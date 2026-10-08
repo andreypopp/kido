@@ -36,7 +36,7 @@ the JSON endpoint supplies its `DIR/socket` path. Helpers never set
 other ending is. A reconnect is a full reset, since ids mean something
 only to the server that issued them. Every connection close, redial
 and quit is one line on stderr, with its reason or trigger.
-Build identity is checked only at discovery and confirmed restart; automatic
+Build identity is checked only at discovery and explicit restart; automatic
 redial only re-attaches, so a different kido manually started in that directory
 is rejected at the next discovery.
 
@@ -64,8 +64,9 @@ config. File → **New Local Window** uses ordinary Local routing even when othe
 windows exist; the cold remote-launch gate still holds Local requests back.
 File → **Connect to Remote Host…** uses the same remote routing as URLs and the
 App Intent. Its native alert is a sheet on the key window, or app-modal without
-one, with a labeled host field and Connect/Cancel buttons. Invalid input reopens
-the alert with the text retained and an error. Neither item has a shortcut.
+one, with a labeled host field and Connect/Cancel buttons. Invalid input keeps
+the same alert open, retaining the text and showing an inline error under the
+field; Connect dismisses only after validation succeeds. Neither item has a shortcut.
 Dock reopen still focuses existing windows. There is no recent-connections store
 or remote restore. Off-screen FileMenuTests exercise the dialog response handler
 directly rather than running a modal alert, and create inert window owners without
@@ -142,9 +143,13 @@ Discovery decodes the server's protocol stamp, not its build ID. The required
 protocol is exactly 2.0 at discovery and RPC hello; both major and minor
 must match. Discovery checks both the binary and creating-server stamp.
 Mismatches block the affected window with a native alert sheet; Close leaves
-a disconnected, read-only view with Reconnect to check again. Local sheets
-offer Restart… with a Cancel-first confirmation that sessions, panes, commands
-and agents end and other clients disconnect; Cancel returns to the mismatch.
+a disconnected, read-only view with Reconnect to check again. For every local mismatch, the sheet includes the warning
+that sessions, panes, commands and agents end and other clients disconnect.
+Its destructive Restart acts immediately; Close is the default and Escape action.
+There is no second confirmation or Cancel-back flow. Newer-local title and guidance
+are retained with the same destructive Restart/Close controls. A successful local restart notifies owners on the same socket:
+their mismatch sheets close and they repeat discovery and connect to the new server,
+without another user action. Restart failures remain banners.
 Remote sheets offer Reconnect, advise updating the app for a newer major or minor,
 and read discovery's binary protocol before recommending an upgrade: an
 already-compatible binary only needs its server restarted. RPC hello retains
@@ -781,7 +786,8 @@ at narrow widths.
 
 `make visual` runs hosted SnapshotTesting tests against a private tmux
 socket, never activating a window. Clipboard sheets use visible windows placed
-far off screen; the other fixtures keep their windows unordered. Menlo 13 and the built-in
+far off screen, as do native-button local-mismatch and remote-host validation tests;
+the other fixtures keep their windows unordered. Menlo 13 and the built-in
 light/dark themes isolate terminal-area image and compact layout references:
 single panes at three heights, splits, floats, zoom, fractional history,
 alternate screen, settled resize and the Load more pill. A test-only

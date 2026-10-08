@@ -36,6 +36,39 @@ import XCTest
         XCTAssertEqual(opened, [.remote("user@alias")])
     }
 
+    func testRemoteDialogNativeInvalidInputStaysAttached() async throws {
+        let routes = WindowRoutes()
+        var opened: [Kido.Host] = []
+        routes.ready(isDefaultLaunch: true) { opened.append($0) }
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        defer { window.close() }
+        let dialog = RemoteHostDialog(routes: routes)
+        dialog.show(on: window)
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        dialog.field.stringValue = "bad host"
+        dialog.alert.buttons[0].performClick(nil)
+        let settled = expectation(description: "native invalid Connect processed")
+        DispatchQueue.main.async { settled.fulfill() }
+        await fulfillment(of: [settled], timeout: 2)
+        XCTAssertTrue(window.attachedSheet === sheet)
+        XCTAssertEqual(dialog.field.stringValue, "bad host")
+        XCTAssertTrue(opened.isEmpty)
+        func labels(_ view: NSView) -> [String] {
+            (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(labels)
+        }
+        XCTAssertTrue(labels(try XCTUnwrap(sheet.contentView)).contains { $0.contains("Host must be") && $0.contains("without spaces") })
+        XCTAssertEqual(NSApp.windows.filter { $0.sheetParent === window }.count, 1)
+        dialog.field.stringValue = " user@alias "
+        dialog.alert.buttons[0].performClick(nil)
+        let closed = expectation(description: "valid Connect dismisses")
+        DispatchQueue.main.async { closed.fulfill() }
+        await fulfillment(of: [closed], timeout: 2)
+        XCTAssertNil(window.attachedSheet)
+        XCTAssertEqual(opened, [.remote("user@alias")])
+    }
+
     func testLocalMenuRespectsColdRemoteGate() {
         let app = AppDelegate()
         var opened: [Kido.Host] = []

@@ -1298,6 +1298,99 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         }
     }
 
+    private func localMismatchOwners(_ count: Int, stamp: String = "1.1") async throws -> [WindowOwner] {
+        directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "Native mismatch tests require a private KIDO_APP_SERVER")
+        socket = directory.appendingPathComponent("socket").path
+        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        XCTAssertEqual(output.status, 0, output.err)
+        _ = try await command(["set-environment", "-g", "KIDO_PROTOCOL", stamp])
+        var owners: [WindowOwner] = []
+        for _ in 0..<count {
+            let owner = try sidebarOwner()
+            owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+            owner.window.orderFront(nil)
+            owner.start()
+            owners.append(owner)
+        }
+        try await wait("local mismatch sheets attached") { owners.allSatisfy { $0.window.attachedSheet != nil && $0.preparedAlert != nil } }
+        return owners
+    }
+
+    func testLocalMismatchNativeRestart() async throws {
+        for stamp in ["1.1", "2.1"] {
+            let owner = try await localMismatchOwners(1, stamp: stamp)[0]
+            defer { owner.close() }
+            let alert = try XCTUnwrap(owner.preparedAlert?.alert)
+            XCTAssertEqual(alert.messageText, stamp == "1.1" ? "Restart the local kido server" : "This server needs a newer Kido.app")
+            XCTAssertTrue(alert.informativeText.contains("Server: \(stamp)."))
+            XCTAssertEqual(alert.buttons.map(\.title), ["Restart", "Close"])
+            XCTAssertTrue(alert.buttons[0].hasDestructiveAction)
+            XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[1].cell)
+            XCTAssertTrue(alert.window.initialFirstResponder === alert.buttons[1])
+            let pid = try await command(["display-message", "-p", "#{pid}"])
+            alert.buttons[0].performClick(nil)
+            var secondSheet = false
+            try await wait("native Restart connects without a second sheet") {
+                if let pending = owner.preparedAlert?.alert, pending !== alert { secondSheet = true }
+                return owner.testConnection != nil && owner.testBanner.isHidden
+            }
+            XCTAssertFalse(secondSheet, "A second restart sheet was prepared")
+            XCTAssertNil(owner.preparedAlert)
+            XCTAssertNil(owner.window.attachedSheet)
+            let current = try await command(["show-environment", "-g", "KIDO_PROTOCOL"])
+            XCTAssertEqual(current, "KIDO_PROTOCOL=\(RPCVersion.required)")
+            let newPID = try await command(["display-message", "-p", "#{pid}"])
+            XCTAssertNotEqual(newPID, pid)
+        }
+    }
+
+    func testLocalMismatchNativeClose() async throws {
+        let owner = try await localMismatchOwners(1)[0]
+        let alert = try XCTUnwrap(owner.preparedAlert?.alert)
+        let pid = try await command(["display-message", "-p", "#{pid}"])
+        alert.buttons[1].performClick(nil)
+        try await wait("Close dismisses mismatch sheet") { owner.preparedAlert == nil && owner.window.attachedSheet == nil }
+        XCTAssertNil(owner.testConnection)
+        let stamp = try await command(["show-environment", "-g", "KIDO_PROTOCOL"])
+        XCTAssertEqual(stamp, "KIDO_PROTOCOL=1.1")
+        let unchangedPID = try await command(["display-message", "-p", "#{pid}"])
+        XCTAssertEqual(unchangedPID, pid)
+    }
+
+    func testLocalMismatchEscapeCloses() async throws {
+        let owner = try await localMismatchOwners(1)[0]
+        let alert = try XCTUnwrap(owner.preparedAlert?.alert)
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: alert.window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        XCTAssertTrue(alert.window.performKeyEquivalent(with: escape))
+        try await wait("Escape closes local mismatch") { owner.preparedAlert == nil && owner.window.attachedSheet == nil }
+        XCTAssertNil(owner.testConnection)
+        let stamp = try await command(["show-environment", "-g", "KIDO_PROTOCOL"])
+        XCTAssertEqual(stamp, "KIDO_PROTOCOL=1.1")
+    }
+
+    func testLocalMismatchNativeRestartOtherWindow() async throws {
+        let owners = try await localMismatchOwners(2)
+        let alert = try XCTUnwrap(owners[0].preparedAlert?.alert)
+        let pid = try await command(["display-message", "-p", "#{pid}"])
+        alert.buttons[0].performClick(nil)
+        try await wait("both Local windows reconnect after one Restart") {
+            owners.allSatisfy { $0.testConnection != nil && $0.testBanner.isHidden && $0.preparedAlert == nil && $0.window.attachedSheet == nil }
+        }
+        let newPID = try await command(["display-message", "-p", "#{pid}"])
+        XCTAssertNotEqual(newPID, pid)
+        for owner in owners {
+            let connected = expectation(description: "owner connected to the new server PID")
+            owner.send([Command("display-message", "-p", "#{pid}")]) { replies in
+                guard case .success(let lines)? = replies?.first else { return XCTFail("Owner control client did not reply") }
+                XCTAssertEqual(lines, [newPID])
+                connected.fulfill()
+            }
+            await fulfillment(of: [connected], timeout: 5)
+        }
+        let stamp = try await command(["show-environment", "-g", "KIDO_PROTOCOL"])
+        XCTAssertEqual(stamp, "KIDO_PROTOCOL=\(RPCVersion.required)")
+    }
+
     func testMismatchAlertCases() throws {
         let remote = Kido.Host.remote("dev@buildbox")
         for (host, stamp, binary, title, body) in [
@@ -1315,9 +1408,14 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             let alert = WindowOwner.mismatchAlert(host: host, server: stamp.flatMap(RPCVersion.init), binary: binary.flatMap(RPCVersion.init))
             XCTAssertEqual(alert.messageText, title)
             let showBinary = host != .local && (binary == "2.0" || binary == "2.1" && binary != stamp)
-            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs exactly protocol 2.0. Server: \(stamp ?? "unstamped (older kido)")." + (showBinary ? " Host binary: \(binary!)." : "") + " Protocol numbers are not Kido.app release numbers.")
-            XCTAssertEqual(alert.buttons.map(\.title), [host == .local ? "Restart…" : "Reconnect", "Close"])
-            XCTAssertEqual(alert.buttons[1].keyEquivalent, "\u{1b}")
+            let restart = host == .local
+            let warning = restart ? "\n\nRestarting ends all sessions and panes on this local kido-app server. Running commands and agents will stop. Other clients attached to this server will disconnect." : ""
+            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs exactly protocol 2.0. Server: \(stamp ?? "unstamped (older kido)")." + (showBinary ? " Host binary: \(binary!)." : "") + " Protocol numbers are not Kido.app release numbers." + warning)
+            XCTAssertEqual(alert.buttons.map(\.title), [host == .local ? "Restart" : "Reconnect", "Close"])
+            XCTAssertEqual(alert.buttons[0].hasDestructiveAction, restart)
+            XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[restart ? 1 : 0].cell)
+            if restart { XCTAssertTrue(alert.window.initialFirstResponder === alert.buttons[1]) }
+            if !restart { XCTAssertEqual(alert.buttons[1].keyEquivalent, "\u{1b}") }
         }
     }
 
@@ -1401,17 +1499,9 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         let mismatch = try XCTUnwrap(owner.preparedAlert?.alert)
         XCTAssertEqual(mismatch.messageText, "Restart the local kido server")
-        XCTAssertEqual(mismatch.buttons.map(\.title), ["Restart…", "Close"])
-        XCTAssertTrue(mismatch.window.defaultButtonCell === mismatch.buttons[0].cell)
-        owner.respondToAlert(.alertFirstButtonReturn)
-        let confirmation = try XCTUnwrap(owner.preparedAlert?.alert)
-        XCTAssertEqual(confirmation.messageText, "Restart the local server?")
-        XCTAssertEqual(confirmation.buttons.map(\.title), ["Cancel", "Restart"])
-        XCTAssertTrue(confirmation.buttons[1].hasDestructiveAction)
-        XCTAssertTrue(confirmation.window.defaultButtonCell === confirmation.buttons[0].cell)
-        XCTAssertTrue(confirmation.window.initialFirstResponder === confirmation.buttons[0])
-        owner.respondToAlert(.alertFirstButtonReturn)
-        XCTAssertEqual(owner.preparedAlert?.alert.messageText, mismatch.messageText)
+        XCTAssertEqual(mismatch.buttons.map(\.title), ["Restart", "Close"])
+        XCTAssertTrue(mismatch.buttons[0].hasDestructiveAction)
+        XCTAssertTrue(mismatch.window.defaultButtonCell === mismatch.buttons[1].cell)
         owner.respondToAlert(.alertSecondButtonReturn)
         XCTAssertNil(owner.preparedAlert)
         XCTAssertFalse(owner.testBanner.isHidden)
