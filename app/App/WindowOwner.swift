@@ -34,7 +34,12 @@ class OwnerWindow: NSWindow {
     private var model = SessionModel()
     private var snapshot: Snapshot?
     private var navigationModel = SessionModel()
-    private var focusTarget: SidebarView.Target?
+    private enum Target { case pane(Snapshot.Position), window(SessionID, WindowID) }
+    private var focusTarget: Target?
+    private var intent = 0
+    private var activating: Int?
+    private var completing = false
+    var request: (RPCRequest, @escaping @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void) -> Void = { $1(.failure(.terminal("the RPC feed is not ready"))) }
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
 
     private enum Attempt {
@@ -87,10 +92,12 @@ class OwnerWindow: NSWindow {
         sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
         if !background { sidebar.isCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") }
         sidebar.changed = { [weak self] in self?.menuChanged() }
-        sidebar.list.request = { [weak self] request, done in
+        request = { [weak self] request, done in
             guard let feed = self?.feed else { return done(.failure(.terminal("the RPC feed is not ready"))) }
             feed.request(request, completed: done)
         }
+        sidebar.list.navigate = { [weak self] in self?.perform($0) }
+        sidebar.list.onIntent = { [weak self] in self?.supersedeIntent() }
         sidebar.list.newSession = { [weak self] in self?.newSession() }
         sidebar.list.newWindow = { [weak self] session in
             guard let self, let window = model.sessions.first(where: { $0.id == session })?.window else { return }
@@ -98,13 +105,11 @@ class OwnerWindow: NSWindow {
         }
         sidebar.tabs.select = { [weak self] in self?.selectWindow($0) }
         sidebar.focusTerminal = { [weak self] in self?.focusSelected() }
-        sidebar.list.prepareFocus = { [weak self] in self?.focusTarget = $0 }
-        sidebar.list.intentChanged = { [weak self] in self?.focusTarget = nil }
         (window as? OwnerWindow)?.focusChanged = { [weak self] old, next in
             guard let self else { return }
             if let pane = next as? PaneView, model.window.flatMap({ session?.windows[$0]?.active }) == pane.pane,
                old == nil || old is PaneView || old === window { return }
-            sidebar.list.supersedeIntent()
+            supersedeIntent()
         }
         banner = Banner(background: runtime.background, target: self, action: #selector(WindowOwner.start))
         banner.frame = sidebar.content.bounds
@@ -405,7 +410,7 @@ class OwnerWindow: NSWindow {
                 onChange: { [weak self] model in guard let self, accepts(generation) else { return }; changed(view, model) },
                 onDiagnostic: { [weak self] message in guard let self, accepts(generation) else { return }; banner.show(message, "", button: nil) },
                 onClose: { [weak self] exit in guard let self, alive, self.generation == generation else { return }; closed(view, exit) })
-            connection.userFocus = { [weak self] in self?.sidebar.list.supersedeIntent() }
+            connection.userFocus = { [weak self] in self?.supersedeIntent() }
             connection.navigate = { [weak self] command in
                 guard let self, accepts(generation) else { return }
                 switch command {
@@ -506,14 +511,45 @@ class OwnerWindow: NSWindow {
     @objc func newSession() { perform(.newSession) }
 
     func selectWindow(_ step: WindowStep) {
-        switch step {
-        case .next: perform(.switchWindow(next: true))
-        case .previous: perform(.switchWindow(next: false))
-        default: if let request = navigationModel.select(step) { perform(request) }
-        }
+        if let request = navigationModel.select(step) { perform(request) }
     }
 
-    func perform(_ request: RPCRequest) { sidebar.list.perform(request) }
+    func supersedeIntent() {
+        guard !completing else { return }
+        intent += 1
+        focusTarget = nil
+    }
+
+    func perform(_ request: RPCRequest) {
+        if case .jump(let target) = request {
+            guard activating != intent else { return }
+            sidebar.list.select(target)
+        }
+        supersedeIntent()
+        let revision = intent
+        if case .jump = request { activating = revision }
+        sidebar.list.failed(nil)
+        let done: @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void = { [weak self] result in
+            guard let self else { return }
+            if activating == revision { activating = nil }
+            guard intent == revision else { return }
+            completing = true
+            defer { completing = false }
+            switch result {
+            case .failure(let error): sidebar.list.failed(error.message)
+            case .success(.jumped(let target)), .success(.selected(let target)), .success(.created(let target)):
+                focusTarget = .pane(target)
+                sidebar.list.completedActivation()
+            case .success(.switched(let target)):
+                guard let target else { return }
+                focusTarget = .window(target.session, target.window)
+                sidebar.list.completedActivation()
+            case .success(.released): sidebar.list.leave()
+            default: break
+            }
+        }
+        self.request(request, done)
+    }
 
     private func focusSelected() {
         if let target = focusTarget {
@@ -607,8 +643,8 @@ class OwnerWindow: NSWindow {
         window.delegate = nil
         onClose()
     }
-    func windowDidBecomeKey(_ notification: Notification) { sidebar.list.supersedeIntent(); menuChanged() }
-    func windowDidResignKey(_ notification: Notification) { sidebar.list.supersedeIntent() }
+    func windowDidBecomeKey(_ notification: Notification) { supersedeIntent(); menuChanged() }
+    func windowDidResignKey(_ notification: Notification) { supersedeIntent() }
     func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert() }
     func updateColorScheme() { session?.updateColorScheme() }
     var navigation: SessionModel { navigationModel }
