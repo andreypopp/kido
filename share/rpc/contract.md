@@ -126,12 +126,12 @@ invalid. All requests use the existing error envelope and explicit socket.
   steps from its top-level ancestor. Top-level steps skip run-marked windows,
   never descend, and wrap across sessions in sidebar order. The CLI and
   sidebar Shift-Up/Down keys share this order; a sole eligible root selects itself.
-- Changed: pi item indicator, attention, title and caption use OSC records
-  instead of State status/title/completion. Pi compaction is running with
+- Changed: pi item indicator, attention and caption use pi's native OSC
+  records instead of State status/completion; the title is the pane title. Pi compaction is running with
   a message, not compacting. Gone runs outrank terminal and Hook status;
   Claude Code retains Hook status and completion.
 - Changed: pi stall requires a working root and stale State heartbeat;
-  bare pi never stalls. Pi addressing uses the root title. State supplies
+  bare pi never stalls. Pi addressing uses the pane title. State supplies
   identity, inbox, parentage, activity and the ask overlay; agent-status
   removes --status, --ended and --title.
 - Unchanged: switch-session requests and integer-correlated replies were
