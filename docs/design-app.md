@@ -168,7 +168,7 @@ Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
 Discovery decodes the server's protocol stamp, not its build ID. The required
-protocol is exactly 2.0 at discovery and RPC hello; both major and minor
+protocol is exactly 2.1 at discovery and RPC hello; both major and minor
 must match. Discovery checks both the binary and creating-server stamp.
 Mismatches block the affected window with a native alert sheet; Close leaves
 a disconnected, read-only view with Reconnect to check again. For every local mismatch, the sheet includes the warning
