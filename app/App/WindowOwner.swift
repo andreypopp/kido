@@ -154,13 +154,13 @@ private class AlertEscape: NSView {
             NSApp.activate(ignoringOtherApps: true)
         }
         menuChanged()
-        if start { self.start() }
+        if start { begin(cause) }
     }
 
     func updateAppearance() {
         let background = runtime.background
         window.backgroundColor = background
-        for view in [sidebar.view, sidebar.terminalHost, sidebar.content] {
+        for view in [sidebar.terminalHost, sidebar.content] {
             view.wantsLayer = true
             view.layer?.backgroundColor = background.cgColor
         }
