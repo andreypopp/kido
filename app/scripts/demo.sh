@@ -57,7 +57,7 @@ AWK
   done
   t send-keys -t main:kido.0 "'$K' async_bash --name build -- sleep 3600" Enter
 fi
-t send-keys -t main:kido.0 "'$K' agent-status --agent pi --session demo-kido --activity 'fixing sidebar tests'; printf '\\033]2;π kido\\007\\033]7501;state=working:app=pi\\007'; sleep 86400" Enter
+t send-keys -t main:kido.0 "'$K' agent-status --agent pi --session demo-kido --activity 'fixing sidebar tests'; printf '\\033]2;π kido\\007\\033]7501;state=working:app=pi\\007\\033]7501;id=agent-a:state=working:title=SW52ZXN0aWdhdGUgc2lkZWJhciBsYXlvdXQ=:msg=Q29tcGFyaW5nIG5hdGl2ZSByb3cgbWVhc3VyZW1lbnRz\\007\\033]7501;id=agent-a/permission:state=blocked:kind=permission:title=QXBwcm92ZSB0ZXN0IGNvbW1hbmQ=:msg=TWF5IEkgcnVuIHRoZSBpbnRlZ3JhdGlvbiB0ZXN0cz8=\\007\\033]7501;id=agent-b:state=working:title=Q2hlY2sgdG9vbGJhciBnZW9tZXRyeQ==\\007\\033]7501;id=agent-c:state=working:title=UmV2aWV3IGFjY2Vzc2liaWxpdHk=\\007'; sleep 86400" Enter
 t send-keys -t main:review "'$K' agent-status --agent pi --session demo-review --parent-session demo-kido --depth 1 --activity 'needs your answer'; printf '\\033]2;π review\\007\\033]7501;state=blocked:app=pi:kind=question\\007'; sleep 86400" Enter
 t send-keys -t main:tests.0 "'$K' agent-status --agent pi --session demo-tests --parent-session demo-kido --depth 1 --activity 'running e2e'; printf '\\033]2;π tests\\007\\033]7501;state=working:app=pi\\007'; sleep 86400" Enter
 t send-keys -t research:notes "'$K' agent-status --agent claude --session demo-notes --activity 'wrote summary'; sleep 86400" Enter

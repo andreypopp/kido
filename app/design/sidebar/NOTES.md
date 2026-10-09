@@ -34,6 +34,27 @@ The tab host is 36pt tall at y=8 within the 52pt toolbar. Tab surfaces stay 28pt
 
 **Fullscreen background fix is represented, implementation settled; user's final native-app look remains pending.** Docked sidebar glass extends through the 52pt toolbar band, identical to the glass below. The themed band begins only to the right of the sidebar divider. Collapsed and floating fullscreen modes retain the themed band across the entire window; floating glass starts below that band. Width changes, session switches and fullscreen re-entry preserve this boundary. Docked glass has square edges and no outline. Only the floating card has rounded corners and a hairline border. This replaces the previous preview's incorrect cream band over docked glass.
 
+## Proposal: OSC 7501 display-only child records — awaiting user review
+
+The default **Claude Code · child records** fixture proposes program records below their owning pane, before selectable child windows. It contains three working Claude Code subagents (one with a caption) and a nested blocked permission record. Records are not panes: no leading agent/terminal icon, no @ prefix, no clock, no button role, no tab stop, no click handler, no hover/selection/focus fill. Their smaller secondary text distinguishes them from 12pt, icon-bearing selectable child-window rows. They remain inside the owning window's continuous active fill; they never create another rounded window group or independent highlight.
+
+| Property | Proposed geometry |
+| --- | --- |
+| Single line / with caption | 24pt / 39pt |
+| Title | 11pt regular secondary, 16pt line box |
+| Caption | 10pt regular secondary, 14pt line box, 1pt below title |
+| Vertical inset | 4pt top/bottom |
+| First record title | owning pane title + 12pt |
+| Each additional slash component | +12pt (child windows remain +16pt) |
+| Status | existing 6pt dot / check symbol, centered 15pt from group right edge |
+| Separation after records | 3pt when records end the window; ordinary child-window spacing otherwise |
+
+Like `lib/sidebar.ml` / `lib/ui.ml` at kido main 2e8acae6: exclude the root id, order ids lexicographically by slash components (bytewise UTF-8), indent by component count even if intermediate records are absent, fall back to full id for empty title, and show msg as caption. Program rows precede child windows. Unlike the TUI's character tree branches, the AppKit proposal preserves this sidebar's existing no-guide treatment.
+
+State mapping: working→green, blocked→orange, error→red, done→green check, idle→no indicator. Visiting the parent pane (by row or tab) acknowledges done/error for that pane's serial; records/captions remain, working/blocked stay visible, and a newer serial restores completion/error indicators. Preview acknowledgement state is separate from feed data, mirroring the per-view model. Fixtures retain raw program_status records; no extra feed field is needed. Existing mock parent indicators are static fixture data, not a full recomputation of kido's representative status algorithm.
+
+**Not approved or implementation-ready yet.** Review especially the 12pt record indent, icon omission, secondary typography, and how records share the active-window fill. No Swift implementation changes are requested until the user settles this proposal.
+
 ## Approved sidebar geometry
 
 Sessions are plain noninteractive 11pt semibold secondary labels in 29pt headers, followed by windows; no session card or folding. Label line-box y=6.5pt. The trailing 13pt plus creates a new window (preview placeholder), with icon-only hover and center aligned to status circles, 15pt from the item's right edge. Session bottom gap is 16pt. The scrolling list has 8pt horizontal insets, 2pt top and 10pt bottom space.
