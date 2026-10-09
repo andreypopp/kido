@@ -127,6 +127,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             UserDefaults.standard.set(left, forKey: "nativeSidebarWidth")
         }
         view.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "newSession" }?.isHidden = isCollapsed || isFloating
+        dockedGlass?.cornerRadius = isFloating ? 18 : 0
         #if KIDO_VISUAL
         dockedGlass?.wantsLayer = true
         dockedGlass?.layer?.backgroundColor = isFloating ? NSColor.windowBackgroundColor.cgColor : nil
