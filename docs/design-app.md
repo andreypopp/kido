@@ -700,11 +700,16 @@ They follow the native separator when the floating sidebar opens.
 `WindowOwner` computes the background and appearance once and assigns them
 atomically to `WindowTabs.theme`. On theme assignment and
 `viewDidMoveToWindow`, the tabs synchronize their own window's background,
-appearance and titlebar transparency. An app-owned, non-hit-testing
-`HeaderBackground` is the lowest subview of that host's contentView;
-in full screen the host is the separate `NSToolbarFullScreenWindow`, whose
-native root otherwise draws white. No public API removes the native toolbar
-material: the app covers it from beneath without mutating private views.
+appearance. Background and titlebar transparency are synchronized only in
+the main window. An app-owned, non-hit-testing `HeaderBackground` is the
+lowest subview of the host's contentView. In full screen the host is the
+separate `NSToolbarFullScreenWindow`: its native right-hand material draws
+white or grey rather than the terminal theme. The backing paints only to
+the right of the live docked sidebar divider, leaving AppKit's own sidebar
+glass uncovered. The main window's full-height sidebar already extends
+under that host. The docked list adds no rounding or outline to AppKit's
+square sidebar; only the floating list has an 18pt radius and hairline
+border. With the sidebar collapsed or floating, the whole band is themed. No private views are mutated or additional glass installed.
 WindowTabs paints no background of its own, preserving the native sidebar shadow.
 
 Tabs project the current session's top-level windows from the
