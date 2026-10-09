@@ -95,7 +95,7 @@ jobs:
         run: dune build
 
       - name: Install
-        run: make install PREFIX=$HOME/tmux-side && $HOME/tmux-side/bin/kido debug-log && test -x $HOME/tmux-side/share/kido/bin/tmux
+        run: make install PREFIX=$HOME/tmux-side && $HOME/tmux-side/bin/kido --version && test -x $HOME/tmux-side/share/kido/bin/tmux
 
       - name: Unit tests
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test --force
