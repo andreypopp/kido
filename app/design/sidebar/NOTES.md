@@ -1,10 +1,46 @@
-# Sidebar reference
+# Sidebar reference — macOS 27
 
-## Approved Finder-style redesign
+Self-contained reference for Kido.app 0.10.1 on macOS 27. The implementation is authoritative: `App/{Sidebar,SidebarView,SidebarRow,WindowTabs}.swift` and `Packages/SidebarFeed/Sources/SidebarFeed/{Rows,Windows}.swift`. The HTML approximates native drawing; it does not replace AppKit.
 
-The current preview is a new Finder-inspired sidebar proposal, not the older shipped/reference layout below. Session names are plain noninteractive 11pt semibold secondary labels, without cards or fold buttons. A small trailing plus button creates a new window in that session (visual placeholder in the preview); only its icon brightens on hover. Its center aligns with the top-level pane status-circle column (15pt from the item's right edge). Each window is one rounded 7pt item with 3pt spacing between items; multi-pane windows contain one row per pane inside the same item, with each pane's descendants immediately beneath it. A faint 1pt horizontal delimiter now separates different windows: 7pt separator row (3pt gap on either side), 12pt inset on both ends, labelColor at approximately 7.5% alpha. It appears only between top-level windows, never before the session's first window or between panes of one window. Nested windows have no divider lines or separator rows. The active window has one continuous 10% labelColor fill; only multi-pane windows retain a small focused-pane mark. Single-pane windows need no extra mark.
+```sh
+open design/sidebar/mockup.html
+```
 
-Final activity geometry was tuned by eye in the built app and approved by the user. Title line boxes remain 18pt; activity line boxes remain 15pt. Activity rows are 4pt shorter than the previous proposal; one-line rows are unchanged:
+## Evidence and appearance
+
+Updated against `/tmp/kido-visual-macos27/index.html`: paired macOS 26/27 captures of `testSidebarCards.*`, `testFloatingSidebar.collapsed-floating`, `testHostLabel.*`, and `testWindowTabs.*`. Chrome now follows `/tmp/kido-chrome-macos27/{windowed-docked,windowed-collapsed,windowed-floating,fullscreen-docked}{,-crop}.png` and `frames.txt`: real active/key-window captures with measured AppKit frames at 2× backing scale. Fullscreen states also follow `/tmp/kido-fs-probe/kido-{light,dark}-{docked,wide,collapsed,floating,switched,reentered}.png`. Final corner verification uses `/tmp/kido-corners-macos27/{light,dark}-windowed-docked{,-crop}.png` and `{light,dark}-fullscreen-docked-crop.png`: these show the corrected square/edgeless docked sidebar. Their “could not reach Local” message is stopped-test-server content, not a design change. These supersede the initial fullscreen screenshot for toolbar/background geometry. All paths are local review artifacts, not runtime dependencies.
+
+The old/new pairs primarily change native glyph shapes/rasterization, not the approved row geometry or palette. Keep system fonts at the existing point sizes rather than inventing larger sizes or heavier weights. Browser text uses the installed OS system font; CSS line boxes and SVG approximations cannot reproduce NSString/SF Symbol rasterization exactly.
+
+The default preview is Light, with warm terminal/toolbar `#fefaf1` and beige sidebar `#f0ebe2`, approximately sampled from the latest real captures. Windowed light glass has a subtle `#eeece1` top tint fading into the body. Dark approximates the real captures with terminal/toolbar `#192028` and glass `#21272e`. These static colors approximate wallpaper-, theme-, appearance-, and color-profile-dependent materials; they are not new hardcoded AppKit colors. **Visual-test surface** switches the sidebar to white in Light / `#1e1e1e` in Dark, matching isolated `testSidebarCards` captures, while leaving the terminal theme intact. Native tests flatten materials and are not evidence that the live sidebar should be white.
+
+The sidebar has no inset/shadow in docked mode. Default width is 292pt; Width previews also cover the measured 236pt and 320pt variants. Docked glass fills the full sidebar width/height with square corners and no hairline edge, in both windowed and fullscreen modes. The rounded outline visible in the supplied docked captures was a Kido bug and is intentionally not reproduced. Docked glass continues behind the toolbar seamlessly. Only the floating overlay keeps an 18pt rounded card with a 0.5pt labelColor-12% border. Floating mode overlays terminal content; in fullscreen its rounded card begins below the themed toolbar band.
+
+Toolbar controls sit in window-level 52pt chrome. Coordinates below are CSS/AppKit points measured from the top-left, not 2× screenshot pixels. Traffic lights are 14pt, at x=19/42/65, y=19, with 9pt gaps. New Session is hidden in collapsed/floating modes. Toolbar symbols approximate the app's 20pt/small SF Symbol configuration.
+
+| Control | x | y | width × height |
+| --- | --- | --- | --- |
+| New Session, docked | sidebar width − 86 | 8.5 | 32.5 × 34 |
+| Toggle, docked/floating | sidebar width − 42 | 9.5 | 32.5 × 32 |
+| Tab host, docked/floating | sidebar width + 8 | 8 | remaining width − 8, × 36 |
+| Toggle, windowed collapsed | 142 | 9.5 | 32.5 × 32 |
+| Tab host, windowed collapsed | 184 | 8 | remaining width − 8, × 36 |
+| Toggle, fullscreen collapsed | 56 | 9.5 | 32.5 × 32 |
+| Tab host, fullscreen collapsed | 98 | 8 | remaining width − 8, × 36 |
+
+For 292pt docked: New Session x=206, Toggle x=250, tabs x=300. The header's first row begins at y=54 (52pt safe area + 2pt list inset); heading line box y=60.5; first pane row y=83. Table x=8, width=sidebar width−16. No decorative CSS border consumes layout space. Fullscreen hides traffic lights without inventing new docked/floating button positions.
+
+The tab host is 36pt tall at y=8 within the 52pt toolbar. Tab surfaces stay 28pt tall (4pt inset in the host), 7pt radius, 2pt leading/1pt trailing inset, equal widths clamped to 85–220pt, with 11pt system labels. Active tabs use 7.5% labelColor fill and a 1pt stroke. No hover/press/focus-ring treatment. Fixed remote label: 11pt medium secondary text, 16pt line box centered in the host, 2pt leading inset, up to 166pt text width; total reservation is text width + 25pt, capped at 35% of the strip. Separator sits 11pt before that reservation's end. Offline/reconnecting dim label and separator to 45%; only the alias is a tooltip. Tabs scroll independently.
+
+**Fullscreen background fix is represented, implementation settled; user's final native-app look remains pending.** Docked sidebar glass extends through the 52pt toolbar band, identical to the glass below. The themed band begins only to the right of the sidebar divider. Collapsed and floating fullscreen modes retain the themed band across the entire window; floating glass starts below that band. Width changes, session switches and fullscreen re-entry preserve this boundary. Docked glass has square edges and no outline. Only the floating card has rounded corners and a hairline border. This replaces the previous preview's incorrect cream band over docked glass.
+
+## Approved sidebar geometry
+
+Sessions are plain noninteractive 11pt semibold secondary labels in 29pt headers, followed by windows; no session card or folding. Label line-box y=6.5pt. The trailing 13pt plus creates a new window (preview placeholder), with icon-only hover and center aligned to status circles, 15pt from the item's right edge. Session bottom gap is 16pt. The scrolling list has 8pt horizontal insets, 2pt top and 10pt bottom space.
+
+Each window is one 7pt-rounded item containing its pane rows and their descendants. Active window gets continuous 10% labelColor fill, including all nested descendants. Focusing a child highlights its own subtree, not ancestors. Single-pane windows need no extra focus mark; multi-pane windows retain a 2pt leading mark with the row's vertical padding as its inset (85% white dark / 75% black light). Keyboard selection independently adds 10% fill and clears on mouse interaction.
+
+Render children immediately after their owning pane, before the next sibling pane. Indent 16pt per level, no guides. Window bottom spacing is 3pt, with an additional 3pt after a pane's children, matching the native rows. Top-level windows alone have separators BETWEEN windows: 7pt row, centered 1pt line, 12pt end insets, 7.5% labelColor. No nested dividers, no divider before the session's first window, none between panes of one window.
 
 | Window kind | One-line height | Activity height | Top padding | Activity y |
 | --- | --- | --- | --- | --- |
@@ -13,77 +49,31 @@ Final activity geometry was tuned by eye in the built app and approved by the us
 | Nested single | 28pt | 40pt | 5pt | 22.5pt |
 | Nested multi | 26pt | 38pt | 4pt | 21.5pt |
 
-Activity y = padding + 18.5pt at top level, padding + 17.5pt when nested. This supersedes the symmetric line-box-padding proposal: measured in AppKit, the visible space below activity descenders matches one-line rows' space below title descenders. Leading inset remains 12pt top-level / 8pt nested; trailing inset remains 12pt to preserve the status column. Activity x remains 36pt top-level / 32pt nested. Focused marks keep the existing 7/6/5/4pt insets. Single-pane windows keep their previous spacing; titles are 13pt at top level and 12pt for nested panes (18pt line-height), using the system font. The 14pt size was tried and reverted. PragmataPro/monospace was tried and rejected. Only two leading 16pt monochrome icons: agent for agents/agent-runs, terminal for shells, SSH, bash runs, and stream monitors. Agent/agent-run names get an `@` prefix (without doubling an existing `@`); Shell panes with no running command display `Terminal` in secondaryLabelColor instead of the shell/previous-command title, while preserving status (including any completion/failure indicator). Running shell panes keep their command title. This affects only kind `shell`, not SSH or run items. Status and clock remain trailing, activity stays below the title. Each pane's nested windows render immediately after that owning pane, before its next sibling pane, indented 16pt per level with no guides inside the parent window's rounded container. For example, @sidebar-mockup and the other @kido-app children sit directly below @kido-app, before the sibling shell pane. The active window's continuous fill includes all nested windows/descendants, as in the previous design. Focusing a nested window highlights that window and its descendants, not its ancestors. Grouped pane rows individually navigate to their pane; tabs still restore the remembered active pane.
+These activity positions/heights were approved by eye in AppKit and remain unchanged on macOS 27. Titles: 13pt top-level / 12pt nested, 18pt line box. Activity: 11pt, 15pt line box. Leading inset 12pt top-level / 8pt nested, 16pt monochrome icon then 8pt gap. Activity aligns with title at x=36pt / 32pt. Trailing inset stays 12pt; clocks are 10pt tabular digits on the first line.
 
-System colors/materials and SF Symbol equivalents make this implementable with ordinary AppKit table/group-row drawing. Icon artwork is a preview approximation. Historical sections below document previous decisions and are not the current redesign contract. The user approved this redesign and requested implementation handoff to kido-app.
+Exactly two leading icon types: `text.bubble` for agents/agent-runs, `terminal` otherwise. The preview uses inline vectors, not embedded SF Symbols. Agent display names get `@` without doubling it; feed identities and tmux tab names are unchanged. Quiet shell panes show dimmed **Terminal**, retaining completion/failure statuses: match native Rows.swift exactly (kind shell, no run, indicator idle/done/failed). Unintegrated/unknown and running shells retain their original titles.
 
-Self-contained HTML reference for **shipped Kido.app 0.1.5 pane focus and window tabs**. Remote support is being finished; the new remote-only host label below is a design proposal for user review.
+Statuses remain: idle absent; running/compacting green dot; done and gone/completed the same green check; waiting for input orange dot; failure red dot; stalled red exclamation. The feed's attention flag also includes completion and must not itself select orange. Dots are 6pt; native check/exclamation symbols use 10pt bold configurations drawn in a 12pt box. Checks/exclamation strokes in HTML remain approximations.
 
-```sh
-open design/sidebar/mockup.html
-```
+## Interaction and fixtures
 
-The code is authoritative: `App/SidebarRow.swift`, `App/WindowTabs.swift`, `App/SessionModel.swift`, `App/Sidebar.swift`, and `Packages/SidebarFeed/Sources/SidebarFeed/{Rows,Windows}.swift`. CSS approximates native colors/materials and system-font metrics; it is not AppKit.
+Arrow keys/j/k navigate, Enter focuses a pane, / reveals filtering, Escape clears it. Session/window creation and terminal content are placeholders. Captured timestamps are historical, not a live feed connection. Fixtures include nested multi-pane windows, long titles, waiting/stalled/failure/completion, SSH/shells, and orphaned windows. Preview selectors cover Light/Dark, docked/collapsed/floating, fullscreen, widths 236/292/320pt, live/flattened material, local/remote/long host and connection state.
 
-## Shipped sidebar and focus
+Tabs restore each window's remembered active pane. Names/existence/order come from simulated tmux inventory; hierarchy and error/request status come from the last unfiltered snapshot, so filtering does not change tabs. Descendants select their nearest surviving ancestor's tab; orphan windows get their own. Error wins over input requests; completion/running/idle/stalled add no tab dot. Cmd-1…9 follows tab order, clamping out-of-range numbers to the final tab.
 
-Sessions fold on their names, with no triangles. Window dividers replace window rows. Nested subagents/runs indent without guide lines. Status/time stay on the title line, activity below. Idle has no dot; running green, attention orange, error red. Clocks require both `run` and `started` and use native elapsed formatting.
+Remote entry remains Spotlight/Shortcuts **Connect to Remote Host in Kido**, with Host input and a separate window per request. No in-app picker or Recent Connections. Titles are Session locally, user@host / Session remotely; the native title is hidden, with the host identity displayed beside tabs.
 
-Geometry: 292pt sidebar; 31pt headers; 28/44pt pane rows and 25/41pt nested rows; 17pt indents; 9pt divider rows containing a 1pt separator. Fonts: 12pt titles, 11pt nested titles/semibold headers, 10pt tails/tabular clocks. Dots are 6pt. Session corners are 10pt; nested windows round only left corners at 6pt, except bottom-left at the session edge.
+## Final capture review
 
-**The focused pane has no extra fill.** Its only mark is a 3pt left-edge strip with 4pt top/bottom insets, 85% white in dark / 75% black in light. The active window retains its continuous 7.5% labelColor fill, including descendants. For a one-pane window that fill covers its single row; that is a window highlight, not an additional pane highlight. Independent keyboard-navigation selection still uses 10% fill. Cards use 2.5% fill and a 7.5% stroke.
+Re-reviewed native light/dark corner-fixed crops and the earlier populated chrome/fullscreen references against a rendered Chrome preview, including a temporary matching single-window `main`/`zsh` fixture at 900×560. Corrected remaining small differences: traffic lights had flat colors instead of the native shaded treatment; pane SVGs had excess internal whitespace; tab strokes sat entirely outside rather than centered on the path; title truncation differed by 1pt without a clock and 2pt with one; the last window's 3pt gap could collapse into the session's 16pt gap (the body now establishes a flow root).
 
-Arrow keys/j/k move keyboard selection; Enter focuses a pane; mouse clears keyboard fill. Left/right and session names fold/unfold sessions. / opens the session-name filter, including zero-match state. Toolbar/plus icons brighten on hover, but pane/header rows have no hover/press feedback or tooltips.
+Browser-measured coordinates match frames.txt: traffic lights (19/42/65,19), New Session (206,8.5,32.5,34), Toggle (250,9.5,32.5,32), tab host (300,8,…,36), first heading (8,54,276,29), first pane (8,83,276,32). Windowed collapsed Toggle/tabs x=142/184; fullscreen collapsed x=56/98. Docked has no border pseudo-element; floating retains its 18pt outline below the 52pt band in fullscreen. CSS 0.5pt borders are one physical pixel at native 2× backing scale; a 1× browser can round them to a full CSS pixel. Exact native rasterization/material equivalence is not claimed.
 
-## Approved spacing changes
+## Limitations
 
-Every window divider, top-level and nested, is a 3pt row: 1pt gap, 1pt line, 1pt gap. The line uses the same color as the outer sidebar border (labelColor at 12% alpha; `--guide` in the preview), not tertiaryLabelColor. Nested lines start at the window's indent (depth × 21pt) and extend to the right edge. Resolve the native color at draw time and pixel-snap the line. This supersedes the previous top-level-only divider/no-nested-divider variants. No sidebar row may be 0pt: NSTableView aborts on one, which crashed `make demo`. Pane heights and text padding are unchanged. Nesting uses indentation only: 21pt per level (up from 17pt), with no guides. Both elbowed and vertical-only guides were tried and rejected as too busy. The user approved these changes and requested implementation handoff. They are reflected in the mockup, not yet claimed as shipped-code changes.
-
-## Approved divider placement
-
-Render a divider before every window's first pane, including the first window in a session and the first nested child window. Do not add dividers between panes of the same window. Color and 3pt geometry remain unchanged. The user approved this placement and requested handoff to kido-app.
-
-## Approved completion, request, and stalled states
-
-Completed agent turns (`done`) and successful shell commands (`done`) show a green checkmark in the existing trailing status slot, not an orange dot. Completed retained runs (`gone/completed`) use the same bright green checkmark. The user chose one completion appearance for simplicity, with no dim/fresh distinction. Idle remains empty; running/compacting remain green dots; failures stay red.
-
-Orange means an agent actually awaits input (`waiting`, agent or agent-run). The feed's `attention` flag also includes completed turns, so it must not directly select an orange dot. Keep the feed's existing navigation/acknowledgement semantics separate from the visual state. Tab aggregation uses actual errors/input requests, not completion; completed turns don't produce orange tab dots. The stress fixture includes agent `done` with `attention: true` as a regression example and successful shell/run completion.
-
-Stalled uses a bold red exclamation mark in the trailing status slot, distinct from failure's red dot and input requests' orange dot, matching kido's TUI. It produces neither an orange request dot nor a failure dot on tabs under the existing error/request-only aggregation. The user approved this stalled treatment and then simplified all successful completion to the same green checkmark. A checkmark does not invent a completion duration; completed run fixtures have no ticking `started` timestamp. Native implementation can use SF Symbols `checkmark` and `exclamationmark` without circles; preview uses simple CSS strokes/text.
-
-## Shipped title-bar tabs
-
-The shipped tabs are custom AppKit `WindowTabs` drawing, not native macOS NSWindow tabbing. The preview follows that code: a 44pt titlebar strip, equal tab widths clamped to 85–220pt, a tab surface inset 2pt left/1pt right and 8pt vertically, 7pt corner radius, 11pt centered/truncating labels. Active surfaces have 7.5% fill/stroke. There is no hover background or keyboard focus ring. Status dots are 6pt, 12pt from the surface's right edge. Overflow scrolls horizontally (including vertical-wheel input). Tabs remain visible with the sidebar collapsed, after the traffic lights and Show Sidebar button.
-
-- Window names, existence, ordering and each window's last active pane come from a separate simulated tmux window listing, not sidebar pane titles. Fixture names intentionally differ from pane titles to make that distinction visible.
-- The last **unfiltered** feed supplies hierarchy/status projection. Filtering the sidebar changes neither tab membership nor attention/error dots. The preview keeps its full snapshot and filters only sidebar rendering.
-- Descendant windows are grouped beneath the nearest surviving ancestor; focusing a descendant selects that ancestor's tab. If a parent window closes, surviving child windows get their own tabs. **Parent window closed** demonstrates a retained feed snapshot with the parent absent from the tmux listing.
-- Error wins over attention when aggregating all descendant pane statuses; running/idle never produce a tab dot. Accessible tab labels include the aggregated status.
-- Tab clicks select the window and restore its last active pane, as tmux does, rather than choosing its first pane. Sidebar pane clicks update that window's remembered active pane in the preview. Cmd-1…9 follows the projected tab list (out-of-range numbers clamp to the last tab, matching the code).
-
-The preview fixtures include captured working-session structure, illustrative activity/states, nested multi-pane windows, long titles, ssh/shell panes, and historical clocks. Captured timestamps are not a live feed connection. Session/window creation and terminal content are placeholders.
-
-## Remote host label — draft for review
-
-A fixed, noninteractive host label sits at the start of the existing 44pt title-bar strip, before the scrolling tabs. Local windows allocate no label space. Remote windows show the resolved `user@host`; only the original SSH alias is in the tooltip (e.g. `buildbox`). No menu, hover treatment, press feedback, icon, or connection-status dot.
-
-Draft geometry/style: 11pt medium system font in secondaryLabelColor (active tab titles remain 11pt regular labelColor). Text has a 16pt line box centered vertically at y=14; 2pt leading inset; up to 166pt text width, further constrained by a label container at most 35% of the full strip. Long text truncates at the tail. After the text, 12pt spacing, a 1pt separatorColor rule 16pt tall, and 10pt gap before the tabs (the first tab keeps its own 2pt inset). Label does not scroll; remaining width goes to tabs, preserving their 85–220pt widths and 8pt/28pt surface geometry.
-
-Connected uses the normal secondary label color. Reconnecting/offline dims the whole label to 45% opacity; no spinner or extra warning glyph. A window banner explains the connection state. The host/alias stays visible offline, never a stale session title. This is implementable as a noneditable NSTextField label plus a separator; native window dragging should continue through the label, without treating it as a tab hit target.
-
-Preview controls select Local/dev@buildbox/long host, Connected/Reconnecting/Offline, and Docked/Collapsed/Floating sidebar. In floating mode, the strip retains its previous horizontal origin while the sidebar overlays the terminal. The same fixed label remains beside the tabs in all modes.
-
-## Remote entry point and window titles
-
-The agreed Spotlight/Shortcuts action is **Connect to Remote Host in Kido**, taking a required Host string (`user@hostname` or SSH alias). Each request opens a new native window, including repeated requests for the same host. Remote connections use that host's kido-app server. There are no in-app connection controls or saved-host history. The new host label is informational, not a connection control.
-
-Session-aware window titles are **Session** for Local (e.g. `main`) and **user@host / Session** for remote windows. They track that window's current session; offline, omit a stale session name. The preview does not show a separate title-bar window title: its title bar contains the shipped window tabs. The terminal heading remains illustrative pane content, not a window title.
-
-## Data gaps and open questions
-
-- `started` is nullable; a retained completion runtime needs an end timestamp or duration.
-- `tail` is generic display text, not an explicit `set_status` field.
-- No pi/Claude provider field or separate monitor kind; monitors use `run: stream`.
-- Independent subtree folding is not implemented; only sessions fold.
-
-Window-name availability, last-active-pane restoration, and orphan-window tab projection are implemented in 0.1.5, not outstanding feed gaps.
+- Native glass, font metrics, SF Symbols and color management cannot be exactly reproduced by HTML; compare against the real app for final visual decisions.
+- `started` is nullable; retained completion runtime requires an end timestamp/duration.
+- `tail` is generic display text, not a distinct set_status field.
+- No pi/Claude provider field or separate monitor kind; monitors use stream runs.
+- Independent subtree folding is not implemented; sessions are plain labels.
+- Fullscreen background implementation is settled and reflected; final native-app user review is pending.
