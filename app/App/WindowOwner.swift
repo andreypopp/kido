@@ -90,7 +90,25 @@ private class AlertEscape: NSView {
         case redialing(DispatchWorkItem, Attempt, TimeInterval)
     }
 
-    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch) {
+    private let openBrowser: (URL) -> Void
+
+    func openLink(_ text: String) {
+        guard let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            let message = "Remote file paths and non-HTTP links cannot be opened locally: \(text)"
+            note("\(host.label): \(message)")
+            if !background {
+                let alert = NSAlert()
+                alert.messageText = "Unsupported remote link"
+                alert.informativeText = message
+                alert.beginSheetModal(for: window) { _ in }
+            }
+            return
+        }
+        openBrowser(url)
+    }
+
+    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
+        self.openBrowser = openBrowser
         self.host = host
         self.runtime = runtime
         super.init()
@@ -458,18 +476,7 @@ private class AlertEscape: NSView {
             }
             connection.onURL = { [weak self] text in
                 guard let self, accepts(generation) else { return }
-                guard let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-                    let message = "Remote file paths and non-HTTP links cannot be opened locally: \(text)"
-                    note("\(host.label): \(message)")
-                    if !background {
-                        let alert = NSAlert()
-                        alert.messageText = "Unsupported remote link"
-                        alert.informativeText = message
-                        alert.beginSheetModal(for: window) { _ in }
-                    }
-                    return
-                }
-                if !background { NSWorkspace.shared.open(url) }
+                openLink(text)
             }
             link = .connected(connection, endpoint, backoff)
             session?.close()
