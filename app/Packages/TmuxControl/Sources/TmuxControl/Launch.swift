@@ -12,7 +12,7 @@ public struct Launch: Sendable {
     }
 
     public static func attach(_ tmux: String, socket: String, session: String? = nil, pauseAfter: Int = 5) -> Launch {
-        Launch(tmux, ["-u", "-S", socket, "-N", "-C", "attach-session"] + (session.map { ["-t", $0] } ?? [])
+        Launch(tmux, ["-u", "-S", socket, "-N", "-T", "hyperlinks", "-C", "attach-session"] + (session.map { ["-t", $0] } ?? [])
             + ["-f", "pause-after=\(pauseAfter),new-layouts,no-detach-on-destroy"])
     }
 }
