@@ -79,9 +79,11 @@ import TmuxControl
             let header = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 52), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
             header.isReleasedWhenClosed = false
             header.contentView = NativeHeader()
+            header.titlebarAppearsTransparent = true
             header.setFrame(NSRect(x: -20000, y: -20000, width: 900, height: 52), display: false)
             defer { header.close() }
             let transferredTabs = WindowTabs(frame: NSRect(x: 200, y: 8, width: 700, height: 36))
+            transferredTabs.sidebar = owner.sidebar
             transferredTabs.theme = owner.sidebar.tabs.theme
             let headerContent = try XCTUnwrap(header.contentView)
             headerContent.addSubview(transferredTabs)
@@ -89,11 +91,13 @@ import TmuxControl
             XCTAssertTrue(paintedBackground.isOpaque)
             XCTAssertNil(paintedBackground.hitTest(.zero))
             XCTAssertTrue(header.titlebarAppearsTransparent)
+            header.setFrame(NSRect(x: owner.window.frame.minX, y: owner.window.frame.maxY - 52, width: 900, height: 52), display: false)
             let transferredShadow = SidebarShadow()
             headerContent.addSubview(transferredShadow, positioned: .below, relativeTo: transferredTabs)
-            for mode in ["docked", "collapsed", "floating"] {
+            for mode in ["docked", "docked-wide", "collapsed", "floating"] {
                 owner.sidebar.dismissFloating()
-                owner.sidebar.isCollapsed = mode != "docked"
+                owner.sidebar.isCollapsed = !mode.hasPrefix("docked")
+                if mode.hasPrefix("docked") { owner.sidebar.splitView.setPosition(mode == "docked-wide" ? 320 : 236, ofDividerAt: 0) }
                 if mode == "floating" { owner.sidebar.focusSidebar(nil) }
                 owner.window.display()
                 try await Task.sleep(for: .milliseconds(200))
@@ -103,6 +107,34 @@ import TmuxControl
                 transferredShadow.frame = NSRect(x: tabsRect.minX - 8, y: 0, width: 12, height: headerContent.bounds.height)
                 windowedShadow.isHidden = mode == "collapsed"
                 transferredShadow.isHidden = mode == "collapsed"
+                XCTAssertEqual(owner.sidebar.list.layer?.cornerRadius, mode == "floating" ? 18 : 0, "docked sidebar must have square corners")
+                XCTAssertEqual(owner.sidebar.list.layer?.borderWidth, mode == "floating" ? 1 / owner.window.backingScaleFactor : 0, "docked sidebar must not draw an extra outline")
+                transferredTabs.refreshHeader()
+                header.display()
+                let hostImage = try XCTUnwrap(headerContent.bitmapImageRepForCachingDisplay(in: headerContent.bounds))
+                headerContent.cacheDisplay(in: headerContent.bounds, to: hostImage)
+                let leftColor = try XCTUnwrap(hostImage.colorAt(x: 20, y: 10))
+                let leftExpected = mode.hasPrefix("docked") ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1) : expected
+                XCTAssertEqual(leftColor.redComponent, leftExpected.redComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
+                XCTAssertEqual(leftColor.greenComponent, leftExpected.greenComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
+                XCTAssertEqual(leftColor.blueComponent, leftExpected.blueComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
+                if mode == "docked" {
+                    let sidebarRect = owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root)
+                    let corners = NSRect(x: sidebarRect.minX, y: sidebarRect.maxY - 80, width: sidebarRect.width + 24, height: 80)
+                    let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: corners))
+                    root.cacheDisplay(in: corners, to: bitmap)
+                    let image = NSImage(size: corners.size)
+                    image.addRepresentation(bitmap)
+                    let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+                    if let failure = verifySnapshot(of: image, as: .image, named: "windowed-corners-\(hex)", record: record),
+                       !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+                }
+                // This white native-host stand-in pins uncovered geometry, not composited Liquid Glass.
+                let snapshot = NSImage(size: headerContent.bounds.size)
+                snapshot.addRepresentation(hostImage)
+                let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+                if let failure = verifySnapshot(of: snapshot, as: .image, named: "fullscreen-\(hex)-\(mode)", record: record),
+                   !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 for (name, view, tabs) in [("windowed", root, owner.sidebar.tabs), ("transferred", headerContent, transferredTabs)] {
                     let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
                     view.cacheDisplay(in: view.bounds, to: image)
@@ -158,10 +190,12 @@ import TmuxControl
         defer { header.close() }
         for transferred in [false, true] {
             if transferred {
+                header.setFrame(NSRect(x: owner.window.frame.minX, y: owner.window.frame.maxY - 52, width: 900, height: 52), display: false)
                 header.contentView!.addSubview(tabs)
                 tabs.frame = NSRect(x: 300, y: 8, width: 592, height: 36)
             }
-            for (hex, appearance) in [("fffaf0", NSAppearance.Name.aqua), ("172029", .darkAqua), ("fffaf0", .aqua)] {
+            for (index, theme) in [("fffaf0", NSAppearance.Name.aqua), ("172029", .darkAqua), ("fffaf0", .aqua)].enumerated() {
+                let (hex, appearance) = theme
                 let changed = expectation(description: "Ghostty config reload \(hex)")
                 runtime.onConfigChange = { [weak owner] in owner?.updateAppearance(); changed.fulfill() }
                 let config = try XCTUnwrap(ghostty_config_new())
@@ -178,6 +212,17 @@ import TmuxControl
                 let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
                 view.cacheDisplay(in: view.bounds, to: image)
                 let expected = try XCTUnwrap(runtime.background.usingColorSpace(.sRGB))
+                if transferred {
+                    let left = try XCTUnwrap(image.colorAt(x: 20, y: 10))
+                    XCTAssertEqual(left.redComponent, 1, accuracy: 2 / 255)
+                    XCTAssertEqual(left.greenComponent, 1, accuracy: 2 / 255)
+                    XCTAssertEqual(left.blueComponent, 1, accuracy: 2 / 255)
+                    let snapshot = NSImage(size: view.bounds.size)
+                    snapshot.addRepresentation(image)
+                    let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+                    if let failure = verifySnapshot(of: snapshot, as: .image, named: "fullscreen-switch-\(index)-\(hex)", record: record),
+                       !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+                }
                 let scale = CGFloat(image.pixelsHigh) / view.bounds.height
                 for y in [CGFloat(3), 26, 49] {
                     let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(20 * scale), y: Int(y * scale)))
