@@ -22,7 +22,7 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public func sameSidebarContent(as other: Snapshot) -> Bool {
         func item(_ a: Item, _ b: Item) -> Bool {
             a.id == b.id && a.window == b.window && a.kind == b.kind && a.run == b.run
-            && a.indicator == b.indicator && a.title == b.title && a.tail == b.tail
+            && a.indicator == b.indicator && a.program_status == b.program_status && a.title == b.title && a.tail == b.tail
             && a.started == b.started && a.attention == b.attention && nodes(a.children, b.children)
         }
         func nodes(_ a: [Node], _ b: [Node]) -> Bool {
