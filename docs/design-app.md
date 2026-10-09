@@ -726,6 +726,14 @@ new-window plus; hovering brightens only its icon. No session folding remains.
 Each window is a 7pt rounded container enclosing its panes and descendants.
 Each pane's child-window trees immediately follow that pane, before its
 next sibling; drawn order and navigation share the row-model traversal.
+OSC 7501 non-root records follow their pane before its child windows, ordered
+by slash components in UTF-8 byte order. Static-text rows use the title (or
+full id), message caption and state indicator; they are never navigation or
+filter targets. Done/error indicators are acknowledged per pane serial when
+visited, returning on newer serials. Rows are 24/39pt with 4pt padding,
+11pt secondary titles (16pt line box), 10pt secondary captions (14pt line
+box, 1pt gap), no icon or clock, and 12pt indent per slash component from
+the owning pane title. They share the owning window's fill and status axis.
 Children indent 16pt per level without guides. The active window has one
 continuous 10% labelColor fill across its subtree. Focusing a child fills
 that child's subtree, not its ancestors. Row slices carry each enclosing

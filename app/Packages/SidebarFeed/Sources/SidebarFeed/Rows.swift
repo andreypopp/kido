@@ -3,9 +3,9 @@ import TmuxControl
 
 public struct SidebarRow: Equatable, Sendable {
     public enum ID: Hashable, Sendable {
-        case header(SessionID), pane(SessionID, PaneID), divider(SessionID, String), gap(SessionID), spacing(SessionID, String)
+        case header(SessionID), pane(SessionID, PaneID), program(SessionID, PaneID, Data), divider(SessionID, String), gap(SessionID), spacing(SessionID, String)
         public var session: SessionID {
-            switch self { case .header(let s), .pane(let s, _), .divider(let s, _), .gap(let s), .spacing(let s, _): s }
+            switch self { case .header(let s), .pane(let s, _), .program(let s, _, _), .divider(let s, _), .gap(let s), .spacing(let s, _): s }
         }
     }
     public enum Status: Equatable, Sendable {
@@ -13,7 +13,7 @@ public struct SidebarRow: Equatable, Sendable {
         public var tabStatus: Self { self == .error || self == .attention ? self : .quiet }
     }
     public enum Kind: Equatable, Sendable {
-        case header, pane(Snapshot.Position), divider, gap
+        case header, pane(Snapshot.Position), program(depth: Int), divider, gap
     }
     public struct WindowSlice: Equatable, Sendable {
         public let offset: Double
@@ -37,9 +37,18 @@ public struct SidebarRow: Equatable, Sendable {
     public var quietShell = false
     public var icon: Icon = .terminal
     public var active: Bool { windows.contains { $0.active } }
-    public var padding: Double { (indent == 0 ? 7 : 5) - (multiPane ? 1 : 0) }
-    public var leading: Double { Double(indent) * 16 + (indent == 0 ? 36 : 32) }
-    public var tailY: Double { padding + (indent == 0 ? 18.5 : 17.5) }
+    public var padding: Double {
+        if case .program = kind { return 4 }
+        return (indent == 0 ? 7 : 5) - (multiPane ? 1 : 0)
+    }
+    public var leading: Double {
+        let extra: Double = if case .program(let depth) = kind { Double(depth) * 12 } else { 0 }
+        return Double(indent) * 16 + (indent == 0 ? 36 : 32) + extra
+    }
+    public var tailY: Double {
+        if case .program = kind { return 21 }
+        return padding + (indent == 0 ? 18.5 : 17.5)
+    }
     public var target: Snapshot.Position? {
         if case .pane(let target) = kind { return target }; return nil
     }
@@ -73,7 +82,22 @@ public func sidebarTarget(_ snapshot: Snapshot?, selected: Snapshot.Position? = 
     return nil
 }
 
-public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
+public func sidebarProgramSeen(_ snapshot: Snapshot?, previous: [PaneID: Int]) -> [PaneID: Int] {
+    guard let snapshot else { return previous }
+    var seen: [PaneID: Int] = [:]
+    func visit(_ node: Node, session: SessionID) {
+        if case .item(let item) = node {
+            if session == snapshot.client.session && item.pane == snapshot.client.pane {
+                seen[item.pane] = item.program_status.serial
+            } else if seen[item.pane] == nil { seen[item.pane] = previous[item.pane] }
+        }
+        for child in node.children { visit(child, session: session) }
+    }
+    for session in snapshot.sessions { for node in session.nodes { visit(node, session: session.id) } }
+    return seen
+}
+
+public func sidebarRows(_ snapshot: Snapshot?, programSeen: [PaneID: Int] = [:]) -> [SidebarRow] {
     guard let snapshot else { return [] }
     var rows: [SidebarRow] = []
     for session in snapshot.sessions {
@@ -112,6 +136,34 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                                            multiPane: multiPane, quietShell: quietShell,
                                            icon: agent ? .agent : .terminal))
                     y += height
+                    let records = item.program_status.records.filter { !$0.id.isEmpty }.sorted { a, b in
+                        let left = a.id.split(separator: "/", omittingEmptySubsequences: false)
+                        let right = b.id.split(separator: "/", omittingEmptySubsequences: false)
+                        for (a, b) in zip(left, right) {
+                            if !a.utf8.elementsEqual(b.utf8) { return a.utf8.lexicographicallyPrecedes(b.utf8) }
+                        }
+                        return left.count < right.count
+                    }
+                    for record in records {
+                        let seen = (programSeen[item.pane] ?? -1) >= item.program_status.serial
+                        let status: SidebarRow.Status = switch record.state {
+                        case .working: .running
+                        case .blocked: .attention
+                        case .done: seen ? .quiet : .done
+                        case .error: seen ? .quiet : .error
+                        case .idle, .unknown: .quiet
+                        }
+                        let caption = record.msg ?? ""
+                        let height = caption.isEmpty ? 24.0 : 39.0
+                        rows.append(SidebarRow(id: .program(session.id, item.pane, Data(record.id.utf8)),
+                                               kind: .program(depth: record.id.split(separator: "/", omittingEmptySubsequences: false).count),
+                                               indent: depth, height: height,
+                                               title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
+                                               tail: caption, status: status,
+                                               indicatorDescription: seen && (record.state == .done || record.state == .error) ? "idle" : record.state.rawValue,
+                                               attention: false, started: nil, focused: false))
+                        y += height
+                    }
                     if !item.children.isEmpty {
                         windows(item.children, depth: depth + 1)
                         rows.append(SidebarRow(id: .spacing(session.id, "children:" + item.id.description), kind: .gap, indent: depth + 1, height: 3,
