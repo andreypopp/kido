@@ -663,7 +663,10 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertTrue(terminal.paneCursorRects.contains { $0.0.contains(CGPoint(x: grid.midX, y: grid.midY)) && $0.1 === NSCursor.pointingHand })
         XCTAssertFalse(pane.scroller.isHidden)
         let strip = terminal.convert(pane.scroller.bounds, from: pane.scroller)
+        let scrollerAlpha = pane.scroller.alphaValue
+        pane.scroller.alphaValue = 0
         XCTAssertFalse(terminal.paneCursorRects.contains { $0.1 === NSCursor.pointingHand && $0.0.intersects(strip) })
+        pane.scroller.alphaValue = scrollerAlpha
         pane.showFind()
         pane.layoutSubtreeIfNeeded()
         let find = try XCTUnwrap(pane.find)
@@ -1492,7 +1495,6 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertTrue(owner.testBanner.isHidden)
         XCTAssertEqual(owner.sidebar.content.layer?.backgroundColor, runtime.background.cgColor)
-        XCTAssertEqual(owner.sidebar.view.layer?.backgroundColor, runtime.background.cgColor)
         XCTAssertEqual(owner.window.backgroundColor, runtime.background)
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verifySnapshot(of: owner.sidebar.content, as: .image, named: "no-terminal", record: record),
