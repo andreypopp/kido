@@ -2,7 +2,7 @@
 exec python3 -u -c '
 import json, select, sys, time
 started = time.time() - 5
-print(json.dumps(dict(hello=dict(protocol="2.0"))))
+print(json.dumps(dict(hello=dict(protocol="2.1"))))
 def item(kind, pane, window, title, status=None, children=None, attention=False, started=None, tail="", run=None):
     return dict(program_status=dict(serial=0, records=[]), kind=kind, id="%"+str(pane), pane="%"+str(pane), window="@"+str(window), indicator=status,
         title=[dict(text=title, role="proc" if kind in ["run", "ssh", "shell"] else "plain")], tail=[dict(text=tail, role="dim")] if tail else [],
