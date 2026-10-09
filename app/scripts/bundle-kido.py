@@ -8,6 +8,9 @@ import time
 
 root = Path(__file__).resolve().parents[2]
 prefix = Path(os.environ['TARGET_BUILD_DIR']) / os.environ['UNLOCALIZED_RESOURCES_FOLDER_PATH'] / 'kido'
+identity = os.environ['EXPANDED_CODE_SIGN_IDENTITY']
+if not identity:
+    raise RuntimeError('No code signing identity selected')
 scratch = root / 'app/build/bundle'
 scratch.mkdir(parents=True, exist_ok=True)
 with (scratch / 'install.lock').open('w') as lock:
@@ -27,5 +30,8 @@ with (scratch / 'install.lock').open('w') as lock:
                            if not path.startswith((xcode, '/var/run/com.apple.security.cryptexd/mnt/')))
     subprocess.run(['make', 'install', f'PREFIX={prefix}', 'SELF_CONTAINED=1'], cwd=root, env=env, check=True, timeout=600)
     (prefix / 'BUILD-ID').write_bytes(subprocess.check_output([prefix / 'bin/kido', '--version']))
-    for binary in (prefix / 'bin').iterdir():
-        subprocess.run(['codesign', '--force', '--sign', '-', str(binary)], check=True)
+    for binary in prefix.rglob('*'):
+        if binary.is_file() and not binary.is_symlink():
+            kind = subprocess.check_output(['file', '--brief', str(binary)], text=True)
+            if 'Mach-O' in kind:
+                subprocess.run(['codesign', '--force', '--sign', identity, str(binary)], check=True)

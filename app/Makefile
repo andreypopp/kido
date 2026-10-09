@@ -56,7 +56,7 @@ demo demo-build: CONFIG = Release
 demo-debug: CONFIG = Debug
 demo demo-debug demo-build demo-stop: DERIVED = build/xcode.noindex/derived-demo
 demo demo-debug demo-build: APP = $(DERIVED)/Build/Products/$(CONFIG)/KidoDev.app
-demo demo-debug demo-build: XCODE_SETTINGS += PRODUCT_BUNDLE_IDENTIFIER=com.andreypopp.kido.dev KIDO_PRODUCT_NAME=KidoDev INFOPLIST_KEY_CFBundleDisplayName=KidoDev
+demo demo-debug demo-build: XCODE_SETTINGS += PRODUCT_BUNDLE_IDENTIFIER=com.andreypopp.kido.dev KIDO_PRODUCT_NAME=KidoDev INFOPLIST_KEY_CFBundleDisplayName=KidoDev CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=
 demo demo-debug demo-build: all
 demo demo-debug:
 	$(DEMO) scripts/demo.sh $(APP)/Contents/MacOS/KidoDev
