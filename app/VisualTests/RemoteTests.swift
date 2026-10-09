@@ -15,12 +15,12 @@ import TmuxControl
         var requests: [Kido.Host] = []
         cold.connect(.remote("localhost"))
         cold.ordinaryOpen()
-        cold.ready(isDefaultLaunch: false) { requests.append($0) }
+        cold.ready(isDefaultLaunch: false) { host, _ in requests.append(host) }
         cold.connect(.remote("localhost"))
         XCTAssertEqual(requests, [.remote("localhost"), .remote("localhost")])
         requests = []
         warm.ordinaryOpen()
-        warm.ready(isDefaultLaunch: true) { requests.append($0) }
+        warm.ready(isDefaultLaunch: true) { host, _ in requests.append(host) }
         warm.connect(.remote("localhost"))
         XCTAssertEqual(requests, [.local, .remote("localhost")])
     }
@@ -166,7 +166,7 @@ import TmuxControl
             var requests: [Kido.Host] = []
             routes.ordinaryOpen()
             if beforeReady { routes.connect(host) }
-            routes.ready(isDefaultLaunch: false) { requests.append($0) }
+            routes.ready(isDefaultLaunch: false) { host, _ in requests.append(host) }
             if !beforeReady {
                 routes.ordinaryOpen()
                 XCTAssertTrue(requests.isEmpty)
@@ -182,7 +182,7 @@ import TmuxControl
             let routes = WindowRoutes()
             var requests: [Kido.Host] = []
             if earlyOrdinaryOpen { routes.ordinaryOpen() }
-            routes.ready(isDefaultLaunch: false) { requests.append($0) }
+            routes.ready(isDefaultLaunch: false) { host, _ in requests.append(host) }
             routes.ordinaryOpen()
             routes.ordinaryOpen()
             XCTAssertTrue(requests.isEmpty, "untitled/reopen before perform must not open Local")
@@ -195,7 +195,7 @@ import TmuxControl
         }
         let routes = WindowRoutes()
         var requests: [Kido.Host] = []
-        routes.ready(isDefaultLaunch: true) { requests.append($0) }
+        routes.ready(isDefaultLaunch: true) { host, _ in requests.append(host) }
         routes.ordinaryOpen()
         XCTAssertEqual(requests, [.local], "plain launch with untitled after ready opens Local")
     }
@@ -350,7 +350,7 @@ import TmuxControl
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         let routes = WindowRoutes()
         routes.connect(.remote("localhost"))
-        routes.ready(isDefaultLaunch: false) { host in
+        routes.ready(isDefaultLaunch: false) { host, _ in
             let owner = WindowOwner(host: host, runtime: runtime, start: false)
             owner.testRemoteEnvironment = env
             owner.testSSHConfiguration = config
@@ -410,7 +410,20 @@ import TmuxControl
         first.window.setContentSize(NSSize(width: 1000, height: 600))
         second.window.setContentSize(NSSize(width: 640, height: 400))
         _ = await replies(second, [Command("refresh-client", "-C", "160x60"), Command("switch-client", "-t", "$0:@1")])
-        first.window.close()
+        let closeLog = root + "/window-close.log"
+        _ = fm.createFile(atPath: closeLog, contents: nil)
+        let output = try FileHandle(forWritingTo: URL(fileURLWithPath: closeLog))
+        let savedStderr = dup(STDERR_FILENO)
+        XCTAssertGreaterThanOrEqual(savedStderr, 0)
+        do {
+            defer { dup2(savedStderr, STDERR_FILENO); Darwin.close(savedStderr); try? output.close() }
+            XCTAssertGreaterThanOrEqual(dup2(output.fileDescriptor, STDERR_FILENO), 0)
+            first.window.close()
+            try await until("window close logs its cause and owner") {
+                ((try? String(contentsOfFile: closeLog, encoding: .utf8)) ?? "")
+                    .contains("connection closed (window closed), tmux exited 0 [owner \(first.ownerID)]")
+            }
+        }
         XCTAssertFalse(first.accepts(first.generation))
         XCTAssertTrue(second.alive && local.alive)
         let secondAlive = await replies(second, [Command("display-message", "-p", "#{session_name}")])
