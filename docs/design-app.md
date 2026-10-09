@@ -705,11 +705,11 @@ the main window. An app-owned, non-hit-testing `HeaderBackground` is the
 lowest subview of the host's contentView. In full screen the host is the
 separate `NSToolbarFullScreenWindow`: its native right-hand material draws
 white or grey rather than the terminal theme. The backing paints only to
-the right of the live docked sidebar divider, leaving AppKit's own sidebar
-glass uncovered. The main window's full-height sidebar already extends
-under that host. The docked list adds no rounding or outline to AppKit's
+the right of the live sidebar glass edge in both docked and floating modes,
+leaving AppKit's own sidebar glass uncovered up to the top of the screen.
+The main window's full-height sidebar already extends under that host. The docked list adds no rounding or outline to AppKit's
 square sidebar; only the floating list has an 18pt radius and hairline
-border. With the sidebar collapsed or floating, the whole band is themed. No private views are mutated or additional glass installed.
+border. With the sidebar collapsed, the whole band is themed. No private views are mutated or additional glass installed.
 WindowTabs paints no background of its own, preserving the native sidebar shadow.
 
 Tabs project the current session's top-level windows from the
