@@ -16,6 +16,7 @@ func TestChildProgramStatus(t *testing.T) {
 			pane := h.newWindow("alpha", "native", nodeBin, "--")
 			h.waitPaneCommand(pane, "node")
 			tail := h.newWindow("alpha", "tail", "cat", "--")
+			h.in("select-window", "-t", tail)
 			emit := func(body string) {
 				t.Helper()
 				h.in("send-keys", "-t", pane, "-l", "osc "+body)
@@ -68,8 +69,14 @@ func TestChildProgramStatus(t *testing.T) {
 			h.sendKeys("Down")
 			h.waitSelected("cat")
 			h.click(5, h.rowIndex("Investigate"))
-			h.sendKeys("Enter")
+			h.sendKeys("Up")
+			h.waitSelectedLine(3)
+			h.sendKeys("Up")
+			h.waitSelectedLine(2)
+			// The cursor reset proves the sidebar observed focus loss before we re-focus.
+			h.prefix("k")
 			h.waitFocused(false)
+			h.waitSelected("cat")
 			h.waitFor(func() bool {
 				return h.in("display-message", "-p", "-c", h.client, "#{pane_id}") == tail
 			}, settle, msgf("child click leaves the selected pane unchanged"))

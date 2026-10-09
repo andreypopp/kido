@@ -1230,6 +1230,23 @@ let%expect_test
     forgotten with the pane: true
     |}]
 
+let%expect_test "a new ssh destination drops the remote latch without a local-shell tick" =
+  let clock = ref test_at in
+  let m = ssh_tick clock (model ~clock ()) (ssh_pane (test_at +. 1.) test_at false (-1)) in
+  let p =
+    {
+      (ssh_pane ~command_line:"ssh alias" (test_at +. 1.) (test_at +. 2.) true (-1)) with
+      ssh = Some ("deploy@realm", "next.test");
+    }
+  in
+  let m = ssh_tick clock m p in
+  Printf.printf "remote=%b\n" (Sidebar.ssh_remote m p);
+  Printf.printf "%s\n" (label m p);
+  [%expect {|
+    remote=false
+     ssh deploy@realm@next.test
+    |}]
+
 let%expect_test
     "a program that has taken the terminal draws nothing, and leaves no hold on the way out" =
   let clock = ref test_at in

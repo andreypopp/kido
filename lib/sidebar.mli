@@ -92,7 +92,7 @@ type model = {
   seen : float Tmux.Pane.Map.t;
   program_seen : int Tmux.Pane.Map.t;
   phases : phase Tmux.Pane.Map.t;
-  ssh_remote : unit Tmux.Pane.Map.t;
+  ssh_remote : (string * string) Tmux.Pane.Map.t;
   now : unit -> float;
   at : float;
   clock : reading;

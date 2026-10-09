@@ -232,7 +232,7 @@ type model = {
   seen : float Tmux.Pane.Map.t;
   program_seen : int Tmux.Pane.Map.t;
   phases : phase Tmux.Pane.Map.t;
-  ssh_remote : unit Tmux.Pane.Map.t;
+  ssh_remote : (string * string) Tmux.Pane.Map.t;
   now : unit -> float;
   at : float;
   clock : reading;
@@ -256,7 +256,12 @@ let make ~now opts =
     clock = read_clock ();
   }
 
-let ssh_remote m (p : P.t) = Tmux.Pane.Map.mem p.pane_id m.ssh_remote
+let ssh_remote m (p : P.t) =
+  Option.equal
+    (Pair.equal String.equal String.equal)
+    (Tmux.Pane.Map.find_opt p.pane_id m.ssh_remote)
+    p.ssh
+  && Option.is_some p.ssh
 
 (* Strictly after: tmux's timestamps are whole seconds, and an ssh launched in the same second as the
    prompt before it would otherwise pass forever on a host with no integration. The reading latches
@@ -265,9 +270,13 @@ let observe_remote m (p : P.t) =
   if not (String.equal p.current_command "ssh" && Option.is_some p.ssh) then
     { m with ssh_remote = Tmux.Pane.Map.remove p.pane_id m.ssh_remote }
   else
-    match (p.last_prompt, p.command_start) with
-    | Some prompt, Some start when Float.(prompt > start) ->
-        { m with ssh_remote = Tmux.Pane.Map.add p.pane_id () m.ssh_remote }
+    let m =
+      if ssh_remote m p then m
+      else { m with ssh_remote = Tmux.Pane.Map.remove p.pane_id m.ssh_remote }
+    in
+    match (p.last_prompt, p.command_start, p.ssh) with
+    | Some prompt, Some start, Some destination when Float.(prompt > start) ->
+        { m with ssh_remote = Tmux.Pane.Map.add p.pane_id destination m.ssh_remote }
     | _ -> m
 
 let observe m prev running =
