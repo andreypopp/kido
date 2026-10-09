@@ -404,6 +404,29 @@ func TestRpcMatchesTheTUI(t *testing.T) {
 	}
 }
 
+func TestRpcHyperlinks(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	f := h.startFeed("alpha")
+	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 1 }, "the first snapshot")
+
+	clients := h.in("list-clients", "-F", "#{client_name}\t#{client_control_mode}\t#{client_flags}\t#{client_termfeatures}")
+	count := 0
+	for _, line := range strings.Split(clients, "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 4 || fields[1] != "1" || !strings.Contains(fields[2], "no-output") || !strings.Contains(fields[2], "ignore-size") {
+			continue
+		}
+		count++
+		if !strings.Contains(fields[3], "hyperlinks") {
+			t.Errorf("kido control client %s: client_termfeatures = %q, want hyperlinks", fields[0], fields[3])
+		}
+	}
+	if count != 2 {
+		t.Errorf("found %d kido control clients, want sidebar and rpc: %s", count, clients)
+	}
+}
+
 func TestRpcWindowRename(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

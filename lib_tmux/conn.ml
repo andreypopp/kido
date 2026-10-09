@@ -151,7 +151,7 @@ let dial t =
       (Exec.client_state ?socket:t.socket t.client)
   in
   let args =
-    [ "-C"; "attach-session"; "-f"; "no-output,ignore-size" ]
+    [ "-T"; "hyperlinks"; "-C"; "attach-session"; "-f"; "no-output,ignore-size" ]
     @ Option.map_or ~default:[] (fun s -> [ "-t"; s ]) session
   in
   match Exec.spawn ?socket:t.socket args with
