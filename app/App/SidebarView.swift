@@ -19,6 +19,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     private let statusLine = NSTextField(labelWithString: "")
     private let noMatches = NSTextField(labelWithString: "No matches")
     private var snapshot: Snapshot?
+    private var programSeen: [PaneID: Int] = [:]
     private var renderedQuery = ""
     private var feedNote: (String, NSColor)?
     private var failure: String?
@@ -166,10 +167,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         let anchor = first == NSNotFound ? nil : entry(first).map { ($0.id, origin.y - table.rect(ofRow: first).minY) }
         let recenter = next.map { $0.client != snapshot?.client } ?? false
         snapshot = next
+        programSeen = sidebarProgramSeen(next, previous: programSeen)
         let visible = visibleSnapshot
         noMatches.isHidden = query.isEmpty || visible?.sessions.isEmpty != true
         let previous = items
-        items = sidebarRows(visible)
+        items = sidebarRows(visible, programSeen: programSeen)
         if previous.map(\.id) == items.map(\.id), previous.map(\.height) == items.map(\.height) {
             table.reloadData(forRowIndexes: IndexSet(items.indices.filter { items[$0] != previous[$0] }), columnIndexes: [0])
         } else { table.reloadData() }
