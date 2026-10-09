@@ -148,7 +148,7 @@ import GhosttyKit
 
     deinit { MainActor.assumeIsolated { ghostty_config_free(config) } }
 
-    nonisolated private static func action(_ app: ghostty_app_t, _ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
+    nonisolated static func action(_ app: ghostty_app_t, _ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
         let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(ghostty_app_userdata(app)!).takeUnretainedValue()
         if action.tag == GHOSTTY_ACTION_CONFIG_CHANGE {
             guard target.tag == GHOSTTY_TARGET_APP,
@@ -184,8 +184,9 @@ import GhosttyKit
             PaneView.onMain(userdata) { $0.setMouseShape(shape) }
             return true
         case GHOSTTY_ACTION_OPEN_URL:
-            guard Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.host) != .local else { return false }
             let link = action.action.open_url
+            if link.kind != GHOSTTY_ACTION_OPEN_URL_KIND_OSC8,
+               Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.host) == .local { return false }
             guard let bytes = link.url else { return true }
             let text = String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(link.len)), as: UTF8.self)
             PaneView.onMain(userdata) { $0.onURL(text) }
