@@ -78,7 +78,8 @@ type row = {
 }
 
 type node = Group of { name : string; first : item; rest : item list } | Item of item
-and item = { row : row; children : node list }
+and item = { row : row; program_rows : program_row list; children : node list }
+and program_row = { id : string; indicator : indicator; title : string; caption : string }
 
 type section = { id : Tmux.Session.id; name : string; current : bool; nodes : node list }
 type phase = { running : bool; since : float; drawn : bool; held : Tmux.Pane.exit option }

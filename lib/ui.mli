@@ -5,6 +5,7 @@ type span = Mosaic.span = { text : string; style : Style.t }
 type line =
   | Header of { name : string; current : bool }
   | Row of string * Tmux.Session.id * Sidebar.row
+  | Program of string * Sidebar.program_row
   | Message of string
   | Ask of Ask.t * Tmux.Pane.id option
 

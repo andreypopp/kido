@@ -134,6 +134,7 @@ let%expect_test "rpc surface" =
                        started = (if i mod 2 = 0 then Some 100. else None);
                      });
             };
+          program_rows = [ { id = "child"; indicator = Done; title = "child"; caption = "done" } ];
           children = [];
         })
       indicators

@@ -7,6 +7,7 @@ type span = Mosaic.span = { text : string; style : Style.t }
 type line =
   | Header of { name : string; current : bool }
   | Row of string * Tmux.Session.id * S.row
+  | Program of string * S.program_row
   | Message of string
   | Ask of Ask.t * Tmux.Pane.id option
 
@@ -35,6 +36,24 @@ let lines ?(search = "") (side : S.model) =
           panes
   and draw session (item : S.item) tree nested =
     out := Row (tree, session, item.row) :: !out;
+    let rec programs prefix depth trailing rows =
+      match rows with
+      | [] -> ()
+      | (r : S.program_row) :: rest ->
+          let children, siblings =
+            List.take_drop_while
+              (fun (c : S.program_row) -> String.prefix ~pre:(r.id ^ "/") c.id)
+              rest
+          in
+          let current_depth = List.length (String.split_on_char '/' r.id) in
+          let nested = prefix ^ String.make (2 * (current_depth - depth)) ' ' in
+          let stem = if List.is_empty siblings && not trailing then " " else "│" in
+          let branch = if String.equal stem " " then "└" else "├" in
+          out := Program (nested ^ branch, r) :: !out;
+          programs (nested ^ stem ^ " ") (current_depth + 1) false children;
+          programs prefix depth trailing siblings
+    in
+    programs nested 1 (not (List.is_empty item.children)) item.program_rows;
     let n = List.length item.children in
     List.iteri
       (fun i child ->
@@ -126,6 +145,10 @@ let parts ~now : line -> span list * span list * span list = function
       ( [],
         [ span role (a.name ^ " " ^ Ask.string_of_id a.id) ],
         [ span role (" " ^ List.hd (String.split_on_char '\n' a.text)) ] )
+  | Program (prefix, r) ->
+      ( [ span `Dim prefix; Option.value ~default:(plain " ") (glyph r.indicator) ],
+        [ plain r.title ],
+        if String.is_empty r.caption then [] else [ plain " "; span `Dim r.caption ] )
   | Row (prefix, _, r) -> (
       let tree = if String.is_empty prefix then [] else [ span `Dim prefix ] in
       ( (tree
@@ -145,7 +168,7 @@ let row_text ~now line = String.concat "" (List.map (fun s -> s.text) (spans ~no
 let pane_of : line -> Tmux.Pane.id option = function
   | Row (_, _, r) -> Some r.pane
   | Ask (_, pane) -> pane
-  | Header _ | Message _ -> None
+  | Program _ | Header _ | Message _ -> None
 
 let index_of ~key m pane =
   Option.map fst (CCArray.find_idx (fun l -> Option.equal Stdlib.( = ) (key l) (Some pane)) m.lines)
@@ -357,7 +380,7 @@ let next_wait m =
     (fun wait i ->
       match m.lines.(i) with
       | Row (_, _, { caption = Elapsed s; _ }) -> Float.min wait (1. -. Float.rem (now -. s) 1.)
-      | Row _ | Header _ | Message _ | Ask _ -> wait)
+      | Row _ | Program _ | Header _ | Message _ | Ask _ -> wait)
     m.side.opts.interval (shown m)
 
 let tick ?wait m =
