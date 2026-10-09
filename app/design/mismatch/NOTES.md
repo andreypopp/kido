@@ -19,7 +19,7 @@ The previous banner can still be selected for comparison. Its optional version/f
 5. Remote binary upgraded, running server still old: show both versions and advise restarting the server, not upgrading again.
 6. Several Local windows: Restart in one dismisses the other mismatch sheets and reconnects all to the same new server.
 
-Dark/light and unstamped/0.9 fixtures are switchable. The current requirement is major 1, minor 0+, so there is no representable lower minor within major 1. The stamped older fixture therefore uses major 0, not an impossible 1.-1. Version stamps are protocol compatibility data, not application release versions.
+Dark/light and unstamped/0.9 fixtures are switchable. The current requirement is exactly protocol 2.1. Protocol 2.0 is an older minor; 2.2 is newer. Version stamps are protocol compatibility data, not application release versions.
 
 ## Behavior and native implementation
 
