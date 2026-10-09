@@ -24,6 +24,22 @@ private class AlertEscape: NSView {
 @MainActor final class WindowOwner: NSObject, NSWindowDelegate {
     let runtime: GhosttyRuntime
     let host: Host
+    let ownerID = String(UUID().uuidString.prefix(8))
+    enum DialCause {
+        case launch, newWindow, reopen, remoteRequest, reconnect, serverRestart
+        case redial(String)
+        var label: String {
+            switch self {
+            case .launch: "launch"
+            case .newWindow: "new window"
+            case .reopen: "reopen"
+            case .remoteRequest: "remote request"
+            case .reconnect: "reconnect"
+            case .serverRestart: "server restart"
+            case .redial(let reason): "redial after \(reason)"
+            }
+        }
+    }
     let ended = DispatchGroup()
     private(set) var alive = true
     private(set) var generation = 0
@@ -56,7 +72,7 @@ private class AlertEscape: NSView {
     @objc private func localServerRestarted(_ notification: Notification) {
         guard alive, host == .local, case .mismatch(let endpoint) = link,
               notification.object as? String == endpoint.server.socket else { return }
-        start()
+        begin(.serverRestart)
     }
 
     private enum Attempt {
@@ -74,7 +90,7 @@ private class AlertEscape: NSView {
         case redialing(DispatchWorkItem, Attempt, TimeInterval)
     }
 
-    init(host: Host, runtime: GhosttyRuntime, start: Bool = true) {
+    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch) {
         self.host = host
         self.runtime = runtime
         super.init()
@@ -183,7 +199,9 @@ private class AlertEscape: NSView {
         sidebar.list.offline(title)
     }
 
-    @objc func start() {
+    @objc func start() { begin(.reconnect) }
+
+    private func begin(_ cause: DialCause) {
         guard alive else { return }
         switch link {
         case .locating, .connected, .changed: return
@@ -191,12 +209,13 @@ private class AlertEscape: NSView {
         case .redialing(let item, _, _): item.cancel()
         case .down: break
         }
-        if case .mismatch = link { invalidate(keepingSnapshot: true) }
-        else { invalidate() }
-        connect(.discover, backoff: 0.1)
+        let closeCause: Connection.CloseCause = if case .serverRestart = cause { .serverRestart } else { .reconnect }
+        if case .mismatch = link { invalidate(cause: closeCause, keepingSnapshot: true) }
+        else { invalidate(cause: closeCause) }
+        connect(.discover, backoff: 0.1, cause: cause)
     }
 
-    private func connect(_ attempt: Attempt, backoff: TimeInterval) {
+    private func connect(_ attempt: Attempt, backoff: TimeInterval, cause: DialCause) {
         let generation = generation, drain = Drain()
         self.drain = drain
         ended.enter()
@@ -210,7 +229,7 @@ private class AlertEscape: NSView {
                 guard accepts(generation) else { return }
                 let endpoint: Endpoint
                 switch attempt {
-                case .attach(let remembered): return dial(remembered, backoff: backoff)
+                case .attach(let remembered): return dial(remembered, backoff: backoff, cause: cause)
                 case .check(let remembered): endpoint = remembered
                 case .discover:
                     #if KIDO_VISUAL || KIDO_STRESS
@@ -222,12 +241,12 @@ private class AlertEscape: NSView {
                 }
                 guard accepts(generation) else { return }
                 if endpoint.server.protocolVersion?.compatible != true || !endpoint.server.binaryProtocol.compatible { return protocolMismatch(endpoint) }
-                dial(endpoint, backoff: backoff)
+                dial(endpoint, backoff: backoff, cause: cause)
             } catch { failed(generation, error) }
         }
     }
 
-    private func failed(_ token: Int, _ error: Failure) {
+    private func failed(_ token: Int, _ error: Failure, cause: Connection.CloseCause? = nil) {
         guard alive, generation == token else { return }
         let attempt: Attempt, backoff: TimeInterval
         switch link {
@@ -236,7 +255,7 @@ private class AlertEscape: NSView {
         case .mismatch(let endpoint): attempt = .check(endpoint); backoff = 0.1
         case .down, .changed: return
         }
-        invalidate()
+        invalidate(cause: cause ?? .failure(error.message))
         switch error {
         case .terminal:
             link = .down
@@ -246,7 +265,7 @@ private class AlertEscape: NSView {
             down("Disconnected from \(host.label)", error.message + "\nReconnecting…", button: "Reconnect")
             let item = DispatchWorkItem { [weak self] in
                 guard let self, accepts(generation) else { return }
-                connect(attempt, backoff: next)
+                connect(attempt, backoff: next, cause: .redial(cause?.label ?? error.message))
             }
             link = .redialing(item, attempt, next)
             DispatchQueue.main.asyncAfter(deadline: .now() + next, execute: item)
@@ -299,7 +318,7 @@ private class AlertEscape: NSView {
     }
 
     private func protocolMismatch(_ endpoint: Endpoint) {
-        invalidate(keepingSnapshot: true)
+        invalidate(cause: .protocolMismatch, keepingSnapshot: true)
         link = .mismatch(endpoint)
         down("Disconnected from \(host.label)", "", button: "Reconnect")
         mismatchSheet(endpoint)
@@ -320,7 +339,7 @@ private class AlertEscape: NSView {
                     guard accepts(generation) else { return }
                     NotificationCenter.default.post(name: Self.localServerRestarted, object: endpoint.server.socket)
                     link = .down
-                    start()
+                    begin(.serverRestart)
                 } catch {
                     guard accepts(generation) else { return }
                     link = .down
@@ -405,15 +424,15 @@ private class AlertEscape: NSView {
 
     func bundleChanged(_ error: Failure) {
         guard alive else { return }
-        invalidate()
+        invalidate(cause: .bundleChanged)
         link = .changed
         down("Relaunch Kido.app", error.message, button: nil)
     }
 
-    private func dial(_ endpoint: Endpoint, backoff: TimeInterval) {
+    private func dial(_ endpoint: Endpoint, backoff: TimeInterval, cause: DialCause) {
         let server = endpoint.server, generation = generation
         do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
-        note("dialing \(server.socket)")
+        note("dialing \(server.socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
         let view = SessionView(runtime: runtime)
         view.onPaneChange = { [weak self] in
             guard let self, accepts(generation) else { return }
@@ -424,10 +443,10 @@ private class AlertEscape: NSView {
         view.autoresizingMask = [.width, .height]
         do {
             let connection = try Connection(
-                server: server, view: view, launch: ssh.map { $0.launch([server.tmux] + Launch.attach(server.tmux, socket: server.socket).arguments, control: endpoint) }, host: host, drain: drain,
+                server: server, view: view, launch: ssh.map { $0.launch([server.tmux] + Launch.attach(server.tmux, socket: server.socket).arguments, control: endpoint) }, host: host, drain: drain, ownerID: ownerID,
                 onChange: { [weak self] model in guard let self, accepts(generation) else { return }; changed(view, model) },
                 onDiagnostic: { [weak self] message in guard let self, accepts(generation) else { return }; banner.show(message, "", button: nil) },
-                onClose: { [weak self] exit in guard let self, alive, self.generation == generation else { return }; closed(view, exit) })
+                onClose: { [weak self] exit, cause in guard let self, alive, self.generation == generation else { return }; closed(view, exit, cause: cause) })
             connection.userFocus = { [weak self] in self?.supersedeIntent() }
             connection.navigate = { [weak self] command in
                 guard let self, accepts(generation) else { return }
@@ -473,7 +492,7 @@ private class AlertEscape: NSView {
                 })
             let timeout = DispatchWorkItem { [weak self] in
                 guard let self, accepts(generation) else { return }
-                closed(view, .ended("Control topology and sidebar snapshot did not arrive within 20 seconds"))
+                closed(view, .ended("Control topology and sidebar snapshot did not arrive within 20 seconds"), cause: .readinessTimeout)
             }
             initial = timeout
             DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
@@ -515,14 +534,14 @@ private class AlertEscape: NSView {
         ready()
     }
 
-    private func closed(_ view: SessionView, _ exit: Exit) {
+    private func closed(_ view: SessionView, _ exit: Exit, cause: Connection.CloseCause? = nil) {
         guard view === session else { return }
         switch exit {
         case .detached(let detached):
-            invalidate()
+            invalidate(cause: nil)
             link = .down
             down("Detached from the kido server", detached, button: "Reconnect")
-        case .ended(let reason): failed(generation, .transport(reason ?? "Control connection ended"))
+        case .ended(let reason): failed(generation, .transport(reason ?? "Control connection ended"), cause: cause)
         }
     }
 
@@ -617,7 +636,7 @@ private class AlertEscape: NSView {
         }
     }
 
-    private func invalidate(keepingSnapshot: Bool = false) {
+    private func invalidate(cause: Connection.CloseCause?, keepingSnapshot: Bool = false) {
         focusTarget = nil
         generation += 1
         clipboardPermission = .ask
@@ -630,7 +649,7 @@ private class AlertEscape: NSView {
         if case .redialing(let work, _, _) = link { work.cancel() }
         feed?.stop()
         feed = nil
-        if case .connected(let connection, _, _) = link { connection.close(keepingView: keepingSnapshot) }
+        if case .connected(let connection, _, _) = link { connection.close(cause: cause, keepingView: keepingSnapshot) }
         if !keepingSnapshot {
             session?.close()
             session = nil
@@ -648,14 +667,17 @@ private class AlertEscape: NSView {
         window.title = host == .local ? "Local" : identity ?? host.label
     }
 
-    func close() {
-        if alive { window.close() }
+    func close(cause: Connection.CloseCause = .windowClosed) {
+        if alive {
+            if case .connected(let connection, _, _) = link { connection.recordCloseCause(cause) }
+            window.close()
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
         guard alive else { return }
         alive = false
-        invalidate()
+        invalidate(cause: .windowClosed)
         link = .down
         sidebar.dismissFloating()
         window.delegate = nil
