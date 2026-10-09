@@ -1157,7 +1157,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             #!/bin/sh
             exec python3 -u -c '
             import json, sys
-            print(json.dumps(dict(hello=dict(protocol="2.0"))))
+            print(json.dumps(dict(hello=dict(protocol="2.1"))))
             snapshot = json.load(open("\(fixture.path)"))
             print(json.dumps(snapshot))
             held = None
@@ -1293,8 +1293,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     }
 
     func testServerProtocolFields() throws {
-        for stamp in ["null", "\"0.9\"", "\"1.1\"", "\"2.1\""] {
-            let server = try JSONDecoder().decode(Server.self, from: Data("{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"2.0\",\"server\":\(stamp)}".utf8))
+        for stamp in ["null", "\"0.9\"", "\"1.1\"", "\"2.0\"", "\"2.2\""] {
+            let server = try JSONDecoder().decode(Server.self, from: Data("{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"2.1\",\"server\":\(stamp)}".utf8))
             XCTAssertEqual(server.binaryProtocol, .required)
             XCTAssertFalse(server.protocolVersion?.compatible == true)
             XCTAssertEqual(server.protocolVersion?.description, stamp == "null" ? nil : String(stamp.dropFirst().dropLast()))
@@ -1320,11 +1320,11 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     }
 
     func testLocalMismatchNativeRestart() async throws {
-        for stamp in ["1.1", "2.1"] {
+        for stamp in ["1.1", "2.0", "2.2"] {
             let owner = try await localMismatchOwners(1, stamp: stamp)[0]
             defer { owner.close() }
             let alert = try XCTUnwrap(owner.preparedAlert?.alert)
-            XCTAssertEqual(alert.messageText, stamp == "1.1" ? "Restart the local kido server" : "This server needs a newer Kido.app")
+            XCTAssertEqual(alert.messageText, stamp != "2.2" ? "Restart the local kido server" : "This server needs a newer Kido.app")
             XCTAssertTrue(alert.informativeText.contains("Server: \(stamp)."))
             XCTAssertEqual(alert.buttons.map(\.title), ["Restart", "Close"])
             XCTAssertTrue(alert.buttons[0].hasDestructiveAction)
@@ -1399,21 +1399,21 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         for (host, stamp, binary, title, body) in [
             (Kido.Host.local, nil, nil, "Restart the local kido server", "This server was started by an older kido. Restart it to use the kido bundled with this app."),
             (.local, "0.9", nil, "Restart the local kido server", "This server was started by an older kido. Restart it to use the kido bundled with this app."),
-            (.local, "2.1", nil, "This server needs a newer Kido.app", "This local server was started by a newer Kido.app. Update the app, or restart the server using this bundle. Restarting ends all its sessions and panes."),
+            (.local, "2.2", nil, "This server needs a newer Kido.app", "This local server was started by a newer Kido.app. Update the app, or restart the server using this bundle. Restarting ends all its sessions and panes."),
             (remote, nil, nil, "Update kido on dev@buildbox", "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."),
             (remote, "0.9", "0.9", "Update kido on dev@buildbox", "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."),
-            (remote, "2.1", "2.1", "Update Kido.app to connect", "The server on dev@buildbox is newer than this app supports. Update Kido.app, then reconnect."),
-            (remote, "1.0", "2.1", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
-            (remote, nil, "2.1", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
-            (remote, "0.9", "2.1", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
-            (remote, "0.9", "2.0", "Restart kido on dev@buildbox", "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect.")
+            (remote, "2.2", "2.2", "Update Kido.app to connect", "The server on dev@buildbox is newer than this app supports. Update Kido.app, then reconnect."),
+            (remote, "1.0", "2.2", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
+            (remote, nil, "2.2", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
+            (remote, "0.9", "2.2", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
+            (remote, "0.9", "2.1", "Restart kido on dev@buildbox", "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect.")
         ] as [(Kido.Host, String?, String?, String, String)] {
             let alert = WindowOwner.mismatchAlert(host: host, server: stamp.flatMap(RPCVersion.init), binary: binary.flatMap(RPCVersion.init))
             XCTAssertEqual(alert.messageText, title)
-            let showBinary = host != .local && (binary == "2.0" || binary == "2.1" && binary != stamp)
+            let showBinary = host != .local && (binary == "2.1" || binary == "2.2" && binary != stamp)
             let restart = host == .local
             let warning = restart ? "\n\nRestarting ends all sessions and panes on this local kido-app server. Running commands and agents will stop. Other clients attached to this server will disconnect." : ""
-            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs exactly protocol 2.0. Server: \(stamp ?? "unstamped (older kido)")." + (showBinary ? " Host binary: \(binary!)." : "") + " Protocol numbers are not Kido.app release numbers." + warning)
+            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs exactly protocol 2.1. Server: \(stamp ?? "unstamped (older kido)")." + (showBinary ? " Host binary: \(binary!)." : "") + " Protocol numbers are not Kido.app release numbers." + warning)
             XCTAssertEqual(alert.buttons.map(\.title), [host == .local ? "Restart" : "Reconnect", "Close"])
             XCTAssertEqual(alert.buttons[0].hasDestructiveAction, restart)
             XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[restart ? 1 : 0].cell)
@@ -1513,7 +1513,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertNil(owner.testConnection)
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
-        print("RPC E2E hello 2.0; unstamped server refused; local mismatch alert prepared off-screen")
+        print("RPC E2E hello 2.1; unstamped server refused; local mismatch alert prepared off-screen")
     }
 
     func testSidebarHeadersKeysAndAccessibility() throws {
