@@ -6,7 +6,27 @@ import os
 #endif
 
 final class Connection: @unchecked Sendable {
+    enum CloseCause: Sendable {
+        case windowClosed, quit, reconnect, gridFailure, serverRestart, protocolMismatch, readinessTimeout, bundleChanged
+        case failure(String)
+
+        var label: String {
+            switch self {
+            case .windowClosed: "window closed"
+            case .quit: "quit"
+            case .reconnect: "reconnect"
+            case .gridFailure: "grid failure"
+            case .serverRestart: "server restart"
+            case .protocolMismatch: "protocol mismatch"
+            case .readinessTimeout: "readiness timeout"
+            case .bundleChanged: "bundle changed"
+            case .failure(let reason): reason
+            }
+        }
+    }
     private let client: Client
+    private let ownerID: String
+    private var closeCause: CloseCause?
     #if KIDO_VISUAL
     private let metadataQueries = OSAllocatedUnfairLock(initialState: 0)
     var visualMetadataQueries: Int { metadataQueries.withLock { $0 } }
@@ -64,15 +84,16 @@ final class Connection: @unchecked Sendable {
         didSet { onChange(model) }
     }
     @MainActor private let onChange: (SessionModel) -> Void
-    @MainActor private let onClose: (Exit) -> Void
+    @MainActor private let onClose: (Exit, CloseCause?) -> Void
     @MainActor private let onDiagnostic: (String) -> Void
 
     @MainActor init(
-        server: Server, view: SessionView, launch: Launch? = nil, host: Host = .local, drain: Drain? = nil, onChange: @escaping (SessionModel) -> Void,
-        onDiagnostic: @escaping (String) -> Void, onClose: @escaping (Exit) -> Void
+        server: Server, view: SessionView, launch: Launch? = nil, host: Host = .local, drain: Drain? = nil, ownerID: String = String(UUID().uuidString.prefix(8)), onChange: @escaping (SessionModel) -> Void,
+        onDiagnostic: @escaping (String) -> Void, onClose: @escaping (Exit, CloseCause?) -> Void
     ) throws {
         self.view = view
         self.host = host
+        self.ownerID = ownerID
         self.onChange = onChange
         self.onClose = onClose
         self.onDiagnostic = onDiagnostic
@@ -96,7 +117,7 @@ final class Connection: @unchecked Sendable {
         onURL(text)
     }
 
-    @MainActor func close(keepingView: Bool = false) {
+    @MainActor func close(cause: CloseCause?, keepingView: Bool = false) {
         guard active else { return }
         active = false
         view?.invalidateClipboard()
@@ -105,7 +126,7 @@ final class Connection: @unchecked Sendable {
         if !keepingView { view?.close() }
         view?.connection = nil
         view = nil
-        client.close()
+        closeClient(cause)
         client.queue.async {
             let gone = self.teardown()
             DispatchQueue.main.async { withExtendedLifetime(gone) {} }
@@ -229,7 +250,16 @@ final class Connection: @unchecked Sendable {
         return true
     }
 
-    func gridFailed() { client.close() }
+    func recordCloseCause(_ cause: CloseCause?) {
+        client.queue.async { if self.closeCause == nil { self.closeCause = cause } }
+    }
+
+    private func closeClient(_ cause: CloseCause?) {
+        recordCloseCause(cause)
+        client.close()
+    }
+
+    func gridFailed() { closeClient(.gridFailure) }
 
     private func handle(_ event: Event) {
         switch event {
@@ -587,11 +617,14 @@ final class Connection: @unchecked Sendable {
         case .detached(let reason): "detached: \(reason)"
         case .ended(let reason): "ended: \(reason ?? "no reason given")"
         }
-        note("connection closed, tmux exited \(status), \(why.replacingOccurrences(of: "\n", with: "; "))")
+        let cause = closeCause
+        let ending = cause.map { " (\($0.label)), tmux exited \(status)" }
+            ?? ", tmux exited \(status), \(why)"
+        note("connection closed\(ending.replacingOccurrences(of: "\n", with: "; ")) [owner \(ownerID)]")
         DispatchQueue.main.async {
             self.active = false
             self.view?.invalidateClipboard()
-            withExtendedLifetime(gone) { self.onClose(exit) }
+            withExtendedLifetime(gone) { self.onClose(exit, cause) }
         }
     }
 
