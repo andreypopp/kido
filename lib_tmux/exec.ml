@@ -129,9 +129,6 @@ let panes_and_programs ?socket () =
       (Pane.parse (List.rev panes), Program_status.parse_lines programs))
     (exec ?socket [ "list-panes"; "-a"; "-F"; Program_status.format ^ "\030" ^ Pane.format ])
 
-let capture_pane ?socket pane =
-  Result.map lines (exec ?socket [ "capture-pane"; "-p"; "-t"; Pane.to_string pane ])
-
 let capture_screen ?socket pane =
   exec ?socket [ "capture-pane"; "-p"; "-t"; Pane.to_string pane; "-S"; "-1000" ]
 

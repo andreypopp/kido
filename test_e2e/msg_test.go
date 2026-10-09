@@ -114,8 +114,8 @@ func TestMessageAgentResolvesByNameTitleIdAndPrefix(t *testing.T) {
 		{"@worker-2", "delivered to Worker-2 by inbox"},
 		{"worker-6", "delivered to worker-6 by inbox"},
 		{"abc123", "delivered to Worker-2 by inbox"},
-		{"abd", "delivered to  by inbox"},
-		{"ab", `kido tool message_agent: "ab" matches several agents by id: abc123 (Worker-2), abd456 ()`},
+		{"abd", "delivered to π -  by inbox"},
+		{"ab", `kido tool message_agent: "ab" matches several agents by id: abc123 (Worker-2), abd456 (π - )`},
 		{"nope", `kido tool message_agent: no agent session matches "nope"`},
 		{"scout", `kido tool message_agent: "scout" matches several agents by name: worker-x (scout), worker-y (scout)`},
 		{"Self", "kido tool message_agent: Self is this agent"},
@@ -372,7 +372,7 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 func (h *harness) writeRecord(id, pane string, ts time.Time, extra map[string]any) {
 	h.t.Helper()
 	rec := map[string]any{
-		"agent": "pi", "name": "", "pane": pane, "pid": os.Getpid(), "reporting": []any{"Terminal"},
+		"agent": "pi", "name": "", "pane": pane, "pid": os.Getpid(),
 		"ts": ts.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	status, title := "idle", ""
@@ -470,7 +470,7 @@ func TestContextKeepsLiveRecordsSharingAPane(t *testing.T) {
 	if len(rows) != 1 || rows[0].ID != "visible-sender" {
 		t.Fatalf("display rows = %+v, want only the pane winner", rows)
 	}
-	h.waitGlyph("visible-sender", "")
+	h.waitGlyph("π - visible-sender", "")
 	if strings.Contains(strings.Join(h.rows(), "\n"), "hidden-sender") {
 		t.Fatalf("sidebar shows the hidden record: %q", h.rows())
 	}
@@ -604,13 +604,13 @@ func TestMessageAgentSaysAMessageToARunningAgentWaits(t *testing.T) {
 	}
 	busy("busy-peer", "working")
 	busy("busy-child", "working", "--parent-session", "caller")
-	busy("compacting-grandchild", "working", "--parent-session", "busy-child")
+	busy("working-grandchild", "working", "--parent-session", "busy-child")
 
 	for _, c := range []struct{ to, want string }{
 		{"idle-child", "delivered to idle-child by inbox"},
 		{"busy-peer", "queued for busy-peer: it is running and reads this when its current turn ends"},
 		{"busy-child", "queued for busy-child: it is running and reads this when its current turn ends; to reach it now, use steer_subagent"},
-		{"compacting-grandchild", "queued for compacting-grandchild: it is running and reads this when its current turn ends; to reach it now, use steer_subagent"},
+		{"working-grandchild", "queued for working-grandchild: it is running and reads this when its current turn ends; to reach it now, use steer_subagent"},
 	} {
 		h.expectKido(caller, "new evidence", nil, c.want, "tool", "message_agent", "--", c.to)
 	}

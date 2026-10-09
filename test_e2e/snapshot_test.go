@@ -61,21 +61,16 @@ func TestSnapshotReplays(t *testing.T) {
 	h.in("split-window", "-d", "-t", "alpha:")
 	h.in("new-window", "-d", "-t", "alpha:", "-n", "editor")
 	h.newSession("beta")
-	resume := h.claudePane("beta", "✳ Resumable")
-	h.claudePane("beta", "✳ Fresh")
-	h.hook("sess-resume", resume, "SessionStart")
-	h.waitGlyph("Resumable", "")
-
-	// Resumes by its own session id too, like a hooked Claude pane.
 	piPane := h.piPane("beta", "π - resumable - kido")
 	h.programStatus(piPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", piPane, "#{pane_title}"), "π - "))
 	h.agentStatus("pi-resume", piPane, "pi")
 	h.waitGlyph("resumable - kido", "")
 
-	// pi that never reported is found by its process alone, and restarted
-	// fresh; a record of any other agent restarts nothing.
-	h.waitPaneCommand(h.newWindow("beta", "", filepath.Join(piBinDir, "pi"), "--"), "pi")
-	h.programStatus(h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "#{pane_title}"), "π - "))
+	// A bare pi root restarts fresh; another root app restarts nothing.
+	bare := h.newWindow("beta", "", filepath.Join(piBinDir, "pi"), "--")
+	h.waitPaneCommand(bare, "pi")
+	h.programStatus(bare, "state=idle:app=pi")
+	h.programStatus(h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "state=idle:app=builder", strings.TrimPrefix(h.in("display-message", "-p", "-t", h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "#{pane_title}"), "π - "))
 	h.agentStatus("other-1", h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "other")
 
 	// A window is named after the client that created it until tmux renames
@@ -104,28 +99,22 @@ func TestSnapshotReplays(t *testing.T) {
 	}
 	script := string(out)
 
-	if !strings.Contains(script, "claude --resume sess-resume") {
-		t.Errorf("snapshot does not resume the hooked pane:\n%s", script)
-	}
-	if !strings.Contains(script, "claude --continue") {
-		t.Errorf("snapshot does not continue the unhooked claude pane:\n%s", script)
-	}
 	if !strings.Contains(script, "pi --session pi-resume") {
 		t.Errorf("snapshot does not resume the reported pi pane:\n%s", script)
 	}
 	if !strings.Contains(script, "'pi' Enter") {
 		t.Errorf("snapshot does not restart the unreported pi pane:\n%s", script)
 	}
-	if n := strings.Count(script, " send-keys "); n != 4 {
-		t.Errorf("snapshot sends %d commands, want 4: shells and the other agent's pane get none:\n%s", n, script)
+	if n := strings.Count(script, " send-keys "); n != 2 {
+		t.Errorf("snapshot sends %d commands, want 2: shells and the other agent's pane get none:\n%s", n, script)
 	}
 
-	// Neither claude nor real pi is available in CI, and the assertions
+	// Real pi is unavailable in CI, and the assertions
 	// above already checked the commands the script would have run: run
 	// "true" for both instead. Anchored on the trailing " Enter" send-keys
 	// always writes, so this only touches a send-keys command line, not a
-	// bare "claude" window name a -n flag may carry.
-	replay := regexp.MustCompile(`'(claude|pi)(?: [^']*)?' Enter`).ReplaceAllString(script, "'true' Enter")
+	// bare window name a -n flag may carry.
+	replay := regexp.MustCompile(`'pi(?: [^']*)?' Enter`).ReplaceAllString(script, "'true' Enter")
 	path := filepath.Join(h.dir, "replay.sh")
 	if err := os.WriteFile(path, []byte(replay), 0o755); err != nil {
 		t.Fatal(err)
@@ -141,8 +130,8 @@ func TestSnapshotReplays(t *testing.T) {
 	}
 
 	want, got := shapes(t, h.inner), shapes(t, third)
-	if len(want) != 7 { // alpha: split window and "editor"; beta: shell, two claude windows, two pi windows
-		t.Fatalf("the source server has %d windows, want 7: %+v", len(want), want)
+	if len(want) != 5 {
+		t.Fatalf("the source server has %d windows, want 5: %+v", len(want), want)
 	}
 	if want[0].panes != 2 {
 		t.Fatalf("alpha's first window has %d panes, want 2", want[0].panes)

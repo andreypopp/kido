@@ -252,7 +252,7 @@ interface AgentInfo {
   pane: string;
   self: boolean;
   canMessage: boolean;
-  status: "running" | "waiting" | "compacting" | "idle" | "working" | "blocked" | "done" | "error" | "unknown";
+  status: "idle" | "working" | "blocked" | "done" | "error" | "unknown";
   activity: string;
   canReply: boolean;
   window: string;

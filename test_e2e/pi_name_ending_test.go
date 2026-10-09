@@ -40,6 +40,7 @@ func TestPiRenamedRunActuallyDies(t *testing.T) {
 	h := start(t, "alpha")
 	root := h.firstPane("alpha")
 	in := startInbox(t, "ok\n")
+	h.programStatus(root, "state=idle:app=pi")
 	h.agentStatus("ending-root", root, "pi", "--name", "Root", "--inbox", in.Path)
 	gate := filepath.Join(h.dir, "report-gate")
 	ready := filepath.Join(h.dir, "reported-name")
@@ -75,6 +76,7 @@ func TestPiRenamedRunActuallyDies(t *testing.T) {
 	}
 	h.waitFor(func() bool { _, err := os.Stat(ready); return err == nil }, settle, msgf("child's own name report"))
 	h.waitPaneCommand(pane, "sleep")
+	h.programStatus(pane, "state=idle:app=pi")
 	h.in("select-window", "-t", window)
 	f := h.startFeed("alpha")
 	f.waitLast(func(s feedSnapshot) bool { return snapshotTitle(s, pane) == "Current" }, "live renamed child")
@@ -103,8 +105,9 @@ func TestPiClearedNameUsesPaneTitleForNestedProgramAndEnding(t *testing.T) {
 	h := start(t, "alpha")
 	root := h.firstPane("alpha")
 	in := startInbox(t, "ok\n")
+	h.programStatus(root, "state=idle:app=pi")
 	h.agentStatus("clear-root", root, "pi", "--name", "Root", "--inbox", in.Path)
-	pane := h.piPane("alpha", "Pane fallback - kido")
+	pane := h.piPane("alpha", "π - Pane fallback - kido")
 	h.agentRunMeta("clear-child", pane, "Launch", "clear-root")
 	h.agentStatus("clear-child", pane, "pi", "--name", "Named", "--parent-session", "clear-root")
 	h.agentStatus("clear-child", pane, "pi", "--name", "", "--parent-session", "clear-root")
@@ -117,12 +120,12 @@ func TestPiClearedNameUsesPaneTitleForNestedProgramAndEnding(t *testing.T) {
 		return strings.Contains(h.in("display-message", "-p", "-t", pane, "#{pane_program_status}"), `"id":"nested"`)
 	}, settle, msgf("nested program status recorded"))
 	f := h.startFeed("alpha")
-	f.waitLast(func(s feedSnapshot) bool { return snapshotTitle(s, pane) == "Pane fallback - kido" }, "cleared pi exact pane title, not nested title")
-	h.waitFor(func() bool { return h.rowFor("Pane fallback") == "└◆Pane fallback - kido" }, settle, msgf("cleared pi sidebar title (rows %v)", h.rows()))
+	f.waitLast(func(s feedSnapshot) bool { return snapshotTitle(s, pane) == "π - Pane fallback - kido" }, "cleared pi exact pane title, not nested title")
+	h.waitFor(func() bool { return h.rowFor("Pane fallback") == "└◆π - Pane fallback - kido" }, settle, msgf("cleared pi sidebar title (rows %v)", h.rows()))
 	if out, rc := h.kidoAs(pane, "", nil, "run-outcome", "--result", "completed", "--unreported", "clear-child"); rc != 0 {
 		t.Fatalf("ending: %d %s", rc, out)
 	}
-	if got := envelopes(in)[0]; field(got, "from", "name") != "Pane fallback - kido" || !strings.Contains(field(got, "text"), `subagent "Pane fallback - kido"`) {
+	if got := envelopes(in)[0]; field(got, "from", "name") != "π - Pane fallback - kido" || !strings.Contains(field(got, "text"), `subagent "π - Pane fallback - kido"`) {
 		t.Fatalf("cleared-name ending notice: %v", got)
 	}
 }

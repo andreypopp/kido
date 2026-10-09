@@ -18,7 +18,7 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
 	longStatus := filepath.Join(dir, "long-status")
-	pane := h.newWindow("status", "program", "sh", "-c", fmt.Sprintf(`stty -echo; printf ready > %s; while IFS= read -r line; do case "$line" in prompt) printf '\033]133;A\007';; long) cat %s;; *) printf '\033]7501;%%s\007' "$line";; esac; done`, shellQuote(ready), shellQuote(longStatus)))
+	pane := h.newWindow("status", "program", "sh", "-c", fmt.Sprintf(`stty -echo; printf '\033]2;Build\007'; printf ready > %s; while IFS= read -r line; do case "$line" in prompt) printf '\033]133;A\007';; long) cat %s;; *) printf '\033]7501;%%s\007' "$line";; esac; done`, shellQuote(ready), shellQuote(longStatus)))
 	h.waitFileNonEmpty(ready)
 	emit := func(body string) {
 		t.Helper()
@@ -42,7 +42,7 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 		t.Helper()
 		s := f.waitLast(func(s feedSnapshot) bool {
 			r, ok := find(s)
-			return ok && len(r.ProgramStatus.Records) == count && (count == 0 || r.ProgramStatus.Records[0].State == state) && (indicator == "" || r.Indicator != nil && r.Indicator.Kind == indicator)
+			return ok && r.Kind == "shell" && len(r.ProgramStatus.Records) == count && (count == 0 || r.ProgramStatus.Records[0].State == state) && (indicator == "" || r.Indicator != nil && r.Indicator.Kind == indicator)
 		}, "program status "+state+" "+indicator)
 		r, _ := find(s)
 		return r

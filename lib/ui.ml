@@ -94,7 +94,6 @@ let style : S.role -> Style.t = function
   | `Err -> Style.make ~fg:Color.red ()
   | `Running -> Style.make ~fg:Color.green ()
   | `Waiting -> Style.make ~fg:Color.yellow ~bold:true ()
-  | `Compacting -> Style.make ~fg:Color.magenta ()
   | `Done -> Style.make ~fg:Color.green ~bold:true ()
   | `Stalled -> Style.make ~fg:Color.red ~bold:true ()
 
@@ -105,7 +104,6 @@ let styled (s : S.span) = span s.role s.text
 let glyph : S.indicator -> span option = function
   | Status Running -> Some (span `Running "◼")
   | Status Waiting -> Some (span `Waiting "◆")
-  | Status Compacting -> Some (span `Compacting "◌")
   | Status Idle -> None
   | Unknown -> Some (span `Dim "?")
   | Done -> Some (span `Done "✓")

@@ -5,13 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 func TestStateReportingOutsideTmux(t *testing.T) {
 	t.Parallel()
-	for _, tool := range []string{"hook", "agent-status"} {
+	for _, tool := range []string{"agent-status"} {
 		t.Run(tool, func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.Chmod(dir, 0o700); err != nil {
@@ -19,11 +18,7 @@ func TestStateReportingOutsideTmux(t *testing.T) {
 			}
 			cmd := exec.Command(kidoBin, tool)
 			cmd.Env = cleanEnv("KIDO_STATE_DIR=" + dir)
-			if tool == "hook" {
-				cmd.Stdin = strings.NewReader(`{"session_id":"outside","hook_event_name":"UserPromptSubmit"}`)
-			} else {
-				cmd.Args = append(cmd.Args, "--agent", "pi", "--session", "outside")
-			}
+			cmd.Args = append(cmd.Args, "--agent", "pi", "--session", "outside")
 			if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
 				t.Fatalf("%s outside tmux = %v %q", tool, err, out)
 			}

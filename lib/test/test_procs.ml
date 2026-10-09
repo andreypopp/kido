@@ -96,17 +96,3 @@ let%expect_test "ssh_session: -N wins over -t wins over -T, else a remote comman
     -oProxyCommand=nc -T -N %h %p h    -> h interactive=true
     -v -p 2222                         -> none
     |}]
-
-let%expect_test "parse_parent" =
-  Printf.printf "%s\n"
-    (match Procs.parse_parent [ [ "71584"; "zsh" ] ] with
-    | Some (ppid, comm) -> Printf.sprintf "%d %s" ppid comm
-    | None -> "none");
-  List.iter
-    (fun rows ->
-      print_string (if Option.is_none (Procs.parse_parent rows) then "none " else "some "))
-    [ []; [ [ "71584" ] ]; [ [ "abc"; "zsh" ] ] ];
-  [%expect {|
-    71584 zsh
-    none none none
-    |}]

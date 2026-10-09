@@ -319,14 +319,13 @@ let snapshot =
   @@ let+ () = Term.const () in
      fun () ->
        let states = State.by_pane (State.load_live ~dir:(state_dir ())) in
-       let pi = (Procs.sweep ()).pi in
+       let panes, programs = ok (Tmux.Exec.panes_and_programs ()) in
        let q = Filename.quote in
        let tm = Unix.localtime (Unix.time ()) in
        Printf.printf
          "#!/bin/sh\n# tmux sessions captured by kido snapshot on %04d-%02d-%02d %02d:%02d.\n"
          (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday tm.tm_hour tm.tm_min;
-       print_endline
-         "# Run outside tmux, then attach. Claude Code and pi panes resume their session.";
+       print_endline "# Run outside tmux, then attach. Local pi panes resume their session.";
        print_endline "set -e\nT=\"${TMUX_BIN:-tmux} -u\"";
        let close = function
          | Some w when not (String.is_empty w.layout) ->
@@ -356,13 +355,15 @@ let snapshot =
          in
          let cmd =
            match Tmux.Pane.Map.find_opt p.pane_id states with
-           | Some (id, ({ agent = Pi; _ } : State.session)) ->
+           | Some (id, { State.agent = Pi; _ }) ->
                if String.is_empty id then "pi" else "pi --session " ^ id
-           | Some (id, { agent = Claude; _ }) ->
-               if String.is_empty id then "claude --continue" else "claude --resume " ^ id
-           | _ when String.equal p.current_command "claude" -> "claude --continue"
-           | _ when Procs.Int_set.mem p.pane_pid pi -> "pi"
-           | _ -> ""
+           | _ -> (
+               match
+                 Option.flat_map Tmux.Program_status.root
+                   (Tmux.Pane.Map.find_opt p.pane_id programs)
+               with
+               | Some { app = Some "pi"; _ } -> "pi"
+               | _ -> "")
          in
          if not (String.is_empty cmd) then
            Printf.printf "$T send-keys -t \"$p%d\" %s Enter\n" w.n (q cmd);
@@ -370,7 +371,7 @@ let snapshot =
            Printf.printf "$T select-window -t \"$p%d\"; $T select-pane -t \"$p%d\"\n" w.n w.n;
          Some w
        in
-       close (List.fold_left step None (ok (Tmux.Exec.list_panes ())));
+       close (List.fold_left step None panes);
        print_endline {|echo "recreated: $($T list-sessions -F '#{session_name}' | tr '\n' ' ')"|};
        0
 
@@ -512,22 +513,6 @@ let async_bash =
            ~self:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE"))
            ~exe:(Lazy.force Tmux.Exec.self) ~name ~stream args)
 
-let hook =
-  Cmd.v (Cmd.info "hook" ~doc:"Record a Claude Code hook event read from stdin.")
-  @@ let+ args = rest in
-     Cli.run ~failure:0 "hook" (fun () ->
-         match args with
-         | _ :: _ ->
-             prerr_endline "usage: kido hook";
-             0
-         | [] ->
-             ok
-               (Reporting.hook ~dir:(state_dir ())
-                  ~pane:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE"))
-                  ~debug:(not (String.is_empty (Tmux.Exec.getenv "KIDO_HOOK_DEBUG")))
-                  (stdin ()));
-             0)
-
 let agent_status =
   Cmd.v (Cmd.info "agent-status" ~doc:"Report the status of an agent session.")
   @@ let+ agent =
@@ -569,12 +554,6 @@ let agent_status =
          | Error holder ->
              Cli.error "agent-status" (State.held_message session holder);
              6)
-
-let debug_log =
-  Cmd.v (Cmd.info "debug-log" ~doc:"Print the path of the hook debug log.")
-  @@ let+ () = Term.const () in
-     print_endline (Reporting.debug_log ~dir:(state_dir ()));
-     0
 
 let server =
   cmd "server" "Start the kido server detached unless it is running, and print its tmux and socket."
@@ -874,9 +853,7 @@ let () =
     Cmd.group ~default:sidebar
       (Cmd.info "kido" ~version:Build_id.value)
       [
-        hook;
         agent_status;
-        debug_log;
         server;
         get_inbox;
         tool;
@@ -907,6 +884,4 @@ let () =
     (match Cmd.eval_value ~catch:false ~argv cmd with
     | Ok (`Ok code) -> code
     | Ok (`Help | `Version) -> 0
-    (* Claude Code runs kido hook, which must never fail it. *)
-    | Error _ when Array.length Sys.argv > 1 && String.equal Sys.argv.(1) "hook" -> 0
     | Error _ -> 1)

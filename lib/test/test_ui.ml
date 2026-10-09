@@ -45,17 +45,13 @@ let pane ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pi
 let agent_pane ?run w p title = pane ~window:w ~title ?run p
 let shell_pane w p = pane ~window:w ~command:"zsh" p
 
-let session ?(agent = State.Claude) ?(status = State.Running) ?(parent = "") ?(depth = 0)
-    ?(ts = test_at) ?ended ?(activity = "") pane : State.session =
+let session ?(agent = State.Pi) ?(parent = "") ?(depth = 0) ?(ts = test_at) ?(activity = "") pane :
+    State.session =
   {
     agent;
     name = "";
     pane = Tmux.Pane.of_string pane;
     pid = Unix.getpid ();
-    reporting =
-      (match agent with
-      | Claude -> Hook { status; ended; background = false; tool_pending = false }
-      | Pi | Other _ -> Terminal);
     ts;
     inbox = "";
     activity;
@@ -73,9 +69,20 @@ let states l =
       Tmux.Pane.Map.add pane (id, { s with State.pane = Some pane }) m)
     Tmux.Pane.Map.empty l
 
+let programs states =
+  Tmux.Pane.Map.map
+    (fun _ ->
+      Result.get_exn
+        (Tmux.Program_status.parse
+           {|{"serial":1,"records":[{"id":"","app":"pi","state":"working"}]}|}))
+    states
+
 let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
   let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
   { m with started; at = !clock }
+
+let pane_label (m : Sidebar.model) p =
+  Sidebar.pane_label m (p, State.pane_kind ~programs:m.snap.programs ~states:m.snap.states p)
 
 let client session =
   Some
@@ -85,7 +92,7 @@ let client session =
       focused = false;
     }
 
-let lines m = Array.to_list (Ui.lines (Sidebar.rebuild m))
+let lines m = Array.to_list (Ui.lines (Sidebar.rebuild (Sidebar.classify m)))
 
 let render ?dir ?(current = "sess") ?(at = test_at) panes st =
   let m = model ?dir ~clock:(ref at) () in
@@ -96,6 +103,7 @@ let render ?dir ?(current = "sess") ?(at = test_at) panes st =
       client = client current;
       panes;
       states;
+      programs = programs states;
       lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes Sidebar.String_map.empty;
     }
   in
@@ -119,11 +127,11 @@ let%expect_test "a subagent's window nests under the pane that spawned it" =
 let%expect_test "field() keeps the three cases aligned" =
   render
     [ agent_pane "@1" "%1" "orchestrator"; pane ~title:"idle-agent" "%2"; shell_pane "@1" "%3" ]
-    [ ("%1", agent_state "root-sess" ""); ("%2", ("idle-sess", session ~status:Idle "")) ];
+    [ ("%1", agent_state "root-sess" ""); ("%2", ("idle-sess", session "")) ];
   [%expect {|
     sess
     ┌◼orchestrator
-    ├ idle-agent
+    ├◼idle-agent
     └ zsh
     |}]
 
@@ -297,7 +305,12 @@ let%expect_test "the same state renders the same rows every time" =
   let rows () =
     let m = model () in
     let states = states st in
-    lines { m with snap = { Sidebar.empty with client = client "sess"; panes; states } }
+    lines
+      {
+        m with
+        snap =
+          { Sidebar.empty with client = client "sess"; panes; states; programs = programs states };
+      }
     |> List.map (Ui.row_text ~now:m.at)
   in
   let want = rows () in
@@ -571,6 +584,7 @@ let%expect_test "run metadata survives activity text and clears its clock on dea
         {
           Sidebar.empty with
           states = states [ ("%30", ("run", session ~activity:"checking tests" "")) ];
+          programs = programs (states [ ("%30", ("run", session "")) ]);
           lingering =
             Sidebar.String_map.singleton "run"
               {
@@ -589,7 +603,7 @@ let%expect_test "run metadata survives activity text and clears its clock on dea
       let lingering =
         Sidebar.String_map.map (fun (l : Sidebar.lingering) -> { l with outcome }) m.snap.lingering
       in
-      let row = Sidebar.pane_label { m with snap = { m.snap with lingering } } p in
+      let row = pane_label { m with snap = { m.snap with lingering } } p in
       match row.run with
       | None -> print_endline "no run"
       | Some run ->
@@ -667,10 +681,7 @@ let%expect_test
       shell_pane "@20" "%5";
       agent_pane ~run:"run-1" "@20" "%4" "helper";
     ]
-    [
-      ("%22", agent_state "root-sess" "");
-      ("%4", ("helper-sess", session ~status:Idle ~parent:"root-sess" ""));
-    ];
+    [ ("%22", agent_state "root-sess" ""); ("%4", ("helper-sess", session ~parent:"root-sess" "")) ];
   render
     [
       agent_pane "@13" "%21" "top-level";
@@ -689,7 +700,7 @@ let%expect_test
       └×subagent
     sess
     ╶◼working-on-kido
-      └┌ helper
+      └┌◼helper
        └ zsh
     sess
     ┌◼top-level
@@ -718,13 +729,15 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
     subagent completed
     |}]
 
-let%expect_test "agent_title_of" =
-  let m = { (model ()) with snap = Sidebar.empty } in
+let%expect_test "pane_title" =
+  let st = states [ ("%1", ("agent", session "%1")) ] in
+  let m = { (model ()) with snap = { Sidebar.empty with programs = programs st; states = st } } in
   List.iter
     (fun title ->
       Printf.printf "%s -> %s\n" title
         (Option.value ~default:"(not an agent)"
-           (Sidebar.agent_title_of m (pane ~command:"claude" ~title "%1"))))
+           (let p = pane ~title "%1" in
+            State.pane_title p (State.pane_kind ~programs:m.snap.programs ~states:m.snap.states p))))
     [
       "✳ Tmux config";
       "✳ 2 panes";
@@ -739,16 +752,16 @@ let%expect_test "agent_title_of" =
     ];
   [%expect
     {|
-    ✳ Tmux config -> Tmux config
-    ✳ 2 panes -> 2 panes
-    π - kido - kido -> kido - kido
-    π - kido -> kido
-    π -  -> -
+    ✳ Tmux config -> ✳ Tmux config
+    ✳ 2 panes -> ✳ 2 panes
+    π - kido - kido -> π - kido - kido
+    π - kido -> π - kido
+    π -  -> π -
     plain title -> plain title
     π-no-space -> π-no-space
-     -> -
-    ✳  -> -
-    ~/src/kido -> src/kido
+     ->
+    ✳  -> ✳
+    ~/src/kido -> ~/src/kido
     |}]
 
 let indicator_name = function
@@ -945,7 +958,7 @@ let%expect_test "shell_indicator debounce on a controlled clock" =
     |}]
 
 let label m (p : Tmux.Pane.t) =
-  Ui.row_text ~now:m.Sidebar.at (Row ("", p.session_id, Sidebar.pane_label m p))
+  Ui.row_text ~now:m.Sidebar.at (Row ("", p.session_id, pane_label m p))
 
 let%expect_test "phases and latches are forgotten with their panes" =
   let m = model ~started:test_at () in
@@ -1017,6 +1030,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
       active = Tmux.Pane.of_string "%1";
       panes = [ pane ~session:"alpha" ~title:"wedged" "%1" ];
       states = states [ ("%1", ("i", session ~ts:!clock "")) ];
+      programs = programs (states [ ("%1", ("i", session ~ts:!clock "")) ]);
     }
   in
   let stalled () =
@@ -1046,11 +1060,10 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
 
 let%expect_test
     "same ignores a heartbeat's ts and catches any other change; panes compare by exclusion" =
-  let snap ?(status = State.Running) ts =
-    { Sidebar.empty with states = states [ ("%1", ("i", session ~status ~ts "")) ] }
-  in
+  let snap ts = { Sidebar.empty with states = states [ ("%1", ("i", session ~ts "")) ] } in
   Printf.printf "ts only: %b\n" (Sidebar.same (snap test_at) (snap (test_at +. 60.)));
-  Printf.printf "status: %b\n" (Sidebar.same (snap test_at) (snap ~status:Idle test_at));
+  Printf.printf "status: %b\n"
+    (Sidebar.same (snap test_at) { (snap test_at) with programs = programs (snap test_at).states });
   let p = pane ~command:"zsh" "%1" in
   Printf.printf "layout: %b\n"
     (Sidebar.same
@@ -1299,6 +1312,7 @@ let%expect_test
           client = client "alpha";
           panes;
           states = states [ ("%2", ("i", session "")) ];
+          programs = programs (states [ ("%2", ("i", session "")) ]);
         };
     }
   in
@@ -1306,7 +1320,7 @@ let%expect_test
     Printf.printf "%S: %s\n" filter
       (String.concat " | "
          (List.map (Ui.row_text ~now:m.at)
-            (Array.to_list (Ui.lines ~search:filter (Sidebar.rebuild m)))))
+            (Array.to_list (Ui.lines ~search:filter (Sidebar.rebuild (Sidebar.classify m))))))
   in
   show "";
   show "zz";
@@ -1314,10 +1328,10 @@ let%expect_test
   show "a";
   [%expect
     {|
-    "": alpha | ╶ zsh | beta | ╶◼kido | gamma | ╶ zsh
+    "": alpha | ╶ zsh | beta | ╶◼π - kido | gamma | ╶ zsh
     "zz":
-    "kido": beta | ╶◼kido
-    "a": alpha | ╶ zsh | gamma | ╶ zsh | beta | ╶◼kido
+    "kido": beta | ╶◼π - kido
+    "a": alpha | ╶ zsh | gamma | ╶ zsh | beta | ╶◼π - kido
     |}]
 
 let%expect_test "a row wider than the sidebar is cut to its width, ellipsis included" =
@@ -1395,8 +1409,7 @@ let%expect_test "a snapshot as the feed sends it" =
   let states =
     states
       [
-        ("%1", ("root", session ~activity:"reading the contract" ""));
-        ("%5", ("asker", session ~status:Waiting ""));
+        ("%1", ("root", session ~activity:"reading the contract" "")); ("%5", ("asker", session ""));
       ]
   in
   let m, _ =
@@ -1407,6 +1420,7 @@ let%expect_test "a snapshot as the feed sends it" =
         active = Tmux.Pane.of_string "%1";
         panes;
         states;
+        programs = programs states;
         lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
       }
   in
@@ -1442,7 +1456,10 @@ let%expect_test "a snapshot as the feed sends it" =
                   "pane": "%1",
                   "window": "@1",
                   "indicator": { "kind": "running" },
-                  "program_status": { "serial": 0, "records": [] },
+                  "program_status": {
+                    "serial": 1,
+                    "records": [ { "id": "", "state": "working", "app": "pi" } ]
+                  },
                   "title": [ { "text": "orchestrator", "role": "plain" } ],
                   "tail": [ { "text": "reading the contract", "role": "dim" } ],
                   "run": null,
@@ -1520,13 +1537,16 @@ let%expect_test "a snapshot as the feed sends it" =
               "id": "%5",
               "pane": "%5",
               "window": "@5",
-              "indicator": { "kind": "waiting" },
-              "program_status": { "serial": 0, "records": [] },
+              "indicator": { "kind": "running" },
+              "program_status": {
+                "serial": 1,
+                "records": [ { "id": "", "state": "working", "app": "pi" } ]
+              },
               "title": [ { "text": "asker", "role": "plain" } ],
               "tail": [],
               "run": null,
               "started": null,
-              "attention": true,
+              "attention": false,
               "children": []
             }
           ]
@@ -1550,6 +1570,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
   let states =
     states [ ("%1", ("root", session "")); ("%2", ("kid", session ~parent:"root" "")) ]
   in
+  let programs = programs states in
   let m, _ =
     Sidebar.step (model ~dir ())
       {
@@ -1558,6 +1579,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
         active = Tmux.Pane.of_string "%1";
         panes;
         states;
+        programs;
         lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
       }
   in
@@ -1581,7 +1603,10 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
               "pane": "%1",
               "window": "@1",
               "indicator": { "kind": "running" },
-              "program_status": { "serial": 0, "records": [] },
+              "program_status": {
+                "serial": 1,
+                "records": [ { "id": "", "state": "working", "app": "pi" } ]
+              },
               "title": [ { "text": "root", "role": "plain" } ],
               "tail": [],
               "run": null,
@@ -1600,7 +1625,12 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
                       "pane": "%2",
                       "window": "@2",
                       "indicator": { "kind": "running" },
-                      "program_status": { "serial": 0, "records": [] },
+                      "program_status": {
+                        "serial": 1,
+                        "records": [
+                          { "id": "", "state": "working", "app": "pi" }
+                        ]
+                      },
                       "title": [ { "text": "kid", "role": "plain" } ],
                       "tail": [],
                       "run": null,
@@ -1665,7 +1695,7 @@ let%expect_test "program acknowledgement survives failed snapshots and reconnect
        (fun m (label, snap) ->
          let m, _ = Sidebar.step m snap in
          let indicator =
-           match (Sidebar.pane_label m p).indicator with
+           match (pane_label m p).indicator with
            | Some Sidebar.Done -> "done"
            | Some (Status Idle) -> "idle"
            | _ -> "none"
@@ -1700,7 +1730,7 @@ let%expect_test "program acknowledgement survives failed snapshots and reconnect
 let%expect_test "every role names its foreground" =
   List.iter
     (fun r -> Format.printf "%a@." Mosaic.Ansi.Style.pp (Ui.style r))
-    [ `Plain; `Current; `Proc; `Dim; `Err; `Running; `Waiting; `Compacting; `Done; `Stalled ];
+    [ `Plain; `Current; `Proc; `Dim; `Err; `Running; `Waiting; `Done; `Stalled ];
   [%expect
     {|
     Style{fg=#000000}
@@ -1710,7 +1740,6 @@ let%expect_test "every role names its foreground" =
     Style{fg=#800000}
     Style{fg=#008000}
     Style{fg=#808000, attrs=[Bold]}
-    Style{fg=#800080}
     Style{fg=#008000, attrs=[Bold]}
     Style{fg=#800000, attrs=[Bold]}
     |}]

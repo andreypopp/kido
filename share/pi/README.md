@@ -186,7 +186,7 @@ nothing useful until a session has started and kido has been found:
   an exact, case-insensitive name, then an exact session id, then a
   unique id prefix, scoped to this tmux session; ambiguity is an error
   naming the candidates rather than a guess. An agent with an inbox gets
-  it as a real user message; an agent with none (Claude Code, above all)
+  it as a real user message; an identity with none
   gets it pasted into its pane instead. Either way kido's stdout reports
   which happened and to whom, and the tool relays that back verbatim.
   `replyTo`, when given, is what makes it a reply - kido derives the

@@ -20,7 +20,6 @@ type lingering = {
   started : Timestamp.t;
 }
 
-type probe = { reported : float; read : float; dismissed : bool }
 type ask_target = Live of Tmux.Pane.id | Revivable | Unavailable
 type ask = { ask : Ask.t; target : ask_target }
 
@@ -32,11 +31,9 @@ type snapshot = {
   programs : Tmux.Program_status.t Tmux.Pane.Map.t;
   states : (string * State.session) Tmux.Pane.Map.t;
   ssh : Procs.ssh_session Procs.Int_map.t;
-  pi : Procs.Int_set.t;
   probed : float;
   wake : float option;
   err : string option;
-  probes : probe Tmux.Pane.Map.t;
   lingering : lingering String_map.t;
   asks : ask list;
 }
@@ -55,10 +52,7 @@ type reading = { wall : Timestamp.t; mono : Mtime.t }
 val detect_pause : reading -> reading -> bool
 
 type client = { session : Tmux.Session.id; window : Tmux.Window.id; pane : Tmux.Pane.id }
-
-type role =
-  [ `Plain | `Current | `Proc | `Dim | `Err | `Running | `Waiting | `Compacting | `Done | `Stalled ]
-
+type role = [ `Plain | `Current | `Proc | `Dim | `Err | `Running | `Waiting | `Done | `Stalled ]
 type span = { text : string; role : role }
 
 type indicator =
@@ -93,6 +87,7 @@ type model = {
   opts : options;
   snap : snapshot;
   sessions : section list;
+  pane_data : (Tmux.Pane.t * State.pane_kind) Tmux.Pane.Map.t;
   client : client option;
   started : float;
   seen : float Tmux.Pane.Map.t;
@@ -108,12 +103,12 @@ val make : now:(unit -> float) -> options -> model
 val interactive_pane : model -> Tmux.Pane.t -> bool
 val ssh_remote : model -> Tmux.Pane.t -> bool
 val shell_outcome : model -> Tmux.Pane.t -> Tmux.Pane.exit option
+val classify : model -> model
 val track : model -> model
 val shell_pending : model -> bool
 val attention : model -> Tmux.Pane.id -> bool
 val shell_indicator : model -> phase -> indicator option
-val agent_title_of : model -> Tmux.Pane.t -> string option
-val pane_label : model -> Tmux.Pane.t -> row
+val pane_label : model -> Tmux.Pane.t * State.pane_kind -> row
 
 type placement = { panes : Tmux.Pane.t list; anchor : Tmux.Pane.id option }
 

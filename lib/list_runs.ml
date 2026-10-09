@@ -1,18 +1,16 @@
 open Tmux
 
-type status = Reported of State.status | Program of Tmux.Program_status.state option
+type status = Tmux.Program_status.state option
 
-let status_to_yojson = function
-  | Reported s -> State.status_to_yojson s
-  | Program state ->
-      `String
-        (match state with
-        | None -> "unknown"
-        | Some Idle -> "idle"
-        | Some (Working _) -> "working"
-        | Some (Blocked _) -> "blocked"
-        | Some Done -> "done"
-        | Some Error -> "error")
+let status_to_yojson (state : status) =
+  `String
+    (match state with
+    | None -> "unknown"
+    | Some Idle -> "idle"
+    | Some (Working _) -> "working"
+    | Some (Blocked _) -> "blocked"
+    | Some Done -> "done"
+    | Some Error -> "error")
 
 type agent_info = {
   id : string;
@@ -46,9 +44,7 @@ let root programs (s : State.session) =
     s.pane
 
 let status programs (s : State.session) =
-  match s.reporting with
-  | Hook h -> Reported h.status
-  | Terminal -> Program (Option.map (fun (r : Program_status.record) -> r.state) (root programs s))
+  Option.map (fun (r : Program_status.record) -> r.state) (root programs s)
 
 let per_pane live = List.map snd (Tmux.Pane.Map.bindings (State.by_pane live))
 

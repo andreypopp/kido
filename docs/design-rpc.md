@@ -73,8 +73,8 @@ semantic roles, not glyph strings; the external view truncates and
 styles it.
 
 The tick reads tmux topology, live agent reports, process information,
-run metadata and outstanding asks. It also performs the reap sweep and
-Claude waiting-screen probes. These operations are idempotent with a TUI
+run metadata and outstanding asks. Only root apps pi and claude-code identify agents;
+State supplies local pi identity but is not a detection signal. It also performs the reap sweep. These operations are idempotent with a TUI
 sidebar running beside RPC; the feed is not a passive file reader.
 RPC uses the default 100ms interval. Stall and linger knobs come from the
 RPC process environment, through the same option readers as the TUI,
@@ -146,15 +146,18 @@ merging pending notifications. A new pane's notification may arrive after
 that read, so it survives until the next read; if the pane is still absent,
 its records are dropped even if it never appeared in topology.
 
-Program records override shell/ssh and pi status, but not a gone run.
-Claude Code's Hook status takes precedence on its own row. The representative is chosen by blocked,
+Program records drive shell/ssh and agent status, but not a gone run.
+A pi root without local State or a claude-code root is a native agent,
+titled from the pane title verbatim; only an empty title falls back to its app.
+Every other root app is a terminal, titled from the record title, then the
+record app, then the current command. The representative is chosen by blocked,
 error, working, done, idle priority, then bytewise id, excluding
 acknowledged done/error records so they cannot hide ongoing work. If all
 records are acknowledged completions, the first record supplies an idle
 label. Its title (or inherited app or foreground command) names a generic
 program row. pi's label comes instead from its reported session name,
-or the pane title (OSC 0/2) with the π prefix stripped for an unnamed session. Message and optional progress percentage
-form the caption, except a pi message duplicating its session name. With no program
+or the pane title (OSC 0/2) verbatim for an unnamed session. Message and optional progress percentage
+form the caption, except a local pi message duplicating its session name. With no program
 message, State activity supplies the caption; a live subagent with neither
 uses its elapsed clock. Indicators map
 to waiting, failed, running, done and idle. Visiting acknowledges done/error
@@ -165,8 +168,9 @@ attention come from pi 1.1.0's native OSC 7501 records; its ask overlay
 still outranks the indicator. Stalled means a working root with a stale State heartbeat,
 rebased against wake. Bare pi never stalls. pi addressing uses its reported
 session name, including when a nested program overwrites the OSC root.
-Unnamed pi sessions are addressable only by id. Claude Code retains its
-Hook status and completion timestamp.
+Unnamed pi sessions are addressable only by id. Native agents without a
+local pi State identity have no session id or inbox and are not listed by
+list_runs; kido prompt can paste to them.
 
 ## Requests and navigation
 
@@ -228,10 +232,9 @@ Protocol 2.0 changes from 1.1:
 - Changed: pi item indicator, attention and caption use native OSC records;
   its title uses the pane title
   instead of State status/title/completion. Pi compaction is running with
-  a message, not compacting. Gone runs outrank terminal and Hook status;
-  Claude Code retains Hook status and completion.
+  a message, not compacting. Gone runs outrank terminal status.
 - Changed: pi stall requires a working root and stale State heartbeat;
-  bare pi never stalls. Pi addressing uses the stripped pane title. State supplies
+  bare pi never stalls. Pi addressing uses the pane title verbatim. State supplies
   identity, inbox, parentage, activity and the ask overlay; agent-status
   removes --status, --ended and --title.
 - Unchanged: switch-session requests and integer-correlated replies were

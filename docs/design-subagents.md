@@ -32,7 +32,7 @@ agent binaries.
 | `notify_parent(summary)` | `kido tool notify_parent` |
 
 The rule runs one way only: a tool names its command, while a subcommand
-that is nobody's tool keeps whatever name fits it - `hook`, `shell`,
+that is nobody's tool keeps whatever name fits it - `shell`,
 `ssh`, `get-agent`, `prompt`, `snapshot`, `reap`, `runs`
 and the rest. `kido agent-status` is the sharpest case and keeps its own
 name too: it reports a session's identity and heartbeat, whereas
@@ -121,9 +121,12 @@ window, status, activity, parent, depth, cwd, model, `canMessage`,
 `canReply`, `sinceReport` and `stalled`. Own runs add `run`, `startedAt`,
 `state` (`running` or `ended`) and the ending's `outcome` result and text.
 A bash run or an ended subagent without a live record has no agent
-status and cannot reply. pi's status is the pane root's OSC 7501 state
-(working, blocked, done, error, idle; unknown when absent), and its name
-comes from the pane title, set by pi through OSC 0/2. Claude Code uses Hook status and its pane title.
+status and cannot reply. Live State records define the coordination graph,
+regardless of the pane's root app: clearing or replacing the root does not
+remove an identity, inbox, parent link or run history. pi's listed status is
+the pane root's OSC 7501 state (working, blocked, done, error, idle; unknown
+when absent). Its name is the State session name, or the pane title verbatim
+when unnamed. Native Claude Code has no State identity and is not listed.
 A pi is stalled only with a working root and an old State heartbeat;
 a bare pi never stalls. The graph is a fresh single tmux read, not a
 cache. `ask_agent` refuses a stalled target before sending.

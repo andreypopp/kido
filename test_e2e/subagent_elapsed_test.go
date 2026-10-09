@@ -53,7 +53,7 @@ func TestSubagentRowShowsElapsedUnlessActivity(t *testing.T) {
 			if activity == "" {
 				return seconds() >= first
 			}
-			return h.rowFor("elapsed-agent") == "└ elapsed-agent "+activity
+			return h.rowFor("elapsed-agent") == "└ π - elapsed-agent "+activity
 		}, settle, func() string { return fmt.Sprintf("activity %q, row %q", activity, h.rowFor("elapsed-agent")) })
 		f.waitLast(func(s feedSnapshot) bool {
 			for _, r := range feedItems(s.Sessions[0].Nodes) {

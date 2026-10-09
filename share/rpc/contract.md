@@ -27,7 +27,7 @@ server stamp produces {"hello":{"protocol":"2.1","server":"other"}} or
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
 or stdin read error; diagnostics use stderr. Option errors use cmdliner.
 Transient tick errors occupy snapshot.error and do not stop the stream.
-The tick also performs idempotent reap and Claude screen probing.
+The tick also performs idempotent reap.
 
 ## Requests and replies
 
@@ -135,10 +135,9 @@ invalid. All requests use the existing error envelope and explicit socket.
 - Changed: pi item indicator, attention and caption use pi's native OSC
   records instead of State status/completion; the title uses the pane title.
   Pi compaction is running with
-  a message, not compacting. Gone runs outrank terminal and Hook status;
-  Claude Code retains Hook status and completion.
+  a message, not compacting. Gone runs outrank terminal status.
 - Changed: pi stall requires a working root and stale State heartbeat;
-  bare pi never stalls. Pi addressing uses the stripped pane title. State supplies
+  bare pi never stalls. Pi addressing uses the State session name. State supplies
   identity, inbox, parentage, activity and the ask overlay; agent-status
   removes --status, --ended and --title.
 - Unchanged: switch-session requests and integer-correlated replies were
@@ -226,7 +225,7 @@ group's place. Groups are the "group" rows the app may draw differently.
 ### Item node: one pane
 
 `"kind"` is one of:
-- `agent`: a pane with an agent session (pi, Claude Code), or a finished
+- `agent`: a pane with OSC 7501 root app pi or claude-code, or a finished
   subagent's lingering pane (its `indicator` is `gone`);
 - `run`: an `async_bash` run's pane, running (`started` set) or ended;
 - `ssh`: a pane whose foreground is an ssh session;
@@ -237,7 +236,7 @@ Fields:
 - `id` = `pane` = the pane id `%N`, stable for the pane's life, including
   a dead lingering pane. `window` is its window id. Both are always
   present, and both are the jump target.
-- `indicator`: null or an object with `kind`: running, waiting, compacting,
+- `indicator`: null or an object with `kind`: running, waiting,
   idle, unknown, done, failed, stalled or gone. Gone also carries `outcome`:
   completed, failed, died, stopped or null.
 - `program_status`: an object with integer `serial` and `records` array,
@@ -252,9 +251,14 @@ Fields:
   inherited from the nearest ancestor that has one,
   including root across missing parents; inheritance is not materialized
   into these records. All records are included. They drive pi display
-  even when a State identity exists; Claude Code retains Hook status.
-  Gone runs take precedence. With no program message, activity or a live
-  subagent's elapsed clock supplies the caption.
+  even when a State identity exists; Claude Code uses its native root records.
+  Gone runs take precedence. Root apps pi and claude-code name agent panes;
+  other apps are terminals, using record title, app, then current command.
+  Native-only agents use the pane title verbatim, or the app when empty.
+  Local pi uses its State session name when set and drops duplicate message
+  captions; native-only agents keep the message independent of the title.
+  With no program message, local pi activity or a live subagent's elapsed
+  clock supplies the caption.
   For other panes, records override shell/ssh display but not gone runs.
   Representative priority is blocked > error > working > done > idle,
   then id order, excluding acknowledged done/error records. If only
@@ -264,7 +268,7 @@ Fields:
   done/error in that view only, until a newer serial (not a reconnect);
   it never removes records from this field.
 - `title` and `tail`: arrays of spans with `text` and `role`: plain, current,
-  proc, dim, err, running, waiting, compacting, done or stalled.
+  proc, dim, err, running, waiting, done or stalled.
 - `attention`: boolean, whether attention navigation visits this pane.
 - `run`: `"agent"` for a subagent run, `"bash"` for plain async_bash,
   `"stream"` for async_bash launched with streaming, or null for anything
@@ -331,7 +335,7 @@ These behaviours come from the pinned fork, not stock tmux.
 pi status comes from pi 1.1.0's native OSC 7501 root record, with no
 title or progress. Named pi labels use the session name reported in State,
 exactly as set by /name. Unnamed or untracked pi labels use the pane title
-set through OSC 0/2, with the π prefix stripped; unnamed tracked sessions
+set through OSC 0/2, verbatim; unnamed tracked sessions
 are addressable only by session id or id prefix. Generic programs retain
 their OSC record title. A pi message duplicating the session name is
 omitted from the caption.

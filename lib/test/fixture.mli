@@ -10,12 +10,10 @@ val session :
   ?pane:string ->
   ?pid:int ->
   ?ts:Kido.Timestamp.t ->
-  ?background:bool ->
-  ?tool_pending:bool ->
   ?inbox:string ->
   ?parent:string ->
   ?depth:int ->
-  Kido.State.status ->
+  unit ->
   Kido.State.session
 
 val start_inbox : reply:string -> string * (unit -> string list)

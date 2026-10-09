@@ -15,5 +15,4 @@ val follow : t -> string -> unit
 val list_panes : t -> (Pane.t list, string) result
 val generation : t -> int
 val program_status : t -> full:bool -> (Program_status.t Pane.Map.t, string) result
-val capture_pane : t -> Pane.id -> (string list, string) result
 val client_state : t -> string -> Exec.client_state option

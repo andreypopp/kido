@@ -127,7 +127,7 @@ let%expect_test "run-outcome records one outcome, and only for a valid run id" =
 let%expect_test "run-outcome --unreported tells the parent once, and only if it won the write" =
   let dir = Filename.temp_dir "kido-state" "" in
   let inbox, received = start_inbox ~reply:"ok\n" in
-  ignore (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox Idle));
+  ignore (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox ()));
   let child r = ignore (run ~dir ~name:"ttyfix" ~kind:Agent ~parent:"root-sess" r) in
   child "run-told";
   run_outcome ~dir ~unreported:true Completed "run-told";

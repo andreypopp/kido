@@ -267,11 +267,6 @@ let program_status t ~full =
   t.pending_programs <- Pane.Map.empty;
   programs
 
-let capture_pane t pane =
-  match run t ("capture-pane -p -t " ^ Filename.quote (Pane.to_string pane)) with
-  | Ok lines -> Ok lines
-  | Error _ -> Exec.capture_pane ?socket:t.socket pane
-
 let client_state t client =
   match run t ("list-clients -F " ^ Filename.quote Exec.client_format) with
   | Ok (_ :: _ as lines) -> Exec.parse_client_state lines client

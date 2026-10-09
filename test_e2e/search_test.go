@@ -99,13 +99,13 @@ func TestSearchEnterJumps(t *testing.T) {
 }
 
 // "/" also matches a session whose name does not contain the query but a
-// Claude pane's title does: the session stays fully visible.
-func TestSearchMatchesClaudeTitle(t *testing.T) {
+// agent pane's title does: the session stays fully visible.
+func TestSearchMatchesAgentTitle(t *testing.T) {
 	t.Parallel()
 	h := start(t, "work")
-	h.claudePane("work", "✳ Fix login redirect")
+	h.piPane("work", "✳ Fix login redirect")
 	h.newSession("chores")
-	// work: header + its shell pane + its claude pane; chores: header + its
+	// work: header + its shell pane + its agent pane; chores: header + its
 	// shell pane.
 	h.waitRows(5)
 	focusSidebar(h)

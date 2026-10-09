@@ -3,6 +3,7 @@ package e2e
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -83,8 +84,6 @@ func feedGlyph(r feedRow) string {
 		return "◼"
 	case "waiting":
 		return "◆"
-	case "compacting":
-		return "◌"
 	case "idle":
 		return " "
 	case "unknown":
@@ -491,14 +490,19 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 		}, "ended "+c.run+" retains run kind but clears started")
 	}
 	rootPane := h.in("display-message", "-p", "-t", "alpha:0", "#{pane_id}")
-	for _, agent := range []string{"pi", "claude"} {
+	for _, agent := range []string{"pi", "claude-code"} {
 		for _, status := range []string{"running", "idle"} {
 			state := "idle"
 			if status == "running" {
 				state = "working"
 			}
-			h.programStatus(rootPane, "state="+state+":app=pi", "feed-root")
-			h.agentStatus("root-e2e", rootPane, agent, "--activity", status)
+			if agent == "pi" {
+				h.programStatus(rootPane, "state="+state+":app=pi", "feed-root")
+				h.agentStatus("root-e2e", rootPane, "pi", "--activity", status)
+			} else {
+				h.agentStatus("root-e2e", rootPane, "pi", "--remove")
+				h.programStatus(rootPane, "state="+state+":app=claude-code:msg="+base64.StdEncoding.EncodeToString([]byte(status)), "feed-root")
+			}
 			f.waitLast(func(s feedSnapshot) bool {
 				for _, session := range s.Sessions {
 					for _, r := range feedItems(session.Nodes) {
@@ -679,7 +683,7 @@ func TestRpcRecoversFromAnError(t *testing.T) {
 	if err := holder.Start(); err != nil {
 		t.Fatal(err)
 	}
-	rec := fmt.Sprintf(`{"agent":"claude","name":"","pane":"%%999","pid":%d,"reporting":["Hook",{"status":"idle","ended":null,"background":false,"toolPending":false}],"ts":"2026-01-01T00:00:00Z"}`,
+	rec := fmt.Sprintf(`{"agent":"pi","name":"","pane":"%%999","pid":%d,"ts":"2026-01-01T00:00:00Z"}`,
 		holder.Process.Pid)
 	if err := os.WriteFile(filepath.Join(dir, "held.json"), []byte(rec), 0o644); err != nil {
 		t.Fatal(err)

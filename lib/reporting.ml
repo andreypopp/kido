@@ -1,10 +1,9 @@
-let session ~agent ~pane ~pid reporting : State.session =
+let session ~agent ~pane ~pid : State.session =
   {
     agent;
     name = "";
     pane;
     pid;
-    reporting;
     ts = Timestamp.now ();
     inbox = "";
     activity = "";
@@ -12,53 +11,6 @@ let session ~agent ~pane ~pid reporting : State.session =
     depth = 0;
     model = "";
   }
-
-let debug_log ~dir = Filename.concat dir "debug.log"
-
-let log_hook ~dir ~pane json (input : Hook.input) action =
-  try
-    Fs.mkdir_p ~perm:0o700 dir;
-    Out_channel.with_open_gen [ Open_append; Open_creat; Open_wronly ] 0o600 (debug_log ~dir)
-      (fun oc ->
-        Printf.fprintf oc "%s\t%s\t%s\t%s\n"
-          (Timestamp.to_string (Timestamp.now ()))
-          (Option.map_or ~default:"" Tmux.Pane.to_string pane)
-          (Yojson.Safe.to_string json) (Hook.describe input action))
-  with Sys_error _ | Unix.Unix_error _ -> ()
-
-let hook ~dir ~pane ~debug text =
-  let open Result.Infix in
-  let* json =
-    match Yojson.Safe.from_string text with
-    | json -> Ok json
-    | exception Yojson.Json_error m -> Error m
-  in
-  let* input = Hook.input_of_yojson json in
-  let id = input.session_id in
-  let parked =
-    (not (String.is_empty id))
-    && Option.exists
-         (fun (s : State.session) ->
-           match s.reporting with Hook h -> h.background | Terminal -> false)
-         (State.get ~dir id)
-  in
-  let action = Hook.apply input ~parked in
-  if debug then log_hook ~dir ~pane json input action;
-  let claude h = session ~agent:Claude ~pane ~pid:(Procs.reporter_pid ()) (Hook h) in
-  (match action with
-    | Ignore -> Ok ()
-    | Remove -> State.remove ~dir id ~pid:(Procs.reporter_pid ())
-    | Ended ->
-        let ended =
-          match State.get ~dir id with
-          | Some { reporting = Hook { status = Idle; ended = Some prev; _ }; _ } -> prev
-          | _ -> Timestamp.now ()
-        in
-        State.record ~dir id
-          (claude { status = Idle; ended = Some ended; background = false; tool_pending = false })
-    | Report { status; background; tool_pending } ->
-        State.record ~dir id (claude { status; ended = None; background; tool_pending }))
-  |> Result.map_err (State.held_message id)
 
 let one_line s ~max =
   let b = Buffer.create (String.length s) in
@@ -80,7 +32,7 @@ let agent_status ~dir ~pane ~agent ~session:id ~inbox ~activity ~parent_pid ~par
     ~model ~name =
   State.record ~dir id
     {
-      (session ~agent:(State.agent_of_string agent) ~pane ~pid:(Unix.getppid ()) Terminal) with
+      (session ~agent:(State.agent_of_string agent) ~pane ~pid:(Unix.getppid ())) with
       inbox;
       name;
       activity = one_line activity ~max:256;

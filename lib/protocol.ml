@@ -144,7 +144,6 @@ let role_name : role -> string = function
   | `Err -> "err"
   | `Running -> "running"
   | `Waiting -> "waiting"
-  | `Compacting -> "compacting"
   | `Done -> "done"
   | `Stalled -> "stalled"
 

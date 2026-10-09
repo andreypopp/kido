@@ -11,6 +11,7 @@ func TestPiSessionNameEverywhere(t *testing.T) {
 	h := start(t, "alpha")
 	root := h.firstPane("alpha")
 	parentInbox := startInbox(t, "ok\n")
+	h.programStatus(root, "state=idle:app=pi")
 	h.agentStatus("name-root", root, "pi", "--name", "Parent", "--inbox", parentInbox.Path)
 	pane := h.piPane("alpha", "launch - kido")
 	h.programStatus(pane, "state=idle:app=pi")
@@ -58,14 +59,14 @@ func TestPiSessionNameEverywhere(t *testing.T) {
 		t.Fatalf("ended but still live name: %+v", rows)
 	}
 
-	unnamed := h.piPane("alpha", "Unnamed - kido")
+	unnamed := h.piPane("alpha", "π - Unnamed - kido")
 	h.agentStatus("unnamed-session", unnamed, "pi", "--name", "", "--inbox", in.Path)
-	h.waitRow("Unnamed - kido")
+	h.waitRow("π - Unnamed - kido")
 	found := false
 	for _, row := range h.listedRuns(root) {
 		if row.ID == "unnamed-session" {
 			found = true
-			if row.Name != "Unnamed - kido" || row.Named {
+			if row.Name != "π - Unnamed - kido" || row.Named {
 				t.Fatalf("unnamed display/addressability: %+v", row)
 			}
 		}
@@ -73,8 +74,8 @@ func TestPiSessionNameEverywhere(t *testing.T) {
 	if !found {
 		t.Fatal("unnamed agent missing from list_runs")
 	}
-	h.expectKido(root, "not a name", nil, `kido tool message_agent: no agent session matches "Unnamed - kido"`, "tool", "message_agent", "Unnamed - kido")
-	h.expectKido(root, "id works", nil, "delivered to Unnamed - kido by inbox", "tool", "message_agent", "unnamed-sess")
+	h.expectKido(root, "not a name", nil, `kido tool message_agent: no agent session matches "\207\128 - Unnamed - kido"`, "tool", "message_agent", "π - Unnamed - kido")
+	h.expectKido(root, "id works", nil, "delivered to π - Unnamed - kido by inbox", "tool", "message_agent", "unnamed-sess")
 	h.agentStatus("unnamed-session", unnamed, "pi", "--name", "Asker", "--inbox", in.Path)
 	if _, rc := askCommand(h, unnamed, "What next?", "tool", "ask_user", "--session-file", filepath.Join(h.dir, "session.json")); rc != 0 {
 		t.Fatal("ask failed")

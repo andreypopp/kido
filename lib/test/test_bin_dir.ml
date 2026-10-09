@@ -54,11 +54,9 @@ let install root =
   copy ~perm:0o755 "../../share/bin/tmux" (share // "bin/tmux");
   copy ~perm:0o755 "../../share/bin/ssh" (share // "bin/ssh");
   copy ~perm:0o755 "../../share/bin/pi" (share // "bin/pi");
-  copy ~perm:0o755 "../../share/bin/claude" (share // "bin/claude");
   copy "../../share/shim.sh" (share // "shim.sh");
   copy "../../share/pi/kido-status.ts" (share // "pi/kido-status.ts");
   copy "../../share/pi/kido-agents.ts" (share // "pi/kido-agents.ts");
-  copy "../../share/claude/settings.json" (share // "claude/settings.json");
   List.iter (fun name -> ignore (recorder (prefix // "bin") name)) [ "kido"; "kido-tmux" ];
   (prefix // "bin", share, share // "bin")
 
@@ -88,7 +86,6 @@ let%expect_test "the shims run what they stand for, with the arguments as given"
   let bin, share, shims = install root in
   let real = root // "real" in
   ignore (recorder real "pi");
-  ignore (recorder real "claude");
   let path = path_of [ shims; real ] in
   let show name (prog, args) = Printf.printf "%s ran %s %s\n" name prog (String.concat "|" args) in
   let prog, args = run_shim path "tmux" awkward in
@@ -107,19 +104,11 @@ let%expect_test "the shims run what they stand for, with the arguments as given"
         (same agents (share // "pi/kido-agents.ts"))
         (List.equal String.equal rest awkward)
   | r -> show "pi" r);
-  (match run_shim path "claude" awkward with
-  | prog, "--settings" :: settings :: rest ->
-      Printf.printf "claude: real %b, settings %b, args %b\n"
-        (String.equal prog (real // "claude"))
-        (same settings (share // "claude/settings.json"))
-        (List.equal String.equal rest awkward)
-  | r -> show "claude" r);
   [%expect
     {|
     tmux: kido-tmux true, args true
     ssh: kido true, args true
     pi: real true, extensions true true, args true
-    claude: real true, settings true, args true
     |}]
 
 (* pi reads these from its first argument: --extension in front would turn `pi install x` into a
@@ -282,35 +271,4 @@ let%expect_test "only a local prime moves PATH" =
     given a bin dir true, carries the script true, without one false
     given a bin dir true, carries the script true, without one false
     ssh: false
-    |}]
-
-let%expect_test "the shipped claude settings are kido's hooks" =
-  let json = Yojson.Safe.from_file "../../share/claude/settings.json" in
-  let open Yojson.Safe.Util in
-  List.iter
-    (fun (event, entries) ->
-      match entries with
-      | `List [ entry ] -> (
-          match member "hooks" entry with
-          | `List [ h ] ->
-              Printf.printf "%s: %s %S async=%b\n" event
-                (to_string (member "type" h))
-                (to_string (member "command" h))
-                (Option.get_or ~default:false (to_bool_option (member "async" h)))
-          | _ -> Printf.printf "%s: not one hook\n" event)
-      | _ -> Printf.printf "%s: not one entry\n" event)
-    (List.sort (fun (a, _) (b, _) -> String.compare a b) (to_assoc (member "hooks" json)));
-  [%expect
-    {|
-    Notification: command "kido hook" async=true
-    PermissionRequest: command "kido hook" async=true
-    PostCompact: command "kido hook" async=true
-    PostToolUse: command "kido hook" async=true
-    PreCompact: command "kido hook" async=true
-    PreToolUse: command "kido hook" async=true
-    SessionEnd: command "kido hook" async=false
-    SessionStart: command "kido hook" async=true
-    Stop: command "kido hook" async=true
-    SubagentStop: command "kido hook" async=true
-    UserPromptSubmit: command "kido hook" async=true
     |}]

@@ -2,7 +2,7 @@
 
 What kido does and how it is installed is in [README.md](README.md). This
 file is the context that is not in the code: the tmux fork it depends on,
-what Claude Code actually reports, and the invariants a plausible-looking
+what terminal programs actually report, and the invariants a plausible-looking
 change would break.
 
 kido's own design decisions - which store is authoritative for what, the
@@ -137,7 +137,7 @@ Conventions:
     bin/main.ml        the cmdliner command table and the small commands:
                        set_status, get-agent, get-inbox, snapshot,
                        ssh, get-window, switch-session/window, server,
-                       debug-log, runs, run-outcome, reap, close-run,
+                       runs, run-outcome, reap, close-run,
                        rpc
     bin/cli.ml         failure printing and tables
     lib/               the library kido:
@@ -149,11 +149,9 @@ Conventions:
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON
       ui.ml            the Mosaic sidebar: the model's rows drawn, keys, cursor
-      screen.ml        reading a Claude Code screen for a dismissed prompt
       state.ml         one JSON file per agent session, keyed by session id
-      hook.ml          Claude Code hook event -> status table
-      reporting.ml     kido hook and kido agent-status
-      procs.ml         process-tree scan: agent panes, ssh destinations
+      reporting.ml     kido agent-status
+      procs.ml         process scan: ssh destinations
       msg.ml           the inbox wire protocol and its client: v0 raw prompt,
                        v1 envelope, the unix-socket sender and notify
       tree.ml          the parent-first walk behind list_runs and the sidebar
@@ -175,12 +173,11 @@ Conventions:
                        pane, which lib/test's Fixture includes; tmux_server/
                        the Conn tests against a real tmux, run only with $KIDO_TMUX
     share/             the source of share/kido, installed by share/dune:
-      bin/             the bin directory's sh shims (kido, tmux, ssh, pi, claude)
+      bin/             the bin directory's sh shims (kido, tmux, ssh, pi)
       shim.sh          their shared helper
       bash/, zsh/      the OSC 133 integrations every primed shell sources
       tmux/            kido-tmux.conf, the defaults the launcher writes into
                        server.conf (embedded, not installed)
-      claude/          settings.json, the hooks file the claude shim hands to Claude Code
       pi/              the two pi extensions, which the pi shim loads with --extension
     .pi/prompts/       gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed
     .pi/extensions/    no-git-writes, the spawned agent's bash-tool guard
@@ -260,7 +257,7 @@ Push over SSH (`git@github.com:andreypopp/tmux.git`).
 
 A fork change bumps kido's submodule pin and the `fork revision:` line
 in `share/rpc/contract.md`; lint enforces their agreement. Bump the
-protocol version only if a behaviour listed in the contract changes.
+protocol version only when the wire format changes.
 
 `scripts/install-tmux-fork.sh <prefix>` builds it
 into `<prefix>/bin/kido-tmux`; `--self-contained <prefix>` is macOS-only,
@@ -281,15 +278,13 @@ as a side column", i.e. `Ui.model.standalone` - a popup or plain pane
 gets the one-shot picker. Keyboard focus is the client flag
 `side-status-focus`.
 
-**OSC 133.** `input_osc_133()` in the fork's `input.c`:
-
-| sequence | effect |
-|---|---|
-| `A`, `N` | `wp->last_prompt_time = time(NULL)`, fires `pane-shell-prompt` |
-| `C` | sets `PANE_CMDRUNNING`, `cmd_start_time`, **`cmd_status = -1`**, stores the `cmdline=` parameter as `#{pane_command_line}`, fires `pane-command-started` |
-| `D[;status]` | clears `PANE_CMDRUNNING`, sets `cmd_end_time`/`cmd_status`, fires `pane-command-finished` |
-
-tmux stores the value through `clean_name()`: control bytes and backslashes
+**OSC 133.** What the sequences mean and how kido reads them is in
+[docs/design-program-status.md](docs/design-program-status.md). The fork's
+`input_osc_133()` in `input.c` keeps them as the `#{pane_last_prompt_time}`
+and `#{pane_command_*}` formats and fires the hooks `pane-shell-prompt`
+(`A`, `N`), `pane-command-started` (`C`) and `pane-command-finished` (`D`).
+`C` stores its `cmdline=` parameter as `#{pane_command_line}`; tmux stores
+the value through `clean_name()`: control bytes and backslashes
 are escaped by `utf8_stravis()`, and `#(` becomes `_(`. The shell
 integrations therefore send the command line **verbatim** apart from
 blanking control characters and capping it at 1024 characters; the fork
@@ -368,28 +363,21 @@ sees `less` under `git` or `nvim` under `sudo`, and is what
   `last_exit` is an `exit option`, `None` rather than a zero status
   (the "parse:" test's empty status).
 
-## What Claude Code actually reports
+## Native agent status
 
-`lib/hook.ml` is the event table (`Hook.apply`). These were measured from
-logged events (`tail -f "$(kido debug-log)"`), not read from docs:
+Only OSC 7501 root apps pi and claude-code identify agent panes. State supplies
+local pi identity and coordination, never detection; process scanning is
+for ssh only. pi and Claude Code status, completion and blocked messages
+come from their terminal records. No Claude Code executable shim is shipped.
 
-- **`SubagentStop` fires on every subagent turn.** Its firing means
-  nothing; only its `background_tasks` do.
-- **A subagent's tool calls arrive under the parent `session_id`** with
-  `agent_id` set. So `working` in `Hook.apply` clears the background
-  flag only when `agent_id` is empty; otherwise the session would strand
-  at running.
-- **`idle_prompt` fires ~60s after *every* `Stop`** and carries no
-  `background_tasks`. Without the `parked` guard a session doing
-  background work goes idle a minute in.
-- **`TaskCompleted` never appears.** Nothing fires it, so a session held
-  open by a background *shell* alone never returns to idle. Known gap.
-
-Claude Code reports nothing when a question is dismissed or a permission
-denied; kido reads the pane's screen instead (`lib/screen.ml`, fixtures
-from real screens in lib/test/test_screen.ml). That probe runs for a
-`State.Claude` session in `Waiting` only, enforced by a match in
-`Sidebar.dismissals`, not by a type.
+Claude Code 2.1.295 queries OSC 7501, then emits a root app=claude-code
+record: idle, working, done, or blocked with permission/question kind and
+a base64 message. Escape on a permission dialog emits idle immediately;
+exit clears all records. CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 disables
+this reporting too. Its OSC 0 title was "Claude Code" at startup and
+"Reply with ok" for the session. Pane titles are displayed verbatim, including
+status glyphs and prefixes. Native-only agents fall back to the app name for
+an empty title; local pi uses its State name when set.
 
 ## Agent state, and delivering a prompt
 
@@ -404,17 +392,10 @@ resolved by policy:
   is `Error holder`, and `kido agent-status` exits **6** for it, which
   `share/pi/kido-status.ts` reads to stop reporting. Change that exit code in
   one half only and a second pi silently clobbers a live session.
-- `State.load_live` **removes** a file whose recorded pid is dead, rather than
-  skipping it; that is what cleans up pi's per-turn headless Claude Code
-  sessions.
-- When two records claim one pane, the **outer** agent wins regardless of
-  timestamp (`outer`, `beats` in `State.by_pane`): pi runs Claude Code
-  in its own pane.
-  Anything not literally `"claude"` is outer, so two non-Claude records on
-  one pane fall to the timestamp and the winner flips (a headless
-  `pi --print` inherits `TMUX_PANE`). That flip is accepted
-  (lib/test/test_state.ml, "the outer agent wins a shared pane"): nothing
-  can tell it from an agent's own record legitimately changing.
+- `State.load_live` **removes** a file whose recorded pid is dead.
+- When two records claim one pane, the latest timestamp wins. A headless
+  pi inherits TMUX_PANE, so it can take the pane's identity view; liveness
+  readers must not use that collapsed view.
 - **Never hand `Reap.sweep` a pane-keyed view.** The sidebar's view is
   `State.load_live` then `State.by_pane`; anything asking "is this
   session running *anywhere*" takes `load_live`'s list, which drops
@@ -425,12 +406,14 @@ resolved by policy:
   live record, the unfocused run is collected even while its command runs;
   a parentless bash run is exempt.
 
-`kido prompt` prefers the recorded inbox socket (`kido-status.ts` binds
-one) and uses a tmux paste **only** when the record names no inbox
+For a Pi_agent, `kido prompt` prefers the recorded inbox socket
+(`kido-status.ts` binds one) and uses a tmux paste **only** when its record names no inbox
 (`Prompt.deliver_or_paste`). An advertised but unavailable inbox is an
 error, not permission to paste. Other socket errors also return without
 a fallback: the message may already have been delivered, and re-sending
-would double-send.
+would double-send. A Some_agent is reached by paste; Terminal is excluded.
+Live State remains authoritative for coordination and run history even when
+the pane's current root app is replaced or cleared.
 
 `Tmux.Exec.send_prompt` **pastes rather than types**: `send-keys -l` writes raw
 bytes, and under bracketed paste a bare newline submits, splitting a
@@ -544,7 +527,7 @@ failure: other agents are working in parallel.
 outer one hosting a pty, the inner one under test with kido as its
 `side-status-command` — and reads the sidebar with `capture-pane`. It
 builds kido with `dune build @install` (so it needs that dune on PATH), and fake
-`claude` and `node` binaries that reproduce real screens.
+`node` binaries that emit terminal titles and native program status.
 
 - The inner server's PATH starts with the built kido and the fork
   (`serverPathPrefix`), because `kido-tmux.conf` bindings name bare
@@ -619,23 +602,11 @@ Negative controls are load-bearing: never delete one half of a pair.
 - **`share/zsh/integration.zsh` must not name a local `status`** — a zsh
   special parameter; shadowing it silently stops the precmd hook. It is
   called `ret`.
-- **`kido hook` must never fail the caller.** Errors print to stderr and
-  exit 0: `Cli.run ~failure:0`, and `bin/main.ml` exits 0 for a `hook`
-  whose arguments cmdliner rejects.
-- **`Procs.reporter_pid` walks up to three ancestors past wrapping
-  shells.** Claude Code runs `sh -c "kido hook"`, and Linux dash does not
-  `exec` the final command.
 - **A tmux command reaching a further parser has no surviving escape.**
   The generated `server.conf` (tmux -> sh) and a `new-window` window name
   (tmux -> sh -> tmux) go through `Launch.tmux_safe`,
   which refuses `'`, `"`, `$`, `#`, `\`, a backtick, a newline or a
   carriage return. A space is quoted.
-- **`KIDO_HOOK_DEBUG` is the only switch for the hook's debug log**, set
-  in the environment of the pane Claude Code starts in; no kido flag can
-  reach `kido hook`. It logs the events share/claude/settings.json registers
-  (lib/test/test_bin_dir.ml pins the list); other events must be registered
-  by hand in the user's settings.json (`--settings` merges).
-
 ## Working here as a spawned agent
 
 These apply to every agent kido spawns into this repo; a brief does not
@@ -726,8 +697,6 @@ reference:
 
 ## Known-open
 
-- A background shell has no completion event, so a Claude Code session
-  held open by one alone never returns to idle.
 - An interactive `ssh` pane whose far side reaches its first prompt in
   the same whole second the ssh started reports nothing until the prompt
   after its first remote command: `Sidebar.observe_remote` reads

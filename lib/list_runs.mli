@@ -1,5 +1,4 @@
-type status = Reported of State.status | Program of Tmux.Program_status.state option
-[@@deriving to_yojson]
+type status = Tmux.Program_status.state option [@@deriving to_yojson]
 
 type agent_info = {
   id : string;

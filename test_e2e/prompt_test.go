@@ -29,13 +29,21 @@ func (h *harness) waitInbox(in *inbox, want ...string) {
 	})
 }
 
-// claudePaneHere, unlike claudePane (new window), splits target's own
+// agentPaneHere, unlike piPane (new window), splits target's own
 // window, for testing kido prompt's window scope.
-func (h *harness) claudePaneHere(target, title string) string {
+func (h *harness) agentPaneHere(target, title string) string {
 	h.t.Helper()
-	id := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", target, claudeBin, "--")
-	h.waitPaneCommand(id, "claude")
+	id := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", target, filepath.Join(piBinDir, "pi"), "--")
+	h.waitPaneCommand(id, "pi")
 	h.title(id, title)
+	h.programStatus(id, "state=idle:app=pi")
+	h.agentStatus("prompt-"+id, id, "pi")
+	return id
+}
+
+func (h *harness) promptPane(session, title string) string {
+	id := h.piPane(session, title)
+	h.agentStatus("prompt-"+id, id, "pi")
 	return id
 }
 
@@ -167,28 +175,28 @@ func TestPromptMultiLine(t *testing.T) {
 	}
 }
 
-// A Claude Code pane split into the caller's own window is found without
+// A pi pane split into the caller's own window is found without
 // searching the session - a second pane in another window means a naive
 // "always search the session" implementation would see two candidates
 // and exit 5 here.
 func TestPromptDefaultWindowOne(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	inWindow := h.claudePaneHere("alpha:", "✳ Claude")
-	h.claudePane("alpha", "✳ Other") // another window, same session
+	inWindow := h.agentPaneHere("alpha:", "✳ Claude")
+	h.promptPane("alpha", "✳ Other") // another window, same session
 
 	h.runPrompt("hello there")
 	h.waitMain("rc=0")
 	h.waitPaneText(inWindow, "got: hello there")
 }
 
-// Several Claude Code panes in the window is exit 5; the window is not
+// Several pi panes in the window is exit 5; the window is not
 // empty, so the search never widens to the session.
 func TestPromptDefaultWindowSeveral(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	h.claudePaneHere("alpha:", "✳ One")
-	h.claudePaneHere("alpha:", "✳ Two")
+	h.agentPaneHere("alpha:", "✳ One")
+	h.agentPaneHere("alpha:", "✳ Two")
 
 	h.runPrompt("hi")
 	h.waitMain("multiple agents found")
@@ -199,7 +207,7 @@ func TestPromptDefaultWindowSeveral(t *testing.T) {
 func TestPromptDefaultSessionOne(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	pane := h.claudePane("alpha", "✳ Claude") // a new window, not the shell's own
+	pane := h.promptPane("alpha", "✳ Claude") // a new window, not the shell's own
 
 	h.runPrompt("session scope")
 	h.waitMain("rc=0")
@@ -207,13 +215,13 @@ func TestPromptDefaultSessionOne(t *testing.T) {
 }
 
 // A spawned subagent's window is never a candidate: with the window
-// empty and a claude-looking subagent elsewhere, the widened search
+// empty and a pi subagent elsewhere, the widened search
 // still delivers to the top-level agent rather than seeing two
 // candidates and exiting 5.
 func TestPromptExcludesSubagentWindow(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	topLevel := h.claudePane("alpha", "✳ Claude") // a new window, not the shell's own
+	topLevel := h.promptPane("alpha", "✳ Claude") // a new window, not the shell's own
 
 	taskFile := filepath.Join(h.dir, "task.txt")
 	if err := os.WriteFile(taskFile, []byte("do the thing"), 0o644); err != nil {
@@ -221,7 +229,7 @@ func TestPromptExcludesSubagentWindow(t *testing.T) {
 	}
 	outFile := filepath.Join(h.dir, "spawn.out")
 	cmd := fmt.Sprintf("%s tool spawn_subagent --no-parent --name sub-e2e --task-file %s -- %s -- > %s 2>&1",
-		kidoBin, taskFile, claudeBin, outFile)
+		kidoBin, taskFile, filepath.Join(piBinDir, "pi"), outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
@@ -230,7 +238,11 @@ func TestPromptExcludesSubagentWindow(t *testing.T) {
 		t.Fatalf("kido tool spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	subPane := fields[1]
-	h.waitPaneCommand(subPane, "claude")
+	h.waitPaneCommand(subPane, "pi")
+	h.programStatus(subPane, "state=idle:app=pi", "sub-e2e")
+	if status := h.in("display-message", "-p", "-t", subPane, "#{pane_program_status}"); !strings.Contains(status, `"app":"pi"`) {
+		t.Fatalf("subagent missing its root before prompt: %s", status)
+	}
 
 	h.runPrompt("hi")
 	h.waitMain("rc=0")
@@ -240,8 +252,8 @@ func TestPromptExcludesSubagentWindow(t *testing.T) {
 func TestPromptDefaultSessionSeveral(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	h.claudePane("alpha", "✳ One")
-	h.claudePane("alpha", "✳ Two")
+	h.promptPane("alpha", "✳ One")
+	h.promptPane("alpha", "✳ Two")
 
 	h.runPrompt("hi")
 	h.waitMain("multiple agents found")
@@ -261,7 +273,7 @@ func TestPromptDefaultNone(t *testing.T) {
 func TestPromptWindowFlagNoneElsewhereInSession(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	h.claudePane("alpha", "✳ Claude") // a new window, not the shell's own
+	h.promptPane("alpha", "✳ Claude") // a new window, not the shell's own
 
 	h.runPrompt("hi", "--window")
 	h.waitMain("agent not found")
@@ -274,7 +286,7 @@ func TestPromptWindowFlagNoneElsewhereInSession(t *testing.T) {
 func TestPromptInboxNative(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	pane := h.piPane("alpha", "π - alpha")
+	pane := h.promptPane("alpha", "π - alpha")
 	in := startInbox(t, "ok\n")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
 	h.agentStatus("pi-1", pane, "pi", "--inbox", in.Path)
@@ -290,7 +302,7 @@ func TestPromptInboxNative(t *testing.T) {
 func TestPromptInboxUnavailable(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	pane := h.piPane("alpha", "π - alpha")
+	pane := h.promptPane("alpha", "π - alpha")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
 	h.agentStatus("pi-1", pane, "pi", "--inbox", staleSocket(t))
 
@@ -304,7 +316,7 @@ func TestPromptInboxUnavailable(t *testing.T) {
 func TestPromptWindowFlagOne(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	pane := h.claudePaneHere("alpha:", "✳ Claude")
+	pane := h.agentPaneHere("alpha:", "✳ Claude")
 
 	h.runPrompt("hello there", "--window")
 	h.waitMain("rc=0")

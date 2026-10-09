@@ -21,7 +21,6 @@ type lingering = {
   started : Timestamp.t;
 }
 
-type probe = { reported : float; read : float; dismissed : bool }
 type ask_target = Live of Tmux.Pane.id | Revivable | Unavailable
 type ask = { ask : Ask.t; target : ask_target }
 
@@ -33,11 +32,9 @@ type snapshot = {
   programs : Tmux.Program_status.t Tmux.Pane.Map.t;
   states : (string * State.session) Tmux.Pane.Map.t;
   ssh : Procs.ssh_session Procs.Int_map.t;
-  pi : Procs.Int_set.t;
   probed : float;
   wake : float option;
   err : string option;
-  probes : probe Tmux.Pane.Map.t;
   lingering : lingering String_map.t;
   asks : ask list;
 }
@@ -51,11 +48,9 @@ let empty =
     programs = Tmux.Pane.Map.empty;
     states = Tmux.Pane.Map.empty;
     ssh = Procs.Int_map.empty;
-    pi = Procs.Int_set.empty;
     probed = 0.;
     wake = None;
     err = None;
-    probes = Tmux.Pane.Map.empty;
     lingering = String_map.empty;
     asks = [];
   }
@@ -82,8 +77,8 @@ let lingering_subagents ~dir panes prev =
                 with Unix.Unix_error (ENOENT, _, _) -> None
               in
               let meta =
-                if Option.is_none stamp || Option.exists (fun l -> Stdlib.(l.stamp = stamp)) cached then
-                  None
+                if Option.is_none stamp || Option.exists (fun l -> Stdlib.(l.stamp = stamp)) cached
+                then None
                 else Subrun.read_meta ~dir run_id
               in
               match cached with
@@ -109,25 +104,6 @@ let lingering_subagents ~dir panes prev =
       | _ -> out)
     String_map.empty panes
 
-let dismissals conn prev states =
-  let now = Unix.gettimeofday () in
-  Tmux.Pane.Map.fold
-    (fun pane ((_, s) : string * State.session) out ->
-      match s.reporting with
-      | State.Hook { status = State.Waiting; _ } -> (
-          match Tmux.Pane.Map.find_opt pane prev with
-          | Some p when Float.(p.reported = s.ts && now - p.read < 1.) ->
-              Tmux.Pane.Map.add pane p out
-          | _ when Float.(now - s.ts < 0.5) -> out
-          | _ ->
-              let dismissed =
-                Result.map_or ~default:false Screen.at_input_prompt
-                  (Tmux.Conn.capture_pane conn pane)
-              in
-              Tmux.Pane.Map.add pane { reported = s.ts; read = now; dismissed } out)
-      | _ -> out)
-    states Tmux.Pane.Map.empty
-
 let take ~opts conn prev client =
   Option.iter (fun (c : Tmux.Exec.client_state) -> Tmux.Conn.follow conn c.session) client;
   match Tmux.Conn.list_panes conn with
@@ -135,54 +111,27 @@ let take ~opts conn prev client =
   | Ok panes -> (
       let live = State.load_live ~dir:opts.dir in
       let states = State.by_pane live in
-      let maybe_pi (p : P.t) =
-        Procs.maybe_pi p.current_command && not (Tmux.Pane.Map.mem p.pane_id states)
-      in
       let unknown (p : P.t) =
-        if String.equal p.current_command "ssh" then not (Procs.Int_map.mem p.pane_pid prev.ssh)
-        else maybe_pi p && not (Procs.Int_set.mem p.pane_pid prev.pi)
+        String.equal p.current_command "ssh" && not (Procs.Int_map.mem p.pane_pid prev.ssh)
       in
       let scan, probed =
         if List.exists unknown panes && Float.(Unix.gettimeofday () - prev.probed >= 1.) then
-          let scan = Procs.sweep () in
-          (scan, Unix.gettimeofday ())
-        else ({ Procs.ssh = prev.ssh; pi = prev.pi }, prev.probed)
+          (Procs.sweep (), Unix.gettimeofday ())
+        else (prev.ssh, prev.probed)
       in
-      let ssh, pi =
+      let ssh =
         List.fold_left
-          (fun (ssh, pi) (p : P.t) ->
+          (fun ssh (p : P.t) ->
             if String.equal p.current_command "ssh" then
-              match Procs.Int_map.find_opt p.pane_pid scan.ssh with
-              | Some sess -> (Procs.Int_map.add p.pane_pid sess ssh, pi)
-              | None -> (ssh, pi)
-            else if maybe_pi p && Procs.Int_set.mem p.pane_pid scan.pi then
-              (ssh, Procs.Int_set.add p.pane_pid pi)
-            else (ssh, pi))
-          (Procs.Int_map.empty, Procs.Int_set.empty)
-          panes
+              match Procs.Int_map.find_opt p.pane_pid scan with
+              | Some sess -> Procs.Int_map.add p.pane_pid sess ssh
+              | None -> ssh
+            else ssh)
+          Procs.Int_map.empty panes
       in
       if not (List.is_empty panes) then
         Reap.collect ?socket:opts.socket ~dir:opts.dir ~grace:opts.grace panes live
           ~now:(Unix.gettimeofday ());
-      let probes = dismissals conn prev.probes states in
-      let states =
-        Tmux.Pane.Map.fold
-          (fun pane p states ->
-            if not p.dismissed then states
-            else
-              Tmux.Pane.Map.update pane
-                (Option.map (fun (id, (s : State.session)) ->
-                     ( id,
-                       {
-                         s with
-                         reporting =
-                           (match s.reporting with
-                           | Hook h -> Hook { h with status = Idle; ended = Some p.reported }
-                           | Terminal -> Terminal);
-                       } )))
-                states)
-          probes states
-      in
       let snap =
         {
           prev with
@@ -194,11 +143,9 @@ let take ~opts conn prev client =
           panes;
           states;
           ssh;
-          pi;
           probed;
           wake = State.wake ~dir:opts.dir;
           err = None;
-          probes;
           lingering = lingering_subagents ~dir:opts.dir panes prev.lingering;
           asks =
             List.map
@@ -254,7 +201,6 @@ let same a b =
   && a.generation = b.generation
   && Tmux.Pane.Map.equal Stdlib.( = ) a.programs b.programs
   && Procs.Int_map.equal Stdlib.( = ) a.ssh b.ssh
-  && Procs.Int_set.equal a.pi b.pi
   && String_map.equal
        (fun x y -> Stdlib.({ x with stamp = None } = { y with stamp = None }))
        a.lingering b.lingering
@@ -269,10 +215,7 @@ let detect_pause prev now =
   Float.(now.wall - prev.wall - mono > 5.)
 
 type client = { session : Tmux.Session.id; window : Tmux.Window.id; pane : Tmux.Pane.id }
-
-type role =
-  [ `Plain | `Current | `Proc | `Dim | `Err | `Running | `Waiting | `Compacting | `Done | `Stalled ]
-
+type role = [ `Plain | `Current | `Proc | `Dim | `Err | `Running | `Waiting | `Done | `Stalled ]
 type span = { text : string; role : role }
 
 type indicator =
@@ -307,6 +250,7 @@ type model = {
   opts : options;
   snap : snapshot;
   sessions : section list;
+  pane_data : (Tmux.Pane.t * State.pane_kind) Tmux.Pane.Map.t;
   client : client option;
   started : float;
   seen : float Tmux.Pane.Map.t;
@@ -324,6 +268,7 @@ let make ~now opts =
     opts;
     snap = empty;
     sessions = [];
+    pane_data = Tmux.Pane.Map.empty;
     client = None;
     started = at;
     seen = Tmux.Pane.Map.empty;
@@ -377,7 +322,21 @@ let shell_outcome m (p : P.t) =
   | Idle, Some exit, Some _ when Float.(exit.at > 0. && exit.at > seen_at m p.pane_id) -> Some exit
   | _ -> None
 
+let classify m =
+  let pane_data =
+    List.fold_left
+      (fun data (p : P.t) ->
+        if Tmux.Pane.Map.mem p.pane_id data then data
+        else
+          Tmux.Pane.Map.add p.pane_id
+            (p, State.pane_kind ~programs:m.snap.programs ~states:m.snap.states p)
+            data)
+      Tmux.Pane.Map.empty m.snap.panes
+  in
+  { m with pane_data }
+
 let track m =
+  let m = classify m in
   let m =
     match m.snap.active with
     | None -> m
@@ -446,16 +405,9 @@ let shell_pending m =
       || ((not ph.running) && ph.drawn && Float.(m.at - ph.since < shell_run_hold)))
     m.phases
 
-let done_ m pane =
-  match Tmux.Pane.Map.find_opt pane m.snap.states with
-  | Some (_, { reporting = Hook { status = Idle; ended = Some ended; _ }; _ }) ->
-      Float.(ended > seen_at m pane)
-  | _ -> false
-
-let asking m pane =
-  match Tmux.Pane.Map.find_opt pane m.snap.states with
-  | None -> false
-  | Some (id, _) -> List.exists (fun a -> String.equal a.ask.session id) m.snap.asks
+let asking m = function
+  | State.Terminal | Some_agent _ -> false
+  | Pi_agent { id; _ } -> List.exists (fun a -> String.equal a.ask.session id) m.snap.asks
 
 let program_indicator m pane status (r : Tmux.Program_status.record) =
   let seen =
@@ -473,14 +425,11 @@ let program_indicator m pane status (r : Tmux.Program_status.record) =
 let program_status m (p : P.t) =
   if
     Option.exists
-      (fun (_, (s : State.session)) -> match s.reporting with Hook _ -> true | Terminal -> false)
-      (Tmux.Pane.Map.find_opt p.pane_id m.snap.states)
-    || Option.exists
-         (fun run ->
-           Option.exists
-             (fun (l : lingering) -> Option.is_some l.outcome || Option.is_some p.dead_at)
-             (String_map.find_opt run m.snap.lingering))
-         p.run
+      (fun run ->
+        Option.exists
+          (fun (l : lingering) -> Option.is_some l.outcome || Option.is_some p.dead_at)
+          (String_map.find_opt run m.snap.lingering))
+      p.run
   then None
   else
     Option.flat_map
@@ -495,17 +444,16 @@ let program_status m (p : P.t) =
       (Tmux.Pane.Map.find_opt p.pane_id m.snap.programs)
 
 let attention m pane =
-  asking m pane
-  || (match Tmux.Pane.Map.find_opt pane m.snap.states with
-    | Some (_, { reporting = Hook { status = Waiting; _ }; _ }) -> true
-    | _ -> false)
-  || done_ m pane
-  || Option.exists
-       (fun (status, r) ->
-         match program_indicator m pane status r with
-         | Status Waiting | Done | Failed -> true
-         | _ -> false)
-       (Option.flat_map (program_status m) (P.find m.snap.panes pane))
+  Option.exists
+    (fun (p, kind) ->
+      asking m kind
+      || Option.exists
+           (fun (status, r) ->
+             match program_indicator m pane status r with
+             | Status Waiting | Done | Failed -> true
+             | _ -> false)
+           (program_status m p))
+    (Tmux.Pane.Map.find_opt pane m.pane_data)
 
 let shell_indicator m ph =
   match ph with
@@ -514,20 +462,10 @@ let shell_indicator m ph =
   | { drawn = true; since; _ } when Float.(m.at - since < shell_run_hold) -> Some (Status Running)
   | _ -> None
 
-let agent_title_of m (p : P.t) =
-  if not (State.is_agent_pane m.snap.states ~pi:m.snap.pi p) then None
-  else
-    let title =
-      match Tmux.Pane.Map.find_opt p.pane_id m.snap.states with
-      | Some (_, s) -> State.display_name [ p ] s
-      | None -> State.agent_title p.title
-    in
-    Some (match title with "" -> "-" | t -> t)
-
 let span role text = { text; role }
 let plain = span `Plain
 
-let pane_label m (p : P.t) =
+let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
   let lingering = Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run in
   let run =
     Option.map
@@ -542,35 +480,37 @@ let pane_label m (p : P.t) =
   let row kind indicator title caption =
     { pane = p.pane_id; window = p.window_id; kind; indicator; title; caption; run }
   in
-  match (lingering, program_status m p, agent_title_of m p) with
-  | Some l, _, _ when Option.is_some l.outcome || Option.is_some p.dead_at ->
+  let identity =
+    match pane_kind with
+    | Pi_agent { id; session } -> Some (id, session)
+    | Terminal | Some_agent _ -> None
+  in
+  match (lingering, program_status m p) with
+  | Some l, _ when Option.is_some l.outcome || Option.is_some p.dead_at ->
       row
         (match l.kind with Agent -> Agent | Bash | Stream -> Run)
         (Some (Gone l.outcome))
         [
           span `Dim
-            (Option.map_or ~default:l.name
-               (fun (_, s) -> State.display_name [ p ] s)
-               (Tmux.Pane.Map.find_opt p.pane_id m.snap.states));
+            (Option.map_or ~default:l.name (fun (_, s) -> State.display_name [ p ] s) identity);
         ]
         (Text
            (Option.map_or ~default:[]
               (fun o -> [ span `Dim (Subrun.string_of_result o) ])
               l.outcome))
-  | _, Some (status, r), agent_title ->
+  | _, Some (status, r) ->
+      let agent_title = State.pane_title p pane_kind in
       let app = Tmux.Program_status.app status r in
-      let pi = Option.exists (String.equal "pi") app in
+      let pi = match pane_kind with Pi_agent _ -> true | Terminal | Some_agent _ -> false in
       let title =
-        match Tmux.Pane.Map.find_opt p.pane_id m.snap.states with
-        | Some (_, ({ agent = Pi; _ } as s)) -> State.display_name [ p ] s
-        | _ ->
-            if pi then Option.value ~default:(State.agent_title p.title) agent_title
-            else Option.value ~default:(Option.value ~default:p.current_command app) r.title
+        match pane_kind with
+        | Pi_agent _ | Some_agent _ -> Option.value ~default:p.current_command agent_title
+        | Terminal -> Option.value ~default:(Option.value ~default:p.current_command app) r.title
       in
       let kind =
-        match lingering with
-        | Some l -> ( match l.kind with Agent -> Agent | Bash | Stream -> Run)
-        | None -> if Option.is_some agent_title then Agent else Shell
+        match pane_kind with
+        | Pi_agent _ | Some_agent _ -> Agent
+        | Terminal -> ( match lingering with Some { kind = Bash | Stream; _ } -> Run | _ -> Shell)
       in
       let message =
         match
@@ -580,22 +520,22 @@ let pane_label m (p : P.t) =
             r.msg
         with
         | Some message -> message
-        | None ->
-            Option.map_or ~default:""
-              (fun (_, (s : State.session)) -> s.activity)
-              (Tmux.Pane.Map.find_opt p.pane_id m.snap.states)
+        | None -> Option.map_or ~default:"" (fun (_, (s : State.session)) -> s.activity) identity
       in
       row kind
-        (Some
-           (if asking m p.pane_id then Status Waiting
-            else if
-              Option.exists
-                (fun (_, s) ->
-                  State.stalled_since ~programs:m.snap.programs ~threshold:m.opts.threshold
-                    ~wake:m.snap.wake ~now:m.at s)
-                (Tmux.Pane.Map.find_opt p.pane_id m.snap.states)
-            then Stalled
-            else program_indicator m p.pane_id status r))
+        (if match pane_kind with Terminal -> p.alternate_on | Pi_agent _ | Some_agent _ -> false
+         then None
+         else
+           Some
+             (if asking m pane_kind then Status Waiting
+              else if
+                Option.exists
+                  (fun (_, s) ->
+                    State.stalled_since ~programs:m.snap.programs ~threshold:m.opts.threshold
+                      ~wake:m.snap.wake ~now:m.at s)
+                  identity
+              then Stalled
+              else program_indicator m p.pane_id status r))
         [ plain title ]
         (match
            List.filter
@@ -610,10 +550,10 @@ let pane_label m (p : P.t) =
             | Some { kind = Agent; started = Some started } -> Elapsed started
             | _ -> Text [])
         | parts -> Text [ span `Dim (String.concat " " parts) ])
-  | _, None, None -> (
+  | _, None -> (
       match lingering with
       | Some l ->
-          let kind = match l.kind with Agent -> Agent | Bash | Stream -> Run in
+          let kind = match l.kind with Agent -> Shell | Bash | Stream -> Run in
           row kind (Some (Status Running)) [ plain l.name ] (Elapsed l.started)
       | None ->
           let cmd =
@@ -641,30 +581,6 @@ let pane_label m (p : P.t) =
                 (Tmux.Pane.Map.find_opt p.pane_id m.phases)
           in
           row kind ind text (Text []))
-  | _, None, Some title ->
-      let ind, activity =
-        match Tmux.Pane.Map.find_opt p.pane_id m.snap.states with
-        | None -> (Unknown, "")
-        | Some (_, s) ->
-            ( (if
-                 State.stalled_since ~programs:m.snap.programs ~threshold:m.opts.threshold
-                   ~wake:m.snap.wake ~now:m.at s
-               then Stalled
-               else match s.reporting with Hook h -> Status h.status | Terminal -> Unknown),
-              s.activity )
-      in
-      let caption =
-        if not (String.is_empty activity) then Text [ span `Dim activity ]
-        else
-          match run with
-          | Some { kind = Agent; started = Some started } -> Elapsed started
-          | _ -> Text []
-      in
-      row Agent
-        (Some
-           (if asking m p.pane_id then Status Waiting else if done_ m p.pane_id then Done else ind))
-        [ plain title ]
-        caption
 
 type placement = { panes : P.t list; anchor : Tmux.Pane.id option }
 
@@ -744,14 +660,17 @@ let append_windows m placements =
         let kids =
           List.rev (Option.get_or ~default:[] (Tmux.Pane.Map.find_opt p.pane_id anchored))
         in
-        { row = pane_label m p; children = List.filter_map emit kids }
+        Option.map
+          (fun data -> { row = pane_label m data; children = List.filter_map emit kids })
+          (Tmux.Pane.Map.find_opt p.pane_id m.pane_data)
       in
       match placements.(i).panes with
       | [] -> None
-      | [ p ] -> Some (Item (item p))
-      | p :: rest ->
-          let first = item p in
-          Some (Group { name = p.window_name; first; rest = List.map item rest })
+      | [ p ] -> Option.map (fun item -> Item item) (item p)
+      | p :: rest -> (
+          match List.filter_map item (p :: rest) with
+          | [] -> None
+          | first :: rest -> Some (Group { name = p.window_name; first; rest }))
     end
   in
   Array.foldi

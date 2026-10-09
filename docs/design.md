@@ -37,16 +37,23 @@ resolved once at the command edge by `State.dir`: a convention-following
 There is one JSON file per
 agent session named by session id, written temp-then-rename. A record
 carries the agent's pane, pid, inbox socket, free-text activity, model,
-heartbeat timestamp and place in the spawn tree. Its reporting variant
-is `Terminal` for pi, or `Hook` for Claude Code with status, ended,
-background and tool-pending fields. pi's status lives
-in its native OSC 7501 root record, and its title in the pane title
-(set by pi through OSC 0/2), not in State. There is no locking beyond the claim that keeps
-one session id to one live process ("Identity"). The
-one policy that stands in for it is that `State.load_live` removes any record whose
-pid is dead, rather than skipping it. When two records name one pane the
-outer agent wins regardless of timestamp, keeping inner Claude Code
-reports from competing with the outer agent's reports.
+heartbeat timestamp and place in the spawn tree. Status comes only from
+OSC 7501 root records, and the pane title comes from OSC 0/2.
+State.pane_kind classifies one pane as Pi_agent (pi root plus State),
+Some_agent (claude-code root or pi without State), or Terminal otherwise. Prompt scope accepts both agent
+cases, using the local pi inbox or otherwise pasting. list_runs includes
+live State identities, regardless of the current root app; get-agent context,
+coordination tools and run history also use live State, not pane_kind.
+Native Claude Code has no identity, inbox or heartbeat; it never stalls.
+Its blocked message is the caption, completion is acknowledged on visit,
+and clear restores a terminal row. Pane titles are displayed verbatim;
+only a native-only agent's empty title falls back to its root app name.
+State does not identify a pane as an agent: only root apps pi and claude-code do.
+A pi root with a live State record displays as a local pi agent. Claude Code
+and bare pi display as native agents; every other app displays as a terminal. A local pi's identity and inbox remain
+reachable by session even while a nested program replaces or clears its root.
+There is no locking beyond the session claim. State.load_live removes
+dead-pid records; the latest timestamp wins when two records name one pane.
 
 That deletion has a consequence that shaped the rest of the design: with
 a sidebar running, `State.load_live` is called every 100ms, so the record of a dead
@@ -243,7 +250,7 @@ the one command behind the `set_status` tool, which finds the calling
 session by its pane and writes that field and nothing else. It is not a
 rename of `agent-status`, which reports the session's identity and
 heartbeat. Writing the previous record back with one field replaced keeps
-its identity, reporting variant and timestamp untouched.
+its identity and timestamp untouched.
 
 Activity is the one field a model writes directly into a state record, so it
 is sanitised once, on the way in, by both commands: control characters
@@ -459,10 +466,10 @@ Every failure from the moment the connection is up is reported as itself
 (`Msg.Failed`), because the message may already have arrived
 and a retry would deliver it twice.
 
-A bracketed paste and a separate Enter are allowed only when the record
-names no inbox. That makes an agent with no inbox at all (Claude Code,
-or a pi whose bind fails) reachable by `kido prompt` and by a plain
-`kido tool message_agent`, and is the only reason the v0 path survives.
+A bracketed paste and a separate Enter are allowed when an identity
+names no inbox, or when kido prompt selects a native-only agent pane.
+A local pi whose bind fails remains reachable by prompt and plain
+message_agent; Claude Code has no identity and is reachable only by prompt.
 An advertised but unavailable inbox is an error: the target is not
 accepting messages. For a subagent run, the error says to wait for it to
 exit, resume it with `spawn_subagent(resume: RUN)`, and resend. Shutdown
@@ -503,7 +510,8 @@ Within scope the rules run in order, and each errors on its own ambiguity
 rather than falling through to guess with a different rule: an exact
 case-insensitive name, then an exact session id, then a unique id prefix.
 The name a session is matched by is the same one `kido tool list_runs` displays
-for it: the stripped pane title for pi and Claude Code. A name read
+for it: the reported pi session name. Unnamed pi sessions match only by id.
+Native-only panes have no addressable session. A name read
 off `list_runs` can always be resolved back. Refusal over guessing is the
 stance throughout: `replyTo` is never inferred even when exactly one ask
 from the target is pending, because guessing wrong does not fail safe, it
@@ -1391,25 +1399,6 @@ The sidebar and one-shot agent graph use the same rule;
 The sidebar also redraws when a refreshed heartbeat clears a stall,
 without redrawing on ordinary heartbeat-only changes.
 
-Claude Code's status is Hook-driven and has no periodic heartbeat.
-Its running status can stall, subject to the exemptions below.
-
-A session parked on background work is exempt. kido's `Stop` handler
-records `running` with `background` set when the payload carries
-outstanding background tasks. The exemption is on the flag rather than
-on a longer clock, because kido has no heartbeat for that work. It costs
-the ability to notice background
-work that has genuinely wedged, which this signal could never see
-anyway: that needs evidence of the work itself, not of the agent.
-
-A session inside a tool call is exempt too. kido's `PreToolUse`
-handler sets `tool_pending`, and
-`PostToolUse` takes it back by not setting it - no carrying forward is
-needed, because every report writes a whole fresh record, so a `Stop`
-or an interrupted turn's idle clears it just as well. What remains
-uncovered is a long stretch of model generation with no tool call in
-it, where nothing is reported and nothing marks the session as busy.
-
 The heartbeat changes one field on every tick with nothing else about
 the session changing, and the sidebar compares records to decide whether
 to redraw. It therefore compares sessions with the timestamp zeroed, so
@@ -1474,12 +1463,12 @@ Its native dialogs report blocked; extension custom UI does not.
 Terminal stop clears the root without app. PI_PROGRAM_STATUS=0 disables
 reporting and =1 forces it. pi supplies no OSC title or progress.
 The pane title, set through OSC 0/2 as "π - <name> - <cwd>", names pi
-rows and agents, with the π prefix stripped. The records drive indicators
-and completion attention even without the extensions. A pi message
+rows and agents verbatim. The records drive indicators
+and completion attention even without the extensions. A local pi message
 duplicating its session name is omitted from the caption; other messages
 remain visible.
 A State identity adds inbox, parentage, activity and the user-ask overlay.
-Gone runs outrank terminal records; Claude Code keeps its Hook status.
+Gone runs outrank terminal records.
 Activity is used as the caption when the program supplies no message;
 a live subagent with neither uses its elapsed clock.
 
@@ -1864,8 +1853,8 @@ plain-mode local shell gets tmux's dashed argv[0] where the remote gets
 
 ### The bin directory
 
-kido ships a bin directory at `<prefix>/share/kido/bin` holding five
-`sh` shims, `kido`, `tmux`, `ssh`, `pi` and `claude` (source `share/bin`, with
+kido ships a bin directory at `<prefix>/share/kido/bin` holding four
+`sh` shims, `kido`, `tmux`, `ssh` and `pi` (source `share/bin`, with
 the shared helper `share/shim.sh` installed as `share/kido/shim.sh`).
 Inside a kido pane they are what those names resolve to:
 
@@ -1885,11 +1874,6 @@ Inside a kido pane they are what those names resolve to:
   A first argument that is one of pi's own subcommands (`install`,
   `remove`, `uninstall`, `update`, `list`, `config`, `auth`) is passed
   through unchanged.
-- `claude` runs the real Claude Code with `--settings` naming
-  `share/kido/claude/settings.json`, which holds one `kido hook` entry per
-  event `Hook.apply` maps (the list pinned by lib/test/test_bin_dir.ml's
-  "the shipped claude settings are kido's hooks").
-
 A shim never embeds a path. Every location is worked out from `$0`:
 `kido_share` is `$0/../..`, and the directory holding kido and kido-tmux
 is `$0/../../../bin`, the inverse of `Bin_dir.of_exe`. No installed path
@@ -1936,7 +1920,7 @@ count as the same copy.
 
 **Install layout.** The `install` stanza in `share/dune` is the one
 description of share/kido, which mirrors the repository's `share/`:
-`bin/`, `shim.sh`, `bash/`, `zsh/`, `claude/` and pi's two extensions
+`bin/`, `shim.sh`, `bash/`, `zsh/` and pi's two extensions
 under `pi/` (not its tests, testdata or package files), beside
 `bin/kido`. `kido-tmux.conf` is not among them - the launcher writes the
 embedded copy into the configuration it starts the server with, and

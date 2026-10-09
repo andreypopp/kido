@@ -6,7 +6,7 @@ let knobs batch : Async_stream.knobs = { batch; backoff_floor = 0.02; backoff_ca
 (* A run whose parent, root-sess, listens on [inbox]. *)
 let run ?(parent = "root-sess") inbox =
   let dir = Filename.temp_dir "kido-state" "" in
-  ignore (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox Idle));
+  ignore (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox ()));
   let meta : Subrun.meta =
     {
       id = Subrun.new_id ();

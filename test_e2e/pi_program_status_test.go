@@ -42,7 +42,7 @@ func TestPiTerminalStatusIdentityAndStall(t *testing.T) {
 				return row.Status == status && row.Name == name && row.Stalled == stalled
 			}
 		}
-		return false
+		return status == "absent"
 	}
 	writeTimestamp := func(at time.Time) {
 		t.Helper()
@@ -53,46 +53,47 @@ func TestPiTerminalStatusIdentityAndStall(t *testing.T) {
 		}
 	}
 	writeTimestamp(time.Now().Add(-time.Hour))
-	h.waitFor(func() bool { return listed("unknown", "Terminal", false) }, settle, msgf("stale identity without a root never stalls"))
+	h.programStatus(pane, "state=clear")
+	h.waitFor(func() bool { return listed("unknown", "π - Terminal", false) }, settle, msgf("live identity without a root keeps unknown coordination status"))
 	writeTimestamp(time.Now())
 	for _, c := range []struct{ state, glyph string }{{"working", "◼"}, {"blocked", "◆"}, {"done", "✓"}} {
 		emit(c.state)
-		h.waitGlyph("Terminal", c.glyph)
-		h.waitFor(func() bool { return listed(c.state, "Terminal", false) }, settle, msgf("terminal %s in list_runs", c.state))
+		h.waitGlyph("π - Terminal", c.glyph)
+		h.waitFor(func() bool { return listed(c.state, "π - Terminal", false) }, settle, msgf("terminal %s in list_runs", c.state))
 	}
 	emit("working")
-	h.waitGlyph("Terminal", "◼")
+	h.waitGlyph("π - Terminal", "◼")
 	writeTimestamp(time.Now().Add(-time.Hour))
-	h.waitGlyph("Terminal", "!")
-	h.waitFor(func() bool { return listed("working", "Terminal", true) }, settle, msgf("stale working terminal stalls"))
+	h.waitGlyph("π - Terminal", "!")
+	h.waitFor(func() bool { return listed("working", "π - Terminal", true) }, settle, msgf("stale working terminal stalls"))
 
 	wake := filepath.Join(h.stateDir, "wake")
 	if err := os.WriteFile(wake, []byte(time.Now().UTC().Format(time.RFC3339Nano)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h.waitGlyph("Terminal", "◼")
-	h.waitFor(func() bool { return listed("working", "Terminal", false) }, settle, msgf("a recent wake suppresses stale working"))
+	h.waitGlyph("π - Terminal", "◼")
+	h.waitFor(func() bool { return listed("working", "π - Terminal", false) }, settle, msgf("a recent wake suppresses stale working"))
 	if err := os.Remove(wake); err != nil {
 		t.Fatal(err)
 	}
-	h.waitGlyph("Terminal", "!")
+	h.waitGlyph("π - Terminal", "!")
 	writeTimestamp(time.Now())
-	h.waitGlyph("Terminal", "◼")
-	h.waitFor(func() bool { return listed("working", "Terminal", false) }, settle, msgf("a fresh heartbeat clears a stall"))
+	h.waitGlyph("π - Terminal", "◼")
+	h.waitFor(func() bool { return listed("working", "π - Terminal", false) }, settle, msgf("a fresh heartbeat clears a stall"))
 	h.programStatus(pane, "state=blocked:app=pi:kind=question", "Nested")
-	h.waitGlyph("Nested", "◆")
+	h.waitGlyph("π - Nested", "◆")
 	writeTimestamp(time.Now().Add(-time.Hour))
-	h.waitFor(func() bool { return listed("blocked", "Nested", false) }, settle, msgf("pane title names pi while its root supplies status"))
+	h.waitFor(func() bool { return listed("blocked", "π - Nested", false) }, settle, msgf("pane title names pi while its root supplies status"))
 	bare := h.piPane("alpha", "Bare")
 	h.in("send-keys", "-t", bare, "-l", "osc state=working:app=pi:msg=QmFyZQ==")
 	h.in("send-keys", "-t", bare, "Enter")
-	h.waitGlyph("Bare", "◼")
-	if row := h.rowFor("Bare"); strings.Count(row, "Bare") != 1 {
-		t.Fatalf("native session name duplicated in caption: %s", row)
+	h.waitGlyph("π - Bare Bare", "◼")
+	if row := h.rowFor("Bare"); strings.Count(row, "Bare") != 2 {
+		t.Fatalf("native-only pane lost its independent message caption: %s", row)
 	}
 	deadline := time.Now().Add(4 * time.Second)
 	for time.Now().Before(deadline) {
-		if !strings.Contains(h.rowFor("Bare"), "◼Bare") {
+		if !strings.Contains(h.rowFor("Bare"), "◼π - Bare") {
 			t.Fatalf("bare pi stalled: %s", h.rowFor("Bare"))
 		}
 		<-time.After(100 * time.Millisecond)

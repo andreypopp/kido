@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// Inside a kido pane, tmux, ssh, pi and claude resolve to the shims in
+// Inside a kido pane, tmux, ssh and pi resolve to the shims in
 // <share>/bin: put first on PATH by the launcher for the server, and by
 // the primed shell's integration after the user's login files. These
 // tests type into a launched kido pane, the only place the second
@@ -213,11 +213,8 @@ func TestShimsReachTheRealPrograms(t *testing.T) {
 	}
 
 	name, args = run("claude -p hi")
-	if name != "claude" || len(args) != 4 || args[0] != "--settings" || !slices.Equal(args[2:], []string{"-p", "hi"}) {
-		t.Fatalf("claude reached %s %q, want --settings and the user's own", name, args)
-	}
-	if !sameFile(args[1], filepath.Join(shareDir, "claude", "settings.json")) {
-		t.Errorf("--settings %s, want the shipped settings.json", args[1])
+	if name != "claude" || !slices.Equal(args, []string{"-p", "hi"}) {
+		t.Fatalf("claude reached %s %q, want unmodified user arguments", name, args)
 	}
 }
 

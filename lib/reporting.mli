@@ -1,8 +1,3 @@
-val debug_log : dir:string -> string
-
-val hook : dir:string -> pane:Tmux.Pane.id option -> debug:bool -> string -> (unit, string) result
-(** Records the hook event JSON [text]. *)
-
 val agent_status :
   dir:string ->
   pane:Tmux.Pane.id option ->

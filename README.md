@@ -61,8 +61,14 @@ While the sidebar is focused:
 
 ## Status
 
-Agent panes show `▌ running`, `◆ waiting`, `◌ compacting`, `✓ done`, or nothing
-when idle. `✓ done` lasts until you visit the pane.
+Agent panes are identified by the OSC 7501 root app pi or claude-code. pi and Claude Code
+show native running, waiting, done and idle status. Blocked messages form
+the caption; pane titles name sessions. Done lasts until you visit the pane.
+Claude Code runs unmodified, without a kido shim or settings. Setting
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` disables its native status too.
+`kido prompt` can paste to a native agent pane; only local pi identities
+appear in `list_runs`, accept `message_agent`, or answer `get-agent`.
+Snapshots resume local pi identities or restart bare pi, not Claude Code.
 
 Shell panes with the OSC 133 integration use the same indicators: green `▌`
 while a command runs, then, until you visit the pane, green `✓` if the last
@@ -86,8 +92,7 @@ rm -f ~/.pi/agent/extensions/kido-status.ts ~/.pi/agent/extensions/kido-agents.t
 Then delete, by hand, the marked kido blocks (`# >>> kido ... >>>` to
 `# <<< kido ... <<<`) from `~/.tmux.conf`, `~/.zshrc`, `~/.bashrc` and
 whichever of `~/.bash_profile`, `~/.bash_login` or `~/.profile` has one,
-and the `kido hook` entries from `~/.claude/settings.json` - the shipped
-settings file has them, and a duplicate just runs the hook twice.
+and obsolete kido entries from `~/.claude/settings.json`.
 
 Anything you want to keep from the sidebar block in `~/.tmux.conf` belongs
 in `~/.config/kido/kido.conf` now.
@@ -115,21 +120,3 @@ CI runs both suites on every push to `main` and every pull request, on Linux
 and macOS.
 
 Ask your coding agent for assistance; kido was built to be developed with one.
-
-## Debugging
-
-With `KIDO_HOOK_DEBUG` set in the environment Claude Code was started in,
-every hook event appends a tab-separated line to `kido debug-log`'s path:
-timestamp, `TMUX_PANE`, the raw payload, and the effect kido computed
-(`unmapped` for an event outside its table). Behaviour is otherwise
-unchanged. It is an environment variable rather than a flag because Claude
-Code is what runs the hook.
-
-```sh
-KIDO_HOOK_DEBUG=1 claude
-tail -f "$(kido debug-log)"
-```
-
-The shipped settings file registers only the events kido acts on. To see
-one it does not, add a `kido hook` entry for that event to your own
-`~/.claude/settings.json`; the two files are merged.

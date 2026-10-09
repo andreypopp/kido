@@ -22,14 +22,6 @@ let in_scope (self : Pane.t) ~whole_session (p : Pane.t) =
   String.equal p.session_name self.session_name
   && (whole_session || p.window_index = self.window_index)
 
-let needs_sweep panes states self ~whole_session =
-  List.exists
-    (fun (p : Pane.t) ->
-      in_scope self ~whole_session p
-      && (not (Tmux.Pane.Map.mem p.pane_id states))
-      && Procs.maybe_pi p.current_command)
-    panes
-
 type error = No_prompt | Not_found | Several | Failed of string
 
 let prompt ~dir ~self ~window text =
@@ -37,29 +29,29 @@ let prompt ~dir ~self ~window text =
   let failed r = Result.map_err (fun m -> Failed m) r in
   if String.is_empty text then Error No_prompt
   else
-    let* panes = failed (Exec.list_panes ()) in
+    let* panes, programs = failed (Exec.panes_and_programs ()) in
     let* self = failed (List_runs.caller_pane panes self) in
     let states = State.by_pane (State.load_live ~dir) in
-    let sweep = lazy (Procs.sweep ()).pi in
     let candidates whole_session =
-      let pi =
-        if needs_sweep panes states self ~whole_session then Lazy.force sweep
-        else Procs.Int_set.empty
-      in
-      List.filter
+      List.filter_map
         (fun (p : Pane.t) ->
-          in_scope self ~whole_session p
-          && Option.is_none (Pane.run_pane panes p.window_id)
-          && State.is_agent_pane states ~pi p)
+          if
+            (not (in_scope self ~whole_session p))
+            || Option.is_some (Pane.run_pane panes p.window_id)
+          then None
+          else
+            match State.pane_kind ~programs ~states p with
+            | Terminal -> None
+            | (Some_agent _ | Pi_agent _) as kind -> Some (p, kind))
         panes
     in
     match match candidates false with [] when not window -> candidates true | found -> found with
     | [] -> Error Not_found
-    | [ p ] ->
+    | [ (p, kind) ] ->
         let inbox, name =
-          Option.map_or ~default:("", p.title)
-            (fun (_, (s : State.session)) -> (s.inbox, State.display_name panes s))
-            (Tmux.Pane.Map.find_opt p.pane_id states)
+          match kind with
+          | Pi_agent { session; _ } -> (session.inbox, State.display_name panes session)
+          | Some_agent _ | Terminal -> ("", p.title)
         in
         failed
           (Result.map ignore

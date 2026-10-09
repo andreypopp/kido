@@ -50,7 +50,7 @@ func TestHelpRendersWithoutCmdlinerErrors(t *testing.T) {
 			}
 			afterBlank = blank
 		}
-		if len(path) == 0 && len(names) != 21 || len(path) == 1 && path[0] == "tool" && len(names) != 12 {
+		if len(path) == 0 && len(names) != 19 || len(path) == 1 && path[0] == "tool" && len(names) != 12 {
 			t.Fatalf("found %d subcommands in the manual, want the whole list:\n%s", len(names), out)
 		}
 		for _, name := range names {

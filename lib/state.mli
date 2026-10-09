@@ -1,16 +1,6 @@
-type status = Running | Waiting | Compacting | Idle [@@deriving to_yojson]
-type agent = Claude | Pi | Other of string [@@deriving to_yojson]
+type status = Running | Waiting | Idle
+type agent = Pi | Other of string [@@deriving to_yojson]
 type parent = { session : string; pid : int }
-
-type hook = {
-  status : status;
-  ended : Timestamp.t option;
-  background : bool;
-  tool_pending : bool; [@key "toolPending"]
-}
-[@@deriving to_yojson]
-
-type reporting = Hook of hook | Terminal [@@deriving to_yojson]
 
 type session = {
   agent : agent;
@@ -18,7 +8,6 @@ type session = {
   pane : Tmux.Pane.id option;
       [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
   pid : int;
-  reporting : reporting;
   ts : Timestamp.t;
   inbox : string;
   activity : string;
@@ -31,7 +20,6 @@ type session = {
 val string_of_status : status -> string
 val string_of_agent : agent -> string
 val agent_of_string : string -> agent
-val agent_title : string -> string
 val display_name : Tmux.Pane.t list -> session -> string
 val addressable_name : session -> bool
 val dir : unit -> string
@@ -42,7 +30,19 @@ val get : dir:string -> string -> session option
 val get_live : dir:string -> string -> session option
 val load_live : dir:string -> (string * session) list
 val by_pane : (string * session) list -> (string * session) Tmux.Pane.Map.t
-val is_agent_pane : (string * session) Tmux.Pane.Map.t -> pi:Procs.Int_set.t -> Tmux.Pane.t -> bool
+
+type pane_kind =
+  | Terminal
+  | Some_agent of { name : string }
+  | Pi_agent of { id : string; session : session }
+
+val pane_kind :
+  programs:Tmux.Program_status.t Tmux.Pane.Map.t ->
+  states:(string * session) Tmux.Pane.Map.t ->
+  Tmux.Pane.t ->
+  pane_kind
+
+val pane_title : Tmux.Pane.t -> pane_kind -> string option
 val record : dir:string -> string -> session -> (unit, session) result
 val remove : dir:string -> string -> pid:int -> (unit, session) result
 val held_message : string -> session -> string

@@ -91,7 +91,7 @@ let%expect_test "a wrapper that loses the outcome race says nothing" =
 let%expect_test "Stream meta sends the output as it runs, then the ending" =
   let dir = Filename.temp_dir "kido-state" "" in
   let inbox, received = start_inbox ~reply:"ok\n" in
-  Result.get_exn (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox Idle));
+  Result.get_exn (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox ()));
   let _ =
     run ~dir ~kind:Stream ~parent:"root-sess" ~command:[ "printf"; "one\\ntwo\\nthree" ] "chatty"
   in

@@ -88,10 +88,8 @@ for path in ['AGENTS.md', 'docs/design.md', 'docs/design-subagents.md', 'share/p
 # Existing bounded timing probes and whole-second timestamp tests; exact statements,
 # not entire files, so a new sleep in any of these files still fails.
 sleeps = {
-    'test_e2e/agent_test.go': {'time.Sleep(time.Second)': 2},
     'test_e2e/async_bash_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/async_ending_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
-    'test_e2e/claude_test.go': {'time.Sleep(time.Second)': 3},
     'test_e2e/conn_test.go': {'time.Sleep(20 * time.Millisecond)': 1},
     'test_e2e/control_test.go': {'time.Sleep(10 * time.Millisecond)': 1},
     'test_e2e/launch_test.go': {'time.Sleep(100 * time.Millisecond)': 3},

@@ -22,17 +22,12 @@ let dead_pid () =
   pid
 
 let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_700_000_000.)
-    ?(background = false) ?(tool_pending = false) ?(inbox = "") ?parent ?(depth = 0) status :
-    State.session =
+    ?(inbox = "") ?parent ?(depth = 0) () : State.session =
   {
     agent;
     name = "";
     pane = Tmux.Pane.of_string pane;
     pid;
-    reporting =
-      (match agent with
-      | Claude -> Hook { status; ended = None; background; tool_pending }
-      | Pi | Other _ -> Terminal);
     ts;
     inbox;
     activity = "";

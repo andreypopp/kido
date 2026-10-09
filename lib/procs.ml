@@ -1,8 +1,6 @@
 module Int_map = Map.Make (Int)
-module Int_set = Set.Make (Int)
 
 type ssh_session = { host : string; interactive : bool }
-type scan = { ssh : ssh_session Int_map.t; pi : Int_set.t }
 type ssh_args = { opts : string list; letters : string; dest : string; command : string list }
 type process = { pid : int; ppid : int; comm : string; args : string list }
 
@@ -62,48 +60,13 @@ let parse_processes rows =
       | _ -> None)
     rows
 
-let parse_parent = function
-  | (ppid :: comm :: _) :: _ -> Option.map (fun ppid -> (ppid, comm)) (Int.of_string ppid)
-  | _ -> None
-
-let is_shell comm = List.mem (Filename.basename comm) [ "sh"; "dash"; "bash"; "zsh"; "ksh" ]
-
-let is_pi p =
-  (match p.args with a :: _ -> String.equal (Filename.basename a) "pi" | [] -> false)
-  || List.exists (String.suffix ~suf:"/libexec/bin/pi") p.args
-
-let mark_ancestors parent pid set =
-  let rec go n pid set =
-    if n = 0 || pid <= 1 || Int_set.mem pid set then set
-    else
-      let set = Int_set.add pid set in
-      match Int_map.find_opt pid parent with Some ppid -> go (n - 1) ppid set | None -> set
-  in
-  go 64 pid set
-
 let sweep () =
   let all = parse_processes (ps [ "-axo"; "pid=,ppid=,comm=,args=" ]) in
-  let parent = Int_map.of_list (List.map (fun p -> (p.pid, p.ppid)) all) in
   List.fold_left
-    (fun scan p ->
-      let ssh =
-        match
-          if String.equal (Filename.basename p.comm) "ssh" then ssh_session (List.tl p.args)
-          else None
-        with
-        | Some s -> scan.ssh |> Int_map.add p.pid s |> Int_map.add p.ppid s
-        | None -> scan.ssh
-      in
-      { ssh; pi = (if is_pi p then mark_ancestors parent p.pid scan.pi else scan.pi) })
-    { ssh = Int_map.empty; pi = Int_set.empty }
-    all
-
-let maybe_pi command = String.equal command "node" || String.equal command "pi"
-
-let reporter_pid () =
-  let rec go n pid =
-    match parse_parent (ps [ "-o"; "ppid=,comm="; "-p"; Int.to_string pid ]) with
-    | Some (ppid, comm) when n > 0 && is_shell comm -> go (n - 1) ppid
-    | _ -> pid
-  in
-  go 3 (Unix.getppid ())
+    (fun ssh p ->
+      match
+        if String.equal (Filename.basename p.comm) "ssh" then ssh_session (List.tl p.args) else None
+      with
+      | Some s -> ssh |> Int_map.add p.pid s |> Int_map.add p.ppid s
+      | None -> ssh)
+    Int_map.empty all

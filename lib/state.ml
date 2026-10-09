@@ -1,36 +1,13 @@
-type status = Running | Waiting | Compacting | Idle
-type agent = Claude | Pi | Other of string
+type status = Running | Waiting | Idle
+type agent = Pi | Other of string
 
-let string_of_status = function
-  | Running -> "running"
-  | Waiting -> "waiting"
-  | Compacting -> "compacting"
-  | Idle -> "idle"
-
-let statuses = List.map (fun s -> (string_of_status s, s)) [ Running; Waiting; Compacting; Idle ]
-let status_to_yojson s = `String (string_of_status s)
-
-let status_of_yojson = function
-  | `String s ->
-      Option.to_result ("unknown status " ^ s) (List.assoc_opt ~eq:String.equal s statuses)
-  | _ -> Error "status"
-
-let agent_of_string = function "claude" -> Claude | "pi" -> Pi | s -> Other s
-let string_of_agent = function Claude -> "claude" | Pi -> "pi" | Other s -> s
+let string_of_status = function Running -> "running" | Waiting -> "waiting" | Idle -> "idle"
+let agent_of_string = function "pi" -> Pi | s -> Other s
+let string_of_agent = function Pi -> "pi" | Other s -> s
 let agent_to_yojson a = `String (string_of_agent a)
 let agent_of_yojson = function `String s -> Ok (agent_of_string s) | _ -> Error "agent"
 
 type parent = { session : string; pid : int [@default 0] } [@@deriving yojson]
-
-type hook = {
-  status : status;
-  ended : Timestamp.t option;
-  background : bool;
-  tool_pending : bool; [@key "toolPending"]
-}
-[@@deriving yojson]
-
-type reporting = Hook of hook | Terminal [@@deriving yojson]
 
 type session = {
   agent : agent;
@@ -38,7 +15,6 @@ type session = {
   pane : Tmux.Pane.id option;
       [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
   pid : int;
-  reporting : reporting;
   ts : Timestamp.t;
   inbox : string; [@default ""]
   activity : string; [@default ""]
@@ -48,37 +24,12 @@ type session = {
 }
 [@@deriving yojson]
 
-let agent_title title =
-  match String.chop_prefix ~pre:"π - " title with
-  | Some t -> t
-  | None ->
-      let rec skip i =
-        if i >= String.length title then i
-        else
-          let d = String.get_utf_8_uchar title i in
-          let c = Uchar.to_int (Uchar.utf_decode_uchar d) in
-          if
-            (c < 0x80 && not (Char.Ascii.is_alphanum (Char.chr c)))
-            || (c >= 0x80 && c <= 0xBF)
-            || c = 0xD7 || c = 0xF7
-            || (c >= 0x2000 && c <= 0x2BFF)
-            || (c >= 0x2E00 && c <= 0x2E7F)
-            || (c >= 0x3000 && c <= 0x303F)
-            || (c >= 0xFE00 && c <= 0xFE0F)
-            || c = 0xFFFD
-            || (c >= 0x1F000 && c <= 0x1FAFF)
-          then skip (i + Uchar.utf_decode_length d)
-          else i
-      in
-      let i = skip 0 in
-      String.sub title i (String.length title - i)
-
 let display_name panes (s : session) =
   match s.agent with
   | Pi when not (String.is_empty s.name) -> s.name
   | _ ->
       Option.map_or ~default:""
-        (fun (p : Tmux.Pane.t) -> agent_title p.title)
+        (fun (p : Tmux.Pane.t) -> p.title)
         (Option.flat_map (Tmux.Pane.find panes) s.pane)
 
 let addressable_name (s : session) =
@@ -170,24 +121,37 @@ let load_live ~dir =
     (read_all ~dir)
 
 let by_pane sessions =
-  let outer s = match s.agent with Claude -> false | Pi | Other _ -> true in
-  let beats s prev =
-    if Bool.equal (outer s) (outer prev) then Float.(s.ts > prev.ts) else outer s
-  in
   List.fold_left
     (fun m ((_, s) as e) ->
       Option.map_or ~default:m
         (fun pane ->
           Tmux.Pane.Map.update pane
-            (function Some (_, prev) as kept when not (beats s prev) -> kept | _ -> Some e)
+            (function Some (_, prev) as kept when Float.(s.ts <= prev.ts) -> kept | _ -> Some e)
             m)
         s.pane)
     Tmux.Pane.Map.empty sessions
 
-let is_agent_pane states ~pi (p : Tmux.Pane.t) =
-  Tmux.Pane.Map.mem p.pane_id states
-  || String.equal p.current_command "claude"
-  || Procs.Int_set.mem p.pane_pid pi
+type pane_kind =
+  | Terminal
+  | Some_agent of { name : string }
+  | Pi_agent of { id : string; session : session }
+
+let pane_kind ~programs ~states (p : Tmux.Pane.t) =
+  match
+    Option.flat_map Tmux.Program_status.root (Tmux.Pane.Map.find_opt p.pane_id programs)
+    |> Option.flat_map (fun (r : Tmux.Program_status.record) -> r.app)
+  with
+  | Some "pi" -> (
+      match Tmux.Pane.Map.find_opt p.pane_id states with
+      | Some (id, session) -> Pi_agent { id; session }
+      | None -> Some_agent { name = "pi" })
+  | Some "claude-code" -> Some_agent { name = "claude-code" }
+  | None | Some _ -> Terminal
+
+let pane_title (p : Tmux.Pane.t) = function
+  | Terminal -> None
+  | Pi_agent { session; _ } -> Some (if String.is_empty session.name then p.title else session.name)
+  | Some_agent { name } -> Some (if String.is_empty p.title then name else p.title)
 
 let held ~dir id pid =
   match get ~dir id with
@@ -220,17 +184,14 @@ let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_M
 
 let stalled_since ~programs ~threshold ~wake ~now s =
   let working =
-    match s.reporting with
-    | Hook h -> (
-        match h.status with Running -> not (h.background || h.tool_pending) | _ -> false)
-    | Terminal ->
-        Option.exists
-          (fun (r : Tmux.Program_status.record) ->
-            match r.state with Working _ -> true | _ -> false)
-          (Option.flat_map
-             (fun pane ->
-               Option.flat_map Tmux.Program_status.root (Tmux.Pane.Map.find_opt pane programs))
-             s.pane)
+    Option.exists
+      (fun (r : Tmux.Program_status.record) ->
+        Option.exists (String.equal "pi") r.app
+        && match r.state with Working _ -> true | _ -> false)
+      (Option.flat_map
+         (fun pane ->
+           Option.flat_map Tmux.Program_status.root (Tmux.Pane.Map.find_opt pane programs))
+         s.pane)
   in
   working && Float.(now - max s.ts (Option.value wake ~default:neg_infinity) >= threshold)
 

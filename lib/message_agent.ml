@@ -171,8 +171,7 @@ let send ~dir ~self recipient spec text =
       (deliver ~states ~panes ~self spec target text, spec.kind, List_runs.status programs target)
     with
     | Ok `Pasted, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)
-    | Ok `Inbox, Message, (List_runs.Reported (Running | Compacting) | Program (Some (Working _)))
-      ->
+    | Ok `Inbox, Message, Some (Working _) ->
         let steerable =
           Result.get_or ~default:false (reaches (List_runs.per_pane live) panes ~self id)
         in

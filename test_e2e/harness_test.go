@@ -32,14 +32,13 @@ import (
 )
 
 var (
-	tmuxBin   string // patched tmux, or "" when unusable
-	tmuxWhy   string // why it is unusable
-	kidoBin   string // freshly built kido
-	shareDir  string // the share/kido beside it
-	claudeBin string // a binary named "claude" that just sleeps
-	nodeBin   string // the same binary named "node", for a pi pane
-	piBinDir  string // a directory holding one binary, named "pi"
-	tmuxDir   string // a directory holding one binary, named "tmux", the patched fork
+	tmuxBin  string // patched tmux, or "" when unusable
+	tmuxWhy  string // why it is unusable
+	kidoBin  string // freshly built kido
+	shareDir string // the share/kido beside it
+	nodeBin  string // the same binary named "node", for a pi pane
+	piBinDir string // a directory holding one binary, named "pi"
+	tmuxDir  string // a directory holding one binary, named "tmux", the patched fork
 	// serverPathPrefix is the PATH prefix every inner server gets: the built
 	// kido's directory, so a bare "kido" in share/tmux/kido-tmux.conf's bindings
 	// resolves to the binary this harness just built rather than to
@@ -113,11 +112,6 @@ func setup(m *testing.M) (int, error) {
 	}
 	kidoBin = filepath.Join(dir, "bin", "kido")
 	shareDir = filepath.Join(dir, "share", "kido")
-	if claudeBin, err = buildFakeAgent(dir, dir, "claude"); err != nil {
-		return 0, err
-	}
-	// pi is a bash shim around node, so tmux reports a pi pane as "node".
-	// Tests supply pi identity with agent-status and status with OSC 7501.
 	if nodeBin, err = buildFakeAgent(dir, dir, "node"); err != nil {
 		return 0, err
 	}
@@ -127,7 +121,7 @@ func setup(m *testing.M) (int, error) {
 	// fake standing in under some other name. The only way to make a name
 	// resolve is to put its directory on a PATH, so this fake gets a
 	// directory holding nothing else: a directory holding the others too
-	// would shadow whatever real "node", "claude" or "kido" is installed
+	// would shadow whatever real "node" or "kido" is installed
 	// on the machine running the suite, for every pane that inherits that
 	// PATH, and a shell startup file that runs one of those names (nvm's,
 	// on a GitHub Ubuntu runner, runs `node -v`) would hang on a fake that
@@ -198,12 +192,6 @@ func installKido(prefix string) error {
 	return nil
 }
 
-// buildFakeAgent compiles a binary named name that sleeps (copying
-// /bin/sleep fails code signing on macOS) and echoes every stdin line it
-// reads, so a test can drive a claudePane with send-keys and read back
-// what arrived. Two lines are commands instead: "busy" and "esc" redraw
-// the pane as real Claude Code would, since kido reads a waiting pane's
-// screen to notice a dismissed prompt (lib/screen.ml).
 func buildFakeAgent(srcRoot, outDir, name string) (string, error) {
 	src := filepath.Join(srcRoot, "fakeagent-"+name)
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -219,17 +207,13 @@ import (
 	"time"
 )
 
-const rule = "────────────────────────────────────────"
-
-func box(footer string) {
-	fmt.Printf("\n%s\n❯ \n%s\n  %s\n", rule, rule, footer)
-}
-
 func main() {
-	fmt.Print("\nDo you prefer tea or coffee?\n\n❯ 1. Tea\n  2. Coffee\n\n" +
-		"Enter to select · Esc to cancel\n")
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
+		if title, ok := strings.CutPrefix(sc.Text(), "raw-title "); ok {
+			fmt.Print("\x1b]2;" + title + "\x1b\\")
+			continue
+		}
 		if title, ok := strings.CutPrefix(sc.Text(), "title "); ok {
 			fmt.Print("\x1b]2;π - " + title + "\x1b\\")
 			continue
@@ -242,10 +226,6 @@ func main() {
 		case "quit":
 			fmt.Print("\x1b]7501;state=clear\x1b\\")
 			return
-		case "busy":
-			box("⏸ manual mode on · esc to interrupt · ← for agents")
-		case "esc":
-			box("⏸ manual mode on · ? for shortcuts · ← for agents")
 		default:
 			fmt.Println("got:", sc.Text())
 		}
@@ -1023,34 +1003,20 @@ func (h *harness) sshProxy() string {
 	return h.proxy
 }
 
-// hook runs `kido hook` out of band from the test binary (whose pid it
-// records, so the state file stays valid for the whole run), and so
-// carries TMUX itself instead of inheriting it as a pane does.
-func (h *harness) hook(sessionID, pane, event string, kv ...string) {
-	h.t.Helper()
-	payload := map[string]any{}
-	for i := 0; i+1 < len(kv); i += 2 {
-		payload[kv[i]] = kv[i+1]
+func (h *harness) rowFor(name string) string {
+	for _, l := range h.rows() {
+		if strings.Contains(l, name) {
+			return strings.TrimSpace(l)
+		}
 	}
-	h.hookPayload(sessionID, pane, event, payload)
+	return ""
 }
 
-// hookPayload is hook for a payload with non-string fields (e.g.
-// background_tasks, a list of objects).
-func (h *harness) hookPayload(sessionID, pane, event string, payload map[string]any) {
+func (h *harness) waitGlyph(title, glyph string) {
 	h.t.Helper()
-	payload["hook_event_name"] = event
-	payload["session_id"] = sessionID
-	body, err := json.Marshal(payload)
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	cmd := exec.Command(kidoBin, "hook")
-	cmd.Stdin = bytes.NewReader(body)
-	cmd.Env = cleanEnv("TMUX="+h.inner+",0,0", "TMUX_PANE="+pane)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		h.t.Fatalf("kido hook %s: %v\n%s", event, err, out)
-	}
+	want := "╶" + indField(glyph) + title
+	h.waitFor(func() bool { return h.rowFor(title) == want }, settle,
+		func() string { return fmt.Sprintf("row %q (is %q)", want, h.rowFor(title)) })
 }
 
 func (h *harness) programStatus(pane, body string, title ...string) {
@@ -1155,27 +1121,8 @@ func (h *harness) piPane(session, title string) string {
 	h.waitFor(func() bool {
 		return h.in("display-message", "-p", "-t", id, "#{pane_title}") == title
 	}, settle, msgf("pi OSC 2 title %s", title))
+	h.programStatus(id, "state=idle:app=pi")
 	return id
-}
-
-// claudePane opens a window in session running the fake claude binary and
-// titles it, so the pane looks like a Claude Code pane to kido. The "--"
-// is the ignored argument newWindow insists on.
-func (h *harness) claudePane(session, title string) string {
-	h.t.Helper()
-	id := h.newWindow(session, "", claudeBin, "--")
-	h.waitPaneCommand(id, "claude")
-	h.title(id, title)
-	return id
-}
-
-// fakeClaude sends one of the fake claude's screen commands to pane:
-// "busy" for the input box with work in flight, "esc" for the input box
-// with nothing running (what a dismissed prompt leaves behind).
-func (h *harness) fakeClaude(pane, cmd string) {
-	h.t.Helper()
-	h.in("send-keys", "-t", pane, "-l", cmd)
-	h.in("send-keys", "-t", pane, "Enter")
 }
 
 // title names a pane the way an agent does ("✳ <name>", "π - <name>"). A shell in the
