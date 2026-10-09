@@ -1,4 +1,4 @@
-# kido rpc protocol 2.0
+# kido rpc protocol 2.1
 
 fork revision: 676f83a82e19fcfae5abf9619a9bf64fbfb06cd5
 
@@ -20,9 +20,9 @@ XDG_STATE_HOME/kido, then ~/.local/state/kido. --client names the app's
 control client. Socket paths fit the platform's sun_path including NUL.
 Run outside tmux with no KIDO_AGENT_* environment.
 
-The first stdout line is {"hello":{"protocol":"2.0"}}. A differing or absent
-server stamp produces {"hello":{"protocol":"2.0","server":"other"}} or
-{"hello":{"protocol":"2.0","server":null}}, followed by
+The first stdout line is {"hello":{"protocol":"2.1"}}. A differing or absent
+server stamp produces {"hello":{"protocol":"2.1","server":"other"}} or
+{"hello":{"protocol":"2.1","server":null}}, followed by
 {"error":"server protocol does not match binary protocol"}, then exit 2.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
 or stdin read error; diagnostics use stderr. Option errors use cmdliner.
@@ -112,6 +112,12 @@ only true, and select-window exactly session and
 window identifier fields ($N and @N). Multiple recognized operations are
 invalid. All requests use the existing error envelope and explicit socket.
 
+## Changes from 2.0 to 2.1
+
+- Changed: pi row titles and addressing use the reported session name.
+  Unnamed pi sessions display the pane-title label but are addressable only by id.
+- Unchanged: wire shapes and snapshot v remain the same.
+
 ## Changes from 1.1 to 2.0
 
 - Removed: the server-side filter request and top-level snapshot.filter.
@@ -127,11 +133,12 @@ invalid. All requests use the existing error envelope and explicit socket.
   never descend, and wrap across sessions in sidebar order. The CLI and
   sidebar Shift-Up/Down keys share this order; a sole eligible root selects itself.
 - Changed: pi item indicator, attention and caption use pi's native OSC
-  records instead of State status/completion; the title is the reported pi session name, or the pane title for an unnamed session. Pi compaction is running with
+  records instead of State status/completion; the title uses the pane title.
+  Pi compaction is running with
   a message, not compacting. Gone runs outrank terminal and Hook status;
   Claude Code retains Hook status and completion.
 - Changed: pi stall requires a working root and stale State heartbeat;
-  bare pi never stalls. Named pi sessions are addressed by their reported session name; unnamed sessions only by id. State supplies
+  bare pi never stalls. Pi addressing uses the stripped pane title. State supplies
   identity, inbox, parentage, activity and the ask overlay; agent-status
   removes --status, --ended and --title.
 - Unchanged: switch-session requests and integer-correlated replies were
@@ -288,7 +295,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"2.0","server":"2.0"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"2.1","server":"2.1"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_PROTOCOL stamp, or null when absent, even when it matches protocol.
 The app compares them to detect a kido upgrade with an old server.

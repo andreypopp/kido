@@ -36,7 +36,7 @@ separate value, not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`2.0`. The launcher stamps it into the tmux server's environment at
+`2.1`. The launcher stamps it into the tmux server's environment at
 creation, before its configuration runs. RPC probes that stamp before
 opening the model's control connection.
 
@@ -152,19 +152,20 @@ error, working, done, idle priority, then bytewise id, excluding
 acknowledged done/error records so they cannot hide ongoing work. If all
 records are acknowledged completions, the first record supplies an idle
 label. Its title (or inherited app or foreground command) names a generic
-program row. pi's label comes instead from the pane title (OSC 0/2),
-with the π prefix stripped. Message and optional progress percentage
+program row. pi's label comes instead from its reported session name,
+or the pane title (OSC 0/2) with the π prefix stripped for an unnamed session. Message and optional progress percentage
 form the caption, except a pi message duplicating its session name. With no program
 message, State activity supplies the caption; a live subagent with neither
 uses its elapsed clock. Indicators map
 to waiting, failed, running, done and idle. Visiting acknowledges done/error
 only in that view; only a newer pane serial re-arms them, not a reconnect.
-pi State records contain identity, inbox, parentage, activity, model and
-heartbeat, not status, completion or title. pi status and completion
+pi State records contain identity, session name, inbox, parentage, activity,
+model and heartbeat, not status or completion. pi status and completion
 attention come from pi 1.1.0's native OSC 7501 records; its ask overlay
 still outranks the indicator. Stalled means a working root with a stale State heartbeat,
-rebased against wake. Bare pi never stalls. pi addressing uses the pane title, including when a nested program
-overwrites the OSC root. Claude Code retains its
+rebased against wake. Bare pi never stalls. pi addressing uses its reported
+session name, including when a nested program overwrites the OSC root.
+Unnamed pi sessions are addressable only by id. Claude Code retains its
 Hook status and completion timestamp.
 
 ## Requests and navigation
@@ -205,6 +206,11 @@ A revived window can outlive a failed subsequent jump: there is no
 rollback or automatic replay. Concurrent views can still revive one
 ended ask twice before a live holder reports. pi resolution retains
 tmux's command-client PATH semantics.
+
+Protocol 2.1 changes from 2.0:
+- Changed: pi row titles and addressing use the reported session name.
+  Unnamed pi sessions display the pane-title label but are addressable only by id.
+- Unchanged: wire shapes and snapshot v remain the same.
 
 Protocol 2.0 changes from 1.1:
 - Removed: the server-side filter request and top-level snapshot.filter.
