@@ -13,6 +13,34 @@ Ghostty-derived content that disagrees with tmux. Purely client/UI state
 (scroll position, selection, find, sidebar UI, gestures, fonts and themes)
 belongs to Kido.app, not tmux.
 
+## Release signing
+
+`make -C app release VERSION=x.y.z` builds Release with the free Apple
+Development (Personal Team) identity. `app/project.yml` selects the common
+name `Apple Development` and the team ID; Xcode resolves a valid identity
+from the keychain and fails if none is available, without ad-hoc fallback.
+The bundling phase signs every nested Mach-O executable and dylib with
+Xcode's resolved identity before Xcode signs `com.andreypopp.kido`. The release
+script verifies the final bundle with `codesign --verify --strict --deep`
+before packaging.
+
+The certificate-based designated requirement keeps TCC grants such as Screen
+Recording stable across upgrades, unlike an ad-hoc cdhash requirement. Expect
+one last permission re-grant after installing the first team-signed release.
+Team signing also supplies the TeamIdentifier required by Shortcuts/App Intents.
+Renew the Apple Development certificate in Xcode roughly yearly, retaining the
+same Personal Team. Rebuild and check the designated requirement after renewal;
+a team or signing-identity change can require another TCC grant.
+
+Hardened runtime is disabled and no entitlements are added: notarization is not
+part of this release path, and enabling runtime/JIT or library-validation
+restrictions would need separate GhosttyKit and bundled-helper validation.
+Personal Team signing is not Developer ID signing or notarization. Gatekeeper
+can still reject quarantined downloads; the cask retains its quarantine-removal
+instructions. Debug, test, visual and stress builds stay ad-hoc. Demo builds
+explicitly stay ad-hoc even in Release; direct `all CONFIG=Release` builds use
+the same team signing as the release script.
+
 ## One control client
 
 Each native window attaches one control client (`kido-tmux -u -S <socket>
@@ -198,7 +226,7 @@ stdout); it does not shadow Homebrew kido in ordinary terminals or interactive S
 
 ```zsh
 if [[ -n ${SSH_CONNECTION-} && ! -o interactive ]]; then
-  path=("$HOME/Workspace/kido-app/app/build/xcode.noindex/derived-remote/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin" $path)
+  path=("$HOME/Workspace/kido-app/app/build/xcode.noindex/derived-remote/Build/Products/Release/Kido.app/Contents/Resources/kido/bin" $path)
 fi
 ```
 
@@ -213,10 +241,10 @@ Before shipping, the user/parent must prepare a **distinct app identity**, not
 register the default derived Kido.app over the running installed app:
 
 ```sh
-make -C app all DERIVED=build/xcode.noindex/derived-remote XCODE_SETTINGS='PRODUCT_BUNDLE_IDENTIFIER=com.andreypopp.kido.remote-test INFOPLIST_KEY_CFBundleDisplayName=KidoRemoteTest CODE_SIGN_IDENTITY="Apple Development" DEVELOPMENT_TEAM=LC2633WWXE'
+make -C app all CONFIG=Release DERIVED=build/xcode.noindex/derived-remote XCODE_SETTINGS='PRODUCT_BUNDLE_IDENTIFIER=com.andreypopp.kido.remote-test INFOPLIST_KEY_CFBundleDisplayName=KidoRemoteTest'
 ```
 
-The output is `app/build/xcode.noindex/derived-remote/Build/Products/Debug/Kido.app`,
+The output is `app/build/xcode.noindex/derived-remote/Build/Products/Release/Kido.app`,
 displayed as KidoRemoteTest. Xcode defaults live under `app/build/xcode.noindex/`
 to keep built apps out of Spotlight; private builds should use
 `DERIVED=build/xcode.noindex/derived-<name>`. Explicit DERIVED paths are honored.
