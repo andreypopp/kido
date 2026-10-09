@@ -111,6 +111,33 @@ import TmuxControl
                 XCTAssertEqual(owner.sidebar.list.layer?.borderWidth, mode == "floating" ? 1 / owner.window.backingScaleFactor : 0, "docked sidebar must not draw an extra outline")
                 transferredTabs.refreshHeader()
                 header.display()
+                if mode == "floating" {
+                    let card = owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root)
+                    var parent = owner.sidebar.list.superview
+                    while let view = parent, !(view is NSGlassEffectView) { parent = view.superview }
+                    XCTAssertEqual(try XCTUnwrap(parent as? NSGlassEffectView).cornerRadius, 18)
+                    for (name, view) in [("windowed", root), ("fullscreen-host", headerContent)] {
+                        let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                        view.cacheDisplay(in: view.bounds, to: image)
+                        let scale = CGFloat(image.pixelsHigh) / view.bounds.height
+                        var sampled = 0
+                        for (corner, point) in [
+                            ("top-left", NSPoint(x: card.minX + 2, y: card.maxY - 2)),
+                            ("top-right", NSPoint(x: card.maxX - 2, y: card.maxY - 2)),
+                            ("bottom-left", NSPoint(x: card.minX + 2, y: card.minY + 2)),
+                            ("bottom-right", NSPoint(x: card.maxX - 2, y: card.minY + 2)),
+                        ] {
+                            let local = name == "windowed" ? point : header.convertPoint(fromScreen: owner.window.convertPoint(toScreen: root.convert(point, to: nil)))
+                            guard view.bounds.contains(local) else { continue }
+                            let color = try XCTUnwrap(image.colorAt(x: Int(local.x * scale), y: Int((view.bounds.maxY - local.y) * scale)))
+                            sampled += 1
+                            XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc red")
+                            XCTAssertEqual(color.greenComponent, expected.greenComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc green")
+                            XCTAssertEqual(color.blueComponent, expected.blueComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc blue")
+                        }
+                        XCTAssertEqual(sampled, name == "windowed" ? 4 : 2)
+                    }
+                }
                 let hostImage = try XCTUnwrap(headerContent.bitmapImageRepForCachingDisplay(in: headerContent.bounds))
                 headerContent.cacheDisplay(in: headerContent.bounds, to: hostImage)
                 let leftColor = try XCTUnwrap(hostImage.colorAt(x: 20, y: 10))
@@ -118,7 +145,7 @@ import TmuxControl
                 XCTAssertEqual(leftColor.redComponent, leftExpected.redComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
                 XCTAssertEqual(leftColor.greenComponent, leftExpected.greenComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
                 XCTAssertEqual(leftColor.blueComponent, leftExpected.blueComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
-                if mode == "docked" {
+                if mode == "docked" || mode == "floating" {
                     let sidebarRect = owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root)
                     let corners = NSRect(x: sidebarRect.minX, y: sidebarRect.maxY - 80, width: sidebarRect.width + 24, height: 80)
                     let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: corners))
@@ -126,7 +153,7 @@ import TmuxControl
                     let image = NSImage(size: corners.size)
                     image.addRepresentation(bitmap)
                     let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                    if let failure = verifySnapshot(of: image, as: .image, named: "windowed-corners-\(hex)", record: record),
+                    if let failure = verifySnapshot(of: image, as: .image, named: mode == "docked" ? "windowed-corners-\(hex)" : "windowed-floating-corners-\(hex)", record: record),
                        !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 }
                 // This white native-host stand-in pins uncovered geometry, not composited Liquid Glass.
