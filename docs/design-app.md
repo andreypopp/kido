@@ -44,7 +44,7 @@ the same team signing as the release script.
 ## One control client
 
 Each native window attaches one control client (`kido-tmux -u -S <socket>
--N -C attach-session -f pause-after=N,new-layouts,no-detach-on-destroy`)
+-N -T hyperlinks -C attach-session -f pause-after=N,new-layouts,no-detach-on-destroy`)
 and behaves like a normal client: all sidebar and tab navigation and shell
 creation use correlated `kido rpc` requests, and the app follows tmux's
 notifications. The control client owns terminal I/O and pane mechanics. So the client's current session, window and pane are
@@ -213,8 +213,13 @@ pane grid, sized by its latest elected client. This coupling is accepted; there
 are no grouped sessions. Models, client names, feeds, surface caches, find and
 scroll state remain disjoint even when both endpoints issue `$0/@0/%0`.
 Authoritative external layouts are clipped, not resized into independent grids.
-HTTP/HTTPS links from remote panes open on the Mac; remote file paths and other
-schemes are refused with a diagnostic. No implicit port forwarding/file transfer.
+OSC 8 links from local panes and all links from remote panes share one app
+handler: HTTP/HTTPS opens on the Mac through NSWorkspace; file paths and other
+schemes are refused with the same diagnostic and alert. Local non-OSC 8 links,
+including regex-detected URLs, retain Ghostty's own OS opener and scheme policy.
+Ghostty's fallback OSC 8 safety guard stays enabled but is not reached. Both
+control transports advertise hyperlinks with `-T hyperlinks`, so tmux preserves
+OSC 8 links. No implicit port forwarding/file transfer.
 Mac clipboard/paste and unsafe-paste sheets remain local. OSC 52 uses the same
 raw control output and pane-input path over SSH; the wider remote/auth/URL
 matrix remains in known issues.
