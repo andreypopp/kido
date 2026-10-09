@@ -1,17 +1,3 @@
-let session ~agent ~pane ~pid : State.session =
-  {
-    agent;
-    name = "";
-    pane;
-    pid;
-    ts = Timestamp.now ();
-    inbox = "";
-    activity = "";
-    parent = None;
-    depth = 0;
-    model = "";
-  }
-
 let one_line s ~max =
   let b = Buffer.create (String.length s) in
   let rec clean i =
@@ -32,7 +18,10 @@ let agent_status ~dir ~pane ~agent ~session:id ~inbox ~activity ~parent_pid ~par
     ~model ~name =
   State.record ~dir id
     {
-      (session ~agent:(State.agent_of_string agent) ~pane ~pid:(Unix.getppid ())) with
+      agent = State.agent_of_string agent;
+      pane;
+      pid = Unix.getppid ();
+      ts = Timestamp.now ();
       inbox;
       name;
       activity = one_line activity ~max:256;

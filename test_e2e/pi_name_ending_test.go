@@ -11,9 +11,8 @@ import (
 )
 
 func snapshotTitle(s feedSnapshot, pane string) string {
-	var find func([]feedRow) string
-	find = func(rows []feedRow) string {
-		for _, row := range rows {
+	for _, session := range s.Sessions {
+		for _, row := range feedItems(session.Nodes) {
 			if row.Pane != nil && *row.Pane == pane {
 				var title strings.Builder
 				for _, span := range row.Title {
@@ -21,15 +20,6 @@ func snapshotTitle(s feedSnapshot, pane string) string {
 				}
 				return title.String()
 			}
-			if title := find(row.Children); title != "" {
-				return title
-			}
-		}
-		return ""
-	}
-	for _, session := range s.Sessions {
-		if title := find(session.Nodes); title != "" {
-			return title
 		}
 	}
 	return ""

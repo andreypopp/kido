@@ -476,7 +476,6 @@ let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
               l.outcome))
   | _, Some (status, r) ->
       let agent_title = State.pane_title p pane_kind in
-      let app = Tmux.Program_status.app status r in
       let pi =
         match pane_kind with Pi_agent _ -> true | Terminal | Some_agent _ | Ssh _ -> false
       in
@@ -485,7 +484,11 @@ let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
         | Pi_agent _ | Some_agent _ | Ssh { pane = Remote_agent _; _ } ->
             Option.value ~default:p.current_command agent_title
         | Ssh { user; host; _ } -> "ssh " ^ user ^ "@" ^ host
-        | Terminal -> Option.value ~default:(Option.value ~default:p.current_command app) r.title
+        | Terminal -> (
+            match r.title with
+            | Some title -> title
+            | None ->
+                Option.value ~default:p.current_command (Tmux.Program_status.app status r))
       in
       let kind =
         match pane_kind with

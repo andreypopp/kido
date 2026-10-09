@@ -1,10 +1,10 @@
 let error name msg =
   Printf.eprintf "%s: %s\n%!" (if String.is_empty name then "kido" else "kido " ^ name) msg
 
-let run ?(failure = 1) name body =
+let run name body =
   let fail msg =
     error name msg;
-    failure
+    1
   in
   match
     let code = body () in
@@ -16,7 +16,7 @@ let run ?(failure = 1) name body =
   | exception Sys_error m when String.equal m (Unix.error_message Unix.EPIPE) ->
       Sys.set_signal Sys.sigpipe Sys.Signal_default;
       Unix.kill (Unix.getpid ()) Sys.sigpipe;
-      failure
+      1
   | exception Failure msg -> fail msg
   | exception Sys_error msg -> fail msg
   | exception Yojson.Json_error msg -> fail msg

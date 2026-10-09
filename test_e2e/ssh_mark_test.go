@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -60,11 +59,9 @@ func main() {
 	h.waitShellRow("╶◼ssh deploy@example.test: sleep 45", "")
 	h.in("send-keys", "-t", pane, "agent", "Enter")
 	h.waitRow("Remote Claude")
-	prompt := exec.Command(kidoBin, "prompt")
-	prompt.Env = append(cleanEnv(), "TMUX="+h.inner+",0,0", "TMUX_PANE="+pane)
-	prompt.Stdin = strings.NewReader("pasted remote message")
-	if out, err := prompt.CombinedOutput(); err != nil {
-		t.Fatalf("remote prompt: %v\n%s", err, out)
+	out, rc := h.kidoAs(pane, "pasted remote message", nil, "prompt")
+	if rc != 0 {
+		t.Fatalf("remote prompt: exit %d\n%s", rc, out)
 	}
 	h.waitPaneText(pane, "received: pasted remote message")
 	h.in("send-keys", "-t", pane, "quit", "Enter")
