@@ -31,6 +31,7 @@ brew_tap=$(brew --repo andreypopp/tap)
 make all CONFIG=Release DERIVED=build/xcode.noindex/derived-release GHOSTTY_OPTIMIZE=ReleaseFast \
   XCODE_SETTINGS="MARKETING_VERSION=$version CURRENT_PROJECT_VERSION=$version"
 app=build/xcode.noindex/derived-release/Build/Products/Release/Kido.app
+codesign --verify --strict --deep "$app"
 for key in CFBundleShortVersionString CFBundleVersion; do
   [[ $(/usr/libexec/PlistBuddy -c "Print :$key" "$app/Contents/Info.plist") == "$version" ]] || { echo "$key must equal $version" >&2; exit 1; }
 done
@@ -42,7 +43,7 @@ echo "SHA256: $sha"
 if [[ -z $local_tag ]]; then action git tag "$tag"; fi
 action git push origin "refs/tags/$tag"
 action gh release create "$tag" "$zip" --repo andreypopp/kido --title "Kido.app $version" \
-  --notes "Native macOS client for kido. Apple Silicon and macOS 26 or later required. Ad-hoc signed; not notarized. Install with brew install --cask andreypopp/tap/kido-app." --prerelease
+  --notes "Native macOS client for kido. Apple Silicon and macOS 26 or later required. Apple Development (Personal Team) signed; not notarized. Install with brew install --cask andreypopp/tap/kido-app." --prerelease
 action git -C "$tap" pull --ff-only origin main
 cask="$tap/Casks/kido-app.rb"
 echo "+ write $cask"
@@ -59,7 +60,8 @@ cask "kido-app" do
   depends_on macos: :tahoe
   app "Kido.app"
   caveats <<~EOS
-    Kido.app is ad-hoc signed, not notarized. Upgrades require relaunching the app
+    Kido.app is Apple Development (Personal Team) signed, not notarized.
+    Upgrades require relaunching the app
     and confirming a restart of its separate app server. If macOS refuses to open it, run:
       xattr -dr com.apple.quarantine "#{appdir}/Kido.app"
   EOS
