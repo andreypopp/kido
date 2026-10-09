@@ -60,7 +60,7 @@ import TmuxControl
     object["sessions"] = sessions
     object["asks"] = [["id": "A12345678", "session": "agent-session", "name": "Ada", "text": "Question?", "created": "2026-07-17T12:00:00Z", "pane": NSNull(), "ended": true, "revivable": false]]
     let rawChanged = try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
-    #expect(snapshot != rawChanged && snapshot.sameSidebarContent(as: rawChanged))
+    #expect(snapshot != rawChanged && !snapshot.sameSidebarContent(as: rawChanged))
     changedNodes[0]["title"] = [["text": "resolved update", "role": "plain"]]
     sessions[0]["nodes"] = changedNodes
     object["sessions"] = sessions
