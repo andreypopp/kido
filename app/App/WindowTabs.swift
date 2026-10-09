@@ -13,7 +13,7 @@ final class WindowTabs: NSView {
     weak var sidebar: Sidebar?
     func refreshHeader() {
         guard let window, let content = headerBackground.superview else { return }
-        let left = sidebar?.headerDivider(in: window) ?? content.bounds.minX
+        let left = sidebar?.headerDivider(in: window) ?? 0
         let frame = NSRect(x: left, y: content.bounds.minY, width: max(0, content.bounds.maxX - left), height: content.bounds.height)
         if headerBackground.frame != frame {
             headerBackground.frame = frame
@@ -27,10 +27,7 @@ final class WindowTabs: NSView {
     var hostLabel: () -> (text: String, alias: String, connected: Bool)? = { nil }
     var theme: (background: NSColor, appearance: NSAppearance?) = (.windowBackgroundColor, nil) {
         didSet {
-            if !headerBackground.color.isEqual(theme.background) {
-                headerBackground.color = theme.background
-                headerBackground.needsDisplay = true
-            }
+            headerBackground.color = theme.background
             synchronizeHost()
             needsDisplay = true
         }
@@ -38,12 +35,10 @@ final class WindowTabs: NSView {
     private var offset: CGFloat = 0
 
     private func synchronizeHost() {
-        guard let window, let content = window.contentView else { headerBackground.removeFromSuperview(); return }
-        window.appearance = theme.appearance
-        if window === sidebar?.view.window {
-            window.backgroundColor = theme.background
-            window.titlebarAppearsTransparent = true
+        guard let window, window !== sidebar?.view.window, let content = window.contentView else {
+            headerBackground.removeFromSuperview(); return
         }
+        window.appearance = theme.appearance
         if headerBackground.superview !== content {
             headerBackground.autoresizingMask = [.width, .height]
             headerBackground.frame = content.bounds

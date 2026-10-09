@@ -18,7 +18,6 @@ final class SessionView: NSView {
         self.runtime = runtime
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = runtime.background.cgColor
         clipsToBounds = true
     }
 
@@ -37,7 +36,6 @@ final class SessionView: NSView {
     }
 
     func updateBackground() {
-        layer?.backgroundColor = runtime.background.cgColor
         for view in windows.values { view.updateBackground() }
         for view in others.values { view.updateBackground() }
     }
