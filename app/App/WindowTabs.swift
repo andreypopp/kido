@@ -4,10 +4,23 @@ final class WindowTabs: NSView {
     private final class HeaderBackground: NSView {
         var color = NSColor.windowBackgroundColor
         override var isOpaque: Bool { true }
-        override func draw(_ rect: NSRect) { color.setFill(); bounds.fill() }
+        override func draw(_ rect: NSRect) {
+            effectiveAppearance.performAsCurrentDrawingAppearance { color.setFill(); bounds.fill() }
+        }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
     private let headerBackground = HeaderBackground()
+    weak var sidebar: Sidebar?
+    func refreshHeader() {
+        guard let window, let content = headerBackground.superview else { return }
+        let left = sidebar?.headerDivider(in: window) ?? content.bounds.minX
+        let frame = NSRect(x: left, y: content.bounds.minY, width: max(0, content.bounds.maxX - left), height: content.bounds.height)
+        if headerBackground.frame != frame {
+            headerBackground.frame = frame
+            content.needsDisplay = true
+        }
+        headerBackground.needsDisplay = true
+    }
 
     var entries: [SessionModel.Tab] = [] { didSet { needsDisplay = true } }
     var select: (WindowStep) -> Void = { _ in }
@@ -26,14 +39,17 @@ final class WindowTabs: NSView {
 
     private func synchronizeHost() {
         guard let window, let content = window.contentView else { headerBackground.removeFromSuperview(); return }
-        window.backgroundColor = theme.background
         window.appearance = theme.appearance
-        window.titlebarAppearsTransparent = true
+        if window === sidebar?.view.window {
+            window.backgroundColor = theme.background
+            window.titlebarAppearsTransparent = true
+        }
         if headerBackground.superview !== content {
             headerBackground.autoresizingMask = [.width, .height]
             headerBackground.frame = content.bounds
             content.addSubview(headerBackground, positioned: .below, relativeTo: nil)
         }
+        refreshHeader()
     }
 
     override func viewDidMoveToWindow() {
