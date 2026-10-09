@@ -913,6 +913,56 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
     }
 
+    func testProgramRecords() throws {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680),
+                          styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        window.colorSpace = .displayP3
+        let list = SidebarView()
+        window.contentView = list
+        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
+        defer { SidebarView.visualNow = nil }
+        let fixture = try sidebarFixture { object in
+            var sessions = object["sessions"] as! [[String: Any]]
+            var nodes = sessions[0]["nodes"] as! [[String: Any]]
+            nodes.insert(["kind": "agent", "id": "%2000", "pane": "%2000", "window": "@2000",
+                          "title": [["text": "Claude Code", "role": "plain"]], "tail": [],
+                          "indicator": ["kind": "running"], "attention": false, "children": [],
+                          "program_status": ["serial": 7, "records": [
+                            ["id": "", "app": "claude-code", "state": "working"],
+                            ["id": "agent-c", "title": "Review accessibility", "state": "working"],
+                            ["id": "agent-a/permission", "title": "Approve test command", "state": "blocked", "kind": "permission", "msg": "May I run the integration tests?"],
+                            ["id": "agent-b", "title": "Check toolbar geometry", "state": "working"],
+                            ["id": "agent-a", "title": "Investigate sidebar layout", "state": "working", "msg": "Comparing native row measurements"]
+                          ]]], at: 0)
+            sessions[0]["nodes"] = nodes
+            object["sessions"] = sessions
+            object["client"] = ["session": "$0", "window": "@2000", "pane": "%2000"]
+        }
+        for dark in [false, true] {
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            list.update(.running(fixture))
+            sidebarSnapshot(list, dark ? "claude-dark" : "claude-light")
+        }
+        let programs = list.visualRows.indices.filter { if case .program = list.visualRows[$0].kind { true } else { false } }
+        XCTAssertEqual(programs.count, 4)
+        var requests: [RPCRequest] = []
+        list.navigate = { requests.append($0) }
+        for index in programs {
+            XCTAssertFalse(list.tableView(list.visualTable, shouldSelectRow: index))
+            list.visualJump(list.visualRows[index])
+            let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
+            XCTAssertEqual(cell.accessibilityRole(), .staticText)
+            XCTAssertTrue(cell.accessibilityLabel()?.contains(list.visualRows[index].indicatorDescription) == true)
+            XCTAssertTrue(cell.addWindow.isHidden)
+        }
+        XCTAssertTrue(requests.isEmpty)
+        list.focus()
+        let down = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .shift, timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{f701}", charactersIgnoringModifiers: "\u{f701}", isARepeat: false, keyCode: 125))
+        list.visualTable.keyDown(with: down)
+        XCTAssertEqual(list.visualRows[list.visualTable.selectedRow].target?.pane, PaneID(number: 0))
+    }
+
     func testSidebarCards() throws {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680),
                           styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)

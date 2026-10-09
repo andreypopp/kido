@@ -3,11 +3,11 @@ import Testing
 import TmuxControl
 @testable import SidebarFeed
 
-private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false) throws -> Snapshot {
+private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false, records: [[String: Any]] = [], serial: Int = 7) throws -> Snapshot {
     func item(_ id: Int, _ window: Int, run: String? = nil, started: Double? = nil, tail: String = "", children: [[String: Any]] = []) -> [String: Any] {
         ["kind": run == "bash" || run == "stream" ? "run" : "agent", "id": "%\(id)", "pane": "%\(id)", "window": "@\(window)",
          "run": run as Any? ?? NSNull(), "started": started as Any? ?? NSNull(), "indicator": ["kind": "running"],
-         "program_status": ["serial": 0, "records": []], "title": [["text": "pane-\(id)", "role": "plain"]], "tail": tail.isEmpty ? [] : [["text": tail, "role": "dim"]],
+         "program_status": ["serial": serial, "records": id == 0 ? records : []], "title": [["text": "pane-\(id)", "role": "plain"]], "tail": tail.isEmpty ? [] : [["text": tail, "role": "dim"]],
          "attention": id == 2, "children": children]
     }
     let children = [item(1, 1, run: "agent", started: 100, tail: "working", children: [item(2, 2, run: "stream", started: 100)]),
@@ -209,4 +209,72 @@ func idleShellIsDisplayOnly(_ kind: String, _ run: String, _ indicator: String, 
     #expect(sidebarTarget(snapshot, selected: panes[0], attention: 1) == panes[3])
     #expect(sidebarTarget(try fixture(sessions: [])) == nil)
     #expect(sidebarTarget(try fixture(sessions: []), attention: 1) == nil)
+}
+
+@Test func programRowsOrderingGeometryAndNavigation() throws {
+    let records: [[String: Any]] = [
+        ["id": "z", "state": "idle", "title": ""],
+        ["id": "a-", "state": "error"],
+        ["id": "a/missing/leaf", "state": "blocked", "msg": "Record-only caption"],
+        ["id": "a", "state": "working", "title": "Record-only title"],
+        ["id": "a/child", "state": "done"],
+        ["id": "é", "state": "idle"], ["id": "é", "state": "idle"],
+        ["id": "", "state": "working", "title": "Root"]
+    ]
+    let snapshot = try fixture(grouped: true, descendants: true, records: records)
+    let rows = sidebarRows(snapshot)
+    let programs = rows.filter { if case .program = $0.kind { true } else { false } }
+    #expect(programs.map(\.title) == ["Record-only title", "a/child", "a/missing/leaf", "a-", "é", "z", "é"])
+    #expect(programs.map(\.leading) == [48, 60, 72, 48, 48, 48, 48])
+    #expect(programs.map(\.height) == [24, 24, 39, 24, 24, 24, 24])
+    #expect(programs.allSatisfy { $0.padding == 4 && $0.tailY == 21 && $0.active && !$0.focused && $0.target == nil && $0.started == nil && !$0.attention })
+    #expect(programs.map(\.status) == [.running, .done, .attention, .error, .quiet, .quiet, .quiet])
+    #expect(rows[1].target?.pane == PaneID(number: 0))
+    #expect(rows[9].target?.pane == PaneID(number: 1))
+    #expect(Set(rows.map(\.id)).count == rows.count)
+    #expect(sidebarTarget(snapshot) == rows[1].target)
+    #expect(sidebarTarget(snapshot, selected: rows[1].target, attention: 1)?.pane == PaneID(number: 2))
+    #expect(sidebarSearch(snapshot, query: "Record-only title")?.sessions.isEmpty == true)
+    #expect(sidebarSearch(snapshot, query: "Record-only caption")?.sessions.isEmpty == true)
+    #expect(sidebarRows(sidebarSearch(snapshot, query: "session-0")) == rows)
+}
+
+@Test func programIDsOrderBySlashComponents() throws {
+    let records: [[String: Any]] = [
+        ["id": "a-b", "state": "working"],
+        ["id": "a/b", "state": "working"],
+        ["id": "a", "state": "working"]
+    ]
+    let rows = sidebarRows(try fixture(records: records)).filter { if case .program = $0.kind { true } else { false } }
+    #expect(rows.map(\.title) == ["a", "a/b", "a-b"])
+}
+
+@Test func programSeenSerialsAndContentChanges() throws {
+    let records: [[String: Any]] = [
+        ["id": "done", "state": "done"], ["id": "error", "state": "error"],
+        ["id": "working", "state": "working"], ["id": "blocked", "state": "blocked"]
+    ]
+    let unvisited = try fixture(client: 5, records: records)
+    let visited = try fixture(records: records)
+    var seen = sidebarProgramSeen(unvisited, previous: [:])
+    #expect(seen[PaneID(number: 0)] == nil)
+    seen = sidebarProgramSeen(visited, previous: seen)
+    seen = sidebarProgramSeen(unvisited, previous: seen)
+    let suppressed = sidebarRows(unvisited, programSeen: seen).filter { if case .program = $0.kind { true } else { false } }
+    #expect(suppressed.map(\.status) == [.attention, .quiet, .quiet, .running])
+    #expect(suppressed.map(\.indicatorDescription) == ["blocked", "idle", "idle", "working"])
+    let newer = try fixture(client: 5, records: records, serial: 8)
+    let restored = sidebarRows(newer, programSeen: seen).filter { if case .program = $0.kind { true } else { false } }
+    #expect(restored.map(\.status) == [.attention, .done, .error, .running])
+    #expect(!unvisited.sameSidebarContent(as: newer))
+    var changed = records
+    changed[0]["title"] = "New title"
+    let edited = try fixture(client: 5, records: changed)
+    #expect(!unvisited.sameSidebarContent(as: edited))
+    let before = sidebarRows(unvisited), after = sidebarRows(edited)
+    #expect(before.map(\.id) == after.map(\.id))
+    #expect(before.map(\.height) == after.map(\.height))
+    #expect(zip(before, after).filter { $0 != $1 }.count == 1)
+    #expect(sidebarProgramSeen(nil, previous: seen) == seen)
+    #expect(sidebarProgramSeen(try fixture(sessions: []), previous: seen).isEmpty)
 }
