@@ -57,6 +57,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
 
     init() {
         super.init(nibName: nil, bundle: nil)
+        tabs.sidebar = self
         splitView.frame = NSRect(x: 0, y: 0, width: 900, height: 560)
         let controller = NSViewController()
         dock.addSubview(list)
@@ -105,9 +106,17 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         super.viewDidAppear()
         view.needsLayout = true
     }
+    func headerDivider(in host: NSWindow) -> CGFloat? {
+        guard let window = view.window, host !== window, !isCollapsed, !isFloating, let glass = dockedGlass else { return nil }
+        let edge = glass.convert(NSPoint(x: glass.bounds.maxX, y: glass.bounds.maxY), to: nil)
+        return host.convertPoint(fromScreen: window.convertPoint(toScreen: edge)).x
+    }
     override func viewDidLayout() {
         super.viewDidLayout()
+        tabs.refreshHeader()
         list.frame = dock.bounds
+        list.layer?.cornerRadius = isFloating ? 18 : 0
+        list.layer?.borderWidth = isFloating ? 1 / (view.window?.backingScaleFactor ?? 2) : 0
         if let outside, let root = outside.superview, let glass = dockedGlass {
             let area = content.convert(content.bounds, to: root)
             let left = glass.convert(glass.bounds, to: root).maxX
