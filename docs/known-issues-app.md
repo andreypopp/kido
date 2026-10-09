@@ -76,14 +76,13 @@ current layout. Add a forced-stale pixel fixture and inspect a real window
 
 The cold-launch gate passed on screen through Shortcuts with a team-signed
 build: one remote window, no Local. Spotlight does not list the action directly.
-The action fails in ad-hoc releases because Linkd requires a validated bundle
-(`requiresValidatedBundle`). Use the unsigned
-`kido-app://<host>` Shortcuts recipe in
-[Remote hosts](design-app.md#remote-hosts) instead.
+Release builds use Apple Development (Personal Team) signing, supplying the
+TeamIdentifier Linkd requires. Ad-hoc Debug/demo builds still fail with
+`requiresValidatedBundle`; use the unsigned `kido-app://<host>` Shortcuts
+recipe in [Remote hosts](design-app.md#remote-hosts) for those builds.
 Internal URL parsing and queued-cold/warm routing are off-screen tested;
 actual URL-launch notification/event ordering still needs the user's on-screen
-retest. No timer guesses are used. Status: App Intent signing limitation;
-URL OS-delivery unverified.
+retest. No timer guesses are used. Status: URL OS-delivery unverified.
 
 ## Remote clipboard, URL and authentication matrix
 
