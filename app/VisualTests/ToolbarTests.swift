@@ -101,6 +101,11 @@ import TmuxControl
                 if mode == "floating" { owner.sidebar.focusSidebar(nil) }
                 owner.window.display()
                 try await Task.sleep(for: .milliseconds(200))
+                if mode.hasPrefix("docked") {
+                    let terminal = owner.sidebar.terminalHost.convert(owner.sidebar.terminalHost.bounds, to: owner.sidebar.splitView)
+                    XCTAssertEqual(terminal.minX, 0)
+                    XCTAssertEqual(terminal.width, owner.sidebar.splitView.bounds.width)
+                }
                 let tabsRect = owner.sidebar.tabs.convert(owner.sidebar.tabs.bounds, to: root)
                 windowedShadow.frame = NSRect(x: tabsRect.minX - 8, y: 0, width: 12, height: owner.window.contentView!.bounds.height)
                 transferredTabs.frame = NSRect(x: tabsRect.minX, y: 8, width: tabsRect.width, height: 36)
@@ -112,6 +117,30 @@ import TmuxControl
                 transferredTabs.refreshHeader()
                 header.display()
                 if mode == "floating" {
+                    for width in [CGFloat(236), 320] {
+                        owner.sidebar.splitView.setPosition(width, ofDividerAt: 0)
+                        root.layoutSubtreeIfNeeded()
+                        owner.sidebar.viewDidLayout()
+                        transferredTabs.refreshHeader()
+                        var glass = owner.sidebar.list.superview
+                        while let view = glass, !(view is NSGlassEffectView) { glass = view.superview }
+                        let liveGlass = try XCTUnwrap(glass)
+                        let edge = liveGlass.convert(NSPoint(x: liveGlass.bounds.maxX, y: liveGlass.bounds.maxY), to: nil)
+                        let convertedEdge = header.convertPoint(fromScreen: owner.window.convertPoint(toScreen: edge)).x
+                        XCTAssertEqual(paintedBackground.frame.minX, convertedEdge, accuracy: 0.5, "floating fullscreen backing must start at the live glass edge at width \(width)")
+                        header.display()
+                        let image = try XCTUnwrap(headerContent.bitmapImageRepForCachingDisplay(in: headerContent.bounds))
+                        headerContent.cacheDisplay(in: headerContent.bounds, to: image)
+                        let scale = CGFloat(image.pixelsWide) / headerContent.bounds.width
+                        let left = try XCTUnwrap(image.colorAt(x: Int(20 * scale), y: 10))
+                        let right = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(20 * scale), y: 10))
+                        XCTAssertEqual(left.redComponent, 1, accuracy: 2 / 255, "floating fullscreen left stand-in must remain uncovered")
+                        XCTAssertEqual(left.greenComponent, 1, accuracy: 2 / 255)
+                        XCTAssertEqual(left.blueComponent, 1, accuracy: 2 / 255)
+                        XCTAssertEqual(right.redComponent, expected.redComponent, accuracy: 2 / 255)
+                        XCTAssertEqual(right.greenComponent, expected.greenComponent, accuracy: 2 / 255)
+                        XCTAssertEqual(right.blueComponent, expected.blueComponent, accuracy: 2 / 255)
+                    }
                     let card = owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root)
                     var parent = owner.sidebar.list.superview
                     while let view = parent, !(view is NSGlassEffectView) { parent = view.superview }
@@ -131,9 +160,10 @@ import TmuxControl
                             guard view.bounds.contains(local) else { continue }
                             let color = try XCTUnwrap(image.colorAt(x: Int(local.x * scale), y: Int((view.bounds.maxY - local.y) * scale)))
                             sampled += 1
-                            XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc red")
-                            XCTAssertEqual(color.greenComponent, expected.greenComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc green")
-                            XCTAssertEqual(color.blueComponent, expected.blueComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc blue")
+                            let cornerExpected = name == "fullscreen-host" ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1) : expected
+                            XCTAssertEqual(color.redComponent, cornerExpected.redComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc red")
+                            XCTAssertEqual(color.greenComponent, cornerExpected.greenComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc green")
+                            XCTAssertEqual(color.blueComponent, cornerExpected.blueComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc blue")
                         }
                         XCTAssertEqual(sampled, name == "windowed" ? 4 : 2)
                     }
@@ -141,7 +171,8 @@ import TmuxControl
                 let hostImage = try XCTUnwrap(headerContent.bitmapImageRepForCachingDisplay(in: headerContent.bounds))
                 headerContent.cacheDisplay(in: headerContent.bounds, to: hostImage)
                 let leftColor = try XCTUnwrap(hostImage.colorAt(x: 20, y: 10))
-                let leftExpected = mode.hasPrefix("docked") ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1) : expected
+                let leftExpected = mode == "collapsed" ? expected : NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+                if mode == "collapsed" { XCTAssertEqual(paintedBackground.frame, headerContent.bounds) }
                 XCTAssertEqual(leftColor.redComponent, leftExpected.redComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
                 XCTAssertEqual(leftColor.greenComponent, leftExpected.greenComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
                 XCTAssertEqual(leftColor.blueComponent, leftExpected.blueComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
