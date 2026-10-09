@@ -14,6 +14,7 @@ type reporting = Hook of hook | Terminal [@@deriving to_yojson]
 
 type session = {
   agent : agent;
+  name : string;
   pane : Tmux.Pane.id option;
       [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
   pid : int;
@@ -30,6 +31,9 @@ type session = {
 val string_of_status : status -> string
 val string_of_agent : agent -> string
 val agent_of_string : string -> agent
+val agent_title : string -> string
+val display_name : Tmux.Pane.t list -> session -> string
+val addressable_name : session -> bool
 val dir : unit -> string
 val check_dir : dir:string -> (unit, string) result
 val server_socket : create:bool -> dir:string -> (string, string) result

@@ -14,6 +14,7 @@ val agent_status :
   parent_session:string ->
   depth:int ->
   model:string ->
+  name:string ->
   (unit, State.session) result
 (** [Error] is another live process holding the session. *)
 

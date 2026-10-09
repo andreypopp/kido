@@ -127,11 +127,11 @@ invalid. All requests use the existing error envelope and explicit socket.
   never descend, and wrap across sessions in sidebar order. The CLI and
   sidebar Shift-Up/Down keys share this order; a sole eligible root selects itself.
 - Changed: pi item indicator, attention and caption use pi's native OSC
-  records instead of State status/completion; the title is the pane title. Pi compaction is running with
+  records instead of State status/completion; the title is the reported pi session name, or the pane title for an unnamed session. Pi compaction is running with
   a message, not compacting. Gone runs outrank terminal and Hook status;
   Claude Code retains Hook status and completion.
 - Changed: pi stall requires a working root and stale State heartbeat;
-  bare pi never stalls. Pi addressing uses the pane title. State supplies
+  bare pi never stalls. Named pi sessions are addressed by their reported session name; unnamed sessions only by id. State supplies
   identity, inbox, parentage, activity and the ask overlay; agent-status
   removes --status, --ended and --title.
 - Unchanged: switch-session requests and integer-correlated replies were
@@ -322,8 +322,10 @@ that read still lacks the pane, its records are dropped. This field is not part 
 exit, RIS and respawn also follow the fork's program-status clear rules.
 These behaviours come from the pinned fork, not stock tmux.
 pi status comes from pi 1.1.0's native OSC 7501 root record, with no
-title or progress. pi labels and addressing use the pane title set
-through OSC 0/2, with the π prefix stripped; generic programs retain
+title or progress. Named pi labels use the session name reported in State,
+exactly as set by /name. Unnamed or untracked pi labels use the pane title
+set through OSC 0/2, with the π prefix stripped; unnamed tracked sessions
+are addressable only by session id or id prefix. Generic programs retain
 their OSC record title. A pi message duplicating the session name is
 omitted from the caption.
 

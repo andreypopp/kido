@@ -394,7 +394,7 @@ function makeFixture(): Fixture {
     logFile,
     inboxDir,
     setAgents(agents) {
-      writeFileSync(agentsFile, JSON.stringify(agents));
+      writeFileSync(agentsFile, JSON.stringify(agents.map((agent) => ({ named: true, ...(agent as object) }))));
     },
     setParentAlive(mode) {
       if (mode === "alive") delete process.env.KIDO_FAKE_PARENT_ALIVE;
@@ -513,6 +513,8 @@ function createFakePi() {
   // two held open replaces it.
   let onUserMessage: (() => unknown) | null = null;
   const pi = {
+    sessionName: undefined as string | undefined,
+    getSessionName: (): string | undefined => pi.sessionName,
     getSettings: (): { tuiMode?: "regular" | "fullscreen" } => ({ tuiMode: "regular" }),
     getAllTools: () => [...tools.values()],
     registerTool(tool: any) {
@@ -1897,6 +1899,22 @@ test("@ completion offers this session's agents first and still returns the buil
 // it; inserting the agent's unique id prefix is what makes accepting it
 // mean something, since resolveAgent takes an id prefix as readily as a
 // name.
+test("@ completion excludes unnamed pi even when its pane title looks like a name", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "named", name: "helper", named: true, self: false, parent: "", canMessage: true },
+      { id: "unnamed-id", name: "helper - kido", named: false, self: false, parent: "", canMessage: true },
+    ]);
+    const s = await startSession(fx);
+    const { provider } = stackOver(s.autocompleteFactories, []);
+    const suggestions = await suggestOnceListed(provider, "@hel");
+    assert.deepEqual(suggestions.items.map((i: any) => i.label), ["@helper"]);
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("@ completion uses list_runs' live agent rows, not bash or ended runs", async () => {
   const fx = makeFixture();
   try {
@@ -2414,7 +2432,7 @@ test("list_runs returns both kinds and tool prompts crosslink listing and stoppi
     fx.setAgents(rows);
     const s = await startSession(fx);
     const result = await s.tools.get("list_runs").execute("list", {});
-    assert.deepEqual(JSON.parse(result.content[0].text), rows);
+    assert.deepEqual(JSON.parse(result.content[0].text), rows.map((row) => ({ named: true, ...row })));
     const list = s.tools.get("list_runs");
     assert.match(list.description, /same-parent peers and your parent/);
     assert.match(list.description, /stop_run/);
@@ -3959,6 +3977,29 @@ test("the first pi on a session id is tracked and goes on reporting", async () =
     }
     assert.deepEqual(s.notifications, [], "nothing to tell the user about");
     await s.emit("session_shutdown", { reason: "quit" });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("identity reports read the live pi session name on every report and rename event", async () => {
+  const fx = makeFixture();
+  try {
+    const s = await startSession(fx);
+    await pollUntil(() => fx.identityReports().length >= 2, 2000, "initial reports");
+    assert.ok(fx.identityReports().every((args) => argAfter(args, "--name") === ""));
+    s.pi.sessionName = "Review - exact";
+    await s.emit("session_info_changed", { name: "not the authoritative name" });
+    await pollUntil(() => fx.identityReports().some((args) => argAfter(args, "--name") === "Review - exact"), 2000, "rename report");
+    const n = fx.identityReports().length;
+    await s.emit("session_info_changed", {});
+    await s.emit("turn_start");
+    await pollUntil(() => fx.identityReports().length > n, 2000, "heartbeat carries name");
+    assert.equal(fx.identityReports().length, n + 1, "unchanged rename is coalesced; work heartbeat is not");
+    assert.equal(argAfter(fx.identityReports().at(-1)!, "--name"), "Review - exact");
+    s.pi.sessionName = undefined;
+    await s.emit("session_info_changed", {});
+    await pollUntil(() => argAfter(fx.identityReports().at(-1)!, "--name") === "", 2000, "cleared name report");
   } finally {
     await fx.restore();
   }

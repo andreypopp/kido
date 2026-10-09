@@ -49,6 +49,7 @@ let session ?(agent = State.Claude) ?(status = State.Running) ?(parent = "") ?(d
     ?(ts = test_at) ?ended ?(activity = "") pane : State.session =
   {
     agent;
+    name = "";
     pane = Tmux.Pane.of_string pane;
     pid = Unix.getpid ();
     reporting =

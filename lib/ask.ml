@@ -140,8 +140,13 @@ let remove ~dir ~self id =
           Ok ()
       | exception Unix.Unix_error (ENOENT, _, _) -> Error ("no ask " ^ id))
 
-let to_json ~live ask =
-  match to_yojson ask with
+let display_name ~panes ~live ask =
+  Option.map_or ~default:ask.name (State.display_name panes)
+    (List.assoc_opt ~eq:String.equal ask.session live)
+
+let to_json ~panes ~live ask =
+  let name = display_name ~panes ~live ask in
+  match to_yojson { ask with name } with
   | `Assoc fields ->
       `Assoc (fields @ [ ("ended", `Bool (not (List.mem_assoc ~eq:String.equal ask.session live))) ])
   | json -> json

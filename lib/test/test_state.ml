@@ -21,7 +21,7 @@ let%expect_test "a record is written compactly, without its empty fields" =
   let s = session Idle ~ts:1_700_000_000.25 in
   print_endline (Yojson.Safe.to_string (State.session_to_yojson { s with pid = 42 }));
   [%expect
-    {| {"agent":"pi","pane":"%1","pid":42,"reporting":["Terminal"],"ts":"2023-11-14T22:13:20.25Z"} |}]
+    {| {"agent":"pi","name":"","pane":"%1","pid":42,"reporting":["Terminal"],"ts":"2023-11-14T22:13:20.25Z"} |}]
 
 let%expect_test "timestamps round-trip through RFC 3339" =
   List.iter

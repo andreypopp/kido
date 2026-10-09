@@ -407,6 +407,7 @@ export default function (pi: ExtensionAPI) {
     const args = [
       "agent-status", "--agent", "pi", "--session", sessionId,
       "--activity", activity, "--model", model ?? "", "--inbox", opts.inbox,
+      "--name", pi.getSessionName() ?? "",
     ];
     if (PARENT_PID !== undefined) args.push("--parent-pid", String(PARENT_PID));
     if (PARENT_SESSION) args.push("--parent-session", PARENT_SESSION);
@@ -419,7 +420,7 @@ export default function (pi: ExtensionAPI) {
     if (!reporter) return;
     const remove = kind === "removed";
     const inbox = inboxOpen() ? (heldInbox()?.path ?? "") : "";
-    const key = [activity, model ?? "", inbox, remove].join("|");
+    const key = JSON.stringify([activity, model ?? "", inbox, remove, pi.getSessionName() ?? ""]);
     if (kind !== "heartbeat" && key === lastKey) return;
     if (kind !== "heartbeat") lastKey = key;
     spawnDetached(reporter.kido, statusArgs(reporter.sessionId, { remove, inbox }));
@@ -521,6 +522,8 @@ export default function (pi: ExtensionAPI) {
 
     report("identity");
   });
+
+  pi.on("session_info_changed", () => report("identity"));
 
   pi.on("model_select", (event) => {
     model = event.model.id;

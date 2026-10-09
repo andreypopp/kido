@@ -247,6 +247,7 @@ interface AgentInfo {
   run?: string;
   id: string;
   name: string;
+  named: boolean;
   parent: string;
   pane: string;
   self: boolean;
@@ -280,7 +281,7 @@ function agentCompletionItems(agents: AgentInfo[], token: string): CompletionIte
   const wanted = token.toLowerCase();
   const matched: Array<{ agent: AgentInfo; rank: number }> = [];
   for (const a of agents) {
-    if (a.self || !a.name) continue;
+    if (a.self || !a.name || !a.named) continue;
     const name = a.name.toLowerCase();
     if (name.startsWith(wanted)) matched.push({ agent: a, rank: 0 });
     else if (name.split(NAME_WORD_SEPARATORS).some((word) => word.startsWith(wanted))) matched.push({ agent: a, rank: 1 });
@@ -303,7 +304,7 @@ function agentCompletionItems(agents: AgentInfo[], token: string): CompletionIte
 // Mirrors kido tool message_agent's Message_agent.resolve_target (lib/message_agent.ml): exact name, then exact id, then unique id prefix.
 function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; error?: string } {
   to = to.replace(/^@/, "");
-  const byName = agents.filter((a) => a.name && a.name.toLowerCase() === to.toLowerCase());
+  const byName = agents.filter((a) => a.named && a.name && a.name.toLowerCase() === to.toLowerCase());
   if (byName.length === 1) return { agent: byName[0] };
   if (byName.length > 1) return { error: `"${to}" matches several agents by name` };
 

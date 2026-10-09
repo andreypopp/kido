@@ -215,7 +215,7 @@ let ask_user =
          |> ok
        in
        let replaces = Option.map (fun id -> ok (Ask.parse_id id)) replaces in
-       let name = List_runs.display_name [ p ] s in
+       let name = State.display_name [ p ] s in
        print
          (Result.map Ask.string_of_id
             (Ask.record ~dir ~self:session ~replaces ~session:id
@@ -249,7 +249,8 @@ let get_asks =
          |> List.filter (fun (a : Ask.t) ->
              Option.map_or ~default:true (String.equal a.session) session)
        in
-       print_endline (Yojson.Safe.to_string (`List (List.map (Ask.to_json ~live) asks)));
+       let panes = if List.is_empty live then [] else ok (Tmux.Exec.list_panes ()) in
+       print_endline (Yojson.Safe.to_string (`List (List.map (Ask.to_json ~panes ~live) asks)));
        0
 
 let get_agent =
@@ -552,6 +553,7 @@ let agent_status =
        str "parent-session" "ID"
          "Session id of the agent that spawned this one, empty for a root agent."
      and+ depth = num "depth" "N" "Depth in the spawn tree, 0 for a root agent."
+     and+ name = str "name" "NAME" "The pi session name, empty for an unnamed session."
      and+ model = str "model" "NAME" "Name of the model the agent is currently running."
      and+ remove = flag "remove" "Delete the session's record." in
      Cli.run "agent-status" (fun () ->
@@ -561,7 +563,7 @@ let agent_status =
            else
              Reporting.agent_status ~dir
                ~pane:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE"))
-               ~agent ~session ~inbox ~activity ~parent_pid ~parent_session ~depth ~model
+               ~agent ~session ~inbox ~activity ~parent_pid ~parent_session ~depth ~model ~name
          with
          | Ok () -> 0
          | Error holder ->

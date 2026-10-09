@@ -305,7 +305,7 @@ func TestStopBashRunFindsItsRunAndSpeaksForIt(t *testing.T) {
 		t.Errorf("stop of a child's run = %q, want it stopped", out)
 	}
 
-	twin := shellAgent("twin-agent", "--parent-session", "caller-e2e")
+	twin := shellAgent("twin-agent", "--parent-session", "caller-e2e", "--name", "Twin")
 	h.agentRunMeta("twin-agent", twin, "Twin", "caller-e2e")
 	twins := []string{runIn(caller, "twin", "sleep", "300"), "twin-agent"}
 	sort.Strings(twins)

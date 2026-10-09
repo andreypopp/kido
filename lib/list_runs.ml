@@ -17,6 +17,7 @@ let status_to_yojson = function
 type agent_info = {
   id : string;
   name : string;
+  named : bool;
   agent : State.agent;
   pane : Tmux.Pane.id;
   window : Tmux.Window.id;
@@ -39,31 +40,6 @@ let caller_pane panes self =
     (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" Pane.to_string self))
     (Option.flat_map (Pane.find panes) self)
 
-let agent_title title =
-  match String.chop_prefix ~pre:"π - " title with
-  | Some t -> t
-  | None ->
-      let rec skip i =
-        if i >= String.length title then i
-        else
-          let d = String.get_utf_8_uchar title i in
-          let c = Uchar.to_int (Uchar.utf_decode_uchar d) in
-          if
-            (c < 0x80 && not (Char.Ascii.is_alphanum (Char.chr c)))
-            || (c >= 0x80 && c <= 0xBF)
-            || c = 0xD7 || c = 0xF7
-            || (c >= 0x2000 && c <= 0x2BFF)
-            || (c >= 0x2E00 && c <= 0x2E7F)
-            || (c >= 0x3000 && c <= 0x303F)
-            || (c >= 0xFE00 && c <= 0xFE0F)
-            || c = 0xFFFD
-            || (c >= 0x1F000 && c <= 0x1FAFF)
-          then skip (i + Uchar.utf_decode_length d)
-          else i
-      in
-      let i = skip 0 in
-      String.sub title i (String.length title - i)
-
 let root programs (s : State.session) =
   Option.flat_map
     (fun pane -> Option.flat_map Program_status.root (Pane.Map.find_opt pane programs))
@@ -73,11 +49,6 @@ let status programs (s : State.session) =
   match s.reporting with
   | Hook h -> Reported h.status
   | Terminal -> Program (Option.map (fun (r : Program_status.record) -> r.state) (root programs s))
-
-let display_name panes (s : State.session) =
-  Option.map_or ~default:""
-    (fun (p : Pane.t) -> agent_title p.title)
-    (Option.flat_map (Pane.find panes) s.pane)
 
 let per_pane live = List.map snd (Tmux.Pane.Map.bindings (State.by_pane live))
 
@@ -140,7 +111,8 @@ let agents ~dir ~threshold ~self ~session ~panes ~programs ~states =
         (fun (p : Pane.t) ->
           {
             id;
-            name = display_name panes s;
+            name = State.display_name panes s;
+            named = State.addressable_name s;
             agent = s.agent;
             pane = p.pane_id;
             window = p.window_id;
@@ -206,9 +178,7 @@ let list_runs ~dir ~threshold ~self ~session =
             {
               run = r;
               agent =
-                (if Option.is_some r.outcome then None
-                 else
-                   List.find_opt (fun a -> String.equal a.id (Subrun.string_of_id r.meta.id)) agents);
+                List.find_opt (fun a -> String.equal a.id (Subrun.string_of_id r.meta.id)) agents;
               window =
                 Option.map
                   (fun (p : Pane.t) -> p.window_id)
@@ -229,11 +199,12 @@ let row_to_yojson row =
         let m = r.meta in
         let fields =
           match a with
-          | Some a -> agent_fields a
-          | None ->
+          | Some a when Option.is_none r.outcome -> agent_fields a
+          | _ ->
               [
                 ("id", `String (Subrun.string_of_id m.id));
-                ("name", `String m.name);
+                ("name", `String (Option.map_or ~default:m.name (fun a -> a.name) a));
+                ("named", `Bool false);
                 ("pane", Pane.optional_id_to_yojson m.pane);
                 ("window", `String (Option.map_or ~default:"" Window.to_string window));
                 ("parent", `String m.parent_session);

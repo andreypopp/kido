@@ -4,6 +4,7 @@ type status = Reported of State.status | Program of Tmux.Program_status.state op
 type agent_info = {
   id : string;
   name : string;
+  named : bool;
   agent : State.agent;
   pane : Tmux.Pane.id;
   window : Tmux.Window.id;
@@ -22,9 +23,7 @@ type agent_info = {
 [@@deriving to_yojson]
 
 val caller_pane : Tmux.Pane.t list -> Tmux.Pane.id option -> (Tmux.Pane.t, string) result
-val agent_title : string -> string
 val status : Tmux.Program_status.t Tmux.Pane.Map.t -> State.session -> status
-val display_name : Tmux.Pane.t list -> State.session -> string
 val per_pane : (string * State.session) list -> (string * State.session) list
 
 val in_session :

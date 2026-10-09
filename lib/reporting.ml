@@ -1,6 +1,7 @@
 let session ~agent ~pane ~pid reporting : State.session =
   {
     agent;
+    name = "";
     pane;
     pid;
     reporting;
@@ -76,11 +77,12 @@ let one_line s ~max =
   String.rdrop_while (Char.equal ' ') (Msg.utf_8_prefix s max)
 
 let agent_status ~dir ~pane ~agent ~session:id ~inbox ~activity ~parent_pid ~parent_session ~depth
-    ~model =
+    ~model ~name =
   State.record ~dir id
     {
       (session ~agent:(State.agent_of_string agent) ~pane ~pid:(Unix.getppid ()) Terminal) with
       inbox;
+      name;
       activity = one_line activity ~max:256;
       parent =
         (if String.is_empty parent_session then None
@@ -88,3 +90,12 @@ let agent_status ~dir ~pane ~agent ~session:id ~inbox ~activity ~parent_pid ~par
       depth;
       model;
     }
+  |> Result.map (fun () ->
+      if String.equal agent "pi" && not (String.is_empty name) then
+        Result.to_opt (Subrun.parse_id id)
+        |> Option.flat_map (Subrun.read_meta ~dir)
+        |> Option.iter (fun (meta : Subrun.meta) ->
+            match meta with
+            | { kind = Agent; _ } when not (String.equal name meta.name) ->
+                Subrun.write_meta ~dir { meta with name }
+            | _ -> ()))

@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1095,7 +1096,11 @@ func (h *harness) programStatus(pane, body string, title ...string) {
 
 func (h *harness) agentStatus(sessionID, pane, agent string, extra ...string) {
 	h.t.Helper()
-	args := append([]string{"agent-status", "--agent", agent, "--session", sessionID}, extra...)
+	args := []string{"agent-status", "--agent", agent, "--session", sessionID}
+	if agent == "pi" && !slices.Contains(extra, "--name") {
+		args = append(args, "--name", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	}
+	args = append(args, extra...)
 	cmd := exec.Command(kidoBin, args...)
 	cmd.Env = cleanEnv("TMUX="+h.inner+",0,0", "TMUX_PANE="+pane)
 	if out, err := cmd.CombinedOutput(); err != nil {

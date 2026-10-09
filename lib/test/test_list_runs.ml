@@ -8,7 +8,7 @@ let%expect_test "Hook and Terminal names use the pane title" =
     ]
   in
   List.iter
-    (fun s -> print_endline (List_runs.display_name panes s))
+    (fun s -> print_endline (State.display_name panes s))
     [
       session ~agent:Claude ~pane:"%1" Idle;
       session ~agent:Claude ~pane:"%2" Idle;
@@ -28,7 +28,7 @@ let%expect_test "is_ancestor refuses a self-edge" =
 
 let%expect_test "agent_title" =
   List.iter
-    (fun t -> Printf.printf "[%s]\n" (List_runs.agent_title t))
+    (fun t -> Printf.printf "[%s]\n" (State.agent_title t))
     [
       "✳ Tmux config";
       "⠂ Fix it";

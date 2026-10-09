@@ -71,12 +71,16 @@ let lingering_subagents ~dir panes prev =
           let outcome () =
             Option.map (fun (o : Subrun.outcome) -> o.result) (Subrun.read_outcome ~dir run_id)
           in
+          let meta = Subrun.read_meta ~dir run_id in
           match String_map.find_opt key prev with
           | _ when String_map.mem key out -> out
           | Some l ->
-              String_map.add key { l with outcome = Option.or_lazy ~else_:outcome l.outcome } out
+              let name = Option.map_or ~default:l.name (fun (m : Subrun.meta) -> m.name) meta in
+              String_map.add key
+                { l with name; outcome = Option.or_lazy ~else_:outcome l.outcome }
+                out
           | None -> (
-              match Subrun.read_meta ~dir run_id with
+              match meta with
               | None -> out
               | Some meta ->
                   String_map.add key
@@ -195,7 +199,8 @@ let take ~opts conn prev client =
                   | Some pane -> Live pane
                   | None -> if Option.is_none (Ask.revival_error a) then Revivable else Unavailable
                 in
-                { ask = a; target })
+                let name = Ask.display_name ~panes ~live a in
+                { ask = { a with name }; target })
               (Ask.list ~dir:opts.dir);
         }
       in
@@ -495,7 +500,13 @@ let shell_indicator m ph =
 
 let agent_title_of m (p : P.t) =
   if not (State.is_agent_pane m.snap.states ~pi:m.snap.pi p) then None
-  else Some (match List_runs.agent_title p.title with "" -> "-" | t -> t)
+  else
+    let title =
+      match Tmux.Pane.Map.find_opt p.pane_id m.snap.states with
+      | Some (_, s) -> State.display_name [ p ] s
+      | None -> State.agent_title p.title
+    in
+    Some (match title with "" -> "-" | t -> t)
 
 let span role text = { text; role }
 let plain = span `Plain
@@ -520,7 +531,12 @@ let pane_label m (p : P.t) =
       row
         (match l.kind with Agent -> Agent | Bash | Stream -> Run)
         (Some (Gone l.outcome))
-        [ span `Dim l.name ]
+        [
+          span `Dim
+            (Option.map_or ~default:l.name
+               (fun (_, s) -> State.display_name [ p ] s)
+               (Tmux.Pane.Map.find_opt p.pane_id m.snap.states));
+        ]
         (Text
            (Option.map_or ~default:[]
               (fun o -> [ span `Dim (Subrun.string_of_result o) ])
@@ -529,8 +545,11 @@ let pane_label m (p : P.t) =
       let app = Tmux.Program_status.app status r in
       let pi = Option.exists (String.equal "pi") app in
       let title =
-        if pi then List_runs.agent_title p.title
-        else Option.value ~default:(Option.value ~default:p.current_command app) r.title
+        match Tmux.Pane.Map.find_opt p.pane_id m.snap.states with
+        | Some (_, ({ agent = Pi; _ } as s)) -> State.display_name [ p ] s
+        | _ ->
+            if pi then Option.value ~default:(State.agent_title p.title) agent_title
+            else Option.value ~default:(Option.value ~default:p.current_command app) r.title
       in
       let kind =
         match lingering with

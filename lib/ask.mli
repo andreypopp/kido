@@ -43,4 +43,5 @@ val target :
   (Tmux.Pane.id, string) result
 
 val remove : dir:string -> self:string -> id -> (unit, string) result
-val to_json : live:(string * State.session) list -> t -> Yojson.Safe.t
+val display_name : panes:Tmux.Pane.t list -> live:(string * State.session) list -> t -> string
+val to_json : panes:Tmux.Pane.t list -> live:(string * State.session) list -> t -> Yojson.Safe.t

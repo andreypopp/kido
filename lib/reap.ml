@@ -111,6 +111,17 @@ let body ~dir e =
   Buffer.contents b
 
 let send ~dir e =
+  let open Result.Infix in
+  let* e =
+    match State.get_live ~dir (Subrun.string_of_id e.meta.id) with
+    | Some ({ agent = Pi; _ } as s) ->
+        let+ panes =
+          if State.addressable_name s then Ok []
+          else Result.map_err (fun m -> Msg.Failed m) (Tmux.Exec.list_panes ())
+        in
+        { e with meta = { e.meta with name = State.display_name panes s } }
+    | _ -> Ok e
+  in
   if String.is_empty e.meta.parent_session then Ok ()
   else
     Msg.notify ~dir ~parent_session:e.meta.parent_session

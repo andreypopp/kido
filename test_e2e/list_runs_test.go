@@ -15,6 +15,7 @@ import (
 type listedRun struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
+	Named        bool   `json:"named"`
 	Kind         string `json:"kind"`
 	Relationship string `json:"relationship"`
 	Run          string `json:"run"`
@@ -144,8 +145,8 @@ func TestListRunsRenamedSubagentNameResolves(t *testing.T) {
 	}
 	h.agentStatus("rename-child", pane, "pi", "--remove")
 	rows = h.listedRuns(caller)
-	if len(rows) != 1 || rows[0].Name != "launch-name" {
-		t.Fatalf("child without live record rows = %+v, want launch name", rows)
+	if len(rows) != 1 || rows[0].Name != "current-name" {
+		t.Fatalf("child without live record rows = %+v, want last reported name", rows)
 	}
 }
 

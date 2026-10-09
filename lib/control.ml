@@ -43,7 +43,7 @@ let interrupt ~dir ~self to_ =
   let* panes = Exec.list_panes () in
   let* _, target = Message_agent.resolve ~live ~panes ~self (Descendant to_) in
   match request ~states:(State.by_pane live) ~panes ~self Interrupt target with
-  | Ok _ -> Ok ("interrupted " ^ List_runs.display_name panes target)
+  | Ok _ -> Ok ("interrupted " ^ State.display_name panes target)
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
 let stop ~dir ~self ~escalation ~warn ~force to_ =
@@ -51,6 +51,8 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
   let unforced what =
     if force then Ok () else Error (what ^ "; pass --force to kill its window instead")
   in
+  let live = State.load_live ~dir in
+  let* panes = Exec.list_panes () in
   let runs = List.filter_map (Subrun.read_meta ~dir) (Subrun.list ~dir) in
   let ids =
     List.filter
@@ -68,7 +70,13 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
     | None ->
         List.filter
           (fun (m : Subrun.meta) ->
-            String.equal_caseless m.name to_ && Option.is_none (Subrun.read_outcome ~dir m.id))
+            let named =
+              match List.assoc_opt ~eq:String.equal (Subrun.string_of_id m.id) live with
+              | Some s ->
+                  State.addressable_name s && String.equal_caseless (State.display_name panes s) to_
+              | None -> String.equal_caseless m.name to_
+            in
+            named && Option.is_none (Subrun.read_outcome ~dir m.id))
           runs
   in
   let* meta =
@@ -86,8 +94,6 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
     if Option.is_none (Subrun.read_outcome ~dir meta.id) then Ok ()
     else Error (Printf.sprintf "run %s has already ended" (Subrun.string_of_id meta.id))
   in
-  let live = State.load_live ~dir in
-  let* panes = Exec.list_panes () in
   match meta.kind with
   | Bash | Stream -> (
       let* reached =
@@ -123,7 +129,7 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
                    label m))
   | Agent -> (
       let* id, target = Message_agent.resolve ~live ~panes ~self (Descendant_run meta.id) in
-      let name = "subagent " ^ List_runs.display_name panes target in
+      let name = "subagent " ^ State.display_name panes target in
       let degrade () =
         match kill_run_pane ~before:(fun () -> record_stopped ~dir id) target.pane with
         | Ok `Killed -> Ok (Printf.sprintf "killed %s's pane" name)

@@ -34,6 +34,7 @@ type reporting = Hook of hook | Terminal [@@deriving yojson]
 
 type session = {
   agent : agent;
+  name : string;
   pane : Tmux.Pane.id option;
       [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
   pid : int;
@@ -46,6 +47,42 @@ type session = {
   model : string; [@default ""]
 }
 [@@deriving yojson]
+
+let agent_title title =
+  match String.chop_prefix ~pre:"π - " title with
+  | Some t -> t
+  | None ->
+      let rec skip i =
+        if i >= String.length title then i
+        else
+          let d = String.get_utf_8_uchar title i in
+          let c = Uchar.to_int (Uchar.utf_decode_uchar d) in
+          if
+            (c < 0x80 && not (Char.Ascii.is_alphanum (Char.chr c)))
+            || (c >= 0x80 && c <= 0xBF)
+            || c = 0xD7 || c = 0xF7
+            || (c >= 0x2000 && c <= 0x2BFF)
+            || (c >= 0x2E00 && c <= 0x2E7F)
+            || (c >= 0x3000 && c <= 0x303F)
+            || (c >= 0xFE00 && c <= 0xFE0F)
+            || c = 0xFFFD
+            || (c >= 0x1F000 && c <= 0x1FAFF)
+          then skip (i + Uchar.utf_decode_length d)
+          else i
+      in
+      let i = skip 0 in
+      String.sub title i (String.length title - i)
+
+let display_name panes (s : session) =
+  match s.agent with
+  | Pi when not (String.is_empty s.name) -> s.name
+  | _ ->
+      Option.map_or ~default:""
+        (fun (p : Tmux.Pane.t) -> agent_title p.title)
+        (Option.flat_map (Tmux.Pane.find panes) s.pane)
+
+let addressable_name (s : session) =
+  match s.agent with Pi -> not (String.is_empty s.name) | _ -> true
 
 let dir () =
   let socket =

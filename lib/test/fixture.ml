@@ -26,6 +26,7 @@ let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_
     State.session =
   {
     agent;
+    name = "";
     pane = Tmux.Pane.of_string pane;
     pid;
     reporting =

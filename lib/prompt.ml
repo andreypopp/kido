@@ -58,7 +58,7 @@ let prompt ~dir ~self ~window text =
     | [ p ] ->
         let inbox, name =
           Option.map_or ~default:("", p.title)
-            (fun (_, (s : State.session)) -> (s.inbox, List_runs.display_name panes s))
+            (fun (_, (s : State.session)) -> (s.inbox, State.display_name panes s))
             (Tmux.Pane.Map.find_opt p.pane_id states)
         in
         failed

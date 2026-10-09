@@ -13,15 +13,15 @@ let decide ~panes to_ by = function
   | [] -> None
   | [ e ] -> Some (Ok e)
   | many ->
-      List.map (fun (id, s) -> Printf.sprintf "%s (%s)" id (List_runs.display_name panes s)) many
+      List.map (fun (id, s) -> Printf.sprintf "%s (%s)" id (State.display_name panes s)) many
       |> List.sort String.compare |> String.concat ", "
       |> Printf.sprintf "%S matches several agents by %s: %s" to_ by
       |> fun m -> Some (Error m)
 
 let match_target ~panes sessions to_ =
   let named (_, s) =
-    let name = List_runs.display_name panes s in
-    (not (String.is_empty name)) && String.equal_caseless name to_
+    let name = State.display_name panes s in
+    State.addressable_name s && (not (String.is_empty name)) && String.equal_caseless name to_
   in
   match decide ~panes to_ "name" (List.filter named sessions) with
   | Some r -> Some r
@@ -74,7 +74,7 @@ let descendant_target states panes ~self to_ =
   let* ((id, target) as e) = resolve_target states panes ~self to_ in
   let* reached = reaches states panes ~self id in
   if reached then Ok e
-  else Error (List_runs.display_name panes target ^ " is not this agent's descendant")
+  else Error (State.display_name panes target ^ " is not this agent's descendant")
 
 let resolve ~live ~panes ~self recipient =
   let open Result.Infix in
@@ -86,11 +86,11 @@ let resolve ~live ~panes ~self recipient =
     | Parent session -> Result.map (fun s -> (session, s)) (Msg.live_parent live session)
   in
   if Option.equal Tmux.Pane.equal target.pane self then
-    Error (List_runs.display_name panes target ^ " is this agent")
+    Error (State.display_name panes target ^ " is this agent")
   else Ok e
 
 let deliver ~states ~panes ~self spec (target : State.session) text =
-  let name = List_runs.display_name panes target in
+  let name = State.display_name panes target in
   let kind = Msg.string_of_kind spec.kind in
   let is_message = match spec.kind with Message -> true | _ -> false in
   if (not is_message) && String.is_empty target.inbox then
@@ -102,7 +102,7 @@ let deliver ~states ~panes ~self spec (target : State.session) text =
     let from : Msg.from =
       match Option.flat_map (fun self -> Tmux.Pane.Map.find_opt self states) self with
       | Some (id, (s : State.session)) ->
-          { session = id; name = List_runs.display_name panes s; pane = self }
+          { session = id; name = State.display_name panes s; pane = self }
       | None -> { session = ""; name = ""; pane = self }
     in
     let payload =
@@ -162,12 +162,11 @@ let send ~dir ~self recipient spec text =
                (Printf.sprintf
                   "%s has no inbox for an answer to arrive on, and only a long-lived process has \
                    one; nothing sent - %s"
-                  (List_runs.display_name panes caller)
-                  alternative))
+                  (State.display_name panes caller) alternative))
       | _ -> Ok ()
     in
     let* id, target = not_sent (resolve ~live ~panes ~self recipient) in
-    let name = List_runs.display_name panes target in
+    let name = State.display_name panes target in
     match
       (deliver ~states ~panes ~self spec target text, spec.kind, List_runs.status programs target)
     with

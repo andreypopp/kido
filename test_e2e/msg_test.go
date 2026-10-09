@@ -372,7 +372,7 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 func (h *harness) writeRecord(id, pane string, ts time.Time, extra map[string]any) {
 	h.t.Helper()
 	rec := map[string]any{
-		"agent": "pi", "pane": pane, "pid": os.Getpid(), "reporting": []any{"Terminal"},
+		"agent": "pi", "name": "", "pane": pane, "pid": os.Getpid(), "reporting": []any{"Terminal"},
 		"ts": ts.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	status, title := "idle", ""
@@ -515,7 +515,7 @@ func TestListRunsScopesOrdersAndDecorates(t *testing.T) {
 		t.Fatalf("kido tool list_runs --json: rc=%d %s", rc, out)
 	}
 	if got, want := strings.Join(jsonKeys(t, out), " "),
-		"id name agent pane window status activity parent depth self cwd canMessage canReply model sinceReport stalled kind relationship"; got != want {
+		"id name named agent pane window status activity parent depth self cwd canMessage canReply model sinceReport stalled kind relationship"; got != want {
 		t.Errorf("list_runs --json keys = %q, want %q", got, want)
 	}
 	var order []string
