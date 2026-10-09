@@ -87,8 +87,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     private func updateAppearance() {
         wantsLayer = true
-        layer?.cornerRadius = 18
-        layer?.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.12).cgColor
         }
