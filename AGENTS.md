@@ -16,6 +16,10 @@ and how a pane is classified and its status read in
 Read them before changing any of that; neither the code's comments nor
 this file repeat it.
 
+Proposed features are drafted as RFCs in `rfc/`, one markdown file
+per proposal. An RFC describes what is not built yet; once its feature
+lands, the design it settled moves into `docs/` and the RFC is deleted.
+
 ## Code rules
 
 These are hard rules, for OCaml and TypeScript alike.
