@@ -13,6 +13,7 @@ type options = {
 let default_interval = 0.1
 
 type lingering = {
+  stamp : (int * float) option;
   name : string;
   parent : string;
   outcome : Subrun.result option;
@@ -71,27 +72,40 @@ let lingering_subagents ~dir panes prev =
           let outcome () =
             Option.map (fun (o : Subrun.outcome) -> o.result) (Subrun.read_outcome ~dir run_id)
           in
-          let meta = Subrun.read_meta ~dir run_id in
           match String_map.find_opt key prev with
           | _ when String_map.mem key out -> out
-          | Some l ->
-              let name = Option.map_or ~default:l.name (fun (m : Subrun.meta) -> m.name) meta in
-              String_map.add key
-                { l with name; outcome = Option.or_lazy ~else_:outcome l.outcome }
-                out
-          | None -> (
-              match meta with
-              | None -> out
-              | Some meta ->
+          | cached -> (
+              let stamp =
+                try
+                  let s = Unix.stat (Subrun.meta_path ~dir run_id) in
+                  Some (s.st_ino, s.st_mtime)
+                with Unix.Unix_error (ENOENT, _, _) -> None
+              in
+              let meta =
+                if Option.is_none stamp || Option.exists (fun l -> Stdlib.(l.stamp = stamp)) cached then
+                  None
+                else Subrun.read_meta ~dir run_id
+              in
+              match cached with
+              | Some l ->
+                  let name = Option.map_or ~default:l.name (fun (m : Subrun.meta) -> m.name) meta in
                   String_map.add key
-                    {
-                      name = meta.name;
-                      parent = meta.parent_session;
-                      outcome = outcome ();
-                      kind = meta.kind;
-                      started = meta.started_at;
-                    }
-                    out))
+                    { l with stamp; name; outcome = Option.or_lazy ~else_:outcome l.outcome }
+                    out
+              | None -> (
+                  match meta with
+                  | None -> out
+                  | Some meta ->
+                      String_map.add key
+                        {
+                          stamp;
+                          name = meta.name;
+                          parent = meta.parent_session;
+                          outcome = outcome ();
+                          kind = meta.kind;
+                          started = meta.started_at;
+                        }
+                        out)))
       | _ -> out)
     String_map.empty panes
 
@@ -241,7 +255,9 @@ let same a b =
   && Tmux.Pane.Map.equal Stdlib.( = ) a.programs b.programs
   && Procs.Int_map.equal Stdlib.( = ) a.ssh b.ssh
   && Procs.Int_set.equal a.pi b.pi
-  && String_map.equal Stdlib.( = ) a.lingering b.lingering
+  && String_map.equal
+       (fun x y -> Stdlib.({ x with stamp = None } = { y with stamp = None }))
+       a.lingering b.lingering
   && List.equal Stdlib.( = ) a.asks b.asks
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }

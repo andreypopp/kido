@@ -371,7 +371,7 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
 let%expect_test "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
   let lingering parent =
     Sidebar.String_map.singleton "run-1"
-      { Sidebar.name = ""; parent; outcome = None; kind = Agent; started = test_at }
+      { Sidebar.stamp = None; name = ""; parent; outcome = None; kind = Agent; started = test_at }
   in
   placements
     [ w "201"; w ~run:"run-1" "205" ]
@@ -574,7 +574,8 @@ let%expect_test "run metadata survives activity text and clears its clock on dea
           lingering =
             Sidebar.String_map.singleton "run"
               {
-                Sidebar.name = "helper";
+                Sidebar.stamp = None;
+                name = "helper";
                 parent = "";
                 outcome = None;
                 kind = Agent;

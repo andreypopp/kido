@@ -12,6 +12,7 @@ type options = {
 val default_interval : float
 
 type lingering = {
+  stamp : (int * float) option;
   name : string;
   parent : string;
   outcome : Subrun.result option;
