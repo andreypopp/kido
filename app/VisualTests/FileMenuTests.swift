@@ -8,7 +8,7 @@ import XCTest
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-file-menu-\(UUID().uuidString)"))))
         let app = AppDelegate(runtime: runtime)
         let remote = try XCTUnwrap(app.open(.remote("example.invalid"), start: false))
-        app.routes.ready(isDefaultLaunch: true) { _ = app.open($0, start: false) }
+        app.routes.ready(isDefaultLaunch: true) { _ = app.open($0, start: false, cause: $1) }
         defer { app.owners.forEach { $0.close() } }
         app.newLocalWindow()
         XCTAssertEqual(app.owners.count, 2)
@@ -20,7 +20,7 @@ import XCTest
     func testRemoteDialogResponses() {
         let routes = WindowRoutes()
         var opened: [Kido.Host] = []
-        routes.ready(isDefaultLaunch: true) { opened.append($0) }
+        routes.ready(isDefaultLaunch: true) { host, _ in opened.append(host) }
         let dialog = RemoteHostDialog(routes: routes)
         dialog.field.stringValue = "user@alias"
         XCTAssertTrue(dialog.handle(.alertSecondButtonReturn))
@@ -39,7 +39,7 @@ import XCTest
     func testRemoteDialogNativeInvalidInputStaysAttached() async throws {
         let routes = WindowRoutes()
         var opened: [Kido.Host] = []
-        routes.ready(isDefaultLaunch: true) { opened.append($0) }
+        routes.ready(isDefaultLaunch: true) { host, _ in opened.append(host) }
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.orderFront(nil)
@@ -72,7 +72,7 @@ import XCTest
     func testLocalMenuRespectsColdRemoteGate() {
         let app = AppDelegate()
         var opened: [Kido.Host] = []
-        app.routes.ready(isDefaultLaunch: false) { opened.append($0) }
+        app.routes.ready(isDefaultLaunch: false) { host, _ in opened.append(host) }
         app.newLocalWindow()
         XCTAssertTrue(opened.isEmpty)
         app.routes.connect(.remote("alias"))
