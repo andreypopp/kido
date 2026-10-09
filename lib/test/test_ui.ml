@@ -13,8 +13,8 @@ let opts ?(dir = temp ()) () : Sidebar.options =
     grace = 30.;
   }
 
-let pane ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pid = 0) ?run ?dead_at
-    ?(alternate = false) ?(running = false) ?start ?prompt ?exit ?(command_line = "")
+let pane ?ssh ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pid = 0) ?run
+    ?dead_at ?(alternate = false) ?(running = false) ?start ?prompt ?exit ?(command_line = "")
     ?(active = false) pane_id : Tmux.Pane.t =
   {
     session_name = session;
@@ -38,6 +38,7 @@ let pane ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pi
     command_line;
     dead_at;
     run;
+    ssh;
     session_attached = active;
     title;
   }
@@ -1126,33 +1127,22 @@ let%expect_test
 let ssh_host = "deploy@build-box"
 
 let ssh_pane ?command_line prompt start running status =
-  pane ~session:"alpha" ~command:"ssh" ~pid:4242 ~prompt ~start ~running
+  pane ~ssh:("deploy", "build-box") ~session:"alpha" ~command:"ssh" ~pid:4242 ~prompt ~start
+    ~running
     ?exit:(if (not running) && status >= 0 then Some (status, start +. 1.) else None)
     ?command_line "%1"
 
 let ssh_tick clock m p =
   Sidebar.track
-    {
-      m with
-      at = !clock;
-      snap =
-        {
-          Sidebar.empty with
-          client = client "alpha";
-          panes = [ p ];
-          ssh = Procs.Int_map.singleton 4242 { Procs.host = ssh_host; interactive = true };
-        };
-    }
+    { m with at = !clock; snap = { Sidebar.empty with client = client "alpha"; panes = [ p ] } }
 
-let%expect_test
-    "an ssh whose far side reports is drawn like any integrated shell, and one that does not stays \
-     quiet" =
+let%expect_test "an ssh runs until a remote prompt, then follows the remote shell" =
   let clock = ref test_at in
   let m = ref (model ~clock ()) in
   let step d p =
     clock := !clock +. d;
     m := ssh_tick clock !m p;
-    Printf.printf "interactive=%b %s: %s\n" (Sidebar.interactive_pane !m p)
+    Printf.printf "remote=%b %s: %s\n" (Sidebar.ssh_remote !m p)
       (indicator_name
          (Option.flat_map (Sidebar.shell_indicator !m)
             (Tmux.Pane.Map.find_opt (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) !m.phases)))
@@ -1167,29 +1157,31 @@ let%expect_test
   print_endline "-- no integration on the far side";
   let m = ref (model ~clock ()) in
   let p = ssh_pane test_at test_at true (-1) in
-  let quiet =
+  m := ssh_tick clock !m p;
+  let running =
     List.for_all
       (fun _ ->
         clock := !clock +. 1.;
         m := ssh_tick clock !m p;
-        Sidebar.interactive_pane !m p
-        && Option.is_none
+        (not (Sidebar.ssh_remote !m p))
+        && Option.exists
+             (function Sidebar.Status State.Running -> true | _ -> false)
              (Option.flat_map (Sidebar.shell_indicator !m)
                 (Tmux.Pane.Map.find_opt
                    (Option.get_exn_or "id" (Tmux.Pane.of_string "%1"))
                    !m.phases)))
       (List.range 1 10)
   in
-  Printf.printf "quiet for ten ticks: %b\n" quiet;
+  Printf.printf "running for ten ticks: %b\n" running;
   [%expect
     {|
-    interactive=true none:  ssh deploy@build-box
-    interactive=false none:  ssh deploy@build-box
-    interactive=false none:  ssh deploy@build-box: sleep 45
-    interactive=false running: ◼ssh deploy@build-box: sleep 45
-    interactive=false done: ✓ssh deploy@build-box
+    remote=false none:  ssh deploy@build-box
+    remote=true none:  ssh deploy@build-box
+    remote=true none:  ssh deploy@build-box: sleep 45
+    remote=true running: ◼ssh deploy@build-box: sleep 45
+    remote=true done: ✓ssh deploy@build-box
     -- no integration on the far side
-    quiet for ten ticks: true
+    running for ten ticks: true
     |}]
 
 let%expect_test
@@ -1199,10 +1191,10 @@ let%expect_test
   let step d p =
     clock := !clock +. d;
     m := ssh_tick clock !m p;
-    Sidebar.interactive_pane !m p
+    not (Sidebar.ssh_remote !m p)
   in
   let start = ssh_pane test_at test_at true (-1) in
-  Printf.printf "prompt in the ssh's own second stays suppressed: %b\n"
+  Printf.printf "prompt in the ssh's own second stays running: %b\n"
     (step 0. start && step 0.3 start);
   ignore (step 1. (ssh_pane test_at (test_at +. 1.) true (-1)));
   Printf.printf "the prompt after the first remote command reports: %b\n"
@@ -1225,12 +1217,12 @@ let%expect_test
     (not (Sidebar.ssh_remote !m2 (ssh_pane 0. 0. false (-1))));
   let next = ssh_pane (test_at +. 2.) (test_at +. 3.) true (-1) in
   m2 := ssh_tick clock !m2 next;
-  Printf.printf "a second ssh is judged afresh: %b\n" (Sidebar.interactive_pane !m2 next);
+  Printf.printf "a second ssh is judged afresh: %b\n" (not (Sidebar.ssh_remote !m2 next));
   m2 := Sidebar.track { !m2 with snap = Sidebar.empty };
   Printf.printf "forgotten with the pane: %b\n" (Tmux.Pane.Map.is_empty !m2.ssh_remote);
   [%expect
     {|
-    prompt in the ssh's own second stays suppressed: true
+    prompt in the ssh's own second stays running: true
     the prompt after the first remote command reports: true
     latched: true
     dropped once the pane is a local shell: true
@@ -1242,11 +1234,11 @@ let%expect_test
     "a program that has taken the terminal draws nothing, and leaves no hold on the way out" =
   let clock = ref test_at in
   let m = ref (model ~clock ()) in
-  let warm p ssh =
+  let warm p =
     clock := test_at;
     m := { (model ~clock ()) with phases = Tmux.Pane.Map.empty };
     let tick () =
-      m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ]; ssh } }
+      m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ] } }
     in
     tick ();
     clock := !clock +. 0.5;
@@ -1256,15 +1248,14 @@ let%expect_test
   let p ?(alternate = false) command =
     pane ~pid:4242 ~command ~alternate ~prompt:(test_at -. 1.) ~running:true ~start:test_at "%1"
   in
-  let ssh interactive = Procs.Int_map.singleton 4242 { Procs.host = "build-box"; interactive } in
   List.iter print_endline
     [
-      warm (p ~alternate:true "nvim") Procs.Int_map.empty;
-      warm (p ~alternate:true "git") Procs.Int_map.empty;
-      warm (p "cargo") Procs.Int_map.empty;
-      warm (p "ssh") (ssh true);
-      warm (p "ssh") (ssh false);
-      warm (p ~alternate:true "ssh") (ssh false);
+      warm (p ~alternate:true "nvim");
+      warm (p ~alternate:true "git");
+      warm (p "cargo");
+      warm { (p "ssh") with ssh = Some ("deploy", "build-box") };
+      warm (p "ssh");
+      warm { (p ~alternate:true "ssh") with ssh = Some ("deploy", "build-box") };
     ];
   print_endline "-- an editor open, then quit";
   let m = ref (model ~clock ()) in
@@ -1281,9 +1272,9 @@ let%expect_test
      nvim
      git
     ◼cargo
-     ssh build-box
-    ◼ssh build-box
-     ssh build-box
+    ◼ssh deploy@build-box
+    ◼ssh
+     ssh deploy@build-box
     -- an editor open, then quit
      nvim
      nvim

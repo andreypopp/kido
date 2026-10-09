@@ -83,4 +83,5 @@ val new_shell :
 
 val kill_window : ?socket:string -> Window.id -> (unit, string) result
 val kill_pane : ?socket:string -> Pane.id -> (unit, string) result
+val mark_ssh : Pane.id -> string -> (unit, string) result
 val mark_run : Pane.id -> string -> (unit, string) result

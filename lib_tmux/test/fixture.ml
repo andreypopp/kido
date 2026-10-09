@@ -23,6 +23,7 @@ let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(
     command_line = "";
     dead_at = None;
     run;
+    ssh = None;
     session_attached = attached;
     title;
   }

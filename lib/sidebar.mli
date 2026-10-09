@@ -30,8 +30,6 @@ type snapshot = {
   generation : int;
   programs : Tmux.Program_status.t Tmux.Pane.Map.t;
   states : (string * State.session) Tmux.Pane.Map.t;
-  ssh : Procs.ssh_session Procs.Int_map.t;
-  probed : float;
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
@@ -101,7 +99,6 @@ type model = {
 }
 
 val make : now:(unit -> float) -> options -> model
-val interactive_pane : model -> Tmux.Pane.t -> bool
 val ssh_remote : model -> Tmux.Pane.t -> bool
 val shell_outcome : model -> Tmux.Pane.t -> Tmux.Pane.exit option
 val classify : model -> model

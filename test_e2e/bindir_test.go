@@ -112,7 +112,7 @@ func (r *kidoRun) fakeRealPrograms() (calls string) {
 		}
 	}
 	for _, name := range []string{"ssh", "pi", "claude"} {
-		body := fmt.Sprintf("#!/bin/sh\nf=$(mktemp %q)\nprintf '%%s\\0' %q \"$@\" >\"$f\"\n",
+		body := fmt.Sprintf("#!/bin/sh\n[ \"$1\" = -G ] && exit 1\nf=$(mktemp %q)\nprintf '%%s\\0' %q \"$@\" >\"$f\"\n",
 			filepath.Join(calls, name+".XXXXXX"), name)
 		if err := os.WriteFile(filepath.Join(fakes, name), []byte(body), 0o755); err != nil {
 			r.t.Fatal(err)

@@ -1,8 +1,4 @@
-module Int_map = Map.Make (Int)
-
-type ssh_session = { host : string; interactive : bool }
 type ssh_args = { opts : string list; letters : string; dest : string; command : string list }
-type process = { pid : int; ppid : int; comm : string; args : string list }
 
 let split_fields out =
   String.lines out
@@ -11,13 +7,6 @@ let split_fields out =
       match String.split_on_char ' ' spaced |> List.filter (fun f -> not (String.is_empty f)) with
       | [] -> None
       | fields -> Some fields)
-
-let ps args =
-  match Unix.open_process_args_in "ps" (Array.of_list ("ps" :: args)) with
-  | exception Unix.Unix_error _ -> []
-  | ic -> (
-      let out = In_channel.input_all ic in
-      match Unix.close_process_in ic with Unix.WEXITED 0 -> split_fields out | _ -> [])
 
 let parse_ssh args =
   let dest opts letters dest command = Some { opts = List.rev opts; letters; dest; command } in
@@ -40,33 +29,3 @@ let parse_ssh args =
         | (letters, _), _ -> go (arg :: opts) letters rest)
   in
   go [] "" args
-
-let ssh_session args =
-  parse_ssh args
-  |> Option.map (fun a ->
-      let has c = String.contains a.letters c in
-      {
-        host = Option.value (String.chop_prefix ~pre:"ssh://" a.dest) ~default:a.dest;
-        interactive = has 'N' || has 't' || ((not (has 'T')) && List.is_empty a.command);
-      })
-
-let parse_processes rows =
-  List.filter_map
-    (function
-      | pid :: ppid :: comm :: args -> (
-          match (Int.of_string pid, Int.of_string ppid, args) with
-          | Some pid, Some ppid, _ :: _ -> Some { pid; ppid; comm; args }
-          | _ -> None)
-      | _ -> None)
-    rows
-
-let sweep () =
-  let all = parse_processes (ps [ "-axo"; "pid=,ppid=,comm=,args=" ]) in
-  List.fold_left
-    (fun ssh p ->
-      match
-        if String.equal (Filename.basename p.comm) "ssh" then ssh_session (List.tl p.args) else None
-      with
-      | Some s -> ssh |> Int_map.add p.pid s |> Int_map.add p.ppid s
-      | None -> ssh)
-    Int_map.empty all

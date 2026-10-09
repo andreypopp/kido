@@ -151,7 +151,7 @@ Conventions:
       ui.ml            the Mosaic sidebar: the model's rows drawn, keys, cursor
       state.ml         one JSON file per agent session, keyed by session id
       reporting.ml     kido agent-status
-      procs.ml         process scan: ssh destinations
+      procs.ml         ssh argument parsing and whitespace fields
       msg.ml           the inbox wire protocol and its client: v0 raw prompt,
                        v1 envelope, the unix-socket sender and notify
       tree.ml          the parent-first walk behind list_runs and the sidebar
@@ -313,7 +313,7 @@ Not done.
 which confuses an interactive shell with a batch `zsh -c`.
 `#{alternate_on}` reports whether the alternate screen is active, so it
 sees `less` under `git` or `nvim` under `sudo`, and is what
-`Sidebar.interactive_pane` uses to decide a program has taken the terminal.
+the sidebar uses to decide a program has taken the terminal.
 
 ## tmux gotchas
 
@@ -366,9 +366,10 @@ sees `less` under `git` or `nvim` under `sudo`, and is what
 ## Native agent status
 
 Only OSC 7501 root apps pi and claude-code identify agent panes. State supplies
-local pi identity and coordination, never detection; process scanning is
-for ssh only. pi and Claude Code status, completion and blocked messages
-come from their terminal records. No Claude Code executable shim is shipped.
+local pi identity and coordination, never detection; ssh panes use the
+pane-scoped `@kido_ssh` mark, believed only while the foreground is `ssh`.
+`kido ssh` sets the mark before exec and leaves it in place. pi and Claude
+Code status, completion and blocked messages come from their terminal records. No Claude Code executable shim is shipped.
 
 Claude Code 2.1.295 queries OSC 7501, then emits a root app=claude-code
 record: idle, working, done, or blocked with permission/question kind and
@@ -697,13 +698,10 @@ reference:
 
 ## Known-open
 
-- An interactive `ssh` pane whose far side reaches its first prompt in
-  the same whole second the ssh started reports nothing until the prompt
-  after its first remote command: `Sidebar.observe_remote` reads
-  `last_prompt > command_start` strictly. Accepting the tie is not
-  the fix — a local prompt and an ssh launched from it share a second
-  just as readily, and every non-integrated remote would then hold the
-  row green for the life of the connection.
+- A marked `ssh` pane whose far side reaches its first prompt in the same
+  whole second ssh started stays running until a later remote prompt.
+  `Sidebar.observe_remote` requires `last_prompt > command_start`: accepting
+  the tie would mistake the local prompt for a remote one.
 
 The subagent system's design limits (a child moved to another session, a
 blocked ask holding a whole turn, a child that exits before its window is

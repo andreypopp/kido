@@ -166,7 +166,8 @@ let%expect_test "only a root app identifies a pane" =
         (match kind with
         | Terminal -> "terminal"
         | Some_agent { name } -> "native " ^ name
-        | Pi_agent { id; _ } -> "local " ^ id))
+        | Pi_agent { id; _ } -> "local " ^ id
+        | Ssh { user; host; _ } -> "ssh " ^ user ^ "@" ^ host))
     [
       ({|{"serial":1,"records":[]}|}, true);
       ({|{"serial":1,"records":[{"id":"child","app":"pi","state":"idle"}]}|}, true);

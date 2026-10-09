@@ -31,8 +31,6 @@ type snapshot = {
   generation : int;
   programs : Tmux.Program_status.t Tmux.Pane.Map.t;
   states : (string * State.session) Tmux.Pane.Map.t;
-  ssh : Procs.ssh_session Procs.Int_map.t;
-  probed : float;
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
@@ -47,8 +45,6 @@ let empty =
     generation = -1;
     programs = Tmux.Pane.Map.empty;
     states = Tmux.Pane.Map.empty;
-    ssh = Procs.Int_map.empty;
-    probed = 0.;
     wake = None;
     err = None;
     lingering = String_map.empty;
@@ -111,24 +107,6 @@ let take ~opts conn prev client =
   | Ok panes -> (
       let live = State.load_live ~dir:opts.dir in
       let states = State.by_pane live in
-      let unknown (p : P.t) =
-        String.equal p.current_command "ssh" && not (Procs.Int_map.mem p.pane_pid prev.ssh)
-      in
-      let scan, probed =
-        if List.exists unknown panes && Float.(Unix.gettimeofday () - prev.probed >= 1.) then
-          (Procs.sweep (), Unix.gettimeofday ())
-        else (prev.ssh, prev.probed)
-      in
-      let ssh =
-        List.fold_left
-          (fun ssh (p : P.t) ->
-            if String.equal p.current_command "ssh" then
-              match Procs.Int_map.find_opt p.pane_pid scan with
-              | Some sess -> Procs.Int_map.add p.pane_pid sess ssh
-              | None -> ssh
-            else ssh)
-          Procs.Int_map.empty panes
-      in
       if not (List.is_empty panes) then
         Reap.collect ?socket:opts.socket ~dir:opts.dir ~grace:opts.grace panes live
           ~now:(Unix.gettimeofday ());
@@ -142,8 +120,6 @@ let take ~opts conn prev client =
               client;
           panes;
           states;
-          ssh;
-          probed;
           wake = State.wake ~dir:opts.dir;
           err = None;
           lingering = lingering_subagents ~dir:opts.dir panes prev.lingering;
@@ -200,7 +176,6 @@ let same a b =
   && Tmux.Pane.Map.equal (fun x y -> Stdlib.( = ) (session x) (session y)) a.states b.states
   && a.generation = b.generation
   && Tmux.Pane.Map.equal Stdlib.( = ) a.programs b.programs
-  && Procs.Int_map.equal Stdlib.( = ) a.ssh b.ssh
   && String_map.equal
        (fun x y -> Stdlib.({ x with stamp = None } = { y with stamp = None }))
        a.lingering b.lingering
@@ -281,26 +256,19 @@ let make ~now opts =
     clock = read_clock ();
   }
 
-let ssh_interactive m (p : P.t) =
-  Option.exists
-    (fun (s : Procs.ssh_session) -> s.interactive)
-    (Procs.Int_map.find_opt p.pane_pid m.snap.ssh)
-
 let ssh_remote m (p : P.t) = Tmux.Pane.Map.mem p.pane_id m.ssh_remote
 
 (* Strictly after: tmux's timestamps are whole seconds, and an ssh launched in the same second as the
    prompt before it would otherwise pass forever on a host with no integration. The reading latches
    because tmux overwrites pane_command_start_time on the remote shell's own 133;C. *)
 let observe_remote m (p : P.t) =
-  if not (ssh_interactive m p) then
+  if not (String.equal p.current_command "ssh" && Option.is_some p.ssh) then
     { m with ssh_remote = Tmux.Pane.Map.remove p.pane_id m.ssh_remote }
   else
     match (p.last_prompt, p.command_start) with
     | Some prompt, Some start when Float.(prompt > start) ->
         { m with ssh_remote = Tmux.Pane.Map.add p.pane_id () m.ssh_remote }
     | _ -> m
-
-let interactive_pane m (p : P.t) = (ssh_interactive m p && not (ssh_remote m p)) || p.alternate_on
 
 let observe m prev running =
   match (running, prev) with
@@ -362,12 +330,14 @@ let track m =
       List.fold_left
         (fun m (p : P.t) ->
           let m = observe_remote m p in
-          match P.shell p with
+          match
+            if Option.is_some p.ssh && String.equal p.current_command "ssh" && not (ssh_remote m p)
+            then P.Running
+            else P.shell p
+          with
           | Unintegrated -> m
           | (Idle | Running) as s ->
-              let running =
-                (match s with Running -> true | _ -> false) && not (interactive_pane m p)
-              in
+              let running = (match s with Running -> true | _ -> false) && not p.alternate_on in
               let prev = Tmux.Pane.Map.find_opt p.pane_id m.phases in
               let ph = observe m prev running in
               let held =
@@ -407,7 +377,7 @@ let shell_pending m =
     m.phases
 
 let asking m = function
-  | State.Terminal | Some_agent _ -> false
+  | State.Terminal | Some_agent _ | Ssh _ -> false
   | Pi_agent { id; _ } -> List.exists (fun a -> String.equal a.ask.session id) m.snap.asks
 
 let program_indicator m pane status (r : Tmux.Program_status.record) =
@@ -481,10 +451,15 @@ let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
   let row kind indicator title caption =
     { pane = p.pane_id; window = p.window_id; kind; indicator; title; caption; run }
   in
+  let cmd = match P.shell p with Running when not p.alternate_on -> p.command_line | _ -> "" in
+  let ssh_title user host =
+    [ span `Proc "ssh "; plain (user ^ "@" ^ host) ]
+    @ if ssh_remote m p && not (String.is_empty cmd) then [ span `Proc ": "; plain cmd ] else []
+  in
   let identity =
     match pane_kind with
     | Pi_agent { id; session } -> Some (id, session)
-    | Terminal | Some_agent _ -> None
+    | Terminal | Some_agent _ | Ssh _ -> None
   in
   match (lingering, program_status m p) with
   | Some l, _ when Option.is_some l.outcome || Option.is_some p.dead_at ->
@@ -502,15 +477,20 @@ let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
   | _, Some (status, r) ->
       let agent_title = State.pane_title p pane_kind in
       let app = Tmux.Program_status.app status r in
-      let pi = match pane_kind with Pi_agent _ -> true | Terminal | Some_agent _ -> false in
+      let pi =
+        match pane_kind with Pi_agent _ -> true | Terminal | Some_agent _ | Ssh _ -> false
+      in
       let title =
         match pane_kind with
-        | Pi_agent _ | Some_agent _ -> Option.value ~default:p.current_command agent_title
+        | Pi_agent _ | Some_agent _ | Ssh { pane = Remote_agent _; _ } ->
+            Option.value ~default:p.current_command agent_title
+        | Ssh { user; host; _ } -> "ssh " ^ user ^ "@" ^ host
         | Terminal -> Option.value ~default:(Option.value ~default:p.current_command app) r.title
       in
       let kind =
         match pane_kind with
-        | Pi_agent _ | Some_agent _ -> Agent
+        | Pi_agent _ | Some_agent _ | Ssh { pane = Remote_agent _; _ } -> Agent
+        | Ssh _ -> Ssh
         | Terminal -> ( match lingering with Some { kind = Bash | Stream; _ } -> Run | _ -> Shell)
       in
       let message =
@@ -524,7 +504,10 @@ let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
         | None -> Option.map_or ~default:"" (fun (_, (s : State.session)) -> s.activity) identity
       in
       row kind
-        (if match pane_kind with Terminal -> p.alternate_on | Pi_agent _ | Some_agent _ -> false
+        (if
+           match pane_kind with
+           | Terminal | Ssh { pane = Remote_terminal; _ } -> p.alternate_on
+           | Pi_agent _ | Some_agent _ | Ssh _ -> false
          then None
          else
            Some
@@ -537,7 +520,9 @@ let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
                   identity
               then Stalled
               else program_indicator m p.pane_id status r))
-        [ plain title ]
+        (match pane_kind with
+        | Ssh { user; host; pane = Remote_terminal } -> ssh_title user host
+        | _ -> [ plain title ])
         (match
            List.filter
              (fun s -> not (String.is_empty s))
@@ -557,25 +542,13 @@ let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
           let kind = match l.kind with Agent -> Shell | Bash | Stream -> Run in
           row kind (Some (Status Running)) [ plain l.name ] (Elapsed l.started)
       | None ->
-          let cmd =
-            match P.shell p with
-            | Running when not (interactive_pane m p) -> p.command_line
-            | _ -> ""
-          in
           let kind, text =
-            match Procs.Int_map.find_opt p.pane_pid m.snap.ssh with
-            | Some (sess : Procs.ssh_session) ->
-                ( Ssh,
-                  [ span `Proc "ssh "; plain sess.host ]
-                  @
-                  if ssh_interactive m p && not (String.is_empty cmd) then
-                    [ span `Proc ": "; plain cmd ]
-                  else [] )
-            | None ->
-                (Shell, [ span `Proc (if String.is_empty cmd then p.current_command else cmd) ])
+            match pane_kind with
+            | Ssh { user; host; _ } -> (Ssh, ssh_title user host)
+            | _ -> (Shell, [ span `Proc (if String.is_empty cmd then p.current_command else cmd) ])
           in
           let ind =
-            if interactive_pane m p then None
+            if p.alternate_on then None
             else
               Option.map
                 (fun ph -> Option.get_or ~default:(Status Idle) (shell_indicator m ph))

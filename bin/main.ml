@@ -607,6 +607,22 @@ let ssh =
                ("ssh" :: a.opts) @ [ "-t"; a.dest; Prime.ssh_bootstrap ]
            | _ -> "ssh" :: args
          in
+         let pane = Option.flat_map Tmux.Pane.of_string (Sys.getenv_opt "TMUX_PANE") in
+         let destination =
+           match pane with
+           | None -> None
+           | Some _ -> (
+               let ic = Unix.open_process_args_in ssh (Array.of_list ("ssh" :: "-G" :: args)) in
+               let lines = In_channel.input_all ic |> String.lines in
+               let status = Unix.close_process_in ic in
+               let field key = List.find_map (String.chop_prefix ~pre:(key ^ " ")) lines in
+               match (status, field "user", field "hostname") with
+               | Unix.WEXITED 0, Some user, Some host -> Some (user ^ "@" ^ host)
+               | _ -> None)
+         in
+         (match (pane, destination) with
+         | Some pane, Some destination -> ignore (Tmux.Exec.mark_ssh pane destination)
+         | _ -> ());
          Unix.execve ssh (Array.of_list argv) (Unix.environment ()))
 
 (* Go's time.Duration syntax, which every caller of --interval already speaks: "100ms", "5s",

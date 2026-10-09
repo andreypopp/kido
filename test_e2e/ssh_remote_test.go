@@ -34,6 +34,24 @@ func requireLocalSSH(t *testing.T) {
 	}
 }
 
+func localSSHDestination(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("ssh", append(append([]string{"-G"}, sshOpts...), "localhost")...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, host := "", ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if value, ok := strings.CutPrefix(line, "user "); ok {
+			user = value
+		}
+		if value, ok := strings.CutPrefix(line, "hostname "); ok {
+			host = value
+		}
+	}
+	return user + "@" + host
+}
+
 // A real ssh to localhost whose remote shell carries kido's OSC 133
 // integration: the row must report the remote shell's commands (tmux
 // parses the markers off the local pane's output stream however far away
@@ -72,7 +90,7 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 	// -tt forces a pty for a remote interactive shell - the pane kido used
 	// to suppress wholesale. ZDOTDIR is spelled out since ssh forwards no
 	// environment.
-	h.in("send-keys", "-t", pane, fmt.Sprintf("ssh -tt %s localhost %q",
+	h.in("send-keys", "-t", pane, fmt.Sprintf(kidoBin+" ssh -tt %s localhost %q",
 		strings.Join(sshOpts, " "), "ZDOTDIR="+zdot+" exec "+zsh+" -i"), "Enter")
 	h.waitPaneCommand(pane, "ssh")
 	// Whether a running row names the far side's command depends on the
@@ -85,7 +103,7 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 		}
 		return row
 	}
-	h.waitShellRow("╶ ssh localhost", "")
+	h.waitRow("ssh " + localSSHDestination(t))
 
 	// Over a loopback connection the prompt above lands in the same whole
 	// second as the ssh itself, as good as no prompt at all to timestamps
@@ -94,13 +112,13 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 	// side is reporting. Its exit status crossing the connection is also
 	// the first thing a suppressed ssh pane could not show.
 	h.in("send-keys", "-t", pane, "sleep 1", "Enter")
-	h.waitShellRow("╶✓ssh localhost", "32")
+	h.waitShellRow("╶✓ssh "+localSSHDestination(t), "32")
 
 	// The local pane's foreground process is still ssh; only the remote
 	// shell's OSC 133 state moves down the connection.
 	h.in("send-keys", "-t", pane, "sleep 3", "Enter")
-	h.waitShellRow(running("╶◼ssh localhost", "sleep 3"), "")
+	h.waitShellRow(running("╶◼ssh "+localSSHDestination(t), "sleep 3"), "")
 
-	h.waitFor(func() bool { return h.shellRow("╶✓ssh localhost", "32") },
+	h.waitFor(func() bool { return h.shellRow("╶✓ssh "+localSSHDestination(t), "32") },
 		10*time.Second, msgf("a checkmark after the remote sleep"))
 }

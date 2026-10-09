@@ -42,7 +42,7 @@ func TestPiPaneIdentityRemovalPreservesNativeStatus(t *testing.T) {
 	// Removing identity does not clear the pane's terminal status.
 	h.agentStatus("pi-1", pane, "pi", "--remove")
 	h.waitFor(func() bool {
-		return h.countRows("╶◼deploy - kido") == 1
+		return h.countRows("╶◼deploy - kido") == 0 && h.countRows("╶◼π - deploy - kido") == 1
 	}, settle, func() string {
 		return fmt.Sprintf("the bare pi pane retains its terminal status (rows are %q)", h.rows())
 	})

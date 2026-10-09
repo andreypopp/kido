@@ -78,22 +78,16 @@ func TestSSHRow(t *testing.T) {
 	h := start(t, "alpha")
 	// ssh blocks on the proxy command, so no network is needed.
 	pane := h.newWindow("alpha", "")
-	// ssh is a child of the pane's shell; kido keys the destination by ssh's ppid.
 	h.in("send-keys", "-t", pane,
-		"ssh -F /dev/null -o ProxyCommand="+h.sshProxy()+" deploy@example.test", "Enter")
+		kidoBin+" ssh -F /dev/null -o ProxyCommand="+h.sshProxy()+" deploy@example.test", "Enter")
 	h.waitPaneCommand(pane, "ssh")
 	h.waitRow("ssh deploy@example.test")
 }
 
-// A pane whose root process is ssh itself (e.g. `tmux new-window 'ssh
-// host'`), not a shell that then ran ssh: kido must key the destination
-// by ssh's own pid too.
 func TestSSHRowDirect(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	// newWindow passes the command as separate arguments, so tmux runs it
-	// directly with execvp and the pane's root process is ssh itself.
-	pane := h.newWindow("alpha", "", "ssh", "-F", "/dev/null",
+	pane := h.newWindow("alpha", "", kidoBin, "ssh", "-F", "/dev/null",
 		"-o", "ProxyCommand="+h.sshProxy(), "deploy@example.test")
 	h.waitPaneCommand(pane, "ssh")
 	h.waitRow("ssh deploy@example.test")

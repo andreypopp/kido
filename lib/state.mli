@@ -31,10 +31,13 @@ val get_live : dir:string -> string -> session option
 val load_live : dir:string -> (string * session) list
 val by_pane : (string * session) list -> (string * session) Tmux.Pane.Map.t
 
+type ssh_kind = Remote_terminal | Remote_agent of { name : string }
+
 type pane_kind =
   | Terminal
   | Some_agent of { name : string }
   | Pi_agent of { id : string; session : session }
+  | Ssh of { user : string; host : string; pane : ssh_kind }
 
 val pane_kind :
   programs:Tmux.Program_status.t Tmux.Pane.Map.t ->

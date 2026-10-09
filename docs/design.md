@@ -39,7 +39,9 @@ agent session named by session id, written temp-then-rename. A record
 carries the agent's pane, pid, inbox socket, free-text activity, model,
 heartbeat timestamp and place in the spawn tree. Status comes only from
 OSC 7501 root records, and the pane title comes from OSC 0/2.
-State.pane_kind classifies one pane as Pi_agent (pi root plus State),
+A believed `@kido_ssh` pane option takes precedence as Ssh, nesting
+Remote_agent for a remote pi or Claude Code root, Remote_terminal otherwise.
+State.pane_kind otherwise classifies one pane as Pi_agent (pi root plus State),
 Some_agent (claude-code root or pi without State), or Terminal otherwise. Prompt scope accepts both agent
 cases, using the local pi inbox or otherwise pasting. list_runs includes
 live State identities, regardless of the current root app; get-agent context,
@@ -1634,8 +1636,12 @@ latches a pane once its far side marks a prompt later than the local
 shell marked the ssh as started. All of that needs the remote shell to
 source an integration of kido's - `share/zsh/integration.zsh`, or
 `share/bash/integration.bash`, which emit the same four markers. On a
-host where nobody has installed anything the pane stays silent for the
-life of the connection.
+host where nobody has installed anything the marked pane stays running
+for the life of the connection. `kido ssh` resolves user and hostname with
+`ssh -G`, marks its own pane with `@kido_ssh`, and execs ssh. The mark
+remains after ssh exits. The mark is believed only while the foreground command is
+`ssh`. A remote pi or Claude Code root makes a nested Remote_agent,
+including paste prompt support; otherwise it is a Remote_terminal.
 
 A local pane gets its copy from `kido shell`, which primes every pane the
 kido server starts ("Priming a local shell"); nothing is written into the
@@ -1705,8 +1711,9 @@ this connection has no login shell in it (`-N`, `-T`, `-W`, `-f`, `-n`,
 interactive shell. On the remote side every failure ends in the same login
 shell unprimed: a login shell that is neither zsh nor bash, no `mktemp`
 or `base64`, a directory that cannot be made, a payload that will not
-decode. kido execs ssh rather than wrapping it, so signals, the exit
-status and the tty behave as they would with no kido in front of them.
+decode. kido execs ssh, so signals, the exit status and the tty behave
+as they would with no kido in front of them. A failed `ssh -G` skips setting
+the pane mark; the connection still runs.
 
 The bootstrap reads the remote login shell from `$SHELL`. zsh and bash
 are both primed; the command line carries both integrations base64'd
@@ -1970,7 +1977,7 @@ up through `globalThis` and serve a session neither started.
 - A child that exits before `remain-on-exit` lands loses its window and
   its last screen; only the run record remains.
 - Pause detection needs a sidebar ticking when the machine sleeps.
-- A `kido ssh` session killed between the `exec` and the remote zsh
+- A `kido ssh` session killed between starting ssh and the remote zsh
   reading the `.zshenv` leaves its temporary directory behind: the trap
   is gone with the exec and the cleanup has not run yet. It is one
   empty-ish directory under the remote's `$TMPDIR`.

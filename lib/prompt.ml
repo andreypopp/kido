@@ -41,8 +41,8 @@ let prompt ~dir ~self ~window text =
           then None
           else
             match State.pane_kind ~programs ~states p with
-            | Terminal -> None
-            | (Some_agent _ | Pi_agent _) as kind -> Some (p, kind))
+            | Terminal | Ssh { pane = Remote_terminal; _ } -> None
+            | (Some_agent _ | Pi_agent _ | Ssh _) as kind -> Some (p, kind))
         panes
     in
     match match candidates false with [] when not window -> candidates true | found -> found with
@@ -51,7 +51,7 @@ let prompt ~dir ~self ~window text =
         let inbox, name =
           match kind with
           | Pi_agent { session; _ } -> (session.inbox, State.display_name panes session)
-          | Some_agent _ | Terminal -> ("", p.title)
+          | Some_agent _ | Terminal | Ssh _ -> ("", p.title)
         in
         failed
           (Result.map ignore

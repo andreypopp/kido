@@ -7,13 +7,15 @@ let time = opt (Printf.sprintf "%.0f")
 let show (p : Pane.t) =
   Printf.printf
     "%s %s created=%.0f win=%d %s %s %s %s active=%b pane_active=%b pid=%d cmd=%s cwd=%s alt=%b \
-     running=%b start=%s prompt=%s exit=%s line=%S dead=%s run=%s attached=%b title=%S\n"
+     running=%b start=%s prompt=%s exit=%s line=%S dead=%s run=%s ssh=%s attached=%b title=%S\n"
     p.session_name (Session.to_string p.session_id) p.session_created p.window_index
     (Window.to_string p.window_id) p.window_name p.window_layout (Pane.to_string p.pane_id) p.active
     p.pane_active p.pane_pid p.current_command p.current_path p.alternate_on p.command_running
     (time p.command_start) (time p.last_prompt)
     (opt (fun (e : Pane.exit) -> Printf.sprintf "%d@%.0f" e.code e.at) p.last_exit)
-    p.command_line (time p.dead_at) (opt Fun.id p.run) p.session_attached p.title
+    p.command_line (time p.dead_at) (opt Fun.id p.run)
+    (opt (fun (user, host) -> user ^ "@" ^ host) p.ssh)
+    p.session_attached p.title
 
 let line = String.concat Pane.sep
 
@@ -56,7 +58,7 @@ let%expect_test "the format: title last, no ticking duration, field count pinned
     (List.hd (List.rev tokens))
     (String.mem ~sub:"pane_command_duration" Pane.format)
     (List.length tokens) Pane.fields;
-  [%expect {| last=#{pane_title} duration=false fields=25 const=25 |}]
+  [%expect {| last=#{pane_title} duration=false fields=26 const=26 |}]
 
 let%expect_test "a fixture generated from the format parses into every field" =
   let values =
@@ -68,13 +70,21 @@ let%expect_test "a fixture generated from the format parses into every field" =
         | 7 -> "%7"
         | 8 | 12 | 13 | 19 | 21 | 23 -> "1"
         | 16 -> "16"
+        | 24 -> "deploy@realm@example.test"
         | 2 | 3 | 9 | 14 | 15 | 17 | 20 -> string_of_int (1_000_000 + i)
         | _ -> Printf.sprintf "str%d" i)
       (String.split ~by:Pane.sep Pane.format)
   in
-  List.iter show (Pane.parse [ line values ]);
+  List.iter
+    (fun p ->
+      show p;
+      Option.iter (fun (user, host) -> Printf.printf "user=%S host=%S\n" user host) p.ssh)
+    (Pane.parse [ line values ]);
   [%expect
-    {| str0 $1 created=1000002 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 attached=true title="str24" |}]
+    {|
+    str0 $1 created=1000002 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true title="str25"
+    user="deploy@realm" host="example.test"
+    |}]
 
 let%expect_test
     "parse: a live pane, a junk line, an empty status, a dead run, a title holding the separator" =
@@ -107,6 +117,7 @@ let%expect_test
              "1";
              "";
              "1";
+             "";
              "✳ Title";
            ];
          "junk";
@@ -136,6 +147,7 @@ let%expect_test
              "0";
              "";
              "1";
+             "";
              "zsh";
            ];
          line
@@ -164,14 +176,15 @@ let%expect_test
              "1";
              "run-abc";
              "0";
+             "";
              "kid\x1fmore";
            ];
        ]);
   [%expect
     {|
-    work $1 created=1700000000 win=2 @7 win layout %3 active=true pane_active=true pid=4242 cmd=claude cwd=/tmp alt=false running=true start=1700000100 prompt=1700000050 exit=2@1700000090 line="make test" dead=- run=- attached=true title="\226\156\179 Title"
-    work $1 created=1700000000 win=2 @7 win layout %3 active=false pane_active=true pid=4242 cmd=zsh cwd=/tmp alt=true running=false start=- prompt=1700000050 exit=- line="" dead=- run=- attached=false title="zsh"
-    work $1 created=1700000000 win=2 @7 kid layout %3 active=false pane_active=false pid=4242 cmd= cwd=/tmp alt=false running=false start=- prompt=- exit=- line="" dead=1700000200 run=run-abc attached=true title="kid\031more"
+    work $1 created=1700000000 win=2 @7 win layout %3 active=true pane_active=true pid=4242 cmd=claude cwd=/tmp alt=false running=true start=1700000100 prompt=1700000050 exit=2@1700000090 line="make test" dead=- run=- ssh=- attached=true title="\226\156\179 Title"
+    work $1 created=1700000000 win=2 @7 win layout %3 active=false pane_active=true pid=4242 cmd=zsh cwd=/tmp alt=true running=false start=- prompt=1700000050 exit=- line="" dead=- run=- ssh=- attached=false title="zsh"
+    work $1 created=1700000000 win=2 @7 kid layout %3 active=false pane_active=false pid=4242 cmd= cwd=/tmp alt=false running=false start=- prompt=- exit=- line="" dead=1700000200 run=run-abc ssh=- attached=true title="kid\031more"
     |}]
 
 let%expect_test "shell: integration, idle, running, the stuck flag healed, a tie read as running" =

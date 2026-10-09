@@ -228,7 +228,9 @@ group's place. Groups are the "group" rows the app may draw differently.
 - `agent`: a pane with OSC 7501 root app pi or claude-code, or a finished
   subagent's lingering pane (its `indicator` is `gone`);
 - `run`: an `async_bash` run's pane, running (`started` set) or ended;
-- `ssh`: a pane whose foreground is an ssh session;
+- `ssh`: a pane marked by `kido ssh` with `@kido_ssh` (`user@host`),
+  believed only while its foreground command is `ssh`; a remote pi or
+  Claude Code root instead gives an agent row;
 - `shell`: anything else (a shell, or a program that has taken the
   terminal).
 

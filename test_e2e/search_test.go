@@ -130,7 +130,7 @@ func TestSearchMatchesAgentTitle(t *testing.T) {
 func TestSearchMatchesSSHDestinationNotCommand(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	pane := h.newWindow("alpha", "", "ssh", "-F", "/dev/null",
+	pane := h.newWindow("alpha", "", kidoBin, "ssh", "-F", "/dev/null",
 		"-o", "ProxyCommand="+h.sshProxy(), "deploy@example.test")
 	h.waitPaneCommand(pane, "ssh")
 	h.newSession("beta")

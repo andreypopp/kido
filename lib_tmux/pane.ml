@@ -54,6 +54,7 @@ type t = {
   command_line : string;
   dead_at : float option;
   run : string option;
+  ssh : (string * string) option;
   session_attached : bool;
   title : string;
 }
@@ -96,10 +97,11 @@ let format =
       "#{session_attached}";
       "#{" ^ run_option ^ "}";
       "#{pane_active}";
+      "#{@kido_ssh}";
       "#{pane_title}";
     ]
 
-let fields = 25
+let fields = 26
 
 let split_n n s =
   let rec go n from =
@@ -148,7 +150,13 @@ let parse_line line =
           session_attached = not (String.equal f.(21) "" || String.equal f.(21) "0");
           run = nonempty f.(22);
           pane_active = String.equal f.(23) "1";
-          title = f.(24);
+          ssh =
+            (match String.rindex_opt f.(24) '@' with
+            | Some i when i > 0 && i < String.length f.(24) - 1 ->
+                Some
+                  (String.sub f.(24) 0 i, String.sub f.(24) (i + 1) (String.length f.(24) - i - 1))
+            | _ -> None);
+          title = f.(25);
         }
 
 let parse lines = List.filter_map parse_line lines

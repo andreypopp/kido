@@ -986,11 +986,6 @@ func (h *harness) waitPanePrompt(id string) {
 // alone holds for every pane there has ever been.
 func reportedPrompt(v string) bool { return v != "" && v != "0" }
 
-// sshProxy writes (once per harness) a ProxyCommand script that just
-// blocks, so an ssh pane needs no network. It is a script rather than
-// "sleep 300" because kido reads ssh's arguments out of ps output, where a
-// space inside an option value is indistinguishable from an argument
-// separator.
 func (h *harness) sshProxy() string {
 	h.t.Helper()
 	if h.proxy == "" {

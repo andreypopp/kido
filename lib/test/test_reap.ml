@@ -26,6 +26,7 @@ let pane ?run ?dead ?(watched = false) pane_id window_id : Tmux.Pane.t =
     command_line = "";
     dead_at = Option.map (fun secs -> now -. Float.of_int secs) dead;
     run;
+    ssh = None;
     session_attached = watched;
     title = "";
   }

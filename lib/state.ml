@@ -131,24 +131,38 @@ let by_pane sessions =
         s.pane)
     Tmux.Pane.Map.empty sessions
 
+type ssh_kind = Remote_terminal | Remote_agent of { name : string }
+
 type pane_kind =
   | Terminal
   | Some_agent of { name : string }
   | Pi_agent of { id : string; session : session }
+  | Ssh of { user : string; host : string; pane : ssh_kind }
 
 let pane_kind ~programs ~states (p : Tmux.Pane.t) =
-  match
+  let app =
     Option.flat_map Tmux.Program_status.root (Tmux.Pane.Map.find_opt p.pane_id programs)
     |> Option.flat_map (fun (r : Tmux.Program_status.record) -> r.app)
-  with
-  | Some "pi" -> (
+  in
+  match (p.ssh, p.current_command, app) with
+  | Some (user, host), "ssh", app ->
+      let pane =
+        match app with
+        | Some (("pi" | "claude-code") as name) -> Remote_agent { name }
+        | _ -> Remote_terminal
+      in
+      Ssh { user; host; pane }
+  | _, _, Some "pi" -> (
       match Tmux.Pane.Map.find_opt p.pane_id states with
       | Some (id, session) -> Pi_agent { id; session }
       | None -> Some_agent { name = "pi" })
-  | Some "claude-code" -> Some_agent { name = "claude-code" }
-  | None | Some _ -> Terminal
+  | _, _, Some "claude-code" -> Some_agent { name = "claude-code" }
+  | _ -> Terminal
 
 let pane_title (p : Tmux.Pane.t) = function
+  | Ssh { pane = Remote_terminal; _ } -> None
+  | Ssh { pane = Remote_agent { name }; _ } ->
+      Some (if String.is_empty p.title then name else p.title)
   | Terminal -> None
   | Pi_agent { session; _ } -> Some (if String.is_empty session.name then p.title else session.name)
   | Some_agent { name } -> Some (if String.is_empty p.title then name else p.title)

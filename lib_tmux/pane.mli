@@ -35,6 +35,7 @@ type t = {
   command_line : string;
   dead_at : float option;
   run : string option;
+  ssh : (string * string) option;
   session_attached : bool;
   title : string;
 }

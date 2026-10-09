@@ -443,5 +443,8 @@ let new_shell ~socket target =
 let kill_window ?socket window_id = run ?socket [ "kill-window"; "-t"; Window.to_string window_id ]
 let kill_pane ?socket pane_id = run ?socket [ "kill-pane"; "-t"; Pane.to_string pane_id ]
 
+let mark_ssh pane destination =
+  run [ "set-option"; "-p"; "-t"; Pane.to_string pane; "@kido_ssh"; destination ]
+
 let mark_run pane_id run_id =
   run [ "set-option"; "-p"; "-t"; Pane.to_string pane_id; Pane.run_option; run_id ]
