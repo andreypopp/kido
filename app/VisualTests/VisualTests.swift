@@ -158,7 +158,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
                                         self?.model = model
                                         self?.updateTabs()
                                     },
-                                    onDiagnostic: { XCTFail($0) }, onClose: { _ in })
+                                    onDiagnostic: { XCTFail($0) }, onClose: { _, _ in })
         try await wait("initial layout") { self.terminal?.panes.isEmpty == false }
         rpc = Feed(serverDir: directory.path, locate: connection.locateFeed, onChange: { _ in })
         try await wait("RPC ready") { if case .running? = self.rpc?.status { return true }; return false }
