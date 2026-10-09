@@ -5,7 +5,7 @@ import Testing
 @Test func attachLaunchNeverStartsServer() {
     let launch = Launch.attach("/remote/install/bin/kido-tmux", socket: "/tmp/state space $literal/socket", session: "$7")
     #expect(launch.path == "/remote/install/bin/kido-tmux")
-    #expect(launch.arguments == ["-u", "-S", "/tmp/state space $literal/socket", "-N", "-C", "attach-session", "-t", "$7", "-f", "pause-after=5,new-layouts,no-detach-on-destroy"])
+    #expect(launch.arguments == ["-u", "-S", "/tmp/state space $literal/socket", "-N", "-T", "hyperlinks", "-C", "attach-session", "-t", "$7", "-f", "pause-after=5,new-layouts,no-detach-on-destroy"])
 }
 
 @Test(.timeLimit(.minutes(1))) func stoppedPreparedClientIsKilled() async throws {
