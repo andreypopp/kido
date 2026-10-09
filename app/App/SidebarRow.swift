@@ -6,6 +6,8 @@ struct SidebarFonts {
     let nested = NSFont.systemFont(ofSize: 12)
     let section = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let tail = NSFont.systemFont(ofSize: 11)
+    let programTitle = NSFont.systemFont(ofSize: 11)
+    let programCaption = NSFont.systemFont(ofSize: 10)
     let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
 }
 
@@ -95,7 +97,8 @@ final class SidebarCell: NSTableCellView {
                 if slice.active { NSColor.labelColor.withAlphaComponent(0.10).setFill(); path.fill() }
                 path.addClip()
             }
-            let leading = row.target == nil ? 12 : CGFloat(row.leading)
+            let program = { if case .program = row.kind { return true }; return false }()
+            let leading = row.target == nil && !program ? 12 : CGFloat(row.leading)
             if row.focused && row.multiPane {
                 let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
                 (dark ? NSColor.white.withAlphaComponent(0.85) : NSColor.black.withAlphaComponent(0.75)).setFill()
@@ -120,7 +123,7 @@ final class SidebarCell: NSTableCellView {
             let y: CGFloat = header ? 6.5 : row.padding
             let dotX = bounds.width - 15
             let iconRect = NSRect(x: leading - 24, y: y + 1, width: 16, height: 16)
-            if !header && dirtyRect.intersects(iconRect) {
+            if !header && !program && dirtyRect.intersects(iconRect) {
                 Self.icons[row.icon]?.draw(in: iconRect,
                           from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             }
@@ -128,20 +131,21 @@ final class SidebarCell: NSTableCellView {
             let end = header ? bounds.width - 30 : dotX - 12 - (clock.isEmpty ? 0 : clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
-            let titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
+            let titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: program ? 16 : 18)
             if dirtyRect.intersects(titleRect) {
                 (row.title as NSString).draw(in: titleRect,
-                                       withAttributes: [.font: header ? fonts.section : row.indent == 0 ? fonts.regular : fonts.nested,
-                                                        .foregroundColor: header || row.quietShell ? NSColor.secondaryLabelColor : NSColor.labelColor,
+                                       withAttributes: [.font: header ? fonts.section : program ? fonts.programTitle : row.indent == 0 ? fonts.regular : fonts.nested,
+                                                        .foregroundColor: header || program || row.quietShell ? NSColor.secondaryLabelColor : NSColor.labelColor,
                                                         .paragraphStyle: paragraph])
             }
-            let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - 24), height: 15)
+            let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - (program ? 27 : 24)), height: program ? 14 : 15)
             if dirtyRect.intersects(tailRect) {
                 (row.tail as NSString).draw(in: tailRect,
-                                          withAttributes: [.font: fonts.tail, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
+                                          withAttributes: [.font: program ? fonts.programCaption : fonts.tail, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
             }
             (clock as NSString).draw(at: NSPoint(x: dotX - 12 - clockWidth, y: y + 2),
                                      withAttributes: [.font: fonts.clock, .foregroundColor: NSColor.secondaryLabelColor])
+            let indicatorY = program ? 3.0 : y
             let color: NSColor? = switch row.status {
             case .quiet: nil; case .running, .done: .systemGreen; case .attention: .systemOrange; case .error, .stalled: .systemRed
             }
@@ -150,10 +154,10 @@ final class SidebarCell: NSTableCellView {
                     let image = NSImage(systemSymbolName: row.status == .done ? "checkmark" : "exclamationmark", accessibilityDescription: nil)?
                         .withSymbolConfiguration(.init(pointSize: 10, weight: .bold))?
                         .withSymbolConfiguration(.init(paletteColors: [color]))
-                    image?.draw(in: NSRect(x: dotX - 6, y: y + 1, width: 12, height: 12),
+                    image?.draw(in: NSRect(x: dotX - 6, y: indicatorY + 1, width: 12, height: 12),
                                 from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
                 } else {
-                    color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: y + 6, width: 6, height: 6)).fill()
+                    color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: indicatorY + 6, width: 6, height: 6)).fill()
                 }
             }
         }
