@@ -218,7 +218,11 @@ final class WindowView: NSView {
             let chrome = overlays[pane.id] ?? PaneChrome(pane: pane.id, runtime: runtime)
             chrome.select = view.onSelect
             chrome.hover = { [weak self] chrome, point in self?.hover(chrome, point) }
-            place(chrome, view, g, placement, floating: (seen[pane.id] ?? pane).layer != .tiled)
+            let isFloating = (seen[pane.id] ?? pane).layer != .tiled
+            chrome.wantsLayer = true
+            chrome.layer?.cornerRadius = isFloating ? floatingRadius : 0
+            chrome.layer?.masksToBounds = isFloating
+            place(chrome, view, g, placement, floating: isFloating)
             chrome.isHidden = view.isHidden
             chrome.dimmed = pane.id != active
             switch (seen[pane.id] ?? pane).layer {
@@ -281,8 +285,6 @@ final class WindowView: NSView {
             let previous = chrome.frame
             place(chrome, view, pane.geometry, placement, floating: pane.layer != .tiled)
             changed = changed || previous != chrome.frame
-            if floatingBoxes[chrome.pane]?.frame != chrome.frame { floatingBoxes[chrome.pane]?.frame = chrome.frame }
-            if toolbar?.superview === chrome { toolbar?.frame = chrome.toolbarFrame }
         }
         for (box, frame) in zip(dividers, shown.visible.root.dividers.map { placement.line($0, pixel: pixel) } + [placement.topLine]) {
             if box.frame != frame { box.frame = frame; changed = true }
@@ -296,8 +298,6 @@ final class WindowView: NSView {
               let view = panes.first(where: { $0.pane == id }),
               chrome.frame != floatFrame(id, pane.geometry, placement) else { return }
         place(chrome, view, pane.geometry, placement, floating: true)
-        if floatingBoxes[id]?.frame != chrome.frame { floatingBoxes[id]?.frame = chrome.frame }
-        if toolbar?.superview === chrome, toolbar?.frame != chrome.toolbarFrame { toolbar?.frame = chrome.toolbarFrame }
         invalidateCursorRects()
         #if KIDO_STRESS
         stressEvent("place-float", id.description)
@@ -317,25 +317,23 @@ final class WindowView: NSView {
             (frame, grid, content, insets) = (tiled.chrome, tiled.grid, tiled.content, tiled.insets)
         }
         if chrome.frame != frame { chrome.frame = frame }
+        if floatingBoxes[chrome.pane]?.frame != frame { floatingBoxes[chrome.pane]?.frame = frame }
+        if toolbar?.superview === chrome, toolbar?.frame != chrome.toolbarFrame { toolbar?.frame = chrome.toolbarFrame }
         view.renderInsets = insets
         if view.frame != content { view.frame = content }
         chrome.content = content.offsetBy(dx: -frame.minX, dy: -frame.minY)
         chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
-        chrome.wantsLayer = true
-        chrome.layer?.cornerRadius = floating ? floatingRadius : 0
-        chrome.layer?.masksToBounds = floating
-        if floating {
+        if floating || content.minY < placement.topLine.maxY {
             let mask = view.layer?.mask as? CAShapeLayer ?? CAShapeLayer()
-            let rect = chrome.bounds.offsetBy(dx: chrome.frame.minX - grid.minX, dy: grid.maxY - chrome.frame.maxY)
-            if mask.path?.boundingBoxOfPath != rect {
-                mask.path = CGPath(roundedRect: rect, cornerWidth: floatingRadius, cornerHeight: floatingRadius, transform: nil)
+            let rect = floating
+                ? chrome.bounds.offsetBy(dx: chrome.frame.minX - grid.minX, dy: grid.maxY - chrome.frame.maxY)
+                : CGRect(x: 0, y: 0, width: content.width, height: max(0, content.maxY - placement.topLine.maxY))
+            if !floating || mask.path?.boundingBoxOfPath != rect {
+                mask.path = floating
+                    ? CGPath(roundedRect: rect, cornerWidth: floatingRadius, cornerHeight: floatingRadius, transform: nil)
+                    : CGPath(rect: rect, transform: nil)
             }
             if view.layer?.mask !== mask { view.layer?.mask = mask }
-        } else if content.minY < placement.topLine.maxY {
-            let mask = view.layer?.mask as? CAShapeLayer ?? CAShapeLayer()
-            let rect = CGRect(x: 0, y: 0, width: content.width, height: max(0, content.maxY - placement.topLine.maxY))
-            mask.path = CGPath(rect: rect, transform: nil)
-            view.layer?.mask = mask
         } else if view.layer?.mask != nil { view.layer?.mask = nil }
         if view.scroller.superview !== chrome { chrome.addSubview(view.scroller, positioned: .below, relativeTo: nil) }
         view.scroller.select = view.onSelect
@@ -414,7 +412,6 @@ final class WindowView: NSView {
         box.boxType = .custom
         box.titlePosition = .noTitle
         box.borderWidth = border
-        box.borderColor = .gray
         box.fillColor = fill
         return box
     }
@@ -459,10 +456,6 @@ final class WindowView: NSView {
     }
 
     private func validateFrames(_ placement: PaneLayout) {
-        let mask = layer?.mask as? CAShapeLayer ?? CAShapeLayer()
-        mask.path = CGPath(rect: CGRect(x: bounds.minX, y: placement.topLine.minY, width: bounds.width,
-                                       height: max(0, bounds.maxY - placement.topLine.minY)), transform: nil)
-        layer?.mask = mask
         if let placed, placed != placement {
             if case .sending = delivery { delivery = .sending(pending: nil) }
             liveFrame = nil
@@ -822,9 +815,7 @@ final class WindowView: NSView {
         func terminal(_ id: PaneID, excluding edges: [CGRect] = []) {
             guard let view = panes.first(where: { $0.pane == id && !$0.isHidden }) else { return }
             let chrome = subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == id }
-            let cuts = edges + (chrome?.subviews.filter {
-                !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0)
-            }.map { convert($0.bounds, from: $0) } ?? [])
+            let cuts = edges + (chrome.map { chrome in chrome.overlays.map { convert($0, from: chrome) } } ?? [])
             for rect in view.terminalCursorRects {
                 for rect in convert(rect, from: view).subtracting(cuts) { add(rect, view.mouseCursor) }
             }

@@ -107,7 +107,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         view.needsLayout = true
     }
     func headerDivider(in host: NSWindow) -> CGFloat? {
-        guard let window = view.window, host !== window, !isCollapsed, !isFloating, let glass = dockedGlass else { return nil }
+        guard let window = view.window, !isCollapsed, let glass = dockedGlass else { return nil }
         let edge = glass.convert(NSPoint(x: glass.bounds.maxX, y: glass.bounds.maxY), to: nil)
         return host.convertPoint(fromScreen: window.convertPoint(toScreen: edge)).x
     }
