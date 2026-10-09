@@ -470,9 +470,9 @@ import TmuxControl
         let upgradedAlert = try XCTUnwrap(mismatch.preparedAlert?.alert)
         let upgradedContent = try XCTUnwrap(upgradedAlert.window.contentView)
         XCTAssertTrue(labels(upgradedContent).contains { $0 == "Restart kido on localhost" })
-        XCTAssertTrue(labels(upgradedContent).contains { $0.contains("Server: 0.9. Host binary: 2.0.") })
+        XCTAssertTrue(labels(upgradedContent).contains { $0.contains("Server: 0.9. Host binary: 2.1.") })
         XCTAssertNil(mismatch.testConnection)
-        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "2.0"]))
+        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "2.1"]))
         mismatch.respondToAlert(.alertFirstButtonReturn)
         try await until("Reconnect rediscovers compatible protocol") { mismatch.testBanner.isHidden }
         transports += owners.compactMap(\.ssh)
