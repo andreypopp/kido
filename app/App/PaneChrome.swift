@@ -23,10 +23,10 @@ final class PaneChrome: NSView {
     private let runtime: GhosttyRuntime
     var select: () -> Void = {}
     var drag: ((NSEvent) -> Void)?
-    var padding: [CGRect] {
-        bounds.insetBy(dx: 5, dy: 5).subtracting(
-            [content] + subviews.filter { !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0) }.map(\.frame))
+    var overlays: [CGRect] {
+        subviews.filter { !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0) }.map(\.frame)
     }
+    var padding: [CGRect] { bounds.insetBy(dx: 5, dy: 5).subtracting([content] + overlays) }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var content = CGRect.zero
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
