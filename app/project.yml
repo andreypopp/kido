@@ -15,6 +15,10 @@ settings:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", DEBUG, "$(KIDO_STRESS_CONDITION)", "$(KIDO_VISUAL_CONDITION)"]
     Release:
       DEBUG_INFORMATION_FORMAT: dwarf
+      CODE_SIGN_IDENTITY: Apple Development
+      DEVELOPMENT_TEAM: LC2633WWXE
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+      ENABLE_HARDENED_RUNTIME: NO
 packages:
   SnapshotTesting:
     url: https://github.com/pointfreeco/swift-snapshot-testing
