@@ -52,7 +52,7 @@ import SidebarFeed
         menus.send = { [weak self] in self?.current?.perform($0) }
         runtime.onConfigChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateAppearance() } }
         runtime.onColorSchemeChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateColorScheme() } }
-        routes.ready(isDefaultLaunch: isDefaultLaunch == true && ordinaryLaunchEvent) { [weak self] in _ = self?.open($0) }
+        routes.ready(isDefaultLaunch: isDefaultLaunch == true && ordinaryLaunchEvent) { [weak self] in _ = self?.open($0, cause: $1) }
         #if KIDO_VISUAL
         if ProcessInfo.processInfo.environment["KIDO_APP_QUIT_VERIFY"] == "1", let owner = owners.first ?? open(.local) {
             let deadline = Date().addingTimeInterval(15)
@@ -74,9 +74,9 @@ import SidebarFeed
         #endif
     }
 
-    @discardableResult func open(_ host: Host, start: Bool = true) -> WindowOwner? {
+    @discardableResult func open(_ host: Host, start: Bool = true, cause: WindowOwner.DialCause = .launch) -> WindowOwner? {
         guard let runtime else { return nil }
-        let owner = WindowOwner(host: host, runtime: runtime, start: start)
+        let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause)
         owners.append(owner)
         owner.onClose = { [weak self, weak owner] in
             self?.updateMenu()
@@ -96,7 +96,7 @@ import SidebarFeed
         return true
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !owners.contains(where: \.alive) { routes.ordinaryOpen() }
+        if !owners.contains(where: \.alive) { routes.ordinaryOpen(cause: .reopen) }
         else if !background { owners.first(where: \.alive)?.window.makeKeyAndOrderFront(nil) }
         return false
     }
@@ -162,7 +162,7 @@ import SidebarFeed
         WindowOwner.resetClipboardPermissions(owners)
     }
 
-    @objc func newLocalWindow() { routes.ordinaryOpen() }
+    @objc func newLocalWindow() { routes.ordinaryOpen(cause: .newWindow) }
     @objc private func connectRemoteHost() { RemoteHostDialog(routes: routes).show(on: NSApp.keyWindow) }
 
     @objc private func newSession() { current?.newSession() }
@@ -178,7 +178,7 @@ import SidebarFeed
             stopped.enter()
             owner.ended.notify(queue: .global()) { @Sendable in stopped.leave() }
         }
-        owners.forEach { $0.close() }
+        owners.forEach { $0.close(cause: .quit) }
         owners = []
         stopped.notify(queue: .global()) { @Sendable in
             RunLoop.main.perform(inModes: [.common]) {
