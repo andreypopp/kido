@@ -143,7 +143,7 @@ let send t text =
           output = Subrun.output_path ~dir:t.dir t.meta.id;
         }
       in
-      match Msg.deliver ~path:inbox (Yojson.Safe.to_string (Msg.envelope_to_yojson env)) with
+      match Msg.deliver ~path:inbox (Yojson.Safe.to_string (Msg.yojson_of_envelope env)) with
       | Ok () -> true
       | Error _ -> false)
   | _ -> false
@@ -243,7 +243,7 @@ let%test_module "Tests" =
           kind = Bash;
           parent_session = parent;
           depth = 1;
-          pane = Tmux.pane_id_of_string "";
+          pane = None;
           pid = 0;
           cwd = "";
           model = "";

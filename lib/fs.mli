@@ -12,6 +12,7 @@ val self : string Lazy.t
 val write_all : Unix.file_descr -> string -> unit
 val mkdir_p : ?perm:int -> string -> unit
 val read : string -> string option
+val read_json : string -> (Yojson.Safe.t -> 'a) -> 'a option
 val write : ?perm:int -> string -> string -> unit
 val remove : string -> unit
 

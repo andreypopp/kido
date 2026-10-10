@@ -1,10 +1,9 @@
 open Tmux
 
-let optional_id_to_yojson = function None -> `String "" | Some id -> pane_id_to_yojson id
+type optional_id = pane_id option
 
-let optional_id_of_yojson = function
-  | `String "" -> Ok None
-  | json -> Result.map Option.some (pane_id_of_yojson json)
+let yojson_of_optional_id = function None -> `String "" | Some id -> yojson_of_pane_id id
+let optional_id_of_yojson = function `String "" -> None | json -> Some (pane_id_of_yojson json)
 
 type exit = { code : int; at : float }
 
@@ -96,10 +95,6 @@ let parse_line line =
   match Array.of_list (split_n fields line) with
   | f when Array.length f < fields -> None
   | f ->
-      let open Option.Infix in
-      let* session_id = session_id_of_string f.(1) in
-      let* window_id = window_id_of_string f.(4) in
-      let* pane_id = pane_id_of_string f.(7) in
       let program_status =
         Result.get_or
           ~default:Program_status.{ serial = 0; records = [] }
@@ -108,13 +103,13 @@ let parse_line line =
       Some
         {
           session_name = f.(0);
-          session_id;
+          session_id = session_id_of_string f.(1);
           session_created = Float.of_int (int f.(2));
           window_index = int f.(3);
-          window_id;
+          window_id = window_id_of_string f.(4);
           window_name = f.(5);
           window_layout = f.(6);
-          pane_id;
+          pane_id = pane_id_of_string f.(7);
           active = String.equal f.(8) "1";
           pane_pid = int f.(9);
           current_command = f.(10);
@@ -207,21 +202,22 @@ let resolve_client tmux ~pane ~tmux_env =
     | None -> None
     | Some pane -> (
         match
-          Tmux.exec tmux [ "display-message"; "-p"; "-t"; pane_id_to_string pane; "#{session_id}" ]
+          Tmux.exec tmux [ "display-message"; "-p"; "-t"; string_of_pane_id pane; "#{session_id}" ]
         with
-        | Ok id -> session_id_of_string id
+        | Ok id when not (String.is_empty id) -> Some (session_id_of_string id)
         | _ -> None)
   in
   let target =
     match (live, String.split_on_char ',' tmux_env) with
     | Some id, _ -> Some id
-    | None, _ :: _ :: id :: _ when not (String.is_empty id) -> session_id_of_string ("$" ^ id)
+    | None, _ :: _ :: id :: _ when not (String.is_empty id) ->
+        Some (session_id_of_string ("$" ^ id))
     | None, _ -> None
   in
   match
     Option.map
       (fun t ->
-        Tmux.exec tmux [ "list-clients"; "-t"; session_id_to_string t; "-F"; Tmux.client_format ])
+        Tmux.exec tmux [ "list-clients"; "-t"; string_of_session_id t; "-F"; Tmux.client_format ])
       target
   with
   | Some (Ok out) -> (
@@ -229,10 +225,10 @@ let resolve_client tmux ~pane ~tmux_env =
   | _ -> None
 
 let mark_ssh tmux pane destination =
-  Tmux.run tmux [ "set-option"; "-p"; "-t"; pane_id_to_string pane; "@kido_ssh"; destination ]
+  Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane; "@kido_ssh"; destination ]
 
 let mark_run tmux pane_id run_id =
-  Tmux.run tmux [ "set-option"; "-p"; "-t"; pane_id_to_string pane_id; run_option; run_id ]
+  Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane_id; run_option; run_id ]
 
 let%test_module "Tests" =
   (module struct
@@ -240,8 +236,9 @@ let%test_module "Tests" =
       List.iter
         (fun json ->
           match optional_id_of_yojson json with
-          | Ok id -> print_endline (Yojson.Safe.to_string (optional_id_to_yojson id))
-          | Error e -> print_endline e)
+          | id -> print_endline (Yojson.Safe.to_string (yojson_of_optional_id id))
+          | exception Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error (Failure e, _) ->
+              print_endline e)
         [ `String ""; `String "%0"; `String "%123"; `String "%"; `String "@1"; `Null ];
       [%expect {|
     ""
@@ -260,24 +257,29 @@ let%test_module "Tests" =
           line [ "/dev/ttys001"; "work"; "$0"; "attached"; "0" ];
           line [ ""; "work"; "$0"; ""; "0" ];
           "junk";
-          line [ "invalid"; "work"; "0"; ""; "0" ];
         ]
       in
       List.iter print_endline (real_clients clients);
-      [%expect {| /dev/ttys001 |}]
+      (match real_clients [ line [ "invalid"; "work"; "0"; ""; "0" ] ] with
+      | _ -> print_endline "parsed"
+      | exception Invalid_argument e -> print_endline e);
+      [%expect {|
+        /dev/ttys001
+        "0" is not a session id ($N)
+        |}]
 
     let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(window = "@1")
         ?(active = false) ?(attached = false) ?(running = false) ?start ?prompt ?run ?(pid = 0)
         ?(cmd = "") ?(cwd = "") ?(title = "") id : t =
       {
         session_name = session;
-        session_id = Option.get_exn_or "id" (session_id_of_string session_id);
+        session_id = session_id_of_string session_id;
         session_created = created;
         window_index = index;
-        window_id = Option.get_exn_or "id" (window_id_of_string window);
+        window_id = window_id_of_string window;
         window_name = "";
         window_layout = "";
-        pane_id = Option.get_exn_or "id" (pane_id_of_string id);
+        pane_id = pane_id_of_string id;
         active;
         pane_active = active;
         pane_pid = pid;
@@ -306,9 +308,9 @@ let%test_module "Tests" =
          alt=%b running=%b start=%s prompt=%s exit=%s line=%S dead=%s run=%s ssh=%s attached=%b \
          title=%S\n"
         p.session_name
-        (session_id_to_string p.session_id)
-        p.session_created p.window_index (window_id_to_string p.window_id) p.window_name
-        p.window_layout (pane_id_to_string p.pane_id) p.active p.pane_active p.pane_pid
+        (string_of_session_id p.session_id)
+        p.session_created p.window_index (string_of_window_id p.window_id) p.window_name
+        p.window_layout (string_of_pane_id p.pane_id) p.active p.pane_active p.pane_pid
         p.current_command p.current_path p.alternate_on p.command_running (time p.command_start)
         (time p.last_prompt)
         (opt (fun (e : exit) -> Printf.sprintf "%d@%.0f" e.code e.at) p.last_exit)
@@ -346,7 +348,7 @@ let%test_module "Tests" =
         (fun p ->
           show p;
           Option.iter (fun (user, host) -> Printf.printf "user=%S host=%S\n" user host) p.ssh;
-          print_endline (Yojson.Safe.to_string (Program_status.to_yojson p.program_status)))
+          print_endline (Yojson.Safe.to_string (Program_status.yojson_of_t p.program_status)))
         (parse [ line values ]);
       [%expect
         {|
@@ -372,8 +374,8 @@ let%test_module "Tests" =
           in
           List.iter
             (fun (p : t) ->
-              Printf.printf "%s %s %s\n" (pane_id_to_string p.pane_id) p.title
-                (Yojson.Safe.to_string (Program_status.to_yojson p.program_status)))
+              Printf.printf "%s %s %s\n" (string_of_pane_id p.pane_id) p.title
+                (Yojson.Safe.to_string (Program_status.yojson_of_t p.program_status)))
             (parse [ line values ]))
         [
           "invalid JSON";
@@ -522,12 +524,12 @@ let%test_module "Tests" =
         "order_sessions: oldest session first, windows in list order, panes oldest first" =
       List.iter
         (fun (s : session) ->
-          Printf.printf "%s %s:" s.name (session_id_to_string s.id);
+          Printf.printf "%s %s:" s.name (string_of_session_id s.id);
           List.iter
             (fun w ->
               Printf.printf " %s[%s]"
-                (window_id_to_string (List.hd w).window_id)
-                (String.concat " " (List.map (fun (p : t) -> pane_id_to_string p.pane_id) w)))
+                (string_of_window_id (List.hd w).window_id)
+                (String.concat " " (List.map (fun (p : t) -> string_of_pane_id p.pane_id) w)))
             s.windows;
           print_newline ())
         (order_sessions
@@ -559,12 +561,12 @@ let%test_module "Tests" =
       List.iter
         (fun w ->
           Printf.printf "%s: focused=%b last_window=%b last_pane=%b run_pane=%s\n" w
-            (window_focused focus_panes (Option.get_exn_or "id" (window_id_of_string w)))
-            (last_window focus_panes (Option.get_exn_or "id" (window_id_of_string w)))
-            (last_pane focus_panes (Option.get_exn_or "id" (window_id_of_string w)))
+            (window_focused focus_panes (window_id_of_string w))
+            (last_window focus_panes (window_id_of_string w))
+            (last_pane focus_panes (window_id_of_string w))
             (Option.map_or ~default:"-"
-               (fun (p : t) -> pane_id_to_string p.pane_id)
-               (run_pane focus_panes (Option.get_exn_or "id" (window_id_of_string w)))))
+               (fun (p : t) -> string_of_pane_id p.pane_id)
+               (run_pane focus_panes (window_id_of_string w))))
         [ "@1"; "@2"; "@3"; "@999" ];
       [%expect
         {|

@@ -1,7 +1,7 @@
 type server = Down | Up of string option | Mismatch
 
 type endpoint = { tmux : string; socket : string; protocol : string; server : string option }
-[@@deriving to_yojson]
+[@@deriving yojson_of]
 
 let tmux_safe what s =
   match Seq.find (String.contains "'\"$#\\`\n\r") (String.to_seq s) with
@@ -182,7 +182,7 @@ let%test_module "Tests" =
       List.iter
         (fun server ->
           emit
-            (endpoint_to_yojson
+            (yojson_of_endpoint
                {
                  tmux = "/bin/kido-tmux";
                  socket = "/server/socket";

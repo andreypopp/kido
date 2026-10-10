@@ -109,7 +109,7 @@ let progress r =
   | Working progress | Blocked { progress; _ } -> progress
   | Idle | Done | Error -> None
 
-let to_yojson t =
+let yojson_of_t t =
   let record r =
     let state =
       match r.state with
@@ -141,7 +141,7 @@ let%test_module "Tests" =
         (fun json ->
           match parse json with
           | Error e -> print_endline e
-          | Ok status -> print_endline (Yojson.Safe.to_string (to_yojson status)))
+          | Ok status -> print_endline (Yojson.Safe.to_string (yojson_of_t status)))
         [
           {|{"serial":2,"records":[{"id":"z","state":"done","title":"8J+YgA=="},{"id":"","state":"working","app":"pi"}]}|};
           {|{"serial":1,"records":[{"id":"","state":"future"}]}|};

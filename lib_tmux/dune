@@ -1,8 +1,14 @@
 (library
  (name tmux)
  (flags
-  (:standard -open Containers))
+  (:standard
+   -open
+   Containers
+   -open
+   Ppx_compare_lib.Builtin
+   -open
+   Ppx_yojson_conv_lib.Yojson_conv.Primitives))
  (libraries containers unix yojson kido_fs)
  (inline_tests)
  (preprocess
-  (pps ppx_expect)))
+  (pps ppx_yojson_conv ppx_compare ppx_string_conv ppx_expect)))

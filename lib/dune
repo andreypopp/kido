@@ -4,7 +4,7 @@
  (modules fs)
  (flags
   (:standard -open Containers))
- (libraries containers unix)
+ (libraries containers unix yojson ppx_yojson_conv_lib)
  (inline_tests)
  (preprocess
   (pps ppx_expect)))
@@ -14,7 +14,13 @@
  (modules
   (:standard \ fs))
  (flags
-  (:standard -open Containers))
+  (:standard
+   -open
+   Containers
+   -open
+   Ppx_compare_lib.Builtin
+   -open
+   Ppx_yojson_conv_lib.Yojson_conv.Primitives))
  (libraries
   kido_fs
   containers
@@ -36,7 +42,7 @@
    %{project_root}/share/pi/kido-status.ts
    %{project_root}/share/pi/kido-agents.ts))
  (preprocess
-  (pps ppx_deriving_yojson ppx_expect)))
+  (pps ppx_yojson_conv ppx_compare ppx_string_conv ppx_expect)))
 
 (rule
  (target embedded.ml)

@@ -1,4 +1,4 @@
-type id = string
+type id = string [@@deriving yojson_of]
 
 let parse_id s =
   if
@@ -12,8 +12,11 @@ let parse_id s =
   else Error (Printf.sprintf "invalid ask id %S" s)
 
 let string_of_id id = id
-let id_to_yojson id = `String id
-let id_of_yojson = function `String s -> parse_id s | _ -> Error "invalid ask id"
+
+let id_of_yojson json =
+  match json with
+  | `String s when Result.is_ok (parse_id s) -> s
+  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid ask id" json
 
 type t = {
   id : id;
@@ -27,13 +30,7 @@ type t = {
 [@@deriving yojson]
 
 let path ~dir id = Filename.concat (Filename.concat dir "asks") (id ^ ".json")
-
-let read ~dir id =
-  Option.flat_map
-    (fun text ->
-      try Result.to_opt (of_yojson (Yojson.Safe.from_string text))
-      with Yojson.Json_error _ -> None)
-    (Fs.read (path ~dir id))
+let read ~dir id = Fs.read_json (path ~dir id) t_of_yojson
 
 let list ~dir =
   let asks = Filename.concat dir "asks" in
@@ -85,7 +82,7 @@ let invalidate ?(removed = false) ~dir ~self ask =
           ignore
             (Msg.deliver ~path:s.inbox
                (Yojson.Safe.to_string
-                  (Msg.envelope_to_yojson
+                  (Msg.yojson_of_envelope
                      {
                        kind = Asks;
                        id = Msg.new_id ();
@@ -108,7 +105,7 @@ let record ~dir ~self ~replaces ~session ~session_file ~cwd ~name ~text ~now =
   else
     let write id place =
       let ask = { id; session; session_file; cwd; name; text; created = now } in
-      Fs.write_temp ~perm:0o600 (path ~dir id) (Yojson.Safe.to_string (to_yojson ask)) place;
+      Fs.write_temp ~perm:0o600 (path ~dir id) (Yojson.Safe.to_string (yojson_of_t ask)) place;
       invalidate ~dir ~self ask;
       Ok id
     in
@@ -146,7 +143,7 @@ let display_name ~panes ~live ask =
 
 let to_json ~panes ~live ask =
   let name = display_name ~panes ~live ask in
-  match to_yojson { ask with name } with
+  match yojson_of_t { ask with name } with
   | `Assoc fields ->
       `Assoc (fields @ [ ("ended", `Bool (not (List.mem_assoc ~eq:String.equal ask.session live))) ])
   | json -> json

@@ -266,21 +266,21 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
         match meta.kind with
         | (Bash | Stream) when not (Tmux.window_exists tmux w.window_id) -> Ok ()
         | Bash | Stream | Agent ->
-            ignore (Tmux.run tmux [ "kill-window"; "-t"; Tmux.window_id_to_string w.window_id ]);
+            ignore (Tmux.run tmux [ "kill-window"; "-t"; Tmux.string_of_window_id w.window_id ]);
             fail e)
   in
   match meta.kind with
   | Bash | Stream ->
       String.concat " "
         [
-          Tmux.window_id_to_string w.window_id;
-          Tmux.pane_id_to_string w.pane_id;
+          Tmux.string_of_window_id w.window_id;
+          Tmux.string_of_pane_id w.pane_id;
           id;
           Subrun.output_path ~dir meta.id;
         ]
   | Agent ->
       String.concat " "
-        [ Tmux.window_id_to_string w.window_id; Tmux.pane_id_to_string w.pane_id; id ]
+        [ Tmux.string_of_window_id w.window_id; Tmux.string_of_pane_id w.pane_id; id ]
 
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 

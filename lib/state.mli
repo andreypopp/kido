@@ -1,12 +1,11 @@
 type status = Running | Waiting | Idle
-type agent = Pi | Other of string [@@deriving to_yojson]
+type agent = Pi | Other of string [@@deriving yojson_of]
 type parent = { session : string; pid : int }
 
 type session = {
   agent : agent;
   name : string;
-  pane : Tmux.pane_id option;
-      [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]
+  pane : Tmux_pane.optional_id;
   pid : int;
   ts : Timestamp.t;
   inbox : string;

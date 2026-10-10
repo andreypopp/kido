@@ -1,30 +1,22 @@
-let id_of_string sigil s =
+let id_of_string ~what sigil s =
   if
     String.length s > 1
     && Char.equal s.[0] sigil
     && String.for_all Char.Ascii.is_digit (String.drop 1 s)
-  then Some s
-  else None
+  then s
+  else invalid_arg (Printf.sprintf "%S is not a %s id (%cN)" s what sigil)
 
-type session_id = string
+type session_id = string [@@deriving equal, to_string, yojson_of]
 
-let session_id_of_string s = id_of_string '$' s
-let session_id_to_string id = id
-let equal_session_id = String.equal
-let session_id_to_yojson id = `String (session_id_to_string id)
+let session_id_of_string s = id_of_string ~what:"session" '$' s
 
-type window_id = string
+type window_id = string [@@deriving equal, to_string, yojson_of]
 
-let window_id_of_string s = id_of_string '@' s
-let window_id_to_string id = id
-let equal_window_id = String.equal
-let window_id_to_yojson id = `String (window_id_to_string id)
+let window_id_of_string s = id_of_string ~what:"window" '@' s
 
-type pane_id = string
+type pane_id = string [@@deriving equal, to_string, yojson_of]
 
-let pane_id_of_string s = id_of_string '%' s
-let pane_id_to_string id = id
-let equal_pane_id = String.equal
+let pane_id_of_string s = id_of_string ~what:"pane" '%' s
 
 let compare_pane_id a b =
   Int.compare
@@ -37,11 +29,12 @@ module Pane_map = Map.Make (struct
   let compare = String.compare
 end)
 
-let pane_id_to_yojson id = `String (pane_id_to_string id)
-
-let pane_id_of_yojson = function
-  | `String s -> Option.to_result "pane" (pane_id_of_string s)
-  | _ -> Error "pane"
+let pane_id_of_yojson json =
+  match json with
+  | `String s -> (
+      try pane_id_of_string s
+      with Invalid_argument _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "pane" json)
+  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "pane" json
 
 module Program_status = Program_status
 
@@ -129,9 +122,7 @@ let client_format =
 let client_fields line =
   match String.split ~by:client_sep line with
   | name :: session :: session_id :: flags :: control :: _ ->
-      Option.map
-        (fun session_id -> (name, session, session_id, flags, control))
-        (session_id_of_string session_id)
+      Some (name, session, session_id_of_string session_id, flags, control)
   | _ -> None
 
 let parse_client_state lines client =
@@ -277,7 +268,7 @@ module Client = struct
     in
     let args =
       [ "-T"; "hyperlinks"; "-C"; "attach-session"; "-f"; "no-output,ignore-size" ]
-      @ Option.map_or ~default:[] (fun s -> [ "-t"; session_id_to_string s ]) session
+      @ Option.map_or ~default:[] (fun s -> [ "-t"; string_of_session_id s ]) session
     in
     match spawn ?socket:t.socket args with
     | Error _ -> drop t
@@ -366,7 +357,7 @@ module Client = struct
   let follow t session =
     match t.link with
     | Live ch when not (Option.equal equal_session_id ch.attached (Some session)) -> (
-        match run t ~command:("switch-client -t " ^ session_id_to_string session) with
+        match run t ~command:("switch-client -t " ^ string_of_session_id session) with
         | Ok _ -> ch.attached <- Some session
         | Error _ -> ())
     | Live _ | Down _ | Closed -> ()
@@ -424,16 +415,16 @@ let jump t ~client ~session ~window pane =
        "-c";
        client;
        "-t";
-       session_id_to_string session ^ ":" ^ window_id_to_string window ^ "."
-       ^ pane_id_to_string pane;
+       string_of_session_id session ^ ":" ^ string_of_window_id window ^ "."
+       ^ string_of_pane_id pane;
        ";";
        "select-window";
        "-t";
-       session_id_to_string session ^ ":" ^ window_id_to_string window;
+       string_of_session_id session ^ ":" ^ string_of_window_id window;
        ";";
        "select-pane";
        "-t";
-       pane_id_to_string pane;
+       string_of_pane_id pane;
        ";";
      ]
     @ release_args client)
@@ -443,8 +434,8 @@ let release_side_focus t client = run t (release_args client)
 (* On a closed window the fork's display-message exits 0 and prints an empty
    line, so only the echoed id answers. *)
 let window_exists t window_id =
-  match exec t [ "display-message"; "-p"; "-t"; window_id_to_string window_id; "#{window_id}" ] with
-  | Ok out -> Option.equal equal_window_id (window_id_of_string out) (Some window_id)
+  match exec t [ "display-message"; "-p"; "-t"; string_of_window_id window_id; "#{window_id}" ] with
+  | Ok out -> String.equal out (string_of_window_id window_id)
   | Error _ -> false
 
 type window = { window_id : window_id; pane_id : pane_id; pane_pid : int }
@@ -460,7 +451,7 @@ let new_window t ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
          "-F";
          "#{window_id}:#{pane_id}:#{pane_pid}";
          "-t";
-         session_id_to_string session ^ ":";
+         string_of_session_id session ^ ":";
          "-n";
          name;
          "-c";
@@ -472,10 +463,18 @@ let new_window t ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
   let* w =
     match String.split ~by:":" out with
     | [ window_id; pane_id; pid ] -> (
-        match (window_id_of_string window_id, pane_id_of_string pane_id, int_of_string_opt pid) with
-        | Some window_id, Some pane_id, Some pane_pid -> Ok { window_id; pane_id; pane_pid }
-        | _, _, None -> Error (Printf.sprintf "new-window: unexpected pane_pid %S" pid)
-        | _ -> Error (Printf.sprintf "new-window: unexpected output %S" out))
+        match int_of_string_opt pid with
+        | Some pane_pid -> (
+            try
+              Ok
+                {
+                  window_id = window_id_of_string window_id;
+                  pane_id = pane_id_of_string pane_id;
+                  pane_pid;
+                }
+            with Invalid_argument _ ->
+              Error (Printf.sprintf "new-window: unexpected output %S" out))
+        | None -> Error (Printf.sprintf "new-window: unexpected pane_pid %S" pid))
     | _ -> Error (Printf.sprintf "new-window: unexpected output %S" out)
   in
   (* A command that exits fast enough always beats remain-on-exit; losing that
@@ -483,7 +482,7 @@ let new_window t ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
   if not remain_on_exit then Ok w
   else
     match
-      exec t [ "set-option"; "-p"; "-t"; pane_id_to_string w.pane_id; "remain-on-exit"; "on" ]
+      exec t [ "set-option"; "-p"; "-t"; string_of_pane_id w.pane_id; "remain-on-exit"; "on" ]
     with
     | Error e when window_exists t w.window_id -> Error e
     | Ok _ | Error _ -> Ok w
@@ -491,15 +490,13 @@ let new_window t ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
 let%test_module "Tests" =
   (module struct
     let%expect_test "tmux ids validate their sigil and digits" =
+      let valid parse s = match parse s with _ -> true | exception Invalid_argument _ -> false in
       List.iter
         (fun (parse, values) -> List.iter (fun s -> Printf.printf "%S %b\n" s (parse s)) values)
         [
-          ( (fun s -> Option.is_some (pane_id_of_string s)),
-            [ "%0"; "%123"; "@1"; ""; "%"; "%x"; "%1x" ] );
-          ( (fun s -> Option.is_some (window_id_of_string s)),
-            [ "@0"; "@123"; "$1"; ""; "@"; "@x"; "@1x" ] );
-          ( (fun s -> Option.is_some (session_id_of_string s)),
-            [ "$0"; "$123"; "%1"; ""; "$"; "$x"; "$1x" ] );
+          (valid pane_id_of_string, [ "%0"; "%123"; "@1"; ""; "%"; "%x"; "%1x" ]);
+          (valid window_id_of_string, [ "@0"; "@123"; "$1"; ""; "@"; "@x"; "@1x" ]);
+          (valid session_id_of_string, [ "$0"; "$123"; "%1"; ""; "$"; "$x"; "$1x" ]);
         ];
       [%expect
         {|
@@ -541,7 +538,7 @@ let%test_module "Tests" =
             (Option.map_or ~default:"-"
                (fun (s : client_state) ->
                  Printf.sprintf "%s %s focused=%b" s.session
-                   (session_id_to_string s.session_id)
+                   (string_of_session_id s.session_id)
                    s.focused)
                (parse_client_state clients c)))
         [ "/dev/ttys012"; "/dev/ttys001"; "/dev/ttys999" ];

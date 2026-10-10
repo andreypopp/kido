@@ -2,7 +2,7 @@ open Tmux
 
 type status = Tmux.Program_status.state option
 
-let status_to_yojson (state : status) =
+let yojson_of_status (state : status) =
   `String
     (match state with
     | None -> "unknown"
@@ -31,11 +31,11 @@ type agent_info = {
   since_report : int; [@key "sinceReport"]
   stalled : bool;
 }
-[@@deriving to_yojson]
+[@@deriving yojson_of]
 
 let caller_pane panes self =
   Option.to_result
-    (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" pane_id_to_string self))
+    (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" string_of_pane_id self))
     (Option.flat_map (Tmux_pane.find panes) self)
 
 let status panes (s : State.session) =
@@ -85,7 +85,7 @@ let agents ~dir ~threshold ~self ~session ~panes ~states =
               (Printf.sprintf
                  "no tmux session for pane %S; pass --session\n\
                   usage: kido tool list_runs [--session ID] [--json]"
-                 (Option.map_or ~default:"" pane_id_to_string self)))
+                 (Option.map_or ~default:"" string_of_pane_id self)))
   in
   let wake = State.wake ~dir and now = Timestamp.now () in
   let scoped = in_session panes states session in
@@ -181,8 +181,8 @@ let list_runs ~dir ~threshold ~self ~session =
   in
   visible @ runs
 
-let row_to_yojson row =
-  let agent_fields a = match agent_info_to_yojson a with `Assoc fields -> fields | _ -> [] in
+let yojson_of_row row =
+  let agent_fields a = match yojson_of_agent_info a with `Assoc fields -> fields | _ -> [] in
   let fields, kind, relationship, extra =
     match row with
     | Peer a ->
@@ -199,8 +199,8 @@ let row_to_yojson row =
                 ("id", `String (Subrun.string_of_id m.id));
                 ("name", `String (Option.map_or ~default:m.name (fun a -> a.name) a));
                 ("named", `Bool false);
-                ("pane", Tmux_pane.optional_id_to_yojson m.pane);
-                ("window", `String (Option.map_or ~default:"" window_id_to_string window));
+                ("pane", Tmux_pane.yojson_of_optional_id m.pane);
+                ("window", `String (Option.map_or ~default:"" string_of_window_id window));
                 ("parent", `String m.parent_session);
                 ("cwd", `String m.cwd);
                 ("canMessage", `Bool false);
@@ -211,10 +211,10 @@ let row_to_yojson row =
           [
             ("run", `String (Subrun.string_of_id m.id));
             ("state", `String (if Option.is_none r.outcome then "running" else "ended"));
-            ("startedAt", Timestamp.to_yojson m.started_at);
+            ("startedAt", Timestamp.yojson_of_t m.started_at);
           ]
           @ Option.map_or ~default:[]
-              (fun o -> [ ("outcome", Subrun.outcome_to_yojson o) ])
+              (fun o -> [ ("outcome", Subrun.yojson_of_outcome o) ])
               r.outcome
         in
         (fields, (match m.kind with Agent -> "subagent" | Bash | Stream -> "bash"), "own", extra)
@@ -232,7 +232,7 @@ let table rows =
      DEPTH CWD RUN STATE STARTED OUTCOME DETAIL"
   :: List.map
        (fun row ->
-         let json = row_to_yojson row in
+         let json = yojson_of_row row in
          let open Yojson.Safe.Util in
          let value json k =
            match member k json with

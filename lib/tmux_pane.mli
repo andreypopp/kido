@@ -1,6 +1,4 @@
-val optional_id_to_yojson : Tmux.pane_id option -> Yojson.Safe.t
-val optional_id_of_yojson : Yojson.Safe.t -> (Tmux.pane_id option, string) result
-
+type optional_id = Tmux.pane_id option [@@deriving yojson]
 type exit = { code : int; at : float }
 
 type t = {

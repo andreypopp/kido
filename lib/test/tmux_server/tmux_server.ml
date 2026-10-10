@@ -31,8 +31,8 @@ let probe () =
   show (Tmux.exec (Tmux.Client.tmux conn) [ "bogus" ]);
   List.iter
     (fun (p : Kido.Tmux_pane.t) ->
-      Printf.printf "pane %s %s %s\n" p.session_name (window_id_to_string p.window_id)
-        (pane_id_to_string p.pane_id))
+      Printf.printf "pane %s %s %s\n" p.session_name (string_of_window_id p.window_id)
+        (string_of_pane_id p.pane_id))
     (Result.get_exn (Kido.Tmux_pane.list_panes (Tmux.Client.tmux conn)));
   Printf.printf "a fresh connection notifies: %b\n"
     Float.(elapsed (fun () -> Tmux.Client.await_notifications conn ~timeout:5.) < 1.);
@@ -43,7 +43,7 @@ let probe () =
     Float.(elapsed (fun () -> Tmux.Client.await_notifications conn ~timeout:5.) < 1.);
   let other =
     tmux [ "new-session"; "-d"; "-P"; "-F"; "#{session_id}"; "-s"; "other"; "sleep 600" ]
-    |> String.trim |> session_id_of_string |> Option.get_exn_or "session id"
+    |> String.trim |> session_id_of_string
   in
   Tmux.Client.await_notifications conn ~timeout:0.5;
   ignore (tmux [ "split-window"; "-d"; "-t"; "other:"; "sleep 600" ]);

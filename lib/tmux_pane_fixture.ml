@@ -3,13 +3,13 @@ let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(
     ?(cmd = "") ?(cwd = "") ?(title = "") id : Tmux_pane.t =
   {
     session_name = session;
-    session_id = Option.get_exn_or "id" (Tmux.session_id_of_string session_id);
+    session_id = Tmux.session_id_of_string session_id;
     session_created = created;
     window_index = index;
-    window_id = Option.get_exn_or "id" (Tmux.window_id_of_string window);
+    window_id = Tmux.window_id_of_string window;
     window_name = "";
     window_layout = "";
-    pane_id = Option.get_exn_or "id" (Tmux.pane_id_of_string id);
+    pane_id = Tmux.pane_id_of_string id;
     active;
     pane_active = active;
     pane_pid = pid;

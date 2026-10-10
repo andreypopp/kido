@@ -50,6 +50,13 @@ let rec mkdir_p ?(perm = 0o755) d =
 let read path =
   try Some (In_channel.with_open_bin path In_channel.input_all) with Sys_error _ -> None
 
+let read_json path of_yojson =
+  Option.flat_map
+    (fun raw ->
+      try Some (of_yojson (Yojson.Safe.from_string raw))
+      with Yojson.Json_error _ | Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error _ -> None)
+    (read path)
+
 let write ?(perm = 0o644) path s =
   Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ] perm path
     (fun oc -> Out_channel.output_string oc s)

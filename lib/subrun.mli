@@ -18,7 +18,7 @@ type meta = {
   kind : kind;
   parent_session : string;
   depth : int;
-  pane : Tmux.pane_id option;
+  pane : Tmux_pane.optional_id;
   pid : int;
   cwd : string;
   model : string;
@@ -26,12 +26,12 @@ type meta = {
   keep_alive : bool;
   started_at : Timestamp.t;
 }
-[@@deriving to_yojson]
+[@@deriving yojson_of]
 
 val label : meta -> string
 
 type result = Completed | Failed | Died | Stopped
-type outcome = { result : result; text : string; at : Timestamp.t option } [@@deriving to_yojson]
+type outcome = { result : result; text : string; at : Timestamp.t option } [@@deriving yojson_of]
 
 val string_of_result : result -> string
 val create : dir:string -> id -> string -> unit

@@ -1,6 +1,4 @@
-type info = { meta : Subrun.meta; outcome : Subrun.outcome option }
-
-val info_to_yojson : ?extra:(string * Yojson.Safe.t) list -> info -> Yojson.Safe.t
+type info = { meta : Subrun.meta; outcome : Subrun.outcome option } [@@deriving yojson_of]
 
 val list : ?parent_session:string -> dir:string -> unit -> info list
 (** Newest first. *)

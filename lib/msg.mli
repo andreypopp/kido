@@ -15,8 +15,8 @@ type envelope = {
   run : string;
   output : string;
 }
+[@@deriving yojson_of]
 
-val envelope_to_yojson : envelope -> Yojson.Safe.t
 val max_notice_bytes : int
 
 val utf_8_prefix : string -> int -> string

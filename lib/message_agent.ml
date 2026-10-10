@@ -111,7 +111,7 @@ let deliver ~states ~panes ~self spec (target : State.session) text =
       if String.is_empty target.inbox then text
       else
         Yojson.Safe.to_string
-          (Msg.envelope_to_yojson
+          (Msg.yojson_of_envelope
              {
                kind = spec.kind;
                id = (if String.is_empty spec.id then Msg.new_id () else spec.id);
@@ -156,7 +156,7 @@ let send ~dir ~self recipient spec text =
                (Printf.sprintf
                   "no live agent session on this pane (%s), so an answer could not be addressed \
                    back here; nothing sent - %s"
-                  (Option.map_or ~default:"" Tmux.pane_id_to_string self)
+                  (Option.map_or ~default:"" Tmux.string_of_pane_id self)
                   alternative))
       | Ask, Some (_, caller) when String.is_empty caller.inbox ->
           Error

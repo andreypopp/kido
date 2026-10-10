@@ -6,8 +6,8 @@ let grace () =
 type close = Window of Tmux.window_id | Pane of { window : Tmux.window_id; pane : Tmux.pane_id }
 
 let release tmux = function
-  | Window w -> Tmux.run tmux [ "kill-window"; "-t"; Tmux.window_id_to_string w ]
-  | Pane { pane; _ } -> Tmux.run tmux [ "kill-pane"; "-t"; Tmux.pane_id_to_string pane ]
+  | Window w -> Tmux.run tmux [ "kill-window"; "-t"; Tmux.string_of_window_id w ]
+  | Pane { pane; _ } -> Tmux.run tmux [ "kill-pane"; "-t"; Tmux.string_of_pane_id pane ]
 
 let close_of panes window pane =
   if not (Tmux_pane.last_pane panes window) then Some (Pane { window; pane })
@@ -18,19 +18,19 @@ let decide panes window_id =
   if Tmux_pane.window_focused panes window_id then
     Error
       (Printf.sprintf "%s is a client's current window; leaving it for the user to read"
-         (Tmux.window_id_to_string window_id))
+         (Tmux.string_of_window_id window_id))
   else
     match Tmux_pane.run_pane panes window_id with
     | None ->
-        Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.window_id_to_string window_id))
+        Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.string_of_window_id window_id))
     | Some { dead_at = None; _ } ->
         Error
           (Printf.sprintf "%s's run is still going; leaving it"
-             (Tmux.window_id_to_string window_id))
+             (Tmux.string_of_window_id window_id))
     | Some run ->
         Option.to_result
           (Printf.sprintf "%s is its session's only window; closing it would destroy the session"
-             (Tmux.window_id_to_string window_id))
+             (Tmux.string_of_window_id window_id))
           (close_of panes window_id run.pane_id)
 
 type detail = Bash | Streamed of { unstreamed : int } | Agent of { unreported : bool }
@@ -230,7 +230,7 @@ let%test_module "Tests" =
           kind;
           parent_session = parent;
           depth = 0;
-          pane = Tmux.pane_id_of_string "";
+          pane = None;
           pid = 0;
           cwd = "";
           model = "";
@@ -242,11 +242,11 @@ let%test_module "Tests" =
 
     let%expect_test "decide: close-run's refusals and closes" =
       let show w panes =
-        match decide panes (Option.get_exn_or "id" (Tmux.window_id_of_string w)) with
-        | Ok (Window w) -> Printf.printf "close %s\n" (Tmux.window_id_to_string w)
+        match decide panes (Tmux.window_id_of_string w) with
+        | Ok (Window w) -> Printf.printf "close %s\n" (Tmux.string_of_window_id w)
         | Ok (Pane { window; pane }) ->
-            Printf.printf "close %s pane %s\n" (Tmux.window_id_to_string window)
-              (Tmux.pane_id_to_string pane)
+            Printf.printf "close %s pane %s\n" (Tmux.string_of_window_id window)
+              (Tmux.string_of_pane_id pane)
         | Error why -> print_endline why
       in
       let focused = pane ~watched:true "%1" "@1" in

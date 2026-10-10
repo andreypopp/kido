@@ -4,23 +4,26 @@ type agent = Pi | Other of string
 let string_of_status = function Running -> "running" | Waiting -> "waiting" | Idle -> "idle"
 let agent_of_string = function "pi" -> Pi | s -> Other s
 let string_of_agent = function Pi -> "pi" | Other s -> s
-let agent_to_yojson a = `String (string_of_agent a)
-let agent_of_yojson = function `String s -> Ok (agent_of_string s) | _ -> Error "agent"
+let yojson_of_agent a = `String (string_of_agent a)
 
-type parent = { session : string; pid : int [@default 0] } [@@deriving yojson]
+let agent_of_yojson = function
+  | `String s -> agent_of_string s
+  | json -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "agent" json
+
+type parent = { session : string; pid : int [@default 0] [@yojson_drop_default.equal] }
+[@@deriving yojson]
 
 type session = {
   agent : agent;
   name : string;
-  pane : Tmux.pane_id option;
-      [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]
+  pane : Tmux_pane.optional_id;
   pid : int;
   ts : Timestamp.t;
-  inbox : string; [@default ""]
-  activity : string; [@default ""]
-  parent : parent option; [@default None]
-  depth : int; [@default 0]
-  model : string; [@default ""]
+  inbox : string; [@default ""] [@yojson_drop_default.equal]
+  activity : string; [@default ""] [@yojson_drop_default.equal]
+  parent : parent option; [@default None] [@yojson_drop_if Option.is_none]
+  depth : int; [@default 0] [@yojson_drop_default.equal]
+  model : string; [@default ""] [@yojson_drop_default.equal]
 }
 [@@deriving yojson]
 
@@ -91,12 +94,7 @@ let alive pid =
   | exception Unix.Unix_error (EPERM, _, _) -> true
   | exception Unix.Unix_error _ -> false
 
-let parse b =
-  match Yojson.Safe.from_string b with
-  | j -> Result.to_opt (session_of_yojson j)
-  | exception Yojson.Json_error _ -> None
-
-let get ~dir id = Option.flat_map parse (Fs.read (path ~dir id))
+let get ~dir id = Fs.read_json (path ~dir id) session_of_yojson
 let get_live ~dir id = Option.filter (fun s -> alive s.pid) (get ~dir id)
 
 let read_all ~dir =
@@ -106,8 +104,8 @@ let read_all ~dir =
       |> List.filter_map (fun name ->
           let full = Filename.concat dir name in
           match Filename.chop_suffix_opt ~suffix:".json" name with
-          | Some id when not (Sys.is_directory full) -> (
-              match Option.flat_map parse (Fs.read full) with Some s -> Some (id, s) | _ -> None)
+          | Some id when not (Sys.is_directory full) ->
+              Option.map (fun s -> (id, s)) (Fs.read_json full session_of_yojson)
           | _ -> None)
 
 let load_live ~dir =
@@ -176,7 +174,7 @@ let record ~dir id s =
   Fs.mkdir_p ~perm:0o700 dir;
   let path = path ~dir id in
   let tmp = Printf.sprintf "%s.tmp.%d" path (Unix.getpid ()) in
-  Fs.write tmp (Yojson.Safe.to_string (session_to_yojson s));
+  Fs.write tmp (Yojson.Safe.to_string (yojson_of_session s));
   Fun.protect ~finally:(fun () -> Fs.remove tmp) @@ fun () ->
   match Unix.link tmp path with
   | () -> Ok ()
@@ -191,7 +189,7 @@ let remove ~dir id ~pid = Result.map (fun () -> Fs.remove (path ~dir id)) (held 
 
 let held_message id s =
   Printf.sprintf "session %s is already open in pane %s (pid %d); this process is not tracked" id
-    (Option.map_or ~default:"" Tmux.pane_id_to_string s.pane)
+    (Option.map_or ~default:"" Tmux.string_of_pane_id s.pane)
     s.pid
 
 let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
@@ -225,7 +223,7 @@ let%test_module "Tests" =
       {
         agent;
         name = "";
-        pane = Tmux.pane_id_of_string pane;
+        pane = Some (Tmux.pane_id_of_string pane);
         pid;
         ts;
         inbox;
@@ -236,25 +234,32 @@ let%test_module "Tests" =
       }
 
     let write ~dir id s =
-      Fs.write (Filename.concat dir (id ^ ".json")) (Yojson.Safe.to_string (session_to_yojson s))
+      Fs.write (Filename.concat dir (id ^ ".json")) (Yojson.Safe.to_string (yojson_of_session s))
 
     let temp () = Filename.temp_dir "kido-state" ""
 
     let show_panes live =
       Tmux.Pane_map.iter
-        (fun pane (id, _) -> Printf.printf "%s: %s\n" (Tmux.pane_id_to_string pane) id)
+        (fun pane (id, _) -> Printf.printf "%s: %s\n" (Tmux.string_of_pane_id pane) id)
         (by_pane live)
 
     let outcome = function
       | Ok () -> print_endline "ok"
       | Error (h : session) ->
           Printf.printf "held by pid %d in %s\n" h.pid
-            (Option.map_or ~default:"" Tmux.pane_id_to_string h.pane)
+            (Option.map_or ~default:"" Tmux.string_of_pane_id h.pane)
 
     let%expect_test "a record is written compactly, without its empty fields" =
       let s = session () ~ts:1_700_000_000.25 in
-      print_endline (Yojson.Safe.to_string (session_to_yojson { s with pid = 42 }));
+      print_endline (Yojson.Safe.to_string (yojson_of_session { s with pid = 42 }));
       [%expect {| {"agent":"pi","name":"","pane":"%1","pid":42,"ts":"2023-11-14T22:13:20.25Z"} |}]
+
+    let%expect_test "an explicit null parent reads as none" =
+      let dir = temp () in
+      Fs.write (Filename.concat dir "s.json")
+        {|{"agent":"pi","name":"","pane":"%1","pid":42,"ts":"2023-11-14T22:13:20Z","parent":null}|};
+      Printf.printf "%b\n" (Option.exists (fun s -> Option.is_none s.parent) (get ~dir "s"));
+      [%expect {| true |}]
 
     let%expect_test "the latest report wins a shared pane" =
       let dir = temp () in
@@ -298,7 +303,7 @@ let%test_module "Tests" =
            (`Assoc
               (("pane", `String "")
               :: List.remove_assoc ~eq:String.equal "pane"
-                   (Yojson.Safe.Util.to_assoc (session_to_yojson (session ()))))));
+                   (Yojson.Safe.Util.to_assoc (yojson_of_session (session ()))))));
       List.iter
         (fun id -> Printf.printf "%s %b\n" id (Option.is_some (get_live ~dir id)))
         [ "live"; "dead"; "no-pane"; "missing" ];
@@ -321,7 +326,7 @@ let%test_module "Tests" =
       Option.iter
         (fun (s : session) ->
           Printf.printf "kept %s %d %s\n"
-            (Option.map_or ~default:"" Tmux.pane_id_to_string s.pane)
+            (Option.map_or ~default:"" Tmux.string_of_pane_id s.pane)
             s.pid s.inbox)
         (get ~dir "s");
       outcome (record ~dir "d" (session () ~pane:"%1" ~pid:(dead_pid ())));
@@ -329,7 +334,7 @@ let%test_module "Tests" =
       Option.iter
         (fun (s : session) ->
           Printf.printf "taken over by %s\n"
-            (Option.map_or ~default:"" Tmux.pane_id_to_string s.pane))
+            (Option.map_or ~default:"" Tmux.string_of_pane_id s.pane))
         (get ~dir "d");
       outcome (record ~dir "d" (session () ~pane:"%2" ~pid:me));
       outcome (remove ~dir "d" ~pid:me);

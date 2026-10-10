@@ -18,6 +18,7 @@ let run name body =
       Unix.kill (Unix.getpid ()) Sys.sigpipe;
       1
   | exception Failure msg -> fail msg
+  | exception Invalid_argument msg -> fail msg
   | exception Sys_error msg -> fail msg
   | exception Yojson.Json_error msg -> fail msg
   | exception Unix.Unix_error (e, fn, arg) -> fail (Fs.unix_message e fn arg)

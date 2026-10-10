@@ -96,8 +96,11 @@ These are fixed:
   `.mli` unless it holds only types. Test-helper modules `Sh`, `Test_support`,
   `Test_fixture`, `View_fixture` and `Tmux_pane_fixture` have no `.mli`;
   `lib_tmux/program_status.ml` is exposed only through `tmux.mli`.
-  JSON is yojson with
-  ppx_deriving_yojson. The TUI is Mosaic, pinned in `dune-project`.
+  JSON is yojson with ppx_yojson_conv, equality and comparison
+  ppx_compare, string conversion ppx_string_conv; `lib/` and `lib_tmux/` also open their runtime
+  primitives (`Ppx_compare_lib.Builtin`,
+  `Ppx_yojson_conv_lib.Yojson_conv.Primitives`). The TUI is Mosaic,
+  pinned in `dune-project`.
   Concurrency is `unix` and `threads.posix`; no Eio, no Lwt.
 - **The command line is a contract** with `share/` and `test_e2e/`: subcommands, flags, exit codes, every parsed or
   asserted stdout/stderr line, JSON shapes, env vars. A long option is
@@ -123,15 +126,33 @@ Conventions:
 - **Time** is `Timestamp.t`, unix seconds as a float, on disk as RFC 3339
   UTC. Timeouts are optional arguments, not mutable refs.
 - **Containers** shadows polymorphic `=` and `compare`: use
-  `String.equal`, `Float.(>)`, etc. ppx_deriving_yojson encodes variants
-  as `["Tag"]`; string enums need hand-written codecs.
+  `String.equal`, `Float.(>)`, etc.
+- **Derivers.** Equality, comparison, string conversion and JSON codecs
+  come from ppx_compare, ppx_string_conv and ppx_yojson_conv, not ad hoc
+  functions. The `.ml` derives each one whose derived form is correct,
+  and hand-writes the rest under the derived name (numeric
+  `Tmux.compare_pane_id`, validating `Tmux.pane_id_of_string`); either
+  way the `.mli` declares them with `[@@deriving ...]`, not spelled-out
+  `val`s. A validating `_of_string` raises `Invalid_argument` naming the
+  bad value: a caller maps it over an absent value (an unset or empty
+  env var) rather than parsing one, calls it directly on a string that
+  must be valid, and catches it only at an untrusted-input edge (an RPC
+  request, a `_of_yojson`). `Cli.run` reports it like `Failure`.
+- **JSON decoding** raises `Of_yojson_error`; hand-written `_of_yojson`
+  raise it through `of_yojson_error`. `Fs.read_json` is the one edge
+  that turns a file into an `option`. Variants encode as `["Tag"]`, so
+  string enums have hand-written codecs. A field omitted at its default
+  needs `[@default v] [@yojson_drop_default.equal]`; an option needs
+  `[@default None] [@yojson_drop_if Option.is_none]`, since
+  `[@yojson.option]` rejects an explicit `null`. A bare option field
+  encodes `None` as `null`.
 - **Cmdliner docs.** A bare `$` is markup and produces "unescaped $"
   on `--help`; write environment variables as `$(b,NAME)`.
   `test_e2e/help_test.go` rejects any help stderr.
 - **Quoting.** `Reap.quote` in `lib/reap.ml` deliberately uses Go-style
   `%q` quoting: OCaml `%S` escapes non-ASCII agent names.
 - **Inbox JSON.** `from.session` must be written even when empty.
-  It has no default annotation; `Msg.envelope_to_yojson` adds `v` to the
+  It has no default annotation; `Msg.yojson_of_envelope` adds `v` to the
   derived encoding. `lib/msg.ml`'s inline tests pin the field set.
 - **Tmux I/O.** No injected tmux/ops records whose only other
   implementation is a test fake: call `Tmux` directly and test

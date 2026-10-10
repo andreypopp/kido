@@ -806,13 +806,16 @@ let rebuild m =
   in
   { m with sessions }
 
-let poll ?wait ~(opts : options) conn prev =
+let poll ?wait ~(opts : options) conn (prev : snapshot) =
   Option.iter (fun timeout -> Tmux.Client.await_notifications conn ~timeout) wait;
-  let client = Tmux.client_state (Tmux.Client.tmux conn) opts.client in
-  let failed e = { prev with client; active = None; err = Some e } in
-  match take ~opts conn prev client with
+  let client = ref prev.client in
+  let failed e = { prev with client = !client; active = None; err = Some e } in
+  match
+    client := Tmux.client_state (Tmux.Client.tmux conn) opts.client;
+    take ~opts conn prev !client
+  with
   | snap -> snap
-  | exception (Failure e | Sys_error e) -> failed e
+  | exception (Failure e | Sys_error e | Invalid_argument e) -> failed e
   | exception Unix.Unix_error (e, fn, arg) -> failed (Fs.unix_message e fn arg)
 
 let step m (snap : snapshot) =
@@ -876,10 +879,10 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
     let from, command, missing =
       match target with
       | `Window window ->
-          let id = Tmux.window_id_to_string window in
+          let id = Tmux.string_of_window_id window in
           (id, [ "new-window"; "-a"; "-t"; id ], "no such window")
       | `Session session ->
-          (Tmux.session_id_to_string session ^ ":", [ "new-session" ], "no such session")
+          (Tmux.string_of_session_id session ^ ":", [ "new-session" ], "no such session")
     in
     let* cwd = Tmux.exec tmux [ "display-message"; "-p"; "-t"; from; "#{pane_current_path}" ] in
     let* session, window, pane =
@@ -889,22 +892,22 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
           Tmux.exec tmux
             (command @ [ "-d"; "-P"; "-F"; "#{session_id}:#{window_id}:#{pane_id}"; "-c"; cwd ])
         in
+        let unreadable = Printf.sprintf "created shell but could not read its location: %S" out in
         match String.split ~by:":" out with
         | [ session; window; pane ] -> (
-            match
-              ( Tmux.session_id_of_string session,
-                Tmux.window_id_of_string window,
-                Tmux.pane_id_of_string pane )
-            with
-            | Some session, Some window, Some pane -> Ok (session, window, pane)
-            | _ -> Error (Printf.sprintf "created shell but could not read its location: %S" out))
-        | _ -> Error (Printf.sprintf "created shell but could not read its location: %S" out)
+            try
+              Ok
+                ( Tmux.session_id_of_string session,
+                  Tmux.window_id_of_string window,
+                  Tmux.pane_id_of_string pane )
+            with Invalid_argument _ -> Error unreadable)
+        | _ -> Error unreadable
     in
     Result.map_err
       (fun e ->
         Printf.sprintf "created %s:%s.%s but selection failed: %s"
-          (Tmux.session_id_to_string session)
-          (Tmux.window_id_to_string window) (Tmux.pane_id_to_string pane) e)
+          (Tmux.string_of_session_id session)
+          (Tmux.string_of_window_id window) (Tmux.string_of_pane_id pane) e)
       (jump { session; window; pane })
   in
   match request with
@@ -1008,11 +1011,11 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
                         "-c";
                         client;
                         "-t";
-                        Tmux.session_id_to_string target.session_id;
+                        Tmux.string_of_session_id target.session_id;
                         ";";
                         "select-window";
                         "-t";
-                        Tmux.window_id_to_string target.window_id;
+                        Tmux.string_of_window_id target.window_id;
                       ])
              | None -> Ok None)
            (Tmux_pane.list_panes tmux))
@@ -1051,7 +1054,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
                               "-c";
                               client;
                               "-t";
-                              Tmux.session_id_to_string target.id;
+                              Tmux.string_of_session_id target.id;
                             ])
                    | None -> Ok None)
                | None -> Ok None)
@@ -1123,8 +1126,8 @@ let%test_module "Tests" =
       List.iter
         (fun (pl : placement) ->
           Printf.printf "%s anchor=%s\n"
-            (Tmux.window_id_to_string (List.hd pl.panes).window_id)
-            (Option.map_or ~default:"-" Tmux.pane_id_to_string pl.anchor))
+            (Tmux.string_of_window_id (List.hd pl.panes).window_id)
+            (Option.map_or ~default:"-" Tmux.string_of_pane_id pl.anchor))
         (order_windows_by_tree windows (states st) lingering)
 
     let w ?run id = [ pane ~window:("@" ^ id) ?run ("%" ^ id) ]
@@ -1247,15 +1250,14 @@ let%test_module "Tests" =
         (fun (session, window, next) ->
           let target =
             window_target ~next
-              ~session:(Option.get_exn_or "session" (Tmux.session_id_of_string session))
-              ~window:(Option.get_exn_or "window" (Tmux.window_id_of_string window))
-              windows
+              ~session:(Tmux.session_id_of_string session)
+              ~window:(Tmux.window_id_of_string window) windows
           in
           Printf.printf "%s:%s %s -> %s\n" session window
             (if next then "next" else "prev")
             (Option.map_or ~default:"null"
                (fun (p : Tmux_pane.t) ->
-                 Tmux.session_id_to_string p.session_id ^ ":" ^ Tmux.window_id_to_string p.window_id)
+                 Tmux.string_of_session_id p.session_id ^ ":" ^ Tmux.string_of_window_id p.window_id)
                target))
         [
           ("$0", "@1", true);
@@ -1279,7 +1281,7 @@ let%test_module "Tests" =
             (fun next ->
               print_endline
                 (Option.map_or ~default:"null"
-                   (fun (p : Tmux_pane.t) -> Tmux.window_id_to_string p.window_id)
+                   (fun (p : Tmux_pane.t) -> Tmux.string_of_window_id p.window_id)
                    (window_target ~next ~session:root.session_id ~window:root.window_id windows)))
             [ true; false ])
         [
@@ -1287,7 +1289,7 @@ let%test_module "Tests" =
           [ { panes = [ root ]; anchor = None } ];
           [ { panes = [ { root with run = Some "only-run" } ]; anchor = None } ];
           [ { panes = [ root; { later_pane with run = Some "split-run" } ]; anchor = None } ];
-          [ { panes = [ root ]; anchor = Tmux.pane_id_of_string "%999" } ];
+          [ { panes = [ root ]; anchor = Some (Tmux.pane_id_of_string "%999") } ];
         ];
       [%expect
         {|
@@ -1343,20 +1345,18 @@ let%test_module "Tests" =
             (if next then "next" else "prev")
             window
             (Option.map_or ~default:"-"
-               (fun (p : Tmux_pane.t) -> Tmux.window_id_to_string p.window_id)
-               (window_target ~next
-                  ~session:(Option.get_exn_or "id" (Tmux.session_id_of_string "$0"))
+               (fun (p : Tmux_pane.t) -> Tmux.string_of_window_id p.window_id)
+               (window_target ~next ~session:(Tmux.session_id_of_string "$0")
                   ~window:
-                    (Option.get_exn_or "id"
-                       (Tmux.window_id_of_string
-                          ("@"
-                          ^ List.assoc ~eq:String.equal window
-                              [
-                                ("other", "209");
-                                ("root", "201");
-                                ("child2", "203");
-                                ("grandchild", "212");
-                              ])))
+                    (Tmux.window_id_of_string
+                       ("@"
+                       ^ List.assoc ~eq:String.equal window
+                           [
+                             ("other", "209");
+                             ("root", "201");
+                             ("child2", "203");
+                             ("grandchild", "212");
+                           ]))
                   windows)))
         [
           (false, "other");
@@ -1453,7 +1453,7 @@ let%test_module "Tests" =
       show "clean exit, not yet visited" (m Tmux.Pane_map.empty) (integrated ~exit:(0, ended) ());
       show "nonzero exit, not yet visited" (m Tmux.Pane_map.empty) (integrated ~exit:(1, ended) ());
       show "nonzero exit, pane visited since"
-        (m (Tmux.Pane_map.singleton (Option.get_exn_or "id" (Tmux.pane_id_of_string "%1")) visited))
+        (m (Tmux.Pane_map.singleton (Tmux.pane_id_of_string "%1") visited))
         (integrated ~exit:(1, ended) ());
       show "no status on record" (m Tmux.Pane_map.empty) (integrated ());
       show "no command has run" (m Tmux.Pane_map.empty) (pane ~prompt:ended ~exit:(0, ended) "%1");
@@ -1557,7 +1557,7 @@ let%test_module "Tests" =
                       {
                         empty with
                         panes = [ p ];
-                        active = (if on_pane then Tmux.pane_id_of_string "%1" else None);
+                        active = (if on_pane then Some (Tmux.pane_id_of_string "%1") else None);
                       };
                   };
               Printf.printf "  +%dms: %s%s\n" adv
@@ -1567,10 +1567,7 @@ let%test_module "Tests" =
                    | Some Done -> "done"
                    | Some Failed -> "failed"
                    | Some _ -> "other")
-                   (shell_indicator !m
-                      (Tmux.Pane_map.find
-                         (Option.get_exn_or "id" (Tmux.pane_id_of_string "%1"))
-                         !m.phases)))
+                   (shell_indicator !m (Tmux.Pane_map.find (Tmux.pane_id_of_string "%1") !m.phases)))
                 (if shell_pending !m then " pending" else ""))
             steps)
         cases;
@@ -1637,13 +1634,13 @@ let%test_module "Tests" =
             snap =
               {
                 empty with
-                active = Tmux.pane_id_of_string "%1";
+                active = Some (Tmux.pane_id_of_string "%1");
                 panes = [ pane ~prompt:test_at ~running:true ~start:test_at "%1" ];
               };
           }
       in
       Printf.printf "phase recorded: %b\n"
-        (Tmux.Pane_map.mem (Option.get_exn_or "id" (Tmux.pane_id_of_string "%1")) m.phases);
+        (Tmux.Pane_map.mem (Tmux.pane_id_of_string "%1") m.phases);
       let m = track { m with snap = empty } in
       Printf.printf "phases after the pane is gone: %d\n" (Tmux.Pane_map.cardinal m.phases);
       [%expect {|

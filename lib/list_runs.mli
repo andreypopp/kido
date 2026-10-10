@@ -19,7 +19,7 @@ type agent_info = {
   since_report : int;
   stalled : bool;
 }
-[@@deriving to_yojson]
+[@@deriving yojson_of]
 
 val caller_pane : Tmux_pane.t list -> Tmux.pane_id option -> (Tmux_pane.t, string) result
 val status : Tmux_pane.t list -> State.session -> status
@@ -43,7 +43,7 @@ val agents :
   states:(string * State.session) list ->
   (agent_info list, string) result
 
-type row
+type row [@@deriving yojson_of]
 
 val list_runs :
   dir:string ->
@@ -52,5 +52,4 @@ val list_runs :
   session:Tmux.session_id option ->
   (row list, string) result
 
-val row_to_yojson : row -> Yojson.Safe.t
 val table : row list -> string list list

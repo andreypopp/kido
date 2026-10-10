@@ -888,8 +888,7 @@ let%test_module "Tests" =
           | Some run ->
               Printf.printf "%s %s %s\n" (Subrun.string_of_kind run.kind)
                 (Option.map_or ~default:"-" (fun _ -> "started") run.started)
-                (row_text ~now:test_at
-                   (Row ("", Option.get_exn_or "id" (Tmux.session_id_of_string "$0"), row))))
+                (row_text ~now:test_at (Row ("", Tmux.session_id_of_string "$0", row))))
         [ (p, None); ({ p with dead_at = Some 1. }, None); (p, Some Completed) ];
       [%expect
         {|
@@ -1000,8 +999,7 @@ let%test_module "Tests" =
         Array.exists
           (fun (l : line) ->
             match l with
-            | Row (_, _, { pane; _ })
-              when Tmux.equal_pane_id pane (Option.get_exn_or "id" (Tmux.pane_id_of_string "%1")) ->
+            | Row (_, _, { pane; _ }) when Tmux.equal_pane_id pane (Tmux.pane_id_of_string "%1") ->
                 List.exists (fun (s : span) -> String.equal s.text "◼") (spans ~now:!clock l)
             | _ -> false)
           !m.lines
@@ -1015,7 +1013,7 @@ let%test_module "Tests" =
         {
           Sidebar.empty with
           client = client "alpha";
-          active = Tmux.pane_id_of_string "%1";
+          active = Some (Tmux.pane_id_of_string "%1");
           panes = [ p ];
         }
       in
@@ -1041,7 +1039,7 @@ let%test_module "Tests" =
         {
           Sidebar.empty with
           client = client "alpha";
-          active = Tmux.pane_id_of_string "%1";
+          active = Some (Tmux.pane_id_of_string "%1");
           panes =
             with_programs
               (states [ ("%1", ("i", session ~ts:!clock "")) ])
@@ -1120,9 +1118,7 @@ let%test_module "Tests" =
              | Some Failed -> "failed"
              | Some _ -> "other")
              (Option.flat_map (Sidebar.shell_indicator !m)
-                (Tmux.Pane_map.find_opt
-                   (Option.get_exn_or "id" (Tmux.pane_id_of_string "%1"))
-                   !m.phases)))
+                (Tmux.Pane_map.find_opt (Tmux.pane_id_of_string "%1") !m.phases)))
           (label !m p)
       in
       step 0.
@@ -1145,9 +1141,7 @@ let%test_module "Tests" =
             && Option.exists
                  (function Sidebar.Status State.Running -> true | _ -> false)
                  (Option.flat_map (Sidebar.shell_indicator !m)
-                    (Tmux.Pane_map.find_opt
-                       (Option.get_exn_or "id" (Tmux.pane_id_of_string "%1"))
-                       !m.phases)))
+                    (Tmux.Pane_map.find_opt (Tmux.pane_id_of_string "%1") !m.phases)))
           (List.range 1 10)
       in
       Printf.printf "running for ten ticks: %b\n" running;

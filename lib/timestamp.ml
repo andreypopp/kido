@@ -40,11 +40,13 @@ let of_string s =
           offset)
   with Scanf.Scan_failure _ | End_of_file | Failure _ -> None
 
-let to_yojson t = `String (to_string t)
+let yojson_of_t t = `String (to_string t)
 
-let of_yojson = function
-  | `String s -> Option.to_result "not an RFC 3339 timestamp" (of_string s)
-  | _ -> Error "not a timestamp"
+let t_of_yojson json =
+  let error what = Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error what json in
+  match json with
+  | `String s -> Option.get_lazy (fun () -> error "not an RFC 3339 timestamp") (of_string s)
+  | _ -> error "not a timestamp"
 
 let duration d =
   let ms = Float.to_int (Float.round (d *. 1000.)) in

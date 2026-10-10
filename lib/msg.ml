@@ -30,31 +30,28 @@ let string_of_kind = function
   | Stop -> "stop"
   | Asks -> "asks"
 
-let kind_to_yojson k = `String (string_of_kind k)
+let yojson_of_kind k = `String (string_of_kind k)
 
 type from = {
   session : string;
-  name : string; [@default ""]
-  pane :
-    (Tmux.pane_id option
-    [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]);
-      [@default None]
+  name : string; [@default ""] [@yojson_drop_default.equal]
+  pane : Tmux.pane_id option; [@default None] [@yojson_drop_if Option.is_none]
 }
-[@@deriving to_yojson]
+[@@deriving yojson_of]
 
 type envelope = {
   kind : kind;
   id : string;
   from : from;
-  reply_to : string; [@key "replyTo"] [@default ""]
+  reply_to : string; [@key "replyTo"] [@default ""] [@yojson_drop_default.equal]
   text : string;
-  run : string; [@default ""]
-  output : string; [@default ""]
+  run : string; [@default ""] [@yojson_drop_default.equal]
+  output : string; [@default ""] [@yojson_drop_default.equal]
 }
-[@@deriving to_yojson]
+[@@deriving yojson_of]
 
-let envelope_to_yojson e =
-  Yojson.Safe.Util.combine (`Assoc [ ("v", `Int 1) ]) (envelope_to_yojson e)
+let yojson_of_envelope e =
+  Yojson.Safe.Util.combine (`Assoc [ ("v", `Int 1) ]) (yojson_of_envelope e)
 
 let max_notice_bytes = 4000
 
@@ -181,7 +178,7 @@ let notify ~dir ~parent_session ~from text =
   | Ok target ->
       deliver ~path:target.inbox
         (Yojson.Safe.to_string
-           (envelope_to_yojson
+           (yojson_of_envelope
               { kind = Notice; id = new_id (); from; reply_to = ""; text; run = ""; output = "" }))
 
 let%test_module "Tests" =
@@ -192,21 +189,21 @@ let%test_module "Tests" =
         {
           kind = Message;
           id = "x";
-          from = { session = ""; name = ""; pane = Tmux.pane_id_of_string "%3" };
+          from = { session = ""; name = ""; pane = Some (Tmux.pane_id_of_string "%3") };
           reply_to = "";
           text = "";
           run = "";
           output = "";
         }
       in
-      print_endline (Yojson.Safe.to_string (envelope_to_yojson env));
+      print_endline (Yojson.Safe.to_string (yojson_of_envelope env));
       print_endline
         (Yojson.Safe.to_string
-           (envelope_to_yojson
+           (yojson_of_envelope
               {
                 env with
                 kind = Stream;
-                from = { session = "s"; name = "n"; pane = Tmux.pane_id_of_string "" };
+                from = { session = "s"; name = "n"; pane = None };
                 reply_to = "a";
                 text = "t";
                 run = "r";

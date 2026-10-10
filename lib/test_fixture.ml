@@ -6,7 +6,7 @@ let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_
   {
     agent;
     name = "";
-    pane = Tmux.pane_id_of_string pane;
+    pane = (if String.is_empty pane then None else Some (Tmux.pane_id_of_string pane));
     pid;
     ts;
     inbox;
@@ -16,7 +16,7 @@ let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_
     model = "";
   }
 
-let run ~dir ?(name = "") ?(kind = Subrun.Agent) ?(parent = "") ?(pane = "") ?(pid = 0) ?(cwd = "")
+let run ~dir ?(name = "") ?(kind = Subrun.Agent) ?(parent = "") ?pane ?(pid = 0) ?(cwd = "")
     ?(started_at = 1_700_000_000.) ?command id =
   let id = Result.get_exn (Subrun.parse_id id) in
   Subrun.create ~dir id "do the thing";
@@ -28,7 +28,7 @@ let run ~dir ?(name = "") ?(kind = Subrun.Agent) ?(parent = "") ?(pane = "") ?(p
       kind;
       parent_session = parent;
       depth = 1;
-      pane = Tmux.pane_id_of_string pane;
+      pane = Option.map Tmux.pane_id_of_string pane;
       pid;
       cwd;
       model = "";

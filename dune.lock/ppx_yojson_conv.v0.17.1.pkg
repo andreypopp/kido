@@ -1,0 +1,15 @@
+(version v0.17.1)
+
+(build
+ (all_platforms ((action (run dune build -p %{pkg-self:name} -j %{jobs})))))
+
+(depends
+ (all_platforms
+  (ocaml base ppx_js_style ppx_yojson_conv_lib dune ppxlib)))
+
+(source
+ (fetch
+  (url
+   https://github.com/janestreet/ppx_yojson_conv/archive/refs/tags/v0.17.1.tar.gz)
+  (checksum
+   sha512=9fd8673d68791de18ed9fbb705ed441fa4cc7e5085000d99c4dd3d0b5ff488c833ca7fdf9952ab02dde2b3272df41440ad373dd89e2ff3f6e226eccd8fad81d2)))

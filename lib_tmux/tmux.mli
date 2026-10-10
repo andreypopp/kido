@@ -1,30 +1,12 @@
-type pane_id
-
-val pane_id_of_string : string -> pane_id option
-val pane_id_to_string : pane_id -> string
-val equal_pane_id : pane_id -> pane_id -> bool
-val pane_id_to_yojson : pane_id -> Yojson.Safe.t
-val pane_id_of_yojson : Yojson.Safe.t -> (pane_id, string) result
-val compare_pane_id : pane_id -> pane_id -> int
+type pane_id [@@deriving compare, equal, string, yojson]
 
 module Pane_map : Map.S with type key = pane_id
 
-type window_id
-
-val window_id_of_string : string -> window_id option
-val window_id_to_string : window_id -> string
-val equal_window_id : window_id -> window_id -> bool
-val window_id_to_yojson : window_id -> Yojson.Safe.t
-
-type session_id
-
-val session_id_of_string : string -> session_id option
-val session_id_to_string : session_id -> string
-val equal_session_id : session_id -> session_id -> bool
-val session_id_to_yojson : session_id -> Yojson.Safe.t
+type window_id [@@deriving equal, string, yojson_of]
+type session_id [@@deriving equal, string, yojson_of]
 
 module Program_status : sig
-  type kind = Permission | Question | Auth
+  type kind
 
   type state =
     | Idle
@@ -41,13 +23,12 @@ module Program_status : sig
     msg : string option;
   }
 
-  type t = { serial : int; records : record list }
+  type t = { serial : int; records : record list } [@@deriving yojson_of]
 
   val root : t -> record option
   val parse : string -> (t, string) result
   val progress : record -> int option
   val app : t -> record -> string option
-  val to_yojson : t -> Yojson.Safe.t
 end
 
 type t

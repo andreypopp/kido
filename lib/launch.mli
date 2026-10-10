@@ -1,5 +1,5 @@
 type endpoint = { tmux : string; socket : string; protocol : string; server : string option }
-[@@deriving to_yojson]
+[@@deriving yojson_of]
 
 type server = Down | Up of string option | Mismatch
 

@@ -23,26 +23,25 @@ type kind = Agent | Bash | Stream
 
 let string_of_kind = function Agent -> "agent" | Bash -> "bash" | Stream -> "stream"
 let kinds = [ ("agent", Agent); ("bash", Bash); ("stream", Stream) ]
-let kind_to_yojson k = `String (string_of_kind k)
+let yojson_of_kind k = `String (string_of_kind k)
 
-let kind_of_yojson = function
-  | `String s -> Option.to_result ("unknown kind " ^ s) (List.assoc_opt ~eq:String.equal s kinds)
-  | _ -> Error "kind"
+let kind_of_yojson json =
+  match json with
+  | `String s when List.mem_assoc ~eq:String.equal s kinds -> List.assoc ~eq:String.equal s kinds
+  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "kind" json
 
 type meta = {
   id : id;
   name : string;
   kind : kind;
-  parent_session : string; [@key "parentSession"] [@default ""]
+  parent_session : string; [@key "parentSession"] [@default ""] [@yojson_drop_default.equal]
   depth : int;
-  pane :
-    (Tmux.pane_id option
-    [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]);
+  pane : Tmux_pane.optional_id;
   pid : int;
   cwd : string;
-  model : string; [@default ""]
-  tools : string list; [@default []]
-  keep_alive : bool; [@key "keepAlive"] [@default false]
+  model : string; [@default ""] [@yojson_drop_default.equal]
+  tools : string list; [@default []] [@yojson_drop_default.equal]
+  keep_alive : bool; [@key "keepAlive"] [@default false] [@yojson_drop_default.equal]
   started_at : Timestamp.t; [@key "startedAt"]
 }
 [@@deriving yojson]
@@ -58,19 +57,20 @@ let string_of_result = function
   | Stopped -> "stopped"
 
 let results = List.map (fun r -> (string_of_result r, r)) [ Completed; Failed; Died; Stopped ]
-let result_to_yojson r = `String (string_of_result r)
+let yojson_of_result r = `String (string_of_result r)
 
-let result_of_yojson = function
-  | `String s ->
-      Option.to_result ("unknown result " ^ s) (List.assoc_opt ~eq:String.equal s results)
-  | _ -> Error "result"
+let result_of_yojson json =
+  match json with
+  | `String s when List.mem_assoc ~eq:String.equal s results ->
+      List.assoc ~eq:String.equal s results
+  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "result" json
 
 type outcome = {
   result : result;
-  text : string; [@default ""]
-  at : Timestamp.t option; [@default None]
+  text : string; [@default ""] [@yojson_drop_default.equal]
+  at : Timestamp.t option; [@default None] [@yojson_drop_if Option.is_none]
 }
-[@@deriving yojson { strict = false }]
+[@@deriving yojson] [@@yojson.allow_extra_fields]
 
 let create ~dir id task =
   Fs.mkdir_p ~perm:0o700 (dir_for ~dir id);
@@ -78,32 +78,24 @@ let create ~dir id task =
 
 type command = string list [@@deriving yojson]
 
-let read_json path of_yojson =
-  Option.flat_map
-    (fun raw ->
-      match Yojson.Safe.from_string raw with
-      | exception Yojson.Json_error _ -> None
-      | json -> Result.to_opt (of_yojson json))
-    (Fs.read path)
-
 let write_command ~dir id argv =
-  Fs.write ~perm:0o600 (command_path ~dir id) (Yojson.Safe.to_string (command_to_yojson argv))
+  Fs.write ~perm:0o600 (command_path ~dir id) (Yojson.Safe.to_string (yojson_of_command argv))
 
 let read_command ~dir id =
-  match read_json (command_path ~dir id) command_of_yojson with Some [] | None -> None | c -> c
+  match Fs.read_json (command_path ~dir id) command_of_yojson with Some [] | None -> None | c -> c
 
 let write_meta ~dir m =
   Fs.mkdir_p ~perm:0o700 (dir_for ~dir m.id);
-  Fs.write_atomic (meta_path ~dir m.id) (Yojson.Safe.to_string (meta_to_yojson m))
+  Fs.write_atomic (meta_path ~dir m.id) (Yojson.Safe.to_string (yojson_of_meta m))
 
-let read_meta ~dir id = read_json (meta_path ~dir id) meta_of_yojson
+let read_meta ~dir id = Fs.read_json (meta_path ~dir id) meta_of_yojson
 let write_report ~dir id text = Fs.write_atomic ~perm:0o600 (report_path ~dir id) text
 let has_report ~dir id = Sys.file_exists (report_path ~dir id)
 let read_task ~dir id = Fs.read (task_path ~dir id)
 
 let record_outcome ~dir id o =
   match
-    Fs.write_temp (outcome_path ~dir id) (Yojson.Safe.to_string (outcome_to_yojson o)) Unix.link
+    Fs.write_temp (outcome_path ~dir id) (Yojson.Safe.to_string (yojson_of_outcome o)) Unix.link
   with
   | () -> true
   | exception Unix.Unix_error _ -> false
@@ -115,7 +107,7 @@ let reset_for_resume ~dir id ~delivered =
   let paths = if delivered then paths @ [ delivered_path ~dir id ] else paths in
   List.iter Fs.remove paths
 
-let read_outcome ~dir id = read_json (outcome_path ~dir id) outcome_of_yojson
+let read_outcome ~dir id = Fs.read_json (outcome_path ~dir id) outcome_of_yojson
 
 let effective_outcome ~dir id ~pid =
   match read_outcome ~dir id with
@@ -148,7 +140,7 @@ let save_screen tmux ~dir id pane =
           data)
         (Result.to_opt
            (Tmux.exec tmux
-              [ "capture-pane"; "-p"; "-t"; Tmux.pane_id_to_string pane; "-S"; "-1000" ])))
+              [ "capture-pane"; "-p"; "-t"; Tmux.string_of_pane_id pane; "-S"; "-1000" ])))
     pane
 
 let%test_module "Tests" =
@@ -170,7 +162,7 @@ let%test_module "Tests" =
           kind = Agent;
           parent_session = "";
           depth = 1;
-          pane = Tmux.pane_id_of_string "%1";
+          pane = Some (Tmux.pane_id_of_string "%1");
           pid = 0;
           cwd = "/tmp";
           model = "";
@@ -180,7 +172,7 @@ let%test_module "Tests" =
         };
       let got = Option.get_exn_or "ReadMeta" (read_meta ~dir i) in
       Printf.printf "%s %d %s\n" got.name got.depth
-        (Option.map_or ~default:"" Tmux.pane_id_to_string got.pane);
+        (Option.map_or ~default:"" Tmux.string_of_pane_id got.pane);
       print_endline (Option.get_exn_or "ReadTask" (read_task ~dir i));
       Printf.printf "run dir exists: %b\n" (Sys.file_exists (Filename.concat dir "runs/run-1"));
       [%expect {|
@@ -188,6 +180,14 @@ let%test_module "Tests" =
     do the thing
     run dir exists: true
     |}]
+
+    let%expect_test "an outcome with an explicit null time reads as none" =
+      let dir = temp () in
+      let i = id "run-null" in
+      create ~dir i "";
+      Fs.write (in_run ~dir i "outcome") {|{"result":"completed","at":null}|};
+      Printf.printf "%b\n" (Option.exists (fun o -> Option.is_none o.at) (read_outcome ~dir i));
+      [%expect {| true |}]
 
     let%expect_test "Kind round-trips" =
       let dir = temp () in
@@ -201,7 +201,7 @@ let%test_module "Tests" =
             kind = k;
             parent_session = "";
             depth = 0;
-            pane = Tmux.pane_id_of_string "";
+            pane = None;
             pid = 0;
             cwd = "";
             model = "";

@@ -1,13 +1,9 @@
 type info = { meta : Subrun.meta; outcome : Subrun.outcome option }
 
-let info_to_yojson ?(extra = []) { meta; outcome } =
-  match Subrun.meta_to_yojson meta with
-  | `Assoc fields ->
-      `Assoc
-        (fields
-        @ Option.map_or ~default:[] (fun o -> [ ("outcome", Subrun.outcome_to_yojson o) ]) outcome
-        @ extra)
-  | json -> json
+let yojson_of_info { meta; outcome } =
+  Yojson.Safe.Util.combine (Subrun.yojson_of_meta meta)
+    (`Assoc
+       (Option.map_or ~default:[] (fun o -> [ ("outcome", Subrun.yojson_of_outcome o) ]) outcome))
 
 let load ?parent_session ~dir id =
   Option.flat_map
@@ -57,10 +53,10 @@ let show ~dir ~json id_str =
   let fork = cd ^ "pi --fork " ^ id_str in
   if json then
     Yojson.Safe.to_string
-      (info_to_yojson info
-         ~extra:
-           ([ ("task", `String task); ("resume", `String resume); ("fork", `String fork) ]
-           @ Option.map_or ~default:[] (fun s -> [ ("screen", `String s) ]) screen))
+      (Yojson.Safe.Util.combine (yojson_of_info info)
+         (`Assoc
+            ([ ("task", `String task); ("resume", `String resume); ("fork", `String fork) ]
+            @ Option.map_or ~default:[] (fun s -> [ ("screen", `String s) ]) screen)))
     ^ "\n"
   else begin
     let b = Buffer.create 1024 in
@@ -181,7 +177,7 @@ let%test_module "Tests" =
     do the thing
     |}];
       let shown = Yojson.Safe.from_string (Result.get_exn (show ~dir ~json:true "run-a")) in
-      let listed = `List (List.map info_to_yojson (list ~dir ())) in
+      let listed = `List (List.map yojson_of_info (list ~dir ())) in
       Yojson.Safe.Util.(
         print_endline (String.concat " " (keys shown));
         List.iter

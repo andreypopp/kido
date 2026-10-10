@@ -17,12 +17,12 @@ let send_prompt pane text =
       (fun e ->
         ignore (Tmux.exec tmux [ "delete-buffer"; "-b"; buf ]);
         e)
-      (Tmux.run tmux [ "paste-buffer"; "-b"; buf; "-d"; "-t"; pane_id_to_string pane; "-p" ])
+      (Tmux.run tmux [ "paste-buffer"; "-b"; buf; "-d"; "-t"; string_of_pane_id pane; "-p" ])
   in
   (* A paste-sensitive reader, Claude Code included, takes an Enter sent with
      the paste as part of the pasted text. *)
   Unix.sleepf 0.1;
-  Tmux.run tmux [ "send-keys"; "-t"; pane_id_to_string pane; "Enter" ]
+  Tmux.run tmux [ "send-keys"; "-t"; string_of_pane_id pane; "Enter" ]
 
 let deliver_or_paste ~inbox ~payload ~pane ~name ~run text =
   if String.is_empty inbox then

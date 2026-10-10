@@ -41,8 +41,12 @@
    (>= 2.1))
   (yojson
    (>= 3.0))
-  (ppx_deriving_yojson
-   (>= 3.10))
+  (ppx_yojson_conv
+   (>= v0.17))
+  (ppx_compare
+   (>= v0.17))
+  (ppx_string_conv
+   (>= v0.17))
   (mtime
    (>= 2.2))
   mosaic
