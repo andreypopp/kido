@@ -6,7 +6,7 @@ type session = {
   agent : agent;
   name : string;
   pane : Tmux.Pane.id option;
-      [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
+      [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]
   pid : int;
   ts : Timestamp.t;
   inbox : string;
@@ -18,7 +18,7 @@ type session = {
 
 val string_of_status : status -> string
 val agent_of_string : string -> agent
-val display_name : Tmux.Pane.t list -> session -> string
+val display_name : Tmux_pane.t list -> session -> string
 val addressable_name : session -> bool
 val dir : unit -> string
 val check_dir : dir:string -> (unit, string) result
@@ -37,8 +37,8 @@ type pane_kind =
   | Pi_agent of { id : string; session : session }
   | Ssh of { user : string; host : string; pane : ssh_kind }
 
-val pane_kind : states:(string * session) Tmux.Pane.Map.t -> Tmux.Pane.t -> pane_kind
-val pane_title : Tmux.Pane.t -> pane_kind -> string option
+val pane_kind : states:(string * session) Tmux.Pane.Map.t -> Tmux_pane.t -> pane_kind
+val pane_title : Tmux_pane.t -> pane_kind -> string option
 val record : dir:string -> string -> session -> (unit, session) result
 val remove : dir:string -> string -> pid:int -> (unit, session) result
 val held_message : string -> session -> string

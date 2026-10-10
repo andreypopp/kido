@@ -6,7 +6,7 @@ type close = Window of Tmux.Window.id | Pane of { window : Tmux.Window.id; pane 
 
 val release : ?socket:string -> close -> (unit, string) result
 
-val decide : Tmux.Pane.t list -> Tmux.Window.id -> (close, string) result
+val decide : Tmux_pane.t list -> Tmux.Window.id -> (close, string) result
 (** [kido close-run]'s decision for a window: the close to release, or the refusal to print. *)
 
 val quote : string -> string
@@ -24,7 +24,7 @@ val collect :
   ?socket:string ->
   dir:string ->
   grace:float ->
-  Tmux.Pane.t list ->
+  Tmux_pane.t list ->
   (string * State.session) list ->
   now:float ->
   unit

@@ -26,7 +26,7 @@ type ask = { ask : Ask.t; target : ask_target }
 type snapshot = {
   client : Tmux.Exec.client_state option;
   active : Tmux.Pane.id option;
-  panes : Tmux.Pane.t list;
+  panes : Tmux_pane.t list;
   states : (string * State.session) Tmux.Pane.Map.t;
   wake : float option;
   err : string option;
@@ -39,7 +39,7 @@ val shell_run_delay : float
 val shell_run_hold : float
 
 val lingering_subagents :
-  dir:string -> Tmux.Pane.t list -> lingering String_map.t -> lingering String_map.t
+  dir:string -> Tmux_pane.t list -> lingering String_map.t -> lingering String_map.t
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }
 type client = { session : Tmux.Session.id; window : Tmux.Window.id; pane : Tmux.Pane.id }
@@ -73,13 +73,13 @@ and item = { row : row; program_rows : program_row list; children : node list }
 and program_row = { id : string; indicator : indicator; title : string; caption : string }
 
 type section = { id : Tmux.Session.id; name : string; current : bool; nodes : node list }
-type phase = { running : bool; since : float; drawn : bool; held : Tmux.Pane.exit option }
+type phase = { running : bool; since : float; drawn : bool; held : Tmux_pane.exit option }
 
 type model = {
   opts : options;
   snap : snapshot;
   sessions : section list;
-  pane_data : (Tmux.Pane.t * State.pane_kind) Tmux.Pane.Map.t;
+  pane_data : (Tmux_pane.t * State.pane_kind) Tmux.Pane.Map.t;
   client : client option;
   started : float;
   seen : float Tmux.Pane.Map.t;
@@ -92,12 +92,12 @@ type model = {
 }
 
 val make : now:(unit -> float) -> options -> model
-val ssh_remote : model -> Tmux.Pane.t -> bool
+val ssh_remote : model -> Tmux_pane.t -> bool
 val classify : model -> model
 val track : model -> model
 val attention : model -> Tmux.Pane.id -> bool
 val shell_indicator : model -> phase -> indicator option
-val pane_label : model -> Tmux.Pane.t * State.pane_kind -> row
+val pane_label : model -> Tmux_pane.t * State.pane_kind -> row
 val filter : string -> section list -> section list
 val rebuild : model -> model
 val poll : ?wait:float -> opts:options -> Tmux.Conn.t -> snapshot -> snapshot

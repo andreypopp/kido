@@ -95,21 +95,6 @@ let parse json =
     Ok { serial; records }
   with Exit | Yojson.Json_error _ | Type_error _ -> Error "invalid program status"
 
-let representative ?seen t =
-  let rank = function Blocked _ -> 0 | Error -> 1 | Working _ -> 2 | Done -> 3 | Idle -> 4 in
-  List.fold_left
-    (fun best r ->
-      match r.state with
-      | (Done | Error) when Option.exists (fun serial -> serial >= t.serial) seen -> best
-      | _ -> (
-          match best with
-          | Some b
-            when let order = Int.compare (rank b.state) (rank r.state) in
-                 (if order = 0 then String.compare b.id r.id else order) <= 0 ->
-              best
-          | _ -> Some r))
-    None t.records
-
 let app t record =
   let rec find id =
     match List.find_opt (fun r -> String.equal r.id id) t.records with
@@ -205,35 +190,8 @@ let%test_module "Tests" =
     QUJ: invalid program status
     |}]
 
-    let%expect_test "representative priority, tie ordering and visit acknowledgement" =
+    let%expect_test "app inherits from the nearest ancestor" =
       let get s = parse s |> Result.get_or_failwith in
-      let status =
-        get
-          {|{"serial":8,"records":[{"id":"b","state":"blocked"},{"id":"a","state":"blocked"},{"id":"","state":"error"},{"id":"c","state":"working"},{"id":"d","state":"done"},{"id":"e","state":"idle"}]}|}
-      in
-      let rec show records =
-        match representative { status with records } with
-        | None -> ()
-        | Some r ->
-            print_endline r.id;
-            show (List.filter (fun x -> not (String.equal x.id r.id)) records)
-      in
-      show status.records;
-      let siblings =
-        {
-          status with
-          records =
-            List.filter (fun r -> List.mem ~eq:String.equal r.id [ ""; "c"; "d" ]) status.records;
-        }
-      in
-      Printf.printf "acknowledged terminal siblings: %s\n"
-        (Option.get_exn_or "representative" (representative ~seen:8 siblings)).id;
-      Printf.printf "newer terminal siblings: %S\n"
-        (Option.get_exn_or "representative" (representative ~seen:7 siblings)).id;
-      let completed =
-        { status with records = List.filter (fun r -> String.equal r.id "d") status.records }
-      in
-      Printf.printf "acknowledged only: %b\n" (Option.is_none (representative ~seen:8 completed));
       let inherited =
         get
           {|{"serial":1,"records":[{"id":"","state":"working","app":"root"},{"id":"a","state":"idle","app":"nearest"},{"id":"a/b/c","state":"working"}]}|}
@@ -242,17 +200,7 @@ let%test_module "Tests" =
         (fun r -> Printf.printf "%s=%s\n" r.id (Option.value ~default:"none" (app inherited r)))
         inherited.records;
 
-      [%expect
-        {|
-    a
-    b
-
-    c
-    d
-    e
-    acknowledged terminal siblings: c
-    newer terminal siblings: ""
-    acknowledged only: true
+      [%expect {|
     =root
     a=nearest
     a/b/c=nearest

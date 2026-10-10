@@ -37,7 +37,7 @@ type from = {
   name : string; [@default ""]
   pane :
     (Tmux.Pane.id option
-    [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]);
+    [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]);
       [@default None]
 }
 [@@deriving to_yojson]

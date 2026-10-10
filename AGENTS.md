@@ -91,10 +91,10 @@ These are fixed:
   at the bottom of the module under test in a `let%test_module "Tests"`
   submodule, so `.mli` exports only what production callers use.
   Out-of-line exceptions are `lib/test/test_tool_parity.ml` and
-  `lib_tmux/test/tmux_server/`.
+  `lib/test/tmux_server/`.
 - **Every stanza compiles with `-open Containers`.** Every `.ml` has an
   `.mli` unless it holds only types. Test-helper modules `Sh`, `Test_support`,
-  `Test_fixture`, `View_fixture` and `Tmux.Fixture` have no `.mli`.
+  `Test_fixture`, `View_fixture` and `Tmux_pane_fixture` have no `.mli`.
   JSON is yojson with
   ppx_deriving_yojson. The TUI is Mosaic, pinned in `dune-project`.
   Concurrency is `unix` and `threads.posix`; no Eio, no Lwt.
@@ -157,6 +157,7 @@ Conventions:
       build_id.ml      the immutable dune-build-info version, or unknown
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
+      tmux_pane.ml     kido's pane view, topology reads, ordering, navigation and marks
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON
       ui.ml            the Mosaic sidebar: the model's rows drawn, keys, cursor
@@ -175,14 +176,13 @@ Conventions:
       control.ml (stop_run, interrupt_subagent)
                        one subcommand or family each
       fs.ml, timestamp.ml  files, time
-      test_fixture.ml, test_support.ml, view_fixture.ml, sh.ml
+      test_fixture.ml, test_support.ml, view_fixture.ml, tmux_pane_fixture.ml, sh.ml
                        shared inline-test scaffolding
       test/            test_tool_parity.ml, the built-binary exception
-    lib_tmux/          the library tmux: pane.ml (the pane format and its
-                       parse), exec.ml (one-shot tmux commands, the binary
-                       lookup), conn.ml (the control-mode client)
-      fixture.ml       shared inline-test pane scaffolding
-      test/tmux_server/  the Conn tests against a real tmux, run only with $KIDO_TMUX
+      test/tmux_server/  the Conn and pane-read tests against a real tmux, run only with $KIDO_TMUX
+    lib_tmux/          the library tmux: pane.ml, window.ml, session.ml (ids),
+                       program_status.ml (the OSC 7501 store), exec.ml (one-shot
+                       tmux primitives and binary lookup), conn.ml (the control-mode client)
     share/             the source of share/kido, installed by share/dune:
       bin/             the bin directory's sh shims (kido, tmux, ssh, pi)
       shim.sh          their shared helper
@@ -307,14 +307,14 @@ Consequences:
 - **These are hooks only.** No control-mode notification exists for
   them; kido reads the `#{pane_command_*}` formats on its poll. Do not go
   looking for `%pane-command-started`.
-- **Timestamps are whole seconds.** `Tmux.Pane.shell` compares
+- **Timestamps are whole seconds.** `Tmux_pane.shell` compares
   `last_prompt > command_start`, and a tie resolves to *running* —
   a false idle the instant a command starts is the worse error.
 - **`cmd_status` is cleared on `C`,** so the last exit code is gone when
-  the next command starts. `Sidebar.phase.held` (a `Tmux.Pane.exit option`)
+  the next command starts. `Sidebar.phase.held` (a `Tmux_pane.exit option`)
   carries it across the following run.
 
-`Tmux.Pane.shell` also heals a stuck flag: a `C` with no `D` leaves
+`Tmux_pane.shell` also heals a stuck flag: a `C` with no `D` leaves
 `PANE_CMDRUNNING` set, and a later prompt's `A` makes `shell` report idle
 without clearing the flag. Two fork changes would each delete a workaround: clearing `PANE_CMDRUNNING` on `A`
 (the heal rule), and not clearing `cmd_status` on `C` (`Sidebar.phase.held`).
@@ -358,16 +358,16 @@ the sidebar uses to decide a program has taken the terminal.
   read a transient process name. Rename the window to a fixed name,
   which turns `automatic-rename` off.
 
-## Format-string invariants (`lib_tmux/pane.ml`)
+## Format-string invariants (`lib/tmux_pane.ml`)
 
-`Pane.format` is `\x1f`-joined and parsed positionally by `Pane.parse`.
+`Tmux_pane.format` is `\x1f`-joined and parsed positionally by `Tmux_pane.parse`.
 
 - `#{pane_title}` stays **last**; it may contain anything.
 - `pane_command_duration` is deliberately **absent**: it ticks every
   second and would redraw the sidebar once a second forever.
-- Adding a field means bumping `Pane.fields`, which both the split count
+- Adding a field means bumping `Tmux_pane.fields`, which both the split count
   and the short-line guard in `parse_line` read. The inline "field count
-  pinned" test in `lib_tmux/pane.ml` ties the two together; its "fixture
+  pinned" test in `lib/tmux_pane.ml` ties the two together; its "fixture
   generated from the format" test exists because the hand-typed fixture
   in its "parse:" test stays green when a new field is left out of it.
 - `pane_command_status` prints **empty**, not `0`, when unset — hence
@@ -427,7 +427,7 @@ would double-send. A Some_agent is reached by paste; Terminal is excluded.
 Live State remains authoritative for coordination and run history even when
 the pane's current root app is replaced or cleared.
 
-`Tmux.Exec.send_prompt` **pastes rather than types**: `send-keys -l` writes raw
+`Prompt.send_prompt` **pastes rather than types**: `send-keys -l` writes raw
 bytes, and under bracketed paste a bare newline submits, splitting a
 multi-line prompt. `load-buffer` + `paste-buffer -p` brackets when the
 application asked for it and pastes raw otherwise. Enter is a
@@ -572,7 +572,7 @@ builds kido with `dune build @install` (so it needs that dune on PATH), and fake
   blocks e2e shells. Unit probes of host shells silently skip a missing
   shell and print only mismatches.
 - `dune test --force` can reuse a cached `.exe.output` target
-  (`lib_tmux/test/tmux_server` does not declare `KIDO_TMUX` as a rule
+  (`lib/test/tmux_server` does not declare `KIDO_TMUX` as a rule
   dependency). A flake loop over it needs the cache off.
 - On macOS CI, `split-window` reporting "fork failed: Device not
   configured" is a runner pty flake. Rerun only the failed job
@@ -588,11 +588,11 @@ Negative controls are load-bearing: never delete one half of a pair.
   precedes PATH in a primed pane; removing the lookup breaks
   `TestKidoSSHOpensAnOrdinarySession` and
   `TestKidoSSHPrimesARemoteShell` in `test_e2e/ssh_prime_test.go`.
-- **`Sidebar.same` compares panes by exclusion.** A new `Tmux.Pane.t` field
+- **`Sidebar.same` compares panes by exclusion.** A new `Tmux_pane.t` field
   participates in equality unless blanked in its local `drawn`. It fails
   toward extra redraws, the safe direction.
 - **A window's panes are ordered oldest first**, by pane id number
-  (`Tmux.Pane.order_sessions`), not in list-panes layout order (`split-window
+  (`Tmux_pane.order_sessions`), not in list-panes layout order (`split-window
   -b` puts a new pane first). The tree, the group glyph's row 0,
   `kido switch-session` and `kido switch-window` rely on that one sort.
 - **`@kido_run` is pane-scoped (`set-option -p`).** It marks the one
@@ -605,7 +605,7 @@ Negative controls are load-bearing: never delete one half of a pair.
   drawn left of a label must fit in space already accounted for; tree
   prefixes are built by `Ui.lines`, before the indicator column.
 - **A standalone kido infers its client by counting, filtered.**
-  `#{client_name}` from a popup is unanswerable. `Tmux.Exec.resolve_client`
+  `#{client_name}` from a popup is unanswerable. `Tmux_pane.resolve_client`
   asks who is attached to the pane's session, ignoring kido's own
   control-mode connections (one per real client). Control mode is read
   from its boolean, not an empty tty (a read-only client has one too).

@@ -3,13 +3,13 @@ let temp () = Filename.temp_dir "kido-ui" ""
 
 let pane ?ssh ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pid = 0) ?run
     ?dead_at ?(alternate = false) ?(running = false) ?start ?prompt ?exit ?(command_line = "")
-    ?(active = false) pane_id : Tmux.Pane.t =
+    ?(active = false) pane_id : Tmux_pane.t =
   {
-    (Tmux.Fixture.pane ~session ~created:0. ~window ~cmd:command ~title ~pid ?run ~active
+    (Test_fixture.pane ~session ~created:0. ~window ~cmd:command ~title ~pid ?run ~active
        ~attached:active ~running ?start ?prompt pane_id)
     with
     alternate_on = alternate;
-    last_exit = Option.map (fun (code, at) -> { Tmux.Pane.code; at }) exit;
+    last_exit = Option.map (fun (code, at) -> { Tmux_pane.code; at }) exit;
     command_line;
     dead_at;
     ssh;
@@ -30,7 +30,7 @@ let states l =
 
 let with_programs states panes =
   List.map
-    (fun (p : Tmux.Pane.t) ->
+    (fun (p : Tmux_pane.t) ->
       if Tmux.Pane.Map.mem p.pane_id states then
         {
           p with

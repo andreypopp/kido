@@ -26,7 +26,7 @@ val caller :
   dir:string ->
   self:Tmux.Pane.id option ->
   owner ->
-  (Tmux.Pane.t * State.parent option * int, string) result
+  (Tmux_pane.t * State.parent option * int, string) result
 (** The caller's pane, the parent a run it starts gets, and the run's depth. *)
 
 val run_env : dir:string -> Subrun.id -> State.parent option -> int -> string list

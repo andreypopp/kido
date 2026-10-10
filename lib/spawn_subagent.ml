@@ -259,13 +259,13 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
   Option.iter (fun delivered -> Subrun.reset_for_resume ~dir meta.id ~delivered) resume;
   let id = Subrun.string_of_id meta.id in
   let+ () =
-    match Tmux.Exec.mark_run w.pane_id id with
+    match Tmux_pane.mark_run w.pane_id id with
     | Ok () -> Ok ()
     | Error e -> (
         match meta.kind with
         | (Bash | Stream) when not (Tmux.Exec.window_exists w.window_id) -> Ok ()
         | Bash | Stream | Agent ->
-            ignore (Tmux.Exec.kill_window w.window_id);
+            ignore (Tmux.Exec.run [ "kill-window"; "-t"; Tmux.Window.to_string w.window_id ]);
             fail e)
   in
   match meta.kind with
@@ -284,7 +284,7 @@ let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | 
 
 let caller ~dir ~self owner =
   let open Result.Infix in
-  let* panes = Tmux.Exec.list_panes () in
+  let* panes = Tmux_pane.list_panes () in
   let+ pane = List_runs.caller_pane panes self in
   let own = Tmux.Pane.Map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
   let parent =

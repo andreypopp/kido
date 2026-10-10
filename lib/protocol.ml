@@ -203,8 +203,8 @@ let snapshot (m : model) =
             ~default:(`Assoc [ ("serial", `Int 0); ("records", `List []) ])
             Tmux.Program_status.to_yojson
             (Option.map
-               (fun (p : Tmux.Pane.t) -> p.program_status)
-               (Tmux.Pane.find m.snap.panes r.pane)) );
+               (fun (p : Tmux_pane.t) -> p.program_status)
+               (Tmux_pane.find m.snap.panes r.pane)) );
         ("title", spans r.title);
         ("tail", spans (match r.caption with Text tail -> tail | Elapsed _ -> []));
         ( "run",

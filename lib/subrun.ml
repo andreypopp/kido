@@ -37,7 +37,7 @@ type meta = {
   depth : int;
   pane :
     (Tmux.Pane.id option
-    [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]);
+    [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]);
   pid : int;
   cwd : string;
   model : string; [@default ""]
@@ -146,7 +146,9 @@ let save_screen ?socket ~dir id pane =
              try Fs.write_atomic (screen_path ~dir id) data
              with Unix.Unix_error _ | Sys_error _ -> ());
           data)
-        (Result.to_opt (Tmux.Exec.capture_screen ?socket pane)))
+        (Result.to_opt
+           (Tmux.Exec.exec ?socket
+              [ "capture-pane"; "-p"; "-t"; Tmux.Pane.to_string pane; "-S"; "-1000" ])))
     pane
 
 let%test_module "Tests" =

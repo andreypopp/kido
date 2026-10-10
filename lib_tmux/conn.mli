@@ -14,8 +14,7 @@ val await_notifications : t -> timeout:float -> unit
 val follow : t -> Session.id -> unit
 (** Switches the control client to the session, so that session's notifications arrive. *)
 
-val list_panes : t -> (Pane.t list, string) result
-(** Every pane on the server, read over the connection or a one-shot tmux when it is down. *)
+val socket : t -> string option
 
 val client_state : t -> Exec.client_state option
 (** The connection's client's session and focus, read over the connection or a one-shot tmux when it

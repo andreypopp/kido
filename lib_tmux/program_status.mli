@@ -19,7 +19,6 @@ type t = { serial : int; records : record list }
 
 val root : t -> record option
 val parse : string -> (t, string) result
-val representative : ?seen:int -> t -> record option
 val progress : record -> int option
 val app : t -> record -> string option
 val to_yojson : t -> Yojson.Safe.t

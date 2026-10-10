@@ -27,7 +27,7 @@ type ask = { ask : Ask.t; target : ask_target }
 type snapshot = {
   client : Tmux.Exec.client_state option;
   active : Tmux.Pane.id option;
-  panes : P.t list;
+  panes : Tmux_pane.t list;
   states : (string * State.session) Tmux.Pane.Map.t;
   wake : float option;
   err : string option;
@@ -52,7 +52,7 @@ let shell_run_hold = 0.5
 
 let lingering_subagents ~dir panes prev =
   List.fold_left
-    (fun out (p : P.t) ->
+    (fun out (p : Tmux_pane.t) ->
       match Option.map Subrun.parse_id p.run with
       | Some (Ok run_id) -> (
           let key = Subrun.string_of_id run_id in
@@ -98,7 +98,7 @@ let lingering_subagents ~dir panes prev =
 
 let take ~opts conn prev client =
   Option.iter (fun (c : Tmux.Exec.client_state) -> Tmux.Conn.follow conn c.session_id) client;
-  match Tmux.Conn.list_panes conn with
+  match Tmux_pane.list_panes ~conn () with
   | Error e -> { prev with client; active = None; err = Some e }
   | Ok panes ->
       let live = State.load_live ~dir:opts.dir in
@@ -109,7 +109,9 @@ let take ~opts conn prev client =
       {
         client;
         active =
-          Option.flat_map (fun (c : Tmux.Exec.client_state) -> P.active_pane panes c.session) client;
+          Option.flat_map
+            (fun (c : Tmux.Exec.client_state) -> Tmux_pane.active_pane panes c.session)
+            client;
         panes;
         states;
         wake = State.wake ~dir:opts.dir;
@@ -134,7 +136,7 @@ let take ~opts conn prev client =
       }
 
 let same a b =
-  let drawn (p : P.t) =
+  let drawn (p : Tmux_pane.t) =
     {
       p with
       window_index = 0;
@@ -195,13 +197,13 @@ and item = { row : row; program_rows : program_row list; children : node list }
 and program_row = { id : string; indicator : indicator; title : string; caption : string }
 
 type section = { id : Tmux.Session.id; name : string; current : bool; nodes : node list }
-type phase = { running : bool; since : float; drawn : bool; held : P.exit option }
+type phase = { running : bool; since : float; drawn : bool; held : Tmux_pane.exit option }
 
 type model = {
   opts : options;
   snap : snapshot;
   sessions : section list;
-  pane_data : (Tmux.Pane.t * State.pane_kind) Tmux.Pane.Map.t;
+  pane_data : (Tmux_pane.t * State.pane_kind) Tmux.Pane.Map.t;
   client : client option;
   started : float;
   seen : float Tmux.Pane.Map.t;
@@ -231,7 +233,7 @@ let make ~now opts =
     clock = read_clock ();
   }
 
-let ssh_remote m (p : P.t) =
+let ssh_remote m (p : Tmux_pane.t) =
   Option.equal
     (Pair.equal String.equal String.equal)
     (Tmux.Pane.Map.find_opt p.pane_id m.ssh_remote)
@@ -241,7 +243,7 @@ let ssh_remote m (p : P.t) =
 (* Strictly after: tmux's timestamps are whole seconds, and an ssh launched in the same second as the
    prompt before it would otherwise pass forever on a host with no integration. The reading latches
    because tmux overwrites pane_command_start_time on the remote shell's own 133;C. *)
-let observe_remote m (p : P.t) =
+let observe_remote m (p : Tmux_pane.t) =
   if not (String.equal p.current_command "ssh" && Option.is_some p.ssh) then
     { m with ssh_remote = Tmux.Pane.Map.remove p.pane_id m.ssh_remote }
   else
@@ -270,15 +272,15 @@ let observe m prev running =
 
 let seen_at m pane = Option.value ~default:m.started (Tmux.Pane.Map.find_opt pane m.seen)
 
-let shell_outcome m (p : P.t) =
-  match (P.shell p, p.last_exit, p.command_start) with
+let shell_outcome m (p : Tmux_pane.t) =
+  match (Tmux_pane.shell p, p.last_exit, p.command_start) with
   | Idle, Some exit, Some _ when Float.(exit.at > 0. && exit.at > seen_at m p.pane_id) -> Some exit
   | _ -> None
 
 let classify m =
   let pane_data =
     List.fold_left
-      (fun data (p : P.t) ->
+      (fun data (p : Tmux_pane.t) ->
         if Tmux.Pane.Map.mem p.pane_id data then data
         else Tmux.Pane.Map.add p.pane_id (p, State.pane_kind ~states:m.snap.states p) data)
       Tmux.Pane.Map.empty m.snap.panes
@@ -304,17 +306,17 @@ let track m =
   else
     let live =
       List.fold_left
-        (fun live (p : P.t) -> Tmux.Pane.Map.add p.pane_id () live)
+        (fun live (p : Tmux_pane.t) -> Tmux.Pane.Map.add p.pane_id () live)
         Tmux.Pane.Map.empty m.snap.panes
     in
     let m =
       List.fold_left
-        (fun m (p : P.t) ->
+        (fun m (p : Tmux_pane.t) ->
           let m = observe_remote m p in
           match
             if Option.is_some p.ssh && String.equal p.current_command "ssh" && not (ssh_remote m p)
-            then P.Running
-            else P.shell p
+            then Tmux_pane.Running
+            else Tmux_pane.shell p
           with
           | Unintegrated -> m
           | (Idle | Running) as s ->
@@ -339,12 +341,14 @@ let track m =
 let stall_pending m snap =
   let panes =
     List.fold_left
-      (fun panes (p : P.t) ->
+      (fun panes (p : Tmux_pane.t) ->
         if Tmux.Pane.Map.mem p.pane_id panes then panes else Tmux.Pane.Map.add p.pane_id p panes)
       Tmux.Pane.Map.empty snap.panes
   in
   let stalled p wake now s =
-    let root = Option.flat_map (fun (p : P.t) -> Tmux.Program_status.root p.program_status) p in
+    let root =
+      Option.flat_map (fun (p : Tmux_pane.t) -> Tmux.Program_status.root p.program_status) p
+    in
     State.stalled_since ~root ~threshold:m.opts.threshold ~wake ~now s
   in
   Tmux.Pane.Map.exists
@@ -388,7 +392,23 @@ let program_indicator m pane status (r : Tmux.Program_status.record) =
   | Done -> if seen then Status Idle else Done
   | Error -> if seen then Status Idle else Failed
 
-let program_status m (p : P.t) =
+let representative ?seen (t : Tmux.Program_status.t) =
+  let open Tmux.Program_status in
+  let rank = function Blocked _ -> 0 | Error -> 1 | Working _ -> 2 | Done -> 3 | Idle -> 4 in
+  List.fold_left
+    (fun best r ->
+      match r.state with
+      | (Done | Error) when Option.exists (fun serial -> serial >= t.serial) seen -> best
+      | _ -> (
+          match best with
+          | Some b
+            when let order = Int.compare (rank b.state) (rank r.state) in
+                 (if order = 0 then String.compare b.id r.id else order) <= 0 ->
+              best
+          | _ -> Some r))
+    None t.records
+
+let program_status m (p : Tmux_pane.t) =
   if
     Option.exists
       (fun run ->
@@ -400,9 +420,7 @@ let program_status m (p : P.t) =
   else
     let status = p.program_status in
     let record =
-      Tmux.Program_status.representative
-        ?seen:(Tmux.Pane.Map.find_opt p.pane_id m.program_seen)
-        status
+      representative ?seen:(Tmux.Pane.Map.find_opt p.pane_id m.program_seen) status
       |> Option.or_lazy ~else_:(fun () -> List.head_opt status.records)
     in
     Option.map (fun r -> (status, r)) record
@@ -429,7 +447,7 @@ let shell_indicator m ph =
 let span role text = { text; role }
 let plain = span `Plain
 
-let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
+let pane_label m ((p : Tmux_pane.t), (pane_kind : State.pane_kind)) =
   let lingering = Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run in
   let run =
     Option.map
@@ -444,7 +462,9 @@ let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
   let row kind indicator title caption =
     { pane = p.pane_id; window = p.window_id; kind; indicator; title; caption; run }
   in
-  let cmd = match P.shell p with Running when not p.alternate_on -> p.command_line | _ -> "" in
+  let cmd =
+    match Tmux_pane.shell p with Running when not p.alternate_on -> p.command_line | _ -> ""
+  in
   let ssh_title user host =
     [ span `Proc "ssh "; plain (user ^ "@" ^ host) ]
     @ if ssh_remote m p && not (String.is_empty cmd) then [ span `Proc ": "; plain cmd ] else []
@@ -552,15 +572,15 @@ let pane_label m ((p : P.t), (pane_kind : State.pane_kind)) =
           in
           row kind ind text (Text []))
 
-type placement = { panes : P.t list; anchor : Tmux.Pane.id option }
+type placement = { panes : Tmux_pane.t list; anchor : Tmux.Pane.id option }
 
 let order_windows_by_tree windows states lingering =
-  let window_id (w : P.t list) = (List.hd w).window_id in
+  let window_id (w : Tmux_pane.t list) = (List.hd w).window_id in
   let by_session =
     List.fold_left
       (fun acc w ->
         List.fold_left
-          (fun acc (p : P.t) ->
+          (fun acc (p : Tmux_pane.t) ->
             match Tmux.Pane.Map.find_opt p.pane_id states with
             | Some (id, _) when not (String.is_empty id) ->
                 String_map.add id (window_id w, p.pane_id) acc
@@ -568,10 +588,10 @@ let order_windows_by_tree windows states lingering =
           acc w)
       String_map.empty windows
   in
-  let parent_of_window (w : P.t list) =
+  let parent_of_window (w : Tmux_pane.t list) =
     match
       List.find_map
-        (fun (p : P.t) ->
+        (fun (p : Tmux_pane.t) ->
           Option.flat_map
             (fun (_, (s : State.session)) ->
               Option.map (fun (pa : State.parent) -> pa.session) s.parent)
@@ -582,7 +602,7 @@ let order_windows_by_tree windows states lingering =
     | None ->
         Option.value ~default:""
           (List.find_map
-             (fun (p : P.t) ->
+             (fun (p : Tmux_pane.t) ->
                Option.map
                  (fun l -> l.parent)
                  (Option.flat_map (fun r -> String_map.find_opt r lingering) p.run))
@@ -607,9 +627,75 @@ let order_windows_by_tree windows states lingering =
 
 let windows_in_order panes states lingering =
   List.concat_map
-    (fun (s : P.session) ->
-      List.map (fun p -> (p.panes, p.anchor)) (order_windows_by_tree s.windows states lingering))
-    (P.order_sessions panes)
+    (fun (s : Tmux_pane.session) -> order_windows_by_tree s.windows states lingering)
+    (Tmux_pane.order_sessions panes)
+
+let window_target ~next ~session ~window windows =
+  let first w = List.hd w.panes in
+  let parent w =
+    Option.flat_map
+      (fun anchor ->
+        List.find_opt
+          (fun candidate ->
+            Tmux.Session.equal (first candidate).session_id (first w).session_id
+            && List.exists
+                 (fun (p : Tmux_pane.t) -> Tmux.Pane.equal p.pane_id anchor)
+                 candidate.panes)
+          windows)
+      w.anchor
+  in
+  match
+    List.find_opt
+      (fun w ->
+        Tmux.Session.equal (first w).session_id session
+        && Tmux.Window.equal (first w).window_id window)
+      windows
+  with
+  | None -> None
+  | Some current -> (
+      let rec root w = match parent w with Some p -> root p | None -> w in
+      let adjacent =
+        Option.flat_map
+          (fun p ->
+            let siblings =
+              List.concat_map
+                (fun (pane : Tmux_pane.t) ->
+                  List.filter
+                    (fun w ->
+                      Tmux.Session.equal (first w).session_id session
+                      && Option.equal Tmux.Pane.equal w.anchor (Some pane.pane_id))
+                    windows)
+                p.panes
+              |> Array.of_list
+            in
+            Option.flat_map
+              (fun (i, _) ->
+                let j = i + if next then 1 else -1 in
+                if j >= 0 && j < Array.length siblings then Some (first siblings.(j))
+                else if next then None
+                else Some (first p))
+              (Array.find_idx (fun w -> Tmux.Window.equal (first w).window_id window) siblings))
+          (parent current)
+      in
+      match adjacent with
+      | Some _ -> adjacent
+      | None ->
+          let roots = List.filter (fun w -> Option.is_none (parent w)) windows |> Array.of_list in
+          let active = first (root current) in
+          let n = Array.length roots in
+          let rec find j k =
+            if k = 0 then None
+            else if List.for_all (fun (p : Tmux_pane.t) -> Option.is_none p.run) roots.(j).panes
+            then Some (first roots.(j))
+            else find ((j + (if next then 1 else -1) + n) mod n) (k - 1)
+          in
+          Option.flat_map
+            (fun (i, _) -> find ((i + (if next then 1 else -1) + n) mod n) n)
+            (Array.find_idx
+               (fun w ->
+                 Tmux.Session.equal (first w).session_id active.session_id
+                 && Tmux.Window.equal (first w).window_id active.window_id)
+               roots))
 
 let append_windows m placements =
   let placements = Array.of_list placements in
@@ -626,7 +712,7 @@ let append_windows m placements =
     if drawn.(i) then None
     else begin
       drawn.(i) <- true;
-      let item (p : P.t) =
+      let item (p : Tmux_pane.t) =
         let kids =
           List.rev (Option.get_or ~default:[] (Tmux.Pane.Map.find_opt p.pane_id anchored))
         in
@@ -704,10 +790,10 @@ let filter text sessions =
     |> List.map snd
 
 let rebuild m =
-  let order = P.order_sessions m.snap.panes in
+  let order = Tmux_pane.order_sessions m.snap.panes in
   let sessions =
     List.map
-      (fun (s : P.session) ->
+      (fun (s : Tmux_pane.session) ->
         {
           id = s.id;
           name = s.name;
@@ -741,7 +827,7 @@ let step m (snap : snapshot) =
     | Some (c : Tmux.Exec.client_state) -> (
         match
           List.find_opt
-            (fun (p : P.t) ->
+            (fun (p : Tmux_pane.t) ->
               Option.equal P.equal (Some p.pane_id) snap.active
               && Tmux.Session.equal p.session_id c.session_id)
             snap.panes
@@ -788,7 +874,33 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
           | Some c -> Ok (`Session c.session_id)
           | None -> Error "no current tmux session")
     in
-    let* session, window, pane = Tmux.Exec.new_shell ~socket target in
+    let from, command, missing =
+      match target with
+      | `Window window ->
+          let id = Tmux.Window.to_string window in
+          (id, [ "new-window"; "-a"; "-t"; id ], "no such window")
+      | `Session session ->
+          (Tmux.Session.to_string session ^ ":", [ "new-session" ], "no such session")
+    in
+    let* cwd =
+      Tmux.Exec.exec ?socket [ "display-message"; "-p"; "-t"; from; "#{pane_current_path}" ]
+    in
+    let* session, window, pane =
+      if String.is_empty cwd then Error missing
+      else
+        let* out =
+          Tmux.Exec.exec ?socket
+            (command @ [ "-d"; "-P"; "-F"; "#{session_id}:#{window_id}:#{pane_id}"; "-c"; cwd ])
+        in
+        match String.split ~by:":" out with
+        | [ session; window; pane ] -> (
+            match
+              (Tmux.Session.of_string session, Tmux.Window.of_string window, P.of_string pane)
+            with
+            | Some session, Some window, Some pane -> Ok (session, window, pane)
+            | _ -> Error (Printf.sprintf "created shell but could not read its location: %S" out))
+        | _ -> Error (Printf.sprintf "created shell but could not read its location: %S" out)
+    in
     Result.map_err
       (fun e ->
         Printf.sprintf "created %s:%s.%s but selection failed: %s" (Tmux.Session.to_string session)
@@ -798,10 +910,10 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
   match request with
   | Select_window target -> (
       let open Result.Infix in
-      let* panes = Tmux.Exec.list_panes ?socket () in
+      let* panes = Tmux_pane.list_panes ?socket () in
       match
         List.find_opt
-          (fun (p : P.t) ->
+          (fun (p : Tmux_pane.t) ->
             Tmux.Session.equal p.session_id target.session
             && Tmux.Window.equal p.window_id target.window
             && p.pane_active)
@@ -811,9 +923,11 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
       | Some p -> jump { session = target.session; window = target.window; pane = p.pane_id })
   | Select_session session -> (
       let open Result.Infix in
-      let* panes = Tmux.Exec.list_panes ?socket () in
+      let* panes = Tmux_pane.list_panes ?socket () in
       match
-        List.find_opt (fun (p : P.t) -> Tmux.Session.equal p.session_id session && p.active) panes
+        List.find_opt
+          (fun (p : Tmux_pane.t) -> Tmux.Session.equal p.session_id session && p.active)
+          panes
       with
       | None -> Error "no such window in session"
       | Some p -> jump { session; window = p.window_id; pane = p.pane_id })
@@ -821,10 +935,10 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
   | New_session -> create None
   | Jump target ->
       let open Result.Infix in
-      let* panes = Tmux.Exec.list_panes ?socket () in
+      let* panes = Tmux_pane.list_panes ?socket () in
       if
         List.exists
-          (fun (p : P.t) ->
+          (fun (p : Tmux_pane.t) ->
             Tmux.Session.equal p.session_id target.session
             && Tmux.Window.equal p.window_id target.window
             && P.equal p.pane_id target.pane)
@@ -844,12 +958,12 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
         | None -> Error "no current tmux session"
       in
       let* pane = Ask.target ~socket ~dir ~session:current.session_id ask in
-      let* panes = Tmux.Exec.list_panes ?socket () in
-      let candidates = List.filter (fun (p : P.t) -> P.equal p.pane_id pane) panes in
+      let* panes = Tmux_pane.list_panes ?socket () in
+      let candidates = List.filter (fun (p : Tmux_pane.t) -> P.equal p.pane_id pane) panes in
       let target =
         match
           List.find_opt
-            (fun (p : P.t) -> Tmux.Session.equal p.session_id current.session_id)
+            (fun (p : Tmux_pane.t) -> Tmux.Session.equal p.session_id current.session_id)
             candidates
         with
         | Some p -> Some p
@@ -865,17 +979,123 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
         (Result.flat_map
            (fun panes ->
              let states = State.by_pane (State.load_live ~dir) in
-             Tmux.Exec.switch_window ?socket ~client
-               ~next:(match direction with Next -> true | Prev -> false)
-               (windows_in_order panes states (lingering_subagents ~dir panes String_map.empty)))
-           (Tmux.Exec.list_panes ?socket ()))
+             let next = match direction with Next -> true | Prev -> false in
+             let windows =
+               windows_in_order panes states (lingering_subagents ~dir panes String_map.empty)
+             in
+             let active =
+               Option.flat_map
+                 (fun (c : Tmux.Exec.client_state) ->
+                   List.find_opt
+                     (fun (p : Tmux_pane.t) -> String.equal p.session_name c.session && p.active)
+                     (List.concat_map (fun w -> w.panes) windows))
+                 (Tmux.Exec.client_state ?socket client)
+             in
+             match
+               Option.flat_map
+                 (fun (a : Tmux_pane.t) ->
+                   window_target ~next ~session:a.session_id ~window:a.window_id windows)
+                 active
+             with
+             | Some target ->
+                 Result.map
+                   (fun () -> Some (target.session_id, target.window_id))
+                   (Tmux.Exec.run ?socket
+                      [
+                        "switch-client";
+                        "-c";
+                        client;
+                        "-t";
+                        Tmux.Session.to_string target.session_id;
+                        ";";
+                        "select-window";
+                        "-t";
+                        Tmux.Window.to_string target.window_id;
+                      ])
+             | None -> Ok None)
+           (Tmux_pane.list_panes ?socket ()))
   | Switch_session direction ->
       switched
-        (Tmux.Exec.switch_session ~socket ~client
-           ~next:(match direction with Next -> true | Prev -> false))
+        (Result.flat_map
+           (fun panes ->
+             let sessions = Array.of_list (Tmux_pane.order_sessions panes) in
+             let length = Array.length sessions in
+             if length < 2 then Ok None
+             else
+               let current = Tmux.Exec.client_state ?socket client in
+               match
+                 Array.find_idx
+                   (fun (s : Tmux_pane.session) ->
+                     Option.exists
+                       (fun (c : Tmux.Exec.client_state) -> String.equal c.session s.name)
+                       current)
+                   sessions
+               with
+               | Some (i, _) -> (
+                   let target =
+                     sessions.((i + (match direction with Next -> 1 | Prev -> -1) + length)
+                               mod length)
+                   in
+                   let active =
+                     List.find_opt (fun (p : Tmux_pane.t) -> p.active) (List.concat target.windows)
+                   in
+                   match active with
+                   | Some p ->
+                       Result.map
+                         (fun () -> Some (target.id, p.window_id))
+                         (Tmux.Exec.run ?socket
+                            [
+                              "switch-client"; "-c"; client; "-t"; Tmux.Session.to_string target.id;
+                            ])
+                   | None -> Ok None)
+               | None -> Ok None)
+           (Tmux_pane.list_panes ?socket ()))
 
 let%test_module "Tests" =
   (module struct
+    let%expect_test "representative priority, tie ordering and visit acknowledgement" =
+      let open Tmux.Program_status in
+      let get s = parse s |> Result.get_or_failwith in
+      let status =
+        get
+          {|{"serial":8,"records":[{"id":"b","state":"blocked"},{"id":"a","state":"blocked"},{"id":"","state":"error"},{"id":"c","state":"working"},{"id":"d","state":"done"},{"id":"e","state":"idle"}]}|}
+      in
+      let rec show records =
+        match representative { status with records } with
+        | None -> ()
+        | Some r ->
+            print_endline r.id;
+            show (List.filter (fun x -> not (String.equal x.id r.id)) records)
+      in
+      show status.records;
+      let siblings =
+        {
+          status with
+          records =
+            List.filter (fun r -> List.mem ~eq:String.equal r.id [ ""; "c"; "d" ]) status.records;
+        }
+      in
+      Printf.printf "acknowledged terminal siblings: %s\n"
+        (Option.get_exn_or "representative" (representative ~seen:8 siblings)).id;
+      Printf.printf "newer terminal siblings: %S\n"
+        (Option.get_exn_or "representative" (representative ~seen:7 siblings)).id;
+      let completed =
+        { status with records = List.filter (fun r -> String.equal r.id "d") status.records }
+      in
+      Printf.printf "acknowledged only: %b\n" (Option.is_none (representative ~seen:8 completed));
+      [%expect
+        {|
+    a
+    b
+
+    c
+    d
+    e
+    acknowledged terminal siblings: c
+    newer terminal siblings: ""
+    acknowledged only: true
+    |}]
+
     open View_fixture
 
     let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
@@ -993,6 +1213,104 @@ let%test_module "Tests" =
     @211 anchor=%101
     |}]
 
+    let%expect_test "window targets: siblings, roots, runs and session occurrences" =
+      let pane = Test_fixture.pane in
+      let p window id = pane ~window id in
+      let root = p "@1" "%1" and later_pane = p "@1" "%2" in
+      let child = pane ~window:"@2" ~run:"child" "%3" in
+      let sibling = pane ~window:"@3" ~run:"sibling" "%4" in
+      let grandchild = pane ~window:"@4" ~run:"grandchild" "%5" in
+      let earlier = p "@5" "%6" in
+      let other = pane ~session:"b" ~session_id:"$1" ~window:"@6" "%7" in
+      let linked = { root with session_name = "b"; session_id = other.session_id } in
+      let windows =
+        [
+          { panes = [ root; later_pane ]; anchor = None };
+          { panes = [ child ]; anchor = Some later_pane.pane_id };
+          { panes = [ grandchild ]; anchor = Some child.pane_id };
+          { panes = [ pane ~window:"@9" ~run:"grand-sibling" "%10" ]; anchor = Some child.pane_id };
+          { panes = [ sibling ]; anchor = Some later_pane.pane_id };
+          { panes = [ earlier ]; anchor = Some root.pane_id };
+          { panes = [ p "@7" "%8" ]; anchor = None };
+          { panes = [ pane ~window:"@8" ~run:"orphan" "%9" ]; anchor = None };
+          { panes = [ linked ]; anchor = None };
+          { panes = [ other ]; anchor = None };
+        ]
+      in
+      List.iter
+        (fun (session, window, next) ->
+          let target =
+            window_target ~next
+              ~session:(Option.get_exn_or "session" (Tmux.Session.of_string session))
+              ~window:(Option.get_exn_or "window" (Tmux.Window.of_string window))
+              windows
+          in
+          Printf.printf "%s:%s %s -> %s\n" session window
+            (if next then "next" else "prev")
+            (Option.map_or ~default:"null"
+               (fun (p : Tmux_pane.t) ->
+                 Tmux.Session.to_string p.session_id ^ ":" ^ Tmux.Window.to_string p.window_id)
+               target))
+        [
+          ("$0", "@1", true);
+          ("$0", "@5", true);
+          ("$0", "@5", false);
+          ("$0", "@2", false);
+          ("$0", "@2", true);
+          ("$0", "@3", true);
+          ("$0", "@4", false);
+          ("$0", "@4", true);
+          ("$0", "@9", false);
+          ("$0", "@9", true);
+          ("$0", "@7", true);
+          ("$1", "@1", false);
+          ("$1", "@6", true);
+          ("$0", "@1", false);
+        ];
+      List.iter
+        (fun windows ->
+          List.iter
+            (fun next ->
+              print_endline
+                (Option.map_or ~default:"null"
+                   (fun (p : Tmux_pane.t) -> Tmux.Window.to_string p.window_id)
+                   (window_target ~next ~session:root.session_id ~window:root.window_id windows)))
+            [ true; false ])
+        [
+          [];
+          [ { panes = [ root ]; anchor = None } ];
+          [ { panes = [ { root with run = Some "only-run" } ]; anchor = None } ];
+          [ { panes = [ root; { later_pane with run = Some "split-run" } ]; anchor = None } ];
+          [ { panes = [ root ]; anchor = Tmux.Pane.of_string "%999" } ];
+        ];
+      [%expect
+        {|
+    $0:@1 next -> $0:@7
+    $0:@5 next -> $0:@2
+    $0:@5 prev -> $0:@1
+    $0:@2 prev -> $0:@5
+    $0:@2 next -> $0:@3
+    $0:@3 next -> $0:@7
+    $0:@4 prev -> $0:@2
+    $0:@4 next -> $0:@9
+    $0:@9 prev -> $0:@4
+    $0:@9 next -> $0:@7
+    $0:@7 next -> $1:@1
+    $1:@1 prev -> $0:@7
+    $1:@6 next -> $0:@1
+    $0:@1 prev -> $1:@6
+    null
+    null
+    @1
+    @1
+    null
+    null
+    null
+    null
+    @1
+    @1
+    |}]
+
     let%expect_test "window targets: siblings precede parents, next leaves the root subtree" =
       let windows =
         windows_in_order
@@ -1019,8 +1337,8 @@ let%test_module "Tests" =
             (if next then "next" else "prev")
             window
             (Option.map_or ~default:"-"
-               (fun (p : Tmux.Pane.t) -> Tmux.Window.to_string p.window_id)
-               (Tmux.Exec.window_target ~next
+               (fun (p : Tmux_pane.t) -> Tmux.Window.to_string p.window_id)
+               (window_target ~next
                   ~session:(Option.get_exn_or "id" (Tmux.Session.of_string "$0"))
                   ~window:
                     (Option.get_exn_or "id"
@@ -1120,7 +1438,7 @@ let%test_module "Tests" =
       let show name m p =
         Printf.printf "%s: %s\n" name
           (Option.map_or ~default:"none"
-             (fun (e : Tmux.Pane.exit) -> Printf.sprintf "exit %d at %.0f" e.code e.at)
+             (fun (e : Tmux_pane.exit) -> Printf.sprintf "exit %d at %.0f" e.code e.at)
              (shell_outcome m p))
       in
       show "no integration" (m Tmux.Pane.Map.empty) (pane ~exit:(1, ended) "%1");

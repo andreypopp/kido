@@ -21,7 +21,7 @@ val caller :
   dir:string ->
   self:Tmux.Pane.id option ->
   session:string ->
-  ((string * State.session * Tmux.Pane.t) option, string) result
+  ((string * State.session * Tmux_pane.t) option, string) result
 
 val record :
   dir:string ->
@@ -43,5 +43,5 @@ val target :
   (Tmux.Pane.id, string) result
 
 val remove : dir:string -> self:string -> id -> (unit, string) result
-val display_name : panes:Tmux.Pane.t list -> live:(string * State.session) list -> t -> string
-val to_json : panes:Tmux.Pane.t list -> live:(string * State.session) list -> t -> Yojson.Safe.t
+val display_name : panes:Tmux_pane.t list -> live:(string * State.session) list -> t -> string
+val to_json : panes:Tmux_pane.t list -> live:(string * State.session) list -> t -> Yojson.Safe.t

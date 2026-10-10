@@ -1,15 +1,15 @@
 let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(window = "@1")
     ?(active = false) ?(attached = false) ?(running = false) ?start ?prompt ?run ?(pid = 0)
-    ?(cmd = "") ?(cwd = "") ?(title = "") id : Pane.t =
+    ?(cmd = "") ?(cwd = "") ?(title = "") id : Tmux_pane.t =
   {
     session_name = session;
-    session_id = Option.get_exn_or "id" (Session.of_string session_id);
+    session_id = Option.get_exn_or "id" (Tmux.Session.of_string session_id);
     session_created = created;
     window_index = index;
-    window_id = Option.get_exn_or "id" (Window.of_string window);
+    window_id = Option.get_exn_or "id" (Tmux.Window.of_string window);
     window_name = "";
     window_layout = "";
-    pane_id = Option.get_exn_or "id" (Pane.of_string id);
+    pane_id = Option.get_exn_or "id" (Tmux.Pane.of_string id);
     active;
     pane_active = active;
     pane_pid = pid;

@@ -136,7 +136,7 @@ Each pane item also carries `program_status`: the pane emission serial
 and every OSC 7501 record, ordered by id. Title and message are decoded
 UTF-8; optional app is the record's own app, inherited by consumers from
 the nearest ancestor with one, including root across missing parents.
-Every topology read includes `#{pane_program_status}` in `Pane.format`,
+Every topology read includes `#{pane_program_status}` in `Tmux_pane.format`,
 parsed once into each pane. Control-mode and one-shot views read records
 the same way. `%program-status` notifications only wake the tick; their
 payload is ignored. Visit acknowledgements remain keyed by the pane's

@@ -261,7 +261,7 @@ created so the child can read its task the instant tmux starts it. The
 run id is `Subrun.id`, abstract rather than a bare string: `Subrun.parse_id` is the one
 check that it names nothing outside that directory, applied at every edge
 the id crosses from outside the module (`kido run-outcome`, `spawn_subagent
---resume`, a `Tmux.Pane.t`'s `run` reader, a `KIDO_AGENT_RUN_ID` reader); every
+--resume`, a `Tmux_pane.t`'s `run` reader, a `KIDO_AGENT_RUN_ID` reader); every
 function taking a `Subrun.id` trusts it.
 
 - `task`, the text as given, never deleted;

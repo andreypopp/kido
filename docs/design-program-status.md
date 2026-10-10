@@ -16,7 +16,7 @@ A pane is classified by:
 ### OSC 7501 records
 
 OSC 7501 payload is handled by tmux into `#{pane_program_status}` per pane
-variable. Every topology read includes it in `Pane.format` and parses it
+variable. Every topology read includes it in `Tmux_pane.format` and parses it
 once into the pane, for control-mode and one-shot views alike.
 `%program-status` notifications wake the tick without consuming their payload.
 
@@ -41,9 +41,13 @@ empty), its state as the indicator, its `msg` as the caption. They are
 for display only and take no cursor or clicks. Claude Code reports each
 of its subagents this way, titled by the subagent's description.
 
-A pane shows its **representative** record: the most urgent of blocked,
-error, working, done, idle. Visiting a pane marks its done and error
-records seen by pane serial, and a seen record is skipped until a newer serial.
+The sidebar chooses a pane's **representative** record: the most urgent
+of blocked, error, working, done, idle (`Sidebar.representative`). Visiting a
+pane marks its done and error records seen by pane serial, and a seen
+record is skipped until a newer serial.
+`Tmux.Program_status` owns the record types, parsing and encoding, root and
+app lookup, and progress extraction; priority and acknowledgement belong to
+the sidebar.
 
 ### OSC 133
 

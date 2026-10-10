@@ -8,21 +8,21 @@ let grace () =
 type close = Window of Tmux.Window.id | Pane of { window : Tmux.Window.id; pane : Tmux.Pane.id }
 
 let release ?socket = function
-  | Window w -> Tmux.Exec.kill_window ?socket w
-  | Pane { pane; _ } -> Tmux.Exec.kill_pane ?socket pane
+  | Window w -> Tmux.Exec.run ?socket [ "kill-window"; "-t"; Tmux.Window.to_string w ]
+  | Pane { pane; _ } -> Tmux.Exec.run ?socket [ "kill-pane"; "-t"; P.to_string pane ]
 
 let close_of panes window pane =
-  if not (P.last_pane panes window) then Some (Pane { window; pane })
-  else if P.last_window panes window then None
+  if not (Tmux_pane.last_pane panes window) then Some (Pane { window; pane })
+  else if Tmux_pane.last_window panes window then None
   else Some (Window window)
 
 let decide panes window_id =
-  if P.window_focused panes window_id then
+  if Tmux_pane.window_focused panes window_id then
     Error
       (Printf.sprintf "%s is a client's current window; leaving it for the user to read"
          (Tmux.Window.to_string window_id))
   else
-    match P.run_pane panes window_id with
+    match Tmux_pane.run_pane panes window_id with
     | None ->
         Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.Window.to_string window_id))
     | Some { dead_at = None; _ } ->
@@ -117,7 +117,7 @@ let send ~dir e =
     | Some ({ agent = Pi; _ } as s) ->
         let+ panes =
           if State.addressable_name s then Ok []
-          else Result.map_err (fun m -> Msg.Failed m) (Tmux.Exec.list_panes ())
+          else Result.map_err (fun m -> Msg.Failed m) (Tmux_pane.list_panes ())
         in
         { e with meta = { e.meta with name = State.display_name panes s } }
     | _ -> Ok e
@@ -137,12 +137,13 @@ let record_ending ~dir (meta : Subrun.meta) outcome =
     Some { meta; outcome; detail }
 
 let sweep ?socket ~dir ~grace panes sessions ~now =
-  let mark ?(text = "ended without its wrapper reporting") ((closing, endings) as acc) (p : P.t) =
+  let mark ?(text = "ended without its wrapper reporting") ((closing, endings) as acc)
+      (p : Tmux_pane.t) =
     let window = p.window_id in
     let closes = function Window w | Pane { window = w; _ } -> Tmux.Window.equal w window in
-    match P.run_pane panes window with
+    match Tmux_pane.run_pane panes window with
     | Some { run = Some run; _ }
-      when not (P.window_focused panes window || List.exists closes closing) -> (
+      when not (Tmux_pane.window_focused panes window || List.exists closes closing) -> (
         match (close_of panes window p.pane_id, Subrun.parse_id run) with
         | Some close, Ok run_id ->
             let ending =
@@ -164,13 +165,13 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
   in
   let acc =
     List.fold_left
-      (fun acc (p : P.t) ->
+      (fun acc (p : Tmux_pane.t) ->
         match p with
         | { run = Some _; dead_at = Some d; _ }
           when Float.(now - d >= grace)
                && Option.exists
-                    (fun (r : P.t) -> P.equal r.pane_id p.pane_id)
-                    (P.run_pane panes p.window_id) ->
+                    (fun (r : Tmux_pane.t) -> P.equal r.pane_id p.pane_id)
+                    (Tmux_pane.run_pane panes p.window_id) ->
             mark acc p
         | _ -> acc)
       ([], []) panes
@@ -180,12 +181,12 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
       (fun acc (_, (s : State.session)) ->
         match s.parent with
         | Some parent when not (List.mem_assoc ~eq:String.equal parent.session sessions) ->
-            Option.map_or ~default:acc (mark acc) (Option.flat_map (P.find panes) s.pane)
+            Option.map_or ~default:acc (mark acc) (Option.flat_map (Tmux_pane.find panes) s.pane)
         | _ -> acc)
       acc sessions
   in
   List.fold_left
-    (fun acc (p : P.t) ->
+    (fun acc (p : Tmux_pane.t) ->
       match
         Option.flat_map
           (fun run ->
@@ -210,9 +211,9 @@ let%test_module "Tests" =
     let now = 1_700_000_000.
     let temp () = Filename.temp_dir "kido-reap" ""
 
-    let pane ?run ?dead ?(watched = false) pane_id window_id : Tmux.Pane.t =
+    let pane ?run ?dead ?(watched = false) pane_id window_id : Tmux_pane.t =
       {
-        (Tmux.Fixture.pane ~session:"s" ~created:0. ~window:window_id ~active:watched
+        (Test_fixture.pane ~session:"s" ~created:0. ~window:window_id ~active:watched
            ~attached:watched ?run pane_id)
         with
         dead_at = Option.map (fun secs -> now -. Float.of_int secs) dead;

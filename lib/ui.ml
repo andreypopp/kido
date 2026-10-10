@@ -520,7 +520,7 @@ let%test_module "Tests" =
 
     let pane_label (m : Sidebar.model) p =
       let p =
-        match Tmux.Pane.find m.snap.panes p.Tmux.Pane.pane_id with
+        match Tmux_pane.find m.snap.panes p.Tmux_pane.pane_id with
         | Some current -> { p with program_status = current.program_status }
         | None -> p
       in
@@ -542,7 +542,7 @@ let%test_module "Tests" =
       in
       List.iter (fun r -> print_endline (row_text ~now:m.at r)) (rendered_lines { m with snap })
 
-    let label m (p : Tmux.Pane.t) =
+    let label m (p : Tmux_pane.t) =
       row_text ~now:m.Sidebar.at (Row ("", p.session_id, pane_label m p))
 
     let ssh_tick clock m p =

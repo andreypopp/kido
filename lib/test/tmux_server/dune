@@ -4,4 +4,4 @@
   (:standard -open Containers))
  (enabled_if
   (<> %{env:KIDO_TMUX=} ""))
- (libraries tmux containers unix))
+ (libraries kido tmux containers unix))

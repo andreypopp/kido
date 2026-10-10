@@ -42,11 +42,13 @@ let argv path mode command =
   head @ Option.map_or ~default:[] (fun c -> [ "-c"; c ]) command
 
 let run () =
+  let global_option name =
+    Result.get_or ~default:"" (Tmux.Exec.exec [ "show-options"; "-gqv"; name ])
+  in
   let path, command =
     command ~path:(Tmux.Exec.getenv "PATH")
-      ~login:
-        (resolve_login_shell [ Tmux.Exec.global_option "default-shell"; Tmux.Exec.getenv "SHELL" ])
-      (match Tmux.Exec.global_option user_command_option with "" -> None | c -> Some c)
+      ~login:(resolve_login_shell [ global_option "default-shell"; Tmux.Exec.getenv "SHELL" ])
+      (match global_option user_command_option with "" -> None | c -> Some c)
   in
   let zdotdir = Sys.getenv_opt "ZDOTDIR" in
   let mode =

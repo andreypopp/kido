@@ -13,7 +13,7 @@ type session = {
   agent : agent;
   name : string;
   pane : Tmux.Pane.id option;
-      [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
+      [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]
   pid : int;
   ts : Timestamp.t;
   inbox : string; [@default ""]
@@ -29,8 +29,8 @@ let display_name panes (s : session) =
   | Pi when not (String.is_empty s.name) -> s.name
   | _ ->
       Option.map_or ~default:""
-        (fun (p : Tmux.Pane.t) -> p.title)
-        (Option.flat_map (Tmux.Pane.find panes) s.pane)
+        (fun (p : Tmux_pane.t) -> p.title)
+        (Option.flat_map (Tmux_pane.find panes) s.pane)
 
 let addressable_name (s : session) =
   match s.agent with Pi -> not (String.is_empty s.name) | _ -> true
@@ -139,7 +139,7 @@ type pane_kind =
   | Pi_agent of { id : string; session : session }
   | Ssh of { user : string; host : string; pane : ssh_kind }
 
-let pane_kind ~states (p : Tmux.Pane.t) =
+let pane_kind ~states (p : Tmux_pane.t) =
   let app =
     Tmux.Program_status.root p.program_status
     |> Option.flat_map (fun (r : Tmux.Program_status.record) -> r.app)
@@ -159,7 +159,7 @@ let pane_kind ~states (p : Tmux.Pane.t) =
   | _, _, Some "claude-code" -> Some_agent { name = "claude-code" }
   | _ -> Terminal
 
-let pane_title (p : Tmux.Pane.t) = function
+let pane_title (p : Tmux_pane.t) = function
   | Ssh { pane = Remote_terminal; _ } -> None
   | Ssh { pane = Remote_agent { name }; _ } ->
       Some (if String.is_empty p.title then name else p.title)
@@ -218,7 +218,7 @@ let record_pause ~dir at =
 let%test_module "Tests" =
   (module struct
     open Test_support
-    open Tmux.Fixture
+    open Tmux_pane_fixture
 
     let session ?(agent = Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_700_000_000.)
         ?(inbox = "") ?parent ?(depth = 0) () : session =

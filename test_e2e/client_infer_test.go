@@ -53,7 +53,7 @@ func (p *picker) waitFailure() {
 
 // realClientCount excludes kido's own control connections
 // (side-status-command dials one per real client), same filter as
-// Tmux.Exec.resolve_client.
+// Tmux_pane.resolve_client.
 func (h *harness) realClientCount() int {
 	h.t.Helper()
 	out := h.in("list-clients", "-F", "#{client_control_mode}")

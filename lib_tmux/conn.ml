@@ -207,10 +207,7 @@ let follow t session =
       | Error _ -> ())
   | Live _ | Down _ | Closed -> ()
 
-let list_panes t =
-  match run t ~command:("list-panes -a -F " ^ Filename.quote Pane.format) with
-  | Ok lines -> Ok (Pane.parse lines)
-  | Error _ -> Exec.list_panes ?socket:t.socket ()
+let socket t = t.socket
 
 let client_state t =
   match run t ~command:("list-clients -F " ^ Filename.quote Exec.client_format) with

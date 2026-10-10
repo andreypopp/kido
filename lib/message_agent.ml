@@ -60,7 +60,7 @@ let reaches states panes ~self id =
   | Some (caller, _) when String.equal caller id -> Ok true
   | Some (caller, _) ->
       Result.map
-        (fun (p : Tmux.Pane.t) ->
+        (fun (p : Tmux_pane.t) ->
           let parent_of =
             List.filter_map
               (fun e -> Option.map (fun p -> (fst e, p)) (List_runs.parent_edge e))
@@ -122,8 +122,8 @@ let deliver ~states ~panes ~self spec (target : State.session) text =
     in
     let run =
       Option.flat_map
-        (fun (p : Tmux.Pane.t) -> p.run)
-        (Option.flat_map (Tmux.Pane.find panes) target.pane)
+        (fun (p : Tmux_pane.t) -> p.run)
+        (Option.flat_map (Tmux_pane.find panes) target.pane)
     in
     if is_message then
       Result.map_err
@@ -144,7 +144,7 @@ let send ~dir ~self recipient spec text =
   else
     let live = State.load_live ~dir in
     let states = State.by_pane live in
-    let* panes = not_sent (Tmux.Exec.list_panes ()) in
+    let* panes = not_sent (Tmux_pane.list_panes ()) in
     let alternative = "use kido tool message_agent instead, which is one-way and needs no reply" in
     let* () =
       match (spec.kind, Option.flat_map (fun self -> Tmux.Pane.Map.find_opt self states) self) with

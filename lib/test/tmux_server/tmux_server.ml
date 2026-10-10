@@ -30,10 +30,10 @@ let probe () =
   show (Conn.run conn ~command:("display-message -p " ^ Filename.quote "it's #{session_name}"));
   show (Conn.run conn ~command:"bogus");
   List.iter
-    (fun (p : Pane.t) ->
+    (fun (p : Kido.Tmux_pane.t) ->
       Printf.printf "pane %s %s %s\n" p.session_name (Window.to_string p.window_id)
         (Pane.to_string p.pane_id))
-    (Result.get_exn (Conn.list_panes conn));
+    (Result.get_exn (Kido.Tmux_pane.list_panes ~conn ()));
   Printf.printf "a fresh connection notifies: %b\n"
     Float.(elapsed (fun () -> Conn.await_notifications conn ~timeout:5.) < 1.);
   let quiet = elapsed (fun () -> Conn.await_notifications conn ~timeout:0.3) in
@@ -59,13 +59,13 @@ let probe () =
   show (Conn.run conn ~command:"display-message -p stuck");
   show (Conn.run conn ~command:"display-message -p gap");
   Printf.printf "panes through the fallback: %d\n"
-    (List.length (Result.get_exn (Conn.list_panes conn)));
+    (List.length (Result.get_exn (Kido.Tmux_pane.list_panes ~conn ())));
   Unix.sleepf 0.25;
   show (Conn.run conn ~command:"display-message -p back");
   Printf.printf "control clients after the redial: [%s]\n" (String.concat "; " (control_clients ()));
   ignore (tmux [ "kill-server" ]);
   show (Conn.run conn ~command:"display-message -p gone");
-  (match Conn.list_panes conn with
+  (match Kido.Tmux_pane.list_panes ~conn () with
   | Ok _ -> print_endline "fallback without a server: panes"
   | Error _ -> print_endline "fallback without a server: failed");
   Conn.close conn;

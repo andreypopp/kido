@@ -1,4 +1,4 @@
-include Tmux.Fixture
+include Tmux_pane_fixture
 include Test_support
 
 let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_700_000_000.)

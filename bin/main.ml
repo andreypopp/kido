@@ -15,7 +15,7 @@ let stdin () =
   let s = In_channel.input_all stdin in
   Option.get_or ~default:s (String.chop_suffix ~suf:"\n" s)
 
-let panes = lazy (Tmux.Exec.list_panes ())
+let panes = lazy (Tmux_pane.list_panes ())
 
 let cmd ?(group = "") name doc term =
   Cmd.v (Cmd.info name ~doc) Term.(const (fun f -> Cli.run (group ^ name) f) $ term)
@@ -249,7 +249,7 @@ let get_asks =
          |> List.filter (fun (a : Ask.t) ->
              Option.map_or ~default:true (String.equal a.session) session)
        in
-       let panes = if List.is_empty live then [] else ok (Tmux.Exec.list_panes ()) in
+       let panes = if List.is_empty live then [] else ok (Tmux_pane.list_panes ()) in
        print_endline (Yojson.Safe.to_string (`List (List.map (Ask.to_json ~panes ~live) asks)));
        0
 
@@ -266,7 +266,7 @@ let get_agent =
      fun () ->
        let dir = state_dir () in
        if context then begin
-         let panes = ok (Tmux.Exec.list_panes ()) in
+         let panes = ok (Tmux_pane.list_panes ()) in
          let agents =
            ok
              (List_runs.agents ~dir ~threshold:(State.stall_threshold ())
@@ -319,7 +319,7 @@ let snapshot =
   @@ let+ () = Term.const () in
      fun () ->
        let states = State.by_pane (State.load_live ~dir:(state_dir ())) in
-       let panes = ok (Tmux.Exec.list_panes ()) in
+       let panes = ok (Tmux_pane.list_panes ()) in
        let q = Filename.quote in
        let tm = Unix.localtime (Unix.time ()) in
        Printf.printf
@@ -332,7 +332,7 @@ let snapshot =
              Printf.printf "$T select-layout -t \"$p0\" %s\n" (q w.layout)
          | _ -> ()
        in
-       let step prev (p : Tmux.Pane.t) =
+       let step prev (p : Tmux_pane.t) =
          let w =
            match prev with
            | Some w when String.equal w.session p.session_name && w.index = p.window_index ->
@@ -409,7 +409,7 @@ let get_window =
             (`Assoc
                [
                  ("id", Tmux.Window.id_to_yojson window);
-                 ("focused", `Bool (Tmux.Pane.window_focused (ok (Lazy.force panes)) window));
+                 ("focused", `Bool (Tmux_pane.window_focused (ok (Lazy.force panes)) window));
                ]));
        0
 
@@ -618,7 +618,7 @@ let ssh =
                | _ -> None)
          in
          (match (pane, destination) with
-         | Some pane, Some destination -> ignore (Tmux.Exec.mark_ssh pane destination)
+         | Some pane, Some destination -> ignore (Tmux_pane.mark_ssh pane destination)
          | _ -> ());
          Unix.execve ssh (Array.of_list argv) (Unix.environment ()))
 
@@ -657,7 +657,7 @@ let reap =
          if not (List.is_empty args) then failwith "usage: kido reap";
          let dir = state_dir () in
          Reap.collect ~dir ~grace:(Reap.grace ())
-           (ok (Tmux.Exec.list_panes ()))
+           (ok (Tmux_pane.list_panes ()))
            (State.load_live ~dir) ~now:(Unix.gettimeofday ());
          0)
 
@@ -678,7 +678,7 @@ let close_run =
            | None -> Printf.ksprintf failwith "%S is not a window id (@N)" window_id
          in
          ignore (state_dir ());
-         (match Reap.decide (ok (Tmux.Exec.list_panes ())) window_id with
+         (match Reap.decide (ok (Tmux_pane.list_panes ())) window_id with
          | Ok c -> ok (Reap.release c)
          | Error refusal -> Cli.error "close-run" refusal);
          0)
@@ -719,7 +719,7 @@ let sidebar =
             | Some c when not (String.is_empty c) -> Some c
             | _ when not (String.is_empty side) -> Some side
             | _ ->
-                Tmux.Exec.resolve_client
+                Tmux_pane.resolve_client
                   ~pane:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE"))
                   ~tmux_env
           in

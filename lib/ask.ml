@@ -57,12 +57,12 @@ let caller ~dir ~self ~session =
       | Some s when Option.equal Tmux.Pane.equal s.pane self -> Ok (Some (session, s))
       | _ -> Error "no calling agent session has reported this pane"
   in
-  let* panes = if Option.is_none self then Ok [] else Tmux.Exec.list_panes () in
-  let pane = Option.flat_map (Tmux.Pane.find panes) self in
+  let* panes = if Option.is_none self then Ok [] else Tmux_pane.list_panes () in
+  let pane = Option.flat_map (Tmux_pane.find panes) self in
   let id =
     match caller with
     | Some (id, _) -> Some id
-    | None -> Option.flat_map (fun (p : Tmux.Pane.t) -> p.run) pane
+    | None -> Option.flat_map (fun (p : Tmux_pane.t) -> p.run) pane
   in
   let run =
     Option.flat_map

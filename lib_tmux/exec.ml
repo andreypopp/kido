@@ -106,15 +106,6 @@ let exec ?socket ?(stdin = "") args =
 
 let run ?socket args = Result.map ignore (exec ?socket args)
 let lines out = String.split_on_char '\n' out
-let global_option name = Result.get_or ~default:"" (exec [ "show-options"; "-gqv"; name ])
-
-let list_panes ?socket () =
-  Result.map
-    (fun out -> Pane.parse (lines out))
-    (exec ?socket [ "list-panes"; "-a"; "-F"; Pane.format ])
-
-let capture_screen ?socket pane =
-  exec ?socket [ "capture-pane"; "-p"; "-t"; Pane.to_string pane; "-S"; "-1000" ]
 
 let current_client () =
   Result.get_or ~default:"" (exec [ "display-message"; "-p"; "#{client_name}" ])
@@ -122,9 +113,10 @@ let current_client () =
 type client_state = { session : string; session_id : Session.id; focused : bool }
 
 let side_focus_flag = "side-status-focus"
+let client_sep = "\x1f"
 
 let client_format =
-  String.concat Pane.sep
+  String.concat client_sep
     [
       "#{client_name}";
       "#{client_session}";
@@ -134,7 +126,7 @@ let client_format =
     ]
 
 let client_fields line =
-  match String.split ~by:Pane.sep line with
+  match String.split ~by:client_sep line with
   | name :: session :: session_id :: flags :: control :: _ ->
       Option.map
         (fun session_id -> (name, session, session_id, flags, control))
@@ -154,162 +146,6 @@ let client_state ?socket client =
   Option.flat_map
     (fun out -> parse_client_state (lines out) client)
     (Result.to_opt (exec ?socket [ "list-clients"; "-F"; client_format ]))
-
-let real_clients lines =
-  List.filter_map
-    (fun line ->
-      match client_fields line with
-      | Some (name, _, _, _, control) when not (String.is_empty name || String.equal control "1") ->
-          Some name
-      | _ -> None)
-    lines
-
-let resolve_client ~pane ~tmux_env =
-  let live =
-    match pane with
-    | None -> None
-    | Some pane -> (
-        match exec [ "display-message"; "-p"; "-t"; Pane.to_string pane; "#{session_id}" ] with
-        | Ok id -> Session.of_string id
-        | _ -> None)
-  in
-  let target =
-    match (live, String.split_on_char ',' tmux_env) with
-    | Some id, _ -> Some id
-    | None, _ :: _ :: id :: _ when not (String.is_empty id) -> Session.of_string ("$" ^ id)
-    | None, _ -> None
-  in
-  match
-    Option.map
-      (fun t -> exec [ "list-clients"; "-t"; Session.to_string t; "-F"; client_format ])
-      target
-  with
-  | Some (Ok out) -> ( match real_clients (lines out) with [ c ] -> Some c | _ -> None)
-  | _ -> None
-
-let step ~next i n = (i + (if next then 1 else -1) + n) mod n
-
-let switch_session ~socket ~client ~next =
-  Result.flat_map
-    (fun panes ->
-      let sessions = Array.of_list (Pane.order_sessions panes) in
-      if Array.length sessions < 2 then Ok None
-      else
-        let current = client_state ?socket client in
-        match
-          Array.find_idx
-            (fun (s : Pane.session) ->
-              Option.exists (fun c -> String.equal c.session s.name) current)
-            sessions
-        with
-        | Some (i, _) -> (
-            let target = sessions.(step ~next i (Array.length sessions)) in
-            let active =
-              List.find_opt (fun (p : Pane.t) -> p.active) (List.concat target.windows)
-            in
-            match active with
-            | Some p ->
-                Result.map
-                  (fun () -> Some (target.id, p.window_id))
-                  (run ?socket [ "switch-client"; "-c"; client; "-t"; Session.to_string target.id ])
-            | None -> Ok None)
-        | None -> Ok None)
-    (list_panes ?socket ())
-
-let window_target ~next ~session ~window windows =
-  let first ((panes : Pane.t list), _) = List.hd panes in
-  let parent ((_, anchor) as w) =
-    Option.flat_map
-      (fun anchor ->
-        List.find_opt
-          (fun candidate ->
-            Session.equal (first candidate).session_id (first w).session_id
-            && List.exists (fun (p : Pane.t) -> Pane.equal p.pane_id anchor) (fst candidate))
-          windows)
-      anchor
-  in
-  match
-    List.find_opt
-      (fun w ->
-        Session.equal (first w).session_id session && Window.equal (first w).window_id window)
-      windows
-  with
-  | None -> None
-  | Some current -> (
-      let rec root w = match parent w with Some p -> root p | None -> w in
-      let adjacent =
-        Option.flat_map
-          (fun p ->
-            let siblings =
-              List.concat_map
-                (fun (pane : Pane.t) ->
-                  List.filter
-                    (fun ((_, anchor) as w) ->
-                      Session.equal (first w).session_id session
-                      && Option.equal Pane.equal anchor (Some pane.pane_id))
-                    windows)
-                (fst p)
-              |> Array.of_list
-            in
-            Option.flat_map
-              (fun (i, _) ->
-                let j = i + if next then 1 else -1 in
-                if j >= 0 && j < Array.length siblings then Some (first siblings.(j))
-                else if next then None
-                else Some (first p))
-              (Array.find_idx (fun w -> Window.equal (first w).window_id window) siblings))
-          (parent current)
-      in
-      match adjacent with
-      | Some _ -> adjacent
-      | None ->
-          let roots = List.filter (fun w -> Option.is_none (parent w)) windows |> Array.of_list in
-          let active = first (root current) in
-          let n = Array.length roots in
-          let rec find j k =
-            if k = 0 then None
-            else if List.for_all (fun (p : Pane.t) -> Option.is_none p.run) (fst roots.(j)) then
-              Some (first roots.(j))
-            else find (step ~next j n) (k - 1)
-          in
-          Option.flat_map
-            (fun (i, _) -> find (step ~next i n) n)
-            (Array.find_idx
-               (fun w ->
-                 Session.equal (first w).session_id active.session_id
-                 && Window.equal (first w).window_id active.window_id)
-               roots))
-
-let switch_window ?socket ~client ~next windows =
-  let active =
-    Option.flat_map
-      (fun c ->
-        List.find_opt
-          (fun (p : Pane.t) -> String.equal p.session_name c.session && p.active)
-          (List.concat_map fst windows))
-      (client_state ?socket client)
-  in
-  match
-    Option.flat_map
-      (fun (a : Pane.t) -> window_target ~next ~session:a.session_id ~window:a.window_id windows)
-      active
-  with
-  | Some target ->
-      Result.map
-        (fun () -> Some (target.session_id, target.window_id))
-        (run ?socket
-           [
-             "switch-client";
-             "-c";
-             client;
-             "-t";
-             Session.to_string target.session_id;
-             ";";
-             "select-window";
-             "-t";
-             Window.to_string target.window_id;
-           ])
-  | None -> Ok None
 
 let release_args client = [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
 
@@ -334,22 +170,6 @@ let jump ?socket ~client ~session ~window pane =
     @ release_args client)
 
 let release_side_focus ?socket client = run ?socket (release_args client)
-
-let send_prompt pane text =
-  let buf = Printf.sprintf "kido-prompt-%d" (Unix.getpid ()) in
-  let open Result.Infix in
-  let* _ = exec ~stdin:text [ "load-buffer"; "-b"; buf; "-" ] in
-  let* () =
-    Result.map_err
-      (fun e ->
-        ignore (exec [ "delete-buffer"; "-b"; buf ]);
-        e)
-      (run [ "paste-buffer"; "-b"; buf; "-d"; "-t"; Pane.to_string pane; "-p" ])
-  in
-  (* A paste-sensitive reader, Claude Code included, takes an Enter sent with
-     the paste as part of the pasted text. *)
-  Unix.sleepf 0.1;
-  run [ "send-keys"; "-t"; Pane.to_string pane; "Enter" ]
 
 (* On a closed window the fork's display-message exits 0 and prints an empty
    line, so only the echoed id answers. *)
@@ -401,38 +221,6 @@ let new_window ?socket ?(remain_on_exit = true) ~session ~name ~cwd ~env command
     | Error e when window_exists ?socket w.window_id -> Error e
     | Ok _ | Error _ -> Ok w
 
-let new_shell ~socket target =
-  let open Result.Infix in
-  let from, command, missing =
-    match target with
-    | `Window window ->
-        let id = Window.to_string window in
-        (id, [ "new-window"; "-a"; "-t"; id ], "no such window")
-    | `Session session -> (Session.to_string session ^ ":", [ "new-session" ], "no such session")
-  in
-  let* cwd = exec ?socket [ "display-message"; "-p"; "-t"; from; "#{pane_current_path}" ] in
-  if String.is_empty cwd then Error missing
-  else
-    let* out =
-      exec ?socket
-        (command @ [ "-d"; "-P"; "-F"; "#{session_id}:#{window_id}:#{pane_id}"; "-c"; cwd ])
-    in
-    match String.split ~by:":" out with
-    | [ session; window; pane ] -> (
-        match (Session.of_string session, Window.of_string window, Pane.of_string pane) with
-        | Some session, Some window, Some pane -> Ok (session, window, pane)
-        | _ -> Error (Printf.sprintf "created shell but could not read its location: %S" out))
-    | _ -> Error (Printf.sprintf "created shell but could not read its location: %S" out)
-
-let kill_window ?socket window_id = run ?socket [ "kill-window"; "-t"; Window.to_string window_id ]
-let kill_pane ?socket pane_id = run ?socket [ "kill-pane"; "-t"; Pane.to_string pane_id ]
-
-let mark_ssh pane destination =
-  run [ "set-option"; "-p"; "-t"; Pane.to_string pane; "@kido_ssh"; destination ]
-
-let mark_run pane_id run_id =
-  run [ "set-option"; "-p"; "-t"; Pane.to_string pane_id; Pane.run_option; run_id ]
-
 let%test_module "Tests" =
   (module struct
     let%expect_test "invoked_path: a bare name is looked up on PATH and left unresolved" =
@@ -461,8 +249,8 @@ let%test_module "Tests" =
     let%expect_test "client state" =
       let clients =
         [
-          String.concat Pane.sep [ "/dev/ttys001"; "other"; "$1"; "attached,UTF-8"; "0" ];
-          String.concat Pane.sep
+          String.concat client_sep [ "/dev/ttys001"; "other"; "$1"; "attached,UTF-8"; "0" ];
+          String.concat client_sep
             [ "/dev/ttys012"; "work"; "$0"; "attached,side-status-focus,UTF-8"; "0" ];
           "junk";
         ]
@@ -481,102 +269,5 @@ let%test_module "Tests" =
     /dev/ttys012: work $0 focused=true
     /dev/ttys001: other $1 focused=false
     /dev/ttys999: -
-    |}]
-
-    let%expect_test "window targets: siblings, roots, runs and session occurrences" =
-      let p window id = Fixture.pane ~window id in
-      let root = p "@1" "%1" and later_pane = p "@1" "%2" in
-      let child = Fixture.pane ~window:"@2" ~run:"child" "%3" in
-      let sibling = Fixture.pane ~window:"@3" ~run:"sibling" "%4" in
-      let grandchild = Fixture.pane ~window:"@4" ~run:"grandchild" "%5" in
-      let earlier = p "@5" "%6" in
-      let other = Fixture.pane ~session:"b" ~session_id:"$1" ~window:"@6" "%7" in
-      let linked = { root with session_name = "b"; session_id = other.session_id } in
-      let windows =
-        [
-          ([ root; later_pane ], None);
-          ([ child ], Some later_pane.pane_id);
-          ([ grandchild ], Some child.pane_id);
-          ([ Fixture.pane ~window:"@9" ~run:"grand-sibling" "%10" ], Some child.pane_id);
-          ([ sibling ], Some later_pane.pane_id);
-          ([ earlier ], Some root.pane_id);
-          ([ p "@7" "%8" ], None);
-          ([ Fixture.pane ~window:"@8" ~run:"orphan" "%9" ], None);
-          ([ linked ], None);
-          ([ other ], None);
-        ]
-      in
-      List.iter
-        (fun (session, window, next) ->
-          let target =
-            window_target ~next
-              ~session:(Option.get_exn_or "session" (Session.of_string session))
-              ~window:(Option.get_exn_or "window" (Window.of_string window))
-              windows
-          in
-          Printf.printf "%s:%s %s -> %s\n" session window
-            (if next then "next" else "prev")
-            (Option.map_or ~default:"null"
-               (fun (p : Pane.t) ->
-                 Session.to_string p.session_id ^ ":" ^ Window.to_string p.window_id)
-               target))
-        [
-          ("$0", "@1", true);
-          ("$0", "@5", true);
-          ("$0", "@5", false);
-          ("$0", "@2", false);
-          ("$0", "@2", true);
-          ("$0", "@3", true);
-          ("$0", "@4", false);
-          ("$0", "@4", true);
-          ("$0", "@9", false);
-          ("$0", "@9", true);
-          ("$0", "@7", true);
-          ("$1", "@1", false);
-          ("$1", "@6", true);
-          ("$0", "@1", false);
-        ];
-      List.iter
-        (fun windows ->
-          List.iter
-            (fun next ->
-              print_endline
-                (Option.map_or ~default:"null"
-                   (fun (p : Pane.t) -> Window.to_string p.window_id)
-                   (window_target ~next ~session:root.session_id ~window:root.window_id windows)))
-            [ true; false ])
-        [
-          [];
-          [ ([ root ], None) ];
-          [ ([ { root with run = Some "only-run" } ], None) ];
-          [ ([ root; { later_pane with run = Some "split-run" } ], None) ];
-          [ ([ root ], Pane.of_string "%999") ];
-        ];
-      [%expect
-        {|
-    $0:@1 next -> $0:@7
-    $0:@5 next -> $0:@2
-    $0:@5 prev -> $0:@1
-    $0:@2 prev -> $0:@5
-    $0:@2 next -> $0:@3
-    $0:@3 next -> $0:@7
-    $0:@4 prev -> $0:@2
-    $0:@4 next -> $0:@9
-    $0:@9 prev -> $0:@4
-    $0:@9 next -> $0:@7
-    $0:@7 next -> $1:@1
-    $1:@1 prev -> $0:@7
-    $1:@6 next -> $0:@1
-    $0:@1 prev -> $1:@6
-    null
-    null
-    @1
-    @1
-    null
-    null
-    null
-    null
-    @1
-    @1
     |}]
   end)

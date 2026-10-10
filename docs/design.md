@@ -927,7 +927,7 @@ the outcome of a child that has not written one yet.
 window's dead pane before closing it destroys that screen for good, so it is
 also where a crash gets its one chance at a diagnosis: for every run pane the
 sweep is about to close, it saves that pane's visible screen plus a bounded
-amount of scrollback (`Tmux.Exec.capture_screen`) to that run's own directory,
+amount of scrollback (`capture-pane -S -1000`) to that run's own directory,
 before the caller actually closes the window - `Subrun.save_screen`
 writes `<run-dir>/screen` temp-then-rename, the way `State.record` writes a
 state file, and last writer wins. This is deliberately not `record_outcome`'s
@@ -1015,7 +1015,7 @@ closes the window of the very child it was waiting for
 **A window a client is looking at is not reaped out from under them.**
 Before shutting down, the timer asks `kido get-window <id>`, which prints
 `{"id": ID, "focused": bool}` (false for a missing window) - the
-same `Tmux.Pane.window_focused` test `kido close-run` and the sweep already
+same `Tmux_pane.window_focused` test `kido close-run` and the sweep already
 share - and, if focused, simply re-arms rather than giving up, as
 the sweep re-checks on its next pass; the window is collected
 once the user looks away.
@@ -1593,7 +1593,7 @@ that window's second pane, and not as a row the group glyph swallowed.
 A window's rows go oldest pane to newest, by the number in the pane id,
 which tmux allocates monotonically; list-panes order is layout
 position, and `split-window -b` puts a new pane above an older one.
-The sort happens once, in `Tmux.Pane.order_sessions`, so every reader of a
+The sort happens once, in `Tmux_pane.order_sessions`, so every reader of a
 window agrees on row 0.
 
 The price is that a window hoisted under a parent's pane is not in tmux's

@@ -10,7 +10,7 @@ type send_error = No_text | Not_sent of string
 
 val reaches :
   (string * State.session) list ->
-  Tmux.Pane.t list ->
+  Tmux_pane.t list ->
   self:Tmux.Pane.id option ->
   string ->
   (bool, string) result
@@ -19,14 +19,14 @@ val reaches :
 
 val resolve :
   live:(string * State.session) list ->
-  panes:Tmux.Pane.t list ->
+  panes:Tmux_pane.t list ->
   self:Tmux.Pane.id option ->
   recipient ->
   (string * State.session, string) result
 
 val deliver :
   states:(string * State.session) Tmux.Pane.Map.t ->
-  panes:Tmux.Pane.t list ->
+  panes:Tmux_pane.t list ->
   self:Tmux.Pane.id option ->
   spec ->
   State.session ->
