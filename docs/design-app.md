@@ -372,8 +372,10 @@ fractional target, including nonzero ended packets. At most one apply is
 pending on the pane's serial scroll worker; it starts immediately and reads
 the latest output-adjusted target when it runs. Its main callback coalesces
 presentation, then applies a changed target.
-Ghostty schedules rendering;
-the app adds no display link, deferred packet, easing or momentum filter.
+Ghostty schedules rendering; a per-pane NSView CADisplayLink exists only while
+its renderer requests pacing and the view can receive ticks. Each main-thread
+tick only notifies the renderer's draw async; token presentation remains immediate.
+The app adds no deferred packet, easing or momentum filter.
 Ghostty's mouse-scroll-multiplier precision setting remains the user's speed
 override; precision 2 restores the previous speed. Discrete wheel notches
 are unchanged. An active selection gesture uses integral wheel steps.
@@ -643,6 +645,14 @@ If output was dropped while a grid was unconfirmed, incremental feed stays
 suspended until a current reset-and-replay commits; a provisional parse
 cannot clear a newer dirty epoch. Renderer
 callbacks publish asynchronously to main; runtime wakeups coalesce main ticks.
+External pacing is selected before renderer initialization, so app surfaces never
+allocate a CVDisplayLink, including with vsync disabled. Renderer demand and its
+scheduled notification share one mutex; notifications enqueue strongly retained
+driver jobs on main without reentry. Main drains latest demand and publishes tick
+availability without a mailbox push. Unavailable views render event-driven, without
+a fallback timer. Disposal terminally closes pacing and invalidates its link before
+parser-quiescent retirement; the driver context survives surface free and renderer
+join. Queued jobs retain only the closed driver, never a pane or live surface.
 Ghostty requests IO/process termination, marks search stopping and joins it,
 then joins IO while the renderer still drains. Only after both producers have
 stopped does it stop and join the renderer and release shared resources.
