@@ -181,7 +181,7 @@ func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 
-	out := h.waitFileNonEmpty(outFile)
+	out := h.waitFileContains(outFile, "rc=")
 	if !strings.Contains(out, "maximum nesting") {
 		t.Errorf("kido tool spawn_subagent output = %q, want a refusal naming the depth ceiling", out)
 	}
