@@ -35,8 +35,6 @@ type snapshot = {
 }
 
 val empty : snapshot
-val shell_run_delay : float
-val shell_run_hold : float
 
 val lingering_subagents :
   dir:string -> Tmux_pane.t list -> lingering String_map.t -> lingering String_map.t
@@ -92,13 +90,7 @@ type model = {
 }
 
 val make : now:(unit -> float) -> options -> model
-val ssh_remote : model -> Tmux_pane.t -> bool
-val classify : model -> model
-val track : model -> model
 val attention : model -> Tmux.pane_id -> bool
-val shell_indicator : model -> phase -> indicator option
-val pane_label : model -> Tmux_pane.t * State.pane_kind -> row
-val rebuild : model -> model
 val poll : ?wait:float -> opts:options -> Tmux.Client.t -> snapshot -> snapshot
 val step : model -> snapshot -> model * bool
 

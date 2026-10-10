@@ -1091,6 +1091,277 @@ let%test_module "Tests" =
       in
       { m with started; at = !clock }
 
+    let ssh_tick clock m p =
+      track { m with at = !clock; snap = { empty with client = client "alpha"; panes = [ p ] } }
+
+    let agent_pane ?run w p title = pane ~window:w ~title ?run p
+
+    let test_pane_label (m : model) p =
+      let p =
+        match Tmux_pane.find m.snap.panes p.Tmux_pane.pane_id with
+        | Some current -> { p with program_status = current.program_status }
+        | None -> p
+      in
+      pane_label m (p, State.pane_kind ~states:m.snap.states p)
+
+    let row_data (row : row) =
+      let indicator =
+        match row.indicator with
+        | None -> "none"
+        | Some (Status Running) -> "running"
+        | Some (Status Idle) -> "idle"
+        | Some Done -> "done"
+        | Some Failed -> "failed"
+        | Some (Gone outcome) ->
+            "gone:" ^ Option.map_or ~default:"unknown" Subrun.string_of_result outcome
+        | Some _ -> "other"
+      in
+      let text spans = String.concat "" (List.map (fun (s : span) -> s.text) spans) in
+      let caption = match row.caption with Text spans -> text spans | Elapsed _ -> "elapsed" in
+      Printf.sprintf "%s title=%S caption=%S" indicator (text row.title) caption
+
+    let label m p = row_data (test_pane_label m p)
+
+    let%expect_test "run metadata survives activity text and clears its clock on death or outcome" =
+      let p = agent_pane ~run:"run" "@20" "%30" "helper" in
+      let m =
+        {
+          (model ()) with
+          snap =
+            {
+              empty with
+              states = states [ ("%30", ("run", session ~activity:"checking tests" "")) ];
+              panes = with_programs (states [ ("%30", ("run", session "")) ]) [ p ];
+              lingering =
+                String_map.singleton "run"
+                  {
+                    stamp = None;
+                    name = "helper";
+                    parent = "";
+                    outcome = None;
+                    kind = Agent;
+                    started = test_at;
+                  };
+            };
+        }
+      in
+      List.iter
+        (fun (p, outcome) ->
+          let lingering =
+            String_map.map (fun (l : lingering) -> { l with outcome }) m.snap.lingering
+          in
+          let row = test_pane_label { m with snap = { m.snap with lingering } } p in
+          match row.run with
+          | None -> print_endline "no run"
+          | Some run ->
+              Printf.printf "%s %s %s\n" (Subrun.string_of_kind run.kind)
+                (Option.map_or ~default:"-" (fun _ -> "started") run.started)
+                (row_data row))
+        [ (p, None); ({ p with dead_at = Some 1. }, None); (p, Some Completed) ];
+      [%expect
+        {|
+        agent started running title="helper" caption="checking tests"
+        agent - gone:unknown title="helper" caption=""
+        agent - gone:completed title="helper" caption="completed"
+        |}]
+
+    let%expect_test
+        "a local integrated shell shows its command line while running, never idle or interactive" =
+      let clock = ref test_at in
+      let m = ref (model ~clock ()) in
+      let tick p =
+        m := track { !m with at = !clock; snap = { empty with panes = [ p ] } };
+        print_endline (label !m p)
+      in
+      tick
+        (pane ~command:"make" ~prompt:(test_at -. 1.) ~start:test_at ~running:true
+           ~command_line:"make -j8 test" "%1");
+      clock := !clock +. 1.;
+      tick
+        (pane ~command:"zsh" ~prompt:(test_at +. 2.) ~start:test_at
+           ~exit:(0, test_at +. 1.)
+           ~command_line:"make -j8 test" "%1");
+      tick (pane ~command:"make" ~prompt:(test_at -. 1.) ~start:test_at ~running:true "%1");
+      tick
+        (pane ~command:"nvim" ~alternate:true ~prompt:(test_at -. 1.) ~start:test_at ~running:true
+           ~command_line:"nvim ui.go" "%1");
+      tick
+        (pane ~command:"zsh" ~prompt:test_at ~start:(test_at -. 1.)
+           ~exit:(0, test_at -. 1.)
+           ~command_line:"make -j8 test" "%1");
+      [%expect
+        {|
+        idle title="make -j8 test" caption=""
+        done title="zsh" caption=""
+        done title="make" caption=""
+        none title="nvim" caption=""
+        done title="zsh" caption=""
+        |}]
+
+    let%expect_test "an ssh runs until a remote prompt, then follows the remote shell" =
+      let clock = ref test_at in
+      let m = ref (model ~clock ()) in
+      let step d p =
+        clock := !clock +. d;
+        m := ssh_tick clock !m p;
+        Printf.printf "remote=%b %s: %s\n" (ssh_remote !m p)
+          ((function
+             | None -> "none"
+             | Some (Status Running) -> "running"
+             | Some Done -> "done"
+             | Some Failed -> "failed"
+             | Some _ -> "other")
+             (Option.flat_map (shell_indicator !m)
+                (Tmux.Pane_map.find_opt (Tmux.pane_id_of_string "%1") !m.phases)))
+          (label !m p)
+      in
+      step 0.
+        (ssh_pane ~command_line:("ssh " ^ "deploy@build-box") (test_at -. 1.) test_at true (-1));
+      step 1. (ssh_pane (test_at +. 1.) test_at false (-1));
+      step 1. (ssh_pane ~command_line:"sleep 45" (test_at +. 1.) (test_at +. 2.) true (-1));
+      step shell_run_delay
+        (ssh_pane ~command_line:"sleep 45" (test_at +. 1.) (test_at +. 2.) true (-1));
+      step 1. (ssh_pane ~command_line:"sleep 45" (test_at +. 4.) (test_at +. 2.) false 0);
+      print_endline "-- no integration on the far side";
+      let m = ref (model ~clock ()) in
+      let p = ssh_pane test_at test_at true (-1) in
+      m := ssh_tick clock !m p;
+      let running =
+        List.for_all
+          (fun _ ->
+            clock := !clock +. 1.;
+            m := ssh_tick clock !m p;
+            (not (ssh_remote !m p))
+            && Option.exists
+                 (function Status State.Running -> true | _ -> false)
+                 (Option.flat_map (shell_indicator !m)
+                    (Tmux.Pane_map.find_opt (Tmux.pane_id_of_string "%1") !m.phases)))
+          (List.range 1 10)
+      in
+      Printf.printf "running for ten ticks: %b\n" running;
+      [%expect
+        {|
+        remote=false none: idle title="ssh deploy@build-box" caption=""
+        remote=true none: idle title="ssh deploy@build-box" caption=""
+        remote=true none: idle title="ssh deploy@build-box: sleep 45" caption=""
+        remote=true running: running title="ssh deploy@build-box: sleep 45" caption=""
+        remote=true done: done title="ssh deploy@build-box" caption=""
+        -- no integration on the far side
+        running for ten ticks: true
+        |}]
+
+    let%expect_test "a new ssh destination drops the remote latch without a local-shell tick" =
+      let clock = ref test_at in
+      let m = ssh_tick clock (model ~clock ()) (ssh_pane (test_at +. 1.) test_at false (-1)) in
+      let p =
+        {
+          (ssh_pane ~command_line:"ssh alias" (test_at +. 1.) (test_at +. 2.) true (-1)) with
+          ssh = Some ("deploy@realm", "next.test");
+        }
+      in
+      let m = ssh_tick clock m p in
+      Printf.printf "remote=%b\n" (ssh_remote m p);
+      Printf.printf "%s\n" (label m p);
+      [%expect
+        {|
+        remote=false
+        idle title="ssh deploy@realm@next.test" caption=""
+        |}]
+
+    let%expect_test
+        "a program that has taken the terminal draws nothing, and leaves no hold on the way out" =
+      let clock = ref test_at in
+      let m = ref (model ~clock ()) in
+      let warm p =
+        clock := test_at;
+        m := { (model ~clock ()) with phases = Tmux.Pane_map.empty };
+        let tick () = m := track { !m with at = !clock; snap = { empty with panes = [ p ] } } in
+        tick ();
+        clock := !clock +. 0.5;
+        tick ();
+        label !m p
+      in
+      let p ?(alternate = false) command =
+        pane ~pid:4242 ~command ~alternate ~prompt:(test_at -. 1.) ~running:true ~start:test_at "%1"
+      in
+      List.iter print_endline
+        [
+          warm (p ~alternate:true "nvim");
+          warm (p ~alternate:true "git");
+          warm (p "cargo");
+          warm { (p "ssh") with ssh = Some ("deploy", "build-box") };
+          warm (p "ssh");
+          warm { (p ~alternate:true "ssh") with ssh = Some ("deploy", "build-box") };
+        ];
+      print_endline "-- an editor open, then quit";
+      let m = ref (model ~clock ()) in
+      let step d alternate running =
+        clock := !clock +. d;
+        let p =
+          pane ~command:"nvim" ~alternate ~prompt:(test_at -. 1.) ~running ~start:test_at "%1"
+        in
+        m := track { !m with at = !clock; snap = { empty with panes = [ p ] } };
+        print_endline (label !m p)
+      in
+      List.iter (fun d -> step d true true) [ 0.; 0.3; 1. ];
+      List.iter (fun d -> step d false false) [ 0.1; 0.2; 0.4 ];
+      [%expect
+        {|
+        none title="nvim" caption=""
+        none title="git" caption=""
+        running title="cargo" caption=""
+        running title="ssh deploy@build-box" caption=""
+        running title="ssh" caption=""
+        none title="ssh deploy@build-box" caption=""
+        -- an editor open, then quit
+        none title="nvim" caption=""
+        none title="nvim" caption=""
+        none title="nvim" caption=""
+        idle title="nvim" caption=""
+        idle title="nvim" caption=""
+        idle title="nvim" caption=""
+        |}]
+
+    let%expect_test "program acknowledgement survives failed snapshots and reconnects" =
+      let p = pane ~command:"sh" "%7" in
+      let status =
+        Tmux.Program_status.parse {|{"serial":1,"records":[{"id":"","state":"done","title":"QQ"}]}|}
+        |> Result.get_or_failwith
+      in
+      let snap = { empty with panes = [ { p with program_status = status } ] } in
+      ignore
+        (List.fold_left
+           (fun m (label, snap) ->
+             let m, _ = step m snap in
+             let indicator =
+               match (test_pane_label m p).indicator with
+               | Some Done -> "done"
+               | Some (Status Idle) -> "idle"
+               | _ -> "none"
+             in
+             Printf.printf "%s: %s acknowledged=%b\n" label indicator
+               (Tmux.Pane_map.mem p.pane_id m.program_seen);
+             m)
+           (model ())
+           [
+             ("initial", snap);
+             ("visit", { snap with active = Some p.pane_id });
+             ("leave", snap);
+             ("failure", { empty with err = Some "disconnected" });
+             ("reconnect", snap);
+             ( "new serial",
+               { snap with panes = [ { p with program_status = { status with serial = 2 } } ] } );
+           ]);
+      [%expect
+        {|
+    initial: done acknowledged=false
+    visit: idle acknowledged=true
+    leave: idle acknowledged=true
+    failure: none acknowledged=true
+    reconnect: idle acknowledged=true
+    new serial: done acknowledged=true
+    |}]
+
     let placements windows st lingering =
       List.iter
         (fun (pl : placement) ->
@@ -1100,9 +1371,6 @@ let%test_module "Tests" =
         (order_windows_by_tree windows (states st) lingering)
 
     let w ?run id = [ pane ~window:("@" ^ id) ?run ("%" ^ id) ]
-
-    let ssh_tick clock m p =
-      track { m with at = !clock; snap = { empty with client = client "alpha"; panes = [ p ] } }
 
     let%expect_test "order_windows_by_tree: child after parent, anchored to the parent's pane" =
       placements
