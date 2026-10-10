@@ -51,12 +51,7 @@ val argv : string -> string list -> string array
 val exec : t -> ?stdin:string -> string list -> (string, string) result
 val run : t -> string list -> (unit, string) result
 val list_panes : t -> format:string -> (string list, string) result
-
-type client_state = { session : string; session_id : session_id; focused : bool }
-
-val client_format : string
-val client_state : t -> string -> client_state option
-val client_fields : string -> (string * string * session_id * string * string) option
+val list_clients : t -> format:string -> (string list, string) result
 
 val jump :
   t -> client:string -> session:session_id -> window:window_id -> pane_id -> (unit, string) result

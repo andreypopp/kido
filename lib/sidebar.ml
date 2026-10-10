@@ -24,7 +24,7 @@ type ask_target = Live of Tmux.pane_id | Revivable | Unavailable
 type ask = { ask : Ask.t; target : ask_target }
 
 type snapshot = {
-  client : Tmux.client_state option;
+  client : Tmux_pane.client_state option;
   active : Tmux.pane_id option;
   panes : Tmux_pane.t list;
   states : (string * State.session) Tmux.Pane_map.t;
@@ -96,7 +96,7 @@ let lingering_subagents ~dir panes prev =
     String_map.empty panes
 
 let take ~opts conn prev client =
-  Option.iter (fun (c : Tmux.client_state) -> Tmux.Client.follow conn c.session_id) client;
+  Option.iter (fun (c : Tmux_pane.client_state) -> Tmux.Client.follow conn c.session_id) client;
   match Tmux_pane.list_panes (Tmux.Client.tmux conn) with
   | Error e -> { prev with client; active = None; err = Some e }
   | Ok panes ->
@@ -109,7 +109,7 @@ let take ~opts conn prev client =
         client;
         active =
           Option.flat_map
-            (fun (c : Tmux.client_state) -> Tmux_pane.active_pane panes c.session)
+            (fun (c : Tmux_pane.client_state) -> Tmux_pane.active_pane panes c.session)
             client;
         panes;
         states;
@@ -798,7 +798,7 @@ let rebuild m =
           name = s.name;
           current =
             Option.exists
-              (fun (c : Tmux.client_state) -> String.equal s.name c.session)
+              (fun (c : Tmux_pane.client_state) -> String.equal s.name c.session)
               m.snap.client;
           nodes = append_windows m (order_windows_by_tree s.windows m.snap.states m.snap.lingering);
         })
@@ -811,7 +811,7 @@ let poll ?wait ~(opts : options) conn (prev : snapshot) =
   let client = ref prev.client in
   let failed e = { prev with client = !client; active = None; err = Some e } in
   match
-    client := Tmux.client_state (Tmux.Client.tmux conn) opts.client;
+    client := Tmux_pane.client_state (Tmux.Client.tmux conn) opts.client;
     take ~opts conn prev !client
   with
   | snap -> snap
@@ -826,7 +826,7 @@ let step m (snap : snapshot) =
      try State.record_pause ~dir:m.opts.dir clock.wall with Unix.Unix_error _ | Sys_error _ -> ());
   let client =
     match snap.client with
-    | Some (c : Tmux.client_state) -> (
+    | Some (c : Tmux_pane.client_state) -> (
         match
           List.find_opt
             (fun (p : Tmux_pane.t) ->
@@ -872,7 +872,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
       match window with
       | Some window -> Ok (`Window window)
       | None -> (
-          match Tmux.client_state tmux client with
+          match Tmux_pane.client_state tmux client with
           | Some c -> Ok (`Session c.session_id)
           | None -> Error "no current tmux session")
     in
@@ -956,7 +956,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
         | None -> Error ("no ask " ^ Ask.string_of_id id)
       in
       let* current =
-        match Tmux.client_state tmux client with
+        match Tmux_pane.client_state tmux client with
         | Some c -> Ok c
         | None -> Error "no current tmux session"
       in
@@ -990,11 +990,11 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
              in
              let active =
                Option.flat_map
-                 (fun (c : Tmux.client_state) ->
+                 (fun (c : Tmux_pane.client_state) ->
                    List.find_opt
                      (fun (p : Tmux_pane.t) -> String.equal p.session_name c.session && p.active)
                      (List.concat_map (fun w -> w.panes) windows))
-                 (Tmux.client_state tmux client)
+                 (Tmux_pane.client_state tmux client)
              in
              match
                Option.flat_map
@@ -1027,12 +1027,12 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
              let length = Array.length sessions in
              if length < 2 then Ok None
              else
-               let current = Tmux.client_state tmux client in
+               let current = Tmux_pane.client_state tmux client in
                match
                  Array.find_idx
                    (fun (s : Tmux_pane.session) ->
                      Option.exists
-                       (fun (c : Tmux.client_state) -> String.equal c.session s.name)
+                       (fun (c : Tmux_pane.client_state) -> String.equal c.session s.name)
                        current)
                    sessions
                with

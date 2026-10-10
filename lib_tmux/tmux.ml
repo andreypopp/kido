@@ -103,41 +103,19 @@ let one_shot_exec ?socket ?(stdin = "") args =
       | WSIGNALED n | WSTOPPED n -> failed (Printf.sprintf "signal %d" n))
 
 let lines out = String.split_on_char '\n' out
-
-type client_state = { session : string; session_id : session_id; focused : bool }
-
 let side_focus_flag = "side-status-focus"
-let client_sep = "\x1f"
 
-let client_format =
-  String.concat client_sep
-    [
-      "#{client_name}";
-      "#{client_session}";
-      "#{session_id}";
-      "#{client_flags}";
-      "#{client_control_mode}";
-    ]
-
-let client_fields line =
-  match String.split ~by:client_sep line with
-  | name :: session :: session_id :: flags :: control :: _ ->
-      Some (name, session, session_id_of_string session_id, flags, control)
-  | _ -> None
-
-let parse_client_state lines client =
-  List.find_map
-    (fun line ->
-      match client_fields line with
-      | Some (name, session, session_id, flags, _) when String.equal name client ->
-          Some { session; session_id; focused = String.mem ~sub:side_focus_flag flags }
-      | _ -> None)
-    lines
-
-let one_shot_client_state ?socket client =
+let one_shot_client_session ?socket client =
   Option.flat_map
-    (fun out -> parse_client_state (lines out) client)
-    (Result.to_opt (one_shot_exec ?socket [ "list-clients"; "-F"; client_format ]))
+    (fun out ->
+      List.find_map
+        (fun line ->
+          match String.split_on_char '\x1f' line with
+          | [ name; id ] when String.equal name client -> Some (session_id_of_string id)
+          | _ -> None)
+        (lines out))
+    (Result.to_opt
+       (one_shot_exec ?socket [ "list-clients"; "-F"; "#{client_name}\x1f#{session_id}" ]))
 
 type event = Block of (string list, string) result | Notification of string
 type parser = Outside | Inside of { id : string; lines : string list }
@@ -261,11 +239,7 @@ module Client = struct
         reply t ch ~deadline
 
   let dial (t : t) =
-    let session =
-      Option.map
-        (fun (c : client_state) -> c.session_id)
-        (one_shot_client_state ?socket:t.socket t.client)
-    in
+    let session = one_shot_client_session ?socket:t.socket t.client in
     let args =
       [ "-T"; "hyperlinks"; "-C"; "attach-session"; "-f"; "no-output,ignore-size" ]
       @ Option.map_or ~default:[] (fun s -> [ "-t"; string_of_session_id s ]) session
@@ -398,13 +372,15 @@ let list_panes (t : t) ~format =
 
 let run t args = Result.map ignore (exec t args)
 
-let client_state (t : t) client =
-  match t.channel with
-  | None -> one_shot_client_state ?socket:t.socket client
-  | Some c -> (
-      match Client.run c ~command:("list-clients -F " ^ Filename.quote client_format) with
-      | Ok (_ :: _ as lines) -> parse_client_state lines client
-      | Ok [] | Error _ -> one_shot_client_state ?socket:t.socket client)
+let list_clients (t : t) ~format =
+  match
+    Option.map
+      (fun c -> Client.run c ~command:("list-clients -F " ^ Filename.quote format))
+      t.channel
+  with
+  | Some (Ok (_ :: _ as lines)) -> Ok lines
+  | None | Some (Ok [] | Error _) ->
+      Result.map lines (one_shot_exec ?socket:t.socket [ "list-clients"; "-F"; format ])
 
 let release_args client = [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
 
@@ -521,32 +497,6 @@ let%test_module "Tests" =
     "$" false
     "$x" false
     "$1x" false
-    |}]
-
-    let%expect_test "client state" =
-      let clients =
-        [
-          String.concat client_sep [ "/dev/ttys001"; "other"; "$1"; "attached,UTF-8"; "0" ];
-          String.concat client_sep
-            [ "/dev/ttys012"; "work"; "$0"; "attached,side-status-focus,UTF-8"; "0" ];
-          "junk";
-        ]
-      in
-      List.iter
-        (fun c ->
-          Printf.printf "%s: %s\n" c
-            (Option.map_or ~default:"-"
-               (fun (s : client_state) ->
-                 Printf.sprintf "%s %s focused=%b" s.session
-                   (string_of_session_id s.session_id)
-                   s.focused)
-               (parse_client_state clients c)))
-        [ "/dev/ttys012"; "/dev/ttys001"; "/dev/ttys999" ];
-      [%expect
-        {|
-    /dev/ttys012: work $0 focused=true
-    /dev/ttys001: other $1 focused=false
-    /dev/ttys999: -
     |}]
 
     let feed stream =

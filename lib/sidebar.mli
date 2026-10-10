@@ -24,7 +24,7 @@ type ask_target = Live of Tmux.pane_id | Revivable | Unavailable
 type ask = { ask : Ask.t; target : ask_target }
 
 type snapshot = {
-  client : Tmux.client_state option;
+  client : Tmux_pane.client_state option;
   active : Tmux.pane_id option;
   panes : Tmux_pane.t list;
   states : (string * State.session) Tmux.Pane_map.t;

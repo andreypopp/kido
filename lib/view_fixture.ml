@@ -72,4 +72,4 @@ let ssh_pane ?command_line prompt start running status =
     ?command_line "%1"
 
 let client session =
-  Some { Tmux.session; session_id = Tmux.session_id_of_string "$0"; focused = false }
+  Some { Tmux_pane.session; session_id = Tmux.session_id_of_string "$0"; focused = false }

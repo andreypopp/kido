@@ -400,7 +400,7 @@ let update msg m =
       in
       let m =
         let focused (s : S.snapshot) =
-          Option.exists (fun (c : Tmux.client_state) -> c.focused) s.client
+          Option.exists (fun (c : Tmux_pane.client_state) -> c.focused) s.client
         in
         if
           ((not (Option.equal Tmux.equal_pane_id snap.active was.active))

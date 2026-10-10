@@ -159,7 +159,7 @@ Conventions:
   through e2e. `Tmux.t` is immutable: `Tmux.create` makes a one-shot handle;
   `Tmux.Client.tmux` makes a handle fixed to that control client. The two
   deliberate read fallbacks use the same socket without changing the handle:
-  `Tmux.client_state` on an empty reply or control error, `Tmux.list_panes`
+  `Tmux.list_clients` on an empty reply or control error, `Tmux.list_panes`
   on a control error. Other control commands are never silently retried as a
   one-shot. `Tmux.Client.t` has no mutex; only the
   sidebar's single tick may touch it. `Tmux.binary` is the accepted lazy
@@ -362,7 +362,7 @@ the sidebar uses to decide a program has taken the terminal.
   started. Use `new-session -e VAR=value` or the command line.
 - A window linked into two sessions has one pane id in several sessions.
   `Sidebar.step` finds the client's pane by active pane id **and**
-  `Tmux.client_state.session_id`.
+  `Tmux_pane.client_state.session_id`.
 - `-S` takes a socket path as supplied; a bare name is relative to the
   working directory, not `/tmp/tmux-<uid>/`. `-L` creates its socket
   directory. An unset `TMUX_TMPDIR` selects `/tmp`; a nonexistent

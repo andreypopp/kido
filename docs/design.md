@@ -1638,7 +1638,7 @@ control-client operations, not server-handle operations.
 
 A failed control command stays failed, including after a timeout or a
 closed client; the channel never silently turns into a one-shot. The two
-read fallbacks are explicit in `Tmux.client_state` (empty reply or control
+read fallbacks are explicit in `Tmux.list_clients` (empty reply or control
 error) and `Tmux.list_panes` (control error). They read the same socket with
 a one-shot, without replacing the original handle's channel.
 

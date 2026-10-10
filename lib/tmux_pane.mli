@@ -32,6 +32,10 @@ type t = {
 type shell = Unintegrated | Idle | Running
 
 val list_panes : Tmux.t -> (t list, string) result
+
+type client_state = { session : string; session_id : Tmux.session_id; focused : bool }
+
+val client_state : Tmux.t -> string -> client_state option
 val resolve_client : Tmux.t -> pane:Tmux.pane_id option -> tmux_env:string -> string option
 val mark_ssh : Tmux.t -> Tmux.pane_id -> string -> (unit, string) result
 val mark_run : Tmux.t -> Tmux.pane_id -> string -> (unit, string) result
