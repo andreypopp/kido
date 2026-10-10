@@ -1,9 +1,8 @@
 type pane_id [@@deriving compare, equal, string, yojson]
-
-module Pane_map : Map.S with type key = pane_id
-
 type window_id [@@deriving equal, string, yojson_of]
 type session_id [@@deriving equal, string, yojson_of]
+
+module Pane_map : Map.S with type key = pane_id
 
 module Program_status : sig
   type kind
