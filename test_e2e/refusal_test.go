@@ -26,6 +26,12 @@ func TestCommandLineRefusals(t *testing.T) {
 		{[]string{"tool", "message_agent", "anyone"}, "\n", "no message given", 1},
 		{[]string{"runs", "run-a", "extra"}, "", "kido runs: unknown argument \"extra\"\nusage: kido runs [--json] [<run-id>]", 1},
 		{[]string{"runs", "no-such-run"}, "", `kido runs: run "no-such-run": no such run`, 1},
+		{[]string{"async-run"}, "", "kido async-run: --run-id is required (or $KIDO_AGENT_RUN_ID)\nusage: kido async-run [--run-id ID]", 1},
+		{[]string{"tool", "async_bash"}, "", "kido tool async_bash: no command given\nusage: kido tool async_bash [--name NAME] [--stream] -- COMMAND [ARG...]", 1},
+		{[]string{"tool", "spawn_subagent", "--name", "kid"}, "", "kido tool spawn_subagent: --parent-pid and --parent-session are required (or --no-parent for a child owned by nobody)\n" +
+			"usage: kido tool spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+			"   or: kido tool spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+			"   or: kido tool spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | --no-parent] [--keep-alive] [-- COMMAND...]", 1},
 	} {
 		cmd := exec.Command(kidoBin, c.args...)
 		cmd.Env = cleanEnv("KIDO_STATE_DIR="+state, "TMUX_PANE=%1")

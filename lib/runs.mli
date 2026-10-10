@@ -3,11 +3,9 @@ type info = { meta : Subrun.meta; outcome : Subrun.outcome option } [@@deriving 
 val list : ?parent_session:string -> dir:string -> unit -> info list
 (** Newest first. *)
 
-val table : now:Timestamp.t -> info list -> string list list
-(** The header row, then one row per run. *)
+type detail = { info : info; task : string; screen : string option; report : string option }
 
-val show : dir:string -> json:bool -> string -> (string, string) result
-(** The whole text of [kido runs <run-id>]. *)
+val detail : dir:string -> string -> (detail, string) result
 
 val run_outcome :
   dir:string ->

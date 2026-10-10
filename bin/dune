@@ -9,7 +9,7 @@
 
 (executable
  (name main)
- (modules main cli)
+ (modules main)
  (public_name kido)
  (promote
   (until-clean)

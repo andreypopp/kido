@@ -4,11 +4,13 @@ module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
 type span = Mosaic.span = { text : string; style : Style.t }
+type role = [ S.role | `Current | `Err | `Running | `Waiting | `Done | `Stalled ]
+type program = { id : string; indicator : S.indicator; title : string; caption : string }
 
 type line =
   | Header of { name : string; current : bool }
   | Row of string * Tmux.session_id * S.row
-  | Program of string * S.program_row
+  | Program of string * program
   | Message of string
   | Ask of Ask.t * Tmux.pane_id option
 
@@ -72,11 +74,9 @@ let lines ?(search = "") (side : S.model) =
     let rec programs prefix depth trailing rows =
       match rows with
       | [] -> ()
-      | (r : S.program_row) :: rest ->
+      | r :: rest ->
           let children, siblings =
-            List.take_drop_while
-              (fun (c : S.program_row) -> String.prefix ~pre:(r.id ^ "/") c.id)
-              rest
+            List.take_drop_while (fun c -> String.prefix ~pre:(r.id ^ "/") c.id) rest
           in
           let current_depth = List.length (String.split_on_char '/' r.id) in
           let nested = prefix ^ String.make (2 * (current_depth - depth)) ' ' in
@@ -86,7 +86,27 @@ let lines ?(search = "") (side : S.model) =
           programs (nested ^ stem ^ " ") (current_depth + 1) false children;
           programs prefix depth trailing siblings
     in
-    programs nested 1 (not (List.is_empty item.children)) item.program_rows;
+    programs nested 1
+      (not (List.is_empty item.children))
+      (match Tmux.Pane_map.find_opt item.row.pane side.pane_data with
+      | None -> []
+      | Some ((p : Tmux_pane.t), _) ->
+          let status = p.program_status in
+          List.filter
+            (fun (r : Tmux.Program_status.record) -> not (String.is_empty r.id))
+            status.records
+          |> List.sort (fun (a : Tmux.Program_status.record) (b : Tmux.Program_status.record) ->
+              List.compare String.compare (String.split_on_char '/' a.id)
+                (String.split_on_char '/' b.id))
+          |> List.map (fun (r : Tmux.Program_status.record) ->
+              {
+                id = r.id;
+                indicator = S.program_indicator side p.pane_id status r;
+                title =
+                  Option.filter (fun s -> not (String.is_empty s)) r.title
+                  |> Option.value ~default:r.id;
+                caption = Option.value ~default:"" r.msg;
+              }));
     let n = List.length item.children in
     List.iteri
       (fun i child ->
@@ -138,7 +158,7 @@ let make ?conn ~standalone side =
 
 (* Every style names its foreground: Mosaic's grid paints an explicit white on any cell left
    without one, which would override the user's theme. *)
-let style : S.role -> Style.t = function
+let style : role -> Style.t = function
   | `Plain -> Style.make ~fg:Color.default ()
   | `Current -> Style.make ~fg:Color.default ~bold:true ()
   | `Proc -> Style.make ~fg:Color.white ()
@@ -151,7 +171,7 @@ let style : S.role -> Style.t = function
 
 let span role text = { text; style = style role }
 let plain = span `Plain
-let styled (s : S.span) = span s.role s.text
+let styled (s : S.span) = span (s.role :> role) s.text
 
 let glyph : S.indicator -> span option = function
   | Status Running -> Some (span `Running "◼")

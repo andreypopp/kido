@@ -4,14 +4,6 @@ let max_depth = 2
 let max_task_bytes = 1024 * 1024
 let max_window_name_len = 64
 
-let usage =
-  "usage: kido tool spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file \
-   FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n\
-  \   or: kido tool spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools \
-   T,...] [--keep-alive] [-- COMMAND...]\n\
-  \   or: kido tool spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | \
-   --no-parent] [--keep-alive] [-- COMMAND...]"
-
 type pi = { path : string; session_dir : string; agent_dir : string; home : string }
 
 type flags = {
@@ -77,9 +69,11 @@ let read_task path =
         | task -> Ok task
         | exception Sys_error e -> Error (Printf.sprintf "--task-file %S: %s" path e))
 
+type error = Usage of string | Invalid of string
+
 let parse (f : flags) =
   let open Result.Infix in
-  let refuse why = Error (why ^ "\n" ^ usage) in
+  let refuse why = Error (Usage why) and invalid r = Result.map_err (fun e -> Invalid e) r in
   let command = if List.is_empty f.command then [ "pi" ] else f.command in
   let given = f.parent_pid > 0 || not (String.is_empty f.parent_session) in
   let* owner =
@@ -113,9 +107,9 @@ let parse (f : flags) =
           if String.is_empty f.name then refuse "--name is required"
           else if String.is_empty f.task_file then refuse "--task-file is required"
           else
-            let* () = check_window_name f.name in
-            let* () = Launch.tmux_safe "--fork" f.fork in
-            let+ task = read_task f.task_file in
+            let* () = invalid (check_window_name f.name) in
+            let* () = invalid (Launch.tmux_safe "--fork" f.fork) in
+            let+ task = invalid (read_task f.task_file) in
             let tools = if String.is_empty f.tools then [] else String.split_on_char ',' f.tools in
             Fresh { name = f.name; task; fork = f.fork; model = f.model; tools }
   in

@@ -60,6 +60,12 @@ and returns an exit code lives in `bin/main.ml`. A `lib/` module whose
 sole export is such a command body, used only by `bin/main.ml`, is
 inlined there.
 
+**No display logic in `lib/`.** Human-facing formatting (tables,
+alignment, padding, truncation, glyphs, styles, local time, usage
+text) belongs in `bin/`. The RPC snapshot is the exception: `lib/`
+sends the semantic data both views need as uncut text, tagged only
+with the wire's span roles (`plain`, `proc`, `dim`).
+
 **State.** One source of truth per fact: never hold the same fact in two
 stores (a state record and a tmux option, an OCaml record and a TS copy, a
 file and an in-memory mirror). Do not store what can be derived; compute
@@ -85,7 +91,7 @@ These are fixed:
 
 - **Layout.** `bin/main.ml` is the cmdliner command table, plus the
   bodies of small commands (`set_status`, `get-agent`, `snapshot`,
-  `ssh`, ...). `lib/` is the library `kido`,
+  `ssh`, ...), failure printing and the CLI's tables and text. `lib/` is the library `kido`,
   one module per domain or subcommand with logic of its own. `lib_tmux/` is the library `tmux` (call sites read
   `Tmux`, `Tmux.Client`). Unit tests are ppx_expect, inline
   at the bottom of the module under test in a `let%test_module "Tests"`
@@ -114,11 +120,12 @@ Conventions:
   by case (`State.record` returns `Error holder`). The `Unix_error` and
   `Sys_error` the I/O raised propagate. Nothing catches to rethrow.
 - **Subcommands.** A subcommand body in `bin/main.ml` returns its exit
-  code, run under `Cli.run name` (`bin/cli.ml`), which prints a raised
-  failure as `kido <name>: <message>` and returns 1; a string error
-  reaches it through `Result.get_or_failwith`. A special code is
-  returned after `Cli.error`. cmdliner's own parse errors exit 1.
-  Library errors do not repeat the command name: `Cli.run` supplies it.
+  code, run under its `run name`, which prints a raised failure as
+  `kido <name>: <message>` and returns 1; a string error reaches it
+  through `Result.get_or_failwith`. A special code is returned after
+  `error`. cmdliner's own parse errors exit 1. Library errors do not
+  repeat the command name or append usage text: `run` supplies the
+  name, and the command body appends its `usage:` line.
   Warnings during a command go through a `~warn` callback so stderr stays
   in order.
 - **Environment.** Read it at the edge and pass the value: functions
@@ -138,7 +145,7 @@ Conventions:
   bad value: a caller maps it over an absent value (an unset or empty
   env var) rather than parsing one, calls it directly on a string that
   must be valid, and catches it only at an untrusted-input edge (an RPC
-  request, a `_of_yojson`). `Cli.run` reports it like `Failure`.
+  request, a `_of_yojson`). `run` reports it like `Failure`.
 - **JSON decoding** raises `Of_yojson_error`; hand-written `_of_yojson`
   raise it through `of_yojson_error`. `Fs.read_json` is the one edge
   that turns a file into an `option`. Variants encode as `["Tag"]`, so
@@ -178,11 +185,11 @@ Conventions:
                        set_status, get-agent, get-inbox, snapshot,
                        ssh, get-window, switch-session/window, server,
                        runs, run-outcome, reap, close-run,
-                       rpc
-    bin/cli.ml         failure printing and tables
+                       rpc; failure printing, and every human-readable
+                       rendering of library results
     bin/kido_sidebar.ml  the library kido_sidebar: Mosaic rendering, keys, cursor
                        and inline tests; consumes Kido.Sidebar's model
-    lib/               the library kido:
+    lib/               the library kido: domain logic and data, no presentation
       launch.ml        the launcher and `kido server`: --server, the
                        server.conf in its state dir, KIDO_PROTOCOL
       build_id.ml      the immutable dune-build-info version, or unknown

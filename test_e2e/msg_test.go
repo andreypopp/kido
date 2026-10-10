@@ -582,6 +582,10 @@ func TestListRunsSessionFlagAndCanReply(t *testing.T) {
 	h.expectKido("", "", nil,
 		"kido tool list_runs: no tmux session for pane \"\"; pass --session\nusage: kido tool list_runs [--session ID] [--json]",
 		"tool", "list_runs", "--json")
+	// get-agent --context shares the refusal but not list_runs' usage line.
+	h.expectKido("", "", nil,
+		"kido get-agent: no tmux session for pane \"\"; pass --session",
+		"get-agent", "--context")
 }
 
 // A plain message to a running agent waits for its turn to end, so the

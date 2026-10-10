@@ -50,6 +50,5 @@ val list_runs :
   threshold:float ->
   self:Tmux.pane_id option ->
   session:Tmux.session_id option ->
+  panes:Tmux_pane.t list ->
   (row list, string) result
-
-val table : row list -> string list list

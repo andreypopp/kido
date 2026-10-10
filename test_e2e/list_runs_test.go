@@ -72,6 +72,10 @@ func TestListRunsPeersParentSiblingsAndOwnRuns(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("list_runs table: rc=%d %q", rc, out)
 	}
+	header := "ID NAME KIND RELATIONSHIP STATUS ACTIVITY CAN_REPLY MODEL PANE WINDOW STALLED SINCE PARENT DEPTH CWD RUN STATE STARTED OUTCOME DETAIL"
+	if got := strings.Join(strings.Fields(strings.SplitN(out, "\n", 2)[0]), " "); got != header {
+		t.Errorf("list_runs table header = %q, want %q", got, header)
+	}
 	found := false
 	for _, line := range strings.Split(out, "\n") {
 		cells := strings.Fields(line)

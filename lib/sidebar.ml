@@ -166,7 +166,7 @@ let detect_pause prev now =
   Float.(now.wall - prev.wall - mono > 5.)
 
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
-type role = [ `Plain | `Current | `Proc | `Dim | `Err | `Running | `Waiting | `Done | `Stalled ]
+type role = [ `Plain | `Proc | `Dim ]
 type span = { text : string; role : role }
 
 type indicator =
@@ -192,8 +192,7 @@ type row = {
 }
 
 type node = Group of { name : string; first : item; rest : item list } | Item of item
-and item = { row : row; program_rows : program_row list; children : node list }
-and program_row = { id : string; indicator : indicator; title : string; caption : string }
+and item = { row : row; children : node list }
 
 type section = { id : Tmux.session_id; name : string; current : bool; nodes : node list }
 type phase = { running : bool; since : float; drawn : bool; held : Tmux_pane.exit option }
@@ -716,31 +715,7 @@ let append_windows m placements =
           List.rev (Option.get_or ~default:[] (Tmux.Pane_map.find_opt p.pane_id anchored))
         in
         Option.map
-          (fun data ->
-            let programs =
-              let status = p.program_status in
-              List.filter
-                (fun (r : Tmux.Program_status.record) -> not (String.is_empty r.id))
-                status.records
-              |> List.sort (fun a b ->
-                  List.compare String.compare
-                    (String.split_on_char '/' a.Tmux.Program_status.id)
-                    (String.split_on_char '/' b.id))
-              |> List.map (fun (r : Tmux.Program_status.record) ->
-                  {
-                    id = r.id;
-                    indicator = program_indicator m p.pane_id status r;
-                    title =
-                      Option.filter (fun s -> not (String.is_empty s)) r.title
-                      |> Option.value ~default:r.id;
-                    caption = Option.value ~default:"" r.msg;
-                  })
-            in
-            {
-              row = pane_label m data;
-              program_rows = programs;
-              children = List.filter_map emit kids;
-            })
+          (fun data -> { row = pane_label m data; children = List.filter_map emit kids })
           (Tmux.Pane_map.find_opt p.pane_id m.pane_data)
       in
       match placements.(i).panes with

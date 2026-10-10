@@ -82,9 +82,7 @@ let agents ~dir ~threshold ~self ~session ~panes ~states =
         | Some p -> Ok p.session_id
         | None ->
             Error
-              (Printf.sprintf
-                 "no tmux session for pane %S; pass --session\n\
-                  usage: kido tool list_runs [--session ID] [--json]"
+              (Printf.sprintf "no tmux session for pane %S; pass --session"
                  (Option.map_or ~default:"" string_of_pane_id self)))
   in
   let wake = State.wake ~dir and now = Timestamp.now () in
@@ -129,9 +127,8 @@ type row =
   | Parent of agent_info
   | Own of { run : Runs.info; agent : agent_info option; window : Tmux.window_id option }
 
-let list_runs ~dir ~threshold ~self ~session =
+let list_runs ~dir ~threshold ~self ~session ~panes =
   let open Result.Infix in
-  let* panes = Tmux_pane.list_panes (Tmux.create ()) in
   let+ agents =
     agents ~dir ~threshold ~self ~session ~panes ~states:(per_pane (State.load_live ~dir))
   in
@@ -220,33 +217,6 @@ let yojson_of_row row =
         (fields, (match m.kind with Agent -> "subagent" | Bash | Stream -> "bash"), "own", extra)
   in
   `Assoc (fields @ [ ("kind", `String kind); ("relationship", `String relationship) ] @ extra)
-
-let table rows =
-  let columns =
-    String.split_on_char ' '
-      "id name kind relationship status activity canReply model pane window stalled sinceReport \
-       parent depth cwd run state startedAt"
-  in
-  String.split_on_char ' '
-    "ID NAME KIND RELATIONSHIP STATUS ACTIVITY CAN_REPLY MODEL PANE WINDOW STALLED SINCE PARENT \
-     DEPTH CWD RUN STATE STARTED OUTCOME DETAIL"
-  :: List.map
-       (fun row ->
-         let json = yojson_of_row row in
-         let open Yojson.Safe.Util in
-         let value json k =
-           match member k json with
-           | `String s -> s
-           | `Int n -> string_of_int n
-           | `Bool b -> string_of_bool b
-           | _ -> ""
-         in
-         List.map (value json) columns
-         @
-         match member "outcome" json with
-         | `Null -> [ ""; "" ]
-         | o -> List.map (value o) [ "result"; "text" ])
-       rows
 
 let%test_module "Tests" =
   (module struct

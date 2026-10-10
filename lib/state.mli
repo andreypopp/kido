@@ -40,7 +40,6 @@ val pane_kind : states:(string * session) Tmux.Pane_map.t -> Tmux_pane.t -> pane
 val pane_title : Tmux_pane.t -> pane_kind -> string option
 val record : dir:string -> string -> session -> (unit, session) result
 val remove : dir:string -> string -> pid:int -> (unit, session) result
-val held_message : string -> session -> string
 val stall_threshold : unit -> float
 
 val stalled_since :

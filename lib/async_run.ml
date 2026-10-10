@@ -1,4 +1,3 @@
-let usage = "usage: kido async-run [--run-id ID]"
 let signal_grace = 2.
 
 let signal_name s =
@@ -61,13 +60,9 @@ let status_of = function
   | WEXITED n -> (Failed, Printf.sprintf "exit status %d" n, n)
   | WSIGNALED s | WSTOPPED s -> (Failed, "signal: " ^ signal_name s, 1)
 
-let async_run ~dir ~knobs ~warn ~run_id =
+let async_run ~dir ~knobs ~warn ~id =
   let open Result.Infix in
-  let* id =
-    Result.map_err
-      (fun _ -> "--run-id is required (or $KIDO_AGENT_RUN_ID)\n" ^ usage)
-      (Subrun.parse_id run_id)
-  in
+  let run_id = Subrun.string_of_id id in
   let* meta =
     Option.to_result (Printf.sprintf "run %s has no meta" run_id) (Subrun.read_meta ~dir id)
   in
@@ -147,7 +142,10 @@ let%test_module "Tests" =
     let knobs : Async_stream.knobs = { batch = 0.02; backoff_floor = 0.02; backoff_cap = 0.1 }
 
     let show_run ~dir run_id =
-      match async_run ~dir ~knobs ~warn:(Printf.printf "\nwarning: %s") ~run_id with
+      match
+        async_run ~dir ~knobs ~warn:(Printf.printf "\nwarning: %s")
+          ~id:(Result.get_exn (Subrun.parse_id run_id))
+      with
       | Ok code -> Printf.printf "\n-> %d\n" code
       | Error m -> Printf.printf "\nrefused: %s\n" m
 
@@ -196,17 +194,10 @@ let%test_module "Tests" =
     output file: ""
     |}]
 
-    let%expect_test "the run comes from its record: a missing id or meta is refused" =
+    let%expect_test "the run comes from its record: a missing meta is refused" =
       let dir = Filename.temp_dir "kido-state" "" in
-      show_run ~dir "";
       show_run ~dir "no-such-run";
-      [%expect
-        {|
-    refused: --run-id is required (or $KIDO_AGENT_RUN_ID)
-    usage: kido async-run [--run-id ID]
-
-    refused: run no-such-run has no meta
-    |}]
+      [%expect {| refused: run no-such-run has no meta |}]
 
     (* The outcome write decides who saw the ending first: a wrapper finding one there keeps that story
    and sends nothing. The silence means something only beside the same wrapper, having won, trying

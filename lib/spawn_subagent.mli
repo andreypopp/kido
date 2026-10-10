@@ -18,8 +18,9 @@ type flags = {
 
 type request
 type owner = Given of State.parent | Nobody | Adopt
+type error = Usage of string | Invalid of string
 
-val parse : flags -> (request, string) result
+val parse : flags -> (request, error) result
 val check_window_name : string -> (unit, string) result
 
 val caller :

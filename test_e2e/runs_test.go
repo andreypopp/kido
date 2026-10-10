@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -203,4 +204,140 @@ func TestGetAgentChildrenCmd(t *testing.T) {
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("the sidebar's sweep to close window %s", windowID))
 	check("ended", "root-e2e", `{"id":"root-e2e","alive":true,"keepAlive":false,"childrenAlive":false}`)
+}
+
+// `kido runs` and `kido runs <id>` render lib's run records for a human
+// in bin/main.ml: the table newest first, local times, a "-" for a run
+// with no ending, Go durations, the detail's aligned keys, and --json's
+// key order. TZ is a POSIX zone, not a zoneinfo name, so a host without
+// tzdata still pins the local time and its half-hour offset.
+func TestRunsTableShowAndJSON(t *testing.T) {
+	t.Parallel()
+	state := serverDir(t)
+	write := func(id string, meta map[string]any, outcome string) {
+		dir := filepath.Join(state, "runs", id)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		b, err := json.Marshal(meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]string{"meta.json": string(b), "task": "do the thing"}
+		if outcome != "" {
+			files["outcome"] = outcome
+		}
+		for name, body := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write("run-a", map[string]any{
+		"id": "run-a", "name": "kid", "kind": "agent", "parentSession": "root", "depth": 1,
+		"pane": "", "pid": 0, "cwd": "/tmp/some project", "startedAt": "2023-11-14T22:13:20Z",
+	}, `{"result":"completed","at":"2023-11-14T22:14:50Z"}`)
+	write("run-b", map[string]any{
+		"id": "run-b", "name": "later", "kind": "bash", "depth": 1,
+		"pane": "", "pid": 0, "cwd": "", "startedAt": "2023-11-14T23:13:20Z",
+	}, "")
+	kidoIn := func(tz string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(kidoBin, args...)
+		cmd.Env = cleanEnv("KIDO_STATE_DIR="+state, "TZ="+tz)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("kido %v: %v %q", args, err, out)
+		}
+		return string(out)
+	}
+	kido := func(args ...string) string { t.Helper(); return kidoIn("IST-5:30", args...) }
+
+	row := func(cells ...string) string {
+		return fmt.Sprintf("%-7s%-7s%-8s%-27s%-10s%-11s%s\n", cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], cells[6])
+	}
+	if got, want := kido("runs"),
+		row("ID", "NAME", "PARENT", "STARTED", "DURATION", "OUTCOME", "CWD")+
+			row("run-b", "later", "", "2023-11-15T04:43:20+05:30", "-", "died", "")+
+			row("run-a", "kid", "root", "2023-11-15T03:43:20+05:30", "1m30s", "completed", "/tmp/some project"); got != want {
+		t.Errorf("kido runs:\n%s\nwant:\n%s", got, want)
+	}
+
+	if got, want := kido("runs", "run-a"), `id:       run-a
+name:     kid
+kind:     agent
+parent:   root
+depth:    1
+cwd:      /tmp/some project
+started:  2023-11-15T03:43:20+05:30
+outcome:  completed
+ended:    2023-11-15T03:44:50+05:30
+resume:   cd '/tmp/some project' && kido tool spawn_subagent --resume run-a
+fork:     cd '/tmp/some project' && pi --fork run-a
+task:
+do the thing
+`; got != want {
+		t.Errorf("kido runs run-a:\n%s\nwant:\n%s", got, want)
+	}
+
+	dec := json.NewDecoder(strings.NewReader(kido("runs", "--json", "run-a")))
+	var keys []string
+	if _, err := dec.Token(); err != nil {
+		t.Fatal(err)
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key.(string))
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := strings.Join(keys, " "), "id name kind parentSession depth pane pid cwd startedAt outcome task resume fork"; got != want {
+		t.Errorf("kido runs --json run-a keys = %q, want %q", got, want)
+	}
+
+	var listed []runInfo
+	if err := json.Unmarshal([]byte(kido("runs", "--json")), &listed); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range listed {
+		got = append(got, r.ID+" "+r.Outcome)
+	}
+	if want := "run-b died, run-a completed"; strings.Join(got, ", ") != want {
+		t.Errorf("kido runs --json = %q, want %q", strings.Join(got, ", "), want)
+	}
+
+	// A negative half-hour zone, an instant whose local date is in another
+	// year, and both sides of each DST transition: in 2024 NDT starts at
+	// 02:00 local on 10 March and ends at 02:00 local on 3 November.
+	const nst = "NST3:30NDT,M3.2.0,M11.1.0"
+	for i, c := range []struct{ tz, at, want string }{
+		{"NST3:30", "2023-11-14T22:13:20Z", "2023-11-14T18:43:20-03:30"},
+		{"NST3:30", "2024-01-01T01:00:00Z", "2023-12-31T21:30:00-03:30"},
+		{"IST-5:30", "2023-12-31T20:00:00Z", "2024-01-01T01:30:00+05:30"},
+		{nst, "2024-03-10T05:00:00Z", "2024-03-10T01:30:00-03:30"},
+		{nst, "2024-03-10T06:00:00Z", "2024-03-10T03:30:00-02:30"},
+		{nst, "2024-11-03T04:00:00Z", "2024-11-03T01:30:00-02:30"},
+		{nst, "2024-11-03T05:00:00Z", "2024-11-03T01:30:00-03:30"},
+	} {
+		id := fmt.Sprintf("run-tz%d", i)
+		write(id, map[string]any{
+			"id": id, "name": "tz", "kind": "bash", "depth": 1,
+			"pane": "", "pid": 0, "cwd": "", "startedAt": c.at,
+		}, "")
+		var started string
+		for _, line := range strings.Split(kidoIn(c.tz, "runs", id), "\n") {
+			if v, ok := strings.CutPrefix(line, "started:  "); ok {
+				started = v
+			}
+		}
+		if started != c.want {
+			t.Errorf("TZ=%s started %s = %q, want %q", c.tz, c.at, started, c.want)
+		}
+	}
 }

@@ -186,12 +186,6 @@ let record ~dir id s =
         (held ~dir id s.pid)
 
 let remove ~dir id ~pid = Result.map (fun () -> Fs.remove (path ~dir id)) (held ~dir id pid)
-
-let held_message id s =
-  Printf.sprintf "session %s is already open in pane %s (pid %d); this process is not tracked" id
-    (Option.map_or ~default:"" Tmux.string_of_pane_id s.pane)
-    s.pid
-
 let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
 
 let stalled_since ~root ~threshold ~wake ~now s =
@@ -339,7 +333,6 @@ let%test_module "Tests" =
       outcome (record ~dir "d" (session () ~pane:"%2" ~pid:me));
       outcome (remove ~dir "d" ~pid:me);
       Printf.printf "removed %b\n" (Option.is_none (get ~dir "d"));
-      print_endline (held_message "s" (session () ~pane:"%1" ~pid:1));
       [%expect
         {|
     ok
@@ -352,7 +345,6 @@ let%test_module "Tests" =
     ok
     ok
     removed true
-    session s is already open in pane %1 (pid 1); this process is not tracked
     |}]
 
     let%expect_test "the wake marker keeps the latest wake" =

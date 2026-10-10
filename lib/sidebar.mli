@@ -41,7 +41,7 @@ val lingering_subagents :
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
-type role = [ `Plain | `Current | `Proc | `Dim | `Err | `Running | `Waiting | `Done | `Stalled ]
+type role = [ `Plain | `Proc | `Dim ]
 type span = { text : string; role : role }
 
 type indicator =
@@ -67,8 +67,7 @@ type row = {
 }
 
 type node = Group of { name : string; first : item; rest : item list } | Item of item
-and item = { row : row; program_rows : program_row list; children : node list }
-and program_row = { id : string; indicator : indicator; title : string; caption : string }
+and item = { row : row; children : node list }
 
 type section = { id : Tmux.session_id; name : string; current : bool; nodes : node list }
 type phase = { running : bool; since : float; drawn : bool; held : Tmux_pane.exit option }
@@ -90,6 +89,10 @@ type model = {
 }
 
 val make : now:(unit -> float) -> options -> model
+
+val program_indicator :
+  model -> Tmux.pane_id -> Tmux.Program_status.t -> Tmux.Program_status.record -> indicator
+
 val attention : model -> Tmux.pane_id -> bool
 val poll : ?wait:float -> opts:options -> Tmux.Client.t -> snapshot -> snapshot
 val step : model -> snapshot -> model * bool

@@ -50,12 +50,13 @@ func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 	if !strings.Contains(out, "rc=6") {
 		t.Errorf("a second live process reporting under a held session id = %q, want rc=6", out)
 	}
-	if !strings.Contains(out, "already open") {
-		t.Errorf("output = %q, want it to say where the holder is", out)
-	}
 	rec, ok := h.readRecord(t, "dup-e2e")
 	if !ok || rec["activity"] != "holder" {
 		t.Fatalf("record = %+v, want the holder's untouched", rec)
+	}
+	pid, _ := rec["pid"].(float64)
+	if want := fmt.Sprintf("kido agent-status: session dup-e2e is already open in pane %v (pid %d); this process is not tracked", rec["pane"], int(pid)); !strings.Contains(out, want) {
+		t.Errorf("output = %q, want it to say where the holder is: %q", out, want)
 	}
 
 	out = h.runKido("alpha", "remove.out",

@@ -65,25 +65,6 @@ let duration d =
     else if s >= 60 then Printf.sprintf "%dm%ss" (s / 60) secs
     else secs ^ "s"
 
-let to_local_string t =
-  let whole = Float.to_int (Float.round t) in
-  let tm = Unix.localtime (Float.of_int whole) in
-  let local =
-    ((((days_from_civil (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday * 24) + tm.tm_hour) * 60)
-    + tm.tm_min)
-    * 60
-    + tm.tm_sec
-  in
-  let offset = (local - whole) / 60 in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d%s" (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
-    tm.tm_hour tm.tm_min tm.tm_sec
-    (if offset = 0 then "Z"
-     else
-       Printf.sprintf "%c%02d:%02d"
-         (if offset < 0 then '-' else '+')
-         (abs offset / 60)
-         (abs offset mod 60))
-
 let ms_env getenv name default =
   match Option.flat_map Int.of_string (getenv name) with
   | Some ms when ms > 0 -> Float.of_int ms /. 1000.
@@ -112,5 +93,24 @@ let%test_module "Tests" =
     2026-09-29T14:36:24.275927Z
     2026-09-29T14:36:24Z
     none
+    |}]
+
+    (* Go's time.Duration printing, which `kido runs` and stop's escalation message carry. *)
+    let%expect_test "durations print as Go prints them" =
+      List.iter
+        (fun d -> Printf.printf "%g -> %s\n" d (duration d))
+        [ 0.; 0.3; 1.; 1.5; 59.; 60.; 90.; 3600.; 3723.; 86400. ];
+      [%expect
+        {|
+    0 -> 0s
+    0.3 -> 300ms
+    1 -> 1s
+    1.5 -> 1.5s
+    59 -> 59s
+    60 -> 1m0s
+    90 -> 1m30s
+    3600 -> 1h0m0s
+    3723 -> 1h2m3s
+    86400 -> 24h0m0s
     |}]
   end)

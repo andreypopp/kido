@@ -4,6 +4,6 @@ val async_bash :
   exe:string ->
   name:string ->
   stream:bool ->
-  string list ->
+  string * string list ->
   (string, string) result
 (** Starts the run and returns its created line. *)
