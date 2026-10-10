@@ -39,6 +39,7 @@ RECORD ?= 0
 visual: DERIVED = build/xcode.noindex/derived-visual
 visual:
 	mkdir -p build/bundle/visual/{home,state,tmp,config}
+	clang -dynamiclib -Werror -Wno-deprecated-declarations scripts/vsync-cv-count.c -framework CoreVideo -o build/bundle/visual/vsync-cv-count.dylib
 	$(MAKE) all DERIVED=$(DERIVED) SANITIZE="KIDO_VISUAL_CONDITION=KIDO_VISUAL"
 	server=$$(mktemp -d /tmp/ka-visual-XXXXXX) || exit 1; \
 	trap '$(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) -S "$$server/socket" kill-server 2>/dev/null || true; rm -rf "$$server"' EXIT; \
