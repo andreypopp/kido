@@ -873,3 +873,559 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
       switched
         (Tmux.Exec.switch_session ~socket ~client
            ~next:(match direction with Next -> true | Prev -> false))
+
+let%test_module "Tests" =
+  (module struct
+    open View_fixture
+
+    let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
+      let m =
+        make
+          ~now:(fun () -> !clock)
+          {
+            interval = default_interval;
+            client = "";
+            socket = None;
+            dir;
+            threshold = 180.;
+            grace = 30.;
+          }
+      in
+      { m with started; at = !clock }
+
+    let placements windows st lingering =
+      List.iter
+        (fun (pl : placement) ->
+          Printf.printf "%s anchor=%s\n"
+            (Tmux.Window.to_string (List.hd pl.panes).window_id)
+            (Option.map_or ~default:"-" Tmux.Pane.to_string pl.anchor))
+        (order_windows_by_tree windows (states st) lingering)
+
+    let w ?run id = [ pane ~window:("@" ^ id) ?run ("%" ^ id) ]
+
+    let ssh_tick clock m p =
+      track { m with at = !clock; snap = { empty with client = client "alpha"; panes = [ p ] } }
+
+    let%expect_test "order_windows_by_tree: child after parent, anchored to the parent's pane" =
+      placements
+        [ w "200"; w "201"; w "203"; w "202" ]
+        [
+          ("%201", ("root-sess", session ""));
+          ("%203", ("", session ~parent:"root-sess" ~depth:1 ""));
+          ("%202", ("", session ~parent:"root-sess" ~depth:1 ""));
+        ]
+        String_map.empty;
+      placements
+        [ w "200"; w "204" ]
+        [ ("%204", ("orphan-sess", session ~parent:"elsewhere-sess" ~depth:1 "")) ]
+        String_map.empty;
+      placements
+        [ w "201"; w "205"; w "206" ]
+        [
+          ("%201", ("root-sess", session ""));
+          ("%205", ("kid-sess", session ~parent:"root-sess" ~depth:1 ""));
+          ("%206", ("gk-sess", session ~parent:"kid-sess" ~depth:1 ""));
+        ]
+        String_map.empty;
+      placements
+        [ w "207"; w "208" ]
+        [
+          ("%207", ("a-sess", session ~parent:"b-sess" ""));
+          ("%208", ("b-sess", session ~parent:"a-sess" ""));
+        ]
+        String_map.empty;
+      [%expect
+        {|
+    @200 anchor=-
+    @201 anchor=-
+    @203 anchor=%201
+    @202 anchor=%201
+    @200 anchor=-
+    @204 anchor=-
+    @201 anchor=-
+    @205 anchor=%201
+    @206 anchor=%205
+    @207 anchor=-
+    @208 anchor=%207
+    |}]
+
+    let%expect_test
+        "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
+      let lingering parent =
+        String_map.singleton "run-1"
+          { stamp = None; name = ""; parent; outcome = None; kind = Agent; started = test_at }
+      in
+      placements
+        [ w "201"; w ~run:"run-1" "205" ]
+        [ ("%201", ("root-sess", session "")) ]
+        (lingering "root-sess");
+      placements
+        [ w "201"; w "209"; w ~run:"run-1" "205" ]
+        [
+          ("%201", ("root-sess", session ""));
+          ("%209", ("other-sess", session ""));
+          ("%205", ("kid-sess", session ~parent:"root-sess" ""));
+        ]
+        (lingering "other-sess");
+      placements [ w "200"; w ~run:"run-1" "205" ] [] (lingering "elsewhere-sess");
+      placements [ w ~run:"run-1" "205" ] [] (lingering "nonexistent-sess");
+      placements
+        [ [ pane ~window:"@13" "%21"; pane ~window:"@13" "%101" ]; w "210"; w "211" ]
+        [
+          ("%21", ("top-sess", session ""));
+          ("%101", ("second-sess", session ""));
+          ("%210", ("kid1-sess", session ~parent:"top-sess" ~depth:1 ""));
+          ("%211", ("kid2-sess", session ~parent:"second-sess" ~depth:1 ""));
+        ]
+        String_map.empty;
+      [%expect
+        {|
+    @201 anchor=-
+    @205 anchor=%201
+    @201 anchor=-
+    @205 anchor=%201
+    @209 anchor=-
+    @200 anchor=-
+    @205 anchor=-
+    @205 anchor=-
+    @13 anchor=-
+    @210 anchor=%21
+    @211 anchor=%101
+    |}]
+
+    let%expect_test "window targets: siblings precede parents, next leaves the root subtree" =
+      let windows =
+        windows_in_order
+          (List.concat
+             [
+               w "201";
+               w "209";
+               w ~run:"child1" "202";
+               w ~run:"child2" "203";
+               w ~run:"grandchild" "212";
+             ])
+          (states
+             [
+               ("%201", ("root-session", session ""));
+               ("%202", ("child1-session", session ~parent:"root-session" ""));
+               ("%203", ("child2-session", session ~parent:"root-session" ""));
+               ("%212", ("grandchild-session", session ~parent:"child2-session" ""));
+             ])
+          String_map.empty
+      in
+      List.iter
+        (fun (next, window) ->
+          Printf.printf "%s %s -> %s\n"
+            (if next then "next" else "prev")
+            window
+            (Option.map_or ~default:"-"
+               (fun (p : Tmux.Pane.t) -> Tmux.Window.to_string p.window_id)
+               (Tmux.Exec.window_target ~next
+                  ~session:(Option.get_exn_or "id" (Tmux.Session.of_string "$0"))
+                  ~window:
+                    (Option.get_exn_or "id"
+                       (Tmux.Window.of_string
+                          ("@"
+                          ^ List.assoc ~eq:String.equal window
+                              [
+                                ("other", "209");
+                                ("root", "201");
+                                ("child2", "203");
+                                ("grandchild", "212");
+                              ])))
+                  windows)))
+        [
+          (false, "other");
+          (false, "root");
+          (false, "child2");
+          (false, "grandchild");
+          (true, "child2");
+          (true, "root");
+        ];
+      [%expect
+        {|
+    prev other -> @201
+    prev root -> @209
+    prev child2 -> @202
+    prev grandchild -> @203
+    next child2 -> @209
+    next root -> @209
+    |}]
+
+    let%expect_test "lingering entries carry forward; only a missing outcome is re-read" =
+      let dir = temp () in
+      let id = new_run ~dir "subagent" in
+      let panes = [ pane ~window:"@20" ~dead_at:1. ~run:id "%30" ] in
+      let first = lingering_subagents ~dir panes String_map.empty in
+      let show l =
+        let (l : lingering) = String_map.find id l in
+        Printf.printf "%s %s\n" l.name
+          (Option.map_or ~default:"-" Subrun.string_of_result l.outcome)
+      in
+      show first;
+      Sys.remove (Subrun.meta_path ~dir (Result.get_exn (Subrun.parse_id id)));
+      ignore
+        (Subrun.record_outcome ~dir
+           (Result.get_exn (Subrun.parse_id id))
+           { result = Completed; text = ""; at = None });
+      show (lingering_subagents ~dir panes first);
+      [%expect {|
+    subagent -
+    subagent completed
+    |}]
+
+    let%expect_test "pane_title" =
+      let st = states [ ("%1", ("agent", session "%1")) ] in
+      List.iter
+        (fun title ->
+          Printf.printf "%s -> %s\n" title
+            (Option.value ~default:"(not an agent)"
+               (let p = List.hd (with_programs st [ pane ~title "%1" ]) in
+                State.pane_title p (State.pane_kind ~states:st p))))
+        [
+          "✳ Tmux config";
+          "✳ 2 panes";
+          "π - kido - kido";
+          "π - kido";
+          "π - ";
+          "plain title";
+          "π-no-space";
+          "";
+          "✳ ";
+          "~/src/kido";
+        ];
+      [%expect
+        {|
+    ✳ Tmux config -> ✳ Tmux config
+    ✳ 2 panes -> ✳ 2 panes
+    π - kido - kido -> π - kido - kido
+    π - kido -> π - kido
+    π -  -> π -
+    plain title -> plain title
+    π-no-space -> π-no-space
+     ->
+    ✳  -> ✳
+    ~/src/kido -> ~/src/kido
+    |}]
+
+    let%expect_test "shell_outcome: the last command's exit since the pane was last looked at" =
+      let ended = 1_700_000_100. and visited = 1_700_000_200. in
+      let integrated ?(start = 1_700_000_099.) ?exit ?(running = false) () =
+        pane ~prompt:ended ~start ~running ?exit "%1"
+      in
+      let m seen =
+        let m = model ~started:test_at () in
+        { m with seen }
+      in
+      let show name m p =
+        Printf.printf "%s: %s\n" name
+          (Option.map_or ~default:"none"
+             (fun (e : Tmux.Pane.exit) -> Printf.sprintf "exit %d at %.0f" e.code e.at)
+             (shell_outcome m p))
+      in
+      show "no integration" (m Tmux.Pane.Map.empty) (pane ~exit:(1, ended) "%1");
+      show "running" (m Tmux.Pane.Map.empty)
+        (integrated ~running:true ~start:(ended +. 1.) ~exit:(1, ended) ());
+      show "clean exit, not yet visited" (m Tmux.Pane.Map.empty) (integrated ~exit:(0, ended) ());
+      show "nonzero exit, not yet visited" (m Tmux.Pane.Map.empty) (integrated ~exit:(1, ended) ());
+      show "nonzero exit, pane visited since"
+        (m (Tmux.Pane.Map.singleton (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) visited))
+        (integrated ~exit:(1, ended) ());
+      show "no status on record" (m Tmux.Pane.Map.empty) (integrated ());
+      show "no command has run" (m Tmux.Pane.Map.empty) (pane ~prompt:ended ~exit:(0, ended) "%1");
+      show "no end time" (m Tmux.Pane.Map.empty) (integrated ~exit:(1, 0.) ());
+      [%expect
+        {|
+    no integration: none
+    running: none
+    clean exit, not yet visited: exit 0 at 1700000100
+    nonzero exit, not yet visited: exit 1 at 1700000100
+    nonzero exit, pane visited since: none
+    no status on record: none
+    no command has run: none
+    no end time: none
+    |}]
+
+    (* Each step says what tmux reports and how much time passed, in milliseconds: tmux's own
+   timestamps are whole seconds, and what is tested is kido's observation of the pane. *)
+    let%expect_test "shell_indicator debounce on a controlled clock" =
+      let cases =
+        [
+          ( "short command draws nothing",
+            true,
+            [ (0, false, -1); (50, true, -1); (50, true, -1); (50, false, 0) ] );
+          ( "long command draws running, then holds",
+            true,
+            [
+              (0, false, -1);
+              (100, true, -1);
+              (100, true, -1);
+              (100, true, -1);
+              (700, true, -1);
+              (100, false, 0);
+              (400, false, 0);
+              (100, false, 0);
+            ] );
+          ( "clean exit elsewhere replaces the green at once",
+            false,
+            [ (0, false, -1); (100, true, -1); (300, true, -1); (100, false, 0); (500, false, 0) ]
+          );
+          ( "failed exit elsewhere replaces the green at once",
+            false,
+            [ (0, false, -1); (100, true, -1); (300, true, -1); (100, false, 1); (500, false, 1) ]
+          );
+          ( "a second command inside the hold keeps the green",
+            true,
+            [
+              (0, false, -1);
+              (100, true, -1);
+              (300, true, -1);
+              (100, false, 0);
+              (100, true, 0);
+              (50, false, 0);
+              (500, false, 0);
+            ] );
+          ( "a command after the hold starts blank again",
+            true,
+            [
+              (0, false, -1);
+              (100, true, -1);
+              (300, true, -1);
+              (100, false, 0);
+              (600, false, 0);
+              (100, true, 0);
+              (200, true, 0);
+            ] );
+          ( "a new command keeps the outcome until it is drawn",
+            false,
+            [
+              (0, false, -1);
+              (100, true, -1);
+              (300, true, -1);
+              (100, false, 0);
+              (600, false, 0);
+              (100, true, -1);
+              (200, true, -1);
+            ] );
+        ]
+      in
+      List.iter
+        (fun (name, on_pane, steps) ->
+          print_endline name;
+          let clock = ref test_at and ms = ref 0 in
+          let m = ref (model ~clock ()) in
+          List.iter
+            (fun (adv, run, stat) ->
+              ms := !ms + adv;
+              clock := test_at +. (Float.of_int !ms /. 1000.);
+              let p =
+                pane ~prompt:(test_at -. 1.) ~running:run ~start:test_at
+                  ?exit:
+                    (if stat >= 0 then Some (stat, Float.of_int (int_of_float !clock)) else None)
+                  "%1"
+              in
+              m :=
+                track
+                  {
+                    !m with
+                    at = !clock;
+                    snap =
+                      {
+                        empty with
+                        panes = [ p ];
+                        active = (if on_pane then Tmux.Pane.of_string "%1" else None);
+                      };
+                  };
+              Printf.printf "  +%dms: %s%s\n" adv
+                ((function
+                   | None -> "none"
+                   | Some (Status Running) -> "running"
+                   | Some Done -> "done"
+                   | Some Failed -> "failed"
+                   | Some _ -> "other")
+                   (shell_indicator !m
+                      (Tmux.Pane.Map.find
+                         (Option.get_exn_or "id" (Tmux.Pane.of_string "%1"))
+                         !m.phases)))
+                (if shell_pending !m then " pending" else ""))
+            steps)
+        cases;
+      [%expect
+        {|
+    short command draws nothing
+      +0ms: none
+      +50ms: none pending
+      +50ms: none pending
+      +50ms: none
+    long command draws running, then holds
+      +0ms: none
+      +100ms: none pending
+      +100ms: none pending
+      +100ms: running
+      +700ms: running
+      +100ms: running pending
+      +400ms: running pending
+      +100ms: none
+    clean exit elsewhere replaces the green at once
+      +0ms: none
+      +100ms: none pending
+      +300ms: running
+      +100ms: done pending
+      +500ms: done
+    failed exit elsewhere replaces the green at once
+      +0ms: none
+      +100ms: none pending
+      +300ms: running
+      +100ms: failed pending
+      +500ms: failed
+    a second command inside the hold keeps the green
+      +0ms: none
+      +100ms: none pending
+      +300ms: running
+      +100ms: running pending
+      +100ms: running
+      +50ms: running pending
+      +500ms: none
+    a command after the hold starts blank again
+      +0ms: none
+      +100ms: none pending
+      +300ms: running
+      +100ms: running pending
+      +600ms: none
+      +100ms: none pending
+      +200ms: running
+    a new command keeps the outcome until it is drawn
+      +0ms: none
+      +100ms: none pending
+      +300ms: running
+      +100ms: done pending
+      +600ms: done
+      +100ms: done pending
+      +200ms: running
+    |}]
+
+    let%expect_test "phases and latches are forgotten with their panes" =
+      let m = model ~started:test_at () in
+      let m =
+        track
+          {
+            m with
+            snap =
+              {
+                empty with
+                active = Tmux.Pane.of_string "%1";
+                panes = [ pane ~prompt:test_at ~running:true ~start:test_at "%1" ];
+              };
+          }
+      in
+      Printf.printf "phase recorded: %b\n"
+        (Tmux.Pane.Map.mem (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) m.phases);
+      let m = track { m with snap = empty } in
+      Printf.printf "phases after the pane is gone: %d\n" (Tmux.Pane.Map.cardinal m.phases);
+      [%expect {|
+    phase recorded: true
+    phases after the pane is gone: 0
+    |}]
+
+    let%expect_test
+        "same ignores a heartbeat's ts and catches any other change; panes compare by exclusion" =
+      let snap ts =
+        { empty with panes = [ pane "%1" ]; states = states [ ("%1", ("i", session ~ts "")) ] }
+      in
+      Printf.printf "ts only: %b\n" (same (snap test_at) (snap (test_at +. 60.)));
+      Printf.printf "status: %b\n"
+        (same (snap test_at)
+           { (snap test_at) with panes = with_programs (snap test_at).states (snap test_at).panes });
+      let p = pane ~command:"zsh" "%1" in
+      Printf.printf "layout: %b\n"
+        (same { empty with panes = [ p ] }
+           { empty with panes = [ { p with window_layout = "x" } ] });
+      Printf.printf "window name: %b\n"
+        (same { empty with panes = [ p ] } { empty with panes = [ { p with window_name = "x" } ] });
+      Printf.printf "exit: %b\n"
+        (same { empty with panes = [ p ] }
+           { empty with panes = [ { p with last_exit = Some { code = 1; at = 1. } } ] });
+      Printf.printf "command: %b\n"
+        (same { empty with panes = [ p ] }
+           { empty with panes = [ { p with current_command = "vim" } ] });
+      [%expect
+        {|
+    ts only: true
+    status: false
+    layout: true
+    window name: false
+    exit: false
+    command: false
+    |}]
+
+    let%expect_test
+        "the remote latch: same-second prompt, dropped with the session, forgotten with the pane" =
+      let clock = ref test_at in
+      let m = ref (model ~clock ()) in
+      let step d p =
+        clock := !clock +. d;
+        m := ssh_tick clock !m p;
+        not (ssh_remote !m p)
+      in
+      let start = ssh_pane test_at test_at true (-1) in
+      Printf.printf "prompt in the ssh's own second stays running: %b\n"
+        (step 0. start && step 0.3 start);
+      ignore (step 1. (ssh_pane test_at (test_at +. 1.) true (-1)));
+      Printf.printf "the prompt after the first remote command reports: %b\n"
+        (not (step 1. (ssh_pane (test_at +. 2.) (test_at +. 1.) false 0)));
+      let m2 = ref (model ~clock ()) in
+      m2 := ssh_tick clock !m2 (ssh_pane (test_at +. 1.) test_at false (-1));
+      Printf.printf "latched: %b\n" (ssh_remote !m2 (ssh_pane 0. 0. false (-1)));
+      m2 :=
+        track
+          {
+            !m2 with
+            snap =
+              {
+                empty with
+                client = client "alpha";
+                panes =
+                  [ pane ~session:"alpha" ~command:"zsh" ~pid:4242 ~prompt:(test_at +. 2.) "%1" ];
+              };
+          };
+      Printf.printf "dropped once the pane is a local shell: %b\n"
+        (not (ssh_remote !m2 (ssh_pane 0. 0. false (-1))));
+      let next = ssh_pane (test_at +. 2.) (test_at +. 3.) true (-1) in
+      m2 := ssh_tick clock !m2 next;
+      Printf.printf "a second ssh is judged afresh: %b\n" (not (ssh_remote !m2 next));
+      m2 := track { !m2 with snap = empty };
+      Printf.printf "forgotten with the pane: %b\n" (Tmux.Pane.Map.is_empty !m2.ssh_remote);
+      [%expect
+        {|
+    prompt in the ssh's own second stays running: true
+    the prompt after the first remote command reports: true
+    latched: true
+    dropped once the pane is a local shell: true
+    a second ssh is judged afresh: true
+    forgotten with the pane: true
+    |}]
+
+    let%expect_test "a pause is the wall clock outrunning the monotonic one" =
+      let reading wall mono_s : reading =
+        { wall; mono = Mtime.of_uint64_ns (Int64.of_float (mono_s *. 1e9)) }
+      in
+      List.iter
+        (fun (name, wall, mono) ->
+          Printf.printf "%-26s %b\n" name
+            (detect_pause (reading 1000. 1000.) (reading (1000. +. wall) (1000. +. mono))))
+        [
+          ("awake, tick on schedule", 0.1, 0.1);
+          ("awake, tick genuinely slow", 300., 300.);
+          ("just under the slack", 4.999, 0.);
+          ("just over the slack", 5.001, 0.);
+          ("asleep for minutes", 300., 0.05);
+        ];
+      [%expect
+        {|
+    awake, tick on schedule    false
+    awake, tick genuinely slow false
+    just under the slack       false
+    just over the slack        true
+    asleep for minutes         true
+    |}]
+  end)

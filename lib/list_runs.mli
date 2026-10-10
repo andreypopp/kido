@@ -1,4 +1,4 @@
-type status = Tmux.Program_status.state option [@@deriving to_yojson]
+type status = Tmux.Program_status.state option
 
 type agent_info = {
   id : string;

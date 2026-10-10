@@ -14,8 +14,15 @@
   matrix
   matrix.text
   threads.posix)
+ (inline_tests
+  (deps
+   ../bin/main.exe
+   (source_tree %{project_root}/share/bin)
+   %{project_root}/share/shim.sh
+   %{project_root}/share/pi/kido-status.ts
+   %{project_root}/share/pi/kido-agents.ts))
  (preprocess
-  (pps ppx_deriving_yojson)))
+  (pps ppx_deriving_yojson ppx_expect)))
 
 (rule
  (target embedded.ml)

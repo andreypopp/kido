@@ -1,6 +1,3 @@
-open Kido
-include Tmux_test.Fixture
-
 let envelope raw =
   match Yojson.Safe.from_string raw with
   | `Assoc f as j
@@ -20,21 +17,6 @@ let dead_pid () =
   let pid = Unix.create_process "true" [| "true" |] Unix.stdin Unix.stdout Unix.stderr in
   ignore (Unix.waitpid [] pid);
   pid
-
-let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_700_000_000.)
-    ?(inbox = "") ?parent ?(depth = 0) () : State.session =
-  {
-    agent;
-    name = "";
-    pane = Tmux.Pane.of_string pane;
-    pid;
-    ts;
-    inbox;
-    activity = "";
-    parent = Option.map (fun session : State.parent -> { session; pid = 0 }) parent;
-    depth;
-    model = "";
-  }
 
 let start_inbox ~reply =
   let dir = Filename.temp_dir "kido-inbox" "" in
@@ -85,27 +67,3 @@ let start_inbox ~reply =
       let r = List.rev !received in
       Mutex.unlock mu;
       r )
-
-let run ~dir ?(name = "") ?(kind = Subrun.Agent) ?(parent = "") ?(pane = "") ?(pid = 0) ?(cwd = "")
-    ?(started_at = 1_700_000_000.) ?command id =
-  let id = Result.get_exn (Subrun.parse_id id) in
-  Subrun.create ~dir id "do the thing";
-  Option.iter (Subrun.write_command ~dir id) command;
-  let meta : Subrun.meta =
-    {
-      id;
-      name;
-      kind;
-      parent_session = parent;
-      depth = 1;
-      pane = Tmux.Pane.of_string pane;
-      pid;
-      cwd;
-      model = "";
-      tools = [];
-      keep_alive = false;
-      started_at;
-    }
-  in
-  Subrun.write_meta ~dir meta;
-  meta

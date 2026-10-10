@@ -495,3 +495,862 @@ let run ~standalone (opts : S.options) =
   Fun.protect
     ~finally:(fun () -> Tmux.Conn.close conn)
     (fun () -> Mosaic.run ~matrix { init; update; view; subscriptions })
+
+let%test_module "Tests" =
+  (module struct
+    open View_fixture
+
+    let opts ?(dir = temp ()) () : Sidebar.options =
+      {
+        interval = Sidebar.default_interval;
+        client = "";
+        socket = None;
+        dir;
+        threshold = 180.;
+        grace = 30.;
+      }
+
+    let agent_pane ?run w p title = pane ~window:w ~title ?run p
+    let shell_pane w p = pane ~window:w ~command:"zsh" p
+    let agent_state id parent = (id, session ~parent "")
+
+    let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
+      let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
+      { m with started; at = !clock }
+
+    let pane_label (m : Sidebar.model) p =
+      let p =
+        match Tmux.Pane.find m.snap.panes p.Tmux.Pane.pane_id with
+        | Some current -> { p with program_status = current.program_status }
+        | None -> p
+      in
+      Sidebar.pane_label m (p, State.pane_kind ~states:m.snap.states p)
+
+    let rendered_lines m = Array.to_list (lines (Sidebar.rebuild (Sidebar.classify m)))
+
+    let render ?dir ?(current = "sess") ?(at = test_at) panes st =
+      let m = model ?dir ~clock:(ref at) () in
+      let states = states st in
+      let snap =
+        {
+          Sidebar.empty with
+          client = client current;
+          panes = with_programs states panes;
+          states;
+          lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes Sidebar.String_map.empty;
+        }
+      in
+      List.iter (fun r -> print_endline (row_text ~now:m.at r)) (rendered_lines { m with snap })
+
+    let label m (p : Tmux.Pane.t) =
+      row_text ~now:m.Sidebar.at (Row ("", p.session_id, pane_label m p))
+
+    let ssh_tick clock m p =
+      Sidebar.track
+        { m with at = !clock; snap = { Sidebar.empty with client = client "alpha"; panes = [ p ] } }
+
+    let%expect_test "a subagent's window nests under the pane that spawned it" =
+      render
+        [
+          agent_pane "@13" "%22" "orchestrator";
+          shell_pane "@13" "%47";
+          agent_pane "@20" "%30" "subagent";
+        ]
+        [ ("%22", agent_state "root-sess" ""); ("%30", agent_state "kid-sess" "root-sess") ];
+      [%expect {|
+    sess
+    ┌◼orchestrator
+    │ └◼subagent
+    └ zsh
+    |}]
+
+    let%expect_test "field() keeps the three cases aligned" =
+      render
+        [ agent_pane "@1" "%1" "orchestrator"; pane ~title:"idle-agent" "%2"; shell_pane "@1" "%3" ]
+        [ ("%1", agent_state "root-sess" ""); ("%2", ("idle-sess", session "")) ];
+      [%expect {|
+    sess
+    ┌◼orchestrator
+    ├◼idle-agent
+    └ zsh
+    |}]
+
+    let%expect_test "sibling subagents form one group" =
+      render
+        [
+          agent_pane "@13" "%22" "orchestrator";
+          shell_pane "@13" "%47";
+          agent_pane "@20" "%30" "subagent-a";
+          agent_pane "@21" "%31" "subagent-b";
+          agent_pane "@22" "%32" "subagent-c";
+        ]
+        [
+          ("%22", agent_state "root-sess" "");
+          ("%30", agent_state "kid-a-sess" "root-sess");
+          ("%31", agent_state "kid-b-sess" "root-sess");
+          ("%32", agent_state "kid-c-sess" "root-sess");
+        ];
+      [%expect
+        {|
+    sess
+    ┌◼orchestrator
+    │ ├◼subagent-a
+    │ ├◼subagent-b
+    │ └◼subagent-c
+    └ zsh
+    |}]
+
+    let%expect_test "a two-pane sibling keeps its own bracket beside the group glyph" =
+      render
+        [
+          agent_pane "@13" "%22" "orchestrator";
+          agent_pane "@20" "%30" "subagent-a";
+          shell_pane "@20" "%40";
+          agent_pane "@21" "%31" "subagent-b";
+        ]
+        [
+          ("%22", agent_state "root-sess" "");
+          ("%30", agent_state "kid-a-sess" "root-sess");
+          ("%31", agent_state "kid-b-sess" "root-sess");
+        ];
+      [%expect
+        {|
+    sess
+    ╶◼orchestrator
+      ├┌◼subagent-a
+      │└ zsh
+      └◼subagent-b
+    |}]
+
+    let%expect_test "groups at depth two" =
+      render
+        [
+          agent_pane "@1" "%1" "root";
+          agent_pane "@2" "%2" "subagent-a";
+          agent_pane "@3" "%3" "subagent-b";
+          agent_pane "@4" "%4" "grandkid-a1";
+          agent_pane "@5" "%5" "grandkid-b1";
+          agent_pane "@6" "%6" "grandkid-b2";
+        ]
+        [
+          ("%1", agent_state "root-sess" "");
+          ("%2", agent_state "a-sess" "root-sess");
+          ("%3", agent_state "b-sess" "root-sess");
+          ("%4", agent_state "a1-sess" "a-sess");
+          ("%5", agent_state "b1-sess" "b-sess");
+          ("%6", agent_state "b2-sess" "b-sess");
+        ];
+      [%expect
+        {|
+    sess
+    ╶◼root
+      ├◼subagent-a
+      │ └◼grandkid-a1
+      └◼subagent-b
+        ├◼grandkid-b1
+        └◼grandkid-b2
+    |}]
+
+    let%expect_test "two root agents in one window are the window's own bracket" =
+      render
+        [ agent_pane "@1" "%1" "first"; agent_pane "@1" "%2" "second" ]
+        [ ("%1", agent_state "first-sess" ""); ("%2", agent_state "second-sess" "") ];
+      [%expect {|
+    sess
+    ┌◼first
+    └◼second
+    |}]
+
+    let%expect_test
+        "the parent's column is carried across a nested child, and stops at the last pane" =
+      render
+        [
+          shell_pane "@13" "%10";
+          agent_pane "@13" "%22" "orchestrator";
+          shell_pane "@13" "%47";
+          agent_pane "@20" "%30" "subagent";
+          shell_pane "@20" "%31";
+        ]
+        [ ("%22", agent_state "root-sess" ""); ("%30", agent_state "kid-sess" "root-sess") ];
+      render
+        [
+          shell_pane "@13" "%10";
+          agent_pane "@13" "%22" "orchestrator";
+          agent_pane "@20" "%30" "subagent";
+        ]
+        [ ("%22", agent_state "root-sess" ""); ("%30", agent_state "kid-sess" "root-sess") ];
+      [%expect
+        {|
+    sess
+    ┌ zsh
+    ├◼orchestrator
+    │ └┌◼subagent
+    │  └ zsh
+    └ zsh
+    sess
+    ┌ zsh
+    └◼orchestrator
+      └◼subagent
+    |}]
+
+    let%expect_test
+        "nesting is the walk's, not the reported depth's; an orphan is a root; a cycle drops nobody"
+        =
+      render
+        [ agent_pane "@1" "%1" "root"; agent_pane "@2" "%2" "kid"; agent_pane "@3" "%3" "grandkid" ]
+        [
+          ("%1", agent_state "root-sess" "");
+          ("%2", ("kid-sess", session ~parent:"root-sess" ~depth:1 ""));
+          ("%3", ("gk-sess", session ~parent:"kid-sess" ~depth:1 ""));
+        ];
+      render
+        [ agent_pane "@1" "%1" "unrelated"; agent_pane "@2" "%2" "orphan" ]
+        [
+          ("%1", agent_state "other-sess" "");
+          ("%2", ("orphan-sess", session ~parent:"elsewhere-sess" ~depth:1 ""));
+        ];
+      render
+        [ agent_pane "@1" "%207" "a"; agent_pane "@2" "%208" "b" ]
+        [ ("%207", agent_state "a-sess" "b-sess"); ("%208", agent_state "b-sess" "a-sess") ];
+      [%expect
+        {|
+    sess
+    ╶◼root
+      └◼kid
+        └◼grandkid
+    sess
+    ╶◼unrelated
+    ╶◼orphan
+    sess
+    ╶◼a
+      └◼b
+    |}]
+
+    let%expect_test "the same state renders the same rows every time" =
+      let panes =
+        [
+          agent_pane "@1" "%1" "root";
+          shell_pane "@1" "%2";
+          agent_pane "@2" "%3" "kid-a";
+          agent_pane "@3" "%4" "kid-b";
+          agent_pane "@4" "%5" "grandkid";
+        ]
+      in
+      let st =
+        [
+          ("%1", agent_state "root-sess" "");
+          ("%3", agent_state "a-sess" "root-sess");
+          ("%4", agent_state "b-sess" "root-sess");
+          ("%5", agent_state "g-sess" "b-sess");
+        ]
+      in
+      let rows () =
+        let m = model () in
+        let states = states st in
+        rendered_lines
+          {
+            m with
+            snap =
+              {
+                Sidebar.empty with
+                client = client "sess";
+                panes = with_programs states panes;
+                states;
+              };
+          }
+        |> List.map (row_text ~now:m.at)
+      in
+      let want = rows () in
+      Printf.printf "stable: %b\n"
+        (List.for_all (fun _ -> List.equal String.equal (rows ()) want) (List.range 1 20));
+      List.iter print_endline want;
+      [%expect
+        {|
+    stable: true
+    sess
+    ┌◼root
+    │ ├◼kid-a
+    │ └◼kid-b
+    │   └◼grandkid
+    └ zsh
+    |}]
+
+    let%expect_test
+        "a lingering subagent shows its own name, dead or alive, and its outcome once recorded" =
+      let dir = temp () in
+      let id = new_run ~dir "fix the flaky test" in
+      render ~dir [ pane ~window:"@20" ~dead_at:1. ~run:id "%30" ] [];
+      render ~dir [ pane ~window:"@20" ~run:id "%30" ] [];
+      render ~dir [ pane ~window:"@20" ~run:id "%30"; shell_pane "@20" "%31" ] [];
+      List.iter
+        (fun result ->
+          render ~dir
+            [ pane ~window:"@20" ~dead_at:1. ~run:(new_run ~dir ~result "subagent") "%30" ]
+            [])
+        [ Subrun.Completed; Failed; Died; Stopped ];
+      render ~dir [ pane ~window:"@20" ~dead_at:1. ~run:"no-such-run" "%30" ] [];
+      [%expect
+        {|
+    sess
+    ╶×fix the flaky test
+    sess
+    ╶◼fix the flaky test 0s
+    sess
+    ┌◼fix the flaky test 0s
+    └ zsh
+    sess
+    ╶✓subagent completed
+    sess
+    ╶×subagent failed
+    sess
+    ╶×subagent died
+    sess
+    ╶×subagent stopped
+    sess
+    ╶
+    |}]
+
+    let%expect_test "a running bash run shows its elapsed time, and its outcome once it ended" =
+      let dir = temp () in
+      let run = new_run ~dir ~kind:Bash "build" in
+      List.iter
+        (fun d -> render ~dir ~at:(test_at +. d) [ pane ~window:"@20" ~run "%30" ] [])
+        [ 0.; 65. ];
+      render ~dir ~at:(test_at +. 65.)
+        [
+          pane ~window:"@20" ~dead_at:1.
+            ~run:(new_run ~dir ~kind:Bash ~result:Completed "build")
+            "%30";
+        ]
+        [];
+      [%expect
+        {|
+    sess
+    ╶◼build 0s
+    sess
+    ╶◼build 1m05s
+    sess
+    ╶✓build completed
+    |}]
+
+    let%expect_test "a live subagent uses its run start unless it has activity text" =
+      let dir = temp () in
+      let run = new_run ~dir "helper" in
+      let panes = [ agent_pane ~run "@20" "%30" "helper" ] in
+      List.iter
+        (fun activity ->
+          render ~dir ~at:(test_at +. 65.) panes
+            [ ("%30", (run, session ~activity ~ts:(test_at +. 60.) "")) ])
+        [ ""; "checking tests"; "" ];
+      [%expect
+        {|
+    sess
+    ╶◼helper 1m05s
+    sess
+    ╶◼helper checking tests
+    sess
+    ╶◼helper 1m05s
+    |}]
+
+    let%expect_test "run metadata survives activity text and clears its clock on death or outcome" =
+      let p = agent_pane ~run:"run" "@20" "%30" "helper" in
+      let m =
+        {
+          (model ()) with
+          snap =
+            {
+              Sidebar.empty with
+              states = states [ ("%30", ("run", session ~activity:"checking tests" "")) ];
+              panes = with_programs (states [ ("%30", ("run", session "")) ]) [ p ];
+              lingering =
+                Sidebar.String_map.singleton "run"
+                  {
+                    Sidebar.stamp = None;
+                    name = "helper";
+                    parent = "";
+                    outcome = None;
+                    kind = Agent;
+                    started = test_at;
+                  };
+            };
+        }
+      in
+      List.iter
+        (fun (p, outcome) ->
+          let lingering =
+            Sidebar.String_map.map
+              (fun (l : Sidebar.lingering) -> { l with outcome })
+              m.snap.lingering
+          in
+          let row = pane_label { m with snap = { m.snap with lingering } } p in
+          match row.run with
+          | None -> print_endline "no run"
+          | Some run ->
+              Printf.printf "%s %s %s\n" (Subrun.string_of_kind run.kind)
+                (Option.map_or ~default:"-" (fun _ -> "started") run.started)
+                (row_text ~now:test_at
+                   (Row ("", Option.get_exn_or "id" (Tmux.Session.of_string "$0"), row))))
+        [ (p, None); ({ p with dead_at = Some 1. }, None); (p, Some Completed) ];
+      [%expect
+        {|
+    agent started ◼helper checking tests
+    agent - ×helper
+    agent - ✓helper completed
+    |}]
+
+    let%expect_test
+        "elapsed time is compact: seconds, then minutes and seconds, then hours and minutes" =
+      List.iter
+        (fun s -> Printf.printf "%g %s\n" s (elapsed s))
+        [ -3.; 0.; 0.99; 1.; 59.9; 60.; 65.; 3599.; 3600.; 3720.; 90000. ];
+      [%expect
+        {|
+    -3 0s
+    0 0s
+    0.99 0s
+    1 1s
+    59.9 59s
+    60 1m00s
+    65 1m05s
+    3599 59m59s
+    3600 1h00m
+    3720 1h02m
+    90000 25h00m
+    |}]
+
+    (* With the interval alone, a displayed second changes up to a whole tick late. *)
+    let%expect_test "a live run wakes the tick at its next second boundary" =
+      let dir = temp () in
+      let clock = ref test_at in
+      let wait panes =
+        let side, _ =
+          Sidebar.step (model ~dir ~clock ())
+            {
+              Sidebar.empty with
+              client = client "sess";
+              panes;
+              lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
+            }
+        in
+        Printf.printf "%.3f\n" (next_wait (make ~standalone:false side))
+      in
+      let bash = [ pane ~window:"@20" ~run:(new_run ~dir ~kind:Bash "build") "%30" ] in
+      let agent = [ pane ~window:"@20" ~run:(new_run ~dir "helper") "%30" ] in
+      List.iter
+        (fun (at, panes) ->
+          clock := test_at +. at;
+          wait panes)
+        [ (2.3, bash); (2.95, bash); (2.95, agent) ];
+      [%expect {|
+    0.100
+    0.050
+    0.050
+    |}]
+
+    let%expect_test
+        "a lingering subagent still nests, and a live split of a keepAlive pi is the bug report" =
+      let dir = temp () in
+      let id = new_run ~dir ~parent:"root-sess" "subagent" in
+      render ~dir
+        [ agent_pane "@13" "%22" "orchestrator"; pane ~window:"@20" ~dead_at:1. ~run:id "%30" ]
+        [ ("%22", agent_state "root-sess" "") ];
+      render
+        [
+          agent_pane "@13" "%22" "working-on-kido";
+          shell_pane "@20" "%5";
+          agent_pane ~run:"run-1" "@20" "%4" "helper";
+        ]
+        [
+          ("%22", agent_state "root-sess" "");
+          ("%4", ("helper-sess", session ~parent:"root-sess" ""));
+        ];
+      render
+        [
+          agent_pane "@13" "%21" "top-level";
+          agent_pane "@13" "%101" "second";
+          agent_pane "@20" "%30" "subagent-b";
+        ]
+        [
+          ("%21", agent_state "top-sess" "");
+          ("%101", agent_state "second-sess" "");
+          ("%30", agent_state "kid-sess" "second-sess");
+        ];
+      [%expect
+        {|
+    sess
+    ╶◼orchestrator
+      └×subagent
+    sess
+    ╶◼working-on-kido
+      └┌◼helper
+       └ zsh
+    sess
+    ┌◼top-level
+    └◼second
+      └◼subagent-b
+    |}]
+
+    (* The pane is driven through Update with a snapshot that never changes: the regression the pending
+   gates exist for, since with them gone every assertion still describes a correct indicator while
+   the row freezes because rebuild is never called. *)
+    let%expect_test "the debounce and the stall both redraw on a quiet tick" =
+      let clock = ref test_at in
+      let m = ref (make ~standalone:false (model ~clock ())) in
+      let green () =
+        Array.exists
+          (fun (l : line) ->
+            match l with
+            | Row (_, _, { pane; _ })
+              when Tmux.Pane.equal pane (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) ->
+                List.exists (fun (s : span) -> String.equal s.text "◼") (spans ~now:!clock l)
+            | _ -> false)
+          !m.lines
+      in
+      let snap running =
+        let p =
+          pane ~session:"alpha" ~command:"zsh" ~prompt:(test_at -. 1.) ~running ~start:test_at
+            ?exit:(if running then None else Some (0, test_at))
+            "%1"
+        in
+        {
+          Sidebar.empty with
+          client = client "alpha";
+          active = Tmux.Pane.of_string "%1";
+          panes = [ p ];
+        }
+      in
+      let tick d running =
+        clock := !clock +. d;
+        m := fst (update (Snapshot (snap running)) !m);
+        Printf.printf "+%.2fs %s: green=%b\n" d
+          (if running then "running" else "stopped")
+          (green ())
+      in
+      tick 0. true;
+      tick Sidebar.shell_run_delay true;
+      tick 1. false;
+      tick (Sidebar.shell_run_hold -. 0.05) false;
+      tick 0.1 false;
+      let dir = temp () in
+      let m =
+        ref
+          (make ~standalone:false
+             { (model ~dir ~clock ()) with opts = { (opts ~dir ()) with threshold = 60. } })
+      in
+      let snap =
+        {
+          Sidebar.empty with
+          client = client "alpha";
+          active = Tmux.Pane.of_string "%1";
+          panes =
+            with_programs
+              (states [ ("%1", ("i", session ~ts:!clock "")) ])
+              [ pane ~session:"alpha" ~title:"wedged" "%1" ];
+          states = states [ ("%1", ("i", session ~ts:!clock "")) ];
+        }
+      in
+      let stalled () =
+        Array.exists
+          (fun r -> List.exists (fun (s : span) -> String.equal s.text "!") (spans ~now:!clock r))
+          !m.lines
+      in
+      let tick d =
+        clock := !clock +. d;
+        m := fst (update (Snapshot snap) !m);
+        Printf.printf "+%.0fs: stalled=%b\n" d (stalled ())
+      in
+      tick 0.;
+      tick 30.;
+      tick 30.;
+      [%expect
+        {|
+    +0.00s running: green=false
+    +0.20s running: green=true
+    +1.00s stopped: green=true
+    +0.45s stopped: green=true
+    +0.10s stopped: green=false
+    +0s: stalled=false
+    +30s: stalled=false
+    +30s: stalled=true
+    |}]
+
+    let%expect_test
+        "a local integrated shell shows its command line while running, never idle or interactive" =
+      let clock = ref test_at in
+      let m = ref (model ~clock ()) in
+      let tick p =
+        m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ] } };
+        print_endline (label !m p)
+      in
+      tick
+        (pane ~command:"make" ~prompt:(test_at -. 1.) ~start:test_at ~running:true
+           ~command_line:"make -j8 test" "%1");
+      clock := !clock +. 1.;
+      tick
+        (pane ~command:"zsh" ~prompt:(test_at +. 2.) ~start:test_at
+           ~exit:(0, test_at +. 1.)
+           ~command_line:"make -j8 test" "%1");
+      tick (pane ~command:"make" ~prompt:(test_at -. 1.) ~start:test_at ~running:true "%1");
+      tick
+        (pane ~command:"nvim" ~alternate:true ~prompt:(test_at -. 1.) ~start:test_at ~running:true
+           ~command_line:"nvim ui.go" "%1");
+      tick
+        (pane ~command:"zsh" ~prompt:test_at ~start:(test_at -. 1.)
+           ~exit:(0, test_at -. 1.)
+           ~command_line:"make -j8 test" "%1");
+      [%expect {|
+     make -j8 test
+    ✓zsh
+    ✓make
+     nvim
+    ✓zsh
+    |}]
+
+    let%expect_test "an ssh runs until a remote prompt, then follows the remote shell" =
+      let clock = ref test_at in
+      let m = ref (model ~clock ()) in
+      let step d p =
+        clock := !clock +. d;
+        m := ssh_tick clock !m p;
+        Printf.printf "remote=%b %s: %s\n" (Sidebar.ssh_remote !m p)
+          ((function
+             | None -> "none"
+             | Some (Sidebar.Status Running) -> "running"
+             | Some Done -> "done"
+             | Some Failed -> "failed"
+             | Some _ -> "other")
+             (Option.flat_map (Sidebar.shell_indicator !m)
+                (Tmux.Pane.Map.find_opt
+                   (Option.get_exn_or "id" (Tmux.Pane.of_string "%1"))
+                   !m.phases)))
+          (label !m p)
+      in
+      step 0.
+        (ssh_pane ~command_line:("ssh " ^ "deploy@build-box") (test_at -. 1.) test_at true (-1));
+      step 1. (ssh_pane (test_at +. 1.) test_at false (-1));
+      step 1. (ssh_pane ~command_line:"sleep 45" (test_at +. 1.) (test_at +. 2.) true (-1));
+      step Sidebar.shell_run_delay
+        (ssh_pane ~command_line:"sleep 45" (test_at +. 1.) (test_at +. 2.) true (-1));
+      step 1. (ssh_pane ~command_line:"sleep 45" (test_at +. 4.) (test_at +. 2.) false 0);
+      print_endline "-- no integration on the far side";
+      let m = ref (model ~clock ()) in
+      let p = ssh_pane test_at test_at true (-1) in
+      m := ssh_tick clock !m p;
+      let running =
+        List.for_all
+          (fun _ ->
+            clock := !clock +. 1.;
+            m := ssh_tick clock !m p;
+            (not (Sidebar.ssh_remote !m p))
+            && Option.exists
+                 (function Sidebar.Status State.Running -> true | _ -> false)
+                 (Option.flat_map (Sidebar.shell_indicator !m)
+                    (Tmux.Pane.Map.find_opt
+                       (Option.get_exn_or "id" (Tmux.Pane.of_string "%1"))
+                       !m.phases)))
+          (List.range 1 10)
+      in
+      Printf.printf "running for ten ticks: %b\n" running;
+      [%expect
+        {|
+    remote=false none:  ssh deploy@build-box
+    remote=true none:  ssh deploy@build-box
+    remote=true none:  ssh deploy@build-box: sleep 45
+    remote=true running: ◼ssh deploy@build-box: sleep 45
+    remote=true done: ✓ssh deploy@build-box
+    -- no integration on the far side
+    running for ten ticks: true
+    |}]
+
+    let%expect_test "a new ssh destination drops the remote latch without a local-shell tick" =
+      let clock = ref test_at in
+      let m = ssh_tick clock (model ~clock ()) (ssh_pane (test_at +. 1.) test_at false (-1)) in
+      let p =
+        {
+          (ssh_pane ~command_line:"ssh alias" (test_at +. 1.) (test_at +. 2.) true (-1)) with
+          ssh = Some ("deploy@realm", "next.test");
+        }
+      in
+      let m = ssh_tick clock m p in
+      Printf.printf "remote=%b\n" (Sidebar.ssh_remote m p);
+      Printf.printf "%s\n" (label m p);
+      [%expect {|
+    remote=false
+     ssh deploy@realm@next.test
+    |}]
+
+    let%expect_test
+        "a program that has taken the terminal draws nothing, and leaves no hold on the way out" =
+      let clock = ref test_at in
+      let m = ref (model ~clock ()) in
+      let warm p =
+        clock := test_at;
+        m := { (model ~clock ()) with phases = Tmux.Pane.Map.empty };
+        let tick () =
+          m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ] } }
+        in
+        tick ();
+        clock := !clock +. 0.5;
+        tick ();
+        label !m p
+      in
+      let p ?(alternate = false) command =
+        pane ~pid:4242 ~command ~alternate ~prompt:(test_at -. 1.) ~running:true ~start:test_at "%1"
+      in
+      List.iter print_endline
+        [
+          warm (p ~alternate:true "nvim");
+          warm (p ~alternate:true "git");
+          warm (p "cargo");
+          warm { (p "ssh") with ssh = Some ("deploy", "build-box") };
+          warm (p "ssh");
+          warm { (p ~alternate:true "ssh") with ssh = Some ("deploy", "build-box") };
+        ];
+      print_endline "-- an editor open, then quit";
+      let m = ref (model ~clock ()) in
+      let step d alternate running =
+        clock := !clock +. d;
+        let p =
+          pane ~command:"nvim" ~alternate ~prompt:(test_at -. 1.) ~running ~start:test_at "%1"
+        in
+        m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ] } };
+        print_endline (label !m p)
+      in
+      List.iter (fun d -> step d true true) [ 0.; 0.3; 1. ];
+      List.iter (fun d -> step d false false) [ 0.1; 0.2; 0.4 ];
+      [%expect
+        {|
+     nvim
+     git
+    ◼cargo
+    ◼ssh deploy@build-box
+    ◼ssh
+     ssh deploy@build-box
+    -- an editor open, then quit
+     nvim
+     nvim
+     nvim
+     nvim
+     nvim
+     nvim
+    |}]
+
+    let%expect_test
+        "the fuzzy filter keeps matching sessions, best first, and an agent title matches too" =
+      let panes =
+        [
+          pane ~session:"alpha" ~window:"@1" ~command:"zsh" "%1";
+          pane ~session:"beta" ~window:"@2" ~title:"π - kido" "%2";
+          pane ~session:"gamma" ~window:"@3" ~command:"zsh" "%3";
+        ]
+      in
+      let m = model () in
+      let m =
+        {
+          m with
+          snap =
+            {
+              Sidebar.empty with
+              client = client "alpha";
+              panes = with_programs (states [ ("%2", ("i", session "")) ]) panes;
+              states = states [ ("%2", ("i", session "")) ];
+            };
+        }
+      in
+      let show filter =
+        Printf.printf "%S: %s\n" filter
+          (String.concat " | "
+             (List.map (row_text ~now:m.at)
+                (Array.to_list (lines ~search:filter (Sidebar.rebuild (Sidebar.classify m))))))
+      in
+      show "";
+      show "zz";
+      show "kido";
+      show "a";
+      [%expect
+        {|
+    "": alpha | ╶ zsh | beta | ╶◼π - kido | gamma | ╶ zsh
+    "zz":
+    "kido": beta | ╶◼π - kido
+    "a": alpha | ╶ zsh | gamma | ╶ zsh | beta | ╶◼π - kido
+    |}]
+
+    let%expect_test "a row wider than the sidebar is cut to its width, ellipsis included" =
+      let show width texts =
+        let cut =
+          truncate width (List.map (fun text -> { text; style = Mosaic.Ansi.Style.default }) texts)
+        in
+        let text = String.concat "" (List.map (fun (s : span) -> s.text) cut) in
+        Printf.printf "%d %S -> %S\n" width (String.concat "" texts) text
+      in
+      show 4 [ "ab"; "cd" ];
+      show 4 [ "abcd"; "ef" ];
+      show 4 [ "ab"; "cd"; "e" ];
+      show 4 [ "abcdef" ];
+      show 4 [ "ab"; "cdef" ];
+      [%expect
+        {|
+    4 "abcd" -> "abcd"
+    4 "abcdef" -> "abc\226\128\166"
+    4 "abcde" -> "abc\226\128\166"
+    4 "abcdef" -> "abc\226\128\166"
+    4 "abcdef" -> "abc\226\128\166"
+    |}]
+
+    let%expect_test "program acknowledgement survives failed snapshots and reconnects" =
+      let p = pane ~command:"sh" "%7" in
+      let status =
+        Tmux.Program_status.parse {|{"serial":1,"records":[{"id":"","state":"done","title":"QQ"}]}|}
+        |> Result.get_or_failwith
+      in
+      let snap = { Sidebar.empty with panes = [ { p with program_status = status } ] } in
+      ignore
+        (List.fold_left
+           (fun m (label, snap) ->
+             let m, _ = Sidebar.step m snap in
+             let indicator =
+               match (pane_label m p).indicator with
+               | Some Sidebar.Done -> "done"
+               | Some (Status Idle) -> "idle"
+               | _ -> "none"
+             in
+             Printf.printf "%s: %s acknowledged=%b\n" label indicator
+               (Tmux.Pane.Map.mem p.pane_id m.program_seen);
+             m)
+           (model ())
+           [
+             ("initial", snap);
+             ("visit", { snap with active = Some p.pane_id });
+             ("leave", snap);
+             ("failure", { Sidebar.empty with err = Some "disconnected" });
+             ("reconnect", snap);
+             ( "new serial",
+               { snap with panes = [ { p with program_status = { status with serial = 2 } } ] } );
+           ]);
+      [%expect
+        {|
+    initial: done acknowledged=false
+    visit: idle acknowledged=true
+    leave: idle acknowledged=true
+    failure: none acknowledged=true
+    reconnect: idle acknowledged=true
+    new serial: done acknowledged=true
+    |}]
+
+    let%expect_test "every role names its foreground" =
+      List.iter
+        (fun r -> Format.printf "%a@." Mosaic.Ansi.Style.pp (style r))
+        [ `Plain; `Current; `Proc; `Dim; `Err; `Running; `Waiting; `Done; `Stalled ];
+      [%expect
+        {|
+    Style{fg=#000000}
+    Style{fg=#000000, attrs=[Bold]}
+    Style{fg=#c0c0c0}
+    Style{fg=#808080}
+    Style{fg=#800000}
+    Style{fg=#008000}
+    Style{fg=#808000, attrs=[Bold]}
+    Style{fg=#008000, attrs=[Bold]}
+    Style{fg=#800000, attrs=[Bold]}
+    |}]
+  end)

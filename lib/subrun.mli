@@ -26,12 +26,12 @@ type meta = {
   keep_alive : bool;
   started_at : Timestamp.t;
 }
-[@@deriving yojson]
+[@@deriving to_yojson]
 
 val label : meta -> string
 
 type result = Completed | Failed | Died | Stopped
-type outcome = { result : result; text : string; at : Timestamp.t option } [@@deriving yojson]
+type outcome = { result : result; text : string; at : Timestamp.t option } [@@deriving to_yojson]
 
 val string_of_result : result -> string
 val create : dir:string -> id -> string -> unit
@@ -55,7 +55,6 @@ val effective_outcome : dir:string -> id -> pid:int -> outcome option
 (** [None] only while the run is still alive. *)
 
 val list : dir:string -> id list
-val truncate_screen : string -> string
 
 val save_screen : ?socket:string -> dir:string -> id -> Tmux.Pane.id option -> string option
 (** Saves a pane's screen with 1000 lines of history, bounded to its tail, into the run's directory

@@ -1,5 +1,3 @@
-val derived_name : string list -> string
-
 val async_bash :
   dir:string ->
   self:Tmux.Pane.id option ->

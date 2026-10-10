@@ -1,4 +1,3 @@
-val of_exe : string -> string option
 val own : unit -> string option
 val same_file : string -> string -> bool
 val path_with_first : string -> string -> string

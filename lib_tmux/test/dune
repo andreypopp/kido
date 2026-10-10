@@ -1,8 +1,0 @@
-(library
- (name tmux_test)
- (flags
-  (:standard -open Containers))
- (libraries tmux containers unix)
- (inline_tests)
- (preprocess
-  (pps ppx_expect)))

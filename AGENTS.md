@@ -87,10 +87,15 @@ These are fixed:
   bodies of small commands (`set_status`, `get-agent`, `snapshot`,
   `ssh`, ...). `lib/` is the library `kido`,
   one module per domain or subcommand with logic of its own. `lib_tmux/` is the library `tmux` (call sites read
-  `Tmux.Conn`, `Tmux.Pane`, `Tmux.Exec`). Tests are ppx_expect in
-  `lib/test/` and `lib_tmux/test/`.
+  `Tmux.Conn`, `Tmux.Pane`, `Tmux.Exec`). Unit tests are ppx_expect, inline
+  at the bottom of the module under test in a `let%test_module "Tests"`
+  submodule, so `.mli` exports only what production callers use.
+  Out-of-line exceptions are `lib/test/test_tool_parity.ml` and
+  `lib_tmux/test/tmux_server/`.
 - **Every stanza compiles with `-open Containers`.** Every `.ml` has an
-  `.mli` unless it holds only types. JSON is yojson with
+  `.mli` unless it holds only types. Test-helper modules `Sh`, `Test_support`,
+  `Test_fixture`, `View_fixture` and `Tmux.Fixture` have no `.mli`.
+  JSON is yojson with
   ppx_deriving_yojson. The TUI is Mosaic, pinned in `dune-project`.
   Concurrency is `unix` and `threads.posix`; no Eio, no Lwt.
 - **The command line is a contract** with `share/` and `test_e2e/`: subcommands, flags, exit codes, every parsed or
@@ -126,7 +131,7 @@ Conventions:
   `%q` quoting: OCaml `%S` escapes non-ASCII agent names.
 - **Inbox JSON.** `from.session` must be written even when empty.
   It has no default annotation; `Msg.envelope_to_yojson` adds `v` to the
-  derived encoding. `lib/test/test_msg.ml` pins the field set.
+  derived encoding. `lib/msg.ml`'s inline tests pin the field set.
 - **Tmux I/O.** No injected tmux/ops records whose only other
   implementation is a test fake: call `Tmux.Exec` directly and test
   through e2e. `Tmux.Conn` has no mutex; only the sidebar's single tick
@@ -170,14 +175,14 @@ Conventions:
       control.ml (stop_run, interrupt_subagent)
                        one subcommand or family each
       fs.ml, timestamp.ml  files, time
-      test/            ppx_expect unit tests, test_<module>.ml; fixture.ml and
-                       sh.ml the shared scaffolding
+      test_fixture.ml, test_support.ml, view_fixture.ml, sh.ml
+                       shared inline-test scaffolding
+      test/            test_tool_parity.ml, the built-binary exception
     lib_tmux/          the library tmux: pane.ml (the pane format and its
                        parse), exec.ml (one-shot tmux commands, the binary
                        lookup), conn.ml (the control-mode client)
-      test/            its ppx_expect tests, needing only tmux; fixture.ml's
-                       pane, which lib/test's Fixture includes; tmux_server/
-                       the Conn tests against a real tmux, run only with $KIDO_TMUX
+      fixture.ml       shared inline-test pane scaffolding
+      test/tmux_server/  the Conn tests against a real tmux, run only with $KIDO_TMUX
     share/             the source of share/kido, installed by share/dune:
       bin/             the bin directory's sh shims (kido, tmux, ssh, pi)
       shim.sh          their shared helper
@@ -361,8 +366,8 @@ the sidebar uses to decide a program has taken the terminal.
 - `pane_command_duration` is deliberately **absent**: it ticks every
   second and would redraw the sidebar once a second forever.
 - Adding a field means bumping `Pane.fields`, which both the split count
-  and the short-line guard in `parse_line` read. lib_tmux/test/test_pane.ml's
-  "field count pinned" test ties the two together; its "fixture
+  and the short-line guard in `parse_line` read. The inline "field count
+  pinned" test in `lib_tmux/pane.ml` ties the two together; its "fixture
   generated from the format" test exists because the hand-typed fixture
   in its "parse:" test stays green when a new field is left out of it.
 - `pane_command_status` prints **empty**, not `0`, when unset — hence
@@ -502,11 +507,11 @@ diff once it has been read.
 
 **Prefer e2e tests.** A behaviour a user or an agent can observe (a
 subcommand's output, exit code, side effects on tmux or state) is
-tested in `test_e2e/`, through the binary. Unit tests in `lib/test/` and `lib_tmux/test/` are for pure
-library logic that e2e cannot reach or cannot pin precisely (parsers,
-formats, ordering); do not write a unit test that execs the binary.
-The one exception is `lib/test/test_tool_parity.ml`, which runs each tool
-as a `kido tool` subcommand.
+tested in `test_e2e/`, through the binary. Unit tests are for pure library
+logic that e2e cannot reach or cannot pin precisely (parsers, formats,
+ordering); their placement is in Layout above. Do not write a unit test
+that execs the binary, except `lib/test/test_tool_parity.ml`, which runs
+each tool as a `kido tool` subcommand.
 
 `make e2e` builds the fork into `build/tmux-fork/<revision>/` (rebuilt
 only on a submodule bump) and runs with `KIDO_E2E_REQUIRED=1`. A

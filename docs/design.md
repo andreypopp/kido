@@ -1690,7 +1690,7 @@ and no markers, the same outcome an unsupported shell gets, by the same
 route.
 
 The floor check precedes the `--posix` invocation and is pinned by
-lib/test/test_prime.ml's "the bootstrap leaves a bash too old for PS0 alone".
+lib/prime.ml's inline test "the bootstrap leaves a bash too old for PS0 alone".
 
 The bash branch has no dotfile guard, where the zsh one does.
 

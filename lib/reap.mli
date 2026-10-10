@@ -15,7 +15,6 @@ val quote : string -> string
 type detail = Bash | Streamed of { unstreamed : int } | Agent of { unreported : bool }
 type ending = { meta : Subrun.meta; outcome : Subrun.outcome; detail : detail }
 
-val body : dir:string -> ending -> string
 val send : dir:string -> ending -> (unit, Msg.error) result
 
 val record_ending : dir:string -> Subrun.meta -> Subrun.outcome -> ending option

@@ -41,3 +41,24 @@ let async_bash ~dir ~self ~exe ~name ~stream args =
   let env = Spawn_subagent.run_env ~dir id parent depth in
   Spawn_subagent.create_run_window ~dir meta ~session:pane.session_id ~env
     [ exe; "async-run"; "--run-id"; Subrun.string_of_id id ]
+
+let%test_module "Tests" =
+  (module struct
+    (* Nothing a name is derived to may be a path, empty, or what tmux's parser cannot carry. *)
+    let%expect_test "a window name derived from the command" =
+      List.iter
+        (fun c ->
+          let name = derived_name [ c ] in
+          Printf.printf "%S -> %s%s\n" c name
+            (match Launch.tmux_safe "name" name with Ok () -> "" | Error _ -> " UNSAFE"))
+        [ "make -j8"; "/usr/bin/env python"; ""; "'"; "./x$y"; String.make 70 'a' ];
+      [%expect
+        {|
+    "make -j8" -> make
+    "/usr/bin/env python" -> env
+    "" -> bash
+    "'" -> bash
+    "./x$y" -> xy
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    |}]
+  end)

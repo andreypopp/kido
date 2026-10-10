@@ -1,4 +1,5 @@
 type server = Down | Up of string option | Mismatch
+
 type endpoint = { tmux : string; socket : string; protocol : string; server : string option }
 [@@deriving to_yojson]
 
@@ -174,3 +175,26 @@ let ensure ~dir =
       | Down ->
           Error ("cannot start a kido server" ^ if String.is_empty stderr then "" else ": " ^ stderr)
       )
+
+let%test_module "Tests" =
+  (module struct
+    let%expect_test "rpc surface" =
+      let emit json = print_endline (Yojson.Safe.to_string json) in
+      List.iter
+        (fun server ->
+          emit
+            (endpoint_to_yojson
+               {
+                 tmux = "/bin/kido-tmux";
+                 socket = "/server/socket";
+                 protocol = Protocol.value;
+                 server;
+               }))
+        [ Some Protocol.value; Some "other"; None ];
+      [%expect
+        {|
+    {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"2.1","server":"2.1"}
+    {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"2.1","server":"other"}
+    {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"2.1","server":null}
+  |}]
+  end)

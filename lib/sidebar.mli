@@ -41,12 +41,7 @@ val shell_run_hold : float
 val lingering_subagents :
   dir:string -> Tmux.Pane.t list -> lingering String_map.t -> lingering String_map.t
 
-val same : snapshot -> snapshot -> bool
-
 type reading = { wall : Timestamp.t; mono : Mtime.t }
-
-val detect_pause : reading -> reading -> bool
-
 type client = { session : Tmux.Session.id; window : Tmux.Window.id; pane : Tmux.Pane.id }
 type role = [ `Plain | `Current | `Proc | `Dim | `Err | `Running | `Waiting | `Done | `Stalled ]
 type span = { text : string; role : role }
@@ -98,28 +93,11 @@ type model = {
 
 val make : now:(unit -> float) -> options -> model
 val ssh_remote : model -> Tmux.Pane.t -> bool
-val shell_outcome : model -> Tmux.Pane.t -> Tmux.Pane.exit option
 val classify : model -> model
 val track : model -> model
-val shell_pending : model -> bool
 val attention : model -> Tmux.Pane.id -> bool
 val shell_indicator : model -> phase -> indicator option
 val pane_label : model -> Tmux.Pane.t * State.pane_kind -> row
-
-type placement = { panes : Tmux.Pane.t list; anchor : Tmux.Pane.id option }
-
-val order_windows_by_tree :
-  Tmux.Pane.t list list ->
-  (string * State.session) Tmux.Pane.Map.t ->
-  lingering String_map.t ->
-  placement list
-
-val windows_in_order :
-  Tmux.Pane.t list ->
-  (string * State.session) Tmux.Pane.Map.t ->
-  lingering String_map.t ->
-  (Tmux.Pane.t list * Tmux.Pane.id option) list
-
 val filter : string -> section list -> section list
 val rebuild : model -> model
 val poll : ?wait:float -> opts:options -> Tmux.Conn.t -> snapshot -> snapshot

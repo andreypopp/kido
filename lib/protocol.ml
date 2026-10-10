@@ -266,3 +266,497 @@ let snapshot (m : model) =
                  m.sessions) );
         ])
     m.client
+
+let%test_module "Tests" =
+  (module struct
+    open View_fixture
+
+    let opts ?(dir = temp ()) () : Sidebar.options =
+      {
+        interval = Sidebar.default_interval;
+        client = "";
+        socket = None;
+        dir;
+        threshold = 180.;
+        grace = 30.;
+      }
+
+    let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
+      let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
+      { m with started; at = !clock }
+
+    let prepared ~dir panes states =
+      fst
+        (Sidebar.step (model ~dir ())
+           {
+             Sidebar.empty with
+             client = client "alpha";
+             active = Tmux.Pane.of_string "%1";
+             panes = with_programs states panes;
+             states;
+             lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
+           })
+
+    (* The feed's wire format: key order, the indicator encoding (null for an empty field, idle for an
+   integrated idle shell, gone with its outcome), a running bash run's start, untruncated spans with their roles, attention from
+   the predicate n/N walk, and rows grouped under their own session. *)
+    let%expect_test "a snapshot as the feed sends it" =
+      let dir = temp () in
+      let id = new_run ~dir "helper" in
+      ignore
+        (Subrun.record_outcome ~dir
+           (Result.get_exn (Subrun.parse_id id))
+           { result = Failed; text = ""; at = None });
+      let panes =
+        [
+          pane ~session:"alpha" ~window:"@1" ~title:"orchestrator" ~active:true "%1";
+          pane ~session:"alpha" ~window:"@1" ~command:"bash" ~prompt:test_at "%2";
+          pane ~session:"alpha" ~window:"@1" ~command:"vim" ~alternate:true "%3";
+          pane ~session:"alpha" ~window:"@4" ~dead_at:1. ~run:id "%4";
+          pane ~session:"alpha" ~window:"@6" ~run:(new_run ~dir ~kind:Bash "build") "%6";
+        ]
+        @ [
+            {
+              (pane ~session:"beta" ~window:"@5" ~title:"asker" "%5") with
+              session_id = Option.get_exn_or "id" (Tmux.Session.of_string "$1");
+            };
+          ]
+      in
+      let states =
+        states
+          [
+            ("%1", ("root", session ~activity:"reading the contract" ""));
+            ("%5", ("asker", session ""));
+          ]
+      in
+      let m = prepared ~dir panes states in
+      let json m = Option.get_exn_or "client" (snapshot m) in
+      print_endline (Yojson.Safe.pretty_to_string (json m));
+      print_endline
+        (Yojson.Safe.to_string
+           (json
+              (fst
+                 (Sidebar.step m
+                    { Sidebar.empty with client = m.snap.client; err = Some "tmux: gone" }))));
+      [%expect
+        {|
+    {
+      "v": 2,
+      "client": { "session": "$0", "window": "@1", "pane": "%1" },
+      "asks": [],
+      "error": null,
+      "sessions": [
+        {
+          "id": "$0",
+          "name": "alpha",
+          "current": true,
+          "nodes": [
+            {
+              "kind": "window",
+              "id": "@1",
+              "window": "@1",
+              "name": "",
+              "children": [
+                {
+                  "kind": "agent",
+                  "id": "%1",
+                  "pane": "%1",
+                  "window": "@1",
+                  "indicator": { "kind": "running" },
+                  "program_status": {
+                    "serial": 1,
+                    "records": [ { "id": "", "state": "working", "app": "pi" } ]
+                  },
+                  "title": [ { "text": "orchestrator", "role": "plain" } ],
+                  "tail": [ { "text": "reading the contract", "role": "dim" } ],
+                  "run": null,
+                  "started": null,
+                  "attention": false,
+                  "children": []
+                },
+                {
+                  "kind": "shell",
+                  "id": "%2",
+                  "pane": "%2",
+                  "window": "@1",
+                  "indicator": { "kind": "idle" },
+                  "program_status": { "serial": 0, "records": [] },
+                  "title": [ { "text": "bash", "role": "proc" } ],
+                  "tail": [],
+                  "run": null,
+                  "started": null,
+                  "attention": false,
+                  "children": []
+                },
+                {
+                  "kind": "shell",
+                  "id": "%3",
+                  "pane": "%3",
+                  "window": "@1",
+                  "indicator": null,
+                  "program_status": { "serial": 0, "records": [] },
+                  "title": [ { "text": "vim", "role": "proc" } ],
+                  "tail": [],
+                  "run": null,
+                  "started": null,
+                  "attention": false,
+                  "children": []
+                }
+              ]
+            },
+            {
+              "kind": "agent",
+              "id": "%4",
+              "pane": "%4",
+              "window": "@4",
+              "indicator": { "kind": "gone", "outcome": "failed" },
+              "program_status": { "serial": 0, "records": [] },
+              "title": [ { "text": "helper", "role": "dim" } ],
+              "tail": [ { "text": "failed", "role": "dim" } ],
+              "run": "agent",
+              "started": null,
+              "attention": false,
+              "children": []
+            },
+            {
+              "kind": "run",
+              "id": "%6",
+              "pane": "%6",
+              "window": "@6",
+              "indicator": { "kind": "running" },
+              "program_status": { "serial": 0, "records": [] },
+              "title": [ { "text": "build", "role": "plain" } ],
+              "tail": [],
+              "run": "bash",
+              "started": 1700000000.0,
+              "attention": false,
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": "$1",
+          "name": "beta",
+          "current": false,
+          "nodes": [
+            {
+              "kind": "agent",
+              "id": "%5",
+              "pane": "%5",
+              "window": "@5",
+              "indicator": { "kind": "running" },
+              "program_status": {
+                "serial": 1,
+                "records": [ { "id": "", "state": "working", "app": "pi" } ]
+              },
+              "title": [ { "text": "asker", "role": "plain" } ],
+              "tail": [],
+              "run": null,
+              "started": null,
+              "attention": false,
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+    {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"asks":[],"error":"tmux: gone","sessions":[]}
+    |}]
+
+    let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" =
+      let dir = temp () in
+      let run = new_run ~dir ~parent:"root" ~kind:Bash "build" in
+      let panes =
+        [
+          pane ~session:"alpha" ~window:"@1" ~title:"root" ~active:true "%1";
+          pane ~session:"alpha" ~window:"@2" ~title:"kid" "%2";
+          pane ~session:"alpha" ~window:"@2" ~command:"bash" "%3";
+          pane ~session:"alpha" ~window:"@3" ~run "%4";
+        ]
+      in
+      let states =
+        states [ ("%1", ("root", session "")); ("%2", ("kid", session ~parent:"root" "")) ]
+      in
+      let m = prepared ~dir panes states in
+      print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (snapshot m)));
+      [%expect
+        {|
+    {
+      "v": 2,
+      "client": { "session": "$0", "window": "@1", "pane": "%1" },
+      "asks": [],
+      "error": null,
+      "sessions": [
+        {
+          "id": "$0",
+          "name": "alpha",
+          "current": true,
+          "nodes": [
+            {
+              "kind": "agent",
+              "id": "%1",
+              "pane": "%1",
+              "window": "@1",
+              "indicator": { "kind": "running" },
+              "program_status": {
+                "serial": 1,
+                "records": [ { "id": "", "state": "working", "app": "pi" } ]
+              },
+              "title": [ { "text": "root", "role": "plain" } ],
+              "tail": [],
+              "run": null,
+              "started": null,
+              "attention": false,
+              "children": [
+                {
+                  "kind": "window",
+                  "id": "@2",
+                  "window": "@2",
+                  "name": "",
+                  "children": [
+                    {
+                      "kind": "agent",
+                      "id": "%2",
+                      "pane": "%2",
+                      "window": "@2",
+                      "indicator": { "kind": "running" },
+                      "program_status": {
+                        "serial": 1,
+                        "records": [
+                          { "id": "", "state": "working", "app": "pi" }
+                        ]
+                      },
+                      "title": [ { "text": "kid", "role": "plain" } ],
+                      "tail": [],
+                      "run": null,
+                      "started": null,
+                      "attention": false,
+                      "children": []
+                    },
+                    {
+                      "kind": "shell",
+                      "id": "%3",
+                      "pane": "%3",
+                      "window": "@2",
+                      "indicator": null,
+                      "program_status": { "serial": 0, "records": [] },
+                      "title": [ { "text": "bash", "role": "proc" } ],
+                      "tail": [],
+                      "run": null,
+                      "started": null,
+                      "attention": false,
+                      "children": []
+                    }
+                  ]
+                },
+                {
+                  "kind": "run",
+                  "id": "%4",
+                  "pane": "%4",
+                  "window": "@3",
+                  "indicator": { "kind": "running" },
+                  "program_status": { "serial": 0, "records": [] },
+                  "title": [ { "text": "build", "role": "plain" } ],
+                  "tail": [],
+                  "run": "bash",
+                  "started": 1700000000.0,
+                  "attention": false,
+                  "children": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+    |}]
+
+    let%expect_test "rpc decoder" =
+      List.iter
+        (fun line ->
+          match decode line with
+          | Request (id, Any request) -> (
+              let show kind direction =
+                Printf.printf "%d:%s:%s\n" id kind
+                  (match direction with Sidebar.Next -> "next" | Prev -> "prev")
+              in
+              match request with
+              | Sidebar.Switch_window direction -> show "window" direction
+              | Sidebar.Switch_session direction -> show "session" direction
+              | Sidebar.New_window _ -> Printf.printf "%d:new-window\n" id
+              | Sidebar.New_session -> Printf.printf "%d:new-session\n" id
+              | Sidebar.Select_session _ -> Printf.printf "%d:select-session\n" id
+              | Sidebar.Select_window _ -> Printf.printf "%d:select-window\n" id
+              | Sidebar.Jump _ -> Printf.printf "%d:jump\n" id
+              | Sidebar.Activate_ask _ -> Printf.printf "%d:activate\n" id
+              | Sidebar.Delete_ask _ -> Printf.printf "%d:delete\n" id
+              | Sidebar.Release_side_focus -> Printf.printf "%d:release\n" id)
+          | Invalid (id, error) -> Printf.printf "%d:%s\n" id error
+          | Ignored -> print_endline "ignored")
+        [
+          {|{"filter":"hello"}|};
+          {|{"filter":""}|};
+          {|{"id":7,"switch-window":{"direction":"next"},"extra":true}|};
+          {|{"id":8,"switch-window":{"direction":"prev"}}|};
+          {|{"id":9,"switch-session":{"direction":"next"}}|};
+          {|{"id":10,"switch-session":{"direction":"prev"}}|};
+          {|{"id":11,"switch-window":{"direction":"other"}}|};
+          {|{"id":12,"switch-window":{"direction":"next","extra":true}}|};
+          {|{"id":13,"switch-window":{"direction":"next"},"switch-session":{"direction":"prev"}}|};
+          {|{"id":14,"filter":"hello"}|};
+          {|{"id":15,"unknown":true}|};
+          {|{"id":"16","switch-window":{"direction":"next"}}|};
+          {|{"switch-window":{"direction":"next"}}|};
+          {|{"filter":"hello","extra":true}|};
+          {|[]|};
+          "invalid";
+        ];
+      [%expect
+        {|
+    ignored
+    ignored
+    7:window:next
+    8:window:prev
+    9:session:next
+    10:session:prev
+    11:invalid or unknown request
+    12:invalid or unknown request
+    13:invalid or unknown request
+    14:invalid or unknown request
+    15:invalid or unknown request
+    ignored
+    ignored
+    ignored
+    ignored
+    ignored
+    |}]
+
+    let%expect_test "rpc surface" =
+      let emit json = print_endline (Yojson.Safe.to_string json) in
+      print_endline value;
+      List.iter (fun stamp -> emit (hello stamp)) [ Some value; Some "other"; None ];
+      List.iter
+        (fun result -> emit (reply 7 (Sidebar.Switch_window Next) result))
+        [
+          Ok
+            (Some
+               {
+                 Sidebar.session = Option.get_exn_or "id" (Tmux.Session.of_string "$3");
+                 window = Option.get_exn_or "id" (Tmux.Window.of_string "@12");
+               });
+          Ok None;
+          Error "invalid or unknown request";
+        ];
+      let opts : Sidebar.options =
+        {
+          interval = 0.1;
+          client = "app";
+          socket = None;
+          dir = "/unused";
+          threshold = 180.;
+          grace = 30.;
+        }
+      in
+      let roles : Sidebar.role list =
+        [ `Plain; `Current; `Proc; `Dim; `Err; `Running; `Waiting; `Done; `Stalled ]
+      in
+      let title = List.map (fun role -> { Sidebar.text = "span"; role }) roles in
+      let indicators : Sidebar.indicator option list =
+        [
+          None;
+          Some (Status Running);
+          Some (Status Waiting);
+          Some (Status Idle);
+          Some Unknown;
+          Some Done;
+          Some Failed;
+          Some Stalled;
+          Some (Gone None);
+          Some (Gone (Some Completed));
+          Some (Gone (Some Failed));
+          Some (Gone (Some Died));
+          Some (Gone (Some Stopped));
+        ]
+      in
+      let items =
+        List.mapi
+          (fun i indicator ->
+            {
+              Sidebar.row =
+                {
+                  pane = Option.get_exn_or "id" (Tmux.Pane.of_string ("%" ^ string_of_int i));
+                  window = Option.get_exn_or "id" (Tmux.Window.of_string "@1");
+                  kind = (match i mod 4 with 0 -> Agent | 1 -> Run | 2 -> Ssh | _ -> Shell);
+                  indicator;
+                  title = (if i = 0 then title else []);
+                  caption = (if i = 0 then Text title else Elapsed 100.);
+                  run =
+                    (if i = List.length indicators - 1 then None
+                     else
+                       Some
+                         {
+                           kind = (match i mod 3 with 0 -> Subrun.Agent | 1 -> Bash | _ -> Stream);
+                           started = (if i mod 2 = 0 then Some 100. else None);
+                         });
+                };
+              program_rows =
+                [ { id = "child"; indicator = Done; title = "child"; caption = "done" } ];
+              children = [];
+            })
+          indicators
+      in
+      let first = List.hd items in
+      let nodes =
+        [
+          Sidebar.Group { name = "window"; first; rest = List.tl items };
+          Sidebar.Item { first with children = [ Sidebar.Item first ] };
+        ]
+      in
+      let m = Sidebar.make ~now:(fun () -> 100.) opts in
+      let m =
+        {
+          m with
+          client =
+            Some
+              {
+                session = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
+                window = Option.get_exn_or "id" (Tmux.Window.of_string "@1");
+                pane = Option.get_exn_or "id" (Tmux.Pane.of_string "%0");
+              };
+          snap =
+            {
+              Sidebar.empty with
+              states =
+                Tmux.Pane.Map.singleton
+                  (Option.get_exn_or "id" (Tmux.Pane.of_string "%0"))
+                  ("agent", Test_fixture.session ~agent:State.Pi ());
+            };
+          sessions =
+            [
+              {
+                id = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
+                name = "session";
+                current = true;
+                nodes;
+              };
+            ];
+        }
+      in
+      emit (Option.get_exn_or "snapshot" (snapshot m));
+      emit
+        (Option.get_exn_or "error snapshot"
+           (snapshot
+              { m with snap = { Sidebar.empty with err = Some "tmux: gone" }; sessions = [] }));
+      [%expect
+        {|
+    2.1
+    {"hello":{"protocol":"2.1"}}
+    {"hello":{"protocol":"2.1","server":"other"}}
+    {"hello":{"protocol":"2.1","server":null}}
+    {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}
+    {"reply":{"id":7,"switched":null}}
+    {"reply":{"id":7,"error":"invalid or unknown request"}}
+    {"v":2,"client":{"session":"$0","window":"@1","pane":"%0"},"asks":[],"error":null,"sessions":[{"id":"$0","name":"session","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"window","children":[{"kind":"agent","id":"%0","pane":"%0","window":"@1","indicator":null,"program_status":{"serial":0,"records":[]},"title":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"tail":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"run":"agent","started":100.0,"attention":false,"children":[]},{"kind":"run","id":"%1","pane":"%1","window":"@1","indicator":{"kind":"running"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"bash","started":null,"attention":false,"children":[]},{"kind":"ssh","id":"%2","pane":"%2","window":"@1","indicator":{"kind":"waiting"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"stream","started":100.0,"attention":false,"children":[]},{"kind":"shell","id":"%3","pane":"%3","window":"@1","indicator":{"kind":"idle"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"agent","started":null,"attention":false,"children":[]},{"kind":"agent","id":"%4","pane":"%4","window":"@1","indicator":{"kind":"unknown"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"bash","started":100.0,"attention":false,"children":[]},{"kind":"run","id":"%5","pane":"%5","window":"@1","indicator":{"kind":"done"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"stream","started":null,"attention":false,"children":[]},{"kind":"ssh","id":"%6","pane":"%6","window":"@1","indicator":{"kind":"failed"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"agent","started":100.0,"attention":false,"children":[]},{"kind":"shell","id":"%7","pane":"%7","window":"@1","indicator":{"kind":"stalled"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"bash","started":null,"attention":false,"children":[]},{"kind":"agent","id":"%8","pane":"%8","window":"@1","indicator":{"kind":"gone","outcome":null},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"stream","started":100.0,"attention":false,"children":[]},{"kind":"run","id":"%9","pane":"%9","window":"@1","indicator":{"kind":"gone","outcome":"completed"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"agent","started":null,"attention":false,"children":[]},{"kind":"ssh","id":"%10","pane":"%10","window":"@1","indicator":{"kind":"gone","outcome":"failed"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"bash","started":100.0,"attention":false,"children":[]},{"kind":"shell","id":"%11","pane":"%11","window":"@1","indicator":{"kind":"gone","outcome":"died"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":"stream","started":null,"attention":false,"children":[]},{"kind":"agent","id":"%12","pane":"%12","window":"@1","indicator":{"kind":"gone","outcome":"stopped"},"program_status":{"serial":0,"records":[]},"title":[],"tail":[],"run":null,"started":null,"attention":false,"children":[]}]},{"kind":"agent","id":"%0","pane":"%0","window":"@1","indicator":null,"program_status":{"serial":0,"records":[]},"title":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"tail":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"run":"agent","started":100.0,"attention":false,"children":[{"kind":"agent","id":"%0","pane":"%0","window":"@1","indicator":null,"program_status":{"serial":0,"records":[]},"title":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"tail":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"run":"agent","started":100.0,"attention":false,"children":[]}]}]}]}
+    {"v":2,"client":{"session":"$0","window":"@1","pane":"%0"},"asks":[],"error":"tmux: gone","sessions":[]}
+    |}]
+  end)

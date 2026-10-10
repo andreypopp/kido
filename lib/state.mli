@@ -15,10 +15,8 @@ type session = {
   depth : int;
   model : string;
 }
-[@@deriving to_yojson]
 
 val string_of_status : status -> string
-val string_of_agent : agent -> string
 val agent_of_string : string -> agent
 val display_name : Tmux.Pane.t list -> session -> string
 val addressable_name : session -> bool
