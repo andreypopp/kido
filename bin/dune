@@ -1,7 +1,9 @@
 (executable
  (name main)
  (public_name kido)
- (promote (until-clean) (into ../build))
+ (promote
+  (until-clean)
+  (into ../build))
  (flags
   (:standard -open Containers))
  (libraries kido tmux containers cmdliner unix threads.posix yojson))
