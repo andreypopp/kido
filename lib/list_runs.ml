@@ -17,8 +17,8 @@ type agent_info = {
   name : string;
   named : bool;
   agent : State.agent;
-  pane : Tmux.Pane.id;
-  window : Tmux.Window.id;
+  pane : Tmux.pane_id;
+  window : Tmux.window_id;
   status : status;
   activity : string;
   parent : string;
@@ -35,7 +35,7 @@ type agent_info = {
 
 let caller_pane panes self =
   Option.to_result
-    (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" Pane.to_string self))
+    (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" pane_id_to_string self))
     (Option.flat_map (Tmux_pane.find panes) self)
 
 let status panes (s : State.session) =
@@ -43,13 +43,13 @@ let status panes (s : State.session) =
   |> Option.flat_map (fun (p : Tmux_pane.t) -> Program_status.root p.program_status)
   |> Option.map (fun (r : Program_status.record) -> r.state)
 
-let per_pane live = List.map snd (Tmux.Pane.Map.bindings (State.by_pane live))
+let per_pane live = List.map snd (Tmux.Pane_map.bindings (State.by_pane live))
 
 let in_session panes states session =
   List.filter
     (fun (_, (s : State.session)) ->
       Option.exists
-        (fun (p : Tmux_pane.t) -> Session.equal session p.session_id)
+        (fun (p : Tmux_pane.t) -> equal_session_id session p.session_id)
         (Option.flat_map (Tmux_pane.find panes) s.pane))
     states
 
@@ -85,7 +85,7 @@ let agents ~dir ~threshold ~self ~session ~panes ~states =
               (Printf.sprintf
                  "no tmux session for pane %S; pass --session\n\
                   usage: kido tool list_runs [--session ID] [--json]"
-                 (Option.map_or ~default:"" Pane.to_string self)))
+                 (Option.map_or ~default:"" pane_id_to_string self)))
   in
   let wake = State.wake ~dir and now = Timestamp.now () in
   let scoped = in_session panes states session in
@@ -114,7 +114,7 @@ let agents ~dir ~threshold ~self ~session ~panes ~states =
             activity = s.activity;
             parent = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) s.parent;
             depth = s.depth;
-            self = Option.equal Pane.equal s.pane self;
+            self = Option.equal equal_pane_id s.pane self;
             cwd = p.current_path;
             can_message = not (String.is_empty s.inbox);
             can_reply = (not (String.is_empty s.inbox)) && can_reply ~dir id;
@@ -127,11 +127,11 @@ let agents ~dir ~threshold ~self ~session ~panes ~states =
 type row =
   | Peer of agent_info
   | Parent of agent_info
-  | Own of { run : Runs.info; agent : agent_info option; window : Tmux.Window.id option }
+  | Own of { run : Runs.info; agent : agent_info option; window : Tmux.window_id option }
 
 let list_runs ~dir ~threshold ~self ~session =
   let open Result.Infix in
-  let* panes = Tmux_pane.list_panes () in
+  let* panes = Tmux_pane.list_panes (Tmux.create ()) in
   let+ agents =
     agents ~dir ~threshold ~self ~session ~panes ~states:(per_pane (State.load_live ~dir))
   in
@@ -200,7 +200,7 @@ let row_to_yojson row =
                 ("name", `String (Option.map_or ~default:m.name (fun a -> a.name) a));
                 ("named", `Bool false);
                 ("pane", Tmux_pane.optional_id_to_yojson m.pane);
-                ("window", `String (Option.map_or ~default:"" Window.to_string window));
+                ("window", `String (Option.map_or ~default:"" window_id_to_string window));
                 ("parent", `String m.parent_session);
                 ("cwd", `String m.cwd);
                 ("canMessage", `Bool false);

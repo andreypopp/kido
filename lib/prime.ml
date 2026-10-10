@@ -112,7 +112,7 @@ let local_mode ~dotdir path =
   match Filename.basename path with
   | "zsh"
     when List.exists
-           (fun name -> Tmux.Exec.is_file (Filename.concat dotdir name))
+           (fun name -> Fs.is_file (Filename.concat dotdir name))
            [ ".zshrc"; ".zshenv"; ".zprofile"; ".zlogin" ] ->
       Zsh
   | "bash" when bash_has_ps0 (bash_version path) -> Bash
@@ -439,7 +439,7 @@ exit 0
       | _ -> false
 
     let interactive_bash () =
-      Tmux.Exec.look_path ~path "bash" |> Option.filter has_ps0
+      Fs.look_path ~path "bash" |> Option.filter has_ps0
       |> Option.map (fun real ->
           Sh.write (Sh.temp () // "bash") ("#!/bin/sh\nexec " ^ real ^ " \"$@\" -i\n"))
 

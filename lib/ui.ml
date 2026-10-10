@@ -6,10 +6,10 @@ type span = Mosaic.span = { text : string; style : Style.t }
 
 type line =
   | Header of { name : string; current : bool }
-  | Row of string * Tmux.Session.id * S.row
+  | Row of string * Tmux.session_id * S.row
   | Program of string * S.program_row
   | Message of string
-  | Ask of Ask.t * Tmux.Pane.id option
+  | Ask of Ask.t * Tmux.pane_id option
 
 let lines ?(search = "") (side : S.model) =
   let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├" in
@@ -75,7 +75,7 @@ type mode = Windows | Asks
 type model = {
   side : S.model;
   lines : line array;
-  conn : Tmux.Conn.t option;
+  conn : Tmux.Client.t option;
   standalone : bool;
   cursor : int;
   top : int;
@@ -165,7 +165,7 @@ let spans ~now line =
 
 let row_text ~now line = String.concat "" (List.map (fun s -> s.text) (spans ~now line))
 
-let pane_of : line -> Tmux.Pane.id option = function
+let pane_of : line -> Tmux.pane_id option = function
   | Row (_, _, r) -> Some r.pane
   | Ask (_, pane) -> pane
   | Program _ | Header _ | Message _ -> None
@@ -247,7 +247,7 @@ let set_search m search = redraw { m with search } m.side
 let request m req =
   try
     let opts = m.side.opts in
-    (m, S.handle ~socket:opts.socket ~dir:opts.dir ~client:opts.client req)
+    (m, S.handle ~tmux:opts.tmux ~dir:opts.dir ~client:opts.client req)
   with
   | Sys_error e -> (m, Error e)
   | Unix.Unix_error (e, fn, arg) -> (m, Error (Fs.unix_message e fn arg))
@@ -400,10 +400,10 @@ let update msg m =
       in
       let m =
         let focused (s : S.snapshot) =
-          Option.exists (fun (c : Tmux.Exec.client_state) -> c.focused) s.client
+          Option.exists (fun (c : Tmux.client_state) -> c.focused) s.client
         in
         if
-          ((not (Option.equal Tmux.Pane.equal snap.active was.active))
+          ((not (Option.equal Tmux.equal_pane_id snap.active was.active))
           || (focused was && not (focused snap)))
           && Option.is_some snap.active
         then
@@ -483,7 +483,7 @@ let subscriptions _ =
     ]
 
 let run ~standalone (opts : S.options) =
-  let conn = Tmux.Conn.create ?socket:opts.socket ~client:opts.client () in
+  let conn = Tmux.Client.connect opts.tmux ~client:opts.client in
   let init () =
     let m = make ~conn ~standalone (S.make ~now:Unix.gettimeofday opts) in
     (m, tick m)
@@ -493,7 +493,7 @@ let run ~standalone (opts : S.options) =
       ~focus_reporting:false ~kitty_keyboard:`Disabled ()
   in
   Fun.protect
-    ~finally:(fun () -> Tmux.Conn.close conn)
+    ~finally:(fun () -> Tmux.Client.close conn)
     (fun () -> Mosaic.run ~matrix { init; update; view; subscriptions })
 
 let%test_module "Tests" =
@@ -504,7 +504,7 @@ let%test_module "Tests" =
       {
         interval = Sidebar.default_interval;
         client = "";
-        socket = None;
+        tmux = Tmux.create ();
         dir;
         threshold = 180.;
         grace = 30.;
@@ -889,7 +889,7 @@ let%test_module "Tests" =
               Printf.printf "%s %s %s\n" (Subrun.string_of_kind run.kind)
                 (Option.map_or ~default:"-" (fun _ -> "started") run.started)
                 (row_text ~now:test_at
-                   (Row ("", Option.get_exn_or "id" (Tmux.Session.of_string "$0"), row))))
+                   (Row ("", Option.get_exn_or "id" (Tmux.session_id_of_string "$0"), row))))
         [ (p, None); ({ p with dead_at = Some 1. }, None); (p, Some Completed) ];
       [%expect
         {|
@@ -1001,7 +1001,7 @@ let%test_module "Tests" =
           (fun (l : line) ->
             match l with
             | Row (_, _, { pane; _ })
-              when Tmux.Pane.equal pane (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) ->
+              when Tmux.equal_pane_id pane (Option.get_exn_or "id" (Tmux.pane_id_of_string "%1")) ->
                 List.exists (fun (s : span) -> String.equal s.text "◼") (spans ~now:!clock l)
             | _ -> false)
           !m.lines
@@ -1015,7 +1015,7 @@ let%test_module "Tests" =
         {
           Sidebar.empty with
           client = client "alpha";
-          active = Tmux.Pane.of_string "%1";
+          active = Tmux.pane_id_of_string "%1";
           panes = [ p ];
         }
       in
@@ -1041,7 +1041,7 @@ let%test_module "Tests" =
         {
           Sidebar.empty with
           client = client "alpha";
-          active = Tmux.Pane.of_string "%1";
+          active = Tmux.pane_id_of_string "%1";
           panes =
             with_programs
               (states [ ("%1", ("i", session ~ts:!clock "")) ])
@@ -1120,8 +1120,8 @@ let%test_module "Tests" =
              | Some Failed -> "failed"
              | Some _ -> "other")
              (Option.flat_map (Sidebar.shell_indicator !m)
-                (Tmux.Pane.Map.find_opt
-                   (Option.get_exn_or "id" (Tmux.Pane.of_string "%1"))
+                (Tmux.Pane_map.find_opt
+                   (Option.get_exn_or "id" (Tmux.pane_id_of_string "%1"))
                    !m.phases)))
           (label !m p)
       in
@@ -1145,8 +1145,8 @@ let%test_module "Tests" =
             && Option.exists
                  (function Sidebar.Status State.Running -> true | _ -> false)
                  (Option.flat_map (Sidebar.shell_indicator !m)
-                    (Tmux.Pane.Map.find_opt
-                       (Option.get_exn_or "id" (Tmux.Pane.of_string "%1"))
+                    (Tmux.Pane_map.find_opt
+                       (Option.get_exn_or "id" (Tmux.pane_id_of_string "%1"))
                        !m.phases)))
           (List.range 1 10)
       in
@@ -1185,7 +1185,7 @@ let%test_module "Tests" =
       let m = ref (model ~clock ()) in
       let warm p =
         clock := test_at;
-        m := { (model ~clock ()) with phases = Tmux.Pane.Map.empty };
+        m := { (model ~clock ()) with phases = Tmux.Pane_map.empty };
         let tick () =
           m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ] } }
         in
@@ -1315,7 +1315,7 @@ let%test_module "Tests" =
                | _ -> "none"
              in
              Printf.printf "%s: %s acknowledged=%b\n" label indicator
-               (Tmux.Pane.Map.mem p.pane_id m.program_seen);
+               (Tmux.Pane_map.mem p.pane_id m.program_seen);
              m)
            (model ())
            [

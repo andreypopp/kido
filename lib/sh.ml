@@ -21,7 +21,7 @@ let run ?(stdin = "") ~env prog argv =
   | pid ->
       Unix.close in_r;
       Unix.close out_w;
-      Tmux.Exec.write_all in_w stdin;
+      Fs.write_all in_w stdin;
       Unix.close in_w;
       let deadline = Unix.gettimeofday () +. 30. in
       let buf = Buffer.create 4096 and chunk = Bytes.create 4096 in
@@ -62,7 +62,7 @@ let zsh_home rc =
   home
 
 let interactive_zsh ~path () =
-  Tmux.Exec.look_path ~path "zsh"
+  Fs.look_path ~path "zsh"
   |> Option.map (fun real ->
       write
         (Filename.concat (temp ()) "zsh")

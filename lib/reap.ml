@@ -1,15 +1,13 @@
-module P = Tmux.Pane
-
 let grace () =
   match Option.flat_map Int.of_string (Sys.getenv_opt "KIDO_LINGER_SECONDS") with
   | Some n when n > 0 -> Float.of_int n
   | _ -> 30.
 
-type close = Window of Tmux.Window.id | Pane of { window : Tmux.Window.id; pane : Tmux.Pane.id }
+type close = Window of Tmux.window_id | Pane of { window : Tmux.window_id; pane : Tmux.pane_id }
 
-let release ?socket = function
-  | Window w -> Tmux.Exec.run ?socket [ "kill-window"; "-t"; Tmux.Window.to_string w ]
-  | Pane { pane; _ } -> Tmux.Exec.run ?socket [ "kill-pane"; "-t"; P.to_string pane ]
+let release tmux = function
+  | Window w -> Tmux.run tmux [ "kill-window"; "-t"; Tmux.window_id_to_string w ]
+  | Pane { pane; _ } -> Tmux.run tmux [ "kill-pane"; "-t"; Tmux.pane_id_to_string pane ]
 
 let close_of panes window pane =
   if not (Tmux_pane.last_pane panes window) then Some (Pane { window; pane })
@@ -20,18 +18,19 @@ let decide panes window_id =
   if Tmux_pane.window_focused panes window_id then
     Error
       (Printf.sprintf "%s is a client's current window; leaving it for the user to read"
-         (Tmux.Window.to_string window_id))
+         (Tmux.window_id_to_string window_id))
   else
     match Tmux_pane.run_pane panes window_id with
     | None ->
-        Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.Window.to_string window_id))
+        Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.window_id_to_string window_id))
     | Some { dead_at = None; _ } ->
         Error
-          (Printf.sprintf "%s's run is still going; leaving it" (Tmux.Window.to_string window_id))
+          (Printf.sprintf "%s's run is still going; leaving it"
+             (Tmux.window_id_to_string window_id))
     | Some run ->
         Option.to_result
           (Printf.sprintf "%s is its session's only window; closing it would destroy the session"
-             (Tmux.Window.to_string window_id))
+             (Tmux.window_id_to_string window_id))
           (close_of panes window_id run.pane_id)
 
 type detail = Bash | Streamed of { unstreamed : int } | Agent of { unreported : bool }
@@ -117,7 +116,7 @@ let send ~dir e =
     | Some ({ agent = Pi; _ } as s) ->
         let+ panes =
           if State.addressable_name s then Ok []
-          else Result.map_err (fun m -> Msg.Failed m) (Tmux_pane.list_panes ())
+          else Result.map_err (fun m -> Msg.Failed m) (Tmux_pane.list_panes (Tmux.create ()))
         in
         { e with meta = { e.meta with name = State.display_name panes s } }
     | _ -> Ok e
@@ -136,11 +135,11 @@ let record_ending ~dir (meta : Subrun.meta) outcome =
     in
     Some { meta; outcome; detail }
 
-let sweep ?socket ~dir ~grace panes sessions ~now =
+let sweep tmux ~dir ~grace panes sessions ~now =
   let mark ?(text = "ended without its wrapper reporting") ((closing, endings) as acc)
       (p : Tmux_pane.t) =
     let window = p.window_id in
-    let closes = function Window w | Pane { window = w; _ } -> Tmux.Window.equal w window in
+    let closes = function Window w | Pane { window = w; _ } -> Tmux.equal_window_id w window in
     match Tmux_pane.run_pane panes window with
     | Some { run = Some run; _ }
       when not (Tmux_pane.window_focused panes window || List.exists closes closing) -> (
@@ -149,9 +148,9 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
             let ending =
               Option.flat_map
                 (fun (m : Subrun.meta) ->
-                  if not (Option.equal P.equal m.pane (Some p.pane_id)) then None
+                  if not (Option.equal Tmux.equal_pane_id m.pane (Some p.pane_id)) then None
                   else begin
-                    ignore (Subrun.save_screen ?socket ~dir run_id (Some p.pane_id));
+                    ignore (Subrun.save_screen tmux ~dir run_id (Some p.pane_id));
                     record_ending ~dir m
                       (match m.kind with
                       | Bash | Stream -> { result = Failed; text; at = Some now }
@@ -170,7 +169,7 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
         | { run = Some _; dead_at = Some d; _ }
           when Float.(now - d >= grace)
                && Option.exists
-                    (fun (r : Tmux_pane.t) -> P.equal r.pane_id p.pane_id)
+                    (fun (r : Tmux_pane.t) -> Tmux.equal_pane_id r.pane_id p.pane_id)
                     (Tmux_pane.run_pane panes p.window_id) ->
             mark acc p
         | _ -> acc)
@@ -194,16 +193,16 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
           p.run
       with
       | Some { kind = Bash | Stream; parent_session; pane; _ }
-        when Option.equal P.equal pane (Some p.pane_id)
+        when Option.equal Tmux.equal_pane_id pane (Some p.pane_id)
              && (not (String.is_empty parent_session))
              && not (List.mem_assoc ~eq:String.equal parent_session sessions) ->
           mark ~text:"its parent ended" acc p
       | _ -> acc)
     acc panes
 
-let collect ?socket ~dir ~grace panes sessions ~now =
-  let closing, endings = sweep ?socket ~dir ~grace panes sessions ~now in
-  List.iter (fun c -> ignore (release ?socket c)) closing;
+let collect tmux ~dir ~grace panes sessions ~now =
+  let closing, endings = sweep tmux ~dir ~grace panes sessions ~now in
+  List.iter (fun c -> ignore (release tmux c)) closing;
   List.iter (fun e -> ignore (send ~dir e)) endings
 
 let%test_module "Tests" =
@@ -231,7 +230,7 @@ let%test_module "Tests" =
           kind;
           parent_session = parent;
           depth = 0;
-          pane = Tmux.Pane.of_string "";
+          pane = Tmux.pane_id_of_string "";
           pid = 0;
           cwd = "";
           model = "";
@@ -243,11 +242,11 @@ let%test_module "Tests" =
 
     let%expect_test "decide: close-run's refusals and closes" =
       let show w panes =
-        match decide panes (Option.get_exn_or "id" (Tmux.Window.of_string w)) with
-        | Ok (Window w) -> Printf.printf "close %s\n" (Tmux.Window.to_string w)
+        match decide panes (Option.get_exn_or "id" (Tmux.window_id_of_string w)) with
+        | Ok (Window w) -> Printf.printf "close %s\n" (Tmux.window_id_to_string w)
         | Ok (Pane { window; pane }) ->
-            Printf.printf "close %s pane %s\n" (Tmux.Window.to_string window)
-              (Tmux.Pane.to_string pane)
+            Printf.printf "close %s pane %s\n" (Tmux.window_id_to_string window)
+              (Tmux.pane_id_to_string pane)
         | Error why -> print_endline why
       in
       let focused = pane ~watched:true "%1" "@1" in

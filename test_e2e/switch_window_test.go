@@ -399,6 +399,31 @@ func TestSwitchWindowNestedSiblings(t *testing.T) {
 	}
 }
 
+func TestSwitchDiscoversClientOnServerSocket(t *testing.T) {
+	t.Parallel()
+	h := start(t, "a")
+	h.renameWindow("a", 0, "a0")
+	h.addWindow("a", "a1")
+	h.newSession("b")
+	h.waitWindow("a", "a0")
+	// Client discovery here is scoped to the server, not control-client filtering.
+	h.in("set-option", "-g", "side-status-command", "")
+	h.waitControlClients(0)
+
+	for _, command := range []string{"switch-window", "switch-session"} {
+		cmd := exec.Command(kidoBin, command, "next", "--server", h.stateDir)
+		cmd.Env = cleanEnv("KIDO_STATE_DIR="+serverDir(t), "TMUX_SIDE_CLIENT=")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("kido %s --server without --client: %v\n%s", command, err, out)
+		}
+		if command == "switch-window" {
+			h.waitWindow("a", "a1")
+		} else {
+			h.waitSession("b")
+		}
+	}
+}
+
 // An explicit server wins over a private default with no running server.
 func TestSwitchWindowSocket(t *testing.T) {
 	t.Parallel()

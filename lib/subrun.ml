@@ -36,7 +36,7 @@ type meta = {
   parent_session : string; [@key "parentSession"] [@default ""]
   depth : int;
   pane :
-    (Tmux.Pane.id option
+    (Tmux.pane_id option
     [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]);
   pid : int;
   cwd : string;
@@ -136,7 +136,7 @@ let truncate_screen data =
   let n = String.length data in
   if n > max_screen_bytes then String.sub data (n - max_screen_bytes) max_screen_bytes else data
 
-let save_screen ?socket ~dir id pane =
+let save_screen tmux ~dir id pane =
   Option.flat_map
     (fun pane ->
       Option.map
@@ -147,8 +147,8 @@ let save_screen ?socket ~dir id pane =
              with Unix.Unix_error _ | Sys_error _ -> ());
           data)
         (Result.to_opt
-           (Tmux.Exec.exec ?socket
-              [ "capture-pane"; "-p"; "-t"; Tmux.Pane.to_string pane; "-S"; "-1000" ])))
+           (Tmux.exec tmux
+              [ "capture-pane"; "-p"; "-t"; Tmux.pane_id_to_string pane; "-S"; "-1000" ])))
     pane
 
 let%test_module "Tests" =
@@ -170,7 +170,7 @@ let%test_module "Tests" =
           kind = Agent;
           parent_session = "";
           depth = 1;
-          pane = Tmux.Pane.of_string "%1";
+          pane = Tmux.pane_id_of_string "%1";
           pid = 0;
           cwd = "/tmp";
           model = "";
@@ -180,7 +180,7 @@ let%test_module "Tests" =
         };
       let got = Option.get_exn_or "ReadMeta" (read_meta ~dir i) in
       Printf.printf "%s %d %s\n" got.name got.depth
-        (Option.map_or ~default:"" Tmux.Pane.to_string got.pane);
+        (Option.map_or ~default:"" Tmux.pane_id_to_string got.pane);
       print_endline (Option.get_exn_or "ReadTask" (read_task ~dir i));
       Printf.printf "run dir exists: %b\n" (Sys.file_exists (Filename.concat dir "runs/run-1"));
       [%expect {|
@@ -201,7 +201,7 @@ let%test_module "Tests" =
             kind = k;
             parent_session = "";
             depth = 0;
-            pane = Tmux.Pane.of_string "";
+            pane = Tmux.pane_id_of_string "";
             pid = 0;
             cwd = "";
             model = "";

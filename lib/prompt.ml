@@ -8,20 +8,21 @@ let not_accepting ~name ~run =
       run
 
 let send_prompt pane text =
+  let tmux = Tmux.create () in
   let buf = Printf.sprintf "kido-prompt-%d" (Unix.getpid ()) in
   let open Result.Infix in
-  let* _ = Exec.exec ~stdin:text [ "load-buffer"; "-b"; buf; "-" ] in
+  let* _ = Tmux.exec tmux ~stdin:text [ "load-buffer"; "-b"; buf; "-" ] in
   let* () =
     Result.map_err
       (fun e ->
-        ignore (Exec.exec [ "delete-buffer"; "-b"; buf ]);
+        ignore (Tmux.exec tmux [ "delete-buffer"; "-b"; buf ]);
         e)
-      (Exec.run [ "paste-buffer"; "-b"; buf; "-d"; "-t"; Pane.to_string pane; "-p" ])
+      (Tmux.run tmux [ "paste-buffer"; "-b"; buf; "-d"; "-t"; pane_id_to_string pane; "-p" ])
   in
   (* A paste-sensitive reader, Claude Code included, takes an Enter sent with
      the paste as part of the pasted text. *)
   Unix.sleepf 0.1;
-  Exec.run [ "send-keys"; "-t"; Pane.to_string pane; "Enter" ]
+  Tmux.run tmux [ "send-keys"; "-t"; pane_id_to_string pane; "Enter" ]
 
 let deliver_or_paste ~inbox ~payload ~pane ~name ~run text =
   if String.is_empty inbox then
@@ -45,7 +46,7 @@ let prompt ~dir ~self ~window text =
   let failed r = Result.map_err (fun m -> Failed m) r in
   if String.is_empty text then Error No_prompt
   else
-    let* panes = failed (Tmux_pane.list_panes ()) in
+    let* panes = failed (Tmux_pane.list_panes (Tmux.create ())) in
     let* self = failed (List_runs.caller_pane panes self) in
     let states = State.by_pane (State.load_live ~dir) in
     let candidates whole_session =

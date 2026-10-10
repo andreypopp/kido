@@ -5,7 +5,7 @@ type parent = { session : string; pid : int }
 type session = {
   agent : agent;
   name : string;
-  pane : Tmux.Pane.id option;
+  pane : Tmux.pane_id option;
       [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]
   pid : int;
   ts : Timestamp.t;
@@ -27,7 +27,7 @@ val alive : int -> bool
 val get : dir:string -> string -> session option
 val get_live : dir:string -> string -> session option
 val load_live : dir:string -> (string * session) list
-val by_pane : (string * session) list -> (string * session) Tmux.Pane.Map.t
+val by_pane : (string * session) list -> (string * session) Tmux.Pane_map.t
 
 type ssh_kind = Remote_terminal | Remote_agent of { name : string }
 
@@ -37,7 +37,7 @@ type pane_kind =
   | Pi_agent of { id : string; session : session }
   | Ssh of { user : string; host : string; pane : ssh_kind }
 
-val pane_kind : states:(string * session) Tmux.Pane.Map.t -> Tmux_pane.t -> pane_kind
+val pane_kind : states:(string * session) Tmux.Pane_map.t -> Tmux_pane.t -> pane_kind
 val pane_title : Tmux_pane.t -> pane_kind -> string option
 val record : dir:string -> string -> session -> (unit, session) result
 val remove : dir:string -> string -> pid:int -> (unit, session) result

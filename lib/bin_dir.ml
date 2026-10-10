@@ -1,11 +1,11 @@
 let of_exe exe =
-  Tmux.Exec.candidates exe
+  Fs.candidates exe
   |> List.map (fun c ->
       Filename.concat (Filename.dirname (Filename.dirname c)) "share/kido/bin/tmux")
-  |> List.find_opt Tmux.Exec.is_file |> Option.map Filename.dirname
+  |> List.find_opt Fs.is_file |> Option.map Filename.dirname
   |> Option.filter (fun d -> not (String.contains d ':'))
 
-let own () = of_exe (Lazy.force Tmux.Exec.self)
+let own () = of_exe (Lazy.force Fs.self)
 let split path = if String.is_empty path then [] else String.split_on_char ':' path
 
 let path_with_first dir path =
@@ -32,8 +32,7 @@ let look_path_past ~path ~dir name =
   List.find_map
     (fun e ->
       let c = Filename.concat e name in
-      if (not (is_dir e)) && Tmux.Exec.is_executable c && not (same (stat c) shim_st) then Some c
-      else None)
+      if (not (is_dir e)) && Fs.is_executable c && not (same (stat c) shim_st) then Some c else None)
     search
 
 let path_prepend_script dir =
@@ -86,7 +85,7 @@ let%test_module "Tests" =
       Fs.mkdir_p (root // "share");
       Unix.symlink real (root // "bin/kido");
       Unix.symlink (versioned // "share/kido") (root // "share/kido");
-      let exe = Tmux.Exec.invoked_path ~path:"" (root // "bin/kido") in
+      let exe = Fs.invoked_path ~path:"" (root // "bin/kido") in
       Printf.printf "invoked_path unresolved: %b\n" (String.equal exe (root // "bin/kido"));
       Printf.printf "bin dir unresolved: %b\n"
         (Option.equal String.equal (of_exe exe) (Some (root // "share/kido/bin")));
@@ -298,7 +297,7 @@ let%test_module "Tests" =
       let script = path_prepend_script dir ^ path_prepend_script dir ^ {|printf '%s' "$PATH"|} in
       List.iter
         (fun sh ->
-          Tmux.Exec.look_path ~path:(Sys.getenv "PATH") sh
+          Fs.look_path ~path:(Sys.getenv "PATH") sh
           |> Option.iter (fun bin ->
               let out =
                 Sh.output ~env:[ "PATH=/usr/bin:" ^ dir ^ ":/bin" ] bin [ bin; "-c"; script ]

@@ -36,7 +36,7 @@ type from = {
   session : string;
   name : string; [@default ""]
   pane :
-    (Tmux.Pane.id option
+    (Tmux.pane_id option
     [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]);
       [@default None]
 }
@@ -192,7 +192,7 @@ let%test_module "Tests" =
         {
           kind = Message;
           id = "x";
-          from = { session = ""; name = ""; pane = Tmux.Pane.of_string "%3" };
+          from = { session = ""; name = ""; pane = Tmux.pane_id_of_string "%3" };
           reply_to = "";
           text = "";
           run = "";
@@ -206,7 +206,7 @@ let%test_module "Tests" =
               {
                 env with
                 kind = Stream;
-                from = { session = "s"; name = "n"; pane = Tmux.Pane.of_string "" };
+                from = { session = "s"; name = "n"; pane = Tmux.pane_id_of_string "" };
                 reply_to = "a";
                 text = "t";
                 run = "r";

@@ -4,7 +4,7 @@ type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop |
 
 val string_of_kind : kind -> string
 
-type from = { session : string; name : string; pane : Tmux.Pane.id option }
+type from = { session : string; name : string; pane : Tmux.pane_id option }
 
 type envelope = {
   kind : kind;

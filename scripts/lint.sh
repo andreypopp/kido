@@ -64,25 +64,28 @@ for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s 
         for match in re.finditer(history, comment, re.I):
             report(path, text, offset + match.start(), 'comment history: ' + match.group())
 
-test_helpers = {'lib/sh.ml', 'lib/test_support.ml', 'lib/test_fixture.ml', 'lib/view_fixture.ml', 'lib/tmux_pane_fixture.ml'}
-for path in set(glob.glob('lib/*.ml') + glob.glob('lib_tmux/*.ml')) - test_helpers:
+without_interface = {'lib/sh.ml', 'lib/test_support.ml', 'lib/test_fixture.ml', 'lib/view_fixture.ml', 'lib/tmux_pane_fixture.ml', 'lib_tmux/program_status.ml'}
+for path in set(glob.glob('lib/*.ml') + glob.glob('lib_tmux/*.ml')) - without_interface:
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text, True)
     match = re.search(r'^let\b', code, re.M)
     if match and not pathlib.Path(path + 'i').exists():
         report(path, text, match.start(), 'missing .mli')
 
-for path in ['AGENTS.md', 'docs/design.md', 'docs/design-subagents.md', 'share/pi/README.md']:
+for path in ['AGENTS.md', *glob.glob('docs/*.md'), 'share/pi/README.md']:
     text = pathlib.Path(path).read_text()
     for match in re.finditer(r'`((?:[A-Z][\w]*\.){1,2}[A-Za-z_][\w]*)`', text):
         parts = match.group(1).split('.')
-        module = ('lib_tmux/' + parts[1].lower() if parts[0] == 'Tmux' else 'lib/' + parts[0].lower()) + '.ml'
-        if parts[0] == 'Tmux' and len(parts) != 3:
-            continue
+        if parts[0] == 'Tmux':
+            module = 'lib_tmux/program_status.ml' if parts[1] == 'Program_status' else 'lib_tmux/tmux.ml'
+            symbols = parts[2:] if parts[1] in {'Client', 'Program_status'} else parts[1:]
+        else:
+            module = 'lib/' + parts[0].lower() + '.ml'
+            symbols = parts[1:]
         if not pathlib.Path(module).exists():
             continue
         code, _ = lexical(pathlib.Path(module).read_text(), True)
-        for symbol in parts[2:] if parts[0] == 'Tmux' else parts[1:]:
+        for symbol in symbols:
             if not re.search(r'\b' + re.escape(symbol) + r'\b', code):
                 report(path, text, match.start(), f'stale reference {match.group(1)} ({module})')
 

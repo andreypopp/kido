@@ -12,7 +12,7 @@ type parent = { session : string; pid : int [@default 0] } [@@deriving yojson]
 type session = {
   agent : agent;
   name : string;
-  pane : Tmux.Pane.id option;
+  pane : Tmux.pane_id option;
       [@to_yojson Tmux_pane.optional_id_to_yojson] [@of_yojson Tmux_pane.optional_id_of_yojson]
   pid : int;
   ts : Timestamp.t;
@@ -125,11 +125,11 @@ let by_pane sessions =
     (fun m ((_, s) as e) ->
       Option.map_or ~default:m
         (fun pane ->
-          Tmux.Pane.Map.update pane
+          Tmux.Pane_map.update pane
             (function Some (_, prev) as kept when Float.(s.ts <= prev.ts) -> kept | _ -> Some e)
             m)
         s.pane)
-    Tmux.Pane.Map.empty sessions
+    Tmux.Pane_map.empty sessions
 
 type ssh_kind = Remote_terminal | Remote_agent of { name : string }
 
@@ -153,7 +153,7 @@ let pane_kind ~states (p : Tmux_pane.t) =
       in
       Ssh { user; host; pane }
   | _, _, Some "pi" -> (
-      match Tmux.Pane.Map.find_opt p.pane_id states with
+      match Tmux.Pane_map.find_opt p.pane_id states with
       | Some (id, session) -> Pi_agent { id; session }
       | None -> Some_agent { name = "pi" })
   | _, _, Some "claude-code" -> Some_agent { name = "claude-code" }
@@ -191,7 +191,7 @@ let remove ~dir id ~pid = Result.map (fun () -> Fs.remove (path ~dir id)) (held 
 
 let held_message id s =
   Printf.sprintf "session %s is already open in pane %s (pid %d); this process is not tracked" id
-    (Option.map_or ~default:"" Tmux.Pane.to_string s.pane)
+    (Option.map_or ~default:"" Tmux.pane_id_to_string s.pane)
     s.pid
 
 let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
@@ -225,7 +225,7 @@ let%test_module "Tests" =
       {
         agent;
         name = "";
-        pane = Tmux.Pane.of_string pane;
+        pane = Tmux.pane_id_of_string pane;
         pid;
         ts;
         inbox;
@@ -241,15 +241,15 @@ let%test_module "Tests" =
     let temp () = Filename.temp_dir "kido-state" ""
 
     let show_panes live =
-      Tmux.Pane.Map.iter
-        (fun pane (id, _) -> Printf.printf "%s: %s\n" (Tmux.Pane.to_string pane) id)
+      Tmux.Pane_map.iter
+        (fun pane (id, _) -> Printf.printf "%s: %s\n" (Tmux.pane_id_to_string pane) id)
         (by_pane live)
 
     let outcome = function
       | Ok () -> print_endline "ok"
       | Error (h : session) ->
           Printf.printf "held by pid %d in %s\n" h.pid
-            (Option.map_or ~default:"" Tmux.Pane.to_string h.pane)
+            (Option.map_or ~default:"" Tmux.pane_id_to_string h.pane)
 
     let%expect_test "a record is written compactly, without its empty fields" =
       let s = session () ~ts:1_700_000_000.25 in
@@ -321,14 +321,15 @@ let%test_module "Tests" =
       Option.iter
         (fun (s : session) ->
           Printf.printf "kept %s %d %s\n"
-            (Option.map_or ~default:"" Tmux.Pane.to_string s.pane)
+            (Option.map_or ~default:"" Tmux.pane_id_to_string s.pane)
             s.pid s.inbox)
         (get ~dir "s");
       outcome (record ~dir "d" (session () ~pane:"%1" ~pid:(dead_pid ())));
       outcome (record ~dir "d" (session () ~pane:"%2" ~pid:me));
       Option.iter
         (fun (s : session) ->
-          Printf.printf "taken over by %s\n" (Option.map_or ~default:"" Tmux.Pane.to_string s.pane))
+          Printf.printf "taken over by %s\n"
+            (Option.map_or ~default:"" Tmux.pane_id_to_string s.pane))
         (get ~dir "d");
       outcome (record ~dir "d" (session () ~pane:"%2" ~pid:me));
       outcome (remove ~dir "d" ~pid:me);
@@ -368,7 +369,7 @@ let%test_module "Tests" =
         (fun (body, local) ->
           let status = Result.get_exn (Tmux.Program_status.parse body) in
           let p = { p with program_status = status } in
-          let states = if local then states else Tmux.Pane.Map.empty in
+          let states = if local then states else Tmux.Pane_map.empty in
           let kind = pane_kind ~states p in
           print_endline
             (match kind with

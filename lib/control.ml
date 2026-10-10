@@ -14,14 +14,15 @@ let wait_for within cond =
 
 let kill_run_pane ?(before = ignore) pane_id =
   let open Result.Infix in
-  let* panes = Tmux_pane.list_panes () in
+  let tmux = Tmux.create () in
+  let* panes = Tmux_pane.list_panes tmux in
   match Option.flat_map (Tmux_pane.find panes) pane_id with
   | None -> Ok `Gone
   | Some p when Tmux_pane.last_window panes p.window_id && Tmux_pane.last_pane panes p.window_id ->
       Error "it is its session's only pane; killing it would destroy the session"
   | Some p ->
       before ();
-      let+ () = Reap.release (Pane { window = p.window_id; pane = p.pane_id }) in
+      let+ () = Reap.release tmux (Pane { window = p.window_id; pane = p.pane_id }) in
       `Killed
 
 let record_stopped ~dir id =
@@ -38,7 +39,7 @@ let request ~states ~panes ~self kind target =
 let interrupt ~dir ~self to_ =
   let open Result.Infix in
   let live = State.load_live ~dir in
-  let* panes = Tmux_pane.list_panes () in
+  let* panes = Tmux_pane.list_panes (Tmux.create ()) in
   let* _, target = Message_agent.resolve ~live ~panes ~self (Descendant to_) in
   match request ~states:(State.by_pane live) ~panes ~self Interrupt target with
   | Ok _ -> Ok ("interrupted " ^ State.display_name panes target)
@@ -50,7 +51,7 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
     if force then Ok () else Error (what ^ "; pass --force to kill its window instead")
   in
   let live = State.load_live ~dir in
-  let* panes = Tmux_pane.list_panes () in
+  let* panes = Tmux_pane.list_panes (Tmux.create ()) in
   let runs = List.filter_map (Subrun.read_meta ~dir) (Subrun.list ~dir) in
   let ids =
     List.filter

@@ -1,6 +1,6 @@
 val agent_status :
   dir:string ->
-  pane:Tmux.Pane.id option ->
+  pane:Tmux.pane_id option ->
   agent:string ->
   session:string ->
   inbox:string ->

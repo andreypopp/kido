@@ -137,7 +137,7 @@ let validate_model ~path command =
   if String.is_empty argument then Ok ()
   else
     let listed =
-      match Tmux.Exec.look_path ~path "pi" with
+      match Fs.look_path ~path "pi" with
       | None -> Error {|exec: "pi": executable file not found in $PATH|}
       | Some pi -> (
           let r, w = Unix.pipe ~cloexec:true () in
@@ -242,6 +242,7 @@ let run_env ~dir id parent depth =
   | None -> []
 
 let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
+  let tmux = Tmux.create () in
   let open Result.Infix in
   let fail e =
     ignore
@@ -250,7 +251,7 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
     Error e
   in
   let* w =
-    match Tmux.Exec.new_window ~session ~name:meta.name ~cwd:meta.cwd ~env command with
+    match Tmux.new_window tmux ~session ~name:meta.name ~cwd:meta.cwd ~env command with
     | Ok w -> Ok w
     | Error e -> fail e
   in
@@ -259,34 +260,35 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
   Option.iter (fun delivered -> Subrun.reset_for_resume ~dir meta.id ~delivered) resume;
   let id = Subrun.string_of_id meta.id in
   let+ () =
-    match Tmux_pane.mark_run w.pane_id id with
+    match Tmux_pane.mark_run tmux w.pane_id id with
     | Ok () -> Ok ()
     | Error e -> (
         match meta.kind with
-        | (Bash | Stream) when not (Tmux.Exec.window_exists w.window_id) -> Ok ()
+        | (Bash | Stream) when not (Tmux.window_exists tmux w.window_id) -> Ok ()
         | Bash | Stream | Agent ->
-            ignore (Tmux.Exec.run [ "kill-window"; "-t"; Tmux.Window.to_string w.window_id ]);
+            ignore (Tmux.run tmux [ "kill-window"; "-t"; Tmux.window_id_to_string w.window_id ]);
             fail e)
   in
   match meta.kind with
   | Bash | Stream ->
       String.concat " "
         [
-          Tmux.Window.to_string w.window_id;
-          Tmux.Pane.to_string w.pane_id;
+          Tmux.window_id_to_string w.window_id;
+          Tmux.pane_id_to_string w.pane_id;
           id;
           Subrun.output_path ~dir meta.id;
         ]
   | Agent ->
-      String.concat " " [ Tmux.Window.to_string w.window_id; Tmux.Pane.to_string w.pane_id; id ]
+      String.concat " "
+        [ Tmux.window_id_to_string w.window_id; Tmux.pane_id_to_string w.pane_id; id ]
 
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 
 let caller ~dir ~self owner =
   let open Result.Infix in
-  let* panes = Tmux_pane.list_panes () in
+  let* panes = Tmux_pane.list_panes (Tmux.create ()) in
   let+ pane = List_runs.caller_pane panes self in
-  let own = Tmux.Pane.Map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
+  let own = Tmux.Pane_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
   let parent =
     match (owner, own) with
     | Given p, _ -> Some p

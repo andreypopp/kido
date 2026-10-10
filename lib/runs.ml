@@ -105,7 +105,8 @@ let run_outcome ~dir ~warn ~result ~text ~unreported id_str =
   let text =
     match (meta, result) with
     | Some m, Subrun.Failed ->
-        Option.map_or ~default:text (refine_no_turn_detail text) (Subrun.save_screen ~dir id m.pane)
+        Option.map_or ~default:text (refine_no_turn_detail text)
+          (Subrun.save_screen (Tmux.create ()) ~dir id m.pane)
     | _ -> text
   in
   let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in

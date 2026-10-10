@@ -1,8 +1,22 @@
 (library
+ (name kido_fs)
+ (wrapped false)
+ (modules fs)
+ (flags
+  (:standard -open Containers))
+ (libraries containers unix)
+ (inline_tests)
+ (preprocess
+  (pps ppx_expect)))
+
+(library
  (name kido)
+ (modules
+  (:standard \ fs))
  (flags
   (:standard -open Containers))
  (libraries
+  kido_fs
   containers
   dune-build-info
   unix

@@ -24,14 +24,14 @@ let session ?(agent = State.Pi) ?(parent = "") ?(depth = 0) ?(ts = test_at) ?(ac
 let states l =
   List.fold_left
     (fun m (pane, (id, s)) ->
-      let pane = Option.get_exn_or "id" (Tmux.Pane.of_string pane) in
-      Tmux.Pane.Map.add pane (id, { s with State.pane = Some pane }) m)
-    Tmux.Pane.Map.empty l
+      let pane = Option.get_exn_or "id" (Tmux.pane_id_of_string pane) in
+      Tmux.Pane_map.add pane (id, { s with State.pane = Some pane }) m)
+    Tmux.Pane_map.empty l
 
 let with_programs states panes =
   List.map
     (fun (p : Tmux_pane.t) ->
-      if Tmux.Pane.Map.mem p.pane_id states then
+      if Tmux.Pane_map.mem p.pane_id states then
         {
           p with
           program_status =
@@ -74,7 +74,7 @@ let ssh_pane ?command_line prompt start running status =
 let client session =
   Some
     {
-      Tmux.Exec.session;
-      session_id = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
+      Tmux.session;
+      session_id = Option.get_exn_or "id" (Tmux.session_id_of_string "$0");
       focused = false;
     }

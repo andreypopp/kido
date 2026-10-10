@@ -51,13 +51,13 @@ let caller ~dir ~self ~session =
   let live = State.load_live ~dir in
   let* caller =
     if String.is_empty session then
-      Ok (Option.flat_map (fun self -> Tmux.Pane.Map.find_opt self (State.by_pane live)) self)
+      Ok (Option.flat_map (fun self -> Tmux.Pane_map.find_opt self (State.by_pane live)) self)
     else
       match List.assoc_opt ~eq:String.equal session live with
-      | Some s when Option.equal Tmux.Pane.equal s.pane self -> Ok (Some (session, s))
+      | Some s when Option.equal Tmux.equal_pane_id s.pane self -> Ok (Some (session, s))
       | _ -> Error "no calling agent session has reported this pane"
   in
-  let* panes = if Option.is_none self then Ok [] else Tmux_pane.list_panes () in
+  let* panes = if Option.is_none self then Ok [] else Tmux_pane.list_panes (Tmux.create ()) in
   let pane = Option.flat_map (Tmux_pane.find panes) self in
   let id =
     match caller with
@@ -157,11 +157,11 @@ let revival_error ask =
     with Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
   in
   if not directory then Some ("ask directory is gone: " ^ ask.cwd)
-  else if not (Tmux.Exec.is_file ask.session_file) then
+  else if not (Fs.is_file ask.session_file) then
     Some ("pi session file is gone: " ^ ask.session_file)
   else None
 
-let target ~socket ~dir ~session ask =
+let target ~tmux ~dir ~session ask =
   match List.assoc_opt ~eq:String.equal ask.session (State.load_live ~dir) with
   | Some { pane = Some pane; _ } -> Ok pane
   | _ -> (
@@ -169,7 +169,7 @@ let target ~socket ~dir ~session ask =
       | Some e -> Error e
       | None ->
           Result.map
-            (fun (w : Tmux.Exec.window) -> w.pane_id)
-            (Tmux.Exec.new_window ?socket ~remain_on_exit:false ~session ~name:("ask-" ^ ask.id)
+            (fun (w : Tmux.window) -> w.pane_id)
+            (Tmux.new_window tmux ~remain_on_exit:false ~session ~name:("ask-" ^ ask.id)
                ~cwd:ask.cwd ~env:[]
                [ "pi"; "--session"; ask.session_file ]))

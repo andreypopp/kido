@@ -11,7 +11,7 @@ type send_error = No_text | Not_sent of string
 val reaches :
   (string * State.session) list ->
   Tmux_pane.t list ->
-  self:Tmux.Pane.id option ->
+  self:Tmux.pane_id option ->
   string ->
   (bool, string) result
 (** Whether session [id] is the caller's own or its descendant, over a per-pane list; a caller that
@@ -20,14 +20,14 @@ val reaches :
 val resolve :
   live:(string * State.session) list ->
   panes:Tmux_pane.t list ->
-  self:Tmux.Pane.id option ->
+  self:Tmux.pane_id option ->
   recipient ->
   (string * State.session, string) result
 
 val deliver :
-  states:(string * State.session) Tmux.Pane.Map.t ->
+  states:(string * State.session) Tmux.Pane_map.t ->
   panes:Tmux_pane.t list ->
-  self:Tmux.Pane.id option ->
+  self:Tmux.pane_id option ->
   spec ->
   State.session ->
   string ->
@@ -35,7 +35,7 @@ val deliver :
 
 val send :
   dir:string ->
-  self:Tmux.Pane.id option ->
+  self:Tmux.pane_id option ->
   recipient ->
   spec ->
   string ->
@@ -44,7 +44,7 @@ val send :
 
 val notify_parent :
   dir:string ->
-  self:Tmux.Pane.id option ->
+  self:Tmux.pane_id option ->
   warn:(string -> unit) ->
   parent:string ->
   run:string ->

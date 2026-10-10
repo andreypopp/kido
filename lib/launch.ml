@@ -69,7 +69,7 @@ let server_conf ~exe ~user_conf =
 let probe_server ~socket bin =
   let ((out, _, err) as p) =
     Unix.open_process_args_full bin
-      (Tmux.Exec.argv bin
+      (Tmux.argv bin
          [
            "-S";
            socket;
@@ -108,15 +108,15 @@ let mismatch ~socket bin =
      client; restart it once its windows are free (detach, then %s -S %s kill-server)"
     socket bin socket
 
-let argv ~socket bin args = Tmux.Exec.argv bin ("-S" :: socket :: args)
+let argv ~socket bin args = Tmux.argv bin ("-S" :: socket :: args)
 
 let new_session ~dir ~detach =
   let open Result.Infix in
   let* user_conf =
-    user_conf ~xdg_config_home:(Tmux.Exec.getenv "XDG_CONFIG_HOME") ~home:(Tmux.Exec.getenv "HOME")
+    user_conf ~xdg_config_home:(Fs.getenv "XDG_CONFIG_HOME") ~home:(Fs.getenv "HOME")
   in
   let conf = Filename.concat dir "server.conf" in
-  let* conf_text = server_conf ~exe:(Lazy.force Tmux.Exec.self) ~user_conf in
+  let* conf_text = server_conf ~exe:(Lazy.force Fs.self) ~user_conf in
   Fs.write conf conf_text;
   let env =
     Shell.with_env
@@ -125,8 +125,7 @@ let new_session ~dir ~detach =
   in
   let env =
     match Bin_dir.own () with
-    | Some dir ->
-        Shell.with_env env [ ("PATH", Bin_dir.path_with_first dir (Tmux.Exec.getenv "PATH")) ]
+    | Some dir -> Shell.with_env env [ ("PATH", Bin_dir.path_with_first dir (Fs.getenv "PATH")) ]
     | None -> env
   in
   Ok (env, [ "-f"; conf; "new-session" ] @ (if detach then [ "-d" ] else []) @ [ "-s"; "main" ])
@@ -139,7 +138,7 @@ let run ~dir ~tmux =
          (List.hd (String.split_on_char ',' tmux)))
   else
     let* socket = State.server_socket ~create:true ~dir in
-    let bin = Lazy.force Tmux.Exec.binary in
+    let bin = Lazy.force Tmux.binary in
     match probe_server ~socket bin with
     | Mismatch -> Error (mismatch ~socket bin)
     | Up _ -> Unix.execvpe bin (argv ~socket bin [ "attach-session" ]) (Unix.environment ())
@@ -150,11 +149,11 @@ let run ~dir ~tmux =
 let ensure ~dir =
   let open Result.Infix in
   let* socket = State.server_socket ~create:true ~dir in
-  let bin = Lazy.force Tmux.Exec.binary in
+  let bin = Lazy.force Tmux.binary in
   let resolve server =
     let tmux =
-      if String.contains bin '/' then Some (Tmux.Exec.abs bin)
-      else Tmux.Exec.look_path ~path:(Tmux.Exec.getenv "PATH") bin
+      if String.contains bin '/' then Some (Fs.abs bin)
+      else Fs.look_path ~path:(Fs.getenv "PATH") bin
     in
     match tmux with
     | Some tmux -> Ok { tmux; socket; protocol = Protocol.value; server }

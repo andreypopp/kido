@@ -20,7 +20,7 @@ let run name body =
   | exception Failure msg -> fail msg
   | exception Sys_error msg -> fail msg
   | exception Yojson.Json_error msg -> fail msg
-  | exception Unix.Unix_error (e, fn, arg) -> fail (Kido.Fs.unix_message e fn arg)
+  | exception Unix.Unix_error (e, fn, arg) -> fail (Fs.unix_message e fn arg)
 
 let width s = String.fold (fun n c -> if Char.code c land 0xC0 = 0x80 then n else n + 1) 0 s
 

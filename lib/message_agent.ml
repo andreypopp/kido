@@ -54,7 +54,9 @@ let resolve_target states panes ~self address =
 
 let reaches states panes ~self id =
   match
-    List.find_opt (fun (_, (s : State.session)) -> Option.equal Tmux.Pane.equal s.pane self) states
+    List.find_opt
+      (fun (_, (s : State.session)) -> Option.equal Tmux.equal_pane_id s.pane self)
+      states
   with
   | None -> Ok true
   | Some (caller, _) when String.equal caller id -> Ok true
@@ -85,7 +87,7 @@ let resolve ~live ~panes ~self recipient =
     | Descendant_run id -> descendant_target (List_runs.per_pane live) panes ~self (Run id)
     | Parent session -> Result.map (fun s -> (session, s)) (Msg.live_parent live session)
   in
-  if Option.equal Tmux.Pane.equal target.pane self then
+  if Option.equal Tmux.equal_pane_id target.pane self then
     Error (State.display_name panes target ^ " is this agent")
   else Ok e
 
@@ -100,7 +102,7 @@ let deliver ~states ~panes ~self spec (target : State.session) text =
             "%s has no inbox to send a %s to; only a plain message can be sent as v0 text" name kind))
   else
     let from : Msg.from =
-      match Option.flat_map (fun self -> Tmux.Pane.Map.find_opt self states) self with
+      match Option.flat_map (fun self -> Tmux.Pane_map.find_opt self states) self with
       | Some (id, (s : State.session)) ->
           { session = id; name = State.display_name panes s; pane = self }
       | None -> { session = ""; name = ""; pane = self }
@@ -144,17 +146,17 @@ let send ~dir ~self recipient spec text =
   else
     let live = State.load_live ~dir in
     let states = State.by_pane live in
-    let* panes = not_sent (Tmux_pane.list_panes ()) in
+    let* panes = not_sent (Tmux_pane.list_panes (Tmux.create ())) in
     let alternative = "use kido tool message_agent instead, which is one-way and needs no reply" in
     let* () =
-      match (spec.kind, Option.flat_map (fun self -> Tmux.Pane.Map.find_opt self states) self) with
+      match (spec.kind, Option.flat_map (fun self -> Tmux.Pane_map.find_opt self states) self) with
       | Ask, None ->
           Error
             (Not_sent
                (Printf.sprintf
                   "no live agent session on this pane (%s), so an answer could not be addressed \
                    back here; nothing sent - %s"
-                  (Option.map_or ~default:"" Tmux.Pane.to_string self)
+                  (Option.map_or ~default:"" Tmux.pane_id_to_string self)
                   alternative))
       | Ask, Some (_, caller) when String.is_empty caller.inbox ->
           Error

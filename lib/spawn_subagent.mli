@@ -24,7 +24,7 @@ val check_window_name : string -> (unit, string) result
 
 val caller :
   dir:string ->
-  self:Tmux.Pane.id option ->
+  self:Tmux.pane_id option ->
   owner ->
   (Tmux_pane.t * State.parent option * int, string) result
 (** The caller's pane, the parent a run it starts gets, and the run's depth. *)
@@ -35,10 +35,10 @@ val create_run_window :
   ?resume:bool ->
   dir:string ->
   Subrun.meta ->
-  session:Tmux.Session.id ->
+  session:Tmux.session_id ->
   env:string list ->
   string list ->
   (string, string) result
 (** The created line: window, pane and run ids, and a bash run's output file. *)
 
-val spawn : dir:string -> self:Tmux.Pane.id option -> pi:pi -> request -> (string, string) result
+val spawn : dir:string -> self:Tmux.pane_id option -> pi:pi -> request -> (string, string) result

@@ -7,7 +7,7 @@ let kido args =
          (String.concat " " (List.map Filename.quote args))
          err)
   in
-  (code, List.hd (String.lines (Option.get_or ~default:"" (Kido.Fs.read err) ^ "\n")))
+  (code, List.hd (String.lines (Option.get_or ~default:"" (Fs.read err) ^ "\n")))
 
 (* pi's own suite pins that tools.json names exactly the tools it registers; this pins that each
    invokes a subcommand of its own name. *)

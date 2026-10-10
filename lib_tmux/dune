@@ -2,7 +2,7 @@
  (name tmux)
  (flags
   (:standard -open Containers))
- (libraries containers unix yojson)
+ (libraries containers unix yojson kido_fs)
  (inline_tests)
  (preprocess
   (pps ppx_expect)))

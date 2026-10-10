@@ -1,22 +1,22 @@
 open Tmux
 
-let optional_id_to_yojson = function None -> `String "" | Some id -> Pane.id_to_yojson id
+let optional_id_to_yojson = function None -> `String "" | Some id -> pane_id_to_yojson id
 
 let optional_id_of_yojson = function
   | `String "" -> Ok None
-  | json -> Result.map Option.some (Pane.id_of_yojson json)
+  | json -> Result.map Option.some (pane_id_of_yojson json)
 
 type exit = { code : int; at : float }
 
 type t = {
   session_name : string;
-  session_id : Session.id;
+  session_id : session_id;
   session_created : float;
   window_index : int;
-  window_id : Window.id;
+  window_id : window_id;
   window_name : string;
   window_layout : string;
-  pane_id : Pane.id;
+  pane_id : pane_id;
   active : bool;
   pane_active : bool;
   pane_pid : int;
@@ -97,9 +97,9 @@ let parse_line line =
   | f when Array.length f < fields -> None
   | f ->
       let open Option.Infix in
-      let* session_id = Session.of_string f.(1) in
-      let* window_id = Window.of_string f.(4) in
-      let* pane_id = Pane.of_string f.(7) in
+      let* session_id = session_id_of_string f.(1) in
+      let* window_id = window_id_of_string f.(4) in
+      let* pane_id = pane_id_of_string f.(7) in
       let program_status =
         Result.get_or
           ~default:Program_status.{ serial = 0; records = [] }
@@ -143,9 +143,9 @@ let parse_line line =
         }
 
 let parse lines = List.filter_map parse_line lines
-let find panes id = List.find_opt (fun p -> Pane.equal p.pane_id id) panes
+let find panes id = List.find_opt (fun p -> equal_pane_id p.pane_id id) panes
 
-type session = { name : string; id : Session.id; windows : t list list }
+type session = { name : string; id : session_id; windows : t list list }
 
 let order_sessions panes =
   let add groups p =
@@ -154,7 +154,7 @@ let order_sessions panes =
     in
     let first, windows = match mine with [ g ] -> g | _ -> (p, []) in
     match windows with
-    | (q :: _ as w) :: ws when Window.equal q.window_id p.window_id ->
+    | (q :: _ as w) :: ws when equal_window_id q.window_id p.window_id ->
         (first, (p :: w) :: ws) :: others
     | ws -> (first, [ p ] :: ws) :: others
   in
@@ -164,10 +164,10 @@ let order_sessions panes =
       | 0 -> String.compare a.session_name b.session_name
       | c -> c)
   |> List.map (fun (first, windows) ->
-      let by_age = List.sort (fun a b -> Pane.compare a.pane_id b.pane_id) in
+      let by_age = List.sort (fun a b -> compare_pane_id a.pane_id b.pane_id) in
       { name = first.session_name; id = first.session_id; windows = List.rev_map by_age windows })
 
-let in_window window_id p = Window.equal p.window_id window_id
+let in_window window_id p = equal_window_id p.window_id window_id
 
 let window_focused panes window_id =
   List.exists (fun p -> in_window window_id p && p.active && p.session_attached) panes
@@ -176,9 +176,9 @@ let last_window panes window_id =
   match List.find_opt (in_window window_id) panes with
   | None -> false
   | Some { session_id; _ } ->
-      List.filter (fun p -> Session.equal p.session_id session_id) panes
+      List.filter (fun p -> equal_session_id p.session_id session_id) panes
       |> List.map (fun p -> p.window_id)
-      |> List.uniq ~eq:Window.equal |> List.length <= 1
+      |> List.uniq ~eq:equal_window_id |> List.length <= 1
 
 let last_pane panes window_id = List.count (in_window window_id) panes <= 1
 
@@ -190,55 +190,49 @@ let active_pane panes session =
     (fun p -> if String.equal p.session_name session && p.active then Some p.pane_id else None)
     panes
 
-let list_panes ?socket ?conn () =
-  match
-    Option.map (fun c -> Conn.run c ~command:("list-panes -a -F " ^ Filename.quote format)) conn
-  with
-  | Some (Ok lines) -> Ok (parse lines)
-  | None | Some (Error _) ->
-      let socket = match conn with Some c -> Conn.socket c | None -> socket in
-      Result.map
-        (fun out -> parse (String.split_on_char '\n' out))
-        (Exec.exec ?socket [ "list-panes"; "-a"; "-F"; format ])
+let list_panes tmux = Result.map parse (Tmux.list_panes tmux ~format)
 
 let real_clients lines =
   List.filter_map
     (fun line ->
-      match Exec.client_fields line with
+      match Tmux.client_fields line with
       | Some (name, _, _, _, control) when not (String.is_empty name || String.equal control "1") ->
           Some name
       | _ -> None)
     lines
 
-let resolve_client ~pane ~tmux_env =
+let resolve_client tmux ~pane ~tmux_env =
   let live =
     match pane with
     | None -> None
     | Some pane -> (
-        match Exec.exec [ "display-message"; "-p"; "-t"; Pane.to_string pane; "#{session_id}" ] with
-        | Ok id -> Session.of_string id
+        match
+          Tmux.exec tmux [ "display-message"; "-p"; "-t"; pane_id_to_string pane; "#{session_id}" ]
+        with
+        | Ok id -> session_id_of_string id
         | _ -> None)
   in
   let target =
     match (live, String.split_on_char ',' tmux_env) with
     | Some id, _ -> Some id
-    | None, _ :: _ :: id :: _ when not (String.is_empty id) -> Session.of_string ("$" ^ id)
+    | None, _ :: _ :: id :: _ when not (String.is_empty id) -> session_id_of_string ("$" ^ id)
     | None, _ -> None
   in
   match
     Option.map
-      (fun t -> Exec.exec [ "list-clients"; "-t"; Session.to_string t; "-F"; Exec.client_format ])
+      (fun t ->
+        Tmux.exec tmux [ "list-clients"; "-t"; session_id_to_string t; "-F"; Tmux.client_format ])
       target
   with
   | Some (Ok out) -> (
       match real_clients (String.split_on_char '\n' out) with [ c ] -> Some c | _ -> None)
   | _ -> None
 
-let mark_ssh pane destination =
-  Exec.run [ "set-option"; "-p"; "-t"; Pane.to_string pane; "@kido_ssh"; destination ]
+let mark_ssh tmux pane destination =
+  Tmux.run tmux [ "set-option"; "-p"; "-t"; pane_id_to_string pane; "@kido_ssh"; destination ]
 
-let mark_run pane_id run_id =
-  Exec.run [ "set-option"; "-p"; "-t"; Pane.to_string pane_id; run_option; run_id ]
+let mark_run tmux pane_id run_id =
+  Tmux.run tmux [ "set-option"; "-p"; "-t"; pane_id_to_string pane_id; run_option; run_id ]
 
 let%test_module "Tests" =
   (module struct
@@ -277,13 +271,13 @@ let%test_module "Tests" =
         ?(cmd = "") ?(cwd = "") ?(title = "") id : t =
       {
         session_name = session;
-        session_id = Option.get_exn_or "id" (Session.of_string session_id);
+        session_id = Option.get_exn_or "id" (session_id_of_string session_id);
         session_created = created;
         window_index = index;
-        window_id = Option.get_exn_or "id" (Window.of_string window);
+        window_id = Option.get_exn_or "id" (window_id_of_string window);
         window_name = "";
         window_layout = "";
-        pane_id = Option.get_exn_or "id" (Pane.of_string id);
+        pane_id = Option.get_exn_or "id" (pane_id_of_string id);
         active;
         pane_active = active;
         pane_pid = pid;
@@ -311,10 +305,12 @@ let%test_module "Tests" =
         "%s %s created=%.0f win=%d %s %s %s %s active=%b pane_active=%b pid=%d cmd=%s cwd=%s \
          alt=%b running=%b start=%s prompt=%s exit=%s line=%S dead=%s run=%s ssh=%s attached=%b \
          title=%S\n"
-        p.session_name (Session.to_string p.session_id) p.session_created p.window_index
-        (Window.to_string p.window_id) p.window_name p.window_layout (Pane.to_string p.pane_id)
-        p.active p.pane_active p.pane_pid p.current_command p.current_path p.alternate_on
-        p.command_running (time p.command_start) (time p.last_prompt)
+        p.session_name
+        (session_id_to_string p.session_id)
+        p.session_created p.window_index (window_id_to_string p.window_id) p.window_name
+        p.window_layout (pane_id_to_string p.pane_id) p.active p.pane_active p.pane_pid
+        p.current_command p.current_path p.alternate_on p.command_running (time p.command_start)
+        (time p.last_prompt)
         (opt (fun (e : exit) -> Printf.sprintf "%d@%.0f" e.code e.at) p.last_exit)
         p.command_line (time p.dead_at) (opt Fun.id p.run)
         (opt (fun (user, host) -> user ^ "@" ^ host) p.ssh)
@@ -376,7 +372,7 @@ let%test_module "Tests" =
           in
           List.iter
             (fun (p : t) ->
-              Printf.printf "%s %s %s\n" (Pane.to_string p.pane_id) p.title
+              Printf.printf "%s %s %s\n" (pane_id_to_string p.pane_id) p.title
                 (Yojson.Safe.to_string (Program_status.to_yojson p.program_status)))
             (parse [ line values ]))
         [
@@ -526,12 +522,12 @@ let%test_module "Tests" =
         "order_sessions: oldest session first, windows in list order, panes oldest first" =
       List.iter
         (fun (s : session) ->
-          Printf.printf "%s %s:" s.name (Session.to_string s.id);
+          Printf.printf "%s %s:" s.name (session_id_to_string s.id);
           List.iter
             (fun w ->
               Printf.printf " %s[%s]"
-                (Window.to_string (List.hd w).window_id)
-                (String.concat " " (List.map (fun (p : t) -> Pane.to_string p.pane_id) w)))
+                (window_id_to_string (List.hd w).window_id)
+                (String.concat " " (List.map (fun (p : t) -> pane_id_to_string p.pane_id) w)))
             s.windows;
           print_newline ())
         (order_sessions
@@ -563,12 +559,12 @@ let%test_module "Tests" =
       List.iter
         (fun w ->
           Printf.printf "%s: focused=%b last_window=%b last_pane=%b run_pane=%s\n" w
-            (window_focused focus_panes (Option.get_exn_or "id" (Window.of_string w)))
-            (last_window focus_panes (Option.get_exn_or "id" (Window.of_string w)))
-            (last_pane focus_panes (Option.get_exn_or "id" (Window.of_string w)))
+            (window_focused focus_panes (Option.get_exn_or "id" (window_id_of_string w)))
+            (last_window focus_panes (Option.get_exn_or "id" (window_id_of_string w)))
+            (last_pane focus_panes (Option.get_exn_or "id" (window_id_of_string w)))
             (Option.map_or ~default:"-"
-               (fun (p : t) -> Pane.to_string p.pane_id)
-               (run_pane focus_panes (Option.get_exn_or "id" (Window.of_string w)))))
+               (fun (p : t) -> pane_id_to_string p.pane_id)
+               (run_pane focus_panes (Option.get_exn_or "id" (window_id_of_string w)))))
         [ "@1"; "@2"; "@3"; "@999" ];
       [%expect
         {|

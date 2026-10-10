@@ -12,7 +12,7 @@ let command ~path ~login user =
   | Some word -> (
       let resolved =
         if String.contains word '/' then word
-        else Option.get_or ~default:word (Tmux.Exec.look_path ~path word)
+        else Option.get_or ~default:word (Fs.look_path ~path word)
       in
       match Filename.basename resolved with
       | "zsh" | "bash" -> (resolved, None)
@@ -30,7 +30,7 @@ let with_env base add =
     (Array.of_list (List.map (fun (k, v) -> k ^ "=" ^ v) add))
 
 let resolve_login_shell candidates =
-  List.find_opt Tmux.Exec.is_executable candidates |> Option.get_or ~default:"/bin/sh"
+  List.find_opt Fs.is_executable candidates |> Option.get_or ~default:"/bin/sh"
 
 let argv path mode command =
   let head =
@@ -42,18 +42,19 @@ let argv path mode command =
   head @ Option.map_or ~default:[] (fun c -> [ "-c"; c ]) command
 
 let run () =
+  let tmux = Tmux.create () in
   let global_option name =
-    Result.get_or ~default:"" (Tmux.Exec.exec [ "show-options"; "-gqv"; name ])
+    Result.get_or ~default:"" (Tmux.exec tmux [ "show-options"; "-gqv"; name ])
   in
   let path, command =
-    command ~path:(Tmux.Exec.getenv "PATH")
-      ~login:(resolve_login_shell [ global_option "default-shell"; Tmux.Exec.getenv "SHELL" ])
+    command ~path:(Fs.getenv "PATH")
+      ~login:(resolve_login_shell [ global_option "default-shell"; Fs.getenv "SHELL" ])
       (match global_option user_command_option with "" -> None | c -> Some c)
   in
   let zdotdir = Sys.getenv_opt "ZDOTDIR" in
   let mode =
     Prime.local_mode
-      ~dotdir:(match zdotdir with None | Some "" -> Tmux.Exec.getenv "HOME" | Some d -> d)
+      ~dotdir:(match zdotdir with None | Some "" -> Fs.getenv "HOME" | Some d -> d)
       path
   in
   let mode, add =

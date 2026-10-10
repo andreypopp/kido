@@ -87,14 +87,15 @@ These are fixed:
   bodies of small commands (`set_status`, `get-agent`, `snapshot`,
   `ssh`, ...). `lib/` is the library `kido`,
   one module per domain or subcommand with logic of its own. `lib_tmux/` is the library `tmux` (call sites read
-  `Tmux.Conn`, `Tmux.Pane`, `Tmux.Exec`). Unit tests are ppx_expect, inline
+  `Tmux`, `Tmux.Client`). Unit tests are ppx_expect, inline
   at the bottom of the module under test in a `let%test_module "Tests"`
   submodule, so `.mli` exports only what production callers use.
   Out-of-line exceptions are `lib/test/test_tool_parity.ml` and
   `lib/test/tmux_server/`.
 - **Every stanza compiles with `-open Containers`.** Every `.ml` has an
   `.mli` unless it holds only types. Test-helper modules `Sh`, `Test_support`,
-  `Test_fixture`, `View_fixture` and `Tmux_pane_fixture` have no `.mli`.
+  `Test_fixture`, `View_fixture` and `Tmux_pane_fixture` have no `.mli`;
+  `lib_tmux/program_status.ml` is exposed only through `tmux.mli`.
   JSON is yojson with
   ppx_deriving_yojson. The TUI is Mosaic, pinned in `dune-project`.
   Concurrency is `unix` and `threads.posix`; no Eio, no Lwt.
@@ -133,9 +134,15 @@ Conventions:
   It has no default annotation; `Msg.envelope_to_yojson` adds `v` to the
   derived encoding. `lib/msg.ml`'s inline tests pin the field set.
 - **Tmux I/O.** No injected tmux/ops records whose only other
-  implementation is a test fake: call `Tmux.Exec` directly and test
-  through e2e. `Tmux.Conn` has no mutex; only the sidebar's single tick
-  may touch it.
+  implementation is a test fake: call `Tmux` directly and test
+  through e2e. `Tmux.t` is immutable: `Tmux.create` makes a one-shot handle;
+  `Tmux.Client.tmux` makes a handle fixed to that control client. The two
+  deliberate read fallbacks use the same socket without changing the handle:
+  `Tmux.client_state` on an empty reply or control error, `Tmux.list_panes`
+  on a control error. Other control commands are never silently retried as a
+  one-shot. `Tmux.Client.t` has no mutex; only the
+  sidebar's single tick may touch it. `Tmux.binary` is the accepted lazy
+  environment lookup exception.
 - **Mosaic.** The grid's default foreground is truecolor white, so
   every style sets `fg` explicitly. A lone Escape arrives about 0.5s
   late.
@@ -175,14 +182,16 @@ Conventions:
       async_run.ml (its wrapper), async_stream.ml, runs.ml,
       control.ml (stop_run, interrupt_subagent)
                        one subcommand or family each
-      fs.ml, timestamp.ml  files, time
+      fs.ml, timestamp.ml  files, paths, executable lookup, time;
+                       Fs is the shared kido_fs library used by kido and tmux
       test_fixture.ml, test_support.ml, view_fixture.ml, tmux_pane_fixture.ml, sh.ml
                        shared inline-test scaffolding
       test/            test_tool_parity.ml, the built-binary exception
-      test/tmux_server/  the Conn and pane-read tests against a real tmux, run only with $KIDO_TMUX
-    lib_tmux/          the library tmux: pane.ml, window.ml, session.ml (ids),
-                       program_status.ml (the OSC 7501 store), exec.ml (one-shot
-                       tmux primitives and binary lookup), conn.ml (the control-mode client)
+      test/tmux_server/  the Client and pane-read tests against a real tmux, run only with $KIDO_TMUX
+    lib_tmux/          the library tmux: tmux.ml and tmux.mli (server handles,
+                       flat ids, operations, binary lookup and Client),
+                       program_status.ml (OSC 7501 parsing, re-exported through
+                       tmux.mli; no separate .mli)
     share/             the source of share/kido, installed by share/dune:
       bin/             the bin directory's sh shims (kido, tmux, ssh, pi)
       shim.sh          their shared helper
@@ -228,7 +237,7 @@ containing a comma, and a socket path that cannot fit the platform's
 `sun_path` including its terminator.
 For debugging the default server, use
 `kido-tmux -u -S ~/.local/state/kido/socket`.
-`Tmux.Exec.argv` puts `-u` on every kido tmux client, including the
+`Tmux.argv` puts `-u` on every kido tmux client, including the
 control client and launcher; `share/bin/tmux` does the same for shell use.
 
 **Tool name == `kido tool` subcommand name.** Every subagent tool in `share/pi/` invokes
@@ -280,7 +289,7 @@ pin only staged.
 
 kido finds its tmux in this order: `$KIDO_TMUX`, then a `kido-tmux`
 beside its own executable (unresolved invoked path first, as for the
-shipped files), then `tmux` on PATH: `Tmux.Exec.resolve_binary`. The e2e harness gives the built kido
+shipped files), then `tmux` on PATH: `Tmux.binary`. The e2e harness gives the built kido
 that sibling, so the suite runs the resolution users get.
 
 **The side column.** `side-status-command` runs a program in the side
@@ -332,7 +341,7 @@ the sidebar uses to decide a program has taken the terminal.
   started. Use `new-session -e VAR=value` or the command line.
 - A window linked into two sessions has one pane id in several sessions.
   `Sidebar.step` finds the client's pane by active pane id **and**
-  `Tmux.Exec.client_state.session_id`.
+  `Tmux.client_state.session_id`.
 - `-S` takes a socket path as supplied; a bare name is relative to the
   working directory, not `/tmp/tmux-<uid>/`. `-L` creates its socket
   directory. An unset `TMUX_TMPDIR` selects `/tmp`; a nonexistent
@@ -445,8 +454,8 @@ Shipped files live at `<prefix>/share/kido/...` beside `<prefix>/bin/kido`
 (Homebrew's `pkgshare` layout; `make install` mirrors it).
 
 `Bin_dir.of_exe` tries the **unresolved** path first and resolves only
-as a fallback (`Tmux.Exec.candidates`), and starts from
-`Tmux.Exec.invoked_path` on `argv[0]`, with `Sys.executable_name` only
+as a fallback (`Fs.candidates`), and starts from
+`Fs.invoked_path` on `argv[0]`, with `Sys.executable_name` only
 as its last resort:
 
 - Homebrew's `bin/kido` and `share/kido` are symlinks repointed on every
@@ -609,8 +618,9 @@ Negative controls are load-bearing: never delete one half of a pair.
   asks who is attached to the pane's session, ignoring kido's own
   control-mode connections (one per real client). Control mode is read
   from its boolean, not an empty tty (a read-only client has one too).
-- **`Tmux.Conn.run` kills the control client on any timeout** and subsequent
-  calls re-dial after the retry backoff; one slow command costs a full reconnect.
+- **`Tmux.exec` over a control handle kills its client on any timeout** and
+  subsequent calls re-dial after the retry backoff; one slow command costs
+  a full reconnect.
 - **`share/zsh/integration.zsh` must not name a local `status`** — a zsh
   special parameter; shadowing it silently stops the precmd hook. It is
   called `ret`.

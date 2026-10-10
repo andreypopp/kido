@@ -51,12 +51,12 @@ let decode line =
                    else Any (Sidebar.Switch_session direction))
             | [ ("jump", `Assoc location) ] when List.length location = 3 -> (
                 match
-                  ( identifier Tmux.Session.of_string
+                  ( identifier Tmux.session_id_of_string
                       (List.assoc_opt ~eq:String.equal "session" location),
-                    identifier Tmux.Window.of_string
+                    identifier Tmux.window_id_of_string
                       (List.assoc_opt ~eq:String.equal "window" location),
-                    identifier Tmux.Pane.of_string (List.assoc_opt ~eq:String.equal "pane" location)
-                  )
+                    identifier Tmux.pane_id_of_string
+                      (List.assoc_opt ~eq:String.equal "pane" location) )
                 with
                 | Some session, Some window, Some pane ->
                     Some (Any (Sidebar.Jump { session; window; pane }))
@@ -72,17 +72,17 @@ let decode line =
             | [ ("new-window", value) ] ->
                 Option.map
                   (fun window -> Any (Sidebar.New_window window))
-                  (identifier Tmux.Window.of_string (Some value))
+                  (identifier Tmux.window_id_of_string (Some value))
             | [ ("select-session", value) ] ->
                 Option.map
                   (fun session -> Any (Sidebar.Select_session session))
-                  (identifier Tmux.Session.of_string (Some value))
+                  (identifier Tmux.session_id_of_string (Some value))
             | [ ("new-session", `Bool true) ] -> Some (Any Sidebar.New_session)
             | [ ("select-window", `Assoc target) ] when List.length target = 2 -> (
                 match
-                  ( identifier Tmux.Session.of_string
+                  ( identifier Tmux.session_id_of_string
                       (List.assoc_opt ~eq:String.equal "session" target),
-                    identifier Tmux.Window.of_string
+                    identifier Tmux.window_id_of_string
                       (List.assoc_opt ~eq:String.equal "window" target) )
                 with
                 | Some session, Some window ->
@@ -103,9 +103,9 @@ let error id message = `Assoc [ ("reply", `Assoc [ ("id", `Int id); ("error", `S
 let location (c : Sidebar.client) =
   `Assoc
     [
-      ("session", Tmux.Session.id_to_yojson c.session);
-      ("window", Tmux.Window.id_to_yojson c.window);
-      ("pane", Tmux.Pane.id_to_yojson c.pane);
+      ("session", Tmux.session_id_to_yojson c.session);
+      ("window", Tmux.window_id_to_yojson c.window);
+      ("pane", Tmux.pane_id_to_yojson c.pane);
     ]
 
 let result_reply id key encode = function
@@ -116,8 +116,8 @@ let switched =
   Option.map_or ~default:`Null (fun (target : Sidebar.switched) ->
       `Assoc
         [
-          ("session", Tmux.Session.id_to_yojson target.session);
-          ("window", Tmux.Window.id_to_yojson target.window);
+          ("session", Tmux.session_id_to_yojson target.session);
+          ("window", Tmux.window_id_to_yojson target.window);
         ])
 
 let reply : type a. int -> a Sidebar.request -> a -> Yojson.Safe.t =
@@ -181,8 +181,8 @@ let snapshot (m : model) =
         `Assoc
           [
             ("kind", `String "window");
-            ("id", Tmux.Window.id_to_yojson g.first.row.window);
-            ("window", Tmux.Window.id_to_yojson g.first.row.window);
+            ("id", Tmux.window_id_to_yojson g.first.row.window);
+            ("window", Tmux.window_id_to_yojson g.first.row.window);
             ("name", `String g.name);
             ("children", `List (List.map item (g.first :: g.rest)));
           ]
@@ -194,9 +194,9 @@ let snapshot (m : model) =
         ( "kind",
           `String
             (match r.kind with Agent -> "agent" | Run -> "run" | Ssh -> "ssh" | Shell -> "shell") );
-        ("id", Tmux.Pane.id_to_yojson r.pane);
-        ("pane", Tmux.Pane.id_to_yojson r.pane);
-        ("window", Tmux.Window.id_to_yojson r.window);
+        ("id", Tmux.pane_id_to_yojson r.pane);
+        ("pane", Tmux.pane_id_to_yojson r.pane);
+        ("window", Tmux.window_id_to_yojson r.window);
         ("indicator", indicator_json r.indicator);
         ( "program_status",
           Option.map_or
@@ -242,7 +242,7 @@ let snapshot (m : model) =
                        ("name", `String a.name);
                        ("text", `String a.text);
                        ("created", Timestamp.to_yojson a.created);
-                       ("pane", Option.map_or ~default:`Null Tmux.Pane.id_to_yojson pane);
+                       ("pane", Option.map_or ~default:`Null Tmux.pane_id_to_yojson pane);
                        ("ended", `Bool (Option.is_none pane));
                        ( "revivable",
                          `Bool
@@ -258,7 +258,7 @@ let snapshot (m : model) =
                  (fun s ->
                    `Assoc
                      [
-                       ("id", Tmux.Session.id_to_yojson s.id);
+                       ("id", Tmux.session_id_to_yojson s.id);
                        ("name", `String s.name);
                        ("current", `Bool s.current);
                        ("nodes", `List (List.map node s.nodes));
@@ -275,7 +275,7 @@ let%test_module "Tests" =
       {
         interval = Sidebar.default_interval;
         client = "";
-        socket = None;
+        tmux = Tmux.create ();
         dir;
         threshold = 180.;
         grace = 30.;
@@ -291,7 +291,7 @@ let%test_module "Tests" =
            {
              Sidebar.empty with
              client = client "alpha";
-             active = Tmux.Pane.of_string "%1";
+             active = Tmux.pane_id_of_string "%1";
              panes = with_programs states panes;
              states;
              lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
@@ -318,7 +318,7 @@ let%test_module "Tests" =
         @ [
             {
               (pane ~session:"beta" ~window:"@5" ~title:"asker" "%5") with
-              session_id = Option.get_exn_or "id" (Tmux.Session.of_string "$1");
+              session_id = Option.get_exn_or "id" (Tmux.session_id_of_string "$1");
             };
           ]
       in
@@ -641,8 +641,8 @@ let%test_module "Tests" =
           Ok
             (Some
                {
-                 Sidebar.session = Option.get_exn_or "id" (Tmux.Session.of_string "$3");
-                 window = Option.get_exn_or "id" (Tmux.Window.of_string "@12");
+                 Sidebar.session = Option.get_exn_or "id" (Tmux.session_id_of_string "$3");
+                 window = Option.get_exn_or "id" (Tmux.window_id_of_string "@12");
                });
           Ok None;
           Error "invalid or unknown request";
@@ -651,7 +651,7 @@ let%test_module "Tests" =
         {
           interval = 0.1;
           client = "app";
-          socket = None;
+          tmux = Tmux.create ();
           dir = "/unused";
           threshold = 180.;
           grace = 30.;
@@ -684,8 +684,8 @@ let%test_module "Tests" =
             {
               Sidebar.row =
                 {
-                  pane = Option.get_exn_or "id" (Tmux.Pane.of_string ("%" ^ string_of_int i));
-                  window = Option.get_exn_or "id" (Tmux.Window.of_string "@1");
+                  pane = Option.get_exn_or "id" (Tmux.pane_id_of_string ("%" ^ string_of_int i));
+                  window = Option.get_exn_or "id" (Tmux.window_id_of_string "@1");
                   kind = (match i mod 4 with 0 -> Agent | 1 -> Run | 2 -> Ssh | _ -> Shell);
                   indicator;
                   title = (if i = 0 then title else []);
@@ -719,22 +719,22 @@ let%test_module "Tests" =
           client =
             Some
               {
-                session = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
-                window = Option.get_exn_or "id" (Tmux.Window.of_string "@1");
-                pane = Option.get_exn_or "id" (Tmux.Pane.of_string "%0");
+                session = Option.get_exn_or "id" (Tmux.session_id_of_string "$0");
+                window = Option.get_exn_or "id" (Tmux.window_id_of_string "@1");
+                pane = Option.get_exn_or "id" (Tmux.pane_id_of_string "%0");
               };
           snap =
             {
               Sidebar.empty with
               states =
-                Tmux.Pane.Map.singleton
-                  (Option.get_exn_or "id" (Tmux.Pane.of_string "%0"))
+                Tmux.Pane_map.singleton
+                  (Option.get_exn_or "id" (Tmux.pane_id_of_string "%0"))
                   ("agent", Test_fixture.session ~agent:State.Pi ());
             };
           sessions =
             [
               {
-                id = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
+                id = Option.get_exn_or "id" (Tmux.session_id_of_string "$0");
                 name = "session";
                 current = true;
                 nodes;

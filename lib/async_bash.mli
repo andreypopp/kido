@@ -1,6 +1,6 @@
 val async_bash :
   dir:string ->
-  self:Tmux.Pane.id option ->
+  self:Tmux.pane_id option ->
   exe:string ->
   name:string ->
   stream:bool ->

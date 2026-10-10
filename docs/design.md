@@ -1041,7 +1041,7 @@ routinely reaped, resuming one is the normal way to keep working with it,
 and a bare `pi --session <id>` comes back standalone: no parent edge, no
 `@kido_run` mark, not a descendant for stop/ask scoping, and no new run
 record. `--resume` instead runs
-through the identical window-creation path (`Tmux.Exec.new_window`, the mark) a
+through the identical window-creation path (`Tmux.new_window`, the mark) a
 fresh spawn uses, but:
 
 - launches `pi --session <run-id>` when the pi session file exists, or
@@ -1625,6 +1625,34 @@ that saw the same state.
 
 ## The sidebar's model, and the feed
 
+### Tmux handles
+
+`Tmux.t` identifies a server and fixes how commands reach it. `Tmux.create`
+creates a one-shot handle. `Tmux.Client.connect` lazily attaches a control
+client to the named real client's session; `Tmux.Client.tmux` returns a new
+handle on that same socket whose commands use that control client. The
+handle is immutable; the control client's link, parser, replies and retry
+backoff belong to `Tmux.Client.t`. Only the sidebar's single tick touches
+that mutable state. Following sessions and waiting for notifications are
+control-client operations, not server-handle operations.
+
+A failed control command stays failed, including after a timeout or a
+closed client; the channel never silently turns into a one-shot. The two
+read fallbacks are explicit in `Tmux.client_state` (empty reply or control
+error) and `Tmux.list_panes` (control error). They read the same socket with
+a one-shot, without replacing the original handle's channel.
+
+`tmux.mli` exposes flat pane, window and session ids and the `Pane_map`,
+server operations, `Client`, and `Program_status`'s OSC 7501 types and
+parsing surface. The library contains only `tmux.ml` and
+`program_status.ml`. Filesystem and executable-path helpers live in
+`lib/fs.ml`, built as the shared `kido_fs` library so tmux's binary lookup
+and kido's installed-file lookup use the same unresolved-path rules
+without a dependency cycle. The lazy tmux binary lookup and `-u` argv
+construction stay in tmux.
+
+### Model and feed
+
 The shared sidebar model and RPC feed are described in [design-rpc.md](design-rpc.md).
 
 ## Priming a remote shell
@@ -1869,7 +1897,7 @@ Inside a kido pane they are what those names resolve to:
   commands and server-side bindings run this prefix's binary rather than
   another installation on PATH.
 - `tmux` runs `$KIDO_TMUX` when set, else the `kido-tmux` beside kido,
-  else the first `tmux` on PATH past the shim: `Tmux.Exec.resolve_binary`'s order.
+  else the first `tmux` on PATH past the shim: `Tmux.binary`'s order.
   A bare-name `KIDO_TMUX` is looked up past the shim too, because
   `exec` would otherwise find the shim itself. This shim is required,
   not a convenience: `$TMUX` in a kido pane names the kido socket, and
