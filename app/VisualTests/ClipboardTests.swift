@@ -24,46 +24,43 @@ import XCTest
         pane.resize(cols: 80, rows: 24)
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         defer { pane.dispose(); owner.close(); board.releaseGlobally() }
-        func drain() async throws {
-            for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
-        }
         func query(_ selector: String = "c") { XCTAssertTrue(pane.feed(Data("\u{1b}]52;\(selector);?\u{7}".utf8))) }
         func expected(_ selector: String, _ text: String) -> Data { Data("\u{1b}]52;\(selector);\(Data(text.utf8).base64EncodedString())\u{1b}\\".utf8) }
         board.clearContents()
         board.setString("secret", forType: .string)
         query()
-        try await drain()
+        try await drain(runtime)
         XCTAssertNotNil(owner.preparedAlert)
         XCTAssertEqual(replies, [])
         query("p")
-        try await drain()
+        try await drain(runtime)
         XCTAssertEqual(replies, [expected("p", "")])
         owner.respondToAlert(.alertThirdButtonReturn)
-        try await drain()
+        try await drain(runtime)
         XCTAssertEqual(replies, [expected("p", ""), expected("c", "")])
         query()
-        try await drain()
+        try await drain(runtime)
         XCTAssertNil(owner.preparedAlert)
         XCTAssertEqual(replies.last, expected("c", ""))
         XCTAssertTrue(ghostty_surface_binding_action(pane.surface, "reload_config", 13))
-        try await drain()
+        try await drain(runtime)
         XCTAssertTrue(ghostty_config_get(runtime.config, &access, "clipboard-read", 14))
         XCTAssertEqual(access.map { String(cString: $0) }, "ask")
         owner.clipboardPermission = .ask
         query()
-        try await drain()
+        try await drain(runtime)
         let respond = try XCTUnwrap(owner.preparedAlert?.respond)
         pane.cancelClipboard()
         respond(.alertFirstButtonReturn)
-        try await drain()
+        try await drain(runtime)
         XCTAssertNil(owner.preparedAlert)
         XCTAssertEqual(replies.count, 3)
         query()
-        try await drain()
+        try await drain(runtime)
         board.clearContents()
         board.setString("fresh ✓\ntext", forType: .string)
         owner.respondToAlert(.alertSecondButtonReturn)
-        try await drain()
+        try await drain(runtime)
         XCTAssertEqual(replies.last, expected("c", "fresh ✓\ntext"))
         XCTAssertTrue(WindowOwner.clipboardConsent.allows(.local))
         XCTAssertFalse(WindowOwner.clipboardConsent.allows(.remote("Local")))
@@ -71,33 +68,33 @@ import XCTest
         owner.window.orderOut(nil)
         for selector in ["c", "p", "s"] {
             query(selector)
-            try await drain()
+            try await drain(runtime)
             XCTAssertEqual(replies.last, expected(selector, "fresh ✓\ntext"))
         }
         board.clearContents()
         query("s")
-        try await drain()
+        try await drain(runtime)
         XCTAssertEqual(replies.last, expected("s", ""))
         board.setString(String(repeating: "x", count: 1_048_577), forType: .string)
         query()
-        try await drain()
+        try await drain(runtime)
         XCTAssertEqual(replies.last, expected("c", ""))
         for selector in ["c", "p", "s"] {
             let text = "live \(selector) ✓\ntext"
             let encoded = Data(text.utf8).base64EncodedString()
             XCTAssertTrue(pane.feed(Data("\u{1b}]52;\(selector);\(encoded)\u{1b}\\".utf8)))
-            try await drain()
+            try await drain(runtime)
             XCTAssertEqual(board.string(forType: .string), text)
         }
         let changes = board.changeCount
         for payload in ["!invalid!", Data([0]).base64EncodedString(), Data(repeating: 120, count: 1_048_577).base64EncodedString()] {
             XCTAssertTrue(pane.feed(Data("\u{1b}]52;c;\(payload)\u{7}".utf8)))
-            try await drain()
+            try await drain(runtime)
             XCTAssertEqual(board.changeCount, changes)
         }
         let count = replies.count
         pane.feed(Data("\u{1b}[c\u{1b}[6n".utf8))
-        try await drain()
+        try await drain(runtime)
         XCTAssertEqual(replies.count, count, "MANUAL_MIRROR still suppresses non-clipboard replies")
         board.clearContents()
         board.setString("Cmd-V ✓\ntext", forType: .string)
@@ -107,12 +104,12 @@ import XCTest
                                                   windowNumber: owner.window.windowNumber, context: nil, characters: "v", charactersIgnoringModifiers: "v", isARepeat: false, keyCode: 9))
         let pasteStart = replies.count
         XCTAssertTrue(pane.performKeyEquivalent(with: paste))
-        try await drain()
+        try await drain(runtime)
         XCTAssertEqual(Data(replies.dropFirst(pasteStart).joined()), Data("\u{1b}[200~Cmd-V ✓\ntext\u{1b}[201~".utf8))
         let finalCount = replies.count
         pane.invalidateClipboard()
         query()
-        try await drain()
+        try await drain(runtime)
         XCTAssertEqual(replies.count, finalCount, "retired surface requests cannot inject late replies")
     }
 

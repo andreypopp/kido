@@ -89,6 +89,7 @@ targets:
       - package: SidebarFeed
       - framework: build/GhosttyKit.xcframework
         embed: false
+        link: false
 schemes:
   Kido:
     build:
@@ -103,10 +104,12 @@ schemes:
       targets: [VisualTests]
       environmentVariables:
         KIDO_APP_BACKGROUND: "1"
+        DYLD_INSERT_LIBRARIES: "$(SRCROOT)/build/bundle/visual/vsync-cv-count.dylib"
         KIDO_APP_SERVER: "$(KIDO_VISUAL_SERVER)"
         HOME: "$(SRCROOT)/build/bundle/visual/home"
         XDG_STATE_HOME: "$(SRCROOT)/build/bundle/visual/state"
         TMUX_TMPDIR: "$(SRCROOT)/build/bundle/visual/tmp"
         XDG_CONFIG_HOME: "$(SRCROOT)/build/bundle/visual/config"
         KIDO_VISUAL_RECORD: "$(KIDO_VISUAL_RECORD)"
+        KIDO_VSYNC_MEASURE: "$(KIDO_VSYNC_MEASURE)"
         KIDO_VISUAL_TMUX: "$(KIDO_VISUAL_TMUX)"
