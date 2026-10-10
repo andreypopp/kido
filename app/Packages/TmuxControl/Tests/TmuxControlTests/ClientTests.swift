@@ -1,0 +1,282 @@
+import Foundation
+import Testing
+@testable import TmuxControl
+
+let tmux = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
+    .map { URL(fileURLWithPath: String($0)).appendingPathComponent("kido-tmux") }
+    .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+
+final class Recorder<Item>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [Item] = []
+    private var status: Int32?
+    private(set) var stderr = ""
+
+    func add(_ e: Item) { lock.withLock { events.append(e) } }
+    func close(_ s: Int32, _ err: String) { lock.withLock { (status, stderr) = (s, err) } }
+
+    func wait<T>(_ what: String, _ probe: ([Item], Int32?) -> T?) async throws -> T {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if let found = lock.withLock({ probe(events, status) }) { return found }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw TimedOut(what: what)
+    }
+}
+
+struct TimedOut: Error { let what: String }
+
+struct Closed: Error {}
+
+extension Client {
+    func run(_ commands: [Command]) async throws -> [Reply] {
+        try await withCheckedThrowingContinuation { k in
+            send(commands) { replies in
+                if let replies { k.resume(returning: replies) } else { k.resume(throwing: Closed()) }
+            }
+        }
+    }
+
+    func run(_ command: Command) async throws -> Reply {
+        try await run([command])[0]
+    }
+}
+
+@discardableResult
+func server(_ tmux: URL, _ socket: String, _ args: String...) throws -> Int32 {
+    let p = try Process.run(tmux, arguments: ["-S", socket, "-f", "/dev/null"] + args)
+    p.waitUntilExit()
+    return p.terminationStatus
+}
+
+@Test(.timeLimit(.minutes(1)))
+func nestedTranscript() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tc-nested-\(UUID())")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let script = dir.appendingPathComponent("tmux")
+    let input = dir.appendingPathComponent("input")
+    let transcript = String(decoding: try fixture("nested"), as: UTF8.self)
+    try """
+        #!/bin/sh
+        IFS= read -r line
+        printf '%s\\n' "$line" >> '\(input.path)'
+        cat <<'TRANSCRIPT'
+        \(transcript)
+        TRANSCRIPT
+        while IFS= read -r line; do
+            printf '%s\\n' "$line" >> '\(input.path)'
+            printf '%%begin 1790925152 322 1\\n%s\\n%%end 1790925152 322 1\\n' "${line##* }"
+        done
+        """.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    let seen = Recorder<Event>()
+    let client = Client(launch: .attach(script.path, socket: dir.appendingPathComponent("unused").path))
+    try client.start(onEvent: seen.add, onClose: seen.close)
+    #expect(try await client.run([
+        Command("if-shell", "-F", "1", "resize-pane -t %1 -x 25 -y 12"),
+        Command("move-pane", "-t", "%1", "-X", "12", "-Y", "6"),
+    ]) == [.success([]), .success([]), .success([])])
+    #expect(try await client.run(Command("display-message", "-p", "next")) == .success(["next"]))
+    client.close()
+    _ = try await seen.wait("close") { _, status in status }
+    let lines = try String(contentsOf: input, encoding: .utf8).split(separator: "\n")
+    try #require(lines.count == 3)
+    #expect(lines[1].hasPrefix("display-message -p "))
+    #expect(lines[2] == "display-message -p next")
+}
+
+@Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
+func liveClient() async throws {
+    let tmux = try #require(tmux)
+    let socket = "/tmp/tc-\(getpid()).sock"
+    #expect(try server(tmux, socket, "new-session", "-d", "-s", "t", "-x", "80", "-y", "24", "/bin/sh") == 0)
+    defer {
+        _ = try? server(tmux, socket, "kill-server")
+        try? FileManager.default.removeItem(atPath: socket)
+    }
+    let seen = Recorder<Event>()
+    let client = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
+    try client.start(onEvent: seen.add, onClose: seen.close)
+    _ = try await seen.wait("attach") { e, _ in e.contains(.sessionChanged(SessionID(number: 0), "t")) ? () : nil }
+
+    let odd = "a b;$HOME ~ \"q\" \\ #{x} ✓\ttab"
+    #expect(try await client.run(Command("set-option", "-g", "@odd", odd)) == .success([]))
+    #expect(try await client.run(Command("show-options", "-gv", "@odd")) == .success([odd]))
+    #expect(try await client.run(Command("no-such-command")) == .failure(["parse error: unknown command: no-such-command"]))
+    let unparsed = Reply.failure(["parse error: unknown command: no-such-command"])
+    #expect(try await client.run([Command("list-sessions"), Command("no-such-command")]) == [unparsed])
+    #expect(try await client.run(Command("show-options", "-gv", "@odd")) == .success([odd]))
+
+    for failing in 0..<3 {
+        let line = (0..<3).map {
+            $0 == failing ? Command("select-pane", "-t", PaneID(number: 999)) : Command("display-message", "-p", "\($0)")
+        }
+        let replies = Recorder<[Reply]?>()
+        client.send(line, then: replies.add)
+        client.send([Command("display-message", "-p", "next")], then: replies.add)
+        let got = try await replies.wait("failure at \(failing)") { r, _ in r.count == 2 ? r : nil }
+        #expect(got[0] == (0..<failing).map { .success(["\($0)"]) } + [.failure(["can't find pane: %999"])])
+        #expect(got[1] == [.success(["next"])])
+    }
+
+    let nested = Recorder<[Reply]?>()
+    client.send([
+        Command("if-shell", "-F", "1", "select-pane -t %999"),
+        Command("display-message", "-p", "outer"),
+    ], then: nested.add)
+    client.send([Command("display-message", "-p", "next")], then: nested.add)
+    let paired = try await nested.wait("nested failure") { r, _ in r.count == 2 ? r : nil }
+    #expect(paired == [
+        [.success([]), .failure(["can't find pane: %999"]), .success(["outer"])],
+        [.success(["next"])],
+    ])
+
+    let pane = PaneID(number: 0)
+    for c in Command.sendKeys(pane, Array("echo 'hi there'\r".utf8), chunk: 4) {
+        #expect(try await client.run(c) == .success([]))
+    }
+    _ = try await seen.wait("output") { e, _ in output(e, pane).contains("hi there\r\n") ? () : nil }
+
+    let replies = try await client.run([
+        Command("capture-pane", "-p", "-t", pane), Command("list-panes", "-t", pane, "-F", "#{pane_id}"),
+    ])
+    #expect(replies.count == 2)
+    guard case .success(let screen) = replies[0] else { Issue.record("capture failed"); return }
+    #expect(screen.contains("hi there"))
+    #expect(replies[1] == .success(["%0"]))
+
+    #expect(try await client.run(Command("send-keys", "-t", pane, "printf '\\033]0;x'; sleep 5", "Enter")) == .success([]))
+    _ = try await seen.wait("unterminated osc") { e, _ in output(e, pane).contains("\u{1B}]0;x") ? () : nil }
+    let pending = try await client.run(Command("capture-pane", "-p", "-P", "-C", "-t", pane))
+    guard case .success(let lines) = pending, lines.count == 1 else { Issue.record("pending: \(pending)"); return }
+    #expect(decodeOctal(ArraySlice(lines[0].utf8)).starts(with: Array("\u{1B}]0;x".utf8)))
+
+    var dropped: Client? = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
+    let gone = Recorder<Event>()
+    try dropped?.start(onEvent: gone.add, onClose: gone.close)
+    _ = try await gone.wait("second attach") { e, _ in e.isEmpty ? nil : () }
+    dropped = nil
+    #expect(try await gone.wait("dropped client exits") { _, s in s } == 0)
+
+    let closing = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
+    let orphans = Recorder<[Reply]?>()
+    try closing.start(onEvent: { _ in }, onClose: orphans.close)
+    closing.send([Command("list-sessions")], then: orphans.add)
+    closing.close()
+    closing.send([Command("list-sessions")], then: orphans.add)
+    #expect(try await orphans.wait("closed client exits") { r, s in s.map { (r, $0) } } == ([nil, nil], 0))
+
+    #expect(try await client.run(Command("rename-window", "-t", WindowID(number: 0), "new name")) == .success([]))
+    _ = try await seen.wait("rename") { e, _ in e.contains(.windowRenamed(WindowID(number: 0), .linked, "new name")) ? () : nil }
+
+    _ = try? await client.run(Command("kill-server"))
+    let status = try await seen.wait("close") { _, s in s }
+    #expect(status == 0)
+    _ = try await seen.wait("exit") { e, _ in e.last == .exit(.ended(nil)) ? () : nil }
+    await #expect(throws: Closed.self) { try await client.run(Command("list-sessions")) }
+}
+
+@Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
+func liveLayout() async throws {
+    let tmux = try #require(tmux)
+    let socket = "/tmp/tl-\(getpid()).sock"
+    #expect(try server(tmux, socket, "new-session", "-d", "-s", "t", "-x", "80", "-y", "24", "/bin/sh") == 0)
+    defer {
+        _ = try? server(tmux, socket, "kill-server")
+        try? FileManager.default.removeItem(atPath: socket)
+    }
+    #expect(try server(tmux, socket, "split-window", "-h", "/bin/sh") == 0)
+    #expect(try server(tmux, socket, "split-window", "-v", "/bin/sh") == 0)
+    #expect(try server(tmux, socket, "new-pane", "-x", "30", "-y", "10", "-X", "5", "-Y", "3", "/bin/sh") == 0)
+    let seen = Recorder<Event>()
+    let client = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
+    try client.start(
+        onEvent: { [queue = client.queue] in
+            dispatchPrecondition(condition: .onQueue(queue))
+            seen.add($0)
+        },
+        onClose: seen.close)
+    _ = try await seen.wait("attach") { e, _ in e.contains(.sessionChanged(SessionID(number: 0), "t")) ? () : nil }
+
+    let replies = Recorder<[Reply]?>()
+    client.send([Command("display-message", "-p", "#{window_layout} #{window_visible_layout}")]) { [queue = client.queue] in
+        dispatchPrecondition(condition: .onQueue(queue))
+        replies.add($0)
+    }
+    let reply = try await replies.wait("layouts") { r, _ in r.first }
+    guard case .success(let lines)? = reply?.first, let words = lines.first?.split(separator: " "), words.count == 2 else {
+        Issue.record("layouts: \(String(describing: reply))")
+        return
+    }
+    let layout = try Layout(json: words[0])
+    #expect(try Layout(json: words[1]) == layout)
+    let p3 = PaneID(number: 3)
+    #expect(layout.root.panes.map(\.id) == [p0, p1, PaneID(number: 2), p3])
+    #expect(layout.root.panes.last == Pane(
+        id: p3, index: 3, geometry: Geometry(x: 6, y: 4, width: 28, height: 8), focus: .active, layer: .floating(z: 0)))
+    let dividers = layout.root.dividers
+    #expect(dividers.map(\.geometry) == [
+        Geometry(x: 40, y: 0, width: 1, height: 24), Geometry(x: 41, y: 12, width: 39, height: 1),
+    ])
+    #expect(dividers[0].resize(to: 0) == nil)
+    #expect(try await client.run(#require(dividers[0].resize(to: 30))) == .success([]))
+    #expect(try await client.run(#require(dividers[1].resize(to: 8))) == .success([]))
+    guard case .success(let resized) = try await client.run(Command("display-message", "-p", "#{window_layout}")),
+          let json = resized.first else {
+        Issue.record("no resized layout")
+        return
+    }
+    #expect(try Layout(json: json).root.dividers.map(\.geometry) == [
+        Geometry(x: 30, y: 0, width: 1, height: 24), Geometry(x: 31, y: 8, width: 49, height: 1),
+    ])
+
+    #expect(try await client.run([
+        Command("if-shell", "-F", "1", "resize-pane -t %3 -x 25 -y 12"),
+        Command("move-pane", "-t", p3, "-X", "12", "-Y", "6"),
+    ]) == [.success([]), .success([]), .success([])])
+    #expect(try await client.run(Command("display-message", "-p", "-t", p3,
+        "#{pane_left},#{pane_top},#{pane_width},#{pane_height}")) == .success(["13,7,23,10"]))
+
+    #expect(try await client.run(Command("resize-pane", "-Z", "-t", p1)) == .success([]))
+    let zoomed = try await seen.wait("zoom") { e, _ in
+        e.lazy.compactMap { if case .layoutChange(_, let l, let v, "*Z") = $0 { (l, v) } else { nil } }.first
+    }
+    #expect(zoomed.0.root.panes.count == 4)
+    #expect(zoomed.1 == Layout(root: .pane(Pane(
+        id: p1, index: 1, geometry: Geometry(x: 0, y: 0, width: 80, height: 24), focus: .active, layer: .tiled))))
+}
+
+@Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
+func liveDetach() async throws {
+    let tmux = try #require(tmux)
+    let socket = "/tmp/td-\(getpid()).sock"
+    #expect(try server(tmux, socket, "new-session", "-d", "-s", "t", "/bin/sh") == 0)
+    defer {
+        _ = try? server(tmux, socket, "kill-server")
+        try? FileManager.default.removeItem(atPath: socket)
+    }
+    let seen = Recorder<Event>()
+    let client = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
+    try client.start(onEvent: seen.add, onClose: seen.close)
+    _ = try await seen.wait("attach") { e, _ in e.contains(.sessionChanged(SessionID(number: 0), "t")) ? () : nil }
+    guard case .success(let name) = try await client.run(Command("display-message", "-p", "#{client_name}")), let name = name.first
+    else {
+        Issue.record("no client name")
+        return
+    }
+    #expect(try server(tmux, socket, "detach-client", "-t", name) == 0)
+    #expect(try await seen.wait("close") { _, s in s } == 0)
+    #expect(try await seen.wait("exit") { e, _ in e.last } == .exit(.detached("detached (from session t)")))
+}
+
+@Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
+func missingServer() async throws {
+    let socket = "/tmp/tm-\(getpid()).sock"
+    let seen = Recorder<Event>()
+    let client = Client(launch: .attach(try #require(tmux).path, socket: socket))
+    try client.start(onEvent: seen.add, onClose: seen.close)
+    #expect(try await seen.wait("close") { _, s in s } == 1)
+    #expect(seen.stderr == "error connecting to \(socket) (No such file or directory)")
+}

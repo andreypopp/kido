@@ -1,0 +1,354 @@
+{
+  "v": 2,
+  "client": {
+    "session": "$0",
+    "window": "@824",
+    "pane": "%936"
+  },
+  "error": null,
+  "sessions": [
+    {
+      "id": "$0",
+      "name": "main",
+      "current": true,
+      "nodes": [
+        {
+          "kind": "agent",
+          "id": "%0",
+          "pane": "%0",
+          "window": "@0",
+          "indicator": {
+            "kind": "idle"
+          },
+          "title": [
+            {
+              "text": "working-on-kido",
+              "role": "plain"
+            }
+          ],
+          "tail": [],
+          "started": null,
+          "attention": false,
+          "children": [
+            {
+              "kind": "run",
+              "id": "%892",
+              "pane": "%892",
+              "window": "@786",
+              "indicator": {
+                "kind": "running"
+              },
+              "title": [
+                {
+                  "text": "main-watch",
+                  "role": "plain"
+                }
+              ],
+              "tail": [],
+              "started": 1791098646.964646,
+              "attention": false,
+              "children": [],
+              "run": "bash",
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
+            }
+          ],
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
+        },
+        {
+          "kind": "window",
+          "id": "@458",
+          "window": "@458",
+          "name": "kido-app",
+          "children": [
+            {
+              "kind": "agent",
+              "id": "%502",
+              "pane": "%502",
+              "window": "@458",
+              "indicator": {
+                "kind": "idle"
+              },
+              "title": [
+                {
+                  "text": "kido-app",
+                  "role": "plain"
+                }
+              ],
+              "tail": [],
+              "started": null,
+              "attention": false,
+              "children": [
+                {
+                  "kind": "agent",
+                  "id": "%936",
+                  "pane": "%936",
+                  "window": "@824",
+                  "indicator": {
+                    "kind": "running"
+                  },
+                  "title": [
+                    {
+                      "text": "sidebar-mockup",
+                      "role": "plain"
+                    }
+                  ],
+                  "tail": [],
+                  "started": 1791131078.818641,
+                  "attention": false,
+                  "children": [],
+                  "run": "agent",
+                  "program_status": {
+                    "serial": 0,
+                    "records": []
+                  }
+                }
+              ],
+              "run": null,
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
+            },
+            {
+              "kind": "shell",
+              "id": "%937",
+              "pane": "%937",
+              "window": "@458",
+              "indicator": {
+                "kind": "idle"
+              },
+              "title": [
+                {
+                  "text": "make -C ../kido-app/app demo",
+                  "role": "proc"
+                }
+              ],
+              "tail": [],
+              "started": null,
+              "attention": false,
+              "children": [],
+              "run": null,
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
+            }
+          ]
+        },
+        {
+          "kind": "agent",
+          "id": "%905",
+          "pane": "%905",
+          "window": "@797",
+          "indicator": {
+            "kind": "idle"
+          },
+          "title": [
+            {
+              "text": "pi-ui",
+              "role": "plain"
+            }
+          ],
+          "tail": [],
+          "started": null,
+          "attention": false,
+          "children": [
+            {
+              "kind": "agent",
+              "id": "%934",
+              "pane": "%934",
+              "window": "@822",
+              "indicator": {
+                "kind": "running"
+              },
+              "title": [
+                {
+                  "text": "pi-ui-perf",
+                  "role": "plain"
+                }
+              ],
+              "tail": [],
+              "started": 1791125890.55034,
+              "attention": false,
+              "children": [],
+              "run": "agent",
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
+            }
+          ],
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "$1",
+      "name": "visa",
+      "current": false,
+      "nodes": [
+        {
+          "kind": "agent",
+          "id": "%11",
+          "pane": "%11",
+          "window": "@11",
+          "indicator": {
+            "kind": "idle"
+          },
+          "title": [
+            {
+              "text": "main",
+              "role": "plain"
+            }
+          ],
+          "tail": [],
+          "started": null,
+          "attention": false,
+          "children": [],
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "$2",
+      "name": "pi",
+      "current": false,
+      "nodes": [
+        {
+          "kind": "agent",
+          "id": "%23",
+          "pane": "%23",
+          "window": "@17",
+          "indicator": {
+            "kind": "idle"
+          },
+          "title": [
+            {
+              "text": "main",
+              "role": "plain"
+            }
+          ],
+          "tail": [],
+          "started": null,
+          "attention": false,
+          "children": [],
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "$3",
+      "name": "video",
+      "current": false,
+      "nodes": [
+        {
+          "kind": "window",
+          "id": "@76",
+          "window": "@76",
+          "name": "node",
+          "children": [
+            {
+              "kind": "agent",
+              "id": "%86",
+              "pane": "%86",
+              "window": "@76",
+              "indicator": {
+                "kind": "idle"
+              },
+              "title": [
+                {
+                  "text": "video",
+                  "role": "plain"
+                }
+              ],
+              "tail": [],
+              "started": null,
+              "attention": false,
+              "children": [],
+              "run": null,
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
+            },
+            {
+              "kind": "shell",
+              "id": "%783",
+              "pane": "%783",
+              "window": "@76",
+              "indicator": {
+                "kind": "idle"
+              },
+              "title": [
+                {
+                  "text": "zsh",
+                  "role": "proc"
+                }
+              ],
+              "tail": [],
+              "started": null,
+              "attention": false,
+              "children": [],
+              "run": null,
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "$4",
+      "name": "umbrella",
+      "current": false,
+      "nodes": [
+        {
+          "kind": "agent",
+          "id": "%193",
+          "pane": "%193",
+          "window": "@166",
+          "indicator": {
+            "kind": "idle"
+          },
+          "title": [
+            {
+              "text": "household",
+              "role": "plain"
+            }
+          ],
+          "tail": [],
+          "started": null,
+          "attention": false,
+          "children": [],
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
+        }
+      ]
+    }
+  ],
+  "asks": []
+}
