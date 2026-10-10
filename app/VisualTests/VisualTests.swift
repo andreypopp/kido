@@ -25,6 +25,29 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
 }
 
 @MainActor class VisualTestCase: XCTestCase {
+    func observeFrames(_ layer: CALayer, _ frame: @escaping @MainActor () -> Void) -> NSKeyValueObservation {
+        layer.observe(\.contents, options: .new) { layer, _ in
+            guard layer.contents != nil else { return }
+            MainActor.assumeIsolated { frame() }
+        }
+    }
+
+    func drain(_ runtime: GhosttyRuntime) async throws {
+        for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    func wait(_ description: String, _ predicate: @escaping @MainActor () -> Bool) async throws {
+        let done = expectation(description: description)
+        let deadline = Date().addingTimeInterval(20)
+        @MainActor func poll() {
+            if predicate() { done.fulfill() }
+            else if Date() >= deadline { XCTFail("Timed out: \(description)"); done.fulfill() }
+            else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() } }
+        }
+        poll()
+        await fulfillment(of: [done], timeout: 21)
+    }
+
     override func invokeTest() {
         NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance { super.invokeTest() }
     }
@@ -58,6 +81,60 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     private var model = SessionModel()
     private var tabSnapshot: Snapshot?
     private var rpc: Feed?
+
+    func testVsyncMeasurement() async throws {
+        guard ProcessInfo.processInfo.environment["KIDO_VSYNC_MEASURE"] == "1" else { throw XCTSkip("authorized on-screen measurement only") }
+        try await start()
+        PaneView.renderOffscreen = false
+        window.isReleasedWhenClosed = false
+        window.setFrameOrigin(NSPoint(x: 200, y: 200))
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try await wait("private measurement window is unoccluded") { self.window.occlusionState.contains(.visible) }
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        let driver = try XCTUnwrap(pane.visualVsync)
+        ghostty_surface_set_focus(pane.surface, true)
+        var report = "host pid=\(getpid()), display=\(window.screen?.localizedName ?? "none"), maximum=\(window.screen?.maximumFramesPerSecond ?? 0)Hz\n"
+        func stats(_ name: String, _ values: [Double], period: Double) -> String {
+            let sorted = values.sorted()
+            guard !sorted.isEmpty else { XCTFail("\(name): no measurement samples"); return "\(name): NO SAMPLES\n" }
+            let quantiles = [0.5, 0.95, 0.99].map { sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * $0))] * 1000 }
+            var missed: [Int: Int] = [:]
+            for value in values { let multiple = Int((value / period).rounded()); if multiple > 1 { missed[multiple, default: 0] += 1 } }
+            return "\(name): n=\(values.count) median/p95/p99_ms=\(quantiles), missed multiples=\(missed)\n"
+        }
+        for bursts in [false, true] {
+            var timestamps: [Double] = []
+            var periods: [Double] = []
+            var installations: [Double] = []
+            let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { installations.append(CACurrentMediaTime()) }
+            driver.visualTick = { timestamp, target in
+                timestamps.append(timestamp)
+                periods.append(target - timestamp)
+                if timestamps.count % 10 == 0, let event = pane.wheelEvent(y: timestamps.count % 20 == 0 ? -1 : 1) { pane.scrollWheel(with: event) }
+                if bursts && timestamps.count % 30 == 0 { Thread.sleep(forTimeInterval: [0.002, 0.004, 0.008, 0.016][(timestamps.count / 30) % 4]) }
+            }
+            try await command(["respawn-pane", "-k", "-t", "%0", "python3 -u -c 'import time; end=time.monotonic()+6; print(\"\\033[?25h\"); i=0\nwhile time.monotonic()<end: print(i); i+=1; time.sleep(0.004)\nprint(\"\\033[?25l\"); time.sleep(30)'"])
+            try await Task.sleep(for: .seconds(6.5))
+            driver.visualTick = nil
+            observation.invalidate()
+            XCTAssertGreaterThan(timestamps.count, 30)
+            let period = periods.sorted().dropFirst(periods.count / 2).first ?? 0
+            report += "bursts=\(bursts), actual link period_ms=\(period * 1000), rate=\(period > 0 ? 1 / period : 0)Hz, creates=\(driver.creates), jobs=\(driver.jobs), visible=\(window.isVisible), occlusion=\(window.occlusionState.contains(.visible)), hidden=\(pane.isHiddenOrHasHiddenAncestor)\n"
+            XCTAssertEqual(period, 1 / 120, accuracy: 0.0007, "window's actual link period must confirm 120Hz")
+            report += stats("link intervals", zip(timestamps.dropFirst(), timestamps).map { $0.0 - $0.1 }, period: max(period, 0.001))
+            report += stats("IOSurface contents intervals (NOT physical presentation)", zip(installations.dropFirst(), installations).map { $0.0 - $0.1 }, period: max(period, 0.001))
+        }
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertFalse(driver.hasLink)
+        let ticks = driver.ticks
+        try await Task.sleep(for: .seconds(3))
+        XCTAssertFalse(driver.hasLink)
+        XCTAssertEqual(driver.ticks, ticks)
+        report += "active→idle: total ticks=\(ticks), settled link=\(driver.hasLink), ticks delta=\(driver.ticks - ticks) over 3s\n"
+        try report.write(toFile: "/tmp/kido-vsync-measure-\(getpid()).txt", atomically: true, encoding: .utf8)
+        print(report)
+    }
 
     private func updateTabs(_ status: Feed.Status? = nil, query: String = "") {
         if case .running(let snapshot) = status { tabSnapshot = snapshot }
@@ -99,18 +176,6 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func wait(_ description: String, _ predicate: @escaping @MainActor () -> Bool) async throws {
-        let done = expectation(description: description)
-        let deadline = Date().addingTimeInterval(20)
-        @MainActor func poll() {
-            if predicate() { done.fulfill() }
-            else if Date() >= deadline { XCTFail("Timed out: \(description)"); done.fulfill() }
-            else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() } }
-        }
-        poll()
-        await fulfillment(of: [done], timeout: 21)
-    }
-
     private var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
 
     private func loadRuntime() throws {
@@ -118,7 +183,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             let config = directory.appendingPathComponent("ghostty.conf")
             let themes = app.appendingPathComponent("Resources/themes").path
             let theme = "light:\(themes)/kido-light,dark:\(themes)/kido-dark"
-            try "theme = \(theme)\nfont-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
+            let blink = ProcessInfo.processInfo.environment["KIDO_VSYNC_MEASURE"] == "1"
+            try "theme = \(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = \(blink)\n".write(to: config, atomically: true, encoding: .utf8)
             Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         }
         runtime = try XCTUnwrap(Self.processRuntime)
