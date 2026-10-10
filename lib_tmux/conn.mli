@@ -1,3 +1,6 @@
+(** A tmux control-mode client: one persistent [tmux -C] connection that runs commands and reads
+    their reply blocks and the server's notifications. *)
+
 type block = (string list, string) result
 type event = Block of block | Notification of string
 type parser = Outside | Inside of { id : string; lines : string list }
