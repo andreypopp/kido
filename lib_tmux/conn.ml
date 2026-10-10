@@ -1,5 +1,4 @@
-type block = (string list, string) result
-type event = Block of block | Notification of string
+type event = Block of (string list, string) result | Notification of string
 type parser = Outside | Inside of { id : string; lines : string list }
 
 let guard_id rest =
@@ -25,24 +24,13 @@ let step parser line =
       else if closes "%error " then (Outside, Some (Block (Error (String.concat "; " lines'))))
       else (Inside { id; lines = line :: lines }, None)
 
-let notifications =
-  [
-    "%window-add";
-    "%window-close";
-    "%window-renamed";
-    "%unlinked-window-add";
-    "%unlinked-window-close";
-    "%unlinked-window-renamed";
-    "%sessions-changed";
-    "%session-changed";
-    "%session-renamed";
-    "%session-window-changed";
-    "%client-session-changed";
-    "%client-detached";
-    "%layout-change";
-    "%window-pane-changed";
-    "%pane-mode-changed";
-  ]
+let is_state_change = function
+  | "%window-add" | "%window-close" | "%window-renamed" | "%unlinked-window-add"
+  | "%unlinked-window-close" | "%unlinked-window-renamed" | "%sessions-changed" | "%session-changed"
+  | "%session-renamed" | "%session-window-changed" | "%client-session-changed" | "%client-detached"
+  | "%layout-change" | "%window-pane-changed" | "%pane-mode-changed" | "%program-status" ->
+      true
+  | _ -> false
 
 let debounce = 0.05
 let run_timeout = 2.
@@ -53,9 +41,9 @@ type child = {
   process : Exec.process;
   partial : Buffer.t;
   mutable parser : parser;
-  replies : block Queue.t;
+  replies : (string list, string) result Queue.t;
   chunk : Bytes.t;
-  mutable attached : string;
+  mutable attached : Session.id option;
 }
 
 type link = Live of child | Down of { next_dial : float } | Closed
@@ -66,8 +54,6 @@ type t = {
   mutable link : link;
   mutable backoff : float;
   mutable changed : bool;
-  mutable generation : int;
-  mutable pending_programs : Program_status.t Pane.Map.t;
 }
 
 let kill ch =
@@ -95,24 +81,7 @@ let feed t ch line =
   | Some (Block b) -> Queue.push b ch.replies
   | Some (Notification n) ->
       let name = List.hd (String.split_on_char ' ' n) in
-      if String.equal name "%exit" then drop t
-      else if String.equal name "%program-status" then (
-        t.changed <- true;
-        match String.split_on_char ' ' n with
-        | _ :: pane :: serial :: json -> (
-            match
-              ( Pane.of_string pane,
-                int_of_string_opt serial,
-                Program_status.parse (String.concat " " json) )
-            with
-            | Some pane, Some serial, Ok status when serial = status.serial ->
-                t.pending_programs <-
-                  Pane.Map.update pane
-                    (fun old -> Some (Program_status.merge status old))
-                    t.pending_programs
-            | _ -> ())
-        | _ -> ())
-      else if List.mem ~eq:String.equal name notifications then t.changed <- true
+      if String.equal name "%exit" then drop t else if is_state_change name then t.changed <- true
   | None -> ()
 
 let pump t ch ~deadline =
@@ -143,16 +112,14 @@ let rec reply t ch ~deadline =
       reply t ch ~deadline
 
 let dial t =
-  t.generation <- t.generation + 1;
-  t.pending_programs <- Pane.Map.empty;
   let session =
     Option.map
-      (fun (c : Exec.client_state) -> c.session)
+      (fun (c : Exec.client_state) -> c.session_id)
       (Exec.client_state ?socket:t.socket t.client)
   in
   let args =
     [ "-T"; "hyperlinks"; "-C"; "attach-session"; "-f"; "no-output,ignore-size" ]
-    @ Option.map_or ~default:[] (fun s -> [ "-t"; s ]) session
+    @ Option.map_or ~default:[] (fun s -> [ "-t"; Session.to_string s ]) session
   in
   match Exec.spawn ?socket:t.socket args with
   | Error _ -> drop t
@@ -164,7 +131,7 @@ let dial t =
           parser = Outside;
           replies = Queue.create ();
           chunk = Bytes.create 65536;
-          attached = Option.get_or ~default:"" session;
+          attached = session;
         }
       in
       t.link <- Live ch;
@@ -175,16 +142,8 @@ let dial t =
       | `Reply (Error _) | `Timeout -> drop t
       | `Dead -> ())
 
-let connect ?socket client =
-  {
-    client;
-    socket;
-    link = Down { next_dial = 0. };
-    backoff = min_backoff;
-    changed = false;
-    generation = 0;
-    pending_programs = Pane.Map.empty;
-  }
+let create ?socket ~client () =
+  { client; socket; link = Down { next_dial = 0. }; backoff = min_backoff; changed = false }
 
 let live t =
   match t.link with
@@ -197,7 +156,7 @@ let live t =
 
 let down = Error "tmux: control connection is down"
 
-let run t cmd =
+let run t ~command:cmd =
   match live t with
   | None -> down
   | Some ch -> (
@@ -214,7 +173,7 @@ let run t cmd =
               drop t;
               Error (Printf.sprintf "tmux -C %s: timed out" cmd)))
 
-let wait t timeout =
+let await_notifications t ~timeout =
   let rec go deadline =
     let now = Unix.gettimeofday () in
     let deadline = if t.changed then Float.min deadline (now +. debounce) else deadline in
@@ -242,32 +201,77 @@ let close t =
 
 let follow t session =
   match t.link with
-  | Live ch when not (String.equal ch.attached session) -> (
-      match run t ("switch-client -t " ^ Filename.quote session) with
-      | Ok _ -> ch.attached <- session
+  | Live ch when not (Option.equal Session.equal ch.attached (Some session)) -> (
+      match run t ~command:("switch-client -t " ^ Session.to_string session) with
+      | Ok _ -> ch.attached <- Some session
       | Error _ -> ())
   | Live _ | Down _ | Closed -> ()
 
 let list_panes t =
-  match run t ("list-panes -a -F " ^ Filename.quote Pane.format) with
+  match run t ~command:("list-panes -a -F " ^ Filename.quote Pane.format) with
   | Ok lines -> Ok (Pane.parse lines)
   | Error _ -> Exec.list_panes ?socket:t.socket ()
 
-let generation t = t.generation
+let client_state t =
+  match run t ~command:("list-clients -F " ^ Filename.quote Exec.client_format) with
+  | Ok (_ :: _ as lines) -> Exec.parse_client_state lines t.client
+  | Ok [] | Error _ -> Exec.client_state ?socket:t.socket t.client
 
-let program_status t ~full =
-  let open Result.Infix in
-  let+ programs =
-    if not full then Ok Pane.Map.empty
-    else
-      Result.map Program_status.parse_lines
-        (run t ("list-panes -a -F " ^ Filename.quote Program_status.format))
-  in
-  let programs = Program_status.merge_panes t.pending_programs programs in
-  t.pending_programs <- Pane.Map.empty;
-  programs
+let%test_module "Tests" =
+  (module struct
+    let feed stream =
+      let _, events =
+        List.fold_left
+          (fun (parser, acc) line ->
+            let parser, e = step parser line in
+            (parser, Option.to_list e @ acc))
+          (Outside, [])
+          (String.split_on_char '\n' stream)
+      in
+      List.iter
+        (function
+          | Block (Ok lines) -> Printf.printf "block [%s]\n" (String.concat " | " lines)
+          | Block (Error e) -> Printf.printf "error %s\n" e
+          | Notification n ->
+              Printf.printf "notification %s refresh=%b\n" n
+                (is_state_change (List.hd (String.split_on_char ' ' n))))
+        (List.rev events)
 
-let client_state t client =
-  match run t ("list-clients -F " ^ Filename.quote Exec.client_format) with
-  | Ok (_ :: _ as lines) -> Exec.parse_client_state lines client
-  | Ok [] | Error _ -> Exec.client_state ?socket:t.socket client
+    let%expect_test
+        "a control-mode session: blocks, data lines starting with %, notifications, errors" =
+      feed
+        "%begin 100 1 0\n\
+         %end 100 1 0\n\
+         %session-changed $1 work\n\
+         %begin 100 2 1\n\
+         %0\tzsh\n\
+         %1\tclaude\n\
+         %end 100 2 0\n\
+         %window-add @7\n\
+         %output %3 junk\n\
+         %program-status ignored payload\n\
+         %begin 100 3 1\n\
+         parse error: unknown command: bogus\n\
+         %error 100 3 1\n\
+         %exit";
+      [%expect
+        {|
+      block []
+      notification %session-changed $1 work refresh=true
+      block [%0	zsh | %1	claude]
+      notification %window-add @7 refresh=true
+      notification %output %3 junk refresh=false
+      notification %program-status ignored payload refresh=true
+      error parse error: unknown command: bogus
+      notification %exit refresh=false
+      |}]
+
+    let%expect_test "a truncated block is never handed out; a guard lookalike is data" =
+      feed "%begin 1 1 0\nrow";
+      print_endline "--";
+      feed "%begin 5 9 0\n%end 5 8 0\nrow\n%end 5 9 1";
+      [%expect {|
+      --
+      block [%end 5 8 0 | row]
+      |}]
+  end)

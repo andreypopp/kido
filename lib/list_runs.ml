@@ -38,13 +38,10 @@ let caller_pane panes self =
     (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" Pane.to_string self))
     (Option.flat_map (Pane.find panes) self)
 
-let root programs (s : State.session) =
-  Option.flat_map
-    (fun pane -> Option.flat_map Program_status.root (Pane.Map.find_opt pane programs))
-    s.pane
-
-let status programs (s : State.session) =
-  Option.map (fun (r : Program_status.record) -> r.state) (root programs s)
+let status panes (s : State.session) =
+  Option.flat_map (Pane.find panes) s.pane
+  |> Option.flat_map (fun (p : Pane.t) -> Program_status.root p.program_status)
+  |> Option.map (fun (r : Program_status.record) -> r.state)
 
 let per_pane live = List.map snd (Tmux.Pane.Map.bindings (State.by_pane live))
 
@@ -75,7 +72,7 @@ let can_reply ~dir id =
   | Some m -> List.is_empty m.tools || List.mem ~eq:String.equal "message_agent" m.tools
   | None -> true
 
-let agents ~dir ~threshold ~self ~session ~panes ~programs ~states =
+let agents ~dir ~threshold ~self ~session ~panes ~states =
   let open Result.Infix in
   let+ session =
     match session with
@@ -105,6 +102,7 @@ let agents ~dir ~threshold ~self ~session ~panes ~programs ~states =
   |> List.filter_map (fun (id, (s : State.session)) ->
       Option.map
         (fun (p : Pane.t) ->
+          let root = Program_status.root p.program_status in
           {
             id;
             name = State.display_name panes s;
@@ -112,7 +110,7 @@ let agents ~dir ~threshold ~self ~session ~panes ~programs ~states =
             agent = s.agent;
             pane = p.pane_id;
             window = p.window_id;
-            status = status programs s;
+            status = Option.map (fun (r : Program_status.record) -> r.state) root;
             activity = s.activity;
             parent = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) s.parent;
             depth = s.depth;
@@ -122,7 +120,7 @@ let agents ~dir ~threshold ~self ~session ~panes ~programs ~states =
             can_reply = (not (String.is_empty s.inbox)) && can_reply ~dir id;
             model = s.model;
             since_report = Float.to_int (now -. s.ts);
-            stalled = State.stalled_since ~programs ~threshold ~wake ~now s;
+            stalled = State.stalled_since ~root ~threshold ~wake ~now s;
           })
         (Option.flat_map (Pane.find panes) s.pane))
 
@@ -133,9 +131,9 @@ type row =
 
 let list_runs ~dir ~threshold ~self ~session =
   let open Result.Infix in
-  let* panes, programs = Exec.panes_and_programs () in
+  let* panes = Exec.list_panes () in
   let+ agents =
-    agents ~dir ~threshold ~self ~session ~panes ~programs ~states:(per_pane (State.load_live ~dir))
+    agents ~dir ~threshold ~self ~session ~panes ~states:(per_pane (State.load_live ~dir))
   in
   let caller = List.find_opt (fun a -> a.self) agents in
   let own = Option.map_or ~default:"" (fun a -> a.id) caller in

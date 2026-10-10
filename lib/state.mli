@@ -39,12 +39,7 @@ type pane_kind =
   | Pi_agent of { id : string; session : session }
   | Ssh of { user : string; host : string; pane : ssh_kind }
 
-val pane_kind :
-  programs:Tmux.Program_status.t Tmux.Pane.Map.t ->
-  states:(string * session) Tmux.Pane.Map.t ->
-  Tmux.Pane.t ->
-  pane_kind
-
+val pane_kind : states:(string * session) Tmux.Pane.Map.t -> Tmux.Pane.t -> pane_kind
 val pane_title : Tmux.Pane.t -> pane_kind -> string option
 val record : dir:string -> string -> session -> (unit, session) result
 val remove : dir:string -> string -> pid:int -> (unit, session) result
@@ -52,7 +47,7 @@ val held_message : string -> session -> string
 val stall_threshold : unit -> float
 
 val stalled_since :
-  programs:Tmux.Program_status.t Tmux.Pane.Map.t ->
+  root:Tmux.Program_status.record option ->
   threshold:float ->
   wake:Timestamp.t option ->
   now:Timestamp.t ->

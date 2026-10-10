@@ -266,12 +266,12 @@ let get_agent =
      fun () ->
        let dir = state_dir () in
        if context then begin
-         let panes, programs = ok (Tmux.Exec.panes_and_programs ()) in
+         let panes = ok (Tmux.Exec.list_panes ()) in
          let agents =
            ok
              (List_runs.agents ~dir ~threshold:(State.stall_threshold ())
                 ~self:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE"))
-                ~session:None ~panes ~programs ~states:(State.load_live ~dir))
+                ~session:None ~panes ~states:(State.load_live ~dir))
          in
          print_endline
            (Yojson.Safe.to_string (`List (List.map List_runs.agent_info_to_yojson agents)));
@@ -319,7 +319,7 @@ let snapshot =
   @@ let+ () = Term.const () in
      fun () ->
        let states = State.by_pane (State.load_live ~dir:(state_dir ())) in
-       let panes, programs = ok (Tmux.Exec.panes_and_programs ()) in
+       let panes = ok (Tmux.Exec.list_panes ()) in
        let q = Filename.quote in
        let tm = Unix.localtime (Unix.time ()) in
        Printf.printf
@@ -358,10 +358,7 @@ let snapshot =
            | Some (id, { State.agent = Pi; _ }) ->
                if String.is_empty id then "pi" else "pi --session " ^ id
            | _ -> (
-               match
-                 Option.flat_map Tmux.Program_status.root
-                   (Tmux.Pane.Map.find_opt p.pane_id programs)
-               with
+               match Tmux.Program_status.root p.program_status with
                | Some { app = Some "pi"; _ } -> "pi"
                | _ -> "")
          in
@@ -790,7 +787,7 @@ let rpc =
            | exception Sys_error e -> push (Read_error e)
          in
          ignore (Thread.create read ());
-         let conn = Tmux.Conn.connect ~socket client in
+         let conn = Tmux.Conn.create ~socket ~client () in
          let rec loop ?wait (m : Sidebar.model) last =
            let snap = Sidebar.poll ?wait ~opts conn m.snap in
            if Option.is_none snap.client then

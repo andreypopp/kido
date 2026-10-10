@@ -58,7 +58,7 @@ let%expect_test "the format: title last, no ticking duration, field count pinned
     (List.hd (List.rev tokens))
     (String.mem ~sub:"pane_command_duration" Pane.format)
     (List.length tokens) Pane.fields;
-  [%expect {| last=#{pane_title} duration=false fields=26 const=26 |}]
+  [%expect {| last=#{pane_title} duration=false fields=27 const=27 |}]
 
 let%expect_test "a fixture generated from the format parses into every field" =
   let values =
@@ -71,6 +71,7 @@ let%expect_test "a fixture generated from the format parses into every field" =
         | 8 | 12 | 13 | 19 | 21 | 23 -> "1"
         | 16 -> "16"
         | 24 -> "deploy@realm@example.test"
+        | 25 -> {|{"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}|}
         | 2 | 3 | 9 | 14 | 15 | 17 | 20 -> string_of_int (1_000_000 + i)
         | _ -> Printf.sprintf "str%d" i)
       (String.split ~by:Pane.sep Pane.format)
@@ -78,12 +79,40 @@ let%expect_test "a fixture generated from the format parses into every field" =
   List.iter
     (fun p ->
       show p;
-      Option.iter (fun (user, host) -> Printf.printf "user=%S host=%S\n" user host) p.ssh)
+      Option.iter (fun (user, host) -> Printf.printf "user=%S host=%S\n" user host) p.ssh;
+      print_endline (Yojson.Safe.to_string (Program_status.to_yojson p.program_status)))
     (Pane.parse [ line values ]);
   [%expect
     {|
-    str0 $1 created=1000002 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true title="str25"
+    str0 $1 created=1000002 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true title="str26"
     user="deploy@realm" host="example.test"
+    {"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}
+    |}]
+
+let%expect_test "rejected program status keeps the pane with no records" =
+  List.iter
+    (fun status ->
+      let values =
+        List.mapi
+          (fun i _ ->
+            match i with 1 -> "$1" | 4 -> "@4" | 7 -> "%7" | 25 -> status | 26 -> "kept" | _ -> "")
+          (String.split ~by:Pane.sep Pane.format)
+      in
+      List.iter
+        (fun (p : Pane.t) ->
+          Printf.printf "%s %s %s\n" (Pane.to_string p.pane_id) p.title
+            (Yojson.Safe.to_string (Program_status.to_yojson p.program_status)))
+        (Pane.parse [ line values ]))
+    [
+      "invalid JSON";
+      {|{"serial":7,"records":[{"id":"","state":"working","msg":"aG Vs bG8="}]}|};
+      {|{"serial":0,"records":[]}|};
+    ];
+  [%expect
+    {|
+    %7 kept {"serial":0,"records":[]}
+    %7 kept {"serial":0,"records":[]}
+    %7 kept {"serial":0,"records":[]}
     |}]
 
 let%expect_test
@@ -118,6 +147,7 @@ let%expect_test
              "";
              "1";
              "";
+             {|{"serial":0,"records":[]}|};
              "✳ Title";
            ];
          "junk";
@@ -148,6 +178,7 @@ let%expect_test
              "";
              "1";
              "";
+             {|{"serial":0,"records":[]}|};
              "zsh";
            ];
          line
@@ -177,6 +208,7 @@ let%expect_test
              "run-abc";
              "0";
              "";
+             {|{"serial":0,"records":[]}|};
              "kid\x1fmore";
            ];
        ]);

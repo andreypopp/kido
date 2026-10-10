@@ -28,6 +28,7 @@ let pane ?run ?dead ?(watched = false) pane_id window_id : Tmux.Pane.t =
     run;
     ssh = None;
     session_attached = watched;
+    program_status = { serial = 0; records = [] };
     title = "";
   }
 

@@ -483,7 +483,7 @@ let subscriptions _ =
     ]
 
 let run ~standalone (opts : S.options) =
-  let conn = Tmux.Conn.connect ?socket:opts.socket opts.client in
+  let conn = Tmux.Conn.create ?socket:opts.socket ~client:opts.client () in
   let init () =
     let m = make ~conn ~standalone (S.make ~now:Unix.gettimeofday opts) in
     (m, tick m)

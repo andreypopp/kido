@@ -29,7 +29,7 @@ let prompt ~dir ~self ~window text =
   let failed r = Result.map_err (fun m -> Failed m) r in
   if String.is_empty text then Error No_prompt
   else
-    let* panes, programs = failed (Exec.panes_and_programs ()) in
+    let* panes = failed (Exec.list_panes ()) in
     let* self = failed (List_runs.caller_pane panes self) in
     let states = State.by_pane (State.load_live ~dir) in
     let candidates whole_session =
@@ -40,7 +40,7 @@ let prompt ~dir ~self ~window text =
             || Option.is_some (Pane.run_pane panes p.window_id)
           then None
           else
-            match State.pane_kind ~programs ~states p with
+            match State.pane_kind ~states p with
             | Terminal | Ssh { pane = Remote_terminal; _ } -> None
             | (Some_agent _ | Pi_agent _ | Ssh _) as kind -> Some (p, kind))
         panes

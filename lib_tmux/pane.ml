@@ -56,6 +56,7 @@ type t = {
   run : string option;
   ssh : (string * string) option;
   session_attached : bool;
+  program_status : Program_status.t;
   title : string;
 }
 
@@ -98,10 +99,11 @@ let format =
       "#{" ^ run_option ^ "}";
       "#{pane_active}";
       "#{@kido_ssh}";
+      "#{pane_program_status}";
       "#{pane_title}";
     ]
 
-let fields = 26
+let fields = 27
 
 let split_n n s =
   let rec go n from =
@@ -123,6 +125,11 @@ let parse_line line =
       let* session_id = Session.of_string f.(1) in
       let* window_id = Window.of_string f.(4) in
       let* pane_id = of_string f.(7) in
+      let program_status =
+        Result.get_or
+          ~default:Program_status.{ serial = 0; records = [] }
+          (Program_status.parse f.(25))
+      in
       Some
         {
           session_name = f.(0);
@@ -156,7 +163,8 @@ let parse_line line =
                 Some
                   (String.sub f.(24) 0 i, String.sub f.(24) (i + 1) (String.length f.(24) - i - 1))
             | _ -> None);
-          title = f.(25);
+          program_status;
+          title = f.(26);
         }
 
 let parse lines = List.filter_map parse_line lines

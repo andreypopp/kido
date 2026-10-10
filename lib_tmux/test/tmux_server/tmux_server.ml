@@ -25,47 +25,51 @@ let control_clients () =
 
 let probe () =
   Sys.set_signal Sys.sigpipe Signal_ignore;
-  let conn = Conn.connect "" in
-  show (Conn.run conn "display-message -p hello");
-  show (Conn.run conn ("display-message -p " ^ Filename.quote "it's #{session_name}"));
-  show (Conn.run conn "bogus");
+  let conn = Conn.create ~client:"" () in
+  show (Conn.run conn ~command:"display-message -p hello");
+  show (Conn.run conn ~command:("display-message -p " ^ Filename.quote "it's #{session_name}"));
+  show (Conn.run conn ~command:"bogus");
   List.iter
     (fun (p : Pane.t) ->
       Printf.printf "pane %s %s %s\n" p.session_name (Window.to_string p.window_id)
         (Pane.to_string p.pane_id))
     (Result.get_exn (Conn.list_panes conn));
   Printf.printf "a fresh connection notifies: %b\n"
-    Float.(elapsed (fun () -> Conn.wait conn 5.) < 1.);
-  let quiet = elapsed (fun () -> Conn.wait conn 0.3) in
+    Float.(elapsed (fun () -> Conn.await_notifications conn ~timeout:5.) < 1.);
+  let quiet = elapsed (fun () -> Conn.await_notifications conn ~timeout:0.3) in
   Printf.printf "a quiet wait runs to its deadline: %b\n" Float.(quiet >= 0.3 && quiet < 1.);
   ignore (tmux [ "new-window"; "-d"; "-t"; "work:"; "sleep 600" ]);
-  Printf.printf "a new window notifies: %b\n" Float.(elapsed (fun () -> Conn.wait conn 5.) < 1.);
-  ignore (tmux [ "new-session"; "-d"; "-s"; "other"; "sleep 600" ]);
-  Conn.wait conn 0.5;
+  Printf.printf "a new window notifies: %b\n"
+    Float.(elapsed (fun () -> Conn.await_notifications conn ~timeout:5.) < 1.);
+  let other =
+    tmux [ "new-session"; "-d"; "-P"; "-F"; "#{session_id}"; "-s"; "other"; "sleep 600" ]
+    |> String.trim |> Session.of_string |> Option.get_exn_or "session id"
+  in
+  Conn.await_notifications conn ~timeout:0.5;
   ignore (tmux [ "split-window"; "-d"; "-t"; "other:"; "sleep 600" ]);
   Printf.printf "a split in an unfollowed session notifies: %b\n"
-    Float.(elapsed (fun () -> Conn.wait conn 1.) < 0.9);
-  Conn.follow conn "other";
+    Float.(elapsed (fun () -> Conn.await_notifications conn ~timeout:1.) < 0.9);
+  Conn.follow conn other;
   Printf.printf "control clients after follow: [%s]\n" (String.concat "; " (control_clients ()));
-  Conn.wait conn 0.5;
+  Conn.await_notifications conn ~timeout:0.5;
   ignore (tmux [ "split-window"; "-d"; "-t"; "other:"; "sleep 600" ]);
   Printf.printf "a split in the followed session notifies: %b\n"
-    Float.(elapsed (fun () -> Conn.wait conn 1.) < 0.9);
-  show (Conn.run conn "run-shell 'sleep 3'");
-  show (Conn.run conn "display-message -p stuck");
-  show (Conn.run conn "display-message -p gap");
+    Float.(elapsed (fun () -> Conn.await_notifications conn ~timeout:1.) < 0.9);
+  show (Conn.run conn ~command:"run-shell 'sleep 3'");
+  show (Conn.run conn ~command:"display-message -p stuck");
+  show (Conn.run conn ~command:"display-message -p gap");
   Printf.printf "panes through the fallback: %d\n"
     (List.length (Result.get_exn (Conn.list_panes conn)));
   Unix.sleepf 0.25;
-  show (Conn.run conn "display-message -p back");
+  show (Conn.run conn ~command:"display-message -p back");
   Printf.printf "control clients after the redial: [%s]\n" (String.concat "; " (control_clients ()));
   ignore (tmux [ "kill-server" ]);
-  show (Conn.run conn "display-message -p gone");
+  show (Conn.run conn ~command:"display-message -p gone");
   (match Conn.list_panes conn with
   | Ok _ -> print_endline "fallback without a server: panes"
   | Error _ -> print_endline "fallback without a server: failed");
   Conn.close conn;
-  show (Conn.run conn "display-message -p closed")
+  show (Conn.run conn ~command:"display-message -p closed")
 
 (* The server lives on its own socket: a wrapper passes -S to the fork, and
    the probe runs in a child whose KIDO_TMUX names that wrapper, so no tmux

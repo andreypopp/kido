@@ -139,9 +139,9 @@ type pane_kind =
   | Pi_agent of { id : string; session : session }
   | Ssh of { user : string; host : string; pane : ssh_kind }
 
-let pane_kind ~programs ~states (p : Tmux.Pane.t) =
+let pane_kind ~states (p : Tmux.Pane.t) =
   let app =
-    Option.flat_map Tmux.Program_status.root (Tmux.Pane.Map.find_opt p.pane_id programs)
+    Tmux.Program_status.root p.program_status
     |> Option.flat_map (fun (r : Tmux.Program_status.record) -> r.app)
   in
   match (p.ssh, p.current_command, app) with
@@ -196,16 +196,13 @@ let held_message id s =
 
 let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
 
-let stalled_since ~programs ~threshold ~wake ~now s =
+let stalled_since ~root ~threshold ~wake ~now s =
   let working =
     Option.exists
       (fun (r : Tmux.Program_status.record) ->
         Option.exists (String.equal "pi") r.app
         && match r.state with Working _ -> true | _ -> false)
-      (Option.flat_map
-         (fun pane ->
-           Option.flat_map Tmux.Program_status.root (Tmux.Pane.Map.find_opt pane programs))
-         s.pane)
+      root
   in
   working && Float.(now - max s.ts (Option.value wake ~default:neg_infinity) >= threshold)
 

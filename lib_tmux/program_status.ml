@@ -95,13 +95,6 @@ let parse json =
     Ok { serial; records }
   with Exit | Yojson.Json_error _ | Type_error _ -> Error "invalid program status"
 
-let merge newer = function Some older when newer.serial <= older.serial -> older | _ -> newer
-
-let merge_panes incoming previous =
-  Pane.Map.fold
-    (fun pane status programs -> Pane.Map.update pane (fun old -> Some (merge status old)) programs)
-    incoming previous
-
 let representative ?seen t =
   let rank = function Blocked _ -> 0 | Error -> 1 | Working _ -> 2 | Done -> 3 | Idle -> 4 in
   List.fold_left
@@ -155,24 +148,3 @@ let to_yojson t =
       @ optional "msg" (fun s -> `String s) r.msg)
   in
   `Assoc [ ("serial", `Int t.serial); ("records", `List (List.map record t.records)) ]
-
-let prune ~current programs =
-  List.fold_left
-    (fun out pane ->
-      match Pane.Map.find_opt pane programs with
-      | Some status -> Pane.Map.add pane status out
-      | None -> out)
-    Pane.Map.empty current
-
-let format = "#{pane_id}\031#{pane_program_status}"
-
-let parse_lines lines =
-  List.fold_left
-    (fun out line ->
-      match String.split_on_char '\031' line with
-      | [ pane; json ] -> (
-          match (Pane.of_string pane, parse json) with
-          | Some pane, Ok status -> Pane.Map.add pane status out
-          | _ -> out)
-      | _ -> out)
-    Pane.Map.empty lines

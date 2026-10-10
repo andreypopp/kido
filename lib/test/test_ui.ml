@@ -40,6 +40,7 @@ let pane ?ssh ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "")
     run;
     ssh;
     session_attached = active;
+    program_status = { serial = 0; records = [] };
     title;
   }
 
@@ -70,20 +71,31 @@ let states l =
       Tmux.Pane.Map.add pane (id, { s with State.pane = Some pane }) m)
     Tmux.Pane.Map.empty l
 
-let programs states =
-  Tmux.Pane.Map.map
-    (fun _ ->
-      Result.get_exn
-        (Tmux.Program_status.parse
-           {|{"serial":1,"records":[{"id":"","app":"pi","state":"working"}]}|}))
-    states
+let with_programs states panes =
+  List.map
+    (fun (p : Tmux.Pane.t) ->
+      if Tmux.Pane.Map.mem p.pane_id states then
+        {
+          p with
+          program_status =
+            Result.get_exn
+              (Tmux.Program_status.parse
+                 {|{"serial":1,"records":[{"id":"","app":"pi","state":"working"}]}|});
+        }
+      else p)
+    panes
 
 let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
   let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
   { m with started; at = !clock }
 
 let pane_label (m : Sidebar.model) p =
-  Sidebar.pane_label m (p, State.pane_kind ~programs:m.snap.programs ~states:m.snap.states p)
+  let p =
+    match Tmux.Pane.find m.snap.panes p.Tmux.Pane.pane_id with
+    | Some current -> { p with program_status = current.program_status }
+    | None -> p
+  in
+  Sidebar.pane_label m (p, State.pane_kind ~states:m.snap.states p)
 
 let client session =
   Some
@@ -102,9 +114,8 @@ let render ?dir ?(current = "sess") ?(at = test_at) panes st =
     {
       Sidebar.empty with
       client = client current;
-      panes;
+      panes = with_programs states panes;
       states;
-      programs = programs states;
       lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes Sidebar.String_map.empty;
     }
   in
@@ -310,7 +321,7 @@ let%expect_test "the same state renders the same rows every time" =
       {
         m with
         snap =
-          { Sidebar.empty with client = client "sess"; panes; states; programs = programs states };
+          { Sidebar.empty with client = client "sess"; panes = with_programs states panes; states };
       }
     |> List.map (Ui.row_text ~now:m.at)
   in
@@ -585,7 +596,7 @@ let%expect_test "run metadata survives activity text and clears its clock on dea
         {
           Sidebar.empty with
           states = states [ ("%30", ("run", session ~activity:"checking tests" "")) ];
-          programs = programs (states [ ("%30", ("run", session "")) ]);
+          panes = with_programs (states [ ("%30", ("run", session "")) ]) [ p ];
           lingering =
             Sidebar.String_map.singleton "run"
               {
@@ -732,13 +743,12 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
 
 let%expect_test "pane_title" =
   let st = states [ ("%1", ("agent", session "%1")) ] in
-  let m = { (model ()) with snap = { Sidebar.empty with programs = programs st; states = st } } in
   List.iter
     (fun title ->
       Printf.printf "%s -> %s\n" title
         (Option.value ~default:"(not an agent)"
-           (let p = pane ~title "%1" in
-            State.pane_title p (State.pane_kind ~programs:m.snap.programs ~states:m.snap.states p))))
+           (let p = List.hd (with_programs st [ pane ~title "%1" ]) in
+            State.pane_title p (State.pane_kind ~states:st p))))
     [
       "✳ Tmux config";
       "✳ 2 panes";
@@ -1029,9 +1039,11 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
       Sidebar.empty with
       client = client "alpha";
       active = Tmux.Pane.of_string "%1";
-      panes = [ pane ~session:"alpha" ~title:"wedged" "%1" ];
+      panes =
+        with_programs
+          (states [ ("%1", ("i", session ~ts:!clock "")) ])
+          [ pane ~session:"alpha" ~title:"wedged" "%1" ];
       states = states [ ("%1", ("i", session ~ts:!clock "")) ];
-      programs = programs (states [ ("%1", ("i", session ~ts:!clock "")) ]);
     }
   in
   let stalled () =
@@ -1061,10 +1073,13 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
 
 let%expect_test
     "same ignores a heartbeat's ts and catches any other change; panes compare by exclusion" =
-  let snap ts = { Sidebar.empty with states = states [ ("%1", ("i", session ~ts "")) ] } in
+  let snap ts =
+    { Sidebar.empty with panes = [ pane "%1" ]; states = states [ ("%1", ("i", session ~ts "")) ] }
+  in
   Printf.printf "ts only: %b\n" (Sidebar.same (snap test_at) (snap (test_at +. 60.)));
   Printf.printf "status: %b\n"
-    (Sidebar.same (snap test_at) { (snap test_at) with programs = programs (snap test_at).states });
+    (Sidebar.same (snap test_at)
+       { (snap test_at) with panes = with_programs (snap test_at).states (snap test_at).panes });
   let p = pane ~command:"zsh" "%1" in
   Printf.printf "layout: %b\n"
     (Sidebar.same
@@ -1318,9 +1333,8 @@ let%expect_test
         {
           Sidebar.empty with
           client = client "alpha";
-          panes;
+          panes = with_programs (states [ ("%2", ("i", session "")) ]) panes;
           states = states [ ("%2", ("i", session "")) ];
-          programs = programs (states [ ("%2", ("i", session "")) ]);
         };
     }
   in
@@ -1426,9 +1440,8 @@ let%expect_test "a snapshot as the feed sends it" =
         Sidebar.empty with
         client = client "alpha";
         active = Tmux.Pane.of_string "%1";
-        panes;
+        panes = with_programs states panes;
         states;
-        programs = programs states;
         lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
       }
   in
@@ -1578,7 +1591,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
   let states =
     states [ ("%1", ("root", session "")); ("%2", ("kid", session ~parent:"root" "")) ]
   in
-  let programs = programs states in
+  let panes = with_programs states panes in
   let m, _ =
     Sidebar.step (model ~dir ())
       {
@@ -1587,7 +1600,6 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
         active = Tmux.Pane.of_string "%1";
         panes;
         states;
-        programs;
         lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
       }
   in
@@ -1690,14 +1702,7 @@ let%expect_test "program acknowledgement survives failed snapshots and reconnect
     Tmux.Program_status.parse {|{"serial":1,"records":[{"id":"","state":"done","title":"QQ"}]}|}
     |> Result.get_or_failwith
   in
-  let snap =
-    {
-      Sidebar.empty with
-      panes = [ p ];
-      generation = 1;
-      programs = Tmux.Pane.Map.singleton p.pane_id status;
-    }
-  in
+  let snap = { Sidebar.empty with panes = [ { p with program_status = status } ] } in
   ignore
     (List.fold_left
        (fun m (label, snap) ->
@@ -1717,13 +1722,9 @@ let%expect_test "program acknowledgement survives failed snapshots and reconnect
          ("visit", { snap with active = Some p.pane_id });
          ("leave", snap);
          ("failure", { Sidebar.empty with err = Some "disconnected" });
-         ("reconnect", { snap with generation = 2 });
+         ("reconnect", snap);
          ( "new serial",
-           {
-             snap with
-             generation = 2;
-             programs = Tmux.Pane.Map.singleton p.pane_id { status with serial = 2 };
-           } );
+           { snap with panes = [ { p with program_status = { status with serial = 2 } } ] } );
        ]);
   [%expect
     {|

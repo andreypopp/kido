@@ -159,9 +159,9 @@ let%expect_test "only a root app identifies a pane" =
   List.iter
     (fun (body, local) ->
       let status = Result.get_exn (Tmux.Program_status.parse body) in
-      let programs = Tmux.Pane.Map.singleton p.pane_id status in
+      let p = { p with program_status = status } in
       let states = if local then states else Tmux.Pane.Map.empty in
-      let kind = State.pane_kind ~programs ~states p in
+      let kind = State.pane_kind ~states p in
       print_endline
         (match kind with
         | Terminal -> "terminal"

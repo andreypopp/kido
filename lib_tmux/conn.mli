@@ -1,21 +1,22 @@
-(** A tmux control-mode client: one persistent [tmux -C] connection that runs commands and reads
-    their reply blocks and the server's notifications. *)
-
-type block = (string list, string) result
-type event = Block of block | Notification of string
-type parser = Outside | Inside of { id : string; lines : string list }
-
-val step : parser -> string -> parser * event option
-val notifications : string list
-
 type t
+(** A tmux control-mode connection. *)
 
-val connect : ?socket:string -> string -> t
-val run : t -> string -> block
-val wait : t -> float -> unit
+val create : ?socket:string -> client:string -> unit -> t
 val close : t -> unit
-val follow : t -> string -> unit
+
+val run : t -> command:string -> (string list, string) result
+(** Runs one tmux command and returns its reply. *)
+
+val await_notifications : t -> timeout:float -> unit
+(** Awaits notifications until the server's panes, windows, sessions or program status change,
+    prompting a fresh read, or [timeout] seconds pass. *)
+
+val follow : t -> Session.id -> unit
+(** Switches the control client to the session, so that session's notifications arrive. *)
+
 val list_panes : t -> (Pane.t list, string) result
-val generation : t -> int
-val program_status : t -> full:bool -> (Program_status.t Pane.Map.t, string) result
-val client_state : t -> string -> Exec.client_state option
+(** Every pane on the server, read over the connection or a one-shot tmux when it is down. *)
+
+val client_state : t -> Exec.client_state option
+(** The connection's client's session and focus, read over the connection or a one-shot tmux when it
+    is down. *)

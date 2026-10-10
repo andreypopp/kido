@@ -16,7 +16,11 @@ A pane is classified by:
 ### OSC 7501 records
 
 OSC 7501 payload is handled by tmux into `#{pane_program_status}` per pane
-variable. kido reads each pane's records from `#{pane_program_status}`:
+variable. Every topology read includes it in `Pane.format` and parses it
+once into the pane, for control-mode and one-shot views alike.
+`%program-status` notifications wake the tick without consuming their payload.
+
+The records supply:
 
 A program may report several records, each under an `id`; ids nest with
 `/` (`build`, `build/test`). The [root record](https://www.superlogical.com/rex/docs/build/program-status#records-and-ids)
@@ -39,7 +43,7 @@ of its subagents this way, titled by the subagent's description.
 
 A pane shows its **representative** record: the most urgent of blocked,
 error, working, done, idle. Visiting a pane marks its done and error
-records seen, and a seen record is skipped until a newer report.
+records seen by pane serial, and a seen record is skipped until a newer serial.
 
 ### OSC 133
 

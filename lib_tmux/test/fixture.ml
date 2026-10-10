@@ -25,5 +25,6 @@ let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(
     run;
     ssh = None;
     session_attached = attached;
+    program_status = { serial = 0; records = [] };
     title;
   }

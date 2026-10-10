@@ -37,6 +37,7 @@ type t = {
   run : string option;
   ssh : (string * string) option;
   session_attached : bool;
+  program_status : Program_status.t;
   title : string;
 }
 

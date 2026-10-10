@@ -22,7 +22,7 @@ type agent_info = {
 [@@deriving to_yojson]
 
 val caller_pane : Tmux.Pane.t list -> Tmux.Pane.id option -> (Tmux.Pane.t, string) result
-val status : Tmux.Program_status.t Tmux.Pane.Map.t -> State.session -> status
+val status : Tmux.Pane.t list -> State.session -> status
 val per_pane : (string * State.session) list -> (string * State.session) list
 
 val in_session :
@@ -40,7 +40,6 @@ val agents :
   self:Tmux.Pane.id option ->
   session:Tmux.Session.id option ->
   panes:Tmux.Pane.t list ->
-  programs:Tmux.Program_status.t Tmux.Pane.Map.t ->
   states:(string * State.session) list ->
   (agent_info list, string) result
 

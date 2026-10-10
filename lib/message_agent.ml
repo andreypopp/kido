@@ -144,7 +144,7 @@ let send ~dir ~self recipient spec text =
   else
     let live = State.load_live ~dir in
     let states = State.by_pane live in
-    let* panes, programs = not_sent (Tmux.Exec.panes_and_programs ()) in
+    let* panes = not_sent (Tmux.Exec.list_panes ()) in
     let alternative = "use kido tool message_agent instead, which is one-way and needs no reply" in
     let* () =
       match (spec.kind, Option.flat_map (fun self -> Tmux.Pane.Map.find_opt self states) self) with
@@ -168,7 +168,7 @@ let send ~dir ~self recipient spec text =
     let* id, target = not_sent (resolve ~live ~panes ~self recipient) in
     let name = State.display_name panes target in
     match
-      (deliver ~states ~panes ~self spec target text, spec.kind, List_runs.status programs target)
+      (deliver ~states ~panes ~self spec target text, spec.kind, List_runs.status panes target)
     with
     | Ok `Pasted, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)
     | Ok `Inbox, Message, Some (Working _) ->

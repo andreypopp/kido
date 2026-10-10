@@ -19,12 +19,7 @@ type t = { serial : int; records : record list }
 
 val root : t -> record option
 val parse : string -> (t, string) result
-val merge : t -> t option -> t
-val merge_panes : t Pane.Map.t -> t Pane.Map.t -> t Pane.Map.t
 val representative : ?seen:int -> t -> record option
 val progress : record -> int option
 val app : t -> record -> string option
 val to_yojson : t -> Yojson.Safe.t
-val prune : current:Pane.id list -> t Pane.Map.t -> t Pane.Map.t
-val format : string
-val parse_lines : string list -> t Pane.Map.t

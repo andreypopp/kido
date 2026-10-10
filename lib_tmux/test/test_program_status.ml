@@ -53,28 +53,7 @@ let%expect_test "optional base64 padding" =
     QUJ: invalid program status
     |}]
 
-let%expect_test
-    "post-read notifications survive once, whether the next read finds their pane or not" =
-  let pane = Tmux.Pane.of_string "%7" |> Option.get_exn_or "pane" in
-  let topology = [] in
-  let notification = Tmux.Pane.Map.singleton pane { serial = 1; records = [] } in
-  let programs = prune ~current:topology Tmux.Pane.Map.empty |> merge_panes notification in
-  Printf.printf "after earlier topology: %b\n" (Tmux.Pane.Map.mem pane programs);
-  let never_appears = prune ~current:[] programs in
-  Printf.printf "never appears on next read: %b\n" (Tmux.Pane.Map.mem pane never_appears);
-  let programs = prune ~current:[ pane ] programs in
-  Printf.printf "now present: %b\n" (Tmux.Pane.Map.mem pane programs);
-  let programs = prune ~current:[] programs in
-  Printf.printf "now gone: %b\n" (Tmux.Pane.Map.mem pane programs);
-  [%expect
-    {|
-    after earlier topology: true
-    never appears on next read: false
-    now present: true
-    now gone: false
-    |}]
-
-let%expect_test "representative priority, tie ordering and serial replacement" =
+let%expect_test "representative priority, tie ordering and visit acknowledgement" =
   let get s = parse s |> Result.get_or_failwith in
   let status =
     get
@@ -110,12 +89,7 @@ let%expect_test "representative priority, tie ordering and serial replacement" =
   List.iter
     (fun r -> Printf.printf "%s=%s\n" r.id (Option.value ~default:"none" (app inherited r)))
     inherited.records;
-  List.iter
-    (fun serial ->
-      let newer = { serial; records = [] } in
-      let merged = merge newer (Some status) in
-      Printf.printf "%d: %d/%d\n" serial merged.serial (List.length merged.records))
-    [ 7; 8; 9 ];
+
   [%expect
     {|
     a
@@ -130,7 +104,4 @@ let%expect_test "representative priority, tie ordering and serial replacement" =
     =root
     a=nearest
     a/b/c=nearest
-    7: 8/6
-    8: 8/6
-    9: 9/0
     |}]

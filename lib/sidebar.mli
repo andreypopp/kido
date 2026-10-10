@@ -27,8 +27,6 @@ type snapshot = {
   client : Tmux.Exec.client_state option;
   active : Tmux.Pane.id option;
   panes : Tmux.Pane.t list;
-  generation : int;
-  programs : Tmux.Program_status.t Tmux.Pane.Map.t;
   states : (string * State.session) Tmux.Pane.Map.t;
   wake : float option;
   err : string option;

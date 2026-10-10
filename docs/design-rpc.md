@@ -136,15 +136,11 @@ Each pane item also carries `program_status`: the pane emission serial
 and every OSC 7501 record, ordered by id. Title and message are decoded
 UTF-8; optional app is the record's own app, inherited by consumers from
 the nearest ancestor with one, including root across missing parents.
-The snapshot is the only persistent record store. The control connection
-coalesces pending notifications and drains them into it; merges accept only
-increasing serials. Notifications wake the tick. A connection generation
-change forces a full read through `pane_program_status`; this also
-initializes one-shot views without resetting visit acknowledgements.
-Each topology read prunes records from the previous snapshot before
-merging pending notifications. A new pane's notification may arrive after
-that read, so it survives until the next read; if the pane is still absent,
-its records are dropped even if it never appeared in topology.
+Every topology read includes `#{pane_program_status}` in `Pane.format`,
+parsed once into each pane. Control-mode and one-shot views read records
+the same way. `%program-status` notifications only wake the tick; their
+payload is ignored. Visit acknowledgements remain keyed by the pane's
+emission serial, independently of the connection.
 
 Program records drive shell/ssh and agent status, but not a gone run.
 A pi root without local State or a claude-code root is a native agent,
