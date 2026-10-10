@@ -658,6 +658,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     // Freed in deinit, so the last reference must be dropped on the main
     // thread, and never while the reader may feed it (Connection).
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
+    private var vsyncContext: Unmanaged<VsyncDriver>?
+    #if KIDO_VISUAL
+    var visualVsync: VsyncDriver? { vsyncContext?.takeUnretainedValue() }
+    #endif
 
     // MANUAL_MIRROR applies set_grid_size inline (termio/Termio.zig);
     // grid_metrics confirms the actual terminal grid under its renderer lock.
@@ -726,6 +730,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private(set) var disposed = false
 
     func dispose() {
+        vsyncContext?.takeUnretainedValue().close()
         guard !disposed else { return }
         disposed = true
         invalidateClipboard()
@@ -780,8 +785,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                 pane.onInput(data)
             }
         }
-        guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
+        let driver = VsyncDriver(view: terminal)
+        let context = Unmanaged.passRetained(driver)
+        vsyncContext = context
+        config.vsync_request_cb = { VsyncDriver.request($0) }
+        config.vsync_userdata = context.toOpaque()
+        guard let surface = ghostty_surface_new(runtime.app, &config) else {
+            driver.close()
+            context.release()
+            vsyncContext = nil
+            return nil
+        }
         self.surface = surface
+        driver.attach(surface)
         ghostty_surface_set_focus(surface, window?.firstResponder === self)
         _ = ghostty_surface_set_render_presented_callback(surface, { @Sendable userdata, token in
             PaneView.onMain(userdata) { $0.rendered(token, status: GHOSTTY_RENDER_PRESENTATION_PRESENTED) }
@@ -851,7 +867,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                 complete(paste.state, "")
                 paste.alert.window.sheetParent?.endSheet(paste.alert.window)
             }
+            vsyncContext?.takeUnretainedValue().close()
             ghostty_surface_free(surface)
+            vsyncContext?.release()
         }
     }
 
@@ -1118,9 +1136,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         viewDidChangeBackingProperties()
         let center = NotificationCenter.default
         center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        center.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: nil)
         if let window {
             center.addObserver(
                 self, selector: #selector(present), name: NSWindow.didChangeOcclusionStateNotification, object: window)
+            center.addObserver(self, selector: #selector(present), name: NSWindow.didChangeScreenNotification, object: window)
         }
         present()
     }
@@ -1136,6 +1156,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     @objc private func present() {
+        vsyncContext?.takeUnretainedValue().updateAvailability()
         let hidden = isHiddenOrHasHiddenAncestor
         var visible = window?.occlusionState.contains(.visible) == true
         #if KIDO_VISUAL
@@ -1155,9 +1176,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         CATransaction.setDisableActions(true)
         layer?.contentsScale = window.backingScaleFactor
         CATransaction.commit()
-        if let id = window.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32 {
-            ghostty_surface_set_display_id(surface, id)
-        }
+        vsyncContext?.takeUnretainedValue().updateAvailability()
         snapScroll()
         let scale = window.backingScaleFactor
         reflow { [weak self] in

@@ -41,6 +41,13 @@ the consumer drains. Audit main-callable sends and use ordered nonblocking
 queues/coalescing where appropriate (large cross-cutting change).
 Status: parked; a blanket no-mailbox-waits guarantee is unverified.
 
+## Inherited Ghostty constructor cleanup leaks
+
+Failed surface construction can retain allocations through stale DerivedConfig
+copies and the renderer's background image (`app/third_party/ghostty/src/Surface.zig`
+and `src/renderer/generic.zig`). These inherited error-path leaks are outside the
+renderer-thread ownership fix. Status: parked by decision; not fixed or covered.
+
 # Unverified
 
 ## Late GPU completion after resize
