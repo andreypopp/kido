@@ -56,6 +56,14 @@ for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
 sources = sum((glob.glob(pattern, recursive=True) for pattern in [
     'lib/**/*.ml', 'lib/**/*.mli', 'lib_tmux/**/*.ml', 'lib_tmux/**/*.mli',
     'bin/*.ml', 'bin/*.mli', 'share/pi/*.ts', 'test_e2e/*.go']), [])
+for path in candidates('Mosaic|Matrix', [p for p in sources if p.startswith(('lib/', 'lib_tmux/'))]):
+    text = pathlib.Path(path).read_text()
+    for match in re.finditer(r'\b(?:Mosaic|Matrix)\w*', text):
+        report(path, text, match.start(), 'TUI dependency outside bin/kido_sidebar')
+text = pathlib.Path('lib/dune').read_text()
+for match in re.finditer(r'\b(?:mosaic|matrix(?:\.text)?)\b', text):
+    report('lib/dune', text, match.start(), 'TUI library dependency')
+
 history = r'\b(previously|no longer|(?<!be )used to|formerly|as of now|since this fix)\b'
 for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', sources):
     text = pathlib.Path(path).read_text()
@@ -65,11 +73,11 @@ for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s 
             report(path, text, offset + match.start(), 'comment history: ' + match.group())
 
 without_interface = {'lib/sh.ml', 'lib/test_support.ml', 'lib/test_fixture.ml', 'lib/view_fixture.ml', 'lib/tmux_pane_fixture.ml', 'lib_tmux/program_status.ml'}
-for path in set(glob.glob('lib/*.ml') + glob.glob('lib_tmux/*.ml')) - without_interface:
+for path in (p for p in set(glob.glob('lib/*.ml') + glob.glob('lib_tmux/*.ml') + glob.glob('bin/*.ml')) - without_interface if not pathlib.Path(p + 'i').exists()):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text, True)
     match = re.search(r'^let\b', code, re.M)
-    if match and not pathlib.Path(path + 'i').exists():
+    if match:
         report(path, text, match.start(), 'missing .mli')
 
 for path in ['AGENTS.md', *glob.glob('docs/*.md'), 'share/pi/README.md']:
@@ -79,6 +87,9 @@ for path in ['AGENTS.md', *glob.glob('docs/*.md'), 'share/pi/README.md']:
         if parts[0] == 'Tmux':
             module = 'lib_tmux/program_status.ml' if parts[1] == 'Program_status' else 'lib_tmux/tmux.ml'
             symbols = parts[2:] if parts[1] in {'Client', 'Program_status'} else parts[1:]
+        elif parts[0] == 'Kido_sidebar':
+            module = 'bin/kido_sidebar.ml'
+            symbols = parts[1:]
         else:
             module = 'lib/' + parts[0].lower() + '.ml'
             symbols = parts[1:]

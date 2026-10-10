@@ -98,7 +98,6 @@ val track : model -> model
 val attention : model -> Tmux.pane_id -> bool
 val shell_indicator : model -> phase -> indicator option
 val pane_label : model -> Tmux_pane.t * State.pane_kind -> row
-val filter : string -> section list -> section list
 val rebuild : model -> model
 val poll : ?wait:float -> opts:options -> Tmux.Client.t -> snapshot -> snapshot
 val step : model -> snapshot -> model * bool

@@ -30,9 +30,6 @@
   mtime
   mtime.clock
   tmux
-  mosaic
-  matrix
-  matrix.text
   threads.posix)
  (inline_tests
   (deps

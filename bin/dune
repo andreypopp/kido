@@ -1,9 +1,19 @@
+(library
+ (name kido_sidebar)
+ (modules kido_sidebar)
+ (flags (:standard -open Containers))
+ (libraries kido tmux kido_fs containers unix mosaic matrix matrix.text)
+ (inline_tests)
+ (preprocess
+  (pps ppx_expect)))
+
 (executable
  (name main)
+ (modules main cli)
  (public_name kido)
  (promote
   (until-clean)
   (into ../build))
  (flags
   (:standard -open Containers))
- (libraries kido tmux containers cmdliner unix threads.posix yojson))
+ (libraries kido kido_sidebar tmux containers cmdliner unix threads.posix yojson))

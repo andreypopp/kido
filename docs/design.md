@@ -1263,7 +1263,7 @@ The sender for an ending's notice is `Msg.notify`, and the text it sends
 is `Reap.body`, sent by `Reap.send`: an ending is never routed through
 `Message_agent` the way `notify_parent`'s own send is, since `Reap`
 already sits below the subcommand modules and can talk to the inbox
-directly. `Ui`'s sweep calls `Reap.collect` and needs no seam of its own
+directly. `Sidebar`'s sweep calls `Reap.collect` and needs no seam of its own
 into a subcommand module for it, unlike a plain message or an ask, which
 still resolve their target and marshal their envelope in
 `Message_agent`.
@@ -1760,7 +1760,7 @@ that is a word is a subcommand, and UI flags select the interactive
 UI - `kido --client <name>`, the one-shot picker the `C-s` binding opens in
 a popup. The side column is the exception to the first rule: the fork
 starts it as a bare `kido`, and `TMUX_SIDE_CLIENT` in its environment is
-what tells the two apart (and what `Ui.model.standalone` reads). The
+what tells the two apart (and what `Kido_sidebar.model.standalone` reads). The
 launcher never runs inside a multiplexer: with `TMUX` set it refuses,
 starts nothing and says to run kido from a plain terminal, because a
 multiplexer already owns that terminal and nesting one under it buys a

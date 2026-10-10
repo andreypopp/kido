@@ -670,7 +670,7 @@ var sgrOn = map[string]*regexp.Regexp{
 
 // indField is the sidebar's indicator field as the tests spell it: the
 // glyph alone, or a single space when there is none. It mirrors
-// Ui.parts (lib/ui.ml).
+// Kido_sidebar.parts (bin/kido_sidebar.ml).
 func indField(glyph string) string {
 	if glyph == "" {
 		return " "

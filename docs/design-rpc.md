@@ -65,7 +65,7 @@ on reconnect rather than replaying them.
 ## One model, two views
 
 `Sidebar` owns the tick, per-pane tracking and the typed session
-and node tree. RPC serializes that model; `Ui` draws it with Mosaic. The
+and node tree. RPC serializes that model; `Kido_sidebar` in `bin/` draws it with Mosaic; `lib/` has no TUI dependencies. The
 model has no width, colour or layout. The TUI owns its cursor, scroll and
 keys, maps roles to styles and indicators to glyphs, and derives bracket
 and continuation columns from the same tree. RPC sends uncut text and

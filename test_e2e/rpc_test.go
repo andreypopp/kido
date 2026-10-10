@@ -73,7 +73,7 @@ type feedSnapshot struct {
 	raw string
 }
 
-// feedGlyph is the TUI's indicator table (Ui.glyph), so a snapshot can be
+// feedGlyph is the TUI's indicator table (Kido_sidebar.glyph), so a snapshot can be
 // drawn the way the sidebar draws it and compared row for row.
 func feedGlyph(r feedRow) string {
 	if r.Indicator == nil {
@@ -101,7 +101,7 @@ func feedGlyph(r feedRow) string {
 	return "<" + r.Indicator.Kind + ">"
 }
 
-// elapsedText is the TUI's elapsed format (Ui.elapsed).
+// elapsedText is the TUI's elapsed format (Kido_sidebar.elapsed).
 func elapsedText(started float64) string {
 	s := max(0, int(float64(time.Now().UnixNano())/1e9-started))
 	switch {

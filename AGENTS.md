@@ -89,7 +89,8 @@ These are fixed:
   one module per domain or subcommand with logic of its own. `lib_tmux/` is the library `tmux` (call sites read
   `Tmux`, `Tmux.Client`). Unit tests are ppx_expect, inline
   at the bottom of the module under test in a `let%test_module "Tests"`
-  submodule, so `.mli` exports only what production callers use.
+  submodule, including the `kido_sidebar` library in `bin/`, so `.mli`
+  exports only what production callers use.
   Out-of-line exceptions are `lib/test/test_tool_parity.ml` and
   `lib/test/tmux_server/`.
 - **Every stanza compiles with `-open Containers`.** Every `.ml` has an
@@ -164,7 +165,7 @@ Conventions:
   one-shot. `Tmux.Client.t` has no mutex; only the
   sidebar's single tick may touch it. `Tmux.binary` is the accepted lazy
   environment lookup exception.
-- **Mosaic.** The grid's default foreground is truecolor white, so
+- **Mosaic (`bin/kido_sidebar.ml`).** The grid's default foreground is truecolor white, so
   every style sets `fg` explicitly. A lone Escape arrives about 0.5s
   late.
 - `dune build`, `dune test`, `dune fmt`, with no opam: dune's package
@@ -179,6 +180,8 @@ Conventions:
                        runs, run-outcome, reap, close-run,
                        rpc
     bin/cli.ml         failure printing and tables
+    bin/kido_sidebar.ml  the library kido_sidebar: Mosaic rendering, keys, cursor
+                       and inline tests; consumes Kido.Sidebar's model
     lib/               the library kido:
       launch.ml        the launcher and `kido server`: --server, the
                        server.conf in its state dir, KIDO_PROTOCOL
@@ -188,7 +191,6 @@ Conventions:
       tmux_pane.ml     kido's pane view, topology reads, ordering, navigation and marks
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON
-      ui.ml            the Mosaic sidebar: the model's rows drawn, keys, cursor
       state.ml         one JSON file per agent session, keyed by session id
       reporting.ml     kido agent-status
       procs.ml         ssh argument parsing and whitespace fields
@@ -315,7 +317,7 @@ that sibling, so the suite runs the resolution users get.
 
 **The side column.** `side-status-command` runs a program in the side
 column with `$TMUX_SIDE_CLIENT` set. Its absence is exactly "not started
-as a side column", i.e. `Ui.model.standalone` - a popup or plain pane
+as a side column", i.e. `Kido_sidebar.model.standalone` - a popup or plain pane
 gets the one-shot picker. Keyboard focus is the client flag
 `side-status-focus`.
 
@@ -628,12 +630,12 @@ Negative controls are load-bearing: never delete one half of a pair.
 - **`@kido_run` is pane-scoped (`set-option -p`).** It marks the one
   pane a run actually runs in; a user's split off that window reads "",
   with no window-scoped fallback to inherit.
-- **`Ui.parts` is the column-alignment contract.** Every pane row's
+- **`Kido_sidebar.parts` is the column-alignment contract.** Every pane row's
   indicator is drawn there as a one-column field. An unintegrated shell and
   a program that has taken the terminal (no indicator) and an idle one (no
   glyph) get an empty field — column kept. Anything
   drawn left of a label must fit in space already accounted for; tree
-  prefixes are built by `Ui.lines`, before the indicator column.
+  prefixes are built by `Kido_sidebar.lines`, before the indicator column.
 - **A standalone kido infers its client by counting, filtered.**
   `#{client_name}` from a popup is unanswerable. `Tmux_pane.resolve_client`
   asks who is attached to the pane's session, ignoring kido's own

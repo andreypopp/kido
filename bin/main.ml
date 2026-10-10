@@ -703,7 +703,7 @@ let sidebar =
               Cli.error "" "no tmux client; pass --client '#{client_name}'";
               1
           | Some client ->
-              Ui.run ~standalone:(String.is_empty side)
+              Kido_sidebar.run ~standalone:(String.is_empty side)
                 {
                   interval;
                   client;

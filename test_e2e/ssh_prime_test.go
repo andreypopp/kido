@@ -18,7 +18,7 @@ const sshSettle = 20 * time.Second
 // integratedShellPane's shell carries kido's own integration. An ssh
 // pane needs one: kido only believes a far side is reporting once it
 // marks a prompt later than the local shell marked the ssh as started
-// (Ui.observe_remote).
+// (Sidebar.observe_remote).
 func integratedShellPane(t *testing.T, h *harness) string {
 	t.Helper()
 	zsh, err := exec.LookPath("zsh")

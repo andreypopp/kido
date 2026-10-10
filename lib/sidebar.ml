@@ -757,37 +757,6 @@ let append_windows m placements =
     [] placements
   |> List.rev
 
-let fuzzy pattern s =
-  let n = String.length pattern and s = String.lowercase_ascii s in
-  let rec go i j score run =
-    if i = n then Some score
-    else if j = String.length s then None
-    else if Char.equal (Char.lowercase_ascii pattern.[i]) s.[j] then
-      go (i + 1) (j + 1) (score + 1 + run) (run + 2)
-    else go i (j + 1) (score - 1) 0
-  in
-  go 0 0 0 0
-
-let filter text sessions =
-  if String.is_empty text then sessions
-  else
-    let rec node = function Item i -> item i | Group g -> List.concat_map item (g.first :: g.rest)
-    and item i =
-      (match (i.row.kind, i.row.title) with
-        | Agent, title -> [ String.concat "" (List.map (fun s -> s.text) title) ]
-        | Ssh, _ :: host :: _ -> [ host.text ]
-        | _ -> [])
-      @ List.concat_map node i.children
-    in
-    List.filter_map
-      (fun (s : section) ->
-        List.filter_map (fuzzy text) (s.name :: List.concat_map node s.nodes)
-        |> List.reduce max
-        |> Option.map (fun score -> (score, s)))
-      sessions
-    |> List.stable_sort (fun (a, _) (b, _) -> Int.compare b a)
-    |> List.map snd
-
 let rebuild m =
   let order = Tmux_pane.order_sessions m.snap.panes in
   let sessions =

@@ -1,4 +1,5 @@
-module S = Sidebar
+open Kido
+module S = Kido.Sidebar
 module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
@@ -10,6 +11,38 @@ type line =
   | Program of string * S.program_row
   | Message of string
   | Ask of Ask.t * Tmux.pane_id option
+
+let fuzzy pattern s =
+  let n = String.length pattern and s = String.lowercase_ascii s in
+  let rec go i j score run =
+    if i = n then Some score
+    else if j = String.length s then None
+    else if Char.equal (Char.lowercase_ascii pattern.[i]) s.[j] then
+      go (i + 1) (j + 1) (score + 1 + run) (run + 2)
+    else go i (j + 1) (score - 1) 0
+  in
+  go 0 0 0 0
+
+let filter text sessions =
+  let open S in
+  if String.is_empty text then sessions
+  else
+    let rec node = function Item i -> item i | Group g -> List.concat_map item (g.first :: g.rest)
+    and item i =
+      (match (i.row.kind, i.row.title) with
+        | Agent, title -> [ String.concat "" (List.map (fun s -> s.text) title) ]
+        | Ssh, _ :: host :: _ -> [ host.text ]
+        | _ -> [])
+      @ List.concat_map node i.children
+    in
+    List.filter_map
+      (fun (s : section) ->
+        List.filter_map (fuzzy text) (s.name :: List.concat_map node s.nodes)
+        |> List.reduce max
+        |> Option.map (fun score -> (score, s)))
+      sessions
+    |> List.stable_sort (fun (a, _) (b, _) -> Int.compare b a)
+    |> List.map snd
 
 let lines ?(search = "") (side : S.model) =
   let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├" in
@@ -67,7 +100,7 @@ let lines ?(search = "") (side : S.model) =
         (fun (s : S.section) ->
           out := Header { name = s.name; current = s.current } :: !out;
           List.iter (node s.id "" None "") s.nodes)
-        (S.filter search side.sessions);
+        (filter search side.sessions);
       Array.of_list (List.rev !out)
 
 type mode = Windows | Asks
