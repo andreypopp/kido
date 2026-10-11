@@ -71,11 +71,16 @@ public struct SidebarSeen: Equatable, Sendable {
     }
 
     public mutating func observe(_ snapshot: Snapshot, attended: Bool) {
+        guard snapshot.error == nil else { return }
+        let baseline = instance == nil
         if instance != snapshot.serverInstance { self = Self(); instance = snapshot.serverInstance }
-        guard snapshot.error == nil, attended || !outcomes.isEmpty else { return }
+        guard baseline || attended || !outcomes.isEmpty else { return }
         var present: Set<PaneID> = [], client: Item?
         func visit(_ node: Node) {
             if case .item(let item) = node {
+                if baseline {
+                    for outcome in item.outcomes { outcomes[item.pane, default: [:]][outcome.source] = outcome.identity }
+                }
                 if outcomes[item.pane] != nil { present.insert(item.pane) }
                 if item.pane == snapshot.client.pane { client = item }
             }
