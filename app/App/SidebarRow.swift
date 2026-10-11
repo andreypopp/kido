@@ -3,11 +3,8 @@ import SidebarFeed
 
 struct SidebarFonts {
     let regular = NSFont.systemFont(ofSize: 13)
-    let nested = NSFont.systemFont(ofSize: 12)
     let section = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let tail = NSFont.systemFont(ofSize: 11)
-    let programTitle = NSFont.systemFont(ofSize: 11)
-    let programCaption = NSFont.systemFont(ofSize: 10)
     let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
 }
 
@@ -31,7 +28,7 @@ final class SidebarCell: NSTableCellView {
     #if KIDO_VISUAL
     private(set) var visualClockDirtyRect = NSRect.zero
     #endif
-    let addWindow = IconButton("plus", "New window", size: 13, hoverStyle: .iconOnly)
+    let addWindow = IconButton("plus", "New window", size: 11, hoverStyle: .iconOnly)
     override var isFlipped: Bool { true }
 
     init(_ fonts: SidebarFonts) {
@@ -90,33 +87,25 @@ final class SidebarCell: NSTableCellView {
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
             NSBezierPath(rect: bounds).addClip()
-            for (depth, slice) in row.windows.enumerated() {
-                let x = CGFloat(depth) * 16
-                let rect = NSRect(x: x, y: -slice.offset, width: max(0, bounds.width - x), height: slice.height)
-                let path = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
-                if slice.active { NSColor.labelColor.withAlphaComponent(0.10).setFill(); path.fill() }
-                path.addClip()
-            }
             let program = { if case .program = row.kind { return true }; return false }()
             let leading = row.target == nil && !program ? 12 : CGFloat(row.leading)
-            if row.focused && row.multiPane {
-                let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                (dark ? NSColor.white.withAlphaComponent(0.85) : NSColor.black.withAlphaComponent(0.75)).setFill()
-                NSRect(x: CGFloat(row.indent) * 16, y: row.padding, width: 2, height: bounds.height - row.padding * 2).fill()
+            let selected = row.target != nil && (superview as? NSTableRowView)?.isSelected == true
+                && (enclosingScrollView?.documentView as? Table)?.keyboardSelection == true
+                && window?.firstResponder === enclosingScrollView?.documentView
+            if row.focused || selected {
+                NSColor.labelColor.withAlphaComponent(0.10).setFill()
+                NSBezierPath(roundedRect: NSRect(x: CGFloat(row.indent) * 15, y: 0,
+                                               width: bounds.width - CGFloat(row.indent) * 15, height: bounds.height),
+                             xRadius: 7, yRadius: 7).fill()
             }
-            if row.target != nil, (superview as? NSTableRowView)?.isSelected == true,
-               let table = enclosingScrollView?.documentView as? Table, table.keyboardSelection,
-               window?.firstResponder === table {
-                NSColor.labelColor.withAlphaComponent(0.10).setFill(); bounds.fill()
-            }
-            if case .divider = row.kind {
-                NSColor.labelColor.withAlphaComponent(0.075).setFill()
-                let x: CGFloat = 12
-                let line = NSRect(x: x, y: 3, width: max(0, bounds.width - x - 12), height: 1)
-                let pixels = convertToBacking(line)
+            let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            (dark ? NSColor(srgbRed: 79 / 255, green: 85 / 255, blue: 92 / 255, alpha: 1)
+                  : NSColor(srgbRed: 191 / 255, green: 186 / 255, blue: 177 / 255, alpha: 1)).setFill()
+            for guide in row.guides {
+                let rect = NSRect(x: guide.x - 0.5, y: guide.top, width: 1, height: guide.bottom - guide.top)
+                let pixels = convertToBacking(rect)
                 convertFromBacking(NSRect(x: pixels.minX.rounded(), y: pixels.minY.rounded(),
                                           width: pixels.width.rounded(), height: pixels.height.rounded())).fill()
-                return
             }
             if case .gap = row.kind { return }
             let header = { if case .header = row.kind { return true }; return false }()
@@ -131,21 +120,21 @@ final class SidebarCell: NSTableCellView {
             let end = header ? bounds.width - 30 : dotX - 12 - (clock.isEmpty ? 0 : clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
-            let titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: program ? 16 : 18)
+            let titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
             if dirtyRect.intersects(titleRect) {
                 (row.title as NSString).draw(in: titleRect,
-                                       withAttributes: [.font: header ? fonts.section : program ? fonts.programTitle : row.indent == 0 ? fonts.regular : fonts.nested,
+                                       withAttributes: [.font: header ? fonts.section : fonts.regular,
                                                         .foregroundColor: header || program || row.quietShell ? NSColor.secondaryLabelColor : NSColor.labelColor,
                                                         .paragraphStyle: paragraph])
             }
-            let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - (program ? 27 : 24)), height: program ? 14 : 15)
+            let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - (program ? 27 : 24)), height: 15)
             if dirtyRect.intersects(tailRect) {
                 (row.tail as NSString).draw(in: tailRect,
-                                          withAttributes: [.font: program ? fonts.programCaption : fonts.tail, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
+                                          withAttributes: [.font: fonts.tail, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
             }
             (clock as NSString).draw(at: NSPoint(x: dotX - 12 - clockWidth, y: y + 2),
                                      withAttributes: [.font: fonts.clock, .foregroundColor: NSColor.secondaryLabelColor])
-            let indicatorY = program ? 3.0 : y
+            let indicatorY = y
             let color: NSColor? = switch row.status {
             case .quiet: nil; case .running, .done: .systemGreen; case .waiting: .systemOrange; case .error, .stalled: .systemRed
             }
