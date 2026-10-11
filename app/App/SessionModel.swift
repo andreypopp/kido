@@ -29,8 +29,8 @@ struct SessionModel: Equatable {
         return "\(session) — \(window.name)"
     }
 
-    func navigation(_ snapshot: Snapshot?, activePanes: [WindowID: PaneID] = [:]) -> (model: SessionModel, tabs: [Tab]) {
-        let projection = sidebarWindows(snapshot, session: session, surviving: Set(windows.map(\.id)), activePanes: activePanes)
+    func navigation(_ snapshot: Snapshot?, activePanes: [WindowID: PaneID] = [:], seen: SidebarSeen = SidebarSeen()) -> (model: SessionModel, tabs: [Tab]) {
+        let projection = sidebarWindows(snapshot, session: session, surviving: Set(windows.map(\.id)), activePanes: activePanes, seen: seen)
         var model = self
         model.windows = windows.filter { projection.ancestors[$0.id] == nil || projection.ancestors[$0.id] == $0.id }
         let active = window.flatMap { projection.ancestors[$0] ?? $0 }
