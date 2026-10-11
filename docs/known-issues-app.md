@@ -277,18 +277,17 @@ has no activation or deletion UI. Live waiting rows remain accessible through
 normal sidebar navigation; ended askers cannot be revived from Kido.app.
 Use kido's ask view instead. Status: accepted migration scope.
 
-## Feed restart loses done-until-visited attention
+## Feed restart can lose or re-arm outcomes
 
-The feed's in-memory tracking does not survive process restart.
-This affects sidebar attention, not agent state or pane content; a restart
-can lose an unvisited completion indication without restoring it later.
-Program-status completion acknowledgements likewise belong to the RPC model;
-the app does not reconstruct them from raw records. The local search query
-survives helper restarts independently.
-See [The sidebar's model, and the feed](design.md#the-sidebars-model-and-the-feed)
-for the CLI-side ownership.
-Persisting that transient tracking is medium cross-component work.
-Status: accepted.
+The app's seen record survives a feed restart, but kido's outcome tracking
+does not. A restart re-derives final records under the current pane serial,
+so an acknowledged agent or report outcome can reappear red; a retained
+outcome whose record already went idle, or a command exit held only in the
+old feed's memory, is lost. Concurrent feeds of one host can assign different
+serials to one outcome, and whole-second command times can collide. These are
+the protocol's accepted identity losses
+(see [the RPC contract](../share/rpc/contract.md)). Seen is not persisted
+across app launches. Status: accepted.
 
 ## Shared remote-session selection and geometry
 

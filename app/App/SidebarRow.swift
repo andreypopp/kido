@@ -147,7 +147,7 @@ final class SidebarCell: NSTableCellView {
                                      withAttributes: [.font: fonts.clock, .foregroundColor: NSColor.secondaryLabelColor])
             let indicatorY = program ? 3.0 : y
             let color: NSColor? = switch row.status {
-            case .quiet: nil; case .running, .done: .systemGreen; case .attention: .systemOrange; case .error, .stalled: .systemRed
+            case .quiet: nil; case .running, .done: .systemGreen; case .waiting: .systemOrange; case .error, .stalled: .systemRed
             }
             if let color {
                 if row.status == .done || row.status == .stalled {
