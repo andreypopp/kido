@@ -26,46 +26,39 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     let rows = sidebarRows(try fixture(client: 5))
     let panes = rows.filter { $0.target != nil }
     #expect(panes.map(\.indent) == [0, 0, 1, 2, 1, 1])
-    #expect(rows.filter { $0.kind == .divider }.map(\.indent) == [0])
-    #expect(rows.filter { $0.kind == .divider }.map(\.height) == [7])
-    #expect(rows.map(\.height) == [29, 32, 3, 7, 32, 40, 28, 3, 3, 3, 28, 3, 28, 3, 3, 3, 16])
+    #expect(rows.map(\.height) == [29, 32, 32, 48, 32, 32, 32, 16])
     #expect(rows.allSatisfy { $0.height > 0 })
-    #expect(panes.map(\.active) == [false, true, true, true, true, true])
-    #expect(panes.allSatisfy { !$0.multiPane })
-    #expect(panes.dropFirst().map { $0.windows.first!.height } == [174, 174, 174, 174, 174])
-    #expect(panes.dropFirst().map { $0.windows.first!.offset } == [0, 32, 72, 109, 140])
-    #expect(panes[2].windows.map(\.height) == [174, 74])
-    #expect(panes[3].windows.map(\.offset) == [72, 40, 0])
-    #expect(rows.filter { $0.active && $0.target == nil }.count == 6)
-    let child = sidebarRows(try fixture(client: 1)).filter { $0.target != nil }
-    #expect(child.filter(\.active).map(\.title) == ["@pane-1", "pane-2"])
-    #expect(child[2].windows.map(\.active) == [false, true])
-    #expect(child[3].windows.map(\.active) == [false, true, false])
-    let grandchild = sidebarRows(try fixture(client: 2)).filter { $0.target != nil }
-    #expect(grandchild.filter(\.active).map(\.title) == ["pane-2"])
+    #expect(panes.filter(\.focused).map(\.title) == ["@pane-5"])
+    #expect(panes[0].guides.isEmpty && panes[1].guides.isEmpty)
+    #expect(panes[2].guides == [.init(x: 20, top: 10, bottom: 48)])
+    #expect(panes[3].guides == [.init(x: 35, top: 10, bottom: 22), .init(x: 20, top: 0, bottom: 32)])
+    #expect(panes[4].guides == [.init(x: 20, top: 0, bottom: 32)])
+    #expect(panes[5].guides == [.init(x: 20, top: 0, bottom: 22)])
+    #expect(sidebarRows(try fixture(client: 1)).filter(\.focused).map(\.title) == ["@pane-1"])
+    #expect(sidebarRows(try fixture(client: 2)).filter(\.focused).map(\.title) == ["pane-2"])
 }
 
 @Test func groupedPanesStayContiguous() throws {
     let rows = sidebarRows(try fixture(grouped: true))
-    #expect(rows.map(\.height) == [29, 30, 30, 3, 16])
-    #expect(rows.filter { $0.kind == .divider }.isEmpty)
-    #expect(rows.filter { $0.target != nil }.allSatisfy { $0.multiPane })
-    #expect(rows.filter { $0.target != nil }.map { $0.windows[0].offset } == [0, 30])
-    #expect(rows.filter { $0.target != nil }.map { $0.windows[0].height } == [60, 60])
+    #expect(rows.map(\.height) == [29, 32, 32, 16])
+    let panes = rows.filter { $0.target != nil }
+    #expect(panes.map(\.guides) == [[.init(x: 5, top: 10, bottom: 32)], [.init(x: 5, top: 0, bottom: 22)]])
+    #expect(rows.filter(\.focused).count == 1)
     #expect(rows.allSatisfy { $0.height > 0 })
 }
 
 @Test func eachPanesChildrenPrecedeItsNextSibling() throws {
-    let snapshot = try fixture(grouped: true, descendants: true)
-    let rows = sidebarRows(snapshot)
+    let rows = sidebarRows(try fixture(grouped: true, descendants: true))
     let panes = rows.filter { $0.target != nil }
     #expect(panes.map { $0.target!.pane } == [0, 1, 2, 5, 3, 6].map { PaneID(number: UInt32($0)) })
-    #expect(panes.map(\.multiPane) == [true, false, false, true, false, true])
-    #expect(panes.map(\.height) == [30, 40, 28, 42, 28, 30])
+    #expect(panes.map(\.height) == [32, 48, 32, 48, 32, 32])
     #expect(panes.map(\.indent) == [0, 1, 2, 0, 1, 0])
-    #expect(panes.allSatisfy { $0.active })
-    #expect(panes.map { $0.windows[0].height } == [216, 216, 216, 216, 216, 216])
-    #expect(rows.filter { $0.kind == .divider }.isEmpty)
+    #expect(panes.map { $0.guides.last! } == [
+        .init(x: 5, top: 10, bottom: 32), .init(x: 5, top: 0, bottom: 48),
+        .init(x: 5, top: 0, bottom: 32), .init(x: 5, top: 0, bottom: 48),
+        .init(x: 5, top: 0, bottom: 32), .init(x: 5, top: 0, bottom: 22)
+    ])
+    #expect(rows.filter(\.focused).count == 1)
     #expect(Set(rows.map(\.id)).count == rows.count)
 }
 
@@ -85,14 +78,12 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     }
     let snapshot = try decode(snapshotObject([nested ? pane : node], client: 1))
     let row = try #require(sidebarRows(snapshot).first { $0.target?.pane == PaneID(number: 1) })
-    #expect(row.height == (activity ? 44 : 32) - (nested ? 4 : 0) - (multi ? 2 : 0))
-    #expect(row.padding == (nested ? 5 : 7) - (multi ? 1 : 0))
-    #expect(row.leading == (nested ? 48 : 36))
-    #expect(row.tailY == (nested ? 22.5 : 25.5) - (multi ? 1 : 0))
-    #expect(row.multiPane == multi)
-    #expect(row.windows.count == (nested ? 2 : 1))
-    #expect(row.windows.last?.active == true)
-    #expect(row.windows.first?.active == !nested)
+    #expect(row.height == (activity ? 48 : 32))
+    #expect(row.padding == 7)
+    #expect(row.leading == (nested ? 51 : 36))
+    #expect(row.tailY == 26)
+    #expect(row.focused)
+    #expect(sidebarRows(snapshot).filter(\.focused).count == 1)
     #expect(sidebarRows(snapshot).allSatisfy { $0.height > 0 })
 }
 
@@ -110,7 +101,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     #expect(panes.map(\.started) == [nil, nil, Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), nil])
     #expect(panes.allSatisfy { if case .pane = $0.kind { return true }; return false })
     #expect(panes.first { $0.title == "@pane-1" }?.tail == "working")
-    #expect(panes.map(\.height) == [32, 32, 40, 28, 28, 28])
+    #expect(panes.map(\.height) == [32, 32, 48, 32, 32, 32])
 }
 
 @Test(arguments: [(0, "0s"), (59, "59s"), (60, "1m00s"), (3599, "59m59s"), (3600, "1h00m"), (7260, "2h01m"), (-1, "0s")])
@@ -182,7 +173,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
         #expect(row.status == status)
         #expect(row.indicatorDescription == description)
         #expect(row.tail == tail)
-        #expect(row.height == (tail.isEmpty ? 32 : 44))
+        #expect(row.height == (tail.isEmpty ? 32 : 48))
         #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == status.tabStatus)
     }
 }
@@ -209,10 +200,15 @@ func elapsed(_ seconds: Int, _ expected: String) {
     let rows = sidebarRows(snapshot)
     let programs = rows.filter { if case .program = $0.kind { true } else { false } }
     #expect(programs.map(\.title) == ["Record-only title", "a/child", "a/missing/leaf", "a-", "é", "z", "é"])
-    #expect(programs.map(\.leading) == [48, 60, 72, 48, 48, 48, 48])
-    #expect(programs.map(\.height) == [24, 24, 39, 24, 24, 24, 24])
-    #expect(programs.allSatisfy { $0.padding == 4 && $0.tailY == 21 && $0.active && !$0.focused && $0.target == nil && $0.started == nil })
+    #expect(programs.map(\.leading) == [27, 42, 57, 27, 27, 27, 27])
+    #expect(programs.map(\.height) == [32, 32, 48, 32, 32, 32, 32])
+    #expect(programs.allSatisfy { $0.padding == 7 && $0.tailY == 26 && !$0.focused && $0.target == nil && $0.started == nil })
     #expect(programs.map(\.status) == [.running, .done, .waiting, .error, .quiet, .quiet, .quiet])
+    #expect(programs[0].guides == [.init(x: 20, top: 10, bottom: 32), .init(x: 5, top: 0, bottom: 32)])
+    #expect(programs[1].guides == [.init(x: 20, top: 0, bottom: 32), .init(x: 35, top: 10, bottom: 32), .init(x: 5, top: 0, bottom: 32)])
+    #expect(programs[2].guides == [.init(x: 20, top: 0, bottom: 48), .init(x: 35, top: 0, bottom: 38), .init(x: 5, top: 0, bottom: 48)])
+    #expect(programs.last!.guides == [.init(x: 20, top: 0, bottom: 22), .init(x: 5, top: 0, bottom: 32)])
+    #expect(programs.allSatisfy { Set($0.guides.map(\.x)).count == $0.guides.count })
     #expect(rows[1].target?.pane == PaneID(number: 0))
     #expect(rows[9].target?.pane == PaneID(number: 1))
     #expect(Set(rows.map(\.id)).count == rows.count)
@@ -232,7 +228,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(rows.map(\.title) == ["a", "a/b", "a-b"])
 }
 
-@Test func appOwnedSeenLeavesChildRecordsRaw() throws {
+@Test func appOwnedSeenSuppressesChildOutcomes() throws {
     let records: [[String: Any]] = [
         ["id": "done", "state": "done"], ["id": "error", "state": "error"],
         ["id": "working", "state": "working"], ["id": "blocked", "state": "blocked"]
@@ -243,28 +239,29 @@ func elapsed(_ seconds: Int, _ expected: String) {
         object["server_instance"] = ["started_at": 1780000000, "pid": pid]
         return try decode(object)
     }
-    func statuses(_ snapshot: Snapshot, _ seen: SidebarSeen) -> [SidebarRow.Status] { sidebarRows(snapshot, seen: seen).filter { $0.kind != .gap && $0.kind != .divider && $0.kind != .header }.map(\.status) }
+    func statuses(_ snapshot: Snapshot, _ seen: SidebarSeen) -> [SidebarRow.Status] { sidebarRows(snapshot, seen: seen).filter { $0.kind != .gap && $0.kind != .header }.map(\.status) }
     let raw: [SidebarRow.Status] = [.waiting, .done, .error, .running]
+    let acknowledged: [SidebarRow.Status] = [.waiting, .quiet, .quiet, .running]
     var seen = SidebarSeen()
     seen.observe(try snapshot(serial: 6, command: 1780000001), attended: false)
     let visited = try snapshot()
     seen.observe(visited, attended: false)
     #expect(statuses(visited, seen) == [.error] + raw + [.error])
     seen.observe(visited, attended: true)
-    #expect(statuses(visited, seen) == [.quiet] + raw + [.error])
+    #expect(statuses(visited, seen) == [.quiet] + acknowledged + [.error])
     let tabs = sidebarWindows(visited, session: SessionID(number: 0), surviving: [WindowID(number: 0), WindowID(number: 5)], seen: seen).statuses
     #expect(tabs[WindowID(number: 0)] == .quiet && tabs[WindowID(number: 5)] == .error)
     #expect(sidebarWindows(visited, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .error)
-    #expect(statuses(try snapshot(client: 5), seen) == [.quiet] + raw + [.error])
+    #expect(statuses(try snapshot(client: 5), seen) == [.quiet] + acknowledged + [.error])
     #expect(statuses(try snapshot(serial: 8), seen) == [.error] + raw + [.error])
-    #expect(statuses(try snapshot(failed: false), seen) == [.quiet] + raw + [.error])
+    #expect(statuses(try snapshot(failed: false), seen) == [.quiet] + acknowledged + [.error])
     var other = seen
     other.observe(try snapshot(client: 5, error: "unreadable"), attended: true)
     #expect(other == seen)
     other.observe(try snapshot(client: 5), attended: true)
-    #expect(statuses(try snapshot(client: 5), other) == [.quiet] + raw + [.quiet])
-    #expect(statuses(try snapshot(command: 1780000002), other) == [.quiet] + raw + [.error])
-    #expect(statuses(try snapshot(command: 1780000001.5), other) == [.quiet] + raw + [.error])
+    #expect(statuses(try snapshot(client: 5), other) == [.quiet] + acknowledged + [.quiet])
+    #expect(statuses(try snapshot(command: 1780000002), other) == [.quiet] + acknowledged + [.error])
+    #expect(statuses(try snapshot(command: 1780000001.5), other) == [.quiet] + acknowledged + [.error])
     var pruned = other
     pruned.observe(try decode(snapshotObject([pane(5, lifecycle: terminal(exited(1)))], client: 5)), attended: false)
     #expect(statuses(try snapshot(client: 5), pruned) == [.error] + raw + [.quiet])
