@@ -246,6 +246,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
     func statuses(_ snapshot: Snapshot, _ seen: SidebarSeen) -> [SidebarRow.Status] { sidebarRows(snapshot, seen: seen).filter { $0.kind != .gap && $0.kind != .divider && $0.kind != .header }.map(\.status) }
     let raw: [SidebarRow.Status] = [.waiting, .done, .error, .running]
     var seen = SidebarSeen()
+    seen.observe(try snapshot(serial: 6, command: 1780000001), attended: false)
     let visited = try snapshot()
     seen.observe(visited, attended: false)
     #expect(statuses(visited, seen) == [.error] + raw + [.error])
@@ -299,4 +300,32 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(same.sameSidebarContent(as: try decode(object)))
     object["server_instance"] = ["started_at": 1780000000, "pid": 1]
     #expect(!same.sameSidebarContent(as: try decode(object)))
+}
+
+@Test func freshSeenBaselinesFinishedOutcomes() throws {
+    func snapshot(serial: Int = 7, error: Any = null, pid: Int = 12345) throws -> Snapshot {
+        var object = snapshotObject([pane(0), pane(1, lifecycle: agent(idle(outcome(serial, "success"))), children: [
+            pane(2, lifecycle: terminal(report: report(idle(outcome(serial, "failure"))))),
+            pane(3, lifecycle: terminal(exited(1)))
+        ])], sessions: [0, 1], error: error)
+        object["server_instance"] = ["started_at": 1780000000, "pid": pid]
+        return try decode(object)
+    }
+    func statuses(_ snapshot: Snapshot, _ seen: SidebarSeen) -> [SidebarRow.Status] {
+        sidebarRows(snapshot, seen: seen).filter { $0.target != nil }.map(\.status)
+    }
+    var seen = SidebarSeen()
+    let initial = try snapshot()
+    seen.observe(initial, attended: false)
+    #expect(statuses(initial, seen) == Array(repeating: .quiet, count: 8))
+    let later = try snapshot(serial: 8)
+    seen.observe(later, attended: false)
+    #expect(statuses(later, seen) == [.quiet, .done, .error, .quiet, .quiet, .done, .error, .quiet])
+    let restarted = try snapshot(pid: 12346)
+    seen.observe(restarted, attended: false)
+    #expect(statuses(restarted, seen) == [.quiet, .done, .error, .error, .quiet, .done, .error, .error])
+    var delayed = SidebarSeen()
+    delayed.observe(try snapshot(error: "unreadable"), attended: false)
+    delayed.observe(initial, attended: false)
+    #expect(statuses(initial, delayed) == Array(repeating: .quiet, count: 8))
 }
