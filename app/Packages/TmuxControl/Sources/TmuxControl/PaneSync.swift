@@ -52,7 +52,7 @@ public enum PaneSync {
             (n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7], n[8], n[9], n[10])
         let (shape, keys, tabs, modes) = (f[11], f[12], f[13].split(separator: ","), f[14].split(separator: ","))
         let e = "\u{1B}"
-        let scrollback = hsize == 0 || history.rows == 0 ? "" : history.text + (history.wrapsIntoScreen ? "" : "\r\n")
+        let scrollback = hsize == 0 || history.rows == 0 ? "" : history.text + (history.wrapsIntoScreen ? "" : "\r\n") + "\(e)[m"
         var out = "\(e)c\(e)[3J" + scrollback + (alternate == 1 ? main : screen).joined(separator: "\r\n")
         if alternate == 1 {
             out += "\(e)[m"
