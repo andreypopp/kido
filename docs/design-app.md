@@ -743,35 +743,33 @@ focus. Status dots summarize the window and its descendants.
 `SidebarFeed/Rows.swift`. Sessions have noninteractive 29pt headers with
 11pt semibold secondary labels and an always-visible, separately accessible
 new-window plus; hovering brightens only its icon. No session folding remains.
-Each window is a 7pt rounded container enclosing its panes and descendants.
 Each pane's child-window trees immediately follow that pane, before its
 next sibling; drawn order and navigation share the row-model traversal.
 OSC 7501 non-root records follow their pane before its child windows, ordered
 by slash components in UTF-8 byte order. Static-text rows use the title (or
-full id), message caption and raw state indicator; they are never navigation or
-filter targets, and visits never acknowledge them. Rows are 24/39pt with 4pt padding,
-11pt secondary titles (16pt line box), 10pt secondary captions (14pt line
-box, 1pt gap), no icon or clock, and 12pt indent per slash component from
-the owning pane title. They share the owning window's fill and status axis.
-Children indent 16pt per level without guides. The active window has one
-continuous 10% labelColor fill across its subtree. Focusing a child fills
-that child's subtree, not its ancestors. Row slices carry each enclosing
-window's offset and total height so rounding remains continuous even across
-short spacing rows. Only multi-pane windows mark the focused pane with a
-2pt strip at that window's left edge, inset by the row's vertical padding.
-Independent keyboard selection clips to the enclosing rounded containers.
+full id), message caption and state indicator, with the parent's seen suppression
+for done/error. They are never navigation, click, hover, selection or filter targets.
+They have secondary text, no icon or reserved icon space, and no clock.
+Their title starts at 12pt plus 15pt per nesting level and slash component.
 
-Top-level single-pane rows are 32/44pt (one line/activity), with 7pt vertical
-padding and 12pt leading inset. Nested single-pane rows are 28/40pt, with
-5pt vertical padding and 8pt leading inset. Multi-pane rows are 2pt shorter:
-30/42pt top-level with 6pt padding, 26/38pt nested with 4pt padding. Trailing
-insets remain 12pt. Monochrome 16pt text.bubble/terminal symbols have an
-8pt gap before 13pt top-level or 12pt nested system-font titles, with 18pt
-line height. Title x positions are indent+36 or indent+32; 11pt activity
-starts 18.5pt below top-level padding and 17.5pt below nested padding:
-y=25.5/24.5 top-level single/multi, y=22.5/21.5 nested single/multi.
-Its line box is 15pt; activity rows are tuned to their visible text rather
-than equal box padding. Agents and
+All pane and program rows are 32pt single-line or 48pt with a caption, with
+7pt vertical padding. Titles are 13pt regular on an 18pt line; captions are
+11pt on a 15pt line, 1pt below the title. Selectable rows have 12pt leading
+inset, a 16pt text.bubble/terminal icon and an 8pt gap; trailing inset is 12pt.
+Nesting steps 15pt at every depth. Only the focused pane row has a 10%
+labelColor fill, with 7pt corners. Independent keyboard selection also has
+7pt corners and clears on mouse press. No window-wide fills or focus marks remain.
+
+Vertical hierarchy guides draw above fills: opaque 1pt lines, light #bfbab1
+or dark #4f555c, aligned to backing pixels, without horizontal arms or
+stacked segments. A top-level multi-pane window gets a guide at x=5pt,
+from its first pane's top+10pt to its last descendant's bottom−10pt.
+Single-pane windows have no window guide. Each children block has a guide
+at its parent row's left+20pt (the parent's icon center), inset 10pt from
+the block's top and bottom. Program parents get guides spanning their records
+at the next depth's title x−7pt, likewise inset 10pt. Geometry is derived
+in the row model as per-row guide segments, not maintained in a separate view tree.
+Agents and
 agent runs receive a display-only @ prefix, never doubled. Idle local shell panes
 (Live Terminal at a known Idle prompt, no run, idle/done/failed indicator) display secondary-colored
 `Terminal`; an Unknown phase, full-screen programs, SSH, and run items keep their labels. Both display
@@ -795,11 +793,9 @@ unknown are quiet. Status and
 waiting rows of any kind an orange dot, failures a red dot, done/completed a green
 checkmark and stalled a red exclamation.
 
-Each item has 3pt bottom spacing; each child collection adds another 3pt,
-and each session adds 16pt. A 7pt separator (3pt, 1pt line, 3pt) appears only
-between top-level windows, never before the first window, between nested
-windows, or between panes within a group. Lines inset 12pt at both ends and
-use 7.5% labelColor. Every row has positive height. Colors resolve at drawing
+There are no window or child gaps and no divider rows. Each session retains
+its 16pt bottom gap. The header plus is 11pt, matching its label.
+Every row has positive height. Colors resolve at drawing
 time; fonts and the two configured dynamic-color icons are cached at
 initialization. Same-shape snapshots reload only changed rows. Equal-width
 clock ticks invalidate only the clock label; width changes invalidate the
