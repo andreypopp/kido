@@ -5,10 +5,11 @@ import TmuxControl
 
 private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false, records: [[String: Any]] = [], serial: Int = 7) throws -> Snapshot {
     func item(_ id: Int, _ window: Int, run: String? = nil, started: Double? = nil, tail: String = "", children: [[String: Any]] = []) -> [String: Any] {
-        ["kind": run == "bash" || run == "stream" ? "run" : "agent", "id": "%\(id)", "pane": "%\(id)", "window": "@\(window)",
-         "run": run as Any? ?? NSNull(), "started": started as Any? ?? NSNull(), "indicator": ["kind": "running"],
-         "program_status": ["serial": serial, "records": id == 0 ? records : []], "title": [["text": "pane-\(id)", "role": "plain"]], "tail": tail.isEmpty ? [] : [["text": tail, "role": "dim"]],
-         "attention": id == 2, "children": children]
+        let lifecycle = run == "bash" || run == "stream"
+            ? terminal(running(), report: id == 2 ? report(waiting()) : null)
+            : agent(id == 2 ? blocked() : working(), msg: tail.isEmpty ? null : tail)
+        return pane(id, window: window, title: "pane-\(id)", lifecycle: lifecycle, run: run, started: started,
+                    records: id == 0 ? records : [], serial: serial, children: children)
     }
     let children = [item(1, 1, run: "agent", started: 100, tail: "working", children: [item(2, 2, run: "stream", started: 100)]),
                     item(3, 3, run: "bash", started: 100), item(4, 4, run: "bash")]
@@ -17,12 +18,8 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
             ? [item(0, 0, children: [item(1, 1, tail: "child", children: [item(2, 2)])]),
                item(5, 0, tail: "parent", children: [item(3, 3)]), item(6, 0)]
             : [item(0, 0), item(5, 0)]]]
-        : [item(0, 0, started: 100), item(5, 5, children: children)]
-    let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": "@\(client)", "pane": "%\(client)"],
-                               "asks": [], "error": NSNull(), "sessions": sessions.map {
-                                   ["id": "$\($0)", "name": "session-\($0)", "current": $0 == 0, "nodes": nodes]
-                               }]
-    return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        : [item(0, 0), item(5, 5, children: children)]
+    return try decode(snapshotObject(nodes, client: client, sessions: sessions))
 }
 
 @Test func nestedWindowsAndExactSpacing() throws {
@@ -69,16 +66,13 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     #expect(panes.allSatisfy { $0.active })
     #expect(panes.map { $0.windows[0].height } == [216, 216, 216, 216, 216, 216])
     #expect(rows.filter { $0.kind == .divider }.isEmpty)
-    #expect(sidebarTarget(snapshot, attention: 1) == panes[2].target)
-    #expect(sidebarTarget(snapshot, selected: panes[5].target, attention: -1) == panes[2].target)
     #expect(Set(rows.map(\.id)).count == rows.count)
 }
 
 @Test(arguments: [(false, false, false), (false, false, true), (false, true, false), (false, true, true),
                   (true, false, false), (true, false, true), (true, true, false), (true, true, true)])
 func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) throws {
-    var pane: [String: Any] = ["kind": "agent", "id": "%1", "pane": "%1", "window": "@1",
-                               "program_status": ["serial": 0, "records": []], "title": [], "tail": activity ? [["text": "working", "role": "dim"]] : [], "attention": false, "children": []]
+    var pane = SidebarFeedTests.pane(1, lifecycle: agent(working(), msg: activity ? "working" : null))
     let node: [String: Any]
     if multi {
         var sibling = pane
@@ -89,9 +83,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
         pane["id"] = "%0"; pane["pane"] = "%0"; pane["window"] = "@0"
         pane["children"] = [node]
     }
-    let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": "@1", "pane": "%1"], "asks": [],
-                               "sessions": [["id": "$0", "name": "main", "current": true, "nodes": [nested ? pane : node]]]]
-    let snapshot = try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
+    let snapshot = try decode(snapshotObject([nested ? pane : node], client: 1))
     let row = try #require(sidebarRows(snapshot).first { $0.target?.pane == PaneID(number: 1) })
     #expect(row.height == (activity ? 44 : 32) - (nested ? 4 : 0) - (multi ? 2 : 0))
     #expect(row.padding == (nested ? 5 : 7) - (multi ? 1 : 0))
@@ -126,89 +118,81 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(sidebarElapsed(started: Date(timeIntervalSince1970: 100), now: Date(timeIntervalSince1970: Double(100 + seconds))) == expected)
 }
 
-@Test(arguments: [("agent", "null", "Ada", "@Ada", SidebarRow.Icon.agent),
-                  ("agent", "null", "@Ada", "@Ada", .agent),
-                  ("run", "\"agent\"", "Ada", "@Ada", .agent),
-                  ("shell", "null", "zsh", "zsh", .terminal),
-                  ("ssh", "null", "host", "host", .terminal),
-                  ("run", "\"bash\"", "job", "job", .terminal),
-                  ("run", "\"stream\"", "monitor", "monitor", .terminal)])
-func iconsAndDisplayOnlyPrefix(_ kind: String, _ run: String, _ title: String, _ expected: String, _ icon: SidebarRow.Icon) throws {
-    let json = """
-    {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"asks":[],"sessions":[
-      {"id":"$0","name":"main","current":true,"nodes":[
-        {"kind":"\(kind)","run":\(run),"id":"%0","pane":"%0","window":"@0",
-         "program_status":{"serial":0,"records":[]},"title":[{"text":"\(title)","role":"plain"}],"tail":[],"attention":false,"children":[]}]}]}
-    """
-    let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
-    let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
-    #expect(row.title == expected)
-    #expect(row.icon == icon)
-    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
-                           activePanes: [WindowID(number: 0): PaneID(number: 0)]).titles[WindowID(number: 0)] == title)
-}
-
-@Test(arguments: [("shell", "null", "idle", true, SidebarRow.Status.quiet),
-                  ("shell", "null", "done", true, .done), ("shell", "null", "failed", true, .error),
-                  ("shell", "null", "stalled", false, .stalled), ("shell", "null", "unknown", false, .quiet),
-                  ("shell", "null", "null", false, .quiet),
-                  ("shell", "null", "waiting", false, .attention), ("shell", "null", "running", false, .running),
-                  ("shell", "null", "compacting", false, .running), ("ssh", "null", "idle", false, .quiet),
-                  ("run", "\"bash\"", "done", false, .done), ("run", "\"stream\"", "failed", false, .error),
-                  ("shell", "\"bash\"", "idle", false, .quiet)])
-func idleShellIsDisplayOnly(_ kind: String, _ run: String, _ indicator: String, _ quiet: Bool, _ status: SidebarRow.Status) throws {
-    let title = indicator == "null" ? "nvim" : "last-command"
-    let resolved = indicator == "null" ? "null" : "{\"kind\":\"\(indicator)\"}"
-    let json = """
-    {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"asks":[],"sessions":[
-      {"id":"$0","name":"main","current":true,"nodes":[
-        {"kind":"\(kind)","run":\(run),"id":"%0","pane":"%0","window":"@0","indicator":\(resolved),
-         "program_status":{"serial":0,"records":[]},"title":[{"text":"\(title)","role":"plain"}],"tail":[],"attention":false,"children":[]}]}]}
-    """
-    let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
-    let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
-    #expect(row.title == (quiet ? "Terminal" : title))
-    #expect(row.quietShell == quiet)
-    #expect(row.status == status)
-    #expect(row.indicatorDescription == (indicator == "null" ? "" : indicator))
-    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
-                           activePanes: [WindowID(number: 0): PaneID(number: 0)]).titles[WindowID(number: 0)] == title)
-}
-
-@Test func originalIndicatorDescriptions() throws {
-    let indicators: [(String, String?, SidebarRow.Status, String)] = [
-        ("waiting", nil, .attention, "waiting"), ("stalled", nil, .stalled, "stalled"),
-        ("done", nil, .done, "done"), ("idle", nil, .quiet, "idle"),
-        ("gone", "completed", .done, "gone, completed")
+@Test func iconsAndDisplayOnlyPrefix() throws {
+    let cases: [([Any], String?, String, String, String, SidebarRow.Icon)] = [
+        (agent(), nil, "Ada", "@Ada", "Ada", .agent),
+        (agent(), nil, "@Ada", "@Ada", "@Ada", .agent),
+        (remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]]), nil, "Ada", "@Ada", "Ada", .agent),
+        (terminal(running()), "agent", "Ada", "@Ada", "Ada", .agent),
+        (["Ended", ["result": "completed"]], "agent", "Ada", "@Ada", "Ada", .agent),
+        (terminal(["Unknown"]), nil, "zsh", "zsh", "zsh", .terminal),
+        (remote(["Remote_terminal", ["interactive": true, "status": shell()]]), nil, "ssh", "ssh alice@devbox", "ssh alice@devbox", .terminal),
+        (terminal(running()), "bash", "job", "job", "job", .terminal),
+        (["Ended", ["result": "failed"]], "stream", "monitor", "monitor", "monitor", .terminal)
     ]
-    for (kind, outcome, status, description) in indicators {
-        let data = """
-        {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"asks":[],"sessions":[
-          {"id":"$0","name":"main","current":true,"nodes":[
-            {"kind":"agent","id":"%0","pane":"%0","window":"@0","indicator":{"kind":"\(kind)","outcome":\(outcome.map { "\"\($0)\"" } ?? "null")},
-             "program_status":{"serial":0,"records":[]},"title":[],"tail":[],"attention":true,"children":[]}]}]}
-        """
-        let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(data.utf8))
+    for (lifecycle, run, title, expected, tab, icon) in cases {
+        let snapshot = try decode(snapshotObject([pane(0, title: title, lifecycle: lifecycle, run: run)]))
         let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
-        #expect(row.status == status)
-        #expect(row.indicatorDescription == description)
-        #expect(row.attention)
-        #expect(sidebarTarget(snapshot, attention: 1) == row.target)
+        #expect(row.title == expected)
+        #expect(row.icon == icon)
+        #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
+                               activePanes: [WindowID(number: 0): PaneID(number: 0)]).titles[WindowID(number: 0)] == tab)
     }
 }
 
-@Test func navigationOrderWrappingAndFallback() throws {
+@Test func composedLabelsCaptionsAndStatuses() throws {
+    let failedReport = report(idle(outcome(4, "failure")), msg: "Build failed")
+    let cases: [([Any], String?, String, Bool, SidebarRow.Status, String, String)] = [
+        (terminal(), nil, "Terminal", true, .quiet, "idle", ""),
+        (terminal(exited(0)), nil, "Terminal", true, .done, "done", ""),
+        (terminal(exited(130)), nil, "Terminal", true, .error, "failed", ""),
+        (terminal(report: report(idle())), nil, "Terminal", true, .quiet, "idle", ""),
+        (terminal(report: failedReport), nil, "Terminal", true, .error, "failed", "Build failed"),
+        (terminal(["Unknown"]), nil, "zsh", false, .quiet, "", ""),
+        (terminal(["Unknown"], report: report(idle(outcome(2, "success")), msg: "Built")), nil, "zsh", false, .done, "done", "Built"),
+        (terminal(running(nil, fullscreen: true)), nil, "zsh", false, .quiet, "", ""),
+        (terminal(running("nvim", fullscreen: true), report: report(waiting("auth"), msg: "Login required")), nil, "zsh", false, .waiting, "waiting", "Login required"),
+        (terminal(running()), nil, "make", false, .running, "running", ""),
+        (terminal(running("")), nil, "zsh", false, .running, "running", ""),
+        (terminal(running(), report: report(working(42), msg: "Building")), nil, "zsh", false, .running, "running", "Building 42%"),
+        (terminal(exited(1), report: report(waiting("auth"), msg: "Login required")), nil, "zsh", false, .waiting, "waiting", "Login required"),
+        (terminal(report: report(idle())), "bash", "zsh", false, .quiet, "idle", ""),
+        (terminal(exited(1)), "bash", "zsh", false, .running, "running", ""),
+        (remote(["Remote_terminal", ["interactive": true, "status": shell(running())]]), nil, "ssh alice@devbox: make", false, .running, "running", ""),
+        (remote(["Remote_terminal", ["interactive": false, "status": shell(running())]]), nil, "ssh alice@devbox", false, .running, "running", ""),
+        (remote(["Remote_terminal", ["interactive": true, "status": shell(running(), report: report(working()))]]), nil, "ssh alice@devbox", false, .running, "running", ""),
+        (remote(["Remote_terminal", ["interactive": true, "status": shell(exited(2))]]), nil, "ssh alice@devbox", false, .error, "failed", ""),
+        (agent(working(42), msg: "Thinking"), nil, "@zsh", false, .running, "running", "Thinking 42%"),
+        (agent(blocked("permission"), msg: "Approve deployment"), nil, "@zsh", false, .waiting, "waiting", "Approve deployment"),
+        (agent(["Waiting", ["source": ["Ask", ["id": "ask-id"]], "progress": null]]), nil, "@zsh", false, .waiting, "waiting", ""),
+        (agent(["Stalled"]), nil, "@zsh", false, .stalled, "stalled", ""),
+        (agent(idle(outcome(17, "success")), msg: "Finished"), nil, "@zsh", false, .done, "done", "Finished"),
+        (agent(idle(outcome(18, "failure")), msg: "Failed"), nil, "@zsh", false, .error, "failed", "Failed"),
+        (["Ended", ["result": "unknown"]], "bash", "zsh", false, .quiet, "gone", ""),
+        (["Ended", ["result": "completed"]], "bash", "zsh", false, .done, "gone, completed", "completed"),
+        (["Ended", ["result": "failed"]], "bash", "zsh", false, .error, "gone, failed", "failed"),
+        (["Ended", ["result": "died"]], "agent", "@zsh", false, .error, "gone, died", "died"),
+        (["Ended", ["result": "stopped"]], "agent", "@zsh", false, .quiet, "gone, stopped", "stopped")
+    ]
+    for (lifecycle, run, title, quiet, status, description, tail) in cases {
+        let snapshot = try decode(snapshotObject([pane(0, title: "zsh", lifecycle: lifecycle, run: run)]))
+        let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
+        #expect(row.title == title)
+        #expect(row.quietShell == quiet)
+        #expect(row.status == status)
+        #expect(row.indicatorDescription == description)
+        #expect(row.tail == tail)
+        #expect(row.height == (tail.isEmpty ? 32 : 44))
+        #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == status.tabStatus)
+    }
+}
+
+@Test func navigationOrderAndFallback() throws {
     let snapshot = try fixture(sessions: [0, 1])
     let panes = sidebarRows(snapshot).compactMap(\.target)
     #expect(panes.map(\.pane) == [0, 5, 1, 2, 3, 4, 0, 5, 1, 2, 3, 4].map { PaneID(number: UInt32($0)) })
-    #expect(sidebarTarget(snapshot) == panes.first)
-    #expect(sidebarTarget(snapshot, attention: 1) == panes[3])
-    #expect(sidebarTarget(snapshot, attention: -1) == panes[9])
-    #expect(sidebarTarget(snapshot, selected: panes[9], attention: 1) == panes[3])
-    #expect(sidebarTarget(snapshot, selected: panes[3], attention: -1) == panes[9])
-    #expect(sidebarTarget(snapshot, selected: panes[0], attention: 1) == panes[3])
-    #expect(sidebarTarget(try fixture(sessions: [])) == nil)
-    #expect(sidebarTarget(try fixture(sessions: []), attention: 1) == nil)
+    #expect(panes.first == Snapshot.Position(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)))
+    #expect(sidebarRows(try fixture(sessions: [])).compactMap(\.target).isEmpty)
 }
 
 @Test func programRowsOrderingGeometryAndNavigation() throws {
@@ -227,13 +211,12 @@ func idleShellIsDisplayOnly(_ kind: String, _ run: String, _ indicator: String, 
     #expect(programs.map(\.title) == ["Record-only title", "a/child", "a/missing/leaf", "a-", "é", "z", "é"])
     #expect(programs.map(\.leading) == [48, 60, 72, 48, 48, 48, 48])
     #expect(programs.map(\.height) == [24, 24, 39, 24, 24, 24, 24])
-    #expect(programs.allSatisfy { $0.padding == 4 && $0.tailY == 21 && $0.active && !$0.focused && $0.target == nil && $0.started == nil && !$0.attention })
-    #expect(programs.map(\.status) == [.running, .done, .attention, .error, .quiet, .quiet, .quiet])
+    #expect(programs.allSatisfy { $0.padding == 4 && $0.tailY == 21 && $0.active && !$0.focused && $0.target == nil && $0.started == nil })
+    #expect(programs.map(\.status) == [.running, .done, .waiting, .error, .quiet, .quiet, .quiet])
     #expect(rows[1].target?.pane == PaneID(number: 0))
     #expect(rows[9].target?.pane == PaneID(number: 1))
     #expect(Set(rows.map(\.id)).count == rows.count)
-    #expect(sidebarTarget(snapshot) == rows[1].target)
-    #expect(sidebarTarget(snapshot, selected: rows[1].target, attention: 1)?.pane == PaneID(number: 2))
+    #expect(rows.compactMap(\.target).first == rows[1].target)
     #expect(sidebarSearch(snapshot, query: "Record-only title")?.sessions.isEmpty == true)
     #expect(sidebarSearch(snapshot, query: "Record-only caption")?.sessions.isEmpty == true)
     #expect(sidebarRows(sidebarSearch(snapshot, query: "session-0")) == rows)
@@ -249,32 +232,71 @@ func idleShellIsDisplayOnly(_ kind: String, _ run: String, _ indicator: String, 
     #expect(rows.map(\.title) == ["a", "a/b", "a-b"])
 }
 
-@Test func programSeenSerialsAndContentChanges() throws {
+@Test func appOwnedSeenLeavesChildRecordsRaw() throws {
     let records: [[String: Any]] = [
         ["id": "done", "state": "done"], ["id": "error", "state": "error"],
         ["id": "working", "state": "working"], ["id": "blocked", "state": "blocked"]
     ]
-    let unvisited = try fixture(client: 5, records: records)
-    let visited = try fixture(records: records)
-    var seen = sidebarProgramSeen(unvisited, previous: [:])
-    #expect(seen[PaneID(number: 0)] == nil)
-    seen = sidebarProgramSeen(visited, previous: seen)
-    seen = sidebarProgramSeen(unvisited, previous: seen)
-    let suppressed = sidebarRows(unvisited, programSeen: seen).filter { if case .program = $0.kind { true } else { false } }
-    #expect(suppressed.map(\.status) == [.attention, .quiet, .quiet, .running])
-    #expect(suppressed.map(\.indicatorDescription) == ["blocked", "idle", "idle", "working"])
-    let newer = try fixture(client: 5, records: records, serial: 8)
-    let restored = sidebarRows(newer, programSeen: seen).filter { if case .program = $0.kind { true } else { false } }
-    #expect(restored.map(\.status) == [.attention, .done, .error, .running])
-    #expect(!unvisited.sameSidebarContent(as: newer))
+    func snapshot(client: Int = 0, serial: Int = 7, command: Double = 1780000001.25, pid: Int = 12345, error: Any = null, failed: Bool = true) throws -> Snapshot {
+        var object = snapshotObject([pane(0, lifecycle: agent(idle(outcome(serial, failed ? "failure" : "success"))), records: records, serial: serial),
+                                     pane(5, lifecycle: terminal(exited(1, ended: command)))], client: client, error: error)
+        object["server_instance"] = ["started_at": 1780000000, "pid": pid]
+        return try decode(object)
+    }
+    func statuses(_ snapshot: Snapshot, _ seen: SidebarSeen) -> [SidebarRow.Status] { sidebarRows(snapshot, seen: seen).filter { $0.kind != .gap && $0.kind != .divider && $0.kind != .header }.map(\.status) }
+    let raw: [SidebarRow.Status] = [.waiting, .done, .error, .running]
+    var seen = SidebarSeen()
+    let visited = try snapshot()
+    seen.observe(visited, attended: false)
+    #expect(statuses(visited, seen) == [.error] + raw + [.error])
+    seen.observe(visited, attended: true)
+    #expect(statuses(visited, seen) == [.quiet] + raw + [.error])
+    let tabs = sidebarWindows(visited, session: SessionID(number: 0), surviving: [WindowID(number: 0), WindowID(number: 5)], seen: seen).statuses
+    #expect(tabs[WindowID(number: 0)] == .quiet && tabs[WindowID(number: 5)] == .error)
+    #expect(sidebarWindows(visited, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .error)
+    #expect(statuses(try snapshot(client: 5), seen) == [.quiet] + raw + [.error])
+    #expect(statuses(try snapshot(serial: 8), seen) == [.error] + raw + [.error])
+    #expect(statuses(try snapshot(failed: false), seen) == [.quiet] + raw + [.error])
+    var other = seen
+    other.observe(try snapshot(client: 5, error: "unreadable"), attended: true)
+    #expect(other == seen)
+    other.observe(try snapshot(client: 5), attended: true)
+    #expect(statuses(try snapshot(client: 5), other) == [.quiet] + raw + [.quiet])
+    #expect(statuses(try snapshot(command: 1780000002), other) == [.quiet] + raw + [.error])
+    #expect(statuses(try snapshot(command: 1780000001.5), other) == [.quiet] + raw + [.error])
+    var pruned = other
+    pruned.observe(try decode(snapshotObject([pane(5, lifecycle: terminal(exited(1)))], client: 5)), attended: false)
+    #expect(statuses(try snapshot(client: 5), pruned) == [.error] + raw + [.quiet])
+    other.observe(try snapshot(client: 5, pid: 12346), attended: false)
+    #expect(statuses(try snapshot(client: 5), other) == [.error] + raw + [.error])
+}
+
+@Test func reportAndCommandOutcomesAreSeenIndependently() throws {
+    func snapshot(_ code: Int, report serial: Int) throws -> Snapshot {
+        try decode(snapshotObject([pane(0, lifecycle: terminal(exited(code, ended: 1780000000 + Double(code)), report: report(idle(outcome(serial, "failure")))))]))
+    }
+    var seen = SidebarSeen()
+    seen.observe(try snapshot(1, report: 3), attended: true)
+    let rows = try [(1, 3), (2, 3), (1, 4)].map { code, serial in try #require(sidebarRows(snapshot(code, report: serial), seen: seen).first { $0.target != nil }) }
+    #expect(rows.map(\.status) == [.quiet, .quiet, .error])
+}
+
+@Test func contentChangesAndServerIdentity() throws {
+    let records: [[String: Any]] = [["id": "done", "state": "done"], ["id": "error", "state": "error"]]
+    let base = try fixture(client: 5, records: records)
+    #expect(!base.sameSidebarContent(as: try fixture(client: 5, records: records, serial: 8)))
     var changed = records
     changed[0]["title"] = "New title"
     let edited = try fixture(client: 5, records: changed)
-    #expect(!unvisited.sameSidebarContent(as: edited))
-    let before = sidebarRows(unvisited), after = sidebarRows(edited)
+    #expect(!base.sameSidebarContent(as: edited))
+    let before = sidebarRows(base), after = sidebarRows(edited)
     #expect(before.map(\.id) == after.map(\.id))
     #expect(before.map(\.height) == after.map(\.height))
     #expect(zip(before, after).filter { $0 != $1 }.count == 1)
-    #expect(sidebarProgramSeen(nil, previous: seen) == seen)
-    #expect(sidebarProgramSeen(try fixture(sessions: []), previous: seen).isEmpty)
+    var object = snapshotObject([pane(0)])
+    let same = try decode(object)
+    object["error"] = "unreadable"
+    #expect(same.sameSidebarContent(as: try decode(object)))
+    object["server_instance"] = ["started_at": 1780000000, "pid": 1]
+    #expect(!same.sameSidebarContent(as: try decode(object)))
 }
