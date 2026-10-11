@@ -68,6 +68,40 @@ private class AlertEscape: NSView {
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
 
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
+    private static let seenChanged = Notification.Name("KidoSeenChanged")
+    private static var seenByHost: [Host: SeenRecord] = [:]
+    private lazy var seen: SeenRecord = {
+        let record = Self.seenByHost[host] ?? SeenRecord()
+        Self.seenByHost[host] = record
+        return record
+    }()
+
+    private func observeSeen() -> Bool {
+        guard let snapshot else { return false }
+        var attended = NSApp.isActive && window.isKeyWindow && !window.isMiniaturized && window.occlusionState.contains(.visible)
+        #if KIDO_VISUAL || KIDO_STRESS
+        attended = testAttended ?? attended
+        #endif
+        var next = seen.value
+        next.observe(snapshot, attended: attended)
+        guard next != seen.value else { return false }
+        seen.value = next
+        NotificationCenter.default.post(name: Self.seenChanged, object: seen, userInfo: ["by": self])
+        return true
+    }
+
+    @objc private func attend() {
+        if observeSeen() { refreshSeen() }
+    }
+
+    @objc private func seenChanged(_ notification: Notification) {
+        if notification.userInfo?["by"] as? WindowOwner !== self { refreshSeen() }
+    }
+
+    private func refreshSeen() {
+        sidebar.list.refresh()
+        updateTabs()
+    }
 
     @objc private func localServerRestarted(_ notification: Notification) {
         guard alive, host == .local, case .mismatch(let endpoint) = link,
@@ -113,6 +147,9 @@ private class AlertEscape: NSView {
         self.runtime = runtime
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(localServerRestarted(_:)), name: Self.localServerRestarted, object: nil)
+        sidebar.list.seen = seen
+        NotificationCenter.default.addObserver(self, selector: #selector(seenChanged(_:)), name: Self.seenChanged, object: seen)
+        NotificationCenter.default.addObserver(self, selector: #selector(attend), name: NSApplication.didBecomeActiveNotification, object: nil)
         window = AppWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -490,12 +527,7 @@ private class AlertEscape: NSView {
                     if case .protocolMismatch(let version, let binary) = status {
                         return self.protocolMismatch(Endpoint(server: Server(tmux: server.tmux, socket: server.socket, protocolVersion: version, binaryProtocol: binary ?? server.binaryProtocol), kido: endpoint.kido))
                     }
-                    self.sidebar.list.update(status)
-                    if case .running(let snapshot) = status {
-                        self.snapshot = snapshot
-                        self.updateTabs()
-                    }
-                    self.ready()
+                    self.received(status)
                 })
             let timeout = DispatchWorkItem { [weak self] in
                 guard let self, accepts(generation) else { return }
@@ -509,6 +541,16 @@ private class AlertEscape: NSView {
         }
     }
 
+    private func received(_ status: Feed.Status) {
+        if case .running(let snapshot) = status {
+            self.snapshot = snapshot
+            _ = observeSeen()
+        }
+        sidebar.list.update(status)
+        if case .running = status { updateTabs() }
+        ready()
+    }
+
     #if KIDO_VISUAL || KIDO_STRESS
     var stressState: (SessionModel, SessionModel, SessionView?, Connection?, Snapshot?) {
         if case .connected(let connection, _, _) = link { return (model, navigationModel, session, connection, snapshot) }
@@ -517,7 +559,7 @@ private class AlertEscape: NSView {
     #endif
 
     private func updateTabs() {
-        let next = model.navigation(snapshot, activePanes: session?.windows.compactMapValues(\.active) ?? [:])
+        let next = model.navigation(snapshot, activePanes: session?.windows.compactMapValues(\.active) ?? [:], seen: seen.value)
         if sidebar.tabs.entries != next.tabs { sidebar.tabs.entries = next.tabs }
         if navigationModel != next.model {
             navigationModel = next.model
@@ -609,8 +651,6 @@ private class AlertEscape: NSView {
         session?.focusActive()
     }
 
-    @objc func nextAttention() { sidebar.list.nextAttention(1) }
-    @objc func previousAttention() { sidebar.list.nextAttention(-1) }
 
     private func openTransport(_ token: Int) async throws(Failure) {
         guard case .remote(let destination) = host else { return }
@@ -690,9 +730,10 @@ private class AlertEscape: NSView {
         window.delegate = nil
         onClose()
     }
-    func windowDidBecomeKey(_ notification: Notification) { supersedeIntent(); menuChanged() }
+    func windowDidBecomeKey(_ notification: Notification) { supersedeIntent(); menuChanged(); attend() }
     func windowDidResignKey(_ notification: Notification) { supersedeIntent() }
-    func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert() }
+    func windowDidDeminiaturize(_ notification: Notification) { attend() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert(); attend() }
     func updateColorScheme() { session?.updateColorScheme() }
     var navigation: SessionModel { navigationModel }
 
@@ -704,5 +745,7 @@ private class AlertEscape: NSView {
     var testBanner: Banner { banner }
     var testSession: SessionView? { session }
     var testConnection: Connection? { if case .connected(let connection, _, _) = link { connection } else { nil } }
+    var testAttended: Bool?
+    func testReceive(_ snapshot: Snapshot) { received(.running(snapshot)) }
     #endif
 }
