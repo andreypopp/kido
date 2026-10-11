@@ -3,9 +3,9 @@ import TmuxControl
 
 public struct SidebarRow: Equatable, Sendable {
     public enum ID: Hashable, Sendable {
-        case header(SessionID), pane(SessionID, PaneID), program(SessionID, PaneID, Data), divider(SessionID, String), gap(SessionID), spacing(SessionID, String)
+        case header(SessionID), pane(SessionID, PaneID), program(SessionID, PaneID, Data), gap(SessionID)
         public var session: SessionID {
-            switch self { case .header(let s), .pane(let s, _), .program(let s, _, _), .divider(let s, _), .gap(let s), .spacing(let s, _): s }
+            switch self { case .header(let s), .pane(let s, _), .program(let s, _, _), .gap(let s): s }
         }
     }
     public enum Status: Equatable, Sendable {
@@ -13,12 +13,12 @@ public struct SidebarRow: Equatable, Sendable {
         public var tabStatus: Self { self == .error || self == .waiting ? self : .quiet }
     }
     public enum Kind: Equatable, Sendable {
-        case header, pane(Snapshot.Position), program(depth: Int), divider, gap
+        case header, pane(Snapshot.Position), program(depth: Int), gap
     }
-    public struct WindowSlice: Equatable, Sendable {
-        public let offset: Double
-        public let height: Double
-        public let active: Bool
+    public struct Guide: Equatable, Sendable {
+        public let x: Double
+        public let top: Double
+        public let bottom: Double
     }
     public enum Icon: String, Equatable, Sendable { case agent = "text.bubble", terminal }
     public let id: ID
@@ -31,23 +31,15 @@ public struct SidebarRow: Equatable, Sendable {
     public var indicatorDescription = ""
     public let started: Date?
     public let focused: Bool
-    public var windows: [WindowSlice] = []
-    public var multiPane = false
+    public var guides: [Guide] = []
     public var quietShell = false
     public var icon: Icon = .terminal
-    public var active: Bool { windows.contains { $0.active } }
-    public var padding: Double {
-        if case .program = kind { return 4 }
-        return (indent == 0 ? 7 : 5) - (multiPane ? 1 : 0)
-    }
+    public var padding: Double { 7 }
     public var leading: Double {
-        let extra: Double = if case .program(let depth) = kind { Double(depth) * 12 } else { 0 }
-        return Double(indent) * 16 + (indent == 0 ? 36 : 32) + extra
+        if case .program(let depth) = kind { return 12 + Double(indent + depth) * 15 }
+        return 36 + Double(indent) * 15
     }
-    public var tailY: Double {
-        if case .program = kind { return 21 }
-        return padding + (indent == 0 ? 18.5 : 17.5)
-    }
+    public var tailY: Double { 26 }
     public var target: Snapshot.Position? {
         if case .pane(let target) = kind { return target }; return nil
     }
@@ -205,16 +197,20 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
     for session in snapshot.sessions {
         rows.append(SidebarRow(id: .header(session.id), kind: .header, indent: 0, height: 29,
                                title: session.name, tail: "", status: .quiet, started: nil, focused: false))
-        var y = 0.0
+        func guide(_ start: Int, end: Int? = nil, x: Double) {
+            let end = end ?? rows.count
+            let height = rows[start..<end].reduce(0) { $0 + $1.height }
+            var offset = 0.0
+            for index in start..<end {
+                let top = max(0, 10 - offset)
+                let bottom = min(rows[index].height, height - 10 - offset)
+                if bottom > top { rows[index].guides.append(.init(x: x, top: top, bottom: bottom)) }
+                offset += rows[index].height
+            }
+        }
         func windows(_ nodes: [Node], depth: Int) {
-            for (index, node) in nodes.enumerated() {
-                if depth == 0 && index > 0 {
-                    rows.append(SidebarRow(id: .divider(session.id, node.id), kind: .divider, indent: depth, height: 7,
-                                           title: "", tail: "", status: .quiet, started: nil, focused: false))
-                    y += 7
-                }
+            for node in nodes {
                 let start = rows.count
-                let top = y
                 let panes: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
                 let multiPane = panes.count > 1
                 for item in panes {
@@ -224,16 +220,15 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                     let agent = item.run == .agent || item.agent != nil
                     let label = item.label
                     let quietShell = if case .live(.terminal(let shell)) = item.lifecycle, case .idle = shell.phase { item.run == nil && [.quiet, .done, .error].contains(status) } else { false }
-                    let height = (tail.isEmpty ? 32.0 : 44.0) - (depth == 0 ? 0 : 4) - (multiPane ? 2 : 0)
+                    let height = tail.isEmpty ? 32.0 : 48.0
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: height,
                                            title: quietShell ? "Terminal" : agent && !label.hasPrefix("@") ? "@" + label : label,
                                            tail: tail, status: status, indicatorDescription: description,
                                            started: item.started,
                                            focused: target == snapshot.client,
-                                           multiPane: multiPane, quietShell: quietShell,
+                                           quietShell: quietShell,
                                            icon: agent ? .agent : .terminal))
-                    y += height
                     let records = item.program_status.records.filter { !$0.id.isEmpty }.sorted { a, b in
                         let left = a.id.split(separator: "/", omittingEmptySubsequences: false)
                         let right = b.id.split(separator: "/", omittingEmptySubsequences: false)
@@ -242,6 +237,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                         }
                         return left.count < right.count
                     }
+                    let recordStart = rows.count
                     for record in records {
                         let status: SidebarRow.Status = switch record.state {
                         case .working: .running
@@ -251,41 +247,39 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                         case .idle, .unknown: .quiet
                         }
                         let caption = record.msg ?? ""
-                        let height = caption.isEmpty ? 24.0 : 39.0
+                        let height = caption.isEmpty ? 32.0 : 48.0
                         rows.append(SidebarRow(id: .program(session.id, item.pane, Data(record.id.utf8)),
                                                kind: .program(depth: record.id.split(separator: "/", omittingEmptySubsequences: false).count),
                                                indent: depth, height: height,
                                                title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
-                                               tail: caption, status: status,
+                                               tail: caption, status: [.done, .error].contains(status) && seen.contains(item.pane, item.agent != nil ? .agent : .report, .serial(item.program_status.serial)) ? .quiet : status,
                                                indicatorDescription: record.state.rawValue,
                                                started: nil, focused: false))
-                        y += height
+                    }
+                    if !records.isEmpty {
+                        guide(recordStart, x: Double(depth + 1) * 15 + 5)
+                        for (index, record) in records.enumerated() {
+                            let prefix = record.id + "/"
+                            let count = records[(index + 1)...].prefix { $0.id.hasPrefix(prefix) }.count
+                            if count > 0 {
+                                guide(recordStart + index + 1, end: recordStart + index + count + 1,
+                                      x: Double(depth + record.id.split(separator: "/", omittingEmptySubsequences: false).count + 1) * 15 + 5)
+                            }
+                        }
                     }
                     if !item.children.isEmpty {
+                        let start = rows.count
                         windows(item.children, depth: depth + 1)
-                        rows.append(SidebarRow(id: .spacing(session.id, "children:" + item.id.description), kind: .gap, indent: depth + 1, height: 3,
-                                               title: "", tail: "", status: .quiet, started: nil, focused: false))
-                        y += 3
+                        guide(start, x: Double(depth) * 15 + 20)
                     }
                 }
-                let height = y - top
-                let window: WindowID = switch node { case .window(let group): group.window; case .item(let item): item.window }
-                let active = session.id == snapshot.client.session && window == snapshot.client.window
-                var offset = 0.0
-                for index in start..<rows.count {
-                    rows[index].windows.append(.init(offset: offset, height: height, active: active))
-                    offset += rows[index].height
-                }
-                rows.append(SidebarRow(id: .spacing(session.id, "window:" + node.id), kind: .gap, indent: depth, height: 3,
-                                       title: "", tail: "", status: .quiet, started: nil, focused: false))
-                y += 3
+                if depth == 0 && multiPane { guide(start, x: 5) }
             }
         }
         windows(session.nodes, depth: 0)
         rows.append(SidebarRow(id: .gap(session.id), kind: .gap, indent: 0, height: 16,
                                title: "", tail: "", status: .quiet, started: nil, focused: false))
     }
-    for index in rows.indices { rows[index].windows.reverse() }
     return rows
 }
 
