@@ -12,9 +12,22 @@ import Testing
     let (data, history) = (snapshot.data, snapshot.history)
     #expect(history == 1)
     let text = String(decoding: data, as: UTF8.self)
-    #expect(text.hasPrefix("\u{1B}c\u{1B}[3J\u{1B}[mold\r\nscreen"))
+    #expect(text.hasPrefix("\u{1B}c\u{1B}[3J\u{1B}[mold\r\n\u{1B}[mscreen"))
     #expect(text.contains("\u{1B}=\u{1B}[4h\u{1B}[6 q\u{1B}[>4;2m"))
     #expect(text.hasSuffix("\u{1B}[2;3H\u{1B}["))
+}
+
+@Test(arguments: [false, true], [false, true])
+func paneSyncResetsHistoryPenBeforeScreen(wraps: Bool, alternate: Bool) throws {
+    let state = ["1", alternate ? "1" : "0", "0", "0", "0", "1", "0", "0", "0", "0", "0", "block", "", "", "7"].joined(separator: "\u{1F}")
+    let replies: [Reply] = [
+        .success(["1 \(alternate ? 1 : 0)"]), .success(["\u{1B}[7mold"]), .success(["-1 \(wraps ? "W" : "-") old"]),
+        .success([alternate ? "alternate" : "screen"]), .success(["screen"]), .success([]), .success([state]), .success(["0 - screen"]),
+    ]
+    let data = try #require(PaneSync.restore(replies)).data
+    let prefix = "\u{1B}c\u{1B}[3J\u{1B}[m\u{1B}[7mold" + (wraps ? "" : "\r\n") + "\u{1B}[mscreen"
+        + (alternate ? "\u{1B}[m\u{1B}[1;1H\u{1B}[?1049halternate" : "")
+    #expect(data.starts(with: prefix.utf8))
 }
 
 @Test func paneSyncRestoresAlternateAndSavedCursor() throws {
