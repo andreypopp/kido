@@ -19,7 +19,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     private let statusLine = NSTextField(labelWithString: "")
     private let noMatches = NSTextField(labelWithString: "No matches")
     private var snapshot: Snapshot?
-    private var programSeen: [PaneID: Int] = [:]
+    var seen = SeenRecord()
+    private var renderedSeen = SidebarSeen()
     private var renderedQuery = ""
     private var feedNote: (String, NSColor)?
     private var failure: String?
@@ -154,11 +155,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     private func show(_ next: Snapshot?) {
-        if renderedQuery == query, next.map({ snapshot?.sameSidebarContent(as: $0) == true }) ?? (snapshot == nil) {
+        if renderedQuery == query, renderedSeen == seen.value, next.map({ snapshot?.sameSidebarContent(as: $0) == true }) ?? (snapshot == nil) {
             snapshot = next
             return
         }
         renderedQuery = query
+        renderedSeen = seen.value
         rendering = true
         defer { rendering = false }
         let selected = entry(table.selectedRow)?.id
@@ -167,11 +169,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         let anchor = first == NSNotFound ? nil : entry(first).map { ($0.id, origin.y - table.rect(ofRow: first).minY) }
         let recenter = next.map { $0.client != snapshot?.client } ?? false
         snapshot = next
-        programSeen = sidebarProgramSeen(next, previous: programSeen)
         let visible = visibleSnapshot
         noMatches.isHidden = query.isEmpty || visible?.sessions.isEmpty != true
         let previous = items
-        items = sidebarRows(visible, programSeen: programSeen)
+        items = sidebarRows(visible, seen: seen.value)
         if previous.map(\.id) == items.map(\.id), previous.map(\.height) == items.map(\.height) {
             table.reloadData(forRowIndexes: IndexSet(items.indices.filter { items[$0] != previous[$0] }), columnIndexes: [0])
         } else { table.reloadData() }
@@ -218,7 +219,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     private func activate() {
         if table.selectedRow >= 0 { jump(table.selectedRow) }
-        else if let target = sidebarTarget(visibleSnapshot) { jump(target) }
+        else if let target = items.lazy.compactMap(\.target).first { jump(target) }
     }
 
     func focus() {
@@ -231,10 +232,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         }
         window?.makeFirstResponder(table)
         table.scrollRowToVisible(table.selectedRow)
-    }
-
-    func nextAttention(_ delta: Int) {
-        if let target = sidebarTarget(visibleSnapshot, selected: entry(table.selectedRow)?.target, attention: delta) { jump(target) }
     }
 
     private func jump(_ row: SidebarRow) {
@@ -279,6 +276,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     @objc private func searched() { show(snapshot) }
 
+    func refresh() { show(snapshot) }
+
     fileprivate func key(_ event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection([.command, .control, .option])
         switch (Int(event.keyCode), event.charactersIgnoringModifiers ?? "", mods) {
@@ -287,8 +286,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         case (36, _, []), (76, _, []): jump(table.selectedRow)
         case (53, _, []):
             navigate(.releaseSideFocus)
-        case (_, "n", []): nextAttention(1)
-        case (_, "N", []): nextAttention(-1)
         case (_, "/", []):
             onIntent()
             search.isHidden = false
@@ -359,6 +356,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         bounds.fill()
     }
     #endif
+}
+
+@MainActor final class SeenRecord {
+    var value = SidebarSeen()
 }
 
 final class Table: NSTableView {
