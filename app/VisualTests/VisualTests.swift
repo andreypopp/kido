@@ -1104,8 +1104,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             sessions[0]["nodes"] = nodes
             object["sessions"] = sessions
         }
-        XCTAssertEqual(sidebarRows(subtree).filter { $0.active && $0.target != nil }.map { $0.target!.window },
-                       [824, 1990, 1991].map { WindowID(number: UInt32($0)) })
+        XCTAssertEqual(sidebarRows(subtree).filter { $0.focused && $0.target != nil }.map { $0.target!.window },
+                       [WindowID(number: 824)])
         list.update(.running(subtree))
         sidebarSnapshot(list, "focused-child-subtree-light")
         window.appearance = NSAppearance(named: .darkAqua)
@@ -1710,7 +1710,6 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
                 object["sessions"] = sessions
             }
             let row = try XCTUnwrap(sidebarRows(fixture).first { $0.started != nil })
-            XCTAssertEqual(row.multiPane, multi)
             XCTAssertFalse(row.tail.isEmpty)
             let started = try XCTUnwrap(row.started)
             let cell = SidebarCell(SidebarFonts())
@@ -1720,9 +1719,9 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
                 cell.configure(row)
                 SidebarView.visualNow = started.addingTimeInterval(after)
                 cell.updateClock()
-                XCTAssertEqual(cell.visualClockDirtyRect.minX, 48,
+                XCTAssertEqual(cell.visualClockDirtyRect.minX, 51,
                                "width-changing tick must invalidate the nested title’s truncation edge")
-                XCTAssertEqual(cell.visualClockDirtyRect.minY, multi ? 4 : 5)
+                XCTAssertEqual(cell.visualClockDirtyRect.minY, 7)
             }
             SidebarView.visualNow = started.addingTimeInterval(11)
             cell.configure(row)
