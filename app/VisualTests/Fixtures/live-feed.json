@@ -5,6 +5,11 @@
     "window": "@824",
     "pane": "%936"
   },
+  "server_instance": {
+    "started_at": 1791000000,
+    "pid": 4242
+  },
+  "asks": [],
   "error": null,
   "sessions": [
     {
@@ -13,53 +18,74 @@
       "current": true,
       "nodes": [
         {
-          "kind": "agent",
+          "kind": "pane",
           "id": "%0",
           "pane": "%0",
           "window": "@0",
-          "indicator": {
-            "kind": "idle"
-          },
-          "title": [
-            {
-              "text": "working-on-kido",
-              "role": "plain"
-            }
-          ],
-          "tail": [],
-          "started": null,
-          "attention": false,
-          "children": [
-            {
-              "kind": "run",
-              "id": "%892",
-              "pane": "%892",
-              "window": "@786",
-              "indicator": {
-                "kind": "running"
-              },
-              "title": [
-                {
-                  "text": "main-watch",
-                  "role": "plain"
+          "title": "working-on-kido",
+          "lifecycle": [
+            "Live",
+            [
+              "Pi_agent",
+              {
+                "id": "session-0",
+                "status": {
+                  "since": 1791131000,
+                  "msg": null,
+                  "state": [
+                    "Idle",
+                    {
+                      "outcome": null
+                    }
+                  ]
                 }
-              ],
-              "tail": [],
-              "started": 1791098646.964646,
-              "attention": false,
-              "children": [],
-              "run": "bash",
-              "program_status": {
-                "serial": 0,
-                "records": []
               }
-            }
+            ]
           ],
-          "run": null,
           "program_status": {
             "serial": 0,
             "records": []
-          }
+          },
+          "run": null,
+          "started": null,
+          "children": [
+            {
+              "kind": "pane",
+              "id": "%892",
+              "pane": "%892",
+              "window": "@786",
+              "title": "main-watch",
+              "lifecycle": [
+                "Live",
+                [
+                  "Terminal",
+                  {
+                    "phase": [
+                      "Running",
+                      {
+                        "origin": [
+                          "Command",
+                          {
+                            "command": "main-watch",
+                            "started_at": 1791098646
+                          }
+                        ],
+                        "fullscreen": false
+                      }
+                    ],
+                    "report": null
+                  }
+                ]
+              ],
+              "program_status": {
+                "serial": 0,
+                "records": []
+              },
+              "run": "bash",
+              "started": 1791098646.964646,
+              "children": []
+            }
+          ]
         },
         {
           "kind": "window",
@@ -68,128 +94,169 @@
           "name": "kido-app",
           "children": [
             {
-              "kind": "agent",
+              "kind": "pane",
               "id": "%502",
               "pane": "%502",
               "window": "@458",
-              "indicator": {
-                "kind": "idle"
-              },
-              "title": [
-                {
-                  "text": "kido-app",
-                  "role": "plain"
-                }
+              "title": "kido-app",
+              "lifecycle": [
+                "Live",
+                [
+                  "Pi_agent",
+                  {
+                    "id": "session-502",
+                    "status": {
+                      "since": 1791131000,
+                      "msg": null,
+                      "state": [
+                        "Idle",
+                        {
+                          "outcome": null
+                        }
+                      ]
+                    }
+                  }
+                ]
               ],
-              "tail": [],
+              "program_status": {
+                "serial": 0,
+                "records": []
+              },
+              "run": null,
               "started": null,
-              "attention": false,
               "children": [
                 {
-                  "kind": "agent",
+                  "kind": "pane",
                   "id": "%936",
                   "pane": "%936",
                   "window": "@824",
-                  "indicator": {
-                    "kind": "running"
-                  },
-                  "title": [
-                    {
-                      "text": "sidebar-mockup",
-                      "role": "plain"
-                    }
+                  "title": "sidebar-mockup",
+                  "lifecycle": [
+                    "Live",
+                    [
+                      "Pi_agent",
+                      {
+                        "id": "session-936",
+                        "status": {
+                          "since": 1791131000,
+                          "msg": null,
+                          "state": [
+                            "Running",
+                            {
+                              "progress": null
+                            }
+                          ]
+                        }
+                      }
+                    ]
                   ],
-                  "tail": [],
-                  "started": 1791131078.818641,
-                  "attention": false,
-                  "children": [],
-                  "run": "agent",
                   "program_status": {
                     "serial": 0,
                     "records": []
-                  }
+                  },
+                  "run": "agent",
+                  "started": 1791131078.818641,
+                  "children": []
                 }
-              ],
-              "run": null,
-              "program_status": {
-                "serial": 0,
-                "records": []
-              }
+              ]
             },
             {
-              "kind": "shell",
+              "kind": "pane",
               "id": "%937",
               "pane": "%937",
               "window": "@458",
-              "indicator": {
-                "kind": "idle"
-              },
-              "title": [
-                {
-                  "text": "make -C ../kido-app/app demo",
-                  "role": "proc"
-                }
+              "title": "make -C ../kido-app/app demo",
+              "lifecycle": [
+                "Live",
+                [
+                  "Terminal",
+                  {
+                    "phase": [
+                      "Idle",
+                      {
+                        "last": null
+                      }
+                    ],
+                    "report": null
+                  }
+                ]
               ],
-              "tail": [],
-              "started": null,
-              "attention": false,
-              "children": [],
-              "run": null,
               "program_status": {
                 "serial": 0,
                 "records": []
-              }
+              },
+              "run": null,
+              "started": null,
+              "children": []
             }
           ]
         },
         {
-          "kind": "agent",
+          "kind": "pane",
           "id": "%905",
           "pane": "%905",
           "window": "@797",
-          "indicator": {
-            "kind": "idle"
-          },
-          "title": [
-            {
-              "text": "pi-ui",
-              "role": "plain"
-            }
-          ],
-          "tail": [],
-          "started": null,
-          "attention": false,
-          "children": [
-            {
-              "kind": "agent",
-              "id": "%934",
-              "pane": "%934",
-              "window": "@822",
-              "indicator": {
-                "kind": "running"
-              },
-              "title": [
-                {
-                  "text": "pi-ui-perf",
-                  "role": "plain"
+          "title": "pi-ui",
+          "lifecycle": [
+            "Live",
+            [
+              "Pi_agent",
+              {
+                "id": "session-905",
+                "status": {
+                  "since": 1791131000,
+                  "msg": null,
+                  "state": [
+                    "Idle",
+                    {
+                      "outcome": null
+                    }
+                  ]
                 }
-              ],
-              "tail": [],
-              "started": 1791125890.55034,
-              "attention": false,
-              "children": [],
-              "run": "agent",
-              "program_status": {
-                "serial": 0,
-                "records": []
               }
-            }
+            ]
           ],
-          "run": null,
           "program_status": {
             "serial": 0,
             "records": []
-          }
+          },
+          "run": null,
+          "started": null,
+          "children": [
+            {
+              "kind": "pane",
+              "id": "%934",
+              "pane": "%934",
+              "window": "@822",
+              "title": "pi-ui-perf",
+              "lifecycle": [
+                "Live",
+                [
+                  "Pi_agent",
+                  {
+                    "id": "session-934",
+                    "status": {
+                      "since": 1791131000,
+                      "msg": null,
+                      "state": [
+                        "Running",
+                        {
+                          "progress": null
+                        }
+                      ]
+                    }
+                  }
+                ]
+              ],
+              "program_status": {
+                "serial": 0,
+                "records": []
+              },
+              "run": "agent",
+              "started": 1791125890.55034,
+              "children": []
+            }
+          ]
         }
       ]
     },
@@ -199,28 +266,37 @@
       "current": false,
       "nodes": [
         {
-          "kind": "agent",
+          "kind": "pane",
           "id": "%11",
           "pane": "%11",
           "window": "@11",
-          "indicator": {
-            "kind": "idle"
-          },
-          "title": [
-            {
-              "text": "main",
-              "role": "plain"
-            }
+          "title": "main",
+          "lifecycle": [
+            "Live",
+            [
+              "Pi_agent",
+              {
+                "id": "session-11",
+                "status": {
+                  "since": 1791131000,
+                  "msg": null,
+                  "state": [
+                    "Idle",
+                    {
+                      "outcome": null
+                    }
+                  ]
+                }
+              }
+            ]
           ],
-          "tail": [],
-          "started": null,
-          "attention": false,
-          "children": [],
-          "run": null,
           "program_status": {
             "serial": 0,
             "records": []
-          }
+          },
+          "run": null,
+          "started": null,
+          "children": []
         }
       ]
     },
@@ -230,28 +306,37 @@
       "current": false,
       "nodes": [
         {
-          "kind": "agent",
+          "kind": "pane",
           "id": "%23",
           "pane": "%23",
           "window": "@17",
-          "indicator": {
-            "kind": "idle"
-          },
-          "title": [
-            {
-              "text": "main",
-              "role": "plain"
-            }
+          "title": "main",
+          "lifecycle": [
+            "Live",
+            [
+              "Pi_agent",
+              {
+                "id": "session-23",
+                "status": {
+                  "since": 1791131000,
+                  "msg": null,
+                  "state": [
+                    "Idle",
+                    {
+                      "outcome": null
+                    }
+                  ]
+                }
+              }
+            ]
           ],
-          "tail": [],
-          "started": null,
-          "attention": false,
-          "children": [],
-          "run": null,
           "program_status": {
             "serial": 0,
             "records": []
-          }
+          },
+          "run": null,
+          "started": null,
+          "children": []
         }
       ]
     },
@@ -267,52 +352,66 @@
           "name": "node",
           "children": [
             {
-              "kind": "agent",
+              "kind": "pane",
               "id": "%86",
               "pane": "%86",
               "window": "@76",
-              "indicator": {
-                "kind": "idle"
-              },
-              "title": [
-                {
-                  "text": "video",
-                  "role": "plain"
-                }
+              "title": "video",
+              "lifecycle": [
+                "Live",
+                [
+                  "Pi_agent",
+                  {
+                    "id": "session-86",
+                    "status": {
+                      "since": 1791131000,
+                      "msg": null,
+                      "state": [
+                        "Idle",
+                        {
+                          "outcome": null
+                        }
+                      ]
+                    }
+                  }
+                ]
               ],
-              "tail": [],
-              "started": null,
-              "attention": false,
-              "children": [],
-              "run": null,
               "program_status": {
                 "serial": 0,
                 "records": []
-              }
+              },
+              "run": null,
+              "started": null,
+              "children": []
             },
             {
-              "kind": "shell",
+              "kind": "pane",
               "id": "%783",
               "pane": "%783",
               "window": "@76",
-              "indicator": {
-                "kind": "idle"
-              },
-              "title": [
-                {
-                  "text": "zsh",
-                  "role": "proc"
-                }
+              "title": "zsh",
+              "lifecycle": [
+                "Live",
+                [
+                  "Terminal",
+                  {
+                    "phase": [
+                      "Idle",
+                      {
+                        "last": null
+                      }
+                    ],
+                    "report": null
+                  }
+                ]
               ],
-              "tail": [],
-              "started": null,
-              "attention": false,
-              "children": [],
-              "run": null,
               "program_status": {
                 "serial": 0,
                 "records": []
-              }
+              },
+              "run": null,
+              "started": null,
+              "children": []
             }
           ]
         }
@@ -324,31 +423,39 @@
       "current": false,
       "nodes": [
         {
-          "kind": "agent",
+          "kind": "pane",
           "id": "%193",
           "pane": "%193",
           "window": "@166",
-          "indicator": {
-            "kind": "idle"
-          },
-          "title": [
-            {
-              "text": "household",
-              "role": "plain"
-            }
+          "title": "household",
+          "lifecycle": [
+            "Live",
+            [
+              "Pi_agent",
+              {
+                "id": "session-193",
+                "status": {
+                  "since": 1791131000,
+                  "msg": null,
+                  "state": [
+                    "Idle",
+                    {
+                      "outcome": null
+                    }
+                  ]
+                }
+              }
+            ]
           ],
-          "tail": [],
-          "started": null,
-          "attention": false,
-          "children": [],
-          "run": null,
           "program_status": {
             "serial": 0,
             "records": []
-          }
+          },
+          "run": null,
+          "started": null,
+          "children": []
         }
       ]
     }
-  ],
-  "asks": []
+  ]
 }

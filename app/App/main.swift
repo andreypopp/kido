@@ -128,9 +128,6 @@ import SidebarFeed
         view.items = [
             item("Hide Sidebar", #selector(Sidebar.toggleSidebar(_:)), "S", [.command, .shift]),
             item("Focus Sidebar", #selector(Sidebar.focusSidebar(_:)), "s", .command),
-            .separator(),
-            item("Next Needing Attention", #selector(nextAttention), "n", [.command, .control]),
-            item("Previous Needing Attention", #selector(previousAttention), "N", [.command, .control]),
         ]
         for item in view.items.prefix(2) { item.target = current?.sidebar }
         let file = NSMenu(title: "File")
@@ -166,8 +163,6 @@ import SidebarFeed
     @objc private func connectRemoteHost() { RemoteHostDialog(routes: routes).show(on: NSApp.keyWindow) }
 
     @objc private func newSession() { current?.newSession() }
-    @objc private func nextAttention() { current?.nextAttention() }
-    @objc private func previousAttention() { current?.previousAttention() }
     @objc private func quitItem() { quit("the Quit menu item") }
     func quit(_ reason: String) { trigger = reason; NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

@@ -29,47 +29,42 @@ import TmuxControl
     }
 }
 
-@Test func localSearchAndResolvedProgramRows() throws {
-    func pane(_ n: Int, kind: String, title: [[String: String]], children: [[String: Any]] = []) -> [String: Any] {
-        ["kind": kind, "id": "%\(n)", "pane": "%\(n)", "window": "@\(n)", "indicator": ["kind": "waiting"],
-         "program_status": ["serial": 7, "records": [["id": "", "state": "working", "title": "ignored raw title", "msg": "ignored raw caption", "progress": 90]]],
-         "title": title, "tail": [["text": "resolved caption", "role": "dim"]], "attention": true, "children": children]
-    }
-    let nodes = [pane(0, kind: "shell", title: [["text": "excluded shell", "role": "plain"]], children: [
-        pane(1, kind: "agent", title: [["text": "Compiler", "role": "plain"], ["text": " expert", "role": "plain"]]),
-        pane(2, kind: "ssh", title: [["text": "ssh ", "role": "proc"], ["text": "devbox", "role": "plain"], ["text": ": excluded-command", "role": "dim"]])])]
-    var object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": "@0", "pane": "%0"], "asks": [],
-        "sessions": [["id": "$0", "name": "workspace", "current": true, "nodes": nodes],
-                     ["id": "$1", "name": "devbox", "current": false, "nodes": []]]]
-    let snapshot = try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
+@Test func localSearchAndComposedRows() throws {
+    let records: [[String: Any]] = [["id": "", "state": "working", "title": "ignored raw title", "msg": "ignored raw caption", "progress": 90]]
+    let nodes = [pane(0, title: "excluded shell", lifecycle: terminal(running("excluded-command"), report: report(waiting(), msg: "composed caption")), records: records, serial: 7, children: [
+        pane(1, title: "Compiler expert", lifecycle: agent(working())),
+        pane(2, title: "excluded-title", lifecycle: remote(["Remote_terminal", ["interactive": true, "status": shell(running("excluded-command"))]])),
+        pane(3, title: "Reviewer", lifecycle: remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]], host: "agenthost"))])]
+    var object = snapshotObject(nodes)
+    object["sessions"] = [["id": "$0", "name": "workspace", "current": true, "nodes": nodes],
+                          ["id": "$1", "name": "devbox", "current": false, "nodes": []]]
+    let snapshot = try decode(object)
     #expect(sidebarSearch(snapshot, query: "") == snapshot)
     #expect(sidebarSearch(snapshot, query: "CMPEX")?.sessions.map(\.id) == [SessionID(number: 0)])
-    #expect(sidebarSearch(snapshot, query: "devbox")?.sessions.map(\.id) == [SessionID(number: 0), SessionID(number: 1)])
+    #expect(sidebarSearch(snapshot, query: "alice@devbox")?.sessions.map(\.id) == [SessionID(number: 0)])
+    #expect(sidebarSearch(snapshot, query: "devbox")?.sessions.map(\.id) == [SessionID(number: 1), SessionID(number: 0)])
+    #expect(sidebarSearch(snapshot, query: "reviewer")?.sessions.map(\.id) == [SessionID(number: 0)])
+    #expect(sidebarSearch(snapshot, query: "alice@agenthost")?.sessions.map(\.id) == [SessionID(number: 0)])
     #expect(sidebarSearch(snapshot, query: "wrksp")?.sessions[0].nodes == snapshot.sessions[0].nodes)
-    for query in ["excluded shell", "excluded-command", "resolved caption", "ignored raw title", "@Compiler", "missing"] {
+    for query in ["excluded shell", "excluded-command", "excluded-title", "composed caption", "ignored raw title", "@Compiler", "missing"] {
         #expect(sidebarSearch(snapshot, query: query)?.sessions.isEmpty == true)
     }
-    let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
-    #expect(row.title == "excluded shell" && row.tail == "resolved caption")
-    #expect(row.status == .attention && row.attention && !row.quietShell)
-    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .attention)
-    var sessions = object["sessions"] as! [[String: Any]]
-    var changedNodes = sessions[0]["nodes"] as! [[String: Any]]
+    let rows = sidebarRows(snapshot).filter { $0.target != nil }
+    #expect(rows.map(\.title) == ["excluded shell", "@Compiler expert", "ssh alice@devbox: excluded-command", "@Reviewer"])
+    #expect(rows[0].tail == "composed caption")
+    #expect(rows[0].status == .waiting && !rows[0].quietShell)
+    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .waiting)
+    var changedNodes = nodes
     changedNodes[0]["program_status"] = ["serial": 99, "records": []]
-    sessions[0]["nodes"] = changedNodes
-    object["sessions"] = sessions
+    object["sessions"] = [["id": "$0", "name": "workspace", "current": true, "nodes": changedNodes]]
     object["asks"] = [["id": "A12345678", "session": "agent-session", "name": "Ada", "text": "Question?", "created": "2026-07-17T12:00:00Z", "pane": NSNull(), "ended": true, "revivable": false]]
-    let rawChanged = try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
+    let rawChanged = try decode(object)
     #expect(snapshot != rawChanged && !snapshot.sameSidebarContent(as: rawChanged))
-    changedNodes[0]["title"] = [["text": "resolved update", "role": "plain"]]
-    sessions[0]["nodes"] = changedNodes
-    object["sessions"] = sessions
-    #expect(!snapshot.sameSidebarContent(as: try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))))
     object.removeValue(forKey: "asks")
-    #expect(throws: DecodingError.self) { try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object)) }
+    #expect(throws: DecodingError.self) { try decode(object) }
     var item = nodes[0]
     item.removeValue(forKey: "program_status")
-    #expect(throws: DecodingError.self) { try JSONDecoder().decode(Item.self, from: JSONSerialization.data(withJSONObject: item)) }
+    #expect(throws: DecodingError.self) { try decode(item, as: Item.self) }
 }
 
 @Test(arguments: ["2026-07-17T12:00:00Z", "2026-07-17T12:00:00.123Z"]) func outstandingAsks(_ created: String) throws {
