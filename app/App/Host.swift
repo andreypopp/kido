@@ -23,7 +23,7 @@ import Foundation
     }
 }
 
-enum Host: Equatable, Sendable {
+enum Host: Hashable, Sendable {
     case local
     case remote(String)
 
