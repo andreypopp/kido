@@ -395,6 +395,8 @@ private final class VsyncGate: @unchecked Sendable {
         try await drain(runtime)
         XCTAssertGreaterThan(frames, activeFrames)
         XCTAssertGreaterThan(try rendererCPU(only: ids).cpu - activeCPU.cpu, 0.003)
+        // Ghostty's compression delay is 250ms.
+        try await Task.sleep(for: .milliseconds(500))
         XCTAssertTrue(panes.allSatisfy { $0.visualVsync?.hasLink == false })
         let ticks = panes.map { $0.visualVsync!.ticks }
         let creates = panes.map { $0.visualVsync!.creates }
