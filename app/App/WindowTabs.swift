@@ -130,7 +130,7 @@ final class WindowTabs: NSView {
                     path.lineWidth = 1
                     path.stroke()
                 }
-                let dot = tab.status == .error || tab.status == .attention
+                let dot = tab.status == .error || tab.status == .waiting
                 (tab.name as NSString).draw(in: NSRect(x: rect.minX + 12, y: rect.midY - 8, width: rect.width - (dot ? 38 : 24), height: 16),
                     withAttributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: tab.active ? NSColor.labelColor : NSColor.secondaryLabelColor,
                                      .paragraphStyle: paragraph])
@@ -151,7 +151,7 @@ final class WindowTabs: NSView {
             element.setAccessibilityRole(.button)
             element.setAccessibilityParent(self)
             element.setAccessibilityFrameInParentSpace(NSRect(x: hostWidth + CGFloat(index) * tabWidth - offset, y: bounds.midY - 14, width: tabWidth, height: 28))
-            element.setAccessibilityLabel("Window: " + tab.name + (tab.status == .error ? " — error" : tab.status == .attention ? " — attention" : ""))
+            element.setAccessibilityLabel("Window: " + tab.name + (tab.status == .error ? " — error" : tab.status == .waiting ? " — waiting" : ""))
             element.setAccessibilityValue(tab.active ? "selected" : "")
             return element
         }
