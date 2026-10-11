@@ -864,7 +864,8 @@ on every snapshot and whenever it becomes attended, its client's active pane's
 current outcomes are marked seen. Every window of the host redraws its rows
 and tab dots from the shared record. A changed `server_instance` drops the
 host's entries; a successful snapshot prunes absent panes, while an error
-snapshot neither prunes nor marks. Nothing is persisted across launches. Control-mode
+snapshot neither prunes nor marks. Outcomes already finished when a host's record
+first observes an error-free snapshot count as seen. Seen is not persisted across launches. Control-mode
 %program-status lines remain unrecognized and unused; Ghostty is unchanged.
 The sidebar is visible by default; it does not automatically collapse
 at narrow widths.
