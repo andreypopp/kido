@@ -168,7 +168,7 @@ Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
 Discovery decodes the server's protocol stamp, not its build ID. The required
-protocol is exactly 2.1 at discovery and RPC hello; both major and minor
+protocol is exactly 3.0 at discovery and RPC hello; both major and minor
 must match. Discovery checks both the binary and creating-server stamp.
 Mismatches block the affected window with a native alert sheet; Close leaves
 a disconnected, read-only view with Reconnect to check again. For every local mismatch, the sheet includes the warning
@@ -692,7 +692,12 @@ banner as discovery, without automatic retry. Filters are JSON requests and
 window and session navigation use numbered RPC requests. Replies can interleave with
 snapshots and arrive out of order; pending callbacks live on the feed reader
 queue and complete once, including failure when the connection ends or restarts.
-The app decodes unknown enum values as unknown and v2 snapshots only:
+The app decodes v2 snapshots of protocol 3.0 only. Pane items carry a plain
+`title`, a typed `lifecycle` (Live pane kind with its agent or shell status,
+or Ended with a run result) and the raw `program_status`; their variants,
+null rules and percentages are enforced, and a malformed snapshot restarts
+the feed. Only the raw-record and run string enums decode unknown values as
+unknown. Every snapshot carries the tmux `server_instance`;
 sessions are source-list sections,
 window groups contain panes, and pane items can contain arbitrarily deep
 hoisted child windows. A node's identity is scoped to its session; linked
@@ -729,7 +734,7 @@ WindowTabs paints no background of its own, preserving the native sidebar shadow
 
 Tabs project the current session's top-level windows from the
 unfiltered feed; descendant windows activate their ancestor tab. Each title
-is the raw feed label of that window's active pane, falling back to the
+is the composed label of that window's active pane, falling back to the
 tmux window name until its feed label arrives. WindowView's active pane,
 read from tmux layouts and `%window-pane-changed`, is shared with terminal
 focus. Status dots summarize the window and its descendants.
@@ -743,9 +748,8 @@ Each pane's child-window trees immediately follow that pane, before its
 next sibling; drawn order and navigation share the row-model traversal.
 OSC 7501 non-root records follow their pane before its child windows, ordered
 by slash components in UTF-8 byte order. Static-text rows use the title (or
-full id), message caption and state indicator; they are never navigation or
-filter targets. Done/error indicators are acknowledged per pane serial when
-visited, returning on newer serials. Rows are 24/39pt with 4pt padding,
+full id), message caption and raw state indicator; they are never navigation or
+filter targets, and visits never acknowledge them. Rows are 24/39pt with 4pt padding,
 11pt secondary titles (16pt line box), 10pt secondary captions (14pt line
 box, 1pt gap), no icon or clock, and 12pt indent per slash component from
 the owning pane title. They share the owning window's fill and status axis.
@@ -768,15 +772,28 @@ starts 18.5pt below top-level padding and 17.5pt below nested padding:
 y=25.5/24.5 top-level single/multi, y=22.5/21.5 nested single/multi.
 Its line box is 15pt; activity rows are tuned to their visible text rather
 than equal box padding. Agents and
-agent runs receive a display-only @ prefix, never doubled. Idle shell panes
-(kind shell, no run, resolved idle/done/failed indicator) display secondary-colored
-`Terminal`; other shells, full-screen programs, SSH, and run items keep their labels. Both display
-rules leave raw pane labels and tab/window titles unchanged. Status and
+agent runs receive a display-only @ prefix, never doubled. Idle local shell panes
+(Live Terminal at a known Idle prompt, no run, idle/done/failed indicator) display secondary-colored
+`Terminal`; an Unknown phase, full-screen programs, SSH, and run items keep their labels. Both display
+rules leave raw pane labels and tab/window titles unchanged.
+
+The app composes what kido no longer sends. The label is the wire title,
+except that a local shell without a program report and not in a run shows a
+non-empty running non-fullscreen command, and a remote terminal shows
+`ssh user@host`, adding `: command` only for an interactive, report-free,
+non-fullscreen running command. The caption is the agent's or report's `msg`
+and progress percentage, joined by a space; Ended rows show their result
+(none for unknown). A run's start metadata drives the clock even when a
+caption is shown. The indicator comes from the agent state
+(running, waiting, stalled, idle with an outcome), else for shells: a live
+run without a report is running, a report wins over the phase (fullscreen
+included), otherwise fullscreen has none, Unknown has none, Running is running and Idle shows its last command
+exit. Ended completed is done, failed and died are errors, stopped and
+unknown are quiet. Status and
 10pt tabular clocks remain trailing; the status and header plus centers are
 15pt from the right edge. Idle has no glyph, running/compacting a green dot,
 waiting rows of any kind an orange dot, failures a red dot, done/completed a green
-checkmark and stalled a red exclamation. Attention navigation remains
-independent of these visual statuses.
+checkmark and stalled a red exclamation.
 
 Each item has 3pt bottom spacing; each child collection adds another 3pt,
 and each session adds 16pt. A 7pt separator (3pt, 1pt line, 3pt) appears only
@@ -797,14 +814,14 @@ The search and single-line, truncating diagnostic sit above the table;
 the full diagnostic is available in its tooltip. The search field
 is the one store of the query and survives helper restarts. Filtering is
 client-side, using kido's ASCII fuzzy score over session names, recursively
-collected agent-title spans and ssh host spans. Matches retain whole sessions;
+collected agent and agent-run titles and every ssh row's typed `user@host` (a remote agent matches on its title too). Matches retain whole sessions;
 no matches displays “No matches”. Tabs always consume the full snapshot. Jump failures leave the filter and focus intact; a
 successful jump clears it and returns focus to the pane. External tmux
 switches update selection without taking keyboard focus.
 
 The toolbar and Shift-Command-S toggle the sidebar; the View menu's
 Show/Hide title follows its collapsed state. Focus Sidebar uses
-Command-S. Control-Command-F enters full screen. Control-Command-N (Shift for previous) walks attention;
+Command-S. Control-Command-F enters full screen.
 Command-{/} and Ghostty previous/next tab use RPC switch-window; there are
 no Control-Command-J/K shortcuts. Nested windows step among direct siblings,
 prev from the first child selects its parent, and next from the last child
@@ -818,7 +835,7 @@ header plus creates a window after that session's current window via new-window.
 Command-T sends new-window with the current window id; the server inserts
 immediately after it using its active pane's cwd. Numbered and last tabs use
 select-window; absolute sessions use select-session. In the table, arrows and j/k
-move pane-only selection, n/N jump to attention, Return activates with exactly one
+move pane-only selection, Return activates with exactly one
 RPC jump, Escape releases side focus via RPC and returns to the pane, and /
 searches. Left/Right do nothing; headers do not activate or fold. Search Enter
 activates once, including while its reply is delayed. Only correlated success
@@ -831,9 +848,23 @@ topology. Pending requests fail once on disconnect and are never replayed.
 Replies do not synthesize topology.
 
 Snapshots require asks and every pane's program_status. Asks are decoded only;
-there is no ask UI. Indicator, title, tail and attention come from the resolved
-snapshot fields, not re-derived from raw program records. Waiting propagates
-to tab dots for all row kinds; error still outranks attention. Control-mode
+there is no ask UI. Pane indicators come from the typed lifecycle, never
+re-derived from raw program records. A tab's dot summarizes its window and
+descendants' row statuses: red for any error (including an unseen failed
+outcome, command exits too), else orange for any waiting row.
+
+Kido does not acknowledge anything: the app owns seen. One app-wide record,
+keyed by host, holds per pane and outcome source (agent, program report,
+shell command) the identity of the last outcome shown: the pane serial for
+agent and report outcomes, the command's start and end seconds for an exit.
+An outcome whose identity matches is seen and drawn quiet; an unseen success
+draws a checkmark and an unseen failure red until then. A window is attended
+while the app is active and the window is key, not minimized and visible;
+on every snapshot and whenever it becomes attended, its client's active pane's
+current outcomes are marked seen. Every window of the host redraws its rows
+and tab dots from the shared record. A changed `server_instance` drops the
+host's entries; a successful snapshot prunes absent panes, while an error
+snapshot neither prunes nor marks. Nothing is persisted across launches. Control-mode
 %program-status lines remain unrecognized and unused; Ghostty is unchanged.
 The sidebar is visible by default; it does not automatically collapse
 at narrow widths.

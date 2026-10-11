@@ -293,9 +293,31 @@ import TmuxControl
         }
     }
 
+    func testSeenIsSharedAcrossSameHostWindows() throws {
+        let board = NSPasteboard(name: .init("kido-seen-test-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let host = Kido.Host.remote("seen-\(UUID().uuidString.prefix(8))")
+        let publisher = WindowOwner(host: host, runtime: runtime, start: false)
+        let peer = WindowOwner(host: host, runtime: runtime, start: false)
+        let other = WindowOwner(host: .remote("other-\(UUID().uuidString.prefix(8))"), runtime: runtime, start: false)
+        defer { [publisher, peer, other].forEach { $0.close() } }
+        let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
+        {"v":2,"asks":[],"client":{"session":"$0","window":"@1","pane":"%1"},"server_instance":{"started_at":1791000000,"pid":4242},"error":null,"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"agent","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791000000,"msg":null,"state":["Idle",{"outcome":{"serial":3,"result":"failure"}}]}}]],"program_status":{"serial":3,"records":[]},"run":null,"started":null,"children":[]}]}]}
+        """.utf8))
+        func status(_ owner: WindowOwner) -> SidebarRow.Status? { owner.sidebar.list.visualRows.first { $0.target != nil }?.status }
+        for owner in [peer, other] { owner.testReceive(snapshot) }
+        XCTAssertEqual([peer, other].map(status), [.error, .error], "unattended windows leave the outcome unseen")
+        publisher.testAttended = true
+        publisher.testReceive(snapshot)
+        XCTAssertEqual(status(publisher), .quiet, "the attended window marks its active pane's outcome seen")
+        XCTAssertEqual(status(peer), .quiet, "a same-host window redraws from the shared seen record")
+        XCTAssertEqual(status(other), .error, "another host's seen record is separate")
+    }
+
     func testOrphanedTab() throws {
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
-        {"v":2,"asks":[],"client":{"session":"$0","window":"@1","pane":"%1"},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"shell","id":"%0","pane":"%0","window":"@0","program_status":{"serial":0,"records":[]},"title":[],"tail":[],"attention":false,"children":[{"kind":"run","id":"%1","pane":"%1","window":"@1","program_status":{"serial":0,"records":[]},"title":[],"tail":[],"attention":false,"children":[]}]}]}]}
+        {"v":2,"asks":[],"client":{"session":"$0","window":"@1","pane":"%1"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"pane","id":"%0","pane":"%0","window":"@0","title":"","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"bash","started":null,"children":[]}]}]}]}
         """.utf8))
         let model = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 1), name: "Child")], window: WindowID(number: 1))
         XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id), [WindowID(number: 1)], "orphan child must retain a tab")
