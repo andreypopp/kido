@@ -9,8 +9,8 @@ public struct SidebarRow: Equatable, Sendable {
         }
     }
     public enum Status: Equatable, Sendable {
-        case quiet, running, attention, error, done, stalled
-        public var tabStatus: Self { self == .error || self == .attention ? self : .quiet }
+        case quiet, running, waiting, error, done, stalled
+        public var tabStatus: Self { self == .error || self == .waiting ? self : .quiet }
     }
     public enum Kind: Equatable, Sendable {
         case header, pane(Snapshot.Position), program(depth: Int), divider, gap
@@ -29,7 +29,6 @@ public struct SidebarRow: Equatable, Sendable {
     public let tail: String
     public let status: Status
     public var indicatorDescription = ""
-    public let attention: Bool
     public let started: Date?
     public let focused: Bool
     public var windows: [WindowSlice] = []
@@ -54,61 +53,159 @@ public struct SidebarRow: Equatable, Sendable {
     }
 }
 
+enum OutcomeSource: Hashable, Sendable { case agent, report, command }
+
+enum OutcomeIdentity: Hashable, Sendable {
+    case serial(Int)
+    case command(started: Date, ended: Date)
+}
+
+public struct SidebarSeen: Equatable, Sendable {
+    private var instance: ServerInstance?
+    private var outcomes: [PaneID: [OutcomeSource: OutcomeIdentity]] = [:]
+
+    public init() {}
+
+    func contains(_ pane: PaneID, _ source: OutcomeSource, _ identity: OutcomeIdentity) -> Bool {
+        outcomes[pane]?[source] == identity
+    }
+
+    public mutating func observe(_ snapshot: Snapshot, attended: Bool) {
+        if instance != snapshot.serverInstance { self = Self(); instance = snapshot.serverInstance }
+        guard snapshot.error == nil, attended || !outcomes.isEmpty else { return }
+        var present: Set<PaneID> = [], client: Item?
+        func visit(_ node: Node) {
+            if case .item(let item) = node {
+                if outcomes[item.pane] != nil { present.insert(item.pane) }
+                if item.pane == snapshot.client.pane { client = item }
+            }
+            node.children.forEach(visit)
+        }
+        for session in snapshot.sessions { session.nodes.forEach(visit) }
+        for pane in outcomes.keys where !present.contains(pane) { outcomes[pane] = nil }
+        guard attended, let client else { return }
+        for outcome in client.outcomes { outcomes[client.pane, default: [:]][outcome.source] = outcome.identity }
+    }
+}
+
 extension Item {
-    var label: String { title.map(\.text).joined() }
+    var agent: AgentStatus? {
+        switch lifecycle {
+        case .live(.someAgent(_, let status)), .live(.piAgent(_, let status)), .live(.ssh(_, .agent(_, let status))): status
+        default: nil
+        }
+    }
 
-    var status: SidebarRow.Status {
-        switch indicator {
-        case .failed, .gone(.failed), .gone(.died): .error
-        case .waiting: .attention
-        case .stalled: .stalled
-        case .done, .gone(.completed): .done
-        case .running, .compacting: .running
-        default: .quiet
+    var shell: ShellStatus? {
+        switch lifecycle {
+        case .live(.terminal(let status)), .live(.ssh(_, .terminal(_, let status))): status
+        default: nil
+        }
+    }
+
+    var outcomes: [(source: OutcomeSource, identity: OutcomeIdentity, failed: Bool)] {
+        var outcomes: [(source: OutcomeSource, identity: OutcomeIdentity, failed: Bool)] = []
+        if case .idle(let outcome?) = agent?.state { outcomes.append((.agent, .serial(outcome.serial), outcome.result == .failure)) }
+        if case .idle(let outcome?) = shell?.report?.state { outcomes.append((.report, .serial(outcome.serial), outcome.result == .failure)) }
+        if run == nil, case .idle(let exit?) = shell?.phase {
+            outcomes.append((.command, .command(started: exit.startedAt, ended: exit.endedAt), exit.code != 0))
+        }
+        return outcomes
+    }
+
+    var label: String {
+        switch lifecycle {
+        case .live(.terminal(let status)) where status.report == nil && run == nil:
+            if case .running(let command?, fullscreen: false) = status.phase, !command.command.isEmpty { return command.command }
+            return title
+        case .live(.ssh(let destination, .terminal(let interactive, let status))):
+            if status.report == nil, interactive, case .running(let command?, fullscreen: false) = status.phase, !command.command.isEmpty {
+                return "ssh \(destination): \(command.command)"
+            }
+            return "ssh \(destination)"
+        default: return title
+        }
+    }
+
+    var searchTitles: [String] {
+        switch lifecycle {
+        case .live(.ssh(let destination, .terminal)): [destination.description]
+        case .live(.ssh(let destination, .agent)): [title, destination.description]
+        case .live(.terminal): []
+        case .live: [title]
+        case .ended: run == .agent ? [title] : []
+        }
+    }
+
+    var caption: String {
+        func compose(_ msg: String?, _ progress: Int?) -> String {
+            [msg ?? "", progress.map { "\($0)%" } ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
+        }
+        if case .ended(let result) = lifecycle { return result == .unknown ? "" : result.rawValue }
+        if let agent {
+            switch agent.state {
+            case .running(let progress), .waiting(_, let progress): return compose(agent.msg, progress)
+            case .stalled, .idle: return compose(agent.msg, nil)
+            }
+        }
+        guard let report = shell?.report else { return "" }
+        switch report.state {
+        case .running(let progress), .waiting(_, let progress): return compose(report.msg, progress)
+        case .idle: return compose(report.msg, nil)
+        }
+    }
+
+    func indicator(_ seen: SidebarSeen) -> (status: SidebarRow.Status, description: String) {
+        func outcome(_ source: OutcomeSource) -> (SidebarRow.Status, String) {
+            guard let outcome = outcomes.first(where: { $0.source == source }), !seen.contains(pane, source, outcome.identity) else { return (.quiet, "idle") }
+            return outcome.failed ? (.error, "failed") : (.done, "done")
+        }
+        if case .ended(let result) = lifecycle {
+            let status: SidebarRow.Status = switch result {
+            case .completed: .done
+            case .failed, .died: .error
+            case .stopped, .unknown: .quiet
+            }
+            return (status, result == .unknown ? "gone" : "gone, " + result.rawValue)
+        }
+        if let agent {
+            switch agent.state {
+            case .running: return (.running, "running")
+            case .waiting: return (.waiting, "waiting")
+            case .stalled: return (.stalled, "stalled")
+            case .idle: return outcome(.agent)
+            }
+        }
+        guard let shell else { return (.quiet, "") }
+        if shell.report == nil, run != nil { return (.running, "running") }
+        if let report = shell.report {
+            switch report.state {
+            case .running: return (.running, "running")
+            case .waiting: return (.waiting, "waiting")
+            case .idle: return outcome(.report)
+            }
+        }
+        if case .running(_, fullscreen: true) = shell.phase { return (.quiet, "") }
+        switch shell.phase {
+        case .unknown: return (.quiet, "")
+        case .running: return (.running, "running")
+        case .idle: return outcome(.command)
         }
     }
 }
 
-public func sidebarTarget(_ snapshot: Snapshot?, selected: Snapshot.Position? = nil, attention delta: Int? = nil) -> Snapshot.Position? {
-    guard let snapshot else { return nil }
-    let targets = sidebarRows(snapshot).compactMap { row in row.target.map { ($0, row.attention) } }
-    guard let delta else { return targets.first?.0 }
-    guard !targets.isEmpty else { return nil }
-    var index = targets.firstIndex { $0.0 == selected } ?? (delta > 0 ? -1 : 0)
-    for _ in targets {
-        index = (index + delta + targets.count) % targets.count
-        if targets[index].1 { return targets[index].0 }
-    }
-    return nil
-}
-
-public func sidebarProgramSeen(_ snapshot: Snapshot?, previous: [PaneID: Int]) -> [PaneID: Int] {
-    guard let snapshot else { return previous }
-    var seen: [PaneID: Int] = [:]
-    func visit(_ node: Node, session: SessionID) {
-        if case .item(let item) = node {
-            if session == snapshot.client.session && item.pane == snapshot.client.pane {
-                seen[item.pane] = item.program_status.serial
-            } else if seen[item.pane] == nil { seen[item.pane] = previous[item.pane] }
-        }
-        for child in node.children { visit(child, session: session) }
-    }
-    for session in snapshot.sessions { for node in session.nodes { visit(node, session: session.id) } }
-    return seen
-}
-
-public func sidebarRows(_ snapshot: Snapshot?, programSeen: [PaneID: Int] = [:]) -> [SidebarRow] {
+public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()) -> [SidebarRow] {
     guard let snapshot else { return [] }
     var rows: [SidebarRow] = []
     for session in snapshot.sessions {
         rows.append(SidebarRow(id: .header(session.id), kind: .header, indent: 0, height: 29,
-                               title: session.name, tail: "", status: .quiet, attention: false, started: nil, focused: false))
+                               title: session.name, tail: "", status: .quiet, started: nil, focused: false))
         var y = 0.0
         func windows(_ nodes: [Node], depth: Int) {
             for (index, node) in nodes.enumerated() {
                 if depth == 0 && index > 0 {
                     rows.append(SidebarRow(id: .divider(session.id, node.id), kind: .divider, indent: depth, height: 7,
-                                           title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
+                                           title: "", tail: "", status: .quiet, started: nil, focused: false))
                     y += 7
                 }
                 let start = rows.count
@@ -116,22 +213,18 @@ public func sidebarRows(_ snapshot: Snapshot?, programSeen: [PaneID: Int] = [:])
                 let panes: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
                 let multiPane = panes.count > 1
                 for item in panes {
-                    let description: String = switch item.indicator {
-                    case .gone(let outcome): "gone" + (outcome.map { ", " + $0.rawValue } ?? "")
-                    case .some(let indicator): String(describing: indicator)
-                    case nil: ""
-                    }
+                    let (status, description) = item.indicator(seen)
                     let target = Snapshot.Position(session: session.id, window: item.window, pane: item.pane)
-                    let tail = item.tail.map(\.text).joined()
-                    let agent = item.kind == .agent || item.run == .agent
+                    let tail = item.caption
+                    let agent = item.run == .agent || item.agent != nil
                     let label = item.label
-                    let quietShell = item.kind == .shell && item.run == nil && (item.indicator == .idle || item.indicator == .done || item.indicator == .failed)
+                    let quietShell = if case .live(.terminal(let shell)) = item.lifecycle, case .idle = shell.phase { item.run == nil && [.quiet, .done, .error].contains(status) } else { false }
                     let height = (tail.isEmpty ? 32.0 : 44.0) - (depth == 0 ? 0 : 4) - (multiPane ? 2 : 0)
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: height,
                                            title: quietShell ? "Terminal" : agent && !label.hasPrefix("@") ? "@" + label : label,
-                                           tail: tail, status: item.status, indicatorDescription: description,
-                                           attention: item.attention, started: item.run == nil ? nil : item.started,
+                                           tail: tail, status: status, indicatorDescription: description,
+                                           started: item.started,
                                            focused: target == snapshot.client,
                                            multiPane: multiPane, quietShell: quietShell,
                                            icon: agent ? .agent : .terminal))
@@ -145,12 +238,11 @@ public func sidebarRows(_ snapshot: Snapshot?, programSeen: [PaneID: Int] = [:])
                         return left.count < right.count
                     }
                     for record in records {
-                        let seen = (programSeen[item.pane] ?? -1) >= item.program_status.serial
                         let status: SidebarRow.Status = switch record.state {
                         case .working: .running
-                        case .blocked: .attention
-                        case .done: seen ? .quiet : .done
-                        case .error: seen ? .quiet : .error
+                        case .blocked: .waiting
+                        case .done: .done
+                        case .error: .error
                         case .idle, .unknown: .quiet
                         }
                         let caption = record.msg ?? ""
@@ -160,14 +252,14 @@ public func sidebarRows(_ snapshot: Snapshot?, programSeen: [PaneID: Int] = [:])
                                                indent: depth, height: height,
                                                title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
                                                tail: caption, status: status,
-                                               indicatorDescription: seen && (record.state == .done || record.state == .error) ? "idle" : record.state.rawValue,
-                                               attention: false, started: nil, focused: false))
+                                               indicatorDescription: record.state.rawValue,
+                                               started: nil, focused: false))
                         y += height
                     }
                     if !item.children.isEmpty {
                         windows(item.children, depth: depth + 1)
                         rows.append(SidebarRow(id: .spacing(session.id, "children:" + item.id.description), kind: .gap, indent: depth + 1, height: 3,
-                                               title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
+                                               title: "", tail: "", status: .quiet, started: nil, focused: false))
                         y += 3
                     }
                 }
@@ -180,13 +272,13 @@ public func sidebarRows(_ snapshot: Snapshot?, programSeen: [PaneID: Int] = [:])
                     offset += rows[index].height
                 }
                 rows.append(SidebarRow(id: .spacing(session.id, "window:" + node.id), kind: .gap, indent: depth, height: 3,
-                                       title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
+                                       title: "", tail: "", status: .quiet, started: nil, focused: false))
                 y += 3
             }
         }
         windows(session.nodes, depth: 0)
         rows.append(SidebarRow(id: .gap(session.id), kind: .gap, indent: 0, height: 16,
-                               title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
+                               title: "", tail: "", status: .quiet, started: nil, focused: false))
     }
     for index in rows.indices { rows[index].windows.reverse() }
     return rows
