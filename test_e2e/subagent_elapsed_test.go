@@ -34,7 +34,7 @@ func TestSubagentRowShowsElapsedUnlessActivity(t *testing.T) {
 		}
 		for _, r := range feedItems(s.Sessions[0].Nodes) {
 			if r.Pane != nil && *r.Pane == pane {
-				return r.Started != nil && len(r.Tail) == 0
+				return r.Started != nil && r.caption() == ""
 			}
 		}
 		return false
@@ -59,9 +59,9 @@ func TestSubagentRowShowsElapsedUnlessActivity(t *testing.T) {
 			for _, r := range feedItems(s.Sessions[0].Nodes) {
 				if r.Pane != nil && *r.Pane == pane {
 					if activity == "" {
-						return r.Started != nil && *r.Started == start && len(r.Tail) == 0
+						return r.Started != nil && *r.Started == start && r.caption() == ""
 					}
-					return r.Started != nil && *r.Started == start && len(r.Tail) == 1 && r.Tail[0].Text == activity
+					return r.Started != nil && *r.Started == start && r.caption() == activity
 				}
 			}
 			return false

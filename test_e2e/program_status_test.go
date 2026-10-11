@@ -28,26 +28,29 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	emit("state=working:app=builder:title=QnVpbGQ:msg=UGxhbg")
 	h.waitRow("◼Build Plan")
 	f := h.startFeed("status")
-	find := func(s feedSnapshot) (feedRow, bool) {
-		for _, session := range s.Sessions {
-			for _, row := range feedItems(session.Nodes) {
-				if row.ID == pane {
-					return row, true
-				}
-			}
+	// report is the shell report's state, "Idle:success" or "Idle:failure" with an outcome,
+	// "none" for no report, or "" for any.
+	report := func(r feedRow) string {
+		rep := r.Lifecycle.Shell.Report
+		switch {
+		case rep == nil:
+			return "none"
+		case rep.Outcome != nil:
+			return rep.State + ":" + feedValue(rep.Outcome.Result)
 		}
-		return feedRow{}, false
+		return rep.State
 	}
-	wait := func(state, indicator string, count int) feedRow {
+	wait := func(state, want string, count int) feedRow {
 		t.Helper()
 		s := f.waitLast(func(s feedSnapshot) bool {
-			r, ok := find(s)
-			return ok && r.Kind == "shell" && len(r.ProgramStatus.Records) == count && (count == 0 || r.ProgramStatus.Records[0].State == state) && (indicator == "" || r.Indicator != nil && r.Indicator.Kind == indicator)
-		}, "program status "+state+" "+indicator)
-		r, _ := find(s)
+			r, ok := feedRowFor(s, pane)
+			return ok && r.isShell() && len(r.ProgramStatus.Records) == count && (count == 0 || r.ProgramStatus.Records[0].State == state) && (want == "" || report(r) == want)
+		}, "program status "+state+" "+want)
+		r, _ := feedRowFor(s, pane)
 		return r
 	}
-	r := wait("working", "running", 1)
+	outcomeSerial := func(r feedRow) int { return feedValue(r.Lifecycle.Shell.Report.Outcome.Serial) }
+	r := wait("working", "Running", 1)
 	if r.ProgramStatus.Serial == 0 || r.ProgramStatus.Records[0].Title != "Build" || r.ProgramStatus.Records[0].Msg != "Plan" || r.ProgramStatus.Records[0].App != "builder" {
 		t.Fatalf("decoded records: %+v", r.ProgramStatus)
 	}
@@ -57,74 +60,81 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	}
 	emit("long")
 	f.waitLast(func(s feedSnapshot) bool {
-		r, ok := find(s)
+		r, ok := feedRowFor(s, pane)
 		return ok && len(r.ProgramStatus.Records) == 1 && r.ProgramStatus.Records[0].Msg == msg
 	}, "1500-byte program status message")
 	emit("state=blocked:app=builder:title=QnVpbGQ=:msg=UGxhbg==:kind=question")
 	h.waitRow("◆Build Plan")
-	wait("blocked", "waiting", 1)
+	r = wait("blocked", "Waiting", 1)
+	if k := r.Lifecycle.Shell.Report.Kind; k == nil || *k != "question" {
+		t.Fatalf("blocked kind: %s", f.last().raw)
+	}
 	emit("state=working:app=builder:title=QnVpbGQ=")
-	wait("working", "running", 1)
+	wait("working", "Running", 1)
 	emit("id=child:state=blocked:title=Q2hpbGQ=:msg=RGVjaWRl:kind=auth:progress=42")
 	h.waitRow("◆Child Decide 42%")
-	r = wait("working", "waiting", 2)
+	r = wait("working", "Waiting", 2)
 	child := r.ProgramStatus.Records[1]
 	if child.ID != "child" || child.Kind != "auth" || child.Progress == nil || *child.Progress != 42 || child.App != "" {
 		t.Fatalf("child record: %+v", child)
 	}
+	// A child's error while the root still works is a pending outcome: the report runs.
 	emit("id=child:state=error:title=Q2hpbGQ=:msg=RGVjaWRl")
-	wait("working", "failed", 2)
+	wait("working", "Running", 2)
 	window := h.in("display-message", "-p", "-t", pane, "#{window_id}")
 	h.in("switch-client", "-c", h.client, "-t", window)
-	r = wait("working", "running", 2)
-	if len(r.Title) != 1 || r.Title[0].Text != "Build" {
-		t.Fatalf("acknowledged child hid working root: %+v", r)
+	r = wait("working", "Running", 2)
+	if r.Title != "Build" {
+		t.Fatalf("the child's error hid the working root's title: %+v", r)
 	}
 	h.waitRow("◼Build")
 	h.in("switch-client", "-c", h.client, "-t", "status:0")
 	f.waitLast(func(s feedSnapshot) bool { return s.Client.Pane != pane }, "leave working sibling")
 	emit("id=child:state=error:title=Q2hpbGQ=:msg=RGVjaWRl")
-	wait("working", "failed", 2)
+	wait("working", "Running", 2)
 	emit("id=child:state=clear")
-	wait("working", "running", 1)
+	wait("working", "Running", 1)
+	// The pending error survives the empty record set once nothing works.
 	emit("state=clear")
-	wait("", "", 0)
+	wait("", "Idle:failure", 0)
 	h.waitFor(func() bool { return !hasLine(h.rows(), "Build") }, settle, msgf("cleared sidebar"))
 	emit("state=working:app=builder:title=QnVpbGQ=")
-	wait("working", "running", 1)
+	wait("working", "Running", 1)
 	emit("prompt")
-	wait("", "", 0)
+	wait("", "none", 0)
 	emit("state=done:app=builder:title=QnVpbGQ=:msg=UGxhbg==")
 	h.waitRow("✓Build Plan")
-	r = wait("done", "done", 1)
-	serial := r.ProgramStatus.Serial
+	r = wait("done", "Idle:success", 1)
+	serial, raw := outcomeSerial(r), r.ProgramStatus.Serial
+	// A visit acknowledges in the TUI only; the feed keeps the outcome.
 	h.in("switch-client", "-c", h.client, "-t", window)
 	h.waitRow("╶ Build Plan")
-	wait("done", "idle", 1)
-	h.in("switch-client", "-c", f.client, "-t", "status:0")
+	wait("done", "Idle:success", 1)
 	h.in("switch-client", "-c", h.client, "-t", "status:0")
-	f.waitLast(func(s feedSnapshot) bool { return s.Client.Pane != pane }, "leave program")
+	// Re-reporting an unchanged done is not a new outcome: its serial and the TUI's seen state hold.
 	emit("state=done:app=builder:title=QnVpbGQ=:msg=UGxhbg==")
-	r = wait("done", "done", 1)
-	if r.ProgramStatus.Serial <= serial {
-		t.Fatal("fresh completion did not advance serial")
+	r, _ = feedRowFor(f.waitLast(func(s feedSnapshot) bool {
+		r, ok := feedRowFor(s, pane)
+		return ok && r.ProgramStatus.Serial > raw
+	}, "the re-reported done's raw serial"), pane)
+	if report(r) != "Idle:success" || outcomeSerial(r) != serial {
+		t.Fatalf("an unchanged done re-armed: %+v", r.Lifecycle.Shell.Report.Outcome)
 	}
-	h.waitRow("✓Build Plan")
+	h.waitRow("╶ Build Plan")
 	emit("state=error:app=builder:title=QnVpbGQ=:msg=UGxhbg==")
-	wait("error", "failed", 1)
+	r = wait("error", "Idle:failure", 1)
+	if outcomeSerial(r) <= serial {
+		t.Fatal("done -> error did not advance the outcome serial")
+	}
 	h.waitRow("◼Build Plan")
 	h.in("switch-client", "-c", h.client, "-t", window)
-	wait("error", "idle", 1)
 	h.waitRow("╶ Build Plan")
+	wait("error", "Idle:failure", 1)
 	h.in("switch-client", "-c", h.client, "-t", "status:0")
-	f.waitLast(func(s feedSnapshot) bool { return s.Client.Pane != pane }, "leave error")
 	emit("state=done:app=builder:title=QnVpbGQ=:msg=UGxhbg==")
-	r = wait("done", "done", 1)
-	serial = r.ProgramStatus.Serial
-	h.in("switch-client", "-c", h.client, "-t", window)
-	wait("done", "idle", 1)
-	h.in("switch-client", "-c", h.client, "-t", "status:0")
-	f.waitLast(func(s feedSnapshot) bool { return s.Client.Pane != pane }, "leave acknowledged completion")
+	r = wait("done", "Idle:success", 1)
+	serial = outcomeSerial(r)
+	h.waitRow("✓Build Plan")
 	killed := ""
 	for _, pid := range controlClientPIDs(h.inner) {
 		parent, err := exec.Command("ps", "-o", "ppid=", "-p", pid).Output()
@@ -160,24 +170,26 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	f.mu.Unlock()
 	h.in("rename-session", "-t", "status", "reconnected")
 	f.waitLast(func(s feedSnapshot) bool {
-		r, ok := find(s)
-		return ok && len(s.Sessions) == 1 && s.Sessions[0].Name == "reconnected" && len(r.ProgramStatus.Records) == 1 && r.ProgramStatus.Serial == serial && r.Indicator != nil && r.Indicator.Kind == "idle"
-	}, "acknowledged serial stays suppressed after reconnect")
+		r, ok := feedRowFor(s, pane)
+		return ok && len(s.Sessions) == 1 && s.Sessions[0].Name == "reconnected" && len(r.ProgramStatus.Records) == 1 && report(r) == "Idle:success" && outcomeSerial(r) == serial
+	}, "the same server keeps the outcome's serial across a control reconnect")
+	emit("state=error:app=builder:title=QnVpbGQ=:msg=UGxhbg==")
+	wait("error", "Idle:failure", 1)
 	emit("state=done:app=builder:title=QnVpbGQ=:msg=UGxhbg==")
-	r = wait("done", "done", 1)
-	if r.ProgramStatus.Serial <= serial {
-		t.Fatal("newer serial did not rearm after reconnect")
+	r = wait("done", "Idle:success", 1)
+	if outcomeSerial(r) <= serial {
+		t.Fatal("a new outcome after reconnect kept the old serial")
 	}
 	if out, rc := h.kidoAs(pane, "", nil, "agent-status", "--agent", "pi", "--session", "status-agent"); rc != 0 {
 		t.Fatalf("identity: %d %s", rc, out)
 	}
 	h.waitRow("✓Build Plan")
-	r = wait("done", "done", 1)
-	if len(r.Title) != 1 || r.Title[0].Text != "Build" {
+	r = wait("done", "Idle:success", 1)
+	if r.Title != "Build" {
 		t.Fatalf("terminal precedence: %+v", r)
 	}
 	h.agentStatus("status-agent", pane, "pi", "--remove")
 	h.waitRow("✓Build Plan")
 	h.in("kill-pane", "-t", pane)
-	f.waitLast(func(s feedSnapshot) bool { _, ok := find(s); return !ok }, "pane records removed")
+	f.waitLast(func(s feedSnapshot) bool { _, ok := feedRowFor(s, pane); return !ok }, "pane records removed")
 }

@@ -1,7 +1,5 @@
-type status = Running | Waiting | Idle
 type agent = Pi | Other of string
 
-let string_of_status = function Running -> "running" | Waiting -> "waiting" | Idle -> "idle"
 let agent_of_string = function "pi" -> Pi | s -> Other s
 let string_of_agent = function Pi -> "pi" | Other s -> s
 let yojson_of_agent a = `String (string_of_agent a)

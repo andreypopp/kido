@@ -24,6 +24,7 @@ type ask_target = Live of Tmux.pane_id | Revivable | Unavailable
 type ask = { ask : Ask.t; target : ask_target }
 
 type snapshot = {
+  server : (int * Tmux_pane.server) option;
   client : Tmux_pane.client_state option;
   active : Tmux.pane_id option;
   panes : Tmux_pane.t list;
@@ -41,59 +42,32 @@ val lingering_subagents :
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
-type role = [ `Plain | `Proc | `Dim ]
-type span = { text : string; role : role }
+type run = { kind : Subrun.kind; started : Timestamp.t }
 
-type indicator =
-  | Status of State.status
-  | Unknown
-  | Done
-  | Failed
-  | Stalled
-  | Gone of Subrun.result option
+type lifecycle =
+  | Live of { status : Pane_status.kind; run : run option }
+  | Ended of { result : Subrun.result option; run : Subrun.kind }
 
-type caption = Text of span list | Elapsed of float
-type row_kind = Agent | Run | Ssh | Shell
-type run = { kind : Subrun.kind; started : Timestamp.t option }
-
-type row = {
-  pane : Tmux.pane_id;
-  window : Tmux.window_id;
-  kind : row_kind;
-  indicator : indicator option;
-  title : span list;
-  caption : caption;
-  run : run option;
-}
+type row = { pane : Tmux.pane_id; window : Tmux.window_id; title : string; lifecycle : lifecycle }
 
 type node = Group of { name : string; first : item; rest : item list } | Item of item
 and item = { row : row; children : node list }
 
 type section = { id : Tmux.session_id; name : string; current : bool; nodes : node list }
-type phase = { running : bool; since : float; drawn : bool; held : Tmux_pane.exit option }
+type pane = { pane : Tmux_pane.t; track : Pane_status.track; status : Pane_status.kind }
 
 type model = {
   opts : options;
   snap : snapshot;
   sessions : section list;
-  pane_data : (Tmux_pane.t * State.pane_kind) Tmux.Pane_map.t;
+  pane_data : pane Tmux.Pane_map.t;
   client : client option;
-  started : float;
-  seen : float Tmux.Pane_map.t;
-  program_seen : int Tmux.Pane_map.t;
-  phases : phase Tmux.Pane_map.t;
-  ssh_remote : (string * string) Tmux.Pane_map.t;
   now : unit -> float;
   at : float;
   clock : reading;
 }
 
 val make : now:(unit -> float) -> options -> model
-
-val program_indicator :
-  model -> Tmux.pane_id -> Tmux.Program_status.t -> Tmux.Program_status.record -> indicator
-
-val attention : model -> Tmux.pane_id -> bool
 val poll : ?wait:float -> opts:options -> Tmux.Client.t -> snapshot -> snapshot
 val step : model -> snapshot -> model * bool
 

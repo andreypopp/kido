@@ -25,7 +25,7 @@ func TestPiCoordinationSurvivesRootReplacement(t *testing.T) {
 				for _, session := range s.Sessions {
 					for _, row := range feedItems(session.Nodes) {
 						if row.Pane != nil && *row.Pane == child {
-							return row.Kind == "shell"
+							return row.isShell()
 						}
 					}
 				}

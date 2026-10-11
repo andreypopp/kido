@@ -16,27 +16,17 @@ import (
 	"time"
 )
 
-type feedSpan struct {
-	Text string `json:"text"`
-	Role string `json:"role"`
-}
-
 type feedRow struct {
-	Pane      *string   `json:"pane"`
-	Window    *string   `json:"window"`
-	Kind      string    `json:"kind"`
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Children  []feedRow `json:"children"`
-	Indicator *struct {
-		Kind    string  `json:"kind"`
-		Outcome *string `json:"outcome"`
-	} `json:"indicator"`
-	Title         []feedSpan `json:"title"`
-	Tail          []feedSpan `json:"tail"`
-	Started       *float64   `json:"started"`
-	Run           *string    `json:"run"`
-	Attention     bool       `json:"attention"`
+	Pane          *string       `json:"pane"`
+	Window        *string       `json:"window"`
+	Kind          string        `json:"kind"`
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	Children      []feedRow     `json:"children"`
+	Title         string        `json:"title"`
+	Lifecycle     feedLifecycle `json:"lifecycle"`
+	Started       *float64      `json:"started"`
+	Run           *string       `json:"run"`
 	ProgramStatus struct {
 		Serial  int `json:"serial"`
 		Records []struct {
@@ -47,7 +37,11 @@ type feedRow struct {
 }
 
 type feedSnapshot struct {
-	V      int `json:"v"`
+	V              int `json:"v"`
+	ServerInstance struct {
+		StartedAt int `json:"started_at"`
+		Pid       int `json:"pid"`
+	} `json:"server_instance"`
 	Client struct {
 		Session string `json:"session"`
 		Window  string `json:"window"`
@@ -73,34 +67,6 @@ type feedSnapshot struct {
 	raw string
 }
 
-// feedGlyph is the TUI's indicator table (Kido_sidebar.glyph), so a snapshot can be
-// drawn the way the sidebar draws it and compared row for row.
-func feedGlyph(r feedRow) string {
-	if r.Indicator == nil {
-		return " "
-	}
-	switch r.Indicator.Kind {
-	case "running", "failed":
-		return "◼"
-	case "waiting":
-		return "◆"
-	case "idle":
-		return " "
-	case "unknown":
-		return "?"
-	case "done":
-		return "✓"
-	case "stalled":
-		return "!"
-	case "gone":
-		if r.Indicator.Outcome != nil && *r.Indicator.Outcome == "completed" {
-			return "✓"
-		}
-		return "×"
-	}
-	return "<" + r.Indicator.Kind + ">"
-}
-
 // elapsedText is the TUI's elapsed format (Kido_sidebar.elapsed).
 func elapsedText(started float64) string {
 	s := max(0, int(float64(time.Now().UnixNano())/1e9-started))
@@ -117,21 +83,14 @@ func elapsedText(started float64) string {
 // time read from the clock now.
 func (s feedSnapshot) drawn() []string {
 	var out []string
-	text := func(spans []feedSpan) string {
-		var b strings.Builder
-		for _, sp := range spans {
-			b.WriteString(sp.Text)
-		}
-		return b.String()
-	}
 	var draw func(feedRow, string, string, string)
 	var item func(feedRow, string, string)
 	item = func(r feedRow, tree, nested string) {
-		label := text(r.Title)
-		if r.Started != nil {
+		label := feedLabel(r)
+		if caption := r.caption(); caption != "" {
+			label += " " + caption
+		} else if r.Started != nil {
 			label += " " + elapsedText(*r.Started)
-		} else if len(r.Tail) > 0 {
-			label += " " + text(r.Tail)
 		}
 		out = append(out, strings.TrimSpace(tree+feedGlyph(r)+label))
 		for i, child := range r.Children {
@@ -366,14 +325,27 @@ func TestRpcMatchesTheTUI(t *testing.T) {
 	if len(s.Sessions) != 2 || s.Sessions[0].Name != "alpha" || !s.Sessions[0].Current || s.Sessions[1].Current {
 		t.Fatalf("sessions: %s", s.raw)
 	}
+	if s.ServerInstance.StartedAt <= 0 || s.ServerInstance.Pid <= 0 {
+		t.Errorf("server_instance: %s", s.raw)
+	}
+	pair := h.in("display-message", "-p", "#{start_time} #{pid}")
+	if got := fmt.Sprintf("%d %d", s.ServerInstance.StartedAt, s.ServerInstance.Pid); got != pair {
+		t.Errorf("server_instance = %s, want tmux's %s", got, pair)
+	}
+	// Display composition is the frontend's: no item carries a span, tail, indicator or attention.
+	for _, field := range []string{`"tail"`, `"role"`, `"indicator"`, `"attention"`, `"kind":"agent"`, `"kind":"shell"`, `"kind":"run"`} {
+		if strings.Contains(s.raw, field) {
+			t.Errorf("snapshot still sends %s: %s", field, s.raw)
+		}
+	}
 	byTitle := map[string]feedRow{}
 	for _, r := range feedItems(s.Sessions[0].Nodes) {
-		if r.Pane == nil || r.Window == nil || !strings.HasPrefix(*r.Pane, "%") || !strings.HasPrefix(*r.Window, "@") {
+		if r.Pane == nil || r.Window == nil || !strings.HasPrefix(*r.Pane, "%") || !strings.HasPrefix(*r.Window, "@") || r.Kind != "pane" {
 			t.Errorf("row without pane/window ids: %+v", r)
 		}
-		byTitle[r.Title[0].Text] = r
+		byTitle[r.Title] = r
 	}
-	if r := byTitle["slow-e2e"]; r.Indicator == nil || r.Kind != "run" || r.Indicator.Kind != "running" || r.Started == nil || len(r.Tail) != 0 {
+	if r := byTitle["slow-e2e"]; !r.isShell() || r.Run == nil || *r.Run != "bash" || r.Started == nil || r.caption() != "" {
 		t.Errorf("the lingering run's row: %+v in %s", r, s.raw)
 	}
 	for title, r := range byTitle {
@@ -385,12 +357,12 @@ func TestRpcMatchesTheTUI(t *testing.T) {
 	for _, root := range feedItems(s.Sessions[0].Nodes) {
 		for _, r := range feedItems(root.Children) {
 			if *r.Window == childWindow {
-				nested = r.Kind == "agent"
-				if r.Started == nil || len(r.Tail) != 0 {
+				nested = r.isAgent()
+				if r.Started == nil || r.caption() != "" {
 					t.Errorf("the subagent's elapsed caption: %s", s.raw)
 				}
-				if r.Indicator == nil || r.Indicator.Kind != "idle" {
-					t.Errorf("the idle subagent's indicator: %s", s.raw)
+				if !r.isAgent() || r.Lifecycle.Agent.State != "Idle" || r.Lifecycle.Agent.Outcome != nil {
+					t.Errorf("the idle subagent's status: %s", s.raw)
 				}
 			}
 		}
@@ -399,7 +371,7 @@ func TestRpcMatchesTheTUI(t *testing.T) {
 		t.Errorf("the subagent window is not nested under its parent: %s", s.raw)
 	}
 	if g := s.Sessions[1].Nodes; len(g) != 1 || g[0].Kind != "window" || g[0].Name != name || len(g[0].Children) != 2 ||
-		g[0].Children[0].Kind != "shell" || g[0].Children[0].Title[0].Role != "proc" {
+		!g[0].Children[0].isShell() || g[0].Children[0].Run != nil {
 		t.Errorf("beta's two-pane window, named %q: %s", name, s.raw)
 	}
 }
@@ -462,11 +434,11 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 	_, streamPane, streamRun := h.asyncBashIDs([]string{"--stream"}, "feed-stream", "sleep", "300")
 	f := h.startFeed("alpha")
 	for _, c := range []struct {
-		pane, id, kind, run string
+		pane, id, run string
 	}{
-		{agentPane, agentRun, "agent", "agent"},
-		{bashPane, bashRun, "run", "bash"},
-		{streamPane, streamRun, "run", "stream"},
+		{agentPane, agentRun, "agent"},
+		{bashPane, bashRun, "bash"},
+		{streamPane, streamRun, "stream"},
 	} {
 		metaBytes, err := os.ReadFile(filepath.Join(h.stateDir, "runs", c.id, "meta.json"))
 		if err != nil {
@@ -488,28 +460,17 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 		}
 		want := float64(at.Unix()) + float64(at.Nanosecond())/1e9
 		f.waitLast(func(s feedSnapshot) bool {
-			for _, session := range s.Sessions {
-				for _, r := range feedItems(session.Nodes) {
-					if r.Pane != nil && *r.Pane == c.pane {
-						return r.Kind == c.kind && r.Run != nil && *r.Run == c.run &&
-							r.Started != nil && *r.Started == want &&
-							(c.run != "agent" || len(r.Tail) == 1 && r.Tail[0].Text == "checking tests")
-					}
-				}
-			}
-			return false
+			r, ok := feedRowFor(s, c.pane)
+			return ok && !r.Lifecycle.Ended && r.Run != nil && *r.Run == c.run &&
+				r.Started != nil && *r.Started == want &&
+				(c.run != "agent" || r.isAgent() && r.caption() == "checking tests")
 		}, "live "+c.run+" run's kind and meta start time")
 
 		h.runKido("alpha", "end-"+c.run+".out", "run-outcome", "--result", "completed", "--", c.id)
 		f.waitLast(func(s feedSnapshot) bool {
-			for _, session := range s.Sessions {
-				for _, r := range feedItems(session.Nodes) {
-					if r.Pane != nil && *r.Pane == c.pane {
-						return r.Run != nil && *r.Run == c.run && r.Started == nil
-					}
-				}
-			}
-			return false
+			r, ok := feedRowFor(s, c.pane)
+			return ok && r.Run != nil && *r.Run == c.run && r.Started == nil &&
+				r.Lifecycle.Ended && feedValue(r.Lifecycle.Result) == "completed"
 		}, "ended "+c.run+" retains run kind but clears started")
 	}
 	rootPane := h.in("display-message", "-p", "-t", "alpha:0", "#{pane_id}")
@@ -527,15 +488,9 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 				h.programStatus(rootPane, "state="+state+":app=claude-code:msg="+base64.StdEncoding.EncodeToString([]byte(status)), "feed-root")
 			}
 			f.waitLast(func(s feedSnapshot) bool {
-				for _, session := range s.Sessions {
-					for _, r := range feedItems(session.Nodes) {
-						if r.Pane != nil && *r.Pane == rootPane {
-							return r.Kind == "agent" && r.Run == nil && r.Started == nil &&
-								len(r.Tail) == 1 && r.Tail[0].Text == status
-						}
-					}
-				}
-				return false
+				r, ok := feedRowFor(s, rootPane)
+				return ok && r.isAgent() && r.Run == nil && r.Started == nil &&
+					r.caption() == status
 			}, agent+" "+status+" top-level agent has no run or start time")
 		}
 	}
@@ -598,19 +553,19 @@ func TestRpcStream(t *testing.T) {
 
 	// Its elapsed time ticks in the TUI; the feed sends only the start.
 	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	callerTitle := fmt.Sprint(f.last().Sessions[0].Nodes[0].Title)
+	callerTitle := f.last().Sessions[0].Nodes[0].Title
 	h.asyncBash("tick-e2e", "sleep", "300")
 	f.waitLast(func(s feedSnapshot) bool {
 		var shellSettled, bashRunning bool
 		for _, session := range s.Sessions {
 			for _, r := range feedItems(session.Nodes) {
 				if r.Pane != nil && *r.Pane == caller {
-					// An unintegrated shell has no indicator while kido is still its foreground command.
-					shellSettled = r.Kind == "shell" && r.Indicator == nil && r.Started == nil &&
-						fmt.Sprint(r.Title) == callerTitle
+					// An unintegrated shell is unknown while kido is still its foreground command.
+					shellSettled = r.isShell() && r.state() == "Unknown" && r.Started == nil &&
+						r.Title == callerTitle
 				}
-				if r.Kind == "run" && len(r.Title) == 1 && r.Title[0].Text == "tick-e2e" {
-					bashRunning = r.Indicator != nil && r.Indicator.Kind == "running"
+				if r.Run != nil && *r.Run == "bash" && r.Title == "tick-e2e" {
+					bashRunning = !r.Lifecycle.Ended && r.Started != nil
 				}
 			}
 		}
@@ -628,7 +583,7 @@ func TestRpcStream(t *testing.T) {
 			return false
 		}
 		rows := s.Sessions[1].Nodes
-		return fmt.Sprint(rows[1].Title) == fmt.Sprint(rows[0].Title)
+		return rows[1].Title == rows[0].Title
 	}, "beta's new window, settled")
 	if f.count() <= n {
 		t.Fatalf("no new line for a new window")
@@ -680,7 +635,7 @@ func TestRpcFailures(t *testing.T) {
 		if msg := stderr.String(); !strings.HasPrefix(msg, "kido rpc: "+c.want) {
 			t.Errorf("%q: stderr %q, want kido rpc: %s...", c.args, msg, c.want)
 		}
-		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"2.1\"}}\n" {
+		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"3.0\"}}\n" {
 			t.Errorf("%q: unexpected stdout %q", c.args, out)
 		}
 	}
@@ -717,7 +672,11 @@ func TestRpcRecoversFromAnError(t *testing.T) {
 	holder.Process.Kill()
 	holder.Wait()
 
-	f.waitLast(func(s feedSnapshot) bool { return s.Error != nil }, "the error line")
+	before := f.last()
+	failed := f.waitLast(func(s feedSnapshot) bool { return s.Error != nil }, "the error line")
+	if failed.ServerInstance != before.ServerInstance || len(failed.Sessions) != 1 {
+		t.Errorf("a failed read dropped the last good identity or topology: %s", failed.raw)
+	}
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

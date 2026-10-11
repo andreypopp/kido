@@ -1,4 +1,4 @@
-type id
+type id [@@deriving yojson_of]
 
 val parse_id : string -> (id, string) result
 val string_of_id : id -> string

@@ -159,6 +159,7 @@ and client = {
   mutable link : link;
   mutable backoff : float;
   mutable changed : bool;
+  mutable dials : int;
 }
 
 and child = {
@@ -261,7 +262,8 @@ module Client = struct
         match reply t ch ~deadline:(Unix.gettimeofday () +. run_timeout) with
         | `Reply (Ok _) ->
             t.backoff <- min_backoff;
-            t.changed <- true
+            t.changed <- true;
+            t.dials <- t.dials + 1
         | `Reply (Error _) | `Timeout -> drop t
         | `Dead -> ())
 
@@ -272,6 +274,7 @@ module Client = struct
       link = Down { next_dial = 0. };
       backoff = min_backoff;
       changed = false;
+      dials = 0;
     }
 
   let live t =
@@ -337,6 +340,7 @@ module Client = struct
     | Live _ | Down _ | Closed -> ()
 
   let tmux (c : t) : tmux = { socket = c.socket; channel = Some c }
+  let dials t = t.dials
 end
 
 let exec (t : t) ?(stdin = "") args =

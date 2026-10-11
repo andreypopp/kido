@@ -1,11 +1,12 @@
 open Kido
 module S = Kido.Sidebar
+module P = Kido.Pane_status
 module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
 type span = Mosaic.span = { text : string; style : Style.t }
-type role = [ S.role | `Current | `Err | `Running | `Waiting | `Done | `Stalled ]
-type program = { id : string; indicator : S.indicator; title : string; caption : string }
+type role = [ `Plain | `Proc | `Dim | `Current | `Err | `Running | `Waiting | `Done | `Stalled ]
+type program = { id : string; state : Tmux.Program_status.state; title : string; caption : string }
 
 type line =
   | Header of { name : string; current : bool }
@@ -31,9 +32,12 @@ let filter text sessions =
   else
     let rec node = function Item i -> item i | Group g -> List.concat_map item (g.first :: g.rest)
     and item i =
-      (match (i.row.kind, i.row.title) with
-        | Agent, title -> [ String.concat "" (List.map (fun s -> s.text) title) ]
-        | Ssh, _ :: host :: _ -> [ host.text ]
+      (match i.row.lifecycle with
+        | Live { status = Some_agent _ | Pi_agent _; _ } | Ended { run = Agent; _ } ->
+            [ i.row.title ]
+        | Live { status = Ssh { user; host; pane = Remote_agent _ }; _ } ->
+            [ i.row.title; user ^ "@" ^ host ]
+        | Live { status = Ssh { user; host; _ }; _ } -> [ user ^ "@" ^ host ]
         | _ -> [])
       @ List.concat_map node i.children
     in
@@ -90,7 +94,7 @@ let lines ?(search = "") (side : S.model) =
       (not (List.is_empty item.children))
       (match Tmux.Pane_map.find_opt item.row.pane side.pane_data with
       | None -> []
-      | Some ((p : Tmux_pane.t), _) ->
+      | Some { pane = p; _ } ->
           let status = p.program_status in
           List.filter
             (fun (r : Tmux.Program_status.record) -> not (String.is_empty r.id))
@@ -101,7 +105,7 @@ let lines ?(search = "") (side : S.model) =
           |> List.map (fun (r : Tmux.Program_status.record) ->
               {
                 id = r.id;
-                indicator = S.program_indicator side p.pane_id status r;
+                state = r.state;
                 title =
                   Option.filter (fun s -> not (String.is_empty s)) r.title
                   |> Option.value ~default:r.id;
@@ -124,12 +128,17 @@ let lines ?(search = "") (side : S.model) =
       Array.of_list (List.rev !out)
 
 type mode = Windows | Asks
+type source = Agent | Report
+type hold = Drawn | Held of float
+type view = { report : (source * int) option; exit : (float * float) option; hold : hold option }
 
 type model = {
   side : S.model;
   lines : line array;
   conn : Tmux.Client.t option;
   standalone : bool;
+  started : float;
+  views : view Tmux.Pane_map.t;
   cursor : int;
   top : int;
   width : int;
@@ -140,12 +149,14 @@ type model = {
   search : string option;
 }
 
-let make ?conn ~standalone side =
+let make ?conn ~standalone (side : S.model) =
   {
     side;
     lines = lines side;
     conn;
     standalone;
+    started = side.at;
+    views = Tmux.Pane_map.empty;
     cursor = 0;
     top = 0;
     width = 0;
@@ -171,18 +182,156 @@ let style : role -> Style.t = function
 
 let span role text = { text; style = style role }
 let plain = span `Plain
-let styled (s : S.span) = span (s.role :> role) s.text
+let hold = 0.5
 
-let glyph : S.indicator -> span option = function
-  | Status Running -> Some (span `Running "◼")
-  | Status Waiting -> Some (span `Waiting "◆")
-  | Status Idle -> None
-  | Unknown -> Some (span `Dim "?")
-  | Done -> Some (span `Done "✓")
-  | Failed -> Some (span `Err "◼")
-  | Stalled -> Some (span `Stalled "!")
-  | Gone (Some Completed) -> Some (span `Dim "✓")
-  | Gone _ -> Some (span `Dim "×")
+let shell (status : S.pane) =
+  match status.status with
+  | Terminal shell | Ssh { pane = Remote_terminal { status = shell; _ }; _ } -> Some shell
+  | Some_agent _ | Pi_agent _ | Ssh { pane = Remote_agent _; _ } -> None
+
+let outcomes (d : S.pane) =
+  let outcome source : P.outcome option -> _ = Option.map (fun o -> (source, o)) in
+  match (d.status, shell d) with
+  | ( ( Some_agent { status = { state = Idle { outcome = o }; _ }; _ }
+      | Pi_agent { status = { state = Idle { outcome = o }; _ }; _ }
+      | Ssh { pane = Remote_agent { status = { state = Idle { outcome = o }; _ }; _ }; _ } ),
+      _ ) ->
+      (outcome Agent o, None)
+  | _, Some { phase; report } ->
+      ( (match report with
+        | Some { state = Idle { outcome = o }; _ } -> outcome Report o
+        | _ -> None),
+        match phase with Idle { last } -> last | Unknown | Running _ | Fullscreen -> None )
+  | _ -> (None, None)
+
+let unseen m pane =
+  match Tmux.Pane_map.find_opt pane m.side.pane_data with
+  | None -> (None, None)
+  | Some d ->
+      let outcome, exit = outcomes d in
+      let view = Tmux.Pane_map.find_opt pane m.views in
+      ( Option.filter
+          (fun ((source, o) : source * P.outcome) ->
+            not
+              (Option.exists
+                 (fun v -> Option.exists (fun key -> Stdlib.(key = (source, o.serial))) v.report)
+                 view))
+          outcome,
+        Option.filter
+          (fun (e : P.exit) ->
+            Float.(e.ended_at > m.started)
+            && not
+                 (Option.exists
+                    (fun v ->
+                      Option.exists
+                        (fun (started_at, ended_at) ->
+                          Float.equal started_at e.started_at && Float.equal ended_at e.ended_at)
+                        v.exit)
+                    view))
+          exit )
+
+let observe m =
+  if Option.is_some m.side.snap.err then m
+  else
+    let now = m.side.at in
+    let views =
+      Tmux.Pane_map.mapi
+        (fun pane (d : S.pane) ->
+          let prev = Tmux.Pane_map.find_opt pane m.views in
+          let raw =
+            (match Tmux_pane.shell d.pane with Running -> true | _ -> false)
+            && not d.pane.alternate_on
+          in
+          let hold =
+            match (shell d, Option.flat_map (fun v -> v.hold) prev) with
+            | Some { phase = Running { fullscreen = false; _ }; _ }, _ -> Some Drawn
+            | Some _, Some Drawn -> Some (if raw then Drawn else Held now)
+            | Some _, (Some (Held t) as prev) when Float.(now - t < hold) ->
+                if raw then Some Drawn else prev
+            | _ -> None
+          in
+          if Option.equal Tmux.equal_pane_id (Some pane) m.side.snap.active then
+            let outcome, exit = outcomes d in
+            {
+              report = Option.map (fun (source, (o : P.outcome)) -> (source, o.serial)) outcome;
+              exit = Option.map (fun (e : P.exit) -> (e.started_at, e.ended_at)) exit;
+              hold;
+            }
+          else
+            match prev with
+            | Some v -> { v with hold }
+            | None -> { report = None; exit = None; hold })
+        m.side.pane_data
+    in
+    { m with views }
+
+type indicator = Running | Waiting | Done | Failed | Stalled | Ended of Subrun.result option
+
+let finished : P.result -> indicator = function Success -> Done | Failure -> Failed
+
+let indicator m (r : S.row) =
+  let unseen_outcome, unseen_exit = unseen m r.pane in
+  let outcome source =
+    Option.flat_map
+      (fun (s, (o : P.outcome)) -> if Stdlib.(s = source) then Some (finished o.result) else None)
+      unseen_outcome
+  in
+  let agent (a : P.agent) =
+    match a.state with
+    | Running _ -> Some Running
+    | Waiting _ -> Some Waiting
+    | Stalled -> Some Stalled
+    | Idle _ -> outcome Agent
+  in
+  let shell (s : P.shell) =
+    match (s.phase, s.report) with
+    | (Running { fullscreen = true; _ } | Fullscreen), _ -> None
+    | _, Some { state = Running _; _ } -> Some Running
+    | _, Some { state = Waiting _; _ } -> Some Waiting
+    | _, Some { state = Idle _; _ } -> (
+        match (outcome Report, unseen_exit) with
+        | (Some Failed as failed), _ -> failed
+        | _, Some { code; _ } when code <> 0 -> Some Failed
+        | report, _ -> report)
+    | phase, None -> (
+        let exit =
+          Option.map (fun (e : P.exit) -> if e.code = 0 then Done else Failed) unseen_exit
+        in
+        match
+          (phase, Option.flat_map (fun v -> v.hold) (Tmux.Pane_map.find_opt r.pane m.views))
+        with
+        | Running _, _ | _, Some Drawn -> Some Running
+        | _, _ when Option.is_some exit -> exit
+        | _, Some (Held t) when Float.(m.side.at - t < hold) -> Some Running
+        | Unknown, _
+          when match r.lifecycle with Live { run; _ } -> Option.is_some run | Ended _ -> false ->
+            Some Running
+        | _ -> None)
+  in
+  match r.lifecycle with
+  | Ended { result; _ } -> Some (Ended result)
+  | Live { status = Some_agent { status; _ } | Pi_agent { status; _ }; _ }
+  | Live { status = Ssh { pane = Remote_agent { status; _ }; _ }; _ } ->
+      agent status
+  | Live { status = Terminal status; _ }
+  | Live { status = Ssh { pane = Remote_terminal { status; _ }; _ }; _ } ->
+      shell status
+
+let glyph : indicator -> span = function
+  | Running -> span `Running "◼"
+  | Waiting -> span `Waiting "◆"
+  | Done -> span `Done "✓"
+  | Failed -> span `Err "◼"
+  | Stalled -> span `Stalled "!"
+  | Ended (Some Completed) -> span `Dim "✓"
+  | Ended _ -> span `Dim "×"
+
+let program_glyph : Tmux.Program_status.state -> span option = function
+  | Idle -> None
+  | Working _ -> Some (glyph Running)
+  | Blocked _ -> Some (glyph Waiting)
+  | Done -> Some (glyph Done)
+  | Error -> Some (glyph Failed)
 
 let elapsed secs =
   let s = max 0 (Float.to_int secs) in
@@ -190,7 +339,62 @@ let elapsed secs =
   else if s < 3600 then Printf.sprintf "%dm%02ds" (s / 60) (s mod 60)
   else Printf.sprintf "%dh%02dm" (s / 3600) (s / 60 mod 60)
 
-let parts ~now : line -> span list * span list * span list = function
+let command (s : P.shell) =
+  match s with
+  | { report = None; phase = Running { command; fullscreen = false; _ } }
+    when not (String.is_empty command) ->
+      Some command
+  | _ -> None
+
+let title (r : S.row) =
+  match r.lifecycle with
+  | Ended _ -> [ span `Dim r.title ]
+  | Live { status = Ssh { user; host; pane = Remote_terminal { interactive; status } }; _ } ->
+      [ span `Proc "ssh "; plain (user ^ "@" ^ host) ]
+      @ Option.map_or ~default:[]
+          (fun c -> [ span `Proc ": "; plain c ])
+          (if interactive then command status else None)
+  | Live { status = Terminal status; run } -> (
+      match command status with
+      | Some c -> [ span `Proc c ]
+      | None when Option.is_none status.report && Option.is_none run -> [ span `Proc r.title ]
+      | None -> [ plain r.title ])
+  | Live { status = Some_agent _ | Pi_agent _ | Ssh { pane = Remote_agent _; _ }; _ } ->
+      [ plain r.title ]
+
+let caption (r : S.row) =
+  let parts msg progress =
+    match
+      Option.to_list msg @ Option.map_or ~default:[] (fun n -> [ Printf.sprintf "%d%%" n ]) progress
+    with
+    | [] -> None
+    | parts -> Some (String.concat " " parts)
+  in
+  let agent (a : P.agent) =
+    parts a.msg
+      (match a.state with
+      | Running { progress } | Waiting { progress; _ } -> progress
+      | Stalled | Idle _ -> None)
+  in
+  let shell (s : P.shell) =
+    Option.flat_map
+      (fun (r : P.report) ->
+        parts r.msg
+          (match r.state with
+          | Running { progress } | Waiting { progress; _ } -> progress
+          | Idle _ -> None))
+      s.report
+  in
+  match r.lifecycle with
+  | Ended { result; _ } -> Option.map Subrun.string_of_result result
+  | Live { status = Some_agent { status; _ } | Pi_agent { status; _ }; _ }
+  | Live { status = Ssh { pane = Remote_agent { status; _ }; _ }; _ } ->
+      agent status
+  | Live { status = Terminal status; _ }
+  | Live { status = Ssh { pane = Remote_terminal { status; _ }; _ }; _ } ->
+      shell status
+
+let parts m : line -> span list * span list * span list = function
   | Header h -> ([], [ span (if h.current then `Current else `Plain) h.name ], [])
   | Message e -> ([], [ span `Err e ], [])
   | Ask (a, pane) ->
@@ -199,24 +403,27 @@ let parts ~now : line -> span list * span list * span list = function
         [ span role (a.name ^ " " ^ Ask.string_of_id a.id) ],
         [ span role (" " ^ List.hd (String.split_on_char '\n' a.text)) ] )
   | Program (prefix, r) ->
-      ( [ span `Dim prefix; Option.value ~default:(plain " ") (glyph r.indicator) ],
+      ( [ span `Dim prefix; Option.value ~default:(plain " ") (program_glyph r.state) ],
         [ plain r.title ],
         if String.is_empty r.caption then [] else [ plain " "; span `Dim r.caption ] )
   | Row (prefix, _, r) -> (
       let tree = if String.is_empty prefix then [] else [ span `Dim prefix ] in
-      ( (tree
-        @ match Option.flat_map glyph r.indicator with None -> [ plain " " ] | Some i -> [ i ]),
-        List.map styled r.title,
-        match r.caption with
-        | Elapsed s -> [ plain " "; span `Dim (elapsed (now -. s)) ]
-        | Text [] -> []
-        | Text tail -> plain " " :: List.map styled tail ))
+      ( tree @ [ Option.map_or ~default:(plain " ") glyph (indicator m r) ],
+        title r,
+        match caption r with
+        | Some text -> [ plain " "; span `Dim text ]
+        | None ->
+            Option.map_or ~default:[]
+              (fun s -> [ plain " "; span `Dim (elapsed (m.side.at -. s)) ])
+              (match r.lifecycle with
+              | Live { run = Some run; _ } -> Some run.started
+              | Live { run = None; _ } | Ended _ -> None) ))
 
-let spans ~now line =
-  let lead, title, tail = parts ~now line in
+let spans m line =
+  let lead, title, tail = parts m line in
   lead @ title @ tail
 
-let row_text ~now line = String.concat "" (List.map (fun s -> s.text) (spans ~now line))
+let row_text m line = String.concat "" (List.map (fun s -> s.text) (spans m line))
 
 let pane_of : line -> Tmux.pane_id option = function
   | Row (_, _, r) -> Some r.pane
@@ -283,17 +490,6 @@ let redraw m side =
         | None -> move { m with cursor = -1 } 1
       in
       clamp_top m
-
-let next_attention m delta =
-  let n = Array.length m.lines in
-  let wants i = Option.exists (S.attention m.side) (pane_of m.lines.(i)) in
-  let rec go k i =
-    if k = n then m
-    else
-      let i = (i + delta + n) mod n in
-      if wants i then ensure_visible { m with cursor = i } else go (k + 1) i
-  in
-  if n = 0 then m else go 0 m.cursor
 
 let set_search m search = redraw { m with search } m.side
 
@@ -418,8 +614,6 @@ let key m (k : Mosaic.Event.key) =
           | _ -> none m)
       | _ when is '/' && match m.mode with Windows -> true | Asks -> false ->
           none (set_search m (Some ""))
-      | _ when is 'n' -> none (next_attention m 1)
-      | _ when is 'N' -> none (next_attention m (-1))
       | _ when is 'g' && not pend -> none { m with g_pend = true }
       | Home -> none (top m)
       | _ when is 'g' -> none (top m)
@@ -432,7 +626,9 @@ let next_wait m =
   List.fold_left
     (fun wait i ->
       match m.lines.(i) with
-      | Row (_, _, { caption = Elapsed s; _ }) -> Float.min wait (1. -. Float.rem (now -. s) 1.)
+      | Row (_, _, ({ lifecycle = Live { run = Some { started = s; _ }; _ }; _ } as r))
+        when Option.is_none (caption r) ->
+          Float.min wait (1. -. Float.rem (now -. s) 1.)
       | Row _ | Program _ | Header _ | Message _ | Ask _ -> wait)
     m.side.opts.interval (shown m)
 
@@ -449,7 +645,10 @@ let update msg m =
   | Snapshot snap ->
       let was = m.side.snap in
       let m =
-        match S.step m.side snap with side, true -> redraw m side | side, false -> { m with side }
+        observe
+          (match S.step m.side snap with
+          | side, true -> redraw m side
+          | side, false -> { m with side })
       in
       let m =
         let focused (s : S.snapshot) =
@@ -505,7 +704,7 @@ let view m =
       (List.map (fun s -> Mosaic.text ~style:s.style ~selectable:false s.text) spans)
   in
   let row i =
-    let lead, title, tail = parts ~now:m.side.at m.lines.(i) in
+    let lead, title, tail = parts m m.lines.(i) in
     let title =
       if i = m.cursor then
         List.map (fun s -> { s with style = Style.with_inverse true s.style }) title
@@ -567,14 +766,16 @@ let%test_module "Tests" =
     let shell_pane w p = pane ~window:w ~command:"zsh" p
     let agent_state id parent = (id, session ~parent "")
 
-    let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
+    let model ?(dir = temp ()) ?(clock = ref test_at) () =
       let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
-      { m with started; at = !clock }
+      { m with at = !clock }
+
+    let server = Some (1, { Tmux_pane.started_at = 1_700_000_000; pid = 42 })
 
     let rendered_model (m : Sidebar.model) =
-      fst (Sidebar.step { m with snap = Sidebar.empty } m.snap)
+      fst (Sidebar.step { m with snap = Sidebar.empty } { m.snap with server })
 
-    let rendered_lines m = Array.to_list (lines (rendered_model m))
+    let rendered (m : Sidebar.model) = make ~standalone:false (rendered_model m)
 
     let render ?dir ?(current = "sess") ?(at = test_at) panes st =
       let m = model ?dir ~clock:(ref at) () in
@@ -588,7 +789,8 @@ let%test_module "Tests" =
           lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes Sidebar.String_map.empty;
         }
       in
-      List.iter (fun r -> print_endline (row_text ~now:m.at r)) (rendered_lines { m with snap })
+      let tui = rendered { m with snap } in
+      Array.iter (fun r -> print_endline (row_text tui r)) tui.lines
 
     let%expect_test "a subagent's window nests under the pane that spawned it" =
       render
@@ -788,18 +990,20 @@ let%test_module "Tests" =
       let rows () =
         let m = model () in
         let states = states st in
-        rendered_lines
-          {
-            m with
-            snap =
-              {
-                Sidebar.empty with
-                client = client "sess";
-                panes = with_programs states panes;
-                states;
-              };
-          }
-        |> List.map (row_text ~now:m.at)
+        let tui =
+          rendered
+            {
+              m with
+              snap =
+                {
+                  Sidebar.empty with
+                  client = client "sess";
+                  panes = with_programs states panes;
+                  states;
+                };
+            }
+        in
+        Array.to_list tui.lines |> List.map (row_text tui)
       in
       let want = rows () in
       Printf.printf "stable: %b\n"
@@ -996,7 +1200,7 @@ let%test_module "Tests" =
           (fun (l : line) ->
             match l with
             | Row (_, _, { pane; _ }) when Tmux.equal_pane_id pane (Tmux.pane_id_of_string "%1") ->
-                List.exists (fun (s : span) -> String.equal s.text "◼") (spans ~now:!clock l)
+                List.exists (fun (s : span) -> String.equal s.text "◼") (spans !m l)
             | _ -> false)
           !m.lines
       in
@@ -1045,7 +1249,7 @@ let%test_module "Tests" =
       in
       let stalled () =
         Array.exists
-          (fun r -> List.exists (fun (s : span) -> String.equal s.text "!") (spans ~now:!clock r))
+          (fun r -> List.exists (fun (s : span) -> String.equal s.text "!") (spans !m r))
           !m.lines
       in
       let tick d =
@@ -1067,6 +1271,211 @@ let%test_module "Tests" =
     +30s: stalled=false
     +30s: stalled=true
     |}]
+
+    let drive ?(clock = ref test_at) () =
+      let m = ref (make ~standalone:false (model ~clock ())) in
+      let tick ?(d = 0.) ?active panes =
+        clock := !clock +. d;
+        m :=
+          fst
+            (update
+               (Snapshot
+                  {
+                    Sidebar.empty with
+                    server;
+                    client = client "alpha";
+                    active = Option.map Tmux.pane_id_of_string active;
+                    panes;
+                  })
+               !m);
+        Array.iter
+          (fun l -> match l with Header _ -> () | _ -> print_endline (row_text !m l))
+          !m.lines
+      in
+      tick
+
+    let records json p =
+      {
+        p with
+        Tmux_pane.program_status =
+          Result.get_exn (Tmux.Program_status.parse ({|{"serial":|} ^ json ^ "}"));
+      }
+
+    let%expect_test "outcomes stay drawn until visited; child records always show their raw state" =
+      let tick = drive () in
+      let agent serial =
+        records
+          (Printf.sprintf
+             {|%d,"records":[{"id":"","app":"claude-code","state":"done","msg":"RmluaXNoZWQ="},{"id":"a","state":"error","title":"Q2hlY2s="},{"id":"b","state":"done"}]|}
+             serial)
+          (pane ~session:"alpha" ~window:"@1" ~title:"claude" "%1")
+      in
+      let shell exit =
+        pane ~session:"alpha" ~window:"@2" ~command:"zsh" ~prompt:(test_at +. 1.) ~start:test_at
+          ~exit ~command_line:"false" "%2"
+      in
+      print_endline "-- unvisited";
+      tick [ agent 1; shell (1, test_at +. 1.) ];
+      print_endline "-- both visited";
+      tick ~active:"%1" [ agent 1; shell (1, test_at +. 1.) ];
+      tick ~active:"%2" [ agent 1; shell (1, test_at +. 1.) ];
+      print_endline "-- an unrelated serial does not re-arm";
+      tick ~active:"%2" [ agent 2; shell (1, test_at +. 1.) ];
+      print_endline "-- an exit from before the sidebar started counts as seen";
+      tick ~active:"%1" [ agent 2; shell (1, test_at -. 1.) ];
+      print_endline "-- accepted: another exit in the same whole seconds is the seen one";
+      tick ~active:"%2" [ agent 2; shell (1, test_at +. 2.) ];
+      tick ~active:"%1" [ agent 2; shell (0, test_at +. 2.) ];
+      [%expect
+        {|
+        -- unvisited
+        ╶✓claude Finished
+          ├◼Check
+          └✓b
+        ╶◼zsh
+        -- both visited
+        ╶ claude Finished
+          ├◼Check
+          └✓b
+        ╶◼zsh
+        ╶ claude Finished
+          ├◼Check
+          └✓b
+        ╶ zsh
+        -- an unrelated serial does not re-arm
+        ╶ claude Finished
+          ├◼Check
+          └✓b
+        ╶ zsh
+        -- an exit from before the sidebar started counts as seen
+        ╶ claude Finished
+          ├◼Check
+          └✓b
+        ╶ zsh
+        -- accepted: another exit in the same whole seconds is the seen one
+        ╶ claude Finished
+          ├◼Check
+          └✓b
+        ╶ zsh
+        ╶ claude Finished
+          ├◼Check
+          └✓b
+        ╶ zsh
+        |}]
+
+    let%expect_test "a seen report does not hide a later unseen failed command" =
+      let clock = ref test_at in
+      let m = ref (make ~standalone:false (model ~clock ())) in
+      let tick ?(d = 0.) label active panes =
+        clock := !clock +. d;
+        m :=
+          fst
+            (update
+               (Snapshot
+                  {
+                    Sidebar.empty with
+                    server;
+                    client = client "alpha";
+                    active = Some (Tmux.pane_id_of_string active);
+                    panes;
+                  })
+               !m);
+        let row = Array.find_map (function Row (_, _, r) -> Some r | _ -> None) !m.lines in
+        Printf.printf "%-14s %s\n" label
+          (match Option.flat_map (indicator !m) row with
+          | None -> "none"
+          | Some Done -> "done"
+          | Some Failed -> "failed"
+          | Some Running -> "running"
+          | Some _ -> "other")
+      in
+      let p ?exit ?(running = false) ~prompt start =
+        records {|1,"records":[{"id":"","app":"make","state":"done"}]|}
+          (pane ~session:"alpha" ~window:"@1" ~command:"zsh" ~prompt:(test_at +. prompt) ~running
+             ~start:(test_at +. start) ?exit ~command_line:"false" "%1")
+      in
+      let other = pane ~session:"alpha" ~window:"@2" ~command:"zsh" "%2" in
+      let built = p ~prompt:1. 0. ~exit:(0, test_at +. 1.) in
+      tick "report done" "%2" [ built; other ];
+      tick "seen" "%1" [ built; other ];
+      tick "left" "%2" [ built; other ];
+      tick "false starts" "%2" [ p ~prompt:1. ~running:true 2.; other ];
+      tick ~d:0.05 "false failed" "%2" [ p ~prompt:2. 2. ~exit:(1, test_at +. 2.); other ];
+      [%expect
+        {|
+        report done    done
+        seen           none
+        left           none
+        false starts   none
+        false failed   failed
+        |}]
+
+    let%expect_test "a finished run holds its green, and a new run inside the hold draws at once" =
+      let clock = ref test_at in
+      let tick = drive ~clock () in
+      let p ?exit running start =
+        pane ~session:"alpha" ~command:"zsh" ~prompt:(test_at -. 1.) ~running
+          ~start:(test_at +. start) ?exit ~command_line:"make" "%1"
+      in
+      List.iter
+        (fun (d, p) ->
+          Printf.printf "+%.2fs " d;
+          tick ~d ~active:"%1" [ p ])
+        [
+          (0., p true 0.);
+          (0.25, p true 0.);
+          (0.1, p false 0. ~exit:(0, test_at));
+          (0.3, p false 0. ~exit:(0, test_at));
+          (0.1, p true 1.);
+          (0.15, p true 1.);
+          (0.1, p true 1.);
+          (0.1, p false 1. ~exit:(0, test_at +. 1.));
+          (0.6, p false 1. ~exit:(0, test_at +. 1.));
+        ];
+      [%expect
+        {|
+        +0.00s ╶ zsh
+        +0.25s ╶◼make
+        +0.10s ╶◼zsh
+        +0.30s ╶◼zsh
+        +0.10s ╶◼zsh
+        +0.15s ╶◼zsh
+        +0.10s ╶◼make
+        +0.10s ╶◼zsh
+        +0.60s ╶ zsh
+        |}]
+
+    let%expect_test "labels and captions are composed from kind and status" =
+      let tick = drive () in
+      let at = test_at +. 1. in
+      tick
+        [
+          pane ~session:"alpha" ~window:"@1" ~command:"zsh" "%1";
+          pane ~session:"alpha" ~window:"@2" ~command:"zsh" ~prompt:at "%2";
+          records
+            {|1,"records":[{"id":"","app":"cargo","state":"working","progress":40,"title":"QnVpbGQ=","msg":"Y29tcGlsaW5n"}]|}
+            (pane ~session:"alpha" ~window:"@3" ~command:"zsh" ~prompt:at "%3");
+          pane ~session:"alpha" ~window:"@4" ~command:"vim" ~prompt:at ~start:at ~running:true
+            ~alternate:true ~command_line:"vim x" "%4";
+          {
+            (pane ~session:"alpha" ~window:"@5" ~command:"ssh" ~prompt:at ~start:test_at
+               ~command_line:"ssh box" "%5")
+            with
+            ssh = Some ("deploy", "box");
+          };
+          records
+            {|1,"records":[{"id":"","app":"claude-code","state":"blocked","kind":"permission","msg":"QXBwcm92ZQ=="}]|}
+            (pane ~session:"alpha" ~window:"@6" ~title:"" "%6");
+        ];
+      [%expect
+        {|
+        ╶ zsh
+        ╶ zsh
+        ╶◼Build compiling 40%
+        ╶ vim
+        ╶ ssh deploy@box
+        ╶◆claude-code Approve
+        |}]
 
     let%expect_test
         "the fuzzy filter keeps matching sessions, best first, and an agent title matches too" =
@@ -1091,10 +1500,10 @@ let%test_module "Tests" =
         }
       in
       let show filter =
+        let tui = rendered m in
         Printf.printf "%S: %s\n" filter
           (String.concat " | "
-             (List.map (row_text ~now:m.at)
-                (Array.to_list (lines ~search:filter (rendered_model m)))))
+             (List.map (row_text tui) (Array.to_list (lines ~search:filter tui.side))))
       in
       show "";
       show "zz";

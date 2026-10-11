@@ -62,9 +62,9 @@ inlined there.
 
 **No display logic in `lib/`.** Human-facing formatting (tables,
 alignment, padding, truncation, glyphs, styles, local time, usage
-text) belongs in `bin/`. The RPC snapshot is the exception: `lib/`
-sends the semantic data both views need as uncut text, tagged only
-with the wire's span roles (`plain`, `proc`, `dim`).
+text, labels and captions composed from facts) belongs in `bin/`. The
+RPC snapshot carries only semantic data: plain titles and typed status,
+as uncut text.
 
 **State.** One source of truth per fact: never hold the same fact in two
 stores (a state record and a tmux option, an OCaml record and a TS copy, a
@@ -350,13 +350,14 @@ Consequences:
   `last_prompt > command_start`, and a tie resolves to *running* —
   a false idle the instant a command starts is the worse error.
 - **`cmd_status` is cleared on `C`,** so the last exit code is gone when
-  the next command starts. `Sidebar.phase.held` (a `Tmux_pane.exit option`)
-  carries it across the following run.
+  the next command starts. `Pane_status` captures the exit whole from one
+  read and keeps it as the Idle phase's `last` until the next command is
+  promoted to running.
 
 `Tmux_pane.shell` also heals a stuck flag: a `C` with no `D` leaves
 `PANE_CMDRUNNING` set, and a later prompt's `A` makes `shell` report idle
 without clearing the flag. Two fork changes would each delete a workaround: clearing `PANE_CMDRUNNING` on `A`
-(the heal rule), and not clearing `cmd_status` on `C` (`Sidebar.phase.held`).
+(the heal rule), and not clearing `cmd_status` on `C` (the captured `last`).
 Not done.
 
 **Why not `pane_current_command`.** It reports the process-group leader,
@@ -751,8 +752,11 @@ reference:
 
 - A marked `ssh` pane whose far side reaches its first prompt in the same
   whole second ssh started stays running until a later remote prompt.
-  `Sidebar.observe_remote` requires `last_prompt > command_start`: accepting
+  `Pane_status.observe` requires `last_prompt > command_start`: accepting
   the tie would mistake the local prompt for a remote one.
+- An `ssh` from an unintegrated local shell reports Unknown until the
+  first remote command completes: with no local `command_start`, a
+  remote prompt alone cannot latch `interactive`.
 
 The subagent system's design limits (a child moved to another session, a
 blocked ask holding a whole turn, a child that exits before its window is

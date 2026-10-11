@@ -1,4 +1,3 @@
-type status = Running | Waiting | Idle
 type agent = Pi | Other of string [@@deriving yojson_of]
 type parent = { session : string; pid : int }
 
@@ -15,7 +14,6 @@ type session = {
   model : string;
 }
 
-val string_of_status : status -> string
 val agent_of_string : string -> agent
 val display_name : Tmux_pane.t list -> session -> string
 val addressable_name : session -> bool

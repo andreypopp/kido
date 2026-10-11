@@ -33,6 +33,10 @@ type shell = Unintegrated | Idle | Running
 
 val list_panes : Tmux.t -> (t list, string) result
 
+type server = { started_at : int; pid : int } [@@deriving equal, yojson_of]
+
+val server : Tmux.t -> (server, string) result
+
 type client_state = { session : string; session_id : Tmux.session_id; focused : bool }
 
 val client_state : Tmux.t -> string -> client_state option

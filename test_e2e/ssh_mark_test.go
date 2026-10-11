@@ -73,7 +73,7 @@ func main() {
 	stale.waitLast(func(s feedSnapshot) bool {
 		for _, item := range feedItems(s.Sessions[0].Nodes) {
 			if item.ID == pane {
-				return item.Kind == "shell"
+				return item.isShell()
 			}
 		}
 		return false
@@ -84,13 +84,23 @@ func main() {
 		t.Fatalf("next ssh mark = %q", got)
 	}
 	h.waitShellRow("╶◼ssh deploy@realm@next.test", "")
+	stale.waitLast(func(s feedSnapshot) bool {
+		for _, item := range feedItems(s.Sessions[0].Nodes) {
+			if item.ID == pane {
+				l := item.Lifecycle
+				return l.Kind == "Ssh" && feedValue(l.User) == "deploy@realm" && feedValue(l.Host) == "next.test" &&
+					l.Remote == "Remote_terminal" && !feedValue(l.Interactive) && item.Title == "ssh"
+			}
+		}
+		return false
+	}, "the destination as typed fields, the title the plain foreground command")
 	plain := h.newWindow("alpha", "plain", fake, "alias")
 	h.waitPaneCommand(plain, "ssh")
 	feed := h.startFeed("alpha")
 	feed.waitLast(func(s feedSnapshot) bool {
 		for _, item := range feedItems(s.Sessions[0].Nodes) {
 			if item.ID == plain {
-				return item.Kind == "shell"
+				return item.isShell()
 			}
 		}
 		return false

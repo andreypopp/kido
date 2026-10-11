@@ -1,4 +1,4 @@
-# kido rpc protocol 2.1
+# kido rpc protocol 3.0
 
 fork revision: 676f83a82e19fcfae5abf9619a9bf64fbfb06cd5
 
@@ -20,9 +20,9 @@ XDG_STATE_HOME/kido, then ~/.local/state/kido. --client names the app's
 control client. Socket paths fit the platform's sun_path including NUL.
 Run outside tmux with no KIDO_AGENT_* environment.
 
-The first stdout line is {"hello":{"protocol":"2.1"}}. A differing or absent
-server stamp produces {"hello":{"protocol":"2.1","server":"other"}} or
-{"hello":{"protocol":"2.1","server":null}}, followed by
+The first stdout line is {"hello":{"protocol":"3.0"}}. A differing or absent
+server stamp produces {"hello":{"protocol":"3.0","server":"other"}} or
+{"hello":{"protocol":"3.0","server":null}}, followed by
 {"error":"server protocol does not match binary protocol"}, then exit 2.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
 or stdin read error; diagnostics use stderr. Option errors use cmdliner.
@@ -112,6 +112,22 @@ only true, and select-window exactly session and
 window identifier fields ($N and @N). Multiple recognized operations are
 invalid. All requests use the existing error envelope and explicit socket.
 
+## Changes from 2.1 to 3.0
+
+- Added: top-level `server_instance` (tmux start time and pid); no snapshot
+  before the first valid pair and topology.
+- Changed: pane items have `kind` "pane", a plain string `title` and a
+  typed `lifecycle`: Ended with its run result, or Live with the pane kind
+  (Terminal, Some_agent, Pi_agent, Ssh with typed destination) and its
+  agent status or shell phase and generic report, each with `since`.
+- Removed: `tail`, span roles, `indicator`, `attention` and the
+  ended-run caption. Frontends compose labels, captions and glyphs,
+  and own seen state; kido acknowledges nothing, and child
+  records are raw.
+- Changed: an unrecognized OSC 7501 blocked kind is dropped, not a parse error.
+- Unchanged: requests, replies, asks, sessions, groups, ordering and
+  snapshot v.
+
 ## Changes from 2.0 to 2.1
 
 - Changed: pi row titles and addressing use the reported session name.
@@ -150,11 +166,13 @@ alternate, but bytes from separate lines do not interleave.
 
 ## stdout: NDJSON, one full snapshot per model change
 
-After hello, a full snapshot is emitted when visible model data changes:
+After hello, a full snapshot is emitted when visible model data changes.
+None is emitted before the first valid server identity and topology read:
 
 ```json
 {
   "v": 2,
+  "server_instance": { "started_at": 1780000000, "pid": 12345 },
   "client": { "session": "$1", "window": "@2", "pane": "%3" },
   "asks": [],
   "error": null,
@@ -165,17 +183,15 @@ After hello, a full snapshot is emitted when visible model data changes:
       "current": true,
       "nodes": [
         {
-          "kind": "agent",
+          "kind": "pane",
           "id": "%3",
           "pane": "%3",
           "window": "@2",
-          "indicator": { "kind": "running" },
-          "program_status": { "serial": 0, "records": [] },
-          "title": [ { "text": "kido", "role": "plain" } ],
-          "tail": [ { "text": "fixing tests", "role": "dim" } ],
+          "title": "kido",
+          "lifecycle": ["Live", ["Pi_agent", {"id": "pi-session-id", "status": {"since": 1780000000.5, "msg": "fixing tests", "state": ["Running", {"progress": null}]}}]],
+          "program_status": { "serial": 4, "records": [ { "id": "", "state": "working", "app": "pi" } ] },
           "run": null,
           "started": null,
-          "attention": false,
           "children": [
             {
               "kind": "window",
@@ -183,8 +199,8 @@ After hello, a full snapshot is emitted when visible model data changes:
               "window": "@7",
               "name": "agents",
               "children": [
-                { "kind": "agent", "id": "%9", "pane": "%9", "window": "@7", "...": "...", "children": [] },
-                { "kind": "shell", "id": "%10", "pane": "%10", "window": "@7", "...": "...", "children": [] }
+                { "kind": "pane", "id": "%9", "pane": "%9", "window": "@7", "...": "...", "children": [] },
+                { "kind": "pane", "id": "%10", "pane": "%10", "window": "@7", "...": "...", "children": [] }
               ]
             }
           ]
@@ -195,6 +211,14 @@ After hello, a full snapshot is emitted when visible model data changes:
 }
 ```
 
+- **`server_instance`**: the tmux server's `#{start_time}` (whole seconds,
+  the server's own start) and `#{pid}`, both positive integers, read
+  together on the RPC's explicit socket once per control connection,
+  and again after each reconnect. The pair tells ordinary
+  same-second restarts apart, but pid reuse within the same start second
+  can collide, and it is not unique across hosts or restored environments.
+  A changed pair means a new server: the feed drops its tracking, and a
+  frontend drops its seen and posted state for that destination.
 - **`client`**: the named client's current session, window and pane ids.
 - **`asks`**: outstanding asks in creation-time/id order, including ended
   sessions. Each entry has `id`, agent `session`, display `name`, full
@@ -204,7 +228,9 @@ After hello, a full snapshot is emitted when visible model data changes:
   promise a successful future activation. Pane is a display association,
   not a jump target: activate by ask id to resolve current topology.
   Session-file paths and cwd are not exposed.
-- **`error`**: null or a transient error string; the stream continues.
+- **`error`**: null or a transient error string; the stream continues. A
+  failed read keeps the last good identity and topology, tracks no
+  transitions and prunes no panes.
 - **`sessions`**: the
   session's top-level nodes in display order. A session is the
   source-list section; it is not itself a node.
@@ -222,77 +248,165 @@ A tmux window with more than one pane (the TUI's `┌├└` bracket).
 A window with one pane has no group node: its pane is an item node in the
 group's place. Groups are the "group" rows the app may draw differently.
 
-### Item node: one pane
+### Item node: `"kind": "pane"`
 
-`"kind"` is one of:
-- `agent`: a pane with OSC 7501 root app pi or claude-code, or a finished
-  subagent's lingering pane (its `indicator` is `gone`);
-- `run`: an `async_bash` run's pane, running (`started` set) or ended;
-- `ssh`: a pane marked by `kido ssh` with `@kido_ssh` (`user@host`),
-  believed only while its foreground command is `ssh`; a remote pi or
-  Claude Code root instead gives an agent row;
-- `shell`: anything else (a shell, or a program that has taken the
-  terminal).
-
-Fields:
+`{"kind", "id", "pane", "window", "title", "lifecycle", "program_status",
+"run", "started", "children"}`, all required:
 - `id` = `pane` = the pane id `%N`, stable for the pane's life, including
-  a dead lingering pane. `window` is its window id. Both are always
-  present, and both are the jump target.
-- `indicator`: null or an object with `kind`: running, waiting,
-  idle, unknown, done, failed, stalled or gone. Gone also carries `outcome`:
-  completed, failed, died, stopped or null.
+  a dead lingering pane. `window` is its window id. Both are the jump target.
+- `title`: the plain resolved label, never a result or caption. Local pi:
+  its State session name when set, otherwise the pane title verbatim (even
+  empty). Native and remote agents: the pane title, or the app name when it
+  is empty; record titles never rename an agent. Terminals and remote
+  terminals: the representative record's title, then its inherited app,
+  then the foreground command (`ssh` for a remote terminal with no
+  records). A live run with no records: the run name. An ended run: when a live local pi State record
+  names the pane, even one whose root was cleared or replaced, its session
+  name or else the pane title; otherwise the run name.
+- `lifecycle`: `["Ended",{"result":R}]` for a run pane whose outcome is
+  recorded or whose pane is dead, overriding any program or shell status.
+  R is `unknown` until an outcome is recorded (never inferred from the
+  process), then `completed`, `failed`, `died` or `stopped`. Ended always
+  has a non-null `run`. Otherwise `["Live",KIND]`, one of:
+
+```json
+["Terminal",{"phase":["Idle",{"last":null}],"report":null}]
+["Some_agent",{"name":"claude-code","status":AGENT}]
+["Pi_agent",{"id":"pi-session-id","status":AGENT}]
+["Ssh",{"user":"alice","host":"example.org","pane":["Remote_terminal",{"interactive":true,"status":SHELL}]}]
+["Ssh",{"user":"alice","host":"example.org","pane":["Remote_agent",{"name":"pi","status":AGENT}]}]
+```
+
+  Detection is OSC 7501 root app `pi` or `claude-code`, and the believed
+  `@kido_ssh` mark (only while the foreground command is `ssh`). A pi root
+  with a live State record naming the pane is `Pi_agent`, whose `id` is
+  that State session; other agent roots are `Some_agent`. A run uses its
+  actual kind: a subagent with no agent root yet is a `Terminal`.
+- AGENT is `{"since","msg","state"}`; state is one of:
+
+```json
+["Running",{"progress":42}]
+["Waiting",{"source":["Blocked",{"kind":"permission"}],"progress":null}]
+["Waiting",{"source":["Ask",{"id":"A12345678"}],"progress":null}]
+["Stalled"]
+["Idle",{"outcome":null}]
+["Idle",{"outcome":{"serial":17,"result":"success"}}]
+["Idle",{"outcome":{"serial":18,"result":"failure"}}]
+```
+
+  Precedence is waiting > stalled > running > idle. An outstanding ask of
+  a local pi session is Waiting with source Ask (the oldest in `asks`
+  order among several; the question is in `asks`), progress null; it outranks
+  blocked records. Otherwise the blocked record with the smallest
+  bytewise id gives Waiting with its kind (`permission`, `question`,
+  `auth`, or null for absent or unrecognized) and progress. Stalled is a
+  local pi with a working root and a stale State heartbeat (rebased across
+  sleep); native and remote agents never stall, and any blocked record
+  outranks it. Running takes the smallest-id working record's progress.
+  `msg` comes from the representative record (blocked, then working, then
+  the retained outcome's record, then idle, then any, ties by id), falling
+  back to local pi's State activity; a local pi message equal to its title,
+  or prefixing it as `msg - `, is dropped. An ask supplies the source only.
+- SHELL is `{"phase","report"}`; phase is one of:
+
+```json
+["Unknown"]
+["Idle",{"last":null}]
+["Idle",{"last":{"code":1,"command":"false","started_at":1780000000.0,"ended_at":1780000001.0}}]
+["Running",{"origin":["Command",{"command":"make","started_at":1780000000.0}],"fullscreen":false}]
+["Running",{"origin":["Unknown"],"fullscreen":true}]
+```
+
+  Unknown is a shell without OSC 133 prompts, not an idle one. Idle is a
+  known prompt; `last` is the last command's exit, captured whole from
+  one read (code, command line, start and end, whole seconds) and kept
+  until the next command is promoted to Running; a missing D yields no
+  exit. A command is Running once it has been observed for 0.2s (kido's
+  clock, from its first observation, restarted by a new start); until then
+  the previous Idle is sent, so a short command never runs. The alternate
+  screen is Running at once with `fullscreen`, its origin the command when
+  OSC 133 knows one, else Unknown. An ssh before a remote prompt strictly
+  later than its start is a transport command; after it, `interactive`
+  is latched for that destination and the remote shell's markers drive
+  the phase.
+- `report` is null or `{"since","msg","state"}`, the pane's generic OSC
+  7501 records reduced blocked > working > idle with the agent rules
+  above, without asks or stall:
+
+```json
+["Running",{"progress":42}]
+["Waiting",{"kind":"auth","progress":null}]
+["Idle",{"outcome":null}]
+["Idle",{"outcome":{"serial":17,"result":"success"}}]
+```
+
+  It rides every phase. Its outcome survives an empty record set until a
+  command is promoted to Running (an outcome first seen during that
+  command's debounce stays) or a new report episode begins. It is never a
+  command exit code.
+- Outcomes: entering done or error in a record (first sight, reappearance,
+  done to error and back included) creates an outcome stamped with that
+  read's pane emission serial; unrelated message, progress, title or
+  serial changes never do. Simultaneous entries take the smallest record id.
+  An outcome is shown at aggregate Idle; arriving during other work it
+  waits until then, and a new live episode after Idle clears it. Removing
+  a record keeps a retained outcome.
+- `since` is when this feed first observed the current state tag (or, at
+  Idle, the current outcome). Progress, message, representative, kind,
+  serial and title changes do not move it. It is for display.
+- Tracking resets when an agent's root app changes, appears or clears
+  (including the agent exiting to the shell, or a shell becoming an
+  agent); when the local State session id or the ssh destination
+  changes; and when a pane leaves a successful topology read. A
+  terminal's report changing app or clearing is not a reset: its
+  retained report outcome stays. Linked occurrences of one pane share
+  tracking.
 - `program_status`: an object with integer `serial` and `records` array,
   always present (serial 0 and an empty array before any emission).
   Records are ordered bytewise by `id`; root has id "". Each has string
   `id` and `state` (idle, working, done, blocked, error), and optional own
-  `app`, `kind` (permission, question, auth), integer `progress` (0..100),
-  `title` and `msg`. Title and msg are decoded, validated UTF-8 strings,
-  not base64; the tmux input accepts padded or unpadded base64. Msg is
-  limited to 2048 decoded bytes (2732 encoded bytes). Kind is
-  meaningful only on blocked, progress only on working/blocked. App is
-  inherited from the nearest ancestor that has one,
+  `app`, `kind` (permission, question, auth; an unknown kind is dropped),
+  integer `progress` (0..100), `title` and `msg`. Title and msg are decoded,
+  validated UTF-8 strings, not base64; the tmux input accepts padded or
+  unpadded base64. Msg is limited to 2048 decoded bytes (2732 encoded
+  bytes). Kind is meaningful only on blocked, progress only on
+  working/blocked. App is inherited from the nearest ancestor that has one,
   including root across missing parents; inheritance is not materialized
-  into these records. All records are included. They drive pi display
-  even when a State identity exists; Claude Code uses its native root records.
-  Gone runs take precedence. Root apps pi and claude-code name agent panes;
-  other apps are terminals, using record title, app, then current command.
-  Native-only agents use the pane title verbatim, or the app when empty.
-  Local pi uses its State session name when set and drops duplicate message
-  captions; native-only agents keep the message independent of the title.
-  With no program message, local pi activity or a live subagent's elapsed
-  clock supplies the caption.
-  For other panes, records override shell/ssh display but not gone runs.
-  Representative priority is blocked > error > working > done > idle,
-  then id order, excluding acknowledged done/error records. If only
-  acknowledged completions remain, the first record supplies an idle label.
-  Message and optional progress percentage form the caption. Indicators
-  are waiting, failed, running, done and idle. Visiting acknowledges
-  done/error in that view only, until a newer serial (not a reconnect);
-  it never removes records from this field.
-- `title` and `tail`: arrays of spans with `text` and `role`: plain, current,
-  proc, dim, err, running, waiting, done or stalled.
-- `attention`: boolean, whether attention navigation visits this pane.
+  into these records. All records are included, raw: no visit or
+  acknowledgement removes or hides any of them.
 - `run`: `"agent"` for a subagent run, `"bash"` for plain async_bash,
   `"stream"` for async_bash launched with streaming, or null for anything
-  else. It remains set on ended or lingering run panes. `kind` stays
-  `"agent"` for subagent runs and `"run"` for both async_bash modes.
-  The run's meta records this classification at launch.
-- `started`: unix seconds as a number, equal to the run's meta.started_at
-  while its pane is alive and no outcome has been recorded. Independent
-  of `tail`: a subagent with activity text still has its run start time,
-  even when that subagent is idle. Null for ended, lingering or gone runs,
-  top-level agents (pi or Claude Code, any status), shells and ssh.
-  The app can draw elapsed time alongside activity text; kido's TUI
-  Elapsed caption remains restricted to runs without activity text.
+  else. It remains set on ended or lingering run panes. The run's meta
+  records this classification at launch.
+- `started`: unix seconds as a number that may carry a fraction, equal to the run's meta.started_at
+  while its pane is alive and no outcome has been recorded; null for ended
+  runs, top-level agents, shells and ssh. Independent of `msg`.
 - `children`: nodes hoisted under this pane, in display order: the
   windows of this agent's subagents and runs, each as a group node or,
   for a one-pane window, an item node. Nesting has no depth limit
   (subagents of subagents). Empty for most panes.
 
+Every option in these shapes is present as null when absent, never
+omitted, and variant-specific fields appear only inside their case.
+Variants are arrays: the tag, then its record when it has one. Every
+time is a JSON number of Unix seconds that may carry a fraction, whole
+values included (`1780000000.0`), so a client decodes it as floating
+point; only `server_instance.started_at` is an integer.
+
 Ids are unique within a session. A window linked into several sessions
 appears in each of them, with the same ids. A pane or window moving to another
 place in the tree keeps its id, so the app can key expansion and
 selection on `id`.
+
+Frontends own seen outcomes, notifications, glyphs, palettes,
+labels assembled from these facts, captions and elapsed clocks. Seen keys
+are the destination, `server_instance`, pane id and outcome source: an
+agent or report outcome by its serial, a command exit by
+(`started_at`, `ended_at`). These identities are weaker than exactly-once:
+two commands can share whole-second start and end; concurrent feeds can
+give one outcome different serials, as can a feed started after an
+unrelated update; a restarted feed loses a retained outcome whose record
+went idle or away, while an exit tmux still holds is reconstructed.
 
 The TUI draws the same tree: its glyph columns are derived from these
 nodes inside kido, so the feed and the TUI cannot disagree about
@@ -301,7 +415,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"2.1","server":"2.1"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"3.0","server":"3.0"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_PROTOCOL stamp, or null when absent, even when it matches protocol.
 The app compares them to detect a kido upgrade with an old server.
@@ -325,14 +439,12 @@ tmux -N attach does not start a server when the target server is absent.
 OSC 7501 records are delivered server-wide to every control client as
 `%program-status %N <serial> <JSON>`, throttled to 100ms per pane. The
 payload is a full record set, identical to `#{pane_program_status}`.
-The snapshot holds records; the control connection only coalesces and
-drains pending notifications. Kido merges only newer serials, fully
-rereads on every control dial and for one-shot views, and prunes the
-previous snapshot's absent panes before merging pending notifications.
-A notification merged after topology survives until the next read; if
-that read still lacks the pane, its records are dropped. This field is not part of the
-100ms topology format. OSC 133 A clears the applicable records; process
-exit, RIS and respawn also follow the fork's program-status clear rules.
+Topology is authoritative: every topology read includes
+`#{pane_program_status}`, and kido parses records only from it, for
+control-mode and one-shot reads alike. `%program-status` notifications
+only wake the next read; their payload is ignored. OSC 133 A clears the
+applicable records; process exit, RIS and respawn also follow the fork's
+program-status clear rules.
 These behaviours come from the pinned fork, not stock tmux.
 pi status comes from pi 1.1.0's native OSC 7501 root record, with no
 title or progress. Named pi labels use the session name reported in State,
@@ -340,7 +452,7 @@ exactly as set by /name. Unnamed or untracked pi labels use the pane title
 set through OSC 0/2, verbatim; unnamed tracked sessions
 are addressable only by session id or id prefix. Generic programs retain
 their OSC record title. A pi message duplicating the session name is
-omitted from the caption.
+dropped from `msg`.
 
 share/dune installs only its named source trees and files; this contract
 and testdata are checkout-only review artifacts.

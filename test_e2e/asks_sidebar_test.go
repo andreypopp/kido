@@ -27,13 +27,14 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 		for _, session := range s.Sessions {
 			for _, row := range feedItems(session.Nodes) {
 				if row.Pane != nil && *row.Pane == pane {
-					return row.Indicator != nil && row.Indicator.Kind == "waiting" && row.Attention
+					return row.isAgent() && row.Lifecycle.Agent.State == "Waiting" &&
+						row.Lifecycle.Agent.Source == "Ask" && feedValue(row.Lifecycle.Agent.Ask) == id
 				}
 			}
 		}
 		return false
 	}
-	f.waitLast(asking, "waiting indicator and attention in rpc")
+	f.waitLast(asking, "waiting on the ask in rpc")
 	h.programStatus(pane, "state=done:app=pi", "Decider")
 	h.agentStatus("asking-session", pane, "pi", "--inbox", in.Path)
 	h.waitRow("◆Decider")
@@ -54,7 +55,7 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 		return h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}") == pane
 	}, settle, msgf("ask jumps to its live pane"))
 	h.waitFocused(false)
-	f.waitLast(func(s feedSnapshot) bool { return s.Client.Pane == pane && asking(s) }, "visited asks remain attention")
+	f.waitLast(func(s feedSnapshot) bool { return s.Client.Pane == pane && asking(s) }, "a visited ask still waits")
 	focusSidebar(h)
 	h.sendKeys("Escape")
 	h.waitRow("◆Decider")

@@ -36,7 +36,7 @@ separate value, not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`2.1`. The launcher stamps it into the tmux server's environment at
+`3.0`. The launcher stamps it into the tmux server's environment at
 creation, before its configuration runs. RPC probes that stamp before
 opening the model's control connection.
 
@@ -65,12 +65,15 @@ on reconnect rather than replaying them.
 ## One model, two views
 
 `Sidebar` owns the tick, per-pane tracking and the typed session
-and node tree. RPC serializes that model; `Kido_sidebar` in `bin/` draws it with Mosaic; `lib/` has no TUI dependencies. The
-model has no width, colour or layout. The TUI owns its cursor, scroll and
-keys, maps roles to styles and indicators to glyphs, and derives bracket
-and continuation columns from the same tree. RPC sends uncut text and
-semantic roles, not glyph strings; the external view truncates and
-styles it.
+and node tree; `Pane_status` owns a pane's typed status and the tracking
+behind it. RPC serializes that model; `Kido_sidebar` in `bin/` draws it
+with Mosaic; `lib/` has no TUI dependencies. The model reports
+classification and semantic status, never presentation or
+acknowledgement: no width, colour, layout, glyph, caption, span or seen
+state. Each frontend composes labels and captions from the plain title
+and typed status, picks glyphs and palette, owns its seen outcomes,
+and derives bracket and continuation columns from the same
+tree. RPC sends uncut text; the external view truncates and styles it.
 
 The tick reads tmux topology, live agent reports, process information,
 run metadata and outstanding asks. Only root apps pi and claude-code identify agents;
@@ -86,9 +89,10 @@ A snapshot holds the named client's session, window and pane location,
 a transient error, and sessions in display order.
 Each session holds its name, current marker and a tree of nodes. A
 multi-pane window is a window group containing pane items; a one-pane
-window is an item directly. Items distinguish agents, async bash runs,
-ssh and shells, with indicators, title and tail spans, and child windows
-hoisted under their parent's pane. Hoisting stays within a session.
+window is an item directly. Each pane item carries a plain title, a
+lifecycle (Ended with its run result, or Live with the pane kind and its
+status), its raw records, run metadata and child windows hoisted under
+it. Hoisting stays within a session.
 
 Run classification distinguishes subagents, plain bash and streamed bash,
 including ended or lingering panes. A live run carries its metadata start
@@ -96,17 +100,15 @@ time while its pane is alive and no outcome is recorded, independently
 of activity text or agent status. Ended runs, top-level agents, shells
 and ssh have no run start time. Clients compute elapsed time locally;
 a running clock does not produce a snapshot every second. The TUI shows
-an elapsed caption for runs without activity text and schedules its own
-redraw at the next second boundary.
+an elapsed caption for runs with no message or progress and schedules
+its own redraw at the next second boundary.
 
 Run kind and the optional running start time are derived once in Sidebar's
-typed rows. TUI elapsed captions and RPC metadata use that same value;
-activity text can hide the TUI clock without hiding the RPC start time.
-Ask targets are likewise resolved once in the typed snapshot, not by
-either frontend.
+typed rows; ask targets are likewise resolved once in the typed snapshot,
+not by either frontend.
 
-Outstanding asks affect agent waiting indicators and the attention flag
-and appear in a separate snapshot list. The list matches the TUI's
+An outstanding ask makes its local pi agent Waiting with the ask as its
+source, and also appears in a separate snapshot list. The list matches the TUI's
 `a` mode: stable id, agent display name, full question text (the TUI
 renders its first line), and a live-pane association that distinguishes
 ended asks. Agent session identity and creation time support stable
@@ -114,10 +116,7 @@ identity and ordering; ended and revivable report whether activation
 would need revival and whether its directory/session file exist.
 Paths remain private persistence details. The model polls revival
 availability so removing a file changes the snapshot even without an
-ask-file change. Attention uses the same model
-predicate as the TUI's attention navigation: an outstanding ask, a waiting
-agent, or an idle agent that completed since this view last visited it.
-The client's location comes from its session's active pane, matching both
+ask-file change. The client's location comes from its session's active pane, matching both
 pane and session for linked windows. The last known location remains
 while no matching active pane is available.
 
@@ -126,58 +125,76 @@ Subsequent ticks wait for relevant tmux control notifications or the poll
 interval. Notifications are coalesced before reading fresh state; polling
 also observes changes that have no tmux notification, including agent
 reports and asks. `Sidebar.step` rebuilds on its snapshot change test or
-when shell debounce or stall tracking comes due. RPC serializes rebuilt
+when a command debounce or stall tracking comes due. RPC serializes rebuilt
 models and sends only a line different from the last snapshot sent. A
 rebuild with no wire-visible change produces nothing. This is a stream
 of full current views, not a delta log or a record of every intermediate
 transition.
 
 Each pane item also carries `program_status`: the pane emission serial
-and every OSC 7501 record, ordered by id. Title and message are decoded
-UTF-8; optional app is the record's own app, inherited by consumers from
-the nearest ancestor with one, including root across missing parents.
-Every topology read includes `#{pane_program_status}` in `Tmux_pane.format`,
-parsed once into each pane. Control-mode and one-shot views read records
-the same way. `%program-status` notifications only wake the tick; their
-payload is ignored. Visit acknowledgements remain keyed by the pane's
-emission serial, independently of the connection.
+and every OSC 7501 record, ordered by id, raw. Title and message are
+decoded UTF-8; optional app is the record's own app, inherited by
+consumers from the nearest ancestor with one, including root across
+missing parents. Topology is authoritative: every topology read includes
+`#{pane_program_status}` in `Tmux_pane.format`, parsed once into each pane,
+for control-mode and one-shot views alike. `%program-status`
+notifications only wake the tick; their payload is ignored.
 
-Program records drive shell/ssh and agent status, but not a gone run.
-A pi root without local State or a claude-code root is a native agent,
-titled from the pane title verbatim; only an empty title falls back to its app.
-Every other root app is a terminal, titled from the record title, then the
-record app, then the current command. The representative is chosen by blocked,
-error, working, done, idle priority, then bytewise id, excluding
-acknowledged done/error records so they cannot hide ongoing work. If all
-records are acknowledged completions, the first record supplies an idle
-label. Its title (or inherited app or foreground command) names a generic
-program row. pi's label comes instead from its reported session name,
-or the pane title (OSC 0/2) verbatim for an unnamed session. Message and optional progress percentage
-form the caption, except a local pi message duplicating its session name. With no program
-message, State activity supplies the caption; a live subagent with neither
-uses its elapsed clock. Indicators map
-to waiting, failed, running, done and idle. Visiting acknowledges done/error
-only in that view; only a newer pane serial re-arms them, not a reconnect.
-pi State records contain identity, session name, inbox, parentage, activity,
-model and heartbeat, not status or completion. pi status and completion
-attention come from pi 1.1.0's native OSC 7501 records; its ask overlay
-still outranks the indicator. Stalled means a working root with a stale State heartbeat,
-rebased against wake. Bare pi never stalls. pi addressing uses its reported
+The lifecycle is computed once per read by `Pane_status.observe`, which
+keeps per-pane tracking across ticks in the model. Ended, for a run pane
+with a recorded outcome or a dead pane, overrides any status; its result
+is unknown until the outcome file exists, never inferred from the
+process. Otherwise the pane's kind (design-program-status.md) carries its
+status. An agent's status is waiting (an outstanding ask of a local pi,
+which outranks blocked records, or a blocked record), stalled (a local
+pi with a working root and a stale heartbeat, rebased against wake),
+running or idle, in that precedence, with ties by bytewise record id
+and the oldest of several asks. A shell's status is its OSC 133 phase plus a generic report, the same
+reduction without asks or stall. Outcomes come from per-record transitions
+into done or error, stamped with the read's pane serial, held pending
+while other records still work and cleared by a new live episode; `since`
+records when this feed first saw the current state. Tracking resets on an
+agent's root app change (a terminal's report app is not tracked), a
+State session change, an ssh destination change, a pane leaving a
+successful read, and a changed server identity.
+
+Messages come from the representative record (blocked, working, the
+outcome's record, idle, then any), falling back to local pi's State
+activity; a local pi message duplicating its title is dropped. pi State
+records contain identity, session name, inbox, parentage, activity, model
+and heartbeat, not status or completion. pi addressing uses its reported
 session name, including when a nested program overwrites the OSC root.
 Unnamed pi sessions are addressable only by id. Native agents without a
 local pi State identity have no session id or inbox and are not listed by
 list_runs; kido prompt can paste to them.
 
+Seen state belongs to each frontend. The TUI marks the client's active
+pane's current outcomes seen on every successful tick, keyed by outcome
+source and serial, or a command exit's start and end; an exit that ended
+before the TUI started counts as seen. Child record rows always show raw states. The
+0.5s post-finish running hold, and drawing a run that starts inside it at
+once, are the TUI's own remembered display, not wire state.
+
+## Server identity
+
+`server_instance` is tmux's `#{start_time}` and `#{pid}`, read with
+`Tmux_pane.server` on the model's control connection once, and again
+after each reconnect (`Tmux.Client.dials`). A failed read keeps
+the last good identity and topology, sets `error`, and tracks nothing. No
+snapshot is sent before the first good pair and topology. A pair that
+changes between reads drops all tracking before the new read is tracked.
+A control reconnect keeps the pair and therefore the tracking; a new RPC
+process starts tracking afresh.
+
 ## Requests and navigation
 
 Search is client-side. The model always contains all sessions; the TUI
-keeps its search text locally and applies Sidebar's pure fuzzy filter to
+keeps its search text locally and applies its pure fuzzy filter to
 the session tree it renders. Matching uses session names, agent titles
 and ssh destinations, and sorts matching sessions by score. Empty text
-keeps the original ordering. Agent titles are row title spans; an ssh
-destination is the host span following the "ssh " prefix, excluding any
-remote command text. RPC accepts no filter request and emits no filter
-field.
+keeps the original ordering. An ssh destination is the typed `user@host`
+of the pane kind, never remote command text. RPC accepts no filter
+request and emits no filter field.
 
 Switch-window and switch-session requests carry an integer id and a
 `next` or `prev` direction. Each receives a correlated reply with the
@@ -206,6 +223,14 @@ A revived window can outlive a failed subsequent jump: there is no
 rollback or automatic replay. Concurrent views can still revive one
 ended ask twice before a live holder reports. pi resolution retains
 tmux's command-client PATH semantics.
+
+Protocol 3.0 changes from 2.1:
+- Added: `server_instance`; no snapshot before the first valid identity.
+- Changed: pane items are `kind` "pane" with a plain `title` and a typed
+  `lifecycle` of kind, agent status or shell phase and report, outcomes
+  and `since`.
+- Removed: `tail`, span roles, `indicator`, `attention` and the ended-run
+  caption; acknowledgement leaves kido's model for each frontend.
 
 Protocol 2.1 changes from 2.0:
 - Changed: pi row titles and addressing use the reported session name.
@@ -280,9 +305,10 @@ a new RPC subprocess performs a new hello and starts a new model.
 
 ## Limits of the surface
 
-RPC exposes no TUI-local cursor, scroll, glyphs or layout,
+RPC exposes no TUI-local cursor, scroll, glyphs, seen state or layout,
 and it does not synchronize those between views. Per-pane tracking belongs
-to that subprocess. Navigation includes shell/session creation, absolute window/session selection,
+to that subprocess, so two feeds can stamp one outcome with different
+serials. Navigation includes shell/session creation, absolute window/session selection,
 relative switches, pane activation,
 ask activation/deletion and releasing tmux side-status keyboard focus,
 not arbitrary tmux commands,

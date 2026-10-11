@@ -1,5 +1,8 @@
 type kind = Permission | Question | Auth
 
+let yojson_of_kind k =
+  `String (match k with Permission -> "permission" | Question -> "question" | Auth -> "auth")
+
 type state =
   | Idle
   | Working of int option
@@ -51,14 +54,13 @@ let parse json =
   let optional f key json = match member key json with `Null -> None | v -> Some (f v) in
   let record json =
     let kind =
-      optional
-        (fun v ->
-          match to_string v with
-          | "permission" -> Permission
-          | "question" -> Question
-          | "auth" -> Auth
-          | _ -> raise Exit)
-        "kind" json
+      Option.flat_map
+        (function
+          | "permission" -> Some Permission
+          | "question" -> Some Question
+          | "auth" -> Some Auth
+          | _ -> None)
+        (optional to_string "kind" json)
     in
     let progress = optional to_int "progress" json in
     if Option.exists (fun n -> n < 0 || n > 100) progress then raise Exit;
@@ -123,10 +125,7 @@ let yojson_of_t t =
     `Assoc
       ([ ("id", `String r.id); ("state", `String state) ]
       @ optional "app" (fun s -> `String s) r.app
-      @ optional "kind"
-          (fun k ->
-            `String
-              (match k with Permission -> "permission" | Question -> "question" | Auth -> "auth"))
+      @ optional "kind" yojson_of_kind
           (match r.state with Blocked { kind; _ } -> kind | _ -> None)
       @ optional "progress" (fun n -> `Int n) (progress r)
       @ optional "title" (fun s -> `String s) r.title
@@ -151,6 +150,7 @@ let%test_module "Tests" =
           {|{"serial":1,"records":[{"id":"","state":"done","msg":"/w=="}]}|};
           {|{"serial":1,"records":[{"id":"","state":"done","progress":101}]}|};
           {|{"serial":1,"records":[{"id":"","state":"done"},{"id":"","state":"idle"}]}|};
+          {|{"serial":1,"records":[{"id":"","state":"blocked","kind":"future"}]}|};
         ];
       [%expect
         {|
@@ -162,6 +162,7 @@ let%test_module "Tests" =
     invalid program status
     invalid program status
     invalid program status
+    {"serial":1,"records":[{"id":"","state":"blocked"}]}
     |}]
 
     let%expect_test "optional base64 padding" =

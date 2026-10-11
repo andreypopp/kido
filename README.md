@@ -52,7 +52,6 @@ While the sidebar is focused:
 | key | action |
 |-----|--------|
 | `j` / `k`, `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
-| `n` / `N` | next / previous session that wants you (waiting, or done since you last looked) |
 | `gg` / `G` | first / last pane |
 | `/` | fuzzy-filter by session name, agent title, or ssh destination; `Esc` cancels |
 | `Esc` / `C-c` | clear the filter, or close the picker |

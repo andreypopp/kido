@@ -554,8 +554,8 @@ Pi shows this session's open asks in full above the editor, refreshing
 on startup, reload and tool actions. Changes made elsewhere invalidate a
 live session's widget through an `asks` inbox envelope; external removals
 also queue a kido notice with the removed ask's id and first text line for
-the model's next turn, without waking or interrupting it. Open asks give a live agent the existing waiting indicator and attention,
-outranking Done and ordinary state and remaining attention after a visit. `a` toggles the all-asks list, including dimmed ended
+the model's next turn, without waking or interrupting it. Open asks give a live agent the existing waiting indicator,
+outranking Done and ordinary state and remaining after a visit. `a` toggles the all-asks list, including dimmed ended
 sessions; `d` removes the selected ask and Escape returns to windows.
 Enter checks the full live registry afresh and jumps to a live session's
 pane. For an ended session it opens a window in the ask's cwd running
@@ -1659,7 +1659,7 @@ The shared sidebar model and RPC feed are described in [design-rpc.md](design-rp
 
 An `ssh` pane reports what the far side is doing only because the far
 side says so: tmux parses OSC 133 off the pane's output stream and never
-learns the markers crossed a network, and `Sidebar.observe_remote`
+learns the markers crossed a network, and `Pane_status.observe`
 latches a pane once its far side marks a prompt later than the local
 shell marked the ssh as started. All of that needs the remote shell to
 source an integration of kido's - `share/zsh/integration.zsh`, or

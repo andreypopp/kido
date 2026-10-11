@@ -187,6 +187,16 @@ let active_pane panes session =
 
 let list_panes tmux = Result.map parse (Tmux.list_panes tmux ~format)
 
+type server = { started_at : int; pid : int } [@@deriving equal, yojson_of]
+
+let server tmux =
+  Result.flat_map
+    (fun out ->
+      match List.map int_of_string_opt (String.split_on_char ' ' out) with
+      | [ Some started_at; Some pid ] when started_at > 0 && pid > 0 -> Ok { started_at; pid }
+      | _ -> Error (Printf.sprintf "unreadable tmux server identity %S" out))
+    (Tmux.exec tmux [ "display-message"; "-p"; "#{start_time} #{pid}" ])
+
 type client_state = { session : string; session_id : session_id; focused : bool }
 
 let client_sep = "\x1f"

@@ -34,18 +34,18 @@ func TestChildProgramStatus(t *testing.T) {
 				}
 				return strings.Join(out, "\n")
 			}
-			waitRows := func(doneGlyph string) {
+			waitRows := func() {
 				t.Helper()
 				h.waitFor(func() bool {
 					rows := rows()
 					return strings.Contains(rows, "├◼Investigate\n") &&
 						strings.Contains(rows, "│ └◆a/b approve\n") &&
-						strings.Contains(rows, "└"+indField(doneGlyph)+"Finished\n") &&
+						strings.Contains(rows, "└"+indField("✓")+"Finished\n") &&
 						strings.Index(rows, "Investigate") < strings.Index(rows, "a/b approve") &&
 						strings.Index(rows, "a/b approve") < strings.Index(rows, "Finished")
 				}, settle, msgf("nested program rows: %v", h.rows()))
 			}
-			waitRows("✓")
+			waitRows()
 			f := h.startFeed("alpha")
 			f.waitLast(func(s feedSnapshot) bool {
 				items := feedItems(s.Sessions[0].Nodes)
@@ -55,7 +55,7 @@ func TestChildProgramStatus(t *testing.T) {
 				for _, r := range items {
 					if r.ID == pane {
 						return len(r.Children) == 0 && len(r.ProgramStatus.Records) == 4 &&
-							r.Indicator != nil && r.Indicator.Kind == "waiting"
+							r.state() == "Waiting"
 					}
 				}
 				return false
@@ -88,7 +88,8 @@ func TestChildProgramStatus(t *testing.T) {
 			h.waitFor(func() bool {
 				return h.in("display-message", "-p", "-c", h.client, "#{pane_id}") == pane
 			}, settle, msgf("Enter jumps to parent pane"))
-			waitRows("")
+			// Visiting the pane acknowledges nothing in its child rows: they show raw states.
+			waitRows()
 			emit("state=clear:id=a/b")
 			emit("state=clear:id=a")
 			emit("state=clear:id=a-other")

@@ -5,7 +5,7 @@ type session_id [@@deriving equal, string, yojson_of]
 module Pane_map : Map.S with type key = pane_id
 
 module Program_status : sig
-  type kind
+  type kind = Permission | Question | Auth [@@deriving yojson_of]
 
   type state =
     | Idle
@@ -43,6 +43,7 @@ module Client : sig
   val await_notifications : t -> timeout:float -> unit
   val follow : t -> session_id -> unit
   val close : t -> unit
+  val dials : t -> int
 end
 
 val binary : string Lazy.t

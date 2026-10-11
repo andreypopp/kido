@@ -14,11 +14,7 @@ func snapshotTitle(s feedSnapshot, pane string) string {
 	for _, session := range s.Sessions {
 		for _, row := range feedItems(session.Nodes) {
 			if row.Pane != nil && *row.Pane == pane {
-				var title strings.Builder
-				for _, span := range row.Title {
-					title.WriteString(span.Text)
-				}
-				return title.String()
+				return row.Title
 			}
 		}
 	}
