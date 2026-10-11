@@ -306,7 +306,10 @@ import TmuxControl
         {"v":2,"asks":[],"client":{"session":"$0","window":"@1","pane":"%1"},"server_instance":{"started_at":1791000000,"pid":4242},"error":null,"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"agent","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791000000,"msg":null,"state":["Idle",{"outcome":{"serial":3,"result":"failure"}}]}}]],"program_status":{"serial":3,"records":[]},"run":null,"started":null,"children":[]}]}]}
         """.utf8))
         func status(_ owner: WindowOwner) -> SidebarRow.Status? { owner.sidebar.list.visualRows.first { $0.target != nil }?.status }
-        for owner in [peer, other] { owner.testReceive(snapshot) }
+        let baseline = try JSONDecoder().decode(Snapshot.self, from: Data("""
+        {"v":2,"asks":[],"client":{"session":"$0","window":"@1","pane":"%1"},"server_instance":{"started_at":1791000000,"pid":4242},"error":null,"sessions":[]}
+        """.utf8))
+        for owner in [peer, other] { owner.testReceive(baseline); owner.testReceive(snapshot) }
         XCTAssertEqual([peer, other].map(status), [.error, .error], "unattended windows leave the outcome unseen")
         publisher.testAttended = true
         publisher.testReceive(snapshot)
