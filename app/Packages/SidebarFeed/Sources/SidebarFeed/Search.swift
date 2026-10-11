@@ -17,8 +17,7 @@ public func sidebarSearch(_ snapshot: Snapshot?, query: String) -> Snapshot? {
         var best = score(session.name)
         func visit(_ node: Node) {
             if case .item(let item) = node {
-                let title: String? = item.kind == .agent ? item.label : item.kind == .ssh && item.title.count > 1 ? item.title[1].text : nil
-                if let title, let match = score(title) { best = max(best ?? match, match) }
+                for title in item.searchTitles { if let match = score(title) { best = max(best ?? match, match) } }
             }
             node.children.forEach(visit)
         }
