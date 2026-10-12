@@ -744,7 +744,7 @@ unfiltered feed; descendant windows activate their ancestor tab. Each title
 is the composed label of that window's active pane, falling back to the
 tmux window name until its feed label arrives. A tab whose active pane is an
 agent or agent run is drawn like its sidebar row: semibold, with the display-only
-@ prefix, never doubled; other tabs are regular with no @. WindowView's active
+@ prefix when that row has one; other tabs are regular with no @. WindowView's active
 pane, read from tmux layouts and `%window-pane-changed`, is shared with terminal
 focus. Status dots summarize the window and its descendants: a 6pt dot on the
 leading side, centered 15pt from the tab surface's leading edge, red for error
@@ -807,8 +807,10 @@ status indicator: at the indicator's center (the parent row's left+20pt),
 from the indicator's bottom+3pt to the last descendant's bottom−10pt.
 Geometry is derived in the row model as per-row guide segments, not
 maintained in a separate view tree.
-Agents and
-agent runs receive a display-only @ prefix, never doubled. Idle local shell panes
+The display-only @
+prefix, never doubled, marks an agent that can be messaged: pi agents and
+agent runs. A native agent pane (Some_agent, such as Claude Code) cannot be
+messaged, so it keeps the semibold title without the @. Idle local shell panes
 (Live Terminal at a known Idle prompt, no run, idle/done/failed indicator) display secondary-colored
 `Terminal`; an Unknown phase, full-screen programs, SSH, and run items keep their labels. Both display
 rules leave raw pane labels and tab/window titles unchanged.
