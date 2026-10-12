@@ -91,14 +91,20 @@ whitespace, controls or shell syntax. Ports and jump hosts belong in SSH
 config. File → **New Local Window** uses ordinary Local routing even when other
 windows exist; the cold remote-launch gate still holds Local requests back.
 File → **Connect to Remote Host…** uses the same remote routing as URLs and the
-App Intent. Its native alert is a sheet on the key window, or app-modal without
-one, with a labeled host field and Connect/Cancel buttons. Invalid input keeps
-the same alert open, retaining the text and showing an inline error under the
-field; Connect dismisses only after validation succeeds. Neither item has a shortcut.
-Dock reopen still focuses existing windows. There is no recent-connections store
-or remote restore. Off-screen FileMenuTests exercise the dialog response handler
-directly rather than running a modal alert, and create inert window owners without
-starting a server.
+App Intent. Its dialog is a 440pt titled sheet on the key window, or a free
+window without one: bold title, a one-line lead, a labeled **Host:** field with
+its help line, a bordered **Recent** table (132pt, 24pt rows of host and
+relative time) and, along the bottom, **Clear Recent** at the left with
+Cancel and the default Connect at the right. Selecting a recent row fills
+the field; double-clicking connects it. Invalid input keeps the sheet open,
+retaining the text and showing an inline red error under the field that grows
+the same sheet by 32pt; Connect dismisses only after validation succeeds. Neither
+item has a shortcut. Dock reopen still focuses existing windows. The recent
+list lives in preferences (`recentHosts`) and is refreshed by every remote
+path, dialog, URL or intent alike; Clear Recent empties it and disables itself
+until a host is added. There is no remote restore. Off-screen FileMenuTests
+exercise the dialog response handler directly rather than running a modal
+sheet, and create inert window owners without starting a server.
 Local keeps `SessionModel.title` (session and current window); remote prefixes
 it with resolved `user@host / `. The original dialing alias is the window
 content's tooltip. Offline titles drop the session/window name.
@@ -111,7 +117,8 @@ broadcast to live owners. Late discovery, command, feed and control callbacks
 check liveness/generation; dead-master callbacks cannot publish channel results.
 Surface disposal cancels find/gestures, denies pending paste exactly once,
 rejects deferred actions/input, and retains parser-quiescent main-thread freeing.
-Closing a window stops only its channels/master, never remote sessions. Closed
+Closing a native window stops only its channels/master, never a pane or a
+remote session, so it never asks for confirmation; reopening redials. Closed
 owners stay retained until their transport cleanup completes; quit replies
 after asynchronous process-reaping completion, including retiring transports.
 The terminate-later reply is a common-mode main RunLoop block, not a main
@@ -735,9 +742,19 @@ WindowTabs paints no background of its own, preserving the native sidebar shadow
 Tabs project the current session's top-level windows from the
 unfiltered feed; descendant windows activate their ancestor tab. Each title
 is the composed label of that window's active pane, falling back to the
-tmux window name until its feed label arrives. WindowView's active pane,
-read from tmux layouts and `%window-pane-changed`, is shared with terminal
-focus. Status dots summarize the window and its descendants.
+tmux window name until its feed label arrives. A tab whose active pane is an
+agent or agent run is drawn like its sidebar row: semibold, with the display-only
+@ prefix, never doubled; other tabs are regular with no @. WindowView's active
+pane, read from tmux layouts and `%window-pane-changed`, is shared with terminal
+focus. Status dots summarize the window and its descendants: a 6pt dot on the
+leading side, centered 15pt from the tab surface's leading edge, red for error
+and orange for waiting. The label is inset 26pt on both sides regardless of the
+dot, so nothing shifts. Hovering the dot's own 16pt slot, and only that slot,
+replaces it with a 16pt × close button whose hover brightens it with a 10%
+labelColor, 4pt-radius fill; leaving the slot restores the dot. A 28pt-wide,
+icon-only + at the trailing end of the strip, outside the scrolling tabs,
+creates a window after the current one through the same new-window request as
+Command-T.
 
 `SidebarView` is a reusable `NSTableView` backed by the pure row model in
 `SidebarFeed/Rows.swift`. Sessions have noninteractive 29pt headers with
@@ -754,6 +771,19 @@ path as every other row; there is no separate record view. A record differs
 from a child-window agent row only in having no @ prefix and no clock, and
 in being display-only: never a navigation, click, hover, selection or filter
 target, and skipped by arrow navigation.
+
+Hovering a pane row's status-indicator slot, the 16pt square centered on the
+indicator, replaces the indicator with a 16pt × close button; the rest of the
+row has no hover treatment and records have no close button. Every app-issued
+close goes through one confirmation: the row and tab ×, Close Pane (Command-W)
+and the menu commands. If the pane, or any pane in the window and its
+descendant windows, is running or waiting, a stock `.warning` NSAlert sheet
+asks `Close “name”?` with "A process is still running in this pane. Closing the
+pane will end it." or "Processes are still running in this window. Closing the
+window will end them."; its Close (Return) and Cancel (Escape) buttons sit
+side by side. A quiet target closes at once. The close kills descendant windows
+before the target, and a failed kill reports "Pane command failed" in another
+sheet. Only one alert is prepared at a time.
 
 All pane and program rows are 32pt single-line or 48pt with a caption, with
 7pt vertical padding. Titles are 13pt regular on an 18pt line; captions are
