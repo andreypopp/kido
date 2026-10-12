@@ -82,12 +82,16 @@ public struct SidebarSeen: Equatable, Sendable {
     }
 }
 
-public func sidebarTitle(_ title: String, agent: Bool) -> String {
-    agent && !title.hasPrefix("@") ? "@" + title : title
+public func sidebarTitle(_ title: String, messageable: Bool) -> String {
+    messageable && !title.hasPrefix("@") ? "@" + title : title
 }
 
 extension Item {
     var isAgent: Bool { run == .agent || agent != nil }
+    var isMessageable: Bool {
+        if case .live(.someAgent) = lifecycle { return false }
+        return isAgent
+    }
     var agent: AgentStatus? {
         switch lifecycle {
         case .live(.someAgent(_, let status)), .live(.piAgent(_, let status)), .live(.ssh(_, .agent(_, let status))): status
@@ -226,7 +230,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                     let parent = rows.count
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: height,
-                                           title: quietShell ? "Terminal" : sidebarTitle(label, agent: agent),
+                                           title: quietShell ? "Terminal" : sidebarTitle(label, messageable: item.isMessageable),
                                            tail: tail, status: status, indicatorDescription: description,
                                            started: item.started,
                                            focused: target == snapshot.client,
