@@ -36,7 +36,7 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     #expect(panes[3].guides == [.init(x: 35, top: 0, bottom: 22), .init(x: 20, top: 0, bottom: 32)])
     #expect(panes[4].guides == [.init(x: 20, top: 0, bottom: 32)])
     #expect(panes[5].guides == [.init(x: 20, top: 0, bottom: 22)])
-    #expect(sidebarRows(try fixture(client: 1)).filter(\.focused).map(\.title) == ["pane-1"])
+    #expect(sidebarRows(try fixture(client: 1)).filter(\.focused).map(\.title) == ["@pane-1"])
     #expect(sidebarRows(try fixture(client: 2)).filter(\.focused).map(\.title) == ["pane-2"])
 }
 
@@ -104,7 +104,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     let panes = sidebarRows(try fixture()).filter { $0.target != nil }
     #expect(panes.map(\.started) == [nil, nil, Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), nil])
     #expect(panes.allSatisfy { if case .pane = $0.kind { return true }; return false })
-    #expect(panes.first { $0.title == "pane-1" }?.tail == "working")
+    #expect(panes.first { $0.title == "@pane-1" }?.tail == "working")
     #expect(panes.map(\.height) == [32, 32, 48, 32, 32, 32])
 }
 
@@ -118,7 +118,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
         (["Live", ["Pi_agent", ["id": "pi-session", "status": report(idle())]]], nil, "Ada", "@Ada", "Ada", true),
         (["Live", ["Some_agent", ["name": "claude-code", "status": ["since": 1, "msg": null, "state": idle()]]]], nil, "Ada", "Ada", "Ada", true),
         (agent(), nil, "@Ada", "@Ada", "@Ada", true),
-        (remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]]), nil, "Ada", "@Ada", "Ada", true),
+        (remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]]), nil, "Ada", "Ada", "Ada", true),
         (terminal(running()), "agent", "Ada", "@Ada", "Ada", true),
         (["Ended", ["result": "completed"]], "agent", "Ada", "@Ada", "Ada", true),
         (terminal(["Unknown"]), nil, "zsh", "zsh", "zsh", false),
