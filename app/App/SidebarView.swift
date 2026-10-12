@@ -14,6 +14,75 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     var newSession: () -> Void = {}
     var newWindow: (SessionID) -> Void = { _ in }
     var closePane: (SidebarRow) -> Void = { _ in }
+    var renameSession: (SessionID, String, @escaping @MainActor @Sendable (String?) -> Void) -> Void = { _, _, done in done("The control client is not ready.") }
+    private var editing: (id: SidebarRow.ID, cell: SidebarCell, original: String, responder: NSResponder?)?
+    private var renaming = false
+
+    private func beginRename(_ item: SidebarRow, cell: SidebarCell) {
+        guard editing == nil else { return }
+        onIntent()
+        editing = (item.id, cell, item.title, window?.firstResponder)
+        renaming = true
+        defer { renaming = false }
+        cell.nameField.stringValue = item.title
+        cell.nameField.isHidden = false
+        cell.needsDisplay = true
+        window?.makeFirstResponder(cell.nameField)
+        cell.nameField.selectText(nil)
+    }
+
+    private func endRename() {
+        guard let edit = editing else { return }
+        editing = nil
+        renaming = false
+        edit.cell.nameField.isHidden = true
+        edit.cell.renameError.isHidden = true
+        edit.cell.needsDisplay = true
+        if let row = items.firstIndex(where: { $0.id == edit.id }) {
+            edit.cell.configure(items[row])
+            resizeRows([row])
+        }
+        window?.makeFirstResponder(edit.responder)
+    }
+
+    private func resizeRows(_ rows: IndexSet) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            table.noteHeightOfRows(withIndexesChanged: rows)
+        }
+    }
+
+    private func rejectRename(_ message: String) {
+        guard let edit = editing else { return }
+        renaming = true
+        defer { renaming = false }
+        edit.cell.renameError.stringValue = message
+        edit.cell.renameError.isHidden = false
+        edit.cell.needsLayout = true
+        if let row = items.firstIndex(where: { $0.id == edit.id }) {
+            resizeRows([row])
+        }
+        edit.cell.needsDisplay = true
+        window?.makeFirstResponder(edit.cell.nameField)
+        edit.cell.nameField.selectText(nil)
+        NSAccessibility.post(element: edit.cell.renameError, notification: .announcementRequested,
+                             userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+
+    private func finishRename(_ commit: Bool) {
+        guard let edit = editing, !renaming, !rendering else { return }
+        guard commit else { endRename(); return }
+        switch SessionRename(edit.cell.nameField.stringValue, session: edit.id.session, original: edit.original, sessions: snapshot?.sessions ?? []) {
+        case .revert: endRename()
+        case .reject(let message): rejectRename(message)
+        case .rename(let name):
+            renaming = true
+            renameSession(edit.id.session, name) { [weak self, weak cell = edit.cell] error in
+                guard let self, editing?.cell === cell else { return }
+                if let error { rejectRename(error) } else { endRename() }
+            }
+        }
+    }
     private let search = NSSearchField()
     private let table = Table()
     private let scroll = NSScrollView()
@@ -164,6 +233,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         renderedSeen = seen.value
         rendering = true
         defer { rendering = false }
+        let editor = editing?.cell.nameField.currentEditor() as? NSTextView
+        let selection = editor?.selectedRange()
         let selected = entry(table.selectedRow)?.id
         let origin = scroll.contentView.bounds.origin
         let first = table.rows(in: table.visibleRect).location
@@ -174,9 +245,28 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         noMatches.isHidden = query.isEmpty || visible?.sessions.isEmpty != true
         let previous = items
         items = sidebarRows(visible, seen: seen.value)
-        if previous.map(\.id) == items.map(\.id), previous.map(\.height) == items.map(\.height) {
+        if let edit = editing, !items.contains(where: { $0.id == edit.id }) { endRename() }
+        if editing != nil {
+            let changes = items.map(\.id).difference(from: previous.map(\.id))
+            table.beginUpdates()
+            for change in changes {
+                switch change {
+                case .remove(let index, _, _): table.removeRows(at: [index], withAnimation: [])
+                case .insert(let index, _, _): table.insertRows(at: [index], withAnimation: [])
+                }
+            }
+            table.endUpdates()
+            table.reloadData(forRowIndexes: IndexSet(items.indices.filter { index in
+                items[index].id != editing?.id && previous.first(where: { $0.id == items[index].id }) != items[index]
+            }), columnIndexes: [0])
+            resizeRows(IndexSet(items.indices))
+        } else if previous.map(\.id) == items.map(\.id), previous.map(\.height) == items.map(\.height) {
             table.reloadData(forRowIndexes: IndexSet(items.indices.filter { items[$0] != previous[$0] }), columnIndexes: [0])
         } else { table.reloadData() }
+        if let edit = editing, let selection, window?.firstResponder !== editor {
+            window?.makeFirstResponder(edit.cell.nameField)
+            (edit.cell.nameField.currentEditor() as? NSTextView)?.setSelectedRange(selection)
+        }
         if let row = items.firstIndex(where: { recenter ? $0.target == next?.client : $0.id == selected }) {
             table.selectRowIndexes([row], byExtendingSelection: false)
             if recenter { table.scrollRowToVisible(row) }
@@ -280,6 +370,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     func refresh() { show(snapshot) }
 
     fileprivate func key(_ event: NSEvent) -> Bool {
+        guard editing == nil else { return true }
         let mods = event.modifierFlags.intersection([.command, .control, .option])
         switch (Int(event.keyCode), event.charactersIgnoringModifiers ?? "", mods) {
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
@@ -328,7 +419,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     func controlTextDidEndEditing(_ notification: Notification) { onIntent() }
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { items[row].height }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        items[row].height + (items[row].id == editing?.id ? editing!.cell.errorHeight : 0)
+    }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { items[row].target != nil }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let id = NSUserInterfaceItemIdentifier("row")
@@ -338,7 +431,21 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = items[row]
-        let cell = tableView.makeView(withIdentifier: SidebarCell.id, owner: nil) as? SidebarCell ?? SidebarCell(fonts)
+        if item.id == editing?.id { return editing?.cell }
+        let reused = tableView.makeView(withIdentifier: SidebarCell.id, owner: nil) as? SidebarCell
+        let cell = reused === editing?.cell ? SidebarCell(fonts) : reused ?? SidebarCell(fonts)
+        cell.beginRename = { [weak self, weak cell] in
+            guard let self, let cell, let current = items.first(where: { $0.id == item.id }) else { return }
+            beginRename(current, cell: cell)
+        }
+        cell.finishRename = { [weak self] in self?.finishRename($0) }
+        cell.renameChanged = { [weak self, weak cell] in
+            guard let self, let cell, editing?.cell === cell else { return }
+            cell.renameError.isHidden = true
+            if let index = items.firstIndex(where: { $0.id == editing?.id }) {
+                resizeRows([index])
+            }
+        }
         cell.configure(item)
         cell.close.invoke = { [weak self] in self?.closePane(item) }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
