@@ -17,7 +17,8 @@ struct SessionModel: Equatable {
         let active: Bool
         let status: SidebarRow.Status
         var agent = false
-        var displayName: String { sidebarTitle(name, agent: agent) }
+        var messageable = false
+        var displayName: String { sidebarTitle(name, messageable: messageable) }
     }
 
     var sessions: [SessionListing] = []
@@ -37,7 +38,8 @@ struct SessionModel: Equatable {
         model.windows = windows.filter { projection.ancestors[$0.id] == nil || projection.ancestors[$0.id] == $0.id }
         let active = window.flatMap { projection.ancestors[$0] ?? $0 }
         return (model, model.windows.map { Tab(id: $0.id, name: projection.labels[$0.id]?.title ?? $0.name, active: $0.id == active,
-                                              status: projection.statuses[$0.id] ?? .quiet, agent: projection.labels[$0.id]?.agent ?? false) })
+                                              status: projection.statuses[$0.id] ?? .quiet, agent: projection.labels[$0.id]?.agent ?? false,
+                                              messageable: projection.labels[$0.id]?.messageable ?? false) })
     }
 
     func select(_ step: WindowStep) -> RPCRequest? {
