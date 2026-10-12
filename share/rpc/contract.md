@@ -1,4 +1,4 @@
-# kido rpc protocol 3.0
+# kido rpc protocol 3.1
 
 fork revision: 676f83a82e19fcfae5abf9619a9bf64fbfb06cd5
 
@@ -20,9 +20,9 @@ XDG_STATE_HOME/kido, then ~/.local/state/kido. --client names the app's
 control client. Socket paths fit the platform's sun_path including NUL.
 Run outside tmux with no KIDO_AGENT_* environment.
 
-The first stdout line is {"hello":{"protocol":"3.0"}}. A differing or absent
-server stamp produces {"hello":{"protocol":"3.0","server":"other"}} or
-{"hello":{"protocol":"3.0","server":null}}, followed by
+The first stdout line is {"hello":{"protocol":"3.1"}}. A differing or absent
+server stamp produces {"hello":{"protocol":"3.1","server":"other"}} or
+{"hello":{"protocol":"3.1","server":null}}, followed by
 {"error":"server protocol does not match binary protocol"}, then exit 2.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
 or stdin read error; diagnostics use stderr. Option errors use cmdliner.
@@ -111,6 +111,36 @@ select-session only a tmux session id ($ followed by digits), new-session
 only true, and select-window exactly session and
 window identifier fields ($N and @N). Multiple recognized operations are
 invalid. All requests use the existing error envelope and explicit socket.
+
+Reordering also requires integer ids and commits one drop per request:
+{"id":51,"reorder-session":{"session":"$3","relative-to":"$1","placement":"before"}}
+{"id":52,"reorder-window":{"session":"$3","window":"@12","relative-to":"@9","placement":"after"}}
+placement is "before" or "after"; every field is required and no other
+field is accepted. Success replies {"reply":{"id":51,"reordered":true}}.
+Both validate against fresh server topology: source and anchor must exist
+and differ ("no such session", "no such top-level window in session",
+"cannot reorder relative to itself"). Reorder-session places the source
+session before or after the anchor in session order, then writes dense
+ranks 0..n-1 to every current session as its session-scoped @kido-order
+option. Reorder-window requires the window and the anchor to be top-level
+roots of that session's tree, never a window nested under its parent
+agent nor another session's window, and refuses a grouped session ("cannot
+reorder windows in a grouped session") before changing anything. It runs
+move-window -d -b (before) or -a (after) -s '$S:@src' -t '$S:@anchor',
+which shifts every occupied index in the range, nested windows' included;
+the tree still hoists them under their parent. When the session's
+renumber-windows is on, move-window -r -t '$S' follows; off, gaps stay.
+When the moved window was the session's current window, select-window
+selects it again in the same tmux command; attached clients can briefly
+see the fallback. No client is switched and no pane is selected.
+
+## Changes from 3.0 to 3.1
+
+- Added: reorder-session and reorder-window requests with the
+  `reordered` reply.
+- Added: a session's @kido-order rank orders ranked sessions first;
+  unranked sessions keep creation-time/name order after them.
+- Unchanged: snapshot shapes and v.
 
 ## Changes from 2.1 to 3.0
 
@@ -231,9 +261,16 @@ None is emitted before the first valid server identity and topology read:
 - **`error`**: null or a transient error string; the stream continues. A
   failed read keeps the last good identity and topology, tracks no
   transitions and prunes no panes.
-- **`sessions`**: the
+- **`sessions`**: in display order, each with the
   session's top-level nodes in display order. A session is the
-  source-list section; it is not itself a node.
+  source-list section; it is not itself a node. Sessions with an integer
+  session-scoped @kido-order option come first, by rank; the rest follow.
+  Ties and unranked sessions are oldest first by creation time, then name.
+  An empty or malformed rank (anything but a canonical decimal integer) is
+  unranked. The option is read through the ordinary format, so a value set
+  globally would be inherited; kido never sets one there. Ranks live as
+  long as the tmux server. Switch-session,
+  cross-session window steps and the TUI use the same order.
 - **Nodes** are one of two shapes, told apart by `kind`.
 
 ### Group node: `"kind": "window"`
@@ -415,7 +452,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"3.0","server":"3.0"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"3.1","server":"3.1"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_PROTOCOL stamp, or null when absent, even when it matches protocol.
 The app compares them to detect a kido upgrade with an old server.

@@ -73,6 +73,8 @@ val step : model -> snapshot -> model * bool
 
 type direction = Next | Prev
 type switched = { session : Tmux.session_id; window : Tmux.window_id }
+type position = Before | After
+type 'a move = { source : 'a; anchor : 'a; position : position }
 
 type _ request =
   | Switch_window : direction -> (switched option, string) result request
@@ -96,5 +98,10 @@ type _ request =
       (** Delete the ask and notify its live asker best-effort; Ok means it was removed. *)
   | Release_side_focus : (unit, string) result request
       (** Return tmux keyboard focus to the terminal; Ok means the client refresh succeeded. *)
+  | Reorder_session : Tmux.session_id move -> (unit, string) result request
+      (** Move a session before or after another in session order, ranking every session. *)
+  | Reorder_window : Tmux.session_id * Tmux.window_id move -> (unit, string) result request
+      (** Move a top-level window before or after another in its session, keeping the session's
+          current window. *)
 
 val handle : tmux:Tmux.t -> dir:string -> client:string -> 'a request -> 'a

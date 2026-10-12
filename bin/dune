@@ -1,7 +1,8 @@
 (library
  (name kido_sidebar)
  (modules kido_sidebar)
- (flags (:standard -open Containers))
+ (flags
+  (:standard -open Containers))
  (libraries kido tmux kido_fs containers unix mosaic matrix matrix.text)
  (inline_tests)
  (preprocess
@@ -16,4 +17,12 @@
   (into ../build))
  (flags
   (:standard -open Containers))
- (libraries kido kido_sidebar tmux containers cmdliner unix threads.posix yojson))
+ (libraries
+  kido
+  kido_sidebar
+  tmux
+  containers
+  cmdliner
+  unix
+  threads.posix
+  yojson))

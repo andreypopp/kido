@@ -517,6 +517,13 @@ let step m (snap : snapshot) =
 
 type direction = Next | Prev
 type switched = { session : Tmux.session_id; window : Tmux.window_id }
+type position = Before | After
+type 'a move = { source : 'a; anchor : 'a; position : position }
+
+let movable ~eq ~missing ids { source; anchor; _ } =
+  if not (List.mem ~eq source ids && List.mem ~eq anchor ids) then Error missing
+  else if eq source anchor then Error "cannot reorder relative to itself"
+  else Ok ()
 
 type _ request =
   | Switch_window : direction -> (switched option, string) result request
@@ -529,6 +536,8 @@ type _ request =
   | Activate_ask : Ask.id -> (client, string) result request
   | Delete_ask : Ask.id -> (unit, string) result request
   | Release_side_focus : (unit, string) result request
+  | Reorder_session : Tmux.session_id move -> (unit, string) result request
+  | Reorder_window : Tmux.session_id * Tmux.window_id move -> (unit, string) result request
 
 let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> a =
  fun ~tmux ~dir ~client request ->
@@ -653,6 +662,66 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
       | Some p -> jump { session = p.session_id; window = p.window_id; pane })
   | Delete_ask id -> Ask.remove ~dir ~self:"" id
   | Release_side_focus -> Tmux.release_side_focus tmux client
+  | Reorder_session ({ source; anchor; position } as move) ->
+      let open Result.Infix in
+      let* panes = Tmux_pane.list_panes tmux in
+      let ids = List.map (fun (s : Tmux_pane.session) -> s.id) (Tmux_pane.order_sessions panes) in
+      let* () = movable ~eq:Tmux.equal_session_id ~missing:"no such session" ids move in
+      Tmux_pane.rank_sessions tmux
+        (List.concat_map
+           (fun id ->
+             if Tmux.equal_session_id id source then []
+             else if Tmux.equal_session_id id anchor then
+               match position with Before -> [ source; id ] | After -> [ id; source ]
+             else [ id ])
+           ids)
+  | Reorder_window (session, ({ source; anchor; position } as move)) ->
+      let open Result.Infix in
+      let* panes = Tmux_pane.list_panes tmux in
+      let roots =
+        List.find_opt
+          (fun (s : Tmux_pane.session) -> Tmux.equal_session_id s.id session)
+          (Tmux_pane.order_sessions panes)
+        |> Option.map_or ~default:[] (fun (s : Tmux_pane.session) ->
+            order_windows_by_tree s.windows
+              (State.by_pane (State.load_live ~dir))
+              (lingering_subagents ~dir panes String_map.empty)
+            |> List.filter_map (fun (w : placement) ->
+                match w.anchor with None -> Some (List.hd w.panes).window_id | Some _ -> None))
+      in
+      let* () =
+        movable ~eq:Tmux.equal_window_id ~missing:"no such top-level window in session" roots move
+      in
+      let id = Tmux.string_of_session_id session in
+      let* grouped =
+        Tmux.exec tmux [ "display-message"; "-p"; "-t"; id ^ ":"; "#{session_grouped}" ]
+      in
+      if String.equal grouped "1" then Error "cannot reorder windows in a grouped session"
+      else
+        let target window = Printf.sprintf "'%s:%s'" id (Tmux.string_of_window_id window) in
+        let move_window =
+          Printf.sprintf "move-window -d %s -s %s -t %s"
+            (match position with Before -> "-b" | After -> "-a")
+            (target source) (target anchor)
+        in
+        Tmux.run tmux
+          [
+            "if-shell";
+            "-F";
+            "-t";
+            id ^ ":";
+            Printf.sprintf "#{==:#{window_id},%s}" (Tmux.string_of_window_id source);
+            Printf.sprintf "%s ; select-window -t %s" move_window (target source);
+            move_window;
+            ";";
+            (* tmux renumbers after move-window only without -s (cmd-move-window.c). *)
+            "if-shell";
+            "-F";
+            "-t";
+            id ^ ":";
+            "#{renumber-windows}";
+            Printf.sprintf "move-window -r -t '%s'" id;
+          ]
   | Switch_window direction ->
       switched
         (Result.flat_map

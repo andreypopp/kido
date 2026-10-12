@@ -5,6 +5,7 @@ let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(
     session_name = session;
     session_id = Tmux.session_id_of_string session_id;
     session_created = created;
+    session_order = None;
     window_index = index;
     window_id = Tmux.window_id_of_string window;
     window_name = "";

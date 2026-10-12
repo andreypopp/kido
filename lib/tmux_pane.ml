@@ -11,6 +11,7 @@ type t = {
   session_name : string;
   session_id : session_id;
   session_created : float;
+  session_order : int option;
   window_index : int;
   window_id : window_id;
   window_name : string;
@@ -44,6 +45,7 @@ let shell p =
   | Some _, _ -> Idle
 
 let run_option = "@kido_run"
+let order_option = "@kido-order"
 let sep = "\x1f"
 
 let format =
@@ -75,10 +77,11 @@ let format =
       "#{pane_active}";
       "#{@kido_ssh}";
       "#{pane_program_status}";
+      "#{" ^ order_option ^ "}";
       "#{pane_title}";
     ]
 
-let fields = 27
+let fields = 28
 
 let split_n n s =
   let rec go n from =
@@ -105,6 +108,10 @@ let parse_line line =
           session_name = f.(0);
           session_id = session_id_of_string f.(1);
           session_created = Float.of_int (int f.(2));
+          session_order =
+            Option.filter
+              (fun n -> String.equal (string_of_int n) f.(26))
+              (int_of_string_opt f.(26));
           window_index = int f.(3);
           window_id = window_id_of_string f.(4);
           window_name = f.(5);
@@ -134,7 +141,7 @@ let parse_line line =
                   (String.sub f.(24) 0 i, String.sub f.(24) (i + 1) (String.length f.(24) - i - 1))
             | _ -> None);
           program_status;
-          title = f.(26);
+          title = f.(27);
         }
 
 let parse lines = List.filter_map parse_line lines
@@ -155,9 +162,14 @@ let order_sessions panes =
   in
   List.fold_left add [] panes
   |> List.sort (fun (a, _) (b, _) ->
-      match Float.compare a.session_created b.session_created with
-      | 0 -> String.compare a.session_name b.session_name
-      | c -> c)
+      match (a.session_order, b.session_order) with
+      | Some x, Some y when x <> y -> Int.compare x y
+      | Some _, None -> -1
+      | None, Some _ -> 1
+      | _ -> (
+          match Float.compare a.session_created b.session_created with
+          | 0 -> String.compare a.session_name b.session_name
+          | c -> c))
   |> List.map (fun (first, windows) ->
       let by_age = List.sort (fun a b -> compare_pane_id a.pane_id b.pane_id) in
       { name = first.session_name; id = first.session_id; windows = List.rev_map by_age windows })
@@ -271,6 +283,15 @@ let resolve_client tmux ~pane ~tmux_env =
 let mark_ssh tmux pane destination =
   Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane; "@kido_ssh"; destination ]
 
+let rank_sessions tmux ids =
+  Tmux.run tmux
+    (List.concat
+       (List.mapi
+          (fun i id ->
+            (if i = 0 then [] else [ ";" ])
+            @ [ "set-option"; "-t"; string_of_session_id id; order_option; string_of_int i ])
+          ids))
+
 let mark_run tmux pane_id run_id =
   Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane_id; run_option; run_id ]
 
@@ -338,13 +359,14 @@ let%test_module "Tests" =
         "0" is not a session id ($N)
         |}]
 
-    let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(window = "@1")
-        ?(active = false) ?(attached = false) ?(running = false) ?start ?prompt ?run ?(pid = 0)
-        ?(cmd = "") ?(cwd = "") ?(title = "") id : t =
+    let pane ?(session = "a") ?(created = 100.) ?order ?(session_id = "$0") ?(index = 0)
+        ?(window = "@1") ?(active = false) ?(attached = false) ?(running = false) ?start ?prompt
+        ?run ?(pid = 0) ?(cmd = "") ?(cwd = "") ?(title = "") id : t =
       {
         session_name = session;
         session_id = session_id_of_string session_id;
         session_created = created;
+        session_order = order;
         window_index = index;
         window_id = window_id_of_string window;
         window_name = "";
@@ -374,15 +396,16 @@ let%test_module "Tests" =
 
     let show (p : t) =
       Printf.printf
-        "%s %s created=%.0f win=%d %s %s %s %s active=%b pane_active=%b pid=%d cmd=%s cwd=%s \
-         alt=%b running=%b start=%s prompt=%s exit=%s line=%S dead=%s run=%s ssh=%s attached=%b \
-         title=%S\n"
+        "%s %s created=%.0f order=%s win=%d %s %s %s %s active=%b pane_active=%b pid=%d cmd=%s \
+         cwd=%s alt=%b running=%b start=%s prompt=%s exit=%s line=%S dead=%s run=%s ssh=%s \
+         attached=%b title=%S\n"
         p.session_name
         (string_of_session_id p.session_id)
-        p.session_created p.window_index (string_of_window_id p.window_id) p.window_name
-        p.window_layout (string_of_pane_id p.pane_id) p.active p.pane_active p.pane_pid
-        p.current_command p.current_path p.alternate_on p.command_running (time p.command_start)
-        (time p.last_prompt)
+        p.session_created
+        (opt string_of_int p.session_order)
+        p.window_index (string_of_window_id p.window_id) p.window_name p.window_layout
+        (string_of_pane_id p.pane_id) p.active p.pane_active p.pane_pid p.current_command
+        p.current_path p.alternate_on p.command_running (time p.command_start) (time p.last_prompt)
         (opt (fun (e : exit) -> Printf.sprintf "%d@%.0f" e.code e.at) p.last_exit)
         p.command_line (time p.dead_at) (opt Fun.id p.run)
         (opt (fun (user, host) -> user ^ "@" ^ host) p.ssh)
@@ -396,7 +419,7 @@ let%test_module "Tests" =
         (List.hd (List.rev tokens))
         (String.mem ~sub:"pane_command_duration" format)
         (List.length tokens) fields;
-      [%expect {| last=#{pane_title} duration=false fields=27 const=27 |}]
+      [%expect {| last=#{pane_title} duration=false fields=28 const=28 |}]
 
     let%expect_test "a fixture generated from the format parses into every field" =
       let values =
@@ -410,6 +433,7 @@ let%test_module "Tests" =
             | 16 -> "16"
             | 24 -> "deploy@realm@example.test"
             | 25 -> {|{"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}|}
+            | 26 -> "-26"
             | 2 | 3 | 9 | 14 | 15 | 17 | 20 -> string_of_int (1_000_000 + i)
             | _ -> Printf.sprintf "str%d" i)
           (String.split ~by:sep format)
@@ -422,7 +446,7 @@ let%test_module "Tests" =
         (parse [ line values ]);
       [%expect
         {|
-    str0 $1 created=1000002 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true title="str26"
+    str0 $1 created=1000002 order=-26 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true title="str27"
     user="deploy@realm" host="example.test"
     {"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}
     |}]
@@ -438,7 +462,7 @@ let%test_module "Tests" =
                 | 4 -> "@4"
                 | 7 -> "%7"
                 | 25 -> status
-                | 26 -> "kept"
+                | 27 -> "kept"
                 | _ -> "")
               (String.split ~by:sep format)
           in
@@ -460,8 +484,8 @@ let%test_module "Tests" =
     |}]
 
     let%expect_test
-        "parse: a live pane, a junk line, an empty status, a dead run, a title holding the \
-         separator" =
+        "parse: a live pane, a junk line, an empty status, a dead run, a malformed order, a title \
+         holding the separator" =
       List.iter show
         (parse
            [
@@ -493,6 +517,7 @@ let%test_module "Tests" =
                  "1";
                  "";
                  {|{"serial":0,"records":[]}|};
+                 "3";
                  "✳ Title";
                ];
              "junk";
@@ -524,6 +549,7 @@ let%test_module "Tests" =
                  "1";
                  "";
                  {|{"serial":0,"records":[]}|};
+                 "";
                  "zsh";
                ];
              line
@@ -554,14 +580,15 @@ let%test_module "Tests" =
                  "0";
                  "";
                  {|{"serial":0,"records":[]}|};
+                 "007";
                  "kid\x1fmore";
                ];
            ]);
       [%expect
         {|
-    work $1 created=1700000000 win=2 @7 win layout %3 active=true pane_active=true pid=4242 cmd=claude cwd=/tmp alt=false running=true start=1700000100 prompt=1700000050 exit=2@1700000090 line="make test" dead=- run=- ssh=- attached=true title="\226\156\179 Title"
-    work $1 created=1700000000 win=2 @7 win layout %3 active=false pane_active=true pid=4242 cmd=zsh cwd=/tmp alt=true running=false start=- prompt=1700000050 exit=- line="" dead=- run=- ssh=- attached=false title="zsh"
-    work $1 created=1700000000 win=2 @7 kid layout %3 active=false pane_active=false pid=4242 cmd= cwd=/tmp alt=false running=false start=- prompt=- exit=- line="" dead=1700000200 run=run-abc ssh=- attached=true title="kid\031more"
+    work $1 created=1700000000 order=3 win=2 @7 win layout %3 active=true pane_active=true pid=4242 cmd=claude cwd=/tmp alt=false running=true start=1700000100 prompt=1700000050 exit=2@1700000090 line="make test" dead=- run=- ssh=- attached=true title="\226\156\179 Title"
+    work $1 created=1700000000 order=- win=2 @7 win layout %3 active=false pane_active=true pid=4242 cmd=zsh cwd=/tmp alt=true running=false start=- prompt=1700000050 exit=- line="" dead=- run=- ssh=- attached=false title="zsh"
+    work $1 created=1700000000 order=- win=2 @7 kid layout %3 active=false pane_active=false pid=4242 cmd= cwd=/tmp alt=false running=false start=- prompt=- exit=- line="" dead=1700000200 run=run-abc ssh=- attached=true title="kid\031more"
     |}]
 
     let%expect_test
@@ -618,6 +645,53 @@ let%test_module "Tests" =
     c $3: @5[%9 %10]
     b $2: @3[%1] @4[%2]
     |}]
+
+    let%expect_test
+        "order_sessions: ranked first by rank, ties and the unranked by creation then name" =
+      List.iter
+        (fun (s : session) -> Printf.printf "%s " s.name)
+        (order_sessions
+           [
+             pane ~session:"new" ~session_id:"$1" ~created:400. "%1";
+             pane ~session:"r2" ~session_id:"$2" ~created:100. ~order:2 "%2";
+             pane ~session:"old" ~session_id:"$3" ~created:50. "%3";
+             pane ~session:"r0b" ~session_id:"$4" ~created:300. ~order:0 "%4";
+             pane ~session:"r0a" ~session_id:"$5" ~created:300. ~order:0 "%5";
+             pane ~session:"r1" ~session_id:"$6" ~created:500. ~order:1 "%6";
+             pane ~session:"r0" ~session_id:"$7" ~created:200. ~order:0 "%7";
+           ]);
+      print_newline ();
+      List.iter
+        (fun (s : session) -> Printf.printf "%s " s.name)
+        (order_sessions
+           (parse
+              (List.map
+                 (fun (name, id, order) ->
+                   line
+                     (List.mapi
+                        (fun i _ ->
+                          match i with
+                          | 0 -> name
+                          | 1 -> id
+                          | 2 -> "100"
+                          | 4 -> "@" ^ string_of_int i
+                          | 7 -> "%" ^ String.sub id 1 (String.length id - 1)
+                          | 26 -> order
+                          | _ -> "")
+                        (String.split ~by:sep format)))
+                 [
+                   ("plus", "$1", "+1");
+                   ("hex", "$2", "0x1");
+                   ("word", "$3", "first");
+                   ("ranked", "$4", "5");
+                   ("empty", "$5", "");
+                   ("negative", "$6", "-1");
+                 ])));
+      [%expect
+        {|
+        r0 r0a r0b r1 r2 old new
+        negative ranked empty hex plus word
+        |}]
 
     let focus_panes =
       [

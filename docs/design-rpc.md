@@ -36,7 +36,7 @@ separate value, not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`3.0`. The launcher stamps it into the tmux server's environment at
+`3.1`. The launcher stamps it into the tmux server's environment at
 creation, before its configuration runs. RPC probes that stamp before
 opening the model's control connection.
 
@@ -224,6 +224,10 @@ rollback or automatic replay. Concurrent views can still revive one
 ended ask twice before a live holder reports. pi resolution retains
 tmux's command-client PATH semantics.
 
+Protocol 3.1 changes from 3.0:
+- Added: reorder-session and reorder-window requests, replying `reordered`.
+- Added: session order honours a session's `@kido-order` rank.
+
 Protocol 3.0 changes from 2.1:
 - Added: `server_instance`; no snapshot before the first valid identity.
 - Changed: pane items are `kind` "pane" with a plain `title` and a typed
@@ -262,7 +266,15 @@ Protocol 2.0 changes from 1.1:
   already present in 1.1. Snapshot v remains 2.
 No compatibility shims are provided.
 
-Sessions are ordered oldest first, with name breaking creation-time ties.
+Sessions with a rank, the session-scoped `@kido-order` user option, come
+first by rank; the rest follow. Ties and unranked sessions are ordered
+oldest first, with name breaking creation-time ties, so a new session
+appends after the ranked ones. The rank is read in the topology format
+like any other pane field, so a change refreshes snapshots and the TUI;
+an empty or non-canonical value is unranked. It is read through the
+ordinary format, so a global value would be inherited; kido only ever
+sets it per session. It lives
+as long as the tmux server, with no other copy.
 Windows use the sidebar's parent-first tree ordering within each session,
 starting from tmux window order; panes within a window are oldest first
 by pane id. A child window anchors under the pane of its parent agent.
@@ -309,8 +321,8 @@ RPC exposes no TUI-local cursor, scroll, glyphs, seen state or layout,
 and it does not synchronize those between views. Per-pane tracking belongs
 to that subprocess, so two feeds can stamp one outcome with different
 serials. Navigation includes shell/session creation, absolute window/session selection,
-relative switches, pane activation,
-ask activation/deletion and releasing tmux side-status keyboard focus,
+relative switches, pane activation, session and top-level window
+reordering, ask activation/deletion and releasing tmux side-status keyboard focus,
 not arbitrary tmux commands,
 terminal output, pane geometry, run control or inbox delivery. The
 contract's fork dependencies describe the separate tmux capabilities an
@@ -339,6 +351,27 @@ Creation is detached, followed by a jump. Failure after creation identifies
 the created location in the error and leaves the effect intact; reconnects
 must fail pending callbacks rather than replay them. Directory lookup,
 creation and selection all use the model's explicit socket.
+
+## Reordering
+
+Reorder_session and Reorder_window are Sidebar requests over a typed
+move: source, anchor and Before or After. Both reread topology and check
+the source and anchor against it, so the client's drag is only feedback.
+Session order is rewritten whole: the source is placed beside its
+anchor in the current order and every session gets a dense rank in one
+tmux invocation, through `Tmux_pane.rank_sessions`, the module that also
+reads the rank. Window order stays tmux's window index: only top-level roots of the
+session's tree are movable, and a grouped session is refused, since a
+move would change the other members' windows. `move-window -d -b/-a`
+inserts beside the anchor, shifting every occupied index in the range,
+nested run windows' included; the tree still hoists them under their
+parent. tmux skips renumber-windows for a move with `-s`, so when the
+session's option is on the handler compacts with `move-window -r`; off,
+gaps stay. Moving the session's current window makes tmux select a
+fallback; one chained tmux command checks whether the source is current,
+moves it, and selects it again only in that case, so a concurrent
+selection of another window is never undone. It switches no client and
+selects no pane. Attached clients can see the fallback briefly.
 
 ## Client boundary
 

@@ -192,8 +192,8 @@ let%test_module "Tests" =
         [ Some Protocol.value; Some "other"; None ];
       [%expect
         {|
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"3.0","server":"3.0"}
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"3.0","server":"other"}
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"3.0","server":null}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"3.1","server":"3.1"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"3.1","server":"other"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"3.1","server":null}
         |}]
   end)

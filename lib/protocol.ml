@@ -1,4 +1,4 @@
-let value = "3.0"
+let value = "3.1"
 let matches server = Option.equal String.equal server (Some value)
 
 let hello server =
@@ -18,6 +18,17 @@ type input = Request of int * any | Invalid of int * string | Ignored
 let decode line =
   let identifier parse = function
     | Some (`String s) -> ( try Some (parse s) with Invalid_argument _ -> None)
+    | _ -> None
+  in
+  let move parse source request =
+    let field name = List.assoc_opt ~eq:String.equal name request in
+    match
+      (identifier parse (field source), identifier parse (field "relative-to"), field "placement")
+    with
+    | Some source, Some anchor, Some (`String "before") ->
+        Some { Sidebar.source; anchor; position = Before }
+    | Some source, Some anchor, Some (`String "after") ->
+        Some { Sidebar.source; anchor; position = After }
     | _ -> None
   in
   match Yojson.Safe.from_string line with
@@ -40,6 +51,8 @@ let decode line =
                       "activate-ask";
                       "delete-ask";
                       "release-side-focus";
+                      "reorder-session";
+                      "reorder-window";
                     ])
                 fields
             with
@@ -92,6 +105,16 @@ let decode line =
                     Some (Any (Sidebar.Select_window { session; window }))
                 | _ -> None)
             | [ ("release-side-focus", `Bool true) ] -> Some (Any Sidebar.Release_side_focus)
+            | [ ("reorder-session", `Assoc request) ] when List.length request = 3 ->
+                Option.map
+                  (fun move -> Any (Sidebar.Reorder_session move))
+                  (move Tmux.session_id_of_string "session" request)
+            | [ ("reorder-window", `Assoc request) ] when List.length request = 4 ->
+                Option.map2
+                  (fun session move -> Any (Sidebar.Reorder_window (session, move)))
+                  (identifier Tmux.session_id_of_string
+                     (List.assoc_opt ~eq:String.equal "session" request))
+                  (move Tmux.window_id_of_string "window" request)
             | _ -> None
           in
           match request with
@@ -136,6 +159,8 @@ let reply : type a. int -> a Sidebar.request -> a -> Yojson.Safe.t =
   | Sidebar.Activate_ask _ -> result_reply id "activated" location response
   | Sidebar.Delete_ask _ -> result_reply id "deleted" (fun () -> `Bool true) response
   | Sidebar.Release_side_focus -> result_reply id "released" (fun () -> `Bool true) response
+  | Sidebar.Reorder_session _ -> result_reply id "reordered" (fun () -> `Bool true) response
+  | Sidebar.Reorder_window _ -> result_reply id "reordered" (fun () -> `Bool true) response
 
 open Sidebar
 
@@ -623,7 +648,18 @@ let%test_module "Tests" =
               | Sidebar.Jump _ -> Printf.printf "%d:jump\n" id
               | Sidebar.Activate_ask _ -> Printf.printf "%d:activate\n" id
               | Sidebar.Delete_ask _ -> Printf.printf "%d:delete\n" id
-              | Sidebar.Release_side_focus -> Printf.printf "%d:release\n" id)
+              | Sidebar.Release_side_focus -> Printf.printf "%d:release\n" id
+              | Sidebar.Reorder_session { source; anchor; position } ->
+                  Printf.printf "%d:reorder-session %s %s %s\n" id
+                    (Tmux.string_of_session_id source)
+                    (match position with Before -> "before" | After -> "after")
+                    (Tmux.string_of_session_id anchor)
+              | Sidebar.Reorder_window (session, { source; anchor; position }) ->
+                  Printf.printf "%d:reorder-window %s %s %s %s\n" id
+                    (Tmux.string_of_session_id session)
+                    (Tmux.string_of_window_id source)
+                    (match position with Before -> "before" | After -> "after")
+                    (Tmux.string_of_window_id anchor))
           | Invalid (id, error) -> Printf.printf "%d:%s\n" id error
           | Ignored -> print_endline "ignored")
         [
@@ -643,6 +679,17 @@ let%test_module "Tests" =
           {|{"filter":"hello","extra":true}|};
           {|[]|};
           "invalid";
+          {|{"id":51,"reorder-session":{"session":"$3","relative-to":"$1","placement":"before"}}|};
+          {|{"id":52,"reorder-window":{"session":"$3","window":"@12","relative-to":"@9","placement":"after"}}|};
+          {|{"id":53,"reorder-session":{"session":"$3","relative-to":"$1","placement":"above"}}|};
+          {|{"id":54,"reorder-session":{"session":"@3","relative-to":"$1","placement":"before"}}|};
+          {|{"id":55,"reorder-window":{"window":"@12","relative-to":"@9","placement":"after"}}|};
+          {|{"id":56,"reorder-window":{"session":"$3","window":"@12","relative-to":"@9","placement":"after","x":1}}|};
+          {|{"id":57,"reorder-session":{"session":"$3","relative-to":"$1","placement":"before","window":"@1"}}|};
+          {|{"id":58,"release-side-focus":{"session":"$3","window":"@12","relative-to":"@9","placement":"after"}}|};
+          {|{"id":59,"jump":{"session":"$3","relative-to":"$1","placement":"before"}}|};
+          {|{"id":60,"select-window":{"session":"$3","window":"@12","relative-to":"@9","placement":"after"}}|};
+          {|{"id":61,"reorder-window":{"session":"$3","relative-to":"$1","placement":"before"}}|};
         ];
       [%expect
         {|
@@ -662,6 +709,17 @@ let%test_module "Tests" =
     ignored
     ignored
     ignored
+    51:reorder-session $3 before $1
+    52:reorder-window $3 @12 after @9
+    53:invalid or unknown request
+    54:invalid or unknown request
+    55:invalid or unknown request
+    56:invalid or unknown request
+    57:invalid or unknown request
+    58:invalid or unknown request
+    59:invalid or unknown request
+    60:invalid or unknown request
+    61:invalid or unknown request
     |}]
 
     let%expect_test "rpc surface" =
@@ -680,6 +738,17 @@ let%test_module "Tests" =
           Ok None;
           Error "invalid or unknown request";
         ];
+      let move =
+        {
+          Sidebar.source = Tmux.window_id_of_string "@12";
+          anchor = Tmux.window_id_of_string "@9";
+          position = After;
+        }
+      in
+      List.iter
+        (fun result ->
+          emit (reply 52 (Sidebar.Reorder_window (Tmux.session_id_of_string "$3", move)) result))
+        [ Ok (); Error "no such top-level window in session" ];
       let opts : Sidebar.options =
         {
           interval = 0.1;
@@ -819,13 +888,15 @@ let%test_module "Tests" =
            (snapshot { m with snap = { m.snap with err = Some "tmux: gone" }; sessions = [] }));
       [%expect
         {|
-        3.0
-        {"hello":{"protocol":"3.0"}}
-        {"hello":{"protocol":"3.0","server":"other"}}
-        {"hello":{"protocol":"3.0","server":null}}
+        3.1
+        {"hello":{"protocol":"3.1"}}
+        {"hello":{"protocol":"3.1","server":"other"}}
+        {"hello":{"protocol":"3.1","server":null}}
         {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}
         {"reply":{"id":7,"switched":null}}
         {"reply":{"id":7,"error":"invalid or unknown request"}}
+        {"reply":{"id":52,"reordered":true}}
+        {"reply":{"id":52,"error":"no such top-level window in session"}}
         {"v":2,"server_instance":{"started_at":1780000000,"pid":12345},"client":{"session":"$0","window":"@1","pane":"%0"},"asks":[],"error":null,"sessions":[{"id":"$0","name":"session","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"window","children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"agent","started":100.0,"children":[]},{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"","lifecycle":["Live",["Terminal",{"phase":["Idle",{"last":null}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"bash","started":100.0,"children":[]}]},{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"agent","started":100.0,"children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"agent","started":100.0,"children":[]}]}]}]}
         ["Live",["Terminal",{"phase":["Idle",{"last":{"code":1,"command":"false","started_at":100.0,"ended_at":101.0}}],"report":null}]]
         ["Live",["Terminal",{"phase":["Running",{"origin":["Command",{"command":"make","started_at":100.0}],"fullscreen":false}],"report":null}]]

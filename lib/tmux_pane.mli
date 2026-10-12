@@ -5,6 +5,7 @@ type t = {
   session_name : string;
   session_id : Tmux.session_id;
   session_created : float;
+  session_order : int option;
   window_index : int;
   window_id : Tmux.window_id;
   window_name : string;
@@ -42,6 +43,7 @@ type client_state = { session : string; session_id : Tmux.session_id; focused : 
 val client_state : Tmux.t -> string -> client_state option
 val resolve_client : Tmux.t -> pane:Tmux.pane_id option -> tmux_env:string -> string option
 val mark_ssh : Tmux.t -> Tmux.pane_id -> string -> (unit, string) result
+val rank_sessions : Tmux.t -> Tmux.session_id list -> (unit, string) result
 val mark_run : Tmux.t -> Tmux.pane_id -> string -> (unit, string) result
 val shell : t -> shell
 val find : t list -> Tmux.pane_id -> t option
