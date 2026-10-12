@@ -25,6 +25,8 @@ private class AlertEscape: NSView {
     let runtime: GhosttyRuntime
     let host: Host
     let ownerID = String(UUID().uuidString.prefix(8))
+    let notificationID = UUID().uuidString
+    var feedFresh = true
     enum DialCause {
         case launch, newWindow, reopen, remoteRequest, reconnect, serverRestart
         case redial(String)
@@ -47,9 +49,10 @@ private class AlertEscape: NSView {
     private var drain: Drain?
     private var initial: DispatchWorkItem?
     private(set) var ssh: SSH?
-    private var identity: String? { didSet { sidebar.tabs.needsLayout = true; sidebar.tabs.needsDisplay = true } }
+    private(set) var identity: String? { didSet { sidebar.tabs.needsLayout = true; sidebar.tabs.needsDisplay = true } }
     var menuChanged: () -> Void = {}
     var onClose: () -> Void = {}
+    var snapshotReceived: () -> Void = {}
     private(set) var window: NSWindow!
     private var banner: Banner!
     private var session: SessionView?
@@ -57,7 +60,7 @@ private class AlertEscape: NSView {
     let sidebar = Sidebar()
     private var feed: Feed?
     private var model = SessionModel()
-    private var snapshot: Snapshot?
+    private(set) var snapshot: Snapshot?
     private var navigationModel = SessionModel()
     private enum Target { case pane(Snapshot.Position), window(SessionID, WindowID) }
     private var focusTarget: Target?
@@ -70,18 +73,22 @@ private class AlertEscape: NSView {
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
     private static let seenChanged = Notification.Name("KidoSeenChanged")
     private static var seenByHost: [Host: SeenRecord] = [:]
-    private lazy var seen: SeenRecord = {
+    private(set) lazy var seen: SeenRecord = {
         let record = Self.seenByHost[host] ?? SeenRecord()
         Self.seenByHost[host] = record
         return record
     }()
 
-    private func observeSeen() -> Bool {
-        guard let snapshot else { return false }
+    var attended: Bool {
         var attended = NSApp.isActive && window.isKeyWindow && !window.isMiniaturized && window.occlusionState.contains(.visible)
         #if KIDO_VISUAL || KIDO_STRESS
         attended = testAttended ?? attended
         #endif
+        return attended
+    }
+
+    private func observeSeen() -> Bool {
+        guard let snapshot else { return false }
         var next = seen.value
         next.observe(snapshot, attended: attended)
         guard next != seen.value else { return false }
@@ -92,6 +99,7 @@ private class AlertEscape: NSView {
 
     @objc private func attend() {
         if observeSeen() { refreshSeen() }
+        Notifier.shared.update(host: host)
     }
 
     @objc private func seenChanged(_ notification: Notification) {
@@ -156,6 +164,7 @@ private class AlertEscape: NSView {
             backing: .buffered,
             defer: false)
         window.delegate = self
+        Notifier.shared.register(self)
         window.isReleasedWhenClosed = false
         window.title = host.label
         window.collectionBehavior = .fullScreenPrimary
@@ -538,8 +547,10 @@ private class AlertEscape: NSView {
                 openLink(text)
             }
             link = .connected(connection, endpoint, backoff)
+            Notifier.shared.connected()
             session?.close()
             session = view
+            feedFresh = true
             feed = Feed(
                 serverDir: endpoint.directory, locate: connection.locateFeed, drain: drain,
                 prepare: { [transport = ssh] args in transport?.launch([endpoint.kido] + args) ?? Launch(endpoint.kido, args, environment: tools.environment) },
@@ -564,9 +575,14 @@ private class AlertEscape: NSView {
     }
 
     private func received(_ status: Feed.Status) {
-        if case .running(let snapshot) = status {
+        switch status {
+        case .starting, .restarting: feedFresh = true
+        case .running(let snapshot):
             self.snapshot = snapshot
             _ = observeSeen()
+            Notifier.shared.update(host: host, snapshotOwner: self)
+            snapshotReceived()
+        default: break
         }
         sidebar.list.update(status)
         if case .running = status { updateTabs() }
@@ -781,6 +797,7 @@ private class AlertEscape: NSView {
     func windowWillClose(_ notification: Notification) {
         guard alive else { return }
         alive = false
+        Notifier.shared.forget(self)
         invalidate(cause: .windowClosed)
         link = .down
         sidebar.dismissFloating()
@@ -788,7 +805,8 @@ private class AlertEscape: NSView {
         onClose()
     }
     func windowDidBecomeKey(_ notification: Notification) { supersedeIntent(); menuChanged(); attend() }
-    func windowDidResignKey(_ notification: Notification) { supersedeIntent() }
+    func windowDidResignKey(_ notification: Notification) { supersedeIntent(); attend() }
+    func windowDidMiniaturize(_ notification: Notification) { attend() }
     func windowDidDeminiaturize(_ notification: Notification) { attend() }
     func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert(); attend() }
     func updateColorScheme() { session?.updateColorScheme() }
@@ -802,7 +820,7 @@ private class AlertEscape: NSView {
     var testBanner: Banner { banner }
     var testSession: SessionView? { session }
     var testConnection: Connection? { if case .connected(let connection, _, _) = link { connection } else { nil } }
-    var testAttended: Bool?
+    var testAttended: Bool? { didSet { attend() } }
     func testReceive(_ snapshot: Snapshot) { received(.running(snapshot)) }
     #endif
 }

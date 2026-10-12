@@ -158,9 +158,21 @@ extension Item {
         }
     }
 
+    var indicatedOutcome: (source: OutcomeSource, identity: OutcomeIdentity, failed: Bool)? {
+        let source: OutcomeSource = agent != nil ? .agent : shell?.report != nil ? .report : .command
+        return outcomes.first { $0.source == source }
+    }
+
+    func rowTitle(status: SidebarRow.Status) -> (title: String, quietShell: Bool) {
+        let quiet = if case .live(.terminal(let shell)) = lifecycle, case .idle = shell.phase {
+            run == nil && [.quiet, .done, .error].contains(status)
+        } else { false }
+        return (quiet ? "Terminal" : sidebarTitle(label, messageable: isMessageable), quiet)
+    }
+
     func indicator(_ seen: SidebarSeen) -> (status: SidebarRow.Status, description: String) {
-        func outcome(_ source: OutcomeSource) -> (SidebarRow.Status, String) {
-            guard let outcome = outcomes.first(where: { $0.source == source }), !seen.contains(pane, source, outcome.identity) else { return (.quiet, "idle") }
+        func outcome() -> (SidebarRow.Status, String) {
+            guard let outcome = indicatedOutcome, !seen.contains(pane, outcome.source, outcome.identity) else { return (.quiet, "idle") }
             return outcome.failed ? (.error, "failed") : (.done, "done")
         }
         if case .ended(let result) = lifecycle {
@@ -176,7 +188,7 @@ extension Item {
             case .running: return (.running, "running")
             case .waiting: return (.waiting, "waiting")
             case .stalled: return (.stalled, "stalled")
-            case .idle: return outcome(.agent)
+            case .idle: return outcome()
             }
         }
         guard let shell else { return (.quiet, "") }
@@ -185,14 +197,14 @@ extension Item {
             switch report.state {
             case .running: return (.running, "running")
             case .waiting: return (.waiting, "waiting")
-            case .idle: return outcome(.report)
+            case .idle: return outcome()
             }
         }
         if case .running(_, fullscreen: true) = shell.phase { return (.quiet, "") }
         switch shell.phase {
         case .unknown: return (.quiet, "")
         case .running: return (.running, "running")
-        case .idle: return outcome(.command)
+        case .idle: return outcome()
         }
     }
 }
@@ -224,13 +236,12 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                     let target = Snapshot.Position(session: session.id, window: item.window, pane: item.pane)
                     let tail = item.caption
                     let agent = item.isAgent
-                    let label = item.label
-                    let quietShell = if case .live(.terminal(let shell)) = item.lifecycle, case .idle = shell.phase { item.run == nil && [.quiet, .done, .error].contains(status) } else { false }
+                    let (title, quietShell) = item.rowTitle(status: status)
                     let height = tail.isEmpty ? 32.0 : 48.0
                     let parent = rows.count
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: height,
-                                           title: quietShell ? "Terminal" : sidebarTitle(label, messageable: item.isMessageable),
+                                           title: title,
                                            tail: tail, status: status, indicatorDescription: description,
                                            started: item.started,
                                            focused: target == snapshot.client,
