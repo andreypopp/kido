@@ -432,7 +432,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertFalse(window.isKeyWindow)
         XCTAssertFalse(NSApp.isActive)
         updateTabs(.running(try fixture("stalled")), query: "")
-        XCTAssertEqual(sidebar.tabs.entries[1].status, .quiet)
+        XCTAssertEqual(sidebar.tabs.entries[1].status, .error)
         updateTabs(.running(try fixture("done")), query: "")
         XCTAssertEqual(sidebar.tabs.entries[1].status, .quiet)
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
@@ -1023,7 +1023,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             list.update(.running(fixture))
             sidebarSnapshot(list, dark ? "claude-dark" : "claude-light")
         }
-        let programs = list.visualRows.indices.filter { if case .program = list.visualRows[$0].kind { true } else { false } }
+        let programs = list.visualRows.indices.filter { if case .program = list.visualRows[$0].id { true } else { false } }
         XCTAssertEqual(programs.count, 4)
         var requests: [RPCRequest] = []
         list.navigate = { requests.append($0) }
