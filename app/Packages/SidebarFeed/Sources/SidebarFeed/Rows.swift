@@ -10,17 +10,16 @@ public struct SidebarRow: Equatable, Sendable {
     }
     public enum Status: Equatable, Sendable {
         case quiet, running, waiting, error, done, stalled
-        public var tabStatus: Self { self == .error || self == .waiting ? self : .quiet }
+        public var tabStatus: Self { self == .stalled ? .error : self == .error || self == .waiting ? self : .quiet }
     }
     public enum Kind: Equatable, Sendable {
-        case header, pane(Snapshot.Position), program(depth: Int), gap
+        case header, pane(Snapshot.Position?), gap
     }
     public struct Guide: Equatable, Sendable {
         public let x: Double
         public let top: Double
         public let bottom: Double
     }
-    public enum Icon: String, Equatable, Sendable { case agent = "text.bubble", terminal }
     public let id: ID
     public let kind: Kind
     public let indent: Int
@@ -33,12 +32,10 @@ public struct SidebarRow: Equatable, Sendable {
     public let focused: Bool
     public var guides: [Guide] = []
     public var quietShell = false
-    public var icon: Icon = .terminal
+    public var agent = false
     public var padding: Double { 7 }
-    public var leading: Double {
-        if case .program(let depth) = kind { return 12 + Double(indent + depth) * 15 }
-        return 36 + Double(indent) * 15
-    }
+    public var leading: Double { 36 + Double(indent) * 15 }
+    public var indicatorX: Double { 20 + Double(indent) * 15 }
     public var tailY: Double { 26 }
     public var target: Snapshot.Position? {
         if case .pane(let target) = kind { return target }; return nil
@@ -197,12 +194,12 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
     for session in snapshot.sessions {
         rows.append(SidebarRow(id: .header(session.id), kind: .header, indent: 0, height: 29,
                                title: session.name, tail: "", status: .quiet, started: nil, focused: false))
-        func guide(_ start: Int, end: Int? = nil, x: Double) {
+        func guide(_ start: Int, end: Int? = nil, x: Double, topInset: Double = 10) {
             let end = end ?? rows.count
             let height = rows[start..<end].reduce(0) { $0 + $1.height }
             var offset = 0.0
             for index in start..<end {
-                let top = max(0, 10 - offset)
+                let top = max(0, topInset - offset)
                 let bottom = min(rows[index].height, height - 10 - offset)
                 if bottom > top { rows[index].guides.append(.init(x: x, top: top, bottom: bottom)) }
                 offset += rows[index].height
@@ -221,6 +218,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                     let label = item.label
                     let quietShell = if case .live(.terminal(let shell)) = item.lifecycle, case .idle = shell.phase { item.run == nil && [.quiet, .done, .error].contains(status) } else { false }
                     let height = tail.isEmpty ? 32.0 : 48.0
+                    let parent = rows.count
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: height,
                                            title: quietShell ? "Terminal" : agent && !label.hasPrefix("@") ? "@" + label : label,
@@ -228,7 +226,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                                            started: item.started,
                                            focused: target == snapshot.client,
                                            quietShell: quietShell,
-                                           icon: agent ? .agent : .terminal))
+                                           agent: agent))
                     let records = item.program_status.records.filter { !$0.id.isEmpty }.sorted { a, b in
                         let left = a.id.split(separator: "/", omittingEmptySubsequences: false)
                         let right = b.id.split(separator: "/", omittingEmptySubsequences: false)
@@ -249,28 +247,28 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                         let caption = record.msg ?? ""
                         let height = caption.isEmpty ? 32.0 : 48.0
                         rows.append(SidebarRow(id: .program(session.id, item.pane, Data(record.id.utf8)),
-                                               kind: .program(depth: record.id.split(separator: "/", omittingEmptySubsequences: false).count),
-                                               indent: depth, height: height,
+                                               kind: .pane(nil),
+                                               indent: depth + record.id.split(separator: "/", omittingEmptySubsequences: false).count, height: height,
                                                title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
                                                tail: caption, status: [.done, .error].contains(status) && seen.contains(item.pane, item.agent != nil ? .agent : .report, .serial(item.program_status.serial)) ? .quiet : status,
                                                indicatorDescription: record.state.rawValue,
-                                               started: nil, focused: false))
+                                               started: nil, focused: false, agent: true))
                     }
                     if !records.isEmpty {
-                        guide(recordStart, x: Double(depth + 1) * 15 + 5)
                         for (index, record) in records.enumerated() {
                             let prefix = record.id + "/"
                             let count = records[(index + 1)...].prefix { $0.id.hasPrefix(prefix) }.count
                             if count > 0 {
-                                guide(recordStart + index + 1, end: recordStart + index + count + 1,
-                                      x: Double(depth + record.id.split(separator: "/", omittingEmptySubsequences: false).count + 1) * 15 + 5)
+                                guide(recordStart + index, end: recordStart + index + count + 1,
+                                      x: rows[recordStart + index].indicatorX, topInset: 22)
                             }
                         }
                     }
                     if !item.children.isEmpty {
-                        let start = rows.count
                         windows(item.children, depth: depth + 1)
-                        guide(start, x: Double(depth) * 15 + 20)
+                    }
+                    if rows.count > parent + 1 {
+                        guide(parent, x: rows[parent].indicatorX, topInset: 22)
                     }
                 }
                 if depth == 0 && multiPane { guide(start, x: 5) }
