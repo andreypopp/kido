@@ -27,8 +27,8 @@ import XCTest
 
     func testTabAgentDisplayNameAndWeight() {
         let tabs = WindowTabs()
-        for (agent, name, display) in [(true, "agent", "@agent"), (true, "@agent", "@agent"), (false, "shell", "shell")] {
-            let tab = SessionModel.Tab(id: WindowID(number: 7), name: name, active: true, status: .quiet, agent: agent)
+        for (agent, messageable, name, display) in [(true, true, "agent", "@agent"), (true, true, "@agent", "@agent"), (true, false, "native", "native"), (false, false, "shell", "shell")] {
+            let tab = SessionModel.Tab(id: WindowID(number: 7), name: name, active: true, status: .quiet, agent: agent, messageable: messageable)
             XCTAssertEqual(tab.name, name)
             XCTAssertEqual(tab.displayName, display)
             XCTAssertEqual(tabs.labelFont(tab), NSFont.systemFont(ofSize: 11, weight: agent ? .semibold : .regular))
