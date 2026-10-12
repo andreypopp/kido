@@ -391,6 +391,7 @@ final class WindowView: NSView {
         view.onCommand = { [weak self] command in
             guard let connection = self?.connection else { return }
             switch command {
+            case .close: return connection.closePane(id)
             case .window, .newWindow: return connection.navigate(command)
             default: break
             }
@@ -516,9 +517,9 @@ final class WindowView: NSView {
         ]
     }
 
-    private func sendPane(_ commands: [Command], done: (@MainActor @Sendable () -> Void)? = nil) {
+    private func sendPane(_ commands: [Command], userInitiated: Bool = true, done: (@MainActor @Sendable () -> Void)? = nil) {
         connection?.send(commands) { [weak self] replies in
-            if let failure = replies?.compactMap({ reply -> String? in
+            if userInitiated, let failure = replies?.compactMap({ reply -> String? in
                 if case .failure(let lines) = reply { return lines.joined(separator: "\n") }; return nil
             }).first, let window = self?.window {
                 #if KIDO_STRESS
@@ -540,7 +541,7 @@ final class WindowView: NSView {
         lastFloatCommand = commands
         if case .sending = delivery { delivery = .sending(pending: commands); return }
         delivery = .sending(pending: nil)
-        sendPane(commands) { [weak self] in
+        sendPane(commands, userInitiated: false) { [weak self] in
             guard let self, case .sending(let pending) = self.delivery else { return }
             self.delivery = .idle
             if let pending { self.lastFloatCommand = nil; self.sendFloat(pending) }

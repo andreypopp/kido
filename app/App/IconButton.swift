@@ -4,26 +4,25 @@ final class IconButton: NSButton {
     static let sidebarSymbols = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular, scale: .small)
     var invoke: () -> Void = {}
     var press: ((NSEvent) -> Void)?
-    enum HoverStyle { case iconOnly, background }
+    enum HoverStyle { case iconOnly, background, close }
     private let hoverStyle: HoverStyle
     private var hovered = false
 
     init(_ symbol: String, _ label: String, size: CGFloat? = nil, hoverStyle: HoverStyle = .background) {
         self.hoverStyle = hoverStyle
         super.init(frame: .zero)
+        cell = ToolbarIconCell()
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
             .withSymbolConfiguration(size.map { .init(pointSize: $0, weight: .regular, scale: .medium) } ?? Self.sidebarSymbols)
         toolTip = label
         setAccessibilityLabel(label)
         isBordered = false
-        if hoverStyle == .iconOnly {
+        if hoverStyle != .background {
             focusRingType = .none
             (cell as? NSButtonCell)?.highlightsBy = []
         }
         imagePosition = .imageOnly
         contentTintColor = .secondaryLabelColor
-        wantsLayer = true
-        layer?.cornerRadius = 8
         target = self
         action = #selector(invokeAction)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
@@ -48,10 +47,22 @@ final class IconButton: NSButton {
     }
     override func mouseEntered(with event: NSEvent) { hovered = true; updateHover() }
     override func mouseExited(with event: NSEvent) { hovered = false; updateHover() }
+    private final class ToolbarIconCell: NSButtonCell {
+        override func hitTest(for event: NSEvent, in cellFrame: NSRect, of controlView: NSView) -> NSCell.HitResult {
+            isEnabled && cellFrame.contains(controlView.convert(event.locationInWindow, from: nil)) ? [.contentArea, .trackableArea] : []
+        }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            if hovered && hoverStyle != .iconOnly {
+                NSColor.labelColor.withAlphaComponent(hoverStyle == .close ? 0.10 : 0.12).setFill()
+                NSBezierPath(roundedRect: bounds, xRadius: hoverStyle == .close ? 4 : 8, yRadius: hoverStyle == .close ? 4 : 8).fill()
+            }
+            super.draw(dirtyRect)
+        }
+    }
     private func updateHover() {
         contentTintColor = hovered ? .labelColor : .secondaryLabelColor
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = hovered && hoverStyle == .background ? NSColor.labelColor.withAlphaComponent(0.12).cgColor : nil
-        }
+        needsDisplay = true
     }
 }
