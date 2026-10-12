@@ -192,6 +192,14 @@ private class AlertEscape: NSView {
             guard let self, let window = model.sessions.first(where: { $0.id == session })?.window else { return }
             perform(.newWindow(window))
         }
+        sidebar.list.renameSession = { [weak self] id, name, done in
+            guard let self else { return done("The control client is not ready.") }
+            send([Command("rename-session", "-t", id, "--", name)]) { replies in
+                guard let reply = replies?.first else { return done("The control client is not ready.") }
+                if case .failure(let lines) = reply { done(lines.joined(separator: "\n")) }
+                else { done(nil) }
+            }
+        }
         sidebar.tabs.select = { [weak self] in self?.selectWindow($0) }
         sidebar.tabs.close = { [weak self] tab in self?.confirmClose(.window(tab.id), name: tab.name) }
         sidebar.tabs.addWindow.invoke = { [weak self] in
