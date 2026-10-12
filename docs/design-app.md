@@ -808,9 +808,11 @@ from the indicator's bottom+3pt to the last descendant's bottom−10pt.
 Geometry is derived in the row model as per-row guide segments, not
 maintained in a separate view tree.
 The display-only @
-prefix, never doubled, marks an agent that can be messaged: pi agents and
-agent runs. A native agent pane (Some_agent, such as Claude Code) cannot be
-messaged, so it keeps the semibold title without the @. Idle local shell panes
+prefix, never doubled, marks an agent that can be messaged, which is exactly
+a Pi_agent pane or an agent run. A native agent pane (Some_agent, such as
+Claude Code) and an agent over SSH (an Ssh pane with a remote agent, out of
+reach of message_agent, which only reaches pi sessions on the same server)
+cannot be messaged, so they keep the semibold title without the @. Idle local shell panes
 (Live Terminal at a known Idle prompt, no run, idle/done/failed indicator) display secondary-colored
 `Terminal`; an Unknown phase, full-screen programs, SSH, and run items keep their labels. Both display
 rules leave raw pane labels and tab/window titles unchanged.
