@@ -50,7 +50,7 @@ import TmuxControl
         #expect(sidebarSearch(snapshot, query: query)?.sessions.isEmpty == true)
     }
     let rows = sidebarRows(snapshot).filter { $0.target != nil }
-    #expect(rows.map(\.title) == ["excluded shell", "@Compiler expert", "ssh alice@devbox: excluded-command", "@Reviewer"])
+    #expect(rows.map(\.title) == ["excluded shell", "Compiler expert", "ssh alice@devbox: excluded-command", "@Reviewer"])
     #expect(rows[0].tail == "composed caption")
     #expect(rows[0].status == .waiting && !rows[0].quietShell)
     #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .waiting)
