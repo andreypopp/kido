@@ -22,6 +22,11 @@ final class SidebarCell: NSTableCellView {
     #if KIDO_VISUAL
     private(set) var visualClockDirtyRect = NSRect.zero
     #endif
+    let close = IconButton("xmark", "Close pane", size: 10, hoverStyle: .close)
+    private var hovered = false
+    override func mouseEntered(with event: NSEvent) { hovered = close.frame.contains(convert(event.locationInWindow, from: nil)); updateClose() }
+    override func mouseExited(with event: NSEvent) { hovered = false; updateClose() }
+    private func updateClose() { close.isHidden = !hovered || row?.target == nil; needsDisplay = true }
     let addWindow = IconButton("plus", "New window", size: 11, hoverStyle: .iconOnly)
     override var isFlipped: Bool { true }
 
@@ -31,11 +36,15 @@ final class SidebarCell: NSTableCellView {
         identifier = Self.id
         focusRingType = .none
         addSubview(addWindow)
+        addSubview(close)
+
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func configure(_ row: SidebarRow) {
         self.row = row
+        updateClose()
+        close.setAccessibilityLabel("Close pane: " + row.title)
         addWindow.isHidden = { if case .header = row.kind { return false }; return true }()
         addWindow.toolTip = nil
         addWindow.setAccessibilityLabel("New window in " + row.title)
@@ -70,9 +79,17 @@ final class SidebarCell: NSTableCellView {
         setNeedsDisplay(dirtyRect)
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: close.frame, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+
     override func layout() {
         super.layout()
+        close.frame = NSRect(x: CGFloat(row?.indicatorX ?? 20) - 8, y: CGFloat(row?.padding ?? 7) + 1, width: 16, height: 16)
         addWindow.frame = NSRect(x: bounds.width - 29, y: 0.5, width: 28, height: 28)
+        updateTrackingAreas()
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -123,7 +140,7 @@ final class SidebarCell: NSTableCellView {
             }
             (clock as NSString).draw(at: NSPoint(x: bounds.width - 12 - clockWidth, y: y + 2),
                                      withAttributes: [.font: fonts.clock, .foregroundColor: NSColor.secondaryLabelColor])
-            if pane {
+            if pane && close.isHidden {
                 let color: NSColor = switch row.status {
                 case .quiet: .secondaryLabelColor.withAlphaComponent(NSColor.secondaryLabelColor.alphaComponent * 0.45)
                 case .running, .done: .systemGreen
