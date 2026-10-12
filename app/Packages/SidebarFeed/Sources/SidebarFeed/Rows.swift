@@ -82,7 +82,12 @@ public struct SidebarSeen: Equatable, Sendable {
     }
 }
 
+public func sidebarTitle(_ title: String, agent: Bool) -> String {
+    agent && !title.hasPrefix("@") ? "@" + title : title
+}
+
 extension Item {
+    var isAgent: Bool { run == .agent || agent != nil }
     var agent: AgentStatus? {
         switch lifecycle {
         case .live(.someAgent(_, let status)), .live(.piAgent(_, let status)), .live(.ssh(_, .agent(_, let status))): status
@@ -214,14 +219,14 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                     let (status, description) = item.indicator(seen)
                     let target = Snapshot.Position(session: session.id, window: item.window, pane: item.pane)
                     let tail = item.caption
-                    let agent = item.run == .agent || item.agent != nil
+                    let agent = item.isAgent
                     let label = item.label
                     let quietShell = if case .live(.terminal(let shell)) = item.lifecycle, case .idle = shell.phase { item.run == nil && [.quiet, .done, .error].contains(status) } else { false }
                     let height = tail.isEmpty ? 32.0 : 48.0
                     let parent = rows.count
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: height,
-                                           title: quietShell ? "Terminal" : agent && !label.hasPrefix("@") ? "@" + label : label,
+                                           title: quietShell ? "Terminal" : sidebarTitle(label, agent: agent),
                                            tail: tail, status: status, indicatorDescription: description,
                                            started: item.started,
                                            focused: target == snapshot.client,

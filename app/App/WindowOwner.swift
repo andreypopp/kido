@@ -193,6 +193,15 @@ private class AlertEscape: NSView {
             perform(.newWindow(window))
         }
         sidebar.tabs.select = { [weak self] in self?.selectWindow($0) }
+        sidebar.tabs.close = { [weak self] tab in self?.confirmClose(.window(tab.id), name: tab.name) }
+        sidebar.tabs.addWindow.invoke = { [weak self] in
+            guard let self, let window = model.window else { return }
+            perform(.newWindow(window))
+        }
+        sidebar.list.closePane = { [weak self] row in
+            guard let pane = row.target?.pane else { return }
+            self?.confirmClose(.pane(pane), name: row.title)
+        }
         sidebar.focusTerminal = { [weak self] in self?.focusSelected() }
         (window as? OwnerWindow)?.focusChanged = { [weak self] old, next in
             guard let self else { return }
@@ -503,6 +512,11 @@ private class AlertEscape: NSView {
                 onDiagnostic: { [weak self] message in guard let self, accepts(generation) else { return }; banner.show(message, "", button: nil) },
                 onClose: { [weak self] exit, cause in guard let self, alive, self.generation == generation else { return }; closed(view, exit, cause: cause) })
             connection.userFocus = { [weak self] in self?.supersedeIntent() }
+            connection.closePane = { [weak self] pane in
+                guard let self, accepts(generation) else { return }
+                let name = sidebarRows(snapshot).first { $0.target?.pane == pane }?.title ?? pane.description
+                confirmClose(.pane(pane), name: name)
+            }
             connection.navigate = { [weak self] command in
                 guard let self, accepts(generation) else { return }
                 switch command {
@@ -604,6 +618,41 @@ private class AlertEscape: NSView {
         guard !completing else { return }
         intent += 1
         focusTarget = nil
+    }
+
+    func confirmClose(_ target: CloseTarget, name: String) {
+        guard preparedAlert == nil, window.attachedSheet == nil else { return }
+        supersedeIntent()
+        let generation = generation
+        let command: Command = switch target {
+        case .pane(let id): Command("kill-pane", "-t", id)
+        case .window(let id): Command("kill-window", "-t", id)
+        }
+        let scope = closeScope(snapshot, target: target)
+        let commands = scope.descendants.map { Command("kill-window", "-t", $0) } + [command]
+        let close = { [weak self] in
+            guard let self, accepts(generation) else { return }
+            send(commands) { [weak self] replies in
+                guard let failure = replies?.compactMap({ reply -> String? in
+                    if case .failure(let lines) = reply { return lines.joined(separator: "\n") }; return nil
+                }).first, let self else { return }
+                let alert = NSAlert()
+                alert.messageText = "Pane command failed"
+                alert.informativeText = failure
+                prepareAlert(alert) { _ in }
+            }
+        }
+        guard scope.running else { close(); return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Close “\(name)”?"
+        alert.informativeText = switch target {
+        case .pane: "A process is still running in this pane. Closing the pane will end it."
+        case .window: "Processes are still running in this window. Closing the window will end them."
+        }
+        alert.addButton(withTitle: "Close").keyEquivalent = "\r"
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        prepareAlert(alert) { response in if response == .alertFirstButtonReturn { close() } }
     }
 
     func perform(_ request: RPCRequest) {
