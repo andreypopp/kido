@@ -45,16 +45,18 @@ private func windowsFixture(_ state: [Any] = blocked(), group: Bool = false) thr
 }
 
 @Test func tabLabelsShareSidebarAgentRule() throws {
-    let cases: [([Any], String?, Bool)] = [(agent(), nil, true), (terminal(), "agent", true),
-                                         (terminal(), nil, false), (terminal(), "bash", false)]
-    for (lifecycle, run, isAgent) in cases {
+    let cases: [([Any], String?, Bool, Bool)] = [(["Live", ["Pi_agent", ["id": "pi-session", "status": report(idle())]]], nil, true, true),
+        (["Live", ["Some_agent", ["name": "claude-code", "status": ["since": 1, "msg": null, "state": idle()]]]], nil, true, false),
+        (terminal(), "agent", true, true), (terminal(), nil, false, false), (terminal(), "bash", false, false)]
+    for (lifecycle, run, isAgent, messageable) in cases {
         for title in ["name", "@name"] {
             let snapshot: Snapshot = try decode(snapshotObject([pane(0, title: title, lifecycle: lifecycle, run: run)]))
             let label = try #require(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
                                                    activePanes: [WindowID(number: 0): PaneID(number: 0)]).labels[WindowID(number: 0)])
             #expect(label.title == title)
             #expect(label.agent == isAgent)
-            #expect(sidebarTitle(label.title, agent: label.agent) == (isAgent && title == "name" ? "@name" : title))
+            #expect(label.messageable == messageable)
+            #expect(sidebarTitle(label.title, messageable: label.messageable) == (messageable && title == "name" ? "@name" : title))
         }
     }
 }
@@ -66,7 +68,7 @@ private func windowsFixture(_ state: [Any] = blocked(), group: Bool = false) thr
     for pane in [PaneID(number: 0), PaneID(number: 3)] {
         let projection = sidebarWindows(snapshot, session: session, surviving: [window], activePanes: [window: pane])
         #expect(projection.labels[window]?.title == "Pane \(pane.number)")
-        #expect(rows.first { $0.id == .pane(session, pane) }?.title == "@Pane \(pane.number)")
+        #expect(rows.first { $0.id == .pane(session, pane) }?.title == "Pane \(pane.number)")
         #expect(projection.labels.count == 1)
     }
     #expect(sidebarWindows(snapshot, session: session, surviving: [window], activePanes: [window: PaneID(number: 99)]).labels.isEmpty)
