@@ -13,6 +13,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     var newSession: () -> Void = {}
     var newWindow: (SessionID) -> Void = { _ in }
+    var closePane: (SidebarRow) -> Void = { _ in }
     private let search = NSSearchField()
     private let table = Table()
     private let scroll = NSScrollView()
@@ -339,6 +340,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         let item = items[row]
         let cell = tableView.makeView(withIdentifier: SidebarCell.id, owner: nil) as? SidebarCell ?? SidebarCell(fonts)
         cell.configure(item)
+        cell.close.invoke = { [weak self] in self?.closePane(item) }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
         return cell
     }

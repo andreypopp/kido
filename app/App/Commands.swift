@@ -39,13 +39,12 @@ enum PaneCommand {
             Command(
                 "resize-pane", side.flag, "-t", pane,
                 max(1, Int((points / max(side == .left || side == .right ? cell.width : cell.height, 1)).rounded())))
-        case .window, .newWindow: nil
+        case .window, .newWindow, .close: nil
         case .next: Command("select-pane", "-t", ":.+")
         case .previous: Command("select-pane", "-t", ":.-")
         case .clear: Command("send-keys", "-R", "-t", pane)
         case .zoom: Command("resize-pane", "-Z", "-t", pane)
         case .equalize: Command("select-layout", "-E", "-t", pane)
-        case .close: Command("kill-pane", "-t", pane)
         }
     }
 
