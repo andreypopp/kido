@@ -131,7 +131,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
         #expect(row.title == expected)
         #expect(row.agent == agent)
         #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
-                               activePanes: [WindowID(number: 0): PaneID(number: 0)]).titles[WindowID(number: 0)] == tab)
+                               activePanes: [WindowID(number: 0): PaneID(number: 0)]).labels[WindowID(number: 0)]?.title == tab)
     }
 }
 
