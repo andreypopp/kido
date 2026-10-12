@@ -48,7 +48,7 @@ import XCTest
         dialog.show(on: window)
         let sheet = try XCTUnwrap(window.attachedSheet)
         dialog.field.stringValue = "bad host"
-        dialog.alert.buttons[0].performClick(nil)
+        dialog.connect()
         let settled = expectation(description: "native invalid Connect processed")
         DispatchQueue.main.async { settled.fulfill() }
         await fulfillment(of: [settled], timeout: 2)
@@ -61,7 +61,7 @@ import XCTest
         XCTAssertTrue(labels(try XCTUnwrap(sheet.contentView)).contains { $0.contains("Host must be") && $0.contains("without spaces") })
         XCTAssertEqual(NSApp.windows.filter { $0.sheetParent === window }.count, 1)
         dialog.field.stringValue = " user@alias "
-        dialog.alert.buttons[0].performClick(nil)
+        dialog.connect()
         let closed = expectation(description: "valid Connect dismisses")
         DispatchQueue.main.async { closed.fulfill() }
         await fulfillment(of: [closed], timeout: 2)
