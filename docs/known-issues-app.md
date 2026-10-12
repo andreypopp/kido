@@ -289,6 +289,29 @@ the protocol's accepted identity losses
 (see [the RPC contract](../share/rpc/contract.md)). Seen is not persisted
 across app launches. Status: accepted.
 
+## Notifications can repeat across windows
+
+Notification entries are per window, not per host. Two Kido.app windows on
+one server each post for a pane that waits or fails out of sight, so one
+event can arrive twice, once per window; withdrawal and the badge count
+follow each entry. Sharing entries would need one primary feed per host and
+reconciling cross-feed serials. Status: accepted.
+
+## Dev builds re-prompt for notification permission
+
+Release builds are team-signed, so the notification grant survives upgrades.
+Dev builds are ad-hoc signed and macOS keys the grant to the code hash, so
+every rebuild is a new app to TCC: KidoDev asks for permission again after
+each rebuild and stale entries accumulate in System Settings. Status:
+accepted for development.
+
+## Notification delivery is verified by hand
+
+Off-screen tests use the recording poster and never touch Notification
+Center, so a real banner, a click from Notification Center (including a
+click that launches the app) and the Dock badge are checked only by the
+user on screen before a release. Status: accepted.
+
 ## Shared remote-session selection and geometry
 
 Each native window owns its own transport/client/feed/surfaces, but tmux has one
