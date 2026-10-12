@@ -14,7 +14,34 @@ final class SidebarSelectionRow: NSTableRowView {
     override var isSelected: Bool { didSet { subviews.forEach { $0.needsDisplay = true } } }
 }
 
-final class SidebarCell: NSTableCellView {
+final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
+    let nameField = NSTextField()
+    let renameError = NSTextField(wrappingLabelWithString: "")
+    var beginRename: () -> Void = {}
+    var finishRename: (Bool) -> Void = { _ in }
+    var renameChanged: () -> Void = {}
+
+    override func mouseDown(with event: NSEvent) {
+        if case .header = row?.kind, event.clickCount == 2,
+           NSRect(x: 12, y: 6.5, width: max(0, bounds.width - 42), height: 18).contains(convert(event.locationInWindow, from: nil)) {
+            beginRename()
+        } else { super.mouseDown(with: event) }
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(insertNewline(_:)) { finishRename(true); return true }
+        if selector == #selector(cancelOperation(_:)) { finishRename(false); return true }
+        return false
+    }
+    func controlTextDidEndEditing(_ notification: Notification) { finishRename(true) }
+    func controlTextDidChange(_ notification: Notification) { renameChanged() }
+
+    var errorHeight: CGFloat {
+        guard !renameError.isHidden else { return 0 }
+        return ceil((renameError.stringValue as NSString).boundingRect(
+            with: NSSize(width: max(1, bounds.width - 42), height: 1000), options: [.usesLineFragmentOrigin],
+            attributes: [.font: renameError.font!]).height) + 6
+    }
     static let id = NSUserInterfaceItemIdentifier("cell")
     private let fonts: SidebarFonts
     private var row: SidebarRow?
@@ -34,10 +61,29 @@ final class SidebarCell: NSTableCellView {
         self.fonts = fonts
         super.init(frame: .zero)
         identifier = Self.id
+        autoresizingMask = [.width, .height]
         focusRingType = .none
         addSubview(addWindow)
         addSubview(close)
-
+        nameField.cell = SessionNameCell(textCell: "")
+        nameField.isEditable = true
+        nameField.isSelectable = true
+        nameField.font = fonts.section
+        nameField.textColor = .labelColor
+        nameField.isBezeled = true
+        nameField.bezelStyle = .roundedBezel
+        nameField.focusRingType = .none
+        nameField.drawsBackground = false
+        nameField.delegate = self
+        nameField.setAccessibilityLabel("Session name")
+        nameField.isHidden = true
+        renameError.font = .systemFont(ofSize: 10)
+        renameError.textColor = .systemRed
+        renameError.setAccessibilityRole(.group)
+        renameError.setAccessibilitySubrole(.init(rawValue: "AXApplicationAlert"))
+        renameError.isHidden = true
+        addSubview(nameField)
+        addSubview(renameError)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -89,6 +135,8 @@ final class SidebarCell: NSTableCellView {
         super.layout()
         close.frame = NSRect(x: CGFloat(row?.indicatorX ?? 20) - 8, y: CGFloat(row?.padding ?? 7) + 1, width: 16, height: 16)
         addWindow.frame = NSRect(x: bounds.width - 29, y: 0.5, width: 28, height: 28)
+        nameField.frame = NSRect(x: 10, y: 6.5, width: max(0, bounds.width - 40), height: 18)
+        renameError.frame = NSRect(x: 12, y: 26.5, width: max(0, bounds.width - 42), height: max(1, errorHeight - 6))
         updateTrackingAreas()
     }
 
@@ -127,7 +175,7 @@ final class SidebarCell: NSTableCellView {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
             let titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
-            if dirtyRect.intersects(titleRect) {
+            if dirtyRect.intersects(titleRect), !header || nameField.isHidden {
                 (row.title as NSString).draw(in: titleRect,
                                        withAttributes: [.font: header ? fonts.section : row.agent ? fonts.agent : fonts.regular,
                                                         .foregroundColor: header || row.quietShell ? NSColor.secondaryLabelColor : NSColor.labelColor,
@@ -161,5 +209,22 @@ final class SidebarCell: NSTableCellView {
                 }
             }
         }
+    }
+}
+
+final class SessionNameCell: NSTextFieldCell {
+    override func drawingRect(forBounds rect: NSRect) -> NSRect { rect }
+    override func titleRect(forBounds rect: NSRect) -> NSRect { drawingRect(forBounds: rect) }
+    override func draw(withFrame rect: NSRect, in view: NSView) {
+        view.effectiveAppearance.performAsCurrentDrawingAppearance {
+            let edge = NSBezierPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), xRadius: 3, yRadius: 3)
+            NSColor.controlAccentColor.withAlphaComponent(0.4).setStroke()
+            edge.lineWidth = 3
+            edge.stroke()
+            NSColor.separatorColor.setStroke()
+            edge.lineWidth = 0.5
+            edge.stroke()
+        }
+        drawInterior(withFrame: rect, in: view)
     }
 }
