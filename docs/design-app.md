@@ -912,6 +912,102 @@ first observes an error-free snapshot count as seen. Seen is not persisted acros
 The sidebar is visible by default; it does not automatically collapse
 at narrow widths.
 
+## Notifications
+
+Kido.app posts a native notification when a pane starts waiting on the
+user or fails out of sight, and withdraws it when the reason is gone. kido
+reports status and retained outcomes; the app decides what the user has
+seen and what deserves a banner. `SidebarFeed/Notifications.swift` is the
+pure step; `App/Notifications.swift` holds the two posters and the
+app-wide `Notifier`; `main.swift` installs the delegate and routes clicks.
+
+**Eligibility.** A pane wants a notification when its lifecycle is Live,
+it is not a kido run, and `Item.indicator(seen)` shows waiting (an agent
+or a shell program report, in any phase) or an unseen error. The
+indicator keeps the sidebar's precedence, so a quiet report masks a
+command exit for the banner exactly as for the row. Waiting is one plain
+reason: a changed ask or kind while still waiting does not repost. A
+failure's reason is its outcome source and identity, so a new failure
+reposts. Done, finished runs, successes, running, stalled, Ended rows and
+a command exit of 130 never notify.
+
+**One notifier, entries per window.** Every `WindowOwner` has its own
+entries, keyed by owner and pane; there is no primary feed per host, and
+two windows on one server may repeat a notification. Attendance is
+shared: `shown` is the set of tmux windows currently displayed by the
+host's attended windows (app active, key, not miniaturized, visible).
+Per entry the states are absent, posted(reason) and acknowledged(reason).
+On every error-free snapshot of an owner, for each wanting pane:
+
+- a baseline snapshot, a pane whose tmux window is shown, or a reason
+  that starts or changes while Kido.app is active, acknowledges it,
+  withdrawing any earlier post: it is on screen, or the user is present
+  and what starts meanwhile counts as noticed;
+- otherwise a new or changed reason posts, replacing an earlier post;
+- an unchanged reason does nothing, posted or acknowledged.
+
+A pane that stops wanting (seen, new work, success, no longer waiting,
+or gone from the snapshot) is withdrawn and forgotten. Error snapshots
+produce nothing and keep the baseline pending. Closing a window withdraws
+its entries; quit withdraws everything, so Notification Center never
+offers a jump that cannot be honoured. Attendance changes (key, active,
+miniaturize, occlusion) re-step the host.
+
+**Baseline.** The first error-free snapshot of a new or restarted feed,
+and the first after a changed `server_instance`, records what wants a
+notification as acknowledged and posts nothing. At launch the seen
+baseline has already quieted finished outcomes, so this covers waiting
+panes; after a feed restart on the same server an outcome re-derived
+under a new serial shows red but does not post; a changed server
+instance clears the sidebar's seen entries without a baseline (rows red)
+and the notifier's entries with one (no banners). That asymmetry is
+deliberate.
+
+**Content.** Title is the sidebar row's title. Subtitle is the session
+name; for a remote window `user@host · session`, using the resolved
+identity the window title shows; for a `kido ssh` remote agent in a Local
+window, `session · destination`. Body: `Asks: <ask text>` for an
+outstanding ask (from `snapshot.asks`), else `Waiting` or
+`Waiting: <caption>`, else `Exit <code>: <command>` for a command, else
+`Failed` or `Failed: <caption>`. Nothing is truncated by the app.
+Identifier is owner and pane, so a repost replaces; thread identifier is
+the host key; category `waiting` or `failed` supplies the hidden-preview
+placeholders "Waiting for input" and "Failed"; sound is the default; the
+click target (host, server instance, session, window, pane) travels as
+JSON in `userInfo`. Linked panes take the client's session.
+
+**Frontmost and badge.** `willPresent` returns no options: nothing is
+shown while Kido.app is frontmost. The Dock badge, through
+`setBadgeCount`, is the number of posted entries across all windows, set
+after every step and cleared on quit.
+
+**Click.** The delegate decodes the target and calls `route`, which
+picks a live owner of that host: one whose snapshot has the same server
+instance and contains the pane, preferring a client already in the
+target session, then the key window; else any window of the host, key
+first. It activates the app, deminiaturizes and orders the window front
+(not in background builds), and performs the existing RPC jump, which
+moves that window's client; the pane becomes active in an attended
+window, is seen, and the notification withdraws on its own. With no
+window for the host, the click opens it through `WindowRoutes.connect`
+(Local as a new-window cause) and keeps a pending jump for 30s, consumed
+by the first error-free snapshot of that host whose instance matches and
+contains the pane, dropped on a mismatch or at the deadline. The delegate
+is installed in `applicationWillFinishLaunching`, because a click that
+launches the app reaches only a handler already in place.
+
+**Authorization and builds.** Alert, sound and badge permission is
+requested once, when the first owner connects, if still undetermined; a
+denial and every posting failure are logged once and otherwise silent,
+and there is no in-app toggle. `SystemNotifications` is the only file
+importing UserNotifications. Background, visual and stress builds use
+`RecordedNotifications`, which records posts, withdrawals, badge counts
+and authorization calls and never touches Notification Center.
+`NotificationsTests` in SidebarFeed cover the step: attendance,
+baselines, suppression and acknowledgement, reposts, every withdrawal,
+exclusions, precedence and content; the hosted `NotificationTests` drive
+two owners, feed restart and `route` against the recording poster.
+
 ## Testing
 
 `make visual` runs hosted SnapshotTesting tests against a private tmux
