@@ -36,18 +36,23 @@ import TmuxControl
                         ("identity", "ForwardAgent yes\n IdentityAgent /tmp/identity.sock", "yes"),
                         ("none", "ForwardAgent yes\n IdentityAgent none", "yes")]
         try policies.map { "Host \($0.0)\n HostName example.invalid\n \($0.1)\n" }.joined().write(toFile: configuration, atomically: true, encoding: .utf8)
-        let options = SSH.options + ["-F", configuration]
         XCTAssertFalse(SSH.options.contains("ForwardAgent=no"))
         for (host, _, policy) in policies {
-            let result = try await Child.run("/usr/bin/ssh", options + ["-G", "--", host], env: tools.environment.merging(["PRIVATE_AGENT": "/tmp/private-agent.sock"]) { _, new in new })
-            XCTAssertEqual(result.status, 0, result.err)
-            XCTAssertTrue(result.out.components(separatedBy: "\n").contains("forwardagent " + policy), result.out)
-            XCTAssertTrue(result.out.contains("clearallforwardings yes"))
             let ssh = try SSH(host)
             ssh.testConfiguration = configuration
             addTeardownBlock { @MainActor in ssh.stop() }
+            XCTAssertFalse(ssh.masterArguments.contains("ClearAllForwardings=yes"))
+            XCTAssertTrue(ssh.masterArguments.contains("ExitOnForwardFailure=no"))
+            XCTAssertFalse(ssh.masterArguments.contains("ForwardAgent=no"))
+            XCTAssertTrue(ssh.probeArguments.contains("ClearAllForwardings=yes"))
+            XCTAssertTrue(ssh.checkArguments.contains("ClearAllForwardings=yes"))
+            let result = try await Child.run("/usr/bin/ssh", ssh.probeArguments, env: tools.environment.merging(["PRIVATE_AGENT": "/tmp/private-agent.sock"]) { _, new in new })
+            XCTAssertEqual(result.status, 0, result.err)
+            XCTAssertTrue(result.out.components(separatedBy: "\n").contains("forwardagent " + policy), result.out)
+            XCTAssertTrue(result.out.contains("clearallforwardings yes"))
             let helper = ssh.passenger(["/usr/bin/printf", "%s", "a'b $c"])
             XCTAssertTrue(helper.arguments.contains("ForwardAgent=no"))
+            XCTAssertTrue(helper.arguments.contains("ClearAllForwardings=yes"))
             XCTAssertEqual(helper.arguments.last, "exec '/usr/bin/env' '-u' 'SSH_AUTH_SOCK' '/usr/bin/printf' '%s' 'a'\"'\"'b $c'")
             let endpoint = Endpoint(server: Server(tmux: "/tmp/tmux ' $tool", socket: "/tmp/state ' $dir/socket", protocolVersion: .required), kido: "/tmp/kido")
             let attach = [endpoint.server.tmux] + Launch.attach(endpoint.server.tmux, socket: endpoint.server.socket).arguments
