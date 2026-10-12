@@ -38,6 +38,8 @@ done
 mkdir -p build/release
 zip="build/release/Kido-$version.zip"
 ditto -c -k --norsrc --noextattr --keepParent "$app" "$zip"
+# Only the installed app should own the shipped LaunchServices identity.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$app"
 sha=$(shasum -a 256 "$zip" | awk '{print $1}')
 echo "SHA256: $sha"
 if [[ -z $local_tag ]]; then action git tag "$tag"; fi
