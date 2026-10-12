@@ -131,11 +131,14 @@ final class SidebarCell: NSTableCellView {
                 case .error, .stalled: .systemRed
                 }
                 if row.status == .done {
-                    let image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?
-                        .withSymbolConfiguration(.init(pointSize: 6, weight: .bold))?
-                        .withSymbolConfiguration(.init(paletteColors: [color]))
-                    image?.draw(in: NSRect(x: dotX - 3, y: y + 7, width: 6, height: 4),
-                                from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                    let path = NSBezierPath()
+                    path.move(to: NSPoint(x: dotX - 2.8, y: y + 9.1))
+                    path.line(to: NSPoint(x: dotX - 0.9, y: y + 11))
+                    path.line(to: NSPoint(x: dotX + 2.8, y: y + 7))
+                    path.lineWidth = 2
+                    path.lineCapStyle = .round
+                    path.lineJoinStyle = .round
+                    color.setStroke(); path.stroke()
                 } else {
                     color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: y + 6, width: 6, height: 6)).fill()
                 }
