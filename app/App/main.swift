@@ -10,6 +10,7 @@ import SidebarFeed
     private var trigger: String?
     let routes = WindowRoutes()
     private var ordinaryLaunchEvent = true
+    private var pendingJumps: [Host: (target: NoticeTarget, deadline: Date)] = [:]
 
     #if KIDO_VISUAL
     init(runtime: GhosttyRuntime? = nil) {
@@ -19,6 +20,10 @@ import SidebarFeed
     #endif
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        if let notifications = Notifier.shared.poster as? SystemNotifications {
+            notifications.click = { [weak self] in self?.route($0) }
+            notifications.install()
+        }
         let event = NSAppleEventManager.shared().currentAppleEvent
         ordinaryLaunchEvent = event.map { $0.eventClass == AEEventClass(kCoreEventClass) && $0.eventID == AEEventID(kAEOpenApplication) } ?? true
     }
@@ -78,6 +83,16 @@ import SidebarFeed
         guard let runtime else { return nil }
         let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause)
         owners.append(owner)
+        owner.snapshotReceived = { [weak self, weak owner] in
+            guard let self, let owner, let snapshot = owner.snapshot, snapshot.error == nil,
+                  let pending = pendingJumps[host] else { return }
+            if pending.deadline <= Date() || snapshot.serverInstance != pending.target.instance {
+                pendingJumps.removeValue(forKey: host)
+            } else if sidebarRows(snapshot).contains(where: { $0.target?.pane == pending.target.position.pane }) {
+                pendingJumps.removeValue(forKey: host)
+                route(pending.target)
+            }
+        }
         owner.onClose = { [weak self, weak owner] in
             self?.updateMenu()
             owner?.ended.notify(queue: .main) { [weak self, weak owner] in self?.owners.removeAll { $0 === owner } }
@@ -88,6 +103,32 @@ import SidebarFeed
         }
         updateMenu()
         return owner
+    }
+
+    func route(_ target: NoticeTarget, now: Date = Date()) {
+        let host: Host
+        if target.host == "local" { host = .local }
+        else if target.host.hasPrefix("ssh:") { host = .remote(String(target.host.dropFirst(4))) }
+        else { return }
+        let candidates = owners.filter { $0.alive && $0.host == host }
+        let containing = candidates.filter {
+            $0.snapshot?.serverInstance == target.instance && sidebarRows($0.snapshot).contains { $0.target?.pane == target.position.pane }
+        }
+        let inSession = containing.filter { $0.snapshot?.client.session == target.position.session }
+        let owner = inSession.first { $0.window.isKeyWindow } ?? inSession.first
+            ?? containing.first { $0.window.isKeyWindow } ?? containing.first
+            ?? candidates.first { $0.window.isKeyWindow } ?? candidates.first
+        if let owner {
+            if !background {
+                NSApp.activate(ignoringOtherApps: true)
+                owner.window.deminiaturize(nil)
+                owner.window.makeKeyAndOrderFront(nil)
+            }
+            owner.perform(.jump(target.position))
+        } else {
+            pendingJumps[host] = (target, now.addingTimeInterval(30))
+            routes.connect(host, cause: host == .local ? .newWindow : .remoteRequest)
+        }
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { true }
@@ -108,7 +149,10 @@ import SidebarFeed
         view?.items.first?.title = current?.sidebar.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"
     }
 
+    func applicationDidResignActive(_ notification: Notification) { Notifier.shared.attendanceChanged() }
+
     func applicationDidBecomeActive(_ notification: Notification) {
+        Notifier.shared.attendanceChanged()
         do throws(Failure) { try tools.validate() } catch { owners.forEach { $0.bundleChanged(error) } }
     }
 
@@ -168,6 +212,7 @@ import SidebarFeed
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         note("quitting: \(trigger ?? "NSApp.terminate")")
+        Notifier.shared.withdrawAll()
         let stopped = DispatchGroup()
         for owner in owners {
             stopped.enter()
