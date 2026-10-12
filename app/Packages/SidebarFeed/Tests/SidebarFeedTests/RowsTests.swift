@@ -29,9 +29,11 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     #expect(rows.map(\.height) == [29, 32, 32, 48, 32, 32, 32, 16])
     #expect(rows.allSatisfy { $0.height > 0 })
     #expect(panes.filter(\.focused).map(\.title) == ["@pane-5"])
-    #expect(panes[0].guides.isEmpty && panes[1].guides.isEmpty)
-    #expect(panes[2].guides == [.init(x: 20, top: 10, bottom: 48)])
-    #expect(panes[3].guides == [.init(x: 35, top: 10, bottom: 22), .init(x: 20, top: 0, bottom: 32)])
+    #expect(panes.map(\.indicatorX) == [20, 20, 35, 50, 35, 35])
+    #expect(panes[0].guides.isEmpty)
+    #expect(panes[1].guides == [.init(x: 20, top: 22, bottom: 32)])
+    #expect(panes[2].guides == [.init(x: 35, top: 22, bottom: 48), .init(x: 20, top: 0, bottom: 48)])
+    #expect(panes[3].guides == [.init(x: 35, top: 0, bottom: 22), .init(x: 20, top: 0, bottom: 32)])
     #expect(panes[4].guides == [.init(x: 20, top: 0, bottom: 32)])
     #expect(panes[5].guides == [.init(x: 20, top: 0, bottom: 22)])
     #expect(sidebarRows(try fixture(client: 1)).filter(\.focused).map(\.title) == ["@pane-1"])
@@ -81,6 +83,8 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     #expect(row.height == (activity ? 48 : 32))
     #expect(row.padding == 7)
     #expect(row.leading == (nested ? 51 : 36))
+    #expect(row.indicatorX == (nested ? 35 : 20))
+    if nested && multi { #expect(sidebarRows(snapshot).allSatisfy { !$0.guides.contains { $0.x == 5 } }) }
     #expect(row.tailY == 26)
     #expect(row.focused)
     #expect(sidebarRows(snapshot).filter(\.focused).count == 1)
@@ -109,23 +113,23 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(sidebarElapsed(started: Date(timeIntervalSince1970: 100), now: Date(timeIntervalSince1970: Double(100 + seconds))) == expected)
 }
 
-@Test func iconsAndDisplayOnlyPrefix() throws {
-    let cases: [([Any], String?, String, String, String, SidebarRow.Icon)] = [
-        (agent(), nil, "Ada", "@Ada", "Ada", .agent),
-        (agent(), nil, "@Ada", "@Ada", "@Ada", .agent),
-        (remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]]), nil, "Ada", "@Ada", "Ada", .agent),
-        (terminal(running()), "agent", "Ada", "@Ada", "Ada", .agent),
-        (["Ended", ["result": "completed"]], "agent", "Ada", "@Ada", "Ada", .agent),
-        (terminal(["Unknown"]), nil, "zsh", "zsh", "zsh", .terminal),
-        (remote(["Remote_terminal", ["interactive": true, "status": shell()]]), nil, "ssh", "ssh alice@devbox", "ssh alice@devbox", .terminal),
-        (terminal(running()), "bash", "job", "job", "job", .terminal),
-        (["Ended", ["result": "failed"]], "stream", "monitor", "monitor", "monitor", .terminal)
+@Test func agentWeightAndDisplayOnlyPrefix() throws {
+    let cases: [([Any], String?, String, String, String, Bool)] = [
+        (agent(), nil, "Ada", "@Ada", "Ada", true),
+        (agent(), nil, "@Ada", "@Ada", "@Ada", true),
+        (remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]]), nil, "Ada", "@Ada", "Ada", true),
+        (terminal(running()), "agent", "Ada", "@Ada", "Ada", true),
+        (["Ended", ["result": "completed"]], "agent", "Ada", "@Ada", "Ada", true),
+        (terminal(["Unknown"]), nil, "zsh", "zsh", "zsh", false),
+        (remote(["Remote_terminal", ["interactive": true, "status": shell()]]), nil, "ssh", "ssh alice@devbox", "ssh alice@devbox", false),
+        (terminal(running()), "bash", "job", "job", "job", false),
+        (["Ended", ["result": "failed"]], "stream", "monitor", "monitor", "monitor", false)
     ]
-    for (lifecycle, run, title, expected, tab, icon) in cases {
+    for (lifecycle, run, title, expected, tab, agent) in cases {
         let snapshot = try decode(snapshotObject([pane(0, title: title, lifecycle: lifecycle, run: run)]))
         let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
         #expect(row.title == expected)
-        #expect(row.icon == icon)
+        #expect(row.agent == agent)
         #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
                                activePanes: [WindowID(number: 0): PaneID(number: 0)]).titles[WindowID(number: 0)] == tab)
     }
@@ -198,24 +202,46 @@ func elapsed(_ seconds: Int, _ expected: String) {
     ]
     let snapshot = try fixture(grouped: true, descendants: true, records: records)
     let rows = sidebarRows(snapshot)
-    let programs = rows.filter { if case .program = $0.kind { true } else { false } }
+    let programs = rows.filter { if case .program = $0.id { true } else { false } }
     #expect(programs.map(\.title) == ["Record-only title", "a/child", "a/missing/leaf", "a-", "é", "z", "é"])
-    #expect(programs.map(\.leading) == [27, 42, 57, 27, 27, 27, 27])
+    #expect(programs.map(\.leading) == [51, 66, 81, 51, 51, 51, 51])
+    #expect(programs.map(\.indicatorX) == [35, 50, 65, 35, 35, 35, 35])
+    #expect(programs.allSatisfy { $0.kind == .pane(nil) && $0.agent })
     #expect(programs.map(\.height) == [32, 32, 48, 32, 32, 32, 32])
     #expect(programs.allSatisfy { $0.padding == 7 && $0.tailY == 26 && !$0.focused && $0.target == nil && $0.started == nil })
     #expect(programs.map(\.status) == [.running, .done, .waiting, .error, .quiet, .quiet, .quiet])
-    #expect(programs[0].guides == [.init(x: 20, top: 10, bottom: 32), .init(x: 5, top: 0, bottom: 32)])
-    #expect(programs[1].guides == [.init(x: 20, top: 0, bottom: 32), .init(x: 35, top: 10, bottom: 32), .init(x: 5, top: 0, bottom: 32)])
-    #expect(programs[2].guides == [.init(x: 20, top: 0, bottom: 48), .init(x: 35, top: 0, bottom: 38), .init(x: 5, top: 0, bottom: 48)])
-    #expect(programs.last!.guides == [.init(x: 20, top: 0, bottom: 22), .init(x: 5, top: 0, bottom: 32)])
+    #expect(rows[1].guides == [.init(x: 20, top: 22, bottom: 32), .init(x: 5, top: 10, bottom: 32)])
+    #expect(programs[0].guides == [.init(x: 35, top: 22, bottom: 32), .init(x: 20, top: 0, bottom: 32), .init(x: 5, top: 0, bottom: 32)])
+    #expect(programs[1].guides == [.init(x: 35, top: 0, bottom: 32), .init(x: 20, top: 0, bottom: 32), .init(x: 5, top: 0, bottom: 32)])
+    #expect(programs[2].guides == [.init(x: 35, top: 0, bottom: 38), .init(x: 20, top: 0, bottom: 48), .init(x: 5, top: 0, bottom: 48)])
+    #expect(programs.last!.guides == [.init(x: 20, top: 0, bottom: 32), .init(x: 5, top: 0, bottom: 32)])
     #expect(programs.allSatisfy { Set($0.guides.map(\.x)).count == $0.guides.count })
     #expect(rows[1].target?.pane == PaneID(number: 0))
     #expect(rows[9].target?.pane == PaneID(number: 1))
     #expect(Set(rows.map(\.id)).count == rows.count)
-    #expect(rows.compactMap(\.target).first == rows[1].target)
+    #expect(rows.compactMap(\.target).map(\.pane) == [0, 1, 2, 5, 3, 6].map { PaneID(number: UInt32($0)) })
     #expect(sidebarSearch(snapshot, query: "Record-only title")?.sessions.isEmpty == true)
     #expect(sidebarSearch(snapshot, query: "Record-only caption")?.sessions.isEmpty == true)
     #expect(sidebarRows(sidebarSearch(snapshot, query: "session-0")) == rows)
+}
+
+@Test func recordGuidesGrowFromPaneAndRecordIndicators() throws {
+    let records: [[String: Any]] = [
+        ["id": "a", "state": "working", "msg": "Activity"],
+        ["id": "a/b", "state": "working"]
+    ]
+    let rows = sidebarRows(try fixture(records: records))
+    #expect(rows[1].guides == [.init(x: 20, top: 22, bottom: 32)])
+    #expect(rows[2].guides == [.init(x: 35, top: 22, bottom: 48), .init(x: 20, top: 0, bottom: 48)])
+    #expect(rows[3].guides == [.init(x: 35, top: 0, bottom: 22), .init(x: 20, top: 0, bottom: 22)])
+}
+
+@Test func stalledPaneMakesItsAncestorTabRed() throws {
+    let snapshot = try decode(snapshotObject([pane(0, children: [pane(1, window: 1, lifecycle: agent(["Stalled"]))])]))
+    let row = try #require(sidebarRows(snapshot).first { $0.target?.pane == PaneID(number: 1) })
+    #expect(row.status == .stalled && row.indicatorDescription == "stalled")
+    #expect(row.status.tabStatus == .error)
+    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .error)
 }
 
 @Test func programIDsOrderBySlashComponents() throws {
@@ -224,7 +250,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
         ["id": "a/b", "state": "working"],
         ["id": "a", "state": "working"]
     ]
-    let rows = sidebarRows(try fixture(records: records)).filter { if case .program = $0.kind { true } else { false } }
+    let rows = sidebarRows(try fixture(records: records)).filter { if case .program = $0.id { true } else { false } }
     #expect(rows.map(\.title) == ["a", "a/b", "a-b"])
 }
 
