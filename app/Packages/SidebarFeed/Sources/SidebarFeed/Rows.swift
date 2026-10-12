@@ -135,7 +135,7 @@ extension Item {
         func compose(_ msg: String?, _ progress: Int?) -> String {
             [msg ?? "", progress.map { "\($0)%" } ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
         }
-        if case .ended(let result) = lifecycle { return result == .unknown ? "" : result.rawValue }
+        if case .ended(let result) = lifecycle { return result == .unknown || result == .completed ? "" : result.rawValue }
         if let agent {
             switch agent.state {
             case .running(let progress), .waiting(_, let progress): return compose(agent.msg, progress)

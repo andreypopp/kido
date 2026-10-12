@@ -164,7 +164,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
         (agent(idle(outcome(17, "success")), msg: "Finished"), nil, "@zsh", false, .done, "done", "Finished"),
         (agent(idle(outcome(18, "failure")), msg: "Failed"), nil, "@zsh", false, .error, "failed", "Failed"),
         (["Ended", ["result": "unknown"]], "bash", "zsh", false, .quiet, "gone", ""),
-        (["Ended", ["result": "completed"]], "bash", "zsh", false, .done, "gone, completed", "completed"),
+        (["Ended", ["result": "completed"]], "bash", "zsh", false, .done, "gone, completed", ""),
         (["Ended", ["result": "failed"]], "bash", "zsh", false, .error, "gone, failed", "failed"),
         (["Ended", ["result": "died"]], "agent", "@zsh", false, .error, "gone, died", "died"),
         (["Ended", ["result": "stopped"]], "agent", "@zsh", false, .quiet, "gone, stopped", "stopped")
