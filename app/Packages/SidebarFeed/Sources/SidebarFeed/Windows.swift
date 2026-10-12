@@ -38,6 +38,7 @@ public struct WindowProjection: Equatable, Sendable {
     public struct Label: Equatable, Sendable {
         public let title: String
         public let agent: Bool
+        public let messageable: Bool
     }
     public var ancestors: [WindowID: WindowID] = [:]
     public var statuses: [WindowID: SidebarRow.Status] = [:]
@@ -50,7 +51,7 @@ public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving
     func collect(_ node: Node, ancestor: WindowID?) {
         let window: WindowID = switch node { case .window(let group): group.window; case .item(let item): item.window }
         if case .item(let item) = node, activePanes[window] == item.pane {
-            result.labels[window] = .init(title: item.label, agent: item.isAgent)
+            result.labels[window] = .init(title: item.label, agent: item.isAgent, messageable: item.isMessageable)
         }
         let root = ancestor ?? (surviving.contains(window) ? window : nil)
         if let root {
