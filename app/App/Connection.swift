@@ -79,6 +79,7 @@ final class Connection: @unchecked Sendable {
     @MainActor private var sentSize: String?
     @MainActor private var sizeInFlight = false
     @MainActor var navigate: (PaneCommand) -> Void = { _ in }
+    @MainActor var closePane: (PaneID) -> Void = { _ in }
     @MainActor var userFocus: () -> Void = {}
     @MainActor private(set) var model = SessionModel() {
         didSet { onChange(model) }
