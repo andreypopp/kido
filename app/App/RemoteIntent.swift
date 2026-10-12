@@ -47,7 +47,10 @@ struct RemoteShortcuts: AppShortcutsProvider {
     }
     func ready(isDefaultLaunch: Bool, _ open: @escaping (Host, WindowOwner.DialCause) -> Void) {
         self.open = open
-        let requests = queued.filter { isDefaultLaunch || $0.0 != .local }
+        let requests = queued.filter { host, cause in
+            if case .newWindow = cause { return true }
+            return isDefaultLaunch || host != .local
+        }
         ordinaryAllowed = isDefaultLaunch || !requests.isEmpty
         queued = []
         requests.forEach { open($0.0, $0.1) }
