@@ -214,8 +214,9 @@ import TmuxControl
                     let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
                     view.cacheDisplay(in: view.bounds, to: image)
                     let scale = CGFloat(image.pixelsHigh) / view.bounds.height
+                    // The trailing 28pt tab-strip slot contains the new-window plus.
                     for y in [CGFloat(3), 26, 49] {
-                        let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(20 * scale), y: Int(y * scale)))
+                        let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(40 * scale), y: Int(y * scale)))
                         XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.001, "\(hex) \(mode) header opacity")
                         XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 2 / 255, "\(hex) \(mode) header red")
                         XCTAssertEqual(color.greenComponent, expected.greenComponent, accuracy: 2 / 255, "\(hex) \(mode) header green")
@@ -282,8 +283,9 @@ import TmuxControl
                        !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 }
                 let scale = CGFloat(image.pixelsHigh) / view.bounds.height
+                // The trailing 28pt tab-strip slot contains the new-window plus.
                 for y in [CGFloat(3), 26, 49] {
-                    let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(20 * scale), y: Int(y * scale)))
+                    let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(40 * scale), y: Int(y * scale)))
                     XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.001)
                     XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 2 / 255)
                     XCTAssertEqual(color.greenComponent, expected.greenComponent, accuracy: 2 / 255)
