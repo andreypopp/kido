@@ -28,7 +28,7 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     #expect(panes.map(\.indent) == [0, 0, 1, 2, 1, 1])
     #expect(rows.map(\.height) == [29, 32, 32, 48, 32, 32, 32, 16])
     #expect(rows.allSatisfy { $0.height > 0 })
-    #expect(panes.filter(\.focused).map(\.title) == ["@pane-5"])
+    #expect(panes.filter(\.focused).map(\.title) == ["pane-5"])
     #expect(panes.map(\.indicatorX) == [20, 20, 35, 50, 35, 35])
     #expect(panes[0].guides.isEmpty)
     #expect(panes[1].guides == [.init(x: 20, top: 22, bottom: 32)])
@@ -36,7 +36,7 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     #expect(panes[3].guides == [.init(x: 35, top: 0, bottom: 22), .init(x: 20, top: 0, bottom: 32)])
     #expect(panes[4].guides == [.init(x: 20, top: 0, bottom: 32)])
     #expect(panes[5].guides == [.init(x: 20, top: 0, bottom: 22)])
-    #expect(sidebarRows(try fixture(client: 1)).filter(\.focused).map(\.title) == ["@pane-1"])
+    #expect(sidebarRows(try fixture(client: 1)).filter(\.focused).map(\.title) == ["pane-1"])
     #expect(sidebarRows(try fixture(client: 2)).filter(\.focused).map(\.title) == ["pane-2"])
 }
 
@@ -104,7 +104,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     let panes = sidebarRows(try fixture()).filter { $0.target != nil }
     #expect(panes.map(\.started) == [nil, nil, Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), nil])
     #expect(panes.allSatisfy { if case .pane = $0.kind { return true }; return false })
-    #expect(panes.first { $0.title == "@pane-1" }?.tail == "working")
+    #expect(panes.first { $0.title == "pane-1" }?.tail == "working")
     #expect(panes.map(\.height) == [32, 32, 48, 32, 32, 32])
 }
 
@@ -115,7 +115,8 @@ func elapsed(_ seconds: Int, _ expected: String) {
 
 @Test func agentWeightAndDisplayOnlyPrefix() throws {
     let cases: [([Any], String?, String, String, String, Bool)] = [
-        (agent(), nil, "Ada", "@Ada", "Ada", true),
+        (["Live", ["Pi_agent", ["id": "pi-session", "status": report(idle())]]], nil, "Ada", "@Ada", "Ada", true),
+        (["Live", ["Some_agent", ["name": "claude-code", "status": ["since": 1, "msg": null, "state": idle()]]]], nil, "Ada", "Ada", "Ada", true),
         (agent(), nil, "@Ada", "@Ada", "@Ada", true),
         (remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]]), nil, "Ada", "@Ada", "Ada", true),
         (terminal(running()), "agent", "Ada", "@Ada", "Ada", true),
@@ -157,12 +158,12 @@ func elapsed(_ seconds: Int, _ expected: String) {
         (remote(["Remote_terminal", ["interactive": false, "status": shell(running())]]), nil, "ssh alice@devbox", false, .running, "running", ""),
         (remote(["Remote_terminal", ["interactive": true, "status": shell(running(), report: report(working()))]]), nil, "ssh alice@devbox", false, .running, "running", ""),
         (remote(["Remote_terminal", ["interactive": true, "status": shell(exited(2))]]), nil, "ssh alice@devbox", false, .error, "failed", ""),
-        (agent(working(42), msg: "Thinking"), nil, "@zsh", false, .running, "running", "Thinking 42%"),
-        (agent(blocked("permission"), msg: "Approve deployment"), nil, "@zsh", false, .waiting, "waiting", "Approve deployment"),
-        (agent(["Waiting", ["source": ["Ask", ["id": "ask-id"]], "progress": null]]), nil, "@zsh", false, .waiting, "waiting", ""),
-        (agent(["Stalled"]), nil, "@zsh", false, .stalled, "stalled", ""),
-        (agent(idle(outcome(17, "success")), msg: "Finished"), nil, "@zsh", false, .done, "done", "Finished"),
-        (agent(idle(outcome(18, "failure")), msg: "Failed"), nil, "@zsh", false, .error, "failed", "Failed"),
+        (agent(working(42), msg: "Thinking"), nil, "zsh", false, .running, "running", "Thinking 42%"),
+        (agent(blocked("permission"), msg: "Approve deployment"), nil, "zsh", false, .waiting, "waiting", "Approve deployment"),
+        (agent(["Waiting", ["source": ["Ask", ["id": "ask-id"]], "progress": null]]), nil, "zsh", false, .waiting, "waiting", ""),
+        (agent(["Stalled"]), nil, "zsh", false, .stalled, "stalled", ""),
+        (agent(idle(outcome(17, "success")), msg: "Finished"), nil, "zsh", false, .done, "done", "Finished"),
+        (agent(idle(outcome(18, "failure")), msg: "Failed"), nil, "zsh", false, .error, "failed", "Failed"),
         (["Ended", ["result": "unknown"]], "bash", "zsh", false, .quiet, "gone", ""),
         (["Ended", ["result": "completed"]], "bash", "zsh", false, .done, "gone, completed", ""),
         (["Ended", ["result": "failed"]], "bash", "zsh", false, .error, "gone, failed", "failed"),
