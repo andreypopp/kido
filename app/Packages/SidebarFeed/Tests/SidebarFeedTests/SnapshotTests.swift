@@ -187,6 +187,6 @@ func requiresServerInstance(_ instance: [String: Int]?) {
     #expect(rows.map(\.title) == ["zsh", "@mpb-andre.local", "builder", "@mpb-andre.local", "less"])
     #expect(rows.map(\.status) == [.quiet, .waiting, .done, .waiting, .quiet])
     #expect(rows.map(\.tail) == ["", "Approve", "Built", "", ""])
-    let programs = sidebarRows(snapshot).filter { if case .program = $0.kind { true } else { false } }
+    let programs = sidebarRows(snapshot).filter { if case .program = $0.id { true } else { false } }
     #expect(programs.map(\.status) == [.error])
 }
