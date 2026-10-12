@@ -746,29 +746,37 @@ new-window plus; hovering brightens only its icon. No session folding remains.
 Each pane's child-window trees immediately follow that pane, before its
 next sibling; drawn order and navigation share the row-model traversal.
 OSC 7501 non-root records follow their pane before its child windows, ordered
-by slash components in UTF-8 byte order. Static-text rows use the title (or
-full id), message caption and state indicator, with the parent's seen suppression
-for done/error. They are never navigation, click, hover, selection or filter targets.
-They have secondary text, no icon or reserved icon space, and no clock.
-Their title starts at 12pt plus 15pt per nesting level and slash component.
+by slash components in UTF-8 byte order. Each record is mapped to an agent
+row (title or full id, message as the activity line, state mapped
+working→running, blocked→waiting, error→failed, done→done, idle after the
+parent's seen suppression for done/error) and drawn through the same row
+path as every other row; there is no separate record view. A record differs
+from a child-window agent row only in having no @ prefix and no clock, and
+in being display-only: never a navigation, click, hover, selection or filter
+target, and skipped by arrow navigation.
 
 All pane and program rows are 32pt single-line or 48pt with a caption, with
 7pt vertical padding. Titles are 13pt regular on an 18pt line; captions are
-11pt on a 15pt line, 1pt below the title. Selectable rows have 12pt leading
-inset, a 16pt text.bubble/terminal icon and an 8pt gap; trailing inset is 12pt.
-Nesting steps 15pt at every depth. Only the focused pane row has a 10%
+11pt on a 15pt line, 1pt below the title. Agent and agent-run titles, records
+included, are semibold; shell and bash/stream-run titles are regular. Rows have
+a 12pt leading inset, a 16pt leading slot holding the status indicator, and an
+8pt gap; there are no leading icons. The trailing inset is 12pt and the
+trailing column holds only the 10pt tabular clock. The activity line is one
+line, truncated with an ellipsis, from the title's leading edge to the
+trailing inset. Nesting steps 15pt at every depth. Only the focused pane row has a 10%
 labelColor fill, with 7pt corners. Independent keyboard selection also has
 7pt corners and clears on mouse press. No window-wide fills or focus marks remain.
 
 Vertical hierarchy guides draw above fills: opaque 1pt lines, light #bfbab1
 or dark #4f555c, aligned to backing pixels, without horizontal arms or
-stacked segments. A top-level multi-pane window gets a guide at x=5pt,
-from its first pane's top+10pt to its last descendant's bottom−10pt.
-Single-pane windows have no window guide. Each children block has a guide
-at its parent row's left+20pt (the parent's icon center), inset 10pt from
-the block's top and bottom. Program parents get guides spanning their records
-at the next depth's title x−7pt, likewise inset 10pt. Geometry is derived
-in the row model as per-row guide segments, not maintained in a separate view tree.
+stacked segments. Only a top-level multi-pane window gets a group guide, at
+x=5pt, from its first pane's top+10pt to its last descendant's bottom−10pt;
+single-pane and nested multi-pane windows have none. Every children block,
+child windows and records alike, has a guide growing out of its parent row's
+status indicator: at the indicator's center (the parent row's left+20pt),
+from the indicator's bottom+3pt to the last descendant's bottom−10pt.
+Geometry is derived in the row model as per-row guide segments, not
+maintained in a separate view tree.
 Agents and
 agent runs receive a display-only @ prefix, never doubled. Idle local shell panes
 (Live Terminal at a known Idle prompt, no run, idle/done/failed indicator) display secondary-colored
@@ -787,20 +795,23 @@ caption is shown. The indicator comes from the agent state
 run without a report is running, a report wins over the phase (fullscreen
 included), otherwise fullscreen has none, Unknown has none, Running is running and Idle shows its last command
 exit. Ended completed is done, failed and died are errors, stopped and
-unknown are quiet. Status and
-10pt tabular clocks remain trailing; the status and header plus centers are
-15pt from the right edge. Idle has no glyph, running/compacting a green dot,
-waiting rows of any kind an orange dot, failures a red dot, done/completed a green
-checkmark and stalled a red exclamation.
+unknown are quiet. The indicator sits in the leading slot, centered at
+x=20pt plus 15pt per nesting level and vertically on the title line; the
+header plus center is 15pt from the right edge. Indicators are 6pt dots:
+idle and quiet gray (secondaryLabelColor at 45%), running/compacting green,
+waiting rows of any kind orange, failures and stalled red. Done/completed is
+a plain green checkmark, about 6×4pt at a 2pt stroke, visually centered on
+the dot position. Because tabs aggregate the same mapping, a stalled pane
+also gives its window tab a red dot.
 
 There are no window or child gaps and no divider rows. Each session retains
 its 16pt bottom gap. The header plus is 11pt, matching its label.
 Every row has positive height. Colors resolve at drawing
-time; fonts and the two configured dynamic-color icons are cached at
+time; fonts are cached at
 initialization. Same-shape snapshots reload only changed rows. Equal-width
 clock ticks invalidate only the clock label; width changes invalidate the
 first-line band from the title's leading edge through the clock, so title
-truncation redraws. Icon/title/activity draws outside the dirty rect are skipped.
+truncation redraws. Indicator/title/activity draws outside the dirty rect are skipped.
 
 Selection and scroll survive snapshots by session-scoped node identity.
 Scroll anchors the first visible identity and its intra-row offset,
