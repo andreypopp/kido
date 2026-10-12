@@ -789,8 +789,9 @@ non-empty running non-fullscreen command, and a remote terminal shows
 `ssh user@host`, adding `: command` only for an interactive, report-free,
 non-fullscreen running command. The caption is the agent's or report's `msg`
 and progress percentage, joined by a space; Ended rows show their result
-(none for unknown). A run's start metadata drives the clock even when a
-caption is shown. The indicator comes from the agent state
+except completed or unknown, which show none: the green check alone marks
+completion, while accessibility still reads "gone, completed". A run's
+start metadata drives the clock even when a caption is shown. The indicator comes from the agent state
 (running, waiting, stalled, idle with an outcome), else for shells: a live
 run without a report is running, a report wins over the phase (fullscreen
 included), otherwise fullscreen has none, Unknown has none, Running is running and Idle shows its last command
