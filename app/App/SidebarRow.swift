@@ -3,6 +3,7 @@ import SidebarFeed
 
 struct SidebarFonts {
     let regular = NSFont.systemFont(ofSize: 13)
+    let agent = NSFont.systemFont(ofSize: 13, weight: .semibold)
     let section = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let tail = NSFont.systemFont(ofSize: 11)
     let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
@@ -15,13 +16,6 @@ final class SidebarSelectionRow: NSTableRowView {
 
 final class SidebarCell: NSTableCellView {
     static let id = NSUserInterfaceItemIdentifier("cell")
-    private static let icons: [SidebarRow.Icon: NSImage] = Dictionary(uniqueKeysWithValues:
-        [SidebarRow.Icon.agent, .terminal].compactMap { icon in
-            (NSImage(systemSymbolName: icon.rawValue, accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))?
-                .withSymbolConfiguration(.init(paletteColors: [.labelColor])))
-                .map { (icon, $0) }
-        })
     private let fonts: SidebarFonts
     private var row: SidebarRow?
     private var clock = ""
@@ -68,8 +62,8 @@ final class SidebarCell: NSTableCellView {
         let padding = CGFloat(row?.padding ?? 7)
         let leading = CGFloat(row?.leading ?? 36)
         let dirtyRect = oldWidth == size.width
-            ? NSRect(origin: NSPoint(x: bounds.width - 27 - size.width, y: padding + 2), size: size)
-            : NSRect(x: leading, y: padding, width: max(0, bounds.width - 27 - leading), height: 18)
+            ? NSRect(origin: NSPoint(x: bounds.width - 12 - size.width, y: padding + 2), size: size)
+            : NSRect(x: leading, y: padding, width: max(0, bounds.width - 12 - leading), height: 18)
         #if KIDO_VISUAL
         visualClockDirtyRect = dirtyRect
         #endif
@@ -87,8 +81,8 @@ final class SidebarCell: NSTableCellView {
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
             NSBezierPath(rect: bounds).addClip()
-            let program = { if case .program = row.kind { return true }; return false }()
-            let leading = row.target == nil && !program ? 12 : CGFloat(row.leading)
+            let pane = { if case .pane = row.kind { return true }; return false }()
+            let leading = pane ? CGFloat(row.leading) : 12
             let selected = row.target != nil && (superview as? NSTableRowView)?.isSelected == true
                 && (enclosingScrollView?.documentView as? Table)?.keyboardSelection == true
                 && window?.firstResponder === enclosingScrollView?.documentView
@@ -110,43 +104,40 @@ final class SidebarCell: NSTableCellView {
             if case .gap = row.kind { return }
             let header = { if case .header = row.kind { return true }; return false }()
             let y: CGFloat = header ? 6.5 : row.padding
-            let dotX = bounds.width - 15
-            let iconRect = NSRect(x: leading - 24, y: y + 1, width: 16, height: 16)
-            if !header && !program && dirtyRect.intersects(iconRect) {
-                Self.icons[row.icon]?.draw(in: iconRect,
-                          from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-            }
+            let dotX = CGFloat(row.indicatorX)
             let clockWidth = (clock as NSString).size(withAttributes: [.font: fonts.clock]).width
-            let end = header ? bounds.width - 30 : dotX - 12 - (clock.isEmpty ? 0 : clockWidth + 6)
+            let end = header ? bounds.width - 30 : bounds.width - 12 - (clock.isEmpty ? 0 : clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
             let titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
             if dirtyRect.intersects(titleRect) {
                 (row.title as NSString).draw(in: titleRect,
-                                       withAttributes: [.font: header ? fonts.section : fonts.regular,
-                                                        .foregroundColor: header || program || row.quietShell ? NSColor.secondaryLabelColor : NSColor.labelColor,
+                                       withAttributes: [.font: header ? fonts.section : row.agent ? fonts.agent : fonts.regular,
+                                                        .foregroundColor: header || row.quietShell ? NSColor.secondaryLabelColor : NSColor.labelColor,
                                                         .paragraphStyle: paragraph])
             }
-            let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - (program ? 27 : 24)), height: 15)
+            let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - 12), height: 15)
             if dirtyRect.intersects(tailRect) {
-                (row.tail as NSString).draw(in: tailRect,
+                (row.tail.split(whereSeparator: \.isNewline).joined(separator: " ") as NSString).draw(in: tailRect,
                                           withAttributes: [.font: fonts.tail, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
             }
-            (clock as NSString).draw(at: NSPoint(x: dotX - 12 - clockWidth, y: y + 2),
+            (clock as NSString).draw(at: NSPoint(x: bounds.width - 12 - clockWidth, y: y + 2),
                                      withAttributes: [.font: fonts.clock, .foregroundColor: NSColor.secondaryLabelColor])
-            let indicatorY = y
-            let color: NSColor? = switch row.status {
-            case .quiet: nil; case .running, .done: .systemGreen; case .waiting: .systemOrange; case .error, .stalled: .systemRed
-            }
-            if let color {
-                if row.status == .done || row.status == .stalled {
-                    let image = NSImage(systemSymbolName: row.status == .done ? "checkmark" : "exclamationmark", accessibilityDescription: nil)?
-                        .withSymbolConfiguration(.init(pointSize: 10, weight: .bold))?
+            if pane {
+                let color: NSColor = switch row.status {
+                case .quiet: .secondaryLabelColor.withAlphaComponent(NSColor.secondaryLabelColor.alphaComponent * 0.45)
+                case .running, .done: .systemGreen
+                case .waiting: .systemOrange
+                case .error, .stalled: .systemRed
+                }
+                if row.status == .done {
+                    let image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?
+                        .withSymbolConfiguration(.init(pointSize: 6, weight: .bold))?
                         .withSymbolConfiguration(.init(paletteColors: [color]))
-                    image?.draw(in: NSRect(x: dotX - 6, y: indicatorY + 1, width: 12, height: 12),
+                    image?.draw(in: NSRect(x: dotX - 3, y: y + 7, width: 6, height: 4),
                                 from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
                 } else {
-                    color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: indicatorY + 6, width: 6, height: 6)).fill()
+                    color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: y + 6, width: 6, height: 6)).fill()
                 }
             }
         }

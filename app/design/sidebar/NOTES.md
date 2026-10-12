@@ -1,5 +1,49 @@
 # Sidebar reference — macOS 27
 
+## Current redesign draft: uniform rows and hierarchy guides
+
+This preview now explores a new direction requested by the user, superseding the older geometry and no-guide decisions below. Native window chrome remains unchanged.
+
+- All pane and child-record titles: 13pt system font, 18pt line height, regardless of depth or single-/multi-pane window; agent, agent-run and record titles semibold, shell and bash/stream-run titles regular.
+- All rows: 32pt single-line / 48pt with caption, 7pt vertical padding. Captions: 11pt system font, 15pt line height, 1pt gap below title.
+- Uniform 15pt nesting step for child windows and slash-separated program records, chosen so each nested guide sits exactly on the parent icon's center (12pt inset + 8pt half icon = 20pt; 15pt indent + 5pt guide inset = 20pt). No extra window/pane spacing or divider rows.
+- All guides are identical vertical 1pt lines in one opaque color (`#bfbab1` light, `#4f555c` dark), with no horizontal arms, no transparency and no overlapping segments. A guide sits 5pt inside the left edge of the group it covers and spans that whole group, 10pt inset top and bottom: a multi-pane top-level window's guide covers its pane rows and every descendant between and below them; a nested guide covers a parent's entire children block, including grandchildren; a program-record guide covers all records under their parent. Single-pane windows have no window guide.
+- Only the focused pane row gets a background highlight, with 7pt corners. No focused left-edge mark, window-wide fill, neighboring-pane fill or descendant fill. Guides are decorative, noninteractive, and do not affect hit targets.
+- Program records are nested agent rows: the preview maps each record to an agent node (title or ID, caption as the activity line, state mapped onto the indicator kinds working→running, blocked→waiting, error→failed, done→done) and draws it through the one row builder, so heights, the 15pt step per slash component, the leading status indicator, the semibold title and the ellipsis all come from the same code as subagent and run rows. Differences: no @ prefix, no click or keyboard selection, and arrow navigation skips them. Native code should do the same: one row view, records fed as agent rows with a display-only flag.
+
+Guide geometry, measured in the preview (points from the window item's left edge; rows are 32pt or 48pt tall, titles at a 16pt baseline band):
+
+| Guide | x (from its group's left edge) | Vertical extent |
+| --- | --- | --- |
+| Multi-pane window guide | 5 | first pane row top + 10 to window item bottom − 10 |
+| Children-block guide | the parent row's status indicator center (20 from the parent row's edge) | parent indicator bottom + 3 to last descendant bottom − 10 |
+| Program-record guide | the parent row's (pane or record) indicator center | parent indicator bottom + 3 to last nested record bottom − 10 |
+
+Nested guides therefore grow directly out of the parent's status indicator, not from the first child's top. Multi-pane window guides have no parent icon and keep their own column.
+
+Lines are 1pt with crisp edges, centered on their x. Guides draw above fills, as content does in native lists; the multi-pane guide therefore crosses the left edge of a focused row's fill. Keyboard-selection and focused fills both use 7pt corners.
+
+Self-review (headless Chrome, light and dark, Claude Code and stress fixtures): every row measures 32pt or 48pt at 13pt title size across all depths; nesting steps are a uniform 15pt; indicators lead and clocks share one trailing column for rows and records. Fixed during review: record elbows previously started 28pt right of child-window stems and from the parent's bottom edge; the keyboard fill was square-cornered. Open visual point: whether the multi-pane window guide should stop at the focused row's fill instead of crossing it.
+
+Leading icons are removed for now; the status indicator takes their place. Earlier icon variations, kept for reference (not in the preview any more):
+
+| Set | Agents | Terminals | Runs | Notes |
+| --- | --- | --- | --- | --- |
+| A | `text.bubble` | `terminal` | as terminal | shipped before 0.17; removed |
+| B | `sparkles` | `terminal` | as terminal | reads "AI" at a glance, lighter than a framed bubble |
+| C | `text.bubble.fill` | `terminal.fill` | as terminal | heavier; solid shapes hold up better when dimmed and at 2× |
+| D | `text.bubble` | `chevron.right` + underscore (`terminal` without frame) | as terminal | less boxy; the bare prompt is quieter next to the bubble |
+| E | bot face (custom; no exact SF Symbol, closest `faceid` or a custom symbol) | bare prompt | as terminal | strongest agent/shell contrast, least Apple-native |
+| F | `text.bubble` | `terminal` | `play.circle` | three kinds: async bash and stream monitors become runs, separating them from interactive shells |
+
+Current rule: no leading icon of any kind. The status indicator (6pt dot; for done a plain green check, roughly 6×4pt at 2pt stroke with round caps, with no circular base (SF Symbol `checkmark`); its visual center sits on the dot's center, horizontally on the dot column and vertically on the title line's center, like every other indicator) sits in the former icon slot, centered 20pt from the row's edge (12pt inset + half the 16pt slot) plus 15pt per nesting level; idle is a gray dot (secondary color at 45%) so every row has a mark. The trailing column keeps only the elapsed clock. Program records use the same row layout, so a record's dot and title line up with child-window rows at its depth. Agent titles (agents, agent runs and program records) are semibold (600); shells and bash/stream runs stay regular. With the @ prefix and the dimmed "Terminal" title, that is the whole agent/shell distinction.
+
+Review the default Claude Code fixture for program records and scroll to the multi-pane kido-app group for selectable nested windows. This is a draft for visual review, not an approved implementation specification.
+
+---
+
+## Earlier reference (historical geometry below)
+
 Self-contained reference for Kido.app 0.10.1 on macOS 27. The implementation is authoritative: `App/{Sidebar,SidebarView,SidebarRow,WindowTabs}.swift` and `Packages/SidebarFeed/Sources/SidebarFeed/{Rows,Windows}.swift`. The HTML approximates native drawing; it does not replace AppKit.
 
 ```sh
@@ -34,30 +78,13 @@ The tab host is 36pt tall at y=8 within the 52pt toolbar. Tab surfaces stay 28pt
 
 **Fullscreen background fix is represented, implementation settled; user's final native-app look remains pending.** Docked sidebar glass extends through the 52pt toolbar band, identical to the glass below. The themed band begins only to the right of the sidebar divider. Collapsed and floating fullscreen modes retain the themed band across the entire window; floating glass starts below that band. Width changes, session switches and fullscreen re-entry preserve this boundary. Docked glass has square edges and no outline. Only the floating card has rounded corners and a hairline border. This replaces the previous preview's incorrect cream band over docked glass.
 
-## Proposal: OSC 7501 display-only child records — awaiting user review
+## OSC 7501 child records — shipped
 
-The default **Claude Code · child records** fixture proposes program records below their owning pane, before selectable child windows. It contains three working Claude Code subagents (one with a caption) and a nested blocked permission record. Records are not panes: no leading agent/terminal icon, no @ prefix, no clock, no button role, no tab stop, no click handler, no hover/selection/focus fill. Their smaller secondary text distinguishes them from 12pt, icon-bearing selectable child-window rows. They remain inside the owning window's continuous active fill; they never create another rounded window group or independent highlight.
-
-| Property | Proposed geometry |
-| --- | --- |
-| Single line / with caption | 24pt / 39pt |
-| Title | 11pt regular secondary, 16pt line box |
-| Caption | 10pt regular secondary, 14pt line box, 1pt below title |
-| Vertical inset | 4pt top/bottom |
-| First record title | owning pane title + 12pt |
-| Each additional slash component | +12pt (child windows remain +16pt) |
-| Status | existing 6pt dot / check symbol, centered 15pt from group right edge |
-| Separation after records | 3pt when records end the window; ordinary child-window spacing otherwise |
-
-Like `lib/sidebar.ml` / `lib/ui.ml` at kido main 2e8acae6: exclude the root id, order ids lexicographically by slash components (bytewise UTF-8), indent by component count even if intermediate records are absent, fall back to full id for empty title, and show msg as caption. Program rows precede child windows. Unlike the TUI's character tree branches, the AppKit proposal preserves this sidebar's existing no-guide treatment.
-
-State mapping: working→green, blocked→orange, error→red, done→green check, idle→no indicator. Visiting the parent pane (by row or tab) acknowledges done/error for that pane's serial; records/captions remain, working/blocked stay visible, and a newer serial restores completion/error indicators. Preview acknowledgement state is separate from feed data, mirroring the per-view model. Fixtures retain raw program_status records; no extra feed field is needed. Existing mock parent indicators are static fixture data, not a full recomputation of kido's representative status algorithm.
-
-**Not approved or implementation-ready yet.** Review especially the 12pt record indent, icon omission, secondary typography, and how records share the active-window fill. No Swift implementation changes are requested until the user settles this proposal.
+The default **Claude Code · child records** fixture shows program records below their owning pane, before selectable child windows: three working Claude Code subagents (one with a caption) and a nested blocked permission record. Like `lib/sidebar.ml` / `lib/ui.ml`: exclude the root id, order ids lexicographically by slash components (bytewise UTF-8), indent by component count even if intermediate records are absent, fall back to the full id for an empty title, show msg as the activity line. State mapping: working→running, blocked→waiting (orange), error→failed (red), done→done (green check), idle→gray. Visiting the parent pane (by row or tab) acknowledges done/error for that pane's serial; records stay, working/blocked stay visible, and a newer serial restores completion/error indicators. Everything else about a record's appearance is in the redesign draft above: it is an agent row.
 
 ## Approved sidebar geometry
 
-Sessions are plain noninteractive 11pt semibold secondary labels in 29pt headers, followed by windows; no session card or folding. Label line-box y=6.5pt. The trailing 13pt plus creates a new window (preview placeholder), with icon-only hover and center aligned to status circles, 15pt from the item's right edge. Session bottom gap is 16pt. The scrolling list has 8pt horizontal insets, 2pt top and 10pt bottom space.
+Sessions are plain noninteractive 11pt semibold secondary labels in 29pt headers, followed by windows; no session card or folding. Label line-box y=6.5pt. The trailing 11pt plus (matching the 11pt heading type) creates a new window (preview placeholder), with icon-only hover and center aligned to status circles, 15pt from the item's right edge. Session bottom gap is 16pt. The scrolling list has 8pt horizontal insets, 2pt top and 10pt bottom space.
 
 Each window is one 7pt-rounded item containing its pane rows and their descendants. Active window gets continuous 10% labelColor fill, including all nested descendants. Focusing a child highlights its own subtree, not ancestors. Single-pane windows need no extra focus mark; multi-pane windows retain a 2pt leading mark with the row's vertical padding as its inset (85% white dark / 75% black light). Keyboard selection independently adds 10% fill and clears on mouse interaction.
 
@@ -70,17 +97,17 @@ Render children immediately after their owning pane, before the next sibling pan
 | Nested single | 28pt | 40pt | 5pt | 22.5pt |
 | Nested multi | 26pt | 38pt | 4pt | 21.5pt |
 
-These activity positions/heights were approved by eye in AppKit and remain unchanged on macOS 27. Titles: 13pt top-level / 12pt nested, 18pt line box. Activity: 11pt, 15pt line box. Leading inset 12pt top-level / 8pt nested, 16pt monochrome icon then 8pt gap. Activity aligns with title at x=36pt / 32pt. Trailing inset stays 12pt; clocks are 10pt tabular digits on the first line.
+Superseded by the redesign draft above for titles, insets and the leading slot. Still true: activity is 11pt on a 15pt line box, aligned with the title at x=36pt plus nesting; trailing inset 12pt; clocks are 10pt tabular digits on the first line.
 
-Exactly two leading icon types: `text.bubble` for agents/agent-runs, `terminal` otherwise. The preview uses inline vectors, not embedded SF Symbols. Agent display names get `@` without doubling it; feed identities and tmux tab names are unchanged. Quiet shell panes show dimmed **Terminal**, retaining completion/failure statuses: match native Rows.swift exactly (kind shell, no run, indicator idle/done/failed). Unintegrated/unknown and running shells retain their original titles.
+No leading icons (superseded; see the redesign draft above). Agent display names get `@` without doubling it; feed identities and tmux tab names are unchanged. Quiet shell panes show dimmed **Terminal**, retaining completion/failure statuses: match native Rows.swift exactly (kind shell, no run, indicator idle/done/failed). Unintegrated/unknown and running shells retain their original titles.
 
-Statuses remain: idle absent; running/compacting green dot; done and gone/completed the same green check; waiting for input orange dot; failure red dot; stalled red exclamation. The feed's attention flag also includes completion and must not itself select orange. Dots are 6pt; native check/exclamation symbols use 10pt bold configurations drawn in a 12pt box. Checks/exclamation strokes in HTML remain approximations.
+Statuses: idle gray dot; running/compacting green dot; done and gone/completed the same plain green check; waiting for input orange dot; failure and stalled the same red dot (no separate stalled glyph). The feed's attention flag also includes completion and must not itself select orange. Dots are 6pt; the check is about 6×4pt at a 2pt stroke. The HTML check stroke remains an approximation of the native symbol.
 
 ## Interaction and fixtures
 
 Arrow keys/j/k navigate, Enter focuses a pane, / reveals filtering, Escape clears it. Session/window creation and terminal content are placeholders. Captured timestamps are historical, not a live feed connection. Fixtures include nested multi-pane windows, long titles, waiting/stalled/failure/completion, SSH/shells, and orphaned windows. Preview selectors cover Light/Dark, docked/collapsed/floating, fullscreen, widths 236/292/320pt, live/flattened material, local/remote/long host and connection state.
 
-Tabs restore each window's remembered active pane. Names/existence/order come from simulated tmux inventory; hierarchy and error/request status come from the last unfiltered snapshot, so filtering does not change tabs. Descendants select their nearest surviving ancestor's tab; orphan windows get their own. Error wins over input requests; completion/running/idle/stalled add no tab dot. Cmd-1…9 follows tab order, clamping out-of-range numbers to the final tab.
+Tabs restore each window's remembered active pane. Names/existence/order come from simulated tmux inventory; hierarchy and error/request status come from the last unfiltered snapshot, so filtering does not change tabs. Descendants select their nearest surviving ancestor's tab; orphan windows get their own. Error (including stalled, which maps to error) wins over input requests; completion/running/idle add no tab dot. Cmd-1…9 follows tab order, clamping out-of-range numbers to the final tab.
 
 Remote entry remains Spotlight/Shortcuts **Connect to Remote Host in Kido**, with Host input and a separate window per request. No in-app picker or Recent Connections. Titles are Session locally, user@host / Session remotely; the native title is hidden, with the host identity displayed beside tabs.
 
