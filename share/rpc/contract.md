@@ -1,6 +1,6 @@
 # kido rpc protocol 4.0
 
-fork revision: 451ab5843db4c6e57e354cae00eee1abe2b64640
+fork revision: 336cb9a1d437a52ec03a0f8dba7538ccb586f1c5
 
 Protocol.value is the binary's protocol constant. It versions this RPC
 surface only; the server's compatibility is a separate stamp (below), so a
