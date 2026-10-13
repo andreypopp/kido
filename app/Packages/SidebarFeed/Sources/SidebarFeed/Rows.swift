@@ -33,6 +33,7 @@ public struct SidebarRow: Equatable, Sendable {
     public var guides: [Guide] = []
     public var quietShell = false
     public var agent = false
+    public var root: WindowID?
     public var padding: Double { 7 }
     public var leading: Double { 36 + Double(indent) * 15 }
     public var indicatorX: Double { 20 + Double(indent) * 15 }
@@ -130,16 +131,6 @@ extension Item {
         }
     }
 
-    var searchTitles: [String] {
-        switch lifecycle {
-        case .live(.ssh(let destination, .terminal)): [destination.description]
-        case .live(.ssh(let destination, .agent)): [title, destination.description]
-        case .live(.terminal): []
-        case .live: [title]
-        case .ended: run == .agent ? [title] : []
-        }
-    }
-
     var caption: String {
         func compose(_ msg: String?, _ progress: Int?) -> String {
             [msg ?? "", progress.map { "\($0)%" } ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
@@ -226,8 +217,9 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                 offset += rows[index].height
             }
         }
-        func windows(_ nodes: [Node], depth: Int) {
+        func windows(_ nodes: [Node], depth: Int, root: WindowID?) {
             for node in nodes {
+                let root = root ?? node.window
                 let start = rows.count
                 let panes: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
                 let multiPane = panes.count > 1
@@ -246,7 +238,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                                            started: item.started,
                                            focused: target == snapshot.client,
                                            quietShell: quietShell,
-                                           agent: agent))
+                                           agent: agent, root: root))
                     let records = item.program_status.records.filter { !$0.id.isEmpty }.sorted { a, b in
                         let left = a.id.split(separator: "/", omittingEmptySubsequences: false)
                         let right = b.id.split(separator: "/", omittingEmptySubsequences: false)
@@ -272,7 +264,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                                                title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
                                                tail: caption, status: [.done, .error].contains(status) && seen.contains(item.pane, item.agent != nil ? .agent : .report, .serial(item.program_status.serial)) ? .quiet : status,
                                                indicatorDescription: record.state.rawValue,
-                                               started: nil, focused: false, agent: true))
+                                               started: nil, focused: false, agent: true, root: root))
                     }
                     if !records.isEmpty {
                         for (index, record) in records.enumerated() {
@@ -285,7 +277,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                         }
                     }
                     if !item.children.isEmpty {
-                        windows(item.children, depth: depth + 1)
+                        windows(item.children, depth: depth + 1, root: root)
                     }
                     if rows.count > parent + 1 {
                         guide(parent, x: rows[parent].indicatorX, topInset: 22)
@@ -294,7 +286,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                 if depth == 0 && multiPane { guide(start, x: 5) }
             }
         }
-        windows(session.nodes, depth: 0)
+        windows(session.nodes, depth: 0, root: nil)
         rows.append(SidebarRow(id: .gap(session.id), kind: .gap, indent: 0, height: 16,
                                title: "", tail: "", status: .quiet, started: nil, focused: false))
     }
