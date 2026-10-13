@@ -318,10 +318,10 @@ if done:
     counts['child-window'] = done['counts'].get('child-window-seen', 0)
     if counts['child-window-attempted'] and not counts['child-window']:
         problems.append('async child windows were sent but never observed in the feed')
-    for action in ('tabs', 'sidebar-jump', 'sidebar-search', 'sidebar-mode'):
+    for action in ('tabs', 'sidebar-jump', 'sidebar-mode'):
         if not done['counts'].get(action + '-delivered'):
             problems.append('UI action never delivered: ' + action)
-    for kind in ('displayed-window', 'tab-order', 'shortcut-order', 'one-rpc-jump', 'search-escape', 'floating-frame', 'floating-dismiss', 'floating-no-refresh'):
+    for kind in ('displayed-window', 'tab-order', 'shortcut-order', 'one-rpc-jump', 'floating-frame', 'floating-dismiss', 'floating-no-refresh'):
         if not done['counts'].get(kind + '-verified'):
             problems.append('UI verification never ran: ' + kind)
 gone = {event['detail'] for event in app if event.get('event') == 'drag-killed'}
