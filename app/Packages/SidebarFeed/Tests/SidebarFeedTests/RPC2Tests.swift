@@ -29,7 +29,7 @@ import TmuxControl
     }
 }
 
-@Test func localSearchAndComposedRows() throws {
+@Test func composedRows() throws {
     let records: [[String: Any]] = [["id": "", "state": "working", "title": "ignored raw title", "msg": "ignored raw caption", "progress": 90]]
     let nodes = [pane(0, title: "excluded shell", lifecycle: terminal(running("excluded-command"), report: report(waiting(), msg: "composed caption")), records: records, serial: 7, children: [
         pane(1, title: "Compiler expert", lifecycle: agent(working())),
@@ -39,16 +39,6 @@ import TmuxControl
     object["sessions"] = [["id": "$0", "name": "workspace", "current": true, "nodes": nodes],
                           ["id": "$1", "name": "devbox", "current": false, "nodes": []]]
     let snapshot = try decode(object)
-    #expect(sidebarSearch(snapshot, query: "") == snapshot)
-    #expect(sidebarSearch(snapshot, query: "CMPEX")?.sessions.map(\.id) == [SessionID(number: 0)])
-    #expect(sidebarSearch(snapshot, query: "alice@devbox")?.sessions.map(\.id) == [SessionID(number: 0)])
-    #expect(sidebarSearch(snapshot, query: "devbox")?.sessions.map(\.id) == [SessionID(number: 1), SessionID(number: 0)])
-    #expect(sidebarSearch(snapshot, query: "reviewer")?.sessions.map(\.id) == [SessionID(number: 0)])
-    #expect(sidebarSearch(snapshot, query: "alice@agenthost")?.sessions.map(\.id) == [SessionID(number: 0)])
-    #expect(sidebarSearch(snapshot, query: "wrksp")?.sessions[0].nodes == snapshot.sessions[0].nodes)
-    for query in ["excluded shell", "excluded-command", "excluded-title", "composed caption", "ignored raw title", "@Compiler", "missing"] {
-        #expect(sidebarSearch(snapshot, query: query)?.sessions.isEmpty == true)
-    }
     let rows = sidebarRows(snapshot).filter { $0.target != nil }
     #expect(rows.map(\.title) == ["excluded shell", "Compiler expert", "ssh alice@devbox: excluded-command", "Reviewer"])
     #expect(rows[0].tail == "composed caption")

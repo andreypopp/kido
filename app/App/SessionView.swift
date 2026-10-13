@@ -4,6 +4,10 @@ import TmuxControl
 
 final class SessionView: NSView {
     weak var connection: Connection?
+    #if KIDO_VISUAL
+    var visualShown: (WindowID) -> Void = { _ in }
+    #endif
+    var reorder = Reorder()
     var onPaneChange: () -> Void = {}
     private(set) var updating = false
     private let runtime: GhosttyRuntime
@@ -74,6 +78,9 @@ final class SessionView: NSView {
         for (id, view) in windows { view.isHidden = id != window }
         others.values.forEach { $0.isHidden = true }
         guard let window, let view = windows[window], view !== before else { return }
+        #if KIDO_VISUAL
+        visualShown(window)
+        #endif
         recent.removeAll { $0 == window }
         recent.insert(window, at: 0)
         let synced = DispatchGroup()
