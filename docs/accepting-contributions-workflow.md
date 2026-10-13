@@ -50,6 +50,8 @@ They can run in parallel.
 
    The user decides whether to merge.
    Do not merge without the user's approval.
+   Merge by squashing only: `gh pr merge N --squash`.
+   Write the squash subject and body in the project's commit style.
    Do not comment on the PR without the user's approval.
    Do not push without the user's approval.
 
