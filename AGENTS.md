@@ -191,7 +191,7 @@ Conventions:
                        and inline tests; consumes Kido.Sidebar's model
     lib/               the library kido: domain logic and data, no presentation
       launch.ml        the launcher and `kido server`: --server, the
-                       server.conf in its state dir, KIDO_PROTOCOL
+                       server.conf in its state dir, the KIDO_SERVER stamp
       build_id.ml      the immutable dune-build-info version, or unknown
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
@@ -247,14 +247,19 @@ without production callers: e2e calls `reap` for a deterministic sweep,
 and `runs` is the CLI reader of run history.
 
 `dune build`; the executable stanza is `bin/main.exe`, installed as `kido`.
-`lib/` embeds the shell integrations and `share/tmux/kido-tmux.conf`.
+`lib/` embeds the shell integrations, `share/tmux/kido-tmux.conf` and the
+fork pin.
 Promotion substitutes the build id through dune-build-info.
 `build/main.exe` is the stamped executable copied by `make install` and
 e2e; `_build/default/bin/main.exe`
 reports `unknown`. `kido --version` prints that id; `kido server` reports the
-binary's `Protocol.value` as its JSON `protocol` field (always a string), and the
-creating server's global `KIDO_PROTOCOL` as its `server` field (always present,
-null if unset, the stamp string otherwise even when it matches `protocol`).
+binary's `Protocol.value` as its JSON `protocol` field (always a string), the
+creating server's global `KIDO_SERVER` as its `server` field (always present,
+null if unset, the stamp string otherwise even when it matches), and the
+binary's `Launch.stamp` as `expected`. The stamp digests the pinned fork
+revision (read at build time through `install-tmux-fork.sh --print-revision`)
+the server.conf template and the launcher's environment changes, so a fork
+or tmux-config change restarts the server and an RPC protocol bump does not.
 The launcher, `kido server`, `rpc` and `switch-session/window`
 accept `--server DIR`. `switch-window` prints nothing. A server is its
 state directory; its socket is `<dir>/socket`. The default is resolved by `State.dir`: inside a pane,
@@ -307,7 +312,8 @@ Push over SSH (`git@github.com:andreypopp/tmux.git`).
 
 A fork change bumps kido's submodule pin and the `fork revision:` line
 in `share/rpc/contract.md`; lint enforces their agreement. Bump the
-protocol version only when the wire format changes.
+protocol version only when the wire format changes; the server stamp
+follows the pin by itself.
 
 `scripts/install-tmux-fork.sh <prefix>` builds it
 into `<prefix>/bin/kido-tmux`; `--self-contained <prefix>` is macOS-only,

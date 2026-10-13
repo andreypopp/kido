@@ -9,7 +9,9 @@
 #        scripts/install-tmux-fork.sh --print-revision
 #
 # --print-revision prints the pinned commit via `git ls-files -s third_party/tmux`:
-# the gitlink resolves without the submodule checked out.
+# the gitlink resolves without the submodule checked out. It is asked from the
+# script's own directory with a top-relative pathspec, so the copy dune builds
+# from inside _build answers too.
 #
 # Requires: git (for --print-revision only), sh, tar, a C toolchain,
 # bison, autoconf, automake, pkg-config, and the libevent/ncurses/utf8proc
@@ -26,7 +28,9 @@ repo_root=$(cd "$script_dir/.." && pwd)
 submodule="$repo_root/third_party/tmux"
 
 if [ "${1:-}" = "--print-revision" ]; then
-	git -C "$repo_root" ls-files -s third_party/tmux | awk '{print $2}'
+	revision=$(git -C "$script_dir" ls-files -s ':(top)third_party/tmux' | awk '{print $2}')
+	[ -n "$revision" ] || { echo "install-tmux-fork.sh: no third_party/tmux gitlink" >&2; exit 1; }
+	echo "$revision"
 	exit 0
 fi
 

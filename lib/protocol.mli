@@ -1,6 +1,6 @@
 val value : string
-val matches : string option -> bool
-val hello : string option -> Yojson.Safe.t
+val matches : expected:string -> string option -> bool
+val hello : expected:string -> string option -> Yojson.Safe.t
 
 type any = Any : 'a Sidebar.request -> any
 type input = Request of int * any | Invalid of int * string | Ignored

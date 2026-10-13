@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -396,7 +397,6 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	var body bytes.Buffer
 	body.Write(defaults)
 	fmt.Fprintf(&body, `
-set-environment -g KIDO_PROTOCOL 3.1
 set-environment -g KIDO_LINGER_SECONDS 1
 set-environment -g KIDO_STOP_ESCALATION_MS 300
 set-environment -g KIDO_STALL_THRESHOLD_MS 3000
@@ -451,7 +451,37 @@ set -g side-status-command "%s%s"
 	h.waitFor(func() bool { return hasLine(h.sidebar(), session) }, settle,
 		msgf("sidebar shows session %s", session))
 	h.client = strings.TrimSpace(strings.Split(h.in("list-clients", "-F", "#{client_name}"), "\n")[0])
+	h.in("set-environment", "-g", "KIDO_SERVER", h.expectedStamp())
 	return h
+}
+
+// expected caches the KIDO_SERVER stamp the kido under test expects. The
+// harness writes its own server.conf rather than launching, so it stamps
+// its server itself, with what `kido server` reports as expected.
+var expected struct {
+	once  sync.Once
+	stamp string
+}
+
+func (h *harness) expectedStamp() string {
+	h.t.Helper()
+	expected.once.Do(func() {
+		cmd := exec.Command(kidoBin, "server", "--server", h.stateDir)
+		cmd.Env = cleanEnv()
+		out, err := cmd.Output()
+		var e struct{ Expected string }
+		if err == nil {
+			err = json.Unmarshal(out, &e)
+		}
+		if err != nil {
+			h.t.Fatalf("kido server: %v, output %q", err, out)
+		}
+		expected.stamp = e.Expected
+	})
+	if expected.stamp == "" {
+		h.t.Fatal("no expected KIDO_SERVER stamp")
+	}
+	return expected.stamp
 }
 
 // controlClientPIDs asks a tmux server for the pids of its own

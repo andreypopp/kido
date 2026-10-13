@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ type endpoint struct {
 	Socket   string `json:"socket"`
 	Protocol string `json:"protocol"`
 	Server   string `json:"server"`
+	Expected string `json:"expected"`
 }
 
 // server runs `kido server` in this test's world with TMUX set to tmux,
@@ -64,8 +66,11 @@ func (r *kidoRun) mustServer(tmux string) endpoint {
 	if !filepath.IsAbs(e.Socket) || !sameFile(e.Socket, r.kidoSock) {
 		r.t.Errorf("socket = %q, want the absolute path of %s", e.Socket, r.kidoSock)
 	}
-	if e.Protocol != "3.1" {
-		r.t.Errorf("binary protocol = %q, want 3.1", e.Protocol)
+	if e.Protocol != "4.0" {
+		r.t.Errorf("binary protocol = %q, want 4.0", e.Protocol)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{12}$`).MatchString(e.Expected) {
+		r.t.Errorf("expected stamp = %q, want 12 hex digits", e.Expected)
 	}
 	return e
 }
@@ -87,8 +92,8 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	}
 
 	first := r.mustServer("")
-	if first.Server != "3.1" {
-		t.Fatalf("server stamp = %q, want 3.1", first.Server)
+	if first.Server != first.Expected {
+		t.Fatalf("server stamp = %q, want the expected %q", first.Server, first.Expected)
 	}
 	if got := r.mustKido("list-sessions", "-F", "#{session_name} #{session_attached}"); got != "main 0" {
 		t.Errorf("sessions = %q, want main, detached", got)
@@ -113,14 +118,14 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	if got := r.mustKido("list-sessions", "-F", "#{session_name}"); got != "main" {
 		t.Errorf("sessions = %q, want only main", got)
 	}
-	r.mustKido("set-environment", "-g", "KIDO_PROTOCOL", "another-protocol")
-	if got := r.mustServer("").Server; got != "another-protocol" {
-		t.Errorf("existing server stamp = %q, want another-protocol", got)
+	r.mustKido("set-environment", "-g", "KIDO_SERVER", "another-stamp")
+	if got := r.mustServer(""); got.Server != "another-stamp" || got.Expected != first.Expected {
+		t.Errorf("existing server: stamp %q, expected %q; want another-stamp and %q", got.Server, got.Expected, first.Expected)
 	}
-	r.mustKido("set-environment", "-gu", "KIDO_PROTOCOL")
+	r.mustKido("set-environment", "-gu", "KIDO_SERVER")
 	out, _, code := r.server("")
-	if code != 0 || !strings.Contains(out, `"protocol":"3.1","server":null`) {
-		t.Errorf("unstamped server: exit %d, JSON %q, want protocol:3.1 and server:null", code, out)
+	if want := `"protocol":"4.0","server":null,"expected":"` + first.Expected + `"`; code != 0 || !strings.Contains(out, want) {
+		t.Errorf("unstamped server: exit %d, JSON %q, want %s", code, out, want)
 	}
 }
 

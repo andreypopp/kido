@@ -1,10 +1,10 @@
-# kido rpc protocol 3.1
+# kido rpc protocol 4.0
 
 fork revision: 676f83a82e19fcfae5abf9619a9bf64fbfb06cd5
 
-Protocol.value is the binary's protocol constant. The launcher stamps it into
-the server's global KIDO_PROTOCOL environment at creation. Exact MAJOR.MINOR
-equality is required. New fields and new enum values are MINOR changes:
+Protocol.value is the binary's protocol constant. It versions this RPC
+surface only; the server's compatibility is a separate stamp (below), so a
+protocol bump never requires restarting the tmux server. New fields and new enum values are MINOR changes:
 the app ignores unknown fields and decodes unknown enum values as unknown.
 Removing or renaming a field, changing its meaning, or changing a reply
 shape is MAJOR. Snapshots retain "v":2 as a schema marker; hello governs
@@ -20,10 +20,20 @@ XDG_STATE_HOME/kido, then ~/.local/state/kido. --client names the app's
 control client. Socket paths fit the platform's sun_path including NUL.
 Run outside tmux with no KIDO_AGENT_* environment.
 
-The first stdout line is {"hello":{"protocol":"3.1"}}. A differing or absent
-server stamp produces {"hello":{"protocol":"3.1","server":"other"}} or
-{"hello":{"protocol":"3.1","server":null}}, followed by
-{"error":"server protocol does not match binary protocol"}, then exit 2.
+The launcher stamps the server's global KIDO_SERVER environment at creation
+with the binary's server stamp: 12 hex digits digesting the pinned fork
+revision, the server.conf the launcher generates and the environment changes
+it makes to the server's (dropping KIDO_STATE_DIR, putting its bin directory
+first on PATH), all with fixed placeholder paths. Install paths do not change
+it; a fork bump, an edit to kido-tmux.conf, to the generated configuration or
+to the launch environment does.
+
+The first stdout line is {"hello":{"protocol":"4.0"}} when KIDO_SERVER equals
+the binary's stamp. A differing or absent stamp produces
+{"hello":{"protocol":"4.0","server":"other","expected":"0123456789ab"}} or
+{"hello":{"protocol":"4.0","server":null,"expected":"0123456789ab"}}, followed
+by {"error":"server stamp does not match binary stamp"}, then exit 2.
+expected is the binary's stamp; the server needs a restart.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
 or stdin read error; diagnostics use stderr. Option errors use cmdliner.
 Transient tick errors occupy snapshot.error and do not stop the stream.
@@ -133,6 +143,18 @@ renumber-windows is on, move-window -r -t '$S' follows; off, gaps stay.
 When the moved window was the session's current window, select-window
 selects it again in the same tmux command; attached clients can briefly
 see the fallback. No client is switched and no pane is selected.
+
+## Changes from 3.1 to 4.0
+
+- Changed: the server's compatibility is the KIDO_SERVER stamp, derived
+  from the fork revision and the generated server.conf, instead of
+  KIDO_PROTOCOL holding Protocol.value. An RPC-only bump no longer needs a
+  server restart.
+- Changed: a refused hello carries `server` (the server's stamp or null)
+  and `expected` (the binary's stamp).
+- Changed: `kido server` reports `server` as the KIDO_SERVER stamp and adds
+  `expected`.
+- Unchanged: requests, replies, snapshot shapes and v.
 
 ## Changes from 3.0 to 3.1
 
@@ -452,10 +474,11 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"3.1","server":"3.1"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"4.0","server":"0123456789ab","expected":"0123456789ab"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
-the server's KIDO_PROTOCOL stamp, or null when absent, even when it matches protocol.
-The app compares them to detect a kido upgrade with an old server.
+the server's KIDO_SERVER stamp, or null when absent, even when it matches expected.
+expected is the binary's own stamp, always a string. The app compares server
+and expected to detect a kido upgrade that needs a server restart.
 The stamp does not change when ensuring or attaching an existing server.
 kido --version independently prints the binary build id.
 

@@ -1,15 +1,19 @@
-let value = "3.1"
-let matches server = Option.equal String.equal server (Some value)
+let value = "4.0"
+let matches ~expected server = Option.equal String.equal server (Some expected)
 
-let hello server =
+let hello ~expected server =
   `Assoc
     [
       ( "hello",
         `Assoc
-          ([ ("protocol", `String value) ]
-          @
-          if matches server then []
-          else [ ("server", Option.map_or ~default:`Null (fun s -> `String s) server) ]) );
+          (("protocol", `String value)
+          ::
+          (if matches ~expected server then []
+           else
+             [
+               ("server", Option.map_or ~default:`Null (fun s -> `String s) server);
+               ("expected", `String expected);
+             ])) );
     ]
 
 type any = Any : 'a Sidebar.request -> any
@@ -725,7 +729,9 @@ let%test_module "Tests" =
     let%expect_test "rpc surface" =
       let emit json = print_endline (Yojson.Safe.to_string json) in
       print_endline value;
-      List.iter (fun stamp -> emit (hello stamp)) [ Some value; Some "other"; None ];
+      List.iter
+        (fun stamp -> emit (hello ~expected:"0123456789ab" stamp))
+        [ Some "0123456789ab"; Some "other"; None ];
       List.iter
         (fun result -> emit (reply 7 (Sidebar.Switch_window Next) result))
         [
@@ -888,10 +894,10 @@ let%test_module "Tests" =
            (snapshot { m with snap = { m.snap with err = Some "tmux: gone" }; sessions = [] }));
       [%expect
         {|
-        3.1
-        {"hello":{"protocol":"3.1"}}
-        {"hello":{"protocol":"3.1","server":"other"}}
-        {"hello":{"protocol":"3.1","server":null}}
+        4.0
+        {"hello":{"protocol":"4.0"}}
+        {"hello":{"protocol":"4.0","server":"other","expected":"0123456789ab"}}
+        {"hello":{"protocol":"4.0","server":null,"expected":"0123456789ab"}}
         {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}
         {"reply":{"id":7,"switched":null}}
         {"reply":{"id":7,"error":"invalid or unknown request"}}

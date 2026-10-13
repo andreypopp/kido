@@ -26,26 +26,42 @@ server`, and the switch commands. The explicit socket reaches both the
 control connection and the model's one-shot tmux calls.
 
 `kido server --server DIR` ensures a detached server and returns its tmux
-executable and socket paths alongside `protocol` and `server`. `protocol`
-is always the binary's `Protocol.value` string. `server` is always present:
-the creating server's global `KIDO_PROTOCOL` stamp, or null when unset,
-even when it matches `protocol`. Ensuring or attaching an existing server
+executable and socket paths alongside `protocol`, `server` and `expected`.
+`protocol` is always the binary's `Protocol.value` string. `server` is
+always present: the creating server's global `KIDO_SERVER` stamp, or null
+when unset, even when it matches. `expected` is the binary's own stamp,
+`Launch.stamp`. Ensuring or attaching an existing server
 does not change its stamp. The binary build id from `kido --version` is a
 separate value, not a protocol version.
 
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`3.1`. The launcher stamps it into the tmux server's environment at
-creation, before its configuration runs. RPC probes that stamp before
+`4.0`. It versions the RPC surface between the binary and its client, and
+nothing the tmux server holds, so bumping it never requires a server
+restart.
+
+The server's side is a separate stamp, `Launch.stamp`: the first 12 hex
+digits of an MD5 over the fork revision the build pinned, the server.conf
+`Launch.server_conf` writes and the environment `Launch.server_env` gives
+the server, both computed for fixed placeholder paths over a placeholder
+environment, so the inherited user environment is left out. It is derived,
+so nobody bumps it: a fork bump or any change to `kido-tmux.conf`, the
+generated template or what the launcher sets in the environment changes it,
+while the install's own paths (the kido executable, its bin directory, the
+user's kido.conf) do not. The build
+learns the revision from `scripts/install-tmux-fork.sh --print-revision`,
+which reads the gitlink, so it needs the git checkout the fork build needs
+anyway. The launcher stamps it into the tmux server's global `KIDO_SERVER`
+at creation, before its configuration runs. RPC probes that stamp before
 opening the model's control connection.
 
 The first stdout event is a hello carrying the binary protocol. If the
-stamp matches exactly, the hello omits `server`. If it differs or is
-absent, the hello includes the server stamp or null, then RPC writes an
-error event and exits 2. There are no snapshots or requests processed on
-that path. Exact minor equality is required as well as major equality;
-there is no compatibility negotiation.
+server stamp equals the binary's, the hello carries nothing else. If it
+differs or is absent, the hello adds `server`, the server's stamp or null,
+and `expected`, the binary's; then RPC writes an error event and exits 2.
+There are no snapshots or requests processed on that path, and there is no
+compatibility negotiation.
 
 Additive fields and enum values bump the minor version. Removing or
 renaming a field, changing its meaning, or changing a reply shape bumps

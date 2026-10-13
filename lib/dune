@@ -46,7 +46,9 @@
  (deps
   %{project_root}/share/zsh/integration.zsh
   %{project_root}/share/bash/integration.bash
-  %{project_root}/share/tmux/kido-tmux.conf)
+  %{project_root}/share/tmux/kido-tmux.conf
+  %{project_root}/scripts/install-tmux-fork.sh
+  (universe))
  (action
   (with-stdout-to
    %{target}
@@ -57,4 +59,6 @@
     (cat %{project_root}/share/bash/integration.bash)
     (echo "|kido}\n\nlet tmux_defaults = {kido|")
     (cat %{project_root}/share/tmux/kido-tmux.conf)
+    (echo "|kido}\n\nlet fork_revision = {kido|")
+    (run bash %{project_root}/scripts/install-tmux-fork.sh --print-revision)
     (echo "|kido}\n")))))

@@ -1,6 +1,12 @@
 type server = Down | Up of string option | Mismatch
 
-type endpoint = { tmux : string; socket : string; protocol : string; server : string option }
+type endpoint = {
+  tmux : string;
+  socket : string;
+  protocol : string;
+  server : string option;
+  expected : string;
+}
 [@@deriving yojson_of]
 
 let tmux_safe what s =
@@ -63,6 +69,27 @@ let server_conf ~exe ~user_conf =
              Shell.user_command_option kido kido_shell;
          ])
 
+let server_env ~bin_dir env =
+  let env = Array.filter (fun s -> not (String.prefix ~pre:"KIDO_STATE_DIR=" s)) env in
+  match bin_dir with
+  | Some dir ->
+      let path = Array.find_map (String.chop_prefix ~pre:"PATH=") env in
+      Shell.with_env env [ ("PATH", Bin_dir.path_with_first dir (Option.value ~default:"" path)) ]
+  | None -> env
+
+let digest ~revision ~conf ~env =
+  String.concat "\n" (String.trim revision :: conf :: Array.to_list env)
+  |> Digest.string |> Digest.to_hex |> String.take 12
+
+let placeholder_env = [| "KIDO_STATE_DIR=/state"; "PATH=/bin" |]
+
+let stamp =
+  match server_conf ~exe:"/kido" ~user_conf:"/kido.conf" with
+  | Ok conf ->
+      digest ~revision:Embedded.fork_revision ~conf
+        ~env:(server_env ~bin_dir:(Some "/kido-bin") placeholder_env)
+  | Error e -> invalid_arg e
+
 (* tmux's own wording, from client.c, is "protocol version mismatch (client N, server M)": what
    a kido-tmux upgraded under a running server answers every new client until that server
    restarts. *)
@@ -79,7 +106,7 @@ let probe_server ~socket bin =
            ";";
            "show-environment";
            "-g";
-           "KIDO_PROTOCOL";
+           "KIDO_SERVER";
          ])
       (Unix.environment ())
   in
@@ -91,14 +118,14 @@ let probe_server ~socket bin =
       let lines = String.split_on_char '\n' stdout in
       match String.split_on_char '\x1f' (List.hd lines) with
       | [ socket; "" ] when not (String.is_empty socket) ->
-          let protocol =
+          let stamp =
             List.find_map
               (fun line ->
-                String.chop_prefix ~pre:"KIDO_PROTOCOL=" line
+                String.chop_prefix ~pre:"KIDO_SERVER=" line
                 |> Option.filter (fun value -> not (String.is_empty value)))
               lines
           in
-          Up protocol
+          Up stamp
       | _ -> Down)
   | _ -> Down
 
@@ -120,13 +147,8 @@ let new_session ~dir ~detach =
   Fs.write conf conf_text;
   let env =
     Shell.with_env
-      (Array.filter (fun s -> not (String.prefix ~pre:"KIDO_STATE_DIR=" s)) (Unix.environment ()))
-      [ ("KIDO_PROTOCOL", Protocol.value) ]
-  in
-  let env =
-    match Bin_dir.own () with
-    | Some dir -> Shell.with_env env [ ("PATH", Bin_dir.path_with_first dir (Fs.getenv "PATH")) ]
-    | None -> env
+      (server_env ~bin_dir:(Bin_dir.own ()) (Unix.environment ()))
+      [ ("KIDO_SERVER", stamp) ]
   in
   Ok (env, [ "-f"; conf; "new-session" ] @ (if detach then [ "-d" ] else []) @ [ "-s"; "main" ])
 
@@ -156,11 +178,11 @@ let ensure ~dir =
       else Fs.look_path ~path:(Fs.getenv "PATH") bin
     in
     match tmux with
-    | Some tmux -> Ok { tmux; socket; protocol = Protocol.value; server }
+    | Some tmux -> Ok { tmux; socket; protocol = Protocol.value; server; expected = stamp }
     | None -> Error (Printf.sprintf "no %s on PATH" bin)
   in
   match probe_server ~socket bin with
-  | Up protocol -> resolve protocol
+  | Up server -> resolve server
   | Mismatch -> Error (mismatch ~socket bin)
   | Down -> (
       let* env, args = new_session ~dir ~detach:true in
@@ -169,7 +191,7 @@ let ensure ~dir =
       let stderr = String.trim (In_channel.input_all err) in
       ignore (Unix.close_process_full p);
       match probe_server ~socket bin with
-      | Up protocol -> resolve protocol
+      | Up server -> resolve server
       | Mismatch -> Error (mismatch ~socket bin)
       | Down ->
           Error ("cannot start a kido server" ^ if String.is_empty stderr then "" else ": " ^ stderr)
@@ -188,12 +210,47 @@ let%test_module "Tests" =
                  socket = "/server/socket";
                  protocol = Protocol.value;
                  server;
+                 expected = "0123456789ab";
                }))
-        [ Some Protocol.value; Some "other"; None ];
+        [ Some "0123456789ab"; Some "other"; None ];
       [%expect
         {|
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"3.1","server":"3.1"}
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"3.1","server":"other"}
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"3.1","server":null}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"4.0","server":"0123456789ab","expected":"0123456789ab"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"4.0","server":"other","expected":"0123456789ab"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"4.0","server":null,"expected":"0123456789ab"}
+        |}]
+
+    let%expect_test "the stamp ignores install paths and follows the template, env and fork" =
+      let installed ?(revision = Embedded.fork_revision) ?(extra = "") exe user_conf bin_dir =
+        let conf = Result.get_exn (server_conf ~exe ~user_conf) in
+        let env = server_env ~bin_dir:(Some bin_dir) placeholder_env in
+        digest ~revision
+          ~conf:
+            (String.replace ~sub:user_conf ~by:"/kido.conf"
+               (String.replace ~sub:exe ~by:"/kido" conf)
+            ^ extra)
+          ~env:(Array.map (String.replace ~sub:bin_dir ~by:"/kido-bin") env)
+      in
+      let homebrew = installed "/opt/homebrew/bin/kido" "/Users/a/.config/kido/kido.conf" in
+      List.iter
+        (fun s -> Printf.printf "%b %d\n" (String.equal s stamp) (String.length s))
+        [
+          homebrew "/opt/homebrew/share/kido/bin";
+          installed "/home/b/.local/bin/kido" "/home/b/xdg/kido/kido.conf" "/home/b/share/kido/bin";
+          installed ~extra:"set -g mouse off\n" "/opt/homebrew/bin/kido"
+            "/Users/a/.config/kido/kido.conf" "/opt/homebrew/share/kido/bin";
+          installed ~revision:(String.make 40 '0') "/opt/homebrew/bin/kido"
+            "/Users/a/.config/kido/kido.conf" "/opt/homebrew/share/kido/bin";
+          digest ~revision:Embedded.fork_revision
+            ~conf:(Result.get_exn (server_conf ~exe:"/kido" ~user_conf:"/kido.conf"))
+            ~env:placeholder_env;
+        ];
+      [%expect
+        {|
+        true 12
+        true 12
+        false 12
+        false 12
+        false 12
         |}]
   end)

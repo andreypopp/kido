@@ -1835,19 +1835,21 @@ Kido.app that attaches on its own: it runs the same probe and, when the
 server is down, the same start (`Launch.new_session`: server.conf, the
 environment and PATH, session `main`), detached. It never attaches, so it
 runs inside tmux too. It prints one JSON line,
-`{"tmux":...,"socket":...,"protocol":...,"server":...}`: the resolved kido-tmux made
-absolute, the convention's `<dir>/socket` path, the binary's `Protocol.value`
-(always a string), and the server's global environment variable `KIDO_PROTOCOL`
-(or JSON null if absent). `server` is always present, even when it matches
-`protocol`; the app compares them to detect a kido upgrade with an old server.
-The launcher sets the stamp to `Protocol.value` in the environment of the tmux
+`{"tmux":...,"socket":...,"protocol":...,"server":...,"expected":...}`: the resolved
+kido-tmux made absolute, the convention's `<dir>/socket` path, the binary's
+`Protocol.value` (always a string), the server's global environment variable
+`KIDO_SERVER` (or JSON null if absent), and the binary's own `Launch.stamp`.
+`server` is always present, even when it matches `expected`; the app compares
+them to detect a kido upgrade that needs a server restart (the stamp's
+derivation is in docs/design-rpc.md).
+The launcher sets the stamp to `Launch.stamp` in the environment of the tmux
 process it starts. tmux copies that environment before forking the server and accepting clients, so the
 stamp is readable even while server.conf is still running; config options
 would not be, because tmux blocks only the initial client during config.
 The probe uses one invocation: `list-sessions -F '#{socket_path}' ;
-show-environment -g KIDO_PROTOCOL`. A direct reader uses
-`kido-tmux -S SOCKET show-environment -g KIDO_PROTOCOL`, which prints
-`KIDO_PROTOCOL=VALUE`; a missing variable exits 1. Attaching or ensuring
+show-environment -g KIDO_SERVER`. A direct reader uses
+`kido-tmux -S SOCKET show-environment -g KIDO_SERVER`, which prints
+`KIDO_SERVER=VALUE`; a missing variable exits 1. Attaching or ensuring
 an existing server never changes its stamp.
 
 `kido --version` prints the binary's baked-in build id followed by a

@@ -26,11 +26,11 @@ func TestRpcHelloAndRequests(t *testing.T) {
 			return false
 		}, settle, msgf("RPC line %s", want))
 	}
-	waitLine(`{"hello":{"protocol":"3.1"}}`)
+	waitLine(`{"hello":{"protocol":"4.0"}}`)
 	f.mu.Lock()
 	first := f.lines[0].raw
 	f.mu.Unlock()
-	if first != `{"hello":{"protocol":"3.1"}}` {
+	if first != `{"hello":{"protocol":"4.0"}}` {
 		t.Fatalf("first line: %s", first)
 	}
 	session := h.in("display-message", "-p", "-t", "alpha:", "#{session_id}")
@@ -126,15 +126,15 @@ func TestRpcSwitchWindowTree(t *testing.T) {
 	f.waitReply(`{"reply":{"id":100,"switched":null}}`)
 }
 
-func TestRpcProtocolRefusal(t *testing.T) {
+func TestRpcServerStampRefusal(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	client := h.appClient("alpha")
-	for _, stamp := range []string{"9.9", ""} {
+	for _, stamp := range []string{"other-stamp", ""} {
 		if stamp == "" {
-			h.in("set-environment", "-gu", "KIDO_PROTOCOL")
+			h.in("set-environment", "-gu", "KIDO_SERVER")
 		} else {
-			h.in("set-environment", "-g", "KIDO_PROTOCOL", stamp)
+			h.in("set-environment", "-g", "KIDO_SERVER", stamp)
 		}
 		cmd := feedCmd(h, "--server", h.stateDir, "--client", client)
 		cmd.Stdin = strings.NewReader("")
@@ -155,9 +155,10 @@ func TestRpcProtocolRefusal(t *testing.T) {
 		}
 		server := "null"
 		if stamp != "" {
-			server = `"9.9"`
+			server = `"other-stamp"`
 		}
-		want := "{\"hello\":{\"protocol\":\"3.1\",\"server\":" + server + "}}\n{\"error\":\"server protocol does not match binary protocol\"}\n"
+		want := "{\"hello\":{\"protocol\":\"4.0\",\"server\":" + server + ",\"expected\":\"" + h.expectedStamp() +
+			"\"}}\n{\"error\":\"server stamp does not match binary stamp\"}\n"
 		if out.String() != want {
 			t.Fatalf("refusal %q, want %q", out.String(), want)
 		}

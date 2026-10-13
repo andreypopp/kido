@@ -917,11 +917,11 @@ let rpc =
          | Up stamp -> stamp
          | Down | Mismatch -> None
        in
-       write (Yojson.Safe.to_string (Protocol.hello stamp));
-       if not (Protocol.matches stamp) then (
+       write (Yojson.Safe.to_string (Protocol.hello ~expected:Launch.stamp stamp));
+       if not (Protocol.matches ~expected:Launch.stamp stamp) then (
          write
            (Yojson.Safe.to_string
-              (`Assoc [ ("error", `String "server protocol does not match binary protocol") ]));
+              (`Assoc [ ("error", `String "server stamp does not match binary stamp") ]));
          2)
        else
          let opts =
