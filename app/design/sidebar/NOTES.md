@@ -119,9 +119,9 @@ Statuses: idle gray dot; running/compacting green dot; done and gone/completed t
 
 ## Interaction and fixtures
 
-Arrow keys/j/k navigate, Enter focuses a pane, / reveals filtering, Escape clears it. Session/window creation and terminal content are placeholders. Captured timestamps are historical, not a live feed connection. Fixtures include nested multi-pane windows, long titles, waiting/stalled/failure/completion, SSH/shells, and orphaned windows. Preview selectors cover Light/Dark, docked/collapsed/floating, fullscreen, widths 236/292/320pt, live/flattened material, local/remote/long host and connection state.
+Arrow keys/j/k navigate, Enter focuses a pane, Escape returns focus to the pane. Session/window creation and terminal content are placeholders. Captured timestamps are historical, not a live feed connection. Fixtures include nested multi-pane windows, long titles, waiting/stalled/failure/completion, SSH/shells, and orphaned windows. Preview selectors cover Light/Dark, docked/collapsed/floating, fullscreen, widths 236/292/320pt, live/flattened material, local/remote/long host and connection state.
 
-Tabs restore each window's remembered active pane. Names/existence/order come from simulated tmux inventory; hierarchy and error/request status come from the last unfiltered snapshot, so filtering does not change tabs. Descendants select their nearest surviving ancestor's tab; orphan windows get their own. Error (including stalled, which maps to error) wins over input requests; completion/running/idle add no tab dot. Cmd-1…9 follows tab order, clamping out-of-range numbers to the final tab.
+Tabs restore each window's remembered active pane. Names/existence/order come from simulated tmux inventory; hierarchy and error/request status come from the last snapshot. Descendants select their nearest surviving ancestor's tab; orphan windows get their own. Error (including stalled, which maps to error) wins over input requests; completion/running/idle add no tab dot. Cmd-1…9 follows tab order, clamping out-of-range numbers to the final tab.
 
 Remote entry remains Spotlight/Shortcuts **Connect to Remote Host in Kido**, with Host input and a separate window per request. No in-app picker or Recent Connections. Titles are Session locally, user@host / Session remotely; the native title is hidden, with the host identity displayed beside tabs.
 
