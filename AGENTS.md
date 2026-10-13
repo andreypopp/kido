@@ -85,6 +85,14 @@ suppression hiding a correctness failure means fixing the cause. A stale
 comment is worse than none because it is trusted: when a mechanism
 changes, grep for the prose that described it.
 
+## Communication
+
+ALWAYS adhere to ASD-STE100
+- when communicating with user
+- when producing commit messages / commit descriptions
+- when producing PR titles / PR descriptions
+- when adding code comments (although see above, **no comments unless absolutely necessary**)
+
 ## OCaml
 
 These are fixed:
