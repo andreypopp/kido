@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// sgr256 matches an escape that sets the 256-colour foreground (38) or
-// background (48) to index n, alone or among other parameters.
 func sgr256(layer, n int) *regexp.Regexp {
 	return regexp.MustCompile(fmt.Sprintf(`\x1b\[(?:[\d:]+;)*%d;5;%d(?:;[\d:]+)*m`, layer, n))
 }
@@ -41,6 +39,5 @@ func TestSidebarStyleOptions(t *testing.T) {
 	}
 
 	h.in("set", "-g", "@kido-sidebar-dim-style", "fg=bogus")
-	h.waitFor(func() bool { return hasLine(h.sidebar(), "@kido-sidebar-dim-style: unknown") }, settle,
-		func() string { return fmt.Sprintf("the bad option named in the footer: %q", h.sidebar()) })
+	h.waitRow("@kido-sidebar-dim-style: unknown")
 }

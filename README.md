@@ -38,9 +38,10 @@ source-file ~/.tmux.conf
 ### Sidebar colours
 
 The sidebar's colours are tmux options in tmux's style syntax (`fg=`,
-`bg=`, `bold`, `italics`, ...; colours by name, `colourN` or `#rrggbb`),
-read on every redraw, so a reload restyles it at once. An unset option
-keeps the default; a bad one is named in the sidebar's last row.
+`bg=`, `bold`, `italics`, ...; the 16 ANSI colour names, `colourN` or
+`#rrggbb`). The sidebar reads them about once a second, so a reload
+restyles it within a second. An unset option keeps the default; the
+first bad one is named in the sidebar's last row.
 
 | option | styles |
 |--------|--------|

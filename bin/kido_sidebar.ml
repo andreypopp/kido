@@ -5,11 +5,6 @@ module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
 type span = Mosaic.span = { text : string; style : Style.t }
-
-type role =
-  [ `Plain | `Proc | `Dim | `Session | `Current | `Err | `Running | `Waiting | `Done | `Stalled ]
-
-type theme = { styles : (role * Style.t) list; current_rows : Color.t option }
 type program = { id : string; state : Tmux.Program_status.state; title : string; caption : string }
 
 type line =
@@ -131,134 +126,7 @@ let lines ?(search = "") (side : S.model) =
         (filter search side.sessions);
       Array.of_list (List.rev !out)
 
-(* Every style names its foreground: Mosaic's grid paints an explicit white on any cell left
-   without one, which would override the user's theme. *)
-let roles : (string * role * Style.t) list =
-  [
-    ("row", `Plain, Style.make ~fg:Color.default ());
-    ("command", `Proc, Style.make ~fg:Color.white ());
-    ("dim", `Dim, Style.make ~fg:Color.bright_black ());
-    ("error", `Err, Style.make ~fg:Color.red ());
-    ("running", `Running, Style.make ~fg:Color.green ());
-    ("waiting", `Waiting, Style.make ~fg:Color.yellow ~bold:true ());
-    ("done", `Done, Style.make ~fg:Color.green ~bold:true ());
-    ("stalled", `Stalled, Style.make ~fg:Color.red ~bold:true ());
-    ("session", `Session, Style.make ~fg:Color.default ());
-    ("current", `Current, Style.make ~fg:Color.default ~bold:true ());
-  ]
-
-let default_theme = { styles = List.map (fun (_, r, s) -> (r, s)) roles; current_rows = None }
-let style_option name = "@kido-sidebar-" ^ name ^ "-style"
-
-let style_options =
-  List.map (fun (n, _, _) -> style_option n) roles @ [ style_option "current-rows" ]
-
-let style theme r = List.assoc ~eq:Stdlib.( = ) r theme.styles
-
-let colour s =
-  let named =
-    [
-      ("black", Color.black, Color.bright_black);
-      ("red", Color.red, Color.bright_red);
-      ("green", Color.green, Color.bright_green);
-      ("yellow", Color.yellow, Color.bright_yellow);
-      ("blue", Color.blue, Color.bright_blue);
-      ("magenta", Color.magenta, Color.bright_magenta);
-      ("cyan", Color.cyan, Color.bright_cyan);
-      ("white", Color.white, Color.bright_white);
-    ]
-  in
-  let indexed n =
-    match int_of_string_opt n with
-    | Some i when i >= 0 && i <= 255 -> Some (Color.indexed i)
-    | _ -> None
-  in
-  let found =
-    if String.equal s "default" || String.equal s "terminal" then Some Color.default
-    else if String.prefix ~pre:"#" s then Color.of_hex s
-    else
-      match (String.chop_prefix ~pre:"colour" s, String.chop_prefix ~pre:"color" s) with
-      | Some n, _ | None, Some n -> indexed n
-      | None, None ->
-          List.find_map
-            (fun (name, c, bright) ->
-              if String.equal s name then Some c
-              else if String.equal s ("bright" ^ name) then Some bright
-              else None)
-            named
-  in
-  Option.to_result (Printf.sprintf "unknown colour %S" s) found
-
-let style_token style tok =
-  let attrs =
-    [
-      ("bold", Style.with_bold);
-      ("bright", Style.with_bold);
-      ("dim", Style.with_dim);
-      ("italics", Style.with_italic);
-      ("underscore", Style.with_underline);
-      ("double-underscore", Style.with_double_underline);
-      ("blink", Style.with_blink);
-      ("reverse", Style.with_inverse);
-      ("hidden", Style.with_hidden);
-      ("strikethrough", Style.with_strikethrough);
-      ("overline", Style.with_overline);
-    ]
-  in
-  let attr name on =
-    Option.map (fun f -> f on style) (List.assoc_opt ~eq:String.equal name attrs)
-  in
-  match String.Split.left ~by:"=" tok with
-  | Some ("fg", c) -> Result.map (fun c -> Style.fg c style) (colour c)
-  | Some ("bg", c) -> Result.map (fun c -> Style.bg c style) (colour c)
-  | Some _ -> Error (Printf.sprintf "unsupported %S" tok)
-  | None -> (
-      match tok with
-      | "none" -> Ok (Style.with_attrs Mosaic.Ansi.Attr.empty style)
-      | "default" -> Ok (Style.with_no_bg (Style.with_no_fg style))
-      | _ -> (
-          match
-            ( attr tok true,
-              Option.flat_map (fun a -> attr a false) (String.chop_prefix ~pre:"no" tok) )
-          with
-          | Some s, _ | None, Some s -> Ok s
-          | None, None -> Error (Printf.sprintf "unknown attribute %S" tok)))
-
-let parse_style s =
-  String.split_on_char ',' (String.map (function ' ' -> ',' | c -> c) s)
-  |> List.filter (fun t -> not (String.is_empty t))
-  |> List.fold_left
-       (fun acc tok -> Result.flat_map (fun st -> style_token st tok) acc)
-       (Ok Style.default)
-  |> Result.map (fun (st : Style.t) ->
-      if Option.is_none st.fg then Style.fg Color.default st else st)
-
-let load_theme values =
-  let errors = ref [] in
-  let value name v ~default ok =
-    if String.is_empty v then default
-    else
-      match parse_style v with
-      | Ok s -> ok s
-      | Error e ->
-          errors := Printf.sprintf "%s: %s" (style_option name) e :: !errors;
-          default
-  in
-  let rec go acc defs values =
-    match (defs, values) with
-    | (name, r, d) :: defs, v :: values ->
-        go ((r, value name v ~default:d Fun.id) :: acc) defs values
-    | [], [ rows ] ->
-        ( {
-            styles = List.rev acc;
-            current_rows = value "current-rows" rows ~default:None (fun (s : Style.t) -> s.bg);
-          },
-          List.head_opt !errors )
-    | _ -> (default_theme, Some "the sidebar's style options did not read back whole")
-  in
-  go [] roles values
-
-let span theme role text = { text; style = style theme role }
+let span theme role text = { text; style = Sidebar_theme.style theme role }
 
 type mode = Windows | Asks
 type source = Agent | Report
@@ -280,8 +148,9 @@ type model = {
   g_pend : bool;
   mode : mode;
   search : string option;
-  theme : theme;
+  theme : Sidebar_theme.t;
   theme_error : string option;
+  styles_read : (int * float) option;
 }
 
 let make ?conn ~standalone (side : S.model) =
@@ -300,8 +169,9 @@ let make ?conn ~standalone (side : S.model) =
     g_pend = false;
     mode = Windows;
     search = None;
-    theme = default_theme;
+    theme = Sidebar_theme.default;
     theme_error = None;
+    styles_read = None;
   }
 
 let hold = 0.5
@@ -638,7 +508,7 @@ let release_focus m =
 
 type msg =
   | Snapshot of S.snapshot
-  | Styles of string list
+  | Styles of { read : int * float; reply : string }
   | Key of Mosaic.Event.key
   | Mouse of Mosaic.Event.mouse
   | Resize of int * int
@@ -769,19 +639,23 @@ let tick ?wait m =
       let opts = m.side.opts and prev = m.side.snap in
       Mosaic.Cmd.perform (fun dispatch ->
           let snap = S.poll ?wait ~opts conn prev in
-          let sep = "\x1f" in
-          let format = String.concat sep (List.map (fun n -> "#{" ^ n ^ "}") style_options) in
-          (match Tmux.exec (Tmux.Client.tmux conn) [ "display-message"; "-p"; format ] with
-          | Ok out -> dispatch (Styles (String.split ~by:sep (String.trim out)))
-          | Error _ -> ());
+          let dial = Tmux.Client.dials conn and now = m.side.now () in
+          (match m.styles_read with
+          | Some (d, at) when Int.equal d dial && Float.(now -. at < 1.) -> ()
+          | _ -> (
+              match
+                Tmux.exec (Tmux.Client.tmux conn) [ "display-message"; "-p"; Sidebar_theme.format ]
+              with
+              | Ok reply -> dispatch (Styles { read = (dial, now); reply })
+              | Error _ -> ()));
           dispatch (Snapshot snap))
 
 let update msg m =
   match msg with
   | Resize (width, height) -> (ensure_visible { m with width; height }, Mosaic.Cmd.none)
-  | Styles values ->
-      let theme, theme_error = load_theme values in
-      ({ m with theme; theme_error }, Mosaic.Cmd.none)
+  | Styles { read; reply } ->
+      let theme, theme_error = Sidebar_theme.load reply in
+      ({ m with theme; theme_error; styles_read = Some read }, Mosaic.Cmd.none)
   | Snapshot snap ->
       let was = m.side.snap in
       let m =
@@ -853,25 +727,13 @@ let view m =
       ~size:(Mosaic.size_wh (Mosaic.pct 100) (Mosaic.px 1))
       (List.map (fun s -> Mosaic.text ~style:s.style ~selectable:false s.text) spans)
   in
-  let in_current =
-    let current = ref false in
-    Array.map
-      (function
-        | Header h ->
-            current := h.current;
-            false
-        | Row _ | Program _ | Ask _ -> !current
-        | Message _ -> false)
-      m.lines
-  in
-  let row i =
+  let row (i, tint) =
     let l = m.lines.(i) in
     let lead, title, tail = parts m l in
     let background =
       match l with
-      | Header h -> (style m.theme (if h.current then `Current else `Session)).bg
-      | _ when in_current.(i) -> m.theme.current_rows
-      | _ -> None
+      | Header h -> (Sidebar_theme.style m.theme (if h.current then `Current else `Session)).bg
+      | Row _ | Program _ | Ask _ | Message _ -> tint
     in
     let title =
       if i = m.cursor then
@@ -879,6 +741,27 @@ let view m =
       else title
     in
     line ?background (truncate m.width (lead @ title @ tail))
+  in
+  let rows =
+    match Sidebar_theme.current_rows m.theme with
+    | None -> List.map (fun i -> (i, None)) (shown m)
+    | Some bg ->
+        let session i =
+          match m.lines.(i) with
+          | Header h -> Some h.current
+          | Message _ -> Some false
+          | Row _ | Program _ | Ask _ -> None
+        in
+        let rec above i =
+          if i < 0 then false else Option.get_lazy (fun () -> above (i - 1)) (session i)
+        in
+        snd
+          (List.fold_map
+             (fun current i ->
+               let current = Option.get_or ~default:current (session i) in
+               (current, (i, if current then Some bg else None)))
+             (above (m.top - 1))
+             (shown m))
   in
   let footer =
     if not (String.is_empty m.status) then line (truncate m.width [ span `Err m.status ])
@@ -890,10 +773,7 @@ let view m =
   in
   Mosaic.box ~flex_direction:Column
     ~size:(Mosaic.size_wh (Mosaic.pct 100) (Mosaic.pct 100))
-    [
-      Mosaic.box ~flex_direction:Column ~flex_grow:1. ~flex_shrink:1. (List.map row (shown m));
-      footer;
-    ]
+    [ Mosaic.box ~flex_direction:Column ~flex_grow:1. ~flex_shrink:1. (List.map row rows); footer ]
 
 let subscriptions _ =
   Mosaic.Sub.batch
@@ -1706,100 +1586,5 @@ let%test_module "Tests" =
     4 "abcde" -> "abc\226\128\166"
     4 "abcdef" -> "abc\226\128\166"
     4 "abcdef" -> "abc\226\128\166"
-    |}]
-
-    let show_style = function
-      | Ok st -> Format.printf "%a@." Mosaic.Ansi.Style.pp st
-      | Error e -> print_endline ("error: " ^ e)
-
-    let%expect_test "every role names its foreground" =
-      List.iter
-        (fun r -> show_style (Ok (style default_theme r)))
-        [ `Plain; `Current; `Session; `Proc; `Dim; `Err; `Running; `Waiting; `Done; `Stalled ];
-      [%expect
-        {|
-    Style{fg=#000000}
-    Style{fg=#000000, attrs=[Bold]}
-    Style{fg=#000000}
-    Style{fg=#c0c0c0}
-    Style{fg=#808080}
-    Style{fg=#800000}
-    Style{fg=#008000}
-    Style{fg=#808000, attrs=[Bold]}
-    Style{fg=#008000, attrs=[Bold]}
-    Style{fg=#800000, attrs=[Bold]}
-    |}]
-
-    let%expect_test "parse_style: tmux's style syntax" =
-      List.iter
-        (fun s ->
-          Printf.printf "%-30S " s;
-          show_style (parse_style s))
-        [
-          "fg=#eee8d5";
-          "fg=colour240 italics";
-          "bg=#123c48,bold,fg=brightred";
-          "fg=color33,bright";
-          "bold,nobold,dim";
-          "fg=red,default";
-          "bg=blue,none";
-          "";
-          "fg=nope";
-          "fg=colour256";
-          "align=left";
-          "blinky";
-        ];
-      [%expect
-        {|
-    "fg=#eee8d5"                   Style{fg=#eee8d5}
-    "fg=colour240 italics"         Style{fg=#585858, attrs=[Italic]}
-    "bg=#123c48,bold,fg=brightred" Style{fg=#ff0000, bg=#123c48, attrs=[Bold]}
-    "fg=color33,bright"            Style{fg=#0087ff, attrs=[Bold]}
-    "bold,nobold,dim"              Style{fg=#000000, attrs=[Dim]}
-    "fg=red,default"               Style{fg=#000000}
-    "bg=blue,none"                 Style{fg=#000000, bg=#000080}
-    ""                             Style{fg=#000000}
-    "fg=nope"                      error: unknown colour "nope"
-    "fg=colour256"                 error: unknown colour "colour256"
-    "align=left"                   error: unsupported "align=left"
-    "blinky"                       error: unknown attribute "blinky"
-    |}]
-
-    let%expect_test "load_theme: unset keeps a default, a bad value is reported and keeps it too" =
-      let values set =
-        List.map
-          (fun name -> Option.get_or ~default:"" (List.assoc_opt ~eq:String.equal name set))
-          style_options
-      in
-      let report (theme, err) =
-        List.iter
-          (fun r -> Format.printf "%a " Mosaic.Ansi.Style.pp (style theme r))
-          [ `Plain; `Session; `Current ];
-        Format.printf "@.rows=%s error=%s@."
-          (Option.map_or ~default:"-" Mosaic.Ansi.Color.to_hex theme.current_rows)
-          (Option.get_or ~default:"-" err)
-      in
-      report (load_theme (values []));
-      report
-        (load_theme
-           (values
-              [
-                ("@kido-sidebar-row-style", "fg=#eee8d5");
-                ("@kido-sidebar-session-style", "fg=#c9d1cf,bold,bg=#123c48");
-                ("@kido-sidebar-current-style", "fg=#fdf6e3,bold,bg=#1f5566");
-                ("@kido-sidebar-current-rows-style", "bg=#0f3a47");
-              ]));
-      report (load_theme (values [ ("@kido-sidebar-session-style", "fg=bogus") ]));
-      report (load_theme [ "fg=red" ]);
-      [%expect
-        {|
-    Style{fg=#000000} Style{fg=#000000} Style{fg=#000000, attrs=[Bold]}
-    rows=- error=-
-    Style{fg=#eee8d5} Style{fg=#c9d1cf, bg=#123c48, attrs=[Bold]} Style{fg=#fdf6e3, bg=#1f5566, attrs=[Bold]}
-    rows=#0f3a47 error=-
-    Style{fg=#000000} Style{fg=#000000} Style{fg=#000000, attrs=[Bold]}
-    rows=- error=@kido-sidebar-session-style: unknown colour "bogus"
-    Style{fg=#000000} Style{fg=#000000} Style{fg=#000000, attrs=[Bold]}
-    rows=- error=the sidebar's style options did not read back whole
     |}]
   end)
