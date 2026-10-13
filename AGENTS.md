@@ -395,6 +395,8 @@ the sidebar uses to decide a program has taken the terminal.
   a survivor is an error (`test_e2e/harness_test.go`).
 - `display-popup` opens a floating pane in the fork's upstream base.
   `popup-style` and `popup-border-style` are invalid options.
+  The fork reports the popup as `#{pane_modal_flag}`, and the pane under
+  it as `#{pane_last}`.
 - The side column's edge is a pane border, following `pane-border-lines`
   and `pane-border-style`. `share/tmux/kido-tmux.conf` deliberately sets
   no `pane-border-style`, which would also restyle real split borders.

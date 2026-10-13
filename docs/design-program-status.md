@@ -219,7 +219,8 @@ Pi and Claude Code report their status through OSC 7501.
 The TUI composes each row from the title and status: glyphs by state
 (running, waiting, stalled, an unseen success or failure), a caption from
 message and progress or else the run's elapsed clock, an ended run's
-result. It marks the active pane's outcomes seen each successful tick;
+result. It marks the active pane's outcomes seen each successful tick,
+using the pane under a modal pane while it is open;
 an exit that ended before the TUI started is seen. After a drawn run
 finishes it keeps
 drawing it running for 0.5s, unless an unseen exit takes the column, and

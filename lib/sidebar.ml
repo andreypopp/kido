@@ -109,7 +109,6 @@ let take ~opts conn prev client =
   match read with
   | Error e -> { prev with client; active = None; err = Some e }
   | Ok (server, panes) ->
-      (* The fork draws display-popup as a modal floating pane. *)
       let panes = List.filter (fun (p : Tmux_pane.t) -> not p.modal) panes in
       let live = State.load_live ~dir:opts.dir in
       let states = State.by_pane live in

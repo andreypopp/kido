@@ -21,12 +21,9 @@ func openPopup(h *harness) {
 	}, settle, msgf("the popup's pane"))
 }
 
-// A popup is no row of the sidebar's and does not move its selection: the
-// fork draws display-popup as a modal floating pane, active while it is
-// open, which the sidebar used to list and select for as long as the
-// popup stood. The beta session is the witness that the sidebar polled
-// with the popup open; without it, the assertions below could run before
-// the popup was ever seen.
+// A popup is not a sidebar row and does not move its selection. The beta
+// session confirms that the sidebar polls with the popup open; without it,
+// the assertions could run before the sidebar sees the popup.
 func TestSidebarIgnoresAPopup(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

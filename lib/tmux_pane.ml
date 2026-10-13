@@ -50,6 +50,8 @@ let order_option = "@kido-order"
 let sep = "\x1f"
 
 let format =
+  (* While a popup is open, the fork makes it active and the covered pane pane_last. *)
+  let pane_active = "#{?#{window_modal_pane},#{pane_last},#{pane_active}}" in
   String.concat sep
     [
       "#{session_name}";
@@ -60,8 +62,7 @@ let format =
       "#{window_name}";
       "#{window_layout}";
       "#{pane_id}";
-      (* A popup is a modal pane the fork makes active; the pane it covers is the last one. *)
-      "#{&&:#{window_active},#{?#{window_modal_pane},#{pane_last},#{pane_active}}}";
+      "#{&&:#{window_active}," ^ pane_active ^ "}";
       "#{pane_pid}";
       "#{pane_current_command}";
       "#{pane_current_path}";
@@ -76,7 +77,7 @@ let format =
       "#{pane_dead_time}";
       "#{session_attached}";
       "#{" ^ run_option ^ "}";
-      "#{?#{window_modal_pane},#{pane_last},#{pane_active}}";
+      pane_active;
       "#{@kido_ssh}";
       "#{pane_program_status}";
       "#{pane_modal_flag}";

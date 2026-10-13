@@ -133,7 +133,9 @@ would need revival and whether its directory/session file exist.
 Paths remain private persistence details. The model polls revival
 availability so removing a file changes the snapshot even without an
 ask-file change. The client's location comes from its session's active pane, matching both
-pane and session for linked windows. The last known location remains
+pane and session for linked windows. A modal pane (`display-popup` or
+`display-menu`) is not a sidebar row, and the pane under it counts as the
+client's pane. The last known location remains
 while no matching active pane is available.
 
 The first model tick emits a snapshot once a client location is known.
