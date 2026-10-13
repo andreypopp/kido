@@ -29,12 +29,11 @@ s=open(sys.argv[1]).read()
 print(re.search(r'revision: "([a-f0-9]+)"',s)[1],re.search(r'version "([^"]+)"',s)[1])
 PY
 )
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+work=$(mktemp -d /tmp/kido-release-XXXXXX)
+trap 'rm -rf "$work"; git worktree prune' EXIT
 for rev in "$old" "$sha"; do
-  mkdir "$work/$rev"
-  echo "+ git archive $rev | tar -x -C $work/$rev"
-  git archive "$rev" | tar -x -C "$work/$rev"
+  echo "+ git worktree add --detach $work/$rev $rev"
+  git worktree add --detach "$work/$rev" "$rev"
   echo "+ (cd $work/$rev && dune build bin/main.exe)"
   (cd "$work/$rev" && dune build bin/main.exe)
   "$work/$rev/_build/default/bin/main.exe" --help=plain > "$work/$rev/top.help"
