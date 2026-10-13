@@ -38,8 +38,9 @@ done
 mkdir -p build/release
 zip="build/release/Kido-$version.zip"
 ditto -c -k --norsrc --noextattr --keepParent "$app" "$zip"
-# Only the installed app should own the shipped LaunchServices identity.
+# Only the installed app should carry the shipped identity: LaunchServices re-registers bundles left on disk.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$app"
+rm -rf "$app"
 sha=$(shasum -a 256 "$zip" | awk '{print $1}')
 echo "SHA256: $sha"
 if [[ -z $local_tag ]]; then action git tag "$tag"; fi
