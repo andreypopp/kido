@@ -2,7 +2,7 @@ import Foundation
 import TmuxControl
 
 public struct RPCVersion: Decodable, Equatable, Sendable, CustomStringConvertible {
-    public static let required = RPCVersion(major: 3, minor: 0)
+    public static let required = RPCVersion(major: 3, minor: 1)
     public let major: Int
     public let minor: Int
     private init(major: Int, minor: Int) { self.major = major; self.minor = minor }
@@ -42,11 +42,11 @@ public enum RPCEvent: Decodable, Sendable {
         }
         public let id: Int
         public enum Value: Sendable {
-            case switched(Target?), jumped(Snapshot.Position), created(Snapshot.Position), selected(Snapshot.Position), released
+            case switched(Target?), jumped(Snapshot.Position), created(Snapshot.Position), selected(Snapshot.Position), released, reordered
             case error(String)
         }
         public let value: Value
-        private enum CodingKeys: String, CodingKey { case id, switched, jumped, created, selected, released, error }
+        private enum CodingKeys: String, CodingKey { case id, switched, jumped, created, selected, released, reordered, error }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decode(Int.self, forKey: .id)
@@ -59,10 +59,11 @@ public enum RPCEvent: Decodable, Sendable {
             else if c.contains(.created) { value = .created(try c.decode(Snapshot.Position.self, forKey: .created)) }
             else if c.contains(.selected) { value = .selected(try c.decode(Snapshot.Position.self, forKey: .selected)) }
             else {
-                guard try c.decode(Bool.self, forKey: .released) else {
-                    throw DecodingError.dataCorruptedError(forKey: .released, in: c, debugDescription: "release must be true")
+                let key: CodingKeys = c.contains(.reordered) ? .reordered : .released
+                guard try c.decode(Bool.self, forKey: key) else {
+                    throw DecodingError.dataCorruptedError(forKey: key, in: c, debugDescription: "\(key.stringValue) must be true")
                 }
-                value = .released
+                value = key == .reordered ? .reordered : .released
             }
         }
     }

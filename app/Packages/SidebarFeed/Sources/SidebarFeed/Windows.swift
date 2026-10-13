@@ -24,13 +24,9 @@ public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (running: 
                 || item.program_status.records.contains { $0.state == .working || $0.state == .blocked }
         }
         node.children.forEach { collect($0, rootWindow: rootWindow) }
-        let window: WindowID = switch node { case .item(let item): item.window; case .window(let group): group.window }
-        if window != rootWindow, !descendants.contains(window) { descendants.append(window) }
+        if node.window != rootWindow, !descendants.contains(node.window) { descendants.append(node.window) }
     }
-    for root in roots {
-        let window: WindowID = switch root { case .item(let item): item.window; case .window(let group): group.window }
-        collect(root, rootWindow: window)
-    }
+    for root in roots { collect(root, rootWindow: root.window) }
     return (running, descendants)
 }
 
@@ -43,17 +39,19 @@ public struct WindowProjection: Equatable, Sendable {
     public var ancestors: [WindowID: WindowID] = [:]
     public var statuses: [WindowID: SidebarRow.Status] = [:]
     public var labels: [WindowID: Label] = [:]
+    public var order: [WindowID] = []
     public init() {}
 }
 
 public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving: Set<WindowID>, activePanes: [WindowID: PaneID] = [:], seen: SidebarSeen = SidebarSeen()) -> WindowProjection {
     var result = WindowProjection()
     func collect(_ node: Node, ancestor: WindowID?) {
-        let window: WindowID = switch node { case .window(let group): group.window; case .item(let item): item.window }
+        let window = node.window
         if case .item(let item) = node, activePanes[window] == item.pane {
             result.labels[window] = .init(title: item.label, agent: item.isAgent, messageable: item.isMessageable)
         }
         let root = ancestor ?? (surviving.contains(window) ? window : nil)
+        if ancestor == nil, root != nil { result.order.append(window) }
         if let root {
             result.ancestors[window] = root
             let previous = result.statuses[root] ?? .quiet
