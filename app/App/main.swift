@@ -250,11 +250,7 @@ let background = ProcessInfo.processInfo.environment["KIDO_APP_BACKGROUND"] == "
 #else
 let background = false
 #endif
-#if KIDO_VISUAL || KIDO_STRESS
 let debugging = ProcessInfo.processInfo.environment["KIDO_APP_DEBUG"] == "1"
-#else
-let debugging = false
-#endif
 
 func note(_ line: String) {
     FileHandle.standardError.write(Data("kido-app \(line)\n".utf8))

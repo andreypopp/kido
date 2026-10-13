@@ -58,8 +58,18 @@ private class AlertEscape: NSView {
     private var session: SessionView?
     private var link = Link.down { didSet { sidebar.tabs.needsDisplay = true } }
     let sidebar = Sidebar()
+    let reorder = Reorder()
     private var feed: Feed?
-    private var model = SessionModel()
+    private var controlModel = SessionModel()
+    private struct Hold {
+        let token: Int, intent: Int, generation: Int, instance: ServerInstance, session: SessionID, window: WindowID
+    }
+    private var held: Hold?
+    private var model: SessionModel {
+        var model = controlModel
+        if let held, holds(held) { model.window = held.window }
+        return model
+    }
     private(set) var snapshot: Snapshot?
     private var navigationModel = SessionModel()
     private enum Target { case pane(Snapshot.Position), window(SessionID, WindowID) }
@@ -209,6 +219,10 @@ private class AlertEscape: NSView {
                 else { done(nil) }
             }
         }
+        sidebar.list.reorder = reorder
+        sidebar.tabs.reorder = reorder
+        sidebar.list.move = { [weak self] in self?.submit($0) }
+        sidebar.tabs.move = sidebar.list.move
         sidebar.tabs.select = { [weak self] in self?.selectWindow($0) }
         sidebar.tabs.close = { [weak self] tab in self?.confirmClose(.window(tab.id), name: tab.name) }
         sidebar.tabs.addWindow.invoke = { [weak self] in
@@ -515,6 +529,7 @@ private class AlertEscape: NSView {
         do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
         note("dialing \(server.socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
         let view = SessionView(runtime: runtime)
+        view.reorder = reorder
         view.onPaneChange = { [weak self] in
             guard let self, accepts(generation) else { return }
             updateTabs()
@@ -579,13 +594,18 @@ private class AlertEscape: NSView {
         case .starting, .restarting: feedFresh = true
         case .running(let snapshot):
             self.snapshot = snapshot
+            reorder.state.observe(snapshot)
+            endHold()
             _ = observeSeen()
             Notifier.shared.update(host: host, snapshotOwner: self)
             snapshotReceived()
         default: break
         }
-        sidebar.list.update(status)
-        if case .running = status { updateTabs() }
+        if case .running(let snapshot) = status {
+            let projected = reorder.state.project(snapshot)
+            sidebar.list.update(.running(projected))
+            updateTabs(projected)
+        } else { sidebar.list.update(status) }
         ready()
     }
 
@@ -596,9 +616,10 @@ private class AlertEscape: NSView {
     }
     #endif
 
-    private func updateTabs() {
-        let next = model.navigation(snapshot, activePanes: session?.windows.compactMapValues(\.active) ?? [:], seen: seen.value)
+    private func updateTabs(_ projected: Snapshot?? = nil) {
+        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), activePanes: session?.windows.compactMapValues(\.active) ?? [:], seen: seen.value)
         if sidebar.tabs.entries != next.tabs { sidebar.tabs.entries = next.tabs }
+        sidebar.tabs.scope = next.model.session.map { .init(session: $0, generation: generation, instance: snapshot?.serverInstance) }
         if navigationModel != next.model {
             navigationModel = next.model
             menuChanged()
@@ -606,8 +627,14 @@ private class AlertEscape: NSView {
     }
 
     private func changed(_ view: SessionView, _ model: SessionModel) {
+        controlModel = model
+        present(view)
+    }
+
+    private func present(_ view: SessionView) {
+        if let held, !holds(held) { self.held = nil }
+        let model = model
         window.title = host == .local ? model.title : "\(identity ?? host.label) / \(model.title)"
-        self.model = model
         if model.session == nil { snapshot = nil }
         updateTabs()
         if view.superview == nil {
@@ -642,6 +669,7 @@ private class AlertEscape: NSView {
         guard !completing else { return }
         intent += 1
         focusTarget = nil
+        endHold()
     }
 
     func confirmClose(_ target: CloseTarget, name: String) {
@@ -698,16 +726,69 @@ private class AlertEscape: NSView {
             case .failure(let error): sidebar.list.failed(error.message)
             case .success(.jumped(let target)), .success(.selected(let target)), .success(.created(let target)):
                 focusTarget = .pane(target)
-                sidebar.list.completedActivation()
+                sidebar.list.leave()
             case .success(.switched(let target)):
                 guard let target else { return }
                 focusTarget = .window(target.session, target.window)
-                sidebar.list.completedActivation()
+                sidebar.list.leave()
             case .success(.released): sidebar.list.leave()
             default: break
             }
         }
         self.request(request, done)
+    }
+
+    private func submit(_ move: ReorderMove) {
+        guard let snapshot, let token = reorder.state.submit(move, to: snapshot) else {
+            let reason = snapshot == nil ? "no snapshot" : reorder.state.pending != nil ? "another reorder is pending"
+                : snapshot?.reordered(move) == nil ? "stale ids" : "no change"
+            return debug("reorder \(move) not sent: \(reason)")
+        }
+        debug("reorder \(move) sent")
+        supersedeIntent()
+        if case .window(let session, _, _, _) = move, session == model.session, let current = model.window {
+            held = Hold(token: token, intent: intent, generation: generation, instance: snapshot.serverInstance, session: session, window: current)
+        }
+        sidebar.list.failed(nil)
+        showOrder()
+        DispatchQueue.main.asyncAfter(deadline: .now() + (host == .local ? 2 : 5)) { [weak self] in
+            self?.endHold(token)
+            if self?.reorder.state.pending?.token == token { debug("reorder \(move) timed out") }
+            self?.settleOrder { $0.expire(token) }
+        }
+        request(.reorder(move)) { [weak self] result in
+            // The reply travels on the feed; the move's own window-change notifications travel on the control
+            // stream. A control round trip after the reply proves those notifications were consumed.
+            if let self, let held, held.token == token, holds(held) { send([Command("display-message", "-p", "")]) { [weak self] _ in self?.endHold(token) } }
+            let error: String? = if case .failure(let error) = result { error.message } else { nil }
+            debug("reorder \(move) reply \(error ?? "reordered")")
+            self?.settleOrder { $0.complete(token, error: error) }
+        }
+    }
+
+    private func holds(_ held: Hold) -> Bool {
+        held.intent == intent && held.generation == generation && held.instance == snapshot?.serverInstance
+            && controlModel.session == held.session && controlModel.windows.contains { $0.id == held.window }
+    }
+
+    private func endHold(_ token: Int? = nil) {
+        guard let held, held.token == token || !holds(held) else { return }
+        self.held = nil
+        if let session { present(session) }
+    }
+
+    private func settleOrder(_ change: (inout ReorderState) -> String?) {
+        let before = reorder.state
+        let error = change(&reorder.state)
+        guard reorder.state != before else { return }
+        if let error { sidebar.list.failed(error) }
+        showOrder()
+    }
+
+    private func showOrder() {
+        let projected = snapshot.map(reorder.state.project)
+        sidebar.list.show(projected)
+        sidebar.tabs.animated { updateTabs(projected) }
     }
 
     private func focusSelected() {
@@ -767,6 +848,7 @@ private class AlertEscape: NSView {
         initial?.cancel()
         initial = nil
         if case .redialing(let work, _, _) = link { work.cancel() }
+        reorder.state.reset()
         feed?.stop()
         feed = nil
         if case .connected(let connection, _, _) = link { connection.close(cause: cause, keepingView: keepingSnapshot) }
@@ -780,7 +862,7 @@ private class AlertEscape: NSView {
         ssh?.stop(after: closing)
         ssh = nil
         if !keepingSnapshot {
-            model = SessionModel()
+            controlModel = SessionModel()
             snapshot = nil
             updateTabs()
         }

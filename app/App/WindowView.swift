@@ -88,6 +88,8 @@ final class WindowView: NSView {
         lines += floatingBoxes.sorted { $0.key.number < $1.key.number }.map { "float \($0.key)=\(rect($0.value.frame))" }
         return lines.joined(separator: "\n")
     }
+    var visualPaneDragging: Bool { paneDrag != nil }
+    func visualBeginDrag(_ pane: PaneID, _ event: NSEvent) { beginDrag(pane, event) }
     #endif
 
     var hot: Bool { !panes.isEmpty }
@@ -430,6 +432,7 @@ final class WindowView: NSView {
         case floating(Pane, NSPoint, CGRect, NSCursor.FrameResizePosition?)
     }
     private var paneDrag: PaneDrag?
+    private var claimed: Reorder?
     private var dragWindow: NSWindow?
     #if KIDO_STRESS
     var stressEvent: (String, String) -> Void = { _, _ in }
@@ -559,6 +562,7 @@ final class WindowView: NSView {
         if event.type != .leftMouseDown { updateDrag(event); return }
         guard !zoomed, let pane = shown?.visible.root.panes.first(where: { $0.id == pane }) else { return }
         endDrag()
+        guard claimPaneDrag() else { return }
         if pane.layer != .tiled { panes.first(where: { $0.pane == pane.id })?.onSelect() }
         #if KIDO_STRESS
         stressEvent("drag-started", pane.id.description)
@@ -566,7 +570,7 @@ final class WindowView: NSView {
         switch pane.layer {
         case .tiled: paneDrag = .tiled(pane.id, event.locationInWindow)
         case .floating:
-            guard let placement else { return }
+            guard let placement else { return endDrag() }
             paneDrag = .floating(pane, event.locationInWindow, floatFrame(pane.id, pane.geometry, placement), nil)
         }
     }
@@ -582,7 +586,15 @@ final class WindowView: NSView {
         if paneDrag == nil { window?.invalidateCursorRects(for: self) }
     }
 
+    private func claimPaneDrag() -> Bool {
+        guard let reorder = session?.reorder, reorder.claim(.pane) else { return false }
+        claimed = reorder
+        return true
+    }
+
     private func endDrag() {
+        claimed?.release(.pane)
+        claimed = nil
         guard paneDrag != nil || drag != nil else { return }
         let target = dragWindow ?? window
         if let dragWindow {
@@ -749,7 +761,7 @@ final class WindowView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         if let (pane, edge) = floatEdge(point) {
             endDrag()
-            guard let placement else { return }
+            guard let placement, claimPaneDrag() else { return }
             paneDrag = .floating(pane, event.locationInWindow, floatFrame(pane.id, pane.geometry, placement), edge)
             panes.first(where: { $0.pane == pane.id })?.beginResizeIntent()
             #if KIDO_STRESS

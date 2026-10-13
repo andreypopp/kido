@@ -2,7 +2,50 @@ import AppKit
 import SidebarFeed
 import TmuxControl
 
-final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+extension NSPasteboard.PasteboardType {
+    static let kidoReorder = Self("com.andreypopp.kido.reorder")
+}
+
+final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
+    private enum Source {
+        case session(SessionID), window(SessionID, WindowID)
+        var session: SessionID { switch self { case .session(let session), .window(let session, _): session } }
+    }
+    private struct DragItem: Codable, Equatable {
+        var v = 1
+        let owner: String
+        let instance: String
+        let session: String
+        let window: String?
+    }
+    private final class DropScroll: NSScrollView {
+        weak var list: SidebarView?
+        override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { list?.dropUpdated(sender) ?? [] }
+        override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { list?.dropUpdated(sender) ?? [] }
+        override func draggingExited(_ sender: (any NSDraggingInfo)?) { list?.insertion.isHidden = true }
+        override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool { true }
+        override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool { list?.dropPerformed(sender) ?? false }
+    }
+    private final class Insertion: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.controlAccentColor.set()
+            let ring = NSBezierPath(ovalIn: NSRect(x: 2.75, y: bounds.midY - 2.75, width: 5.5, height: 5.5))
+            ring.lineWidth = 1.5
+            ring.stroke()
+            NSRect(x: 8.5, y: bounds.midY - 1, width: max(0, bounds.width - 10.5), height: 2).fill()
+        }
+    }
+    var reorder = Reorder()
+    var move: (ReorderMove) -> Void = { _ in }
+    private var dragging: Source?
+    private struct DropTarget: Equatable { let row: Int; let move: ReorderMove? }
+    private var validated: DropTarget??
+    private var collapsed = false
+    private var renderedCollapsed = false
+    private var heldSelection: SidebarRow.ID?
+    private let insertion = Insertion()
+    private let dragOwner = UUID().uuidString
     var navigate: (RPCRequest) -> Void = { _ in }
     var onIntent: () -> Void = {}
     var leave: () -> Void = {}
@@ -83,18 +126,14 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             }
         }
     }
-    private let search = NSSearchField()
     private let table = Table()
-    private let scroll = NSScrollView()
+    private let scroll = DropScroll()
     private let statusLine = NSTextField(labelWithString: "")
-    private let noMatches = NSTextField(labelWithString: "No matches")
     private var snapshot: Snapshot?
     var seen = SeenRecord()
     private var renderedSeen = SidebarSeen()
-    private var renderedQuery = ""
     private var feedNote: (String, NSColor)?
     private var failure: String?
-    private var visibleSnapshot: Snapshot? { sidebarSearch(snapshot, query: query) }
     private let fonts = SidebarFonts()
     private var tick: Timer?
 
@@ -106,12 +145,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     init() {
         super.init(frame: .zero)
-        search.placeholderString = "Filter"
-        search.controlSize = .small
-        search.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        search.delegate = self
-        search.target = self
-        search.action = #selector(searched)
         table.addTableColumn(NSTableColumn(identifier: .init("row")))
         table.headerView = nil
         table.style = .plain
@@ -127,12 +160,15 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         table.dataSource = self
         table.delegate = self
         table.focusChanged = { [weak self] in self?.onIntent() }
-        table.target = self
-        table.action = #selector(clicked)
         table.focusRingType = .none
         table.selectionHighlightStyle = .none
+        table.setDraggingSourceOperationMask(.move, forLocal: true)
+        table.setDraggingSourceOperationMask([], forLocal: false)
+        insertion.isHidden = true
+        table.addSubview(insertion)
         scroll.focusRingType = .none
-        search.focusRingType = .none
+        scroll.list = self
+        scroll.registerForDraggedTypes([.kidoReorder])
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -142,11 +178,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         statusLine.isSelectable = true
         statusLine.lineBreakMode = .byTruncatingTail
         statusLine.maximumNumberOfLines = 1
-        noMatches.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        noMatches.textColor = .secondaryLabelColor
-        noMatches.isHidden = true
-        search.isHidden = true
-        for view in [search, scroll, statusLine, noMatches] { addSubview(view) }
+        for view in [scroll, statusLine] { addSubview(view) }
         updateAppearance()
     }
 
@@ -172,13 +204,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     override func layout() {
         super.layout()
         let inner = bounds.width - 16
-        search.frame = CGRect(x: 8, y: safeAreaInsets.top + 2, width: inner, height: search.isHidden ? 0 : search.fittingSize.height)
         let note: CGFloat = statusLine.isHidden ? 0 : 16
-        statusLine.frame = CGRect(x: 8, y: search.frame.maxY, width: inner, height: note)
-        let top = search.frame.maxY + note
+        statusLine.frame = CGRect(x: 8, y: safeAreaInsets.top + 2, width: inner, height: note)
+        let top = safeAreaInsets.top + 2 + note
         scroll.frame = CGRect(x: 8, y: top, width: inner, height: max(0, bounds.height - top - 10))
         table.setFrameSize(NSSize(width: scroll.contentSize.width, height: table.frame.height))
-        noMatches.frame = CGRect(x: 10, y: top + 4, width: inner, height: noMatches.fittingSize.height)
     }
 
     func update(_ status: Feed.Status) {
@@ -204,10 +234,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     var position: Snapshot.Position? { snapshot?.client }
 
-    var query: String { search.stringValue }
     var containsFocus: Bool {
         guard let focused = window?.firstResponder else { return false }
-        return focused === search.currentEditor() || (focused as? NSView)?.isDescendant(of: self) == true
+        return (focused as? NSView)?.isDescendant(of: self) == true
     }
 
     func failed(_ message: String?) {
@@ -224,27 +253,32 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         needsLayout = true
     }
 
-    private func show(_ next: Snapshot?) {
-        if renderedQuery == query, renderedSeen == seen.value, next.map({ snapshot?.sameSidebarContent(as: $0) == true }) ?? (snapshot == nil) {
+    func show(_ next: Snapshot?, pin: SidebarRow.ID? = nil) {
+        if pin == nil, renderedCollapsed == collapsed, renderedSeen == seen.value, next.map({ snapshot?.sameSidebarContent(as: $0) == true }) ?? (snapshot == nil) {
             snapshot = next
             return
         }
-        renderedQuery = query
         renderedSeen = seen.value
+        renderedCollapsed = collapsed
         rendering = true
         defer { rendering = false }
         let editor = editing?.cell.nameField.currentEditor() as? NSTextView
         let selection = editor?.selectedRange()
-        let selected = entry(table.selectedRow)?.id
+        let selected = entry(table.selectedRow)?.id ?? heldSelection
         let origin = scroll.contentView.bounds.origin
-        let first = table.rows(in: table.visibleRect).location
+        let first = pin.flatMap { id in items.firstIndex { $0.id == id } } ?? table.rows(in: table.visibleRect).location
         let anchor = first == NSNotFound ? nil : entry(first).map { ($0.id, origin.y - table.rect(ofRow: first).minY) }
-        let recenter = next.map { $0.client != snapshot?.client } ?? false
+        let recenter = dragging == nil && next.map { $0.client != snapshot?.client } ?? false
         snapshot = next
-        let visible = visibleSnapshot
-        noMatches.isHidden = query.isEmpty || visible?.sessions.isEmpty != true
         let previous = items
-        items = sidebarRows(visible, seen: seen.value)
+        items = sidebarRows(snapshot, seen: seen.value)
+        if collapsed {
+            switch dragging {
+            case .session: items = items.filter { $0.kind == .header }
+            case .window(let session, let window): items.removeAll { $0.id.session == session && $0.root == window }
+            case nil: break
+            }
+        }
         if let edit = editing, !items.contains(where: { $0.id == edit.id }) { endRename() }
         if editing != nil {
             let changes = items.map(\.id).difference(from: previous.map(\.id))
@@ -272,7 +306,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             if recenter { table.scrollRowToVisible(row) }
         } else { table.deselectAll(nil) }
         if !recenter {
-            let y = anchor.flatMap { key, offset in items.firstIndex { $0.id == key }.map { table.rect(ofRow: $0).minY + offset } } ?? origin.y
+            var y = anchor.flatMap { key, offset in items.firstIndex { $0.id == key }.map { table.rect(ofRow: $0).minY + offset } } ?? origin.y
+            if pin != nil {
+                let top = dragging == nil ? 0 : max(0, -y)
+                scroll.contentInsets.top = top
+                y = min(max(y, -top), max(-top, table.frame.height - scroll.contentView.bounds.height))
+            }
             scroll.contentView.scroll(to: NSPoint(x: origin.x, y: y))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
@@ -308,11 +347,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         for row in rows { (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell)?.updateClock() }
     }
 
-    private func activate() {
-        if table.selectedRow >= 0 { jump(table.selectedRow) }
-        else if let target = items.lazy.compactMap(\.target).first { jump(target) }
-    }
-
     func focus() {
         onIntent()
         table.keyboardSelection = true
@@ -325,11 +359,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         table.scrollRowToVisible(table.selectedRow)
     }
 
-    private func jump(_ row: SidebarRow) {
-        guard let target = row.target else { return }
-        jump(target)
-    }
-
     private func move(_ delta: Int) {
         var i = table.selectedRow
         repeat { i += delta } while i >= 0 && i < table.numberOfRows && entry(i)?.target == nil
@@ -338,12 +367,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         table.scrollRowToVisible(i)
     }
 
-    private func jump(_ index: Int) {
-        guard let row = entry(index) else { return }
-        jump(row)
+    fileprivate func activate(_ index: Int) {
+        guard let target = entry(index)?.target else { return }
+        navigate(.jump(target))
     }
-
-    private func jump(_ target: Snapshot.Position) { navigate(.jump(target)) }
 
     func select(_ target: Snapshot.Position) {
         if let index = items.firstIndex(where: { $0.target == target }) {
@@ -351,21 +378,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             table.scrollRowToVisible(index)
         }
     }
-
-    func completedActivation() {
-        search.stringValue = ""
-        search.isHidden = true
-        needsLayout = true
-        show(snapshot)
-        leave()
-    }
-
-    @objc private func clicked() {
-        guard let row = entry(table.clickedRow) else { return }
-        jump(row)
-    }
-
-    @objc private func searched() { show(snapshot) }
 
     func refresh() { show(snapshot) }
 
@@ -375,37 +387,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         switch (Int(event.keyCode), event.charactersIgnoringModifiers ?? "", mods) {
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
-        case (36, _, []), (76, _, []): jump(table.selectedRow)
+        case (36, _, []), (76, _, []): activate(table.selectedRow)
         case (53, _, []):
             navigate(.releaseSideFocus)
-        case (_, "/", []):
-            onIntent()
-            search.isHidden = false
-            needsLayout = true
-            layoutSubtreeIfNeeded()
-            window?.makeFirstResponder(search)
         default: return false
-        }
-        return true
-    }
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        switch selector {
-        case #selector(moveDown(_:)):
-            focus()
-            move(table.selectedRow < 0 ? 1 : 0)
-        case #selector(insertNewline(_:)):
-            show(snapshot)
-            activate()
-        case #selector(cancelOperation(_:)):
-            onIntent()
-            search.stringValue = ""
-            show(snapshot)
-            search.isHidden = true
-            needsLayout = true
-            focus()
-        default:
-            return false
         }
         return true
     }
@@ -414,9 +399,141 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         if !rendering { onIntent() }
     }
 
-    func controlTextDidChange(_ notification: Notification) { onIntent(); show(snapshot) }
-    func controlTextDidBeginEditing(_ notification: Notification) { onIntent() }
-    func controlTextDidEndEditing(_ notification: Notification) { onIntent() }
+    private func source(_ row: SidebarRow) -> Source? {
+        switch row.kind {
+        case .header: .session(row.id.session)
+        case .pane(_?) where row.indent == 0: row.root.map { .window(row.id.session, $0) }
+        default: nil
+        }
+    }
+
+    private func dragItem(_ source: Source) -> DragItem? {
+        guard let instance = snapshot?.serverInstance else { return nil }
+        let window: String? = if case .window(_, let window) = source { window.description } else { nil }
+        return DragItem(owner: dragOwner, instance: "\(instance.pid)/\(instance.startedAt)", session: source.session.description, window: window)
+    }
+
+    private func blockRows(_ session: SessionID, _ root: WindowID) -> Range<Int> {
+        let start = items.firstIndex { $0.id.session == session && $0.root == root } ?? 0
+        return start..<(items.lastIndex { $0.id.session == session && $0.root == root }.map { $0 + 1 } ?? start)
+    }
+
+    private func dropTarget(_ info: any NSDraggingInfo) -> DropTarget? {
+        guard let dragging, !items.isEmpty, let data = info.draggingPasteboard.data(forType: .kidoReorder),
+              let item = try? JSONDecoder().decode(DragItem.self, from: data), item == dragItem(dragging) else { return nil }
+        let y = table.convert(info.draggingLocation, from: nil).y
+        let hit = table.row(at: NSPoint(x: table.bounds.midX, y: y)), above = y < table.rect(ofRow: 0).minY
+        switch dragging {
+        case .session(let source):
+            let slot = hit >= 0 ? (y < table.rect(ofRow: hit).midY ? hit : hit + 1) : above ? 0 : items.count
+            return DropTarget(row: slot, move: ReorderMove.placing(source, at: slot, in: items.map(\.id.session)).map { .session(source, relativeTo: $0.anchor, $0.placement) })
+        case .window(let session, let source):
+            let below = hit >= 0 ? hit : above ? 0 : items.count - 1
+            guard items[below].id.session == session else { return nil }
+            var roots: [WindowID] = []
+            for item in items where item.id.session == session {
+                if let root = item.root, roots.last != root { roots.append(root) }
+            }
+            let row: Int, slot: Int
+            if let root = items[below].root, let at = roots.firstIndex(of: root) {
+                let block = blockRows(session, root)
+                let above = y < (table.rect(ofRow: block.lowerBound).minY + table.rect(ofRow: block.upperBound - 1).maxY) / 2
+                (row, slot) = above ? (block.lowerBound, at) : (block.upperBound, at + 1)
+            } else if case .header = items[below].kind {
+                (row, slot) = (roots.first.map { blockRows(session, $0).lowerBound } ?? below + 1, 0)
+            } else { (row, slot) = (roots.last.map { blockRows(session, $0).upperBound } ?? below, roots.count) }
+            let all = snapshot?.sessions.first { $0.id == session }?.nodes.map(\.window) ?? roots
+            let at = slot < roots.count ? all.firstIndex(of: roots[slot]) ?? all.count : all.count
+            return DropTarget(row: row, move: ReorderMove.placing(source, at: at, in: all).map { .window(session, source, relativeTo: $0.anchor, $0.placement) })
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
+        guard editing == nil, reorder.gesture == nil, reorder.state.pending == nil, let source = entry(row).flatMap(source),
+              let data = try? JSONEncoder().encode(dragItem(source)) else { return nil }
+        let item = NSPasteboardItem()
+        item.setData(data, forType: .kidoReorder)
+        return item
+    }
+
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+        guard let row = rowIndexes.first.flatMap(entry), let source = source(row), reorder.claim(.sidebar) else {
+            return debug("drag begin refused rows=\(Array(rowIndexes)) row=\(rowIndexes.first.flatMap(entry).map { "\($0.id)" } ?? "-") gesture=\(String(describing: reorder.gesture))")
+        }
+        dragging = source
+        validated = nil
+        heldSelection = entry(table.selectedRow)?.id
+        debug("drag begin row=\(rowIndexes.first!) \(row.id)")
+    }
+
+    fileprivate func dragImage(_ items: [NSDraggingItem]) {
+        for item in items {
+            let row = table.row(at: NSPoint(x: item.draggingFrame.midX, y: item.draggingFrame.midY))
+            guard let source = entry(row).flatMap(source) else { continue }
+            let rows = switch source {
+            case .session: row..<row + 1
+            case .window(let session, let window): blockRows(session, window)
+            }
+            let frame = table.rect(ofRow: rows.lowerBound).union(table.rect(ofRow: rows.upperBound - 1))
+            guard let bitmap = table.bitmapImageRepForCachingDisplay(in: frame) else { continue }
+            table.cacheDisplay(in: frame, to: bitmap)
+            let image = NSImage(size: frame.size)
+            image.addRepresentation(bitmap)
+            item.setDraggingFrame(frame, contents: image)
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        insertion.isHidden = true
+        guard let source = dragging else { return debug("drag end operation=\(operation.rawValue) without a drag") }
+        dragging = nil
+        reorder.release(.sidebar)
+        if collapsed {
+            collapsed = false
+            if case .session(let session) = source { show(snapshot, pin: .header(session)) } else { show(snapshot) }
+        }
+        heldSelection = nil
+        debug("drag end operation=\(operation.rawValue) restored rows=\(items.count)")
+    }
+
+    private func dropUpdated(_ info: any NSDraggingInfo) -> NSDragOperation {
+        if !collapsed, let dragging {
+            collapsed = true
+            if case .session(let session) = dragging { show(snapshot, pin: .header(session)) } else { show(snapshot) }
+            debug("drag collapsed rows=\(items.count) inset=\(scroll.contentInsets.top)")
+        }
+        let clip = scroll.contentView, point = clip.convert(info.draggingLocation, from: nil)
+        let step: CGFloat = point.y < clip.bounds.minY + 24 ? -8 : point.y > clip.bounds.maxY - 24 ? 8 : 0
+        let y = min(max(clip.bounds.minY + step, -scroll.contentInsets.top), max(-scroll.contentInsets.top, table.frame.height - clip.bounds.height))
+        if dragging != nil, y != clip.bounds.minY {
+            clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+            scroll.reflectScrolledClipView(clip)
+        }
+        let target = dropTarget(info)
+        if debugging, validated != .some(target) {
+            validated = target
+            debug("drag validate y=\(Int(table.convert(info.draggingLocation, from: nil).y)) -> \(target.map { "move row=\($0.row) \($0.move.map { "\($0)" } ?? "no-op")" } ?? "none")")
+        }
+        guard let target else {
+            insertion.isHidden = true
+            if dragging != nil { NSCursor.operationNotAllowed.set() }
+            return []
+        }
+        let line = target.row < items.count ? table.rect(ofRow: target.row).minY : table.rect(ofRow: items.count - 1).maxY
+        insertion.frame = NSRect(x: 0, y: line - 4, width: table.bounds.width, height: 8)
+        insertion.isHidden = false
+        table.addSubview(insertion, positioned: .above, relativeTo: nil)
+        return .move
+    }
+
+    private func dropPerformed(_ info: any NSDraggingInfo) -> Bool {
+        insertion.isHidden = true
+        let target = dropTarget(info)
+        debug("drag accept y=\(Int(table.convert(info.draggingLocation, from: nil).y)) -> \(target.map { "row=\($0.row) \($0.move.map { "\($0)" } ?? "no-op")" } ?? "none")")
+        guard let move = target?.move else { return false }
+        self.move(move)
+        return true
+    }
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
@@ -457,9 +574,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     var visualTable: NSTableView { table }
     var visualScroll: NSScrollView { scroll }
     var visualRows: [SidebarRow] { items }
-    var visualSearch: NSSearchField { search }
     var visualDiagnostic: String { statusLine.stringValue }
-    func visualJump(_ row: SidebarRow) { jump(row) }
+    func visualJump(_ row: SidebarRow) { activate(items.firstIndex { $0.id == row.id } ?? -1) }
+    var visualDragging: String? { dragging.map { "\($0)" } }
+    var visualInsertion: NSRect? { insertion.isHidden ? nil : insertion.frame }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.windowBackgroundColor.setFill()
         bounds.fill()
@@ -489,7 +607,24 @@ final class Table: NSTableView {
     override func mouseDown(with event: NSEvent) {
         keyboardSelection = false
         super.mouseDown(with: event)
+        guard let up = NSApp.currentEvent, up.type == .leftMouseUp,
+              hypot(up.locationInWindow.x - event.locationInWindow.x, up.locationInWindow.y - event.locationInWindow.y) < 4 else { return }
+        (delegate as? SidebarView)?.activate(row(at: convert(event.locationInWindow, from: nil)))
     }
+    override func beginDraggingSession(with items: [NSDraggingItem], event: NSEvent, source: any NSDraggingSource) -> NSDraggingSession {
+        (delegate as? SidebarView)?.dragImage(items)
+        #if KIDO_VISUAL
+        let session = NSDraggingSession.perform(NSSelectorFromString("new")).takeRetainedValue() as! NSDraggingSession
+        visualDrag = (items, session, source)
+        return session
+        #else
+        return super.beginDraggingSession(with: items, event: event, source: source)
+        #endif
+    }
+    #if KIDO_VISUAL
+    private(set) var visualDrag: (items: [NSDraggingItem], session: NSDraggingSession, source: any NSDraggingSource)?
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    #endif
     override func frameOfCell(atColumn column: Int, row: Int) -> NSRect { rect(ofRow: row) }
     override func keyDown(with event: NSEvent) {
         keyboardSelection = true
