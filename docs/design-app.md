@@ -174,9 +174,10 @@ Relative/control-containing paths or noisy/malformed stdout are errors. Explicit
 Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
-Discovery decodes the server's protocol stamp, not its build ID. The required
-protocol is exactly 3.1 at discovery and RPC hello; both major and minor
-must match. Discovery checks both the binary and creating-server stamp.
+Discovery requires the binary's RPC protocol to be exactly 4.0, as does
+RPC hello; both major and minor must match. Server compatibility is separate:
+the opaque server stamp must equal the expected stamp from the same binary's
+discovery JSON. A null stamp is incompatible. The app has no stamp constant.
 Mismatches block the affected window with a native alert sheet; Close leaves
 a disconnected, read-only view with Reconnect to check again. For every local mismatch, the sheet includes the warning
 that sessions, panes, commands and agents end and other clients disconnect.
@@ -187,12 +188,14 @@ their mismatch sheets close and they repeat discovery and connect to the new ser
 without another user action. Restart failures remain banners.
 Remote sheets offer Reconnect, advise updating the app for a newer major or minor,
 and read discovery's binary protocol before recommending an upgrade: an
-already-compatible binary only needs its server restarted. RPC hello retains
-both versions for later mismatches. No server is restarted automatically.
+already-compatible binary only needs its server restarted when its stamp
+differs. RPC hello retains the binary protocol and server/expected stamps for
+later mismatches. Stamp mismatch copy describes a different build or config;
+protocol mismatch copy names the required and actual RPC versions. No server is restarted automatically.
 Reconnect repeats discovery after the user fixes the mismatch.
 There is no compatibility waiver or remote restart. The bundle's captured
 BUILD-ID detects an app replaced on disk and requires relaunch independently
-of the server protocol.
+of the server stamp and RPC protocol.
 
 Control attach and duplex RPC (including switch-window and switch-session) share the owned master,
 with `ControlMaster=no`. One audited POSIX single-quote function quotes every
@@ -699,7 +702,7 @@ banner as discovery, without automatic retry. Window and session navigation
 use numbered RPC requests. Replies can interleave with
 snapshots and arrive out of order; pending callbacks live on the feed reader
 queue and complete once, including failure when the connection ends or restarts.
-The app decodes v2 snapshots of protocol 3.1 only. Pane items carry a plain
+The app decodes v2 snapshots of protocol 4.0 only. Pane items carry a plain
 `title`, a typed `lifecycle` (Live pane kind with its agent or shell status,
 or Ended with a run result) and the raw `program_status`; their variants,
 null rules and percentages are enforced, and a malformed snapshot restarts

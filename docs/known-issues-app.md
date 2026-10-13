@@ -94,7 +94,7 @@ retest. No timer guesses are used. Status: URL OS-delivery unverified.
 ## Remote clipboard, URL and authentication matrix
 
 Private real localhost SSH tests cover control/feed/navigation, two remote plus
-Local windows, quoting, missing kido, protocol refusal and rediscovery, master SIGKILL/recovery,
+Local windows, quoting, missing kido, server-stamp refusal and rediscovery, master SIGKILL/recovery,
 detach, generation rejection and cancellation. They use the existing prepared
 account and trusted host keys, not an isolated sshd or changed account settings.
 
