@@ -63,4 +63,6 @@ t send-keys -t main:tests.0 "'$K' agent-status --agent pi --session demo-tests -
 t send-keys -t research:notes "'$K' agent-status --agent claude --session demo-notes --activity 'wrote summary'; sleep 86400" Enter
 t send-keys -t research:deep "'$K' agent-status --agent pi --session demo-deep --activity compacting; printf '\\033]2;π deep-dive\\007\\033]7501;state=working:app=pi\\007'; sleep 86400" Enter
 t select-window -t main:kido
-exec "$APP"
+export KIDO_APP_DEBUG=1
+printf '\n=== %s launch %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$APP" >>"$D/app.log"
+exec "$APP" >>"$D/app.log" 2>&1

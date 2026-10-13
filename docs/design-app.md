@@ -175,7 +175,7 @@ Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
 Discovery decodes the server's protocol stamp, not its build ID. The required
-protocol is exactly 3.0 at discovery and RPC hello; both major and minor
+protocol is exactly 3.1 at discovery and RPC hello; both major and minor
 must match. Discovery checks both the binary and creating-server stamp.
 Mismatches block the affected window with a native alert sheet; Close leaves
 a disconnected, read-only view with Reconnect to check again. For every local mismatch, the sheet includes the warning
@@ -695,11 +695,11 @@ The sidebar runs the bundled `kido rpc --server DIR --client NAME` with
 the app's own client name, so kido's rules follow what the app shows. The
 in-repo [RPC contract](../share/rpc/contract.md) is authoritative. The first line
 must be a compatible hello; a server mismatch stops the feed and uses the same
-banner as discovery, without automatic retry. Filters are JSON requests and
-window and session navigation use numbered RPC requests. Replies can interleave with
+banner as discovery, without automatic retry. Window and session navigation
+use numbered RPC requests. Replies can interleave with
 snapshots and arrive out of order; pending callbacks live on the feed reader
 queue and complete once, including failure when the connection ends or restarts.
-The app decodes v2 snapshots of protocol 3.0 only. Pane items carry a plain
+The app decodes v2 snapshots of protocol 3.1 only. Pane items carry a plain
 `title`, a typed `lifecycle` (Live pane kind with its agent or shell status,
 or Ended with a run result) and the raw `program_status`; their variants,
 null rules and percentages are enforced, and a malformed snapshot restarts
@@ -740,7 +740,7 @@ border. With the sidebar collapsed, the whole band is themed. No private views a
 WindowTabs paints no background of its own, preserving the native sidebar shadow.
 
 Tabs project the current session's top-level windows from the
-unfiltered feed; descendant windows activate their ancestor tab. Each title
+feed; descendant windows activate their ancestor tab. Each title
 is the composed label of that window's active pane, falling back to the
 tmux window name until its feed label arrives. A tab whose active pane is an
 agent or agent run is drawn like its sidebar row: semibold, with the display-only
@@ -769,7 +769,7 @@ working→running, blocked→waiting, error→failed, done→done, idle after th
 parent's seen suppression for done/error) and drawn through the same row
 path as every other row; there is no separate record view. A record differs
 from a child-window agent row only in having no @ prefix and no clock, and
-in being display-only: never a navigation, click, hover, selection or filter
+in being display-only: never a navigation, click, hover or selection
 target, and skipped by arrow navigation.
 
 Hovering a pane row's status-indicator slot, the 16pt square centered on the
@@ -852,14 +852,10 @@ Selection and scroll survive snapshots by session-scoped node identity.
 Scroll anchors the first visible identity and its intra-row offset,
 falling back to pixels only if that row disappears.
 
-The search and single-line, truncating diagnostic sit above the table;
-the full diagnostic is available in its tooltip. The search field
-is the one store of the query and survives helper restarts. Filtering is
-client-side, using kido's ASCII fuzzy score over session names, recursively
-collected agent and agent-run titles and every ssh row's typed `user@host` (a remote agent matches on its title too). Matches retain whole sessions;
-no matches displays “No matches”. Tabs always consume the full snapshot. Jump failures leave the filter and focus intact; a
-successful jump clears it and returns focus to the pane. External tmux
-switches update selection without taking keyboard focus.
+The single-line, truncating diagnostic sits above the table; the full
+diagnostic is available in its tooltip. The sidebar has no filter. Jump
+failures leave focus intact; a successful jump returns focus to the pane.
+External tmux switches update selection without taking keyboard focus.
 
 The toolbar and Shift-Command-S toggle the sidebar; the View menu's
 Show/Hide title follows its collapsed state. Focus Sidebar uses
@@ -869,7 +865,7 @@ no Control-Command-J/K shortcuts. Nested windows step among direct siblings,
 prev from the first child selects its parent, and next from the last child
 steps from its top-level ancestor. Top-level steps skip run windows and wrap
 across sessions; a sole eligible window can select itself and null is a no-op.
-Option-Command-]/[ switches sessions in the unfiltered
+Option-Command-]/[ switches sessions in the
 sidebar session order, with wraparound and a single-session no-op.
 Session navigation uses RPC switch-session and selects the returned current window.
 Command-N and toolbar plus create a session via new-session. Each session
@@ -878,13 +874,12 @@ Command-T sends new-window with the current window id; the server inserts
 immediately after it using its active pane's cwd. Numbered and last tabs use
 select-window; absolute sessions use select-session. In the table, arrows and j/k
 move pane-only selection, Return activates with exactly one
-RPC jump, Escape releases side focus via RPC and returns to the pane, and /
-searches. Left/Right do nothing; headers do not activate or fold. Search Enter
-activates once, including while its reply is delayed. Only correlated success
-clears the query and returns focus when the authoritative pane view is current;
-failures preserve query and focus. One monotonic UI-intent revision advances on edits, selection/focus changes
+RPC jump, and Escape releases side focus via RPC and returns to the pane.
+Left/Right do nothing; headers do not activate or fold. Only correlated success
+returns focus when the authoritative pane view is current; failures preserve
+focus. One monotonic UI-intent revision advances on selection/focus changes
 and navigation. Each request captures it; only a still-current completion
-clears query, leaves the sidebar or installs deferred focus. Any new intent
+leaves the sidebar or installs deferred focus. Any new intent
 cancels deferred focus, which is consumed on pane changes as well as window
 topology. Pending requests fail once on disconnect and are never replayed.
 Replies do not synthesize topology.

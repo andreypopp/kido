@@ -6,9 +6,9 @@ import Testing
     #expect(RPCVersion(text) == nil)
 }
 
-@Test(arguments: [("2.1", false), ("2.0", false), ("3.0", true), ("3.1", false), ("0.9", false), ("4.0", false)]) func protocolCompatibility(_ text: String, _ compatible: Bool) throws {
+@Test(arguments: [("2.1", false), ("3.0", false), ("3.1", true), ("3.2", false), ("0.9", false), ("4.1", false)]) func protocolCompatibility(_ text: String, _ compatible: Bool) throws {
     #expect(try #require(RPCVersion(text)).compatible == compatible)
-    #expect(RPCVersion.required.description == "3.0")
+    #expect(RPCVersion.required.description == "3.1")
 }
 
 @Test func tolerantRawEnums() throws {
@@ -21,7 +21,7 @@ import Testing
 
 @Test func rpcEventsInterleave() throws {
     let lines = [
-        #"{"hello":{"protocol":"3.0"}}"#,
+        #"{"hello":{"protocol":"3.1"}}"#,
         #"{"reply":{"id":2,"switched":null}}"#,
         #"{"v":2,"client":{"session":"$1","window":"@2","pane":"%3"},"server_instance":{"started_at":1780000000,"pid":12345},"asks":[],"error":null,"sessions":[]}"#,
         #"{"reply":{"id":1,"switched":{"session":"$3","window":"@12"}}}"#,
@@ -37,7 +37,7 @@ import Testing
     #expect(error == "invalid or unknown request")
 }
 
-@Test(arguments: [(#"{"hello":{"protocol":"3.0","server":null}}"#, nil), (#"{"hello":{"protocol":"3.0","server":"9.9"}}"#, "9.9"), (#"{"hello":{"protocol":"3.0","server":"invalid"}}"#, nil)]) func rejectedHello(_ line: String, _ expected: String?) throws {
+@Test(arguments: [(#"{"hello":{"protocol":"3.1","server":null}}"#, nil), (#"{"hello":{"protocol":"3.1","server":"9.9"}}"#, "9.9"), (#"{"hello":{"protocol":"3.1","server":"invalid"}}"#, nil)]) func rejectedHello(_ line: String, _ expected: String?) throws {
     guard case .hello(.rejected(let binary, let server)) = try JSONDecoder().decode(RPCEvent.self, from: Data(line.utf8)) else { Issue.record("not rejected"); return }
     #expect(binary == .required)
     #expect(server?.description == expected)
