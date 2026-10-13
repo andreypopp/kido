@@ -5,7 +5,6 @@ module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
 type span = Mosaic.span = { text : string; style : Style.t }
-type role = [ `Plain | `Proc | `Dim | `Current | `Err | `Running | `Waiting | `Done | `Stalled ]
 type program = { id : string; state : Tmux.Program_status.state; title : string; caption : string }
 
 type line =
@@ -127,6 +126,8 @@ let lines ?(search = "") (side : S.model) =
         (filter search side.sessions);
       Array.of_list (List.rev !out)
 
+let span theme role text = { text; style = Sidebar_theme.style theme role }
+
 type mode = Windows | Asks
 type source = Agent | Report
 type hold = Drawn | Held of float
@@ -147,6 +148,9 @@ type model = {
   g_pend : bool;
   mode : mode;
   search : string option;
+  theme : Sidebar_theme.t;
+  theme_error : string option;
+  styles_read : (int * float) option;
 }
 
 let make ?conn ~standalone (side : S.model) =
@@ -165,23 +169,11 @@ let make ?conn ~standalone (side : S.model) =
     g_pend = false;
     mode = Windows;
     search = None;
+    theme = Sidebar_theme.default;
+    theme_error = None;
+    styles_read = None;
   }
 
-(* Every style names its foreground: Mosaic's grid paints an explicit white on any cell left
-   without one, which would override the user's theme. *)
-let style : role -> Style.t = function
-  | `Plain -> Style.make ~fg:Color.default ()
-  | `Current -> Style.make ~fg:Color.default ~bold:true ()
-  | `Proc -> Style.make ~fg:Color.white ()
-  | `Dim -> Style.make ~fg:Color.bright_black ()
-  | `Err -> Style.make ~fg:Color.red ()
-  | `Running -> Style.make ~fg:Color.green ()
-  | `Waiting -> Style.make ~fg:Color.yellow ~bold:true ()
-  | `Done -> Style.make ~fg:Color.green ~bold:true ()
-  | `Stalled -> Style.make ~fg:Color.red ~bold:true ()
-
-let span role text = { text; style = style role }
-let plain = span `Plain
 let hold = 0.5
 
 let shell (status : S.pane) =
@@ -317,7 +309,9 @@ let indicator m (r : S.row) =
   | Live { status = Ssh { pane = Remote_terminal { status; _ }; _ }; _ } ->
       shell status
 
-let glyph : indicator -> span = function
+let glyph theme : indicator -> span =
+  let span = span theme in
+  function
   | Running -> span `Running "◼"
   | Waiting -> span `Waiting "◆"
   | Done -> span `Done "✓"
@@ -326,12 +320,12 @@ let glyph : indicator -> span = function
   | Ended (Some Completed) -> span `Dim "✓"
   | Ended _ -> span `Dim "×"
 
-let program_glyph : Tmux.Program_status.state -> span option = function
+let program_glyph theme : Tmux.Program_status.state -> span option = function
   | Idle -> None
-  | Working _ -> Some (glyph Running)
-  | Blocked _ -> Some (glyph Waiting)
-  | Done -> Some (glyph Done)
-  | Error -> Some (glyph Failed)
+  | Working _ -> Some (glyph theme Running)
+  | Blocked _ -> Some (glyph theme Waiting)
+  | Done -> Some (glyph theme Done)
+  | Error -> Some (glyph theme Failed)
 
 let elapsed secs =
   let s = max 0 (Float.to_int secs) in
@@ -346,7 +340,9 @@ let command (s : P.shell) =
       Some command
   | _ -> None
 
-let title (r : S.row) =
+let title theme (r : S.row) =
+  let span = span theme in
+  let plain = span `Plain in
   match r.lifecycle with
   | Ended _ -> [ span `Dim r.title ]
   | Live { status = Ssh { user; host; pane = Remote_terminal { interactive; status } }; _ } ->
@@ -394,8 +390,11 @@ let caption (r : S.row) =
   | Live { status = Ssh { pane = Remote_terminal { status; _ }; _ }; _ } ->
       shell status
 
-let parts m : line -> span list * span list * span list = function
-  | Header h -> ([], [ span (if h.current then `Current else `Plain) h.name ], [])
+let parts m : line -> span list * span list * span list =
+  let span = span m.theme in
+  let plain = span `Plain in
+  function
+  | Header h -> ([], [ span (if h.current then `Current else `Session) h.name ], [])
   | Message e -> ([], [ span `Err e ], [])
   | Ask (a, pane) ->
       let role = if Option.is_none pane then `Dim else `Plain in
@@ -403,13 +402,13 @@ let parts m : line -> span list * span list * span list = function
         [ span role (a.name ^ " " ^ Ask.string_of_id a.id) ],
         [ span role (" " ^ List.hd (String.split_on_char '\n' a.text)) ] )
   | Program (prefix, r) ->
-      ( [ span `Dim prefix; Option.value ~default:(plain " ") (program_glyph r.state) ],
+      ( [ span `Dim prefix; Option.value ~default:(plain " ") (program_glyph m.theme r.state) ],
         [ plain r.title ],
         if String.is_empty r.caption then [] else [ plain " "; span `Dim r.caption ] )
   | Row (prefix, _, r) -> (
       let tree = if String.is_empty prefix then [] else [ span `Dim prefix ] in
-      ( tree @ [ Option.map_or ~default:(plain " ") glyph (indicator m r) ],
-        title r,
+      ( tree @ [ Option.map_or ~default:(plain " ") (glyph m.theme) (indicator m r) ],
+        title m.theme r,
         match caption r with
         | Some text -> [ plain " "; span `Dim text ]
         | None ->
@@ -509,6 +508,7 @@ let release_focus m =
 
 type msg =
   | Snapshot of S.snapshot
+  | Styles of { read : int * float; reply : string }
   | Key of Mosaic.Event.key
   | Mouse of Mosaic.Event.mouse
   | Resize of int * int
@@ -637,11 +637,25 @@ let tick ?wait m =
   | None -> Mosaic.Cmd.none
   | Some conn ->
       let opts = m.side.opts and prev = m.side.snap in
-      Mosaic.Cmd.perform (fun dispatch -> dispatch (Snapshot (S.poll ?wait ~opts conn prev)))
+      Mosaic.Cmd.perform (fun dispatch ->
+          let snap = S.poll ?wait ~opts conn prev in
+          let dial = Tmux.Client.dials conn and now = m.side.now () in
+          (match m.styles_read with
+          | Some (d, at) when Int.equal d dial && Float.(now -. at < 1.) -> ()
+          | _ -> (
+              match
+                Tmux.exec (Tmux.Client.tmux conn) [ "display-message"; "-p"; Sidebar_theme.format ]
+              with
+              | Ok reply -> dispatch (Styles { read = (dial, now); reply })
+              | Error _ -> ()));
+          dispatch (Snapshot snap))
 
 let update msg m =
   match msg with
   | Resize (width, height) -> (ensure_visible { m with width; height }, Mosaic.Cmd.none)
+  | Styles { read; reply } ->
+      let theme, theme_error = Sidebar_theme.load reply in
+      ({ m with theme; theme_error; styles_read = Some read }, Mosaic.Cmd.none)
   | Snapshot snap ->
       let was = m.side.snap in
       let m =
@@ -692,39 +706,74 @@ let truncate width spans =
             (Matrix_text.find_wrap_pos ~width_method:`Unicode ~tab_width:2 s.text ~max_columns:room)
               .byte_offset
           in
-          [ { s with text = String.sub s.text 0 cut }; plain "…" ]
+          [ { s with text = String.sub s.text 0 cut }; { s with text = "…" } ]
   in
   if width <= 0 || List.fold_left (fun x s -> x + measure s.text) 0 spans <= width then spans
   else go (width - 1) spans
 
 let view m =
-  let line spans =
-    Mosaic.box ~flex_direction:Row
+  let span = span m.theme in
+  let line ?background spans =
+    let spans =
+      match background with
+      | None -> spans
+      | Some bg ->
+          List.map
+            (fun s ->
+              if Option.is_none s.style.bg then { s with style = Style.bg bg s.style } else s)
+            spans
+    in
+    Mosaic.box ~flex_direction:Row ?background
       ~size:(Mosaic.size_wh (Mosaic.pct 100) (Mosaic.px 1))
       (List.map (fun s -> Mosaic.text ~style:s.style ~selectable:false s.text) spans)
   in
-  let row i =
-    let lead, title, tail = parts m m.lines.(i) in
+  let row (i, tint) =
+    let l = m.lines.(i) in
+    let lead, title, tail = parts m l in
+    let background =
+      match l with
+      | Header h -> (Sidebar_theme.style m.theme (if h.current then `Current else `Session)).bg
+      | Row _ | Program _ | Ask _ | Message _ -> tint
+    in
     let title =
       if i = m.cursor then
         List.map (fun s -> { s with style = Style.with_inverse true s.style }) title
       else title
     in
-    line (truncate m.width (lead @ title @ tail))
+    line ?background (truncate m.width (lead @ title @ tail))
+  in
+  let rows =
+    match Sidebar_theme.current_rows m.theme with
+    | None -> List.map (fun i -> (i, None)) (shown m)
+    | Some bg ->
+        let session i =
+          match m.lines.(i) with
+          | Header h -> Some h.current
+          | Message _ -> Some false
+          | Row _ | Program _ | Ask _ -> None
+        in
+        let rec above i =
+          if i < 0 then false else Option.get_lazy (fun () -> above (i - 1)) (session i)
+        in
+        snd
+          (List.fold_map
+             (fun current i ->
+               let current = Option.get_or ~default:current (session i) in
+               (current, (i, if current then Some bg else None)))
+             (above (m.top - 1))
+             (shown m))
   in
   let footer =
     if not (String.is_empty m.status) then line (truncate m.width [ span `Err m.status ])
     else
-      match m.search with
-      | Some filter -> line (truncate m.width [ span `Dim "/"; plain filter ])
-      | None -> line []
+      match (m.search, m.theme_error) with
+      | Some filter, _ -> line (truncate m.width [ span `Dim "/"; span `Plain filter ])
+      | None, Some e -> line (truncate m.width [ span `Err e ])
+      | None, None -> line []
   in
   Mosaic.box ~flex_direction:Column
     ~size:(Mosaic.size_wh (Mosaic.pct 100) (Mosaic.pct 100))
-    [
-      Mosaic.box ~flex_direction:Column ~flex_grow:1. ~flex_shrink:1. (List.map row (shown m));
-      footer;
-    ]
+    [ Mosaic.box ~flex_direction:Column ~flex_grow:1. ~flex_shrink:1. (List.map row rows); footer ]
 
 let subscriptions _ =
   Mosaic.Sub.batch
@@ -1537,22 +1586,5 @@ let%test_module "Tests" =
     4 "abcde" -> "abc\226\128\166"
     4 "abcdef" -> "abc\226\128\166"
     4 "abcdef" -> "abc\226\128\166"
-    |}]
-
-    let%expect_test "every role names its foreground" =
-      List.iter
-        (fun r -> Format.printf "%a@." Mosaic.Ansi.Style.pp (style r))
-        [ `Plain; `Current; `Proc; `Dim; `Err; `Running; `Waiting; `Done; `Stalled ];
-      [%expect
-        {|
-    Style{fg=#000000}
-    Style{fg=#000000, attrs=[Bold]}
-    Style{fg=#c0c0c0}
-    Style{fg=#808080}
-    Style{fg=#800000}
-    Style{fg=#008000}
-    Style{fg=#808000, attrs=[Bold]}
-    Style{fg=#008000, attrs=[Bold]}
-    Style{fg=#800000, attrs=[Bold]}
     |}]
   end)

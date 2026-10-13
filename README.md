@@ -35,6 +35,35 @@ If you want your `~/.tmux.conf` to take effect, you need to source it from
 source-file ~/.tmux.conf
 ```
 
+### Sidebar colours
+
+The sidebar's colours are tmux options in tmux's style syntax (`fg=`,
+`bg=`, `bold`, `italics`, ...; the 16 ANSI colour names, `colourN` or
+`#rrggbb`). The sidebar reads them about once a second, so a reload
+restyles it within a second. An unset option keeps the default; the
+first bad one is named in the sidebar's last row.
+
+| option | styles |
+|--------|--------|
+| `@kido-sidebar-row-style` | pane titles: agents, and the host of an ssh row |
+| `@kido-sidebar-command-style` | a shell's command |
+| `@kido-sidebar-dim-style` | tree lines, captions, elapsed times |
+| `@kido-sidebar-session-style` | other sessions' names; `bg=` fills the row |
+| `@kido-sidebar-current-style` | the current session's name; `bg=` fills the row |
+| `@kido-sidebar-current-rows-style` | `bg=` fills the current session's rows |
+| `@kido-sidebar-running-style`, `-waiting-`, `-done-`, `-stalled-`, `-error-` | status glyphs |
+
+The panel behind them is `side-status-style`. For example:
+
+```tmux
+set -g @kido-sidebar-row-style          "fg=#eee8d5"
+set -g @kido-sidebar-command-style      "fg=#eee8d5"
+set -g @kido-sidebar-dim-style          "fg=#586e75"
+set -g @kido-sidebar-session-style      "fg=#c9d1cf,bold,bg=#123c48"
+set -g @kido-sidebar-current-style      "fg=#fdf6e3,bold,bg=#1f5566"
+set -g @kido-sidebar-current-rows-style "bg=#0f3a47"
+```
+
 ## Keys
 
 By default the following keys are bound:

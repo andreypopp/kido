@@ -1,6 +1,6 @@
 (library
  (name kido_sidebar)
- (modules kido_sidebar)
+ (modules kido_sidebar sidebar_theme)
  (flags
   (:standard -open Containers))
  (libraries kido tmux kido_fs containers unix mosaic matrix matrix.text)
