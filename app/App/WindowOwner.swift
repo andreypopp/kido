@@ -335,7 +335,7 @@ private class AlertEscape: NSView {
                     #endif
                 }
                 guard accepts(generation) else { return }
-                if endpoint.server.protocolVersion?.compatible != true || !endpoint.server.binaryProtocol.compatible { return protocolMismatch(endpoint) }
+                if !endpoint.server.compatible { return protocolMismatch(endpoint) }
                 dial(endpoint, backoff: backoff, cause: cause)
             } catch { failed(generation, error) }
         }
@@ -367,35 +367,18 @@ private class AlertEscape: NSView {
         }
     }
 
-    static func mismatchAlert(host: Host, server: RPCVersion?, binary: RPCVersion?) -> NSAlert {
+    static func mismatchAlert(host: Host, server: ServerStamp?, binary: RPCVersion) -> NSAlert {
         let alert = NSAlert()
         let local = host == .local
-        func newerThanRequired(_ version: RPCVersion?) -> Bool {
-            guard let version else { return false }
-            return version.major > RPCVersion.required.major || version.major == RPCVersion.required.major && version.minor > RPCVersion.required.minor
-        }
-        let newer = newerThanRequired(server) || newerThanRequired(binary)
-        let upgraded = !newer && binary?.compatible == true
-        if newer {
-            alert.messageText = local ? "This server needs a newer Kido.app" : "Update Kido.app to connect"
-            alert.informativeText = local
-                ? "This local server was started by a newer Kido.app. Update the app, or restart the server using this bundle. Restarting ends all its sessions and panes."
-                : "The server on \(host.label) is newer than this app supports. Update Kido.app, then reconnect."
-            if !local, let binary, newerThanRequired(binary), !newerThanRequired(server) {
-                alert.informativeText = "kido on \(host.label) is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."
-            }
-        } else if !local && upgraded {
-            alert.messageText = "Restart kido on \(host.label)"
-            alert.informativeText = "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect."
+        if !binary.compatible {
+            let newer = binary.major > RPCVersion.required.major || binary.major == RPCVersion.required.major && binary.minor > RPCVersion.required.minor
+            alert.messageText = newer ? (local ? "This server needs a newer Kido.app" : "Update Kido.app to connect") : (local ? "Update Kido.app" : "Update kido on \(host.label)")
+            alert.informativeText = "This app needs kido RPC \(RPCVersion.required). \(local ? "The bundled kido" : "kido on " + host.label) speaks \(binary)."
+            alert.informativeText += newer ? " Update Kido.app, then reconnect." : (local ? " Reinstall or update Kido.app." : " Upgrade kido there, then reconnect.")
         } else {
-            alert.messageText = local ? "Restart the local kido server" : "Update kido on \(host.label)"
-            alert.informativeText = local
-                ? "This server was started by an older kido. Restart it to use the kido bundled with this app."
-                : "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."
+            alert.messageText = local ? "Restart the local kido server" : "Restart kido on \(host.label)"
+            alert.informativeText = "This server was started by a different kido build or config\(server == nil ? " (or is unstamped)" : ""). Restart it, then reconnect."
         }
-        alert.informativeText += "\n\nCompatibility: this app needs exactly protocol \(RPCVersion.required). Server: \(server.map(String.init(describing:)) ?? "unstamped (older kido)")."
-        if !local && (upgraded || newer && binary != server), let binary { alert.informativeText += " Host binary: \(binary)." }
-        alert.informativeText += " Protocol numbers are not Kido.app release numbers."
         if local {
             alert.informativeText += "\n\nRestarting ends all sessions and panes on this local kido-app server. Running commands and agents will stop. Other clients attached to this server will disconnect."
         }
@@ -420,7 +403,7 @@ private class AlertEscape: NSView {
     }
 
     private func mismatchSheet(_ endpoint: Endpoint) {
-        let alert = Self.mismatchAlert(host: host, server: endpoint.server.protocolVersion, binary: endpoint.server.binaryProtocol)
+        let alert = Self.mismatchAlert(host: host, server: endpoint.server.stamp, binary: endpoint.server.binaryProtocol)
         let generation = generation
         prepareAlert(alert) { [weak self] response in
             guard let self, accepts(generation) else { return }
@@ -572,8 +555,8 @@ private class AlertEscape: NSView {
                 onChange: { [weak self] status in
                     guard let self, accepts(generation) else { return }
                     if case .invalidBundle(let error) = status { return self.bundleChanged(error) }
-                    if case .protocolMismatch(let version, let binary) = status {
-                        return self.protocolMismatch(Endpoint(server: Server(tmux: server.tmux, socket: server.socket, protocolVersion: version, binaryProtocol: binary ?? server.binaryProtocol), kido: endpoint.kido))
+                    if case .protocolMismatch(let stamp, let expected, let binary) = status {
+                        return self.protocolMismatch(Endpoint(server: Server(tmux: server.tmux, socket: server.socket, stamp: stamp, expected: expected ?? server.expected, binaryProtocol: binary), kido: endpoint.kido))
                     }
                     self.received(status)
                 })

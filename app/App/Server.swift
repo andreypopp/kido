@@ -49,9 +49,11 @@ struct Endpoint: Sendable {
 struct Server: Decodable, Sendable {
     let tmux: String
     let socket: String
-    let protocolVersion: RPCVersion?
+    let stamp: ServerStamp?
+    let expected: ServerStamp
     var binaryProtocol: RPCVersion = .required
-    private enum CodingKeys: String, CodingKey { case tmux, socket; case protocolVersion = "server"; case binaryProtocol = "protocol" }
+    var compatible: Bool { stamp == expected && binaryProtocol.compatible }
+    private enum CodingKeys: String, CodingKey { case tmux, socket, expected; case stamp = "server"; case binaryProtocol = "protocol" }
 
     static func validPath(_ path: String) -> Bool {
         path.hasPrefix("/") && !path.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
@@ -61,7 +63,7 @@ struct Server: Decodable, Sendable {
         #if KIDO_VISUAL || KIDO_STRESS
         let env = ProcessInfo.processInfo.environment
         guard let dir = env["KIDO_APP_SERVER"], let tmux = env["KIDO_APP_TMUX"] else { return nil }
-        return Server(tmux: tmux, socket: URL(fileURLWithPath: dir).appendingPathComponent("socket").path, protocolVersion: .required)
+        return Server(tmux: tmux, socket: URL(fileURLWithPath: dir).appendingPathComponent("socket").path, stamp: ServerStamp("visual"), expected: ServerStamp("visual"))
         #else
         return nil
         #endif
@@ -106,7 +108,7 @@ struct Server: Decodable, Sendable {
         try tools.validate()
         let current = try await Self.locate(drain: drain).server
         guard current.socket == socket else { throw Failure(message: "Discovery returned a different local server socket.") }
-        if current.protocolVersion != protocolVersion, current.protocolVersion?.compatible == true { return }
+        if current.compatible { return }
         let (killed, _, err) = try await Child.run(tools.tmux, ["-S", socket, "kill-server"], env: tools.environment, drain: drain)
         guard killed == 0 else { throw Failure(message: err.isEmpty ? "Could not stop the app server" : err) }
     }
