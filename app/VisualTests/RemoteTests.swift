@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 import TmuxControl
+import SidebarFeed
 @testable import Kido
 
 @MainActor final class RemoteTests: VisualTestCase {
@@ -54,7 +55,7 @@ import TmuxControl
             XCTAssertTrue(helper.arguments.contains("ForwardAgent=no"))
             XCTAssertTrue(helper.arguments.contains("ClearAllForwardings=yes"))
             XCTAssertEqual(helper.arguments.last, "exec '/usr/bin/env' '-u' 'SSH_AUTH_SOCK' '/usr/bin/printf' '%s' 'a'\"'\"'b $c'")
-            let endpoint = Endpoint(server: Server(tmux: "/tmp/tmux ' $tool", socket: "/tmp/state ' $dir/socket", protocolVersion: .required), kido: "/tmp/kido")
+            let endpoint = Endpoint(server: Server(tmux: "/tmp/tmux ' $tool", socket: "/tmp/state ' $dir/socket", stamp: ServerStamp("visual"), expected: ServerStamp("visual")), kido: "/tmp/kido")
             let attach = [endpoint.server.tmux] + Launch.attach(endpoint.server.tmux, socket: endpoint.server.socket).arguments
             let control = ssh.passenger(attach, control: endpoint)
             XCTAssertFalse(control.arguments.contains("ForwardAgent=no"))
@@ -64,7 +65,7 @@ import TmuxControl
         var launches: [[String]] = []
         let endpoint = try await Server.locate(prepare: { arguments in
             launches.append(arguments)
-            let output = arguments.first == "/bin/sh" ? "/tmp/kido\n/tmp/state ' $dir/kido-app\n" : "{\"tmux\":\"/tmp/tmux\",\"socket\":\"/tmp/state ' $dir/kido-app/socket\",\"server\":\"1.0\",\"protocol\":\"1.0\"}\n"
+            let output = arguments.first == "/bin/sh" ? "/tmp/kido\n/tmp/state ' $dir/kido-app\n" : "{\"tmux\":\"/tmp/tmux\",\"socket\":\"/tmp/state ' $dir/kido-app/socket\",\"server\":\"0123456789ab\",\"expected\":\"0123456789ab\",\"protocol\":\"4.0\"}\n"
             return Launch("/usr/bin/printf", ["%s", output])
         })
         XCTAssertEqual(launches.last, ["/usr/bin/env", "SSH_AUTH_SOCK=" + endpoint.directory + "/agent.sock", "/tmp/kido", "server", "--server", endpoint.directory])
@@ -449,7 +450,7 @@ import TmuxControl
         let quoted = try await Child.run(transport.launch(["/usr/bin/printf", "%s", "space $literal ' quote ☃"]))
         XCTAssertEqual(quoted.out, "space $literal ' quote ☃")
         let socket = state + "/kido-app/socket"
-        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "9.9"]))
+        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_SERVER", "9.9"]))
         let mismatch = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
         mismatch.testRemoteEnvironment = env
         mismatch.testSSHConfiguration = config
@@ -460,8 +461,8 @@ import TmuxControl
         let mismatchAlert = try XCTUnwrap(mismatch.preparedAlert?.alert)
         let mismatchContent = try XCTUnwrap(mismatchAlert.window.contentView)
         XCTAssertTrue(mismatchAlert.window.defaultButtonCell === mismatchAlert.buttons[0].cell)
-        XCTAssertTrue(labels(mismatchContent).contains { $0 == "Update Kido.app to connect" })
-        XCTAssertTrue(labels(mismatchContent).contains { $0.contains("Server: 9.9.") })
+        XCTAssertTrue(labels(mismatchContent).contains { $0 == "Restart kido on localhost" })
+        XCTAssertTrue(labels(mismatchContent).contains { $0.contains("different kido build or config") })
         XCTAssertTrue(buttons(mismatchContent).contains { $0.title == "Reconnect" })
         XCTAssertFalse(buttons(mismatchContent).contains { $0.title == "Restart…" })
         XCTAssertNil(mismatch.testConnection)
@@ -469,15 +470,17 @@ import TmuxControl
         XCTAssertNil(mismatch.preparedAlert)
         XCTAssertNil(mismatch.testConnection)
         XCTAssertTrue(buttons(mismatch.testBanner).contains { $0.title == "Reconnect" && !$0.isHidden })
-        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "0.9"]))
+        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_SERVER", "0.9"]))
         mismatch.start()
         try await until("upgraded binary mismatch alert") { mismatch.preparedAlert != nil }
         let upgradedAlert = try XCTUnwrap(mismatch.preparedAlert?.alert)
         let upgradedContent = try XCTUnwrap(upgradedAlert.window.contentView)
         XCTAssertTrue(labels(upgradedContent).contains { $0 == "Restart kido on localhost" })
-        XCTAssertTrue(labels(upgradedContent).contains { $0.contains("Server: 0.9. Host binary: 3.1.") })
+        XCTAssertTrue(labels(upgradedContent).contains { $0.contains("different kido build or config") })
         XCTAssertNil(mismatch.testConnection)
-        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "3.1"]))
+        let discovery = try await Child.run(transport.launch([tools.kido, "server", "--server", state + "/kido-app"]))
+        let discovered = try JSONDecoder().decode(Server.self, from: Data(discovery.out.utf8))
+        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_SERVER", discovered.expected.description]))
         mismatch.respondToAlert(.alertFirstButtonReturn)
         try await until("Reconnect rediscovers compatible protocol") { mismatch.testBanner.isHidden }
         transports += owners.compactMap(\.ssh)

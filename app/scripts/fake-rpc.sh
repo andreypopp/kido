@@ -2,7 +2,7 @@
 exec python3 -u -c '
 import json, select, sys, time
 started = time.time() - 5
-print(json.dumps(dict(hello=dict(protocol="3.1"))))
+print(json.dumps(dict(hello=dict(protocol="4.0"))))
 def status(state, msg=None):
     return dict(since=started, msg=msg, state=state)
 def agent(state, msg=None):

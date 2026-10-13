@@ -2,7 +2,7 @@ import Foundation
 import TmuxControl
 
 public struct RPCVersion: Decodable, Equatable, Sendable, CustomStringConvertible {
-    public static let required = RPCVersion(major: 3, minor: 1)
+    public static let required = RPCVersion(major: 4, minor: 0)
     public let major: Int
     public let minor: Int
     private init(major: Int, minor: Int) { self.major = major; self.minor = minor }
@@ -22,16 +22,22 @@ public struct RPCVersion: Decodable, Equatable, Sendable, CustomStringConvertibl
     }
 }
 
+public struct ServerStamp: Decodable, Equatable, Sendable, CustomStringConvertible {
+    public let description: String
+    public init(_ value: String) { description = value }
+    public init(from decoder: Decoder) throws { description = try decoder.singleValueContainer().decode(String.self) }
+}
+
 public enum RPCEvent: Decodable, Sendable {
     public enum Hello: Decodable, Sendable {
         case accepted(RPCVersion)
-        case rejected(binary: RPCVersion, server: RPCVersion?)
-        private enum CodingKeys: String, CodingKey { case `protocol`, server }
+        case rejected(binary: RPCVersion, server: ServerStamp?, expected: ServerStamp)
+        private enum CodingKeys: String, CodingKey { case `protocol`, server, expected }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             let version = try c.decode(RPCVersion.self, forKey: .protocol)
             self = c.contains(.server)
-                ? .rejected(binary: version, server: try c.decodeIfPresent(String.self, forKey: .server).flatMap(RPCVersion.init))
+                ? .rejected(binary: version, server: try c.decodeIfPresent(ServerStamp.self, forKey: .server), expected: try c.decode(ServerStamp.self, forKey: .expected))
                 : .accepted(version)
         }
     }

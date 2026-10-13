@@ -9,7 +9,7 @@ final class Feed: @unchecked Sendable {
     enum Status {
         case starting
         case invalidBundle(Failure)
-        case protocolMismatch(server: RPCVersion?, binary: RPCVersion?)
+        case protocolMismatch(server: ServerStamp?, expected: ServerStamp?, binary: RPCVersion)
         case running(Snapshot)
         case restarting(String)
     }
@@ -160,22 +160,22 @@ final class Feed: @unchecked Sendable {
                     guard let event else { return self.restart("Unreadable RPC event") }
                     if first {
                         guard case .hello(let hello) = event else { return self.restart("RPC did not send a hello first") }
-                        let version: RPCVersion?, binary: RPCVersion?
+                        let status: Status
                         switch hello {
-                        case .accepted(let protocolVersion):
-                            guard !protocolVersion.compatible else { return }
-                            version = protocolVersion
-                            binary = protocolVersion
-                        case .rejected(let executable, let server): version = server; binary = executable
+                        case .accepted(let version):
+                            guard !version.compatible else { return }
+                            status = .protocolMismatch(server: nil, expected: nil, binary: version)
+                        case .rejected(let binary, let server, let expected):
+                            status = .protocolMismatch(server: server, expected: expected, binary: binary)
                         }
                         self.stop()
-                        return self.publish(.protocolMismatch(server: version, binary: binary))
+                        return self.publish(status)
                     }
                     switch event {
                     case .snapshot(let snapshot):
                         self.backoff = 0.1
                         self.publish(.running(snapshot))
-                    case .error: self.stop(); self.publish(.protocolMismatch(server: nil, binary: nil))
+                    case .error(let message): self.restart(message)
                     case .hello, .reply: self.restart("Unexpected RPC event")
                     }
                 }
