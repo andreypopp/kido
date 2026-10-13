@@ -100,16 +100,25 @@ in `~/.config/kido/kido.conf` now.
 
 kido is OCaml, built with dune's own package management: dune fetches
 and builds the compiler and every dependency from `dune.lock` into
-`_build`, so no opam is involved. The e2e suite is Go.
+`_build`, so no opam is involved.
+
+`make install` builds the tmux fork first: it needs git, a C toolchain,
+make, bison, autoconf, automake, pkg-config, and the headers and libraries
+for libevent, ncurses and utf8proc. `make e2e` needs Go; the TypeScript
+tests need Node 24 or newer.
 
 ```sh
-curl -fsSL https://github.com/ocaml-dune/dune-bin-install/releases/download/v3/install.sh | sh -s -- 3.24.2
+curl -fsSL https://get.dune.build/install | sh -s - --release 3.24.2
+export PATH="$HOME/.local/bin:$PATH"
 git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
 make install   # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
 make test      # the unit tests and the pi extensions' suite (needs node 24)
 make e2e       # drives kido inside a real tmux server
 dune tools install ocamlformat && dune fmt   # ocamlformat is a dune dev tool, not a dependency
 ```
+
+The dune installer installs into `~/.local` and also prints an env file
+you can source; it cannot change the calling shell's PATH.
 
 The first build compiles OCaml and the dependencies (a few minutes);
 `dune pkg lock` regenerates `dune.lock` after a dependency changes in
