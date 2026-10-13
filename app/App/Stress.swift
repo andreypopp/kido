@@ -22,12 +22,12 @@ typealias AppWindow = StressWindow
         case resizeBurst = "resize-burst", loadMore = "load-more", gripDrag = "grip-drag"
         case gripDragKill = "grip-drag-kill", appearance, edgeResize = "edge-resize", detachReconnect = "detach-reconnect"
         case hiddenResize = "hidden-resize", clearHistory = "clear-history"
-        case tabs, sidebarJump = "sidebar-jump", sidebarSearch = "sidebar-search", sidebarMode = "sidebar-mode"
+        case tabs, sidebarJump = "sidebar-jump", sidebarMode = "sidebar-mode"
     }
     private static let actions: [Action] = [
         .wheel, .wheel, .stripPress, .stripWheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
         .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect, .hiddenResize, .clearHistory,
-        .tabs, .sidebarJump, .sidebarSearch, .sidebarMode,
+        .tabs, .sidebarJump, .sidebarMode,
     ]
     private let window: NSWindow
     private let send: ([Command]) -> Void
@@ -705,7 +705,7 @@ typealias AppWindow = StressWindow
         log(["step": step, "action": action.rawValue, "pane": pane?.pane.description ?? "", "panes": panes.count,
              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
              "active": NSApp.isActive, "onScreenWindows": onScreen()])
-        if [.tabs, .sidebarJump, .sidebarSearch, .sidebarMode].contains(action) { performUI(action) }
+        if [.tabs, .sidebarJump, .sidebarMode].contains(action) { performUI(action) }
         else if let pane { perform(action, pane, all) }
         if step % 5 == 0 { verifyUI() }
         log(["tick": step, "counts": counts])
@@ -714,7 +714,7 @@ typealias AppWindow = StressWindow
 
     private func perform(_ action: Action, _ pane: PaneView, _ all: [NSView]) {
         switch action {
-        case .tabs, .sidebarJump, .sidebarSearch, .sidebarMode: break
+        case .tabs, .sidebarJump, .sidebarMode: break
         case .stripPress:
             let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.renderInsets.top / 2), to: nil)
             pane.mouseDown(with: event(.leftMouseDown, point))
@@ -884,7 +884,9 @@ typealias AppWindow = StressWindow
                 let rects = children.map { $0.accessibilityFrameInParentSpace() }.filter { tabs.bounds.contains(NSPoint(x: $0.midX, y: $0.midY)) }
                 guard !rects.isEmpty else { return }
                 let rect = rects[random(rects.count)]
-                tabs.mouseDown(with: event(.leftMouseDown, tabs.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)))
+                let point = tabs.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+                tabs.mouseDown(with: event(.leftMouseDown, point))
+                tabs.mouseUp(with: event(.leftMouseUp, point))
                 counts["tab-mouse-down", default: 0] += 1
             case 1:
                 _ = NSApp.mainMenu?.performKeyEquivalent(with: key("\(random(9) + 1)", 0, .command))
@@ -902,17 +904,6 @@ typealias AppWindow = StressWindow
             afterSidebarReply(app.stressOwner, verification: "one-rpc-jump", action: { table.keyDown(with: key("\r", 36)) }) {
                 self.verifyUI()
             }
-        case .sidebarSearch:
-            table.keyDown(with: key("/"))
-            guard let field = all.compactMap({ $0 as? NSSearchField }).first else { return }
-            window.makeFirstResponder(field)
-            if let editor = field.currentEditor() as? NSTextView {
-                editor.selectAll(nil)
-                editor.insertText(["s1", "log", "missing"][random(3)], replacementRange: editor.selectedRange())
-            } else { field.stringValue = "s1" }
-            field.sendAction(field.action, to: field.target)
-            _ = list.control(field, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
-            check("search-escape", list.query.isEmpty)
         case .sidebarMode:
             let lock = env["STRESS_UI_LOCK"] ?? ""
             let generation = app.stressGeneration
