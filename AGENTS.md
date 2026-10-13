@@ -1,191 +1,236 @@
 # Developing kido
 
-What kido does and how it is installed is in [README.md](README.md). This
-file is the context that is not in the code: the tmux fork it depends on,
-what terminal programs actually report, and the invariants a plausible-looking
-change would break.
+[README.md](README.md) describes kido and its installation. This file
+supplies context that the code does not contain:
 
-kido's own design decisions - which store is authoritative for what, the
-inbox protocol, addressing, the ask/reply cycle rule, spawning and the
-window lifecycle, run outcomes, the heartbeat, and the seam between the
-two pi extensions - live in [docs/design.md](docs/design.md), with the
-subagent side in [docs/design-subagents.md](docs/design-subagents.md),
-the external-client RPC in [docs/design-rpc.md](docs/design-rpc.md),
-and how a pane is classified and its status read in
-[docs/design-program-status.md](docs/design-program-status.md).
-Read them before changing any of that; neither the code's comments nor
-this file repeat it.
+- The tmux fork that kido needs.
+- What terminal programs report.
+- The invariants that a change can break, even if the change looks correct.
 
-Proposed features are drafted as RFCs in `rfc/`, one markdown file
-per proposal. An RFC describes what is not built yet; once its feature
-lands, the design it settled moves into `docs/` and the RFC is deleted.
+[docs/design.md](docs/design.md) contains kido's design decisions:
+
+- The authoritative store for each fact.
+- The inbox protocol and addressing.
+- The ask/reply cycle rule.
+- Spawning and the window lifecycle.
+- Run outcomes and the heartbeat.
+- The boundary between the two pi extensions.
+
+[docs/design-subagents.md](docs/design-subagents.md) describes subagents.
+[docs/design-rpc.md](docs/design-rpc.md) describes the external-client RPC.
+[docs/design-program-status.md](docs/design-program-status.md) describes
+pane classification and status reads. Before you change these mechanisms,
+read these files. The code comments and this file do not repeat them.
+
+Proposed features have RFC drafts in `rfc/`, with one markdown file per
+proposal. An RFC describes a feature that is not built yet. When the
+feature is complete, its agreed design moves into `docs/`. The RFC is
+then deleted.
 
 ## Code rules
 
-These are hard rules, for OCaml and TypeScript alike.
+These rules apply to OCaml and TypeScript.
 
-**No backward compatibility, ever.** The binary, the extensions, the
-shims and the tmux config ship together from one checkout, and the tmux
-server is restarted when they must agree. Do not write fallbacks for
-state an older kido left behind (old tmux marks, old record fields, old
-flags or env vars), version gates, deprecated aliases or migration
-paths. Change both sides and delete the old one. A leftover from an
-older kido that a restart or a user action clears is not a bug.
+**No backward compatibility, ever.** The binary, extensions, shims and
+tmux config ship together from one checkout. When they must agree, the
+tmux server restarts. Do not write fallbacks for state from an older
+kido: old tmux marks, record fields, flags or environment variables.
+Do not add version gates, deprecated aliases or migration paths.
+Change both sides.
 
-**Plain functions over data.** Abstraction only when it pays: no
-functor, object or first-class module without a second instance. Data
-structures carry the design: make illegal states unrepresentable. A set
-of cases is a variant (a discriminated union in TS), not a record of
-options or a combination of bools; a value with its own rules gets its
-own type, abstract in the `.mli`, parsed once at the edge, not a string
-checked in several places; parallel fields or maps describing one thing
-are one record.
+Delete the old one.
 
-**Minimal line count.** Do not abstract what has one use: a function,
-type, interface, constant, option struct or test helper with a single
-caller is inlined. No wrappers that only forward, no interfaces or
-swappable vars without a second implementation, no dead code or unused
-parameters. Duplicated logic is merged into one place.
+State from an older kido is not a bug if a restart or user action
+clears it.
 
-**Module boundaries.** Each subcomponent lives in its own module (an
-OCaml module and its `.mli`, a TS module) and is used through its
-exported surface. `bin/main.ml` wires subcommands to `lib/` modules
-and holds the commands too small to be library code; domain logic
-belongs in the module that owns the domain.
+**Plain functions over data.** Use abstraction only when it has a benefit.
+Do not use a functor, object or first-class module without a second
+instance. Express the design through data structures. Make illegal
+states unrepresentable.
+
+- Use a variant for a set of cases (a discriminated union in TS).
+  Do not use a record of options or a combination of bools.
+- Give a value with its own rules its own type, abstract in the `.mli`.
+  Parse it once at the edge. Do not check a string in several places.
+- Use one record for parallel fields or maps that describe one thing.
+
+**Minimal line count.** Do not abstract something with one use. Inline a
+function, type, interface, constant, option struct or test helper with
+one caller. Do not add wrappers that only forward. Do not add interfaces
+or swappable variables without a second implementation. Remove dead
+code and unused parameters.
+
+Put duplicated logic in one place.
+
+**Module boundaries.** Each subcomponent has its own module: an OCaml
+module with its `.mli`, or a TS module. Use its exported surface.
+`bin/main.ml` connects subcommands to `lib/` modules. It contains
+commands too small for library code. Domain logic belongs in the module
+that owns the domain.
 
 **Library code returns, the CLI reports.** A `lib/` function returns
-its result (a value, an `option`, a `result`); it does not print,
-`failwith` or `exit`. A command body that only calls the library, prints
-and returns an exit code lives in `bin/main.ml`. A `lib/` module whose
-sole export is such a command body, used only by `bin/main.ml`, is
-inlined there.
+its result: a value, an `option` or a `result`. It does not print, call
+`failwith` or call `exit`. A command body belongs in `bin/main.ml` if it
+only calls the library, prints and returns an exit code.
 
-**No display logic in `lib/`.** Human-facing formatting (tables,
-alignment, padding, truncation, glyphs, styles, local time, usage
-text, labels and captions composed from facts) belongs in `bin/`. The
-RPC snapshot carries only semantic data: plain titles and typed status,
-as uncut text.
+If a `lib/` module exports only such a body, used only by
+`bin/main.ml`, inline it there.
 
-**State.** One source of truth per fact: never hold the same fact in two
-stores (a state record and a tmux option, an OCaml record and a TS copy, a
-file and an in-memory mirror). Do not store what can be derived; compute
-it when needed. Each piece of state is read and written through the one
-module that owns it.
+**No display logic in `lib/`.** Human-facing formatting belongs in
+`bin/`. This includes tables, alignment, padding, truncation, glyphs,
+styles, local time, usage text, and labels and captions composed from
+facts. The RPC snapshot contains only semantic data: plain titles and
+typed status, as uncut text.
 
-**No comments unless absolutely necessary.** Code should explain
-itself: no narration, no doc comment restating the name, no history
-("previously", "no longer", "since this fix"), no design rationale -
-that belongs in `docs/`. What remains is a verified external constraint
-the code cannot express (a tmux, pi, Claude Code or OS quirk), the
-reason for a workaround for as long as the workaround lives, and a link
-to the issue behind either.
+**State.** Use one source of truth for each fact. Never hold the same
+fact in two stores:
 
-Build, compiler and formatter directives are not comments. A diagnostic
-suppression hiding a correctness failure means fixing the cause. A stale
-comment is worse than none because it is trusted: when a mechanism
-changes, grep for the prose that described it.
+- A state record and a tmux option.
+- An OCaml record and a TS copy.
+- A file and an in-memory mirror.
+
+Do not store a fact that you can derive. Compute it when necessary.
+Read and write each piece of state through its owner module only.
+
+**No comments unless absolutely necessary.** Code should explain itself.
+Do not add narration or doc comments that repeat the name. Do not add
+history ("previously", "no longer", "since this fix"). Design rationale
+belongs in `docs/`, not comments. Keep only these comments:
+
+- A verified external constraint that the code cannot express:
+  a tmux, pi, Claude Code or OS quirk.
+- The reason for a workaround, while that workaround exists.
+- A link to the issue for either case.
+
+Build, compiler and formatter directives are not comments. If a
+diagnostic suppression hides a correctness failure, fix the cause.
+A stale comment is worse than no comment because readers trust it.
+When a mechanism changes, use grep to find prose that describes it.
 
 ## Communication
 
-ALWAYS adhere to ASD-STE100
-- when communicating with user
-- when producing commit messages / commit descriptions
-- when producing PR titles / PR descriptions
-- when adding code comments (although see above, **no comments unless absolutely necessary**)
+Always use ASD-STE100:
+
+- When you communicate with the user.
+- When you produce commit messages or commit descriptions.
+- When you produce PR titles or PR descriptions.
+- When you add code comments (see **no comments unless absolutely necessary** above).
 
 ## OCaml
 
-These are fixed:
+These requirements are fixed:
 
-- **Layout.** `bin/main.ml` is the cmdliner command table, plus the
-  bodies of small commands (`set_status`, `get-agent`, `snapshot`,
-  `ssh`, ...), failure printing and the CLI's tables and text. `lib/` is the library `kido`,
-  one module per domain or subcommand with logic of its own. `lib_tmux/` is the library `tmux` (call sites read
-  `Tmux`, `Tmux.Client`). Unit tests are ppx_expect, inline
-  at the bottom of the module under test in a `let%test_module "Tests"`
-  submodule, including the `kido_sidebar` library in `bin/`, so `.mli`
-  exports only what production callers use.
-  Out-of-line exceptions are `lib/test/test_tool_parity.ml` and
-  `lib/test/tmux_server/`.
-- **Every stanza compiles with `-open Containers`.** Every `.ml` has an
-  `.mli` unless it holds only types. Test-helper modules `Sh`, `Test_support`,
-  `Test_fixture`, `View_fixture` and `Tmux_pane_fixture` have no `.mli`;
-  `lib_tmux/program_status.ml` is exposed only through `tmux.mli`.
-  JSON is yojson with ppx_yojson_conv, equality and comparison
-  ppx_compare, string conversion ppx_string_conv; `lib/` and `lib_tmux/` also open their runtime
-  primitives (`Ppx_compare_lib.Builtin`,
-  `Ppx_yojson_conv_lib.Yojson_conv.Primitives`). The TUI is Mosaic,
-  pinned in `dune-project`.
-  Concurrency is `unix` and `threads.posix`; no Eio, no Lwt.
-- **The command line is a contract** with `share/` and `test_e2e/`: subcommands, flags, exit codes, every parsed or
-  asserted stdout/stderr line, JSON shapes, env vars. A long option is
-  `--name`, never `-name`.
+- **Layout.** `bin/main.ml` contains the cmdliner command table and
+  small command bodies (`set_status`, `get-agent`, `snapshot`, `ssh`, ...).
+  It also contains failure printing and the CLI's tables and text.
+  `lib/` is the library `kido`. Each domain or subcommand with its
+  own logic has one module. `lib_tmux/` is the library `tmux`.
+  Call sites use `Tmux` and `Tmux.Client`.
+
+  Unit tests use ppx_expect. Put them at the bottom of the module
+  under test, in a `let%test_module "Tests"` submodule. This includes
+  the `kido_sidebar` library in `bin/`. Thus, `.mli` exports only
+  what production callers use. The out-of-line exceptions are
+  `lib/test/test_tool_parity.ml` and `lib/test/tmux_server/`.
+- **Every stanza compiles with `-open Containers`.** Every `.ml`
+  has an `.mli` unless it contains only types. The test-helper modules
+  `Sh`, `Test_support`, `Test_fixture`, `View_fixture` and
+  `Tmux_pane_fixture` have no `.mli`.
+  Only `tmux.mli` exposes `lib_tmux/program_status.ml`.
+
+  JSON uses yojson with ppx_yojson_conv. Equality and comparison use
+  ppx_compare. String conversion uses ppx_string_conv.
+  `lib/` and `lib_tmux/` also open their runtime primitives:
+  `Ppx_compare_lib.Builtin` and
+  `Ppx_yojson_conv_lib.Yojson_conv.Primitives`.
+  The TUI uses Mosaic, pinned in `dune-project`.
+  Concurrency uses `unix` and `threads.posix`, not Eio or Lwt.
+- **The command line is a contract** with `share/` and `test_e2e/`.
+  This includes subcommands, flags, exit codes, every parsed or asserted
+  stdout/stderr line, JSON shapes and environment variables.
+  A long option is `--name`, never `-name`.
 
 Conventions:
 
-- **Errors.** A `lib/` failure is a `result`: a string error holding the
-  message to print, or a variant where the caller or the message differs
-  by case (`State.record` returns `Error holder`). The `Unix_error` and
-  `Sys_error` the I/O raised propagate. Nothing catches to rethrow.
-- **Subcommands.** A subcommand body in `bin/main.ml` returns its exit
-  code, run under its `run name`, which prints a raised failure as
-  `kido <name>: <message>` and returns 1; a string error reaches it
-  through `Result.get_or_failwith`. A special code is returned after
-  `error`. cmdliner's own parse errors exit 1. Library errors do not
-  repeat the command name or append usage text: `run` supplies the
-  name, and the command body appends its `usage:` line.
-  Warnings during a command go through a `~warn` callback so stderr stays
-  in order.
-- **Environment.** Read it at the edge and pass the value: functions
-  take `~dir`, `~threshold`, `~now`. Tests pass a temp dir; nothing in a
-  test sets an env var or swaps a global.
-- **Time** is `Timestamp.t`, unix seconds as a float, on disk as RFC 3339
-  UTC. Timeouts are optional arguments, not mutable refs.
-- **Containers** shadows polymorphic `=` and `compare`: use
-  `String.equal`, `Float.(>)`, etc.
+- **Errors.** A `lib/` failure is a `result`. Use a string error
+  that contains the message to print. If the caller or message differs
+  by case, use a variant (`State.record` returns `Error holder`).
+  The I/O exceptions `Unix_error` and `Sys_error` propagate.
+  Do not catch them to rethrow them.
+- **Subcommands.** A subcommand body in `bin/main.ml` returns its
+  exit code. It runs under its `run name`. This prints a raised
+  failure as `kido <name>: <message>` and returns 1.
+  A string error reaches it through `Result.get_or_failwith`.
+  After `error`, the body returns a special code.
+  cmdliner's own parse errors exit 1.
+
+  Library errors do not repeat the command name or append usage text.
+  `run` supplies the name. The command body appends its `usage:`
+  line. Warnings during a command use a `~warn` callback to keep
+  stderr in order.
+- **Environment.** Read the environment at the edge. Pass its values
+  to functions through `~dir`, `~threshold` and `~now`.
+  Tests pass a temporary directory. No test sets an environment
+  variable or swaps a global.
+- **Time** uses `Timestamp.t`: unix seconds as a float, and RFC 3339
+  UTC on disk. Timeouts are optional arguments, not mutable refs.
+- **Containers** shadows polymorphic `=` and `compare`.
+  Use `String.equal`, `Float.(>)`, etc.
 - **Derivers.** Equality, comparison, string conversion and JSON codecs
-  come from ppx_compare, ppx_string_conv and ppx_yojson_conv, not ad hoc
-  functions. The `.ml` derives each one whose derived form is correct,
-  and hand-writes the rest under the derived name (numeric
-  `Tmux.compare_pane_id`, validating `Tmux.pane_id_of_string`); either
-  way the `.mli` declares them with `[@@deriving ...]`, not spelled-out
-  `val`s. A validating `_of_string` raises `Invalid_argument` naming the
-  bad value: a caller maps it over an absent value (an unset or empty
-  env var) rather than parsing one, calls it directly on a string that
-  must be valid, and catches it only at an untrusted-input edge (an RPC
-  request, a `_of_yojson`). `run` reports it like `Failure`.
-- **JSON decoding** raises `Of_yojson_error`; hand-written `_of_yojson`
-  raise it through `of_yojson_error`. `Fs.read_json` is the one edge
-  that turns a file into an `option`. Variants encode as `["Tag"]`, so
-  string enums have hand-written codecs. A field omitted at its default
-  needs `[@default v] [@yojson_drop_default.equal]`; an option needs
-  `[@default None] [@yojson_drop_if Option.is_none]`, since
-  `[@yojson.option]` rejects an explicit `null`. A bare option field
-  encodes `None` as `null`.
-- **Cmdliner docs.** A bare `$` is markup and produces "unescaped $"
-  on `--help`; write environment variables as `$(b,NAME)`.
+  use ppx_compare, ppx_string_conv and ppx_yojson_conv, not ad hoc functions.
+  The `.ml` derives each one whose derived form is correct.
+  Write the others manually under the derived name. Examples are numeric
+  `Tmux.compare_pane_id` and validating `Tmux.pane_id_of_string`.
+  For derived and manually written functions, use `[@@deriving ...]`
+  in the `.mli`, not explicit `val` declarations.
+
+  A validating `_of_string` raises `Invalid_argument` that names
+  the bad value. A caller maps it over an absent value (an unset or empty
+  environment variable) rather than parsing one. It calls it directly
+  on a string that must be valid. It catches it only at an
+  untrusted-input edge: an RPC request or a `_of_yojson`.
+  `run` reports it like `Failure`.
+- **JSON decoding** raises `Of_yojson_error`. Manually written
+  `_of_yojson` functions raise it through `of_yojson_error`.
+  `Fs.read_json` is the only edge that turns a file into an `option`.
+  Variants encode as `["Tag"]`, so string enums need manually written
+  codecs. A field omitted at its default needs
+  `[@default v] [@yojson_drop_default.equal]`.
+  An option needs `[@default None] [@yojson_drop_if Option.is_none]`
+  because `[@yojson.option]` rejects an explicit `null`.
+
+  A bare option field encodes `None` as `null`.
+- **Cmdliner docs.** A bare `$` is markup.
+  It produces "unescaped $" on `--help`.
+  Write environment variables as `$(b,NAME)`.
   `test_e2e/help_test.go` rejects any help stderr.
-- **Quoting.** `Reap.quote` in `lib/reap.ml` deliberately uses Go-style
-  `%q` quoting: OCaml `%S` escapes non-ASCII agent names.
-- **Inbox JSON.** `from.session` must be written even when empty.
-  It has no default annotation; `Msg.yojson_of_envelope` adds `v` to the
-  derived encoding. `lib/msg.ml`'s inline tests pin the field set.
-- **Tmux I/O.** No injected tmux/ops records whose only other
-  implementation is a test fake: call `Tmux` directly and test
-  through e2e. `Tmux.t` is immutable: `Tmux.create` makes a one-shot handle;
-  `Tmux.Client.tmux` makes a handle fixed to that control client. The two
-  deliberate read fallbacks use the same socket without changing the handle:
-  `Tmux.list_clients` on an empty reply or control error, `Tmux.list_panes`
-  on a control error. Other control commands are never silently retried as a
-  one-shot. `Tmux.Client.t` has no mutex; only the
-  sidebar's single tick may touch it. `Tmux.binary` is the accepted lazy
-  environment lookup exception.
-- **Mosaic (`bin/kido_sidebar.ml`).** The grid's default foreground is truecolor white, so
-  every style sets `fg` explicitly. A lone Escape arrives about 0.5s
-  late.
-- `dune build`, `dune test`, `dune fmt`, with no opam: dune's package
-  management builds the compiler and every dependency of `dune.lock`
-  into `_build` (README.md, "Building" below).
+- **Quoting.** `Reap.quote` in `lib/reap.ml` deliberately uses
+  Go-style `%q` quoting. OCaml `%S` escapes non-ASCII agent names.
+- **Inbox JSON.** Write `from.session` even when it is empty.
+  It has no default annotation.
+  `Msg.yojson_of_envelope` adds `v` to the derived encoding.
+  The inline tests in `lib/msg.ml` fix the field set.
+- **Tmux I/O.** Do not inject tmux/ops records whose only other
+  implementation is a test fake. Call `Tmux` directly.
+  Test through e2e. `Tmux.t` is immutable.
+  `Tmux.create` makes a one-shot handle.
+  `Tmux.Client.tmux` makes a handle fixed to that control client.
+
+  The two deliberate read fallbacks use the same socket without
+  changing the handle:
+  - `Tmux.list_clients` on an empty reply or control error.
+  - `Tmux.list_panes` on a control error.
+
+  Other control commands never silently retry as a one-shot.
+  `Tmux.Client.t` has no mutex. Only the sidebar's single tick may
+  access it. `Tmux.binary` is the accepted exception for lazy
+  environment lookup.
+- **Mosaic (`bin/kido_sidebar.ml`).** The grid's default foreground
+  is truecolor white. Thus, every style sets `fg` explicitly.
+  A lone Escape arrives about 0.5s late.
+- Use `dune build`, `dune test` and `dune fmt`, without opam.
+  dune's package management builds the compiler and every dependency
+  of `dune.lock` into `_build` (README.md, "Building" below).
 
 ## Layout
 
@@ -250,62 +295,89 @@ Conventions:
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     test_e2e/          tests driving kido inside a real tmux server, in Go
 
-`snapshot`, `prompt`, `switch-session`, `reap` and `runs` stay even
-without production callers: e2e calls `reap` for a deterministic sweep,
-and `runs` is the CLI reader of run history.
+`snapshot`, `prompt`, `switch-session`, `reap` and `runs` remain,
+even without production callers. e2e calls `reap` for a deterministic
+sweep. `runs` is the CLI reader of run history.
 
-`dune build`; the executable stanza is `bin/main.exe`, installed as `kido`.
-`lib/` embeds the shell integrations, `share/tmux/kido-tmux.conf` and the
-fork pin.
+`dune build` builds the executable stanza `bin/main.exe`, installed as
+`kido`. `lib/` embeds the shell integrations,
+`share/tmux/kido-tmux.conf` and the fork pin.
 Promotion substitutes the build id through dune-build-info.
-`build/main.exe` is the stamped executable copied by `make install` and
-e2e; `_build/default/bin/main.exe`
-reports `unknown`. `kido --version` prints that id; `kido server` reports the
-binary's `Protocol.value` as its JSON `protocol` field (always a string), the
-creating server's global `KIDO_SERVER` as its `server` field (always present,
-null if unset, the stamp string otherwise even when it matches), and the
-binary's `Launch.stamp` as `expected`. The stamp digests the pinned fork
-revision (read at build time through `install-tmux-fork.sh --print-revision`)
-the server.conf template and the launcher's environment changes, so a fork
-or tmux-config change restarts the server and an RPC protocol bump does not.
-The launcher, `kido server`, `rpc` and `switch-session/window`
-accept `--server DIR`. `switch-window` prints nothing. A server is its
-state directory; its socket is `<dir>/socket`. The default is resolved by `State.dir`: inside a pane,
-`$TMUX` wins when its socket is named `socket` and `server.conf` exists
-beside it; otherwise `$KIDO_STATE_DIR`, `$XDG_STATE_HOME/kido`, then
-`~/.local/state/kido`. The launcher does not export `KIDO_STATE_DIR`.
-It creates its state directory with mode 0700 and refuses a directory
-not owned by the user or accessible to group or others, a directory path
-containing a comma, and a socket path that cannot fit the platform's
-`sun_path` including its terminator.
-For debugging the default server, use
-`kido-tmux -u -S ~/.local/state/kido/socket`.
-`Tmux.argv` puts `-u` on every kido tmux client, including the
-control client and launcher; `share/bin/tmux` does the same for shell use.
+`make install` and e2e copy the stamped executable `build/main.exe`.
+`_build/default/bin/main.exe` reports `unknown`.
+`kido --version` prints that id.
 
-**Tool name == `kido tool` subcommand name.** Every subagent tool in `share/pi/` invokes
-the `kido tool` subcommand of its own name (table in docs/design-subagents.md). A new
-tool brings a subcommand spelled the same way; there are no aliases, and
-a divergence is a silent runtime failure, not a build one;
-`lib/test/test_tool_parity.ml` runs each tool in `share/pi/testdata/tools.json` as
-a `kido tool` subcommand. A subcommand
-no tool calls is named however it reads best (`async-run`); `async_bash`
-took the underscore before its tool existed, because renaming a command
-once something calls it is the harder half.
+`kido server` reports these JSON fields:
+
+- `protocol`: the binary's `Protocol.value`, always a string.
+- `server`: the creating server's global `KIDO_SERVER`, always present.
+  If unset, it is null. Otherwise, it is the stamp string, even when
+  it matches.
+- `expected`: the binary's `Launch.stamp`.
+
+The stamp digests these inputs:
+
+- The pinned fork revision, read at build time through
+  `install-tmux-fork.sh --print-revision`.
+- The `server.conf` template.
+- The launcher's environment changes.
+
+Thus, a fork or tmux-config change restarts the server.
+An RPC protocol bump does not.
+The launcher, `kido server`, `rpc` and `switch-session/window`
+accept `--server DIR`. `switch-window` prints nothing.
+A server is its state directory. Its socket is `<dir>/socket`.
+
+`State.dir` resolves the default. Inside a pane, `$TMUX` has priority
+if its socket is named `socket` and `server.conf` exists beside it.
+Otherwise, the order is:
+
+1. `$KIDO_STATE_DIR`.
+2. `$XDG_STATE_HOME/kido`.
+3. `~/.local/state/kido`.
+
+The launcher does not export `KIDO_STATE_DIR`.
+It creates its state directory with mode 0700.
+It refuses these paths:
+
+- A directory not owned by the user.
+- A directory accessible to the group or others.
+- A directory path that contains a comma.
+- A socket path that cannot fit the platform's `sun_path`, including
+  its terminator.
+
+To debug the default server, use
+`kido-tmux -u -S ~/.local/state/kido/socket`.
+`Tmux.argv` adds `-u` to every kido tmux client, including the
+control client and launcher.
+`share/bin/tmux` does the same for shell use.
+
+**Tool name == `kido tool` subcommand name.** Every subagent tool in
+`share/pi/` invokes the `kido tool` subcommand with its own name
+(table in docs/design-subagents.md).
+A new tool requires a subcommand with the same spelling.
+There are no aliases. A different name causes a silent runtime failure,
+not a build failure. `lib/test/test_tool_parity.ml` runs each tool in
+`share/pi/testdata/tools.json` as a `kido tool` subcommand.
+
+A subcommand that no tool calls uses the clearest name (`async-run`).
+`async_bash` used the underscore before its tool existed.
+Renaming a command is harder after something calls it.
 
 ## The tmux fork
 
-kido only runs under [andreypopp/tmux](https://github.com/andreypopp/tmux),
-vendored as the submodule `third_party/tmux` (`tmux -V` prints
-`next-3.9`). `fork` is the branch kido pins. It carries kido's commits
-linearly on top of
-[PR tmux/tmux#5468](https://github.com/tmux/tmux/pull/5468) (side status),
-whose commits are rebased onto current upstream tmux master. When master
-moves, the PR's commits and kido's are rebased onto it. If the PR lands,
-kido's commits sit directly on master. Maintenance is by rebase only,
-never merges or cherry-picks from upstream.
+kido runs only under [andreypopp/tmux](https://github.com/andreypopp/tmux),
+vendored as the submodule `third_party/tmux`.
+`tmux -V` prints `next-3.9`. kido pins the `fork` branch.
+This branch contains kido's commits in a linear sequence after
+[PR tmux/tmux#5468](https://github.com/tmux/tmux/pull/5468) (side status).
+The PR's commits are rebased onto current upstream tmux master.
 
-Kido's commit order on top of the PR is:
+When master changes, the PR's commits and kido's commits are rebased
+onto it. If the PR is merged, kido's commits follow master directly.
+Use only rebase for maintenance, never merges or cherry-picks from upstream.
+
+Kido's commit order after the PR is:
 
 - Side status first: `side-status-command`, its conventions, the drag
   fixes, the pane-border edge.
@@ -313,233 +385,314 @@ Kido's commit order on top of the PR is:
   flush, `%exit` reason, control-state guard, hanging up a pane's child);
   terminal query-reply routing to the query's owner.
 
-Before force-pushing `fork`, push its previous head as a dated branch
-`fork-YYYY-MM-DD`, so older submodule pins stay reachable. `master` on
-`andreypopp/tmux` only mirrors upstream; a PR into it is mistargeted.
+Before you force-push `fork`, push its previous head as a dated branch
+`fork-YYYY-MM-DD`. This keeps older submodule pins reachable.
+`master` on `andreypopp/tmux` only mirrors upstream.
+A PR into it has the wrong target.
 Push over SSH (`git@github.com:andreypopp/tmux.git`).
 
-A fork change bumps kido's submodule pin and the `fork revision:` line
-in `share/rpc/contract.md`; lint enforces their agreement. Bump the
-protocol version only when the wire format changes; the server stamp
-follows the pin by itself.
+A fork change updates kido's submodule pin and the `fork revision:`
+line in `share/rpc/contract.md`. lint checks their agreement.
+Only when the wire format changes, bump the protocol version.
+The server stamp follows the pin automatically.
 
-`scripts/install-tmux-fork.sh <prefix>` builds it
-into `<prefix>/bin/kido-tmux`; `--self-contained <prefix>` is macOS-only,
-linking Homebrew's static libevent, source-built utf8proc and system ncurses
-so the binary needs no Homebrew at runtime (licenses in `share/kido-tmux`).
-`--print-revision` reads the pin with
-`git ls-files -s`, so it works with the submodule unchecked-out or the
-pin only staged.
+`scripts/install-tmux-fork.sh <prefix>` builds the fork into
+`<prefix>/bin/kido-tmux`.
+`--self-contained <prefix>` is macOS-only.
+It links Homebrew's static libevent, source-built utf8proc and system
+ncurses. Thus, the binary needs no Homebrew at runtime
+(licenses in `share/kido-tmux`).
+`--print-revision` reads the pin with `git ls-files -s`.
+It works if the submodule is not checked out or the pin is only staged.
 
-kido finds its tmux in this order: `$KIDO_TMUX`, then a `kido-tmux`
-beside its own executable (unresolved invoked path first, as for the
-shipped files), then `tmux` on PATH: `Tmux.binary`. The e2e harness gives the built kido
-that sibling, so the suite runs the resolution users get.
+`Tmux.binary` finds kido's tmux in this order:
+
+1. `$KIDO_TMUX`.
+2. A `kido-tmux` beside kido's executable. It uses the unresolved
+   invoked path first, as for the shipped files.
+3. `tmux` on PATH.
+
+The e2e harness supplies that sibling to the built kido.
+Thus, the suite uses the same resolution as users.
 
 **The side column.** `side-status-command` runs a program in the side
-column with `$TMUX_SIDE_CLIENT` set. Its absence is exactly "not started
-as a side column", i.e. `Kido_sidebar.model.standalone` - a popup or plain pane
-gets the one-shot picker. Keyboard focus is the client flag
-`side-status-focus`.
+column with `$TMUX_SIDE_CLIENT` set.
+Its absence means exactly "not started as a side column":
+`Kido_sidebar.model.standalone`.
+A popup or plain pane gets the one-shot picker.
+The client flag `side-status-focus` specifies keyboard focus.
 
-**OSC 133.** What the sequences mean and how kido reads them is in
-[docs/design-program-status.md](docs/design-program-status.md). The fork's
-`input_osc_133()` in `input.c` keeps them as the `#{pane_last_prompt_time}`
-and `#{pane_command_*}` formats and fires the hooks `pane-shell-prompt`
-(`A`, `N`), `pane-command-started` (`C`) and `pane-command-finished` (`D`).
-`C` stores its `cmdline=` parameter as `#{pane_command_line}`; tmux stores
-the value through `clean_name()`: control bytes and backslashes
-are escaped by `utf8_stravis()`, and `#(` becomes `_(`. The shell
-integrations therefore send the command line **verbatim** apart from
-blanking control characters and capping it at 1024 characters; the fork
-caps it at 1024 bytes without splitting UTF-8. Anything the integrations
-escaped would be escaped again and reach the sidebar unreadable.
+**OSC 133.**
+[docs/design-program-status.md](docs/design-program-status.md) describes
+the sequences and how kido reads them.
+The fork's `input_osc_133()` in `input.c` stores them as the
+`#{pane_last_prompt_time}` and `#{pane_command_*}` formats.
+It fires these hooks:
+
+- `pane-shell-prompt` (`A`, `N`).
+- `pane-command-started` (`C`).
+- `pane-command-finished` (`D`).
+
+`C` stores its `cmdline=` parameter as `#{pane_command_line}`.
+tmux stores the value through `clean_name()`.
+`utf8_stravis()` escapes control bytes and backslashes.
+`#(` becomes `_(`.
+
+Thus, the shell integrations send the command line **verbatim**, except
+that they blank control characters and limit it to 1024 characters.
+The fork limits it to 1024 bytes without splitting UTF-8.
+If the integrations escaped anything, tmux would escape it again.
+The sidebar would receive unreadable text.
 
 Consequences:
 
-- **These are hooks only.** No control-mode notification exists for
-  them; kido reads the `#{pane_command_*}` formats on its poll. Do not go
-  looking for `%pane-command-started`.
+- **These are hooks only.** No control-mode notification exists for them.
+  kido reads the `#{pane_command_*}` formats when it polls.
+  Do not search for `%pane-command-started`.
 - **Timestamps are whole seconds.** `Tmux_pane.shell` compares
-  `last_prompt > command_start`, and a tie resolves to *running* —
-  a false idle the instant a command starts is the worse error.
-- **`cmd_status` is cleared on `C`,** so the last exit code is gone when
-  the next command starts. `Pane_status` captures the exit whole from one
-  read and keeps it as the Idle phase's `last` until the next command is
-  promoted to running.
+  `last_prompt > command_start`. A tie resolves to *running*.
+  A false idle when a command starts is the worse error.
+- **`cmd_status` is cleared on `C`,** so the last exit code is absent
+  when the next command starts. `Pane_status` captures the exit whole
+  from one read. It keeps this as the Idle phase's `last` until the
+  next command is promoted to running.
 
-`Tmux_pane.shell` also heals a stuck flag: a `C` with no `D` leaves
-`PANE_CMDRUNNING` set, and a later prompt's `A` makes `shell` report idle
-without clearing the flag. Two fork changes would each delete a workaround: clearing `PANE_CMDRUNNING` on `A`
-(the heal rule), and not clearing `cmd_status` on `C` (the captured `last`).
-Not done.
+`Tmux_pane.shell` also corrects a stuck flag.
+A `C` with no `D` leaves `PANE_CMDRUNNING` set.
+A later prompt's `A` makes `shell` report idle without clearing the flag.
+Each of these two fork changes would remove a workaround:
 
-**Why not `pane_current_command`.** It reports the process-group leader,
-which confuses an interactive shell with a batch `zsh -c`.
-`#{alternate_on}` reports whether the alternate screen is active, so it
-sees `less` under `git` or `nvim` under `sudo`, and is what
-the sidebar uses to decide a program has taken the terminal.
+- Clear `PANE_CMDRUNNING` on `A` (the heal rule).
+- Do not clear `cmd_status` on `C` (the captured `last`).
+
+Neither change is complete.
+
+**Why not `pane_current_command`.** It reports the process-group leader.
+This confuses an interactive shell with a batch `zsh -c`.
+`#{alternate_on}` reports whether the alternate screen is active.
+Thus, it detects `less` under `git` or `nvim` under `sudo`.
+The sidebar uses it to decide whether a program has taken the terminal.
 
 ## tmux gotchas
 
-- `set-environment` after `new-session` cannot reach the pane it
-  started. Use `new-session -e VAR=value` or the command line.
+- After `new-session`, `set-environment` cannot reach the pane that
+  `new-session` started. Use `new-session -e VAR=value` or the command
+  line.
 - A window linked into two sessions has one pane id in several sessions.
   `Sidebar.step` finds the client's pane by active pane id **and**
   `Tmux_pane.client_state.session_id`.
-- `-S` takes a socket path as supplied; a bare name is relative to the
-  working directory, not `/tmp/tmux-<uid>/`. `-L` creates its socket
-  directory. An unset `TMUX_TMPDIR` selects `/tmp`; a nonexistent
-  directory named by it is an error. Programmatic tmux, cleanup above
-  all, uses `-S` with an absolute path.
-- An empty `TMUX=` still forces tmux's UTF-8 detection. Unset `TMUX`
-  entirely for locale tests (`test_e2e/locale_test.go`).
-- `list-sessions` can succeed with an empty list while the server reads
-  its config; only the launching client blocks. Readiness waits poll
-  for a non-empty list. `test_e2e/launch_test.go` covers a slow
-  `kido.conf`.
-- `kill-server` returns before the processes it SIGHUP'd exit. Teardown
-  collects the server's descendants first, then waits for each to exit;
-  a survivor is an error (`test_e2e/harness_test.go`).
+- `-S` takes a socket path as supplied. A bare name is relative to
+  the working directory, not `/tmp/tmux-<uid>/`.
+  `-L` creates its socket directory.
+  If `TMUX_TMPDIR` is unset, tmux selects `/tmp`.
+  If it names a nonexistent directory, tmux reports an error.
+  Programmatic tmux uses `-S` with an absolute path, especially for cleanup.
+- An empty `TMUX=` still forces tmux's UTF-8 detection.
+  For locale tests, unset `TMUX` entirely
+  (`test_e2e/locale_test.go`).
+- `list-sessions` can succeed with an empty list while the server
+  reads its config. Only the launching client blocks.
+  Readiness waits poll for a non-empty list.
+  `test_e2e/launch_test.go` covers a slow `kido.conf`.
+- `kill-server` returns before the processes that it SIGHUP'd exit.
+  Teardown first collects the server's descendants.
+  Then it waits for each to exit.
+  A survivor is an error (`test_e2e/harness_test.go`).
 - `display-popup` opens a floating pane in the fork's upstream base.
   `popup-style` and `popup-border-style` are invalid options.
-  The fork reports the popup as `#{pane_modal_flag}`, and the pane under
-  it as `#{pane_last}`.
-- The side column's edge is a pane border, following `pane-border-lines`
-  and `pane-border-style`. `share/tmux/kido-tmux.conf` deliberately sets
-  no `pane-border-style`, which would also restyle real split borders.
-- `share/tmux/kido-tmux.conf` applies to every kido user; personal
-  settings belong in `~/.config/kido/kido.conf`.
-- Never assert on automatic `#{window_name}`: `automatic-rename` can
-  read a transient process name. Rename the window to a fixed name,
-  which turns `automatic-rename` off.
+  The fork reports the popup as `#{pane_modal_flag}`.
+  It reports the pane under the popup as `#{pane_last}`.
+- The side column's edge is a pane border.
+  It follows `pane-border-lines` and `pane-border-style`.
+  `share/tmux/kido-tmux.conf` deliberately sets no `pane-border-style`.
+  That option would also change the style of real split borders.
+- `share/tmux/kido-tmux.conf` applies to every kido user.
+  Personal settings belong in `~/.config/kido/kido.conf`.
+- Never assert on automatic `#{window_name}`.
+  `automatic-rename` can read a transient process name.
+  Rename the window to a fixed name. This turns `automatic-rename` off.
 
 ## Format-string invariants (`lib/tmux_pane.ml`)
 
-`Tmux_pane.format` is `\x1f`-joined and parsed positionally by `Tmux_pane.parse`.
+`Tmux_pane.format` joins fields with `\x1f`.
+`Tmux_pane.parse` parses them by position.
 
-- `#{pane_title}` stays **last**; it may contain anything.
-- `pane_command_duration` is deliberately **absent**: it ticks every
-  second and would redraw the sidebar once a second forever.
-- Adding a field means bumping `Tmux_pane.fields`, which both the split count
-  and the short-line guard in `parse_line` read. The inline "field count
-  pinned" test in `lib/tmux_pane.ml` ties the two together; its "fixture
-  generated from the format" test exists because the hand-typed fixture
-  in its "parse:" test stays green when a new field is left out of it.
-- `pane_command_status` prints **empty**, not `0`, when unset — hence
-  `last_exit` is an `exit option`, `None` rather than a zero status
-  (the "parse:" test's empty status).
+- `#{pane_title}` stays **last** because it can contain anything.
+- `pane_command_duration` is deliberately **absent**.
+  It changes every second and would redraw the sidebar once a second forever.
+- If you add a field, increase `Tmux_pane.fields`.
+  Both the split count and the short-line guard in `parse_line` read it.
+  The inline "field count pinned" test in `lib/tmux_pane.ml` connects
+  the two. The "fixture generated from the format" test checks a
+  case that the "parse:" test misses. The manually typed fixture in
+  the "parse:" test still passes if it omits a new field.
+- If unset, `pane_command_status` prints **empty**, not `0`.
+  Thus, `last_exit` is an `exit option`.
+  It uses `None`, not a zero status (the "parse:" test's empty status).
 
 ## Native agent status
 
-Only OSC 7501 root apps pi and claude-code identify agent panes. State supplies
-local pi identity and coordination, never detection; ssh panes use the
-pane-scoped `@kido_ssh` mark, believed only while the foreground is `ssh`.
-`kido ssh` sets the mark before exec and leaves it in place. pi and Claude
-Code status, completion and blocked messages come from their terminal records. No Claude Code executable shim is shipped.
+Only OSC 7501 root apps pi and claude-code identify agent panes.
+State supplies local pi identity and coordination, never detection.
+ssh panes use the pane-scoped `@kido_ssh` mark.
+kido trusts this mark only while the foreground is `ssh`.
+`kido ssh` sets the mark before exec and leaves it in place.
 
-Claude Code 2.1.295 queries OSC 7501, then emits a root app=claude-code
-record: idle, working, done, or blocked with permission/question kind and
-a base64 message. Escape on a permission dialog emits idle immediately;
-exit clears all records. CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 disables
-this reporting too. Its OSC 0 title was "Claude Code" at startup and
-"Reply with ok" for the session. Pane titles are displayed verbatim, including
-status glyphs and prefixes. Native-only agents fall back to the app name for
-an empty title; local pi uses its State name when set.
+pi and Claude Code status, completion and blocked messages come from
+their terminal records. kido ships no Claude Code executable shim.
+
+Claude Code 2.1.295 queries OSC 7501.
+Then it emits a root `app=claude-code` record: idle, working, done,
+or blocked with permission/question kind and a base64 message.
+Escape on a permission dialog emits idle immediately.
+Exit clears all records.
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables this reporting.
+Its OSC 0 title was "Claude Code" at startup and "Reply with ok" for
+the session.
+
+Pane titles display verbatim, including status glyphs and prefixes.
+For an empty title, native-only agents use the app name.
+If its State name is set, local pi uses that name.
 
 ## Agent state, and delivering a prompt
 
-State lives in the server directory resolved above — one JSON file per agent session, named by session
-id, written temp-file-then-rename. There is **no locking**; races are
-resolved by policy:
+State uses the server directory resolved above.
+Each agent session has one JSON file, named by session id.
+Writes use a temporary file and then rename it.
+There is **no locking**. Policy resolves races:
 
 - **One live holder per session id.** `State.record` creates a record
-  with `Unix.link` from its own pid-named temp file (atomic, fails if
-  taken); an existing record is overwritten only by the pid it names or
-  once that pid is dead. `State.remove` follows the same rule. A refusal
-  is `Error holder`, and `kido agent-status` exits **6** for it, which
-  `share/pi/kido-status.ts` reads to stop reporting. Change that exit code in
-  one half only and a second pi silently clobbers a live session.
+  with `Unix.link` from its own pid-named temporary file.
+  This is atomic and fails if the record is taken.
+  Only the pid named in an existing record can overwrite it while
+  that pid is alive. Once that pid is dead, another pid can overwrite it.
+  `State.remove` follows the same rule.
+
+  A refusal is `Error holder`.
+  For a refusal, `kido agent-status` exits **6**.
+  `share/pi/kido-status.ts` reads this code to stop reporting.
+  If only one side changes this exit code, a second pi silently
+  overwrites a live session.
 - `State.load_live` **removes** a file whose recorded pid is dead.
-- When two records claim one pane, the latest timestamp wins. A headless
-  pi inherits TMUX_PANE, so it can take the pane's identity view; liveness
-  readers must not use that collapsed view.
-- **Never hand `Reap.sweep` a pane-keyed view.** The sidebar's view is
-  `State.load_live` then `State.by_pane`; anything asking "is this
-  session running *anywhere*" takes `load_live`'s list, which drops
-  nothing. A pane-keyed view makes the flip
-  above close a parent's children.
-- **The orphan rule includes `async_bash`.** `Reap.sweep` reads the parent
-  session from run metadata for plain and streamed bash runs. If it has no
-  live record, the unfocused run is collected even while its command runs;
-  a parentless bash run is exempt.
+- If two records claim one pane, the latest timestamp wins.
+  A headless pi inherits `TMUX_PANE`.
+  Thus, it can take the pane's identity view.
+  Liveness readers must not use that collapsed view.
+- **Never give `Reap.sweep` a pane-keyed view.**
+  The sidebar's view uses `State.load_live` and then `State.by_pane`.
+  Any check for "is this session running *anywhere*" uses
+  `load_live`'s list, which drops nothing.
+  With a pane-keyed view, the identity change above closes a parent's
+  children.
+- **The orphan rule includes `async_bash`.**
+  For plain and streamed bash runs, `Reap.sweep` reads the parent
+  session from run metadata.
+  If that parent has no live record, it collects the unfocused run
+  even while its command runs.
+  A parentless bash run is exempt.
 
-For a Pi_agent, `kido prompt` prefers the recorded inbox socket
-(`kido-status.ts` binds one) and uses a tmux paste **only** when its record names no inbox
-(`Prompt.deliver_or_paste`). An advertised but unavailable inbox is an
-error, not permission to paste. Other socket errors also return without
-a fallback: the message may already have been delivered, and re-sending
-would double-send. A Some_agent is reached by paste; Terminal is excluded.
-Live State remains authoritative for coordination and run history even when
-the pane's current root app is replaced or cleared.
+For a `Pi_agent`, `kido prompt` prefers the recorded inbox socket.
+`kido-status.ts` binds one.
+`kido prompt` uses a tmux paste **only** when the record names no inbox
+(`Prompt.deliver_or_paste`).
+An advertised but unavailable inbox is an error, not permission to paste.
 
-`Prompt.send_prompt` **pastes rather than types**: `send-keys -l` writes raw
-bytes, and under bracketed paste a bare newline submits, splitting a
-multi-line prompt. `load-buffer` + `paste-buffer -p` brackets when the
-application asked for it and pastes raw otherwise. Enter is a
-**separate** `send-keys` after a delay; sent with the paste it cuts the
-paste mid-line.
+Other socket errors also return without a fallback.
+The message may already have arrived.
+Sending it again would deliver it twice.
+A `Some_agent` receives a paste. `Terminal` is excluded.
 
-Exit codes: `0` sent, `1` empty stdin or an error, `4` no agent in scope,
-`5` several. Scope is the caller's window, widening to the session only
-when the window had none (`--window` never widens) — so `5` can never
-be resolved by widening.
+Live State remains authoritative for coordination and run history,
+even when the pane's current root app is replaced or cleared.
+
+`Prompt.send_prompt` **pastes rather than types**.
+`send-keys -l` writes raw bytes.
+Under bracketed paste, a bare newline submits and splits a multi-line
+prompt. `load-buffer` + `paste-buffer -p` brackets the paste when
+the application requests it. Otherwise, it pastes raw bytes.
+
+Enter uses a **separate** `send-keys` after a delay.
+If sent with the paste, Enter cuts the paste mid-line.
+
+Exit codes are:
+
+- `0`: sent.
+- `1`: empty stdin or an error.
+- `4`: no agent in scope.
+- `5`: several agents in scope.
+
+Scope is the caller's window.
+Only if the window has no agents, scope widens to the session.
+`--window` never widens.
+Thus, widening can never resolve `5`.
 
 ## Installed-file lookup (`lib/bin_dir.ml`)
 
-Shipped files live at `<prefix>/share/kido/...` beside `<prefix>/bin/kido`
-(Homebrew's `pkgshare` layout; `make install` mirrors it).
+Shipped files are at `<prefix>/share/kido/...`, beside
+`<prefix>/bin/kido`. This is Homebrew's `pkgshare` layout.
+`make install` uses the same layout.
 
-`Bin_dir.of_exe` tries the **unresolved** path first and resolves only
-as a fallback (`Fs.candidates`), and starts from
-`Fs.invoked_path` on `argv[0]`, with `Sys.executable_name` only
-as its last resort:
+`Bin_dir.of_exe` tries the **unresolved** path first.
+It resolves only as a fallback (`Fs.candidates`).
+It starts from `Fs.invoked_path` on `argv[0]`.
+It uses `Sys.executable_name` only as its last resort:
 
-- Homebrew's `bin/kido` and `share/kido` are symlinks repointed on every
-  upgrade. The resolved path names a Cellar version directory the next
-  `brew cleanup` deletes, leaving `side-status-command` and every pane's
-  PATH pointing at nothing.
-- On Linux `Sys.executable_name` reads `/proc/self/exe` and always
-  resolves, defeating the ordering.
+- Homebrew's `bin/kido` and `share/kido` are symlinks.
+  Each upgrade changes their targets.
+  The resolved path names a Cellar version directory that the next
+  `brew cleanup` deletes.
+  This leaves `side-status-command` and every pane's PATH with a
+  nonexistent target.
+- On Linux, `Sys.executable_name` reads `/proc/self/exe`.
+  It always resolves, which defeats the ordering.
 
 ## Building
 
-`make install PREFIX=<prefix>` installs `bin/kido`, `bin/kido-tmux` and
-`share/kido`, including the shim that routes bare `kido` to that prefix.
+`make install PREFIX=<prefix>` installs these files:
+
+- `bin/kido`.
+- `bin/kido-tmux`.
+- `share/kido`, including the shim that routes bare `kido` to that prefix.
+
 It reuses the e2e revision-keyed fork cache under `build/tmux-fork/`.
-`SELF_CONTAINED=1` passes `--self-contained` to the fork installer and
-uses a separate `<revision>-self-contained` cache entry.
+`SELF_CONTAINED=1` passes `--self-contained` to the fork installer.
+It uses a separate `<revision>-self-contained` cache entry.
 
-kido is built by dune **3.24.2**, the binary distribution, with package
-management on (`dune-workspace`); the README's install line fetches it.
-Dependencies are declared in `dune-project`, Mosaic as `(pin ...)`
-stanzas on a git commit, and resolved into the committed `dune.lock`;
-`dune pkg lock` regenerates the lock and always resolves against the
-newest opam-repository, so a re-lock is a reviewed change. There is no
-`kido.opam`: `dune-project` is the one dependency list. The first build
-of a checkout compiles OCaml and every package in `dune.lock` (a few
-minutes); dune's shared cache (see `dune-workspace`) restores them in
-seconds after a clean `_build`, and `dune cache trim --size 5GB` bounds
-it. ocamlformat is a dev tool, not a dependency:
-`dune tools install ocamlformat`, then `dune fmt`. Dev tools are per
-checkout under `_build`: `dune clean` deletes them, and they are not on
-PATH by default. Use `dune tools which`, `dune tools exec` or
-`eval "$(dune tools env)"`. `dune show
-depexts` prints nothing; there are none.
+kido uses the dune **3.24.2** binary distribution for builds.
+Package management is on (`dune-workspace`).
+The README's install line fetches this distribution.
+`dune-project` declares dependencies.
+Mosaic uses `(pin ...)` stanzas on a git commit.
+Dependency resolution writes the committed `dune.lock`.
 
-Dune 3.24.2 with package management dies on an absolute
-`DUNE_BUILD_DIR`; `scripts/ci-like/Dockerfile` therefore sets a relative
-one.
+`dune pkg lock` regenerates the lock.
+It always resolves against the newest opam-repository.
+Thus, a re-lock requires review.
+There is no `kido.opam`.
+`dune-project` is the only dependency list.
+
+The first build of a checkout compiles OCaml and every package in
+`dune.lock`. This takes a few minutes.
+After a clean `_build`, dune's shared cache restores them in seconds
+(see `dune-workspace`).
+`dune cache trim --size 5GB` limits the cache size.
+
+ocamlformat is a dev tool, not a dependency.
+Use `dune tools install ocamlformat`.
+Then use `dune fmt`.
+Dev tools are per checkout under `_build`.
+`dune clean` deletes them.
+
+They are not on PATH by default.
+Use `dune tools which`, `dune tools exec` or
+`eval "$(dune tools env)"`.
+
+`dune show
+depexts` prints nothing because there are no depexts.
+
+Dune 3.24.2 with package management fails on an absolute
+`DUNE_BUILD_DIR`.
+Thus, `scripts/ci-like/Dockerfile` sets a relative one.
 
 ## Tests
 
@@ -552,212 +705,297 @@ one.
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
     make website the website's dev server at http://localhost:4321 (website/README.md)
 
-`make verify E2E=TestFoo` limits e2e; `STAGES=e2e` selects only that stage.
+`make verify E2E=TestFoo` limits e2e.
+`STAGES=e2e` selects only that stage.
 Every selected stage runs even after a failure and prints PASS/FAIL.
-Validation before a release is `make verify`, in full; CI
-runs both on Ubuntu and macOS on every push and PR (`scripts/main-watch.sh`
-watches main and reports each observed head's CI), building the fork at the
-pinned revision, cached by SHA. `/gh-watch` starts it via streamed `async_bash`.
-While working, `dune test` is the loop; `dune promote` accepts an expect
-diff once it has been read.
+Before a release, validation uses `make verify` in full.
 
-**Prefer e2e tests.** A behaviour a user or an agent can observe (a
-subcommand's output, exit code, side effects on tmux or state) is
-tested in `test_e2e/`, through the binary. Unit tests are for pure library
-logic that e2e cannot reach or cannot pin precisely (parsers, formats,
-ordering); their placement is in Layout above. Do not write a unit test
-that execs the binary, except `lib/test/test_tool_parity.ml`, which runs
-each tool as a `kido tool` subcommand.
+CI runs on Ubuntu and macOS on every push and PR.
+`scripts/main-watch.sh` watches main and reports each observed head's CI.
+CI builds the fork at the pinned revision, cached by SHA.
+`/gh-watch` starts `scripts/main-watch.sh` through streamed `async_bash`.
+While you work, use `dune test` for repeated checks.
+After you read an expect diff, `dune promote` accepts it.
 
-`make e2e` builds the fork into `build/tmux-fork/<revision>/` (rebuilt
-only on a submodule bump) and runs with `KIDO_E2E_REQUIRED=1`. A
-`KIDO_TMUX` in the environment names another fork and skips the build
-(how CI uses its cached one). A bare `go test ./test_e2e/` with neither
-skips. The harness requires the fork's `share/kido-tmux/REVISION` to
-match the gitlink pin; rebuild with `scripts/install-tmux-fork.sh` if it
-is missing or differs. The TypeScript suite requires Node 24 or newer and
-skips without it; `KIDO_TS_TEST_REQUIRED=1` (set in CI) makes that a failure.
+**Prefer e2e tests.** Use `test_e2e/` to test behaviour that a user or
+agent can observe through the binary. This includes a subcommand's
+output, exit code, and effects on tmux or state.
+Unit tests check pure library logic that e2e cannot reach or test
+precisely: parsers, formats and ordering. Layout above specifies their
+location.
+Do not write a unit test that execs the binary, except
+`lib/test/test_tool_parity.ml`. It runs each tool as a
+`kido tool` subcommand.
+
+`make e2e` builds the fork into `build/tmux-fork/<revision>/`.
+It rebuilds only on a submodule bump.
+It runs with `KIDO_E2E_REQUIRED=1`.
+`KIDO_TMUX` in the environment names another fork and skips the build.
+CI uses this to use its cached fork.
+A bare `go test ./test_e2e/` with neither skips.
+
+The harness requires the fork's `share/kido-tmux/REVISION` to match
+the gitlink pin. If it is missing or differs, rebuild with
+`scripts/install-tmux-fork.sh`.
+The TypeScript suite requires Node 24 or newer.
+Without it, the suite skips.
+`KIDO_TS_TEST_REQUIRED=1` (set in CI) makes that a failure.
 
 **Reproducing a CI-only failure:** `scripts/ci-like.sh` runs a Linux
-container with the repo bind-mounted, CPU/memory capped, and the fork
-built at the pinned revision (`make ci-like ARGS="--cpus 0.25 -- go test
-./test_e2e/ -run TestFoo"`). A CPU quota alone rarely reproduces timing
-failures; `--contend N` starts N busy sibling containers, and with a low
-`--cpu-shares` desyncs a wrapper's timer from its command the way a
-loaded runner does. With `--contend N` greater than zero, `--budget`
-(default 2) minus the run's `--cpus` is split equally among the siblings
-as their CPU quotas; a nonpositive sibling quota is rejected. It does
-not cap a plain `--cpus`. Contention is for one named failure, not a
-whole suite. Never saturate the host's own cores to chase a runner
-failure: other agents are working in parallel.
+container with the repo bind-mounted and CPU/memory capped.
+It builds the fork at the pinned revision
+(`make ci-like ARGS="--cpus 0.25 -- go test
+./test_e2e/ -run TestFoo"`).
+A CPU quota alone rarely reproduces timing failures.
 
-**The e2e harness** (`test_e2e/harness_test.go`) nests two tmux servers — an
-outer one hosting a pty, the inner one under test with kido as its
-`side-status-command` — and reads the sidebar with `capture-pane`. It
-builds kido with `dune build @install` (so it needs that dune on PATH), and fake
-`node` binaries that emit terminal titles and native program status.
+`--contend N` starts N busy sibling containers.
+With a low `--cpu-shares`, this makes a wrapper's timer run out of step
+with its command as a loaded runner does.
+If `--contend N` exceeds zero, the siblings equally share
+`--budget` (default 2) minus the run's `--cpus` as their CPU quotas.
+The script rejects a sibling quota of zero or less.
+It does not cap a plain `--cpus`.
+
+Use contention for one named failure, not a whole suite.
+Never saturate the host's cores to reproduce a runner failure.
+Other agents work in parallel.
+
+**The e2e harness** (`test_e2e/harness_test.go`) nests two tmux servers.
+The outer server hosts a pty.
+The inner server is under test, with kido as its
+`side-status-command`.
+The harness reads the sidebar with `capture-pane`.
+
+It builds kido with `dune build @install`.
+Thus, it needs that dune on PATH.
+It also builds fake `node` binaries that emit terminal titles and
+native program status.
 
 - The inner server's PATH starts with the built kido and the fork
-  (`serverPathPrefix`), because `kido-tmux.conf` bindings name bare
-  `kido`/`tmux` resolved by `run-shell` against the server's PATH. An
-  installed kido masks a missing entry locally; CI gets exit 127.
-- `cleanEnv` strips installed `share/kido/bin` PATH entries, `TMUX`,
-  `TMUX_PANE`, `KIDO_STATE_DIR`, `KIDO_AGENT_*` and `KIDO_TMUX`: the suite is often
-  run from a tracked agent's pane, and the inner server's environment is
-  what `new-window` gives a spawned child, so the developer's own parent
-  edge would leak into tests.
-- `settle = 5s` is the default wait deadline; wait helpers poll at 100ms, kido's
-  tick. Every grace period (linger, stop escalation, stall threshold) is
-  shortened only through the inner server's environment, never
-  in-process, so the sidebar and the extension's helper agree ("Knobs" in
-  docs/design.md).
-- Never put a fake on a shared PATH: it shadows that name for every
-  startup file too. Tests needing a fake `pi` get their own PATH through
+  (`serverPathPrefix`).
+  `kido-tmux.conf` bindings name bare `kido`/`tmux`.
+  `run-shell` resolves them against the server's PATH.
+  An installed kido hides a missing entry locally.
+  CI gets exit 127.
+- `cleanEnv` removes installed `share/kido/bin` PATH entries,
+  `TMUX`, `TMUX_PANE`, `KIDO_STATE_DIR`, `KIDO_AGENT_*` and
+  `KIDO_TMUX`.
+  The suite often runs from a tracked agent's pane.
+  `new-window` gives the inner server's environment to a spawned child.
+  Otherwise, the developer's parent edge would enter the tests.
+- `settle = 5s` is the default wait deadline.
+  Wait helpers poll at 100ms, kido's tick.
+  Shorten grace periods (linger, stop escalation, stall threshold)
+  only through the inner server's environment, never in-process.
+  This keeps the sidebar and extension's helper in agreement
+  ("Knobs" in docs/design.md).
+- Never put a fake on a shared PATH.
+  It also shadows that name for every startup file.
+  Tests that need a fake `pi` get their own PATH through
   `startPathPrefix`.
-- After sending Escape to the sidebar, wait for its effect before the
-  next key: on a loaded runner Mosaic joins a buffered ESC with the next
-  byte into an Alt-key.
-- macOS limits unix socket paths to 104 bytes including the terminator;
-  `t.TempDir`'s suffix can exceed it. Use the harness's short socket
-  directories (`serverDir` / `launcherEnv`). A pid-0 liveness check tests
-  a process group, not the child; wait for a real published pid.
-- Tests executing `zsh -i` detach from the terminal (no TTY, `setsid`),
-  or the run hangs. Prefer timing ratios against a baseline measured in
-  the same run to fixed wall-clock bounds.
-- Ubuntu CI does not install zsh: compinit's insecure-directories prompt
-  blocks e2e shells. Unit probes of host shells silently skip a missing
-  shell and print only mismatches.
-- `dune test --force` can reuse a cached `.exe.output` target
-  (`lib/test/tmux_server` does not declare `KIDO_TMUX` as a rule
-  dependency). A flake loop over it needs the cache off.
+- After you send Escape to the sidebar, wait for its effect.
+  Then send the next key.
+  On a loaded runner, Mosaic joins a buffered ESC with the next byte
+  into an Alt-key.
+- macOS limits unix socket paths to 104 bytes, including the terminator.
+  The suffix from `t.TempDir` can exceed this limit.
+  Use the harness's short socket directories (`serverDir` /
+  `launcherEnv`).
+  A pid-0 liveness check tests a process group, not the child.
+  Wait for a real published pid.
+- Tests that execute `zsh -i` detach from the terminal
+  (no TTY, `setsid`). Otherwise, the run hangs.
+  Prefer timing ratios against a baseline measured in the same run
+  to fixed wall-clock bounds.
+- Ubuntu CI does not install zsh.
+  compinit's insecure-directories prompt blocks e2e shells.
+  Unit probes of host shells silently skip a missing shell.
+  They print only mismatches.
+- `dune test --force` can reuse a cached `.exe.output` target.
+  `lib/test/tmux_server` does not declare `KIDO_TMUX` as a rule
+  dependency.
+  A flake loop over it needs the cache off.
 - On macOS CI, `split-window` reporting "fork failed: Device not
-  configured" is a runner pty flake. Rerun only the failed job
-  (`gh run rerun --failed`), rather than capping parallelism.
+  configured" is a runner pty flake.
+  Rerun only the failed job (`gh run rerun --failed`).
+  Do not cap parallelism.
 
-Many tests carry a comment saying what they pin or which assertion
-carries them; read it before weakening or "cleaning up" such a test.
-Negative controls are load-bearing: never delete one half of a pair.
+Many tests have a comment that identifies their check or their
+important assertion. Before you weaken or simplify such a test, read
+its comment. Negative controls are essential.
+Never delete one half of a pair.
 
 ### Other traps
 
-- **`kido ssh` keeps `Bin_dir.look_path_past`.** Kido's bin directory
-  precedes PATH in a primed pane; removing the lookup breaks
-  `TestKidoSSHOpensAnOrdinarySession` and
-  `TestKidoSSHPrimesARemoteShell` in `test_e2e/ssh_prime_test.go`.
-- **`Sidebar.same` compares panes by exclusion.** A new `Tmux_pane.t` field
-  participates in equality unless blanked in its local `drawn`. It fails
-  toward extra redraws, the safe direction.
+- **`kido ssh` keeps `Bin_dir.look_path_past`.**
+  Kido's bin directory precedes PATH in a primed pane.
+  Removing the lookup breaks `TestKidoSSHOpensAnOrdinarySession`
+  and `TestKidoSSHPrimesARemoteShell` in
+  `test_e2e/ssh_prime_test.go`.
+- **`Sidebar.same` compares panes by exclusion.**
+  A new `Tmux_pane.t` field participates in equality unless its local
+  `drawn` blanks it.
+  Failure causes extra redraws, which is the safe direction.
 - **A window's panes are ordered oldest first**, by pane id number
-  (`Tmux_pane.order_sessions`), not in list-panes layout order (`split-window
-  -b` puts a new pane first). The tree, the group glyph's row 0,
-  `kido switch-session` and `kido switch-window` rely on that one sort.
-- **`@kido_run` is pane-scoped (`set-option -p`).** It marks the one
-  pane a run actually runs in; a user's split off that window reads "",
-  with no window-scoped fallback to inherit.
-- **`Kido_sidebar.parts` is the column-alignment contract.** Every pane row's
-  indicator is drawn there as a one-column field. An unintegrated shell and
-  a program that has taken the terminal (no indicator) and an idle one (no
-  glyph) get an empty field — column kept. Anything
-  drawn left of a label must fit in space already accounted for; tree
-  prefixes are built by `Kido_sidebar.lines`, before the indicator column.
-- **A standalone kido infers its client by counting, filtered.**
-  `#{client_name}` from a popup is unanswerable. `Tmux_pane.resolve_client`
-  asks who is attached to the pane's session, ignoring kido's own
-  control-mode connections (one per real client). Control mode is read
-  from its boolean, not an empty tty (a read-only client has one too).
-- **`Tmux.exec` over a control handle kills its client on any timeout** and
-  subsequent calls re-dial after the retry backoff; one slow command costs
-  a full reconnect.
-- **`share/zsh/integration.zsh` must not name a local `status`** — a zsh
-  special parameter; shadowing it silently stops the precmd hook. It is
-  called `ret`.
+  (`Tmux_pane.order_sessions`).
+  This is not list-panes layout order: `split-window
+  -b` puts a new pane first.
+  The tree, the group glyph's row 0, `kido switch-session` and
+  `kido switch-window` use that one sort.
+- **`@kido_run` is pane-scoped (`set-option -p`).**
+  It marks only the pane where a run runs.
+  A user's split from that window reads "".
+  There is no window-scoped fallback to inherit.
+- **`Kido_sidebar.parts` is the column-alignment contract.**
+  It draws every pane row's indicator as a one-column field.
+  These cases get an empty field that keeps the column:
+  - An unintegrated shell.
+  - A program that has taken the terminal (no indicator).
+  - An idle one (no glyph).
+
+  Anything drawn left of a label must fit in space already included.
+  `Kido_sidebar.lines` builds tree prefixes before the indicator column.
+- **A standalone kido finds its client from a filtered count.**
+  `#{client_name}` from a popup is unanswerable.
+  `Tmux_pane.resolve_client` checks who is attached to the pane's session.
+  It ignores kido's control-mode connections, one per real client.
+  It reads control mode from its boolean, not an empty tty.
+  A read-only client also has an empty tty.
+- **`Tmux.exec` over a control handle kills its client on any timeout**.
+  Subsequent calls re-dial after the retry backoff.
+  One slow command requires a full reconnect.
+- **`share/zsh/integration.zsh` must not name a local `status`**.
+  This is a zsh special parameter.
+  Shadowing it silently stops the precmd hook.
+  The local is called `ret`.
 - **A tmux command reaching a further parser has no surviving escape.**
-  The generated `server.conf` (tmux -> sh) and a `new-window` window name
-  (tmux -> sh -> tmux) go through `Launch.tmux_safe`,
-  which refuses `'`, `"`, `$`, `#`, `\`, a backtick, a newline or a
-  carriage return. A space is quoted.
+  The generated `server.conf` (tmux -> sh) and a `new-window` window
+  name (tmux -> sh -> tmux) use `Launch.tmux_safe`.
+  It refuses `'`, `"`, `$`, `#`, `\`, a backtick, a newline
+  or a carriage return.
+  It quotes a space.
+
 ## Working here as a spawned agent
 
-These apply to every agent kido spawns into this repo; a brief does not
-repeat them.
+These rules apply to every agent that kido spawns into this repo.
+A brief does not repeat them.
 
-- **Do the task yourself.** Do not spawn subagents or call `ask_agent`;
-  nobody is waiting to be asked.
-- **No git writes.** No commit, push, reset, add, checkout or stash. The
-  top-level session commits. Leave work uncommitted. Never `git stash`.
-  `.pi/extensions/no-git-writes` guards bash tool calls when
-  `KIDO_AGENT_PARENT_SESSION` is set.
-- **Other agents' uncommitted changes are expected.** Work runs in
-  parallel; the brief says which files are yours. Do not revert, clean
-  or fix anything outside them - report it instead.
-- **You are inside the user's live tmux server.** `kill-server` without
-  `-S` and your own absolute socket path risks killing it. Start every
-  test server on its own explicit socket (`tmux -S "$scratch/socket"`),
-  end it with `kill-session`, and never touch `~/bin/tmux`,
-  `/opt/homebrew/bin/tmux` or the running server.
+- **Do the task yourself.** Do not spawn subagents.
+  Do not call `ask_agent`.
+  Nobody waits for a question.
+- **No git writes.** Do not commit, push, reset, add, checkout or stash.
+  The top-level session commits.
+  Leave work uncommitted.
+  Never use `git stash`.
+  If `KIDO_AGENT_PARENT_SESSION` is set,
+  `.pi/extensions/no-git-writes` guards bash tool calls.
+- **Other agents' uncommitted changes are expected.**
+  Work runs in parallel.
+  The brief identifies your files.
+  Do not revert, clean or fix anything outside those files.
+  Report it instead.
+- **You are inside the user's live tmux server.**
+  `kill-server` without `-S` and your own absolute socket path can
+  kill that server.
+  Start every test server on its own explicit socket
+  (`tmux -S "$scratch/socket"`).
+  End it with `kill-session`.
+  Never change `~/bin/tmux`, `/opt/homebrew/bin/tmux` or the running server.
 - **Scratch worktrees.** Use `mktemp -d /tmp/<name>-XXXXXX`.
-  A bare `mktemp -d` on macOS resolves under `/var/folders`, where
-  `.pi/extensions/no-git-writes/policy.ts` refuses
-  `git worktree add --detach`; it permits detached worktrees only under
-  `/tmp`. The submodule makes `git worktree remove` refuse here: remove
-  the scratch directory with `rm -rf`, then `git worktree prune`.
-- **Every wait has a deadline.** No open-ended polling in code or in
-  your own shell. macOS has no `timeout` command; give the wait its
-  deadline another way.
-- **Verify what you touched; CI runs the whole.** For a bug whose cause
-  is not plain from the code (a race, a flake, a wrong guess about tmux,
-  pi or Claude Code), write the test first, watch it fail, and quote that
-  failure. A simple fix, and a feature, need tests that only pass. Test in proportion to the change: a trivial
-  one (a character of spacing, a word of text) updates the expected
-  strings it breaks and adds no new tests. Negative controls (breaking the code to prove
-  a test can fail) only where a test could plausibly pass vacuously -
-  timing, races, deduplication, polling; never for a trivial change
-  such as text, spacing or a renamed field. Then run `make verify` once
-  after the last edit (`E2E=TestFoo` to limit e2e to the touched behaviour).
-  It owns environment scrubbing and pinned-fork selection. This replaces
-  the separate build/test recipes: do not also run `make test` or `make e2e`.
-  No loops or second tmux build unless the brief requests `make flake`.
-  Report PASS/FAIL/SKIP as
-  printed; a failure in a file you do not own is reported, not fixed.
-- **Docs are not per task.** Do not edit `docs/` or this file unless the
-  brief assigns them. Put any prose a change deserves in your report.
-- **Report through `notify_parent`, under 4000 characters**, leading
-  with what was built and the pre-fix failures.
+  A bare `mktemp -d` on macOS resolves under `/var/folders`.
+  There, `.pi/extensions/no-git-writes/policy.ts` refuses
+  `git worktree add --detach`.
+  It permits detached worktrees only under `/tmp`.
+
+  The submodule makes `git worktree remove` refuse here.
+  Remove the scratch directory with `rm -rf`.
+  Then use `git worktree prune`.
+- **Every wait has a deadline.**
+  Do not poll without a deadline in code or your shell.
+  macOS has no `timeout` command.
+  Give the wait its deadline another way.
+- **Verify what you touched; CI runs the whole.**
+  If a bug's cause is not clear from the code, write the test first.
+  This includes a race, a flake, or an incorrect assumption about
+  tmux, pi or Claude Code.
+  Watch the test fail.
+  Quote that failure.
+  A simple fix or a feature needs tests that only pass.
+
+  Test in proportion to the change.
+  For a trivial change, update the expected strings that it breaks.
+  Do not add new tests for it.
+  Trivial changes include a character of spacing or a word of text.
+
+  Use negative controls only where a test could pass without checking
+  the intended behaviour:
+  timing, races, deduplication or polling.
+  Negative controls break the code to prove that a test can fail.
+  Never use them for a trivial change such as text, spacing or a
+  renamed field.
+
+  After the last edit, run `make verify` once.
+  Use `E2E=TestFoo` to limit e2e to the changed behaviour.
+  It controls environment scrubbing and pinned-fork selection.
+  This replaces the separate build/test recipes.
+  Do not also run `make test` or `make e2e`.
+
+  Unless the brief requests `make flake`, do not use loops or a
+  second tmux build.
+  Report PASS/FAIL/SKIP as printed.
+  If a failure is in a file you do not own, report it.
+  Do not fix it.
+- **Docs are not per task.**
+  Unless the brief assigns them, do not edit `docs/` or this file.
+  Put prose that a change needs in your report.
+- **Report through `notify_parent`, under 4000 characters**.
+  Start with what you built and the pre-fix failures.
 
 ## Releasing
 
-kido carries **no release version and no tags, deliberately**. Versioning
-lives in `andreypopp/homebrew-tap`'s `kido` formula: a git `revision:`
-with a hand-bumped `version`. The formula pins only the kido git revision;
-`make install` builds the fork from the `third_party/tmux` submodule that
-revision pins, via `scripts/install-tmux-fork.sh`.
+kido deliberately has **no release version and no tags**.
+Versioning uses the `kido` formula in `andreypopp/homebrew-tap`:
+a git `revision:` with a manually increased `version`.
+The formula pins only the kido git revision.
+`make install` builds the fork from that revision's pinned
+`third_party/tmux` submodule through `scripts/install-tmux-fork.sh`.
 
-After landing on `main`, run `scripts/release.sh VERSION` (or
-`make release VERSION=x.y.z`); use `--dry-run` to inspect its actions.
-It requires green CI for origin/main, compares tool and subcommand lists
-with the tap's current revision, and requires a minor bump for removals
-or renames: panes must be restarted, not /reloaded. It edits and commits
-the brew tap formula, fast-forwards `~/Workspace/homebrew-tap`, and pushes
-from that SSH checkout. It never runs `brew upgrade`.
+After the change is on `main`, run `scripts/release.sh VERSION`
+(or `make release VERSION=x.y.z`).
+Use `--dry-run` to inspect its actions.
+It requires green CI for origin/main.
+It compares tool and subcommand lists with the tap's current revision.
+Removals or renames require a minor bump.
+Panes must restart, not /reload.
 
-`make preview-pi` atomically replaces the installed pi extensions,
-backing up originals once; `make unpreview-pi` restores them. Run `/reload`
-in the panes afterward. `KIDO_PREVIEW_PREFIX` selects a fake install for tests.
+The script edits and commits the brew tap formula.
+It fast-forwards `~/Workspace/homebrew-tap`.
+It pushes from that SSH checkout.
+It never runs `brew upgrade`.
 
-Only `kido-app/N.N.N` tags mark Kido.app releases, built from `kido-app`
-by `app/scripts/release.sh` and published as `Casks/kido-app.rb` in
-`andreypopp/homebrew-tap`; kido itself is never tagged.
-`brew audit`/`brew style` vendor gems into the
-Homebrew checkout itself, which can leave it dirty. Verify against a real
-tmux server before releasing — the ppx_expect tests do not need tmux, and e2e skips
-silently without the fork.
+`make preview-pi` atomically replaces the installed pi extensions.
+It backs up the originals once.
+`make unpreview-pi` restores them.
+Afterward, run `/reload` in the panes.
+`KIDO_PREVIEW_PREFIX` selects a fake install for tests.
+
+Only `kido-app/N.N.N` tags mark Kido.app releases.
+`app/scripts/release.sh` builds them from `kido-app`.
+They are published as `Casks/kido-app.rb` in `andreypopp/homebrew-tap`.
+kido itself never has tags.
+
+`brew audit`/`brew style` vendor gems into the Homebrew checkout itself.
+This can leave the checkout dirty.
+Before a release, verify against a real tmux server.
+The ppx_expect tests do not need tmux.
+Without the fork, e2e silently skips.
 
 ## Commit style
 
-One imperative sentence, usually with no prefix and no trailing period.
-The body says *why*, in prose, hard-wrapped — and where a change is
-subtle, why the test was written the way it was. Recent history is the
-reference:
+Use one imperative sentence, usually with no prefix and no trailing period.
+The body explains *why*, in hard-wrapped prose.
+For a subtle change, it also explains why the test has that design.
+Use recent history as the reference:
 
     Send a prompt as a paste, so its newlines survive
     Quitting an editor no longer flashes the row green
@@ -766,15 +1004,22 @@ reference:
 
 ## Known-open
 
-- A marked `ssh` pane whose far side reaches its first prompt in the same
-  whole second ssh started stays running until a later remote prompt.
-  `Pane_status.observe` requires `last_prompt > command_start`: accepting
-  the tie would mistake the local prompt for a remote one.
-- An `ssh` from an unintegrated local shell reports Unknown until the
-  first remote command completes: with no local `command_start`, a
-  remote prompt alone cannot latch `interactive`.
+- A marked `ssh` pane stays running if its first remote prompt arrives
+  in the same whole second that ssh starts.
+  It stays running until a later remote prompt.
+  `Pane_status.observe` requires `last_prompt > command_start`.
+  Accepting a tie would mistake the local prompt for a remote one.
+- An `ssh` from an unintegrated local shell reports Unknown until
+  the first remote command completes.
+  Without a local `command_start`, a remote prompt alone cannot latch
+  `interactive`.
 
-The subagent system's design limits (a child moved to another session, a
-blocked ask holding a whole turn, a child that exits before its window is
-kept, a child that crashes before `notify_parent`) are under "Known
-limits" in docs/design.md and "Limits" in docs/design-subagents.md.
+The subagent system has these design limits:
+
+- A child moves to another session.
+- A blocked ask holds a whole turn.
+- A child exits before its window is kept.
+- A child crashes before `notify_parent`.
+
+These limits are under "Known limits" in docs/design.md and "Limits" in
+docs/design-subagents.md.

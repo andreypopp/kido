@@ -1,12 +1,12 @@
 # kido
 
-A workflow on top of tmux to manage coding agents (pi and Claude Code are supported).
+A tmux workflow to manage coding agents. It supports pi and Claude Code.
 
 Website: <https://kido.tools>
 
-Kido runs a modified tmux to gather status from every pane and to render a
-sidebar with this information. On top of that, kido ships with a small set of pi
-extensions for process management (subagents, an async bash tool), which use
+Kido runs a modified tmux to collect status from every pane and show this
+information in a sidebar. Kido includes a small set of pi extensions for
+process management: subagents and an async bash tool. These extensions use
 tmux for supervision and status reporting.
 
 ## Install
@@ -15,21 +15,20 @@ tmux for supervision and status reporting.
 brew install andreypopp/tap/kido
 ```
 
-Then, from a plain terminal:
+Then start kido from a plain terminal:
 
 ```sh
 kido
 ```
 
-Now use it as you would use tmux.
+Use kido as you use tmux.
 
 ## Configuration
 
-Your own configuration goes in `~/.config/kido/kido.conf`
-(`$XDG_CONFIG_HOME/kido/kido.conf` when that is set), in tmux's syntax.
+Put your configuration in `~/.config/kido/kido.conf`, with tmux syntax.
+If you set `$XDG_CONFIG_HOME`, use `$XDG_CONFIG_HOME/kido/kido.conf` instead.
 
-If you want your `~/.tmux.conf` to take effect, you need to source it from
-`kido.conf`:
+If you want to use your `~/.tmux.conf`, source it from `kido.conf`:
 
 ```tmux
 source-file ~/.tmux.conf
@@ -37,11 +36,11 @@ source-file ~/.tmux.conf
 
 ### Sidebar colours
 
-The sidebar's colours are tmux options in tmux's style syntax (`fg=`,
-`bg=`, `bold`, `italics`, ...; the 16 ANSI colour names, `colourN` or
-`#rrggbb`). The sidebar reads them about once a second, so a reload
-restyles it within a second. An unset option keeps the default; the
-first bad one is named in the sidebar's last row.
+The sidebar colours are tmux options that use tmux style syntax:
+`fg=`, `bg=`, `bold`, `italics`, ... . Colours use the 16 ANSI colour names,
+`colourN` or `#rrggbb`. The sidebar reads the options about once a second.
+Thus, a reload changes its style within a second. An unset option keeps
+the default. The sidebar's last row names the first invalid option.
 
 | option | styles |
 |--------|--------|
@@ -53,7 +52,7 @@ first bad one is named in the sidebar's last row.
 | `@kido-sidebar-current-rows-style` | `bg=` fills the current session's rows |
 | `@kido-sidebar-running-style`, `-waiting-`, `-done-`, `-stalled-`, `-error-` | status glyphs |
 
-The panel behind them is `side-status-style`. For example:
+`side-status-style` sets the panel behind these rows. For example:
 
 ```tmux
 set -g @kido-sidebar-row-style          "fg=#eee8d5"
@@ -66,7 +65,7 @@ set -g @kido-sidebar-current-rows-style "bg=#0f3a47"
 
 ## Keys
 
-By default the following keys are bound:
+The default key bindings are:
 
 | key | action |
 |-----|--------|
@@ -76,7 +75,7 @@ By default the following keys are bound:
 | drag the sidebar's edge | resize it |
 | `S-Up` / `S-Down` | switch the client to the previous / next window (works with the sidebar unfocused too) |
 
-While the sidebar is focused:
+When the sidebar has keyboard focus:
 
 | key | action |
 |-----|--------|
@@ -89,52 +88,69 @@ While the sidebar is focused:
 
 ## Status
 
-Agent panes are identified by the OSC 7501 root app pi or claude-code. pi and Claude Code
-show native running, waiting, done and idle status. Blocked messages form
-the caption; pane titles name sessions. Done lasts until you visit the pane.
-Claude Code runs unmodified, without a kido shim or settings. Setting
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` disables its native status too.
-`kido prompt` can paste to a native agent pane; only local pi identities
+The OSC 7501 root app `pi` or `claude-code` identifies agent panes.
+pi and Claude Code show native running, waiting, done and idle status.
+Blocked messages supply the caption. Pane titles name sessions.
+Done status continues until you visit the pane.
+
+Claude Code runs unmodified, without a kido shim or settings.
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables its native status.
+`kido prompt` can paste to a native agent pane. Only local pi identities
 appear in `list_runs`, accept `message_agent`, or answer `get-agent`.
 Snapshots resume local pi identities or restart bare pi, not Claude Code.
 
-Shell panes with the OSC 133 integration use the same indicators: green `▌`
-while a command runs, then, until you visit the pane, green `✓` if the last
-one exited zero or red `▌` if it exited nonzero.
+Shell panes with the OSC 133 integration use the same indicators:
 
-Kido overrides the `ssh` command to inject shell integration on the remote side.
-This means shell panes show the status and command for remote shells as well.
+- Green `▌` while a command runs.
+- Green `✓` if the last command exited zero, until you visit the pane.
+- Red `▌` if the last command exited nonzero, until you visit the pane.
+
+Kido overrides the `ssh` command to add shell integration on the remote side.
+Thus, shell panes also show the status and command for remote shells.
 
 ## Upgrading from the setup-command era
 
-Earlier kido was a sidebar installed beside your own tmux, configured by
-`kido setup-*`. Those commands are gone, and so is the tap's `tmux`
-formula. Nothing below is required - what the old setup left behind is
-inert under kido - but all of it can go:
+Earlier kido used a sidebar installed beside your own tmux, with
+configuration from `kido setup-*`. Those commands and the tap's `tmux`
+formula no longer exist. The old setup files have no effect under kido.
+The steps below are optional, but you can remove all these files:
 
 ```sh
 brew uninstall andreypopp/tap/tmux   # and `brew install tmux` for a stock one
 rm -f ~/.pi/agent/extensions/kido-status.ts ~/.pi/agent/extensions/kido-agents.ts
 ```
 
-Then delete, by hand, the marked kido blocks (`# >>> kido ... >>>` to
-`# <<< kido ... <<<`) from `~/.tmux.conf`, `~/.zshrc`, `~/.bashrc` and
-whichever of `~/.bash_profile`, `~/.bash_login` or `~/.profile` has one,
-and obsolete kido entries from `~/.claude/settings.json`.
+Then manually delete the marked kido blocks (`# >>> kido ... >>>` to
+`# <<< kido ... <<<`) from these files:
 
-Anything you want to keep from the sidebar block in `~/.tmux.conf` belongs
-in `~/.config/kido/kido.conf` now.
+- `~/.tmux.conf`
+- `~/.zshrc`
+- `~/.bashrc`
+- Whichever of `~/.bash_profile`, `~/.bash_login` or `~/.profile` has a block.
+
+Delete obsolete kido entries from `~/.claude/settings.json`.
+
+If you want to keep settings from the sidebar block in `~/.tmux.conf`,
+put them in `~/.config/kido/kido.conf`.
 
 ## Development
 
-kido is OCaml, built with dune's own package management: dune fetches
-and builds the compiler and every dependency from `dune.lock` into
-`_build`, so no opam is involved.
+kido uses OCaml and dune's own package management. dune downloads and
+builds the compiler and every dependency from `dune.lock` into `_build`.
+It does not use opam.
 
-`make install` builds the tmux fork first: it needs git, a C toolchain,
-make, bison, autoconf, automake, pkg-config, and the headers and libraries
-for libevent, ncurses and utf8proc. `make e2e` needs Go; the TypeScript
-tests need Node 24 or newer.
+`make install` builds the tmux fork first. It needs:
+
+- git
+- A C toolchain
+- make
+- bison
+- autoconf
+- automake
+- pkg-config
+- The headers and libraries for libevent, ncurses and utf8proc.
+
+`make e2e` needs Go. The TypeScript tests need Node 24 or newer.
 
 ```sh
 curl -fsSL https://get.dune.build/install | sh -s - --release 3.24.2
@@ -146,14 +162,15 @@ make e2e       # drives kido inside a real tmux server
 dune tools install ocamlformat && dune fmt   # ocamlformat is a dune dev tool, not a dependency
 ```
 
-The dune installer installs into `~/.local` and also prints an env file
-you can source; it cannot change the calling shell's PATH.
+The dune installer installs into `~/.local`. It also prints an environment
+file that you can source. It cannot change the calling shell's `PATH`.
 
-The first build compiles OCaml and the dependencies (a few minutes);
-`dune pkg lock` regenerates `dune.lock` after a dependency changes in
-`dune-project`, and the result is committed.
+The first build compiles OCaml and the dependencies in a few minutes.
+After a dependency changes in `dune-project`, `dune pkg lock` regenerates
+`dune.lock`. The project commits the resulting file.
 
-CI runs both suites on every push to `main` and every pull request, on Linux
-and macOS.
+CI runs both suites on Linux and macOS for every push to `main` and every
+pull request.
 
-Ask your coding agent for assistance; kido was built to be developed with one.
+Ask your coding agent for help. kido is designed for development with a
+coding agent.
