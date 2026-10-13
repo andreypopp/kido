@@ -56,7 +56,7 @@ public struct SessionNodes: Decodable, Equatable, Sendable {
     public let id: SessionID
     public let name: String
     public let current: Bool
-    public let nodes: [Node]
+    public var nodes: [Node]
     private enum CodingKeys: String, CodingKey { case id, name, current, nodes }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
