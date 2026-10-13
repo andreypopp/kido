@@ -5,6 +5,7 @@ public enum RPCRequest: Equatable, Sendable {
     case switchWindow(next: Bool), switchSession(next: Bool)
     case jump(Snapshot.Position), selectWindow(SessionID, WindowID), selectSession(SessionID)
     case newWindow(WindowID), newSession, releaseSideFocus
+    case reorder(ReorderMove)
 
     public func data(id: Int) throws -> Data {
         let operation: [String: Any] = switch self {
@@ -16,6 +17,10 @@ public enum RPCRequest: Equatable, Sendable {
         case .newWindow(let w): ["new-window": w.description]
         case .newSession: ["new-session": true]
         case .releaseSideFocus: ["release-side-focus": true]
+        case .reorder(.session(let s, let anchor, let placement)):
+            ["reorder-session": ["session": s.description, "relative-to": anchor.description, "placement": placement.rawValue]]
+        case .reorder(.window(let s, let w, let anchor, let placement)):
+            ["reorder-window": ["session": s.description, "window": w.description, "relative-to": anchor.description, "placement": placement.rawValue]]
         }
         return try JSONSerialization.data(withJSONObject: operation.merging(["id": id]) { _, new in new }) + Data([10])
     }
@@ -24,7 +29,7 @@ public enum RPCRequest: Equatable, Sendable {
         switch (self, value) {
         case (_, .error), (.switchWindow, .switched), (.switchSession, .switched), (.jump, .jumped),
              (.selectWindow, .selected), (.selectSession, .selected), (.newWindow, .created), (.newSession, .created),
-             (.releaseSideFocus, .released): true
+             (.releaseSideFocus, .released), (.reorder, .reordered): true
         default: false
         }
     }

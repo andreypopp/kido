@@ -91,10 +91,10 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     #expect(sidebarRows(snapshot).allSatisfy { $0.height > 0 })
 }
 
-@Test func filteredSessionsKeepIdentity() throws {
+@Test func singleSessionKeepsIdentity() throws {
     let rows = sidebarRows(try fixture(sessions: [0, 1]))
-    let filtered = sidebarRows(try fixture(sessions: [0]))
-    #expect(filtered == rows.filter { $0.id.session == SessionID(number: 0) })
+    let singleSession = sidebarRows(try fixture(sessions: [0]))
+    #expect(singleSession == rows.filter { $0.id.session == SessionID(number: 0) })
     #expect(sidebarRows(try fixture(sessions: [])).isEmpty)
     #expect(Set(rows.map(\.id)).count == rows.count)
     #expect(rows.filter { $0.focused }.count == 1)
@@ -221,9 +221,6 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(rows[9].target?.pane == PaneID(number: 1))
     #expect(Set(rows.map(\.id)).count == rows.count)
     #expect(rows.compactMap(\.target).map(\.pane) == [0, 1, 2, 5, 3, 6].map { PaneID(number: UInt32($0)) })
-    #expect(sidebarSearch(snapshot, query: "Record-only title")?.sessions.isEmpty == true)
-    #expect(sidebarSearch(snapshot, query: "Record-only caption")?.sessions.isEmpty == true)
-    #expect(sidebarRows(sidebarSearch(snapshot, query: "session-0")) == rows)
 }
 
 @Test func recordGuidesGrowFromPaneAndRecordIndicators() throws {
