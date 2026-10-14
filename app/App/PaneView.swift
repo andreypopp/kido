@@ -844,6 +844,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             PaneView.onMain(userdata) { pane in pane.reflow { pane.onFontChange(points) } }
         }, this)
         updateTrackingAreas()
+        registerForDraggedTypes([.fileURL] + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) })
         // AppKit sends no keyUp through the responder chain while Command is
         // held (SurfaceView_AppKit.swift).
         keyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
@@ -1089,6 +1090,30 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     func deny(_ state: UnsafeMutableRawPointer?) {
         complete(state, "")
+    }
+
+    private(set) var pasting: String?
+
+    func paste(_ text: String) {
+        pasting = text
+        defer { pasting = nil }
+        _ = ghostty_surface_binding_action(surface, "paste_from_clipboard", 20)
+    }
+
+    func pasteImage() -> Bool {
+        guard pasting == nil, let types = runtime.pasteboard.types, !types.contains(.fileURL), !types.contains(.string),
+              let type = [NSPasteboard.PasteboardType.png, .tiff].first(where: types.contains) else { return false }
+        (window?.delegate as? WindowOwner)?.uploadImage(runtime.pasteboard.data(forType: type), to: self)
+        return true
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { acceptingInput ? .copy : [] }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard acceptingInput, let owner = window?.delegate as? WindowOwner else { return false }
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        owner.upload(Result { () throws(Failure) in try Upload(files: urls, copying: host != .local) }, to: self)
+        return true
     }
 
     func confirmPaste(_ text: String, _ state: UnsafeMutableRawPointer?) {
@@ -1416,6 +1441,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         resizeAnchor = nil
         if scrollTarget != nil { resetScroll() }
         if let find, event.keyCode == 53 { find.close(); return }
+        if event.keyCode == 53, (window?.delegate as? WindowOwner)?.cancelUploads(self) == true { return }
         if let find, event.keyCode == 36, event.modifierFlags.isDisjoint(with: [.command, .control, .option]) {
             if event.modifierFlags.contains(.shift) { find.previous() } else { find.next() }
             return

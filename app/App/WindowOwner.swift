@@ -434,7 +434,11 @@ private class AlertEscape: NSView {
     #endif
     static func resetClipboardPermissions(_ owners: [WindowOwner]) {
         clipboardConsent.reset()
-        owners.forEach { $0.clipboardPermission = .ask }
+        for owner in owners {
+            owner.clipboardPermission = .ask
+            owner.uploadPermission = .ask
+            owner.releaseUploadPrompt()
+        }
     }
 
     private var clipboardPrompt: (pane: PaneView, alert: NSAlert)?
@@ -471,6 +475,113 @@ private class AlertEscape: NSView {
 
     enum ClipboardPermission { case ask, allow, deny }
     var clipboardPermission = ClipboardPermission.ask
+    var uploadPermission = ClipboardPermission.ask
+    private var uploadPrompt: NSAlert?
+    private var uploads: [String: (pane: PaneView, task: Task<Void, Never>)] = [:]
+
+    private var uploadBase: String? {
+        #if KIDO_VISUAL || KIDO_STRESS
+        if let testUploadBase { return testUploadBase }
+        #endif
+        if case .connected(_, let endpoint, _) = link { return endpoint.directory }
+        return nil
+    }
+
+    func upload(_ planned: Result<Upload, Failure>, to pane: PaneView) {
+        let plan: Upload
+        do { plan = try planned.get() } catch { return notice("Kido did not upload", error.message) }
+        if host == .local, let paths = plan.originals { return insert(paths, into: pane) }
+        guard let base = uploadBase else { return notice("Kido did not upload", "\(host.label) is not connected.") }
+        guard admitsUpload() else { return }
+        if host == .local || uploadPermission == .allow || Self.clipboardConsent.allows(host, .upload) { return transfer(plan, base: base, to: pane) }
+        if uploadPermission == .deny { return notice("Kido did not upload", "Uploads to “\(host.label)” are denied for this connection.") }
+        guard window.isVisible, preparedAlert == nil, window.attachedSheet == nil,
+              Self.clipboardConsent.askingHosts.insert("upload " + host.clipboardKey).inserted else {
+            return note("\(host.label): upload refused while another prompt is open")
+        }
+        let alert = NSAlert()
+        let files = plan.sources.count == 1 ? "1 file" : "\(plan.sources.count) files"
+        alert.messageText = "Upload \(files) (\(String(format: "%.1f", Double(plan.size) / 1_048_576)) MiB) to “\(host.label)”?"
+        alert.informativeText = "Kido copies them to \(base)/drops on \(identity ?? host.label) and pastes their paths. Files are kept for about 7 days."
+        for title in ["Allow for this connection", "Always allow", "Deny"] { alert.addButton(withTitle: title) }
+        uploadPrompt = alert
+        let generation = generation
+        prepareAlert(alert) { [weak self, weak pane] response in
+            guard let self, uploadPrompt === alert else { return }
+            releaseUploadPrompt()
+            if response == .alertSecondButtonReturn { Self.clipboardConsent.allowAlways(host, .upload) }
+            uploadPermission = response == .alertFirstButtonReturn || response == .alertSecondButtonReturn ? .allow : .deny
+            guard uploadPermission == .allow, accepts(generation), let pane else { return }
+            transfer(plan, base: base, to: pane)
+        }
+    }
+
+    func uploadImage(_ raw: Data?, to pane: PaneView) {
+        guard admitsUpload() else { return }
+        let id = UUID().uuidString.lowercased(), generation = generation
+        uploads[id] = (pane, Task { [weak self] in
+            let planned: Result<Upload, Failure>
+            do throws(Failure) { planned = .success(try await Upload(image: raw)) } catch { planned = .failure(error) }
+            guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil else { return }
+            upload(planned, to: pane)
+        })
+    }
+
+    private func admitsUpload() -> Bool {
+        guard uploads.count >= 2 else { return true }
+        notice("Kido did not upload", "An upload is running. Wait for it to finish, or press Escape in its pane to cancel it.")
+        return false
+    }
+
+    private func releaseUploadPrompt() {
+        guard let alert = uploadPrompt else { return }
+        uploadPrompt = nil
+        Self.clipboardConsent.askingHosts.remove("upload " + host.clipboardKey)
+        cancelClipboardAlert(alert)
+    }
+
+    private func transfer(_ plan: Upload, base: String, to pane: PaneView) {
+        let id = UUID().uuidString.lowercased(), generation = generation, drain = drain, arguments = plan.arguments(base: base, id: id)
+        guard let launch = host == .local ? Launch(arguments[0], Array(arguments.dropFirst()), environment: tools.environment) : ssh?.upload(arguments) else {
+            return notice("Kido did not upload", "\(host.label) is not connected.")
+        }
+        let task = Task { [weak self] in
+            let result: Result<(status: Int32, out: String, err: String), Failure>
+            do throws(Failure) { result = .success(try await Child.run(launch, deadline: 60 + Double(plan.size >> 20), drain: drain, input: plan.send)) }
+            catch { result = .failure(error) }
+            guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil else { return }
+            switch result {
+            case .failure(let error): notice("Upload to \(host.label) failed", error.message)
+            case .success(let run) where run.status != 0 || run.out != base + "/drops/" + id:
+                notice("Upload to \(host.label) failed", run.err.isEmpty ? "The upload exited \(run.status)." : run.err)
+            case .success(let run): insert(plan.sources.map { run.out + "/" + $0.name }, into: pane)
+            }
+        }
+        uploads[id] = (pane, task)
+    }
+
+    func cancelUploads(_ pane: PaneView) -> Bool {
+        let running = uploads.filter { $0.value.pane === pane }
+        running.forEach { uploads[$0.key] = nil; $0.value.task.cancel() }
+        return !running.isEmpty
+    }
+
+    private func insert(_ paths: [String], into pane: PaneView) {
+        guard let text = Upload.text(paths) else {
+            return notice("Kido did not paste the path", "A path contains control characters. The files are in \(paths.first.map { ($0 as NSString).deletingLastPathComponent } ?? "").")
+        }
+        guard !pane.disposed, pane.acceptingInput else { return notice("The pane closed before the upload finished", text) }
+        pane.paste(text)
+    }
+
+    private func notice(_ title: String, _ detail: String) {
+        note("\(host.label): \(title): \(detail)")
+        guard alive, preparedAlert == nil, window.attachedSheet == nil else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        prepareAlert(alert) { _ in }
+    }
 
     func cancelClipboardAlert(_ alert: NSAlert) {
         guard preparedAlert?.alert === alert else { return }
@@ -824,6 +935,10 @@ private class AlertEscape: NSView {
         focusTarget = nil
         generation += 1
         clipboardPermission = .ask
+        uploadPermission = .ask
+        uploads.values.forEach { $0.task.cancel() }
+        uploads = [:]
+        releaseUploadPrompt()
         preparedAlert = nil
         if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .abort) }
         task?.cancel()
@@ -882,6 +997,7 @@ private class AlertEscape: NSView {
     var testSSHConfiguration: String?
     var testIdentity: String { identity ?? host.label }
     var testEndpoint: Endpoint?
+    var testUploadBase: String?
     var testBanner: Banner { banner }
     var testSession: SessionView? { session }
     var testConnection: Connection? { if case .connected(let connection, _, _) = link { connection } else { nil } }
