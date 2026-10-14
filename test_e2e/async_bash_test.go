@@ -132,10 +132,6 @@ func TestAsyncBashNotifiesItsParentOnce(t *testing.T) {
 	}
 }
 
-// remain-on-exit is set by a second call after new-window, so tmux loses
-// the race for a command as fast as `true`: the window may vanish. The
-// wrapper reports before it exits, so the notice and outcome survive
-// regardless; the window itself is deliberately not asserted on.
 func TestAsyncBashThatExitsInstantlyStillNotifiesOnce(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

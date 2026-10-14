@@ -15,8 +15,7 @@ import (
 //
 // The flags are spelled onto the line only when the command is literally
 // `pi`, so this spawn names none; hence the fake pi on this server's
-// PATH alone (the race in Tmux.Exec.new_window: a pane that exits first
-// loses its window before remain-on-exit is set).
+// PATH alone.
 func TestSpawnForkCarriesTheForkOntoThePiCommandLine(t *testing.T) {
 	t.Parallel()
 	h := startPathPrefix(t, "alpha", piBinDir)

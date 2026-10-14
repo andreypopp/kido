@@ -420,8 +420,19 @@ let window_exists t window_id =
 
 type window = { window_id : window_id; pane_id : pane_id; pane_pid : int }
 
-let new_window t ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
+let new_window t ?setup ~session ~name ~cwd ~env command =
   let open Result.Infix in
+  let initial_name, setup =
+    match setup with
+    | None -> (name, [])
+    | Some (temporary_name, options) ->
+        let target = string_of_session_id session ^ ":=" ^ temporary_name in
+        ( temporary_name,
+          List.concat_map
+            (fun (key, value) -> [ ";"; "set-option"; "-p"; "-t"; target; key; value ])
+            options
+          @ [ ";"; "rename-window"; "-t"; target; name ] )
+  in
   let* out =
     exec t
       ([
@@ -433,39 +444,27 @@ let new_window t ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
          "-t";
          string_of_session_id session ^ ":";
          "-n";
-         name;
+         initial_name;
          "-c";
          cwd;
        ]
       @ List.concat_map (fun kv -> [ "-e"; kv ]) env
-      @ command)
+      @ command @ setup)
   in
-  let* w =
-    match String.split ~by:":" out with
-    | [ window_id; pane_id; pid ] -> (
-        match int_of_string_opt pid with
-        | Some pane_pid -> (
-            try
-              Ok
-                {
-                  window_id = window_id_of_string window_id;
-                  pane_id = pane_id_of_string pane_id;
-                  pane_pid;
-                }
-            with Invalid_argument _ ->
-              Error (Printf.sprintf "new-window: unexpected output %S" out))
-        | None -> Error (Printf.sprintf "new-window: unexpected pane_pid %S" pid))
-    | _ -> Error (Printf.sprintf "new-window: unexpected output %S" out)
-  in
-  (* A command that exits fast enough always beats remain-on-exit; losing that
-     race is not a failure to create the window. *)
-  if not remain_on_exit then Ok w
-  else
-    match
-      exec t [ "set-option"; "-p"; "-t"; string_of_pane_id w.pane_id; "remain-on-exit"; "on" ]
-    with
-    | Error e when window_exists t w.window_id -> Error e
-    | Ok _ | Error _ -> Ok w
+  match String.split ~by:":" out with
+  | [ window_id; pane_id; pid ] -> (
+      match int_of_string_opt pid with
+      | Some pane_pid -> (
+          try
+            Ok
+              {
+                window_id = window_id_of_string window_id;
+                pane_id = pane_id_of_string pane_id;
+                pane_pid;
+              }
+          with Invalid_argument _ -> Error (Printf.sprintf "new-window: unexpected output %S" out))
+      | None -> Error (Printf.sprintf "new-window: unexpected pane_pid %S" pid))
+  | _ -> Error (Printf.sprintf "new-window: unexpected output %S" out)
 
 let%test_module "Tests" =
   (module struct

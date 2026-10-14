@@ -52,7 +52,6 @@ val mark_ssh :
   (unit, string) result
 
 val rank_sessions : Tmux.t -> Tmux.session_id list -> (unit, string) result
-val mark_run : Tmux.t -> Tmux.pane_id -> string -> (unit, string) result
 val shell : t -> shell
 val find : t list -> Tmux.pane_id -> t option
 

@@ -244,37 +244,32 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
          { result = Failed; text = e; at = Some (Timestamp.now ()) });
     Error e
   in
+  let id = Subrun.string_of_id meta.id in
   let* w =
-    match Tmux.new_window tmux ~session ~name:meta.name ~cwd:meta.cwd ~env command with
+    match
+      Tmux.new_window tmux
+        ~setup:(id, [ (Tmux_vars.run, id); ("remain-on-exit", "on") ])
+        ~session ~name:meta.name ~cwd:meta.cwd ~env command
+    with
     | Ok w -> Ok w
     | Error e -> fail e
   in
   let meta = { meta with pane = Some w.pane_id; pid = w.pane_pid } in
   Subrun.write_meta ~dir meta;
   Option.iter (fun delivered -> Subrun.reset_for_resume ~dir meta.id ~delivered) resume;
-  let id = Subrun.string_of_id meta.id in
-  let+ () =
-    match Tmux_pane.mark_run tmux w.pane_id id with
-    | Ok () -> Ok ()
-    | Error e -> (
-        match meta.kind with
-        | (Bash | Stream) when not (Tmux.window_exists tmux w.window_id) -> Ok ()
-        | Bash | Stream | Agent ->
-            ignore (Tmux.run tmux [ "kill-window"; "-t"; Tmux.string_of_window_id w.window_id ]);
-            fail e)
-  in
-  match meta.kind with
-  | Bash | Stream ->
-      String.concat " "
-        [
-          Tmux.string_of_window_id w.window_id;
-          Tmux.string_of_pane_id w.pane_id;
-          id;
-          Subrun.output_path ~dir meta.id;
-        ]
-  | Agent ->
-      String.concat " "
-        [ Tmux.string_of_window_id w.window_id; Tmux.string_of_pane_id w.pane_id; id ]
+  Ok
+    (match meta.kind with
+    | Bash | Stream ->
+        String.concat " "
+          [
+            Tmux.string_of_window_id w.window_id;
+            Tmux.string_of_pane_id w.pane_id;
+            id;
+            Subrun.output_path ~dir meta.id;
+          ]
+    | Agent ->
+        String.concat " "
+          [ Tmux.string_of_window_id w.window_id; Tmux.string_of_pane_id w.pane_id; id ])
 
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 

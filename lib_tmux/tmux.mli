@@ -63,7 +63,7 @@ type window = { window_id : window_id; pane_id : pane_id; pane_pid : int }
 
 val new_window :
   t ->
-  ?remain_on_exit:bool ->
+  ?setup:string * (string * string) list ->
   session:session_id ->
   name:string ->
   cwd:string ->

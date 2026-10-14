@@ -314,9 +314,6 @@ let rank_sessions tmux ids =
             @ [ "set-option"; "-t"; string_of_session_id id; Tmux_vars.order; string_of_int i ])
           ids))
 
-let mark_run tmux pane_id run_id =
-  Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane_id; Tmux_vars.run; run_id ]
-
 let%test_module "Tests" =
   (module struct
     let%expect_test "client state" =

@@ -167,6 +167,5 @@ let target ~tmux ~dir ~session ask =
       | None ->
           Result.map
             (fun (w : Tmux.window) -> w.pane_id)
-            (Tmux.new_window tmux ~remain_on_exit:false ~session ~name:("ask-" ^ ask.id)
-               ~cwd:ask.cwd ~env:[]
+            (Tmux.new_window tmux ~session ~name:("ask-" ^ ask.id) ~cwd:ask.cwd ~env:[]
                [ "pi"; "--session"; ask.session_file ]))

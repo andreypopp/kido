@@ -349,11 +349,6 @@ func TestSpawnTakesATaskAtTheCap(t *testing.T) {
 	}
 }
 
-// A window gone before kido could mark it (here a hook kills every new
-// window the moment it exists) leaves nothing that will ever report an
-// agent run, so that run fails and the spawn says so. A bash run's own
-// wrapper records and reports its ending, so for it the same loss is the
-// ordinary ending it is: the negative control, same hook, one kind apart.
 func TestSpawnWhoseWindowIsGoneBeforeItsMark(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -375,10 +370,9 @@ func TestSpawnWhoseWindowIsGoneBeforeItsMark(t *testing.T) {
 	if !strings.HasPrefix(agent, "kido tool spawn_subagent: ") || !strings.Contains(agent, "rc=1") {
 		t.Errorf("agent spawn = %q, want the failed mark reported and rc=1", agent)
 	}
-	if fields := strings.Fields(bash); len(fields) != 5 || !strings.Contains(bash, "rc=0") {
-		t.Fatalf("async_bash = %q, want \"<window> <pane> <run> <output>\" and rc=0", bash)
+	if !strings.HasPrefix(bash, "kido tool async_bash: ") || !strings.Contains(bash, "rc=1") {
+		t.Errorf("async_bash = %q, want the failed creation reported and rc=1", bash)
 	}
-	bashRun := strings.Fields(bash)[2]
 
 	var runs []struct {
 		ID      string `json:"id"`
@@ -392,21 +386,20 @@ func TestSpawnWhoseWindowIsGoneBeforeItsMark(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.SplitN(out, "\n", 2)[0]), &runs); err != nil {
 		t.Fatalf("kido runs --json: %v (%q)", err, out)
 	}
-	found := false
-	for _, r := range runs {
-		if r.Name != "gone-e2e" {
-			continue
+	for name, output := range map[string]string{"gone-e2e": agent, "gone-bash-e2e": bash} {
+		found := false
+		for _, r := range runs {
+			if r.Name != name {
+				continue
+			}
+			found = true
+			if r.Outcome == nil || r.Outcome.Result != "failed" || r.Outcome.Text == "" || !strings.Contains(output, r.Outcome.Text) {
+				t.Errorf("run %s outcome = %+v, want failed with the error the spawn printed", r.ID, r.Outcome)
+			}
 		}
-		found = true
-		if r.Outcome == nil || r.Outcome.Result != "failed" || r.Outcome.Text == "" || !strings.Contains(agent, r.Outcome.Text) {
-			t.Errorf("agent run %s outcome = %+v, want failed with the error the spawn printed", r.ID, r.Outcome)
+		if !found {
+			t.Errorf("kido runs --json = %q, want run %s recorded", out, name)
 		}
-	}
-	if !found {
-		t.Errorf("kido runs --json = %q, want the agent run gone-e2e recorded", out)
-	}
-	if _, err := os.Stat(filepath.Join(h.stateDir, "runs", bashRun, "outcome")); !os.IsNotExist(err) {
-		t.Errorf("bash run %s has a recorded outcome (%v); its window's loss is its wrapper's to report", bashRun, err)
 	}
 }
 

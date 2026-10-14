@@ -116,9 +116,6 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// The sleep is not decoration: Tmux.Exec.new_window sets remain-on-exit in a
-	// second call, and a command exiting before it lands loses its window
-	// outright (measured 20/20 for /bin/true; see new_window's own comment).
 	script := fmt.Sprintf(`sleep 0.3; %s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"`, kidoBin)
 	runID, windowID := h.spawnRun("done-e2e", script)
 	// The parent gets an inbox only now, spawnRun having recorded it without

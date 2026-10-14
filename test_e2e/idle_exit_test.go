@@ -444,9 +444,7 @@ func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 // The model comes back the same way, unless the resume names its own.
 //
 // Both are spelled onto the command line only when the command is
-// literally `pi`; whether that name resolves decides whether the pane
-// lives long enough to set remain-on-exit (Tmux.Exec.new_window's
-// race), so this test's own fake pi goes on this server's PATH alone.
+// literally `pi`, so this test's own fake pi goes on this server's PATH alone.
 // It answers --list-models too, which the carried model is checked by.
 func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	t.Parallel()
