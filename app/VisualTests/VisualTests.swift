@@ -444,7 +444,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         updateTabs(.running(try fixture("stalled")))
         XCTAssertEqual(sidebar.tabs.entries[1].status, .error)
         updateTabs(.running(try fixture("done")))
-        XCTAssertEqual(sidebar.tabs.entries[1].status, .quiet)
+        XCTAssertEqual(sidebar.tabs.entries[1].status, .done)
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "middle", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }

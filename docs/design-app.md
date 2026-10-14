@@ -749,12 +749,17 @@ tmux window name until its feed label arrives. A tab whose active pane is an
 agent or agent run is drawn like its sidebar row: semibold, with the display-only
 @ prefix when that row has one; other tabs are regular with no @. WindowView's active
 pane, read from tmux layouts and `%window-pane-changed`, is shared with terminal
-focus. Status dots summarize the window and its descendants: a 6pt dot on the
-leading side, centered 15pt from the tab surface's leading edge, red for error
-and orange for waiting. The label is inset 26pt on both sides regardless of the
-dot, so nothing shifts. Hovering the dot's own 16pt slot, and only that slot,
+focus. Each tab combines its window and descendants into one status mark,
+ranked error (including stalled and unseen failed outcomes, command exits
+too) > waiting > running > done (unseen) > quiet. With the sidebar collapsed
+or floating, tabs use the pane row marks: red dot, orange dot, green running
+dot and green check. Docked tabs show only red and orange; quiet shows nothing.
+Accessibility labels follow the visible mark with " — error", " — waiting",
+" — running" or " — done". The mark is centered 15pt from the tab surface's
+leading edge. The label is inset 26pt on both sides regardless of the
+mark, so nothing shifts. Hovering the mark's own 16pt slot, and only that slot,
 replaces it with a 16pt × close button whose hover brightens it with a 10%
-labelColor, 4pt-radius fill; leaving the slot restores the dot. A 28pt-wide,
+labelColor, 4pt-radius fill; leaving the slot restores the mark. A 28pt-wide,
 icon-only + at the trailing end of the strip, outside the scrolling tabs,
 creates a window after the current one through the same new-window request as
 Command-T.
@@ -839,8 +844,9 @@ header plus center is 15pt from the right edge. Indicators are 6pt dots:
 idle and quiet gray (secondaryLabelColor at 45%), running/compacting green,
 waiting rows of any kind orange, failures and stalled red. Done/completed is
 a plain green checkmark, about 6×4pt at a 2pt stroke, visually centered on
-the dot position. Because tabs aggregate the same mapping, a stalled pane
-also gives its window tab a red dot.
+the dot position. Tabs aggregate the same mapping, with running and done
+marks visible only when the sidebar is collapsed or floating; a stalled pane
+always gives its window tab a red dot.
 
 There are no window or child gaps and no divider rows. Each session retains
 its 16pt bottom gap. The header plus is 11pt, matching its label.
@@ -889,9 +895,9 @@ Replies do not synthesize topology.
 
 Snapshots require asks and every pane's program_status. Asks are decoded only;
 there is no ask UI. Pane indicators come from the typed lifecycle, never
-re-derived from raw program records. A tab's dot summarizes its window and
-descendants' row statuses: red for any error (including an unseen failed
-outcome, command exits too), else orange for any waiting row.
+re-derived from raw program records. A tab's mark summarizes its window and
+descendants' row statuses in error > waiting > running > unseen done > quiet
+order; docked tabs show only error and waiting marks.
 
 Kido does not acknowledge anything: the app owns seen. One app-wide record,
 keyed by host, holds per pane and outcome source (agent, program report,

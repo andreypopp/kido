@@ -16,6 +16,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     let list = SidebarView()
     let content = NSView()
     let tabs = WindowTabs()
+    private var lastTabActivity = false
     let terminalHost = NSView()
     private let dock = NSView()
     private(set) var isFloating = false
@@ -125,6 +126,11 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         let left = terminalHost.safeAreaInsets.left
         if !background, view.window != nil, !isCollapsed, !isFloating, left >= 200 {
             UserDefaults.standard.set(left, forKey: "nativeSidebarWidth")
+        }
+        let tabActivity = tabs.showsActivity
+        if tabActivity != lastTabActivity {
+            lastTabActivity = tabActivity
+            tabs.needsDisplay = true
         }
         view.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "newSession" }?.isHidden = isCollapsed || isFloating
         dockedGlass?.cornerRadius = isFloating ? 18 : 0
