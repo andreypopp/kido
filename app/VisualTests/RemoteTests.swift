@@ -266,31 +266,8 @@ import SidebarFeed
     }
 
     func testOSC52LocalhostRemoteWindow() async throws {
-        let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ForwardAgent=no","-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
-        guard trust.status == 0 else { throw XCTSkip("Prepared BatchMode localhost unavailable: \(trust.err)") }
-        let root = "/tmp/kr-osc52-" + UUID().uuidString.prefix(8)
+        let (root, owner, board) = try await localhostOwner("/tmp/kr-osc52-")
         let fm = FileManager.default
-        for path in [root, root + "/home", root + "/state", root + "/bin"] {
-            try fm.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        }
-        try ("#!/bin/sh\nexec " + SSH.quote(tools.kido) + " \"$@\"\n").write(toFile: root + "/bin/kido", atomically: true, encoding: .utf8)
-        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root + "/bin/kido")
-        let env = ["HOME": root + "/home", "XDG_STATE_HOME": root + "/state", "PATH": root + "/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
-        let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
-        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
-        owner.testRemoteEnvironment = env
-        let config = root + "/ssh.conf"
-        try "Host localhost\n  ForwardAgent no\n".write(toFile: config, atomically: true, encoding: .utf8)
-        owner.testSSHConfiguration = config
-        addTeardownBlock { @MainActor in
-            owner.close()
-            _ = try? await Child.run(tools.tmux, ["-S", root + "/state/kido-app/socket", "kill-server"])
-            try? fm.removeItem(atPath: root)
-            board.releaseGlobally()
-        }
-        let launched = try await Child.run(tools.kido, ["server", "--server", root + "/state/kido-app"], env: tools.environment.merging(env) { _, new in new })
-        XCTAssertEqual(launched.status, 0, launched.err)
         let clipboardModeBeforeAttach = try await Child.run(tools.tmux, ["-S", root + "/state/kido-app/socket", "show", "-sv", "get-clipboard"])
         XCTAssertEqual(clipboardModeBeforeAttach.status, 0, clipboardModeBeforeAttach.err)
         owner.start()
@@ -508,6 +485,130 @@ import SidebarFeed
         for owner in owners {
             XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
         }
+    }
+
+    func testLocalhostUploadRidesTheMasterOnly() async throws {
+        let (root, owner, board) = try await localhostOwner("/tmp/kr-up-")
+        let fm = FileManager.default
+        let drops = root + "/state/kido-app/drops"
+        try fm.createDirectory(atPath: root + "/files", withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        owner.window.orderFront(nil)
+        owner.start()
+        try await until("upload SSH window connected") { owner.testConnection != nil && owner.testBanner.isHidden }
+        let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.panes.first)
+        let received = root + "/received", script = root + "/record.py"
+        try """
+        import os, select, time, tty
+        tty.setraw(0)
+        os.write(1, b'\\x1b[?2004h')
+        out = open('\(received)', 'ab', buffering=0)
+        end = time.monotonic() + 120
+        while time.monotonic() < end:
+            readable, _, _ = select.select([0], [], [], 0.2)
+            if readable: out.write(os.read(0, 65536))
+        """.write(toFile: script, atomically: true, encoding: .utf8)
+        _ = await replies(owner, [Command("respawn-pane", "-k", "-t", pane.pane, "exec /usr/bin/python3 " + script)])
+        try await until("recorder ready") { fm.fileExists(atPath: received) }
+        try await Task.sleep(for: .milliseconds(300))
+        func pasted() -> String { (try? String(contentsOfFile: received, encoding: .utf8)) ?? "" }
+        func published() -> [String] { ((try? fm.contentsOfDirectory(atPath: drops)) ?? []).sorted() }
+
+        let blob = root + "/files/blob.bin"
+        XCTAssertTrue(fm.createFile(atPath: blob, contents: Data((0..<(3 << 20)).map { UInt8(truncatingIfNeeded: $0) })))
+        drop(pane, board, [blob])
+        try await until("upload consent asked") { owner.preparedAlert != nil }
+        XCTAssertEqual(owner.preparedAlert?.alert.messageText, "Upload 1 file (3.0 MiB) to “localhost”?")
+        owner.respondToAlert(.alertFirstButtonReturn)
+        try await until("bracketed path pasted") { pasted().hasSuffix("\u{1b}[201~") }
+        let first = try XCTUnwrap(published().first)
+        XCTAssertEqual(pasted(), "\u{1b}[200~\(drops)/\(first)/blob.bin\u{1b}[201~", "exactly one bracketed paste and no Enter")
+        let remote = try await Child.run(try XCTUnwrap(owner.ssh).upload(["/usr/bin/shasum", "-a", "256", drops + "/" + first + "/blob.bin"]))
+        let local = try await Child.run("/usr/bin/shasum", ["-a", "256", blob])
+        XCTAssertEqual(remote.out.prefix(64), local.out.prefix(64))
+        XCTAssertFalse(remote.out.isEmpty)
+
+        drop(pane, board, [blob, blob])
+        try await until("an identical drop gets its own directory") { published().count == 2 && pasted().components(separatedBy: "\u{1b}[201~").count == 3 }
+        XCTAssertNil(owner.preparedAlert, "the connection's Allow covers the second drop")
+        let second = try XCTUnwrap(published().first { $0 != first })
+        XCTAssertTrue(pasted().hasSuffix("\u{1b}[200~\(drops)/\(second)/blob.bin \(drops)/\(second)/blob-2.bin\u{1b}[201~"), "colliding names get a suffix")
+
+        let big = root + "/files/big.bin"
+        XCTAssertTrue(fm.createFile(atPath: big, contents: Data(count: 60 << 20)))
+        let before = pasted()
+        drop(pane, board, [big])
+        let deadline = Date().addingTimeInterval(20)
+        while !published().contains(where: { $0.hasPrefix(".") }), Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(published().contains { $0.hasPrefix(".") }, "the transfer was staging")
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber,
+                                                    context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        pane.keyDown(with: escape)
+        try await Task.sleep(for: .seconds(2))
+        let staged = published().filter { $0.hasPrefix(".") }
+        XCTAssertEqual(staged.count, 1)
+        XCTAssertEqual(published().count, 3, "cancel leaves only the dot-staged directory")
+        XCTAssertEqual(pasted(), before, "a cancelled upload pastes nothing")
+        let old = try await Child.run("/usr/bin/touch", ["-t", "202601010000", drops + "/" + staged[0]])
+        XCTAssertEqual(old.status, 0, old.err)
+        drop(pane, board, [blob])
+        try await until("the next upload's sweep removes the stale staging directory") { published().count == 3 && !published().contains(where: { $0.hasPrefix(".") }) }
+
+        WindowOwner.clipboardConsent.allowAlways(owner.host, .upload)
+        WindowOwner.resetClipboardPermissions([owner])
+        XCTAssertFalse(WindowOwner.clipboardConsent.allows(owner.host, .upload))
+        drop(pane, board, [blob])
+        try await until("Reset asks again") { owner.preparedAlert != nil }
+        owner.respondToAlert(.alertThirdButtonReturn)
+        drop(pane, board, [blob])
+        try await until("Deny holds for the connection") { owner.preparedAlert != nil }
+        XCTAssertEqual(owner.preparedAlert?.alert.messageText, "Kido did not upload")
+        owner.respondToAlert(.alertFirstButtonReturn)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(published().count, 3)
+
+        let transport = try XCTUnwrap(owner.ssh)
+        let upload = transport.upload(["/usr/bin/printf", "%s", "VIA-MUX"])
+        let direct = transport.launch(["/usr/bin/printf", "%s", "DIRECT"])
+        let viaMux = try await Child.run(upload)
+        XCTAssertEqual(viaMux.status, 0, viaMux.err)
+        XCTAssertEqual(viaMux.out, "VIA-MUX", "the guard does not stop a passenger on a live master")
+        kill(try XCTUnwrap(transport.master?.process.processIdentifier), SIGKILL)
+        try await until("master gone") { transport.master?.process.isRunning != true }
+        let started = Date()
+        let dead = try await Child.run(upload)
+        XCTAssertEqual(dead.status, 255, dead.err)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        let fallback = try await Child.run(direct)
+        XCTAssertEqual(fallback.out, "DIRECT", "negative control: a passenger without the guard bypasses the dead master")
+    }
+
+    private func localhostOwner(_ prefix: String) async throws -> (root: String, owner: WindowOwner, board: NSPasteboard) {
+        let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ForwardAgent=no","-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
+        guard trust.status == 0 else { throw XCTSkip("Prepared BatchMode localhost unavailable: \(trust.err)") }
+        let root = prefix + UUID().uuidString.prefix(8)
+        let fm = FileManager.default
+        for path in [root, root + "/home", root + "/state", root + "/bin"] {
+            try fm.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        try ("#!/bin/sh\nexec " + SSH.quote(tools.kido) + " \"$@\"\n").write(toFile: root + "/bin/kido", atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root + "/bin/kido")
+        let env = ["HOME": root + "/home", "XDG_STATE_HOME": root + "/state", "PATH": root + "/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
+        let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
+        owner.testRemoteEnvironment = env
+        try "Host localhost\n  ForwardAgent no\n".write(toFile: root + "/ssh.conf", atomically: true, encoding: .utf8)
+        owner.testSSHConfiguration = root + "/ssh.conf"
+        addTeardownBlock { @MainActor in
+            owner.close()
+            _ = try? await Child.run(tools.tmux, ["-S", root + "/state/kido-app/socket", "kill-server"])
+            try? fm.removeItem(atPath: root)
+            board.releaseGlobally()
+        }
+        let launched = try await Child.run(tools.kido, ["server", "--server", root + "/state/kido-app"], env: tools.environment.merging(env) { _, new in new })
+        XCTAssertEqual(launched.status, 0, launched.err)
+        return (root, owner, board)
     }
 
     private func until(_ reason: String, seconds: TimeInterval = 25, _ condition: () -> Bool) async throws {
