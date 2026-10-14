@@ -393,7 +393,7 @@ agent owns that pane. The steer and control paths use these two facts to
 identify a human.
 
 Both sender types use the same delivery: `followUp` while streaming,
-or a wake while idle. Only the label depends on the sender.
+or a new run while idle. Only the label depends on the sender.
 
 An `ask` uses the same custom-message handling and relationship header:
 `ask from @<name> (your parent, who spawned you):`, and the other forms.
@@ -446,25 +446,26 @@ the wrapper instead of adding another wrapper.
 
 ### Waking an idle session
 
-For an idle recipient, kido queues the arrival with
-`sendMessage(..., { deliverAs: "nextTurn" })`, then sends a short
-user-role **trigger** with `sendUserMessage`. While the session is
-streaming, kido sends no trigger and uses the kind's steer or follow-up mode.
+kido sends each arrival with
+`sendMessage(..., { deliverAs, triggerTurn: true })`. `deliverAs` is the
+kind's steer or follow-up mode. While a run is active, pi queues the
+message in that mode. While the session is idle, pi starts a run with
+the custom message as its first message. kido sends no user-role text.
+Thus, the run contains no synthetic user prompt. The arrival keeps
+its custom type, header and renderer.
 
-The trigger is one line. Only the incoming kind changes:
-`(kido: a
-message arrived; it follows)` and its three related forms.
-kido installs a wrapper that removes its triggers from outgoing
-messages. A remaining trigger says only what follows. kido sets
-`expandPromptTemplates` to false.
+pi starts this run with the same setup as a prompt. It runs
+`before_agent_start` with `messageType: "custom"`, and kido's handler
+adds its prompt guidelines. The run gets the current system prompt and
+selected tools. It also contains every pending `nextTurn` message.
 
-**One trigger at a time.** If a trigger is pending, kido queues an
-arrival without another trigger. It accepts two asks in one turn
-instead of serializing them. Each ask has its own id and receives a
-reply with `replyTo`, so simultaneous arrival causes no misattribution.
-The `turn_start` handler clears the pending-trigger flag.
-`sendUserMessage` failure also clears it, so a failed wake cannot delay
-later arrivals. The trigger uses the kind's delivery mode.
+**One run at a time.** pi counts the session as busy from the start of
+the run, also while `before_agent_start` handlers run. A second
+arrival during that time goes into the starting run's queue in its own
+mode. It does not start a second run. Two asks can thus be in one run.
+Each ask has its own id and receives a reply with `replyTo`, so
+simultaneous arrival causes no misattribution. An arrival while pi sends
+the `agent_settled` event starts its run after the event.
 
 This handling does not change the idle-exit clock. Arrival of the
 envelope resets the clock, not delivery to the model. Thus, a session
@@ -1433,8 +1434,8 @@ subagent. The sender chooses the kind, not the identity, through
 `kido tool notify_parent` or `kido tool message_agent`. `from` remains
 advisory, as elsewhere in the inbox protocol. Rendering therefore
 needs no identity lookup. A notice always requests a turn. An idle
-parent receives the same wake trigger as a plain message, described
-under "Waking an idle session".
+parent starts a run for it, as for a plain message, described under
+"Waking an idle session".
 
 **Visual arrival is immediate; model delivery steers.** These use two
 paths. Immediately on envelope dispatch, before any message `await`,
@@ -1598,7 +1599,7 @@ problem.
 ## pi extensions, and the seam between them
 
 The pi shim loads two extensions. After interactive terminal feature
-detection, pi 1.1.0 natively emits OSC 7501 root records with `app=pi`.
+detection, pi 1.2.0 natively emits OSC 7501 root records with `app=pi`.
 Its lifecycle supplies working, blocked, done, idle and error. Native
 dialogs report blocked; extension custom UI does not. Terminal stop
 clears the root without app. `PI_PROGRAM_STATUS=0` disables reporting,

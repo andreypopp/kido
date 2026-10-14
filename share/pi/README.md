@@ -1,6 +1,6 @@
 # pi extensions: kido-status and kido-agents
 
-Two extensions, installed together. pi 1.1.0 natively reports status
+Two extensions, installed together. pi 1.2.0 natively reports status
 through OSC 7501 in interactive mode after terminal feature detection.
 Its pane title, set through OSC 0/2, names the session in kido.
 These work even without the kido extensions.

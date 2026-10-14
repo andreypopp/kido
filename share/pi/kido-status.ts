@@ -114,8 +114,6 @@ function spawnDetached(cmd: string, args: string[]): void {
 export interface SessionContext {
   abort(): void;
   shutdown(): void;
-  // Read live, per arriving envelope: only an idle session has to be woken through a prompt.
-  isIdle(): boolean;
   // Absent in a headless session.
   ui?: SessionUI;
 }
@@ -206,7 +204,6 @@ declare global {
   var __kidoPiExtensionInbox: InboxHold | undefined;
   var __kidoPiExtensionSeam: Seam | undefined;
   var __kidoPiExtensionStatusCopy: string | undefined;
-  var __kidoPiExtensionRunAgentPrompt: unknown;
   var __kidoPiExtensionClearQueue: AgentSession["clearQueue"] | undefined;
 }
 

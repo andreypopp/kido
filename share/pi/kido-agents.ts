@@ -9,7 +9,6 @@ import type {
   AgentHooks,
   CompletionItem,
   CompletionProvider,
-  DeliverAs,
   Envelope,
   RunKidoResult,
   Seam,
@@ -142,43 +141,6 @@ const collapsedInbound = (width: number, header: string, body: string, paint: Pa
   const preview = body ? ` ${body.split("\n", 1)[0]}${body.includes("\n") ? "..." : ""}` : "";
   return paint("border", "│ ") + truncateToWidth(paint("dim", header) + paint(undefined, preview), width - 2);
 };
-
-// Read as the user's words whenever the run below cannot drop it; kept short and neutral.
-type CustomType = "kido-message" | "kido-notice" | "kido-ask" | "kido-stream" | "kido-reply";
-
-const WAKE_TRIGGERS: Record<CustomType, string> = {
-  "kido-message": "(kido: a message arrived; it follows)",
-  "kido-notice": "(kido: a notification arrived; it follows)",
-  "kido-ask": "(kido: a question arrived; it follows)",
-  "kido-stream": "(kido: a background run's output follows)",
-  "kido-reply": "(kido: a reply arrived; it follows)",
-};
-
-const TRIGGER_TEXTS: ReadonlySet<unknown> = new Set(Object.values(WAKE_TRIGGERS));
-
-function isWakeTrigger(message: unknown): boolean {
-  if (typeof message !== "object" || message === null || !("role" in message) || message.role !== "user") return false;
-  if (!("content" in message) || !Array.isArray(message.content)) return false;
-  const [part, ...rest]: unknown[] = message.content;
-  return rest.length === 0 && typeof part === "object" && part !== null && "text" in part && TRIGGER_TEXTS.has(part.text);
-}
-
-// prompt() hands the turn's messages to the private _runAgentPrompt, which records and sends
-// them: the one place to drop wake()'s trigger. Remove with wake()'s detour
-// (https://github.com/earendil-works/pi/issues/5581).
-const runAgentPrompt: unknown = (globalThis.__kidoPiExtensionRunAgentPrompt ??= Object.getOwnPropertyDescriptor(
-  AgentSession.prototype,
-  "_runAgentPrompt",
-)?.value);
-if (typeof runAgentPrompt === "function") {
-  Object.defineProperty(AgentSession.prototype, "_runAgentPrompt", {
-    configurable: true,
-    writable: true,
-    value(this: unknown, messages: unknown): unknown {
-      return Reflect.apply(runAgentPrompt, this, [Array.isArray(messages) ? messages.filter((m) => !isWakeTrigger(m)) : messages]);
-    },
-  });
-}
 
 function isMessageQueue(queue: unknown): queue is { messages: AgentSession["messages"] } {
   return typeof queue === "object" && queue !== null && "messages" in queue && Array.isArray(queue.messages);
@@ -440,53 +402,6 @@ export default function (pi: ExtensionAPI) {
     for (const waiter of [...pendingOutbound.values()]) waiter.settle({ gaveUp: "inbox" });
   };
 
-  // A trigger already sent whose turn has not started yet; one is enough for any number of
-  // arrivals, since prompt() injects every pending "nextTurn" message into the turn it
-  // builds. Cleared at pi's turn_start.
-  let wakeInFlight = false;
-
-  // pi's sendMessage(triggerTurn) on an idle session skips prompt() - no
-  // before_agent_start, and a resumed session's stale system prompt makes
-  // pi-claude-bridge refuse the turn. Queueing as "nextTurn" and starting it with
-  // sendUserMessage goes through prompt() instead, keeping the arrival's custom type,
-  // header and renderer. Remove once pi's own triggerTurn path runs prompt().
-  const wake = (
-    message: { customType: CustomType; content: string; display: boolean; details?: unknown },
-    deliverAs: DeliverAs,
-  ): void => {
-    let idle = false;
-    try {
-      idle = !!session?.isIdle();
-    } catch {
-      // A ctx pi has retired (its assertActive) throws rather than answering: mid-/reload.
-      idle = false;
-    }
-    if (!idle) {
-      pi.sendMessage(message, { deliverAs, triggerTurn: true });
-      return;
-    }
-    pi.sendMessage(message, { deliverAs: "nextTurn" });
-    if (wakeInFlight) return;
-    wakeInFlight = true;
-    // expandPromptTemplates is spelled out because the trigger is user-role text and must
-    // never be dispatched as a command.
-    const trigger = WAKE_TRIGGERS[message.customType];
-    const clear = (): void => {
-      wakeInFlight = false;
-    };
-    // prompt() can fail before any turn starts (compaction in progress, unconfigured
-    // model); clearing the flag here stops that from blocking every later arrival.
-    try {
-      void Promise.resolve(pi.sendUserMessage(trigger, { deliverAs, expandPromptTemplates: false })).catch(clear);
-    } catch {
-      clear();
-    }
-  };
-
-  pi.on("turn_start", () => {
-    wakeInFlight = false;
-  });
-
   // labelFrom names an envelope's sender for the model to read. It is a
   // label only, shown to the model, never the address a reply actually
   // resolves against - see pendingInboundAsks below for why.
@@ -523,14 +438,14 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     workStarted();
-    wake(
+    pi.sendMessage(
       {
         customType: MESSAGE_CUSTOM_TYPE,
         content: `${senderHeader("message", sender.name, sender.relation)}\n${env.text}`,
         display: true,
         details: { from: sender.name, relation: sender.relation },
       },
-      "followUp",
+      { deliverAs: "followUp", triggerTurn: true },
     );
   };
 
@@ -539,7 +454,7 @@ export default function (pi: ExtensionAPI) {
     const noticeId = randomUUID();
     pendingNotices.set(noticeId, { from, text });
     renderNoticeWidget();
-    wake({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } }, "steer");
+    pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } }, { deliverAs: "steer", triggerTurn: true });
   };
 
   // A "stream" envelope never reaches the model on arrival: pi drains one steering message
@@ -586,14 +501,14 @@ export default function (pi: ExtensionAPI) {
       streamBuffers.delete(run);
       if (entry.lines.length === 0) continue;
       const header = `async run ${JSON.stringify(entry.name)} output (run ${run})`;
-      wake(
+      pi.sendMessage(
         {
           customType: STREAM_CUSTOM_TYPE,
           content: `${header}\n${streamBatch(entry.lines, entry.output, entry.dropped)}`,
           display: true,
           details: { from: entry.name, run, output: entry.output },
         },
-        "steer",
+        { deliverAs: "steer", triggerTurn: true },
       );
     }
   };
@@ -614,7 +529,7 @@ export default function (pi: ExtensionAPI) {
     const relation = sender?.relation ?? "peer";
     if (env.from.pane) pendingInboundAsks.set(env.id, env.from.pane);
     workStarted();
-    wake(
+    pi.sendMessage(
       {
         customType: ASK_CUSTOM_TYPE,
         content:
@@ -624,7 +539,7 @@ export default function (pi: ExtensionAPI) {
         display: true,
         details: { from, relation, id: env.id, question: env.text },
       },
-      "followUp",
+      { deliverAs: "followUp", triggerTurn: true },
     );
     return "ok";
   };
@@ -638,14 +553,14 @@ export default function (pi: ExtensionAPI) {
     if (!env.text) return;
     const from = labelFrom(env.from);
     workStarted();
-    wake(
+    pi.sendMessage(
       {
         customType: REPLY_CUSTOM_TYPE,
         content: replyHeader(from, env.replyTo) + env.text,
         display: true,
         details: { from, replyTo: env.replyTo },
       },
-      "followUp",
+      { deliverAs: "followUp", triggerTurn: true },
     );
   };
 
@@ -1465,7 +1380,6 @@ export default function (pi: ExtensionAPI) {
       pendingNotices.clear();
       clearStreamTimer();
       streamBuffers.clear();
-      wakeInFlight = false;
       // A headless session has no ui, and a pi older than 0.87.1 has one without this
       // method; both simply get no `@name` completion. Registered once: session_start fires
       // again on a /reload, and nothing is fetched until the first `@` keystroke.
