@@ -6,13 +6,13 @@ import TmuxControl
 import XCTest
 @testable import Kido
 
-func clipboardQueryScript(ready: String, result: String, selector: String, deadline: Int) -> String {
+func clipboardQueryScript(ready: String, result: String, query: String, deadline: Int) -> String {
     """
     import os, select, time, tty
     tty.setraw(0)
     deadline = time.monotonic() + 5
     while not os.path.exists('\(ready)') and time.monotonic() < deadline: time.sleep(0.02)
-    os.write(1, b'\\x1b]52;\(selector);?\\x1b\\\\')
+    os.write(1, b'\(query)')
     deadline = time.monotonic() + \(deadline)
     reply = b''
     while time.monotonic() < deadline:
@@ -1350,7 +1350,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         let ready = directory.appendingPathComponent("clipboard-ready")
         board.clearContents()
         board.setString("before-live", forType: .string)
-        let program = clipboardQueryScript(ready: ready.path, result: result.path, selector: "p", deadline: 12)
+        let program = clipboardQueryScript(ready: ready.path, result: result.path, query: "\\x1b]52;p;?\\x1b\\\\", deadline: 12)
         try program.write(to: script, atomically: true, encoding: .utf8)
         _ = try await command(["respawn-pane", "-k", "-t", pane.pane.description, "printf '\\033]52;c;\(copy)\\007'; exec /usr/bin/python3 " + script.path])
         try await wait("OSC52 private pane printf live copy") { board.string(forType: .string) == "copied ✓" }
