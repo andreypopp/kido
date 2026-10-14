@@ -76,14 +76,15 @@ import GhosttyKit
             action_cb: { @Sendable app, target, action in
                 GhosttyRuntime.action(app!, target, action)
             },
-            read_clipboard_cb: { @Sendable userdata, _, state, _, _, list in
+            read_clipboard_cb: { @Sendable userdata, location, state, _, _, list in
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
                 return MainActor.assumeIsolated {
                     let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
                     guard view.acceptingInput, let state else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
                     switch ghostty_clipboard_request_kind(state) {
                     case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
-                        let text = view.runtime.pasteboard.string(forType: .string) ?? ""
+                        let image = location == GHOSTTY_CLIPBOARD_STANDARD && view.pasteImage()
+                        let text = image ? "" : view.pasting ?? view.runtime.pasteboard.string(forType: .string) ?? ""
                         GhosttyRuntime.completeClipboard(view.surface, text, state, confirmed: false, list: list)
                     case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ:
                         view.requestClipboard(state)
