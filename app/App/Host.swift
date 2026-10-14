@@ -1,24 +1,26 @@
 import Foundation
 
 @MainActor final class ClipboardConsent {
+    enum Capability: String, CaseIterable { case clipboard = "clipboardReadHosts", upload = "uploadHosts" }
     private let grants: UserDefaults?
     private var allowedHosts: Set<String> = []
     var askingHosts: Set<String> = []
 
     init(grants: UserDefaults? = nil) { self.grants = grants }
 
-    func allows(_ host: Host) -> Bool {
-        grants?.stringArray(forKey: "clipboardReadHosts")?.contains(host.clipboardKey) ?? allowedHosts.contains(host.clipboardKey)
+    func allows(_ host: Host, _ capability: Capability = .clipboard) -> Bool {
+        grants.map { $0.stringArray(forKey: capability.rawValue)?.contains(host.clipboardKey) ?? false }
+            ?? allowedHosts.contains(capability.rawValue + " " + host.clipboardKey)
     }
 
-    func allowAlways(_ host: Host) {
+    func allowAlways(_ host: Host, _ capability: Capability = .clipboard) {
         if let grants {
-            grants.set(Array(Set(grants.stringArray(forKey: "clipboardReadHosts") ?? []).union([host.clipboardKey])), forKey: "clipboardReadHosts")
-        } else { allowedHosts.insert(host.clipboardKey) }
+            grants.set(Array(Set(grants.stringArray(forKey: capability.rawValue) ?? []).union([host.clipboardKey])), forKey: capability.rawValue)
+        } else { allowedHosts.insert(capability.rawValue + " " + host.clipboardKey) }
     }
 
     func reset() {
-        grants?.removeObject(forKey: "clipboardReadHosts")
+        Capability.allCases.forEach { grants?.removeObject(forKey: $0.rawValue) }
         allowedHosts.removeAll()
     }
 }
