@@ -133,7 +133,7 @@ private final class VsyncGate: @unchecked Sendable {
         callbacks.action_cb = { _, _, _ in false }
         callbacks.read_clipboard_cb = { _, _, _, _, _, _ in GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
         callbacks.confirm_read_clipboard_cb = { _, _, _, _ in }
-        callbacks.write_clipboard_cb = { _, _, _, _, _ in }
+        callbacks.write_clipboard_cb = { _, _, _, _, _ in GHOSTTY_CLIPBOARD_WRITE_OK }
         let config = try XCTUnwrap(ghostty_config_clone(runtime.config))
         let initial = "cursor-style-blink = true\nfont-size = 6\n"
         ghostty_config_load_string(config, initial, UInt(initial.utf8.count), "/vsync-test")

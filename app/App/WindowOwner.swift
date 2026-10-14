@@ -435,33 +435,36 @@ private class AlertEscape: NSView {
     static func resetClipboardPermissions(_ owners: [WindowOwner]) {
         clipboardConsent.reset()
         for owner in owners {
-            owner.clipboardPermission = .ask
+            owner.clipboardPermission = [:]
             owner.uploadPermission = .ask
+            owner.clipboardPrompt?.pane.finishClipboard(false)
             owner.releaseUploadPrompt()
         }
     }
 
-    private var clipboardPrompt: (pane: PaneView, alert: NSAlert)?
+    private var clipboardPrompt: (pane: PaneView, alert: NSAlert, scope: ClipboardConsent.Capability)?
 
-    func requestClipboard(_ pane: PaneView) {
-        if clipboardPermission == .deny { return pane.finishClipboard(false) }
-        if clipboardPermission == .allow || Self.clipboardConsent.allows(host) { return pane.finishClipboard(true) }
+    func requestClipboard(_ pane: PaneView, _ scope: ClipboardConsent.Capability) {
+        if clipboardPermission[scope] == .deny { return pane.finishClipboard(false) }
+        if clipboardPermission[scope] == .allow || Self.clipboardConsent.allows(host, scope) { return pane.finishClipboard(true) }
         guard !pane.isHiddenOrHasHiddenAncestor, window.isVisible,
               preparedAlert == nil, window.attachedSheet == nil,
-              Self.clipboardConsent.askingHosts.insert(host.clipboardKey).inserted else { return pane.finishClipboard(false) }
+              Self.clipboardConsent.askingHosts.insert(scope.rawValue + " " + host.clipboardKey).inserted else { return pane.finishClipboard(false) }
         let alert = NSAlert()
-        alert.messageText = "Allow applications on “\(host.label)” to read your Mac clipboard?"
+        alert.messageText = scope == .rich
+            ? "Allow applications on “\(host.label)” to read images, HTML and file lists from your Mac clipboard?"
+            : "Allow applications on “\(host.label)” to read your Mac clipboard?"
         alert.informativeText = "This also permits applications reached through SSH inside its panes."
         for title in ["Allow for this connection", "Always allow", "Deny"] { alert.addButton(withTitle: title) }
-        clipboardPrompt = (pane, alert)
+        clipboardPrompt = (pane, alert, scope)
         pane.expireClipboard()
         prepareAlert(alert) { [weak self, weak pane] response in
             guard let self, let pane, clipboardPrompt?.pane === pane, clipboardPrompt?.alert === alert else { return }
             guard pane.clipboardOnTime else { return pane.finishClipboard(false) }
             let granted = response == .alertFirstButtonReturn || response == .alertSecondButtonReturn
-            if granted { clipboardPermission = .allow }
-            if response == .alertThirdButtonReturn { clipboardPermission = .deny }
-            if response == .alertSecondButtonReturn { Self.clipboardConsent.allowAlways(host) }
+            if granted { clipboardPermission[scope] = .allow }
+            if response == .alertThirdButtonReturn { clipboardPermission[scope] = .deny }
+            if response == .alertSecondButtonReturn { Self.clipboardConsent.allowAlways(host, scope) }
             pane.finishClipboard(granted)
         }
     }
@@ -469,12 +472,12 @@ private class AlertEscape: NSView {
     func releaseClipboard(_ pane: PaneView) {
         guard let prompt = clipboardPrompt, prompt.pane === pane else { return }
         clipboardPrompt = nil
-        Self.clipboardConsent.askingHosts.remove(host.clipboardKey)
+        Self.clipboardConsent.askingHosts.remove(prompt.scope.rawValue + " " + host.clipboardKey)
         cancelClipboardAlert(prompt.alert)
     }
 
     enum ClipboardPermission { case ask, allow, deny }
-    var clipboardPermission = ClipboardPermission.ask
+    var clipboardPermission: [ClipboardConsent.Capability: ClipboardPermission] = [:]
     var uploadPermission = ClipboardPermission.ask
     private var uploadPrompt: NSAlert?
     private var uploads: [String: (pane: PaneView, task: Task<Void, Never>)] = [:]
@@ -983,7 +986,7 @@ private class AlertEscape: NSView {
     private func invalidate(cause: Connection.CloseCause?, keepingSnapshot: Bool = false) {
         focusTarget = nil
         generation += 1
-        clipboardPermission = .ask
+        clipboardPermission = [:]
         uploadPermission = .ask
         uploads.values.forEach { $0.task.cancel() }
         uploads = [:]
