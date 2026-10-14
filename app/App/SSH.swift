@@ -44,7 +44,7 @@ import TmuxControl
     }
     #endif
 
-    static func quote(_ argument: String) -> String {
+    nonisolated static func quote(_ argument: String) -> String {
         "'" + argument.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }
 
@@ -83,6 +83,14 @@ import TmuxControl
     func launch(_ arguments: [String], control: Endpoint? = nil) -> Launch {
         guard !stopped, master?.process.isRunning == true else { return Launch("/usr/bin/false", []) }
         return passenger(arguments, control: control)
+    }
+
+    // OpenSSH tries the control socket before the transport; a dead master
+    // falls through to the proxy, which fails before any authentication.
+    func upload(_ arguments: [String]) -> Launch {
+        let launch = launch(arguments)
+        guard launch.path == "/usr/bin/ssh" else { return launch }
+        return Launch(launch.path, ["-o", "ProxyCommand=/usr/bin/false"] + launch.arguments, environment: launch.environment)
     }
 
     func passenger(_ arguments: [String], control: Endpoint? = nil) -> Launch {
