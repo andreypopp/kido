@@ -189,7 +189,7 @@ import SidebarFeed
         ]
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
-        edit.addItem(item("Reset Clipboard Permissions", #selector(resetClipboardPermissions), "", []))
+        edit.addItem(item("Reset Clipboard and Upload Permissions", #selector(resetClipboardPermissions), "", []))
         let bar = NSMenu()
         for menu in [app, file, edit, view, menus.window, menus.session] {
             bar.addItem(withTitle: menu.title, action: nil, keyEquivalent: "").submenu = menu
