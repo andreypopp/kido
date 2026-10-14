@@ -583,6 +583,146 @@ import SidebarFeed
         XCTAssertEqual(fallback.out, "DIRECT", "negative control: a passenger without the guard bypasses the dead master")
     }
 
+    func testLocalSSHPaneUploadsThroughItsRecordedArguments() async throws {
+        let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ForwardAgent=no","-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
+        guard trust.status == 0 else { throw XCTSkip("Prepared BatchMode localhost unavailable: \(trust.err)") }
+        let root = "/tmp/kr-lsu-" + UUID().uuidString.prefix(8)
+        let fm = FileManager.default
+        for path in [root + "/files", root + "/state"] {
+            try fm.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        let launched = try await Child.run(tools.kido, ["server", "--server", root + "/server"], env: tools.environment)
+        XCTAssertEqual(launched.status, 0, launched.err)
+        let server = try JSONDecoder().decode(Server.self, from: Data(launched.out.utf8))
+        let board = NSPasteboard(name: .init("kido-ssh-pane-test-\(UUID().uuidString)"))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        owner.testUploadBase = root + "/state"
+        addTeardownBlock { @MainActor in
+            owner.close()
+            _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-server"], env: tools.environment)
+            try? fm.removeItem(atPath: root)
+            board.releaseGlobally()
+        }
+        owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        owner.window.orderFront(nil)
+        owner.start()
+        try await until("Local window connected") { owner.testConnection != nil && owner.testSession?.windows.values.first?.panes.first != nil }
+        let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.panes.first)
+        let received = root + "/received", script = root + "/record.py"
+        try """
+        import os, select, time, tty
+        tty.setraw(0)
+        os.write(1, b'\\x1b[?2004h')
+        out = open('\(received)', 'ab', buffering=0)
+        end = time.monotonic() + 120
+        while time.monotonic() < end:
+            readable, _, _ = select.select([0], [], [], 0.2)
+            if readable: out.write(os.read(0, 65536))
+        """.write(toFile: script, atomically: true, encoding: .utf8)
+        // The private server's panes start without SSH_AUTH_SOCK.
+        let agent = SSH.quote("SSH_AUTH_SOCK=" + (ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] ?? ""))
+        _ = await replies(owner, [Command("respawn-pane", "-k", "-t", pane.pane, "exec /usr/bin/env \(agent) /usr/bin/ssh -o BatchMode=yes -tt localhost exec /usr/bin/python3 " + script),
+                                  Command("set-option", "-p", "-t", pane.pane, "@kido_ssh", NSUserName() + "@localhost")])
+        try await until("recorder ready over ssh") { fm.fileExists(atPath: received) }
+        try await until("the snapshot reports the pane as Ssh") { owner.sshDestination(pane) == NSUserName() + "@localhost" }
+        func pasted() -> String { (try? String(contentsOfFile: received, encoding: .utf8)) ?? "" }
+        func published() -> [String] { ((try? fm.contentsOfDirectory(atPath: root + "/state/drops")) ?? []).sorted() }
+        func record(_ arguments: [String]) async throws {
+            let json = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
+            let set = await replies(owner, [Command("set-option", "-p", "-t", pane.pane, "@kido_ssh_args", json)])
+            XCTAssertEqual(set, [.success([])])
+        }
+        let file = root + "/files/note.txt"
+        XCTAssertTrue(fm.createFile(atPath: file, contents: Data("over ssh\n".utf8)))
+
+        drop(pane, board, [file])
+        try await until("a missing option refuses") { owner.preparedAlert != nil }
+        XCTAssertEqual(owner.preparedAlert?.alert.messageText, "Kido did not upload")
+        XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "Kido can't tell where this ssh session connects; nothing was uploaded.")
+        owner.respondToAlert(.alertFirstButtonReturn)
+
+        try await record(["-p", "22", "localhost"])
+        drop(pane, board, [file])
+        try await until("upload confirmation asked") { owner.preparedAlert != nil }
+        XCTAssertEqual(owner.preparedAlert?.alert.messageText, "Upload 1 file (0.0 MiB) to “localhost”?")
+        XCTAssertEqual(owner.preparedAlert?.alert.informativeText,
+                       "The program in this pane runs over ssh on localhost (\(NSUserName())@localhost). Nested ssh sessions are not detected.")
+        XCTAssertEqual(owner.preparedAlert?.alert.buttons.map(\.title), ["Upload", "Cancel"])
+        owner.respondToAlert(.alertSecondButtonReturn)
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertNil(owner.preparedAlert)
+        XCTAssertEqual(published(), [], "Cancel uploads nothing")
+        XCTAssertEqual(pasted(), "")
+
+        drop(pane, board, [file])
+        try await until("every upload asks again") { owner.preparedAlert != nil }
+        owner.respondToAlert(.alertFirstButtonReturn)
+        try await until("remote path pasted") { pasted().hasSuffix("\u{1b}[201~") }
+        let first = try XCTUnwrap(published().first)
+        XCTAssertEqual(pasted(), "\u{1b}[200~\(root)/state/drops/\(first)/note.txt\u{1b}[201~")
+        XCTAssertEqual(try String(contentsOfFile: root + "/state/drops/\(first)/note.txt", encoding: .utf8), "over ssh\n")
+
+        let marker = root + "/remote-command-ran"
+        let recorded = ["-o", "BatchMode=no", "-o", "RemoteCommand=/usr/bin/touch " + marker, "localhost"]
+        let argv = SSH.recorded(recorded, ["/usr/bin/true"]).arguments
+        XCTAssertEqual(Array(argv.prefix(16)), ["BatchMode=yes", "ClearAllForwardings=yes", "RemoteCommand=none", "RequestTTY=no", "SessionType=default",
+                                                "StdinNull=no", "PermitLocalCommand=no", "ControlMaster=no"].flatMap { ["-o", $0] })
+        XCTAssertEqual(Array(argv.dropFirst(16)), Array(recorded.dropLast()) + ["--", "localhost", "exec '/usr/bin/true'"], "the app's settings come first, so OpenSSH uses them")
+        let swapped = try await Child.run("/usr/bin/ssh", Array(argv[16..<20]) + Array(argv.prefix(16)) + Array(argv.dropFirst(20)), env: tools.environment)
+        XCTAssertNotEqual(swapped.status, 0, "negative control: with the recorded settings first, the recorded RemoteCommand wins and ssh refuses the command")
+        XCTAssertFalse(fm.fileExists(atPath: marker))
+        let resolved = try await Child.run("/usr/bin/ssh", Array(argv.dropLast(3)) + ["-G", "--", "localhost"], env: tools.environment)
+        XCTAssertTrue(resolved.out.components(separatedBy: "\n").contains("batchmode yes"), resolved.out)
+        try await record(recorded)
+        drop(pane, board, [file])
+        try await until("the recorded settings ask") { owner.preparedAlert != nil }
+        owner.respondToAlert(.alertFirstButtonReturn)
+        try await until("second remote path pasted") { published().count == 2 && pasted().components(separatedBy: "\u{1b}[201~").count == 3 }
+        XCTAssertFalse(fm.fileExists(atPath: marker), "a recorded RemoteCommand does not run")
+
+        try await record(["-p", "1", "localhost"])
+        let before = pasted()
+        drop(pane, board, [file])
+        try await until("the failing port asks") { owner.preparedAlert != nil }
+        owner.respondToAlert(.alertFirstButtonReturn)
+        try await until("the failure is a notice") { owner.preparedAlert != nil }
+        XCTAssertEqual(owner.preparedAlert?.alert.messageText, "Upload to localhost failed")
+        XCTAssertEqual(owner.preparedAlert?.alert.informativeText.contains("port 1"), true, owner.preparedAlert?.alert.informativeText ?? "")
+        owner.respondToAlert(.alertFirstButtonReturn)
+        XCTAssertEqual(pasted(), before, "a failed upload pastes nothing")
+        XCTAssertEqual(published().count, 2)
+
+        try await record(["-p", "22", "localhost"])
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber,
+                                                    context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        drop(pane, board, [file])
+        pane.keyDown(with: escape)
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertNil(owner.preparedAlert, "Escape during the option lookup drops its reply")
+        XCTAssertEqual(pasted(), before, "the lookup takes Escape, so the pane gets nothing")
+
+        func refusedAfterConfirmation(_ reason: String, _ change: () async throws -> Void) async throws {
+            drop(pane, board, [file])
+            try await until(reason + ": asks") { owner.preparedAlert != nil }
+            try await change()
+            owner.respondToAlert(.alertFirstButtonReturn)
+            try await until(reason + ": refused") { owner.preparedAlert != nil && owner.preparedAlert?.alert.buttons.count == 1 }
+            XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "The ssh session in this pane changed after you confirmed; nothing was uploaded.", reason)
+            owner.respondToAlert(.alertFirstButtonReturn)
+            try await Task.sleep(for: .seconds(1))
+            XCTAssertEqual(published().count, 2, reason)
+            XCTAssertEqual(pasted(), before, reason)
+        }
+        try await refusedAfterConfirmation("changed arguments") { try await record(["-o", "Port=22", "localhost"]) }
+        try await record(["-p", "22", "localhost"])
+        try await refusedAfterConfirmation("changed identity") {
+            _ = await replies(owner, [Command("set-option", "-p", "-t", pane.pane, "@kido_ssh", "someone@localhost")])
+            try await until("the snapshot reports the new identity") { owner.sshDestination(pane) == "someone@localhost" }
+        }
+    }
+
     private func localhostOwner(_ prefix: String) async throws -> (root: String, owner: WindowOwner, board: NSPasteboard) {
         let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ForwardAgent=no","-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
         guard trust.status == 0 else { throw XCTSkip("Prepared BatchMode localhost unavailable: \(trust.err)") }
