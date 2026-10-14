@@ -10,7 +10,10 @@ public struct SidebarRow: Equatable, Sendable {
     }
     public enum Status: Equatable, Sendable {
         case quiet, running, waiting, error, done, stalled
-        public var tabStatus: Self { self == .stalled ? .error : self == .error || self == .waiting ? self : .quiet }
+        func mergingTabStatus(_ other: Self) -> Self {
+            let ranked: [Self] = [.error, .waiting, .running, .done, .quiet]
+            return ranked.first { $0 == self || $0 == other || $0 == .error && (self == .stalled || other == .stalled) }!
+        }
     }
     public enum Kind: Equatable, Sendable {
         case header, pane(Snapshot.Position?), gap
