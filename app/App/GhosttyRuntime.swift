@@ -57,6 +57,7 @@ import GhosttyKit
         var runtime = ghostty_runtime_config_s(
             userdata: Unmanaged.passUnretained(self).toOpaque(),
             supports_selection_clipboard: true,
+            supports_paste_events: false,
             wakeup_cb: { @Sendable userdata in
                 let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(userdata!).takeUnretainedValue()
                 #if KIDO_STRESS
