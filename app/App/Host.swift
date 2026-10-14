@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor final class ClipboardConsent {
-    enum Capability: String, CaseIterable { case clipboard = "clipboardReadHosts", upload = "uploadHosts" }
+    enum Capability: String, CaseIterable { case clipboard = "clipboardReadHosts", rich = "richClipboardReadHosts", upload = "uploadHosts" }
     private let grants: UserDefaults?
     private var allowedHosts: Set<String> = []
     var askingHosts: Set<String> = []
