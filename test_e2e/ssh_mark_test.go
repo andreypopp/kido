@@ -1,10 +1,13 @@
 package e2e
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +54,10 @@ func main() {
 	if got := mark(); got != "deploy@example.test" {
 		t.Fatalf("ssh mark = %q", got)
 	}
+	argsMark := func() string { return h.in("show-options", "-p", "-v", "-t", pane, "@kido_ssh_args") }
+	if got := argsMark(); got != `["alias"]` {
+		t.Fatalf("ssh args = %q", got)
+	}
 	h.waitShellRow("╶◼ssh deploy@example.test", "")
 	h.newWindow("alpha", "tail", "cat", "-")
 	h.in("send-keys", "-t", pane, "prompt", "Enter")
@@ -69,6 +76,9 @@ func main() {
 	if got := mark(); got != "deploy@example.test" {
 		t.Fatalf("mark after ssh exit = %q", got)
 	}
+	if got := argsMark(); got != `["alias"]` {
+		t.Fatalf("args after ssh exit = %q", got)
+	}
 	stale := h.startFeed("alpha")
 	stale.waitLast(func(s feedSnapshot) bool {
 		for _, item := range feedItems(s.Sessions[0].Nodes) {
@@ -83,6 +93,9 @@ func main() {
 	if got := mark(); got != "deploy@realm@next.test" {
 		t.Fatalf("next ssh mark = %q", got)
 	}
+	if got := argsMark(); got != `["-l","deploy@realm","realm"]` {
+		t.Fatalf("replacement ssh args = %q", got)
+	}
 	h.waitShellRow("╶◼ssh deploy@realm@next.test", "")
 	stale.waitLast(func(s feedSnapshot) bool {
 		for _, item := range feedItems(s.Sessions[0].Nodes) {
@@ -94,6 +107,45 @@ func main() {
 		}
 		return false
 	}, "the destination as typed fields, the title the plain foreground command")
+	h.in("send-keys", "-t", pane, "quit", "Enter")
+	h.waitPaneCommand(pane, "bash")
+	value := `ProxyCommand=printf 'a b' "#{$HOME}" \\path`
+	quoted := "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+	h.in("send-keys", "-t", pane, fmt.Sprintf("PATH=%s:$PATH %s ssh -p2222 -o BatchMode=no -o %s -t -L8080:host:80 alias -J jump -o BatchMode=yes uptime", dir, kidoBin, quoted), "Enter")
+	h.waitPaneCommand(pane, "ssh")
+	encoded, err := json.Marshal([]string{"-p", "2222", "-o", "BatchMode=no", "-o", value, "-J", "jump", "-o", "BatchMode=yes", "alias"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := argsMark(); got != string(encoded) {
+		t.Fatalf("quoted ssh args = %q, want %q", got, encoded)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), settle)
+	defer cancel()
+	control := exec.CommandContext(ctx, tmuxBin, "-u", "-S", socketPath("", h.inner), "-C", "attach-session", "-t", "alpha")
+	control.Env = cleanEnv()
+	control.Stdin = strings.NewReader("show-options -p -v -t " + pane + " @kido_ssh_args\ndetach-client\n")
+	if out, err := control.CombinedOutput(); err != nil || !strings.Contains(string(out), "\n"+string(encoded)+"\n") {
+		t.Fatalf("control read: %v\n%s\nwant %s", err, out, encoded)
+	}
+	h.in("send-keys", "-t", pane, "quit", "Enter")
+	h.waitPaneCommand(pane, "bash")
+	h.in("send-keys", "-t", pane, fmt.Sprintf("PATH=%s:$PATH %s ssh -Z alias uptime", dir, kidoBin), "Enter")
+	h.waitPaneCommand(pane, "ssh")
+	if got := h.in("show-options", "-p", "-t", pane); strings.Contains(got, "@kido_ssh_args") {
+		t.Fatalf("unrecordable ssh kept old args: %s", got)
+	}
+	if got := mark(); got != "deploy@example.test" {
+		t.Fatalf("fresh mark for unrecordable ssh = %q", got)
+	}
+	h.in("send-keys", "-t", pane, "quit", "Enter")
+	h.waitPaneCommand(pane, "bash")
+	h.in("set-option", "-p", "-t", pane, "@kido_ssh_args", string(encoded))
+	h.in("send-keys", "-t", pane, fmt.Sprintf("PATH=%s:$PATH %s ssh -i $'\\377' alias uptime", dir, kidoBin), "Enter")
+	h.waitPaneCommand(pane, "ssh")
+	if got := h.in("show-options", "-p", "-t", pane); strings.Contains(got, "@kido_ssh_args") {
+		t.Fatalf("invalid UTF-8 kept old args: %s", got)
+	}
 	plain := h.newWindow("alpha", "plain", fake, "alias")
 	h.waitPaneCommand(plain, "ssh")
 	feed := h.startFeed("alpha")

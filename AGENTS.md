@@ -537,6 +537,9 @@ State supplies local pi identity and coordination, never detection.
 ssh panes use the pane-scoped `@kido_ssh` mark.
 kido trusts this mark only while the foreground is `ssh`.
 `kido ssh` sets the mark before exec and leaves it in place.
+`@kido_ssh_args` records the connection arguments. See
+[docs/design-program-status.md](docs/design-program-status.md) for the
+option classification and read contract.
 
 pi and Claude Code status, completion and blocked messages come from
 their terminal records. kido ships no Claude Code executable shim.

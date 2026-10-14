@@ -285,8 +285,26 @@ let resolve_client tmux ~pane ~tmux_env =
       match real_clients (String.split_on_char '\n' out) with [ c ] -> Some c | _ -> None)
   | _ -> None
 
-let mark_ssh tmux pane destination =
-  Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane; "@kido_ssh"; destination ]
+let mark_ssh tmux pane destination args =
+  let target = [ "-t"; string_of_pane_id pane ] in
+  let mark =
+    Option.map
+      (fun destination -> [ "set-option"; "-p" ] @ target @ [ "@kido_ssh"; destination ])
+      destination
+  in
+  let unset = [ "set-option"; "-p"; "-u" ] @ target @ [ "@kido_ssh_args" ] in
+  let record =
+    match args with
+    | None -> unset
+    | Some args ->
+        [ "set-option"; "-p" ] @ target @ [ "@kido_ssh_args"; Procs.ssh_connection_args_json args ]
+  in
+  match Tmux.run tmux (match mark with None -> record | Some mark -> mark @ [ ";" ] @ record) with
+  | Ok () -> Ok ()
+  | Error _ as error ->
+      ignore (Tmux.run tmux unset);
+      Option.iter (fun mark -> ignore (Tmux.run tmux mark)) mark;
+      error
 
 let rank_sessions tmux ids =
   Tmux.run tmux

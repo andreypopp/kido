@@ -757,12 +757,13 @@ let ssh =
            | st -> Stdlib.(st.st_kind = S_CHR)
            | exception Unix.Unix_error _ -> false
          in
+         let parsed = Procs.parse_ssh args in
          let argv =
-           match Procs.parse_ssh args with
+           match parsed with
            | Some a
              when tty && List.is_empty a.command
-                  && not (String.exists (String.contains "NTWfsnOQVG") a.letters) ->
-               ("ssh" :: a.opts) @ [ "-t"; a.dest; Prime.ssh_bootstrap ]
+                  && not (String.exists (String.contains "NTWfsnOQVG") (Procs.ssh_letters a)) ->
+               ("ssh" :: a.opts) @ [ "-t"; "--"; a.dest; Prime.ssh_bootstrap ]
            | _ -> "ssh" :: args
          in
          let pane = self_pane () in
@@ -778,10 +779,12 @@ let ssh =
                | Unix.WEXITED 0, Some user, Some host -> Some (user ^ "@" ^ host)
                | _ -> None)
          in
-         (match (pane, destination) with
-         | Some pane, Some destination ->
-             ignore (Tmux_pane.mark_ssh (Tmux.create ()) pane destination)
-         | _ -> ());
+         Option.iter
+           (fun pane ->
+             ignore
+               (Tmux_pane.mark_ssh (Tmux.create ()) pane destination
+                  (Option.flat_map Procs.ssh_connection_args parsed)))
+           pane;
          Unix.execve ssh (Array.of_list argv) (Unix.environment ()))
 
 (* Go's time.Duration syntax, which every caller of --interval already speaks: "100ms", "5s",

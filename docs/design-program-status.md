@@ -161,6 +161,58 @@ It never unsets the option. kido trusts `@kido_ssh` only while
 `#{pane_current_command}` is `ssh`. The next `kido ssh` in the pane
 overwrites it.
 
+Before exec, `kido ssh` also sets the pane option `@kido_ssh_args`.
+Its value is a JSON array of strings. The last element is the destination
+as entered, not the host from `ssh -G`. The preceding elements are ssh
+options and their values, in the user's order, before the destination.
+Grouped options and attached values become separate elements. ssh parses
+options before and after the destination, until `--` or the first remote
+command argument. `--` before the destination also stops option parsing
+after it. The remote command is not included.
+
+A consumer must put its required `-o` settings before the recorded
+arguments. OpenSSH uses the first value for each setting. For example,
+`-o BatchMode=yes` must precede a recorded `-o BatchMode=no`.
+The recorded `-o` values stay unchanged.
+
+The command keeps these options:
+
+- `-p`, `-J`, `-F`, `-i`, `-l`, `-o`: port, jump hosts, configuration,
+  identity, user and configuration options. Each `-o` value stays intact.
+- `-4`, `-6`: address family.
+- `-B`, `-b`: interface and source address.
+- `-c`, `-m`: cipher and MAC selection.
+- `-I`, `-K`, `-k`: PKCS#11 provider and GSSAPI authentication.
+- `-P`: configuration tag.
+- `-C`: compression.
+- `-S`: control socket. A new connection can use the same master.
+
+It removes `-t`, `-T`, `-L`, `-R`, `-D`, `-A`, `-a`, `-g`, `-X`,
+`-Y`, `-x`, `-N`, `-f`, `-n`, `-q`, `-v`, `-y`, `-E` and `-e`.
+These options control the terminal, forwarding, background operation,
+stdin, messages, logs or escape characters, not the connection target.
+
+It does not record `-O` (a control operation), `-M` (master mode),
+`-W` (stdio forwarding), `-w` (a tunnel), `-s` (a subsystem),
+`-G`, `-Q` or `-V` (configuration, query or version output).
+These modes cannot supply an ordinary remote command. An unknown option,
+a missing option value, an absent, empty or hyphen-prefixed destination,
+or invalid UTF-8 in any argument also prevents recording. Valid non-ASCII
+text stays intact. JSON escaping preserves control bytes.
+
+Each call replaces `@kido_ssh_args`, or unsets it if the arguments cannot
+be recorded. The value remains after ssh exits. The command sets the
+option through tmux argv, without format expansion or a shell command
+string. If the set fails, it attempts to unset the option. A failed set
+or unset does not stop ssh and produces no warning, as with `@kido_ssh`.
+If tmux cannot accept the unset, an old value can remain.
+
+A client reads the value with `show-options -p -v -t %P @kido_ssh_args`.
+It must use the same foreground-ssh check as for `@kido_ssh`. This option
+is not part of RPC. It does not change the RPC protocol or server stamp:
+the fork revision, server configuration and launcher environment stay
+the same.
+
 ## Pane kinds
 
 kido classifies a pane's kind, `pane_kind`, in this order:
