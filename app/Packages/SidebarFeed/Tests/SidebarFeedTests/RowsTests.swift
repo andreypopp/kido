@@ -179,7 +179,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
         #expect(row.indicatorDescription == description)
         #expect(row.tail == tail)
         #expect(row.height == (tail.isEmpty ? 32 : 48))
-        #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == status.tabStatus)
+        #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == status.mergingTabStatus(.quiet))
     }
 }
 
@@ -238,7 +238,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
     let snapshot = try decode(snapshotObject([pane(0, children: [pane(1, window: 1, lifecycle: agent(["Stalled"]))])]))
     let row = try #require(sidebarRows(snapshot).first { $0.target?.pane == PaneID(number: 1) })
     #expect(row.status == .stalled && row.indicatorDescription == "stalled")
-    #expect(row.status.tabStatus == .error)
+    #expect(row.status.mergingTabStatus(.quiet) == .error)
     #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .error)
 }
 
