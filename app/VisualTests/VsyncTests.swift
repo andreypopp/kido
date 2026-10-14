@@ -212,6 +212,9 @@ private final class VsyncGate: @unchecked Sendable {
     }
 
     func testUnavailableOutputHiddenDiscardRecovery() async throws {
+        let threadSymbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "kido_renderer_thread"))
+        let rendererThread = unsafeBitCast(threadSymbol, to: (@convention(c) (Bool) -> UInt64).self)
+        _ = rendererThread(true)
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
         let window = NSWindow(contentRect: pane.bounds, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -221,12 +224,14 @@ private final class VsyncGate: @unchecked Sendable {
         try await drain(runtime)
         var frames = 0
         let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { frames += 1 }
-        let activeCPU = try rendererCPU()
-        XCTAssertGreaterThan(activeCPU.count, 0, "sampling actual named renderer threads")
+        let renderer = rendererThread(false)
+        XCTAssertNotEqual(renderer, 0)
+        let activeCPU = try rendererCPU(only: [renderer])
+        XCTAssertEqual(activeCPU.count, 1, "sampling this pane's renderer thread")
         try await flow([pane])
         try await drain(runtime)
         XCTAssertGreaterThan(frames, 0, "ordinary unavailable output installs IOSurfaces without token requests")
-        XCTAssertGreaterThan(try rendererCPU().cpu - activeCPU.cpu, 0.003, "active renderer CPU exceeds idle tolerance")
+        XCTAssertGreaterThan(try rendererCPU(only: [renderer]).cpu - activeCPU.cpu, 0.003, "active renderer CPU exceeds idle tolerance")
         for enabled in [false, true] {
             try reload("window-vsync = \(enabled)\n")
             let before = frames
