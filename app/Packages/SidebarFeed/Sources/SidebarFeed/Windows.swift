@@ -56,8 +56,8 @@ public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving
             result.ancestors[window] = root
             let previous = result.statuses[root] ?? .quiet
             if previous != .error {
-                let status: SidebarRow.Status = if case .item(let item) = node { item.indicator(seen).status.tabStatus } else { .quiet }
-                result.statuses[root] = status == .error ? .error : previous == .waiting || status == .waiting ? .waiting : .quiet
+                let status: SidebarRow.Status = if case .item(let item) = node { item.indicator(seen).status } else { .quiet }
+                result.statuses[root] = previous.mergingTabStatus(status)
             }
         }
         node.children.forEach { collect($0, ancestor: root) }
