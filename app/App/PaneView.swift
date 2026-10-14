@@ -725,7 +725,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var keyUpMonitor: Any?
     private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer?)?
     let runtime: GhosttyRuntime
-    private var clipboard: (state: UnsafeMutableRawPointer, timeout: DispatchWorkItem?, deadline: DispatchTime)?
+    private var clipboard: (state: UnsafeMutableRawPointer, mimes: [String], list: Bool, timeout: DispatchWorkItem?, deadline: DispatchTime)?
+    private var pasteEvent: (changeCount: Int, deadline: DispatchTime, text: String?)?
     private(set) var acceptingInput = true
     private(set) var disposed = false
 
@@ -774,6 +775,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
         config.font_size = font
         config.io_mode = GHOSTTY_SURFACE_IO_MANUAL_MIRROR
+        config.kitty_clipboard = true
         config.io_write_userdata = this
         // Called on the reader or Ghostty's IO thread; a strong reference
         // taken there could be the view's last.
@@ -1041,18 +1043,54 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     // A request is completed exactly once; an empty completion refuses it.
     private func complete(_ state: UnsafeMutableRawPointer?, _ text: String) {
-        resizeAnchor = nil
-        snapScroll()
-        GhosttyRuntime.completeClipboard(surface, text, state, confirmed: true)
+        complete(state, [("text/plain", Data(text.utf8))])
     }
 
-    func requestClipboard(_ state: UnsafeMutableRawPointer?) {
+    private func complete(_ state: UnsafeMutableRawPointer?, _ contents: [(mime: String, data: Data)], available: [String] = []) {
+        resizeAnchor = nil
+        snapScroll()
+        GhosttyRuntime.completeClipboard(surface, contents, available: available, state, confirmed: true)
+    }
+
+    func listClipboard(_ state: UnsafeMutableRawPointer) {
+        pasteEvent = (runtime.pasteboard.changeCount, .now() + 30, pasting)
+        complete(state, [], available: pasting == nil ? PasteboardMIME.available(runtime.pasteboard) : ["text/plain"])
+    }
+
+    func readClipboard(_ state: UnsafeMutableRawPointer, _ mimes: [String], list: Bool) {
+        if mimes.isEmpty { return complete(state, [], available: PasteboardMIME.available(runtime.pasteboard)) }
+        guard ghostty_clipboard_request_granted(state) else {
+            return requestClipboard(state, mimes, list: list, mimes.allSatisfy { $0 == "text/plain" } ? .clipboard : .rich)
+        }
+        guard let event = pasteEvent, event.changeCount == runtime.pasteboard.changeCount, DispatchTime.now() < event.deadline else {
+            return complete(state, [])
+        }
+        serve(state, mimes, list: list, text: event.text)
+    }
+
+    private func serve(_ state: UnsafeMutableRawPointer, _ mimes: [String], list: Bool, text: String? = nil) {
+        let board = runtime.pasteboard
+        let available = list ? PasteboardMIME.available(board) : []
+        let contents = text.map { mimes.contains("text/plain") ? [("text/plain", Data($0.utf8))] : [] } ?? PasteboardMIME.read(board, mimes)
+        guard text == nil, clipboard == nil, mimes.contains("image/png"), !contents.contains(where: { $0.mime == "image/png" }),
+              let tiff = board.data(forType: .tiff) else { return complete(state, contents, available: available) }
+        clipboard = (state, mimes, list, nil, .distantFuture)
+        Task { [weak self] in
+            let converted = try? await Upload(image: tiff)
+            guard let self, clipboard?.state == state else { return }
+            clipboard = nil
+            let png: [(mime: String, data: Data)] = if case .data(let data)? = converted?.sources.first?.bytes { [("image/png", data)] } else { [] }
+            complete(state, contents + png, available: available)
+        }
+    }
+
+    func requestClipboard(_ state: UnsafeMutableRawPointer?, _ mimes: [String], list: Bool, _ scope: ClipboardConsent.Capability) {
         guard let state else { return }
         guard acceptingInput else { return ghostty_surface_cancel_clipboard_request(surface, state) }
         guard clipboard == nil else { return deny(state) }
-        clipboard = (state, nil, .now() + 8)
+        clipboard = (state, mimes, list, nil, .now() + 8)
         guard let owner = window?.delegate as? WindowOwner else { return finishClipboard(false) }
-        owner.requestClipboard(self)
+        owner.requestClipboard(self, scope)
     }
 
     var clipboardOnTime: Bool { clipboard.map { DispatchTime.now() < $0.deadline } ?? false }
@@ -1064,32 +1102,36 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         DispatchQueue.main.asyncAfter(deadline: clipboard.deadline, execute: timeout)
     }
 
-    private func takeClipboard() -> UnsafeMutableRawPointer? {
+    private func takeClipboard() -> (state: UnsafeMutableRawPointer, mimes: [String], list: Bool)? {
         guard let pending = clipboard else { return nil }
         clipboard = nil
         pending.timeout?.cancel()
         (window?.delegate as? WindowOwner)?.releaseClipboard(self)
-        return pending.state
+        return (pending.state, pending.mimes, pending.list)
     }
 
     func finishClipboard(_ granted: Bool) {
-        guard let state = takeClipboard() else { return }
-        let text = granted ? runtime.pasteboard.string(forType: .string) ?? "" : ""
-        GhosttyRuntime.completeClipboard(surface, text.utf8.count > 1_048_576 || text.utf8.contains(0) ? "" : text, state, confirmed: true)
+        guard let pending = takeClipboard() else { return }
+        guard granted else { return deny(pending.state) }
+        serve(pending.state, pending.mimes, list: pending.list)
     }
 
     func cancelClipboard() {
-        guard let state = takeClipboard() else { return }
-        ghostty_surface_cancel_clipboard_request(surface, state)
+        guard let pending = takeClipboard() else { return }
+        ghostty_surface_cancel_clipboard_request(surface, pending.state)
     }
 
     func invalidateClipboard() {
         acceptingInput = false
+        pasteEvent = nil
         cancelClipboard()
     }
 
     func deny(_ state: UnsafeMutableRawPointer?) {
-        complete(state, "")
+        guard let state, [GHOSTTY_CLIPBOARD_REQUEST_KITTY_READ, GHOSTTY_CLIPBOARD_REQUEST_KITTY_WRITE].contains(ghostty_clipboard_request_kind(state)) else {
+            return complete(state, "")
+        }
+        ghostty_surface_deny_clipboard_request(surface, state)
     }
 
     private(set) var pasting: String?
