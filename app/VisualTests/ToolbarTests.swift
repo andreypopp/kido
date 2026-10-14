@@ -7,6 +7,54 @@ import TmuxControl
 @testable import Kido
 
 @MainActor final class ToolbarTests: VisualTestCase {
+    func testTabActivityMarks() throws {
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("tab-marks-\(UUID().uuidString).conf")
+        defer { try? FileManager.default.removeItem(at: config) }
+        let board = NSPasteboard(name: .init("tab-marks-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        for (name, hex) in [("light", "fffaf0"), ("dark", "172029")] {
+            try "background = #\(hex)\n".write(to: config, atomically: true, encoding: .utf8)
+            let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
+            let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+            defer { owner.close() }
+            let tabs = owner.sidebar.tabs
+            tabs.entries = [.init(id: WindowID(number: 0), name: "Running", active: true, status: .running),
+                            .init(id: WindowID(number: 1), name: "Done", active: false, status: .done)]
+            let root = try XCTUnwrap(owner.window.contentView?.superview)
+            if owner.sidebar.isCollapsed { owner.sidebar.toggleSidebar(nil) }
+            root.layoutSubtreeIfNeeded()
+            owner.window.display()
+            for mode in ["collapsed", "docked", "collapsed", "floating", "docked"] {
+                if mode == "floating" { owner.sidebar.focusSidebar(nil) }
+                else { owner.sidebar.toggleSidebar(nil) }
+                root.layoutSubtreeIfNeeded()
+                owner.window.display()
+                let activity = mode != "docked"
+                XCTAssertEqual(owner.sidebar.isFloating, mode == "floating")
+                XCTAssertEqual(tabs.showsActivity, activity)
+                XCTAssertEqual(tabs.labelRect(0).minX, 28)
+                let labels = tabs.accessibilityChildren()?.compactMap { ($0 as? NSAccessibilityElement)?.accessibilityLabel() } ?? []
+                XCTAssertTrue(labels.contains("Window: Running" + (activity ? " — running" : "")))
+                XCTAssertTrue(labels.contains("Window: Done" + (activity ? " — done" : "")))
+                let image = try headerImage(tabs)
+                let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+                var green = 0
+                for y in 0..<bitmap.pixelsHigh {
+                    for x in 0..<bitmap.pixelsWide {
+                        let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                        if color.greenComponent > 0.5 && color.greenComponent > color.redComponent * 1.5 && color.greenComponent > color.blueComponent * 1.5 { green += 1 }
+                    }
+                }
+                XCTAssertEqual(green > 0, activity, "\(mode) visible marks")
+                if mode != "floating" {
+                    let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+                    if let failure = verifySnapshot(of: image, as: .image, named: "\(name)-\(mode)", record: record),
+                       !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+                }
+            }
+        }
+    }
+
     func testHostLabel() async throws {
         let owner = try XCTUnwrap(delegate.open(.remote("buildbox"), start: false))
         defer { owner.close() }

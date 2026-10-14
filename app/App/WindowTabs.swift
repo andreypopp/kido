@@ -24,6 +24,11 @@ final class WindowTabs: NSView {
         headerBackground.needsDisplay = true
     }
 
+    var showsActivity: Bool { sidebar.map { $0.isCollapsed || $0.isFloating } ?? false }
+    private func visibleStatus(_ status: SidebarRow.Status) -> SidebarRow.Status {
+        !showsActivity && (status == .running || status == .done) ? .quiet : status
+    }
+
     let addWindow = IconButton("plus", "New window", size: 11, hoverStyle: .iconOnly)
     let closeButton = IconButton("xmark", "Close window", size: 10, hoverStyle: .close)
     var close: (SessionModel.Tab) -> Void = { _ in }
@@ -345,13 +350,12 @@ final class WindowTabs: NSView {
                     path.lineWidth = 1
                     path.stroke()
                 }
-                let dot = tab.status == .error || tab.status == .waiting
+                let status = visibleStatus(tab.status)
                 (tab.displayName as NSString).draw(in: label(x, tabWidth),
                     withAttributes: [.font: labelFont(tab), .foregroundColor: tab.active ? NSColor.labelColor : NSColor.secondaryLabelColor,
                                      .paragraphStyle: paragraph])
-                if dot && hovered != index {
-                    (tab.status == .error ? NSColor.systemRed : NSColor.systemOrange).setFill()
-                    NSBezierPath(ovalIn: NSRect(x: rect.minX + 12, y: rect.midY - 3, width: 6, height: 6)).fill()
+                if status != .quiet && hovered != index {
+                    drawStatusMark(status, at: NSPoint(x: rect.minX + 15, y: rect.midY), flipped: false)
                 }
             }
             for index in entries.indices where index != dragged { drawTab(index) }
@@ -367,7 +371,14 @@ final class WindowTabs: NSView {
             element.setAccessibilityRole(.button)
             element.setAccessibilityParent(self)
             element.setAccessibilityFrameInParentSpace(NSRect(x: origin(index, geometry), y: bounds.midY - 14, width: tabWidth, height: 28))
-            element.setAccessibilityLabel("Window: " + tab.name + (tab.status == .error ? " — error" : tab.status == .waiting ? " — waiting" : ""))
+            let suffix: String = switch visibleStatus(tab.status) {
+            case .error, .stalled: " — error"
+            case .waiting: " — waiting"
+            case .running: " — running"
+            case .done: " — done"
+            case .quiet: ""
+            }
+            element.setAccessibilityLabel("Window: " + tab.name + suffix)
             element.setAccessibilityValue(tab.active ? "selected" : "")
             return element
         }
