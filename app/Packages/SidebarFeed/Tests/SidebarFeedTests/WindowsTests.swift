@@ -40,7 +40,7 @@ private func windowsFixture(_ state: [Any] = blocked(), group: Bool = false) thr
         let snapshot = try windowsFixture(state)
         let projection = sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)])
         let status = try #require(sidebarRows(snapshot).first { $0.target?.window == WindowID(number: 2) }?.status)
-        #expect(projection.statuses[WindowID(number: 0)] == status.tabStatus)
+        #expect(projection.statuses[WindowID(number: 0)] == SidebarRow.Status.quiet.mergingTabStatus(status))
     }
 }
 
@@ -80,4 +80,23 @@ private func windowsFixture(_ state: [Any] = blocked(), group: Bool = false) thr
     #expect(projection.labels[window]?.title == "Pane 3")
     #expect(projection.labels[child]?.title == "Pane 2")
     #expect(projection.ancestors[child] == window)
+}
+
+@Test func nestedTabStatusPrecedence() throws {
+    let states: [[Any]] = [idle(), idle(outcome(1, "success")), working(), blocked(), idle(outcome(1, "failure")), ["Stalled"]]
+    let expected: [SidebarRow.Status] = [.quiet, .done, .running, .waiting, .error, .error]
+    for first in states.indices {
+        for second in states.indices {
+            let child = pane(1, lifecycle: agent(states[second]))
+            let parent = pane(0, lifecycle: agent(states[first]), children: [child])
+            let snapshot: Snapshot = try decode(snapshotObject([parent]))
+            let projection = sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0), WindowID(number: 1)])
+            #expect(projection.statuses[WindowID(number: 0)] == expected[max(first, second)])
+        }
+    }
+    let snapshot = try windowsFixture(idle(outcome(1, "success")))
+    var seen = SidebarSeen()
+    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)], seen: seen).statuses[WindowID(number: 0)] == .done)
+    seen.observe(snapshot, attended: true)
+    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)], seen: seen).statuses[WindowID(number: 0)] == .quiet)
 }
