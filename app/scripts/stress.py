@@ -107,7 +107,7 @@ def report_matches(text, pid):
 
 
 def app_children(pid):
-    for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,args='], text=True).splitlines():
+    for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,args='], text=True, errors='replace').splitlines():
         bits = line.split(None, 2)
         if len(bits) == 3 and int(bits[1]) == pid and 'rpc' in bits[2].split():
             yield int(bits[0])
