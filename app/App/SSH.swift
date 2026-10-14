@@ -93,6 +93,15 @@ import TmuxControl
         return Launch(launch.path, ["-o", "ProxyCommand=/usr/bin/false"] + launch.arguments, environment: launch.environment)
     }
 
+    static func recorded(_ recorded: [String], _ arguments: [String]) -> Launch {
+        let options = [
+            "BatchMode=yes", "ClearAllForwardings=yes", "RemoteCommand=none", "RequestTTY=no", "SessionType=default",
+            "StdinNull=no", "PermitLocalCommand=no", "ControlMaster=no",
+        ].flatMap { ["-o", $0] }
+        return Launch("/usr/bin/ssh", options + recorded.dropLast() + ["--"] + recorded.suffix(1) + ["exec " + arguments.map(quote).joined(separator: " ")],
+                      environment: tools.environment)
+    }
+
     func passenger(_ arguments: [String], control: Endpoint? = nil) -> Launch {
         var arguments = control.map { ["/bin/sh", "-c", Self.attachScript, "kido-agent", $0.directory, $0.server.socket] + arguments } ?? ["/usr/bin/env", "-u", "SSH_AUTH_SOCK"] + arguments
         #if KIDO_VISUAL || KIDO_STRESS

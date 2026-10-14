@@ -79,7 +79,7 @@ struct Upload: Sendable {
     }
 
     static let script = """
-    base=$1; id=$2; shift 2
+    base=${1:-${XDG_STATE_HOME:-$HOME/.local/state}/kido-app}; id=$2; shift 2
     refuse() { printf '%s\\n' "kido-drop: $1" >&2; exit 1; }
     me=$(id -u)
     check() { case $(uname -s) in
@@ -111,7 +111,8 @@ struct Upload: Sendable {
     """
 
     func arguments(base: String, id: String) -> [String] {
-        ["/bin/sh", "-c", Self.script, "kido-drop", base, id] + sources.flatMap { [$0.name, String($0.size)] }
+        // tcsh, as a remote login shell, rejects a newline inside single quotes.
+        ["/bin/sh", "-c", "eval \"$(printf %s \(Data(Self.script.utf8).base64EncodedString()) | base64 -d)\"", "kido-drop", base, id] + sources.flatMap { [$0.name, String($0.size)] }
     }
 
     func send(_ pipe: FileHandle) {
