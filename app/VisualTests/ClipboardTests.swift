@@ -5,28 +5,164 @@ import XCTest
 @testable import Kido
 
 @MainActor final class ClipboardTests: VisualTestCase {
-    func testModeFiveFiveTwoTwoDoesNotSilenceCmdV() async throws {
+    @MainActor private final class Replies {
+        var data: [Data] = []
+        var text: String { String(decoding: data.joined(), as: UTF8.self) }
+    }
+
+    private func b64(_ text: String) -> String { Data(text.utf8).base64EncodedString() }
+
+    private func osc(_ metadata: String, _ payload: String? = nil) -> Data {
+        Data("\u{1b}]5522;\(metadata)\(payload.map { ";" + $0 } ?? "")\u{1b}\\".utf8)
+    }
+
+    private func kittyPane() throws -> (board: NSPasteboard, runtime: GhosttyRuntime, owner: WindowOwner, pane: PaneView, replies: Replies) {
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
-        defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        defer { owner.close() }
-        var replies: [Data] = []
-        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { replies.append($0) })
-        defer { pane.dispose() }
+        let owner = WindowOwner(host: .remote("rich-host"), runtime: runtime, start: false)
+        let replies = Replies()
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { replies.data.append($0) })
         owner.window.contentView = pane
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
         pane.resize(cols: 80, rows: 24)
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+        addTeardownBlock { @MainActor in pane.dispose(); owner.close(); board.releaseGlobally() }
+        return (board, runtime, owner, pane, replies)
+    }
+
+    func testModeFiveFiveTwoTwoCmdVEmitsPasteEventForOneRead() async throws {
+        let (board, runtime, owner, pane, replies) = try kittyPane()
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0, 1, 2])
+        func set(_ text: String) {
+            board.clearContents()
+            board.declareTypes([.string, .png], owner: nil)
+            board.setString(text, forType: .string)
+            board.setData(png, forType: .png)
+        }
+        func paste() async throws -> String {
+            replies.data = []
+            XCTAssertTrue(ghostty_surface_binding_action(pane.surface, "paste_from_clipboard", 20))
+            try await drain(runtime)
+            let pw = try XCTUnwrap(replies.text.components(separatedBy: "pw=").dropFirst().first?.prefix { $0 != "\u{1b}" })
+            XCTAssertEqual(replies.text, "\u{1b}]5522;type=read:status=OK:pw=\(pw)\u{1b}\\\u{1b}]5522;type=read:status=DATA:mime=Lg==:pw=\(pw);"
+                + b64("text/plain image/png\n") + "\u{1b}\\\u{1b}]5522;type=read:status=DONE:pw=\(pw)\u{1b}\\", "Cmd-V under mode 5522 sends the event, not text")
+            XCTAssertNil(owner.preparedAlert)
+            return String(pw)
+        }
+        func read(_ pw: String) async throws -> String {
+            replies.data = []
+            XCTAssertTrue(pane.feed(osc("type=read:name=\(b64("test")):pw=\(pw)", b64("image/png"))))
+            try await drain(runtime)
+            return replies.text
+        }
+        set("hello")
         XCTAssertTrue(pane.feed(Data("\u{1b}[?2004h\u{1b}[?5522h".utf8)))
         try await drain(runtime)
-        board.clearContents()
-        board.setString("hello", forType: .string)
-        XCTAssertTrue(ghostty_surface_binding_action(pane.surface, "paste_from_clipboard", 20))
+        let pw = try await paste()
+        let served = try await read(pw)
+        XCTAssertEqual(served, "\u{1b}]5522;type=read:status=OK\u{1b}\\\u{1b}]5522;type=read:status=DATA:mime=\(b64("image/png"));\(png.base64EncodedString())\u{1b}\\\u{1b}]5522;type=read:status=DONE\u{1b}\\")
+        XCTAssertNil(owner.preparedAlert)
+        let replayed = try await read(pw)
+        XCTAssertEqual(replayed, "", "a used password is an application read, which asks first")
+        XCTAssertNotNil(owner.preparedAlert)
+        owner.respondToAlert(.alertThirdButtonReturn)
         try await drain(runtime)
-        let input = Data(replies.joined())
-        XCTAssertEqual(input, Data("\u{1b}[200~hello\u{1b}[201~".utf8))
+        XCTAssertEqual(replies.text, "\u{1b}]5522;type=read:status=EPERM\u{1b}\\")
+        owner.clipboardPermission = [:]
+        let stale = try await paste()
+        set("changed")
+        let changed = try await read(stale)
+        XCTAssertEqual(changed, "\u{1b}]5522;type=read:status=OK\u{1b}\\\u{1b}]5522;type=read:status=DONE\u{1b}\\")
+        XCTAssertNil(owner.preparedAlert)
+        func superseded(_ old: String) async throws {
+            try await wait("previous sheet closed") { owner.window.attachedSheet == nil }
+            set("next")
+            _ = try await paste()
+            let late = try await read(old)
+            XCTAssertEqual(late, "", "a newer paste event revokes an unused older password")
+            XCTAssertNotNil(owner.preparedAlert)
+            owner.respondToAlert(.alertThirdButtonReturn)
+            try await drain(runtime)
+            XCTAssertEqual(replies.text, "\u{1b}]5522;type=read:status=EPERM\u{1b}\\")
+            owner.clipboardPermission = [:]
+        }
+        try await superseded(try await paste())
+        let expired = try await paste()
+        try await Task.sleep(for: .seconds(30.1))
+        try await superseded(expired)
+    }
+
+    func testRichReadAsksSeparatelyAndResetDeniesIt() async throws {
+        let (board, runtime, owner, pane, replies) = try kittyPane()
+        board.clearContents()
+        board.declareTypes([.string, .png], owner: nil)
+        board.setString("text", forType: .string)
+        board.setData(Data([1, 2, 3]), forType: .png)
+        XCTAssertTrue(pane.feed(osc("type=read", b64("."))))
+        try await drain(runtime)
+        XCTAssertEqual(replies.text, "\u{1b}]5522;type=read:status=OK\u{1b}\\\u{1b}]5522;type=read:status=DATA:mime=Lg==;\(b64("text/plain image/png\n"))\u{1b}\\\u{1b}]5522;type=read:status=DONE\u{1b}\\")
+        XCTAssertNil(owner.preparedAlert)
+        replies.data = []
+        owner.clipboardPermission[.clipboard] = .allow
+        XCTAssertTrue(pane.feed(osc("type=read", b64("text/plain"))))
+        try await drain(runtime)
+        XCTAssertTrue(replies.text.contains("status=DATA:mime=\(b64("text/plain"));\(b64("text"))"), replies.text)
+        XCTAssertNil(owner.preparedAlert)
+        replies.data = []
+        XCTAssertTrue(pane.feed(osc("type=read", b64("image/png"))))
+        try await drain(runtime)
+        XCTAssertEqual(owner.preparedAlert?.alert.messageText, "Allow applications on “rich-host” to read images, HTML and file lists from your Mac clipboard?")
+        XCTAssertEqual(replies.text, "", "a text grant does not serve a rich read")
+        WindowOwner.resetClipboardPermissions([owner])
+        try await drain(runtime)
+        XCTAssertNil(owner.preparedAlert)
+        XCTAssertEqual(owner.clipboardPermission, [:])
+        XCTAssertEqual(replies.text, "\u{1b}]5522;type=read:status=EPERM\u{1b}\\")
+        replies.data = []
+        XCTAssertTrue(pane.feed(osc("type=read", b64("image/png"))))
+        try await drain(runtime)
+        XCTAssertNotNil(owner.preparedAlert)
+        pane.invalidateClipboard()
+        try await drain(runtime)
+        XCTAssertNil(owner.preparedAlert)
+        XCTAssertEqual(replies.text, "", "a reconnect drops a pending read without a reply")
+    }
+
+    func testKittyWritesValidateEveryRepresentation() async throws {
+        let (board, runtime, _, pane, replies) = try kittyPane()
+        board.clearContents()
+        board.setString("before", forType: .string)
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0, 9])
+        func write(_ parts: [(String, Data)]) -> Data {
+            parts.reduce(osc("type=write")) { $0 + osc("type=wdata:mime=\(b64($1.0))", $1.1.base64EncodedString()) } + osc("type=wdata")
+        }
+        let changes = board.changeCount
+        XCTAssertTrue(pane.feed(write([("image/png", png), ("application/x-unknown", Data("x".utf8))])))
+        try await drain(runtime)
+        XCTAssertEqual(replies.text, "\u{1b}]5522;type=write:status=EINVAL\u{1b}\\")
+        XCTAssertEqual(board.changeCount, changes)
+        replies.data = []
+        XCTAssertTrue(pane.feed(write([("image/png", png)]), kind: .snapshot))
+        try await drain(runtime)
+        XCTAssertEqual(replies.text, "", "a replayed transaction writes nothing")
+        XCTAssertEqual(board.changeCount, changes)
+        let split = write([("image/png", png), ("text/plain", Data("caption".utf8))])
+        let cut = split.count - 40
+        XCTAssertTrue(pane.feed(split.prefix(cut)))
+        XCTAssertTrue(pane.feed(split.dropFirst(cut)))
+        try await drain(runtime)
+        XCTAssertEqual(replies.text, "\u{1b}]5522;type=write:status=DONE\u{1b}\\")
+        XCTAssertEqual(board.data(forType: .png), png)
+        XCTAssertEqual(board.string(forType: .string), "caption")
+        replies.data = []
+        let chunk = osc("type=wdata:mime=\(b64("image/png"))", Data(count: 3 << 20).base64EncodedString())
+        XCTAssertTrue(pane.feed(osc("type=write")))
+        for _ in 0..<21 { XCTAssertTrue(pane.feed(chunk)) }
+        XCTAssertTrue(pane.feed(osc("type=wdata:mime=\(b64("image/png"))", Data(count: (64 << 20) + 1 - 21 * (3 << 20)).base64EncodedString()) + osc("type=wdata")))
+        try await drain(runtime)
+        XCTAssertEqual(replies.text, "\u{1b}]5522;type=write:status=EFBIG\u{1b}\\")
+        XCTAssertEqual(board.data(forType: .png), png)
     }
 
     func testConsentCancellationRegistersAndLimits() async throws {
@@ -70,7 +206,7 @@ import XCTest
         try await drain(runtime)
         XCTAssertTrue(ghostty_config_get(runtime.config, &access, "clipboard-read", 14))
         XCTAssertEqual(access.map { String(cString: $0) }, "ask")
-        owner.clipboardPermission = .ask
+        owner.clipboardPermission = [:]
         query()
         try await drain(runtime)
         let respond = try XCTUnwrap(owner.preparedAlert?.respond)
@@ -175,8 +311,8 @@ import XCTest
         XCTAssertEqual(replies.last, Data("\u{1b}]52;c;\u{1b}\\".utf8))
         WindowOwner.resetClipboardPermissions([a, b])
         XCTAssertFalse(WindowOwner.clipboardConsent.allows(host))
-        XCTAssertEqual(a.clipboardPermission, .ask)
-        XCTAssertEqual(b.clipboardPermission, .ask)
+        XCTAssertEqual(a.clipboardPermission, [:])
+        XCTAssertEqual(b.clipboardPermission, [:])
         try await query(pa)
         XCTAssertNotNil(a.preparedAlert)
         a.respondToAlert(.alertThirdButtonReturn)
