@@ -743,7 +743,11 @@ border. With the sidebar collapsed, the whole band is themed. No private views a
 WindowTabs paints no background of its own, preserving the native sidebar shadow.
 
 Tabs project the current session's top-level windows from the
-feed; descendant windows activate their ancestor tab. Each title
+feed; descendant windows activate their ancestor tab. The control client's
+window list is filtered by the feed: with a snapshot, an unlisted window
+gets a tab only if it is the session's current window, so a new detached run
+window does not flash as a top-level tab before the snapshot nests it under
+its parent. With no snapshot, every window shows. Each title
 is the composed label of that window's active pane, falling back to the
 tmux window name until its feed label arrives. A tab whose active pane is an
 agent or agent run is drawn like its sidebar row: semibold, with the display-only
