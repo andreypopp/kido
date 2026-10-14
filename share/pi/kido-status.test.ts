@@ -3065,23 +3065,26 @@ test("a batch rides a turn that ran tools, and a turn that ran none leaves it he
   }
 });
 
-test("a chunk flushes after 1s of quiet, and a chunk inside that second restarts it: one delivery with both (TestStreamDebounce)", async () => {
+test("a chunk flushes after 1s of quiet, and a chunk inside that second restarts it: one delivery with both (TestStreamDebounce)", { timeout: 10000 }, async (t) => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx);
 
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
     assert.equal(await sendToInbox(s.inboxPath, streamEnvelope("line 1")), "ok");
-    await new Promise((r) => setTimeout(r, 600));
+    t.mock.timers.tick(600);
     assert.equal(await sendToInbox(s.inboxPath, streamEnvelope("line 2")), "ok");
-    await new Promise((r) => setTimeout(r, 600));
-    assert.equal(streamMessages(s.messages).length, 0, "1.2s after the first chunk, but only 0.6s after the last: still held");
+    t.mock.timers.tick(999);
+    assert.equal(streamMessages(s.messages).length, 0, "999ms after the second chunk: the restarted timer must still hold both chunks");
 
-    await pollUntil(() => streamMessages(s.messages).length === 1, 3000, "the debounce to flush after the quiet second");
+    t.mock.timers.tick(1);
+    assert.equal(streamMessages(s.messages).length, 1, "1s after the second chunk: the restarted timer must flush once");
     assert.match(streamMessages(s.messages)[0].message.content, /line 1[\s\S]*line 2/, "both chunks arrive in the one message");
-    await new Promise((r) => setTimeout(r, 1300));
+    t.mock.timers.tick(1300);
     assert.equal(streamMessages(s.messages).length, 1, "and nothing else follows");
   } finally {
+    t.mock.timers.reset();
     await fx.restore();
   }
 });
