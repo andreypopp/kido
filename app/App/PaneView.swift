@@ -1112,7 +1112,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard acceptingInput, let owner = window?.delegate as? WindowOwner else { return false }
         let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        owner.upload(Result { () throws(Failure) in try Upload(files: urls, copying: host != .local) }, to: self)
+        owner.upload(Result { () throws(Failure) in try Upload(files: urls, copying: host != .local || owner.sshDestination(self) != nil) }, to: self)
         return true
     }
 
