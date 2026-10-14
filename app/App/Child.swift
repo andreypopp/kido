@@ -59,18 +59,25 @@ final class Child: @unchecked Sendable {
         }
     }
 
-    static func run(_ launch: Launch, deadline: TimeInterval = 10, drain: Drain? = nil) async throws(Failure) -> (status: Int32, out: String, err: String) {
-        try await run(launch.path, launch.arguments, env: launch.environment, deadline: deadline, drain: drain)
+    static func run(
+        _ launch: Launch, deadline: TimeInterval = 10, drain: Drain? = nil, input: (@Sendable (FileHandle) -> Void)? = nil
+    ) async throws(Failure) -> (status: Int32, out: String, err: String) {
+        try await run(launch.path, launch.arguments, env: launch.environment, deadline: deadline, drain: drain, input: input)
     }
 
     static func run(
-        _ path: String, _ args: [String], env: [String: String]? = nil, cwd: String? = nil, deadline: TimeInterval = 10, drain: Drain? = nil
+        _ path: String, _ args: [String], env: [String: String]? = nil, cwd: String? = nil, deadline: TimeInterval = 10, drain: Drain? = nil,
+        input: (@Sendable (FileHandle) -> Void)? = nil
     ) async throws(Failure) -> (status: Int32, out: String, err: String) {
         guard !Task.isCancelled else { throw Failure(message: "Connection cancelled") }
-        let out = Pipe()
-        let child = try Child(path, args, env: env, cwd: cwd, stdout: out, drain: drain)
+        let out = Pipe(), stdin = input.map { _ in Pipe() }
+        if let stdin { _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) }
+        let child = try Child(path, args, env: env, cwd: cwd, stdin: stdin, stdout: out, drain: drain)
         nonisolated(unsafe) var stdout = Data()
         DispatchQueue.global().async(group: child.ended) { stdout = out.fileHandleForReading.readDataToEndOfFile() }
+        if let input, let writer = stdin?.fileHandleForWriting {
+            DispatchQueue.global().async(group: child.ended) { input(writer); try? writer.close() }
+        }
         let finished = await withTaskCancellationHandler {
             await withCheckedContinuation { finished in
                 DispatchQueue.global().async { finished.resume(returning: child.ended.wait(timeout: .now() + deadline) == .success) }
