@@ -1,6 +1,28 @@
 import AppKit
 import SidebarFeed
 
+func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bool) {
+    let color: NSColor = switch status {
+    case .quiet: .secondaryLabelColor.withAlphaComponent(NSColor.secondaryLabelColor.alphaComponent * 0.45)
+    case .running, .done: .systemGreen
+    case .waiting: .systemOrange
+    case .error, .stalled: .systemRed
+    }
+    if status == .done {
+        let direction: CGFloat = flipped ? 1 : -1
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: center.x - 2.8, y: center.y + direction * 0.1))
+        path.line(to: NSPoint(x: center.x - 0.9, y: center.y + direction * 2))
+        path.line(to: NSPoint(x: center.x + 2.8, y: center.y - direction * 2))
+        path.lineWidth = 2
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        color.setStroke(); path.stroke()
+    } else {
+        color.setFill(); NSBezierPath(ovalIn: NSRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6)).fill()
+    }
+}
+
 struct SidebarFonts {
     let regular = NSFont.systemFont(ofSize: 13)
     let agent = NSFont.systemFont(ofSize: 13, weight: .semibold)
@@ -189,24 +211,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             (clock as NSString).draw(at: NSPoint(x: bounds.width - 12 - clockWidth, y: y + 2),
                                      withAttributes: [.font: fonts.clock, .foregroundColor: NSColor.secondaryLabelColor])
             if pane && close.isHidden {
-                let color: NSColor = switch row.status {
-                case .quiet: .secondaryLabelColor.withAlphaComponent(NSColor.secondaryLabelColor.alphaComponent * 0.45)
-                case .running, .done: .systemGreen
-                case .waiting: .systemOrange
-                case .error, .stalled: .systemRed
-                }
-                if row.status == .done {
-                    let path = NSBezierPath()
-                    path.move(to: NSPoint(x: dotX - 2.8, y: y + 9.1))
-                    path.line(to: NSPoint(x: dotX - 0.9, y: y + 11))
-                    path.line(to: NSPoint(x: dotX + 2.8, y: y + 7))
-                    path.lineWidth = 2
-                    path.lineCapStyle = .round
-                    path.lineJoinStyle = .round
-                    color.setStroke(); path.stroke()
-                } else {
-                    color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: y + 6, width: 6, height: 6)).fill()
-                }
+                drawStatusMark(row.status, at: NSPoint(x: dotX, y: y + 9), flipped: true)
             }
         }
     }
