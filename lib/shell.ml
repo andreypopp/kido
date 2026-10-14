@@ -1,5 +1,3 @@
-let user_command_option = "@kido-user-command"
-
 let bare_shell_word command =
   match String.trim command with
   | "" -> None
@@ -49,7 +47,7 @@ let run () =
   let path, command =
     command ~path:(Fs.getenv "PATH")
       ~login:(resolve_login_shell [ global_option "default-shell"; Fs.getenv "SHELL" ])
-      (match global_option user_command_option with "" -> None | c -> Some c)
+      (match global_option Tmux_vars.user_command with "" -> None | c -> Some c)
   in
   let zdotdir = Sys.getenv_opt "ZDOTDIR" in
   let mode =

@@ -45,8 +45,6 @@ let shell p =
   | Some prompt, Some start when p.command_running && Float.(prompt <= start) -> Running
   | Some _, _ -> Idle
 
-let run_option = "@kido_run"
-let order_option = "@kido-order"
 let sep = "\x1f"
 
 let format =
@@ -76,12 +74,12 @@ let format =
       "#{pane_dead}";
       "#{pane_dead_time}";
       "#{session_attached}";
-      "#{" ^ run_option ^ "}";
+      "#{" ^ Tmux_vars.run ^ "}";
       pane_active;
-      "#{@kido_ssh}";
+      "#{" ^ Tmux_vars.ssh ^ "}";
       "#{pane_program_status}";
       "#{pane_modal_flag}";
-      "#{" ^ order_option ^ "}";
+      "#{" ^ Tmux_vars.order ^ "}";
       "#{pane_title}";
     ]
 
@@ -289,15 +287,16 @@ let mark_ssh tmux pane destination args =
   let target = [ "-t"; string_of_pane_id pane ] in
   let mark =
     Option.map
-      (fun destination -> [ "set-option"; "-p" ] @ target @ [ "@kido_ssh"; destination ])
+      (fun destination -> [ "set-option"; "-p" ] @ target @ [ Tmux_vars.ssh; destination ])
       destination
   in
-  let unset = [ "set-option"; "-p"; "-u" ] @ target @ [ "@kido_ssh_args" ] in
+  let unset = [ "set-option"; "-p"; "-u" ] @ target @ [ Tmux_vars.ssh_args ] in
   let record =
     match args with
     | None -> unset
     | Some args ->
-        [ "set-option"; "-p" ] @ target @ [ "@kido_ssh_args"; Procs.ssh_connection_args_json args ]
+        [ "set-option"; "-p" ] @ target
+        @ [ Tmux_vars.ssh_args; Procs.ssh_connection_args_json args ]
   in
   match Tmux.run tmux (match mark with None -> record | Some mark -> mark @ [ ";" ] @ record) with
   | Ok () -> Ok ()
@@ -312,11 +311,11 @@ let rank_sessions tmux ids =
        (List.mapi
           (fun i id ->
             (if i = 0 then [] else [ ";" ])
-            @ [ "set-option"; "-t"; string_of_session_id id; order_option; string_of_int i ])
+            @ [ "set-option"; "-t"; string_of_session_id id; Tmux_vars.order; string_of_int i ])
           ids))
 
 let mark_run tmux pane_id run_id =
-  Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane_id; run_option; run_id ]
+  Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane_id; Tmux_vars.run; run_id ]
 
 let%test_module "Tests" =
   (module struct

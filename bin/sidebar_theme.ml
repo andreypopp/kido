@@ -1,3 +1,4 @@
+module Tmux_vars = Kido.Tmux_vars
 module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
@@ -48,25 +49,23 @@ let style t : role -> Style.t = function
   | `Current -> t.current
 
 let current_rows t = t.current_rows
-let option name = "@kido-sidebar-" ^ name ^ "-style"
 
-let format =
-  String.concat "\x1f"
-    (List.map
-       (fun n -> "#{" ^ option n ^ "}")
-       [
-         "row";
-         "command";
-         "dim";
-         "error";
-         "running";
-         "waiting";
-         "done";
-         "stalled";
-         "session";
-         "current";
-         "current-rows";
-       ])
+let options =
+  [
+    (Tmux_vars.sidebar_row_style, fun t s -> { t with row = s });
+    (Tmux_vars.sidebar_command_style, fun t s -> { t with command = s });
+    (Tmux_vars.sidebar_dim_style, fun t s -> { t with dim = s });
+    (Tmux_vars.sidebar_error_style, fun t s -> { t with error = s });
+    (Tmux_vars.sidebar_running_style, fun t s -> { t with running = s });
+    (Tmux_vars.sidebar_waiting_style, fun t s -> { t with waiting = s });
+    (Tmux_vars.sidebar_done_style, fun t s -> { t with done_ = s });
+    (Tmux_vars.sidebar_stalled_style, fun t s -> { t with stalled = s });
+    (Tmux_vars.sidebar_session_style, fun t s -> { t with session = s });
+    (Tmux_vars.sidebar_current_style, fun t s -> { t with current = s });
+    (Tmux_vars.sidebar_current_rows_style, fun t (s : Style.t) -> { t with current_rows = s.bg });
+  ]
+
+let format = String.concat "\x1f" (List.map (fun (name, _) -> "#{" ^ name ^ "}") options)
 
 let colour s =
   let named =
@@ -144,48 +143,25 @@ let parse_style s =
       if Option.is_none st.fg then Style.fg Color.default st else st)
 
 let load reply =
-  match String.split ~by:"\x1f" reply with
-  | [ row; command; dim; error; running; waiting; done_; stalled; session; current; current_rows ]
-    ->
-      let first = ref None in
-      let pick name v =
-        if String.is_empty v then None
-        else
-          match parse_style v with
-          | Ok s -> Some s
-          | Error e ->
-              if Option.is_none !first then first := Some (Printf.sprintf "%s: %s" (option name) e);
-              None
-      in
-      let d = default in
-      let row = Option.get_or ~default:d.row (pick "row" row) in
-      let command = Option.get_or ~default:d.command (pick "command" command) in
-      let dim = Option.get_or ~default:d.dim (pick "dim" dim) in
-      let error = Option.get_or ~default:d.error (pick "error" error) in
-      let running = Option.get_or ~default:d.running (pick "running" running) in
-      let waiting = Option.get_or ~default:d.waiting (pick "waiting" waiting) in
-      let done_ = Option.get_or ~default:d.done_ (pick "done" done_) in
-      let stalled = Option.get_or ~default:d.stalled (pick "stalled" stalled) in
-      let session = Option.get_or ~default:d.session (pick "session" session) in
-      let current = Option.get_or ~default:d.current (pick "current" current) in
-      let current_rows =
-        Option.flat_map (fun (s : Style.t) -> s.bg) (pick "current-rows" current_rows)
-      in
-      ( {
-          row;
-          command;
-          dim;
-          error;
-          running;
-          waiting;
-          done_;
-          stalled;
-          session;
-          current;
-          current_rows;
-        },
-        !first )
-  | _ -> (default, None)
+  let fields = String.split ~by:"\x1f" reply in
+  if List.length fields <> List.length options then (default, None)
+  else
+    let first = ref None in
+    let pick name v =
+      if String.is_empty v then None
+      else
+        match parse_style v with
+        | Ok s -> Some s
+        | Error e ->
+            if Option.is_none !first then first := Some (Printf.sprintf "%s: %s" name e);
+            None
+    in
+    let theme =
+      List.fold_left2
+        (fun t (name, update) v -> match pick name v with Some s -> update t s | None -> t)
+        default options fields
+    in
+    (theme, !first)
 
 let%test_module "Tests" =
   (module struct

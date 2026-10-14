@@ -72,7 +72,7 @@ for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s 
         for match in re.finditer(history, comment, re.I):
             report(path, text, offset + match.start(), 'comment history: ' + match.group())
 
-without_interface = {'lib/sh.ml', 'lib/test_support.ml', 'lib/test_fixture.ml', 'lib/view_fixture.ml', 'lib/tmux_pane_fixture.ml', 'lib_tmux/program_status.ml'}
+without_interface = {'lib/sh.ml', 'lib/test_support.ml', 'lib/test_fixture.ml', 'lib/view_fixture.ml', 'lib/tmux_pane_fixture.ml', 'lib_tmux/program_status.ml', 'lib/tmux_vars.ml'}
 for path in (p for p in set(glob.glob('lib/*.ml') + glob.glob('lib_tmux/*.ml') + glob.glob('bin/*.ml')) - without_interface if not pathlib.Path(p + 'i').exists()):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text, True)

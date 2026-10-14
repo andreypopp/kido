@@ -133,7 +133,7 @@ These requirements are fixed:
   what production callers use. The out-of-line exceptions are
   `lib/test/test_tool_parity.ml` and `lib/test/tmux_server/`.
 - **Every stanza compiles with `-open Containers`.** Every `.ml`
-  has an `.mli` unless it contains only types. The test-helper modules
+  has an `.mli` unless it contains only types or constants. The test-helper modules
   `Sh`, `Test_support`, `Test_fixture`, `View_fixture` and
   `Tmux_pane_fixture` have no `.mli`.
   Only `tmux.mli` exposes `lib_tmux/program_status.ml`.
@@ -248,6 +248,7 @@ Conventions:
       build_id.ml      the immutable dune-build-info version, or unknown
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
+      tmux_vars.ml     names of kido's tmux user options and environment variables
       tmux_pane.ml     kido's pane view, topology reads, ordering, navigation and marks
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON

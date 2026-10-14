@@ -66,7 +66,7 @@ let server_conf ~exe ~user_conf =
               set -gF %s '#{default-command}'\n\
               set -g side-status-command %s\n\
               set -g default-command %s\n"
-             Shell.user_command_option kido kido_shell;
+             Tmux_vars.user_command kido kido_shell;
          ])
 
 let server_env ~bin_dir env =
@@ -106,7 +106,7 @@ let probe_server ~socket bin =
            ";";
            "show-environment";
            "-g";
-           "KIDO_SERVER";
+           Tmux_vars.server;
          ])
       (Unix.environment ())
   in
@@ -118,10 +118,11 @@ let probe_server ~socket bin =
       let lines = String.split_on_char '\n' stdout in
       match String.split_on_char '\x1f' (List.hd lines) with
       | [ socket; "" ] when not (String.is_empty socket) ->
+          let prefix = Tmux_vars.server ^ "=" in
           let stamp =
             List.find_map
               (fun line ->
-                String.chop_prefix ~pre:"KIDO_SERVER=" line
+                String.chop_prefix ~pre:prefix line
                 |> Option.filter (fun value -> not (String.is_empty value)))
               lines
           in
@@ -148,7 +149,7 @@ let new_session ~dir ~detach =
   let env =
     Shell.with_env
       (server_env ~bin_dir:(Bin_dir.own ()) (Unix.environment ()))
-      [ ("KIDO_SERVER", stamp) ]
+      [ (Tmux_vars.server, stamp) ]
   in
   Ok (env, [ "-f"; conf; "new-session" ] @ (if detach then [ "-d" ] else []) @ [ "-s"; "main" ])
 
