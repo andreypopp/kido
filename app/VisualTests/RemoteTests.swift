@@ -280,7 +280,7 @@ import SidebarFeed
         board.setString("before remote copy", forType: .string)
         let copy = Data("remote copy ✓".utf8).base64EncodedString()
         let ready = root + "/ready", result = root + "/reply", script = root + "/clipboard.py"
-        try clipboardQueryScript(ready: ready, result: result, selector: "s", deadline: 8).write(toFile: script, atomically: true, encoding: .utf8)
+        try clipboardQueryScript(ready: ready, result: result, query: "\\x1b]52;s;?\\x1b\\\\", deadline: 8).write(toFile: script, atomically: true, encoding: .utf8)
         _ = await replies(owner, [Command("set-option", "-s", "set-clipboard", "on"), Command("respawn-pane", "-k", "-t", pane.pane, "printf '\\033]52;c;\(copy)\\007'; exec /usr/bin/python3 " + script)])
         try await until("OSC52 SSH live write changed named board") { board.string(forType: .string) == "remote copy ✓" }
         _ = await replies(owner, [Command("set-buffer", "remote stale tmux buffer")])
@@ -292,6 +292,26 @@ import SidebarFeed
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: result)), Data("\u{1b}]52;s;\(Data(text.utf8).base64EncodedString())\u{1b}\\".utf8))
         XCTAssertNil(owner.preparedAlert)
         print("OSC52 SSH localhost private remote window: named-board copy and exactly one preauthorized s read reply")
+    }
+
+    func testKittyClipboardLocalhostRemoteWindow() async throws {
+        let (root, owner, board) = try await localhostOwner("/tmp/kr-5522-")
+        owner.start()
+        try await until("5522 private SSH window connected") { owner.testConnection != nil && owner.testBanner.isHidden }
+        let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.panes.first)
+        WindowOwner.clipboardConsent.allowAlways(owner.host, .rich)
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0, 7]), mime = Data("image/png".utf8).base64EncodedString()
+        board.clearContents()
+        board.setData(png, forType: .png)
+        let ready = root + "/ready", result = root + "/reply", script = root + "/clipboard.py"
+        try clipboardQueryScript(ready: ready, result: result, query: "\\x1b]5522;type=read;\(mime)\\x1b\\\\", deadline: 8).write(toFile: script, atomically: true, encoding: .utf8)
+        _ = await replies(owner, [Command("respawn-pane", "-k", "-t", pane.pane, "exec /usr/bin/python3 " + script)])
+        try Data().write(to: URL(fileURLWithPath: ready))
+        try await until("5522 SSH pane received reply") { FileManager.default.fileExists(atPath: result) }
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: result)), Data(("\u{1b}]5522;type=read:status=OK\u{1b}\\\u{1b}]5522;type=read:status=DATA:mime=\(mime);"
+            + png.base64EncodedString() + "\u{1b}\\\u{1b}]5522;type=read:status=DONE\u{1b}\\").utf8))
+        XCTAssertNil(owner.preparedAlert)
+        print("OSC5522 SSH localhost private remote window: one preauthorized image/png read answered in the reading pane")
     }
 
     func testLocalhostWindowsAndRecovery() async throws {
