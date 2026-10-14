@@ -5,6 +5,30 @@ import XCTest
 @testable import Kido
 
 @MainActor final class ClipboardTests: VisualTestCase {
+    func testModeFiveFiveTwoTwoDoesNotSilenceCmdV() async throws {
+        let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        defer { owner.close() }
+        var replies: [Data] = []
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { replies.append($0) })
+        defer { pane.dispose() }
+        owner.window.contentView = pane
+        owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        owner.window.orderFront(nil)
+        pane.resize(cols: 80, rows: 24)
+        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+        XCTAssertTrue(pane.feed(Data("\u{1b}[?2004h\u{1b}[?5522h".utf8)))
+        try await drain(runtime)
+        board.clearContents()
+        board.setString("hello", forType: .string)
+        XCTAssertTrue(ghostty_surface_binding_action(pane.surface, "paste_from_clipboard", 20))
+        try await drain(runtime)
+        let input = Data(replies.joined())
+        XCTAssertEqual(input, Data("\u{1b}[200~hello\u{1b}[201~".utf8))
+    }
+
     func testConsentCancellationRegistersAndLimits() async throws {
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         XCTAssertNotEqual(board.name.rawValue, "NSGeneralPboard")
