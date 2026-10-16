@@ -45,6 +45,7 @@ final class Connection: @unchecked Sendable {
             case syncing(RestoreRequest)
             case settled(Boundary)
             case fetching(UUID)
+            var fetching: Bool { if case .fetching = self { true } else { false } }
         }
         let view: PaneView
         var history: History = .settled(.older)
@@ -147,6 +148,17 @@ final class Connection: @unchecked Sendable {
                 self.sync(id)
             }
         }
+        pane.onCopyCheck = { [weak self, id = pane.pane, key = ObjectIdentifier(pane)] done in
+            guard let self else { return done(false) }
+            client.queue.async {
+                let admitted = if let feed = self.panes?[id], ObjectIdentifier(feed.view) == key, !feed.history.fetching { true } else { false }
+                let reply: @Sendable () -> Void = { DispatchQueue.main.async { done(admitted) } }
+                #if KIDO_VISUAL
+                if let hook = self.visualCopyCheck { return hook(reply) }
+                #endif
+                reply()
+            }
+        }
         pane.onScrollTop = { [weak self, id = pane.pane] in self?.load(id, metadataOnly: true) }
         pane.onLoadMore = { [weak self, id = pane.pane] in self?.load(id) }
         pane.onFindCoverage = { [weak self, id = pane.pane] distance, token in
@@ -189,7 +201,28 @@ final class Connection: @unchecked Sendable {
 
     #if KIDO_VISUAL
     var visualCommands: [Command] = []
+    var visualCopyCheck: ((@escaping @Sendable () -> Void) -> Void)?
+    private let restores = OSAllocatedUnfairLock(initialState: 0)
+    var visualRestores: Int { restores.withLock { $0 } }
+    enum Gate { case armed, held(@Sendable () -> Void) }
+    private let gates = OSAllocatedUnfairLock(initialState: [String: Gate]())
+    func visualHoldLoad(_ phase: String) { gates.withLock { $0[phase] = .armed } }
+    func visualHeld(_ phase: String) -> Bool { gates.withLock { if case .held? = $0[phase] { true } else { false } } }
+    func visualReleaseLoad(_ phase: String) {
+        if case .held(let body)? = gates.withLock({ $0.removeValue(forKey: phase) }) { client.queue.async(execute: body) }
+    }
     #endif
+
+    private func gate(_ phase: String, _ body: @escaping @Sendable () -> Void) {
+        #if KIDO_VISUAL
+        if gates.withLock({ gates in
+            guard case .armed? = gates[phase] else { return false }
+            gates[phase] = .held(body)
+            return true
+        }) { return }
+        #endif
+        body()
+    }
 
     func send(_ commands: [Command], then done: (@MainActor @Sendable ([Reply]?) -> Void)? = nil) {
         #if KIDO_VISUAL
@@ -343,7 +376,7 @@ final class Connection: @unchecked Sendable {
             feed.preparingRestore = true
             DispatchQueue.main.async {
                 let view = feed.view
-                let deferred = (view.superview as? WindowView)?.defersRestore == true
+                let deferred = (view.superview as? WindowView)?.defersRestore == true || view.copyMode != nil
                 let epoch = view.historyEpoch
                 if !deferred { view.resetScroll() }
                 self.client.queue.async {
@@ -352,7 +385,7 @@ final class Connection: @unchecked Sendable {
                         feed.completePendingRestore()
                         return
                     }
-                    guard !deferred else { return }
+                    guard !deferred, !view.frozen else { return }
                     guard view.historyEpoch == epoch else { return self.sync(pane) }
                     guard case .settled = feed.history, let pending = feed.pendingRestore else { return }
                     feed.pendingRestore = nil
@@ -375,6 +408,9 @@ final class Connection: @unchecked Sendable {
 
     private func capture(_ pane: PaneID, _ feed: PaneFeed, request: PaneFeed.RestoreRequest, first: [Command]) {
         let epoch = request.epoch
+        #if KIDO_VISUAL
+        restores.withLock { $0 += 1 }
+        #endif
         debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-send pane=\(pane) chunk=\(historyChunkSize)")
         client.send(first + PaneSync.commands(pane)) { [weak self, weak feed] replies in
             debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-reply pane=\(pane)")
@@ -484,7 +520,7 @@ final class Connection: @unchecked Sendable {
 
     private func load(_ pane: PaneID, goal: (Int, UUID)? = nil, metadataOnly: Bool = false) {
         client.queue.async { [self] in
-            guard let feed = panes?[pane], !feed.view.resizeDirty else { return }
+            guard let feed = panes?[pane], !feed.view.resizeDirty, !feed.view.frozen else { return }
             if let goal {
                 guard case .scanning(let token, _) = feed.search, token == goal.1 else { return }
                 feed.goal = goal.0 > feed.view.scrollPosition().retainedHistoryRows ? goal : nil
@@ -498,11 +534,11 @@ final class Connection: @unchecked Sendable {
             metadataQueries.withLock { $0 += 1 }
             #endif
             client.send([Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}")]) {
-                [weak self, weak feed] replies in
+                [weak self, weak feed] replies in self?.gate("metadata") { [weak self, weak feed] in
                 guard let self, let feed, self.panes?[pane] === feed,
                       case .fetching(let current) = feed.history, current == token else { return }
                 defer { if case .settled = feed.history { self.drain(pane, feed) } }
-                guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty,
+                guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, !feed.view.frozen,
                       let metadata = HistoryMetadata(replies?.first) else {
                     self.publish(feed, history: feed.sampledTmuxHistoryRows)
                     return
@@ -519,18 +555,18 @@ final class Connection: @unchecked Sendable {
                 }
                 feed.sampledTmuxHistoryRows = metadata.history
                 self.fetch(pane, feed, token: token, chunk: min(historyChunkSize, metadata.history - position.retainedHistoryRows))
-            }
+            } }
         }
     }
 
     private func fetch(_ pane: PaneID, _ feed: PaneFeed, token: UUID, chunk: Int = historyChunkSize, retries: Int = 0) {
         let position = feed.view.scrollPosition(), epoch = feed.view.historyEpoch
         debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-send pane=\(pane) loaded=\(position.retainedHistoryRows) chunk=\(chunk)")
-        client.send(HistoryCapture.commands(pane, loaded: position.retainedHistoryRows, chunk: chunk)) { [weak self, weak feed] replies in
+        client.send(HistoryCapture.commands(pane, loaded: position.retainedHistoryRows, chunk: chunk)) { [weak self, weak feed] replies in self?.gate("capture") { [weak self, weak feed] in
             guard let self, let feed, self.panes?[pane] === feed,
                   case .fetching(let current) = feed.history, current == token else { return }
             defer { if case .settled = feed.history { self.drain(pane, feed) } }
-            guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, let replies else {
+            guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, !feed.view.frozen, let replies else {
                 self.publish(feed, history: feed.sampledTmuxHistoryRows)
                 return
             }
@@ -550,7 +586,7 @@ final class Connection: @unchecked Sendable {
                 return self.fetch(pane, feed, token: token, chunk: min(capture.history - position.retainedHistoryRows, chunk * 2))
             }
             let added = capture.rows == 0 ? 0 : feed.view.prepend(Data(capture.text.utf8), epoch: epoch)
-            guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty else {
+            guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, !feed.view.frozen else {
                 self.publish(feed, history: feed.sampledTmuxHistoryRows)
                 return
             }
@@ -566,7 +602,7 @@ final class Connection: @unchecked Sendable {
                 feed.history = .fetching(token)
                 self.fetch(pane, feed, token: token, chunk: min(historyChunkSize, max(0, capture.history - loaded)))
             } else { feed.goal = nil }
-        }
+        } }
     }
 
     private func failGoal(_ feed: PaneFeed) {

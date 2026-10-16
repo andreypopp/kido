@@ -344,6 +344,7 @@ import GhosttyKit
         return MainActor.assumeIsolated { [items] in
             let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
             guard !view.disposed, view.acceptingInput else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
+            let items = view.copyingLines ? items.map { $0.type == .string ? ($0.type, $0.data + Data("\n".utf8)) : $0 } : items
             let pasteboard = view.runtime.pasteboard, item = NSPasteboardItem()
             pasteboard.clearContents()
             guard items.allSatisfy({ item.setData($0.data, forType: $0.type) }), pasteboard.writeObjects([item]) else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
