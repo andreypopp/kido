@@ -568,12 +568,20 @@ private class AlertEscape: NSView {
     }
 
     func uploadImage(_ raw: Data?, to pane: PaneView) {
-        guard admitsUpload() else { return }
+        prepareUpload(to: pane) { _ throws(Failure) in try await Upload(image: raw) }
+    }
+
+    func uploadPromises(_ receivers: [NSFilePromiseReceiver], to pane: PaneView) {
+        prepareUpload(to: pane) { id throws(Failure) in try await Upload.promised(receivers, id: id) }
+    }
+
+    private func prepareUpload(to pane: PaneView, _ prepare: @escaping @MainActor (String) async throws(Failure) -> Upload) {
+        guard !pane.disposed, pane.acceptingInput, admitsUpload() else { return }
         let id = UUID().uuidString.lowercased(), generation = generation
         uploads[id] = (pane, Task { [weak self] in
             let planned: Result<Upload, Failure>
-            do throws(Failure) { planned = .success(try await Upload(image: raw)) } catch { planned = .failure(error) }
-            guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil else { return }
+            do throws(Failure) { planned = .success(try await prepare(id)) } catch { planned = .failure(error) }
+            guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil, !pane.disposed, pane.acceptingInput else { return }
             upload(planned, to: pane)
         })
     }
@@ -598,6 +606,7 @@ private class AlertEscape: NSView {
             else if host == .local { Launch(arguments[0], Array(arguments.dropFirst()), environment: tools.environment) } else { ssh?.upload(arguments) }
         guard let launch else { return notice("Kido did not upload", "\(host.label) is not connected.") }
         let task = Task { [weak self] in
+            guard !Task.isCancelled else { return }
             let result: Result<(status: Int32, out: String, err: String), Failure>
             do throws(Failure) { result = .success(try await Child.run(launch, deadline: 60 + Double(plan.size >> 20), drain: drain, input: plan.send)) }
             catch { result = .failure(error) }
@@ -617,6 +626,7 @@ private class AlertEscape: NSView {
     func cancelUploads(_ pane: PaneView) -> Bool {
         let running = uploads.filter { $0.value.pane === pane }
         running.forEach { uploads[$0.key] = nil; $0.value.task.cancel() }
+        Upload.cancelPromises(Array(running.keys))
         return !running.isEmpty
     }
 
@@ -992,6 +1002,7 @@ private class AlertEscape: NSView {
         clipboardPermission = [:]
         uploadPermission = .ask
         uploads.values.forEach { $0.task.cancel() }
+        Upload.cancelPromises(Array(uploads.keys))
         uploads = [:]
         releaseUploadPrompt()
         preparedAlert = nil
