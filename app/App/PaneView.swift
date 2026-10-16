@@ -763,6 +763,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         vsyncContext?.takeUnretainedValue().close()
         guard !disposed else { return }
         disposed = true
+        _ = (window?.delegate as? WindowOwner)?.cancelUploads(self)
         invalidateClipboard()
         grid.withLock { $0.ready = false; $0.epoch += 1 }
         find?.close()
@@ -1372,7 +1373,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard acceptingInput, copyMode == nil, let owner = window?.delegate as? WindowOwner else { return false }
         let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        owner.upload(Result { () throws(Failure) in try Upload(files: urls, copying: host != .local || owner.sshDestination(self) != nil) }, to: self)
+        if urls.isEmpty, let promises = sender.draggingPasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver], !promises.isEmpty {
+            owner.uploadPromises(promises, to: self)
+        } else {
+            owner.upload(Result { () throws(Failure) in try Upload(files: urls, copying: host != .local || owner.sshDestination(self) != nil) }, to: self)
+        }
         return true
     }
 
