@@ -14,32 +14,28 @@ let one_line s ~max =
   let s = Buffer.contents b in
   String.rdrop_while (Char.equal ' ') (Msg.utf_8_prefix s max)
 
-let agent_status ~dir ~pane ~agent ~session:id ~inbox ~activity ~parent_pid ~parent_session ~depth
-    ~model ~name =
-  State.record ~dir id
+let agent_status ~dir ~pane ~id ~session_file ~inbox ~activity ~model ~name =
+  let pid = Unix.getppid () and now = Timestamp.now () in
+  Subrun.create_meta ~dir
     {
-      agent = State.agent_of_string agent;
-      pane;
-      pid = Unix.getppid ();
-      ts = Timestamp.now ();
-      inbox;
-      name;
-      activity = one_line activity ~max:256;
-      parent =
-        (if String.is_empty parent_session then None
-         else Some { session = parent_session; pid = parent_pid });
-      depth;
-      model;
-    }
+      id;
+      name = "";
+      kind = Pi;
+      parent = None;
+      pane = None;
+      pid = 0;
+      cwd = Sys.getcwd ();
+      model = "";
+      tools = [];
+      keep_alive = false;
+      started_at = now;
+    };
+  Subrun.write_pi ~dir id ~holder:pid
+    { pid; pane; ts = now; inbox; activity = one_line activity ~max:256; model; name; session_file }
   |> Result.map (fun () ->
-      if String.equal agent "pi" && not (String.is_empty name) then
-        Result.to_opt (Subrun.parse_id id)
-        |> Option.flat_map (Subrun.read_meta ~dir)
-        |> Option.iter (fun (meta : Subrun.meta) ->
-            match meta with
-            | { kind = Agent; _ } when not (String.equal name meta.name) ->
-                Subrun.write_meta ~dir { meta with name }
-            | _ -> ()))
+      Option.iter
+        (fun pane -> ignore (Tmux_pane.mark_run (Tmux.create ()) pane (Subrun.string_of_id id)))
+        pane)
 
 let%test_module "Tests" =
   (module struct

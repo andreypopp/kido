@@ -31,8 +31,8 @@ func TestKidoSeparateServerAndState(t *testing.T) {
 		t.Fatalf("pane ids = %s and %s, want a collision to test state isolation", pane, appPane)
 	}
 	for _, server := range []*kidoRun{r, &app} {
-		if got := server.shellIn(pane, "printf '%s' \"$KIDO_STATE_DIR\""); got != "" {
-			t.Errorf("pane state environment = %q, want absent", got)
+		if got := server.shellIn(pane, "printf '%s' \"$KIDO_STATE_DIR$PI_SESSION_ID\""); got != "" {
+			t.Errorf("pane state and caller environment = %q, want absent", got)
 		}
 		if _, err := os.Stat(filepath.Join(server.state, "server.conf")); err != nil {
 			t.Fatal(err)
@@ -40,10 +40,10 @@ func TestKidoSeparateServerAndState(t *testing.T) {
 		if got := server.shellIn(pane, "tmux display-message -p '#{socket_path}'"); got != server.mustServer("").Socket {
 			t.Errorf("pane reaches %q, want %s", got, server.kidoSock)
 		}
-		if got := server.shellIn(pane, "KIDO_STATE_DIR=/must-not-use kido agent-status --agent pi --session isolated; echo $?"); got != "0" {
+		if got := server.shellIn(pane, "KIDO_STATE_DIR=/must-not-use PI_SESSION_ID=isolated kido agent-status; echo $?"); got != "0" {
 			t.Fatalf("agent-status: %q", got)
 		}
-		body, err := os.ReadFile(filepath.Join(server.state, "isolated.json"))
+		body, err := os.ReadFile(filepath.Join(server.state, "runs", "isolated", "pi.json"))
 		if err != nil {
 			t.Fatal(err)
 		}

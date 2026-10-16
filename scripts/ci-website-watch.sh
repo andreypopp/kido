@@ -25,14 +25,14 @@ try:
     own = pathlib.Path(os.environ['KIDO_AGENT_TASK_FILE']).parent
     runs = own.parent
     meta = json.loads((own / 'meta.json').read_text())
-    parent = meta['parentSession'] if meta['kind'] == 'bash' else ''
+    parent = meta.get('parent') if meta['kind'] == 'bash' else ''
 except (KeyError, OSError, ValueError):
     parent = ''
 if parent:
     for path in runs.glob('*/meta.json'):
         try:
             peer = json.loads(path.read_text())
-            if path.parent == own or peer['parentSession'] != parent or peer['kind'] != 'bash' or peer['pid'] <= 0 or (path.parent / 'outcome').exists():
+            if path.parent == own or peer.get('parent') != parent or peer['kind'] != 'bash' or peer['pid'] <= 0 or (path.parent / 'outcome').exists():
                 continue
             command = json.loads((path.parent / 'command').read_text())
             if not any(re.search(r'''(^|[\s/'"])scripts/ci-website-watch\.sh($|[\s;'"&|])''', arg) for arg in command):

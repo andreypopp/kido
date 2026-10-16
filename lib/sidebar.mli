@@ -12,7 +12,6 @@ type options = {
 val default_interval : float
 
 type lingering = {
-  stamp : (int * float) option;
   name : string;
   parent : string;
   outcome : Subrun.result option;
@@ -21,14 +20,14 @@ type lingering = {
 }
 
 type ask_target = Live of Tmux.pane_id | Revivable | Unavailable
-type ask = { ask : Ask.t; target : ask_target }
+type ask = { ask : Ask.t; name : string; target : ask_target }
 
 type snapshot = {
   server : (int * Tmux_pane.server) option;
   client : Tmux_pane.client_state option;
   active : Tmux.pane_id option;
   panes : Tmux_pane.t list;
-  states : (string * State.session) Tmux.Pane_map.t;
+  states : (string * Subrun.pi) Tmux.Pane_map.t;
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
@@ -36,9 +35,7 @@ type snapshot = {
 }
 
 val empty : snapshot
-
-val lingering_subagents :
-  dir:string -> Tmux_pane.t list -> lingering String_map.t -> lingering String_map.t
+val lingering_subagents : dir:string -> Subrun.run Tmux.Pane_map.t -> lingering String_map.t
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }

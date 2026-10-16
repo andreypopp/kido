@@ -133,8 +133,8 @@ RPC sends complete text. The external view truncates and styles it.
 
 The tick reads tmux topology, live agent reports, process information,
 run metadata and outstanding asks. Only root apps `pi` and `claude-code`
-identify agents. `State` supplies local pi identity but does not identify
-an agent pane. The tick also performs the reap sweep. These operations
+identify agents. A pane run supplies local pi identity but does not
+identify an agent pane. The tick also performs the reap sweep. These operations
 are idempotent when a TUI sidebar runs beside RPC.
 
 The feed is not a passive file reader. RPC uses the default 100ms
@@ -249,22 +249,22 @@ feed first observes the current state.
 Tracking resets on:
 
 - An agent's root app change. The model does not track a terminal's report app.
-- A `State` session change.
+- A change of the pane's run.
 - An ssh destination change.
 - A pane leaving a successful read.
 - A changed server identity.
 
 Messages come from the representative record: blocked, working, the
 outcome's record, idle, then any. If that record supplies no message,
-local pi's `State` activity supplies it. The model removes a local pi
+local pi's run activity supplies it. The model removes a local pi
 message that repeats its title.
 
-pi `State` records contain identity, session name, inbox, parentage,
-activity, model and heartbeat, not status or completion. pi addressing
+pi run records (`meta.json` and `pi.json`) contain identity, session
+name, inbox, parentage, activity, model and heartbeat, not status or
+completion. pi addressing
 uses its reported session name, including when a nested program
 overwrites the OSC root. Unnamed pi sessions are addressable only by id.
-Native agents without a local pi `State` identity have no session id or
-inbox. `list_runs` does not list them. `kido prompt` can paste to them.
+Native agents without a pane run have no session id or inbox. `list_runs` does not list them. `kido prompt` can paste to them.
 
 Each frontend controls seen state. On every successful tick, the TUI
 marks the client's active pane's current outcomes seen. It keys them by
@@ -370,12 +370,12 @@ Protocol 2.0 changes from 1.1:
   never descend, and wrap across sessions in sidebar order. The CLI and
   sidebar Shift-Up/Down keys share this order. A sole eligible root selects itself.
 - Changed: pi item indicator, attention and caption use native OSC records.
-  Its title uses the pane title instead of `State` status/title/completion.
+  Its title uses the pane title instead of a reported status/title/completion.
   Pi compaction is running with a message, not compacting.
   Gone runs have precedence over terminal status.
-- Changed: pi stall requires a working root and stale `State` heartbeat.
+- Changed: pi stall requires a working root and a stale run heartbeat.
   Bare pi never stalls. Pi addressing uses the pane title without changes.
-  `State` supplies identity, inbox, parentage, activity and the ask overlay.
+  The pane run supplies identity, inbox, parentage, activity and the ask overlay.
   `agent-status` removes `--status`, `--ended` and `--title`.
 - Unchanged: switch-session requests and integer-correlated replies were
   already present in 1.1. Snapshot v remains 2.

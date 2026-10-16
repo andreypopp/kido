@@ -23,7 +23,7 @@ func TestSpawnForkCarriesTheForkOntoThePiCommandLine(t *testing.T) {
 
 	outFile := filepath.Join(h.dir, "fork.out")
 	h.sendLiteral(fmt.Sprintf(
-		"%s tool spawn_subagent --parent-pid 1 --parent-session root-e2e --name forked-e2e "+
+		"PI_SESSION_ID=root-e2e %s tool spawn_subagent --name forked-e2e "+
 			"--task-file %s --fork caller-session-e2e > %s 2>&1",
 		kidoBin, h.writeTaskFile("forked-e2e"), outFile))
 	h.sendKeys("Enter")

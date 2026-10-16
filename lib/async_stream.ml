@@ -130,22 +130,19 @@ let credit t lines n =
       t.streamed <- t.streamed + n)
 
 let send t text =
-  match State.get_live ~dir:t.dir t.meta.parent_session with
-  | Some { inbox; _ } when not (String.is_empty inbox) -> (
-      let env : Msg.envelope =
-        {
-          kind = Stream;
-          id = Msg.new_id ();
-          from = { session = ""; name = t.meta.name; pane = None };
-          reply_to = "";
-          text;
-          run = Subrun.string_of_id t.meta.id;
-          output = Subrun.output_path ~dir:t.dir t.meta.id;
-        }
-      in
-      match Msg.deliver ~path:inbox (Yojson.Safe.to_string (Msg.yojson_of_envelope env)) with
-      | Ok () -> true
-      | Error _ -> false)
+  match Option.flat_map (Subrun.read_pi ~dir:t.dir) t.meta.parent with
+  | Some { inbox; pid; _ } when Subrun.alive pid && not (String.is_empty inbox) ->
+      Result.is_ok
+        (Msg.deliver_envelope ~path:inbox
+           {
+             kind = Stream;
+             id = Msg.new_id ();
+             from = { session = ""; name = t.meta.name; pane = None };
+             reply_to = "";
+             text;
+             run = Subrun.string_of_id t.meta.id;
+             output = Subrun.output_path ~dir:t.dir t.meta.id;
+           })
   | _ -> false
 
 let deliver t =
@@ -235,14 +232,13 @@ let%test_module "Tests" =
     (* A run whose parent, root-sess, listens on [inbox]. *)
     let run ?(parent = "root-sess") inbox =
       let dir = Filename.temp_dir "kido-state" "" in
-      ignore (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox ()));
+      holding ~dir ~inbox "root-sess";
       let meta : Subrun.meta =
         {
           id = Subrun.new_id ();
           name = "chatty";
           kind = Bash;
-          parent_session = parent;
-          depth = 1;
+          parent = owned parent;
           pane = None;
           pid = 0;
           cwd = "";

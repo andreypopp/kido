@@ -201,13 +201,13 @@ see the fallback. No client is switched and no pane is selected.
   never descend, and wrap across sessions in sidebar order. The CLI and
   sidebar Shift-Up/Down keys share this order; a sole eligible root selects itself.
 - Changed: pi item indicator, attention and caption use pi's native OSC
-  records instead of State status/completion; the title uses the pane title.
+  records instead of reported status/completion; the title uses the pane title.
   Pi compaction is running with
   a message, not compacting. Gone runs outrank terminal status.
-- Changed: pi stall requires a working root and stale State heartbeat;
-  bare pi never stalls. Pi addressing uses the State session name. State supplies
-  identity, inbox, parentage, activity and the ask overlay; agent-status
-  removes --status, --ended and --title.
+- Changed: pi stall requires a working root and a stale run heartbeat;
+  bare pi never stalls. Pi addressing uses the reported session name. The
+  pane run supplies identity, inbox, parentage, activity and the ask
+  overlay; agent-status removes --status, --ended and --title.
 - Unchanged: switch-session requests and integer-correlated replies were
   already present in 1.1. Snapshot v remains 2.
 
@@ -314,14 +314,16 @@ group's place. Groups are the "group" rows the app may draw differently.
 - `id` = `pane` = the pane id `%N`, stable for the pane's life, including
   a dead lingering pane. `window` is its window id. Both are the jump target.
 - `title`: the plain resolved label, never a result or caption. Local pi:
-  its State session name when set, otherwise the pane title verbatim (even
+  its reported session name when set, otherwise the pane title verbatim (even
   empty). Native and remote agents: the pane title, or the app name when it
   is empty; record titles never rename an agent. Terminals and remote
   terminals: the representative record's title, then its inherited app,
   then the foreground command (`ssh` for a remote terminal with no
-  records). A live run with no records: the run name. An ended run: when a live local pi State record
-  names the pane, even one whose root was cleared or replaced, its session
-  name or else the pane title; otherwise the run name.
+  records). A live run with no records: the run name. An ended run: when
+  the pane still has a pane run, even one whose root was cleared or
+  replaced, its session name or else the pane title; otherwise the run
+  name, which is the session name its pi last reported, else its launch
+  name.
 - `lifecycle`: `["Ended",{"result":R}]` for a run pane whose outcome is
   recorded or whose pane is dead, overriding any program or shell status.
   R is `unknown` until an outcome is recorded (never inferred from the
@@ -338,8 +340,9 @@ group's place. Groups are the "group" rows the app may draw differently.
 
   Detection is OSC 7501 root app `pi` or `claude-code`, and the believed
   `@kido_ssh` mark (only while the foreground command is `ssh`). A pi root
-  with a live State record naming the pane is `Pi_agent`, whose `id` is
-  that State session; other agent roots are `Some_agent`. A run uses its
+  with a pane run (the run its `@kido_run` mark names, held by a live pid
+  in that pane) is `Pi_agent`, whose `id` is that run's session id; other
+  agent roots are `Some_agent`. A run uses its
   actual kind: a subagent with no agent root yet is a `Terminal`.
 - AGENT is `{"since","msg","state"}`; state is one of:
 
@@ -359,12 +362,12 @@ group's place. Groups are the "group" rows the app may draw differently.
   blocked records. Otherwise the blocked record with the smallest
   bytewise id gives Waiting with its kind (`permission`, `question`,
   `auth`, or null for absent or unrecognized) and progress. Stalled is a
-  local pi with a working root and a stale State heartbeat (rebased across
+  local pi with a working root and a stale run heartbeat (rebased across
   sleep); native and remote agents never stall, and any blocked record
   outranks it. Running takes the smallest-id working record's progress.
   `msg` comes from the representative record (blocked, then working, then
   the retained outcome's record, then idle, then any, ties by id), falling
-  back to local pi's State activity; a local pi message equal to its title,
+  back to local pi's run activity; a local pi message equal to its title,
   or prefixing it as `msg - `, is dropped. An ask supplies the source only.
 - SHELL is `{"phase","report"}`; phase is one of:
 
@@ -415,7 +418,7 @@ group's place. Groups are the "group" rows the app may draw differently.
   serial and title changes do not move it. It is for display.
 - Tracking resets when an agent's root app changes, appears or clears
   (including the agent exiting to the shell, or a shell becoming an
-  agent); when the local State session id or the ssh destination
+  agent); when the pane run's session id or the ssh destination
   changes; and when a pane leaves a successful topology read. A
   terminal's report changing app or clearing is not a reset: its
   retained report outcome stays. Linked occurrences of one pane share
@@ -507,7 +510,7 @@ applicable records; process exit, RIS and respawn also follow the fork's
 program-status clear rules.
 These behaviours come from the pinned fork, not stock tmux.
 pi status comes from pi 1.2.0's native OSC 7501 root record, with no
-title or progress. Named pi labels use the session name reported in State,
+title or progress. Named pi labels use the session name reported in its run,
 exactly as set by /name. Unnamed or untracked pi labels use the pane title
 set through OSC 0/2, verbatim; unnamed tracked sessions
 are addressable only by session id or id prefix. Generic programs retain

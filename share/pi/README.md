@@ -33,26 +33,26 @@ tools report kido as unavailable.
 The status half shells out to:
 
 ```
-kido agent-status --agent pi --session <id> \
-     [--activity <text>] [--model <name>] \
-     [--parent-pid <pid>] [--parent-session <id>] [--depth <n>] \
+kido agent-status [--activity <text>] [--model <name>] [--name <name>] \
      [--remove] [--inbox <path>]
 ```
 
-kido reads `$TMUX_PANE` from the environment, so the command is spawned from
-inside the pi process, which lives in the tmux pane.
+kido reads `$TMUX_PANE`, `$PI_SESSION_ID` and `$PI_SESSION_FILE` from the
+environment. The extension sets the last two from its own session for
+every kido process it starts, as pi does for its bash tool, so kido knows
+which session calls it.
 
-The session id is the agent's identity: one live process holds it, and a
-child names its parent by it. The first report of a session is the claim
-on that id, and is the one call this extension awaits: kido exits 6 if
-another live process already holds the session (two pi processes started
-from one session file), and the extension then reports nothing more,
-binds no inbox and tells the user once, naming the holder. `--parent-pid`, `--parent-session` and
-`--depth` are read
-once from `KIDO_AGENT_PARENT_PID`, `KIDO_AGENT_PARENT_SESSION` and
-`KIDO_AGENT_DEPTH`, which `kido tool spawn_subagent` sets in a subagent's
-environment (see docs/design-subagents.md, "What a child is given");
-absent for a root session.
+The session id is the agent's identity and its run id: one live process
+holds the run, and a child names its parent by it. The first report of a
+session is the claim on that run, and is the one call this extension
+awaits: kido exits 6 if another live process already holds the run (two
+pi processes started from one session file), and the extension then
+reports nothing more, binds no inbox and tells the user once, naming the
+holder. Only a pi with a UI claims: a headless `pi --print` reports
+nothing. A subagent's parent is in its run's meta, which
+`kido tool spawn_subagent` writes; `KIDO_AGENT_PARENT_SESSION` names it to
+the child's extension (see docs/design-subagents.md, "What a child is
+given").
 
 Those variables are inherited by anything the session starts, so they are
 not on their own what makes this process a subagent: everything that acts
@@ -90,8 +90,9 @@ reporting and `=1` forces it.
 `kido-status.ts` claims the session identity at `session_start`, reports
 activity, model and inbox changes, and sends heartbeats when work starts
 and every thirty seconds while work or compaction is active. At
-`session_shutdown` it sends `--remove` and closes and unlinks the inbox.
-Pi status, title and completion are not stored in State. A tracked pi
+`session_shutdown` it sends `--remove`, which releases the run and keeps
+its record, and closes and unlinks the inbox. Pi status, title and
+completion are not stored in the run. A tracked pi
 stalls only when the root record is working and its heartbeat is stale;
 a bare pi has no heartbeat and never stalls.
 

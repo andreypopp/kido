@@ -89,7 +89,7 @@ let async_run ~dir ~knobs ~warn ~id =
   let stream =
     match meta.kind with
     | Stream -> Some (Async_stream.start ~dir knobs meta)
-    | Agent | Bash -> None
+    | Pi | Agent | Bash -> None
   in
   let report result text =
     let detail =
@@ -224,7 +224,7 @@ let%test_module "Tests" =
     let%expect_test "Stream meta sends the output as it runs, then the ending" =
       let dir = Filename.temp_dir "kido-state" "" in
       let inbox, received = start_inbox ~reply:"ok\n" in
-      Result.get_exn (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox ()));
+      holding ~dir ~inbox "root-sess";
       let _ =
         run ~dir ~kind:Stream ~parent:"root-sess" ~command:[ "printf"; "one\\ntwo\\nthree" ]
           "chatty"

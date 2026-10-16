@@ -316,7 +316,7 @@ let observe ~now ~ask ~stalled (p : Tmux_pane.t) (kind : State.pane_kind) prev =
   | Some_agent { name } ->
       let t, status = agent ~ask:None ~stalled:false ~dedupe:false ~fallback:None in
       (t, Some_agent { name; status })
-  | Pi_agent { id; session } ->
+  | Pi_agent { id; pi = session } ->
       let t, status =
         agent ~ask ~stalled ~dedupe:true
           ~fallback:(if String.is_empty session.activity then None else Some session.activity)
@@ -603,7 +603,7 @@ let%test_module "Tests" =
         Printf.printf "%-20s %s\n" label (text test_at k)
       in
       let p = pane ~title:"agent" "%1" in
-      let pi_kind id : State.pane_kind = Pi_agent { id; session = session "" } in
+      let pi_kind id : State.pane_kind = Pi_agent { id; pi = session "" } in
       step "pi done" (pi_kind "a") (records ~serial:1 [ ("", pi ^ {|"done"|}) ] p);
       step "same" (pi_kind "a") (records ~serial:2 [ ("", pi ^ {|"done"|}) ] p);
       step "new session id" (pi_kind "b") (records ~serial:3 [ ("", pi ^ {|"done"|}) ] p);

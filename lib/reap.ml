@@ -14,13 +14,13 @@ let close_of panes window pane =
   else if Tmux_pane.last_window panes window then None
   else Some (Window window)
 
-let decide panes window_id =
+let decide ~runs panes window_id =
   if Tmux_pane.window_focused panes window_id then
     Error
       (Printf.sprintf "%s is a client's current window; leaving it for the user to read"
          (Tmux.string_of_window_id window_id))
   else
-    match Tmux_pane.run_pane panes window_id with
+    match State.run_pane ~runs panes window_id with
     | None ->
         Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.string_of_window_id window_id))
     | Some { dead_at = None; _ } ->
@@ -109,99 +109,81 @@ let body ~dir e =
         (quote (Subrun.string_of_id e.meta.id)));
   Buffer.contents b
 
-let send ~dir e =
-  let open Result.Infix in
-  let* e =
-    match State.get_live ~dir (Subrun.string_of_id e.meta.id) with
-    | Some ({ agent = Pi; _ } as s) ->
-        let+ panes =
-          if State.addressable_name s then Ok []
-          else Result.map_err (fun m -> Msg.Failed m) (Tmux_pane.list_panes (Tmux.create ()))
-        in
-        { e with meta = { e.meta with name = State.display_name panes s } }
-    | _ -> Ok e
+let send ~dir (e : ending) =
+  let e =
+    {
+      e with
+      meta =
+        { e.meta with name = Subrun.name { meta = e.meta; pi = Subrun.read_pi ~dir e.meta.id } };
+    }
   in
-  if String.is_empty e.meta.parent_session then Ok ()
-  else
-    Msg.notify ~dir ~parent_session:e.meta.parent_session
-      ~from:{ session = ""; name = Subrun.label e.meta; pane = None }
-      (body ~dir e)
+  match Option.map Subrun.string_of_id e.meta.parent with
+  | None -> Ok ()
+  | Some parent -> (
+      match Subrun.live_parent ~dir parent with
+      | Error m -> Error (Msg.Failed m)
+      | Ok { inbox = ""; _ } ->
+          Error (Unavailable (Printf.sprintf "session %s has no inbox" parent))
+      | Ok target ->
+          Msg.deliver_envelope ~path:target.inbox
+            {
+              kind = Notice;
+              id = Msg.new_id ();
+              from = { session = ""; name = Subrun.label e.meta; pane = None };
+              reply_to = "";
+              text = body ~dir e;
+              run = "";
+              output = "";
+            })
 
 let record_ending ~dir (meta : Subrun.meta) outcome =
   if not (Subrun.record_outcome ~dir meta.id outcome) then None
   else
     let detail =
-      match meta.kind with Subrun.Bash | Stream -> Bash | Agent -> Agent { unreported = false }
+      match meta.kind with
+      | Subrun.Bash | Stream -> Bash
+      | Pi | Agent -> Agent { unreported = false }
     in
     Some { meta; outcome; detail }
 
-let sweep tmux ~dir ~grace panes sessions ~now =
-  let mark ?(text = "ended without its wrapper reporting") ((closing, endings) as acc)
-      (p : Tmux_pane.t) =
+let sweep tmux ~dir ~grace ~runs panes ~now =
+  let live p =
+    List.find_map
+      (fun (_, (r : Subrun.run)) ->
+        if Subrun.equal_id r.meta.id p then Some (Subrun.holder r) else None)
+      (Tmux.Pane_map.bindings runs)
+    |> Option.get_lazy (fun () -> Subrun.live_pi ~dir (Subrun.string_of_id p))
+    |> Option.is_some
+  in
+  let mark ((closing, endings) as acc) (p : Tmux_pane.t) (m : Subrun.meta) text =
     let window = p.window_id in
     let closes = function Window w | Pane { window = w; _ } -> Tmux.equal_window_id w window in
-    match Tmux_pane.run_pane panes window with
-    | Some { run = Some run; _ }
-      when not (Tmux_pane.window_focused panes window || List.exists closes closing) -> (
-        match (close_of panes window p.pane_id, Subrun.parse_id run) with
-        | Some close, Ok run_id ->
-            let ending =
-              Option.flat_map
-                (fun (m : Subrun.meta) ->
-                  if not (Option.equal Tmux.equal_pane_id m.pane (Some p.pane_id)) then None
-                  else begin
-                    ignore (Subrun.save_screen tmux ~dir run_id (Some p.pane_id));
-                    record_ending ~dir m
-                      (match m.kind with
-                      | Bash | Stream -> { result = Failed; text; at = Some now }
-                      | Agent -> { result = Died; text = ""; at = Some now })
-                  end)
-                (Subrun.read_meta ~dir run_id)
-            in
-            (closing @ [ close ], endings @ Option.to_list ending)
-        | _ -> acc)
+    match close_of panes window p.pane_id with
+    | Some close when not (Tmux_pane.window_focused panes window || List.exists closes closing) ->
+        ignore (Subrun.save_screen tmux ~dir m.id (Some p.pane_id));
+        let ending =
+          record_ending ~dir m
+            (match m.kind with
+            | Bash | Stream -> { result = Failed; text; at = Some now }
+            | Pi | Agent -> { result = Died; text = ""; at = Some now })
+        in
+        (closing @ [ close ], endings @ Option.to_list ending)
     | _ -> acc
-  in
-  let acc =
-    List.fold_left
-      (fun acc (p : Tmux_pane.t) ->
-        match p with
-        | { run = Some _; dead_at = Some d; _ }
-          when Float.(now - d >= grace)
-               && Option.exists
-                    (fun (r : Tmux_pane.t) -> Tmux.equal_pane_id r.pane_id p.pane_id)
-                    (Tmux_pane.run_pane panes p.window_id) ->
-            mark acc p
-        | _ -> acc)
-      ([], []) panes
-  in
-  let acc =
-    List.fold_left
-      (fun acc (_, (s : State.session)) ->
-        match s.parent with
-        | Some parent when not (List.mem_assoc ~eq:String.equal parent.session sessions) ->
-            Option.map_or ~default:acc (mark acc) (Option.flat_map (Tmux_pane.find panes) s.pane)
-        | _ -> acc)
-      acc sessions
   in
   List.fold_left
     (fun acc (p : Tmux_pane.t) ->
-      match
-        Option.flat_map
-          (fun run ->
-            Result.to_opt (Subrun.parse_id run) |> Option.flat_map (Subrun.read_meta ~dir))
-          p.run
-      with
-      | Some { kind = Bash | Stream; parent_session; pane; _ }
-        when Option.equal Tmux.equal_pane_id pane (Some p.pane_id)
-             && (not (String.is_empty parent_session))
-             && not (List.mem_assoc ~eq:String.equal parent_session sessions) ->
-          mark ~text:"its parent ended" acc p
+      match Tmux.Pane_map.find_opt p.pane_id runs with
+      | Some { meta = { kind = Agent | Bash | Stream; pane = Some pane; _ } as m; _ }
+        when Tmux.equal_pane_id pane p.pane_id ->
+          if Option.exists (fun d -> Float.(now - d >= grace)) p.dead_at then
+            mark acc p m "ended without its wrapper reporting"
+          else if Option.exists (Fun.negate live) m.parent then mark acc p m "its parent ended"
+          else acc
       | _ -> acc)
-    acc panes
+    ([], []) panes
 
-let collect tmux ~dir ~grace panes sessions ~now =
-  let closing, endings = sweep tmux ~dir ~grace panes sessions ~now in
+let collect tmux ~dir ~grace ~runs panes ~now =
+  let closing, endings = sweep tmux ~dir ~grace ~runs panes ~now in
   List.iter (fun c -> ignore (release tmux c)) closing;
   List.iter (fun e -> ignore (send ~dir e)) endings
 
@@ -228,8 +210,7 @@ let%test_module "Tests" =
           id = i;
           name;
           kind;
-          parent_session = parent;
-          depth = 0;
+          parent = Test_fixture.owned parent;
           pane = None;
           pid = 0;
           cwd = "";
@@ -242,7 +223,7 @@ let%test_module "Tests" =
 
     let%expect_test "decide: close-run's refusals and closes" =
       let show w panes =
-        match decide panes (Tmux.window_id_of_string w) with
+        match decide ~runs:Tmux.Pane_map.empty panes (Tmux.window_id_of_string w) with
         | Ok (Window w) -> Printf.printf "close %s\n" (Tmux.string_of_window_id w)
         | Ok (Pane { window; pane }) ->
             Printf.printf "close %s pane %s\n" (Tmux.string_of_window_id window)

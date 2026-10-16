@@ -12,7 +12,7 @@ type line =
   | Row of string * Tmux.session_id * S.row
   | Program of string * program
   | Message of string
-  | Ask of Ask.t * Tmux.pane_id option
+  | Ask of S.ask
 
 let fuzzy pattern s =
   let n = String.length pattern and s = String.lowercase_ascii s in
@@ -396,10 +396,14 @@ let parts m : line -> span list * span list * span list =
   function
   | Header h -> ([], [ span (if h.current then `Current else `Session) h.name ], [])
   | Message e -> ([], [ span `Err e ], [])
-  | Ask (a, pane) ->
-      let role = if Option.is_none pane then `Dim else `Plain in
+  | Ask { ask = a; name; target } ->
+      let role = match target with Live _ -> `Plain | Revivable | Unavailable -> `Dim in
       ( [],
-        [ span role (a.name ^ " " ^ Ask.string_of_id a.id) ],
+        [
+          span role
+            ((if String.is_empty name then String.take 8 a.session else name)
+            ^ " " ^ Ask.string_of_id a.id);
+        ],
         [ span role (" " ^ List.hd (String.split_on_char '\n' a.text)) ] )
   | Program (prefix, r) ->
       ( [ span `Dim prefix; Option.value ~default:(plain " ") (program_glyph m.theme r.state) ],
@@ -426,7 +430,8 @@ let row_text m line = String.concat "" (List.map (fun s -> s.text) (spans m line
 
 let pane_of : line -> Tmux.pane_id option = function
   | Row (_, _, r) -> Some r.pane
-  | Ask (_, pane) -> pane
+  | Ask { target = Live pane; _ } -> Some pane
+  | Ask { target = Revivable | Unavailable; _ } -> None
   | Program _ | Header _ | Message _ -> None
 
 let index_of ~key m pane =
@@ -462,7 +467,7 @@ let focus m pane =
 
 let redraw m side =
   let key = function
-    | Ask (a, _) -> Some (`Ask a.id)
+    | Ask { ask = a; _ } -> Some (`Ask a.id)
     | line -> Option.map (fun p -> `Pane p) (pane_of line)
   in
   let prev = Option.flat_map key (CCArray.get_safe m.lines m.cursor) in
@@ -471,13 +476,7 @@ let redraw m side =
     | Windows -> lines ~search:(Option.get_or ~default:"" m.search) side
     | Asks ->
         Array.of_list
-          (Header { name = "asks"; current = true }
-          :: List.map
-               (fun (a : S.ask) ->
-                 Ask
-                   ( a.ask,
-                     match a.target with Live pane -> Some pane | Revivable | Unavailable -> None ))
-               side.snap.asks)
+          (Header { name = "asks"; current = true } :: List.map (fun a -> Ask a) side.snap.asks)
   in
   let m = { m with side; lines = drawn } in
   match side.snap.err with
@@ -516,7 +515,7 @@ type msg =
 let jump m =
   let req =
     match CCArray.get_safe m.lines m.cursor with
-    | Some (Ask (a, _)) -> Some (S.Activate_ask a.id)
+    | Some (Ask { ask = a; _ }) -> Some (S.Activate_ask a.id)
     | Some (Row (_, session, r)) -> Some (S.Jump { session; window = r.window; pane = r.pane })
     | _ -> None
   in
@@ -608,7 +607,7 @@ let key m (k : Mosaic.Event.key) =
                m.side)
       | _ when is 'd' && match m.mode with Asks -> true | Windows -> false -> (
           match CCArray.get_safe m.lines m.cursor with
-          | Some (Ask (a, _)) -> (
+          | Some (Ask { ask = a; _ }) -> (
               let m, response = request m (S.Delete_ask a.id) in
               match response with Ok () -> none m | Error e -> none { m with status = e })
           | _ -> none m)
@@ -813,7 +812,7 @@ let%test_module "Tests" =
 
     let agent_pane ?run w p title = pane ~window:w ~title ?run p
     let shell_pane w p = pane ~window:w ~command:"zsh" p
-    let agent_state id parent = (id, session ~parent "")
+    let agent_state id parent = (id, parent)
 
     let model ?(dir = temp ()) ?(clock = ref test_at) () =
       let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
@@ -826,20 +825,28 @@ let%test_module "Tests" =
 
     let rendered (m : Sidebar.model) = make ~standalone:false (rendered_model m)
 
-    let render ?dir ?(current = "sess") ?(at = test_at) panes st =
+    let rows ?dir ?(current = "sess") ?(at = test_at) ?(pi = session "") panes st =
       let m = model ?dir ~clock:(ref at) () in
-      let states = states st in
+      List.iter
+        (fun (_, (id, parent)) ->
+          if not (String.is_empty parent) then ignore (Test_fixture.run ~dir:m.opts.dir ~parent id))
+        st;
+      let states = states (List.map (fun (pane, (id, _)) -> (pane, (id, pi))) st) in
+      let panes = with_programs states panes in
       let snap =
         {
           Sidebar.empty with
           client = client current;
-          panes = with_programs states panes;
+          panes;
           states;
-          lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes Sidebar.String_map.empty;
+          lingering = Sidebar.lingering_subagents ~dir:m.opts.dir (State.runs ~dir:m.opts.dir panes);
         }
       in
       let tui = rendered { m with snap } in
-      Array.iter (fun r -> print_endline (row_text tui r)) tui.lines
+      Array.to_list tui.lines |> List.map (row_text tui)
+
+    let render ?dir ?current ?at ?pi panes st =
+      List.iter print_endline (rows ?dir ?current ?at ?pi panes st)
 
     let%expect_test "a subagent's window nests under the pane that spawned it" =
       render
@@ -849,17 +856,18 @@ let%test_module "Tests" =
           agent_pane "@20" "%30" "subagent";
         ]
         [ ("%22", agent_state "root-sess" ""); ("%30", agent_state "kid-sess" "root-sess") ];
-      [%expect {|
-    sess
-    ┌◼orchestrator
-    │ └◼subagent
-    └ zsh
-    |}]
+      [%expect
+        {|
+        sess
+        ┌◼orchestrator
+        │ └◼subagent 0s
+        └ zsh
+        |}]
 
     let%expect_test "field() keeps the three cases aligned" =
       render
         [ agent_pane "@1" "%1" "orchestrator"; pane ~title:"idle-agent" "%2"; shell_pane "@1" "%3" ]
-        [ ("%1", agent_state "root-sess" ""); ("%2", ("idle-sess", session "")) ];
+        [ ("%1", agent_state "root-sess" ""); ("%2", agent_state "idle-sess" "") ];
       [%expect {|
     sess
     ┌◼orchestrator
@@ -884,13 +892,13 @@ let%test_module "Tests" =
         ];
       [%expect
         {|
-    sess
-    ┌◼orchestrator
-    │ ├◼subagent-a
-    │ ├◼subagent-b
-    │ └◼subagent-c
-    └ zsh
-    |}]
+        sess
+        ┌◼orchestrator
+        │ ├◼subagent-a 0s
+        │ ├◼subagent-b 0s
+        │ └◼subagent-c 0s
+        └ zsh
+        |}]
 
     let%expect_test "a two-pane sibling keeps its own bracket beside the group glyph" =
       render
@@ -907,12 +915,12 @@ let%test_module "Tests" =
         ];
       [%expect
         {|
-    sess
-    ╶◼orchestrator
-      ├┌◼subagent-a
-      │└ zsh
-      └◼subagent-b
-    |}]
+        sess
+        ╶◼orchestrator
+          ├┌◼subagent-a 0s
+          │└ zsh
+          └◼subagent-b 0s
+        |}]
 
     let%expect_test "groups at depth two" =
       render
@@ -934,14 +942,14 @@ let%test_module "Tests" =
         ];
       [%expect
         {|
-    sess
-    ╶◼root
-      ├◼subagent-a
-      │ └◼grandkid-a1
-      └◼subagent-b
-        ├◼grandkid-b1
-        └◼grandkid-b2
-    |}]
+        sess
+        ╶◼root
+          ├◼subagent-a 0s
+          │ └◼grandkid-a1 0s
+          └◼subagent-b 0s
+            ├◼grandkid-b1 0s
+            └◼grandkid-b2 0s
+        |}]
 
     let%expect_test "two root agents in one window are the window's own bracket" =
       render
@@ -973,17 +981,17 @@ let%test_module "Tests" =
         [ ("%22", agent_state "root-sess" ""); ("%30", agent_state "kid-sess" "root-sess") ];
       [%expect
         {|
-    sess
-    ┌ zsh
-    ├◼orchestrator
-    │ └┌◼subagent
-    │  └ zsh
-    └ zsh
-    sess
-    ┌ zsh
-    └◼orchestrator
-      └◼subagent
-    |}]
+        sess
+        ┌ zsh
+        ├◼orchestrator
+        │ └┌◼subagent 0s
+        │  └ zsh
+        └ zsh
+        sess
+        ┌ zsh
+        └◼orchestrator
+          └◼subagent 0s
+        |}]
 
     let%expect_test
         "nesting is the walk's, not the reported depth's; an orphan is a root; a cycle drops nobody"
@@ -992,31 +1000,28 @@ let%test_module "Tests" =
         [ agent_pane "@1" "%1" "root"; agent_pane "@2" "%2" "kid"; agent_pane "@3" "%3" "grandkid" ]
         [
           ("%1", agent_state "root-sess" "");
-          ("%2", ("kid-sess", session ~parent:"root-sess" ~depth:1 ""));
-          ("%3", ("gk-sess", session ~parent:"kid-sess" ~depth:1 ""));
+          ("%2", agent_state "kid-sess" "root-sess");
+          ("%3", agent_state "gk-sess" "kid-sess");
         ];
       render
         [ agent_pane "@1" "%1" "unrelated"; agent_pane "@2" "%2" "orphan" ]
-        [
-          ("%1", agent_state "other-sess" "");
-          ("%2", ("orphan-sess", session ~parent:"elsewhere-sess" ~depth:1 ""));
-        ];
+        [ ("%1", agent_state "other-sess" ""); ("%2", agent_state "orphan-sess" "elsewhere-sess") ];
       render
         [ agent_pane "@1" "%207" "a"; agent_pane "@2" "%208" "b" ]
         [ ("%207", agent_state "a-sess" "b-sess"); ("%208", agent_state "b-sess" "a-sess") ];
       [%expect
         {|
-    sess
-    ╶◼root
-      └◼kid
-        └◼grandkid
-    sess
-    ╶◼unrelated
-    ╶◼orphan
-    sess
-    ╶◼a
-      └◼b
-    |}]
+        sess
+        ╶◼root
+          └◼kid 0s
+            └◼grandkid 0s
+        sess
+        ╶◼unrelated
+        ╶◼orphan 0s
+        sess
+        ╶◼a 0s
+          └◼b 0s
+        |}]
 
     let%expect_test "the same state renders the same rows every time" =
       let panes =
@@ -1036,38 +1041,21 @@ let%test_module "Tests" =
           ("%5", agent_state "g-sess" "b-sess");
         ]
       in
-      let rows () =
-        let m = model () in
-        let states = states st in
-        let tui =
-          rendered
-            {
-              m with
-              snap =
-                {
-                  Sidebar.empty with
-                  client = client "sess";
-                  panes = with_programs states panes;
-                  states;
-                };
-            }
-        in
-        Array.to_list tui.lines |> List.map (row_text tui)
-      in
+      let rows () = rows panes st in
       let want = rows () in
       Printf.printf "stable: %b\n"
         (List.for_all (fun _ -> List.equal String.equal (rows ()) want) (List.range 1 20));
       List.iter print_endline want;
       [%expect
         {|
-    stable: true
-    sess
-    ┌◼root
-    │ ├◼kid-a
-    │ └◼kid-b
-    │   └◼grandkid
-    └ zsh
-    |}]
+        stable: true
+        sess
+        ┌◼root
+        │ ├◼kid-a 0s
+        │ └◼kid-b 0s
+        │   └◼grandkid 0s
+        └ zsh
+        |}]
 
     let%expect_test
         "a lingering subagent shows its own name, dead or alive, and its outcome once recorded" =
@@ -1133,8 +1121,10 @@ let%test_module "Tests" =
       let panes = [ agent_pane ~run "@20" "%30" "helper" ] in
       List.iter
         (fun activity ->
-          render ~dir ~at:(test_at +. 65.) panes
-            [ ("%30", (run, session ~activity ~ts:(test_at +. 60.) "")) ])
+          render ~dir ~at:(test_at +. 65.)
+            ~pi:(session ~activity ~ts:(test_at +. 60.) "")
+            panes
+            [ ("%30", agent_state run "") ])
         [ ""; "checking tests"; "" ];
       [%expect
         {|
@@ -1177,7 +1167,7 @@ let%test_module "Tests" =
               Sidebar.empty with
               client = client "sess";
               panes;
-              lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
+              lingering = Sidebar.lingering_subagents ~dir (State.runs ~dir panes);
             }
         in
         Printf.printf "%.3f\n" (next_wait (make ~standalone:false side))
@@ -1206,12 +1196,9 @@ let%test_module "Tests" =
         [
           agent_pane "@13" "%22" "working-on-kido";
           shell_pane "@20" "%5";
-          agent_pane ~run:"run-1" "@20" "%4" "helper";
+          agent_pane "@20" "%4" "helper";
         ]
-        [
-          ("%22", agent_state "root-sess" "");
-          ("%4", ("helper-sess", session ~parent:"root-sess" ""));
-        ];
+        [ ("%22", agent_state "root-sess" ""); ("%4", agent_state "helper-sess" "root-sess") ];
       render
         [
           agent_pane "@13" "%21" "top-level";
@@ -1225,18 +1212,18 @@ let%test_module "Tests" =
         ];
       [%expect
         {|
-    sess
-    ╶◼orchestrator
-      └×subagent
-    sess
-    ╶◼working-on-kido
-      └┌◼helper
-       └ zsh
-    sess
-    ┌◼top-level
-    └◼second
-      └◼subagent-b
-    |}]
+        sess
+        ╶◼orchestrator
+          └×subagent
+        sess
+        ╶◼working-on-kido
+          └┌◼helper 0s
+           └ zsh
+        sess
+        ┌◼top-level
+        └◼second
+          └◼subagent-b 0s
+        |}]
 
     (* The pane is driven through Update with a snapshot that never changes: the regression the pending
    gates exist for, since with them gone every assertion still describes a correct indicator while

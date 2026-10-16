@@ -102,6 +102,7 @@ func (r *kidoRun) env() []string {
 		"XDG_CONFIG_HOME=" + r.config,
 		"TMUX_TMPDIR=" + r.tmpdir,
 		"KIDO_STATE_DIR=" + r.state,
+		"PI_SESSION_ID=launching-pi",
 		"SHELL=" + r.shell,
 		// Empty is unset: every launch here must still find the kido-tmux
 		// beside kido.

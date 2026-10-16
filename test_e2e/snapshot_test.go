@@ -63,7 +63,7 @@ func TestSnapshotReplays(t *testing.T) {
 	h.newSession("beta")
 	piPane := h.piPane("beta", "π - resumable - kido")
 	h.programStatus(piPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", piPane, "#{pane_title}"), "π - "))
-	h.agentStatus("pi-resume", piPane, "pi")
+	h.agentStatus("pi-resume", piPane)
 	h.waitGlyph("resumable - kido", "")
 
 	// A bare pi root restarts fresh; another root app restarts nothing.
@@ -71,7 +71,6 @@ func TestSnapshotReplays(t *testing.T) {
 	h.waitPaneCommand(bare, "pi")
 	h.programStatus(bare, "state=idle:app=pi")
 	h.programStatus(h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "state=idle:app=builder", strings.TrimPrefix(h.in("display-message", "-p", "-t", h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "#{pane_title}"), "π - "))
-	h.agentStatus("other-1", h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "other")
 
 	// A window is named after the client that created it until tmux renames
 	// it to its pane's command a moment later; wait for that to settle, or

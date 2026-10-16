@@ -18,16 +18,7 @@ let id_of_yojson json =
   | `String s when Result.is_ok (parse_id s) -> s
   | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid ask id" json
 
-type t = {
-  id : id;
-  session : string;
-  session_file : string; [@key "sessionFile"]
-  cwd : string;
-  name : string;
-  text : string;
-  created : Timestamp.t;
-}
-[@@deriving yojson]
+type t = { id : id; session : string; text : string; created : Timestamp.t } [@@deriving yojson]
 
 let path ~dir id = Filename.concat (Filename.concat dir "asks") (id ^ ".json")
 let read ~dir id = Fs.read_json (path ~dir id) t_of_yojson
@@ -43,70 +34,45 @@ let list ~dir =
       let c = Float.compare a.created b.created in
       if c = 0 then String.compare a.id b.id else c)
 
-let caller ~dir ~self ~session =
-  let open Result.Infix in
-  let live = State.load_live ~dir in
-  let* caller =
-    if String.is_empty session then
-      Ok (Option.flat_map (fun self -> Tmux.Pane_map.find_opt self (State.by_pane live)) self)
-    else
-      match List.assoc_opt ~eq:String.equal session live with
-      | Some s when Option.equal Tmux.equal_pane_id s.pane self -> Ok (Some (session, s))
-      | _ -> Error "no calling agent session has reported this pane"
-  in
-  let* panes = if Option.is_none self then Ok [] else Tmux_pane.list_panes (Tmux.create ()) in
-  let pane = Option.flat_map (Tmux_pane.find panes) self in
-  let id =
-    match caller with
-    | Some (id, _) -> Some id
-    | None -> Option.flat_map (fun (p : Tmux_pane.t) -> p.run) pane
-  in
-  let run =
-    Option.flat_map
-      (fun id -> Option.flat_map (Subrun.read_meta ~dir) (Result.to_opt (Subrun.parse_id id)))
-      id
-  in
-  if Option.exists (fun (m : Subrun.meta) -> not (String.is_empty m.parent_session)) run then
-    Error "user asks are for top-level agents only"
-  else
-    match (caller, pane) with
-    | None, _ -> Ok None
-    | Some (id, s), Some p -> Ok (Some (id, s, p))
-    | Some _, None -> Error "calling pane not found"
+let caller ~dir caller =
+  if
+    Option.exists
+      (fun (id, _) ->
+        Option.is_some
+          (Option.flat_map (fun (m : Subrun.meta) -> m.parent) (Subrun.read_meta ~dir id)))
+      caller
+  then Error "user asks are for top-level agents only"
+  else Ok caller
 
 let invalidate ?(removed = false) ~dir ~self ask =
   if not (String.equal self ask.session) then
     Option.iter
-      (fun (s : State.session) ->
+      (fun (s : Subrun.pi) ->
         if not (String.is_empty s.inbox) then
           ignore
-            (Msg.deliver ~path:s.inbox
-               (Yojson.Safe.to_string
-                  (Msg.yojson_of_envelope
-                     {
-                       kind = Asks;
-                       id = Msg.new_id ();
-                       from = { session = ""; name = "kido"; pane = None };
-                       reply_to = "";
-                       text =
-                         (if removed then
-                            Printf.sprintf "The user removed ask %s: %s" ask.id
-                              (List.hd (String.split_on_char '\n' ask.text))
-                          else "");
-                       run = "";
-                       output = "";
-                     }))))
-      (State.get_live ~dir ask.session)
+            (Msg.deliver_envelope ~path:s.inbox
+               {
+                 kind = Asks;
+                 id = Msg.new_id ();
+                 from = { session = ""; name = "kido"; pane = None };
+                 reply_to = "";
+                 text =
+                   (if removed then
+                      Printf.sprintf "The user removed ask %s: %s" ask.id
+                        (List.hd (String.split_on_char '\n' ask.text))
+                    else "");
+                 run = "";
+                 output = "";
+               }))
+      (Subrun.live_pi ~dir ask.session)
 
-let record ~dir ~self ~replaces ~session ~session_file ~cwd ~name ~text ~now =
+let record ~dir ~replaces ~session ~text ~now =
   if String.is_empty (String.trim text) then Error "no question given"
-  else if String.is_empty session_file then Error "no pi session file given"
   else if not (String.equal (Msg.valid_utf_8 text) text) then Error "question is not valid UTF-8"
   else
     let write id place =
-      let ask = { id; session; session_file; cwd; name; text; created = now } in
+      let ask = { id; session; text; created = now } in
       Fs.write_temp ~perm:0o600 (path ~dir id) (Yojson.Safe.to_string (yojson_of_t ask)) place;
-      invalidate ~dir ~self ask;
       Ok id
     in
     match replaces with
@@ -115,7 +81,7 @@ let record ~dir ~self ~replaces ~session ~session_file ~cwd ~name ~text ~now =
         | None -> Error ("no ask " ^ id)
         | Some old ->
             let result = write id Unix.rename in
-            if not (String.equal old.session session) then invalidate ~dir ~self old;
+            if not (String.equal old.session session) then invalidate ~dir ~self:session old;
             result)
     | None ->
         Fs.mkdir_p ~perm:0o700 (Filename.concat dir "asks");
@@ -137,35 +103,44 @@ let remove ~dir ~self id =
           Ok ()
       | exception Unix.Unix_error (ENOENT, _, _) -> Error ("no ask " ^ id))
 
-let display_name ~panes ~live ask =
-  Option.map_or ~default:ask.name (State.display_name panes)
-    (List.assoc_opt ~eq:String.equal ask.session live)
+let name ~panes run =
+  match (Option.flat_map Subrun.holder run, run) with
+  | Some pi, _ -> State.display_name panes pi
+  | None, Some r -> Subrun.name r
+  | None, None -> ""
 
-let to_json ~panes ~live ask =
-  let name = display_name ~panes ~live ask in
-  match yojson_of_t { ask with name } with
-  | `Assoc fields ->
-      `Assoc (fields @ [ ("ended", `Bool (not (List.mem_assoc ~eq:String.equal ask.session live))) ])
-  | json -> json
+let to_json ~panes ask run =
+  Yojson.Safe.Util.combine (yojson_of_t ask)
+    (`Assoc
+       [
+         ("name", `String (name ~panes run));
+         ("ended", `Bool (Option.is_none (Option.flat_map Subrun.holder run)));
+       ])
 
-let revival_error ask =
+let revival run =
+  let cwd = Option.map_or ~default:"" (fun (r : Subrun.run) -> r.meta.cwd) run
+  and file =
+    Option.map_or ~default:""
+      (fun (p : Subrun.pi) -> p.session_file)
+      (Option.flat_map (fun (r : Subrun.run) -> r.pi) run)
+  in
   let directory =
-    try match (Unix.stat ask.cwd).st_kind with Unix.S_DIR -> true | _ -> false
+    try match (Unix.stat cwd).st_kind with Unix.S_DIR -> true | _ -> false
     with Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
   in
-  if not directory then Some ("ask directory is gone: " ^ ask.cwd)
-  else if not (Fs.is_file ask.session_file) then
-    Some ("pi session file is gone: " ^ ask.session_file)
-  else None
+  if not directory then Error ("ask directory is gone: " ^ cwd)
+  else if not (Fs.is_file file) then Error ("pi session file is gone: " ^ file)
+  else Ok (cwd, file)
 
 let target ~tmux ~dir ~session ask =
-  match List.assoc_opt ~eq:String.equal ask.session (State.load_live ~dir) with
+  let run = Subrun.load ~dir ask.session in
+  match Option.flat_map Subrun.holder run with
   | Some { pane = Some pane; _ } -> Ok pane
-  | _ -> (
-      match revival_error ask with
-      | Some e -> Error e
-      | None ->
+  | _ ->
+      Result.flat_map
+        (fun (cwd, file) ->
           Result.map
             (fun (w : Tmux.window) -> w.pane_id)
-            (Tmux.new_window tmux ~session ~name:("ask-" ^ ask.id) ~cwd:ask.cwd ~env:[]
-               [ "pi"; "--session"; ask.session_file ]))
+            (Tmux.new_window tmux ~session ~name:("ask-" ^ ask.id) ~cwd ~env:[]
+               [ "pi"; "--session"; file ]))
+        (revival run)

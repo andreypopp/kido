@@ -11,6 +11,41 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+func TestPromptExcludesEveryMarkedRunInWindow(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
+	candidate := h.promptPane("alpha", "candidate")
+	mixedTop := h.promptPane("alpha", "mixed-top")
+	sub := h.promptPane("alpha", "subagent")
+	subID := "prompt-" + sub
+	h.agentRunMeta(subID, sub, "subagent", "")
+	h.in("join-pane", "-d", "-s", sub, "-t", mixedTop)
+	if got := h.in("list-panes", "-t", mixedTop, "-F", "#{pane_id}"); got != mixedTop+"\n"+sub {
+		t.Fatalf("mixed window panes = %q, want top-level pi first", got)
+	}
+	for _, phase := range []string{"live", "released", "missing-meta"} {
+		if phase == "released" {
+			h.agentStatus("prompt-"+mixedTop, mixedTop, "--remove")
+			h.programStatus(mixedTop, "state=idle:app=shell")
+		}
+		if phase == "missing-meta" {
+			if err := os.Remove(filepath.Join(h.stateDir, "runs", subID, "meta.json")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out := h.typeScript(caller, "prompt-"+phase+".out", fmt.Sprintf("printf %s | %s prompt", shellQuote(phase), kidoBin))
+		if !strings.Contains(out, "rc=0") {
+			t.Errorf("prompt with %s first pi mark = %q, want rc=0", phase, out)
+			continue
+		}
+		h.waitPaneText(candidate, "got: "+phase)
+		if got := h.paneText(sub); strings.Contains(got, "got: "+phase) {
+			t.Errorf("prompt reached the subagent: %q", got)
+		}
+	}
+}
+
 func (h *harness) waitInbox(in *inbox, want ...string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
@@ -37,13 +72,13 @@ func (h *harness) agentPaneHere(target, title string) string {
 	h.waitPaneCommand(id, "pi")
 	h.title(id, title)
 	h.programStatus(id, "state=idle:app=pi")
-	h.agentStatus("prompt-"+id, id, "pi")
+	h.agentStatus("prompt-"+id, id)
 	return id
 }
 
 func (h *harness) promptPane(session, title string) string {
 	id := h.piPane(session, title)
-	h.agentStatus("prompt-"+id, id, "pi")
+	h.agentStatus("prompt-"+id, id)
 	return id
 }
 
@@ -158,7 +193,7 @@ func TestPromptMultiLine(t *testing.T) {
 	// No inbox socket: kido delivers through Tmux.Exec.send_prompt, not the
 	// socket path (TestPromptInboxNative).
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("pi-1", pane, "pi")
+	h.agentStatus("pi-1", pane)
 
 	// printf expands \n inside the pane, not the caller's shell.
 	h.runPrompt(`echo AAA\necho BBB`)
@@ -289,7 +324,7 @@ func TestPromptInboxNative(t *testing.T) {
 	pane := h.promptPane("alpha", "π - alpha")
 	in := startInbox(t, "ok\n")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("pi-1", pane, "pi", "--inbox", in.Path)
+	h.agentStatus("pi-1", pane, "--inbox", in.Path)
 
 	h.runPrompt("over the socket")
 	h.waitMain("rc=0")
@@ -304,7 +339,7 @@ func TestPromptInboxUnavailable(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.promptPane("alpha", "π - alpha")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("pi-1", pane, "pi", "--inbox", staleSocket(t))
+	h.agentStatus("pi-1", pane, "--inbox", staleSocket(t))
 
 	h.runPrompt("not pasted")
 	h.waitMain("rc=1")

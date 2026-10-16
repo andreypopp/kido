@@ -63,7 +63,6 @@ func TestSpawnKeepAliveSetsRunMetadata(t *testing.T) {
 
 	h.liveParent("alpha", "p")
 	h.runSpawn(outFile, envFile,
-		"--parent-pid", "1", "--parent-session", "p",
 		"--name", "kid-keepalive", "--task-file", taskFile,
 		"--keep-alive",
 	)
@@ -111,24 +110,17 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	}
 	newParentPane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 	h.programStatus(newParentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", newParentPane, "#{pane_title}"), "π - "))
-	h.agentStatus("new-parent-e2e", newParentPane, "pi")
+	h.agentStatus("new-parent-e2e", newParentPane)
 
-	sessDir := filepath.Join(h.dir, "pi-sessions")
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	sessFile := filepath.Join(sessDir, "2026-01-01T00-00-00-000Z_"+runID+".jsonl")
-	if err := os.WriteFile(sessFile, []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	h.savedSession(runID)
 
 	// Typed from another directory, under another parent: a resume keeps
 	// the run's own cwd, since pi sessions are project-scoped.
 	outFile := filepath.Join(h.dir, "resume.out")
 	envFile := filepath.Join(h.dir, "resume.env")
 	fake := shellQuote(fmt.Sprintf("env > %s; pwd >> %s; sleep 300", envFile, envFile))
-	cmd := fmt.Sprintf("cd / && PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s --parent-pid 777 --parent-session new-parent-e2e --keep-alive -- /bin/sh -c %s > %s 2>&1",
-		shellQuote(sessDir), kidoBin, runID, fake, outFile)
+	cmd := fmt.Sprintf("cd / && PI_SESSION_ID=new-parent-e2e %s tool spawn_subagent --resume %s --keep-alive -- /bin/sh -c %s > %s 2>&1",
+		kidoBin, runID, fake, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 
@@ -149,7 +141,6 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	for k, want := range map[string]string{
 		"KIDO_AGENT_RUN_ID":         runID,
 		"KIDO_AGENT_PARENT_SESSION": "new-parent-e2e",
-		"KIDO_AGENT_PARENT_PID":     "777",
 	} {
 		if got := envLine(env, k); got != want {
 			t.Errorf("resumed child's %s = %q, want %q", k, got, want)
@@ -170,9 +161,9 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	if after["keepAlive"] != true {
 		t.Errorf("resumed keepAlive = %v, want true", after["keepAlive"])
 	}
-	if after["startedAt"] != before["startedAt"] || after["parentSession"] != "new-parent-e2e" {
-		t.Errorf("resumed meta startedAt=%v parentSession=%v, want startedAt %v kept and the new parent",
-			after["startedAt"], after["parentSession"], before["startedAt"])
+	if after["startedAt"] != before["startedAt"] || fmt.Sprint(after["parent"]) != "new-parent-e2e" {
+		t.Errorf("resumed meta startedAt=%v parent=%v, want startedAt %v kept and the new parent",
+			after["startedAt"], after["parent"], before["startedAt"])
 	}
 
 	mark := h.in("show-options", "-p", "-v", "-t", newPaneID, "@kido_run")
@@ -195,7 +186,7 @@ func TestSpawnResumeBeforeOldPaneIsSwept(t *testing.T) {
 	gate := filepath.Join(h.dir, "finish")
 	fake := filepath.Join(h.dir, "pi")
 	script := fmt.Sprintf(`#!/bin/bash
-%s agent-status --agent pi --session "$KIDO_AGENT_RUN_ID" --parent-session resume-parent-e2e
+PI_SESSION_ID="$KIDO_AGENT_RUN_ID" %s agent-status
 until [ -f %s ]; do
   [ "$SECONDS" -lt 10 ] || exit 1
   read -r -t 1 ignored
@@ -206,9 +197,8 @@ printf 'finished first life' | %s tool notify_parent
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out := h.runKido("alpha", "first-life.out", "tool", "spawn_subagent", "--parent-pid", "1",
-		"--parent-session", "resume-parent-e2e", "--name", "resumable",
-		"--task-file", h.writeTaskFile("resumable"), "--", fake)
+	out := h.runScript("alpha", "first-life.out", "PI_SESSION_ID=resume-parent-e2e "+kidoBin+
+		" tool spawn_subagent --name resumable --task-file "+h.writeTaskFile("resumable")+" -- "+fake)
 	fields := strings.Fields(firstLine(out))
 	if len(fields) != 3 {
 		t.Fatalf("spawn output = %q", out)
@@ -225,8 +215,8 @@ printf 'finished first life' | %s tool notify_parent
 	if len(in.Received()) != 1 || !strings.Contains(in.Received()[0], "finished first life") {
 		t.Fatalf("first life notices = %q", in.Received())
 	}
-	out = h.runKido("alpha", "second-life.out", "tool", "spawn_subagent", "--resume", runID,
-		"--parent-pid", "1", "--parent-session", "resume-parent-e2e", "--", "/bin/sh", "-c", shellQuote("exec sleep 300"))
+	out = h.runScript("alpha", "second-life.out", "PI_SESSION_ID=resume-parent-e2e "+kidoBin+
+		" tool spawn_subagent --resume "+runID+" -- /bin/sh -c "+shellQuote("exec sleep 300"))
 	fields = strings.Fields(firstLine(out))
 	if len(fields) != 3 {
 		t.Fatalf("resume output = %q", out)
@@ -286,12 +276,17 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	if got := h.runKido("alpha", "resume-unknown.out", "tool", "spawn_subagent", "--resume", "no-such-run"); got != want {
 		t.Errorf("kido tool spawn_subagent --resume no-such-run = %q, want %q", got, want)
 	}
+	// A pi kido did not start records no pid in its meta, so only its kind refuses it.
+	h.agentStatus("top-e2e", h.firstPane("alpha"))
+	if out, rc := h.kidoAs(h.firstPane("alpha"), "", nil, "tool", "spawn_subagent", "--resume", "top-e2e"); rc != 1 || !strings.Contains(out, "not a subagent run") {
+		t.Errorf("resume a top-level pi's run: got (rc=%d) %q, want rc=1 and not a subagent run", rc, out)
+	}
 }
 
 // resumeRun ends a run's current attempt and resumes it with a fake
 // command that dumps its environment, returning that environment and the
 // new attempt's window.
-func (h *harness) resumeRun(tag, runID, windowID, sessDir string, flags ...string) (env, newWindowID string) {
+func (h *harness) resumeRun(tag, runID, windowID string, flags ...string) (env, newWindowID string) {
 	h.t.Helper()
 	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
@@ -299,8 +294,8 @@ func (h *harness) resumeRun(tag, runID, windowID, sessDir string, flags ...strin
 	outFile := filepath.Join(h.dir, tag+".out")
 	envFile := filepath.Join(h.dir, tag+".env")
 	fake := shellQuote(fmt.Sprintf("env > %s; sleep 300", envFile))
-	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s %s -- /bin/sh -c %s > %s 2>&1",
-		shellQuote(sessDir), kidoBin, runID, strings.Join(flags, " "), fake, outFile))
+	h.sendLiteral(fmt.Sprintf("%s %s tool spawn_subagent --resume %s %s -- /bin/sh -c %s > %s 2>&1",
+		h.callerShell(""), kidoBin, runID, strings.Join(flags, " "), fake, outFile))
 	h.sendKeys("Enter")
 	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 	if len(fields) != 3 {
@@ -317,15 +312,9 @@ func TestSpawnResumeParentIsTheCallersOrNobody(t *testing.T) {
 	h := start(t, "alpha")
 
 	runID, windowID := h.spawnRun("edge-src", "exec sleep 300")
-	sessDir := filepath.Join(h.dir, "pi-sessions")
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sessDir, "2026-01-01T00-00-00-000Z_"+runID+".jsonl"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	h.savedSession(runID)
 
-	env, windowID := h.resumeRun("defaulted", runID, windowID, sessDir)
+	env, windowID := h.resumeRun("defaulted", runID, windowID)
 	for k, want := range map[string]string{"KIDO_AGENT_PARENT_SESSION": "root-e2e"} {
 		if got := envLine(env, k); got != want {
 			t.Errorf("resumed child's %s = %q, want %q", k, got, want)
@@ -336,14 +325,14 @@ func TestSpawnResumeParentIsTheCallersOrNobody(t *testing.T) {
 		t.Errorf("resumed keepAlive = %v, want false", got)
 	}
 
-	env, _ = h.resumeRun("handed-over", runID, windowID, sessDir, "--no-parent")
-	for _, k := range []string{"KIDO_AGENT_PARENT_SESSION", "KIDO_AGENT_PARENT_PID"} {
+	env, _ = h.resumeRun("handed-over", runID, windowID, "--no-parent")
+	for _, k := range []string{"KIDO_AGENT_PARENT_SESSION"} {
 		if got := envLine(env, k); got != "" {
 			t.Errorf("child resumed with --no-parent has %s = %q, want it unset", k, got)
 		}
 	}
-	if got, _ := h.runMeta("handed-over", runID)["parentSession"].(string); got != "" {
-		t.Errorf("run meta parentSession = %q after --no-parent, want none", got)
+	if got := h.runMeta("handed-over", runID)["parent"]; got != nil {
+		t.Errorf("run meta parent = %v after --no-parent, want no parent", got)
 	}
 }
 
@@ -366,8 +355,7 @@ func TestSpawnResumeWithNoPiSessionMintsOne(t *testing.T) {
 	}
 
 	outFile := filepath.Join(h.dir, "resume.out")
-	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s > %s 2>&1",
-		shellQuote(t.TempDir()), kidoBin, runID, outFile))
+	h.sendLiteral(fmt.Sprintf("%s tool spawn_subagent --resume %s > %s 2>&1", kidoBin, runID, outFile))
 	h.sendKeys("Enter")
 	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 	if len(fields) != 3 {
@@ -383,14 +371,13 @@ func TestSpawnResumeWithNoPiSessionMintsOne(t *testing.T) {
 
 // spawnRecordedRun is the fixture the two carry tests below share: a run
 // spawned with a tool allowlist and keepAlive, then ended so it can be
-// resumed. Returns the run id and the session dir `--resume` insists on
-// (lib/spawn_subagent.ml's pi_session_file_exists).
-func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
+// resumed from its saved pi session.
+func (h *harness) spawnRecordedRun(name string) (runID string) {
 	h.t.Helper()
 	h.liveParent("alpha", "root-e2e")
 	outFile := filepath.Join(h.dir, name+"-spawn.out")
 	h.sendLiteral(fmt.Sprintf(
-		"%s tool spawn_subagent --parent-pid 1 --parent-session root-e2e --name %s "+
+		"PI_SESSION_ID=root-e2e %s tool spawn_subagent --name %s "+
 			"--task-file %s --model acme/claude-sonnet-5 --tools read,bash --keep-alive -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote("exec sleep 300"), outFile))
 	h.sendKeys("Enter")
@@ -405,14 +392,8 @@ func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("the sweep to close window %s", windowID))
 
-	sessDir = filepath.Join(h.dir, name+"-sessions")
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
-		h.t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sessDir, "2026-01-01T00-00-00-000Z_"+runID+".jsonl"), []byte("{}"), 0o644); err != nil {
-		h.t.Fatal(err)
-	}
-	return runID, sessDir
+	h.savedSession(runID)
+	return runID
 }
 
 // Nothing on the resume command line says keepAlive; it can only have
@@ -421,13 +402,13 @@ func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	runID, sessDir := h.spawnRecordedRun("keepalive-carry-e2e")
+	runID := h.spawnRecordedRun("keepalive-carry-e2e")
 
 	outFile := filepath.Join(h.dir, "resume.out")
 	envFile := filepath.Join(h.dir, "resume.env")
 	fake := shellQuote(fmt.Sprintf("env > %s; sleep 300", envFile))
-	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s -- /bin/sh -c %s > %s 2>&1",
-		shellQuote(sessDir), kidoBin, runID, fake, outFile))
+	h.sendLiteral(fmt.Sprintf("%s tool spawn_subagent --resume %s -- /bin/sh -c %s > %s 2>&1",
+		kidoBin, runID, fake, outFile))
 	h.sendKeys("Enter")
 	if out := strings.TrimSpace(h.waitFileNonEmpty(outFile)); len(strings.Fields(out)) != 3 {
 		t.Fatalf("kido tool spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
@@ -452,7 +433,7 @@ func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	writeFakeListModelsPi(t, piDir)
 	h := startPathPrefix(t, "alpha", piDir)
 
-	runID, sessDir := h.spawnRecordedRun("tools-carry-e2e")
+	runID := h.spawnRecordedRun("tools-carry-e2e")
 	delivered := filepath.Join(h.stateDir, "runs", runID, "delivered")
 	if err := os.WriteFile(delivered, nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -460,8 +441,8 @@ func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 
 	resume := func(tag, tools string, command ...string) string {
 		outFile := filepath.Join(h.dir, tag+".out")
-		h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s %s -- %s > %s 2>&1",
-			shellQuote(piDir), shellQuote(sessDir), kidoBin, runID, tools, strings.Join(command, " "), outFile))
+		h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH PI_SESSION_ID=root-e2e %s tool spawn_subagent --resume %s %s -- %s > %s 2>&1",
+			shellQuote(piDir), kidoBin, runID, tools, strings.Join(command, " "), outFile))
 		h.sendKeys("Enter")
 		fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 		if len(fields) != 3 {
@@ -472,7 +453,7 @@ func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	newWindowID := resume("resume", "", "pi")
 
 	started := h.startCommand(newWindowID)
-	for _, want := range []string{"--tools read,bash,notify_parent", "--model acme/claude-sonnet-5", "--session " + runID} {
+	for _, want := range []string{"--tools read,bash,notify_parent", "--model acme/claude-sonnet-5", "--session ", runID + ".jsonl"} {
 		if !strings.Contains(started, want) {
 			t.Errorf("resumed pane's command = %q, want %q: the run's own session, tools and model back", started, want)
 		}
@@ -546,17 +527,17 @@ setTimeout(() => process.exit(2), 15000);
 			if err := os.WriteFile(script, []byte(source), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			args := []string{"tool", "spawn_subagent", "--parent-pid", "1", "--parent-session", "dynamic-parent", "--name", "dynamic-keepalive", "--task-file", h.writeTaskFile("wait")}
+			args := []string{"PI_SESSION_ID=dynamic-parent", kidoBin, "tool", "spawn_subagent", "--name", "dynamic-keepalive", "--task-file", h.writeTaskFile("wait")}
 			if initial {
 				args = append(args, "--keep-alive")
 			}
 			h.in("set-environment", "-g", "KIDO_IDLE_EXIT_SECONDS", "0.2")
 			args = append(args, "--", node, script)
 			// runKido assembles shell arguments; quote the absolute file paths.
-			for i := range args {
-				args[i] = shellQuote(args[i])
+			for i := range args[1:] {
+				args[i+1] = shellQuote(args[i+1])
 			}
-			fields := strings.Fields(firstLine(h.runKido("alpha", "dynamic-spawn.out", args...)))
+			fields := strings.Fields(firstLine(h.runScript("alpha", "dynamic-spawn.out", strings.Join(args, " "))))
 			if len(fields) != 3 {
 				t.Fatalf("spawn = %q", fields)
 			}

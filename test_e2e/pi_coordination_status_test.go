@@ -12,10 +12,10 @@ func TestPiCoordinationSurvivesRootReplacement(t *testing.T) {
 			h := start(t, "alpha")
 			parent := h.firstPane("alpha")
 			h.programStatus(parent, "state=idle:app=pi")
-			h.agentStatus("coord-parent", parent, "pi", "--name", "Parent", "--inbox", startInbox(t, "ok\n").Path)
+			h.agentStatus("coord-parent", parent, "--name", "Parent", "--inbox", startInbox(t, "ok\n").Path)
 			child := h.piPane("alpha", "Child")
 			in := startInbox(t, "ok\n")
-			h.agentStatus("coord-child", child, "pi", "--name", "Child", "--inbox", in.Path, "--parent-session", "coord-parent")
+			h.agentStatus("coord-child", child, "--name", "Child", "--inbox", in.Path, "--parent-session", "coord-parent")
 			h.agentRunMeta("coord-child", child, "Child", "coord-parent")
 			h.waitRow("Child")
 			feed := h.startFeed("alpha")
@@ -66,7 +66,7 @@ func TestPiCoordinationSurvivesRootReplacement(t *testing.T) {
 					}
 					return false
 				}, settle, msgf("stop reaches healthy child"))
-				h.agentStatus("coord-child", child, "pi", "--remove")
+				h.agentStatus("coord-child", child, "--remove")
 				stopped <- true
 			}()
 			out, rc = h.kidoAs(parent, "", nil, "tool", "stop_run", "Child")

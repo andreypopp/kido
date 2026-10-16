@@ -180,7 +180,7 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	if outcomeSerial(r) <= serial {
 		t.Fatal("a new outcome after reconnect kept the old serial")
 	}
-	if out, rc := h.kidoAs(pane, "", nil, "agent-status", "--agent", "pi", "--session", "status-agent"); rc != 0 {
+	if out, rc := h.kidoAs(pane, "", h.callerOf("status-agent"), "agent-status"); rc != 0 {
 		t.Fatalf("identity: %d %s", rc, out)
 	}
 	h.waitRow("✓Build Plan")
@@ -188,7 +188,7 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	if r.Title != "Build" {
 		t.Fatalf("terminal precedence: %+v", r)
 	}
-	h.agentStatus("status-agent", pane, "pi", "--remove")
+	h.agentStatus("status-agent", pane, "--remove")
 	h.waitRow("✓Build Plan")
 	h.in("kill-pane", "-t", pane)
 	f.waitLast(func(s feedSnapshot) bool { _, ok := feedRowFor(s, pane); return !ok }, "pane records removed")

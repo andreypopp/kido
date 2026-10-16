@@ -192,9 +192,6 @@ let last_window panes window_id =
 
 let last_pane panes window_id = List.count (in_window window_id) panes <= 1
 
-let run_pane panes window_id =
-  List.find_opt (fun p -> in_window window_id p && Option.is_some p.run) panes
-
 let active_pane panes session =
   List.find_map
     (fun p -> if String.equal p.session_name session && p.active then Some p.pane_id else None)
@@ -282,6 +279,9 @@ let resolve_client tmux ~pane ~tmux_env =
   | Some (Ok out) -> (
       match real_clients (String.split_on_char '\n' out) with [ c ] -> Some c | _ -> None)
   | _ -> None
+
+let mark_run tmux pane run =
+  Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane; Tmux_vars.run; run ]
 
 let mark_ssh tmux pane destination args =
   let target = [ "-t"; string_of_pane_id pane ] in
@@ -724,22 +724,19 @@ let%test_module "Tests" =
         pane ~session_id:"$1" ~window:"@3" ~run:"run-1" "%4";
       ]
 
-    let%expect_test "focus, last window, last pane, run pane" =
+    let%expect_test "focus, last window, last pane" =
       List.iter
         (fun w ->
-          Printf.printf "%s: focused=%b last_window=%b last_pane=%b run_pane=%s\n" w
+          Printf.printf "%s: focused=%b last_window=%b last_pane=%b\n" w
             (window_focused focus_panes (window_id_of_string w))
             (last_window focus_panes (window_id_of_string w))
-            (last_pane focus_panes (window_id_of_string w))
-            (Option.map_or ~default:"-"
-               (fun (p : t) -> string_of_pane_id p.pane_id)
-               (run_pane focus_panes (window_id_of_string w))))
+            (last_pane focus_panes (window_id_of_string w)))
         [ "@1"; "@2"; "@3"; "@999" ];
       [%expect
         {|
-    @1: focused=true last_window=false last_pane=true run_pane=-
-    @2: focused=false last_window=false last_pane=true run_pane=-
-    @3: focused=false last_window=true last_pane=false run_pane=%4
-    @999: focused=false last_window=false last_pane=true run_pane=-
+    @1: focused=true last_window=false last_pane=true
+    @2: focused=false last_window=false last_pane=true
+    @3: focused=false last_window=true last_pane=false
+    @999: focused=false last_window=false last_pane=true
     |}]
   end)

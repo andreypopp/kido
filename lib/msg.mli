@@ -31,5 +31,4 @@ type error = Unavailable of string | Refused of string | Failed of string
 
 val string_of_error : error -> string
 val deliver : ?timeout:float -> path:string -> string -> (unit, error) result
-val live_parent : (string * State.session) list -> string -> (State.session, string) result
-val notify : dir:string -> parent_session:string -> from:from -> string -> (unit, error) result
+val deliver_envelope : path:string -> envelope -> (unit, error) result

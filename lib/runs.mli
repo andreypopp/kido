@@ -1,6 +1,6 @@
 type info = { meta : Subrun.meta; outcome : Subrun.outcome option } [@@deriving yojson_of]
 
-val list : ?parent_session:string -> dir:string -> unit -> info list
+val list : ?owner:Subrun.id -> dir:string -> unit -> info list
 (** Newest first. *)
 
 type detail = { info : info; task : string; screen : string option; report : string option }

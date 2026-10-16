@@ -45,7 +45,7 @@ func (h *harness) spawnRun(name, script string) (runID, windowID string) {
 	h.t.Helper()
 	h.liveParent("alpha", "root-e2e")
 	outFile := filepath.Join(h.dir, name+".out")
-	cmd := fmt.Sprintf("%s tool spawn_subagent --parent-pid 1 --parent-session root-e2e --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("PI_SESSION_ID=root-e2e %s tool spawn_subagent --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote(script), outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
@@ -165,7 +165,7 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
 	in := startInbox(h.t, "ok\n")
 	h.programStatus(paneID, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
-	h.agentStatus(runID, paneID, "pi", "--inbox", in.Path)
+	h.agentStatus(runID, paneID, "--inbox", in.Path)
 
 	out := h.runKido("alpha", "stop.out", "tool", "stop_run", runID)
 	if !strings.Contains(out, "killed") {
@@ -231,11 +231,11 @@ func TestRunsTableShowAndJSON(t *testing.T) {
 		}
 	}
 	write("run-a", map[string]any{
-		"id": "run-a", "name": "kid", "kind": "agent", "parentSession": "root", "depth": 1,
+		"id": "run-a", "name": "kid", "kind": "agent", "parent": "root",
 		"pane": "", "pid": 0, "cwd": "/tmp/some project", "startedAt": "2023-11-14T22:13:20Z",
 	}, `{"result":"completed","at":"2023-11-14T22:14:50Z"}`)
 	write("run-b", map[string]any{
-		"id": "run-b", "name": "later", "kind": "bash", "depth": 1,
+		"id": "run-b", "name": "later", "kind": "bash",
 		"pane": "", "pid": 0, "cwd": "", "startedAt": "2023-11-14T23:13:20Z",
 	}, "")
 	kidoIn := func(tz string, args ...string) string {
@@ -264,7 +264,6 @@ func TestRunsTableShowAndJSON(t *testing.T) {
 name:     kid
 kind:     agent
 parent:   root
-depth:    1
 cwd:      /tmp/some project
 started:  2023-11-15T03:43:20+05:30
 outcome:  completed
@@ -293,7 +292,7 @@ do the thing
 			t.Fatal(err)
 		}
 	}
-	if got, want := strings.Join(keys, " "), "id name kind parentSession depth pane pid cwd startedAt outcome task resume fork"; got != want {
+	if got, want := strings.Join(keys, " "), "id name kind parent pane pid cwd startedAt outcome task resume fork"; got != want {
 		t.Errorf("kido runs --json run-a keys = %q, want %q", got, want)
 	}
 
@@ -324,7 +323,7 @@ do the thing
 	} {
 		id := fmt.Sprintf("run-tz%d", i)
 		write(id, map[string]any{
-			"id": id, "name": "tz", "kind": "bash", "depth": 1,
+			"id": id, "name": "tz", "kind": "bash",
 			"pane": "", "pid": 0, "cwd": "", "startedAt": c.at,
 		}, "")
 		var started string
@@ -336,5 +335,26 @@ do the thing
 		if started != c.want {
 			t.Errorf("TZ=%s started %s = %q, want %q", c.tz, c.at, started, c.want)
 		}
+	}
+}
+
+// A pi kido did not start is a run too: its holder makes it running, a
+// release completes it with its name kept, and it resumes as a plain pi.
+func TestRunsListsAPiRun(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.firstPane("alpha")
+	h.programStatus(pane, "state=idle:app=pi", "top")
+	h.agentStatus("top-pi", pane, "--name", "Top")
+	if info := h.runInfo("top-pi"); info.Kind != "pi" || info.Outcome != "running" {
+		t.Fatalf("held pi run = %+v, want a running pi", info)
+	}
+	h.agentStatus("top-pi", pane, "--remove")
+	meta := h.runMeta("released", "top-pi")
+	if info := h.runInfo("top-pi"); info.Outcome != "completed" || meta["name"] != "Top" {
+		t.Fatalf("released pi run = %+v, %v, want completed and named Top", info, meta)
+	}
+	if !strings.HasSuffix(meta["resume"].(string), "&& pi --session '"+h.sessionFile("top-pi")+"'") {
+		t.Errorf("resume = %q, want a plain pi --session of its recorded file", meta["resume"])
 	}
 }

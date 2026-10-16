@@ -79,7 +79,7 @@ current state, or the current outcome at idle.
 Tracking resets when:
 
 - An agent's root app changes, appears or clears.
-- Its `State` session changes.
+- Its pane run changes.
 - An ssh destination changes.
 
 A terminal report's app change or removal does not reset tracking.
@@ -129,28 +129,30 @@ without a `/name`. A `Terminal` row does not use it.
 Claude Code sets `Claude Code` at startup, then a session summary
 (observed: `Reply with ok`).
 
-### State records
+### Run records
 
-Each local pi session that runs kido's extensions (`kido-status.ts`) has
-one record, keyed by session id. The record contains:
+Every tracked process has one run, `<state>/runs/<run-id>/`. Its
+`meta.json` contains launch metadata: kind (pi, agent, bash or stream),
+name, parent and start. It contains the outcome after the run ends. The
+run's pane has the `@kido_run` mark. See
+[design-subagents.md](design-subagents.md).
+
+Each local pi session with a UI that runs kido's extensions
+(`kido-status.ts`) claims the run of its session id. Its `pi.json`
+contains:
 
 - pid
 - Pane
 - Name (pi's `/name`)
 - Inbox socket
-- Parent and depth
+- pi session file
 - Model
 - Activity text
 - Report time (heartbeat).
 
-These records supply identity and coordination.
-
-### Run records
-
-`<state>/runs/<run-id>/` contains launch metadata: kind (agent, bash or
-stream), name, parent and start. It contains the outcome after the run
-ends. The run's pane also has the `@kido_run` mark. See
-[design-subagents.md](design-subagents.md).
+These records supply identity and coordination. The claim also sets
+`@kido_run` on the pi's pane. The pane's run is the run that the mark
+names, if its `pi.json` names the pane and a live pid.
 
 ### The ssh mark
 
@@ -221,10 +223,9 @@ kido classifies a pane's kind, `pane_kind`, in this order:
    record from the remote side. If the app is `pi` or `claude-code`, the
    kind is `Remote_agent { name = app }`. Otherwise, it is
    `Remote_terminal`.
-2. A root record with `app = "pi"` and a live State record naming the
-   pane gives `Pi_agent`.
-3. A root record with `app = "claude-code"`, or `app = "pi"` without
-   such a State record, gives `Some_agent { name = app }`.
+2. A root record with `app = "pi"` and a pane run gives `Pi_agent`.
+3. A root record with `app = "claude-code"`, or `app = "pi"` without a
+   pane run, gives `Some_agent { name = app }`.
 4. Anything else is `Terminal`.
 
 A run pane (`@kido_run`) can have any of these kinds. Its run record adds
@@ -252,7 +253,7 @@ the run's name, elapsed time and outcome (below).
 ### `Some_agent { name }`
 
 - Detected: the root record's app. Examples: Claude Code
-  (`app=claude-code`), pi without kido's extensions (`app=pi`, no State).
+  (`app=claude-code`), pi without kido's extensions (`app=pi`, no run).
 - Title: the pane title, or `name` when that is empty.
 - Status: the records' reduction; never stalled.
 - Supports: `kido prompt`, by paste, when it is the only agent in scope.
@@ -261,13 +262,13 @@ Pi and Claude Code report their status through OSC 7501.
 
 ### `Pi_agent`
 
-- Detected: root app `pi` and a live `State` record naming the pane.
-- Title: the `State` `name` when set, otherwise the pane title.
+- Detected: root app `pi` and a pane run.
+- Title: the `name` in `pi.json` when set, otherwise the pane title.
 - Status: as `Some_agent`, from the pi root (pi 1.1's native emitter).
   An open ask makes it waiting on that ask. kido removes `msg` if it
-  repeats the title. If there is no `msg`, the `State` `activity` supplies
-  the message.
-- Stall: a working root and a `State` report older than the stall
+  repeats the title. If there is no `msg`, the `pi.json` `activity`
+  supplies the message.
+- Stall: a working root and a `pi.json` report older than the stall
   threshold (heartbeat), unless the host has slept since that report.
 - Supports: everything in `design.md` and `design-subagents.md`:
   - The inbox for `kido prompt` and `message_agent`/ask/steer/interrupt.
@@ -305,9 +306,9 @@ Pi and Claude Code report their status through OSC 7501.
 - While present, a terminal report has precedence over its shell phase
   for the frontend's indicator and message. A shell prompt (`A`) clears
   the non-final records.
-- For `Pi_agent`, `State` gives identity and name. OSC 7501 gives status.
+- For `Pi_agent`, the run gives identity and name. OSC 7501 gives status.
 - A pane's kind determines only its row and `kido prompt` scope.
-  Messaging, control, `list_runs`, asks and runs use live `State` records.
+  Messaging, control, `list_runs`, asks and runs use runs by id.
   Thus, local pi remains reachable if its root clears or another root
   replaces it.
 

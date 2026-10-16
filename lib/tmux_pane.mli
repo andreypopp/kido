@@ -43,6 +43,7 @@ type client_state = { session : string; session_id : Tmux.session_id; focused : 
 
 val client_state : Tmux.t -> string -> client_state option
 val resolve_client : Tmux.t -> pane:Tmux.pane_id option -> tmux_env:string -> string option
+val mark_run : Tmux.t -> Tmux.pane_id -> string -> (unit, string) result
 
 val mark_ssh :
   Tmux.t ->
@@ -61,5 +62,4 @@ val order_sessions : t list -> session list
 val window_focused : t list -> Tmux.window_id -> bool
 val last_window : t list -> Tmux.window_id -> bool
 val last_pane : t list -> Tmux.window_id -> bool
-val run_pane : t list -> Tmux.window_id -> t option
 val active_pane : t list -> string -> Tmux.pane_id option

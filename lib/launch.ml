@@ -70,7 +70,15 @@ let server_conf ~exe ~user_conf =
          ])
 
 let server_env ~bin_dir env =
-  let env = Array.filter (fun s -> not (String.prefix ~pre:"KIDO_STATE_DIR=" s)) env in
+  let env =
+    Array.filter
+      (fun s ->
+        not
+          (List.exists
+             (fun pre -> String.prefix ~pre s)
+             [ "KIDO_STATE_DIR="; "PI_SESSION_ID="; "PI_SESSION_FILE=" ]))
+      env
+  in
   match bin_dir with
   | Some dir ->
       let path = Array.find_map (String.chop_prefix ~pre:"PATH=") env in

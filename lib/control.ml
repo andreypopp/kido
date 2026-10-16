@@ -33,26 +33,24 @@ let record_stopped ~dir id =
            { result = Stopped; text = ""; at = Some (Timestamp.now ()) }))
     (Subrun.parse_id id)
 
-let request ~states ~panes ~self kind target =
-  Message_agent.deliver ~states ~panes ~self { kind; reply_to = ""; id = "" } target ""
+let request ~dir ~caller ~panes ~self kind target =
+  Message_agent.deliver ~dir ~caller ~panes ~self { kind; reply_to = ""; id = "" } target ""
 
-let interrupt ~dir ~self to_ =
+let interrupt ~dir ~self ~caller to_ =
   let open Result.Infix in
-  let live = State.load_live ~dir in
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let* _, target = Message_agent.resolve ~live ~panes ~self (Descendant to_) in
-  match request ~states:(State.by_pane live) ~panes ~self Interrupt target with
+  let* ((_, target) as e) = Message_agent.resolve ~dir ~panes ~self ~caller (Descendant to_) in
+  match request ~dir ~caller ~panes ~self Interrupt e with
   | Ok _ -> Ok ("interrupted " ^ State.display_name panes target)
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
-let stop ~dir ~self ~escalation ~warn ~force to_ =
+let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
   let open Result.Infix in
   let unforced what =
     if force then Ok () else Error (what ^ "; pass --force to kill its window instead")
   in
-  let live = State.load_live ~dir in
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let runs = List.filter_map (Subrun.read_meta ~dir) (Subrun.list ~dir) in
+  let runs = List.filter_map (Subrun.find ~dir) (Subrun.list ~dir) in
   let ids =
     List.filter
       (fun (m : Subrun.meta) ->
@@ -70,9 +68,8 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
         List.filter
           (fun (m : Subrun.meta) ->
             let named =
-              match List.assoc_opt ~eq:String.equal (Subrun.string_of_id m.id) live with
-              | Some s ->
-                  State.addressable_name s && String.equal_caseless (State.display_name panes s) to_
+              match Subrun.live_pi ~dir (Subrun.string_of_id m.id) with
+              | Some s -> (not (String.is_empty s.name)) && String.equal_caseless s.name to_
               | None -> String.equal_caseless m.name to_
             in
             named && Option.is_none (Subrun.read_outcome ~dir m.id))
@@ -90,16 +87,19 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
                    (List.map (fun (m : Subrun.meta) -> Subrun.string_of_id m.id) many))))
   in
   let* () =
-    if Option.is_none (Subrun.read_outcome ~dir meta.id) then Ok ()
-    else Error (Printf.sprintf "run %s has already ended" (Subrun.string_of_id meta.id))
+    match meta.kind with
+    | Pi -> Ok ()
+    | Agent | Bash | Stream ->
+        if Option.is_none (Subrun.read_outcome ~dir meta.id) then Ok ()
+        else Error (Printf.sprintf "run %s has already ended" (Subrun.string_of_id meta.id))
   in
   match meta.kind with
   | Bash | Stream -> (
-      let* reached =
-        Message_agent.reaches (List_runs.per_pane live) panes ~self meta.parent_session
-      in
       let label = "async run " ^ Reap.quote (Subrun.label meta) in
-      if not reached then Error (label ^ " is not this agent's descendant")
+      if
+        not
+          (Message_agent.reaches ~dir ~caller:(Option.map fst caller) (Subrun.string_of_id meta.id))
+      then Error (label ^ " is not this agent's descendant")
       else
         let ending =
           Reap.record_ending ~dir meta
@@ -112,7 +112,7 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
           | () -> true
           | exception Unix.Unix_error _ -> false
         in
-        let gone = (not signalled) || wait_for escalation (fun () -> not (State.alive meta.pid)) in
+        let gone = (not signalled) || wait_for escalation (fun () -> not (Subrun.alive meta.pid)) in
         (if not gone then try Unix.kill meta.pid Sys.sigkill with Unix.Unix_error _ -> ());
         Option.iter
           (fun e -> Result.iter_err (fun e -> warn (Msg.string_of_error e)) (Reap.send ~dir e))
@@ -126,8 +126,11 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
               Error
                 (Printf.sprintf "%s was recorded stopped, but its pane could not be killed: %s"
                    label m))
+  | Pi -> Error "a top-level pi run cannot be stopped with stop_run"
   | Agent -> (
-      let* id, target = Message_agent.resolve ~live ~panes ~self (Descendant_run meta.id) in
+      let* ((id, target) as e) =
+        Message_agent.resolve ~dir ~panes ~self ~caller (Descendant_run meta.id)
+      in
       let name = "subagent " ^ State.display_name panes target in
       let degrade () =
         match kill_run_pane ~before:(fun () -> record_stopped ~dir id) target.pane with
@@ -137,9 +140,7 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
       in
       let escalate refusal =
         record_stopped ~dir id;
-        let gone () =
-          match State.get ~dir id with None -> true | Some s -> not (State.alive s.pid)
-        in
+        let gone () = Option.is_none (Subrun.live_pi ~dir id) in
         if wait_for escalation gone then Ok ("stopped " ^ name)
         else
           let after = Timestamp.duration escalation in
@@ -159,7 +160,7 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
         let* () = unforced (name ^ " has no inbox to ask nicely over") in
         degrade ()
       else
-        match request ~states:(State.by_pane live) ~panes ~self Stop target with
+        match request ~dir ~caller ~panes ~self Stop e with
         | Error (Message_agent.Unavailable m) ->
             let* () = unforced (Printf.sprintf "%s could not be asked to stop (%s)" name m) in
             degrade ()

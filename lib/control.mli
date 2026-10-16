@@ -2,11 +2,17 @@ val stop_escalation : unit -> float
 (** Seconds a stop waits for its target to go before killing its pane, from KIDO_STOP_ESCALATION_MS
     (default 5s). *)
 
-val interrupt : dir:string -> self:Tmux.pane_id option -> string -> (string, string) result
+val interrupt :
+  dir:string ->
+  self:Tmux.pane_id option ->
+  caller:(Subrun.id * Subrun.pi) option ->
+  string ->
+  (string, string) result
 
 val stop :
   dir:string ->
   self:Tmux.pane_id option ->
+  caller:(Subrun.id * Subrun.pi) option ->
   escalation:float ->
   warn:(string -> unit) ->
   force:bool ->

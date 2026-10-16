@@ -52,7 +52,7 @@ func TestAgentsShowsStalledAfterHeartbeatStops(t *testing.T) {
 
 	id := "stall-no-heartbeat-e2e"
 	h.programStatus(paneID, "state=working:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
-	h.agentStatus(id, paneID, "pi")
+	h.agentStatus(id, paneID)
 
 	if h.stalledFor("alpha", id)() {
 		t.Fatal("must not be stalled immediately after the first report")
@@ -77,7 +77,7 @@ func TestAgentsDoesNotShowStalledWhileHeartbeatContinues(t *testing.T) {
 		defer close(done)
 		for i := 0; ; i++ {
 			h.programStatus(paneID, "state=working:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
-			h.agentStatus(id, paneID, "pi", "--activity", "heartbeat "+strconv.Itoa(i))
+			h.agentStatus(id, paneID, "--activity", "heartbeat "+strconv.Itoa(i))
 			select {
 			case <-stop:
 				return

@@ -47,18 +47,18 @@ func TestListRunsPeersParentSiblingsAndOwnRuns(t *testing.T) {
 	h.asyncParent("alpha", "root-list")
 	peer := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 	h.programStatus(peer, "state=blocked:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", peer, "#{pane_title}"), "π - "))
-	h.agentStatus("peer-list", peer, "pi", "--activity", "reviewing")
+	h.agentStatus("peer-list", peer, "--activity", "reviewing")
 	child := func(id string) string {
 		pane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 		h.programStatus(pane, "state=working:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-		h.agentStatus(id, pane, "pi", "--parent-session", "root-list", "--inbox", startInbox(t, "ok\n").Path)
+		h.agentStatus(id, pane, "--parent-session", "root-list", "--inbox", startInbox(t, "ok\n").Path)
 		h.agentRunMeta(id, pane, id, "root-list")
 		return pane
 	}
 	first, second := child("first-list"), child("second-list")
 	other := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 	h.programStatus(other, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", other, "#{pane_title}"), "π - "))
-	h.agentStatus("other-child", other, "pi", "--parent-session", "peer-list")
+	h.agentStatus("other-child", other, "--parent-session", "peer-list")
 	h.agentRunMeta("other-child", other, "other-child", "peer-list")
 	bash := h.asyncBash("root-job", "sleep", "300")
 	out, rc := h.kidoAs(first, "", nil, "tool", "async_bash", "--name", "child-job", "--", "sleep 300")
@@ -132,13 +132,13 @@ func TestListRunsRenamedSubagentNameResolves(t *testing.T) {
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
 	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
-	h.agentStatus("rename-root", caller, "pi")
+	h.agentStatus("rename-root", caller)
 	in, pane := h.agentWithInbox("alpha", "rename-child")
 	h.agentRunMeta("rename-child", pane, "launch-name", "rename-root")
 	h.programStatus(pane, "state=idle:app=pi", "launch-name")
-	h.agentStatus("rename-child", pane, "pi", "--parent-session", "rename-root", "--inbox", in.Path)
+	h.agentStatus("rename-child", pane, "--parent-session", "rename-root", "--inbox", in.Path)
 	h.programStatus(pane, "state=idle:app=pi", "current-name")
-	h.agentStatus("rename-child", pane, "pi", "--parent-session", "rename-root", "--inbox", in.Path)
+	h.agentStatus("rename-child", pane, "--parent-session", "rename-root", "--inbox", in.Path)
 	rows := h.listedRuns(caller)
 	if len(rows) != 1 || rows[0].Name != "current-name" {
 		t.Fatalf("renamed child rows = %+v", rows)
@@ -147,7 +147,7 @@ func TestListRunsRenamedSubagentNameResolves(t *testing.T) {
 	if rc != 0 || len(in.Received()) != 1 || field(envelopes(in)[0], "text") != "hello renamed child" {
 		t.Fatalf("message to listed name = rc %d %q, envelopes %v", rc, out, envelopes(in))
 	}
-	h.agentStatus("rename-child", pane, "pi", "--remove")
+	h.agentStatus("rename-child", pane, "--remove")
 	rows = h.listedRuns(caller)
 	if len(rows) != 1 || rows[0].Name != "current-name" {
 		t.Fatalf("child without live record rows = %+v, want last reported name", rows)
@@ -201,7 +201,7 @@ func TestListRunsKeepsAllRunningAndNewestTwentyEnded(t *testing.T) {
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
 	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
-	h.agentStatus("recent-root", caller, "pi")
+	h.agentStatus("recent-root", caller)
 	for i := 0; i < 24; i++ {
 		id := fmt.Sprintf("recent-run-%02d", i)
 		h.agentRunMeta(id, caller, id, "recent-root")

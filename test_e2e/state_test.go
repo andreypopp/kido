@@ -17,12 +17,11 @@ func TestStateReportingOutsideTmux(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := exec.Command(kidoBin, tool)
-			cmd.Env = cleanEnv("KIDO_STATE_DIR=" + dir)
-			cmd.Args = append(cmd.Args, "--agent", "pi", "--session", "outside")
+			cmd.Env = cleanEnv("KIDO_STATE_DIR="+dir, "PI_SESSION_ID=outside")
 			if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
 				t.Fatalf("%s outside tmux = %v %q", tool, err, out)
 			}
-			raw, err := os.ReadFile(filepath.Join(dir, "outside.json"))
+			raw, err := os.ReadFile(filepath.Join(dir, "runs", "outside", "pi.json"))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -14,10 +14,13 @@ func TestPiTerminalStatusIdentityAndStall(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.piPane("alpha", "Terminal")
 	in := startInbox(t, "ok\n")
-	if out, rc := h.kidoAs(pane, "", nil, "agent-status", "--agent", "pi", "--session", "terminal-pi", "--inbox", in.Path); rc != 0 {
+	if out, rc := h.kidoAs(pane, "", h.callerOf("terminal-pi"), "agent-status", "--inbox", in.Path); rc != 0 {
 		t.Fatalf("identity: %d %s", rc, out)
 	}
-	rec := h.stateRecord("terminal-pi")
+	rec, ok := h.readRecord(t, "terminal-pi")
+	if !ok {
+		t.Fatal("no run record for terminal-pi")
+	}
 	for _, field := range []string{"status", "ended", "background", "toolPending", "title"} {
 		if _, exists := rec[field]; exists {
 			t.Fatalf("terminal identity carries %s: %v", field, rec)
@@ -48,7 +51,7 @@ func TestPiTerminalStatusIdentityAndStall(t *testing.T) {
 		t.Helper()
 		rec["ts"] = at.UTC().Format(time.RFC3339Nano)
 		bytes, _ := json.Marshal(rec)
-		if err := os.WriteFile(filepath.Join(h.stateDir, "terminal-pi.json"), bytes, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(h.stateDir, "runs", "terminal-pi", "pi.json"), bytes, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

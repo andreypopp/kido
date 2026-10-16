@@ -21,18 +21,18 @@ func TestSidebarAsksRevive(t *testing.T) {
 	if err := os.Mkdir(cwd, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	file := filepath.Join(h.dir, "saved session.jsonl")
+	file := h.sessionFile("ended-session")
 	if err := os.WriteFile(file, []byte("saved pi session"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pane := h.in("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "alpha:", "-c", cwd)
 	h.programStatus(pane, "state=idle:app=pi", "Ended")
-	h.agentStatus("ended-session", pane, "pi")
-	id, code := askCommand(h, pane, "Restart me?", "tool", "ask_user", "--session-file", file)
+	h.agentStatus("ended-session", pane)
+	id, code := h.kidoAs(pane, "Restart me?", nil, "tool", "ask_user")
 	if code != 0 {
 		t.Fatal(id)
 	}
-	h.agentStatus("ended-session", pane, "pi", "--remove")
+	h.agentStatus("ended-session", pane, "--remove")
 	focusSidebar(h)
 	h.sendKeys("a")
 	h.waitSelected("Ended " + id + " Restart me?")
@@ -71,7 +71,7 @@ func TestSidebarAsksRevive(t *testing.T) {
 	if !strings.HasPrefix(got, want) {
 		t.Fatalf("revived pi got %q, want prefix %q", got, want)
 	}
-	for _, key := range []string{"KIDO_AGENT_PARENT_SESSION", "KIDO_AGENT_PARENT_PID", "KIDO_AGENT_RUN_ID", "KIDO_AGENT_TASK_FILE"} {
+	for _, key := range []string{"KIDO_AGENT_PARENT_SESSION", "KIDO_AGENT_RUN_ID", "KIDO_AGENT_TASK_FILE"} {
 		if envLine(got, key) != "" {
 			t.Fatalf("revived root inherited %s: %q", key, got)
 		}
@@ -87,9 +87,9 @@ func TestSidebarAsksRevive(t *testing.T) {
 		t.Fatal("revive removed the ask")
 	}
 	h.programStatus(newPane, "state=idle:app=pi", "Revived")
-	h.agentStatus("ended-session", newPane, "pi")
+	h.agentStatus("ended-session", newPane)
 	h.programStatus(newPane, "state=idle:app=pi", "Other")
-	h.agentStatus("nested-competitor", newPane, "pi")
+	h.agentStatus("nested-competitor", newPane)
 	focusSidebar(h)
 	h.waitSelected(id)
 	h.sendKeys("Enter")

@@ -2,38 +2,19 @@ package e2e
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 type userAsk struct {
-	ID          string `json:"id"`
-	Session     string `json:"session"`
-	SessionFile string `json:"sessionFile"`
-	Cwd         string `json:"cwd"`
-	Name        string `json:"name"`
-	Text        string `json:"text"`
-	Created     string `json:"created"`
-	Ended       bool   `json:"ended"`
-}
-
-func askCommand(h *harness, pane, text string, args ...string) (string, int) {
-	h.t.Helper()
-	cmd := exec.Command(kidoBin, args...)
-	cmd.Env = cleanEnv("TMUX="+h.inner+",0,0", "TMUX_PANE="+pane)
-	cmd.Stdin = strings.NewReader(text)
-	out, err := cmd.CombinedOutput()
-	code := 0
-	if exit, ok := err.(*exec.ExitError); ok {
-		code = exit.ExitCode()
-	} else if err != nil {
-		h.t.Fatal(err)
-	}
-	return strings.TrimSpace(string(out)), code
+	ID      string `json:"id"`
+	Session string `json:"session"`
+	Name    string `json:"name"`
+	Text    string `json:"text"`
+	Created string `json:"created"`
+	Ended   bool   `json:"ended"`
 }
 
 func openAsks(h *harness, session string) []userAsk {
@@ -42,7 +23,7 @@ func openAsks(h *harness, session string) []userAsk {
 	if session != "" {
 		args = append(args, "--session", session)
 	}
-	out, code := askCommand(h, "", "", args...)
+	out, code := h.kidoAs("", "", nil, args...)
 	var asks []userAsk
 	if code != 0 || json.Unmarshal([]byte(out), &asks) != nil {
 		h.t.Fatalf("get-asks: exit %d, %s", code, out)
@@ -54,19 +35,18 @@ func TestAskUserLifecycle(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	file := filepath.Join(h.dir, "session.jsonl")
 	h.programStatus(pane, "state=idle:app=pi", "Orchestrator")
-	h.agentStatus("ask-session", pane, "pi")
-	id, code := askCommand(h, pane, "Ship now?\nOr wait?", "tool", "ask_user", "--session-file", file)
+	h.agentStatus("ask-session", pane)
+	id, code := h.kidoAs(pane, "Ship now?\nOr wait?", nil, "tool", "ask_user")
 	if code != 0 || !strings.HasPrefix(id, "A") || len(id) > 10 {
 		t.Fatalf("ask_user: exit %d, %s", code, id)
 	}
 	asks := openAsks(h, "ask-session")
-	if len(asks) != 1 || asks[0].ID != id || asks[0].Text != "Ship now?\nOr wait?" || asks[0].Name != "Orchestrator" || asks[0].Ended || asks[0].SessionFile != file {
+	if len(asks) != 1 || asks[0].ID != id || asks[0].Text != "Ship now?\nOr wait?" || asks[0].Name != "Orchestrator" || asks[0].Ended {
 		t.Fatalf("ask: %+v", asks)
 	}
 	first := asks[0]
-	other, code := askCommand(h, pane, "Choose the colour?", "tool", "ask_user", "--session-file", file)
+	other, code := h.kidoAs(pane, "Choose the colour?", nil, "tool", "ask_user")
 	if code != 0 || other == id || len(openAsks(h, "")) != 2 {
 		t.Fatalf("second ask: exit %d, %s", code, other)
 	}
@@ -74,17 +54,17 @@ func TestAskUserLifecycle(t *testing.T) {
 		t.Fatalf("session filter: %+v", got)
 	}
 	h.programStatus(pane, "state=idle:app=pi", "Renamed")
-	h.agentStatus("ask-session", pane, "pi")
-	out, code := askCommand(h, pane, "Ship Monday?", "tool", "ask_user", "--replaces", id, "--session-file", file)
+	h.agentStatus("ask-session", pane)
+	out, code := h.kidoAs(pane, "Ship Monday?", nil, "tool", "ask_user", "--replaces", id)
 	asks = openAsks(h, "ask-session")
 	if code != 0 || out != id || len(asks) != 2 || asks[1].ID != id || asks[1].Text != "Ship Monday?" || asks[1].Name != "Renamed" || asks[1].Created == first.Created {
 		t.Fatalf("replacement: exit %d, %s, %+v", code, out, asks)
 	}
-	out, code = askCommand(h, pane, "Missing", "tool", "ask_user", "--replaces", "A1", "--session-file", file)
+	out, code = h.kidoAs(pane, "Missing", nil, "tool", "ask_user", "--replaces", "A1")
 	if code != 1 || !strings.Contains(out, "no ask A1") {
 		t.Fatalf("missing replace: exit %d, %s", code, out)
 	}
-	h.agentStatus("ask-session", pane, "pi", "--remove")
+	h.agentStatus("ask-session", pane, "--remove")
 	asks = openAsks(h, "ask-session")
 	if len(asks) != 2 || !asks[0].Ended || !asks[1].Ended {
 		t.Fatalf("asks did not persist as ended: %+v", asks)
@@ -94,12 +74,12 @@ func TestAskUserLifecycle(t *testing.T) {
 		t.Fatalf("ended was persisted: %s, %v", stored, err)
 	}
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("ask-session", pane, "pi")
+	h.agentStatus("ask-session", pane)
 	if openAsks(h, "ask-session")[0].Ended {
 		t.Fatal("resumed session still ended")
 	}
 	for _, ask := range []string{id, other} {
-		out, code = askCommand(h, "", "", "tool", "remove_ask", ask)
+		out, code = h.kidoAs("", "", nil, "tool", "remove_ask", ask)
 		if code != 0 {
 			t.Fatalf("remove: exit %d, %s", code, out)
 		}
@@ -111,27 +91,46 @@ func TestAskUserLifecycle(t *testing.T) {
 	if err := os.WriteFile(task, []byte("do work"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	spawn, code := askCommand(h, pane, "", "tool", "spawn_subagent", "--parent-session", "ask-session", "--parent-pid", fmt.Sprint(os.Getpid()), "--name", "asking-child", "--task-file", task, "--", "sh", "-c", "exec sleep 300")
+	spawn, code := h.kidoAs(pane, "", nil, "tool", "spawn_subagent", "--name", "asking-child", "--task-file", task, "--", "sh", "-c", "exec sleep 300")
 	fields := strings.Fields(spawn)
 	if code != 0 || len(fields) != 3 {
 		t.Fatalf("spawn child: exit %d, %s", code, spawn)
 	}
 	h.programStatus(fields[1], "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", fields[1], "#{pane_title}"), "π - "))
-	h.agentStatus(fields[2], fields[1], "pi", "--parent-session", "ask-session", "--parent-pid", fmt.Sprint(os.Getpid()), "--depth", "1")
-	for _, args := range [][]string{{"tool", "ask_user", "--session-file", file}, {"tool", "remove_ask", id}} {
-		out, code = askCommand(h, fields[1], "Question", args...)
+	h.agentStatus(fields[2], fields[1])
+	for _, args := range [][]string{{"tool", "ask_user"}, {"tool", "remove_ask", id}} {
+		out, code = h.kidoAs(fields[1], "Question", nil, args...)
 		if code != 1 || !strings.Contains(out, "top-level agents only") {
 			t.Fatalf("subagent refusal: exit %d, %s", code, out)
 		}
 	}
 	h.programStatus(fields[1], "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", fields[1], "#{pane_title}"), "π - "))
-	h.agentStatus("nested-session", fields[1], "pi", "--parent-session", "ask-session", "--parent-pid", fmt.Sprint(os.Getpid()), "--depth", "1")
-	nested, code := askCommand(h, fields[1], "Nested root question", "tool", "ask_user", "--session", "nested-session", "--session-file", file)
+	h.agentStatus("nested-session", fields[1])
+	nested, code := h.kidoAs(fields[1], "Nested root question", nil, "tool", "ask_user")
 	if code != 0 {
 		t.Fatalf("nested root was mistaken for its pane's run: exit %d, %s", code, nested)
 	}
-	out, code = askCommand(h, fields[1], "", "tool", "remove_ask", "--session", "nested-session", nested)
+	out, code = h.kidoAs(fields[1], "", nil, "tool", "remove_ask", nested)
 	if code != 0 {
 		t.Fatalf("nested root remove: exit %d, %s", code, out)
+	}
+}
+
+// A headless pi in an agent's pane reports after the agent, so it is the
+// pane's latest record; the agent's own ask_user still names the agent,
+// since the caller is the session pi names, not whoever reported the pane.
+func TestAskNamesTheCallingSessionNotThePane(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
+	h.programStatus(pane, "state=idle:app=pi", "Agent")
+	h.agentStatus("agent-session", pane)
+	agent := h.caller(pane)
+	h.agentStatus("headless-session", pane)
+	if id, code := h.kidoAs(pane, "Whose question?", agent, "tool", "ask_user"); code != 0 {
+		t.Fatal(id)
+	}
+	if asks := openAsks(h, ""); len(asks) != 1 || asks[0].Session != "agent-session" {
+		t.Fatalf("asks = %+v, want one from agent-session", asks)
 	}
 }

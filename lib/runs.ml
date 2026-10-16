@@ -5,16 +5,18 @@ let yojson_of_info { meta; outcome } =
     (`Assoc
        (Option.map_or ~default:[] (fun o -> [ ("outcome", Subrun.yojson_of_outcome o) ]) outcome))
 
-let load ?parent_session ~dir id =
-  Option.flat_map
-    (fun (meta : Subrun.meta) ->
-      if Option.exists (fun parent -> not (String.equal parent meta.parent_session)) parent_session
-      then None
-      else Some { meta; outcome = Subrun.effective_outcome ~dir id ~pid:meta.pid })
-    (Subrun.read_meta ~dir id)
+let load ?owner ~dir id =
+  Subrun.load ~dir id
+  |> Option.filter (fun (r : Subrun.run) ->
+      Option.for_all (fun o -> Option.equal Subrun.equal_id (Some o) r.meta.parent) owner)
+  |> Option.map (fun (r : Subrun.run) ->
+      {
+        meta = { r.meta with name = Subrun.name r };
+        outcome = Subrun.effective_outcome ~dir r.meta;
+      })
 
-let list ?parent_session ~dir () =
-  List.filter_map (load ?parent_session ~dir) (Subrun.list ~dir)
+let list ?owner ~dir () =
+  List.filter_map (load ?owner ~dir) (Subrun.list ~dir)
   |> List.sort (fun a b -> Float.compare b.meta.started_at a.meta.started_at)
 
 type detail = { info : info; task : string; screen : string option; report : string option }
@@ -22,7 +24,7 @@ type detail = { info : info; task : string; screen : string option; report : str
 let detail ~dir id_str =
   let open Result.Infix in
   let* id = Subrun.parse_id id_str in
-  let+ info = Option.to_result (Printf.sprintf "run %S: no such run" id_str) (load ~dir id) in
+  let+ info = Option.to_result (Printf.sprintf "run %S: no such run" id_str) (load ~dir id_str) in
   {
     info;
     task = Option.get_or ~default:"" (Subrun.read_task ~dir id);
@@ -84,7 +86,7 @@ let%test_module "Tests" =
       ignore (run ~dir ~parent:"other" ~started_at:3. "other");
       ignore (run ~dir ~parent:"root" ~pid:(Unix.getpid ()) ~started_at:2. "new");
       outcome ~dir "old" Completed;
-      list ~parent_session:"root" ~dir ()
+      list ~owner:(id "root") ~dir ()
       |> List.iter (fun (r : info) ->
           Printf.printf "%s %s\n" (Subrun.string_of_id r.meta.id)
             (Option.map_or ~default:"running"
@@ -139,7 +141,7 @@ let%test_module "Tests" =
     let%expect_test "run-outcome --unreported tells the parent once, and only if it won the write" =
       let dir = Filename.temp_dir "kido-state" "" in
       let inbox, received = start_inbox ~reply:"ok\n" in
-      ignore (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox ()));
+      holding ~dir ~inbox "root-sess";
       let child r = ignore (run ~dir ~name:"ttyfix" ~kind:Agent ~parent:"root-sess" r) in
       child "run-told";
       record_outcome ~dir ~unreported:true Completed "run-told";

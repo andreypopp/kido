@@ -121,7 +121,7 @@ func TestSteerFromAShellIsNotHeldToTheDescendantRule(t *testing.T) {
 	// rule would refuse it outright if it applied.
 	in, paneID := h.agentWithInbox("alpha", "stranger-e2e")
 	h.programStatus(paneID, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
-	h.agentStatus("stranger-e2e", paneID, "pi", "--parent-session", "somebody-else-e2e", "--inbox", in.Path)
+	h.agentStatus("stranger-e2e", paneID, "--parent-session", "somebody-else-e2e", "--inbox", in.Path)
 
 	out := h.pipeKido("alpha", "steer.out", "stop what you are doing",
 		"tool", "steer_subagent", "--", "stranger-e2e")

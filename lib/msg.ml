@@ -165,21 +165,7 @@ let deliver ?(timeout = 2.) ~path text =
             | exception ((Timeout | Unix.Unix_error _) as e) ->
                 Error (Failed (Printf.sprintf "inbox %s: %s" path (describe e))))
 
-let live_parent live session =
-  Option.to_result
-    (Printf.sprintf "no live process holds session %S; the parent is gone, nothing sent" session)
-    (List.assoc_opt ~eq:String.equal session live)
-
-let notify ~dir ~parent_session ~from text =
-  match live_parent (State.load_live ~dir) parent_session with
-  | Error m -> Error (Failed m)
-  | Ok (target : State.session) when String.is_empty target.inbox ->
-      Error (Unavailable (Printf.sprintf "session %s has no inbox" parent_session))
-  | Ok target ->
-      deliver ~path:target.inbox
-        (Yojson.Safe.to_string
-           (yojson_of_envelope
-              { kind = Notice; id = new_id (); from; reply_to = ""; text; run = ""; output = "" }))
+let deliver_envelope ~path e = deliver ~path (Yojson.Safe.to_string (yojson_of_envelope e))
 
 let%test_module "Tests" =
   (module struct

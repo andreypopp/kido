@@ -5,20 +5,15 @@ import { createServer, type Server, type Socket } from "node:net";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Set by `kido tool spawn_subagent` in a subagent's environment; absent for a root session.
-const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
-const PARENT_SESSION = process.env.KIDO_AGENT_PARENT_SESSION || undefined;
-const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH) : undefined;
-
 // Read once at module scope; a test re-imports the module to change it.
 const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
 
-// A timeout here is not a refusal: State.record's write path (lib/state.ml) is what actually decides who holds the id.
+// A timeout here is not a refusal: Subrun.write_pi (lib/subrun.ml) is what actually decides who holds the run.
 const CLAIM_TIMEOUT_MS = 5000;
 
 export type RunKidoResult = { ok: true; out: string } | { ok: false; error: string; code?: number };
 
-// lib/reporting.ml's exit code when another live process already holds this session id.
+// kido agent-status's exit code when another live process already holds this session's run.
 const EXIT_SESSION_HELD = 6;
 
 const MAX_PROMPT_BYTES = 1024 * 1024;
@@ -95,12 +90,22 @@ function findKido(): string | null {
   return null;
 }
 
+let caller: { PI_SESSION_ID?: string; PI_SESSION_FILE?: string } = {};
+
+// kido names its caller from these two, which pi sets only for its own bash tool's
+// commands: a pi started from another pi's bash inherits that caller and must not pass it on.
+// A user's action from this pi's UI has no caller.
+function kidoEnv(user = false): NodeJS.ProcessEnv {
+  const { PI_SESSION_ID: _id, PI_SESSION_FILE: _file, ...env } = process.env;
+  return user ? env : { ...env, ...caller };
+}
+
 // Detached and stdio-ignored, so a Ctrl+C on pi's process group does not kill it.
 // Both failure paths are swallowed - the synchronous throw and the async "error"
 // event - since an unhandled "error" event is an uncaught exception on this process.
 function spawnDetached(cmd: string, args: string[]): void {
   try {
-    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+    const child = spawn(cmd, args, { stdio: "ignore", detached: true, env: kidoEnv() });
     child.on("error", () => {});
     child.unref();
   } catch {}
@@ -165,7 +170,7 @@ export interface StatusHost {
   inboxOpen(): boolean;
   setActivity(text: string): void;
   deliver(text: string, deliverAs?: DeliverAs): void;
-  runKido(args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult>;
+  runKido(args: string[], opts: { input?: string; timeoutMs: number; user?: boolean }): Promise<RunKidoResult>;
   spawnDetached(cmd: string, args: string[]): void;
 }
 
@@ -400,18 +405,10 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const statusArgs = (sessionId: string, opts: { remove?: boolean; inbox: string } = { inbox: "" }): string[] => {
-    const args = [
-      "agent-status", "--agent", "pi", "--session", sessionId,
-      "--activity", activity, "--model", model ?? "", "--inbox", opts.inbox,
-      "--name", pi.getSessionName() ?? "",
-    ];
-    if (PARENT_PID !== undefined) args.push("--parent-pid", String(PARENT_PID));
-    if (PARENT_SESSION) args.push("--parent-session", PARENT_SESSION);
-    if (DEPTH !== undefined) args.push("--depth", String(DEPTH));
-    if (opts.remove) args.push("--remove");
-    return args;
-  };
+  const statusArgs = (opts: { remove?: boolean; inbox: string } = { inbox: "" }): string[] => [
+    "agent-status", "--activity", activity, "--model", model ?? "", "--inbox", opts.inbox,
+    "--name", pi.getSessionName() ?? "", ...(opts.remove ? ["--remove"] : []),
+  ];
 
   const report = (kind: "identity" | "heartbeat" | "removed"): void => {
     if (!reporter) return;
@@ -420,18 +417,18 @@ export default function (pi: ExtensionAPI) {
     const key = JSON.stringify([activity, model ?? "", inbox, remove, pi.getSessionName() ?? ""]);
     if (kind !== "heartbeat" && key === lastKey) return;
     if (kind !== "heartbeat") lastKey = key;
-    spawnDetached(reporter.kido, statusArgs(reporter.sessionId, { remove, inbox }));
+    spawnDetached(reporter.kido, statusArgs({ remove, inbox }));
   };
 
   // Awaited but never blocking the event loop: a blocked process cannot accept an
   // inbox connection. On failure it yields the line kido printed on stderr, the
   // only part a model can act on.
-  const runKido = (args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult> => {
+  const runKido = (args: string[], opts: { input?: string; timeoutMs: number; user?: boolean }): Promise<RunKidoResult> => {
     const command = kido;
     if (!command) return Promise.resolve({ ok: false, error: "kido is not on PATH" });
     const label = `kido ${args.slice(0, args[0] === "tool" ? 2 : 1).join(" ")}`;
     return new Promise((resolve) => {
-      const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: kidoEnv(opts.user) });
       const finish = (result: RunKidoResult): void => {
         clearTimeout(timer);
         resolve(result);
@@ -484,6 +481,7 @@ export default function (pi: ExtensionAPI) {
     reporter = null;
     if (!kido) return;
     const sessionId = ctx.sessionManager.getSessionId();
+    caller = { PI_SESSION_ID: sessionId || undefined, PI_SESSION_FILE: ctx.sessionManager.getSessionFile() };
     model = ctx.model?.id;
     lastKey = null;
     stopHeartbeat();
@@ -491,9 +489,10 @@ export default function (pi: ExtensionAPI) {
     // The claim is this same first report, awaited so an EXIT_SESSION_HELD refusal
     // can be read: a session id another live process holds is not this one's to
     // report under, and every later report is fire-and-forget precisely because
-    // this one settled the question.
-    if (sessionId) {
-      const claim = await runKido(statusArgs(sessionId), { timeoutMs: CLAIM_TIMEOUT_MS });
+    // this one settled the question. A headless pi claims nothing: it may run inside
+    // another agent's pane, and it is no agent anyone can address.
+    if (sessionId && ctx.hasUI) {
+      const claim = await runKido(statusArgs(), { timeoutMs: CLAIM_TIMEOUT_MS });
       if (!claim.ok && claim.code === EXIT_SESSION_HELD) {
         try {
           ctx.ui?.notify?.(`kido: ${claim.error}`, "warning");

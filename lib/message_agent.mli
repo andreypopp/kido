@@ -8,34 +8,32 @@ type spec = { kind : Msg.kind; reply_to : string; id : string }
 type failure = Unavailable of string | Failed of string
 type send_error = No_text | Not_sent of string
 
-val reaches :
-  (string * State.session) list ->
-  Tmux_pane.t list ->
-  self:Tmux.pane_id option ->
-  string ->
-  (bool, string) result
-(** Whether session [id] is the caller's own or its descendant, over a per-pane list; a caller that
-    is no agent reaches everything. *)
+val reaches : dir:string -> caller:Subrun.id option -> string -> bool
+(** Whether run [id] is the caller's own or its descendant; a caller that is no agent reaches
+    everything. *)
 
 val resolve :
-  live:(string * State.session) list ->
+  dir:string ->
   panes:Tmux_pane.t list ->
   self:Tmux.pane_id option ->
+  caller:(Subrun.id * Subrun.pi) option ->
   recipient ->
-  (string * State.session, string) result
+  (string * Subrun.pi, string) result
 
 val deliver :
-  states:(string * State.session) Tmux.Pane_map.t ->
+  dir:string ->
+  caller:(Subrun.id * Subrun.pi) option ->
   panes:Tmux_pane.t list ->
   self:Tmux.pane_id option ->
   spec ->
-  State.session ->
+  string * Subrun.pi ->
   string ->
   ([ `Inbox | `Pasted ], failure) result
 
 val send :
   dir:string ->
   self:Tmux.pane_id option ->
+  caller:(Subrun.id * Subrun.pi) option ->
   recipient ->
   spec ->
   string ->
@@ -45,6 +43,7 @@ val send :
 val notify_parent :
   dir:string ->
   self:Tmux.pane_id option ->
+  caller:(Subrun.id * Subrun.pi) option ->
   warn:(string -> unit) ->
   parent:string ->
   run:string ->

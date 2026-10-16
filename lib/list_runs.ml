@@ -16,7 +16,6 @@ type agent_info = {
   id : string;
   name : string;
   named : bool;
-  agent : State.agent;
   pane : Tmux.pane_id;
   window : Tmux.window_id;
   status : status;
@@ -38,41 +37,15 @@ let caller_pane panes self =
     (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" string_of_pane_id self))
     (Option.flat_map (Tmux_pane.find panes) self)
 
-let status panes (s : State.session) =
-  Option.flat_map (Tmux_pane.find panes) s.pane
-  |> Option.flat_map (fun (p : Tmux_pane.t) -> Program_status.root p.program_status)
-  |> Option.map (fun (r : Program_status.record) -> r.state)
-
-let per_pane live = List.map snd (Tmux.Pane_map.bindings (State.by_pane live))
-
 let in_session panes states session =
   List.filter
-    (fun (_, (s : State.session)) ->
+    (fun (_, (s : Subrun.pi)) ->
       Option.exists
         (fun (p : Tmux_pane.t) -> equal_session_id session p.session_id)
         (Option.flat_map (Tmux_pane.find panes) s.pane))
     states
 
-let parent_edge (id, (s : State.session)) =
-  match s.parent with Some p when not (String.equal p.session id) -> Some p.session | _ -> None
-
-let is_ancestor parent_of ~ancestor target =
-  let rec walk seen cur =
-    match cur with
-    | None -> false
-    | Some cur when List.mem ~eq:String.equal cur seen -> false
-    | Some cur ->
-        String.equal cur ancestor
-        || walk (cur :: seen) (List.assoc_opt ~eq:String.equal cur parent_of)
-  in
-  (not (String.equal ancestor target)) && walk [] (List.assoc_opt ~eq:String.equal target parent_of)
-
-let can_reply ~dir id =
-  match Result.to_opt (Subrun.parse_id id) |> Option.flat_map (Subrun.read_meta ~dir) with
-  | Some m -> List.is_empty m.tools || List.mem ~eq:String.equal "message_agent" m.tools
-  | None -> true
-
-let agents ~dir ~threshold ~self ~session ~panes ~states =
+let agents ~dir ~threshold ~self ~caller ~session ~panes =
   let open Result.Infix in
   let+ session =
     match session with
@@ -85,56 +58,50 @@ let agents ~dir ~threshold ~self ~session ~panes ~states =
               (Printf.sprintf "no tmux session for pane %S; pass --session"
                  (Option.map_or ~default:"" string_of_pane_id self)))
   in
-  let wake = State.wake ~dir and now = Timestamp.now () in
-  let scoped = in_session panes states session in
-  let parent e =
-    match parent_edge e with
-    | Some p when List.mem_assoc ~eq:String.equal p scoped -> Some p
-    | _ -> None
-  in
-  List.sort
-    (fun (a, (sa : State.session)) (b, (sb : State.session)) ->
+  let wake = State.wake ~dir and now = Timestamp.now () and runs = State.runs ~dir panes in
+  Pane_map.bindings (State.agents runs)
+  |> List.filter_map (fun (pane, (id, (s : Subrun.pi))) ->
+      Tmux_pane.find panes pane
+      |> Option.filter (fun (p : Tmux_pane.t) -> equal_session_id session p.session_id)
+      |> Option.map (fun p -> (id, s, p, (Pane_map.find pane runs).meta)))
+  |> List.sort (fun (a, (sa : Subrun.pi), _, _) (b, (sb : Subrun.pi), _, _) ->
       match Float.compare sa.ts sb.ts with 0 -> String.compare a b | c -> c)
-    scoped
-  |> Tree.order ~id:fst ~parent
-  |> List.filter_map (fun (id, (s : State.session)) ->
-      Option.map
-        (fun (p : Tmux_pane.t) ->
-          let root = Program_status.root p.program_status in
-          {
-            id;
-            name = State.display_name panes s;
-            named = State.addressable_name s;
-            agent = s.agent;
-            pane = p.pane_id;
-            window = p.window_id;
-            status = Option.map (fun (r : Program_status.record) -> r.state) root;
-            activity = s.activity;
-            parent = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) s.parent;
-            depth = s.depth;
-            self = Option.equal equal_pane_id s.pane self;
-            cwd = p.current_path;
-            can_message = not (String.is_empty s.inbox);
-            can_reply = (not (String.is_empty s.inbox)) && can_reply ~dir id;
-            model = s.model;
-            since_report = Float.to_int (now -. s.ts);
-            stalled = State.stalled_since ~root ~threshold ~wake ~now s;
-          })
-        (Option.flat_map (Tmux_pane.find panes) s.pane))
+  |> List.map (fun (id, (s : Subrun.pi), (p : Tmux_pane.t), (m : Subrun.meta)) ->
+      let root = Program_status.root p.program_status in
+      {
+        id;
+        name = State.display_name panes s;
+        named = not (String.is_empty s.name);
+        pane = p.pane_id;
+        window = p.window_id;
+        status = Option.map (fun (r : Program_status.record) -> r.state) root;
+        activity = s.activity;
+        parent = Option.map_or ~default:"" Subrun.string_of_id m.parent;
+        depth = Subrun.depth ~dir m;
+        self = Option.exists (Subrun.equal_id m.id) caller;
+        cwd = p.current_path;
+        can_message = not (String.is_empty s.inbox);
+        can_reply =
+          (not (String.is_empty s.inbox))
+          && (List.is_empty m.tools || List.mem ~eq:String.equal "message_agent" m.tools);
+        model = s.model;
+        since_report = Float.to_int (now -. s.ts);
+        stalled = State.stalled_since ~root ~threshold ~wake ~now s;
+      })
+  |> Tree.order ~id:(fun a -> a.id) ~parent:(fun a -> Some a.parent)
 
 type row =
   | Peer of agent_info
   | Parent of agent_info
   | Own of { run : Runs.info; agent : agent_info option; window : Tmux.window_id option }
 
-let list_runs ~dir ~threshold ~self ~session ~panes =
+let list_runs ~dir ~threshold ~self ~caller ~session ~panes =
   let open Result.Infix in
-  let+ agents =
-    agents ~dir ~threshold ~self ~session ~panes ~states:(per_pane (State.load_live ~dir))
+  let+ agents = agents ~dir ~threshold ~self ~caller ~session ~panes in
+  let own = Option.filter (fun _ -> List.exists (fun a -> a.self) agents) caller in
+  let parent =
+    Option.map_or ~default:"" (fun a -> a.parent) (List.find_opt (fun a -> a.self) agents)
   in
-  let caller = List.find_opt (fun a -> a.self) agents in
-  let own = Option.map_or ~default:"" (fun a -> a.id) caller in
-  let parent = Option.map_or ~default:"" (fun a -> a.parent) caller in
   let visible =
     List.filter_map
       (fun a ->
@@ -143,11 +110,9 @@ let list_runs ~dir ~threshold ~self ~session ~panes =
         else if String.equal parent a.parent then
           if String.is_empty parent then Some (Peer a)
           else
-            match
-              Result.to_opt (Subrun.parse_id a.id) |> Option.flat_map (Subrun.read_meta ~dir)
-            with
-            | Some ({ kind = Agent; _ } as m)
-              when Option.is_none (Subrun.effective_outcome ~dir m.id ~pid:m.pid) ->
+            match Subrun.find ~dir a.id with
+            | Some ({ kind = Agent; _ } as m) when Option.is_none (Subrun.effective_outcome ~dir m)
+              ->
                 Some (Peer a)
             | _ -> None
         else None)
@@ -155,26 +120,27 @@ let list_runs ~dir ~threshold ~self ~session ~panes =
   in
   let ended = ref 0 in
   let runs =
-    if String.is_empty own then []
-    else
-      Runs.list ~parent_session:own ~dir ()
-      |> List.filter (fun (r : Runs.info) ->
-          match r.outcome with
-          | None -> true
-          | Some _ ->
-              incr ended;
-              !ended <= 20)
-      |> List.map (fun (r : Runs.info) ->
-          Own
-            {
-              run = r;
-              agent =
-                List.find_opt (fun a -> String.equal a.id (Subrun.string_of_id r.meta.id)) agents;
-              window =
-                Option.map
-                  (fun (p : Tmux_pane.t) -> p.window_id)
-                  (Option.flat_map (Tmux_pane.find panes) r.meta.pane);
-            })
+    match own with
+    | None -> []
+    | Some owner ->
+        Runs.list ~owner ~dir ()
+        |> List.filter (fun (r : Runs.info) ->
+            match r.outcome with
+            | None -> true
+            | Some _ ->
+                incr ended;
+                !ended <= 20)
+        |> List.map (fun (r : Runs.info) ->
+            Own
+              {
+                run = r;
+                agent =
+                  List.find_opt (fun a -> String.equal a.id (Subrun.string_of_id r.meta.id)) agents;
+                window =
+                  Option.map
+                    (fun (p : Tmux_pane.t) -> p.window_id)
+                    (Option.flat_map (Tmux_pane.find panes) r.meta.pane);
+              })
   in
   visible @ runs
 
@@ -198,7 +164,7 @@ let yojson_of_row row =
                 ("named", `Bool false);
                 ("pane", Tmux_pane.yojson_of_optional_id m.pane);
                 ("window", `String (Option.map_or ~default:"" string_of_window_id window));
-                ("parent", `String m.parent_session);
+                ("parent", `String (Option.map_or ~default:"" Subrun.string_of_id m.parent));
                 ("cwd", `String m.cwd);
                 ("canMessage", `Bool false);
                 ("canReply", `Bool false);
@@ -214,34 +180,9 @@ let yojson_of_row row =
               (fun o -> [ ("outcome", Subrun.yojson_of_outcome o) ])
               r.outcome
         in
-        (fields, (match m.kind with Agent -> "subagent" | Bash | Stream -> "bash"), "own", extra)
+        ( fields,
+          (match m.kind with Pi | Agent -> "subagent" | Bash | Stream -> "bash"),
+          "own",
+          extra )
   in
   `Assoc (fields @ [ ("kind", `String kind); ("relationship", `String relationship) ] @ extra)
-
-let%test_module "Tests" =
-  (module struct
-    open Test_fixture
-
-    let%expect_test "Agent names use the pane title" =
-      let panes =
-        [
-          pane ~title:"π - kido" "%1";
-          pane ~title:"π - review - kido" "%2";
-          pane ~title:"π - kido" "%3";
-        ]
-      in
-      List.iter
-        (fun s -> print_endline (State.display_name panes s))
-        [ session ~agent:Pi ~pane:"%1" (); session ~agent:Pi ~pane:"%2" (); session ~pane:"%3" () ];
-      [%expect {|
-    π - kido
-    π - review - kido
-    π - kido
-    |}]
-
-    let%expect_test "is_ancestor refuses a self-edge" =
-      Printf.printf "%b %b\n"
-        (is_ancestor [ ("x", "x") ] ~ancestor:"x" "x")
-        (is_ancestor [ ("c", "b"); ("b", "a") ] ~ancestor:"a" "c");
-      [%expect {| false true |}]
-  end)

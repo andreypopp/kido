@@ -13,7 +13,6 @@ func TestRunMarkedAtWindowCreation(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			h := start(t, "alpha")
 			h.liveParent("alpha", "p")
-			parent := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 			// The window-linked hook runs from the server queue after the creating
 			// command list, before another client can supply a separate mark.
 			decoy := h.in("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "alpha:9", "-n", "created", "sleep 300")
@@ -21,7 +20,7 @@ func TestRunMarkedAtWindowCreation(t *testing.T) {
 			var pane, run string
 			if kind == "agent" {
 				out := filepath.Join(h.dir, "spawn.out")
-				h.runSpawn(out, filepath.Join(h.dir, "child.env"), "--parent-pid", "1", "--parent-session", "p", "--name", "created", "--task-file", h.writeTaskFile("created"))
+				h.runSpawn(out, filepath.Join(h.dir, "child.env"), "--name", "created", "--task-file", h.writeTaskFile("created"))
 				fields := strings.Fields(h.waitFileNonEmpty(out))
 				if len(fields) != 3 {
 					t.Fatalf("spawn output = %q", fields)
@@ -37,10 +36,8 @@ func TestRunMarkedAtWindowCreation(t *testing.T) {
 			if got, want := h.in("show-options", "-gv", "@creation"), fmt.Sprintf("%s:%s:on", pane, run); got != want {
 				t.Errorf("window-linked observed %q, want %q", got, want)
 			}
-			for _, untouched := range []string{parent, decoy} {
-				if got := h.in("display-message", "-p", "-t", untouched, "#{@kido_run}"); got != "" {
-					t.Errorf("pane %s run mark = %q, want empty", untouched, got)
-				}
+			if got := h.in("display-message", "-p", "-t", decoy, "#{@kido_run}"); got != "" {
+				t.Errorf("pane %s run mark = %q, want empty", decoy, got)
 			}
 		})
 	}

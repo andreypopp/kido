@@ -46,7 +46,7 @@ func TestSpawnRefusesModelRejectedByPi(t *testing.T) {
 	// trap AGENTS.md describes for the shims): the gate runs `pi` from
 	// kido's own environment.
 	outFile := filepath.Join(h.dir, "model-refused.out")
-	h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH %s tool spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name model-e2e --task-file %s -- pi --name model-e2e --model sonnet > %s 2>&1; echo rc=$? >> %s",
+	h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH PI_SESSION_ID=model-e2e-parent %s tool spawn_subagent --name model-e2e --task-file %s -- pi --name model-e2e --model sonnet > %s 2>&1; echo rc=$? >> %s",
 		shellQuote(piDir), kidoBin, h.writeTaskFile("model-e2e"), outFile, outFile))
 	h.sendKeys("Enter")
 	var out string
@@ -105,7 +105,7 @@ func TestSpawnModelMustBeAConfiguredProvidersOwn(t *testing.T) {
 				break
 			}
 		}
-		h.sendLiteral(fmt.Sprintf("PATH=%s %s tool spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name %s --task-file %s --fork caller-e2e %s -- %s > %s 2>&1; echo rc=$? >> %s",
+		h.sendLiteral(fmt.Sprintf("PATH=%s PI_SESSION_ID=model-e2e-parent %s tool spawn_subagent --name %s --task-file %s --fork caller-e2e %s -- %s > %s 2>&1; echo rc=$? >> %s",
 			path, kidoBin, tag, h.writeTaskFile(tag), model, strings.Join(command, " "), out, out))
 		h.sendKeys("Enter")
 		return h.waitFileContains(out, "rc=")
@@ -164,8 +164,8 @@ func TestSpawnModelMustBeAConfiguredProvidersOwn(t *testing.T) {
 			h.killPane(fields[1])
 			h.waitFor(func() bool { return !h.windowExists(fields[0]) }, settle, msgf("thinking window to close"))
 			out := filepath.Join(h.dir, "thinking-resume.out")
-			h.sendLiteral(fmt.Sprintf("PATH=%s PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s > %s 2>&1; echo rc=$? >> %s",
-				withPi, shellQuote(t.TempDir()), kidoBin, fields[2], out, out))
+			h.sendLiteral(fmt.Sprintf("PATH=%s %s tool spawn_subagent --resume %s > %s 2>&1; echo rc=$? >> %s",
+				withPi, kidoBin, fields[2], out, out))
 			h.sendKeys("Enter")
 			resumed := strings.Fields(h.waitFileContains(out, "rc="))
 			if len(resumed) != 4 || resumed[3] != "rc=0" {

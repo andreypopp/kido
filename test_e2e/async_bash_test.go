@@ -21,7 +21,7 @@ func (h *harness) asyncParent(session, id string) *inbox {
 	in := startInbox(h.t, "ok\n")
 	pane := h.in("display-message", "-p", "-t", session+":", "#{pane_id}")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus(id, pane, "pi", "--inbox", in.Path)
+	h.agentStatus(id, pane, "--inbox", in.Path)
 	return in
 }
 
@@ -43,8 +43,8 @@ func (h *harness) asyncBashIDs(flags []string, name string, command ...string) (
 	for i, c := range command {
 		quoted[i] = shellQuote(c)
 	}
-	h.sendLiteral(fmt.Sprintf("%s tool async_bash --name %s %s -- %s > %s 2>&1; echo rc=$? >> %s",
-		kidoBin, name, strings.Join(flags, " "), strings.Join(quoted, " "), outFile, outFile))
+	h.sendLiteral(fmt.Sprintf("%s %s tool async_bash --name %s %s -- %s > %s 2>&1; echo rc=$? >> %s",
+		h.callerShell(""), kidoBin, name, strings.Join(flags, " "), strings.Join(quoted, " "), outFile, outFile))
 	h.sendKeys("Enter")
 	out := h.waitFileContains(outFile, "rc=")
 	fields := strings.Fields(out)
@@ -176,10 +176,11 @@ func TestAsyncBashEndsWhenItsParentQuits(t *testing.T) {
 	childPIDFile := filepath.Join(h.dir, "orphan-command.pid")
 	fake := filepath.Join(h.dir, "pi")
 	script := fmt.Sprintf(`#!/bin/bash
-%s agent-status --agent pi --session orphan-parent-e2e
+export PI_SESSION_ID=orphan-parent-e2e
+%s agent-status
 %s tool async_bash --name orphan-bash -- sh -c %s > %s
 read -r -t 30 ignored
-%s agent-status --agent pi --session orphan-parent-e2e --remove
+%s agent-status --remove
 `, kidoBin, kidoBin, shellQuote("echo $$ > "+shellQuote(childPIDFile)+"; exec sleep 300"), shellQuote(outFile), kidoBin)
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -240,11 +241,11 @@ func TestAsyncBashRecordsItsRunAndItsCommand(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("abash-caller-e2e", pane, "pi", "--depth", "1")
+	h.agentStatus("abash-caller-e2e", pane)
 
 	outFile := filepath.Join(h.dir, "derived.out")
-	h.sendLiteral(fmt.Sprintf("%s tool async_bash -- %s > %s 2>&1; echo rc=$? >> %s",
-		kidoBin, shellQuote("/usr/bin/env sleep 300 && ./run"), outFile, outFile))
+	h.sendLiteral(fmt.Sprintf("%s %s tool async_bash -- %s > %s 2>&1; echo rc=$? >> %s",
+		h.callerShell(""), kidoBin, shellQuote("/usr/bin/env sleep 300 && ./run"), outFile, outFile))
 	h.sendKeys("Enter")
 	out := h.waitFileContains(outFile, "rc=")
 	fields := strings.Fields(out)
@@ -257,10 +258,10 @@ func TestAsyncBashRecordsItsRunAndItsCommand(t *testing.T) {
 	}
 	meta := h.runMeta("derived", runID)
 	for k, want := range map[string]any{
-		"name": "env", "kind": "bash", "parentSession": "abash-caller-e2e", "depth": 2.0,
+		"name": "env", "kind": "bash", "parent": "abash-caller-e2e",
 		"task": "/usr/bin/env sleep 300 && ./run",
 	} {
-		if meta[k] != want {
+		if fmt.Sprint(meta[k]) != want {
 			t.Errorf("run meta %s = %v, want %v", k, meta[k], want)
 		}
 	}

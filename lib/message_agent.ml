@@ -19,9 +19,8 @@ let decide ~panes to_ by = function
       |> fun m -> Some (Error m)
 
 let match_target ~panes sessions to_ =
-  let named (_, s) =
-    let name = State.display_name panes s in
-    State.addressable_name s && (not (String.is_empty name)) && String.equal_caseless name to_
+  let named (_, (s : Subrun.pi)) =
+    (not (String.is_empty s.name)) && String.equal_caseless s.name to_
   in
   match decide ~panes to_ "name" (List.filter named sessions) with
   | Some r -> Some r
@@ -52,46 +51,35 @@ let resolve_target states panes ~self address =
           Error (Printf.sprintf "%s (%s) is in another tmux session, not this one" to_ id)
       | None -> Error (Printf.sprintf "no agent session matches %S" to_))
 
-let reaches states panes ~self id =
-  match
-    List.find_opt
-      (fun (_, (s : State.session)) -> Option.equal Tmux.equal_pane_id s.pane self)
-      states
-  with
-  | None -> Ok true
-  | Some (caller, _) when String.equal caller id -> Ok true
-  | Some (caller, _) ->
-      Result.map
-        (fun (p : Tmux_pane.t) ->
-          let parent_of =
-            List.filter_map
-              (fun e -> Option.map (fun p -> (fst e, p)) (List_runs.parent_edge e))
-              (List_runs.in_session panes states p.session_id)
-          in
-          List_runs.is_ancestor parent_of ~ancestor:caller id)
-        (List_runs.caller_pane panes self)
+let reaches ~dir ~caller id =
+  Option.for_all
+    (fun c ->
+      Option.exists
+        (fun (m : Subrun.meta) -> List.mem ~eq:Subrun.equal_id c (m.id :: Subrun.ancestors ~dir m))
+        (Subrun.find ~dir id))
+    caller
 
-let descendant_target states panes ~self to_ =
+let resolve ~dir ~panes ~self ~caller recipient =
   let open Result.Infix in
-  let* ((id, target) as e) = resolve_target states panes ~self to_ in
-  let* reached = reaches states panes ~self id in
-  if reached then Ok e
-  else Error (State.display_name panes target ^ " is not this agent's descendant")
-
-let resolve ~live ~panes ~self recipient =
-  let open Result.Infix in
-  let* ((_, target) as e) =
-    match recipient with
-    | Named to_ -> resolve_target (List_runs.per_pane live) panes ~self (Name to_)
-    | Descendant to_ -> descendant_target (List_runs.per_pane live) panes ~self (Name to_)
-    | Descendant_run id -> descendant_target (List_runs.per_pane live) panes ~self (Run id)
-    | Parent session -> Result.map (fun s -> (session, s)) (Msg.live_parent live session)
+  let caller = Option.map fst caller in
+  let agents = List.map snd (Tmux.Pane_map.bindings (State.agents (State.runs ~dir panes))) in
+  let descendant address =
+    let* ((id, target) as e) = resolve_target agents panes ~self address in
+    if reaches ~dir ~caller id then Ok e
+    else Error (State.display_name panes target ^ " is not this agent's descendant")
   in
-  if Option.equal Tmux.equal_pane_id target.pane self then
+  let* ((id, target) as e) =
+    match recipient with
+    | Named to_ -> resolve_target agents panes ~self (Name to_)
+    | Descendant to_ -> descendant (Name to_)
+    | Descendant_run id -> descendant (Run id)
+    | Parent session -> Result.map (fun s -> (session, s)) (Subrun.live_parent ~dir session)
+  in
+  if Option.exists (fun c -> String.equal (Subrun.string_of_id c) id) caller then
     Error (State.display_name panes target ^ " is this agent")
   else Ok e
 
-let deliver ~states ~panes ~self spec (target : State.session) text =
+let deliver ~dir ~caller ~panes ~self spec (id, (target : Subrun.pi)) text =
   let name = State.display_name panes target in
   let kind = Msg.string_of_kind spec.kind in
   let is_message = match spec.kind with Message -> true | _ -> false in
@@ -102,81 +90,77 @@ let deliver ~states ~panes ~self spec (target : State.session) text =
             "%s has no inbox to send a %s to; only a plain message can be sent as v0 text" name kind))
   else
     let from : Msg.from =
-      match Option.flat_map (fun self -> Tmux.Pane_map.find_opt self states) self with
-      | Some (id, (s : State.session)) ->
-          { session = id; name = State.display_name panes s; pane = self }
+      match caller with
+      | Some (id, s) ->
+          { session = Subrun.string_of_id id; name = State.display_name panes s; pane = self }
       | None -> { session = ""; name = ""; pane = self }
     in
-    let payload =
-      if String.is_empty target.inbox then text
-      else
-        Yojson.Safe.to_string
-          (Msg.yojson_of_envelope
-             {
-               kind = spec.kind;
-               id = (if String.is_empty spec.id then Msg.new_id () else spec.id);
-               from;
-               reply_to = spec.reply_to;
-               text;
-               run = "";
-               output = "";
-             })
+    let envelope : Msg.envelope =
+      {
+        kind = spec.kind;
+        id = (if String.is_empty spec.id then Msg.new_id () else spec.id);
+        from;
+        reply_to = spec.reply_to;
+        text;
+        run = "";
+        output = "";
+      }
     in
     let run =
-      Option.flat_map
-        (fun (p : Tmux_pane.t) -> p.run)
-        (Option.flat_map (Tmux_pane.find panes) target.pane)
+      match Subrun.find ~dir id with
+      | Some { kind = Agent; _ } -> Some id
+      | Some { kind = Pi | Bash | Stream; _ } | None -> None
     in
     if is_message then
       Result.map_err
         (fun m -> Failed m)
-        (Prompt.deliver_or_paste ~inbox:target.inbox ~payload ~pane:target.pane ~name ~run text)
+        (Prompt.deliver_or_paste ~inbox:target.inbox
+           ~payload:(Yojson.Safe.to_string (Msg.yojson_of_envelope envelope))
+           ~pane:target.pane ~name ~run text)
     else
-      match Msg.deliver ~path:target.inbox payload with
+      match Msg.deliver_envelope ~path:target.inbox envelope with
       | Ok () -> Ok `Inbox
       | Error (Msg.Refused _) -> Error (Failed (Printf.sprintf "%s refused the %s" name kind))
       | Error (Msg.Unavailable _) -> Error (Unavailable (Prompt.not_accepting ~name ~run))
       | Error (Msg.Failed m) -> Error (Failed m)
 
-let send ~dir ~self recipient spec text =
+let send ~dir ~self ~caller recipient spec text =
   let open Result.Infix in
   let not_sent r = Result.map_err (fun m -> Not_sent m) r in
   if String.is_empty text then Error No_text
   else if not (String.is_valid_utf_8 text) then Error (Not_sent "message is not valid UTF-8")
   else
-    let live = State.load_live ~dir in
-    let states = State.by_pane live in
     let* panes = not_sent (Tmux_pane.list_panes (Tmux.create ())) in
     let alternative = "use kido tool message_agent instead, which is one-way and needs no reply" in
     let* () =
-      match (spec.kind, Option.flat_map (fun self -> Tmux.Pane_map.find_opt self states) self) with
+      match (spec.kind, caller) with
       | Ask, None ->
           Error
             (Not_sent
                (Printf.sprintf
-                  "no live agent session on this pane (%s), so an answer could not be addressed \
-                   back here; nothing sent - %s"
-                  (Option.map_or ~default:"" Tmux.string_of_pane_id self)
+                  "no agent session is calling ($PI_SESSION_ID names none), so an answer could not \
+                   be addressed back; nothing sent - %s"
                   alternative))
-      | Ask, Some (_, caller) when String.is_empty caller.inbox ->
+      | Ask, Some (_, (s : Subrun.pi)) when String.is_empty s.inbox ->
           Error
             (Not_sent
                (Printf.sprintf
                   "%s has no inbox for an answer to arrive on, and only a long-lived process has \
                    one; nothing sent - %s"
-                  (State.display_name panes caller) alternative))
+                  (State.display_name panes s) alternative))
       | _ -> Ok ()
     in
-    let* id, target = not_sent (resolve ~live ~panes ~self recipient) in
+    let* ((id, target) as e) = not_sent (resolve ~dir ~panes ~self ~caller recipient) in
     let name = State.display_name panes target in
-    match
-      (deliver ~states ~panes ~self spec target text, spec.kind, List_runs.status panes target)
-    with
+    let status =
+      Option.flat_map (Tmux_pane.find panes) target.pane
+      |> Option.flat_map (fun (p : Tmux_pane.t) -> Tmux.Program_status.root p.program_status)
+      |> Option.map (fun (r : Tmux.Program_status.record) -> r.state)
+    in
+    match (deliver ~dir ~caller ~panes ~self spec e text, spec.kind, status) with
     | Ok `Pasted, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)
     | Ok `Inbox, Message, Some (Working _) ->
-        let steerable =
-          Result.get_or ~default:false (reaches (List_runs.per_pane live) panes ~self id)
-        in
+        let steerable = reaches ~dir ~caller:(Option.map fst caller) id in
         Ok
           (Printf.sprintf "queued for %s: it is running and reads this when its current turn ends%s"
              name
@@ -202,12 +186,12 @@ let report_notice ~warn ~dir run report =
                  (Fs.unix_message e fn arg));
             head_within report Msg.max_notice_bytes)
 
-let notify_parent ~dir ~self ~warn ~parent ~run text =
+let notify_parent ~dir ~self ~caller ~warn ~parent ~run text =
   if String.is_empty parent then
     Error
       (Not_sent "this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent")
   else
     let run = Result.to_opt (Subrun.parse_id run) in
-    send ~dir ~self (Parent parent)
+    send ~dir ~self ~caller (Parent parent)
       { kind = Notice; reply_to = ""; id = "" }
       (report_notice ~warn ~dir run text)

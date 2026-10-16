@@ -9,12 +9,12 @@ import (
 	"testing"
 )
 
-// readRecord is the state file for sessionID as it is on disk, and
-// whether there is one. The claim is a rule about that file, so the test
-// reads the file rather than anything kido says about it.
+// readRecord is the run record of sessionID's holder as it is on disk,
+// and whether there is one. The claim is a rule about that file, so the
+// test reads the file rather than anything kido says about it.
 func (h *harness) readRecord(t *testing.T, sessionID string) (map[string]any, bool) {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(h.stateDir, sessionID+".json"))
+	b, err := os.ReadFile(filepath.Join(h.stateDir, "runs", sessionID, "pi.json"))
 	if os.IsNotExist(err) {
 		return nil, false
 	}
@@ -39,14 +39,13 @@ func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 	h := start(t, "alpha")
 
 	// The pid on the holder's record is a running process for as long as the pane is.
-	script := fmt.Sprintf("%s agent-status --agent pi --session dup-e2e --activity holder; exec sleep 300", kidoBin)
+	script := fmt.Sprintf("PI_SESSION_ID=dup-e2e %s agent-status --activity holder; exec sleep 300", kidoBin)
 	holderPane := h.newWindow("alpha", "holder-e2e", "sh", "-c", script)
 	h.waitPaneCommand(holderPane, "sleep")
 	h.waitFor(func() bool { _, ok := h.readRecord(t, "dup-e2e"); return ok }, settle,
 		msgf("the holder's own record to appear"))
 
-	out := h.runKido("alpha", "intruder.out",
-		"agent-status", "--agent", "pi", "--session", "dup-e2e", "--activity", "intruder")
+	out := h.runScript("alpha", "intruder.out", "PI_SESSION_ID=dup-e2e "+kidoBin+" agent-status --activity intruder")
 	if !strings.Contains(out, "rc=6") {
 		t.Errorf("a second live process reporting under a held session id = %q, want rc=6", out)
 	}
@@ -59,8 +58,7 @@ func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 		t.Errorf("output = %q, want it to say where the holder is: %q", out, want)
 	}
 
-	out = h.runKido("alpha", "remove.out",
-		"agent-status", "--agent", "pi", "--session", "dup-e2e", "--remove")
+	out = h.runScript("alpha", "remove.out", "PI_SESSION_ID=dup-e2e "+kidoBin+" agent-status --remove")
 	if !strings.Contains(out, "rc=6") {
 		t.Errorf("a second live process removing a held session's record = %q, want rc=6", out)
 	}
@@ -70,7 +68,7 @@ func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 
 	// With the holder gone, its session id is free.
 	h.killPane(holderPane)
-	restart := fmt.Sprintf("%s agent-status --agent pi --session dup-e2e --activity restarted; exec sleep 300", kidoBin)
+	restart := fmt.Sprintf("PI_SESSION_ID=dup-e2e %s agent-status --activity restarted; exec sleep 300", kidoBin)
 	restartPane := h.newWindow("alpha", "restarted-e2e", "sh", "-c", restart)
 	h.waitPaneCommand(restartPane, "sleep")
 	h.waitFor(func() bool {

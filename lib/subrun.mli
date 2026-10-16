@@ -1,4 +1,4 @@
-type id
+type id [@@deriving equal]
 
 val parse_id : string -> (id, string) result
 val new_id : unit -> id
@@ -8,7 +8,7 @@ val output_path : dir:string -> id -> string
 val report_path : dir:string -> id -> string
 val meta_path : dir:string -> id -> string
 
-type kind = Agent | Bash | Stream
+type kind = Pi | Agent | Bash | Stream
 
 val string_of_kind : kind -> string
 
@@ -16,8 +16,7 @@ type meta = {
   id : id;
   name : string;
   kind : kind;
-  parent_session : string;
-  depth : int;
+  parent : id option;
   pane : Tmux_pane.optional_id;
   pid : int;
   cwd : string;
@@ -30,6 +29,28 @@ type meta = {
 
 val label : meta -> string
 
+type pi = {
+  pid : int;
+  pane : Tmux_pane.optional_id;
+  ts : Timestamp.t;
+  inbox : string;
+  activity : string;
+  model : string;
+  name : string;
+  session_file : string;
+}
+
+val alive : int -> bool
+val read_pi : dir:string -> id -> pi option
+val live_pi : dir:string -> string -> pi option
+val live_parent : dir:string -> string -> (pi, string) result
+val caller : dir:string -> string -> (id * pi) option
+
+val write_pi : dir:string -> id -> holder:int -> pi -> (unit, pi) result
+(** [Error] is the record of another live process holding the run. *)
+
+val release : dir:string -> id -> holder:int -> (unit, pi) result
+
 type result = Completed | Failed | Died | Stopped
 type outcome = { result : result; text : string; at : Timestamp.t option } [@@deriving yojson_of]
 
@@ -38,7 +59,27 @@ val create : dir:string -> id -> string -> unit
 val write_command : dir:string -> id -> string list -> unit
 val read_command : dir:string -> id -> string list option
 val write_meta : dir:string -> meta -> unit
+
+val create_meta : dir:string -> meta -> unit
+(** Writes [meta] unless the run already has one. *)
+
 val read_meta : dir:string -> id -> meta option
+val find : dir:string -> string -> meta option
+
+type run = { meta : meta; pi : pi option }
+
+val load : dir:string -> string -> run option
+val holder : run -> pi option
+
+val name : run -> string
+(** The name its pi last reported, else the meta's. *)
+
+val ancestors : dir:string -> meta -> id list
+(** The owners above the run, nearest first. *)
+
+val depth : dir:string -> meta -> int
+(** The number of parent edges above the run. *)
+
 val write_report : dir:string -> id -> string -> unit
 val has_report : dir:string -> id -> bool
 val read_task : dir:string -> id -> string option
@@ -51,10 +92,10 @@ val read_screen : dir:string -> id -> string option
 val reset_for_resume : dir:string -> id -> delivered:bool -> unit
 val read_outcome : dir:string -> id -> outcome option
 
-val effective_outcome : dir:string -> id -> pid:int -> outcome option
+val effective_outcome : dir:string -> meta -> outcome option
 (** [None] only while the run is still alive. *)
 
-val list : dir:string -> id list
+val list : dir:string -> string list
 
 val save_screen : Tmux.t -> dir:string -> id -> Tmux.pane_id option -> string option
 (** Saves a pane's screen with 1000 lines of history, bounded to its tail, into the run's directory

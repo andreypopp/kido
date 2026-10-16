@@ -15,31 +15,30 @@ let pane ?ssh ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "")
     ssh;
   }
 
-let session ?(agent = State.Pi) ?(parent = "") ?(depth = 0) ?(ts = test_at) ?(activity = "") pane :
-    State.session =
-  Test_fixture.session ~agent ~pane ~ts ~activity
-    ?parent:(if String.is_empty parent then None else Some parent)
-    ~depth ()
+let session ?(ts = test_at) ?(activity = "") pane : Subrun.pi =
+  Test_fixture.pi ~pane ~ts ~activity ()
 
 let states l =
   List.fold_left
-    (fun m (pane, (id, s)) ->
+    (fun m (pane, (id, (s : Subrun.pi))) ->
       let pane = Tmux.pane_id_of_string pane in
-      Tmux.Pane_map.add pane (id, { s with State.pane = Some pane }) m)
+      Tmux.Pane_map.add pane (id, { s with pane = Some pane }) m)
     Tmux.Pane_map.empty l
 
 let with_programs states panes =
   List.map
     (fun (p : Tmux_pane.t) ->
-      if Tmux.Pane_map.mem p.pane_id states then
-        {
-          p with
-          program_status =
-            Result.get_exn
-              (Tmux.Program_status.parse
-                 {|{"serial":1,"records":[{"id":"","app":"pi","state":"working"}]}|});
-        }
-      else p)
+      match Tmux.Pane_map.find_opt p.pane_id states with
+      | Some (id, _) ->
+          {
+            p with
+            run = Some (Option.value p.run ~default:id);
+            program_status =
+              Result.get_exn
+                (Tmux.Program_status.parse
+                   {|{"serial":1,"records":[{"id":"","app":"pi","state":"working"}]}|});
+          }
+      | None -> p)
     panes
 
 let new_run ~dir ?(parent = "") ?(kind = Subrun.Agent) ?result name =
@@ -50,8 +49,7 @@ let new_run ~dir ?(parent = "") ?(kind = Subrun.Agent) ?result name =
       id;
       name;
       kind;
-      parent_session = parent;
-      depth = 0;
+      parent = Test_fixture.owned parent;
       pane = None;
       pid = 0;
       cwd = "";

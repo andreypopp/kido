@@ -27,10 +27,10 @@ func TestPiRenamedRunActuallyDies(t *testing.T) {
 	root := h.firstPane("alpha")
 	in := startInbox(t, "ok\n")
 	h.programStatus(root, "state=idle:app=pi")
-	h.agentStatus("ending-root", root, "pi", "--name", "Root", "--inbox", in.Path)
+	h.agentStatus("ending-root", root, "--name", "Root", "--inbox", in.Path)
 	gate := filepath.Join(h.dir, "report-gate")
 	ready := filepath.Join(h.dir, "reported-name")
-	script := fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done; %s agent-status --agent pi --session ending-child --name Current --parent-session ending-root; touch %s; exec sleep 300", shellQuote(gate), kidoBin, shellQuote(ready))
+	script := fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done; PI_SESSION_ID=ending-child %s agent-status --name Current; touch %s; exec sleep 300", shellQuote(gate), kidoBin, shellQuote(ready))
 	pane := h.newWindow("alpha", "Launch", "sh", "-c", script)
 	window := h.windowID(pane)
 	h.in("set-window-option", "-t", window, "remain-on-exit", "on")
@@ -75,10 +75,6 @@ func TestPiRenamedRunActuallyDies(t *testing.T) {
 		return snapshotTitle(s, pane) == "Current" && strings.Contains(strings.Join(s.drawn(), "\n"), "×Current")
 	}, "dead child exact title")
 	h.waitFor(func() bool { return h.rowFor("Current") == "└×Current" }, settle, msgf("dead child exact sidebar title"))
-	h.waitFor(func() bool {
-		_, err := os.Stat(filepath.Join(h.stateDir, "ending-child.json"))
-		return os.IsNotExist(err)
-	}, settle, msgf("dead child State record removed"))
 	h.in("select-window", "-t", h.windowID(root))
 	h.waitFor(func() bool { return len(in.Received()) == 1 }, settle, msgf("death notice"))
 	if got := envelopes(in)[0]; field(got, "from", "name") != "Current" || !strings.Contains(field(got, "text"), `subagent "Current"`) {
@@ -86,17 +82,17 @@ func TestPiRenamedRunActuallyDies(t *testing.T) {
 	}
 }
 
-func TestPiClearedNameUsesPaneTitleForNestedProgramAndEnding(t *testing.T) {
+func TestPiClearedNameUsesPaneTitleForNestedProgramAndRunNameForEnding(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	root := h.firstPane("alpha")
 	in := startInbox(t, "ok\n")
 	h.programStatus(root, "state=idle:app=pi")
-	h.agentStatus("clear-root", root, "pi", "--name", "Root", "--inbox", in.Path)
+	h.agentStatus("clear-root", root, "--name", "Root", "--inbox", in.Path)
 	pane := h.piPane("alpha", "π - Pane fallback - kido")
 	h.agentRunMeta("clear-child", pane, "Launch", "clear-root")
-	h.agentStatus("clear-child", pane, "pi", "--name", "Named", "--parent-session", "clear-root")
-	h.agentStatus("clear-child", pane, "pi", "--name", "", "--parent-session", "clear-root")
+	h.agentStatus("clear-child", pane, "--name", "Named", "--parent-session", "clear-root")
+	h.agentStatus("clear-child", pane, "--name", "", "--parent-session", "clear-root")
 	h.programStatus(pane, "state=idle:app=pi")
 	tty := h.in("display-message", "-p", "-t", pane, "#{pane_tty}")
 	if err := os.WriteFile(tty, []byte("\x1b]7501;id=nested:state=blocked:app=builder:title=TmVzdGVk\x1b\\"), 0); err != nil {
@@ -107,11 +103,11 @@ func TestPiClearedNameUsesPaneTitleForNestedProgramAndEnding(t *testing.T) {
 	}, settle, msgf("nested program status recorded"))
 	f := h.startFeed("alpha")
 	f.waitLast(func(s feedSnapshot) bool { return snapshotTitle(s, pane) == "π - Pane fallback - kido" }, "cleared pi exact pane title, not nested title")
-	h.waitFor(func() bool { return h.rowFor("Pane fallback") == "└◆π - Pane fallback - kido" }, settle, msgf("cleared pi sidebar title (rows %v)", h.rows()))
+	h.waitFor(func() bool { return rowTitled(h.rowFor("Pane fallback"), "└◆π - Pane fallback - kido") }, settle, msgf("cleared pi sidebar title (rows %v)", h.rows()))
 	if out, rc := h.kidoAs(pane, "", nil, "run-outcome", "--result", "completed", "--unreported", "clear-child"); rc != 0 {
 		t.Fatalf("ending: %d %s", rc, out)
 	}
-	if got := envelopes(in)[0]; field(got, "from", "name") != "π - Pane fallback - kido" || !strings.Contains(field(got, "text"), `subagent "π - Pane fallback - kido"`) {
+	if got := envelopes(in)[0]; field(got, "from", "name") != "Launch" || !strings.Contains(field(got, "text"), `subagent "Launch"`) {
 		t.Fatalf("cleared-name ending notice: %v", got)
 	}
 }

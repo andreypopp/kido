@@ -1,20 +1,26 @@
 include Tmux_pane_fixture
 include Test_support
 
-let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_700_000_000.)
-    ?(inbox = "") ?(activity = "") ?parent ?(depth = 0) () : State.session =
+let pi ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_700_000_000.) ?(inbox = "") ?(activity = "")
+    () : Subrun.pi =
   {
-    agent;
-    name = "";
-    pane = (if String.is_empty pane then None else Some (Tmux.pane_id_of_string pane));
     pid;
+    pane = (if String.is_empty pane then None else Some (Tmux.pane_id_of_string pane));
     ts;
     inbox;
     activity;
-    parent = Option.map (fun session : State.parent -> { session; pid = 0 }) parent;
-    depth;
     model = "";
+    name = "";
+    session_file = "";
   }
+
+let owned s = if String.is_empty s then None else Some (Result.get_exn (Subrun.parse_id s))
+
+let holding ~dir ~inbox id =
+  Result.get_exn
+    (Subrun.write_pi ~dir
+       (Result.get_exn (Subrun.parse_id id))
+       ~holder:(Unix.getpid ()) (pi ~pane:"%2" ~inbox ()))
 
 let run ~dir ?(name = "") ?(kind = Subrun.Agent) ?(parent = "") ?pane ?(pid = 0) ?(cwd = "")
     ?(started_at = 1_700_000_000.) ?command id =
@@ -26,8 +32,7 @@ let run ~dir ?(name = "") ?(kind = Subrun.Agent) ?(parent = "") ?pane ?(pid = 0)
       id;
       name;
       kind;
-      parent_session = parent;
-      depth = 1;
+      parent = owned parent;
       pane = Option.map Tmux.pane_id_of_string pane;
       pid;
       cwd;

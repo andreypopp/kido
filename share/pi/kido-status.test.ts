@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Value } from "typebox/value";
-import childProcess, { spawnSync } from "node:child_process";
+import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,7 +47,7 @@ switch (args[0]) {
   case "remove_ask": {
     const file = path.join(process.env.KIDO_FAKE_STATE_DIR, "asks.json");
     let asks = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
-    const session = args[args.indexOf("--session") + 1];
+    const session = args[0] === "get-asks" ? args[args.indexOf("--session") + 1] : process.env.PI_SESSION_ID;
     if (args[0] === "get-asks") {
       const snapshot = JSON.stringify(asks.filter((a) => a.session === session));
       if (fs.existsSync(path.dirname(file))) fs.appendFileSync(file + ".read", snapshot + "\\n");
@@ -57,7 +57,7 @@ switch (args[0]) {
     } else if (args[0] === "ask_user") {
       const id = args.includes("--replaces") ? args[args.indexOf("--replaces") + 1] : "A7";
       asks = asks.filter((a) => a.id !== id);
-      asks.push({ id, session, sessionFile: args[args.indexOf("--session-file") + 1], text: readStdin() });
+      asks.push({ id, session, sessionFile: process.env.PI_SESSION_FILE, text: readStdin() });
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, JSON.stringify(asks));
       process.stdout.write(id);
@@ -128,11 +128,12 @@ switch (args[0]) {
   }
   case "agent-status": {
     const logFile = process.env.KIDO_FAKE_STATUS_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
+    // Logged with the caller kido reads from PI_SESSION_ID, as if it were a flag.
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify([...argv, "--caller", process.env.PI_SESSION_ID]) + "\\n");
     // Logged first, so a test can tell "the claim was attempted and refused" from
     // "nothing was ever sent".
     if (process.env.KIDO_FAKE_SESSION_HELD) {
-      process.stderr.write("session " + args[args.indexOf("--session") + 1] +
+      process.stderr.write("session " + process.env.PI_SESSION_ID +
         " is already open in pane %9 (pid 4242); this process is not tracked\\n");
       process.exit(6);
     }
@@ -184,7 +185,7 @@ switch (args[0]) {
   case "spawn_subagent": {
     const logFile = process.env.KIDO_FAKE_SPAWN_LOG;
     const task = readStdin();
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify({ args: argv, task }) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify({ args: argv, task, caller: process.env.PI_SESSION_ID }) + "\\n");
     const respond = () => {
       process.stdout.write("@9 %9 fake-run-id\\n");
       process.exit(0);
@@ -250,6 +251,7 @@ interface Fixture {
   lastLogFor(to: string, kind?: string): { id: string; replyTo: string; to: string; text: string; failed?: boolean } | undefined;
   lastSpawnArgs(): string[] | undefined;
   lastSpawnTask(): string | undefined;
+  lastSpawnCaller(): string | undefined;
   lastRunOutcomeArgs(): string[] | undefined;
   lastAsyncBashArgs(): string[] | undefined;
   runsDir: string;
@@ -332,6 +334,7 @@ function makeFixture(): Fixture {
   writeFileSync(childrenAliveLogFile, "");
 
   const saved = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("KIDO_AGENT_"))),
     PATH: process.env.PATH,
     TMUX_PANE: process.env.TMUX_PANE,
     KIDO_FAKE_AGENTS_FILE: process.env.KIDO_FAKE_AGENTS_FILE,
@@ -360,6 +363,9 @@ function makeFixture(): Fixture {
     KIDO_FAKE_MESSAGE_DELAY_MS: process.env.KIDO_FAKE_MESSAGE_DELAY_MS,
     KIDO_FAKE_AGENTS_DELAY_MS: process.env.KIDO_FAKE_AGENTS_DELAY_MS,
   };
+  for (const key of Object.keys(saved)) {
+    if (key.startsWith("KIDO_AGENT_")) delete process.env[key];
+  }
   process.env.PATH = binDir + delimiter + (saved.PATH ?? "");
   process.env.TMUX_PANE = "%1";
   process.env.KIDO_FAKE_AGENTS_FILE = agentsFile;
@@ -437,6 +443,9 @@ function makeFixture(): Fixture {
     },
     lastSpawnTask() {
       return last(jsonLines(spawnLogFile))?.task;
+    },
+    lastSpawnCaller() {
+      return last(jsonLines(spawnLogFile))?.caller;
     },
     lastRunOutcomeArgs() {
       return last(jsonLines(runOutcomeLogFile));
@@ -573,6 +582,7 @@ const fakeTheme = {
 
 function fakeCtx(sessionId = "self-session", ui?: unknown, idle: () => boolean = () => true) {
   return {
+    hasUI: true,
     sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined, getSessionFile: () => "/tmp/" + sessionId + ".json" },
     model: undefined,
     isIdle: idle,
@@ -633,7 +643,7 @@ const DEFAULT_SESSION = "self-session";
 // same save/restore; the extensions read all of it once at module scope, so each
 // case still goes through freshExtensions() to pick it up.
 async function asSubagent<T>(sessionId: string, fn: () => Promise<T>, extra: Record<string, string> = {}): Promise<T> {
-  return withEnv({ KIDO_AGENT_PARENT_SESSION: "boss-session", KIDO_AGENT_PARENT_PID: undefined, KIDO_AGENT_RUN_ID: sessionId, ...extra }, fn);
+  return withEnv({ KIDO_AGENT_PARENT_SESSION: "boss-session", KIDO_AGENT_RUN_ID: sessionId, ...extra }, fn);
 }
 
 // Restores whatever was there. The extensions read their knobs once at module
@@ -1177,10 +1187,15 @@ test("user asks register only for top-level sessions, including inherited child 
       const child = await startSession(fx, { factory: await freshExtensions() });
       assert.equal(child.tools.has("ask_user"), false);
       assert.equal(child.tools.has("remove_ask"), false);
+      await pollUntil(() => fx.parentAliveCalls().length > 0, 2000, "the child's parent poll to start");
+      await child.emit("session_shutdown", { reason: "new" });
       const nested = await startSession(fx, { factory: await freshExtensions(), sessionId: "nested-root" });
       assert.equal(nested.tools.has("ask_user"), true);
       assert.equal(nested.tools.has("remove_ask"), true);
-    });
+      fx.setParentAlive("gone");
+      const readings = fx.parentAliveCalls().length;
+      assert.equal(await pollForStable(() => fx.parentAliveCalls().length, 200, 2000, "no child poll after replacement"), readings);
+    }, { KIDO_PARENT_POLL_MS: "20" });
   } finally {
     await fx.restore();
   }
@@ -1568,7 +1583,7 @@ test("a message from an agent is labelled with its sender and their relationship
         "regular mode draws the message in full regardless of ctrl-o",
       );
 
-      // Negative control: a human at a bare pane has no state record, so kido puts
+      // Negative control: a human at a bare pane is no calling session, so kido puts
       // no session in `from` and no listed agent owns that pane - the user speaking, unlabelled.
       await sendToInbox(s.inboxPath, envelope("message", "do this instead", { from: { session: "", pane: "%99" } as any }));
       assert.ok(s.delivered.some((d) => d.text === "do this instead"), "a shell's message is the user's own words, delivered unlabelled");
@@ -2569,7 +2584,7 @@ test("spawn_subagent passes its task as text on stdin and calls kido tool spawn_
     const s = await startSession(fx);
     // Fire-and-forget: nothing to await but the file it eventually writes.
     await pollUntil(() => fx.lastStatusArgs() !== undefined);
-    const own = argAfter(fx.lastStatusArgs(), "--session");
+    const own = argAfter(fx.lastStatusArgs(), "--caller");
     assert.equal(own, DEFAULT_SESSION, "session_start reported under its own session id");
 
     const spawn = s.tools.get("spawn_subagent");
@@ -2579,8 +2594,7 @@ test("spawn_subagent passes its task as text on stdin and calls kido tool spawn_
 
     const spawnArgs = fx.lastSpawnArgs();
     assert.ok(spawnArgs, "kido tool spawn_subagent was invoked");
-    assert.equal(argAfter(spawnArgs, "--parent-pid"), String(process.pid), "passes its own pid as --parent-pid");
-    assert.equal(argAfter(spawnArgs, "--parent-session"), own, "passes its own session id as --parent-session");
+    assert.equal(fx.lastSpawnCaller(), own, "kido names its own session as the caller through PI_SESSION_ID");
     assert.equal(argAfter(spawnArgs, "--name"), "kid-1");
     assert.equal(argAfter(spawnArgs, "--task-file"), "-", "the task is passed as text on stdin, not as a file this tool manages");
     assert.equal(fx.lastSpawnTask(), "go do the thing", "the task's own text goes on stdin, not on the command line");
@@ -2623,7 +2637,7 @@ test("spawn_subagent(resume) calls kido tool spawn_subagent --resume with its ow
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx);
     await pollUntil(() => fx.lastStatusArgs() !== undefined);
-    const own = argAfter(fx.lastStatusArgs(), "--session");
+    const own = argAfter(fx.lastStatusArgs(), "--caller");
 
     const spawn = s.tools.get("spawn_subagent");
     const result = await spawn.execute("c1", { resume: "run-abc" });
@@ -2632,8 +2646,7 @@ test("spawn_subagent(resume) calls kido tool spawn_subagent --resume with its ow
     const spawnArgs = fx.lastSpawnArgs();
     assert.ok(spawnArgs, "kido tool spawn_subagent was invoked");
     assert.equal(argAfter(spawnArgs, "--resume"), "run-abc");
-    assert.equal(argAfter(spawnArgs, "--parent-pid"), String(process.pid), "carries its own identity through exactly as a fresh spawn does");
-    assert.equal(argAfter(spawnArgs, "--parent-session"), own);
+    assert.equal(fx.lastSpawnCaller(), own, "carries its own identity through exactly as a fresh spawn does");
     assert.ok(!spawnArgs!.includes("--task-file"), "a resume keeps its own original task; no task file is written for it");
     assert.ok(!spawnArgs!.includes("--name"), "a resume keeps its own original window name");
     assert.deepEqual(spawnArgs!.slice(spawnArgs!.indexOf("--") + 1), ["pi"], "no command override is sent when neither model nor tools is given");
@@ -2893,7 +2906,6 @@ test("a child whose task is delivered but whose first turn never starts self-exi
       },
       {
         KIDO_AGENT_TASK_FILE: taskFile,
-        KIDO_AGENT_PARENT_PID: String(process.pid), // alive: the parent poll must not end this session
         KIDO_PARENT_POLL_MS: "5000",
         KIDO_IDLE_EXIT_SECONDS: "0.05",
         KIDO_LINGER_SECONDS: "0.05",
@@ -2932,7 +2944,6 @@ test("a child whose task starts a turn is untouched by the startup clock", async
       },
       {
         KIDO_AGENT_TASK_FILE: taskFile,
-        KIDO_AGENT_PARENT_PID: String(process.pid),
         KIDO_PARENT_POLL_MS: "5000",
         KIDO_IDLE_EXIT_SECONDS: "0.05",
         KIDO_LINGER_SECONDS: "0.05",
@@ -3563,6 +3574,7 @@ test("a process that merely inherited a subagent's environment is not a subagent
   try {
     // What the pane lookup finds: the REAL agent's record, window and all.
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@7" }]);
+    fx.setParentAlive("gone");
     await asSubagent(
       "the-real-childs-run",
       async () => {
@@ -3579,7 +3591,7 @@ test("a process that merely inherited a subagent's environment is not a subagent
         assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "and sends nothing");
 
         // Several times over both the 50ms idle interval and the 20ms
-        // parent poll, whose pid is dead: neither clock belongs to this
+        // parent poll, whose parent is gone: neither clock belongs to this
         // process, so neither may end it.
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await new Promise((r) => setTimeout(r, 300));
@@ -3594,7 +3606,6 @@ test("a process that merely inherited a subagent's environment is not a subagent
         assert.equal(fx.lastRunOutcomeArgs(), undefined, "and the real child's run is never given an outcome");
       },
       {
-        KIDO_AGENT_PARENT_PID: String(deadPid()),
         KIDO_PARENT_POLL_MS: "20",
         KIDO_IDLE_EXIT_SECONDS: "0.05",
         KIDO_LINGER_SECONDS: "0.05",
@@ -3636,7 +3647,6 @@ test("a real subagent, fresh or resumed, is still a subagent in every respect", 
           assert.deepEqual(await fx.waitForCloseRun(), ["close-run", "@7"], `${runID}: its own window is still lingered`);
         },
         {
-          KIDO_AGENT_PARENT_PID: String(process.pid), // alive: the poll must not end this session
           KIDO_PARENT_POLL_MS: "5000",
           KIDO_IDLE_EXIT_SECONDS: "0.05",
           KIDO_LINGER_SECONDS: "0.05",
@@ -3722,13 +3732,6 @@ test("interleaving: an inbound ask from the same target is refused even while th
   }
 });
 
-// Guaranteed to belong to no process by the time the caller uses it (the same
-// trick lib/test/fixture.ml's dead_pid uses on the OCaml side).
-function deadPid(): number {
-  const r = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
-  return r.pid!;
-}
-
 test("a stream that never goes quiet for 1s is still delivered 30s after its first chunk (TestStreamMaxWait)", async (t) => {
   const fx = makeFixture();
   try {
@@ -3751,8 +3754,8 @@ test("a stream that never goes quiet for 1s is still delivered 30s after its fir
   }
 });
 
-async function withParentEnv<T>(pid: number, session: string, pollMs: number, fn: () => Promise<T>): Promise<T> {
-  const vars = { KIDO_AGENT_PARENT_PID: String(pid), KIDO_AGENT_PARENT_SESSION: session, KIDO_PARENT_POLL_MS: String(pollMs) };
+async function withParentEnv<T>(session: string, pollMs: number, fn: () => Promise<T>): Promise<T> {
+  const vars = { KIDO_AGENT_PARENT_SESSION: session, KIDO_PARENT_POLL_MS: String(pollMs) };
   return withEnv({ ...vars, KIDO_AGENT_RUN_ID: DEFAULT_SESSION }, fn);
 }
 
@@ -3772,29 +3775,13 @@ test("fixture teardown stops parent polls before another session starts", async 
     } finally {
       await fx.restore();
     }
-  }, { KIDO_AGENT_PARENT_PID: String(process.pid), KIDO_PARENT_POLL_MS: "20" });
+  }, { KIDO_PARENT_POLL_MS: "20" });
   const next = makeFixture();
   try {
     await startSession(next, { factory: await freshExtensions() });
     assert.equal(await pollForStable(() => next.parentAliveCalls().length, 200, 2000, "no inherited parent polls"), 0);
   } finally {
     await next.restore();
-  }
-});
-
-test("parent-liveness poll: shuts the session down when the parent's process is gone", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }]);
-    await withParentEnv(deadPid(), "boss-session", 20, async () => {
-      const factory = await freshExtensions();
-      const s = await startWithShutdownSpy(fx, factory);
-      await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() to be called for a dead parent pid");
-      assert.equal(fx.parentAliveCalls().length, 0, "ESRCH is definite, and answered without spawning anything");
-      await s.emit("session_shutdown"); // stop the poll, as a real shutdown would
-    });
-  } finally {
-    await fx.restore();
   }
 });
 
@@ -3805,7 +3792,7 @@ test("parent-liveness poll: does not shut down while the parent is alive, and as
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     fx.setParentAlive("alive");
-    await withParentEnv(process.pid, "boss-session", 20, async () => {
+    await withParentEnv("boss-session", 20, async () => {
       const factory = await freshExtensions();
       const s = await startWithShutdownSpy(fx, factory);
       const agentsBefore = fx.agentsCallCount();
@@ -3835,7 +3822,7 @@ test("parent-liveness poll: a kido that cannot answer is not evidence, and never
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     fx.setParentAlive("fail");
-    await withParentEnv(process.pid, "boss-session", 20, async () => {
+    await withParentEnv("boss-session", 20, async () => {
       const factory = await freshExtensions();
       const s = await startWithShutdownSpy(fx, factory);
       await pollUntil(() => fx.parentAliveCalls().length >= 4, 2000, "several failed get-agent polls");
@@ -3847,19 +3834,18 @@ test("parent-liveness poll: a kido that cannot answer is not evidence, and never
   }
 });
 
-// kill(pid, 0) success is not proof: this process's own pid is alive, but no
-// live record holds the parent session, as if the real parent exited and
-// something else now holds its old pid. Pins the absence of a debounce: one
-// "false" reading ends the session, within about one poll interval.
-test("parent-liveness poll: a recycled pid with no live record of the session counts as gone, on the first reading", async () => {
+// Pins the absence of a debounce: one "false" reading ends the session, within
+// about one poll interval.
+test("parent-liveness poll: a parent session with no live holder counts as gone, on the first reading", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }]);
     fx.setParentAlive("gone");
-    await withParentEnv(process.pid, "boss-session", 20, async () => {
+    fx.setParentAliveDelay(100);
+    await withParentEnv("boss-session", 20, async () => {
       const factory = await freshExtensions();
       const s = await startWithShutdownSpy(fx, factory);
-      await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() to be called for a recycled pid with no live record of the session");
+      await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() to be called for a parent session with no live holder");
       assert.equal(fx.parentAliveCalls().length, 1, "one reading is conclusive; nothing waits for a second");
       await s.emit("session_shutdown");
     });
@@ -3879,7 +3865,7 @@ test("parent-liveness poll: a slow reply does not let ticks pile up concurrent r
     const pollMs = 10;
     fx.setParentAlive("alive");
     fx.setParentAliveDelay(delayMs);
-    await withParentEnv(process.pid, "boss-session", pollMs, async () => {
+    await withParentEnv("boss-session", pollMs, async () => {
       const factory = await freshExtensions();
       const s = await startWithShutdownSpy(fx, factory);
       const started = Date.now();
@@ -3908,7 +3894,7 @@ async function withHeartbeatEnv<T>(ms: number, fn: () => Promise<T>): Promise<T>
 }
 
 // The second incident: two pi processes on one session id. kido refuses
-// the newcomer's claim (exit 6, State.record), and what this
+// the newcomer's claim (exit 6, Subrun.write_pi), and what this
 // pins is everything that must then NOT happen - no second report, no
 // heartbeat, no removal report on the way out, all of which would be
 // writes to a record that belongs to the process still running. The
@@ -3927,7 +3913,7 @@ test("a second pi on one session id claims nothing, reports nothing, and says so
     const s = await startSession(fx);
 
     assert.equal(fx.statusReportCount(), 1, "the claim was attempted exactly once");
-    assert.equal(argAfter(fx.lastStatusArgs(), "--session"), DEFAULT_SESSION);
+    assert.equal(argAfter(fx.lastStatusArgs(), "--caller"), DEFAULT_SESSION);
 
     const notified = s.notifications;
     assert.equal(notified.length, 1, `want one notification, got ${JSON.stringify(notified)}`);
@@ -3944,6 +3930,23 @@ test("a second pi on one session id claims nothing, reports nothing, and says so
     while (Date.now() < until) {
       assert.equal(fx.statusReportCount(), 1, "an untracked pi reports nothing after the refusal");
       assert.equal(fx.statusReportsWithRemove().length, 0, "and never removes the holder's record");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  } finally {
+    await fx.restore();
+  }
+});
+
+// The pair of the test below, which a gate refusing every session would also pass.
+test("a headless pi claims nothing and reports nothing", async () => {
+  const fx = makeFixture();
+  try {
+    const s = await startSessionCore(fx, loadExtensions, (c) => ({ ...fakeCtx(undefined, c.ui), hasUI: false }));
+    await s.emit("turn_start");
+    await s.emit("session_shutdown", { reason: "quit" });
+    const until = Date.now() + 300;
+    while (Date.now() < until) {
+      assert.equal(fx.statusReportCount(), 0, "a headless pi never reports to kido");
       await new Promise((r) => setTimeout(r, 20));
     }
   } finally {
@@ -4623,7 +4626,7 @@ test("idle self-exit: a settled turn with no further work shuts the session down
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    await withParentEnv(process.pid, "boss-session", 5000, async () => {
+    await withParentEnv("boss-session", 5000, async () => {
       await withIdleExitEnv(0.1, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
@@ -4644,7 +4647,7 @@ test("idle self-exit: new work resets the timer instead of letting it fire mid-t
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    await withParentEnv(process.pid, "boss-session", 5000, async () => {
+    await withParentEnv("boss-session", 5000, async () => {
       await withIdleExitEnv(0.15, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
@@ -4689,7 +4692,7 @@ test("idle self-exit: keepAlive is read from the run at each check", async () =>
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    await withParentEnv(process.pid, "boss-session", 5000, async () => {
+    await withParentEnv("boss-session", 5000, async () => {
       await withIdleExitEnv(0.05, async () => {
         const meta = join(fx.runsDir, DEFAULT_SESSION, "meta.json");
         mkdirSync(dirname(meta), { recursive: true });
@@ -4714,7 +4717,7 @@ test("idle self-exit: a focused window re-arms instead of shutting down, then ex
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     fx.setWindowFocused(true);
-    await withParentEnv(process.pid, "boss-session", 5000, async () => {
+    await withParentEnv("boss-session", 5000, async () => {
       await withIdleExitEnv(0.05, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
@@ -4743,7 +4746,7 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     fx.setChildrenAlive(true);
-    await withParentEnv(process.pid, "boss-session", 5000, async () => {
+    await withParentEnv("boss-session", 5000, async () => {
       await withIdleExitEnv(0.05, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
@@ -4771,7 +4774,7 @@ for (const mode of ["fail", "timeout"]) {
     try {
       fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
       process.env.KIDO_FAKE_CHILDREN_ALIVE = mode;
-      await withParentEnv(process.pid, "boss-session", 5000, async () => {
+      await withParentEnv("boss-session", 5000, async () => {
         await withIdleExitEnv(0.05, async () => {
           const factory = await freshExtensions();
           const s = await startWithShutdownSpy(fx, factory);
@@ -4796,7 +4799,7 @@ test("idle self-exit: a shutdown pi declined is asked for again", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    await withParentEnv(process.pid, "boss-session", 5000, async () => {
+    await withParentEnv("boss-session", 5000, async () => {
       await withIdleExitEnv(0.05, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);

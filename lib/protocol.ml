@@ -241,7 +241,7 @@ let snapshot (m : model) =
                      [
                        ("id", `String (Ask.string_of_id a.id));
                        ("session", `String a.session);
-                       ("name", `String a.name);
+                       ("name", `String entry.name);
                        ("text", `String a.text);
                        ("created", Timestamp.yojson_of_t a.created);
                        ("pane", Option.map_or ~default:`Null Tmux.yojson_of_pane_id pane);
@@ -288,6 +288,7 @@ let%test_module "Tests" =
       { m with at = !clock }
 
     let prepared ~dir panes states =
+      let panes = with_programs states panes in
       fst
         (Sidebar.step (model ~dir ())
            {
@@ -295,9 +296,9 @@ let%test_module "Tests" =
              server = Some (1, { Tmux_pane.started_at = test_at |> Float.to_int; pid = 42 });
              client = client "alpha";
              active = Some (Tmux.pane_id_of_string "%1");
-             panes = with_programs states panes;
+             panes;
              states;
-             lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
+             lingering = Sidebar.lingering_subagents ~dir (State.runs ~dir panes);
            })
 
     (* The feed's wire format: key order, the server identity, plain titles, each pane's lifecycle,
@@ -509,9 +510,8 @@ let%test_module "Tests" =
           pane ~session:"alpha" ~window:"@3" ~run "%4";
         ]
       in
-      let states =
-        states [ ("%1", ("root", session "")); ("%2", ("kid", session ~parent:"root" "")) ]
-      in
+      ignore (Test_fixture.run ~dir ~parent:"root" "kid");
+      let states = states [ ("%1", ("root", session "")); ("%2", ("kid", session "")) ] in
       let m = prepared ~dir panes states in
       print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (snapshot m)));
       [%expect
@@ -587,8 +587,8 @@ let%test_module "Tests" =
                               { "id": "", "state": "working", "app": "pi" }
                             ]
                           },
-                          "run": null,
-                          "started": null,
+                          "run": "agent",
+                          "started": 1700000000.0,
                           "children": []
                         },
                         {

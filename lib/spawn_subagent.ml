@@ -4,11 +4,7 @@ let max_depth = 2
 let max_task_bytes = 1024 * 1024
 let max_window_name_len = 64
 
-type pi = { path : string; session_dir : string; agent_dir : string; home : string }
-
 type flags = {
-  parent_pid : int;
-  parent_session : string;
   name : string;
   task_file : string;
   model : string;
@@ -24,11 +20,9 @@ type mode =
   | Fresh of { name : string; task : string; fork : string; model : string }
   | Resume of Subrun.id
 
-type owner = Given of State.parent | Nobody | Adopt
-
 type request = {
   mode : mode;
-  owner : owner;
+  no_parent : bool;
   tools : string list option;
   keep_alive : bool;
   command : string list;
@@ -82,17 +76,6 @@ let parse (f : flags) =
   let open Result.Infix in
   let refuse why = Error (Usage why) and invalid r = Result.map_err (fun e -> Invalid e) r in
   let command = if List.is_empty f.command then [ "pi" ] else f.command in
-  let given = f.parent_pid > 0 || not (String.is_empty f.parent_session) in
-  let* owner =
-    if f.no_parent && given then
-      refuse "--no-parent contradicts --parent-pid/--parent-session; pass one or the other"
-    else if f.parent_pid > 0 && not (String.is_empty f.parent_session) then
-      Ok (Given { pid = f.parent_pid; session = f.parent_session })
-    else if given then
-      refuse "--parent-pid and --parent-session name one parent and are given together"
-    else if f.no_parent then Ok Nobody
-    else Ok Adopt
-  in
   let+ mode =
     if not (String.is_empty f.resume) then
       if not (String.is_empty f.task_file) then
@@ -104,25 +87,18 @@ let parse (f : flags) =
           "--resume continues a run's own session; --fork starts a new one from somebody else's, \
            and the two cannot both be asked for"
       else match Subrun.parse_id f.resume with Error e -> refuse e | Ok run -> Ok (Resume run)
+    else if String.is_empty f.name then refuse "--name is required"
+    else if String.is_empty f.task_file then refuse "--task-file is required"
     else
-      match owner with
-      | Adopt ->
-          refuse
-            "--parent-pid and --parent-session are required (or --no-parent for a child owned by \
-             nobody)"
-      | Given _ | Nobody ->
-          if String.is_empty f.name then refuse "--name is required"
-          else if String.is_empty f.task_file then refuse "--task-file is required"
-          else
-            let* () = invalid (check_window_name f.name) in
-            let* () = invalid (Launch.tmux_safe "--fork" f.fork) in
-            let+ task = invalid (read_task f.task_file) in
-            Fresh { name = f.name; task; fork = f.fork; model = f.model }
+      let* () = invalid (check_window_name f.name) in
+      let* () = invalid (Launch.tmux_safe "--fork" f.fork) in
+      let+ task = invalid (read_task f.task_file) in
+      Fresh { name = f.name; task; fork = f.fork; model = f.model }
   in
   let tools =
     Option.map (fun s -> if String.is_empty s then [] else String.split_on_char ',' s) f.tools
   in
-  { mode; owner; tools; keep_alive = f.keep_alive; command }
+  { mode; no_parent = f.no_parent; tools; keep_alive = f.keep_alive; command }
 
 let thinking_levels = [ "off"; "minimal"; "low"; "medium"; "high"; "xhigh"; "max" ]
 
@@ -204,47 +180,16 @@ let validate_model ~path command =
                argument
                (String.concat ", " (List.map group providers)))
 
-(* pi 0.85.1's getDefaultSessionDirPath (session-manager.js): PI_CODING_AGENT_SESSION_DIR, else
-   <PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions/--<cwd, / \ : as ->--, files named
-   "<timestamp>_<id>.jsonl". pi's settings.json "sessionDir" is not read. With no home the check
-   cannot be made and reads as present. *)
-let pi_session_file_exists pi cwd id =
-  let dir =
-    if not (String.is_empty pi.session_dir) then Some pi.session_dir
-    else
-      let agent_dir =
-        if not (String.is_empty pi.agent_dir) then Some pi.agent_dir
-        else if String.is_empty pi.home then None
-        else Some (Filename.concat pi.home ".pi/agent")
-      in
-      Option.map
-        (fun agent_dir ->
-          let cwd = Option.get_or ~default:cwd (String.chop_prefix ~pre:"/" cwd) in
-          let safe = String.map (function '/' | '\\' | ':' -> '-' | c -> c) cwd in
-          Filename.concat (Filename.concat agent_dir "sessions") ("--" ^ safe ^ "--"))
-        agent_dir
+let create_run_window ?resume ~dir (meta : Subrun.meta) ~session command =
+  let env =
+    [
+      "KIDO_AGENT_TASK_FILE=" ^ Subrun.task_path ~dir meta.id;
+      "KIDO_AGENT_RUN_ID=" ^ Subrun.string_of_id meta.id;
+    ]
+    @ Option.map_or ~default:[]
+        (fun p -> [ "KIDO_AGENT_PARENT_SESSION=" ^ Subrun.string_of_id p ])
+        meta.parent
   in
-  match dir with
-  | None -> true
-  | Some dir -> (
-      let suffix = "_" ^ Subrun.string_of_id id ^ ".jsonl" in
-      match Sys.readdir dir with
-      | exception Sys_error _ -> false
-      | names -> Array.exists (String.suffix ~suf:suffix) names)
-
-let run_env ~dir id parent depth =
-  [
-    "KIDO_AGENT_TASK_FILE=" ^ Subrun.task_path ~dir id;
-    "KIDO_AGENT_RUN_ID=" ^ Subrun.string_of_id id;
-    "KIDO_AGENT_DEPTH=" ^ string_of_int depth;
-  ]
-  @
-  match parent with
-  | Some ({ pid; session } : State.parent) ->
-      [ "KIDO_AGENT_PARENT_PID=" ^ string_of_int pid; "KIDO_AGENT_PARENT_SESSION=" ^ session ]
-  | None -> []
-
-let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
   let tmux = Tmux.create () in
   let open Result.Infix in
   let fail e =
@@ -276,48 +221,40 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
             id;
             Subrun.output_path ~dir meta.id;
           ]
-    | Agent ->
+    | Pi | Agent ->
         String.concat " "
           [ Tmux.string_of_window_id w.window_id; Tmux.string_of_pane_id w.pane_id; id ])
 
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 
-let caller ~dir ~self owner =
+let spawn ~dir ~self ~caller ~path req =
   let open Result.Infix in
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let+ pane = List_runs.caller_pane panes self in
-  let own = Tmux.Pane_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
-  let parent =
-    match (owner, own) with
-    | Given p, _ -> Some p
-    | Adopt, Some (session, s) -> Some State.{ pid = s.pid; session }
-    | Adopt, None | Nobody, _ -> None
+  let* pane = List_runs.caller_pane panes self in
+  let parent = if req.no_parent then None else Option.map fst caller in
+  let depth =
+    Option.map_or ~default:0
+      (fun id -> 1 + Option.map_or ~default:0 (Subrun.depth ~dir) (Subrun.read_meta ~dir id))
+      parent
   in
-  (pane, parent, 1 + Option.map_or ~default:0 (fun (_, (s : State.session)) -> s.depth) own)
-
-let spawn ~dir ~self ~pi req =
-  let open Result.Infix in
-  let* pane, parent, depth = caller ~dir ~self req.owner in
   let* () =
-    if depth > max_depth then
-      Error
-        (Printf.sprintf
-           "refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)"
-           depth max_depth)
-    else
-      match parent with
-      | Some { session; _ }
-        when not
-               (Option.exists
-                  (fun (s : State.session) -> State.alive s.pid)
-                  (State.get ~dir session)) ->
-          Error
-            (Printf.sprintf
-               "--parent-session %S names no currently live agent; the child would be closed \
-                within moments as an orphan by the reap sweep - pass --no-parent for a child owned \
-                by nobody, or name an agent that is actually running"
-               session)
-      | _ -> Ok ()
+    match (parent, caller) with
+    | None, None when (not req.no_parent) && match req.mode with Fresh _ -> true | _ -> false ->
+        Error
+          "no calling agent session ($PI_SESSION_ID names none); pass --no-parent for a child \
+           owned by nobody"
+    | _ when depth > max_depth ->
+        Error
+          (Printf.sprintf
+             "refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)"
+             depth max_depth)
+    | Some id, Some (_, (s : Subrun.pi)) when not (Subrun.alive s.pid) ->
+        Error
+          (Printf.sprintf
+             "the calling session %S is not live; the child would be closed within moments as an \
+              orphan by the reap sweep - pass --no-parent for a child owned by nobody"
+             (Subrun.string_of_id id))
+    | _ -> Ok ()
   in
   let is_pi = match req.command with "pi" :: _ -> true | _ -> false in
   let* meta, command, mint =
@@ -329,8 +266,7 @@ let spawn ~dir ~self ~pi req =
             id;
             name = f.name;
             kind = Agent;
-            parent_session = "";
-            depth = 0;
+            parent = None;
             pane = None;
             pid = 0;
             cwd = pane.current_path;
@@ -354,23 +290,34 @@ let spawn ~dir ~self ~pi req =
                (Subrun.meta_path ~dir run))
             (Subrun.read_meta ~dir run)
         in
+        let id = Subrun.string_of_id meta.id in
         let* () =
-          if State.alive meta.pid then
-            Error
-              (Printf.sprintf
-                 "run %S is still running (pid %d); resuming a live agent makes no sense"
-                 (Subrun.string_of_id meta.id) meta.pid)
-          else Ok ()
+          match meta.kind with
+          | Pi ->
+              Error (Printf.sprintf "run %S is not a subagent run: kido did not start its pi" id)
+          | _ when Subrun.alive meta.pid ->
+              Error
+                (Printf.sprintf
+                   "run %S is still running (pid %d); resuming a live agent makes no sense" id
+                   meta.pid)
+          | _ -> Ok ()
         in
         (* With no pi session file the id is free rather than stale, so --session-id mints one
            under it and the stored task is delivered again. *)
-        let mint = not (pi_session_file_exists pi meta.cwd meta.id) in
-        let id = Subrun.string_of_id meta.id in
+        let session =
+          Option.map (fun (p : Subrun.pi) -> p.session_file) (Subrun.read_pi ~dir run)
+          |> Option.filter Fs.is_file
+        in
+        let mint = Option.is_none session in
         let command =
           if not is_pi then req.command
           else
             let command =
-              insert_after_head [ (if mint then "--session-id" else "--session"); id ] req.command
+              insert_after_head
+                (Option.map_or ~default:[ "--session-id"; id ]
+                   (fun f -> [ "--session"; f ])
+                   session)
+                req.command
             in
             let lacks flag = not (List.mem ~eq:String.equal flag (List.tl command)) in
             command
@@ -382,35 +329,34 @@ let spawn ~dir ~self ~pi req =
   in
   let tools = Option.get_or ~default:meta.tools req.tools in
   let tools =
-    if
-      is_pi && Option.is_some parent
-      && (not (List.is_empty tools))
-      && not (List.mem ~eq:String.equal "notify_parent" tools)
-    then tools @ [ "notify_parent" ]
-    else tools
+    match parent with
+    | Some _
+      when is_pi
+           && (not (List.is_empty tools))
+           && not (List.mem ~eq:String.equal "notify_parent" tools) ->
+        tools @ [ "notify_parent" ]
+    | _ -> tools
   in
   let command =
     if is_pi && not (List.is_empty tools) then command @ [ "--tools"; String.concat "," tools ]
     else command
   in
-  let* () = validate_model ~path:pi.path command in
+  let* () = validate_model ~path command in
   (* A resume keeps the run's own cwd: pi sessions are project-scoped, and `pi --session` from
      another directory asks to fork instead of resuming. *)
-  let meta =
-    {
-      meta with
-      tools;
-      parent_session = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) parent;
-      depth;
-      keep_alive = meta.keep_alive || req.keep_alive;
-    }
-  in
+  let meta = { meta with tools; parent; keep_alive = meta.keep_alive || req.keep_alive } in
   (match req.mode with
   | Fresh { task; _ } ->
       Subrun.create ~dir meta.id task;
       Subrun.write_meta ~dir meta
   | Resume _ -> ());
   let resume = match req.mode with Fresh _ -> None | Resume _ -> Some mint in
-  create_run_window ?resume ~dir meta ~session:pane.session_id
-    ~env:(run_env ~dir meta.id parent depth)
-    command
+  let+ line = create_run_window ?resume ~dir meta ~session:pane.session_id command in
+  Option.iter
+    (fun (old : Tmux_pane.t) ->
+      Result.iter
+        (fun c -> ignore (Reap.release (Tmux.create ()) c))
+        (Reap.decide ~runs:(State.runs ~dir panes) panes old.window_id))
+    (Option.flat_map (Tmux_pane.find panes)
+       (Option.filter (fun _ -> Option.is_some resume) meta.pane));
+  line

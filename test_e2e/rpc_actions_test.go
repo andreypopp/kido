@@ -83,12 +83,12 @@ func TestRpcAskActivateReviveDeleteExplicitSocket(t *testing.T) {
 	pane := h.newWindow("alpha", "asker", "sh", "-c", "exec sleep 300")
 	in := startInbox(t, "ok\n")
 	h.programStatus(pane, "state=idle:app=pi", "Decider")
-	h.agentStatus("rpc-asker", pane, "pi", "--inbox", in.Path)
-	file := filepath.Join(h.dir, "saved.jsonl")
+	h.agentStatus("rpc-asker", pane, "--inbox", in.Path)
+	file := h.sessionFile("rpc-asker")
 	if err := os.WriteFile(file, []byte("saved session"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	id, code := askCommand(h, pane, "Ship?\nSecond line", "tool", "ask_user", "--session-file", file)
+	id, code := h.kidoAs(pane, "Ship?\nSecond line", nil, "tool", "ask_user")
 	if code != 0 {
 		t.Fatal(id)
 	}
@@ -108,7 +108,7 @@ func TestRpcAskActivateReviveDeleteExplicitSocket(t *testing.T) {
 	window := h.in("display-message", "-p", "-t", pane, "#{window_id}")
 	f.send(fmt.Sprintf(`{"id":1,"activate-ask":%q}`, id))
 	f.waitReply(fmt.Sprintf(`{"reply":{"id":1,"activated":{"session":%q,"window":%q,"pane":%q}}}`, session, window, pane))
-	h.agentStatus("rpc-asker", pane, "pi", "--remove")
+	h.agentStatus("rpc-asker", pane, "--remove")
 	f.waitLast(func(s feedSnapshot) bool {
 		return len(s.Asks) == 1 && s.Asks[0].Ended && s.Asks[0].Revivable && s.Asks[0].Pane == nil
 	}, "revivable ask")
@@ -150,7 +150,7 @@ func TestRpcAskActivateReviveDeleteExplicitSocket(t *testing.T) {
 		t.Fatal("revival reused old pane")
 	}
 	h.programStatus(newPane, "state=idle:app=pi", "Revived")
-	h.agentStatus("rpc-asker", newPane, "pi", "--inbox", in.Path)
+	h.agentStatus("rpc-asker", newPane, "--inbox", in.Path)
 	f.waitLast(func(s feedSnapshot) bool {
 		return len(s.Asks) == 1 && s.Asks[0].Pane != nil && *s.Asks[0].Pane == newPane && !s.Asks[0].Ended
 	}, "revived holder")

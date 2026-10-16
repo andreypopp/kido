@@ -22,13 +22,12 @@ function seam(): Seam {
 }
 
 // Read at call time, not factory time: pi may run this factory before session_start.
-function runKido(args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult> {
+function runKido(args: string[], opts: { input?: string; timeoutMs: number; user?: boolean }): Promise<RunKidoResult> {
   return seam().host?.runKido(args, opts) ?? Promise.resolve({ ok: false, error: "kido-status.ts is not loaded" });
 }
 
 const reply = (text: string, details: unknown = {}) => ({ content: [{ type: "text" as const, text }], details });
 
-const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
 const PARENT_SESSION = process.env.KIDO_AGENT_PARENT_SESSION || undefined;
 const RUN_ID = process.env.KIDO_AGENT_RUN_ID || undefined;
 
@@ -346,7 +345,7 @@ export default function (pi: ExtensionAPI) {
           if (!row || pi.getSettings().tuiMode === "regular") return;
           return handleClick(event, () => {
             if (row.first && event.x === 2) {
-              void runKido(["tool", "remove_ask", "--", row.ask.id], { timeoutMs: 3000 }).then((res) => {
+              void runKido(["tool", "remove_ask", "--", row.ask.id], { timeoutMs: 3000, user: true }).then((res) => {
                 if (ctx === session && !res.ok) ui.notify?.(res.error, "error");
               }).catch((err) => ui.notify?.(String(err), "error"));
             } else if (row.first && event.x >= 4 && event.x < 4 + row.ask.id.length) {
@@ -654,11 +653,7 @@ export default function (pi: ExtensionAPI) {
   let completion: CompletionCache | null = null;
 
   // Only a definite false from `kido get-agent` is evidence; anything else - an error, an
-  // unreachable kido - is inconclusive and never shuts the session down on a guess. Not
-  // `kido tool list_runs --json`: it scopes to the caller's tmux session and collapses to one
-  // record per pane, so a `pi --print` started in the parent's pane and inheriting
-  // TMUX_PANE would win that pane and make a healthy parent look gone.
-  // kill(pid, 0) success or EPERM is not proof of life - a pid can be recycled.
+  // unreachable kido - is inconclusive and never shuts the session down on a guess.
   const lookupBoolean = (res: RunKidoResult, id: string, field: "alive" | "childrenAlive" | "keepAlive" | "focused"): boolean | undefined => {
     if (!res.ok) return undefined;
     try {
@@ -671,12 +666,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const parentIsAlive = async (): Promise<boolean> => {
-    if (PARENT_PID === undefined || PARENT_SESSION === undefined) return true;
-    try {
-      process.kill(PARENT_PID, 0);
-    } catch (err) {
-      if (err instanceof Error && "code" in err && err.code === "ESRCH") return false;
-    }
+    if (PARENT_SESSION === undefined) return true;
     const res = await runKido(["get-agent", PARENT_SESSION], { timeoutMs: 2000 });
     return lookupBoolean(res, PARENT_SESSION, "alive") !== false;
   };
@@ -688,7 +678,7 @@ export default function (pi: ExtensionAPI) {
   let pollInFlight = false;
 
   const startParentLivenessPoll = (): void => {
-    if (PARENT_PID === undefined || !isSubagent()) return;
+    if (PARENT_SESSION === undefined || !isSubagent()) return;
     stopParentLivenessPoll();
     parentPollTimer = setInterval(() => {
       if (pollInFlight) return;
@@ -1034,7 +1024,7 @@ export default function (pi: ExtensionAPI) {
       // A generated name goes on a tmux command line, so it must avoid the characters tmuxConfUnsafe rejects; hex does.
       const name = params.name || (params.resume ? "" : `sub-${randomUUID().slice(0, 8)}`);
       const model = params.model ? ["--model", params.model] : [];
-      const args = ["tool", "spawn_subagent", "--parent-pid", String(process.pid), "--parent-session", own];
+      const args = ["tool", "spawn_subagent"];
       if (params.resume) args.push("--resume", params.resume);
       if (name) args.push("--name", name);
       if (params.task) args.push("--task-file", "-");
@@ -1442,11 +1432,9 @@ export default function (pi: ExtensionAPI) {
               invalidate() {},
             };
           },
-          async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+          async execute(_toolCallId, params) {
             if (isSubagent()) throw new Error("user asks are for top-level agents only");
-            const file = ctx.sessionManager.getSessionFile();
-            if (!file) throw new Error("this pi session has no session file");
-            const args = ["tool", "ask_user", "--session", seam().host?.sessionId() ?? "", "--session-file", file];
+            const args = ["tool", "ask_user"];
             if (params.replaces) args.push("--replaces", params.replaces);
             const res = await runKido(args, { input: params.text, timeoutMs: 3000 });
             if (!res.ok) throw new Error(res.error);
@@ -1463,7 +1451,7 @@ export default function (pi: ExtensionAPI) {
           parameters: Type.Object({ id: Type.String({ description: "The ask id to remove." }) }, { additionalProperties: false }),
           async execute(_toolCallId, params) {
             if (isSubagent()) throw new Error("user asks are for top-level agents only");
-            const res = await runKido(["tool", "remove_ask", "--session", seam().host?.sessionId() ?? "", "--", params.id], { timeoutMs: 3000 });
+            const res = await runKido(["tool", "remove_ask", "--", params.id], { timeoutMs: 3000 });
             if (!res.ok) throw new Error(res.error);
             await refreshAsks();
             return reply("removed " + params.id);

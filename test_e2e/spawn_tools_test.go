@@ -20,18 +20,19 @@ func TestSpawnToolsIncludeNotifyParent(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := startPathPrefix(t, "alpha", piBinDir)
-			parent := "--no-parent"
+			parent, caller := "--no-parent", ""
 			if !tc.noParent {
 				h.liveParent("alpha", "root-e2e")
-				parent = "--parent-pid 1 --parent-session root-e2e"
+				parent = ""
+				caller = "PI_SESSION_ID=root-e2e "
 			}
 			tools := ""
 			if tc.tools != "" {
 				tools = "--tools " + tc.tools
 			}
 			outFile := filepath.Join(h.dir, "spawn.out")
-			h.sendLiteral(fmt.Sprintf("%s tool spawn_subagent %s --name tools-e2e --task-file %s %s -- pi > %s 2>&1",
-				kidoBin, parent, h.writeTaskFile("tools-e2e"), tools, outFile))
+			h.sendLiteral(fmt.Sprintf("%s%s tool spawn_subagent %s --name tools-e2e --task-file %s %s -- pi > %s 2>&1",
+				caller, kidoBin, parent, h.writeTaskFile("tools-e2e"), tools, outFile))
 			h.sendKeys("Enter")
 			fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 			if len(fields) != 3 {

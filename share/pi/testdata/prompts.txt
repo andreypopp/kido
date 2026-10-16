@@ -312,7 +312,7 @@ delivered as: followUp
 ### a message with no agent sender
 
 ```
-<text> verbatim, unlabelled: a human running `kido tool message_agent` from a pane with no state record is the user speaking
+<text> verbatim, unlabelled: a human running `kido tool message_agent` with no `PI_SESSION_ID` is the user speaking
 ```
 delivered as: followUp
 

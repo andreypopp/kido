@@ -8,10 +8,11 @@ change: the tmux fork and the reports from Claude Code and pi. It also
 describes problems that an apparently correct change can cause. This
 document does not repeat those constraints or problems.
 
-tmux owns the topology. Agents report information that only they know to
-a directory of state files. pi's extension binds one unix socket per
-session to receive text as a real user message. Each operation on another
-agent is a `kido` subcommand that a pi tool calls:
+tmux owns the topology. Each tracked process has a run record in the
+state directory. A pi writes the facts that only it knows into its run.
+pi's extension binds one unix socket per session to receive text as a
+real user message. Each operation on another agent is a `kido`
+subcommand that a pi tool calls:
 
 - list;
 - message;
@@ -22,11 +23,12 @@ agent is a `kido` subcommand that a pi tool calls:
 
 The e2e suite cannot host a TypeScript extension. It uses fake agent
 binaries to test all these operations. The sidebar polls tmux and the
-state directory. This poll also collects subagent windows.
+run records of the panes it shows. This poll also collects subagent
+windows.
 
 ## Who is authoritative for what
 
-Four stores each hold information that no other store can hold:
+Three stores each hold information that no other store can hold:
 
 **tmux, for topology.** tmux supplies these facts:
 
@@ -38,36 +40,84 @@ Four stores each hold information that no other store can hold:
 kido never caches these facts. A pane can move between windows and
 sessions while its process runs. A window id has meaning only on the
 server that issued it. Each command that needs an agent's session reads
-a fresh pane list and finds the agent's pane there. A state record names
+a fresh pane list and finds the agent's pane there. A run record names
 only a pane, not its window or session.
 
-**State files, for what only an agent knows.** `State.dir` resolves the
-server's state directory once at the command boundary. It uses this order:
+**Pane options, for which run a pane holds.** `@kido_run`
+(`set-option -p`) names the run of the pane. `kido tool spawn_subagent`
+and `kido tool async_bash` set it on the pane that they create. The claim
+of a pi sets it on the pane that the pi reports from. The option is in
+the tmux server, where no race removes it. It names a current pane, not
+a pane id that a later server can give to another process.
+
+Killing the pane removes the option without a separate unmark step. The
+pane-scoped option lets a sweep and the sidebar distinguish the run's
+pane from a pane that the user later creates with a split. A
+window-scoped option would also apply to the user's pane.
+
+Only a run that kido started makes its window eligible for collection.
+The kind in the run's meta makes this decision, not the mark alone. A
+`pi` run is never collected. `kido prompt` does not skip a window whose
+mark names a `pi` run.
+
+**The runs directory, for everything else.** `State.dir` resolves the
+server's state directory once at the command boundary. It uses this
+order:
 
 - a convention-following `$TMUX` socket with `server.conf` beside it;
 - `$KIDO_STATE_DIR`;
 - `$XDG_STATE_HOME/kido`;
 - `~/.local/state/kido`.
 
-Each agent session has one JSON file, named by session id. A write uses a
-temporary file and then a rename. A record contains the agent's pane,
-pid, inbox socket, free-text activity, model, heartbeat timestamp and
-place in the spawn tree. Only OSC 7501 root records supply status.
-OSC 0/2 supplies the pane title.
+Every tracked process has one run in `<state>/runs/<run-id>/`. Its kind
+is `pi` (a pi that kido did not start), `agent` (a subagent), `bash` or
+`stream`. Each file has one writer, and each writer writes its whole
+file:
+
+- `meta.json`: written by the starter. `spawn_subagent` and `async_bash`
+  write it at spawn and rewrite it at resume. The first claim of a pi
+  writes it for a `pi` run with `Unix.link`, so a later claim leaves it.
+  It contains the id, name, kind, parent, pane and pid that kido started,
+  cwd, model, tools and keepAlive. The parent is an optional run id:
+  absent for a top-level run, or the id of the run that owns it.
+- `pi.json`: written only by the pi that holds the run. It contains the
+  pid and pane of the holder, the heartbeat timestamp, inbox socket,
+  free-text activity, model, session name and pi session file. kido
+  never deletes it.
+- `outcome`: the first write wins.
+- the task text, command, output, report, delivered marker and screen.
+
+`meta.pane` and `meta.pid` (what kido started) and `pi.pane` and
+`pi.pid` (where the holder runs) are separate facts. They differ before
+a child claims, after a manual `pi --session` in another pane, and for
+a `pi` run.
+
+A run's status comes from these files. A `pi` run is running while its
+holder pid is alive. A release (pid 0) completes it, and a dead pid means
+it died. A `pi` run never has an outcome file. An `agent`, `bash` or
+`stream` run uses its outcome file, or died if the pid that kido started
+is dead.
+
+Only OSC 7501 root records supply status. OSC 0/2 supplies the pane
+title.
 
 A trusted `@kido_ssh` pane option takes precedence as `Ssh`. It contains
 `Remote_agent` for a remote pi or Claude Code root, or `Remote_terminal`
 otherwise. Otherwise, `State.pane_kind` classifies a pane as:
 
-- `Pi_agent`: a pi root with `State`;
-- `Some_agent`: a `claude-code` root or pi without `State`;
+- `Pi_agent`: a pi root with a pane run;
+- `Some_agent`: a `claude-code` root or pi without a pane run;
 - `Terminal`: any other case.
 
+A pane run is the run that `@kido_run` names, if its `pi.json` names
+this pane and a live pid (`State.agents`). A mark that a moved session
+left in another pane is thus no agent. One pane has at most one pane
+run, so no rule picks between two records of one pane.
+
 Prompt scope accepts both agent cases. It uses the local pi inbox or
-otherwise pastes. `list_runs` includes live `State`
-identities, regardless of the current root app. `get-agent` context,
-coordination tools and run history also use live `State`, not
-`pane_kind`.
+otherwise pastes. `list_runs` includes pane runs, regardless of the
+current root app. `get-agent` and the coordination tools read runs by
+id, not `pane_kind`.
 
 Native Claude Code has no identity, inbox or heartbeat. It never stalls.
 Its blocked message is the caption. A visit acknowledges completion, and
@@ -75,49 +125,17 @@ clear restores a terminal row. The sidebar displays pane titles
 verbatim. Only a native-only agent with an empty title uses its root app
 name instead.
 
-`State` does not identify a pane as an agent. Only root apps `pi` and
-`claude-code` do this. A pi root with a live `State` record displays as a
-local pi agent. Claude Code and bare pi display as native agents. Every
-other app displays as a terminal. A local pi's identity and inbox remain
-reachable by session when a nested program replaces or clears its root.
+A run does not identify a pane as an agent. Only root apps `pi` and
+`claude-code` do this. A pi root with a pane run displays as a local pi
+agent. Claude Code and bare pi display as native agents. Every other app
+displays as a terminal. A local pi's identity and inbox remain reachable
+by id when a nested program replaces or clears its root.
 
-There is no locking beyond the session claim. `State.load_live` removes
-dead-pid records. If two records name one pane, the latest timestamp wins.
+There is no locking beyond the claim. Runs are never deleted. A released
+or dead `pi.json` is history: its name and session file stay for asks,
+`kido runs` and resume.
 
-This deletion affects the rest of the design. With a sidebar running,
-`State.load_live` runs every 100ms. It removes a dead agent's record within
-one tick of the agent's death. Code that needs information about a dead
-agent cannot read its state record, because the record no longer exists.
-
-**Pane options, for facts that must survive kido's own cleanup.**
-`kido spawn_subagent` sets `@kido_run` (`set-option -p`) to the run id on
-the pane that runs the command. The option exists in the tmux server,
-where no race removes it. It names a current pane, not a pane id that a
-later server can give to another process. Only a pane that kido creates
-can have this option. This option alone makes a window eligible for
-collection.
-
-Killing the run's pane removes the option without a separate unmark step.
-The pane-scoped option lets a sweep and the sidebar distinguish the run's
-pane from a pane that the user later creates with a split. A window-scoped
-option would also apply to the user's pane. It would not show that the
-user's pane is not the run's pane.
-
-**The runs directory, for facts that must outlive the process.**
-`<state>/runs/<run-id>/` contains:
-
-- the task text;
-- a meta file, written at spawn and rewritten at resume, with pane, pid,
-  cwd, model, tools, parent and depth;
-- an outcome, after the run ends.
-
-A run record is not a state record. A state record disappears when its
-pid dies. A run record must survive the process. `State.read_all` reads
-only `*.json` entries and skips directories. Thus, it ignores `runs/`,
-the inbox socket directory and the wake marker. No code may depend on a
-change to this behavior.
-
-Two more files exist beside the records. The `inbox/` directory contains
+Two more files exist beside the runs. The `inbox/` directory contains
 one socket per pi session. Its mode is `0700`, like the state directory.
 Anyone who can write there can impersonate an agent's socket. The `wake`
 file is the staleness rebase marker described below.
@@ -125,92 +143,100 @@ file is the staleness rebase marker described below.
 ## Identity
 
 **An agent is its session, not its process.** The session id is the
-identity. It names the state file and the parent that a child records.
-`kido get-agent` answers about this id. The tree, the reaper and the ask
-cycle rule match this id.
+identity and the run id. It names the run and the parent that a child's
+meta records. `kido get-agent` answers about this id. The tree, the
+reaper and the ask cycle rule match this id.
 
 A pid is not an identity, because the OS reuses pids. kido's liveness
-test (`kill(pid, 0)`) interprets `EPERM` as alive. Thus, another user's
-process with a reused pid looks like a live parent. kido still records
-and passes the parent pid, but uses it only for a quick first liveness
-check. `ESRCH` definitely means "gone". For any other result, kido checks
-whether a live process holds the parent session.
-
-`State.session` stores this edge as one `parent : State.parent option`:
-`{ session; pid }`, or `None` for a root agent. It does not use two
-parallel fields that a caller could set independently.
+test (`kill(pid, 0)`) interprets `EPERM` as alive. kido never deletes
+`pi.json`, so a reused pid of a crashed holder can look live. kido
+accepts this.
 
 This identity supports a restart. If a user quits pi and resumes the
-same session (`pi --resume`), a new process uses the same session id.
-When that process reports, each child with that parent id belongs to the
-session again. A per-process identity would orphan children on restart.
+same session (`pi --session`), a new process uses the same session id.
+It claims the same run: `meta.json` stays, and `pi.json` and the mark
+move. Each child with that parent id belongs to the session again. A
+per-process identity would orphan children on restart.
 
 The extensions read the session id; they never generate it. Both halves
 use `ctx.sessionManager`, the one source that pi supplies. The status
-half holds the id, and the agent half reads it through the seam. Both
-halves independently read parent pid, parent session and depth from the
-environment. Two readers of a constant cannot disagree.
+half holds the id, and the agent half reads it through the seam.
 
-**One holder per session id.** The first live process holds the session
-id. Without this rule, a second process could overwrite the first
-process's pane, pid and inbox, then delete its record on exit. This can
-happen with two pi processes from one session file, or two calls to
-`pi --session <file>`. `State.record` makes the claim in the write path,
-without a lock, through three rules:
+**The caller is the session that pi names.** pi 1.2.0 sets
+`PI_SESSION_ID` and `PI_SESSION_FILE` for every bash-tool command. It
+deletes inherited values. `kido-status.ts` sets both for each `kido`
+process that it starts, from its own session. It does not change
+`process.env`, because a `/reload` would then read the changed value.
+kido reads `PI_SESSION_ID` at the command boundary. The caller is that
+run if its `pi.json` exists. kido never finds the caller from its pane.
+Thus, `kido tool ask_user` and the other tools need no session flags.
 
-- If no record exists, the writer creates it with `Unix.link` from its
-  own temporary file. This operation is atomic and fails if the name is
-  taken. If two processes start together, exactly one claims the id.
+tmux `new-window` does not pass the caller's environment. The launcher
+and the e2e harness remove both variables. A human's shell and pi's `!`
+commands have no caller. A second pi on one session file loses the
+claim, but its bash commands act as the holder. This is a user error,
+and kido has no defence against it.
+
+**Only a pi with a UI claims a run.** A headless `pi --print` has its own
+session id, so it cannot act as the agent of the pane that it runs in.
+It claims nothing. Two pis with a UI cannot share a pane, because a pane
+has one foreground.
+
+**One holder per run.** The first live process holds the run. Without
+this rule, a second process could overwrite the first process's pane,
+pid and inbox. This can happen with two pi processes from one session
+file, or two calls to `pi --session <file>`. `Subrun.write_pi` makes the
+claim in the write path, without a lock, through three rules:
+
+- If no `pi.json` exists, the writer creates it with `Unix.link` from
+  its own temporary file. This operation is atomic and fails if the name
+  is taken. If two processes start together, exactly one claims the run.
   The other reads its record and stops claiming it.
 - If the record names the writer's own pid, it belongs to the writer.
   Every report after the first continues unchanged.
 - If the record names another live pid, kido refuses the write. If that
   pid is dead, kido overwrites the record. This lets a restart reclaim
-  its session id. Two processes can both write to replace a dead holder.
-  A takeover therefore rereads the written record and informs the
-  losing process. No other write needs a second read.
+  its run. Two processes can both write to replace a dead holder. A
+  takeover therefore rereads the written record and informs the losing
+  process. No other write needs a second read.
 
-`State.remove` uses the same rule. Thus, a second process cannot delete
-the running session's record on exit. A refusal is `Error holder`, and
-`kido agent-status` exits **6**. This separate code lets pi's extension
-respond to the refusal. The second pi stops reporting for the rest of
-the session. It tells its user once, naming the holder's pane and pid.
+`Subrun.release` uses the same rule: it writes pid 0 for the holder.
+Thus, a second process cannot release the running session's run on
+exit, and the name and session file stay. A refusal is `Error holder`,
+and `kido agent-status` exits **6**. This separate code lets pi's
+extension respond to the refusal. The second pi stops reporting for the
+rest of the session. It tells its user once, naming the holder's pane
+and pid.
 
 The second pi does not bind an inbox. Its pid-based socket path would
-not collide with another path. However, only a state record publishes
-the address, so nothing could reach that inbox.
+not collide with another path. However, only `pi.json` publishes the
+address, so nothing could reach that inbox.
 
 `session_start` makes the claim in the session's first status report.
 The extension awaits this report because it needs the answer. It does
 not await later reports, because the first report settles the claim.
 Thus, the extension cannot observe a later refusal from a lost takeover
-or a reused pid on a stale record. Such a refusal removes that session's
-row, not another session's row.
+or a reused pid on a stale record.
 
 **The record must survive a reload.** The extension's `session_shutdown`
-handler removes this session's state record for every reason except
-literally `"reload"`. Unconditional removal with
-`send("idle", { remove: true })` would leave a gap before
-`session_start` reports a fresh record. During that gap, a liveness poll
-can find "no record" for an unchanged session id. This independently
-orphans a live parent's children.
+handler releases the run for every reason except literally `"reload"`.
+A release with a later claim would leave a gap. During that gap, a
+liveness poll can find no live holder for an unchanged session id. This
+independently orphans a live parent's children.
 
 This condition differs from `endOwnRun`, which controls the run outcome
 and completion linger described below. Those operations answer "did the
-run finish". They treat `"new"`, `"resume"` and `"fork"` as not run-ending,
-because the run continues. Record removal instead asks whether the
-*filename* (the session id) still refers to this session. For those
-three reasons, the handler removes the old record.
-
-Without removal, the old file has a live pid. `State.load_live` deletes
-only records with dead pids, so it leaves that file indefinitely. The
-old record and the fresh record under the new id then claim the same
-pane.
+run finish". They treat `"new"`, `"resume"` and `"fork"` as not
+run-ending, because the run continues. The release instead asks whether
+the session id still refers to this process. For those three reasons,
+the handler releases the old run, and the next `session_start` claims
+the new session id as its own `pi` run, with no parent. Only a starter
+writes a parent.
 
 **Children belong to the session that spawned them.** `/new`, `/resume`
 and `/fork` move a pi process to a new session id. A child still names
-the old id. The old session has no live holder, so the ordinary rule
-makes its children orphans. No special case is necessary or wanted.
+the old id. The old run has no live holder, so the ordinary rule makes
+its children orphans. No special case is necessary or wanted.
 
 The session that spawned them and receives their reports has ended.
 The process at that terminal now represents another session with its own
@@ -218,49 +244,32 @@ work. Transferring the parent edge would send a child's report to a
 session that nobody reads.
 
 **What the child asks, and of what.** `parentIsAlive()` calls the separate
-command `kido get-agent <session>`. It reads `State.get_live`: the named
-record, without a per-pane collapse. It prints
-`{"id": SESSION, "alive": bool}`. An unknown session returns false. A
-dead record returns false without removal.
+command `kido get-agent <session>`. It reads the run's `pi.json` by id.
+It prints `{"id": SESSION, "alive": bool}`. An unknown session or a dead
+holder returns false.
 
 One read decides the result, without debounce. The optional `--children`
 flag scans run records and adds `"childrenAlive": bool` and
-`"keepAlive": bool`. `keepAlive` comes from the session's run metadata,
-or is false if no run exists. If the metadata exists but cannot be read
-or decoded, the output omits `keepAlive`. For this inconclusive result,
-the idle timer rearms instead of shutting down the child.
-
-A display cannot answer this question. `kido tool list_runs` uses a
-per-pane view (`State.by_pane`). This view suits a display, but not a
-liveness check. A `pi --print` inside the parent's pane takes precedence
-for that pane. The answer then omits the parent's record. If a command
-calls pi in the child's pane, the answer also omits the child's row.
-
-Either case reports a healthy parent as gone. Debounce would wait for a
-second identical wrong answer. It would treat an incorrect answer as a
-slow answer. A pane collision decides who owns the pane. `get-agent`
-never asks that question, so a collision cannot affect its answer.
+`"keepAlive": bool`. `keepAlive` comes from the session's run meta, or is
+false if no run exists. If the meta exists but cannot be read or
+decoded, the output omits `keepAlive`. For this inconclusive result, the
+idle timer rearms instead of shutting down the child.
 
 `get-agent` is a separate subcommand, not a `kido tool list_runs` flag.
-It shares only a command prefix, not pane listing, session scope or
-per-pane collapse. Giving a display a second meaning can make a
-liveness poll read the pane owner instead. Without a pane list, the
-timer also avoids a tmux round trip every five seconds per subagent,
-for the subagent's lifetime.
+It shares only a command prefix, not pane listing or session scope.
+Without a pane list, the timer also avoids a tmux round trip every five
+seconds per subagent, for the subagent's lifetime.
 
 Two consequences are intentional. First, `false` ends the session on
-that poll. A dead parent, or a reused pid with no session holder,
-therefore causes a prompt response. `keepAlive` protects against the
-idle-exit timer, not against an orphan surviving its parent. However, a
-child can poll between a quit and `pi --resume`. It then reads a
-definite "false" and exits, even if the parent restarts.
+that poll. A dead parent therefore causes a prompt response. `keepAlive`
+protects against the idle-exit timer, not against an orphan surviving
+its parent. However, a child can poll between a quit and
+`pi --session`. It then reads a definite "false" and exits, even if the
+parent restarts.
 
 Second, the answer has no scope restriction to the caller's tmux
-session. The record file does not identify the pane's tmux session.
-This matches the server-wide rule 2 in `lib/reap.ml`, which reads the
-same fact. Session-scoped polling would disagree with the sweep. A
-child moved to another tmux session would find no parent in that list
-and exit, while the sweep still finds the parent's record.
+session. This matches the orphan rule in `lib/reap.ml`, which reads the
+same fact. Session-scoped polling would disagree with the sweep.
 
 Messaging remains session-scoped (`list_runs` is the display, and the
 limit below still applies). Liveness needs no such scope. The only
@@ -276,41 +285,35 @@ independently reliable. They only add load to an already slow machine.
 ## Every report is whole
 
 Every report is complete. Nothing continues from the previous report.
-On every call, `kido agent-status` builds a fresh `State.session` from
-its arguments. An omitted flag supplies its zero value, not the
-previous report's value. To keep a field, the caller sends it on every
-call: inbox, activity, model, parent pid, parent session or depth.
-
-The agent knows these values from its own state and environment.
-Reporting fresh values is more reliable than following the parent
-chain, which fails when an intermediate record disappears. `--inbox ""`
-means the agent's socket is gone. Thus, `share/pi/kido-status.ts` sends
-`--model` and `--inbox` on every report, with empty values when necessary.
+On every call, `kido agent-status` builds a fresh `pi.json` from its
+arguments and environment. An omitted flag supplies its zero value, not
+the previous report's value. To keep a field, the caller sends it on
+every call: inbox, activity, model and name. `--inbox ""` means the
+agent's socket is gone. Thus, `share/pi/kido-status.ts` sends `--model`
+and `--inbox` on every report, with empty values when necessary. Every
+report also sets `@kido_run` on its pane, so a lost mark heals.
 
 `kido tool set_status -- <activity>` updates only the activity field.
-This command implements the `set_status` tool. It finds the calling
-session by its pane and writes no other field. It does not rename
-`agent-status`, which reports identity and heartbeat. Rewriting the
-previous record with only activity replaced preserves its identity and
-timestamp.
+This command implements the `set_status` tool. It finds the calling run
+by `PI_SESSION_ID` and writes no other field. It is a second writer of
+`pi.json`: the next heartbeat replaces its value. Rewriting the previous
+record with only activity replaced preserves its identity and timestamp.
 
-Activity is the only field a model writes directly into a state record.
-Both commands sanitize it once, at input. They replace control
-characters with spaces and truncate at 256 bytes on a rune boundary.
-The sidebar allows one terminal line per row, and
-`kido tool list_runs` prints a tab-separated table. Rejecting newlines
-where arguments become a record requires less work than protecting
-both displays separately.
+Activity is the only field a model writes directly into a run. Both
+commands sanitize it once, at input. They replace control characters
+with spaces and truncate at 256 bytes on a rune boundary. The sidebar
+allows one terminal line per row, and `kido tool list_runs` prints a
+tab-separated table. Rejecting newlines where arguments become a record
+requires less work than protecting both displays separately.
 
 A model can ignore a schema. Any same-uid process can run either
 command. Thus, only kido's cap is authoritative. The extension sends
 text unchanged.
 
-The extension coalesces reports by activity, model, inbox path and
-removal. A newly bound inbox changes the key. Its first report cannot
-match a duplicate from before the bind. kido does not combine heartbeat
-reports.
-Status and title are not identity-report fields.
+The extension coalesces reports by activity, model, inbox path,
+release and name. A newly bound inbox changes the key. Its first report
+cannot match a duplicate from before the bind. kido does not combine
+heartbeat reports. Status and title are not report fields.
 
 ## The inbox
 
@@ -387,8 +390,8 @@ with the full text. Unlike a notice, a message never collapses, because
 its purpose is to be read.
 
 A message without an agent sender is the user's own text, without a
-header. This means a human runs `kido message_agent` from a pane with
-no state record. `from` contains a pane but no session, and no listed
+header. This means a human runs `kido message_agent` with no
+`PI_SESSION_ID`. `from` contains a pane but no session, and no listed
 agent owns that pane. The steer and control paths use these two facts to
 identify a human.
 
@@ -430,7 +433,7 @@ This rule determines the incoming work and report kinds:
 - **`notice` steers.** The parent needs this information to assign the
   next work. Thus, kido interleaves it instead of queueing it.
 - **`stream` is held, then steers.** For each send, the wrapper resolves
-  the parent's live record and inbox (`Async_stream.send`). It does not
+  the parent's live run and inbox (`Async_stream.send`). It does not
   retain a stale address after a socket rebind. A running command's
   output batch is the only kind not delivered on arrival. kido buffers
   it until model delivery requires no turn. `design-subagents.md`,
@@ -505,8 +508,9 @@ plain prompt would remove the information that makes it an ask.
 `kido prompt` always uses v0. It is independent of agent type and must
 continue to support Claude Code panes. It targets only top-level agents.
 A pane is never a candidate if its window contains a run pane
-(`@kido_run`). This uses the same reader as the sweep and
-`switch-window`, and excludes a child between spawn and its first report.
+(`@kido_run`) of a run that kido started, not a `pi` run. This uses the
+same reader as the sweep and `switch-window`, and excludes a child
+between spawn and its first report.
 
 If the caller's window has no candidate, the search widens to the
 session. Without this exclusion, one agent and one live child in the
@@ -519,13 +523,13 @@ Thus, a version gate would serve no purpose. Stop escalation kills the
 pane whether or not the target understands the request.
 
 The sender field is advisory. The state and inbox directory modes
-enforce uid-scoped trust. State records are `0644` files in a `0700`
-directory. Any same-uid process can already write a record claiming any
-agent identity. A peer-credential check would add no protection.
+enforce uid-scoped trust. Run records are files in a `0700` directory.
+Any same-uid process can already write a record claiming any agent
+identity. A peer-credential check would add no protection.
 
 For the same reason, sending commands have no `--from`. The sender is
-the identity in the calling process's record, found by its pane. A
-caller without a record sends only its pane.
+the caller, the run that `PI_SESSION_ID` names. A caller without a run
+sends only its pane.
 
 ## Delivery, and when a paste is allowed
 
@@ -547,8 +551,8 @@ For a subagent run, the error gives these instructions:
 2. Resume it with `spawn_subagent(resume: RUN)`.
 3. Resend the message.
 
-Shutdown closes the inbox before removing the state record or exiting
-the process. A live pid does not prove that the inbox accepts messages.
+Shutdown closes the inbox before the release or the exit of the
+process. A live pid does not prove that the inbox accepts messages.
 
 A refusal (`Msg.Refused`) is not a delivery failure. The target reads
 the question and intentionally declines it. A paste would bypass this
@@ -557,7 +561,7 @@ not run as a command line in the target's pane. A dead parent has nobody
 to receive a report.
 
 Two more refusals occur before sending. kido refuses a message to the
-sender's own pane. Although `list_runs` excludes the caller, an explicit
+caller itself. Although `list_runs` excludes the caller, an explicit
 self-message would return its own message as a fresh user turn.
 
 kido also refuses invalid UTF-8, because the delivery paths handle it
@@ -578,8 +582,7 @@ Own runs include all running runs and the newest 20 ended runs by start
 time, newest first. This display scope does not restrict addressing.
 Across both kinds, `stop_run` resolves run ids before running run names.
 Id prefixes must be unique and contain at least eight characters. It
-then applies descendant scope through agent records or the parent
-session in bash meta.
+then applies descendant scope through the parent chain of run metas.
 
 kido reports a target in another session as such, not as "not found".
 It reports an ambiguity there as an ambiguity, not a single match with
@@ -626,18 +629,24 @@ refresh starts. kido fetches nothing until the first `@`.
 Top-level pi agents use `ask_user` to record questions that need the
 user's decision. They use `remove_ask` to remove answered questions or
 questions that no longer apply. Kido owns `<state>/asks/<id>.json`.
-Each ask contains its id, session, pi session file path, cwd, display
-name, text and creation time. An atomic link claims a fresh id.
+Each ask contains its id, its session (the run of the asking pi), text
+and creation time. An atomic link claims a fresh id. The run supplies
+everything else: the name, the cwd and the pi session file.
 
 `replaces` rewords an existing ask without changing its id. It uses an
-atomic temporary-file rename and refreshes the session, cwd, name and
-time. Asks persist after their session ends. Ended means no live state
-record holds the session. kido derives this from the full registry and
-never stores it. `get-asks` returns asks, optionally filtered by session.
+atomic temporary-file rename and refreshes the session and time. Only a
+caller whose run has no parent can record or remove an ask.
+
+Asks persist after their session ends. Ended means no live pid holds
+the run. kido derives this from `pi.json` and never stores it. An ask's
+name is the session name that its pi last reported, else the pane title
+while the pi is live. `get-asks` returns asks, optionally filtered by session.
 
 Pi shows the session's open asks in full above the editor. It refreshes
 them on startup, reload and tool actions. An `asks` inbox envelope
-invalidates a live session's widget after external changes. External
+invalidates a live session's widget after external changes. A change is
+external when its caller is not the ask's session. The widget removes an
+ask with no caller, because the user acts, not the agent. External
 removals also queue a kido notice with the removed ask's id and first
 text line. This notice waits for the model's next turn without waking
 or interrupting it.
@@ -647,11 +656,11 @@ indicator takes precedence over Done and ordinary state, and remains
 after a visit. `a` toggles the all-asks list, including dimmed ended
 sessions. `d` removes the selected ask. Escape returns to windows.
 
-Enter rereads the full live registry. For a live session, it selects the
-session's pane. For an ended session, it opens a window in the ask's cwd
-with `pi --session <session-file>`. This uses the spawn's pi launch path,
-without a parent edge or run record. A missing cwd or session file is an
-error. The resumed session's widget reads asks from the same store.
+Enter rereads the run. For a live session, it selects the session's
+pane. For an ended session, it opens a window in the run's cwd with
+`pi --session <session-file>` from its `pi.json`. This uses the spawn's
+pi launch path, without a parent edge. The revived pi claims the same
+run. A missing cwd or session file is an error. The resumed session's widget reads asks from the same store.
 
 ## Ask and reply
 
@@ -680,10 +689,9 @@ reports `canReply` beside `canMessage`. A child's result arrives as a
 notice, as the spawn and ask descriptions state.
 
 The sender check is the check that `send` applies to recipients of
-non-message envelopes. A reply is such an envelope. The caller's pane
-must have a live state record, so `kido tool message_agent -- <asker>`
-can resolve it. That record must name an inbox, so the `reply` has an
-address. A reply never uses a paste fallback.
+non-message envelopes. A reply is such an envelope. The caller must
+have a run, so `kido tool message_agent -- <asker>` can resolve it.
+That run must name an inbox, so the `reply` has an address. A reply never uses a paste fallback.
 
 An unavailable inbox causes delivery failure. A weaker check is not
 sufficient: an agent without an inbox accepts only a paste, and a paste
@@ -815,59 +823,52 @@ instead of silently changing them.
 
 ### A parentless spawn, and a parent that must exist
 
-A fresh spawn requires one of these choices:
+A fresh spawn has one of these parents:
 
-- a live parent, with `--parent-pid` and `--parent-session`;
+- the caller, the live run that `PI_SESSION_ID` names;
 - no parent, explicitly specified with `--no-parent`.
 
-A parent with no holder is an error, which kido refuses as described
-below. `--no-parent` lets a human start a standalone agent from a shell.
-No parent owns it, no mechanism collects it, and it reports to nobody.
-Existing mechanisms already support a child without a parent:
+A fresh spawn with no caller and no `--no-parent` is an error. A caller
+whose holder is dead is also an error. kido refuses both before it
+creates the window: the child would be closed as an orphan within
+moments. `--no-parent` lets a human start a standalone agent from a
+shell. It is an ordinary top-level run, with depth 0. Its children start
+at depth 1. No depth or restriction carries over from the caller. It
+reports to nobody. Existing mechanisms support a run without a parent:
 
-- A record with `parent` equal to `None` is exempt from sweep rule 2.
+- A run without a parent is exempt from the orphan rule of the sweep.
+  The sweep still collects its dead marked pane.
 - Without `KIDO_AGENT_PARENT_SESSION`, the child fails the subagent
   test, arms no idle timer and cannot call `notify_parent`.
-- For a caller without a record, `--resume` defaults to no parent.
+- Without a caller, `--resume` defaults to no parent.
 
-`--no-parent` also works with `--resume`. It removes the caller's edge
-instead of using that edge by default.
+`--no-parent` also works with `--resume`. It makes the resumed run
+top-level, with depth 0, regardless of the caller.
 
-**Why a flag and not an empty `--parent-session`.** These errors differ.
-A script with an empty parent session intended to name a parent but lost
-that value. Silently creating a window that cannot be collected would
-misinterpret that intent. An explicit flag cannot result from that
-accident. The tool never passes this flag, because a live pi session
-names itself as parent. Only humans use this entry point, and only they
-can make this error.
-
-**And the session named must be alive.** `--no-parent` explicitly means
-no parent. Thus, `--parent-session` with no holder is an error, not
-another way to specify no parent. kido refuses it before creating the
-window. The check uses the same registry reading as `--resume`,
-described below. It reads the named record and tests its pid, not a
-pane-keyed view. As with the sweep, a pane collision can remove exactly
-the parent's record from that view.
+**Why a flag and not a missing caller.** These errors differ. A command
+that a model runs from its bash tool always has a caller. A command
+without one comes from a human or from a lost environment. Silently
+creating a window that cannot be collected would misinterpret that
+intent. An explicit flag cannot result from that accident. The tool
+never passes this flag, because a live pi session is the caller.
 
 ### The depth ceiling is derived
 
 Nesting has a limit of two levels below the root.
-`kido tool spawn_subagent` accepts no `--depth` flag. kido finds the
-caller's last-reported record by `$TMUX_PANE`. It sets the child's depth
-to the caller's depth plus one. A caller without a record has depth 0:
-a human at the CLI or an agent that has not yet reported.
-
-This uses the same trust decision as `State.load_live` for other
-same-uid records. A missing record gives the caller the root's limit.
-The extension can refuse early from its `KIDO_AGENT_DEPTH` environment
-value. This avoids a subprocess in the common case. However, kido's own
-limit is authoritative, because a caller could understate its depth.
+`kido tool spawn_subagent` accepts no `--depth` flag, and no run stores
+a depth. A run's depth is the number of runs above it in the parent
+chain of run metas (`Subrun.depth`). kido follows only owner edges.
+A child with a parent has that parent's depth plus one. A run with no
+parent has depth 0, whether started with `--no-parent` or resumed without
+a caller. Its children start at depth 1. Nothing from the caller's depth
+chain restricts a `--no-parent` run. A cycle ends the walk.
 
 ### The run id is the child's session id
 
 `kido tool spawn_subagent` creates the run id. If the command is
 literally `pi`, it inserts `--session-id <run-id>` after the command.
-kido prints `pi --session <run-id>` for restart and `pi --fork <run-id>`
+kido prints `kido tool spawn_subagent --resume <run-id>` for restart, or
+`pi --session <session file>` for a `pi` run, and `pi --fork <run-id>`
 for a fork, each preceded by `cd <cwd> &&`. Only one id exists, so no
 mapping between ids is necessary. kido always sets `KIDO_AGENT_RUN_ID`.
 A non-pi child, including every e2e fake, has no session from which to
@@ -880,9 +881,8 @@ and a tool calling `pi --print`. Thus, any descendant can claim the
 parent edge. Trusting that claim would let an extension act on another
 process's run.
 
-A nested pi would resolve itself by pane and find the real agent's
-record. On exit, it would schedule `kido close-run` for the real agent's
-window. Instead, the extension checks its own identity. It is a
+A nested pi would trust the inherited `KIDO_AGENT_RUN_ID`. On exit, it
+would schedule `kido close-run` for the real agent's window. Instead, the extension checks its own identity. It is a
 subagent only when `KIDO_AGENT_PARENT_SESSION` is set *and* its pi
 session id equals `KIDO_AGENT_RUN_ID`. The real child meets both
 conditions through `--session-id` and `--session`. A nested pi creates
@@ -914,10 +914,9 @@ A spawned window enables `remain-on-exit` on the run's pane through
 exit. This gives the user time to read during linger. It also gives the
 sweep a pane to find if linger never runs.
 
-A second tmux call sets the option after `new-window`. A fast command
-can exit before that call. Thus, an immediately failing child loses its
-window and last screen. The run record survives, and its pid still
-makes it read as `died`. Every fix costs more than this gap.
+The `new-window` command list also sets `@kido_run` and
+`remain-on-exit` on the new pane. Thus, no snapshot sees an unmarked run
+window, and an immediately failing child keeps its pane and last screen.
 
 **The linger helper.** Before exiting, a subagent starts a detached
 `sh -c 'sleep N && exec kido close-run @id'`. This helper survives the
@@ -950,45 +949,38 @@ to print. `kido close-run` parses flags and prints around that one call.
 
 **The sweep.** `Reap.sweep` runs at every sidebar poll tick. It collects
 subagent windows in a live session. `kido reap` calls the same function
-manually, for a test or operator. The sweep uses the sidebar snapshot
-from `Sidebar.take`, through `Reap.collect`. It does not run from
-`State.load_live`.
+manually, for a test or operator. The sweep uses the pane list and the
+marked panes' runs (`State.runs`) of the sidebar snapshot from
+`Sidebar.take`, through `Reap.collect`. The tick reads each marked run
+once and shares it with the rows; only a parent that no pane marks is
+read again.
 
-`kido prompt` and the popup picker also call `load_live`. Reading the
-state directory must not close a window as a side effect. Several
-sidebars, one per client, can sweep simultaneously. A sidebar can ask
-tmux to close a window another sidebar already closed. This produces an
-error that nobody reads.
+Several sidebars, one per client, can sweep simultaneously. A sidebar
+can ask tmux to close a window another sidebar already closed. This
+produces an error that nobody reads.
 
-A sweep decides from tmux, not kido's state. A dead subagent's record
-cannot identify the window to close. With a sidebar running, the record
-disappears within one tick of death, before a sweep sees it. A pane id
-is not an identity. Each new tmux server restarts pane ids at `%0`,
-while global state files survive the server.
+A sweep starts from tmux, not from kido's runs. A pane id is not an
+identity. Each new tmux server restarts pane ids at `%0`, while run
+records survive the server. A run's meta can therefore name another
+process's current pane. The sweep acts only on a pane whose `@kido_run`
+names the run, and whose run meta names that same pane. It skips a `pi`
+run. Thus, a sweep cannot close a plain shell window, a top-level pi's
+window, or a window where a user resumed a subagent's session by hand.
 
-A stale record can therefore name another process's current pane.
-Without a mark check, a sweep could close a plain shell window that is
-not a subagent.
+Two rules apply:
 
-Two rules apply only to windows that contain a run pane:
-
-1. The run's pane has been dead for the linger grace period. This rule
-   reads no state record.
-2. A live subagent's parent is gone. The sweep kills the run's pane to
-   cancel the subagent.
+1. The run's pane has been dead for the linger grace period.
+2. The run's parent is gone: no live pid holds the parent's run. The
+   sweep kills the run's pane to cancel the run.
 
 Rule 2 forces a stop instead of requesting graceful shutdown like the
 child's poll. It is the only available action outside pi. This rule
-needs records, because tmux does not know parentage. The run-pane check
-prevents a stale, reused pane id from closing an unrelated window.
-A record without a parent session represents a root agent that the
-sweep must not cancel.
-
-Rule 2 also covers `async_bash`. Its parent edge is in run meta, not an
-agent record. `Bash` and `Stream` runs without a live parent-session
-holder receive a `failed` outcome and the detail "its parent ended".
-Neither rule acts on a client's current window or closes a session's
-last window. Waiting loses nothing, because the sweep runs next tick.
+needs run meta, because tmux does not know parentage. A run without a
+parent session is a root that the sweep must not cancel. An `agent` run
+receives `died`. A `bash` or `stream` run receives a `failed` outcome
+and the detail "its parent ended". Neither rule acts on a client's
+current window or closes a session's last window. Waiting loses nothing,
+because the sweep runs next tick.
 
 **A split window is the user's window.** The collection unit is the
 run's pane, not its original window. Waiting until every pane dies would
@@ -1018,26 +1010,12 @@ It also has no `remain-on-exit`, so its normal exit closes the pane and,
 when appropriate, the window.
 
 Rule 2 acts on one read. This is safe because "gone" means no live
-process holds the parent session. It concerns the full registry, not a
-pane. The sweep receives every live record from `State.load_live`, or
-`State.read_all` for `kido reap`.
+process holds the parent's run. It reads the parent's `pi.json` by id,
+not a pane. Another session that claims the parent's pane changes only
+the pane's mark. It cannot make a live parent look gone.
 
-`State.by_pane` cannot answer this question. It keeps one record per
-pane. A `pi --print` inside an agent's pane inherits the pane and takes
-precedence while reporting. The view then omits the real parent's
-record. No check inside the sweep can recover a missing record.
-Debounce would treat an incorrect answer as a slow answer.
-
-With the full registry, a collision does not matter. It decides pane
-ownership, which the reaper never asks about. The sidebar still uses
-the per-pane view for rows, because a pane has one label. It derives
-both views from one directory read: `State.by_pane` over the
-`load_live` list. Thus, the sweep adds no I/O to a 100ms tick.
-
-No other guard applies: no grace period, debounce or check of the
-child's recorded parent pid. A reused pid could make a dead parent look
-alive. The rule consults no pid. This also lets a one-shot `kido reap`
-apply the rule in its single sweep.
+No other guard applies: no grace period or debounce. This also lets a
+one-shot `kido reap` apply the rule in its single sweep.
 
 Without grace, a child already shutting down can lose its window during
 exit. It can receive `died` before recording its own outcome.
@@ -1052,7 +1030,7 @@ saves its visible screen and bounded scrollback with
 caller closes the window.
 
 `Subrun.save_screen` writes `<run-dir>/screen` with a temporary file and
-rename, like `State.record`. The last writer wins. Unlike
+rename. The last writer wins. Unlike
 `record_outcome`, this does not use first-write-wins. Outcomes need
 precedence: an earlier `stopped` must not lose to `completed`. Two
 captures of one window need no such precedence.
@@ -1086,9 +1064,7 @@ would close the window before the helper.
 
 **Parent death.** The child's pi belongs to the tmux server, not the
 parent's pi process. Thus, no OS parent-death signal reaches it. It
-polls every five seconds. First, `kill(pid, 0)` gives a definite answer
-for `ESRCH` without a subprocess. Otherwise, it calls
-`kido get-agent <parent-session>`, which a reused pid cannot deceive.
+polls every five seconds. It calls `kido get-agent <parent-session>`.
 "What the child asks, and of what" above explains why it uses this
 command, not a listing.
 
@@ -1136,8 +1112,8 @@ effect at the next check.
 **A session with a live child of its own is not idle.** Waiting for a
 child's report settles a turn just like finished work. Before shutdown,
 the timer calls `kido get-agent --children <session>`. It checks whether
-any session run remains active. Run records supply the parent edge
-that survives a turn.
+any session run remains active. Run metas supply the parent edge that
+survives a turn.
 
 Unless the answer is definitely no, the timer rearms. Errors and
 timeouts leave the session open. Exiting would also remove the child:
@@ -1169,16 +1145,17 @@ awaiting collection.
 
 **`kido tool spawn_subagent --resume <run-id>`.** kido routinely collects
 idle children. Resume is the normal way to continue work with them.
-A bare `pi --session <id>` starts a standalone session. It has no parent
-edge, `@kido_run` mark or new run record. Stop and ask scope do not
-recognize it as a descendant.
+A bare `pi --session <id>` claims the run as a standalone session, in
+a window that kido did not create. Its run keeps the old parent, but no
+sweep collects that window, and the pi is no subagent.
 
 `--resume` uses the same window-creation path as a fresh spawn:
 `Tmux.new_window` and the mark. It makes these changes:
 
-- It launches `pi --session <run-id>` if the pi session file exists.
+- It launches `pi --session <file>` if the session file in `pi.json`
+  exists.
   Otherwise, it launches `pi --session-id <run-id>` to create the session.
-- It continues the existing run record, preserving task, history and id.
+- It continues the existing run, preserving task, history and id.
   `Subrun.read_meta` supplies the window name and cwd. Resume leaves the
   task file unchanged. It clears `delivered` only if the pi session file
   is missing. Thus, a newly created session receives the stored task again.
@@ -1202,64 +1179,54 @@ recognize it as a descendant.
   This occurs strictly *before* any exit path can describe the new attempt.
 
 Resume refuses an unknown run id (`Subrun.read_meta` returns `None`).
-It also refuses a run with a live recorded pid (`State.alive`), even
+It also refuses a run with a live recorded pid (`Subrun.alive`), even
 with an outcome. Shutdown can write an outcome before process exit.
-Resuming a live agent is not meaningful.
+Resuming a live agent is not meaningful. It refuses a `pi` run: kido
+did not start it, its meta records no pid, and a resume would rewrite a
+live top-level pi's run.
 
-If the pi session file is gone, `--session-id` creates a fresh session
-with the run's id. See `design-subagents.md`, "Resuming a run".
-`pi_session_file_exists` in `lib/spawn_subagent.ml` checks this. It uses
-`PI_CODING_AGENT_SESSION_DIR` if set, or
-`<agentDir>/sessions/--<cwd, its slashes and colons dashed>--` otherwise.
-The depth ceiling still derives from the *resumer's* caller record,
-exactly as for a fresh spawn. Resume cannot bypass it.
+After the new window exists, the resume closes the previous attempt's
+dead pane through `Reap.decide`. The sweep collects only the pane that
+meta names, so it no longer collects that pane.
 
-Only `--resume` makes `--parent-pid`/`--parent-session` optional.
-A fresh spawn requires them or `--no-parent`. See "A parentless spawn,
-and a parent that must exist". Omitted values default to the caller's
-reported pid and session id, the same source as depth. A human without
-a state record therefore resumes a parentless, root-like session that
-does not self-collect. An agent becomes the new parent without explicit
-parent arguments.
+If the run's `pi.json` names no pi session file that exists,
+`--session-id` creates a fresh session with the run's id. See
+`design-subagents.md`, "Resuming a run". The depth ceiling still derives
+from the resumer, exactly as for a fresh spawn. Resume cannot bypass it.
+
+The parent of a resume is the caller, as for a fresh spawn, unless
+`--no-parent` detaches it. Without a caller, a resume has no parent. A
+human therefore resumes a parentless, root-like session that does not
+self-collect. An agent becomes the new parent without explicit
+arguments.
 
 Thus, `kido runs <id>` can print one parent-free
 `kido tool spawn_subagent --resume <id>` line. It works for any caller
 that uses `cd` to enter the run's cwd. It does not embed an identity that
-could be wrong when someone later runs it. `pi --fork <id>` remains a bare command. A
-standalone fork, without a parent edge or run record, is a different,
-valid operation.
+could be wrong when someone later runs it. `pi --fork <id>` remains a
+bare command. A standalone fork, without a parent edge, is a different,
+valid operation. For a `pi` run, `kido runs <id>` prints
+`pi --session <session file>` instead.
 
 A bare `pi`, without `-- pi --model ...`, uses the run's recorded
 `model` as `--model`. A model already named in the caller's command
 takes precedence. Meta retains the run's model, so the resumer need not
 repeat it.
 
-**`--parent-session` is refused, before the window exists, unless it names
-somebody currently alive.** Rule 2 in `lib/reap.ml` closes a marked
-window whose child's `parent` session has no live holder. The rule
-keeps no history. An unknown session and a session with a dead process
-therefore give the same result. The tool has a live caller, but that
-caller can end before the command checks.
-
-`--resume` intentionally lets a *different*, manual caller claim the
-parent edge, as described above. A value that cannot be checked can
-therefore cause a failure. A parent without a holder makes the resumed run an
-orphan. Rule 2 detects it in another process at the next sidebar poll,
+**A caller whose holder is dead is refused, before the window exists.**
+The orphan rule closes a marked window whose child's parent run has no
+live holder. A resume by such a caller would close within moments,
 after the resume command has returned success. The human receives no
-error message for this delayed close.
-
-A liveness check before window creation uses the same reading as rule 2.
-It replaces silent delayed closure with an immediate refusal that the
-caller can act on. A resumer without a state record, or without those
-flags, is unaffected. An empty `--parent-session` skips the check and
-resumes without a parent.
+error message for this delayed close. A liveness check before window
+creation uses the same reading as the orphan rule. It replaces silent
+delayed closure with an immediate refusal that the caller can act on.
 
 **`spawn_subagent(resume)`.** The tool follows the CLI. An optional
 `resume` parameter calls `kido tool spawn_subagent --resume <resume>`
-instead of a fresh spawn. It passes this session's
-`--parent-pid`/`--parent-session`, as for a fresh spawn. Combining
-`resume` with `task` or `name` causes refusal before sending anything
-to kido. A resumed run retains its original task and window name.
+instead of a fresh spawn. Its caller is this session, as for a fresh
+spawn. Combining `resume` with `task` or `name` causes refusal before
+sending anything to kido. A resumed run retains its original task and
+window name.
 
 A new task or name makes the model's intent ambiguous. The tool does
 not silently discard either choice. It accepts `model` and `tools`.
@@ -1282,8 +1249,9 @@ abort a turn. No destructive fallback fits "redirect this, do not kill
 it". `stop` ends the session through the normal exit's shutdown path.
 It needs no second teardown.
 
-**Scope.** An agent caller can reach only its descendants. A human at
-the CLI without a state record is exempt from the ancestry check.
+**Scope.** An agent caller can reach only its descendants: runs with
+the caller in their parent chain. A human at the CLI has no caller and
+is exempt from the ancestry check.
 Steer and interrupt address live agents. Stop addresses recorded agent
 or bash runs by run id or name. Unlike `message_agent`, steer has the
 same restriction as interrupt. Both redirect current work with the same
@@ -1304,12 +1272,12 @@ The receiver recognizes a human from two facts: an empty sender session
 and a pane that no agent occupies. A confused agent must therefore make
 two simultaneous errors to appear human. Both walks use the ancestor
 chain that `ask_agent` follows in reverse. Both immediately refuse a
-self-edge. A corrupt record naming itself as parent therefore cannot
-let the session stop itself.
+self-edge. A corrupt meta naming itself as parent therefore cannot let
+the session stop itself.
 
 **Escalation.** An unresponsive child does not answer. `stop` sends its
-request, then polls the target's record for up to five seconds. If the
-record remains, it kills the pane. A held-open connection, invalid
+request, then polls the target's run for up to five seconds. If its
+holder is still live, it kills the pane. A held-open connection, invalid
 answer or receiver scope refusal causes escalation, not cancellation.
 Returning only the send error would make stop fail in the case it must
 handle.
@@ -1369,18 +1337,11 @@ nothing.
 accepts no target. It reads `KIDO_AGENT_PARENT_SESSION` from its own
 environment. `kido tool spawn_subagent` sets this parent edge. The
 child's pi and every process it starts inherit the edge. The command
-resolves the session through `State.load_live`, using the same registry
-and question as `kido get-agent`.
-
-An indirect lookup would list agents, find the caller's row, read its
-`parent`, then return that target to kido. This would ask a display for
-a fact kido already supplies. It would also retain the per-pane view's
-problem. A `pi --print` in the parent's pane takes precedence and
-removes the parent's record from the answer. The liveness poll and
-orphan sweep both reject that view.
+reads the parent's run by id (`Subrun.live_parent`), the same question
+as `kido get-agent`.
 
 An absent variable means a root session. Both command and tool refuse
-it. A session without a live record means the parent has exited. This
+it. A parent run without a live holder means the parent has exited. This
 is an error, not permission to use a fallback.
 
 **What this costs, and what covers it.** A crashed or idle-collected
@@ -1396,8 +1357,7 @@ a sweep. See `design-subagents.md`, "Reporting". An ending needs no
 judgment about the work. Without this limited notice, a parent could
 wait forever for a child that no longer exists.
 
-`Msg.notify` sends the ending notice. `Reap.body` supplies the text,
-and `Reap.send` sends it. Unlike `notify_parent`, this path never uses
+`Reap.body` supplies the ending notice's text, and `Reap.send` sends it. Unlike `notify_parent`, this path never uses
 `Message_agent`. `Reap` is below the subcommand modules and can contact
 the inbox directly. The `Sidebar` sweep calls `Reap.collect` without a
 separate connection to a subcommand module. Plain messages and asks
@@ -1539,10 +1499,11 @@ All heartbeats bypass the identity-report coalescing key.
 A pi is stalled only if both conditions apply:
 
 - Its pane's OSC 7501 root record says working.
-- `State`'s heartbeat timestamp is at least three minutes old after
+- Its `pi.json` heartbeat timestamp is at least three minutes old after
   rebasing against the wake marker.
 
-Blocked, idle, done, error and absent roots never stall. A bare pi has no State heartbeat and never stalls.
+Blocked, idle, done, error and absent roots never stall. A bare pi has
+no run and never stalls.
 The sidebar and one-shot agent graph use the same rule;
 `ask_agent` refuses a stalled target before sending anything.
 The sidebar also redraws when a refreshed heartbeat clears a stall,
@@ -1611,8 +1572,7 @@ The records control indicators and completion attention even without
 extensions. The caption omits a local pi message that duplicates its
 session name. Other messages remain visible.
 
-A `State` identity adds inbox, parentage, activity and the user-ask
-overlay. Gone runs take precedence over terminal records. Activity
+A pane run adds inbox, parentage, activity and the user-ask overlay. Gone runs take precedence over terminal records. Activity
 supplies the caption if the program supplies no message. A live
 subagent without either uses its elapsed clock.
 
@@ -1702,9 +1662,8 @@ already have completed its work.
 The sidebar indents a subagent's window under its spawning agent's
 *pane*, not after the whole parent window. The subagents belong to the
 coordinating agent, not a shell sharing its window. The walk supplies
-both anchor and indent. Reported depth does not supply them. A
-subagent can report depth 1 even if its parent is absent or in another
-session.
+both anchor and indent. A run's parent comes from its meta, through the
+run mark of its pane. A parent can be absent or in another session.
 
 Indenting by depth alone would place it under an unrelated preceding
 row. The walk nests a window only under a pane with a found edge.
@@ -1712,8 +1671,8 @@ Every agent pane is an anchor, not only the window's first pane.
 A window can contain two agents, such as a top-level pi with a second
 pi in a split. The second agent's child nests under that pane's row.
 
-The window's own tree position still comes from one record: its first
-agent pane's record. A window has exactly one position, regardless of
+The window's own tree position still comes from one run: the first pane
+whose run names a parent. A window has exactly one position, regardless of
 its agent count.
 
 Nesting inside a window divides its bracket. The ┌ ├ └ glyphs join the
@@ -1763,8 +1722,8 @@ direct siblings in feed order, including runs.
 
 Prev from the first child selects its direct parent, even when nested.
 Next from the last child moves from its top-level ancestor. Top-level
-steps never descend. They skip windows containing `@kido_run` panes and
-wrap across sessions in sidebar order. A sole eligible root can select
+steps never descend. They skip windows containing the `@kido_run` pane
+of a run that kido started, and wrap across sessions in sidebar order. A sole eligible root can select
 itself.
 
 The command prints nothing. Its key bindings use `run-shell`, which
@@ -1775,7 +1734,7 @@ this prevents an agent from becoming invisible.
 
 The sidebar and `kido tool list_runs` walks share parent-first ordering.
 It emits every item exactly once, with or without a tree. A reporting
-bug or replayed old state file can create a cycle. A roots-only walk
+bug or edited run meta can create a cycle. A roots-only walk
 cannot reach that cycle. The walk therefore emits missed items afterward
 as roots. An invalid edge loses only the item's tree position.
 
@@ -1961,8 +1920,8 @@ This takes precedence over the default environment order. Hooks, tools,
 extensions and the sidebar therefore read the same records, even if
 ambient `KIDO_STATE_DIR` points elsewhere. Extensions and shims call
 kido instead of resolving the directory independently. The launcher
-removes `KIDO_STATE_DIR` from the new server's environment. Only the
-build stamp and PATH need export. Servers have separate `server.conf`
+removes `KIDO_STATE_DIR`, `PI_SESSION_ID` and `PI_SESSION_FILE` from the
+new server's environment. Only the build stamp and PATH need export. Servers have separate `server.conf`
 files and records, even when their pane ids repeat.
 
 The socket gives full shell access. kido creates state directories with
@@ -2226,6 +2185,10 @@ and serve a session that neither started.
   target's latency.
 - A child that exits before `remain-on-exit` lands loses its window and
   its last screen; only the run record remains.
+- A crashed holder's pid stays in its `pi.json`. If the OS reuses that
+  pid, the run looks live until a pi claims it again.
+- Runs are never pruned. Each top-level pi session adds one run
+  directory.
 - Pause detection needs a sidebar ticking when the machine sleeps.
 - A `kido ssh` session killed after ssh starts but before remote zsh
   reads `.zshenv` leaves its temporary directory. The exec removes the

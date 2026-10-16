@@ -12,17 +12,51 @@ import (
 	"time"
 )
 
+func TestStopRefusesTopLevelPiWithoutOutcome(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	in, pane := h.agentWithInbox("alpha", "top-level-pi")
+	for i, flags := range []string{"", "--force"} {
+		out := h.runKido("alpha", fmt.Sprintf("stop-top-%d.out", i), "tool", "stop_run", flags, "top-level-pi")
+		if !strings.Contains(out, "top-level pi run cannot be stopped with stop_run") || !strings.Contains(out, "rc=1") {
+			t.Errorf("stop top-level pi = %q, want a top-level refusal", out)
+		}
+		if _, err := os.Stat(filepath.Join(h.stateDir, "runs", "top-level-pi", "outcome")); !os.IsNotExist(err) {
+			t.Errorf("top-level pi outcome exists: %v", err)
+		}
+		if !h.paneExists(pane) {
+			t.Fatal("stop_run killed the top-level pi pane")
+		}
+		h.agentStatus("top-level-pi", pane, "--remove")
+		h.agentStatus("top-level-pi", pane, "--inbox", in.Path)
+		if got := h.runInfo("top-level-pi").Outcome; got != "running" {
+			t.Errorf("reclaimed top-level pi outcome = %q, want running", got)
+		}
+	}
+	if got := in.Received(); len(got) != 0 {
+		t.Errorf("top-level inbox = %q, want no stop request", got)
+	}
+	h.runKido("alpha", "top-outcome.out", "run-outcome", "--result", "completed", "top-level-pi")
+	if _, err := os.Stat(filepath.Join(h.stateDir, "runs", "top-level-pi", "outcome")); !os.IsNotExist(err) {
+		t.Errorf("run-outcome wrote a top-level pi outcome: %v", err)
+	}
+}
+
 func (h *harness) agentRunMeta(id, pane, name, parent string) {
 	h.t.Helper()
 	dir := filepath.Join(h.stateDir, "runs", id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		h.t.Fatal(err)
 	}
-	meta, err := json.Marshal(map[string]any{
-		"id": id, "name": name, "kind": "agent", "parentSession": parent,
-		"depth": 1, "pane": pane, "pid": os.Getpid(), "cwd": h.dir,
+	fields := map[string]any{
+		"id": id, "name": name, "kind": "agent",
+		"pane": pane, "pid": os.Getpid(), "cwd": h.dir,
 		"startedAt": time.Now().UTC().Format(time.RFC3339Nano),
-	})
+	}
+	if parent != "" {
+		fields["parent"] = parent
+	}
+	meta, err := json.Marshal(fields)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -77,7 +111,7 @@ func TestStopDoesNotKillAHealthyChild(t *testing.T) {
 		for len(in.Received()) == 0 && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
-		h.agentStatus("healthy-e2e", paneID, "pi", "--remove")
+		h.agentStatus("healthy-e2e", paneID, "--remove")
 	}()
 
 	out := h.runKido("alpha", "stop.out", "tool", "stop_run", "healthy-e2e")
@@ -107,11 +141,12 @@ func (h *harness) recordedRun(name string, flags ...string) (runID, windowID str
 		}
 	}
 	runID, windowID = h.spawnRun(name, fmt.Sprintf(
-		`printf "\033]2;π - %%s\033\\\\\033]7501;state=idle:app=pi\033\\\\" "%s"; %s agent-status --agent pi --session "$KIDO_AGENT_RUN_ID" --parent-session root-e2e %s; exec sleep 300`,
+		`printf "\033]2;π - %%s\033\\\\\033]7501;state=idle:app=pi\033\\\\" "%s"; PI_SESSION_ID="$KIDO_AGENT_RUN_ID" %s agent-status %s; exec sleep 300`,
 		title, kidoBin, strings.Join(args, " ")))
-	record := filepath.Join(h.stateDir, runID+".json")
+	record := filepath.Join(h.stateDir, "runs", runID, "pi.json")
 	h.waitFor(func() bool { _, err := os.Stat(record); return err == nil }, settle,
 		msgf("run %s's own record %s", runID, record))
+	h.callers.Store(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"), runID)
 	return runID, windowID
 }
 
@@ -147,7 +182,7 @@ func TestStopWithNoWayToAskNeedsForce(t *testing.T) {
 		paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
 		bystander := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowID, "sh", "-c", "exec sleep 300")
 		h.programStatus(bystander, "state=idle:app=pi", runID)
-		h.agentStatus("decoy-"+c.name, bystander, "pi")
+		h.agentStatus("decoy-"+c.name, bystander)
 
 		out := h.runKido("alpha", c.name+"-unforced.out", "tool", "stop_run", runID)
 		if !strings.Contains(out, c.refusal) || !strings.Contains(out, "pass --force") || !strings.Contains(out, "rc=1") {
@@ -180,18 +215,18 @@ func TestInterruptAndStopReachOnlyDescendants(t *testing.T) {
 
 	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
-	h.agentStatus("caller-e2e", caller, "pi")
 	h.agentRunMeta("caller-e2e", caller, "caller-e2e", "")
-	agent := func(session, id string, flags ...string) *inbox {
+	h.agentStatus("caller-e2e", caller)
+	agent := func(session, id, parent string) *inbox {
 		in := startInbox(t, "ok\n")
 		pane := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
 		h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-		h.agentStatus(id, pane, "pi", append([]string{"--inbox", in.Path}, flags...)...)
-		h.agentRunMeta(id, pane, id, "")
+		h.agentRunMeta(id, pane, id, parent)
+		h.agentStatus(id, pane, "--inbox", in.Path)
 		return in
 	}
-	child := agent("alpha", "child-e2e", "--parent-session", "caller-e2e")
-	peer := agent("alpha", "peer-e2e")
+	child := agent("alpha", "child-e2e", "caller-e2e")
+	peer := agent("alpha", "peer-e2e", "")
 
 	for i, c := range []struct{ verb, target, want string }{
 		{"interrupt_subagent", "peer-e2e", "is not this agent's descendant\nrc=1"},
@@ -218,7 +253,7 @@ func TestInterruptAndStopReachOnlyDescendants(t *testing.T) {
 	}
 
 	h.newSession("beta")
-	agent("beta", "elsewhere-e2e")
+	agent("beta", "elsewhere-e2e", "")
 	if out := h.runKido("alpha", "elsewhere.out", "tool", "interrupt_subagent", "elsewhere-e2e"); !strings.Contains(out, "is in another tmux session, not this one") || !strings.Contains(out, "rc=1") {
 		t.Errorf("interrupt_subagent into another tmux session = %q, want a refusal naming it", out)
 	}
@@ -239,7 +274,7 @@ func TestStopSaysWhyItKilledAnUnwillingTarget(t *testing.T) {
 		pane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 		windowID := h.windowID(pane)
 		h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-		h.agentStatus(c.id, pane, "pi", "--inbox", in.Path)
+		h.agentStatus(c.id, pane, "--inbox", in.Path)
 		h.agentRunMeta(c.id, pane, c.id, "")
 		out := h.runKido("alpha", c.id+".out", "tool", "stop_run", c.id)
 		for _, want := range []string{"did not accept the stop request (", c.why, "and was still there after 300ms; killed its pane", "rc=0"} {
@@ -261,11 +296,11 @@ func TestStopBashRunFindsItsRunAndSpeaksForIt(t *testing.T) {
 	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	in := startInbox(t, "ok\n")
 	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
-	h.agentStatus("caller-e2e", caller, "pi", "--inbox", in.Path)
+	h.agentStatus("caller-e2e", caller, "--inbox", in.Path)
 	shellAgent := func(id string, flags ...string) string {
 		pane := h.newWindow("alpha", "")
 		h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-		h.agentStatus(id, pane, "pi", append([]string{"--inbox", startInbox(t, "ok\n").Path}, flags...)...)
+		h.agentStatus(id, pane, append([]string{"--inbox", startInbox(t, "ok\n").Path}, flags...)...)
 		return pane
 	}
 	started := 0

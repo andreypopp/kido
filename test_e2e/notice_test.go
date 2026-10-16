@@ -24,7 +24,7 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	in := startInbox(t, "ok\n")
 	parentPane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.programStatus(parentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", parentPane, "#{pane_title}"), "π - "))
-	h.agentStatus("parent-notice-e2e", parentPane, "pi", "--inbox", in.Path)
+	h.agentStatus("parent-notice-e2e", parentPane, "--inbox", in.Path)
 
 	taskFile := filepath.Join(h.dir, "task.txt")
 	if err := os.WriteFile(taskFile, []byte("say hi"), 0o644); err != nil {
@@ -35,12 +35,11 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	// Reports itself as a subagent (as kido-status.ts's session_start
 	// would), then reports home exactly as pi's notify_parent tool does.
 	child := fmt.Sprintf(
-		"%s agent-status --agent pi --session child-notice-e2e "+
-			"--parent-session parent-notice-e2e; "+
+		"export PI_SESSION_ID=\"$KIDO_AGENT_RUN_ID\"; %s agent-status; "+
 			"printf \"the answer is 42\" | %s tool notify_parent; "+
 			"exec sleep 300",
 		kidoBin, kidoBin)
-	cmd := fmt.Sprintf("%s tool spawn_subagent --parent-pid 1 --parent-session parent-notice-e2e --name kid-notice-e2e --task-file %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("PI_SESSION_ID=parent-notice-e2e %s tool spawn_subagent --name kid-notice-e2e --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, taskFile, shellQuote(child), outFile)
 
 	t0 := time.Now()

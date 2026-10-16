@@ -165,8 +165,6 @@ func TestReapedAgentRunTellsItsParentNobodyReported(t *testing.T) {
 	}
 	outFile := filepath.Join(h.dir, "spawn-silent.out")
 	h.runSpawn(outFile, filepath.Join(h.dir, "silent.env"),
-		"--parent-pid", "424242",
-		"--parent-session", "parent-silent-e2e",
 		"--name", "silent-e2e",
 		"--task-file", taskFile,
 	)

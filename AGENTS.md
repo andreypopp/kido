@@ -85,7 +85,7 @@ typed status, as uncut text.
 **State.** Use one source of truth for each fact. Never hold the same
 fact in two stores:
 
-- A state record and a tmux option.
+- A run record and a tmux option.
 - An OCaml record and a TS copy.
 - A file and an in-memory mirror.
 
@@ -154,7 +154,7 @@ Conventions:
 
 - **Errors.** A `lib/` failure is a `result`. Use a string error
   that contains the message to print. If the caller or message differs
-  by case, use a variant (`State.record` returns `Error holder`).
+  by case, use a variant (`Subrun.write_pi` returns `Error holder`).
   The I/O exceptions `Unix_error` and `Sys_error` propagate.
   Do not catch them to rethrow them.
 - **Subcommands.** A subcommand body in `bin/main.ml` returns its
@@ -252,15 +252,15 @@ Conventions:
       tmux_pane.ml     kido's pane view, topology reads, ordering, navigation and marks
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON
-      state.ml         one JSON file per agent session, keyed by session id
-      reporting.ml     kido agent-status
+      state.ml         the state directory, pane agents and their kinds, staleness
+      reporting.ml     kido agent-status: the claim of a pi's run
       procs.ml         ssh argument parsing and whitespace fields
       msg.ml           the inbox wire protocol and its client: v0 raw prompt,
                        v1 envelope, the unix-socket sender and notify
       tree.ml          the parent-first walk behind list_runs and the sidebar
       reap.ml          which subagent windows are finished with, and when;
                        an ending's text and its send to the parent's inbox
-      subrun.ml        the durable record of one `kido tool spawn_subagent`
+      subrun.ml        the record of one run in runs/<id>/: meta, pi.json, outcome
       prompt.ml, message_agent.ml (also ask_agent and notify_parent),
       list_runs.ml, spawn_subagent.ml, async_bash.ml,
       async_run.ml (its wrapper), async_stream.ml, runs.ml,
@@ -534,7 +534,7 @@ The sidebar uses it to decide whether a program has taken the terminal.
 ## Native agent status
 
 Only OSC 7501 root apps pi and claude-code identify agent panes.
-State supplies local pi identity and coordination, never detection.
+A pi's run supplies local pi identity and coordination, never detection.
 ssh panes use the pane-scoped `@kido_ssh` mark.
 kido trusts this mark only while the foreground is `ssh`.
 `kido ssh` sets the mark before exec and leaves it in place.
@@ -556,44 +556,43 @@ the session.
 
 Pane titles display verbatim, including status glyphs and prefixes.
 For an empty title, native-only agents use the app name.
-If its State name is set, local pi uses that name.
+If its reported session name is set, local pi uses that name.
 
-## Agent state, and delivering a prompt
+## Agent runs, and delivering a prompt
 
-State uses the server directory resolved above.
-Each agent session has one JSON file, named by session id.
-Writes use a temporary file and then rename it.
-There is **no locking**. Policy resolves races:
+Runs use the server directory resolved above.
+Every tracked process has one directory `runs/<id>/`, and a pi's run id
+is its session id. Each file in it has one writer, and each write
+replaces the whole file. There is **no locking**. Policy resolves races:
 
-- **One live holder per session id.** `State.record` creates a record
+- **The caller is `PI_SESSION_ID`.** pi sets it, with
+  `PI_SESSION_FILE`, for its bash tool. `kido-status.ts` sets both for
+  every kido process it starts. kido never finds the caller from its
+  pane. The launcher and the e2e harness remove both variables.
+- **One live holder per run.** `Subrun.write_pi` creates `pi.json`
   with `Unix.link` from its own pid-named temporary file.
   This is atomic and fails if the record is taken.
   Only the pid named in an existing record can overwrite it while
   that pid is alive. Once that pid is dead, another pid can overwrite it.
-  `State.remove` follows the same rule.
+  `Subrun.release` follows the same rule and writes pid 0.
+  Nothing deletes `pi.json`.
 
   A refusal is `Error holder`.
   For a refusal, `kido agent-status` exits **6**.
   `share/pi/kido-status.ts` reads this code to stop reporting.
   If only one side changes this exit code, a second pi silently
   overwrites a live session.
-- `State.load_live` **removes** a file whose recorded pid is dead.
-- If two records claim one pane, the latest timestamp wins.
-  A headless pi inherits `TMUX_PANE`.
-  Thus, it can take the pane's identity view.
-  Liveness readers must not use that collapsed view.
-- **Never give `Reap.sweep` a pane-keyed view.**
-  The sidebar's view uses `State.load_live` and then `State.by_pane`.
-  Any check for "is this session running *anywhere*" uses
-  `load_live`'s list, which drops nothing.
-  With a pane-keyed view, the identity change above closes a parent's
-  children.
-- **The orphan rule includes `async_bash`.**
-  For plain and streamed bash runs, `Reap.sweep` reads the parent
-  session from run metadata.
-  If that parent has no live record, it collects the unfocused run
-  even while its command runs.
-  A parentless bash run is exempt.
+- Only a pi with a UI claims a run. A headless pi claims nothing.
+- **A pane's agent is its `@kido_run`.** The claim marks its pane.
+  `State.agents` accepts a mark only if the run's `pi.json` names that
+  pane and a live pid. Thus, a stale mark is no agent.
+- **The kind decides collection.** `Reap.sweep` and `kido prompt`
+  read the marked run's meta. A `pi` run is never collected, and its
+  window stays a prompt candidate.
+- **The orphan rule reads the parent's run by id.** For a marked run
+  whose meta names a parent, `Reap.sweep` checks whether a live pid
+  holds that parent's run. If not, it collects the unfocused run even
+  while its command runs. A parentless run is exempt.
 
 For a `Pi_agent`, `kido prompt` prefers the recorded inbox socket.
 `kido-status.ts` binds one.
@@ -606,7 +605,7 @@ The message may already have arrived.
 Sending it again would deliver it twice.
 A `Some_agent` receives a paste. `Terminal` is excluded.
 
-Live State remains authoritative for coordination and run history,
+Runs remain authoritative for coordination and run history,
 even when the pane's current root app is replaced or cleared.
 
 `Prompt.send_prompt` **pastes rather than types**.

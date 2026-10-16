@@ -23,9 +23,9 @@ func (h *harness) kidoAs(pane, input string, env []string, args ...string) (stri
 	h.t.Helper()
 	sock := h.in("display-message", "-p", "#{socket_path}")
 	cmd := exec.Command(kidoBin, args...)
-	cmd.Env = cleanEnv(append([]string{
+	cmd.Env = cleanEnv(append(append([]string{
 		"TMUX=" + sock + ",0,0", "TMUX_PANE=" + pane, "KIDO_STATE_DIR=" + h.stateDir,
-	}, env...)...)
+	}, h.caller(pane)...), env...)...)
 	cmd.Stdin = strings.NewReader(input)
 	out, err := cmd.CombinedOutput()
 	code := 0
@@ -65,7 +65,7 @@ func (h *harness) idleAgent(session, id, title string, extra ...string) string {
 	p := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
 	h.in("select-pane", "-t", p, "-T", "")
 	h.programStatus(p, "state=idle:app=pi", title)
-	h.agentStatus(id, p, "pi", extra...)
+	h.agentStatus(id, p, extra...)
 	return p
 }
 
@@ -98,7 +98,7 @@ func TestMessageAgentResolvesByNameTitleIdAndPrefix(t *testing.T) {
 	h.newSession("beta")
 	caller := h.firstPane("alpha")
 	h.programStatus(caller, "state=idle:app=pi", "Self")
-	h.agentStatus("me", caller, "pi")
+	h.agentStatus("me", caller)
 	in := startInbox(t, "ok\n")
 	h.idleAgent("alpha", "abc123", "Worker-2", "--inbox", in.Path)
 	h.idleAgent("alpha", "abd456", "", "--inbox", in.Path)
@@ -140,7 +140,7 @@ func TestMessageAgentSendsEnvelopesFromTheCaller(t *testing.T) {
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
 	h.programStatus(caller, "state=idle:app=pi", "asker")
-	h.agentStatus("caller", caller, "pi", "--inbox", startInbox(t, "ok\n").Path)
+	h.agentStatus("caller", caller, "--inbox", startInbox(t, "ok\n").Path)
 	in := startInbox(t, "ok\n")
 	h.idleAgent("alpha", "target", "peer", "--inbox", in.Path)
 
@@ -182,25 +182,25 @@ func TestMessagePastesOnlyWithoutAnInbox(t *testing.T) {
 	pane := h.piPane("alpha", "π - pastee")
 
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("target", pane, "pi")
+	h.agentStatus("target", pane)
 	h.expectKido(caller, "hi claude", nil, "pasted into pastee's pane", "tool", "message_agent", "--", "target")
 	h.waitPaneText(pane, "got: hi claude")
 
 	stale := staleSocket(t)
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("target", pane, "pi", "--inbox", stale)
+	h.agentStatus("target", pane, "--inbox", stale)
 	h.expectKido(caller, "hello", nil, "kido tool message_agent: pastee is not accepting messages", "tool", "message_agent", "--", "target")
 
 	if err := os.Remove(stale); err != nil {
 		t.Fatal(err)
 	}
-	run := "1234567890abcdef1234567890abcdef"
-	h.in("set-option", "-p", "-t", pane, "@kido_run", run)
+	run := "target"
+	h.agentRunMeta(run, pane, "pastee", "")
 	h.expectKido(caller, "hello", nil,
 		"kido tool message_agent: pastee is not accepting messages; after it exits, resume it with spawn_subagent(resume: "+run+") and resend",
 		"tool", "message_agent", "--", "target")
 	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
-	h.agentStatus("caller", caller, "pi", "--inbox", startInbox(t, "ok\n").Path)
+	h.agentStatus("caller", caller, "--inbox", startInbox(t, "ok\n").Path)
 	h.expectKido(caller, "hello", nil,
 		"kido tool ask_agent: pastee is not accepting messages; after it exits, resume it with spawn_subagent(resume: "+run+") and resend",
 		"tool", "ask_agent", "--", "target")
@@ -209,7 +209,7 @@ func TestMessagePastesOnlyWithoutAnInbox(t *testing.T) {
 
 	nope := startInbox(t, "nope\n")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("target", pane, "pi", "--inbox", nope.Path)
+	h.agentStatus("target", pane, "--inbox", nope.Path)
 	h.expectKido(caller, "never pasted", nil,
 		fmt.Sprintf(`kido tool message_agent: inbox %s: answered "nope", want "ok"`, nope.Path),
 		"tool", "message_agent", "--", "target")
@@ -225,17 +225,17 @@ func TestAskReplyAndNoticeNeverPaste(t *testing.T) {
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
 	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
-	h.agentStatus("caller", caller, "pi", "--inbox", startInbox(t, "ok\n").Path)
+	h.agentStatus("caller", caller, "--inbox", startInbox(t, "ok\n").Path)
 	pane := h.piPane("alpha", "π - victim")
 
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("target", pane, "pi")
+	h.agentStatus("target", pane)
 	h.expectKido(caller, "x", nil,
 		"kido tool ask_agent: victim has no inbox to send a ask to; only a plain message can be sent as v0 text",
 		"tool", "ask_agent", "--", "target")
 
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("target", pane, "pi", "--inbox", staleSocket(t))
+	h.agentStatus("target", pane, "--inbox", staleSocket(t))
 	for _, c := range []struct {
 		env  []string
 		args []string
@@ -249,7 +249,7 @@ func TestAskReplyAndNoticeNeverPaste(t *testing.T) {
 	}
 
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("target", pane, "pi", "--inbox", startInbox(t, "refused\n").Path)
+	h.agentStatus("target", pane, "--inbox", startInbox(t, "refused\n").Path)
 	h.expectKido(caller, "touch /tmp/pwned", nil, "kido tool ask_agent: victim refused the ask", "tool", "ask_agent", "--", "target")
 
 	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "got:") },
@@ -265,7 +265,7 @@ func TestSteerReachesDescendantsOnly(t *testing.T) {
 	caller := h.firstPane("alpha")
 	h.idleAgent("alpha", "root", "root", "--inbox", in.Path)
 	h.programStatus(caller, "state=idle:app=pi", "caller")
-	h.agentStatus("caller", caller, "pi", "--inbox", in.Path, "--parent-session", "root")
+	h.agentStatus("caller", caller, "--inbox", in.Path, "--parent-session", "root")
 	h.idleAgent("alpha", "child", "child", "--inbox", in.Path, "--parent-session", "caller")
 	h.idleAgent("alpha", "grandchild", "grandchild", "--inbox", in.Path, "--parent-session", "child")
 	h.idleAgent("alpha", "peer", "peer", "--inbox", in.Path)
@@ -366,15 +366,13 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 	}
 }
 
-// writeRecord writes a state record directly, for the fields agent-status
-// cannot set: a chosen report time. Its pid is the test binary's, alive
-// for the whole run.
+// writeRecord writes a run's record directly, and marks its pane as the
+// claim does, for the fields agent-status cannot set: a chosen report time.
+// Its pid is the test binary's, alive for the whole run. A "parent" in
+// extra is the parent its run meta names.
 func (h *harness) writeRecord(id, pane string, ts time.Time, extra map[string]any) {
 	h.t.Helper()
-	rec := map[string]any{
-		"agent": "pi", "name": "", "pane": pane, "pid": os.Getpid(),
-		"ts": ts.UTC().Format("2006-01-02T15:04:05Z"),
-	}
+	rec := map[string]any{"pane": pane, "pid": os.Getpid(), "ts": ts.UTC().Format("2006-01-02T15:04:05Z")}
 	status, title := "idle", ""
 	for k, v := range extra {
 		switch k {
@@ -382,10 +380,13 @@ func (h *harness) writeRecord(id, pane string, ts time.Time, extra map[string]an
 			status = v.(string)
 		case "title":
 			title = v.(string)
+		case "parent":
 		default:
 			rec[k] = v
 		}
 	}
+	parent, _ := extra["parent"].(string)
+	h.agentRunMeta(id, pane, "", parent)
 	if title == "" {
 		title = strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - ")
 	}
@@ -395,9 +396,14 @@ func (h *harness) writeRecord(id, pane string, ts time.Time, extra map[string]an
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(h.stateDir, id+".json"), b, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(h.stateDir, "runs", id), 0o700); err != nil {
 		h.t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(h.stateDir, "runs", id, "pi.json"), b, 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	h.in("set-option", "-p", "-t", pane, "@kido_run", id)
+	h.callers.Store(pane, id)
 }
 
 type listedAgent struct {
@@ -442,37 +448,34 @@ func jsonKeys(t *testing.T, out string) []string {
 	return keys
 }
 
-func TestContextKeepsLiveRecordsSharingAPane(t *testing.T) {
+// The claim marks the pane it reports from and never clears a mark, so a
+// session that moved leaves its old pane marked; only the pane its record
+// names is its own.
+func TestAStaleMarkIsNoAgent(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
-	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
-	h.agentStatus("context-self", caller, "pi")
-	pane := h.piPane("alpha", "π - shared")
-	at := time.Now().Add(-time.Minute)
-	h.writeRecord("hidden-sender", pane, at, map[string]any{"title": "hidden-sender"})
-	h.writeRecord("visible-sender", pane, at.Add(time.Second), map[string]any{"title": "visible-sender"})
-	h.newSession("beta")
-	h.writeRecord("outside-context", h.firstPane("beta"), at, nil)
-
+	h.programStatus(caller, "state=idle:app=pi", "caller")
+	h.agentStatus("caller", caller)
+	from := h.piPane("alpha", "π - moving")
+	h.agentStatus("mover", from)
+	to := h.piPane("alpha", "π - moved")
+	h.agentStatus("mover", to)
+	if mark := h.in("display-message", "-p", "-t", from, "#{@kido_run}"); mark != "mover" {
+		t.Fatalf("old pane's mark = %q, want it left as mover", mark)
+	}
 	out, rc := h.kidoAs(caller, "", nil, "get-agent", "--context")
 	if rc != 0 {
 		t.Fatalf("get-agent --context: rc=%d %s", rc, out)
 	}
-	seen := map[string]listedAgent{}
+	var panes []string
 	for _, a := range parseAgents(t, out) {
-		seen[a.ID] = a
+		if a.ID == "mover" {
+			panes = append(panes, a.Pane)
+		}
 	}
-	if len(seen) != 3 || !seen["context-self"].Self || seen["hidden-sender"].Pane != pane || seen["visible-sender"].Pane != pane {
-		t.Fatalf("context = %+v, want both live senders and self, scoped to alpha", seen)
-	}
-	rows := h.listedRuns(caller)
-	if len(rows) != 1 || rows[0].ID != "visible-sender" {
-		t.Fatalf("display rows = %+v, want only the pane winner", rows)
-	}
-	h.waitGlyph("π - visible-sender", "")
-	if strings.Contains(strings.Join(h.rows(), "\n"), "hidden-sender") {
-		t.Fatalf("sidebar shows the hidden record: %q", h.rows())
+	if len(panes) != 1 || panes[0] != to {
+		t.Fatalf("mover's panes = %v, want only %s", panes, to)
 	}
 }
 
@@ -484,15 +487,14 @@ func TestListRunsScopesOrdersAndDecorates(t *testing.T) {
 	pane := func(session string) string { return h.newWindow(session, "", "sh", "-c", "exec sleep 300") }
 	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
 	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
-	parent := func(p string) map[string]any { return map[string]any{"parent": map[string]any{"session": p}} }
-	withDepth := func(m map[string]any, d int) map[string]any { m["depth"] = d; return m }
+	parent := func(p string) map[string]any { return map[string]any{"parent": p} }
 
 	h.writeRecord("root", caller, at(0), map[string]any{
 		"status": "running", "title": "alpha-root", "inbox": "/nonexistent.sock", "model": "m1",
 	})
 	child2, child1 := pane("alpha"), pane("alpha")
-	h.writeRecord("child2", child2, at(2), withDepth(parent("root"), 1))
-	h.writeRecord("child1", child1, at(1), withDepth(parent("root"), 1))
+	h.writeRecord("child2", child2, at(2), parent("root"))
+	h.writeRecord("child1", child1, at(1), parent("root"))
 	h.agentRunMeta("child2", child2, "child2", "root")
 	h.agentRunMeta("child1", child1, "child1", "root")
 	// The session id breaks a tie in ts, so identical state always lists
@@ -505,9 +507,7 @@ func TestListRunsScopesOrdersAndDecorates(t *testing.T) {
 	h.writeRecord("cyc-a", pane("alpha"), at(3), parent("cyc-b"))
 	h.writeRecord("cyc-b", pane("alpha"), at(4), parent("cyc-a"))
 	h.writeRecord("selfish", pane("alpha"), at(5), parent("selfish"))
-	// The edge is matched on the parent's session, never its pid: a pid
-	// can be recycled.
-	h.writeRecord("orphan", pane("alpha"), at(6), map[string]any{"parent": map[string]any{"session": "someone-else", "pid": os.Getpid()}})
+	h.writeRecord("orphan", pane("alpha"), at(6), parent("someone-else"))
 	h.writeRecord("far", pane("beta"), at(0), nil)
 
 	out, rc := h.kidoAs(caller, "", nil, "tool", "list_runs", "--json")
@@ -515,7 +515,7 @@ func TestListRunsScopesOrdersAndDecorates(t *testing.T) {
 		t.Fatalf("kido tool list_runs --json: rc=%d %s", rc, out)
 	}
 	if got, want := strings.Join(jsonKeys(t, out), " "),
-		"id name named agent pane window status activity parent depth self cwd canMessage canReply model sinceReport stalled kind relationship"; got != want {
+		"id name named pane window status activity parent depth self cwd canMessage canReply model sinceReport stalled kind relationship"; got != want {
 		t.Errorf("list_runs --json keys = %q, want %q", got, want)
 	}
 	var order []string
@@ -551,19 +551,15 @@ func TestListRunsSessionFlagAndCanReply(t *testing.T) {
 		{"no-message-tool", []string{"read", "bash"}},
 		{"has-message-tool", []string{"read", "message_agent"}},
 	} {
+		h.writeRecord(c.id, h.newWindow("beta", "", "sh", "-c", "exec sleep 300"),
+			t0.Add(time.Duration(i)*time.Second), map[string]any{"inbox": "/nonexistent.sock"})
 		if c.tools != nil {
-			meta, _ := json.Marshal(map[string]any{"id": c.id, "name": "", "kind": "agent", "depth": 0,
+			meta, _ := json.Marshal(map[string]any{"id": c.id, "name": "", "kind": "agent",
 				"pane": "", "pid": 0, "cwd": "", "tools": c.tools, "startedAt": "2023-11-14T22:13:20Z"})
-			dir := filepath.Join(h.stateDir, "runs", c.id)
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(h.stateDir, "runs", c.id, "meta.json"), meta, 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}
-		h.writeRecord(c.id, h.newWindow("beta", "", "sh", "-c", "exec sleep 300"),
-			t0.Add(time.Duration(i)*time.Second), map[string]any{"inbox": "/nonexistent.sock"})
 	}
 	h.writeRecord("here", h.firstPane("alpha"), t0, nil)
 
@@ -598,13 +594,13 @@ func TestMessageAgentSaysAMessageToARunningAgentWaits(t *testing.T) {
 	in := startInbox(t, "ok\n")
 	caller := h.firstPane("alpha")
 	h.programStatus(caller, "state=idle:app=pi", "caller")
-	h.agentStatus("caller", caller, "pi", "--inbox", in.Path)
+	h.agentStatus("caller", caller, "--inbox", in.Path)
 	h.idleAgent("alpha", "idle-child", "idle-child", "--inbox", in.Path, "--parent-session", "caller")
 	busy := func(id, status string, extra ...string) {
 		p := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 		h.in("select-pane", "-t", p, "-T", "")
 		h.programStatus(p, "state="+status+":app=pi", id)
-		h.agentStatus(id, p, "pi", append([]string{"--inbox", in.Path}, extra...)...)
+		h.agentStatus(id, p, append([]string{"--inbox", in.Path}, extra...)...)
 	}
 	busy("busy-peer", "working")
 	busy("busy-child", "working", "--parent-session", "caller")

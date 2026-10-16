@@ -482,9 +482,9 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 			}
 			if agent == "pi" {
 				h.programStatus(rootPane, "state="+state+":app=pi", "feed-root")
-				h.agentStatus("root-e2e", rootPane, "pi", "--activity", status)
+				h.agentStatus("root-e2e", rootPane, "--activity", status)
 			} else {
-				h.agentStatus("root-e2e", rootPane, "pi", "--remove")
+				h.agentStatus("root-e2e", rootPane, "--remove")
 				h.programStatus(rootPane, "state="+state+":app=claude-code:msg="+base64.StdEncoding.EncodeToString([]byte(status)), "feed-root")
 			}
 			f.waitLast(func(s feedSnapshot) bool {
@@ -642,42 +642,31 @@ func TestRpcFailures(t *testing.T) {
 }
 
 // A failed poll is sent as "error" and the feed keeps going; the next good
-// poll clears it. The failure is load_live removing a dead record from a
-// read-only state directory, which it cannot swallow; the feed has that
-// directory to itself, so nothing else removes the record first.
+// poll clears it. The failure is an asks directory the feed cannot read.
 func TestRpcRecoversFromAnError(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("root removes a file from a read-only directory")
+		t.Skip("root reads a directory of mode 000")
 	}
 	t.Parallel()
 	h := start(t, "alpha")
 	h.in("set-option", "-g", "side-status-command", "false")
-	dir := h.stateDir
-	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	asks := filepath.Join(h.stateDir, "asks")
+	if err := os.Mkdir(asks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(asks, 0o700) })
 	f := h.startFeed("alpha")
 	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 1 }, "the first line")
 
-	holder := exec.Command("sleep", "300")
-	if err := holder.Start(); err != nil {
+	if err := os.Chmod(asks, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	rec := fmt.Sprintf(`{"agent":"pi","name":"","pane":"%%999","pid":%d,"ts":"2026-01-01T00:00:00Z"}`,
-		holder.Process.Pid)
-	if err := os.WriteFile(filepath.Join(dir, "held.json"), []byte(rec), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	holder.Process.Kill()
-	holder.Wait()
-
 	before := f.last()
 	failed := f.waitLast(func(s feedSnapshot) bool { return s.Error != nil }, "the error line")
 	if failed.ServerInstance != before.ServerInstance || len(failed.Sessions) != 1 {
 		t.Errorf("a failed read dropped the last good identity or topology: %s", failed.raw)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := os.Chmod(asks, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	f.waitLast(func(s feedSnapshot) bool { return s.Error == nil && len(s.Sessions) == 1 }, "the recovery")

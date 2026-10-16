@@ -35,12 +35,12 @@ func TestPiPaneIdentityRemovalPreservesNativeStatus(t *testing.T) {
 		{"working", "◼"},
 	} {
 		h.programStatus(pane, "state="+c.state+":app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-		h.agentStatus("pi-1", pane, "pi")
+		h.agentStatus("pi-1", pane)
 		h.waitGlyph("deploy - kido", c.glyph)
 	}
 
 	// Removing identity does not clear the pane's terminal status.
-	h.agentStatus("pi-1", pane, "pi", "--remove")
+	h.agentStatus("pi-1", pane, "--remove")
 	h.waitFor(func() bool {
 		return h.countRows("╶◼deploy - kido") == 0 && h.countRows("╶◼π - deploy - kido") == 1
 	}, settle, func() string {
@@ -53,20 +53,20 @@ func TestPiPaneTitleAndNativeStatus(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.piPane("alpha", "π - deploy - branch - kido")
 	h.programStatus(pane, "state=working:app=pi:msg=ZGVwbG95IC0gYnJhbmNo")
-	h.agentStatus("pi-3", pane, "pi")
+	h.agentStatus("pi-3", pane)
 	h.waitGlyph("deploy - branch - kido", "◼")
 	if got := h.rowFor("deploy"); got != "╶◼deploy - branch - kido" {
 		t.Fatalf("row = %q, want pane title, native status and no duplicate caption", got)
 	}
-	h.agentStatus("pi-3", pane, "pi", "--remove")
+	h.agentStatus("pi-3", pane, "--remove")
 	h.waitGlyph("deploy - branch - kido", "◼")
-	h.agentStatus("pi-3", pane, "pi")
+	h.agentStatus("pi-3", pane)
 	h.programStatus(pane, "state=clear")
 	h.waitFor(func() bool { return !strings.Contains(h.rowFor("deploy"), "deploy - branch - kido") }, settle, msgf("clear hides the pi label despite its identity"))
 }
 
-// A second live agent on the parent's pane wins it in the per-pane view;
-// get-agent reads every live record, so the parent still answers true.
+// get-agent reads the run by id, so another agent claiming the parent's
+// pane leaves the parent alive.
 func TestGetAgentCmd(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -76,10 +76,16 @@ func TestGetAgentCmd(t *testing.T) {
 	if err := dead.Run(); err != nil {
 		t.Fatal(err)
 	}
-	rec := h.stateRecord("parent")
+	rec, ok := h.readRecord(t, "parent")
+	if !ok {
+		t.Fatal("no run record for parent")
+	}
 	rec["pid"] = dead.Process.Pid
 	b, _ := json.Marshal(rec)
-	if err := os.WriteFile(filepath.Join(h.stateDir, "dead-sess.json"), b, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(h.stateDir, "runs", "dead-sess"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.stateDir, "runs", "dead-sess", "pi.json"), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -112,25 +118,9 @@ func TestGetAgentCmd(t *testing.T) {
 			}
 		}
 	}
-	if _, err := os.Stat(filepath.Join(h.stateDir, "dead-sess.json")); !os.IsNotExist(err) {
-		t.Errorf("dead record was not removed: %v", err)
-	}
 	if got := strings.TrimSpace(h.runKido("alpha", "empty-session.out", "get-agent", "''")); got != "kido get-agent: usage: kido get-agent SESSION\nrc=1" {
 		t.Errorf("empty session = %q", got)
 	}
-}
-
-func (h *harness) stateRecord(sessionID string) map[string]any {
-	h.t.Helper()
-	b, err := os.ReadFile(filepath.Join(h.stateDir, sessionID+".json"))
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	var rec map[string]any
-	if err := json.Unmarshal(b, &rec); err != nil {
-		h.t.Fatal(err)
-	}
-	return rec
 }
 
 // The record is full of fields a rebuilt one would lose; only the
@@ -140,11 +130,14 @@ func TestSetStatusCmd(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.programStatus(pane, "state=working:app=pi", "worker")
-	h.agentStatus("worker", pane, "pi", "--inbox", "/tmp/nope.sock", "--parent-session", "p", "--depth", "1", "--model", "claude-sonnet-5", "--activity", "the old one")
-	before := h.stateRecord("worker")
+	h.agentStatus("worker", pane, "--inbox", "/tmp/nope.sock", "--parent-session", "p", "--model", "claude-sonnet-5", "--activity", "the old one")
+	before, ok := h.readRecord(t, "worker")
+	if !ok {
+		t.Fatal("no run record for worker")
+	}
 	setStatus := func(pane, activity string) (string, error) {
 		cmd := exec.Command(kidoBin, "tool", "set_status", activity)
-		cmd.Env = cleanEnv("TMUX_PANE="+pane, "KIDO_STATE_DIR="+h.stateDir)
+		cmd.Env = cleanEnv(append([]string{"TMUX_PANE=" + pane, "KIDO_STATE_DIR=" + h.stateDir}, h.caller(pane)...)...)
 		out, err := cmd.CombinedOutput()
 		return strings.TrimSpace(string(out)), err
 	}
@@ -157,8 +150,8 @@ func TestSetStatusCmd(t *testing.T) {
 		if out, err := setStatus(pane, c.activity); err != nil {
 			t.Fatalf("set_status %q: %v\n%s", c.activity, err, out)
 		}
-		after := h.stateRecord("worker")
-		if got, _ := after["activity"].(string); got != c.want {
+		after, ok := h.readRecord(t, "worker")
+		if got, _ := after["activity"].(string); !ok || got != c.want {
 			t.Errorf("set_status %q recorded %q, want %q", c.activity, got, c.want)
 		}
 		after["activity"] = before["activity"]
@@ -167,8 +160,8 @@ func TestSetStatusCmd(t *testing.T) {
 		}
 	}
 
-	want := `kido tool set_status: no agent session has reported pane "%999"; there is nothing to set an activity on`
+	want := `kido tool set_status: no agent session is calling ($PI_SESSION_ID names none); there is nothing to set an activity on`
 	if out, err := setStatus("%999", "busy"); err == nil || out != want {
-		t.Errorf("set_status from an unreported pane = %q (%v), want %q and a failure", out, err, want)
+		t.Errorf("set_status from no agent = %q (%v), want %q and a failure", out, err, want)
 	}
 }

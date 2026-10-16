@@ -48,13 +48,14 @@ let prompt ~dir ~self ~window text =
   else
     let* panes = failed (Tmux_pane.list_panes (Tmux.create ())) in
     let* self = failed (List_runs.caller_pane panes self) in
-    let states = State.by_pane (State.load_live ~dir) in
+    let runs = State.runs ~dir panes in
+    let states = State.agents runs in
     let candidates whole_session =
       List.filter_map
         (fun (p : Tmux_pane.t) ->
           if
             (not (in_scope self ~whole_session p))
-            || Option.is_some (Tmux_pane.run_pane panes p.window_id)
+            || Option.is_some (State.run_pane ~runs panes p.window_id)
           then None
           else
             match State.pane_kind ~states p with
@@ -67,10 +68,10 @@ let prompt ~dir ~self ~window text =
     | [ (p, kind) ] ->
         let inbox, name =
           match kind with
-          | Pi_agent { session; _ } -> (session.inbox, State.display_name panes session)
+          | Pi_agent { pi; _ } -> (pi.inbox, State.display_name panes pi)
           | Some_agent _ | Terminal | Ssh _ -> ("", p.title)
         in
         failed
           (Result.map ignore
-             (deliver_or_paste ~inbox ~payload:text ~pane:(Some p.pane_id) ~name ~run:p.run text))
+             (deliver_or_paste ~inbox ~payload:text ~pane:(Some p.pane_id) ~name ~run:None text))
     | _ -> Error Several
