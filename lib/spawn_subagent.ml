@@ -12,7 +12,7 @@ type flags = {
   name : string;
   task_file : string;
   model : string;
-  tools : string;
+  tools : string option;
   resume : string;
   fork : string;
   keep_alive : bool;
@@ -21,11 +21,18 @@ type flags = {
 }
 
 type mode =
-  | Fresh of { name : string; task : string; fork : string; model : string; tools : string list }
+  | Fresh of { name : string; task : string; fork : string; model : string }
   | Resume of Subrun.id
 
 type owner = Given of State.parent | Nobody | Adopt
-type request = { mode : mode; owner : owner; keep_alive : bool; command : string list }
+
+type request = {
+  mode : mode;
+  owner : owner;
+  tools : string list option;
+  keep_alive : bool;
+  command : string list;
+}
 
 let check_window_name name =
   let open Result.Infix in
@@ -110,10 +117,12 @@ let parse (f : flags) =
             let* () = invalid (check_window_name f.name) in
             let* () = invalid (Launch.tmux_safe "--fork" f.fork) in
             let+ task = invalid (read_task f.task_file) in
-            let tools = if String.is_empty f.tools then [] else String.split_on_char ',' f.tools in
-            Fresh { name = f.name; task; fork = f.fork; model = f.model; tools }
+            Fresh { name = f.name; task; fork = f.fork; model = f.model }
   in
-  { mode; owner; keep_alive = f.keep_alive; command }
+  let tools =
+    Option.map (fun s -> if String.is_empty s then [] else String.split_on_char ',' s) f.tools
+  in
+  { mode; owner; tools; keep_alive = f.keep_alive; command }
 
 let thinking_levels = [ "off"; "minimal"; "low"; "medium"; "high"; "xhigh"; "max" ]
 
@@ -326,7 +335,7 @@ let spawn ~dir ~self ~pi req =
             pid = 0;
             cwd = pane.current_path;
             model = f.model;
-            tools = f.tools;
+            tools = [];
             keep_alive = false;
             started_at = Timestamp.now ();
           }
@@ -365,15 +374,24 @@ let spawn ~dir ~self ~pi req =
             in
             let lacks flag = not (List.mem ~eq:String.equal flag (List.tl command)) in
             command
-            @ (if (not (String.is_empty meta.model)) && lacks "--model" then
-                 [ "--model"; meta.model ]
-               else [])
             @
-            if (not (List.is_empty meta.tools)) && lacks "--tools" then
-              [ "--tools"; String.concat "," meta.tools ]
+            if (not (String.is_empty meta.model)) && lacks "--model" then [ "--model"; meta.model ]
             else []
         in
         Ok (meta, command, mint)
+  in
+  let tools = Option.get_or ~default:meta.tools req.tools in
+  let tools =
+    if
+      is_pi && Option.is_some parent
+      && (not (List.is_empty tools))
+      && not (List.mem ~eq:String.equal "notify_parent" tools)
+    then tools @ [ "notify_parent" ]
+    else tools
+  in
+  let command =
+    if is_pi && not (List.is_empty tools) then command @ [ "--tools"; String.concat "," tools ]
+    else command
   in
   let* () = validate_model ~path:pi.path command in
   (* A resume keeps the run's own cwd: pi sessions are project-scoped, and `pi --session` from
@@ -381,6 +399,7 @@ let spawn ~dir ~self ~pi req =
   let meta =
     {
       meta with
+      tools;
       parent_session = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) parent;
       depth;
       keep_alive = meta.keep_alive || req.keep_alive;

@@ -31,7 +31,7 @@ a TypeScript extension. It uses fake agent binaries to test the same paths.
 | `message_agent(to, message, replyTo?)` | `kido tool message_agent [--reply-to ID] -- <to>` |
 | `ask_agent(to, question, timeoutMs?)` | `kido tool ask_agent --id ID -- <to>` |
 | `spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?)` | `kido tool spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file - [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] -- pi ...` |
-| `spawn_subagent(resume, model?, tools?, keepAlive?)` | `kido tool spawn_subagent --resume RUN_ID --parent-pid PID --parent-session ID [--keep-alive] -- pi ...` |
+| `spawn_subagent(resume, model?, tools?, keepAlive?)` | `kido tool spawn_subagent --resume RUN_ID --parent-pid PID --parent-session ID [--model M] [--tools T,...] [--keep-alive] -- pi ...` |
 | `steer_subagent(to, message)` | `kido tool steer_subagent -- <to>` |
 | `interrupt_subagent(to)` | `kido tool interrupt_subagent -- <to>` |
 | `stop_run(to, force?)` | `kido tool stop_run [--force] -- <to>` |
@@ -193,9 +193,14 @@ after `--`, or plain `pi`.
 
 If the command is literally `pi`, kido inserts `--session-id <run-id>`
 after it. Thus, the run id is the child's pi session id, with no mapping
-to store. The extension adds `--name`. It passes `--model` and `--tools`
-when given. A narrow toolset limits possible effects; the depth ceiling
-does not.
+to store. The extension adds `--name` and `--model` to pi's command.
+It passes tools only as kido's `--tools` flag. kido selects that list,
+or the stored list on resume, and records it in the run metadata.
+For a pi child with a parent, kido adds `notify_parent` to a non-empty
+list unless present. It emits `--tools` once. An empty list keeps pi's
+default tools; `--tools ''` also selects defaults on resume.
+A `--no-parent` child keeps its requested list.
+A narrow toolset limits possible effects; the depth ceiling does not.
 
 The spawn-specific environment uses `new-window`'s `-e` flags.
 Otherwise, the command receives tmux's global and session environment,

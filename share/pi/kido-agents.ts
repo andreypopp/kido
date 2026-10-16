@@ -1004,7 +1004,7 @@ export default function (pi: ExtensionAPI) {
         ),
         tools: Type.Optional(
           Type.Array(Type.String(), {
-            description: "Tool names the subagent may use - its capability ceiling. Omit to leave it at pi's default set.",
+            description: "Tool names the subagent may use - its capability ceiling. notify_parent is always included. Omit to leave it at pi's default set.",
           }),
         ),
         keepAlive: Type.Optional(
@@ -1033,17 +1033,15 @@ export default function (pi: ExtensionAPI) {
       if (!own) return reply("this session has no id of its own to parent a subagent with; cannot spawn");
       // A generated name goes on a tmux command line, so it must avoid the characters tmuxConfUnsafe rejects; hex does.
       const name = params.name || (params.resume ? "" : `sub-${randomUUID().slice(0, 8)}`);
-      const modelAndTools = [
-        ...(params.model ? ["--model", params.model] : []),
-        ...(params.tools && params.tools.length > 0 ? ["--tools", params.tools.join(",")] : []),
-      ];
+      const model = params.model ? ["--model", params.model] : [];
       const args = ["tool", "spawn_subagent", "--parent-pid", String(process.pid), "--parent-session", own];
       if (params.resume) args.push("--resume", params.resume);
       if (name) args.push("--name", name);
       if (params.task) args.push("--task-file", "-");
       if (params.fork) args.push("--fork", own);
       if (params.keepAlive) args.push("--keep-alive");
-      args.push(...modelAndTools, "--", "pi", ...(name ? ["--name", name] : []), ...modelAndTools);
+      if (params.tools) args.push("--tools", params.tools.join(","));
+      args.push(...model, "--", "pi", ...(name ? ["--name", name] : []), ...model);
       const res = await runKido(args, { input: params.task, timeoutMs: SPAWN_TIMEOUT_MS });
       if (!res.ok) return reply(params.resume ? `could not resume ${params.resume}: ${res.error}` : `could not spawn subagent: ${res.error}`);
       const [windowID, paneID, runID] = res.out.split(/\s+/);

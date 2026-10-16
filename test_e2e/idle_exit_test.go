@@ -458,10 +458,10 @@ func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resume := func(tag string, command ...string) string {
+	resume := func(tag, tools string, command ...string) string {
 		outFile := filepath.Join(h.dir, tag+".out")
-		h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s -- %s > %s 2>&1",
-			shellQuote(piDir), shellQuote(sessDir), kidoBin, runID, strings.Join(command, " "), outFile))
+		h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s %s -- %s > %s 2>&1",
+			shellQuote(piDir), shellQuote(sessDir), kidoBin, runID, tools, strings.Join(command, " "), outFile))
 		h.sendKeys("Enter")
 		fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 		if len(fields) != 3 {
@@ -469,10 +469,10 @@ func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 		}
 		return fields[0]
 	}
-	newWindowID := resume("resume", "pi")
+	newWindowID := resume("resume", "", "pi")
 
 	started := h.startCommand(newWindowID)
-	for _, want := range []string{"--tools read,bash", "--model acme/claude-sonnet-5", "--session " + runID} {
+	for _, want := range []string{"--tools read,bash,notify_parent", "--model acme/claude-sonnet-5", "--session " + runID} {
 		if !strings.Contains(started, want) {
 			t.Errorf("resumed pane's command = %q, want %q: the run's own session, tools and model back", started, want)
 		}
@@ -484,7 +484,10 @@ func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	h.killPane(h.in("list-panes", "-t", newWindowID, "-F", "#{pane_id}"))
 	h.waitFor(func() bool { return !h.windowExists(newWindowID) }, settle,
 		msgf("the sweep to close window %s", newWindowID))
-	started = h.startCommand(resume("override", "pi", "--model", "acme/claude-opus-5"))
+	started = h.startCommand(resume("override", "--tools read", "pi", "--model", "acme/claude-opus-5"))
+	if !strings.HasSuffix(started, "--tools read,notify_parent") {
+		t.Errorf("resumed pane's command = %q, want notify_parent in the tools override", started)
+	}
 	if !strings.Contains(started, "--model acme/claude-opus-5") || strings.Contains(started, "claude-sonnet-5") {
 		t.Errorf("resumed pane's command = %q, want the model the resume named and not the recorded one", started)
 	}

@@ -2593,7 +2593,7 @@ test("spawn_subagent passes its task as text on stdin and calls kido tool spawn_
   }
 });
 
-test("spawn_subagent passes --model and --tools through to the child's pi invocation, and generates a safe name when omitted", async () => {
+test("spawn_subagent passes tools to kido and model to pi, and generates a safe name when omitted", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -2605,7 +2605,8 @@ test("spawn_subagent passes --model and --tools through to the child's pi invoca
     const command = spawnArgs.slice(spawnArgs.indexOf("--") + 1);
     assert.equal(command[0], "pi");
     assert.equal(argAfter(command, "--model"), "anthropic/sonnet");
-    assert.equal(argAfter(command, "--tools"), "read,bash", "--tools is the capability ceiling handed to the child, comma-joined");
+    assert.equal(argAfter(spawnArgs.slice(0, spawnArgs.indexOf("--")), "--tools"), "read,bash");
+    assert.ok(!command.includes("--tools"));
 
     const name = argAfter(spawnArgs, "--name");
     assert.ok(name, "a name was generated");
@@ -2641,7 +2642,7 @@ test("spawn_subagent(resume) calls kido tool spawn_subagent --resume with its ow
   }
 });
 
-test("spawn_subagent(resume) with model/tools overrides them in the resumed pi's own command", async () => {
+test("spawn_subagent(resume) passes the tools override to kido and the model to pi", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -2655,7 +2656,8 @@ test("spawn_subagent(resume) with model/tools overrides them in the resumed pi's
     const command = spawnArgs.slice(sepIndex + 1);
     assert.equal(command[0], "pi");
     assert.equal(argAfter(command, "--model"), "claude-opus-5");
-    assert.equal(argAfter(command, "--tools"), "read");
+    assert.equal(argAfter(spawnArgs.slice(0, sepIndex), "--tools"), "read");
+    assert.ok(!command.includes("--tools"));
   } finally {
     await fx.restore();
   }

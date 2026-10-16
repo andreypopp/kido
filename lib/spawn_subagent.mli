@@ -8,7 +8,7 @@ type flags = {
   name : string;
   task_file : string;
   model : string;
-  tools : string;
+  tools : string option;
   resume : string;
   fork : string;
   keep_alive : bool;

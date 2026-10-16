@@ -605,9 +605,13 @@ let spawn_subagent =
      and+ model =
        str "model" "M" "Model the child will run, recorded in the run's meta for kido runs."
      and+ tools =
-       str "tools" "T,..."
-         "Comma-separated tool allowlist the child will run, recorded in the run's meta for kido \
-          runs."
+       Arg.(
+         value
+         & opt (some string) None
+         & info [ "tools" ] ~docv:"T,..."
+             ~doc:
+               "Comma-separated pi tool allowlist. On resume, omit to keep the stored list; pass \
+                an empty value for pi defaults.")
      and+ resume =
        str "resume" "RUN_ID" "Resume an existing run's own session instead of starting a new one."
      and+ fork =
@@ -641,7 +645,8 @@ let spawn_subagent =
                     \   or: kido tool spawn_subagent --no-parent --name NAME --task-file FILE|- \
                      [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n\
                     \   or: kido tool spawn_subagent --resume RUN_ID [--parent-pid PID \
-                     --parent-session ID | --no-parent] [--keep-alive] [-- COMMAND...]")
+                     --parent-session ID | --no-parent] [--tools T,...] [--keep-alive] [-- \
+                     COMMAND...]")
            @@ Spawn_subagent.parse
                 {
                   parent_pid;
