@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -6,8 +7,10 @@ struct Upload: Sendable {
     enum Bytes: Sendable { case file(FileHandle, path: String), data(Data) }
     struct Source: Sendable { let name: String; let size: Int; let bytes: Bytes }
     let sources: [Source]
+    private var temporary = false
     var size: Int { sources.reduce(0) { $0 + $1.size } }
     var originals: [String]? {
+        guard !temporary else { return nil }
         let paths = sources.compactMap { if case .file(_, let path) = $0.bytes { path } else { nil } }
         return paths.count == sources.count ? paths : nil
     }
@@ -50,6 +53,104 @@ struct Upload: Sendable {
             throw Failure(message: "Kido uploads at most 256 MiB at once.")
         }
         self.sources = sources
+    }
+
+    #if KIDO_VISUAL || KIDO_STRESS
+    @MainActor static let promiseRoot = FileManager.default.temporaryDirectory.appendingPathComponent("kido-promises-test-" + UUID().uuidString)
+    #else
+    static let promiseRoot = FileManager.default.temporaryDirectory.appendingPathComponent("kido-promises")
+    #endif
+    @MainActor static let promiseDirectory = promiseRoot.appendingPathComponent(UUID().uuidString)
+    @MainActor private static var promiseLock: FileHandle?
+    #if KIDO_VISUAL
+    @MainActor static var promiseTimeout: TimeInterval = 30
+    #else
+    static let promiseTimeout: TimeInterval = 30
+    #endif
+    @MainActor private static var promises: [String: PromisedFiles] = [:]
+
+    fileprivate static func privatePromiseDirectory(_ url: URL) -> Bool {
+        var info = stat()
+        return lstat(url.path, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR && info.st_uid == getuid() && info.st_mode & 0o777 == 0o700
+    }
+
+    private static func promiseDirectoryMatches(_ url: URL, _ fd: Int32) -> Bool {
+        var opened = stat(), named = stat()
+        return fstat(fd, &opened) == 0 && lstat(url.path, &named) == 0 && opened.st_dev == named.st_dev && opened.st_ino == named.st_ino
+    }
+
+    @MainActor static func sweepPromises(launch: Bool = false) {
+        guard privatePromiseDirectory(promiseRoot) else { return }
+        if !launch {
+            Array(promises.values).forEach { $0.finish(.failure(Failure(message: "Upload cancelled."))) }
+            if privatePromiseDirectory(promiseDirectory) { try? FileManager.default.removeItem(at: promiseDirectory) }
+            return
+        }
+        for directory in (try? FileManager.default.contentsOfDirectory(at: promiseRoot, includingPropertiesForKeys: nil)) ?? [] {
+            guard privatePromiseDirectory(directory) else { continue }
+            let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { continue }
+            defer { close(fd) }
+            guard flock(fd, LOCK_EX | LOCK_NB) == 0, promiseDirectoryMatches(directory, fd) else { continue }
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    @MainActor static func cancelPromises(_ ids: [String]) {
+        ids.forEach { promises[$0]?.finish(.failure(Failure(message: "Upload cancelled."))) }
+    }
+
+    @MainActor static func promised(_ receivers: [NSFilePromiseReceiver], id: String) async throws(Failure) -> Upload {
+        guard !receivers.isEmpty, receivers.reduce(0, { $0 + max(1, $1.fileTypes.count) }) <= countLimit else {
+            throw Failure(message: "Kido uploads at most \(countLimit) files at once.")
+        }
+        let directory = promiseDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            if !FileManager.default.fileExists(atPath: promiseRoot.path) {
+                try FileManager.default.createDirectory(at: promiseRoot, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            }
+            guard privatePromiseDirectory(promiseRoot) else { throw Failure(message: "The temporary upload directory is not private.") }
+            if !FileManager.default.fileExists(atPath: promiseDirectory.path) {
+                try FileManager.default.createDirectory(at: promiseDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            }
+            guard privatePromiseDirectory(promiseDirectory) else { throw Failure(message: "The temporary upload directory is not private.") }
+            if promiseLock.map({ promiseDirectoryMatches(promiseDirectory, $0.fileDescriptor) }) != true {
+                let fd = open(promiseDirectory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard fd >= 0 else { throw Failure(message: "Kido could not open the temporary upload directory.") }
+                let lock = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+                guard flock(fd, LOCK_EX | LOCK_NB) == 0, promiseDirectoryMatches(promiseDirectory, fd) else { throw Failure(message: "Kido could not lock the temporary upload directory.") }
+                promiseLock = lock
+            }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        } catch { throw Failure(message: "Kido could not create a temporary upload directory: \(error.localizedDescription)") }
+        let state = PromisedFiles(directory: directory, deadline: .now.advanced(by: .seconds(promiseTimeout)))
+        promises[id] = state
+        defer { promises[id] = nil }
+        let result = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                state.continuation = continuation
+                guard !Task.isCancelled else { return state.finish(.failure(Failure(message: "Upload cancelled."))) }
+                state.timer = Task {
+                    do { try await Task.sleep(until: state.deadline, clock: .continuous) } catch { return }
+                    state.finish(.failure(Failure(message: "The source app did not provide the files within 30 seconds.")))
+                }
+                let queue = OperationQueue()
+                queue.name = "Kido file promises"
+                for receiver in receivers {
+                    receiver.receivePromisedFiles(atDestination: directory, options: [:], operationQueue: queue) { @Sendable url, error in
+                        let message = error?.localizedDescription
+                        Task { @MainActor in state.received(url, error: message) }
+                    }
+                }
+                state.expected = receivers.reduce(0) { $0 + $1.fileNames.count }
+                if state.expected == 0 || state.expected > countLimit { state.finish(.failure(Failure(message: "Kido uploads at most \(countLimit) files at once."))) }
+            }
+        } onCancel: {
+            Task { @MainActor in state.finish(.failure(Failure(message: "Upload cancelled."))) }
+        }
+        var upload = try result.get()
+        upload.temporary = true
+        return upload
     }
 
     init(image raw: Data?) async throws(Failure) {
@@ -136,5 +237,38 @@ struct Upload: Sendable {
         return paths.map { path in
             path.unicodeScalars.allSatisfy(plain.contains) ? path : SSH.quote(path)
         }.joined(separator: " ")
+    }
+}
+
+@MainActor private final class PromisedFiles {
+    let directory: URL
+    let deadline: ContinuousClock.Instant
+    var expected = 0
+    var urls: [URL] = []
+    var continuation: CheckedContinuation<Result<Upload, Failure>, Never>?
+    var timer: Task<Void, Never>?
+
+    init(directory: URL, deadline: ContinuousClock.Instant) { self.directory = directory; self.deadline = deadline }
+
+    func received(_ url: URL, error: String?) {
+        guard continuation != nil else { return clean() }
+        guard ContinuousClock.now < deadline else { return finish(.failure(Failure(message: "The source app did not provide the files within 30 seconds."))) }
+        if let error { return finish(.failure(Failure(message: "Kido could not receive the promised files: \(error)"))) }
+        urls.append(url)
+        if urls.count == expected { finish(Result { () throws(Failure) in try Upload(files: urls, copying: true) }) }
+    }
+
+    func finish(_ result: Result<Upload, Failure>) {
+        clean()
+        timer?.cancel()
+        timer = nil
+        let pending = continuation
+        continuation = nil
+        pending?.resume(returning: result)
+    }
+
+    private func clean() {
+        guard Upload.privatePromiseDirectory(Upload.promiseRoot), Upload.privatePromiseDirectory(Upload.promiseDirectory) else { return }
+        try? FileManager.default.removeItem(at: directory)
     }
 }
