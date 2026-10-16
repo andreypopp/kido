@@ -4,10 +4,17 @@ import SidebarFeed
 
 class OwnerWindow: NSWindow {
     var focusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
+    private var nested = 0
+    // Ending a field editor's session first makes the window itself first
+    // responder, through this method.
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
-        let old = firstResponder
+        let old = firstResponder, owner = PaneView.owner(old)
+        nested += 1
         let accepted = super.makeFirstResponder(responder)
-        if accepted, old !== firstResponder { focusChanged(old, firstResponder) }
+        nested -= 1
+        guard accepted, old !== firstResponder else { return accepted }
+        if nested == 0, let owner, owner !== PaneView.owner(firstResponder) { owner.endCopy() }
+        focusChanged(old, firstResponder)
         return accepted
     }
 }
