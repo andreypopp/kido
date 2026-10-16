@@ -1196,7 +1196,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         default: ""
         }
         if case .entering = copyMode { if name == "q" { endCopy() }; return }
-        guard ["q", "y", "v", "V", "h", "l", "j", "k", "0", "$", "^u", "^d", "g", "G"].contains(name) else { return }
+        guard ["q", "y", "v", "V", "h", "l", "w", "b", "e", "^", "j", "k", "0", "$", "^u", "^d", "g", "G"].contains(name) else { return }
         var value = ghostty_selection_s()
         guard name != "q", ghostty_surface_selection(surface, &value) else { return endCopy() }
         var anchor = (x: Int(value.top_left.x), y: Int(value.top_left.y))
@@ -1233,8 +1233,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         guard ghostty_surface_scrollbar(surface, &bar) else { return endCopy() }
         let columns = Int(ghostty_surface_size(surface).columns), rows = Int(bar.len), history = Int(bar.total) - rows, row = cursor.y
         switch name {
-        case "h": cursor.x -= 1
-        case "l": cursor.x += 1
+        case "h", "l", "w", "b", "e", "^":
+            let motion = switch name {
+            case "h": GHOSTTY_POINT_MOTION_LEFT
+            case "l": GHOSTTY_POINT_MOTION_RIGHT
+            case "w": GHOSTTY_POINT_MOTION_WORD_NEXT
+            case "b": GHOSTTY_POINT_MOTION_WORD_PREVIOUS
+            case "e": GHOSTTY_POINT_MOTION_WORD_END
+            default: GHOSTTY_POINT_MOTION_FIRST_NONBLANK
+            }
+            var moved = ghostty_point_s()
+            let point = ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_EXACT, x: UInt32(cursor.x), y: UInt32(cursor.y))
+            guard ghostty_surface_move_point(surface, point, motion, &moved) else { return endCopy() }
+            cursor = (Int(moved.x), Int(moved.y))
         case "j": cursor.y += 1
         case "k": cursor.y -= 1
         case "0": cursor.x = 0
@@ -1242,7 +1253,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         case "^u": cursor.y -= max(1, rows / 2)
         case "^d": cursor.y += max(1, rows / 2)
         case "g": cursor.y = 0
-        default: cursor.y = history + rows - 1
+        case "G": cursor.y = history + rows - 1
+        default: break
         }
         cursor = (min(max(0, cursor.x), columns - 1), min(max(0, cursor.y), history + rows - 1))
         if lines { copyMode = .lines(anchor: anchor, cursor: cursor) }
@@ -1813,8 +1825,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let chord = event.charactersIgnoringModifiers?.lowercased()
         if mods == [.command, .shift] && chord == "c" { toggleCopyMode(nil); return true }
         if copyMode != nil {
-            if !(mods == [.command] && chord == "c") && !(mods == [.control] && (chord == "u" || chord == "d")),
-               NSApp.mainMenu?.performKeyEquivalent(with: event) == true { return true }
+            // AppKit's Edit menu adds Emoji & Symbols (fn-E), which a plain e also matches.
+            if mods.contains(.command), mods != [.command] || chord != "c", NSApp.mainMenu?.performKeyEquivalent(with: event) == true { return true }
             copyKey(event)
             return true
         }
