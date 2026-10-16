@@ -224,12 +224,20 @@ import GhosttyKit
             }
             return true
         case GHOSTTY_ACTION_SEARCH_SELECTED:
-            let selected = action.action.search_selected.selected
+            let value = action.action.search_selected, selected = value.selected
+            let start = value.has_start ? (x: Int(value.start_x), y: Int(value.start_y)) : nil
             let generation = ghostty_surface_search_generation(surface)
-            PaneView.onMain(userdata) {
-                guard ghostty_surface_search_generation($0.surface) == generation else { return }
-                $0.find?.ghosttySelected(selected)
+            nonisolated(unsafe) let userdata = userdata
+            let deliver: @Sendable () -> Void = {
+                PaneView.onMain(userdata) {
+                    guard ghostty_surface_search_generation($0.surface) == generation else { return }
+                    $0.find?.ghosttySelected(selected, start: start)
+                }
             }
+            #if KIDO_VISUAL
+            if MainActor.assumeIsolated({ visualHoldSelected.map { $0(start, deliver) } != nil }) { return true }
+            #endif
+            deliver()
             return true
         default: break
         }
@@ -249,6 +257,10 @@ import GhosttyKit
         PaneView.onMain(userdata) { $0.onCommand(command) }
         return true
     }
+
+    #if KIDO_VISUAL
+    static var visualHoldSelected: (((x: Int, y: Int)?, @escaping @Sendable () -> Void) -> Void)?
+    #endif
 
     #if KIDO_STRESS
     static func verifyDeferredSearchAction(_ surface: ghostty_surface_t) {
