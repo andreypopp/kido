@@ -9,11 +9,13 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
     private var matches: [Int] = []
     private var index = 0
     private var selected: Int?
+    private var start: (x: Int, y: Int)?
     private var total = 0
     private var target: Int?
     private var navigating = false
     private var searchedHistory = 0
     private var autoNavigate = true
+    private var loaded: Bool { pane?.copyMode != nil }
 
     init(_ pane: PaneView) {
         self.pane = pane
@@ -59,12 +61,13 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         matches = []
         index = 0
         target = nil
-        count.stringValue = field.stringValue.isEmpty ? "" : "Searching…"
+        count.stringValue = field.stringValue.isEmpty || loaded ? "" : "Searching…"
         restartGhostty()
-        pane?.onSearch(field.stringValue, token)
+        pane?.onSearch(loaded ? "" : field.stringValue, token)
     }
 
     func invalidate() {
+        guard !loaded else { return }
         token = UUID()
         matches = []
         target = nil
@@ -89,6 +92,12 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
     @objc func previous() { move(-1) }
 
     private func move(_ delta: Int) {
+        if loaded {
+            guard total > 0 else { return }
+            if total == 1, let start { pane?.copyMove("", to: start); return }
+            pane?.resetScroll()
+            return action(delta > 0 || selected == nil ? "navigate_search:next" : "navigate_search:previous")
+        }
         guard !matches.isEmpty else { return }
         index = (index + delta + matches.count) % matches.count
         land()
@@ -110,11 +119,22 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
 
     }
 
-    func ghosttyTotal(_ total: Int) { self.total = max(0, total); navigate() }
-    func ghosttySelected(_ selected: Int) {
+    func ghosttyTotal(_ total: Int) {
+        self.total = max(0, total)
+        guard loaded else { return navigate() }
+        count.stringValue = total > 0 ? "\(total) matches (loaded)" : "No matches (loaded)"
+        guard autoNavigate, total > 0, selected == nil, !navigating else { return }
+        navigating = true
+        pane?.resetScroll()
+        action("navigate_search:next")
+    }
+
+    func ghosttySelected(_ selected: Int, start: (x: Int, y: Int)?) {
         self.selected = selected >= 0 ? selected : nil
+        self.start = self.selected == nil ? nil : start
         navigating = false
-        navigate()
+        guard loaded else { return navigate() }
+        if let start = self.start { pane?.copyMove("", to: start) }
     }
 
     private func navigate() {
@@ -135,10 +155,12 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
 
     private func restartGhostty() {
         selected = nil
+        start = nil
         total = 0
         navigating = false
         searchedHistory = pane?.scrollPosition().retainedHistoryRows ?? 0
         action("search:")
+        if case .entering = pane?.copyMode { return }
         action("search:\(field.stringValue)")
     }
 
@@ -160,17 +182,20 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         token = UUID()
         pane?.onSearch("", token)
         action("end_search")
+        if loaded, !field.stringValue.isEmpty { pane?.copyFind.query = field.stringValue }
+        if (window?.firstResponder as? NSView)?.isDescendant(of: self) == true { window?.makeFirstResponder(pane) }
         let pane = pane
         removeFromSuperview()
         pane?.find = nil
-        pane?.window?.makeFirstResponder(pane)
+        pane?.needsLayout = true
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.cancelOperation(_:)): close()
         case #selector(NSResponder.insertNewline(_:)):
-            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { previous() } else { next() }
+            if loaded { window?.makeFirstResponder(pane) }
+            else if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { previous() } else { next() }
         default: return false
         }
         return true
