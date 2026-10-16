@@ -502,6 +502,33 @@ Cmd-V and unsafe paste are separate from application reads. An unsafe paste is
 asked about in a sheet showing its text, and completed exactly once: pasted,
 or refused with an empty completion on Cancel or when its surface is freed.
 
+**Uploads.** File drops prefer existing file URLs. Local panes paste their
+original paths; remote panes copy the files. If no file URLs exist, Kido
+receives file promises on a dedicated operation queue into a private per-drop
+directory in its process's private subdirectory of `$TMPDIR/kido-promises`
+(all 0700). The process holds an exclusive flock on its subdirectory's open
+file descriptor until exit. Reader callbacks are
+nonisolated and send results to the main actor. A continuation and one
+30-second timer wait for the source; there is no polling. Promise waits count
+as uploads. Escape and pane disposal cancel them, and connection changes
+prevent late results from pasting. Reader errors and timeouts show a notice.
+
+Promised files use the same regular-file validation and copying limits as
+other uploads: 64 MiB per file, 16 files, and 256 MiB total. Open file handles
+keep their contents readable after Kido deletes the temporary directory.
+Kido deletes it after validation and on failure, cancellation or timeout.
+Late reader callbacks remove late writes and cannot paste. Owner invalidation
+removes that owner's temporary files synchronously. At launch, Kido removes
+only process directories whose exclusive lock it can acquire without waiting.
+It holds the lock through removal and checks that the path still names the
+locked directory. This clears crash and post-exit writes without deleting
+another process's drops. Quit removes only this process's directory. Both
+sweeps refuse symlinked parents and subdirectories. Cleanup does not depend
+on cancelled tasks running in the termination loop.
+Promised files never paste temporary paths, even in Local panes. They use the existing transfer script and drops
+directory, with its seven-day cleanup. Remote and Local-pane SSH consent
+rules still apply. Text and web links without files or promises are refused.
+
 Surfaces are kept per window, for the most recently shown windows of
 any session while their panes total at most 32; the rest have none. A
 window gains its surfaces when shown. Showing another window evicts the
