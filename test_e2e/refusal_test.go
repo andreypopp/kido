@@ -31,7 +31,7 @@ func TestCommandLineRefusals(t *testing.T) {
 		{[]string{"tool", "spawn_subagent", "--name", "kid"}, "", "kido tool spawn_subagent: --parent-pid and --parent-session are required (or --no-parent for a child owned by nobody)\n" +
 			"usage: kido tool spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
 			"   or: kido tool spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
-			"   or: kido tool spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | --no-parent] [--keep-alive] [-- COMMAND...]", 1},
+			"   or: kido tool spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | --no-parent] [--tools T,...] [--keep-alive] [-- COMMAND...]", 1},
 	} {
 		cmd := exec.Command(kidoBin, c.args...)
 		cmd.Env = cleanEnv("KIDO_STATE_DIR="+state, "TMUX_PANE=%1")
