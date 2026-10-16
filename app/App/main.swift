@@ -20,6 +20,7 @@ import SidebarFeed
     #endif
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        Upload.sweepPromises(launch: true)
         if let notifications = Notifier.shared.poster as? SystemNotifications {
             notifications.click = { [weak self] in self?.route($0) }
             notifications.install()
@@ -214,6 +215,7 @@ import SidebarFeed
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         note("quitting: \(trigger ?? "NSApp.terminate")")
         Notifier.shared.withdrawAll()
+        Upload.sweepPromises()
         let stopped = DispatchGroup()
         for owner in owners {
             stopped.enter()

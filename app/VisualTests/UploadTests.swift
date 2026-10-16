@@ -44,6 +44,38 @@ func pngData(width: Int, height: Int, type: UTType = .png, compression: Int? = n
     XCTAssertTrue(pane.performDragOperation(SyntheticDrag(board)))
 }
 
+private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: (URL, OperationQueue, (URL, Error?) -> Void)?
+    private var replied = false
+    var destination: URL? { lock.withLock { pending?.0 } }
+    var didReply: Bool { lock.withLock { replied } }
+    var stalled = false
+    var size = 8
+    var name = "promised.txt"
+    override var fileTypes: [String] { [UTType.plainText.identifier] }
+    override var fileNames: [String] { [name] }
+    override func receivePromisedFiles(atDestination destinationDir: URL, options: [AnyHashable: Any] = [:], operationQueue: OperationQueue, reader: @escaping (URL, Error?) -> Void) {
+        lock.withLock { pending = (destinationDir.appendingPathComponent(name), operationQueue, reader) }
+        if !stalled { reply() }
+    }
+    func reply(recreate: Bool = false) {
+        guard let queue = lock.withLock({ pending?.1 }) else { return }
+        queue.addOperation { [self] in
+            guard let (destination, _, reader) = lock.withLock({ pending }) else { return }
+            do {
+                if recreate { try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
+                try Data("promised".utf8).write(to: destination)
+                let file = try FileHandle(forWritingTo: destination)
+                try file.truncate(atOffset: UInt64(size))
+                try file.close()
+                reader(destination, nil)
+            } catch { reader(destination, error) }
+            lock.withLock { replied = true }
+        }
+    }
+}
+
 @MainActor final class UploadTests: VisualTestCase {
     private final class Input { var data = Data() }
 
@@ -64,15 +96,217 @@ func pngData(width: Int, height: Int, type: UTType = .png, compression: Int? = n
         addTeardownBlock { @MainActor in
             pane.dispose()
             owner.close()
+            Upload.sweepPromises()
+            rmdir(Upload.promiseRoot.path)
             board.releaseGlobally()
             try? FileManager.default.removeItem(atPath: root)
         }
         return (owner, pane, board, input, root)
     }
 
+    private func removed(_ promise: PromisedFile) -> Bool {
+        promise.destination.map { !FileManager.default.fileExists(atPath: $0.deletingLastPathComponent().path) } ?? false
+    }
+
     private func notice(_ owner: WindowOwner) -> String? {
         defer { if owner.preparedAlert != nil { owner.respondToAlert(.alertFirstButtonReturn) } }
         return owner.preparedAlert.map { $0.alert.messageText + "\n" + $0.alert.informativeText }
+    }
+
+    func testPromisedDropCopiesFile() async throws {
+        let (owner, pane, _, input, root) = try localPane()
+        let writer = PromisedFile()
+        owner.uploadPromises([writer], to: pane)
+        try await wait("promise transfer", within: 5) { !owner.uploading(pane) }
+        try await drain(pane.runtime)
+        XCTAssertNil(notice(owner))
+        let path = String(decoding: input.data, as: UTF8.self)
+        XCTAssertTrue(path.hasPrefix(root + "/state/drops/"), path)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "promised")
+        let temporary = try XCTUnwrap(writer.destination)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.deletingLastPathComponent().path))
+    }
+
+    func testPromisedDropCancelRemovesDirectoryAndIgnoresLateReader() async throws {
+        let (owner, pane, _, input, _) = try localPane()
+        let promise = PromisedFile()
+        promise.stalled = true
+        owner.uploadPromises([promise], to: pane)
+        try await wait("promise requested", within: 2) { promise.destination != nil }
+        let destination = try XCTUnwrap(promise.destination)
+        let directory = destination.deletingLastPathComponent()
+        XCTAssertEqual(try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory, true)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber,
+                                                    context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        pane.keyDown(with: escape)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), "Escape must clean synchronously")
+        XCTAssertFalse(owner.uploading(pane))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        promise.reply(recreate: true)
+        try await wait("late write removed", within: 2) { promise.didReply && !FileManager.default.fileExists(atPath: directory.path) }
+        try await drain(pane.runtime)
+        XCTAssertTrue(input.data.isEmpty)
+        XCTAssertNil(notice(owner))
+    }
+
+    func testTooLargePromiseIsRefusedAndRemoved() async throws {
+        let (owner, pane, _, input, _) = try localPane()
+        let promise = PromisedFile()
+        promise.size = Upload.fileLimit + 1
+        owner.uploadPromises([promise], to: pane)
+        try await wait("oversized promise refused", within: 2) { !owner.uploading(pane) }
+        XCTAssertTrue(try XCTUnwrap(notice(owner)).contains("larger than 64 MiB"))
+        XCTAssertTrue(input.data.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(promise.destination).deletingLastPathComponent().path))
+    }
+
+    func testSeveralPromisedFilesReplyOnTheOperationQueue() async throws {
+        let (owner, pane, _, input, root) = try localPane()
+        let promises = (0..<3).map { index in
+            let promise = PromisedFile()
+            promise.name = "promised-\(index).txt"
+            return promise
+        }
+        owner.uploadPromises(promises, to: pane)
+        try await wait("three promise transfers", within: 5) { !owner.uploading(pane) }
+        XCTAssertTrue(promises.allSatisfy(\.didReply))
+        XCTAssertNil(notice(owner))
+        let paths = String(decoding: input.data, as: UTF8.self).split(separator: " ")
+        XCTAssertEqual(paths.count, 3)
+        for path in paths {
+            XCTAssertTrue(path.hasPrefix(root + "/state/drops/"))
+            XCTAssertEqual(try String(contentsOfFile: String(path), encoding: .utf8), "promised")
+        }
+        XCTAssertTrue(promises.allSatisfy(removed))
+    }
+
+    func testPromiseReplyAfterDeadlineCannotPasteOrLeaveFiles() async throws {
+        let (owner, pane, _, input, _) = try localPane()
+        Upload.promiseTimeout = 0.1
+        defer { Upload.promiseTimeout = 30 }
+        let promise = PromisedFile()
+        promise.stalled = true
+        owner.uploadPromises([promise], to: pane)
+        try await wait("promise requested", within: 2) { promise.destination != nil }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { promise.reply(recreate: true) }
+        try await wait("late reply cleaned", within: 2) { promise.didReply && !owner.uploading(pane) && self.removed(promise) }
+        XCTAssertTrue(try XCTUnwrap(notice(owner)).contains("did not provide the files within 30 seconds"))
+        XCTAssertTrue(input.data.isEmpty)
+    }
+
+    func testDisposedPaneCancelsPromiseSynchronously() async throws {
+        let (owner, pane, _, input, _) = try localPane()
+        let promise = PromisedFile()
+        promise.stalled = true
+        owner.uploadPromises([promise], to: pane)
+        try await wait("promise requested", within: 2) { promise.destination != nil }
+        pane.dispose()
+        XCTAssertFalse(owner.uploading(pane))
+        XCTAssertTrue(removed(promise))
+        promise.reply(recreate: true)
+        try await wait("disposed pane late reply cleaned", within: 2) { promise.didReply && self.removed(promise) }
+        XCTAssertTrue(input.data.isEmpty)
+        XCTAssertNil(notice(owner))
+    }
+
+    func testPaneThatRefusesInputDoesNotTransferPromise() async throws {
+        let (owner, pane, _, input, root) = try localPane()
+        let promise = PromisedFile()
+        promise.stalled = true
+        owner.uploadPromises([promise], to: pane)
+        try await wait("promise requested", within: 2) { promise.destination != nil }
+        pane.visualRefuseInput()
+        promise.reply()
+        try await wait("promise refused", within: 2) { !owner.uploading(pane) }
+        XCTAssertTrue(input.data.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/state/drops"))
+        XCTAssertTrue(removed(promise))
+        XCTAssertNil(notice(owner))
+    }
+
+    func testTooManyPromisesAreRefusedBeforeCallingReceivers() async throws {
+        let (owner, pane, _, input, _) = try localPane()
+        let promises = (0...Upload.countLimit).map { _ in PromisedFile() }
+        owner.uploadPromises(promises, to: pane)
+        try await wait("promise count refused", within: 2) { !owner.uploading(pane) }
+        XCTAssertTrue(promises.allSatisfy { $0.destination == nil })
+        XCTAssertTrue((try? FileManager.default.contentsOfDirectory(atPath: Upload.promiseDirectory.path).isEmpty) ?? true)
+        XCTAssertTrue(try XCTUnwrap(notice(owner)).contains("at most 16 files"))
+        XCTAssertTrue(input.data.isEmpty)
+    }
+
+    func testOwnerInvalidationRemovesPromisesSynchronously() async throws {
+        let (owner, pane, _, input, _) = try localPane()
+        let promise = PromisedFile()
+        promise.stalled = true
+        owner.uploadPromises([promise], to: pane)
+        try await wait("promise requested", within: 2) { promise.destination != nil }
+        owner.close()
+        XCTAssertTrue(removed(promise))
+        XCTAssertFalse(owner.uploading(pane))
+        promise.reply(recreate: true)
+        try await wait("closed owner late reply cleaned", within: 2) { promise.didReply && self.removed(promise) }
+        XCTAssertTrue(input.data.isEmpty)
+    }
+
+    func testPromiseSweepsPreserveAnotherProcessLock() async throws {
+        let (owner, pane, _, input, root) = try localPane()
+        let promise = PromisedFile()
+        promise.stalled = true
+        owner.uploadPromises([promise], to: pane)
+        try await wait("own promise requested", within: 2) { promise.destination != nil }
+        let fm = FileManager.default, parent = Upload.promiseRoot
+        let held = parent.appendingPathComponent("other-process"), stale = parent.appendingPathComponent("stale-process")
+        defer { try? fm.removeItem(at: held); try? fm.removeItem(at: stale) }
+        for directory in [held, stale] {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            try Data("keep".utf8).write(to: directory.appendingPathComponent("file"))
+        }
+        let ready = root + "/locked"
+        let child = try Child("/usr/bin/python3", ["-I", "-c", "import fcntl,os,sys,time; fd=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); fcntl.flock(fd,fcntl.LOCK_EX); open(sys.argv[2],'w').close(); time.sleep(10)", held.path, ready], stdout: Pipe())
+        var failure: Error?
+        do {
+            try await wait("other process locked its directory", within: 3) { fm.fileExists(atPath: ready) }
+            Upload.sweepPromises(launch: true)
+            XCTAssertTrue(fm.fileExists(atPath: held.appendingPathComponent("file").path), "launch sweep removed another process's locked drop")
+            XCTAssertFalse(fm.fileExists(atPath: stale.path))
+            XCTAssertFalse(removed(promise), "launch sweep must preserve this process's active drop")
+            Upload.sweepPromises()
+            XCTAssertTrue(fm.fileExists(atPath: held.appendingPathComponent("file").path), "quit sweep removed another process's locked drop")
+            XCTAssertFalse(fm.fileExists(atPath: Upload.promiseDirectory.path))
+            try await wait("quit cancelled own promise", within: 2) { !owner.uploading(pane) }
+            XCTAssertTrue(input.data.isEmpty)
+        } catch { failure = error }
+        child.stop()
+        let reaped = await withCheckedContinuation { done in
+            DispatchQueue.global().async { done.resume(returning: child.ended.wait(timeout: .now() + 3) == .success) }
+        }
+        XCTAssertTrue(reaped, "the lock helper must be killed and reaped within 3 seconds")
+        if let failure { throw failure }
+        Upload.sweepPromises(launch: true)
+        XCTAssertFalse(fm.fileExists(atPath: held.path), "a crashed or exited process no longer holds its lock")
+    }
+
+    func testPromiseSweepDoesNotFollowParentOrChildSymlinks() throws {
+        let fm = FileManager.default, parent = Upload.promiseRoot
+        let outside = parent.appendingPathExtension("outside")
+        defer { try? fm.removeItem(at: parent); try? fm.removeItem(at: outside) }
+        try fm.createDirectory(at: outside, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let sentinel = outside.appendingPathComponent("keep")
+        try Data("keep".utf8).write(to: sentinel)
+        try fm.createSymbolicLink(at: parent, withDestinationURL: outside)
+        Upload.sweepPromises(launch: true)
+        Upload.sweepPromises()
+        XCTAssertEqual(try Data(contentsOf: sentinel), Data("keep".utf8))
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: parent.path), outside.path)
+        try fm.removeItem(at: parent)
+        try fm.createDirectory(at: parent, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let link = parent.appendingPathComponent("symlink")
+        try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+        Upload.sweepPromises(launch: true)
+        XCTAssertEqual(try Data(contentsOf: sentinel), Data("keep".utf8))
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: link.path), outside.path)
     }
 
     func testLocalDropPastesOriginalPathsThroughThePastePath() async throws {
@@ -221,8 +455,10 @@ func pngData(width: Int, height: Int, type: UTType = .png, compression: Int? = n
         input.data = Data()
         owner.upload(.success(try await Upload(image: png)), to: pane)
         pane.dispose()
-        try await wait("the transfer published although its pane closed") { published().count == 3 && owner.preparedAlert != nil }
-        XCTAssertEqual(notice(owner)?.hasPrefix("The pane closed before the upload finished"), true)
+        XCTAssertFalse(owner.uploading(pane))
+        try await drain(runtime)
+        XCTAssertEqual(published().count, 2)
+        XCTAssertNil(notice(owner))
         XCTAssertEqual(input.data, Data())
     }
 }
