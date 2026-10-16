@@ -169,7 +169,7 @@ process that it starts, from its own session. It does not change
 `process.env`, because a `/reload` would then read the changed value.
 kido reads `PI_SESSION_ID` at the command boundary. The caller is that
 run if its `pi.json` exists. kido never finds the caller from its pane.
-Thus, `kido tool ask_user` and the other tools need no session flags.
+Thus, `kido tool set_asks` and the other tools need no session flags.
 
 tmux `new-window` does not pass the caller's environment. The launcher
 and the e2e harness remove both variables. A human's shell and pi's `!`
@@ -626,16 +626,24 @@ refresh starts. kido fetches nothing until the first `@`.
 
 ## User asks
 
-Top-level pi agents use `ask_user` to record questions that need the
-user's decision. They use `remove_ask` to remove answered questions or
-questions that no longer apply. Kido owns `<state>/asks/<id>.json`.
+Top-level pi agents use `set_asks` to replace the complete list of
+questions that need the user's decision. They send every open ask at the
+end of a turn that changes this list. An omitted ask is removed; an empty
+list clears all asks. The user can remove one with `kido remove-ask ID`.
+Kido owns `<state>/asks/<id>.json`.
 Each ask contains its id, its session (the run of the asking pi), text
 and creation time. An atomic link claims a fresh id. The run supplies
 everything else: the name, the cwd and the pi session file.
 
-`replaces` rewords an existing ask without changing its id. It uses an
-atomic temporary-file rename and refreshes the session and time. Only a
-caller whose run has no parent can record or remove an ask.
+Each entry has text and an optional id. Kido validates all entries before
+it writes: text must be non-empty and valid UTF-8; ids must be unique and
+belong to the calling session. An entry without an id claims a fresh id.
+An unchanged entry keeps its file and creation time. Changed text keeps
+the id, uses an atomic temporary-file rename, and refreshes the creation
+time. The command reads a JSON array from stdin and returns an array of
+id/text objects in the input order. The caller comes from `PI_SESSION_ID`;
+the command takes no flags. Only a caller whose run has no parent can
+set or remove asks.
 
 Asks persist after their session ends. Ended means no live pid holds
 the run. kido derives this from `pi.json` and never stores it. An ask's
@@ -650,6 +658,32 @@ ask with no caller, because the user acts, not the agent. External
 removals also queue a kido notice with the removed ask's id and first
 text line. This notice waits for the model's next turn without waking
 or interrupting it.
+
+If a top-level run of a pi with a UI ends without a successful
+`set_asks` call, pi starts one background model request to keep the list
+current. A headless pi claims no run and makes no request. The request
+does not delay the next user prompt. It contains the current asks with
+ids and only user messages and assistant text since the last reviewed
+point on the active branch. Custom messages count as user messages, with
+their sender. The most recent 16 KB of text is kept. Tool calls, tool
+results and thinking are excluded. If no text remains, pi sends no
+request. A branch entry records each successful set and each reviewed
+span, so this boundary survives reload and resume. An entry that names
+an id not on the active branch is ignored.
+
+The model keeps ids for existing asks, removes answered or moot asks,
+and adds only decisions the agent explicitly asked the user to make.
+Uncertain decisions leave the list unchanged. Unknown ids are dropped.
+An unchanged list needs no write, but it records the reviewed span.
+Changes use the tool's same write path and refresh the widget. Before
+the write, pi reads the asks again. If they changed during the request,
+for example through `kido tool set_asks` from a shell, pi discards the
+result. A kido notice gives the agent the new ids on its next turn,
+without waking or interrupting it. Only one request runs at a time. A
+new run, a later set or a session change discards its result, also
+while its write waits or runs. The request has a 30-second abort
+deadline. Missing models, missing authentication and all request or
+write failures are silent.
 
 Open asks give a live agent the existing waiting indicator. This
 indicator takes precedence over Done and ordinary state, and remains
@@ -2164,6 +2198,11 @@ variables are:
 - `KIDO_AGENT_LIST_TTL_MS`;
 - wrapper streaming variables `KIDO_STREAM_BATCH_MS`,
   `KIDO_STREAM_BACKOFF_MS` and `KIDO_STREAM_BACKOFF_CAP_MS`.
+
+`KIDO_ASKS_MODEL` selects the asks fallback model as `provider/model-id`.
+Its default is `claude-bridge/claude-haiku-5-5`. An empty value disables
+the fallback. The extension reads it once at module scope, as it does
+the duration variables.
 
 Streaming variables control batch frequency and retry delay after a
 failed send. The extension reads its variables once at module scope.

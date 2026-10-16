@@ -368,14 +368,9 @@ let set_status =
            | Ok () -> 0
            | Error holder -> failwith (held_message (Subrun.string_of_id id) holder))
 
-let ask_user =
-  cmd ~group:"tool " "ask_user" "Record a question for the user, read from stdin."
-  @@ let+ replaces =
-       Arg.(
-         value
-         & opt (some string) None
-         & info [ "replaces" ] ~docv:"ID" ~doc:"Reword an existing ask, keeping its id.")
-     in
+let set_asks =
+  cmd ~group:"tool " "set_asks" "Set the complete user ask list, read as JSON from stdin."
+  @@ let+ () = Term.const () in
      fun () ->
        let dir = state_dir () in
        let id, _ =
@@ -383,14 +378,19 @@ let ask_user =
          |> Option.to_result "no agent session is calling ($PI_SESSION_ID names none)"
          |> ok
        in
-       let replaces = Option.map (fun id -> ok (Ask.parse_id id)) replaces in
-       print
-         (Result.map Ask.string_of_id
-            (Ask.record ~dir ~replaces ~session:(Subrun.string_of_id id) ~text:(stdin ())
-               ~now:(Timestamp.now ())))
+       let asks =
+         try Ask.entries_of_yojson (Yojson.Safe.from_string (stdin ()))
+         with Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error (e, _) ->
+           failwith (Printexc.to_string e)
+       in
+       let result =
+         ok (Ask.set ~dir ~session:(Subrun.string_of_id id) ~asks ~now:(Timestamp.now ()))
+       in
+       print_endline (Yojson.Safe.to_string (`List (List.map Ask.yojson_of_answer result)));
+       0
 
 let remove_ask =
-  cmd ~group:"tool " "remove_ask" "Remove an open user ask."
+  cmd "remove-ask" "Remove an open user ask."
   @@ let+ id = arg "ID" in
      fun () ->
        let dir = state_dir () in
@@ -1003,8 +1003,7 @@ let tool =
     [
       message_agent;
       ask_agent;
-      ask_user;
-      remove_ask;
+      set_asks;
       notify_parent;
       steer_subagent;
       interrupt_subagent;
@@ -1030,6 +1029,7 @@ let () =
         async_run;
         get_agent;
         get_asks;
+        remove_ask;
         snapshot;
         prompt;
         get_window;

@@ -38,13 +38,13 @@ const argv = process.argv.slice(2);
 const args = argv[0] === "tool" ? argv.slice(1) : argv;
 if ([
   "list_runs", "message_agent", "ask_agent", "notify_parent", "steer_subagent",
-  "interrupt_subagent", "stop_run", "set_status", "spawn_subagent", "async_bash", "ask_user", "remove_ask",
+  "interrupt_subagent", "stop_run", "set_status", "spawn_subagent", "async_bash", "set_asks",
 ].includes(args[0]) && argv[0] !== "tool") process.exit(1);
 if (args[0] === "get-agent" && args.includes("--context")) args[0] = "list_runs";
 switch (args[0]) {
   case "get-asks":
-  case "ask_user":
-  case "remove_ask": {
+  case "set_asks":
+  case "remove-ask": {
     const file = path.join(process.env.KIDO_FAKE_STATE_DIR, "asks.json");
     let asks = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
     const session = args[0] === "get-asks" ? args[args.indexOf("--session") + 1] : process.env.PI_SESSION_ID;
@@ -54,13 +54,19 @@ switch (args[0]) {
       const delay = Number(process.env.KIDO_FAKE_ASKS_DELAY_MS || 0);
       setTimeout(() => { process.stdout.write(snapshot); process.exit(0); }, delay);
       break;
-    } else if (args[0] === "ask_user") {
-      const id = args.includes("--replaces") ? args[args.indexOf("--replaces") + 1] : "A7";
-      asks = asks.filter((a) => a.id !== id);
-      asks.push({ id, session, sessionFile: process.env.PI_SESSION_FILE, text: readStdin() });
+    } else if (args[0] === "set_asks") {
+      const entries = JSON.parse(readStdin());
+      const result = entries.map((a, i) => ({ id: a.id || ("A" + (7 + i)), text: a.text }));
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, JSON.stringify(asks));
-      process.stdout.write(id);
+      fs.writeFileSync(file + ".setting", "");
+      setTimeout(() => {
+        asks = asks.filter((a) => a.session !== session);
+        asks.push(...result.map((a) => ({ ...a, session })));
+        fs.writeFileSync(file, JSON.stringify(asks));
+        process.stdout.write(JSON.stringify(result));
+        process.exit(0);
+      }, Number(process.env.KIDO_FAKE_SET_DELAY_MS || 0));
+      break;
     } else {
       asks = asks.filter((a) => a.id !== args[args.length - 1]);
       fs.writeFileSync(file, JSON.stringify(asks));
@@ -519,6 +525,7 @@ function createFakePi() {
     getSessionName: (): string | undefined => pi.sessionName,
     getSettings: (): { tuiMode?: "regular" | "fullscreen" } => ({ tuiMode: "regular" }),
     getAllTools: () => [...tools.values()],
+    appendEntry(_customType: string, _data: unknown) {},
     registerTool(tool: any) {
       tools.set(tool.name, tool);
     },
@@ -583,7 +590,7 @@ const fakeTheme = {
 function fakeCtx(sessionId = "self-session", ui?: unknown, idle: () => boolean = () => true) {
   return {
     hasUI: true,
-    sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined, getSessionFile: () => "/tmp/" + sessionId + ".json" },
+    sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined, getSessionFile: () => "/tmp/" + sessionId + ".json", getLeafId: () => null, getBranch: () => [] },
     model: undefined,
     isIdle: idle,
     hasPendingMessages: () => false,
@@ -1185,13 +1192,11 @@ test("user asks register only for top-level sessions, including inherited child 
   try {
     await asSubagent(DEFAULT_SESSION, async () => {
       const child = await startSession(fx, { factory: await freshExtensions() });
-      assert.equal(child.tools.has("ask_user"), false);
-      assert.equal(child.tools.has("remove_ask"), false);
+      assert.equal(child.tools.has("set_asks"), false);
       await pollUntil(() => fx.parentAliveCalls().length > 0, 2000, "the child's parent poll to start");
       await child.emit("session_shutdown", { reason: "new" });
       const nested = await startSession(fx, { factory: await freshExtensions(), sessionId: "nested-root" });
-      assert.equal(nested.tools.has("ask_user"), true);
-      assert.equal(nested.tools.has("remove_ask"), true);
+      assert.equal(nested.tools.has("set_asks"), true);
       fx.setParentAlive("gone");
       const readings = fx.parentAliveCalls().length;
       assert.equal(await pollForStable(() => fx.parentAliveCalls().length, 200, 2000, "no child poll after replacement"), readings);
@@ -1281,7 +1286,7 @@ test("clicking an ask's x removes it as the user and receives the sidebar note t
     assert.deepEqual(widget.handleMouse!({ type: "click", button: "left", x: 2, y: 0 }), { handled: true, render: true });
     assert.deepEqual(widget.render(80), collapsed);
     await pollUntil(() => existsSync(file + ".removed"), 2000, "the user removal command");
-    assert.deepEqual(JSON.parse(readFileSync(file + ".removed", "utf8")), ["tool", "remove_ask", "--", "A1"]);
+    assert.deepEqual(JSON.parse(readFileSync(file + ".removed", "utf8")), ["remove-ask", "--", "A1"]);
     assert.equal(s.messages.length, messages);
     assert.equal(await sendToInbox(s.inboxPath, envelope("asks", "The user removed ask A1: Ship now?", {
       from: { session: "", name: "kido", pane: "" },
@@ -1308,9 +1313,9 @@ test("user ask widgets refresh from kido on actions, session startup and reload"
     const s = await startSession(fx, { factory: await freshExtensions() });
     const render = (host: typeof s) => host.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(35).join("\n") ?? "";
     assert.equal(render(s), "");
-    const ask = s.tools.get("ask_user");
-    const result = await ask.execute("ask1", { text: "Ship now?\nOr wait for review?" }, undefined, undefined, fakeCtx());
-    assert.equal(result.content[0].text, "A7");
+    const ask = s.tools.get("set_asks");
+    const result = await ask.execute("ask1", { asks: [{ text: "Ship now?\nOr wait for review?" }] }, undefined, undefined, fakeCtx());
+    assert.equal(result.content[0].text, "A7: Ship now?");
     assert.match(render(s), /A7 asks you: Ship now\?/);
     assert.match(render(s), /Or wait for review\?/);
     assert.deepEqual(s.widgets.get("kido-asks")?.options, { placement: "aboveEditor" });
@@ -1318,8 +1323,10 @@ test("user ask widgets refresh from kido on actions, session startup and reload"
       const lines = s.widgets.get("kido-asks")!.content!(null, fakeTheme).render(width);
       assert.ok(lines.every((line) => visibleWidth(line) <= width), `ask widget overflowed width ${width}`);
     }
-    assert.match(ask.renderCall({ text: "Ship now?" }, fakeTheme).render(80).join("\n"), /│ asks you: Ship now\?/);
-    await ask.execute("ask2", { text: "Wait until Monday?", replaces: "A7" }, undefined, undefined, fakeCtx());
+    const call = ask.renderCall({ asks: [{ id: "A7", text: "Ship now?" }, { text: "Which version?" }] }, fakeTheme).render(80).join("\n");
+    assert.match(call, /│ asks you \(A7\): Ship now\?/);
+    assert.match(call, /│ asks you: Which version\?/);
+    await ask.execute("ask2", { asks: [{ id: "A7", text: "Wait until Monday?" }] }, undefined, undefined, fakeCtx());
     assert.match(render(s), /Monday/);
     assert.doesNotMatch(render(s), /Ship/);
     await s.emit("session_shutdown", { reason: "reload" });
@@ -1327,7 +1334,7 @@ test("user ask widgets refresh from kido on actions, session startup and reload"
     await pollUntil(() => /A7 asks you: Wait until/.test(render(reloaded)), 2000, "the ask widget refresh");
     const file = join(dirname(fx.runsDir), "asks.json");
     const persisted = JSON.parse(readFileSync(file, "utf8"));
-    assert.equal(persisted.find((a: any) => a.id === "A7").sessionFile, "/tmp/self-session.json");
+    assert.equal(persisted.find((a: any) => a.id === "A7").session, DEFAULT_SESSION);
     const delivered = reloaded.delivered.length;
     const messages = reloaded.messages.length;
     writeFileSync(file, JSON.stringify(persisted.map((a: any) => a.id === "A7" ? { ...a, text: "Changed by the sidebar" } : a)));
@@ -1338,8 +1345,10 @@ test("user ask widgets refresh from kido on actions, session startup and reload"
     writeFileSync(file, JSON.stringify(persisted.filter((a: any) => a.id !== "A7")));
     assert.equal(await sendToInbox(reloaded.inboxPath, envelope("asks", "")), "ok");
     await pollUntil(() => render(reloaded) === "", 2000, "the removed ask widget");
-    await reloaded.tools.get("ask_user").execute("ask3", { text: "Another question" }, undefined, undefined, fakeCtx());
-    await reloaded.tools.get("remove_ask").execute("remove", { id: "A7" });
+    const multiple = await reloaded.tools.get("set_asks").execute("ask3", { asks: [{ text: "Another question\nDetails" }, { text: "Second question" }] }, undefined, undefined, fakeCtx());
+    assert.equal(multiple.content[0].text, "A7: Another question\nA8: Second question");
+    const cleared = await reloaded.tools.get("set_asks").execute("clear", { asks: [] }, undefined, undefined, fakeCtx());
+    assert.equal(cleared.content[0].text, "no open asks");
     assert.equal(render(reloaded), "");
     assert.equal(reloaded.messages.length, messages, "own removal produces no note");
     const other = await startSession(fx, { factory: await freshExtensions(), sessionId: "other" });
@@ -1420,23 +1429,203 @@ test("user ask widgets discard an old instance's pending refresh across reload",
   }
 });
 
+test("asks fallback applies text-only branch decisions and queues a notice", async () => {
+  const fx = makeFixture();
+  try {
+    const branch: any[] = [
+      { id: "old", type: "message", message: { role: "user", content: "old context" } },
+      { id: "set", type: "message", message: { role: "toolResult", toolName: "set_asks", isError: false, content: [{ type: "text", text: "tool output" }] } },
+      { id: "user", type: "message", message: { role: "user", content: "Ship Monday." } },
+      { id: "stray", type: "custom", customType: "kido-asks-set", data: { through: "not-on-branch" } },
+      { id: "notice", type: "custom_message", content: "Review complete", details: { from: "reviewer" } },
+      { id: "assistant", type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "secret" }, { type: "toolCall", name: "bash" }, { type: "text", text: "Which colour?" }] } },
+    ];
+    const file = join(dirname(fx.runsDir), "asks.json");
+    mkdirSync(dirname(fx.runsDir), { recursive: true });
+    writeFileSync(file, JSON.stringify([{ id: "A1", text: "Ship now?", session: DEFAULT_SESSION }]));
+    let input: any;
+    let ctx: any;
+    const s = await startSessionCore(fx, await freshExtensions(), (c) => {
+      c.pi.appendEntry = (customType, data) => { branch.push({ id: "marker", type: "custom", customType, data }); };
+      ctx = { ...fakeCtx(DEFAULT_SESSION, c.ui), sessionManager: { ...fakeCtx().sessionManager, getBranch: () => branch, getLeafId: () => branch.at(-1)?.id }, modelRegistry: {
+        find: (provider: string, id: string) => { assert.equal(`${provider}/${id}`, "claude-bridge/claude-haiku-5-5"); return {}; },
+        hasConfiguredAuth: () => true,
+        complete: async (_model: unknown, context: any, options: any) => { input = JSON.parse(context.messages[0].content); assert.ok(options.signal instanceof AbortSignal); return { content: [{ type: "text", text: '```json\n[{"text":"Which colour?"},{"id":"foreign","text":"Bad"}]\n```' }] }; },
+      } };
+      return ctx;
+    });
+    await s.emit("agent_start", {}, ctx);
+    await s.emit("agent_end", { messages: [] }, ctx);
+    await pollUntil(() => s.messages.length === 1, 2000, "fallback notice");
+    assert.deepEqual(input, { asks: [{ id: "A1", text: "Ship now?" }], messages: "user: Ship Monday.\n\nuser (reviewer): Review complete\n\nassistant: Which colour?" });
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).map(({ id, text }: any) => ({ id, text })), [{ id: "A7", text: "Which colour?" }]);
+    assert.deepEqual(s.messages[0].opts, { deliverAs: "nextTurn" });
+    assert.match(s.messages[0].message.content, /kido updated your open asks: A7: Which colour/);
+    assert.equal(s.messages[0].message.display, false);
+    assert.equal(branch.at(-1).data.through, "assistant");
+  } finally { await fx.restore(); }
+});
+
+test("asks fallback reads persisted branch boundaries and keeps the recent 16 KB", async () => {
+  const fx = makeFixture();
+  try {
+    const branch: any[] = [
+      { id: "old", type: "message", message: { role: "user", content: "before the set" } },
+      { id: "boundary", type: "message", message: { role: "assistant", content: [{ type: "text", text: "old reply" }] } },
+      { id: "marker", type: "custom", customType: "kido-asks-set", data: { through: "boundary" } },
+      { id: "new", type: "message", message: { role: "user", content: "cut this old end " + "é".repeat(10000) + " recent answer" } },
+      { id: "failed", type: "message", message: { role: "toolResult", toolName: "set_asks", isError: true, content: [{ type: "text", text: "failed tool output" }] } },
+    ];
+    let input: any;
+    let ctx: any;
+    const s = await startSessionCore(fx, await freshExtensions(), (c) => {
+      ctx = { ...fakeCtx(DEFAULT_SESSION, c.ui), sessionManager: { ...fakeCtx().sessionManager, getBranch: () => branch, getLeafId: () => "failed" }, modelRegistry: {
+        find: () => ({}), hasConfiguredAuth: () => true,
+        complete: async (_model: unknown, context: any) => { input = JSON.parse(context.messages[0].content); return { content: [{ type: "text", text: "[]" }] }; },
+      } };
+      return ctx;
+    });
+    await s.emit("agent_end", { messages: [] }, ctx);
+    await pollUntil(() => input !== undefined, 2000, "branch model input");
+    assert.deepEqual(input.asks, []);
+    assert.ok(Buffer.byteLength(input.messages) <= 16384);
+    assert.match(input.messages, /recent answer$/);
+    assert.doesNotMatch(input.messages, /before the set|old reply|cut this old end|failed tool output|�/);
+  } finally { await fx.restore(); }
+});
+
+for (const mode of ["called", "disabled", "unchanged", "in-flight", "missing-model", "no-auth", "no-text", "headless"] as const) {
+  test(`asks fallback ${mode}`, async () => {
+    const fx = makeFixture();
+    try {
+      await withEnv({ KIDO_ASKS_MODEL: mode === "disabled" ? "" : "fake/model" }, async () => {
+        let calls = 0;
+        let finish: (value: any) => void = () => {};
+        let completed = false;
+        let writes = 0;
+        const file = join(dirname(fx.runsDir), "asks.json");
+        const existing = [{ id: "A1", text: "First?", session: DEFAULT_SESSION }, { id: "A2", text: "Second?", session: DEFAULT_SESSION }];
+        if (mode === "unchanged") {
+          mkdirSync(dirname(file), { recursive: true });
+          writeFileSync(file, JSON.stringify(existing));
+        }
+        let ctx: any;
+        const s = await startSessionCore(fx, await freshExtensions(), (c) => {
+          c.pi.appendEntry = () => { writes++; };
+          const branch = mode === "no-text" ? [] : [{ id: "user", type: "message", message: { role: "user", content: "Done?" } }];
+          ctx = { ...fakeCtx(DEFAULT_SESSION, c.ui), hasUI: mode !== "headless", sessionManager: { ...fakeCtx().sessionManager, getBranch: () => branch, getLeafId: () => branch.at(-1)?.id ?? null }, modelRegistry: {
+            find: () => mode === "missing-model" ? undefined : {}, hasConfiguredAuth: () => mode !== "no-auth",
+            complete: async () => { calls++; const result = mode === "in-flight" ? await new Promise((resolve) => { finish = resolve; }) : { content: [{ type: "text", text: JSON.stringify(existing.toReversed().map(({ id, text }) => ({ id, text }))) }] }; completed = true; return result; },
+          } };
+          return ctx;
+        });
+        await s.emit("agent_start", {}, ctx);
+        if (mode === "called") await s.tools.get("set_asks").execute("set", { asks: [] }, undefined, undefined, ctx);
+        await s.emit("agent_end", { messages: [] }, ctx);
+        if (mode === "in-flight") {
+          await pollUntil(() => calls === 1, 2000, "in-flight model call");
+          await s.emit("agent_end", { messages: [] }, ctx);
+          assert.equal(calls, 1, "only one fallback runs");
+          await s.tools.get("set_asks").execute("set", { asks: [{ text: "New decision?" }] }, undefined, undefined, ctx);
+          finish({ content: [{ type: "text", text: '[{"text":"Stale decision?"}]' }] });
+          await pollUntil(() => completed, 2000, "model result");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        assert.equal(calls, ["unchanged", "in-flight"].includes(mode) ? 1 : 0);
+        assert.equal(writes, ["called", "in-flight", "unchanged"].includes(mode) ? 1 : 0);
+        if (mode === "in-flight") assert.equal(JSON.parse(readFileSync(file, "utf8"))[0].text, "New decision?", "an in-flight fallback must not overwrite set_asks");
+        else if (mode === "unchanged") assert.equal(readFileSync(file, "utf8"), JSON.stringify(existing));
+        else if (mode !== "called") assert.equal(existsSync(file), false, "skipped fallback writes nothing");
+        assert.equal(s.messages.length, 0);
+      });
+    } finally { await fx.restore(); }
+  });
+}
+
+async function startDeferredFallback(fx: Fixture) {
+  const replies: Array<(text: string) => void> = [];
+  const marks: unknown[] = [];
+  const branch = [{ id: "user", type: "message", message: { role: "user", content: "Ship Monday." } }];
+  let ctx: any;
+  const s = await startSessionCore(fx, await freshExtensions(), (c) => {
+    c.pi.appendEntry = (_customType: string, data: unknown) => { marks.push(data); };
+    ctx = { ...fakeCtx(DEFAULT_SESSION, c.ui), sessionManager: { ...fakeCtx().sessionManager, getBranch: () => branch, getLeafId: () => "user" }, modelRegistry: {
+      find: () => ({}), hasConfiguredAuth: () => true,
+      complete: () => new Promise((resolve) => replies.push((text) => resolve({ content: [{ type: "text", text }] }))),
+    } };
+    return ctx;
+  });
+  return { s, ctx, replies, marks, file: join(dirname(fx.runsDir), "asks.json") };
+}
+
+test("a new run discards the previous run's pending asks fallback", async () => {
+  const fx = makeFixture();
+  try {
+    const { s, ctx, replies, marks, file } = await startDeferredFallback(fx);
+    await s.emit("agent_start", {}, ctx);
+    await s.emit("agent_end", { messages: [] }, ctx);
+    await pollUntil(() => replies.length === 1, 2000, "the first run's model call");
+    await s.emit("agent_start", {}, ctx);
+    await s.emit("agent_end", { messages: [] }, ctx);
+    await pollUntil(() => replies.length === 2, 2000, "the second run's model call");
+    replies[0]('[{"text":"Stale decision?"}]');
+    replies[1]('[{"text":"Current decision?"}]');
+    await pollUntil(() => s.messages.length === 1, 2000, "the second run's notice");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).map((a: any) => a.text), ["Current decision?"]);
+    assert.equal(marks.length, 1);
+  } finally { await fx.restore(); }
+});
+
+test("asks fallback drops a write that a session switch overtakes", async () => {
+  const fx = makeFixture();
+  try {
+    await withEnv({ KIDO_FAKE_SET_DELAY_MS: "600" }, async () => {
+      const { s, ctx, replies, marks, file } = await startDeferredFallback(fx);
+      await s.emit("agent_end", { messages: [] }, ctx);
+      await pollUntil(() => replies.length === 1, 2000, "the model call");
+      replies[0]('[{"text":"Old session decision?"}]');
+      await pollUntil(() => existsSync(file + ".setting"), 2000, "the fallback write to start");
+      await s.emit("session_start", {}, fakeCtx("other-session", s.ui));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      assert.deepEqual(marks, []);
+      assert.equal(s.messages.length, 0);
+    });
+  } finally { await fx.restore(); }
+});
+
+test("asks fallback drops its result when the stored asks changed during the request", async () => {
+  const fx = makeFixture();
+  try {
+    const { s, ctx, replies, marks, file } = await startDeferredFallback(fx);
+    await s.emit("agent_end", { messages: [] }, ctx);
+    await pollUntil(() => replies.length === 1, 2000, "the model call");
+    const external = JSON.stringify([{ id: "A9", text: "Set from bash?", session: DEFAULT_SESSION }]);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, external);
+    replies[0]('[{"text":"Stale decision?"}]');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(readFileSync(file, "utf8"), external);
+    assert.deepEqual(marks, []);
+    assert.equal(s.messages.length, 0);
+  } finally { await fx.restore(); }
+});
+
 test("user ask tools follow root child root identity changes in one runtime", async () => {
   const fx = makeFixture();
   try {
     await asSubagent(DEFAULT_SESSION, async () => {
       const s = await startSession(fx, { factory: await freshExtensions(), sessionId: "nested-root" });
-      for (const name of ["ask_user", "remove_ask"]) assert.equal(s.tools.get(name).exposure, "direct");
-      const rootAsk = s.tools.get("ask_user");
-      const rootRemove = s.tools.get("remove_ask");
+      assert.equal(s.tools.get("set_asks").exposure, "direct");
+      const rootAsk = s.tools.get("set_asks");
       await s.emit("session_start", {}, fakeCtx(DEFAULT_SESSION, s.ui));
-      for (const name of ["ask_user", "remove_ask"]) assert.equal(s.tools.get(name).exposure, "hidden");
-      await assert.rejects(rootAsk.execute("ask", { text: "Question" }, undefined, undefined, fakeCtx()), /top-level agents only/);
-      await assert.rejects(rootRemove.execute("remove", { id: "A7" }), /top-level agents only/);
+      assert.equal(s.tools.get("set_asks").exposure, "hidden");
+      await assert.rejects(rootAsk.execute("ask", { asks: [{ text: "Question" }] }, undefined, undefined, fakeCtx()), /top-level agents only/);
       await s.emit("session_start", {}, fakeCtx("nested-root", s.ui));
-      for (const name of ["ask_user", "remove_ask"]) assert.equal(s.tools.get(name).exposure, "direct");
-      const result = await s.tools.get("ask_user").execute("ask", { text: "Root question" }, undefined, undefined, fakeCtx("nested-root"));
-      assert.equal(result.content[0].text, "A7");
-      await s.tools.get("remove_ask").execute("remove", { id: "A7" });
+      assert.equal(s.tools.get("set_asks").exposure, "direct");
+      const result = await s.tools.get("set_asks").execute("ask", { asks: [{ text: "Root question" }] }, undefined, undefined, fakeCtx("nested-root"));
+      assert.equal(result.content[0].text, "A7: Root question");
+      await s.tools.get("set_asks").execute("clear", { asks: [] }, undefined, undefined, fakeCtx("nested-root"));
     });
   } finally {
     await fx.restore();

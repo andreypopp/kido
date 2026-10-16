@@ -28,7 +28,7 @@ func TestSidebarAsksRevive(t *testing.T) {
 	pane := h.in("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "alpha:", "-c", cwd)
 	h.programStatus(pane, "state=idle:app=pi", "Ended")
 	h.agentStatus("ended-session", pane)
-	id, code := h.kidoAs(pane, "Restart me?", nil, "tool", "ask_user")
+	id, code := setOneAsk(h, pane, "Restart me?")
 	if code != 0 {
 		t.Fatal(id)
 	}

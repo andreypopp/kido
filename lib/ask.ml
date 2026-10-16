@@ -66,32 +66,59 @@ let invalidate ?(removed = false) ~dir ~self ask =
                }))
       (Subrun.live_pi ~dir ask.session)
 
-let record ~dir ~replaces ~session ~text ~now =
-  if String.is_empty (String.trim text) then Error "no question given"
-  else if not (String.equal (Msg.valid_utf_8 text) text) then Error "question is not valid UTF-8"
-  else
-    let write id place =
-      let ask = { id; session; text; created = now } in
-      Fs.write_temp ~perm:0o600 (path ~dir id) (Yojson.Safe.to_string (yojson_of_t ask)) place;
-      Ok id
-    in
-    match replaces with
-    | Some id -> (
-        match read ~dir id with
-        | None -> Error ("no ask " ^ id)
-        | Some old ->
-            let result = write id Unix.rename in
-            if not (String.equal old.session session) then invalidate ~dir ~self:session old;
-            result)
-    | None ->
-        Fs.mkdir_p ~perm:0o700 (Filename.concat dir "asks");
-        let rec create () =
-          let id = "A" ^ String.sub (Msg.new_id ()) 0 8 in
-          match write id Unix.link with
-          | result -> result
-          | exception Unix.Unix_error (EEXIST, _, _) -> create ()
-        in
-        create ()
+type entry = { id : id option; [@default None] [@yojson_drop_if Option.is_none] text : string }
+[@@deriving of_yojson]
+
+type entries = entry list [@@deriving of_yojson]
+type answer = { id : id; text : string } [@@deriving yojson_of]
+
+let set ~dir ~session ~asks ~now =
+  let existing = list ~dir |> List.filter (fun (a : t) -> String.equal a.session session) in
+  let rec validate seen = function
+    | [] -> Ok ()
+    | (a : entry) :: rest -> (
+        if String.is_empty (String.trim a.text) then Error "no question given"
+        else if not (String.equal (Msg.valid_utf_8 a.text) a.text) then
+          Error "question is not valid UTF-8"
+        else
+          match a.id with
+          | Some id when List.mem ~eq:String.equal id seen -> Error ("duplicate ask " ^ id)
+          | Some id when not (List.exists (fun (a : t) -> String.equal a.id id) existing) ->
+              Error ("no ask " ^ id)
+          | id -> validate (Option.to_list id @ seen) rest)
+  in
+  let open Result.Infix in
+  let* () = validate [] asks in
+  Fs.mkdir_p ~perm:0o700 (Filename.concat dir "asks");
+  let write id text place =
+    let ask : t = { id; session; text; created = now } in
+    Fs.write_temp ~perm:0o600 (path ~dir id) (Yojson.Safe.to_string (yojson_of_t ask)) place;
+    { id; text }
+  in
+  let result =
+    List.map
+      (fun (a : entry) ->
+        match a.id with
+        | Some id ->
+            let old = List.find (fun (a : t) -> String.equal a.id id) existing in
+            if String.equal old.text a.text then { id; text = a.text }
+            else write id a.text Unix.rename
+        | None ->
+            let rec create () =
+              let id = "A" ^ String.sub (Msg.new_id ()) 0 8 in
+              match write id a.text Unix.link with
+              | answer -> answer
+              | exception Unix.Unix_error (EEXIST, _, _) -> create ()
+            in
+            create ())
+      asks
+  in
+  List.iter
+    (fun (a : t) ->
+      if not (List.exists (fun (r : answer) -> String.equal r.id a.id) result) then
+        Unix.unlink (path ~dir a.id))
+    existing;
+  Ok result
 
 let remove ~dir ~self id =
   match read ~dir id with

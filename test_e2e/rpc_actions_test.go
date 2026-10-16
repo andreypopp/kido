@@ -88,7 +88,7 @@ func TestRpcAskActivateReviveDeleteExplicitSocket(t *testing.T) {
 	if err := os.WriteFile(file, []byte("saved session"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	id, code := h.kidoAs(pane, "Ship?\nSecond line", nil, "tool", "ask_user")
+	id, code := setOneAsk(h, pane, "Ship?\nSecond line")
 	if code != 0 {
 		t.Fatal(id)
 	}

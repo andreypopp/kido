@@ -14,13 +14,12 @@ val revival : Subrun.run option -> (string * string, string) result
 val caller :
   dir:string -> (Subrun.id * Subrun.pi) option -> ((Subrun.id * Subrun.pi) option, string) result
 
-val record :
-  dir:string ->
-  replaces:id option ->
-  session:string ->
-  text:string ->
-  now:Timestamp.t ->
-  (id, string) result
+type entry = { id : id option; text : string }
+type entries = entry list [@@deriving of_yojson]
+type answer = { id : id; text : string } [@@deriving yojson_of]
+
+val set :
+  dir:string -> session:string -> asks:entry list -> now:Timestamp.t -> (answer list, string) result
 
 val target :
   tmux:Tmux.t -> dir:string -> session:Tmux.session_id -> t -> (Tmux.pane_id, string) result

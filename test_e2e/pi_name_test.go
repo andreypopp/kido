@@ -83,7 +83,7 @@ func TestPiSessionNameEverywhere(t *testing.T) {
 	h.expectKido(root, "not a name", nil, `kido tool message_agent: no agent session matches "\207\128 - Unnamed - kido"`, "tool", "message_agent", "π - Unnamed - kido")
 	h.expectKido(root, "id works", nil, "delivered to π - Unnamed - kido by inbox", "tool", "message_agent", "unnamed-sess")
 	h.agentStatus("unnamed-session", unnamed, "--name", "Asker", "--inbox", in.Path)
-	if _, rc := h.kidoAs(unnamed, "What next?", nil, "tool", "ask_user"); rc != 0 {
+	if _, rc := setOneAsk(h, unnamed, "What next?"); rc != 0 {
 		t.Fatal("ask failed")
 	}
 	h.agentStatus("unnamed-session", unnamed, "--name", "New Asker", "--inbox", in.Path)

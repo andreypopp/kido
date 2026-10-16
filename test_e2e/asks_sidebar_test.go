@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,7 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 	in := startInbox(t, "ok\n")
 	h.programStatus(pane, "state=blocked:app=pi", "Decider")
 	h.agentStatus("asking-session", pane, "--inbox", in.Path)
-	id, code := h.kidoAs(pane, "Ship?\nSecond line", nil, "tool", "ask_user")
+	id, code := setOneAsk(h, pane, "Ship?\nSecond line")
 	if code != 0 {
 		t.Fatalf("ask: exit %d, %s", code, id)
 	}
@@ -76,7 +77,7 @@ func TestSidebarAsksStandaloneEscape(t *testing.T) {
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.programStatus(pane, "state=idle:app=pi", "Decider")
 	h.agentStatus("standalone-ask", pane)
-	id, code := h.kidoAs(pane, "Question?", nil, "tool", "ask_user")
+	id, code := setOneAsk(h, pane, "Question?")
 	if code != 0 {
 		t.Fatal(id)
 	}
@@ -97,15 +98,15 @@ func TestAskUserSelfReplacementAndExternalRemoval(t *testing.T) {
 	in := startInbox(t, "ok\n")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
 	h.agentStatus("external-ask", pane, "--inbox", in.Path)
-	id, code := h.kidoAs(pane, "Original", nil, "tool", "ask_user")
+	id, code := setOneAsk(h, pane, "Original")
 	if code != 0 {
 		t.Fatal(id)
 	}
-	out, code := h.kidoAs(pane, "Reworded", nil, "tool", "ask_user", "--replaces", id)
-	if code != 0 || out != id || len(in.Received()) != 0 {
+	out, code := h.kidoAs(pane, fmt.Sprintf(`[{"id":%q,"text":"Reworded"}]`, id), nil, "tool", "set_asks")
+	if code != 0 || !strings.Contains(out, id) || len(in.Received()) != 0 {
 		t.Fatalf("own replacement: exit %d, %s, messages %q", code, out, in.Received())
 	}
-	out, code = h.kidoAs("", "", nil, "tool", "remove_ask", id)
+	out, code = h.kidoAs("", "", nil, "remove-ask", id)
 	if code != 0 || len(in.Received()) != 1 {
 		t.Fatalf("external removal: exit %d, %s, messages %q", code, out, in.Received())
 	}

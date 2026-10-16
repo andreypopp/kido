@@ -1,4 +1,4 @@
-import { AgentSession, type ExtensionAPI, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
+import { AgentSession, type ExtensionAPI, type ExtensionContext, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
 import { type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -81,6 +81,7 @@ const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
 
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
+const ASKS_MODEL = process.env.KIDO_ASKS_MODEL ?? "claude-bridge/claude-haiku-5-5";
 
 // Nothing pushes a target's death at the asker; this is what stops the asker sitting out its whole timeoutMs after the target dies mid-wait.
 const ASK_LIVENESS_POLL_MS = Number(process.env.KIDO_ASK_POLL_MS) || 5000;
@@ -325,6 +326,119 @@ export default function (pi: ExtensionAPI) {
     wrapTextWithAnsi(theme.fg("warning", prefix) + text, Math.max(1, width - 2))
       .map((line) => truncateToWidth(theme.fg("border", "│ ") + line, width));
 
+  type Ask = { id: string; text: string };
+  let asksGeneration = 0;
+  let asksSetInRun = false;
+  let asksFallback: AbortController | undefined;
+  let asksWrite = Promise.resolve();
+  const sameAsks = (asks: { id?: string; text: string }[], current: Ask[]) =>
+    asks.length === current.length && asks.every((a) => current.some((c) => c.id === a.id && c.text === a.text));
+  const setAsks = async (asks: { id?: string; text: string }[], through: string | null, fallback?: { generation: number; sessionId: string; current: Ask[] }) => {
+    if (isSubagent()) throw new Error("user asks are for top-level agents only");
+    const checkCurrent = () => {
+      if (fallback && (fallback.generation !== asksGeneration || fallback.sessionId !== seam().host?.sessionId())) throw new Error("the asks fallback is stale");
+    };
+    if (!fallback) ++asksGeneration;
+    const write = asksWrite.then(async () => {
+      if (fallback) {
+        const res = await runKido(["get-asks", "--session", fallback.sessionId], { timeoutMs: 3000 });
+        if (!res.ok || !sameAsks(JSON.parse(res.out), fallback.current)) throw new Error("the asks changed during the fallback");
+      }
+      checkCurrent();
+      const res = await runKido(["tool", "set_asks"], {
+        input: JSON.stringify(asks), timeoutMs: 3000,
+      });
+      if (!res.ok) throw new Error(res.error);
+      checkCurrent();
+      if (!fallback) ++asksGeneration;
+      pi.appendEntry("kido-asks-set", { through });
+      const result: Ask[] = JSON.parse(res.out);
+      return result;
+    });
+    asksWrite = write.then(() => {}, () => {});
+    const result = await write;
+    showAsks(result);
+    return result;
+  };
+
+  const fallbackAsks = async (ctx: ExtensionContext) => {
+    const sessionId = seam().host?.sessionId();
+    if (!ASKS_MODEL || !sessionId || isSubagent() || asksFallback || asksSetInRun) return;
+    const controller = new AbortController();
+    asksFallback = controller;
+    const generation = asksGeneration;
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const slash = ASKS_MODEL.indexOf("/");
+      const model = ctx.modelRegistry.find(ASKS_MODEL.slice(0, slash), ASKS_MODEL.slice(slash + 1));
+      if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) return;
+      const branch = ctx.sessionManager.getBranch();
+      const through = ctx.sessionManager.getLeafId();
+      const marked = new Set<unknown>();
+      const span: string[] = [];
+      let budget = 16384;
+      for (let i = branch.length - 1; i >= 0 && budget > 0; i--) {
+        const entry = branch[i];
+        if (marked.has(entry.id) || (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "set_asks" && !entry.message.isError)) break;
+        if (entry.type === "custom" && entry.customType === "kido-asks-set" && entry.data && typeof entry.data === "object" && "through" in entry.data) marked.add(entry.data.through);
+        const message = entry.type === "custom_message" ? { role: "custom", content: entry.content, details: entry.details } : entry.type === "message" ? entry.message : undefined;
+        if (!message || (message.role !== "user" && message.role !== "assistant" && message.role !== "custom")) continue;
+        const content = typeof message.content === "string" ? message.content : message.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+        if (!content) continue;
+        const details = "details" in message ? message.details : undefined;
+        const from = details && typeof details === "object" && "from" in details && typeof details.from === "string" ? details.from : undefined;
+        let part = Buffer.from(`${message.role === "assistant" ? "assistant" : "user"}${from ? ` (${from})` : ""}: ${content}${span.length ? "\n\n" : ""}`);
+        if (part.length > budget) {
+          let cut = part.length - budget;
+          while ((part[cut] & 0xc0) === 0x80) cut++;
+          part = part.subarray(cut);
+        }
+        budget -= part.length;
+        span.push(part.toString("utf8"));
+      }
+      if (!span.length) return;
+      const res = await runKido(["get-asks", "--session", sessionId], { timeoutMs: 3000 });
+      if (!res.ok) return;
+      const current: Ask[] = JSON.parse(res.out).map(({ id, text }: Ask) => ({ id, text }));
+      const result = await ctx.modelRegistry.complete(model, {
+        systemPrompt: "Maintain the complete list of questions waiting for the user's decision. Return ONLY a JSON array [{\"id\"?: string, \"text\": string}]. Keep an existing ask's id and text unless the text must change. Drop asks the user answered or that became moot. Add an ask without an id only for a decision the agent explicitly asked the user to make and that is not yet answered. Status updates, FYIs and 'should I continue?' are not asks. When unsure, keep the list unchanged.",
+        messages: [{ role: "user", content: JSON.stringify({ asks: current, messages: span.reverse().join("") }), timestamp: Date.now() }],
+      }, { signal: controller.signal });
+      if (result.stopReason === "error" || result.stopReason === "aborted") return;
+      const raw = result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n").trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\s*```$/, "");
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed) || !parsed.every((a) => a && typeof a === "object" && typeof a.text === "string" && a.text.trim() && (a.id === undefined || typeof a.id === "string") && Object.keys(a).every((k) => k === "id" || k === "text"))) return;
+      const asks: { id?: string; text: string }[] = parsed.filter((a) => a.id === undefined || current.some((c) => c.id === a.id));
+      const ids = asks.filter((a) => a.id);
+      if (new Set(ids.map((a) => a.id)).size !== ids.length) return;
+      if (controller.signal.aborted || generation !== asksGeneration || isSubagent()) return;
+      if (sameAsks(asks, current)) {
+        pi.appendEntry("kido-asks-set", { through });
+        return;
+      }
+      const updated = await setAsks(asks, through, { generation, sessionId, current });
+      pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: updated.length ? `kido updated your open asks: ${updated.map((a) => `${a.id}: ${a.text.split("\n")[0]}`).join("; ")}` : "kido cleared your open asks", display: false, details: { from: "kido" } }, { deliverAs: "nextTurn" });
+    } catch {} finally {
+      clearTimeout(timeout);
+      if (asksFallback === controller) asksFallback = undefined;
+    }
+  };
+
+  const abortAsksFallback = () => {
+    ++asksGeneration;
+    asksFallback?.abort();
+    asksFallback = undefined;
+  };
+  const startAsksRun = () => {
+    abortAsksFallback();
+    asksSetInRun = false;
+  };
+  pi.on("agent_start", startAsksRun);
+  pi.on("agent_end", (_event, ctx) => { void fallbackAsks(ctx); });
+  pi.on("session_shutdown", abortAsksFallback);
+  pi.on("session_start", startAsksRun);
+  pi.on("session_tree", abortAsksFallback);
+
   let expandedAsk: string | undefined;
   let asksRefresh = 0;
   const refreshAsks = async (): Promise<void> => {
@@ -334,7 +448,12 @@ export default function (pi: ExtensionAPI) {
     if (!ctx?.ui || !id || isSubagent()) return;
     const res = await runKido(["get-asks", "--session", id], { timeoutMs: 3000 });
     if (!res.ok || ctx !== session || refresh !== asksRefresh) return;
-    const asks: { id: string; text: string }[] = JSON.parse(res.out);
+    showAsks(JSON.parse(res.out));
+  };
+  const showAsks = (asks: Ask[]): void => {
+    ++asksRefresh;
+    const ctx = session;
+    if (!ctx?.ui) return;
     if (!asks.some((a) => a.id === expandedAsk)) expandedAsk = undefined;
     const ui = ctx.ui;
     ui.setWidget("kido-asks", asks.length ? (_tui, theme) => {
@@ -345,7 +464,7 @@ export default function (pi: ExtensionAPI) {
           if (!row || pi.getSettings().tuiMode === "regular") return;
           return handleClick(event, () => {
             if (row.first && event.x === 2) {
-              void runKido(["tool", "remove_ask", "--", row.ask.id], { timeoutMs: 3000, user: true }).then((res) => {
+              void runKido(["remove-ask", "--", row.ask.id], { timeoutMs: 3000, user: true }).then((res) => {
                 if (ctx === session && !res.ok) ui.notify?.(res.error, "error");
               }).catch((err) => ui.notify?.(String(err), "error"));
             } else if (row.first && event.x >= 4 && event.x < 4 + row.ask.id.length) {
@@ -598,6 +717,7 @@ export default function (pi: ExtensionAPI) {
   const handleEnvelope = async (env: Envelope): Promise<"ok" | "refused"> => {
     switch (env.kind) {
       case "asks":
+        ++asksGeneration;
         if (env.text) pi.sendMessage({
           customType: NOTICE_CUSTOM_TYPE,
           content: env.text,
@@ -1407,54 +1527,37 @@ export default function (pi: ExtensionAPI) {
       }));
     },
     async sessionStarted() {
-      if (!isSubagent() || pi.getAllTools().some((t) => t.name === "ask_user")) {
+      if (!isSubagent() || pi.getAllTools().some((t) => t.name === "set_asks")) {
         pi.registerTool({
-          name: "ask_user",
+          name: "set_asks",
           exposure: isSubagent() ? "hidden" : "direct",
-          label: "Ask User",
-          description: "Put a question needing the user's decision into kido's tracked asks and return its short id. Call this whenever your reply ends with a decision the user must make. Never announce in your reply that you created, reworded or removed an ask: the user sees asks in the UI. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.",
-          promptSnippet: "ask_user(text, replaces?) - track a question that needs the user's decision",
+          label: "Set Asks",
+          description: "Replace your tracked user asks with this complete list: the questions that need the user's decision now. Keep an ask's id to keep it, with new text to reword it; omit id for a new ask; an ask you leave out is removed; [] clears them all. An unknown id is an error. Returns the resulting asks with their ids. Top-level agents only.",
+          promptSnippet: "set_asks(asks) - set the complete list of questions that need the user's decision",
           promptGuidelines: [
-            "Use ask_user for each decision that needs the user, one decision per ask, so each can be answered and removed on its own. Status updates, FYIs and 'should I continue?' are not asks.",
+            "Call set_asks at the end of every turn that changed what needs the user's decision: you asked something new, the user answered or dismissed an ask, or an ask became moot. The list is the whole set: send every ask that is still open, with its id.",
+            "Use one decision per ask. Status updates, FYIs and 'should I continue?' are not asks.",
             "Write an ask to be read on its own, away from this conversation: name the project or thread, what is being decided, the options, and your recommendation if you have one.",
-            "An ask is tracked in addition to your reply, not instead of it: still put the question in your reply text, but never announce that you created, reworded or removed an ask, nor list ask ids; the user sees asks in the UI.",
-            "When the user has answered an ask, or it is moot, call remove_ask. Use replaces to reword an existing ask, keeping its id.",
+            "An ask is tracked in addition to your reply, not instead of it: still put the question in your reply text, but never announce that you set asks, nor list ask ids; the user sees asks in the UI.",
           ],
           parameters: Type.Object({
-            text: Type.String({ description: "The question needing the user's decision." }),
-            replaces: Type.Optional(Type.String({ description: "An existing ask id to reword, keeping its id." })),
+            asks: Type.Array(Type.Object({
+              id: Type.Optional(Type.String()),
+              text: Type.String({ description: "The question needing the user's decision." }),
+            }, { additionalProperties: false })),
           }, { additionalProperties: false }),
           renderCall(params, theme) {
             return {
               render(width) {
-                return renderAsk(theme, `asks you${params.replaces ? ` (${params.replaces})` : ""}: `, params.text ?? "", width);
+                return (params.asks ?? []).flatMap((ask) => renderAsk(theme, `asks you${ask.id ? ` (${ask.id})` : ""}: `, ask.text ?? "", width));
               },
               invalidate() {},
             };
           },
-          async execute(_toolCallId, params) {
-            if (isSubagent()) throw new Error("user asks are for top-level agents only");
-            const args = ["tool", "ask_user"];
-            if (params.replaces) args.push("--replaces", params.replaces);
-            const res = await runKido(args, { input: params.text, timeoutMs: 3000 });
-            if (!res.ok) throw new Error(res.error);
-            await refreshAsks();
-            return reply(res.out.trim());
-          },
-        });
-        pi.registerTool({
-          name: "remove_ask",
-          exposure: isSubagent() ? "hidden" : "direct",
-          label: "Remove Ask",
-          description: "Remove a tracked user ask when it has been answered or is moot. Never announce the removal in your reply. Top-level agents only.",
-          promptSnippet: "remove_ask(id) - remove an answered or moot user ask",
-          parameters: Type.Object({ id: Type.String({ description: "The ask id to remove." }) }, { additionalProperties: false }),
-          async execute(_toolCallId, params) {
-            if (isSubagent()) throw new Error("user asks are for top-level agents only");
-            const res = await runKido(["tool", "remove_ask", "--", params.id], { timeoutMs: 3000 });
-            if (!res.ok) throw new Error(res.error);
-            await refreshAsks();
-            return reply("removed " + params.id);
+          async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+            const asks = await setAsks(params.asks, ctx.sessionManager.getLeafId());
+            asksSetInRun = true;
+            return reply(asks.map((ask) => `${ask.id}: ${ask.text.split("\n")[0]}`).join("\n") || "no open asks");
           },
         });
       }
