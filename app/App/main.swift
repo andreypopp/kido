@@ -189,6 +189,7 @@ import SidebarFeed
         ]
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
+        edit.addItem(item("Copy Mode", #selector(PaneView.toggleCopyMode(_:)), "c", [.command, .shift]))
         edit.addItem(item("Reset Clipboard and Upload Permissions", #selector(resetClipboardPermissions), "", []))
         let bar = NSMenu()
         for menu in [app, file, edit, view, menus.window, menus.session] {
