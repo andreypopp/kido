@@ -773,9 +773,6 @@ extension VisualTests {
         try await exits("font") { _ = ghostty_surface_binding_action(pane.surface, "increase_font_size:1", 20) }
         _ = ghostty_surface_binding_action(pane.surface, "reset_font_size", 15)
         try await settle()
-        try await exits("find") { pane.showFind() }
-        XCTAssertNotNil(pane.find)
-        pane.find?.close()
         try await exits("sidebar focus") { window.makeFirstResponder(nil) }
         try await command(["split-window", "-t", pane.pane.description, "exec /bin/cat"])
         try await wait("split pane") { self.terminal?.panes.count == 2 }
@@ -817,6 +814,234 @@ extension VisualTests {
         keys(pane, "y")
         XCTAssertNil(pane.copyMode)
         XCTAssertEqual(board.changeCount, count)
+    }
+
+    private func type(_ pane: PaneView, _ text: String) throws {
+        let editor = try XCTUnwrap(pane.window?.firstResponder as? NSTextView), find = try XCTUnwrap(pane.find)
+        XCTAssertTrue(editor.isFieldEditor && editor.isDescendant(of: find))
+        editor.selectAll(nil)
+        editor.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+    }
+
+    private func field(_ pane: PaneView, _ selector: Selector) throws {
+        let editor = try XCTUnwrap(pane.window?.firstResponder as? NSTextView)
+        editor.doCommand(by: selector)
+    }
+
+    private func found(_ pane: PaneView) -> String? {
+        pane.find?.subviews.compactMap { $0 as? NSTextField }.first { !($0 is NSSearchField) }?.stringValue
+    }
+
+    private func at(_ pane: PaneView, _ x: Int, _ y: Int, _ step: String) async throws {
+        try await wait("cursor at \(x),\(y) after \(step)", within: 2) { self.cursor(pane).map { $0 == (x, y) } == true }
+        if case .cursor = pane.copyMode {} else if case .selecting = pane.copyMode {} else if case .lines = pane.copyMode {} else { XCTFail("copy mode kept: \(step)") }
+    }
+
+    func testCopySearchMovesTheCursorAndSelectionEnd() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "one target\r\ntwo\r\nthree target here\r\nfour\r\ntarget five\r\n", until: "five")
+        try await enter(pane)
+        let base = try XCTUnwrap(cursor(pane)).y - 5, count = board.changeCount
+        key(pane, "?", .shift)
+        XCTAssertNotNil(pane.find)
+        XCTAssertTrue(PaneView.owner(window.firstResponder) === pane && window.firstResponder !== pane, "? focuses the bar's field")
+        XCTAssertEqual(label(pane), "COPY")
+        XCTAssertTrue(pane.frozen)
+        try type(pane, "target")
+        try await at(pane, 0, base + 4, "typing: the newest match")
+        try await wait("loaded count", within: 2) { self.found(pane) == "3 matches (loaded)" }
+        try field(pane, #selector(NSResponder.insertNewline(_:)))
+        XCTAssertTrue(window.firstResponder === pane, "Return in the field returns focus to the pane")
+        XCTAssertNotNil(pane.find, "Return keeps the bar")
+        for (step, x, y) in [("n", 6, 2), ("n", 4, 0), ("N", 6, 2)] {
+            keys(pane, step)
+            try await at(pane, x, base + y, "? then \(step)")
+        }
+        key(pane, "/")
+        XCTAssertTrue(PaneView.owner(window.firstResponder) === pane && window.firstResponder !== pane, "/ focuses the same field")
+        XCTAssertEqual(pane.find?.field.stringValue, "target")
+        try field(pane, #selector(NSResponder.insertNewline(_:)))
+        for (step, x, y) in [("n", 0, 4), ("N", 6, 2)] {
+            keys(pane, step)
+            try await at(pane, x, base + y, "/ then \(step)")
+        }
+        keys(pane, "y")
+        XCTAssertNil(pane.copyMode)
+        XCTAssertEqual(board.changeCount, count, "a cursor moved by search grants no copy")
+        XCTAssertNil(pane.find, "copy exit closes the bar")
+
+        try await enter(pane)
+        key(pane, "?", .shift)
+        try type(pane, "target")
+        try await at(pane, 0, base + 4, "second session")
+        try field(pane, #selector(NSResponder.insertNewline(_:)))
+        keys(pane, "kkv")
+        try await at(pane, 0, base + 2, "v anchor")
+        keys(pane, "n")
+        try await at(pane, 6, base + 2, "v keeps its anchor")
+        keys(pane, "n")
+        try await at(pane, 4, base, "v end moves")
+        keys(pane, "y")
+        XCTAssertEqual(board.string(forType: .string), "target\ntwo\nt")
+
+        try await enter(pane)
+        key(pane, "?", .shift)
+        try type(pane, "target")
+        try await at(pane, 0, base + 4, "line session")
+        try field(pane, #selector(NSResponder.insertNewline(_:)))
+        keys(pane, "Vn")
+        try await wait("V re-expands to the match's line", within: 2) {
+            var value = ghostty_selection_s()
+            return ghostty_surface_selection(pane.surface, &value) && (value.top_left.x, value.top_left.y) == (0, UInt32(base + 2))
+        }
+        keys(pane, "y")
+        XCTAssertEqual(board.string(forType: .string), "three target here\nfour\ntarget five\n")
+        XCTAssertEqual(board.changeCount, count + 2)
+    }
+
+    func testCopySearchBarFocusAndExits() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha match\r\nbeta\r\nmatch gamma\r\n", until: "gamma")
+        pane.showFind()
+        try type(pane, "match")
+        try await wait("ordinary find lands", within: 5) { self.found(pane) == "1 of 2" }
+        let find = try XCTUnwrap(pane.find), captures = connection.visualSearchCaptures
+        XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(PaneView.toggleCopyMode(_:)), with: nil), "Copy Mode from the field")
+        try await wait("copy mode entered", within: 2) { if case .cursor = pane.copyMode { true } else { false } }
+        let start = try XCTUnwrap(cursor(pane)), base = start.y - 3
+        XCTAssertTrue(pane.find === find, "the open query is kept")
+        XCTAssertEqual(find.field.stringValue, "match")
+        XCTAssertTrue(window.firstResponder === pane)
+        try await wait("loaded count", within: 2) { self.found(pane) == "2 matches (loaded)" }
+        try await emit(pane, "late match\r\n", until: "late match")
+        try await Task.sleep(for: .milliseconds(400))
+        try await roundTrip()
+        XCTAssertEqual(found(pane), "2 matches (loaded)", "frozen output restarts no search")
+        XCTAssertEqual(connection.visualSearchCaptures, captures, "copy-mode search scans no tmux history")
+        XCTAssertTrue(cursor(pane).map { $0 == start } == true, "a carried query moves no cursor until asked")
+        keys(pane, "n")
+        try await at(pane, 0, base + 2, "n after carry-in")
+        XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(PaneView.showFind(_:)), with: nil), "Cmd-F in copy mode")
+        XCTAssertTrue(window.firstResponder !== pane && PaneView.owner(window.firstResponder) === pane)
+        XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(PaneView.findNext(_:)), with: nil), "Cmd-G from the field")
+        try await at(pane, 6, base, "Cmd-G")
+        try field(pane, #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertNil(pane.find, "Escape in the field closes the bar")
+        XCTAssertTrue(window.firstResponder === pane)
+        try await at(pane, 6, base, "the first Escape keeps copy mode")
+        keys(pane, "G")
+        keys(pane, "n")
+        XCTAssertNotNil(pane.find, "n reopens the remembered query")
+        XCTAssertTrue(window.firstResponder === pane)
+        try await at(pane, 0, base + 2, "n after Escape")
+        try XCTUnwrap(pane.find?.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Done" }).performClick(nil)
+        XCTAssertNil(pane.find, "Done closes the bar")
+        try await at(pane, 0, base + 2, "Done keeps copy mode")
+        keys(pane, "n")
+        try await wait("bar reopened", within: 2) { pane.find != nil }
+        keys(pane, "\u{1b}")
+        XCTAssertNil(pane.find, "Escape in the pane closes the bar first")
+        XCTAssertNotNil(pane.copyMode)
+        keys(pane, "\u{1b}")
+        XCTAssertNil(pane.copyMode, "a second Escape exits")
+
+        try await wait("dirty exit restored", within: 2) { !pane.resizeDirty }
+        try await settle()
+        try await enter(pane)
+        key(pane, "/")
+        window.makeFirstResponder(nil)
+        XCTAssertNil(pane.copyMode, "focus leaving the field for another owner exits")
+        XCTAssertNil(pane.find)
+        XCTAssertTrue(window.firstResponder === window, "the exit does not take focus back")
+        window.makeFirstResponder(pane)
+        try await sentinel(pane, since: connection.visualCommands.count)
+    }
+
+    func testCopySearchOnlyLoadedHistory() async throws {
+        try await start(history: 100000)
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        let fixture = directory.appendingPathComponent("history.txt"), done = directory.appendingPathComponent("history-done")
+        let rows = 3 * historyChunkSize + 2000
+        try (0..<rows).map { "row-\($0)" + ($0 == 100 ? " old-marker" : $0 == rows - 1000 ? " new-marker" : "") + "\r\n" }.joined()
+            .write(to: fixture, atomically: true, encoding: .utf8)
+        try await command(["respawn-pane", "-k", "-t", pane.pane.description, "/bin/cat '\(fixture.path)'; /usr/bin/touch '\(done.path)'; exec /bin/sleep 600"])
+        try await wait("history fixture written") { FileManager.default.fileExists(atPath: done.path) }
+        try await restore(pane)
+        try await enter(pane)
+        let loaded = pane.scrollPosition().retainedHistoryRows, start = try XCTUnwrap(cursor(pane))
+        let captures = connection.visualSearchCaptures, queries = connection.visualMetadataQueries, restores = connection.visualRestores
+        connection.visualCommands.removeAll()
+        func unchanged(_ step: String) async throws {
+            try await roundTrip()
+            XCTAssertEqual(connection.visualSearchCaptures, captures, step)
+            XCTAssertEqual(connection.visualMetadataQueries, queries, step)
+            XCTAssertEqual(connection.visualRestores, restores, step)
+            XCTAssertEqual(pane.scrollPosition().retainedHistoryRows, loaded, step)
+            XCTAssertEqual(connection.visualCommands.filter { $0.line != Command("display-message", "-p", "").line }.map(\.line), [], step)
+        }
+        key(pane, "?", .shift)
+        try type(pane, "old-marker")
+        try await wait("no loaded match", within: 2) { self.found(pane) == "No matches (loaded)" }
+        try await unchanged("unloaded query")
+        XCTAssertTrue(cursor(pane).map { $0 == start } == true, "no match leaves the cursor")
+        try type(pane, "new-marker")
+        try await at(pane, String("row-\(rows - 1000) ").count, start.y - 1000, "loaded match")
+        XCTAssertEqual(found(pane), "1 matches (loaded)")
+        try await unchanged("loaded query")
+        try field(pane, #selector(NSResponder.cancelOperation(_:)))
+        keys(pane, "q")
+        try await settle()
+
+        pane.showFind()
+        try type(pane, "old-marker")
+        try await wait("ordinary find scans tmux and loads the old match", within: 20) {
+            self.connection.visualSearchCaptures > captures && pane.scrollPosition().retainedHistoryRows > loaded
+        }
+        pane.find?.close()
+    }
+
+    func testCopySearchAlternateScreen() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "primary match\r\n\u{1b}[?1049h\u{1b}[Halt one\r\nalt match two", until: "match two")
+        try await enter(pane)
+        XCTAssertTrue(pane.alternate)
+        key(pane, "?", .shift)
+        try type(pane, "match")
+        try await at(pane, 4, 1, "alternate match")
+        XCTAssertEqual(found(pane), "1 matches (loaded)", "only the frozen alternate screen")
+        try field(pane, #selector(NSResponder.insertNewline(_:)))
+        keys(pane, "g0vn")
+        try await at(pane, 4, 1, "alternate v end")
+        keys(pane, "y")
+        XCTAssertEqual(board.string(forType: .string), "alt one\nalt m")
+    }
+
+    func testCopySearchIgnoresSupersededQueries() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, (0..<300).map { "aaa-\($0)\r\n" }.joined() + "bbb-last\r\nend\r\n", until: "end")
+        try await enter(pane)
+        let base = try XCTUnwrap(cursor(pane)).y
+        let start = try XCTUnwrap(cursor(pane))
+        var held: (start: (x: Int, y: Int)?, deliver: () -> Void)?
+        GhosttyRuntime.visualHoldSelected = { start, deliver in
+            if held == nil, start != nil { held = (start, deliver) } else { deliver() }
+        }
+        defer { GhosttyRuntime.visualHoldSelected = nil }
+        key(pane, "?", .shift)
+        try type(pane, "aaa")
+        try await wait("an aaa selection is held", within: 2) { held != nil }
+        XCTAssertTrue(held?.start.map { $0 == (0, base - 3) } == true, "the held event names the newest aaa match")
+        XCTAssertTrue(cursor(pane).map { $0 == start } == true, "the held event has not moved the cursor")
+        try type(pane, "bbb")
+        try await at(pane, 0, base - 2, "the newest query")
+        held?.deliver()
+        try await Task.sleep(for: .milliseconds(100))
+        try await at(pane, 0, base - 2, "the released superseded event moves no cursor")
+        try type(pane, "")
+        try await Task.sleep(for: .milliseconds(100))
+        try await at(pane, 0, base - 2, "an empty query moves nothing")
+        try field(pane, #selector(NSResponder.cancelOperation(_:)))
+        keys(pane, "q")
     }
 
     private func copySnapshots(dark: Bool, testName: String = #function) async throws {
