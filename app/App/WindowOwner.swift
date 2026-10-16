@@ -612,6 +612,8 @@ private class AlertEscape: NSView {
         uploads[id] = (pane, task)
     }
 
+    func uploading(_ pane: PaneView) -> Bool { uploads.values.contains { $0.pane === pane } }
+
     func cancelUploads(_ pane: PaneView) -> Bool {
         let running = uploads.filter { $0.value.pane === pane }
         running.forEach { uploads[$0.key] = nil; $0.value.task.cancel() }
@@ -623,6 +625,7 @@ private class AlertEscape: NSView {
             return notice("Kido did not paste the path", "A path contains control characters. The files are in \(paths.first.map { ($0 as NSString).deletingLastPathComponent } ?? "").")
         }
         guard !pane.disposed, pane.acceptingInput else { return notice("The pane closed before the upload finished", text) }
+        guard pane.copyMode == nil else { return notice("Kido did not paste the path", text) }
         pane.paste(text)
     }
 
