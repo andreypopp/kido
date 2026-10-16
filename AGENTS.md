@@ -203,7 +203,6 @@ Conventions:
 - **Cmdliner docs.** A bare `$` is markup.
   It produces "unescaped $" on `--help`.
   Write environment variables as `$(b,NAME)`.
-  `test_e2e/help_test.go` rejects any help stderr.
 - **Quoting.** `Reap.quote` in `lib/reap.ml` deliberately uses
   Go-style `%q` quoting. OCaml `%S` escapes non-ASCII agent names.
 - **Inbox JSON.** Write `from.session` even when it is empty.
