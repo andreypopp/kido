@@ -36,7 +36,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
     }
 
-    func wait(_ description: String, _ predicate: @escaping @MainActor () -> Bool) async throws {
+    func wait(_ description: String, within seconds: Double = 20, _ predicate: @escaping @MainActor () -> Bool) async throws {
         let done = expectation(description: description)
         var finished = false
         func finish() { if !finished { finished = true; done.fulfill() } }
@@ -46,11 +46,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         // One block at the original deadline, never a poll's own clock check: after a main-queue stall,
         // main-queue timers due earlier than this deadline still run before the verdict.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
             if !finished { if !predicate() { XCTFail("Timed out: \(description)") }; finish() }
         }
         poll()
-        await fulfillment(of: [done], timeout: 21)
+        await fulfillment(of: [done], timeout: seconds + 1)
     }
 
     override func invokeTest() {
@@ -84,12 +84,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     private let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
     private var tmux = ""
     private var socket = ""
-    private var directory: URL!
-    private var window: NSWindow!
+    var directory: URL!
+    var window: NSWindow!
     private static var processRuntime: GhosttyRuntime?
-    private var runtime: GhosttyRuntime!
+    var runtime: GhosttyRuntime!
     private var session: SessionView!
-    private var connection: Connection!
+    var connection: Connection!
     private var model = SessionModel()
     private var tabSnapshot: Snapshot?
     private var rpc: Feed?
@@ -182,13 +182,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         NSApp.appearance = nil
     }
 
-    @discardableResult private func command(_ args: [String]) async throws -> String {
+    @discardableResult func command(_ args: [String]) async throws -> String {
         let (status, out, err) = try await Child.run(tmux, ["-S", socket] + args)
         XCTAssertEqual(status, 0, "\(args): \(err)")
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
+    var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
 
     private func loadRuntime() throws {
         if Self.processRuntime == nil {
@@ -196,7 +196,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             let themes = app.appendingPathComponent("Resources/themes").path
             let theme = "light:\(themes)/kido-light,dark:\(themes)/kido-dark"
             let blink = ProcessInfo.processInfo.environment["KIDO_VSYNC_MEASURE"] == "1"
-            try "theme = \(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = \(blink)\n".write(to: config, atomically: true, encoding: .utf8)
+            try "theme = \(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = \(blink)\nkeybind = super+e=text:X\nkeybind = super+shift+c=text:Y\n".write(to: config, atomically: true, encoding: .utf8)
             Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         }
         runtime = try XCTUnwrap(Self.processRuntime)
@@ -209,7 +209,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         return owner
     }
 
-    @discardableResult private func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000) async throws -> String {
+    @discardableResult func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000) async throws -> String {
         NSApp.appearance = NSAppearance(named: .aqua)
         try loadRuntime()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
@@ -266,14 +266,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         return clipboardMode
     }
 
-    private func settle() async throws {
+    func settle() async throws {
         try await wait("authoritative restore and presented frame") {
             guard let terminal = self.terminal else { return false }
             return terminal.visualGeometryReady && !terminal.panes.isEmpty && terminal.panes.filter { !$0.isHidden }.allSatisfy(\.visualReady)
         }
     }
 
-    private func paint(lines: Int? = nil, alternate: Bool = false) async throws {
+    func paint(lines: Int? = nil, alternate: Bool = false) async throws {
         for pane in try XCTUnwrap(terminal).panes.filter({ !$0.isHidden }) {
             let grid = ghostty_surface_size(pane.surface)
             let count = lines ?? Int(grid.rows)
@@ -299,7 +299,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await settle()
     }
 
-    private func snapshot(_ name: String, pill: Bool = false, testName: String = #function) async throws {
+    func snapshot(_ name: String, pill: Bool = false, testName: String = #function) async throws {
         try await settle()
         let terminal = try XCTUnwrap(terminal)
         XCTAssertEqual(terminal.panes.contains { $0.visualPill }, pill)
