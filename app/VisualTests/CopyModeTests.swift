@@ -99,30 +99,31 @@ extension VisualTests {
         XCTAssertEqual(sends(since).count, 1, "only the sentinel after copy mode sent input: \(sends(since).map(\.line))")
     }
 
+    private func copied(_ pane: PaneView, _ sequence: String, _ finish: (PaneView) -> Void = { _ in }) async throws -> String? {
+        try await enter(pane)
+        let count = board.changeCount
+        keys(pane, sequence)
+        finish(pane)
+        XCTAssertNil(pane.copyMode, sequence)
+        XCTAssertNil(label(pane), sequence)
+        return board.changeCount == count ? nil : board.string(forType: .string)
+    }
+
     func testCopyRangesAndCursorDoesNotCopy() async throws {
         let pane = try await rawPane()
         try await emit(pane, (0..<38).map { String(format: "line-%02d\r\n", $0) }.joined() + "日本 wide\r\n", until: "日本")
-        func copied(_ sequence: String, _ finish: (PaneView) -> Void = { _ in }) async throws -> String? {
-            try await enter(pane)
-            let count = board.changeCount
-            keys(pane, sequence)
-            finish(pane)
-            XCTAssertNil(pane.copyMode)
-            XCTAssertNil(label(pane))
-            return board.changeCount == count ? nil : board.string(forType: .string)
-        }
         for (sequence, expected) in [("kk0v$y", "line-37"), ("kkk0vjl\r", "line-36\nli"), ("kk$vk0y", "line-36\nline-37"),
                                      ("k0vly", "日"), ("k0vlly", "日本")] {
-            let text = try await copied(sequence)
+            let text = try await copied(pane, sequence)
             XCTAssertEqual(text, expected, sequence)
         }
-        let command = try await copied("kk0v$") { self.key($0, "c", .command) }
+        let command = try await copied(pane, "kk0v$") { self.key($0, "c", .command) }
         XCTAssertEqual(command, "line-37", "Cmd-C copies as y does")
         for sequence in ["y", "\r", " ky", "vvy", "kv\u{1b}", "kvq"] {
-            let text = try await copied(sequence)
+            let text = try await copied(pane, sequence)
             XCTAssertNil(text, sequence)
         }
-        let cursorOnly = try await copied("") { self.key($0, "c", .command) }
+        let cursorOnly = try await copied(pane, "") { self.key($0, "c", .command) }
         XCTAssertNil(cursorOnly, "Cmd-C without v writes nothing")
         try await enter(pane)
         let start = try XCTUnwrap(cursor(pane))
@@ -267,9 +268,13 @@ extension VisualTests {
                     while !target.frozen, Date() < deadline { usleep(1000) }
                     schedule.after()
                 } }
-                target.feed(Data(schedule.batch.utf8))
+                if !target.feed(Data(schedule.batch.utf8)) {
+                    reply()
+                    XCTFail("batch not admitted: \(schedule.name)")
+                }
                 target.postProbe.withLock { $0 = nil }
             }
+            try await wait("grid ready: \(schedule.name)", within: 2) { pane.gridReady && !pane.resizeDirty }
             key(pane, "C", [.command, .shift], ignoring: "C")
             try await wait("copy mode entered: \(schedule.name)", within: 2) { if case .cursor = pane.copyMode { true } else { false } }
             connection.visualCopyCheck = nil
@@ -377,28 +382,21 @@ extension VisualTests {
         let pane = try await rawPane()
         let wrapped = wrappedFixture(pane)
         try await emit(pane, "alpha\r\nbeta\r\n\(wrapped)\r\ngamma\r\ndelta\r\n", until: "delta")
-        func copied(_ sequence: String) async throws -> String? {
-            try await enter(pane)
-            let count = board.changeCount
-            keys(pane, sequence)
-            XCTAssertNil(pane.copyMode, sequence)
-            return board.changeCount == count ? nil : board.string(forType: .string)
-        }
         for (sequence, expected) in [
             ("kkkkkkkVjy", "alpha\nbeta\n"), ("kVky", "gamma\ndelta\n"), ("kkkkVy", wrapped + "\n"),
             ("kkkkkkVjy", "beta\n\(wrapped)\n"), ("kkVky", "\(wrapped)\ngamma\n"), ("Vy", "\n"),
             ("kV$hy", "delta\n"), ("kvllVy", "delta\n"), ("kVvlly", "del"), ("kkkkvVy", wrapped + "\n"),
         ] {
-            let text = try await copied(sequence)
+            let text = try await copied(pane, sequence)
             XCTAssertEqual(text, expected, sequence)
         }
         for sequence in ["kVVy", "kVvvy", "kvVVy"] {
-            let text = try await copied(sequence)
+            let text = try await copied(pane, sequence)
             XCTAssertNil(text, sequence)
         }
         try await emit(pane, (0..<60).map { "filler-\($0)\r\n" }.joined(), until: "filler-59")
         XCTAssertGreaterThan(pane.scrollPosition().retainedHistoryRows, 0)
-        let history = try await copied(String(repeating: "k", count: 64) + "Vy")
+        let history = try await copied(pane, String(repeating: "k", count: 64) + "Vy")
         XCTAssertEqual(history, wrapped + "\n", "a wrapped line in loaded history")
     }
 

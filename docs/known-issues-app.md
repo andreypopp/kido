@@ -321,6 +321,15 @@ latest elected client. Smaller viewers clip authoritative external layouts;
 there are no grouped sessions or independent per-view terminal grids. Client-local
 find, scroll and surface budgets remain independent. Status: accepted.
 
+## Every live batch reads the screen before parsing
+
+Each admitted live batch, in every pane and also outside copy mode, calls
+`ghostty_surface_is_alternate_screen` on the scroll worker before parsing,
+which takes the renderer mutex. The return-to-primary repair then uses the
+screen that the batch started from, because a SCROLLBAR action can update
+the alternate flag on main first (`testEntryKeepsAScreenSwitchParsedBeforeTheReply`).
+The cost is one short mutex hold per batch. Status: accepted cost.
+
 ## Restore latency
 
 The reported Release baseline is roughly 20ms for 10k lines, dominated by
