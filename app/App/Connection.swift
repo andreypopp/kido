@@ -30,6 +30,8 @@ final class Connection: @unchecked Sendable {
     #if KIDO_VISUAL
     private let metadataQueries = OSAllocatedUnfairLock(initialState: 0)
     var visualMetadataQueries: Int { metadataQueries.withLock { $0 } }
+    private let searchCaptures = OSAllocatedUnfairLock(initialState: 0)
+    var visualSearchCaptures: Int { searchCaptures.withLock { $0 } }
     #endif
     private final class PaneFeed: @unchecked Sendable {
         enum Boundary { case older, exhausted(epoch: Int), refused }
@@ -471,7 +473,7 @@ final class Connection: @unchecked Sendable {
         if case .syncing = feed.history { return }
         let work = DispatchWorkItem { [weak feed] in
             guard let feed, case .stale = feed.search else { return }
-            DispatchQueue.main.async { [weak view = feed.view] in view?.find?.search() }
+            DispatchQueue.main.async { [weak view = feed.view] in if view?.copyMode == nil { view?.find?.search() } }
         }
         feed.search = .stale(since: since, restart: work)
         client.queue.asyncAfter(deadline: min(.now() + 0.3, since + 2), execute: work)
@@ -482,8 +484,8 @@ final class Connection: @unchecked Sendable {
             guard let feed = self.panes?[pane] else { return }
             if case .stale(_, let work) = feed.search { work?.cancel() }
             feed.goal = nil
-            feed.search = query.isEmpty ? nil : .scanning(token: token, matches: [])
-            guard !query.isEmpty else { return }
+            feed.search = query.isEmpty || feed.view.frozen ? nil : .scanning(token: token, matches: [])
+            guard feed.search != nil else { return }
             if case .syncing = feed.history { return self.invalidateSearch(feed, restart: false) }
             self.searchChunk(pane, feed, query: query, token: token, end: nil)
         }
@@ -491,6 +493,9 @@ final class Connection: @unchecked Sendable {
 
     private func searchChunk(_ pane: PaneID, _ feed: PaneFeed, query: String, token: UUID,
                              end: Int?, chunk: Int = 5000) {
+        #if KIDO_VISUAL
+        searchCaptures.withLock { $0 += 1 }
+        #endif
         client.send(SearchCapture.commands(pane, end: end, chunk: chunk)) { [weak self, weak feed] replies in
             guard let self, let feed, self.panes?[pane] === feed,
                   case .scanning(let current, _) = feed.search, current == token else { return }
