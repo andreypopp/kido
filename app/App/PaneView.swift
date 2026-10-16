@@ -33,6 +33,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var find: PaneFind?
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
+    var copyFind: (query: String?, older: Bool) = (nil, true)
     private(set) var copyingLines = false
     enum Freeze { case off, entering, frozen }
     private(set) var alternate = false
@@ -129,16 +130,29 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onSearch: (String, UUID) -> Void = { _, _ in }
 
     @objc func showFind(_ sender: Any? = nil) {
-        endCopy()
+        if case .entering = copyMode { return }
         resizeAnchor = nil
         snapScroll()
-        if find == nil {
-            let bar = PaneFind(self)
-            find = bar
-            addSubview(bar)
-            needsLayout = true
-        }
+        openFind(navigate: false)
         window?.makeFirstResponder(find?.field)
+    }
+
+    private func openFind(navigate: Bool) {
+        guard find == nil else { return }
+        let bar = PaneFind(self)
+        find = bar
+        addSubview(bar)
+        needsLayout = true
+        guard let query = copyFind.query else { return }
+        copyFind.query = nil
+        bar.field.stringValue = query
+        bar.search(navigate: navigate)
+    }
+
+    static func owner(_ responder: NSResponder?) -> PaneView? {
+        var view = responder as? NSView
+        while let current = view, !(current is PaneView) { view = current.superview }
+        return view as? PaneView
     }
 
     @objc func findNext(_ sender: Any? = nil) { resizeAnchor = nil; snapScroll(); find?.next() }
@@ -677,7 +691,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         copyLabel.frame.size = copyLabel.contentView!.fittingSize
         copyLabel.frame.size.width += 16
         copyLabel.frame.size.height += 4
-        copyLabel.frame.origin = NSPoint(x: 8, y: max(0, bounds.height - copyLabel.frame.height - 8))
+        copyLabel.frame.origin = NSPoint(x: 8, y: max(0, bounds.height - copyLabel.frame.height - (find == nil ? 8 : 44)))
     }
 
     // Freed in deinit, so the last reference must be dropped on the main
@@ -1097,7 +1111,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
               (window?.delegate as? WindowOwner)?.uploading(self) != true else { return refuseCopy() }
         let deadline = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.refuseCopy() } }
         copyMode = .entering(deadline)
-        find?.close()
+        find?.search(navigate: false)
         inputContext?.discardMarkedText()
         unmarkText()
         lastPerformKeyEvent = nil
@@ -1142,14 +1156,21 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         copyMode = .cursor
         guard select(cursor, cursor) else { return refuseCopy() }
         presentCopy()
+        window?.makeFirstResponder(self)
+        find?.search(navigate: false)
     }
 
-    private func endCopy(restore: Bool = true) {
+    func endCopy(restore: Bool = true) {
         guard let mode = copyMode else { return }
-        if case .entering(let deadline) = mode { deadline.cancel() } else { _ = ghostty_surface_set_selection(surface, nil) }
+        if case .entering(let deadline) = mode { deadline.cancel() } else {
+            _ = ghostty_surface_set_selection(surface, nil)
+            find?.close()
+        }
         let dirty = grid.withLock { $0.freeze = .off; return $0.dirty }
         copyMode = nil
+        copyFind = (nil, true)
         presentCopy()
+        if case .entering = mode { find?.search(navigate: false) }
         guard restore, superview != nil, acceptingInput else { return }
         if dirty { captureAnchor() }
         onRestoreDrain()
@@ -1196,9 +1217,24 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         default: ""
         }
         if case .entering = copyMode { if name == "q" { endCopy() }; return }
-        guard ["q", "y", "v", "V", "h", "l", "w", "b", "e", "^", "j", "k", "0", "$", "^u", "^d", "g", "G"].contains(name) else { return }
+        if name == "q", event.keyCode == 53, let find { return find.close() }
+        switch name {
+        case "q": endCopy()
+        case "/", "?":
+            copyFind.older = name == "?"
+            showFind()
+        case "n", "N":
+            guard let find else { return copyFind.query == nil ? () : openFind(navigate: true) }
+            if copyFind.older == (name == "n") { find.next() } else { find.previous() }
+        case "y", "v", "V", "h", "l", "w", "b", "e", "^", "j", "k", "0", "$", "^u", "^d", "g", "G": copyMove(name)
+        default: break
+        }
+    }
+
+    func copyMove(_ name: String, to point: (x: Int, y: Int)? = nil) {
+        if case .entering = copyMode { return }
         var value = ghostty_selection_s()
-        guard name != "q", ghostty_surface_selection(surface, &value) else { return endCopy() }
+        guard ghostty_surface_selection(surface, &value) else { return endCopy() }
         var anchor = (x: Int(value.top_left.x), y: Int(value.top_left.y))
         var cursor = (x: Int(value.bottom_right.x), y: Int(value.bottom_right.y))
         var lines = false, selecting = false
@@ -1254,7 +1290,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         case "^d": cursor.y += max(1, rows / 2)
         case "g": cursor.y = 0
         case "G": cursor.y = history + rows - 1
-        default: break
+        default: if let point { cursor = point }
         }
         cursor = (min(max(0, cursor.x), columns - 1), min(max(0, cursor.y), history + rows - 1))
         if lines { copyMode = .lines(anchor: anchor, cursor: cursor) }
@@ -1427,7 +1463,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func resignFirstResponder() -> Bool {
-        endCopy()
         snapScroll()
         let result = super.resignFirstResponder()
         if result { ghostty_surface_set_focus(surface, false) }

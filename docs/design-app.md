@@ -457,6 +457,20 @@ Budget retries and chunk expansion are bounded; genuine resource or capture
 failure reports a failed search without evicting newer rows. Command-G and Shift-Command-G (also Return
 and Shift-Return) navigate; Escape closes the bar and clears highlights.
 
+In copy mode, Command-F, `/` and `?` open or focus the same bar without leaving
+copy mode. The bar searches only what Ghostty has loaded: no tmux scan, no history
+load, and no restart on output, because the pane is frozen. The count reads
+“N matches (loaded)”. `?` searches toward older text and `/` toward newer text;
+`n` repeats that direction and `N` reverses it. The first result is the newest
+match. Each selected-match event carries the match's first cell, and the copy
+cursor (or the end of a `v` or `V` selection) moves there. Search never selects
+the match or writes the pasteboard. A failed or empty query moves nothing. Return
+in the field gives focus back to the pane and keeps the bar open. Escape or Done
+closes the bar first and keeps copy mode; a second Escape exits. A query that is
+open when copy mode starts stays, and it only highlights until a query edit or
+`n`/`N`. After the bar closes, `n`/`N` reopen it with the same query and
+direction. Copy mode exit closes the bar and starts no whole-history search.
+
 ### Clipboard
 
 Live OSC 52 writes copy text to the Mac general pasteboard. Reads use Ghostty's
