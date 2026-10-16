@@ -1230,7 +1230,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         var bar = ghostty_surface_scrollbar_s()
         guard ghostty_surface_scrollbar(surface, &bar) else { return endCopy() }
-        let columns = Int(ghostty_surface_size(surface).columns), rows = Int(bar.len), history = Int(bar.total) - rows
+        let columns = Int(ghostty_surface_size(surface).columns), rows = Int(bar.len), history = Int(bar.total) - rows, row = cursor.y
         switch name {
         case "h": cursor.x -= 1
         case "l": cursor.x += 1
@@ -1245,7 +1245,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         cursor = (min(max(0, cursor.x), columns - 1), min(max(0, cursor.y), history + rows - 1))
         if lines { copyMode = .lines(anchor: anchor, cursor: cursor) }
-        guard lines ? selectLines(anchor.y, cursor.y) : select(selecting ? anchor : cursor, cursor) else { return endCopy() }
+        guard lines ? cursor.y == row || selectLines(anchor.y, cursor.y) : select(selecting ? anchor : cursor, cursor) else { return endCopy() }
         let top = history - (scrollTarget ?? (history - Int(bar.offset)))
         if !alternate, cursor.y < top || cursor.y >= top + rows {
             requestScroll(history - (cursor.y < top ? max(0, cursor.y - 2) : min(history, cursor.y + 3 - rows)))
