@@ -53,7 +53,7 @@ extension VisualTests {
 
     private func keys(_ pane: PaneView, _ sequence: String) {
         for c in sequence {
-            key(pane, String(c), c.isUppercase || c == "$" ? .shift : [], code: c == "\r" ? 36 : c == "\u{1b}" ? 53 : 0)
+            key(pane, String(c), c.isUppercase || c == "$" || c == "^" ? .shift : [], code: c == "\r" ? 36 : c == "\u{1b}" ? 53 : 0)
         }
     }
 
@@ -113,7 +113,7 @@ extension VisualTests {
         let pane = try await rawPane()
         try await emit(pane, (0..<38).map { String(format: "line-%02d\r\n", $0) }.joined() + "日本 wide\r\n", until: "日本")
         for (sequence, expected) in [("kk0v$y", "line-37"), ("kkk0vjl\r", "line-36\nli"), ("kk$vk0y", "line-36\nline-37"),
-                                     ("k0vly", "日"), ("k0vlly", "日本")] {
+                                     ("k0vly", "日本"), ("k0vlly", "日本"), ("k0vllly", "日本 w")] {
             let text = try await copied(pane, sequence)
             XCTAssertEqual(text, expected, sequence)
         }
@@ -143,9 +143,74 @@ extension VisualTests {
         key(pane, String(UnicodeScalar(NSUpArrowFunctionKey)!), code: 126)
         key(pane, String(UnicodeScalar(NSRightArrowFunctionKey)!), code: 124)
         XCTAssertEqual(cursor(pane)?.y, last - 1)
-        XCTAssertEqual(cursor(pane)?.x, 1)
+        XCTAssertEqual(cursor(pane)?.x, 2, "Right steps over a wide character")
         keys(pane, "q")
         XCTAssertNil(cursor(pane))
+    }
+
+    func testWordMotions() async throws {
+        let pane = try await rawPane()
+        let columns = Int(ghostty_surface_size(pane.surface).columns)
+        let wrapped = String(repeating: "a", count: columns - 3) + " longword tail"
+        try await emit(pane, "one,two  ;; three\r\n   indented\r\n\(wrapped)\r\n日本 wide\r\n", until: "wide")
+        try await enter(pane)
+        let base = try XCTUnwrap(cursor(pane)).y - 5
+        for (sequence, x, row) in [
+            ("k", 0, 4), ("l", 2, 4), ("l", 4, 4), ("h", 2, 4), ("h", 0, 4), ("e", 2, 4), ("w", 5, 4), ("b", 0, 4),
+            ("b", 7, 3), ("b", columns - 2, 2), ("e", 5, 3), ("w", 7, 3), ("kkk0", 0, 0), ("w", 3, 0), ("w", 4, 0), ("w", 9, 0),
+            ("e", 10, 0), ("w", 12, 0), ("w", 3, 1), ("$^", 3, 1), ("j^", 0, 2), ("jl", 1, 3), ("j", 1, 4), ("h", 0, 4),
+            ("kl", 1, 3), ("j", 1, 4), ("l", 2, 4), ("kh", 1, 3), ("j", 1, 4), ("e", 2, 4), ("$^", 0, 4),
+        ] {
+            keys(pane, sequence)
+            XCTAssertEqual(cursor(pane)?.x, x, sequence)
+            XCTAssertEqual(cursor(pane)?.y, base + row, sequence)
+        }
+        keys(pane, "q")
+        for (sequence, expected) in [
+            ("kkkkk0vey", "one"), ("kkkkk0vwey", "one,two"), ("kkkkk0wwwvby", "two  ;"), ("kkk0wvey", "longword"),
+            ("kkkk$v^y", "indented"), ("kkkkVby", "one,two  ;; three\n   indented\n"), ("kkkkVey", "   indented\n"),
+            ("kkkVwwy", wrapped + "\n"), ("kVby", "\(wrapped)\n日本 wide\n"), ("kVvwy", "日本 w"),
+        ] {
+            let text = try await copied(pane, sequence)
+            XCTAssertEqual(text, expected, sequence)
+        }
+        for sequence in ["kkkkk0wey", "kkk0wbe\r"] {
+            let text = try await copied(pane, sequence)
+            XCTAssertNil(text, sequence)
+        }
+        try await enter(pane)
+        try await emit(pane, "\u{1b}[2J\u{1b}[Hreplaced\r\n", until: "replaced")
+        keys(pane, "kkkkk0vwey")
+        XCTAssertEqual(board.string(forType: .string), "one,two", "motion reads the frozen screen")
+        try await wait("dirty exit restored", within: 2) { !pane.resizeDirty }
+        try await settle()
+        try await emit(pane, String(repeating: "x", count: columns - 1) + "日\r\n", until: "日")
+        try await enter(pane)
+        let head = try XCTUnwrap(cursor(pane)).y - 2
+        for (sequence, x) in [("kk$", columns - 1), ("l", columns - 2), ("$h", columns - 2)] {
+            keys(pane, sequence)
+            XCTAssertEqual(cursor(pane)?.x, x, sequence)
+            XCTAssertEqual(cursor(pane)?.y, head, sequence)
+        }
+        keys(pane, "q")
+    }
+
+    func testWordMotionFollowsTheViewport() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "target\r\n" + String(repeating: "  \r\n", count: 60) + "end\r\n", until: "end")
+        try await enter(pane)
+        let end = try XCTUnwrap(cursor(pane)).y - 1, target = end - 61
+        for (sequence, y) in [("b", end), ("b", target), ("w", end)] {
+            keys(pane, sequence)
+            XCTAssertEqual(cursor(pane)?.x, 0, sequence)
+            XCTAssertEqual(cursor(pane)?.y, y, sequence)
+            try await wait("the viewport shows \(sequence) at row \(y)", within: 2) {
+                var bar = ghostty_surface_scrollbar_s()
+                return ghostty_surface_scrollbar(pane.surface, &bar) && Int(bar.offset) <= y && y < Int(bar.offset + bar.len)
+            }
+            XCTAssertEqual(cursor(pane)?.y, y, sequence)
+        }
+        keys(pane, "q")
     }
 
     func testFrozenOutputRestoresOnce() async throws {
@@ -362,7 +427,7 @@ extension VisualTests {
         pane.toggleCopyMode(nil)
         try await wait("copy mode entered", within: 2) { if case .cursor = pane.copyMode { true } else { false } }
         unchanged("entry")
-        for step in ["k", "l", "v", "j", "$", "v", "V", "k", "j", "V", "v", "V", "\u{1b}"] {
+        for step in ["k", "l", "v", "j", "$", "v", "w", "b", "e", "^", "V", "k", "j", "V", "v", "V", "w", "b", "e", "^", "\u{1b}"] {
             keys(pane, step)
             unchanged(step)
         }
@@ -456,7 +521,7 @@ extension VisualTests {
         let start = connection.visualCommands.count
         try await enter(pane)
         XCTAssertFalse(pane.hasMarkedText(), "entry cancels the preedit")
-        for c in ["a", "1", " ", "Z"] { key(pane, c, c == "Z" ? .shift : []) }
+        for c in ["a", "1", " ", "Z", "w", "b", "e", "^"] { key(pane, c, c == "Z" || c == "^" ? .shift : []) }
         key(pane, "\u{3}", .control, ignoring: "c")
         key(pane, String(UnicodeScalar(NSLeftArrowFunctionKey)!), [.shift, .numericPad, .function], code: 123)
         key(pane, String(UnicodeScalar(NSRightArrowFunctionKey)!), [.option, .numericPad, .function], code: 124)
@@ -667,7 +732,12 @@ extension VisualTests {
         try await enter(pane)
         XCTAssertTrue(connection.visualCommands.isEmpty, "entry sends no command: \(connection.visualCommands.map(\.line))")
         XCTAssertFalse(pane.visualPill)
-        keys(pane, "gk")
+        let columns = Int(ghostty_surface_size(pane.surface).columns)
+        for (sequence, x) in [("gkb", 0), ("e", columns - 1), ("b", 0)] {
+            keys(pane, sequence)
+            XCTAssertEqual(cursor(pane)?.x, x, sequence)
+            XCTAssertEqual(cursor(pane)?.y, 0, sequence)
+        }
         key(pane, "\u{15}", .control, ignoring: "u")
         pane.scrollWheel(with: try XCTUnwrap(pane.wheelEvent(y: 400)))
         XCTAssertEqual(cursor(pane)?.y, 0)
