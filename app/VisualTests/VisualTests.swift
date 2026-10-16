@@ -212,8 +212,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     @discardableResult func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000) async throws -> String {
         NSApp.appearance = NSAppearance(named: .aqua)
         try loadRuntime()
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
-                          styleMask: [.titled, .fullSizeContentView, .resizable], backing: .buffered, defer: false)
+        window = OwnerWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
+                             styleMask: [.titled, .fullSizeContentView, .resizable], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .aqua)
         window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
