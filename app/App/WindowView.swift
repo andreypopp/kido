@@ -104,7 +104,10 @@ final class WindowView: NSView {
 
     func updateBackground() {
         layer?.backgroundColor = runtime.background.cgColor
-        subviews.compactMap { $0 as? PaneChrome }.forEach { $0.needsDisplay = true }
+        for chrome in subviews.compactMap({ $0 as? PaneChrome }) {
+            chrome.needsDisplay = true
+            for overlay in chrome.subviews { overlay.needsDisplay = true }
+        }
         floatingBoxes.values.forEach { $0.fillColor = runtime.background }
     }
 
@@ -318,8 +321,9 @@ final class WindowView: NSView {
             let tiled = placement.tiled(g, alternate: view.alternate)
             (frame, grid, content, insets) = (tiled.chrome, tiled.grid, tiled.content, tiled.insets)
         }
-        if chrome.frame != frame { chrome.frame = frame }
+        if chrome.frame != frame { chrome.frame = frame; view.needsLayout = true }
         if floatingBoxes[chrome.pane]?.frame != frame { floatingBoxes[chrome.pane]?.frame = frame }
+        for overlay in view.chromeViews where overlay.superview !== chrome { chrome.addSubview(overlay); view.needsLayout = true }
         if toolbar?.superview === chrome, toolbar?.frame != chrome.toolbarFrame { toolbar?.frame = chrome.toolbarFrame }
         view.renderInsets = insets
         if view.frame != content { view.frame = content }
@@ -348,9 +352,12 @@ final class WindowView: NSView {
         guard !isHidden else { return }
         let show = point.map { chrome.hotZone.contains($0) } ?? false
         if show, let view = panes.first(where: { $0.pane == chrome.pane }) {
-            let toolbar = self.toolbar ?? PaneToolbar()
+            let toolbar = self.toolbar ?? PaneToolbar(runtime: runtime)
             self.toolbar = toolbar
-            if toolbar.superview !== chrome { toolbar.removeFromSuperview(); chrome.addSubview(toolbar) }
+            if toolbar.superview !== chrome {
+                let find = chrome.subviews.first { $0 is PaneFind }
+                chrome.addSubview(toolbar, positioned: find == nil ? .above : .below, relativeTo: find)
+            }
             toolbar.frame = chrome.toolbarFrame
             toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) })
         }
@@ -403,6 +410,7 @@ final class WindowView: NSView {
             } else { self?.sendPane([tmux]) }
         }
         view.onAlternateChange = { [weak self] in self?.place() }
+        view.onFindChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
         view.onFontChange = { [weak self] in self?.session?.fontChanged($0) }
         view.onResync = { [weak connection] in connection?.syncResize(id) ?? false }
