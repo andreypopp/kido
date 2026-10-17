@@ -95,6 +95,13 @@ let parse json =
       | _ -> true
     in
     if not (unique records) then raise Exit;
+    let records =
+      List.filter
+        (function
+          | { state = Working (Some 0); app = None; title = None; msg = None; _ } -> false
+          | _ -> true)
+        records
+    in
     Ok { serial; records }
   with Exit | Yojson.Json_error _ | Type_error _ -> Error "invalid program status"
 
@@ -165,6 +172,16 @@ let%test_module "Tests" =
     invalid program status
     {"serial":1,"records":[{"id":"","state":"blocked"}]}
     |}]
+
+    let%expect_test "bare zero progress sets no status" =
+      let status =
+        parse
+          {|{"serial":1,"records":[{"id":"","state":"working","progress":0},{"id":"msg","state":"working","progress":0,"msg":"QQ=="},{"id":"app","state":"working","progress":0,"app":"tool"},{"id":"title","state":"working","progress":0,"title":"QQ=="},{"id":"one","state":"working","progress":1},{"id":"working","state":"working"},{"id":"idle","state":"idle","progress":0}]}|}
+        |> Result.get_or_failwith
+      in
+      print_endline (Yojson.Safe.to_string (yojson_of_t status));
+      [%expect
+        {|{"serial":1,"records":[{"id":"app","state":"working","app":"tool","progress":0},{"id":"idle","state":"idle"},{"id":"msg","state":"working","progress":0,"msg":"A"},{"id":"one","state":"working","progress":1},{"id":"title","state":"working","progress":0,"title":"A"},{"id":"working","state":"working"}]}|}]
 
     let%expect_test "optional base64 padding" =
       List.iter

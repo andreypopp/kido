@@ -4,6 +4,24 @@ import (
 	"testing"
 )
 
+func TestRpcBareZeroProgressSetsNoStatus(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.newWindow("alpha", "native", nodeBin, "--")
+	h.waitPaneCommand(pane, "node")
+	f := h.startFeed("alpha")
+	h.programStatus(pane, "state=working:progress=1")
+	r, _ := feedRowFor(f.waitLast(func(s feedSnapshot) bool {
+		r, ok := feedRowFor(s, pane)
+		return ok && len(r.ProgramStatus.Records) == 1 && feedValue(r.ProgramStatus.Records[0].Progress) == 1
+	}, "nonzero progress retained"), pane)
+	h.programStatus(pane, "state=working:progress=0")
+	f.waitLast(func(s feedSnapshot) bool {
+		next, ok := feedRowFor(s, pane)
+		return ok && next.ProgramStatus.Serial > r.ProgramStatus.Serial && len(next.ProgramStatus.Records) == 0
+	}, "bare zero progress removed")
+}
+
 func feedRowFor(s feedSnapshot, pane string) (feedRow, bool) {
 	for _, session := range s.Sessions {
 		for _, r := range feedItems(session.Nodes) {

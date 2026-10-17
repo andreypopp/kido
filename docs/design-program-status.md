@@ -23,6 +23,8 @@ Every topology read includes this variable in `Tmux_pane.format` and
 parses it once into the pane. This applies to control-mode and one-shot
 views. `%program-status` notifications only wake the tick.
 kido ignores their payload.
+When it parses records, kido removes any working record with progress 0
+and no app, title or msg.
 
 A program can report several records, each under an `id`.
 IDs nest with `/` (`build`, `build/test`). The [root record](https://www.superlogical.com/rex/docs/build/program-status#records-and-ids)
