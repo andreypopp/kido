@@ -112,7 +112,6 @@ sleeps = {
     'test_e2e/reap_test.go': {'time.Sleep(100 * time.Millisecond)': 1, 'time.Sleep(1200 * time.Millisecond)': 1},
     'test_e2e/render_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
     'test_e2e/rpc_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
-    'test_e2e/snapshot_test.go': {'time.Sleep(200 * time.Millisecond)': 1},
     'test_e2e/ssh_prime_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/stall_test.go': {'time.Sleep(6 * time.Second)': 1},
     'test_e2e/standalone_test.go': {'time.Sleep(60 * time.Millisecond)': 2, 'time.Sleep(time.Second)': 1},

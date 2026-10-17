@@ -47,9 +47,9 @@ func TestPiCoordinationSurvivesRootReplacement(t *testing.T) {
 			if len(agents) != 2 || !agents[0].Self || agents[1].ID != "coord-child" || !agents[1].CanMessage || !agents[1].CanReply {
 				t.Fatalf("coordination permissions lost after %s: %+v", status, agents)
 			}
-			out, rc = h.kidoAs(parent, "", nil, "snapshot")
-			if rc != 0 || !strings.Contains(out, "pi --session coord-parent") || !strings.Contains(out, "pi --session coord-child") {
-				t.Fatalf("session resume lost after %s: %d %s", status, rc, out)
+			// A resumed pi needs its run to still resolve to its pane.
+			if agents[0].Pane != parent || agents[1].Pane != child {
+				t.Fatalf("session resume lost after %s: %+v", status, agents)
 			}
 			h.expectKido(parent, "message", nil, "delivered to Child by inbox", "tool", "message_agent", "Child")
 			h.expectKido(parent, "question", nil, "delivered to Child by inbox", "tool", "ask_agent", "--id", "coord-ask", "Child")

@@ -121,7 +121,7 @@ Always use ASD-STE100:
 These requirements are fixed:
 
 - **Layout.** `bin/main.ml` contains the cmdliner command table and
-  small command bodies (`set_status`, `get-agent`, `snapshot`, `ssh`, ...).
+  small command bodies (`set_status`, `get-agent`, `ssh`, ...).
   It also contains failure printing and the CLI's tables and text.
   `lib/` is the library `kido`. Each domain or subcommand with its
   own logic has one module. `lib_tmux/` is the library `tmux`.
@@ -238,7 +238,7 @@ Conventions:
 ## Layout
 
     bin/main.ml        the cmdliner command table and the small commands:
-                       set_status, get-agent, get-inbox, snapshot,
+                       set_status, get-agent, get-inbox,
                        ssh, get-window, switch-session/window, server,
                        runs, run-outcome, reap, close-run,
                        rpc; failure printing, and every human-readable
@@ -308,7 +308,7 @@ Conventions:
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     test_e2e/          tests driving kido inside a real tmux server, in Go
 
-`snapshot`, `prompt`, `switch-session`, `reap` and `runs` remain,
+`prompt`, `switch-session`, `reap` and `runs` remain,
 even without production callers. e2e calls `reap` for a deterministic
 sweep. `runs` is the CLI reader of run history.
 

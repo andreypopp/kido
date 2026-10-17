@@ -40,7 +40,7 @@ a TypeScript extension. It uses fake agent binaries to test the same paths.
 
 The rule applies in one direction only: a tool names its command. A
 subcommand without a tool keeps the name that fits it. These include
-`shell`, `ssh`, `get-agent`, `prompt`, `snapshot`, `reap`, `runs` and the
+`shell`, `ssh`, `get-agent`, `prompt`, `reap`, `runs` and the
 other subcommands. `kido agent-status` also keeps its own name. It claims
 a session's run and reports its identity and heartbeat. In contrast, `set_status` writes only
 activity (design.md, "Every report is whole").
