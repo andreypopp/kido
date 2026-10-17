@@ -1106,7 +1106,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     @objc func toggleCopyMode(_ sender: Any?) {
         guard copyMode == nil else { return endCopy() }
         guard !disposed, acceptingInput, superview != nil, !isHiddenOrHasHiddenAncestor, window?.attachedSheet == nil,
-              paste == nil, clipboard == nil, pressed.isEmpty, NSEvent.pressedMouseButtons == 0, !resizeDirty,
+              paste == nil, clipboard == nil, pressed.isEmpty, !resizeDirty,
               (window?.delegate as? WindowOwner)?.uploading(self) != true else { return refuseCopy() }
         let deadline = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.refuseCopy() } }
         copyMode = .entering(deadline)
