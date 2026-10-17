@@ -838,6 +838,12 @@ side by side. A quiet target closes at once. The close kills descendant windows
 before the target, and a failed kill reports "Pane command failed" in another
 sheet. Only one alert is prepared at a time.
 
+Captions use a display-only 200ms debounce per row. New text must remain
+stable for 200ms; empty text must persist for 200ms before the old caption
+is hidden. The first snapshot after launch or reconnect shows captions
+immediately. Row height and accessibility use the displayed caption. One
+timer serves the next pending deadline; removed rows lose their state.
+
 All pane and program rows are 32pt single-line or 48pt with a caption, with
 7pt vertical padding. Titles are 13pt regular on an 18pt line; captions are
 11pt on a 15pt line, 1pt below the title. Agent and agent-run titles, records
