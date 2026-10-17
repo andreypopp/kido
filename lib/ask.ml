@@ -27,9 +27,10 @@ let list ~dir =
   let asks = Filename.concat dir "asks" in
   (if Sys.file_exists asks then Array.to_list (Sys.readdir asks) else [])
   |> List.filter_map (fun file ->
-      Option.flat_map
-        (fun id -> Option.flat_map (read ~dir) (Result.to_opt (parse_id id)))
-        (String.chop_suffix ~suf:".json" file))
+      let open Option.Infix in
+      let* id = String.chop_suffix ~suf:".json" file in
+      let* id = Result.to_opt (parse_id id) in
+      read ~dir id)
   |> List.sort (fun a b ->
       let c = Float.compare a.created b.created in
       if c = 0 then String.compare a.id b.id else c)
@@ -148,11 +149,11 @@ let availability run =
   match Option.flat_map Run.holder run with
   | Some { pane = Some pane; _ } -> Live pane
   | _ ->
-      let cwd = Option.map_or ~default:"" (fun (r : Run.t) -> r.meta.cwd) run
+      let cwd = match run with Some (r : Run.t) -> r.meta.cwd | None -> ""
       and file =
-        Option.map_or ~default:""
-          (fun (p : Run.pi) -> p.session_file)
-          (Option.flat_map (fun (r : Run.t) -> r.pi) run)
+        match Option.flat_map (fun (r : Run.t) -> r.pi) run with
+        | Some (p : Run.pi) -> p.session_file
+        | None -> ""
       in
       let directory =
         try match (Unix.stat cwd).st_kind with Unix.S_DIR -> true | _ -> false

@@ -288,8 +288,10 @@ let order_windows_by_tree windows states lingering =
   let parent_of_window (w : State.pane list) =
     List.find_map
       (fun (p : State.pane) ->
-        Option.flat_map (fun r -> String_map.find_opt r lingering) p.run
-        |> Option.flat_map (fun l -> l.parent))
+        let open Option.Infix in
+        let* r = p.run in
+        let* l = String_map.find_opt r lingering in
+        l.parent)
       w
   in
   let ordered =
@@ -342,27 +344,26 @@ let window_target ~next ~session ~window ~lingering windows =
   | Some current -> (
       let rec root w = match parent w with Some p -> root p | None -> w in
       let adjacent =
-        Option.flat_map
-          (fun p ->
-            let siblings =
-              List.concat_map
-                (fun (pane : State.pane) ->
-                  List.filter
-                    (fun w ->
-                      Tmux.equal_session_id (first w).session_id session
-                      && Option.equal Tmux.equal_pane_id w.anchor (Some pane.pane_id))
-                    windows)
-                p.panes
-              |> Array.of_list
-            in
-            Option.flat_map
-              (fun (i, _) ->
-                let j = i + if next then 1 else -1 in
-                if j >= 0 && j < Array.length siblings then Some (first siblings.(j))
-                else if next then None
-                else Some (first p))
-              (Array.find_idx (fun w -> Tmux.equal_window_id (first w).window_id window) siblings))
-          (parent current)
+        let open Option.Infix in
+        let* p = parent current in
+        let siblings =
+          List.concat_map
+            (fun (pane : State.pane) ->
+              List.filter
+                (fun w ->
+                  Tmux.equal_session_id (first w).session_id session
+                  && Option.equal Tmux.equal_pane_id w.anchor (Some pane.pane_id))
+                windows)
+            p.panes
+          |> Array.of_list
+        in
+        let* i, _ =
+          Array.find_idx (fun w -> Tmux.equal_window_id (first w).window_id window) siblings
+        in
+        let j = i + if next then 1 else -1 in
+        if j >= 0 && j < Array.length siblings then Some (first siblings.(j))
+        else if next then None
+        else Some (first p)
       in
       match adjacent with
       | Some _ -> adjacent
@@ -649,13 +650,16 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
       let open Result.Infix in
       let* state = State.read ~dir tmux in
       let roots =
-        List.find_opt
-          (fun (s : State.session) -> Tmux.equal_session_id s.id session)
-          (State.order_sessions state)
-        |> Option.map_or ~default:[] (fun (s : State.session) ->
+        match
+          List.find_opt
+            (fun (s : State.session) -> Tmux.equal_session_id s.id session)
+            (State.order_sessions state)
+        with
+        | Some (s : State.session) ->
             order_windows_by_tree s.windows state.agents (lingering_subagents ~dir state.runs)
             |> List.filter_map (fun (w : placement) ->
-                match w.anchor with None -> Some (List.hd w.panes).window_id | Some _ -> None))
+                match w.anchor with None -> Some (List.hd w.panes).window_id | Some _ -> None)
+        | None -> []
       in
       let* () =
         movable ~eq:Tmux.equal_window_id ~missing:"no such top-level window in session" roots move
@@ -697,19 +701,15 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
              let next = match direction with Next -> true | Prev -> false in
              let lingering = lingering_subagents ~dir state.runs in
              let windows = windows_in_order state lingering in
-             let active =
-               Option.flat_map
-                 (fun (c : Tmux.client) ->
-                   List.find_opt
-                     (fun (p : State.pane) -> String.equal p.session_name c.session && p.active)
-                     (List.concat_map (fun w -> w.panes) windows))
-                 (Tmux.find_client tmux client)
-             in
              match
-               Option.flat_map
-                 (fun (a : State.pane) ->
-                   window_target ~next ~session:a.session_id ~window:a.window_id ~lingering windows)
-                 active
+               let open Option.Infix in
+               let* (c : Tmux.client) = Tmux.find_client tmux client in
+               let* (a : State.pane) =
+                 List.find_opt
+                   (fun (p : State.pane) -> String.equal p.session_name c.session && p.active)
+                   (List.concat_map (fun w -> w.panes) windows)
+               in
+               window_target ~next ~session:a.session_id ~window:a.window_id ~lingering windows
              with
              | Some target ->
                  Result.map
@@ -836,14 +836,15 @@ let%test_module "Tests" =
       let row = pane_label m (Tmux.Pane_map.find p.pane_id m.pane_data) in
       Printf.sprintf "%S %s" row.title
         (match row.lifecycle with
-        | Live { status; run } ->
+        | Live { status; run } -> (
             Yojson.Safe.to_string (Pane_status.yojson_of_kind status)
-            ^ Option.map_or ~default:""
-                (fun (r : run) -> " run=" ^ Run.string_of_kind r.kind ^ " started")
-                run
+            ^
+            match run with
+            | Some (r : run) -> " run=" ^ Run.string_of_kind r.kind ^ " started"
+            | None -> "")
         | Ended { result; run } ->
             Printf.sprintf "ended %s run=%s"
-              (Option.map_or ~default:"unknown" Run.string_of_result result)
+              (match result with Some x -> Run.string_of_result x | None -> "unknown")
               (Run.string_of_kind run))
 
     let snap_of ?(l = []) panes =
@@ -1048,7 +1049,7 @@ let%test_module "Tests" =
         (fun (pl : placement) ->
           Printf.printf "%s anchor=%s\n"
             (Tmux.string_of_window_id (List.hd pl.panes).window_id)
-            (Option.map_or ~default:"-" Tmux.string_of_pane_id pl.anchor))
+            (match pl.anchor with Some x -> Tmux.string_of_pane_id x | None -> "-"))
         (order_windows_by_tree (marked edges windows) states lingering)
 
     let w ?run id = [ pane ~window:("@" ^ id) ?run ("%" ^ id) ]
@@ -1139,10 +1140,10 @@ let%test_module "Tests" =
           in
           Printf.printf "%s:%s %s -> %s\n" session window
             (if next then "next" else "prev")
-            (Option.map_or ~default:"null"
-               (fun (p : State.pane) ->
-                 Tmux.string_of_session_id p.session_id ^ ":" ^ Tmux.string_of_window_id p.window_id)
-               target))
+            (match target with
+            | Some (p : State.pane) ->
+                Tmux.string_of_session_id p.session_id ^ ":" ^ Tmux.string_of_window_id p.window_id
+            | None -> "null"))
         [
           ("$0", "@1", true);
           ("$0", "@5", true);
@@ -1164,10 +1165,12 @@ let%test_module "Tests" =
           List.iter
             (fun next ->
               print_endline
-                (Option.map_or ~default:"null"
-                   (fun (p : State.pane) -> Tmux.string_of_window_id p.window_id)
-                   (window_target ~next ~session:root.session_id ~window:root.window_id
-                      ~lingering:String_map.empty windows)))
+                (match
+                   window_target ~next ~session:root.session_id ~window:root.window_id
+                     ~lingering:String_map.empty windows
+                 with
+                | Some (p : State.pane) -> Tmux.string_of_window_id p.window_id
+                | None -> "null"))
             [ true; false ])
         [
           [];
@@ -1228,20 +1231,22 @@ let%test_module "Tests" =
           Printf.printf "%s %s -> %s\n"
             (if next then "next" else "prev")
             window
-            (Option.map_or ~default:"-"
-               (fun (p : State.pane) -> Tmux.string_of_window_id p.window_id)
-               (window_target ~next ~session:(Tmux.session_id_of_string "$0")
-                  ~window:
-                    (Tmux.window_id_of_string
-                       ("@"
-                       ^ List.assoc ~eq:String.equal window
-                           [
-                             ("other", "209");
-                             ("root", "201");
-                             ("child2", "203");
-                             ("grandchild", "212");
-                           ]))
-                  ~lingering windows)))
+            (match
+               window_target ~next ~session:(Tmux.session_id_of_string "$0")
+                 ~window:
+                   (Tmux.window_id_of_string
+                      ("@"
+                      ^ List.assoc ~eq:String.equal window
+                          [
+                            ("other", "209");
+                            ("root", "201");
+                            ("child2", "203");
+                            ("grandchild", "212");
+                          ]))
+                 ~lingering windows
+             with
+            | Some (p : State.pane) -> Tmux.string_of_window_id p.window_id
+            | None -> "-"))
         [
           (false, "other");
           (false, "root");
@@ -1266,7 +1271,8 @@ let%test_module "Tests" =
       let i = Test_fixture.run_id id in
       let show () =
         let l = String_map.find id (lingering ~dir "%30" id) in
-        Printf.printf "%s %s\n" l.name (Option.map_or ~default:"-" Run.string_of_result l.outcome)
+        Printf.printf "%s %s\n" l.name
+          (match l.outcome with Some x -> Run.string_of_result x | None -> "-")
       in
       show ();
       ignore (Run.write_pi ~dir i ~holder:0 { (Test_fixture.pi ()) with name = "renamed" });

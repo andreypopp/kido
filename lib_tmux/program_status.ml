@@ -140,7 +140,7 @@ let yojson_of_t t =
       | Blocked _ -> "blocked"
       | Error -> "error"
     in
-    let optional key f = Option.map_or ~default:[] (fun v -> [ (key, f v) ]) in
+    let optional key f = function Some v -> [ (key, f v) ] | None -> [] in
     `Assoc
       ([ ("id", `String r.id); ("state", `String state) ]
       @ optional "app" (fun s -> `String s) r.app

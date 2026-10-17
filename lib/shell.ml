@@ -34,7 +34,7 @@ let argv path mode command =
     | Plain, Some _ -> [ path ]
     | (Zsh | Bash), _ -> path :: Prime.shell_args mode
   in
-  head @ Option.map_or ~default:[] (fun c -> [ "-c"; c ]) command
+  head @ match command with Some c -> [ "-c"; c ] | None -> []
 
 let run () =
   let tmux = Tmux.create () in

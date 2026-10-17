@@ -23,7 +23,9 @@ let%test_module "Tests" =
 
     let%expect_test "the wake marker keeps the latest wake" =
       let dir = temp () in
-      let show () = print_endline (Option.map_or ~default:"none" Timestamp.to_string (wake ~dir)) in
+      let show () =
+        print_endline (match wake ~dir with Some x -> Timestamp.to_string x | None -> "none")
+      in
       show ();
       record_pause ~dir 1_700_001_000.;
       record_pause ~dir 1_700_000_000.;

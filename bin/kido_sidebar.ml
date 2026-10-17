@@ -324,11 +324,12 @@ let title theme (r : S.row) =
   let plain = span `Plain in
   match r.lifecycle with
   | Ended _ -> [ span `Dim r.title ]
-  | Live { status = Ssh { user; host; pane = Remote_terminal { interactive; status } }; _ } ->
+  | Live { status = Ssh { user; host; pane = Remote_terminal { interactive; status } }; _ } -> (
       [ span `Proc "ssh "; plain (user ^ "@" ^ host) ]
-      @ Option.map_or ~default:[]
-          (fun c -> [ span `Proc ": "; plain c ])
-          (if interactive then command status else None)
+      @
+      match if interactive then command status else None with
+      | Some c -> [ span `Proc ": "; plain c ]
+      | None -> [])
   | Live { status = Terminal status; run } -> (
       match command status with
       | Some c -> [ span `Proc c ]
@@ -340,7 +341,7 @@ let title theme (r : S.row) =
 let caption (r : S.row) =
   let parts msg progress =
     match
-      Option.to_list msg @ Option.map_or ~default:[] (fun n -> [ Printf.sprintf "%d%%" n ]) progress
+      Option.to_list msg @ match progress with Some n -> [ Printf.sprintf "%d%%" n ] | None -> []
     with
     | [] -> None
     | parts -> Some (String.concat " " parts)
@@ -398,16 +399,18 @@ let parts m : line -> span list * span list * span list =
         if String.is_empty r.caption then [] else [ plain " "; span `Dim r.caption ] )
   | Row (prefix, _, r) -> (
       let tree = if String.is_empty prefix then [] else [ span `Dim prefix ] in
-      ( tree @ [ Option.map_or ~default:(plain " ") (glyph m.theme) (indicator m r) ],
+      ( tree @ [ (match indicator m r with Some x -> glyph m.theme x | None -> plain " ") ],
         title m.theme r,
         match caption r with
         | Some text -> [ plain " "; span `Dim text ]
-        | None ->
-            Option.map_or ~default:[]
-              (fun s -> [ plain " "; span `Dim (elapsed (m.side.at -. s)) ])
-              (match r.lifecycle with
+        | None -> (
+            match
+              match r.lifecycle with
               | Live { run = Some run; _ } -> Some run.started
-              | Live { run = None; _ } | Ended _ -> None) ))
+              | Live { run = None; _ } | Ended _ -> None
+            with
+            | Some s -> [ plain " "; span `Dim (elapsed (m.side.at -. s)) ]
+            | None -> []) ))
 
 let pane_of : line -> Tmux.pane_id option = function
   | Row (_, _, r) -> Some r.pane
@@ -479,7 +482,7 @@ let request (opts : S.options) req =
 
 let release_focus m =
   match request m.side.opts S.Release_side_focus with
-  | Ok () -> Option.map_or ~default:m (focus m) (S.active m.side.snap)
+  | Ok () -> ( match S.active m.side.snap with Some x -> focus m x | None -> m)
   | Error e -> { m with status = e }
 
 type msg =

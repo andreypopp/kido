@@ -164,9 +164,11 @@ let send ~dir ~self ~caller recipient spec text =
     let* ((id, target) as e) = not_sent (resolve ~dir ~state ~self ~caller recipient) in
     let name = State.display_name state target in
     let status =
-      Option.flat_map (State.find state) target.pane
-      |> Option.flat_map (fun (p : State.pane) -> Tmux.Program_status.root p.program_status)
-      |> Option.map (fun (r : Tmux.Program_status.record) -> r.state)
+      let open Option.Infix in
+      let* pane = target.pane in
+      let* p = State.find state pane in
+      let+ (r : Tmux.Program_status.record) = Tmux.Program_status.root p.program_status in
+      r.state
     in
     match (deliver ~dir ~caller ~state ~self spec e text, spec, status) with
     | Ok `Pasted, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)

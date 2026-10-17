@@ -77,9 +77,9 @@ let%test_module "Tests" =
           Printf.printf "%s %b\n" s
             (Option.exists (fun t' -> Float.(abs (t' - t) < 1e-6)) (of_string s)))
         [ 0.; 1_700_000_000.; 1_700_000_000.5; 951_782_400.123456 ];
-      print_endline (Option.map_or ~default:"none" to_string (of_string "junk"));
+      print_endline (match of_string "junk" with Some x -> to_string x | None -> "none");
       List.iter
-        (fun s -> print_endline (Option.map_or ~default:"none" to_string (of_string s)))
+        (fun s -> print_endline (match of_string s with Some x -> to_string x | None -> "none"))
         [ "2026-09-29T16:36:24.275927+02:00"; "2026-09-29T11:06:24-03:30"; "2026-09-29T14:36:24+2" ];
       [%expect
         {|

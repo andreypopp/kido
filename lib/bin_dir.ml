@@ -252,9 +252,9 @@ let%test_module "Tests" =
       let before = recorder (root // "before") "ssh" and after = recorder (root // "after") "ssh" in
       let show path =
         print_endline
-          (Option.map_or ~default:"none"
-             (fun p -> String.replace ~sub:root ~by:"$ROOT" p)
-             (look_path_past ~path ~dir:shims "ssh"))
+          (match look_path_past ~path ~dir:shims "ssh" with
+          | Some p -> String.replace ~sub:root ~by:"$ROOT" p
+          | None -> "none")
       in
       show (path_of [ Filename.dirname before; shims; Filename.dirname after ]);
       show (path_of [ shims; other; Filename.dirname after ]);

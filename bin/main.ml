@@ -68,7 +68,7 @@ let local_time t =
 
 let held_message id (s : Run.pi) =
   Printf.sprintf "session %s is already open in pane %s (pid %d); this process is not tracked" id
-    (Option.map_or ~default:"" Tmux.string_of_pane_id s.pane)
+    (match s.pane with Some x -> Tmux.string_of_pane_id x | None -> "")
     s.pid
 
 let rest = Arg.(value & pos_all string [] & info [] ~docv:"ARG")
@@ -110,9 +110,10 @@ let env_run_id name =
     (Option.filter (Fun.negate String.is_empty) (Sys.getenv_opt name))
 
 let caller dir =
-  Option.flat_map
-    (fun id -> Option.map (Pair.make id) (Run.read_pi ~dir id))
-    (Result.to_opt (Run.parse_id (Fs.getenv "PI_SESSION_ID")))
+  let open Option.Infix in
+  let* id = Result.to_opt (Run.parse_id (Fs.getenv "PI_SESSION_ID")) in
+  let+ pi = Run.read_pi ~dir id in
+  (id, pi)
 
 let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
 
@@ -208,11 +209,11 @@ let runs =
                       [
                         Run.string_of_id m.id;
                         m.name;
-                        Option.map_or ~default:"" Run.string_of_id m.parent;
+                        (match m.parent with Some x -> Run.string_of_id x | None -> "");
                         local_time m.started_at;
-                        Option.map_or ~default:"-"
-                          (fun t -> Timestamp.duration (Float.round (t -. m.started_at)))
-                          ended;
+                        (match ended with
+                        | Some t -> Timestamp.duration (Float.round (t -. m.started_at))
+                        | None -> "-");
                         outcome;
                         m.cwd;
                       ])
@@ -227,11 +228,12 @@ let runs =
              cd
              ^
              match m.kind with
-             | Pi ->
+             | Pi -> (
                  "pi --session "
-                 ^ Option.map_or ~default:id
-                     (fun (p : Run.pi) -> Filename.quote p.session_file)
-                     (Run.read_pi ~dir m.id)
+                 ^
+                 match Run.read_pi ~dir m.id with
+                 | Some (p : Run.pi) -> Filename.quote p.session_file
+                 | None -> id)
              | Agent | Bash | Stream -> "kido tool spawn_subagent --resume " ^ id
            and fork = cd ^ "pi --fork " ^ id in
            if json then
@@ -245,13 +247,13 @@ let runs =
                            ("resume", `String resume);
                            ("fork", `String fork);
                          ]
-                        @ Option.map_or ~default:[] (fun s -> [ ("screen", `String s) ]) d.screen))))
+                        @ match d.screen with Some s -> [ ("screen", `String s) ] | None -> []))))
            else begin
              let line k v = Printf.printf "%-10s%s\n" (k ^ ":") v in
              line "id" id;
              line "name" m.name;
              line "kind" (Run.string_of_kind m.kind);
-             line "parent" (Option.map_or ~default:"" Run.string_of_id m.parent);
+             line "parent" (match m.parent with Some x -> Run.string_of_id x | None -> "");
              line "cwd" m.cwd;
              if not (String.is_empty m.model) then line "model" m.model;
              if not (List.is_empty m.tools) then line "tools" ("[" ^ String.concat " " m.tools ^ "]");
@@ -424,7 +426,7 @@ let get_asks =
        let asks =
          Ask.list ~dir
          |> List.filter_map (fun (a : Ask.t) ->
-             if Option.map_or ~default:true (String.equal (Run.string_of_id a.session)) session then
+             if Option.for_all (String.equal (Run.string_of_id a.session)) session then
                Some (a, Run.load ~dir a.session)
              else None)
        in
@@ -474,9 +476,12 @@ let get_agent =
            if not children then fields
            else
              fields
-             @ (match Option.map_or ~default:(Some false) (Run.keep_alive ~dir) id with
-               | Some k -> [ ("keepAlive", `Bool k) ]
-               | None -> [])
+             @ (match id with
+               | None -> [ ("keepAlive", `Bool false) ]
+               | Some id -> (
+                   match Run.keep_alive ~dir id with
+                   | Some k -> [ ("keepAlive", `Bool k) ]
+                   | None -> []))
              @ [ ("childrenAlive", `Bool (Option.exists (Run.children_alive ~dir) id)) ]
          in
          print_endline (Yojson.Safe.to_string (`Assoc fields));

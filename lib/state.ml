@@ -147,11 +147,14 @@ let read ~dir tmux =
       let runs =
         List.fold_left
           (fun m p ->
-            Option.map_or ~default:m
-              (fun r -> Pane_map.add p.pane_id r m)
-              (Option.flat_map
-                 (fun run -> Option.flat_map (Run.load ~dir) (Result.to_opt (Run.parse_id run)))
-                 p.run))
+            match
+              let open Option.Infix in
+              let* run = p.run in
+              let* id = Result.to_opt (Run.parse_id run) in
+              Run.load ~dir id
+            with
+            | Some r -> Pane_map.add p.pane_id r m
+            | None -> m)
           Pane_map.empty panes
       in
       {
@@ -171,13 +174,14 @@ let empty = { panes = []; runs = Pane_map.empty; agents = Pane_map.empty }
 let find t id = List.find_opt (fun p -> equal_pane_id p.pane_id id) t.panes
 
 let caller_pane t self =
-  Option.to_result
-    (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" string_of_pane_id self))
-    (Option.flat_map (find t) self)
+  match self with
+  | None -> Error "pane \"\" not found"
+  | Some id ->
+      Option.to_result (Printf.sprintf "pane %S not found" (string_of_pane_id id)) (find t id)
 
 let display_name t (s : Run.pi) =
   if not (String.is_empty s.name) then s.name
-  else Option.map_or ~default:"" (fun p -> p.title) (Option.flat_map (find t) s.pane)
+  else match Option.flat_map (find t) s.pane with Some p -> p.title | None -> ""
 
 let find_window_run t window =
   List.find_opt
@@ -271,7 +275,7 @@ let%test_module "Tests" =
         title;
       }
 
-    let opt f = Option.map_or ~default:"-" f
+    let opt f = function Some x -> f x | None -> "-"
     let time = opt (Printf.sprintf "%.0f")
 
     let show (p : pane) =

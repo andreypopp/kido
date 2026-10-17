@@ -14,7 +14,7 @@ let yojson_of_status (state : status) =
 
 type parent = Run.id option
 
-let yojson_of_parent p = `String (Option.map_or ~default:"" Run.string_of_id p)
+let yojson_of_parent p = `String (match p with Some x -> Run.string_of_id x | None -> "")
 
 type agent_info = {
   id : Run.id;
@@ -47,7 +47,7 @@ let agents ~dir ~threshold ~self ~caller ~session ~state:({ runs; agents; _ } as
         | None ->
             Error
               (Printf.sprintf "no tmux session for pane %S; pass --session"
-                 (Option.map_or ~default:"" string_of_pane_id self)))
+                 (match self with Some x -> string_of_pane_id x | None -> "")))
   in
   let wake = Stall.wake ~dir and now = Timestamp.now () in
   Pane_map.bindings agents
@@ -124,9 +124,10 @@ let list_runs ~dir ~threshold ~self ~caller ~session ~(state : State.t) =
                 run = r;
                 agent = List.find_opt (fun a -> Run.equal_id a.id r.meta.id) agents;
                 window =
-                  Option.map
-                    (fun (p : State.pane) -> p.window_id)
-                    (Option.flat_map (State.find state) r.meta.pane);
+                  (let open Option.Infix in
+                   let* pane = r.meta.pane in
+                   let+ (p : State.pane) = State.find state pane in
+                   p.window_id);
               })
   in
   visible @ runs
@@ -147,10 +148,11 @@ let yojson_of_row row =
           | _ ->
               [
                 ("id", Run.yojson_of_id m.id);
-                ("name", `String (Option.map_or ~default:m.name (fun a -> a.name) a));
+                ("name", `String (match a with Some a -> a.name | None -> m.name));
                 ("named", `Bool false);
                 ("pane", Run.yojson_of_optional_id m.pane);
-                ("window", `String (Option.map_or ~default:"" string_of_window_id window));
+                ( "window",
+                  `String (match window with Some x -> string_of_window_id x | None -> "") );
                 ("parent", yojson_of_parent m.parent);
                 ("cwd", `String m.cwd);
                 ("canMessage", `Bool false);
@@ -163,7 +165,7 @@ let yojson_of_row row =
             ("state", `String (if Option.is_none r.outcome then "running" else "ended"));
             ("startedAt", Timestamp.yojson_of_t m.started_at);
           ]
-          @ Option.map_or ~default:[] (fun o -> [ ("outcome", Run.yojson_of_outcome o) ]) r.outcome
+          @ match r.outcome with Some o -> [ ("outcome", Run.yojson_of_outcome o) ] | None -> []
         in
         ( fields,
           (match m.kind with Pi | Agent -> "subagent" | Bash | Stream -> "bash"),

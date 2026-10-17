@@ -83,12 +83,12 @@ let%test_module "Tests" =
           let runs =
             List.fold_left
               (fun m (p : State.pane) ->
-                Option.map_or ~default:m
-                  (fun id ->
+                match p.run with
+                | Some id ->
                     Tmux.Pane_map.add p.pane_id
                       { Run.meta = View_fixture.meta (Test_fixture.run_id id) ""; pi = None }
-                      m)
-                  p.run)
+                      m
+                | None -> m)
               Tmux.Pane_map.empty panes
           in
           decide { panes; runs; agents = Tmux.Pane_map.empty } (Tmux.window_id_of_string w)

@@ -87,7 +87,7 @@ let spawn ?socket args =
         {
           pid =
             Unix.create_process bin
-              (argv bin (Option.map_or ~default:[] (fun s -> [ "-S"; s ]) socket @ args))
+              (argv bin ((match socket with Some s -> [ "-S"; s ] | None -> []) @ args))
               in_r out_w null;
           stdin = in_w;
           stdout = out_r;
@@ -290,7 +290,7 @@ module Client = struct
     in
     let args =
       [ "-T"; "hyperlinks"; "-C"; "attach-session"; "-f"; "no-output,ignore-size" ]
-      @ Option.map_or ~default:[] (fun s -> [ "-t"; string_of_session_id s ]) session
+      @ match session with Some s -> [ "-t"; string_of_session_id s ] | None -> []
     in
     match spawn ?socket:t.socket args with
     | Error _ -> drop t

@@ -176,9 +176,9 @@ let spawn ~dir ~self ~caller ~path req =
   let* pane = State.caller_pane state self in
   let parent = if req.no_parent then None else Option.map fst caller in
   let depth =
-    Option.map_or ~default:0
-      (fun id -> 1 + Option.map_or ~default:0 (Run.depth ~dir) (Run.read_meta ~dir id))
-      parent
+    match parent with
+    | Some id -> ( 1 + match Run.read_meta ~dir id with Some m -> Run.depth ~dir m | None -> 0)
+    | None -> 0
   in
   let* () =
     match (parent, caller) with
@@ -256,9 +256,7 @@ let spawn ~dir ~self ~caller ~path req =
           else
             let command =
               insert_after_head
-                (Option.map_or ~default:[ "--session-id"; id ]
-                   (fun f -> [ "--session"; f ])
-                   session)
+                (match session with Some f -> [ "--session"; f ] | None -> [ "--session-id"; id ])
                 req.command
             in
             let lacks flag = not (List.mem ~eq:String.equal flag (List.tl command)) in

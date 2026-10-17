@@ -169,7 +169,7 @@ let ancestors ~dir m =
   let rec up seen m =
     match m.parent with
     | Some p when not (List.mem ~eq:equal_id p seen) ->
-        p :: Option.map_or ~default:[] (up (p :: seen)) (read_meta ~dir p)
+        p :: (match read_meta ~dir p with Some x -> up (p :: seen) x | None -> [])
     | _ -> []
   in
   up [ m.id ] m
@@ -279,19 +279,16 @@ let truncate_screen data =
   else String.drop (String.length data - max_screen_bytes) data
 
 let save_screen tmux ~dir id pane =
-  Option.flat_map
-    (fun pane ->
-      Option.map
-        (fun text ->
-          let data = truncate_screen text in
-          (if not (String.is_empty data) then
-             try Fs.write_atomic (screen_path ~dir id) data
-             with Unix.Unix_error _ | Sys_error _ -> ());
-          data)
-        (Result.to_opt
-           (Tmux.exec tmux
-              [ "capture-pane"; "-p"; "-t"; Tmux.string_of_pane_id pane; "-S"; "-1000" ])))
-    pane
+  let open Option.Infix in
+  let* pane = pane in
+  let+ text =
+    Result.to_opt
+      (Tmux.exec tmux [ "capture-pane"; "-p"; "-t"; Tmux.string_of_pane_id pane; "-S"; "-1000" ])
+  in
+  let data = truncate_screen text in
+  (if not (String.is_empty data) then
+     try Fs.write_atomic (screen_path ~dir id) data with Unix.Unix_error _ | Sys_error _ -> ());
+  data
 
 let%test_module "Tests" =
   (module struct
@@ -373,7 +370,8 @@ let%test_module "Tests" =
           started_at = Timestamp.now ();
         };
       let got = Option.get_exn_or "ReadMeta" (read_meta ~dir i) in
-      Printf.printf "%s %s\n" got.name (Option.map_or ~default:"" Tmux.string_of_pane_id got.pane);
+      Printf.printf "%s %s\n" got.name
+        (match got.pane with Some x -> Tmux.string_of_pane_id x | None -> "");
       print_endline (Option.get_exn_or "ReadTask" (read_task ~dir i));
       Printf.printf "run dir exists: %b\n" (Sys.file_exists (Filename.concat dir "runs/run-1"));
       [%expect {|
@@ -504,9 +502,9 @@ let%test_module "Tests" =
                  }))
           pi;
         Printf.printf "%s %s\n" name
-          (Option.map_or ~default:"running"
-             (fun o -> string_of_result o.result)
-             (effective_outcome ~dir m))
+          (match effective_outcome ~dir m with
+          | Some o -> string_of_result o.result
+          | None -> "running")
       in
       show "live" Agent ~pid:(Unix.getpid ()) ();
       show "dead" Agent ~pid:(dead_pid ()) ();

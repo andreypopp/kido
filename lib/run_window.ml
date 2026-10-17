@@ -15,9 +15,10 @@ let create ?(start = Run.Fresh_start) ~dir (meta : Run.meta) ~session command =
       "KIDO_AGENT_TASK_FILE=" ^ Run.task_path ~dir meta.id;
       "KIDO_AGENT_RUN_ID=" ^ Run.string_of_id meta.id;
     ]
-    @ Option.map_or ~default:[]
-        (fun p -> [ "KIDO_AGENT_PARENT_SESSION=" ^ Run.string_of_id p ])
-        meta.parent
+    @
+    match meta.parent with
+    | Some p -> [ "KIDO_AGENT_PARENT_SESSION=" ^ Run.string_of_id p ]
+    | None -> []
   in
   let tmux = Tmux.create () in
   let open Result.Infix in

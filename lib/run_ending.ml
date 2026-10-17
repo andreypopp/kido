@@ -120,9 +120,10 @@ let run_outcome ~dir ~warn ~result ~text ~unreported id =
   let meta = Run.read_meta ~dir id in
   let text =
     match (meta, result) with
-    | Some m, Run.Failed ->
-        Option.map_or ~default:text (refine_no_turn_detail text)
-          (Run.save_screen (Tmux.create ()) ~dir id m.pane)
+    | Some m, Run.Failed -> (
+        match Run.save_screen (Tmux.create ()) ~dir id m.pane with
+        | Some x -> refine_no_turn_detail text x
+        | None -> text)
     | _ -> text
   in
   let outcome : Run.outcome = { result; text; at = Some (Timestamp.now ()) } in

@@ -176,6 +176,10 @@ Conventions:
   UTC on disk. Timeouts are optional arguments, not mutable refs.
 - **Containers** shadows polymorphic `=` and `compare`.
   Use `String.equal`, `Float.(>)`, etc.
+- **Options.** Do not use `Option.map_or`. Use a `match` on the option.
+  Use the `Option.Infix` let-ops (`let*`, `let+`) only for two or more
+  binds in a chain, with a local `let open Option.Infix in`.
+  For one step, use `Option.map` or `Option.flat_map`.
 - **Derivers.** Equality, comparison, string conversion and JSON codecs
   use ppx_compare, ppx_string_conv and ppx_yojson_conv, not ad hoc functions.
   The `.ml` derives each one whose derived form is correct.

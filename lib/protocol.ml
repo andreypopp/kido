@@ -11,7 +11,7 @@ let hello ~expected server =
           (if matches ~expected server then []
            else
              [
-               ("server", Option.map_or ~default:`Null (fun s -> `String s) server);
+               ("server", match server with Some s -> `String s | None -> `Null);
                ("expected", `String expected);
              ])) );
     ]
@@ -142,13 +142,14 @@ let result_reply id key encode = function
   | Error e -> error id e
   | Ok value -> `Assoc [ ("reply", `Assoc [ ("id", `Int id); (key, encode value) ]) ]
 
-let switched =
-  Option.map_or ~default:`Null (fun (target : Sidebar.switched) ->
+let switched = function
+  | Some (target : Sidebar.switched) ->
       `Assoc
         [
           ("session", Tmux.yojson_of_session_id target.session);
           ("window", Tmux.yojson_of_window_id target.window);
-        ])
+        ]
+  | None -> `Null
 
 let reply : type a. int -> a Sidebar.request -> a -> Yojson.Safe.t =
  fun id request response ->
@@ -175,7 +176,10 @@ let lifecycle = function
         [
           `String "Ended";
           `Assoc
-            [ ("result", `String (Option.map_or ~default:"unknown" Run.string_of_result result)) ];
+            [
+              ( "result",
+                `String (match result with Some x -> Run.string_of_result x | None -> "unknown") );
+            ];
         ]
 
 let snapshot (m : model) =
@@ -202,9 +206,9 @@ let snapshot (m : model) =
         ("lifecycle", lifecycle r.lifecycle);
         ( "program_status",
           Tmux.Program_status.yojson_of_t
-            (Option.map_or ~default:Tmux.Program_status.empty
-               (fun (p : State.pane) -> p.program_status)
-               (State.find m.snap.visible r.pane)) );
+            (match State.find m.snap.visible r.pane with
+            | Some (p : State.pane) -> p.program_status
+            | None -> Tmux.Program_status.empty) );
         ( "run",
           match r.lifecycle with
           | Live { run = Some { kind; _ }; _ } | Ended { run = kind; _ } ->
@@ -241,7 +245,7 @@ let snapshot (m : model) =
                        ("name", `String entry.name);
                        ("text", `String a.text);
                        ("created", Timestamp.yojson_of_t a.created);
-                       ("pane", Option.map_or ~default:`Null Tmux.yojson_of_pane_id pane);
+                       ("pane", match pane with Some x -> Tmux.yojson_of_pane_id x | None -> `Null);
                        ("ended", `Bool (Option.is_none pane));
                        ( "revivable",
                          `Bool
@@ -250,7 +254,7 @@ let snapshot (m : model) =
                            | Live _ | Unavailable -> false) );
                      ])
                  m.snap.asks) );
-          ("error", Option.map_or ~default:`Null (fun e -> `String e) m.snap.err);
+          ("error", match m.snap.err with Some e -> `String e | None -> `Null);
           ( "sessions",
             `List
               (List.map
@@ -895,8 +899,9 @@ let%test_module "Tests" =
       emit (Option.get_exn_or "snapshot" (snapshot m));
       List.iter (fun (i : Sidebar.item) -> emit (lifecycle i.row.lifecycle)) (List.drop 2 items);
       print_endline
-        (Option.map_or ~default:"no snapshot before a server identity" Yojson.Safe.to_string
-           (snapshot { m with snap = empty_snap }));
+        (match snapshot { m with snap = empty_snap } with
+        | Some x -> Yojson.Safe.to_string x
+        | None -> "no snapshot before a server identity");
       emit
         (Option.get_exn_or "error snapshot"
            (snapshot { m with snap = { m.snap with err = Some "tmux: gone" }; sessions = [] }));

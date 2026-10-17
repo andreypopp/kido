@@ -123,7 +123,7 @@ let advance ~now ~serial ~(tag : tag) (records : Tmux.Program_status.record list
     finals =
       List.fold_left
         (fun m (r : Tmux.Program_status.record) ->
-          Option.map_or ~default:m (fun f -> String_map.add r.id f m) (final r))
+          match final r with Some f -> String_map.add r.id f m | None -> m)
         String_map.empty records;
     retained;
     shown = Some key;
@@ -175,7 +175,7 @@ let agent ~now ~serial ~ask ~stalled ~msg records e =
     | None, None, false, Some progress -> Some (`Running, Running { progress })
     | None, None, false, None -> None
   in
-  let e = advance ~now ~serial ~tag:(Option.map_or ~default:`Idle fst live) records e in
+  let e = advance ~now ~serial ~tag:(match live with Some x -> fst x | None -> `Idle) records e in
   let state =
     match live with Some (_, state) -> state | None -> Idle { outcome = idle_outcome e }
   in
@@ -190,7 +190,7 @@ let report ~now ~serial records e =
     | None, Some progress -> Some (`Running, Running { progress })
     | None, None -> None
   in
-  let e = advance ~now ~serial ~tag:(Option.map_or ~default:`Idle fst live) records e in
+  let e = advance ~now ~serial ~tag:(match live with Some x -> fst x | None -> `Idle) records e in
   match (records, e.retained) with
   | [], None -> ({ e with shown = None }, None)
   | _ ->
@@ -373,7 +373,7 @@ let%test_module "Tests" =
             (match result with Success -> "success" | Failure -> "failure")
             serial
 
-    let progress = Option.map_or ~default:"" (Printf.sprintf "(%d%%)")
+    let progress = function Some n -> Printf.sprintf "(%d%%)" n | None -> ""
 
     let kind_name : Tmux.Program_status.kind option -> string = function
       | None -> "none"
@@ -391,7 +391,7 @@ let%test_module "Tests" =
         | Stalled -> "stalled"
         | Idle { outcome = o } -> "idle" ^ outcome o)
         (a.since -. t0)
-        (Option.map_or ~default:"" (Printf.sprintf " msg=%S") a.msg)
+        (match a.msg with Some x -> Printf.sprintf " msg=%S" x | None -> "")
 
     let shell_text t0 (s : shell) =
       (match s.phase with
@@ -404,16 +404,17 @@ let%test_module "Tests" =
             Printf.sprintf "running %S %.0f" command (started_at -. test_at)
             ^ if fullscreen then " fullscreen" else ""
         | Fullscreen -> "running ? fullscreen")
-      ^ Option.map_or ~default:""
-          (fun (r : report) ->
-            Printf.sprintf " | report %s since=+%.1f%s"
-              (match r.state with
-              | Running { progress = p } -> "running" ^ progress p
-              | Waiting { kind; progress = p } -> "waiting:" ^ kind_name kind ^ progress p
-              | Idle { outcome = o } -> "idle" ^ outcome o)
-              (r.since -. t0)
-              (Option.map_or ~default:"" (Printf.sprintf " msg=%S") r.msg))
-          s.report
+      ^
+      match s.report with
+      | Some (r : report) ->
+          Printf.sprintf " | report %s since=+%.1f%s"
+            (match r.state with
+            | Running { progress = p } -> "running" ^ progress p
+            | Waiting { kind; progress = p } -> "waiting:" ^ kind_name kind ^ progress p
+            | Idle { outcome = o } -> "idle" ^ outcome o)
+            (r.since -. t0)
+            (match r.msg with Some x -> Printf.sprintf " msg=%S" x | None -> "")
+      | None -> ""
 
     let text t0 = function
       | Terminal s -> shell_text t0 s

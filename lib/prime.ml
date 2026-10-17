@@ -74,7 +74,7 @@ let local ~zdotdir ~bin_dir mode =
     let dir = Filename.temp_dir "kido-shell." "" in
     let files =
       let with_path integration =
-        integration ^ Option.map_or ~default:"" Bin_dir.path_prepend_script bin_dir
+        integration ^ match bin_dir with Some x -> Bin_dir.path_prepend_script x | None -> ""
       in
       match mode with
       | Plain -> []
@@ -96,7 +96,7 @@ let local ~zdotdir ~bin_dir mode =
   | Zsh ->
       prime (fun dir ->
           ("ZDOTDIR", dir)
-          :: Option.map_or ~default:[] (fun old -> [ ("KIDO_ORIG_ZDOTDIR", old) ]) zdotdir)
+          :: (match zdotdir with Some old -> [ ("KIDO_ORIG_ZDOTDIR", old) ] | None -> []))
   | Bash -> prime (fun dir -> [ ("ENV", Filename.concat dir "env.bash") ])
 
 let local_mode ~dotdir ~env path =

@@ -1,7 +1,9 @@
 let dir () =
   let socket =
-    Option.flat_map Tmux.env_of_string (Sys.getenv_opt "TMUX")
-    |> Option.map (fun (e : Tmux.env) -> e.socket)
+    (let open Option.Infix in
+     let* tmux = Sys.getenv_opt "TMUX" in
+     let+ (e : Tmux.env) = Tmux.env_of_string tmux in
+     e.socket)
     |> Option.filter (fun s ->
         String.equal (Filename.basename s) "socket"
         && Sys.file_exists (Filename.concat (Filename.dirname s) "server.conf"))

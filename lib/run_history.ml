@@ -2,7 +2,7 @@ type info = { meta : Run.meta; outcome : Run.outcome option }
 
 let yojson_of_info { meta; outcome } =
   Yojson.Safe.Util.combine (Run.yojson_of_meta meta)
-    (`Assoc (Option.map_or ~default:[] (fun o -> [ ("outcome", Run.yojson_of_outcome o) ]) outcome))
+    (`Assoc (match outcome with Some o -> [ ("outcome", Run.yojson_of_outcome o) ] | None -> []))
 
 let load ?owner ~dir id =
   Run.load ~dir id
@@ -45,9 +45,7 @@ let%test_module "Tests" =
       list ~owner:(run_id "root") ~dir ()
       |> List.iter (fun (r : info) ->
           Printf.printf "%s %s\n" (Run.string_of_id r.meta.id)
-            (Option.map_or ~default:"running"
-               (fun o -> Run.string_of_result o.Run.result)
-               r.outcome));
+            (match r.outcome with Some o -> Run.string_of_result o.Run.result | None -> "running"));
       [%expect {|
     new running
     old completed
@@ -60,9 +58,9 @@ let%test_module "Tests" =
       List.iter
         (fun r ->
           print_endline
-            (Option.map_or ~default:"running"
-               (fun o -> Run.string_of_result o.Run.result)
-               (Result.get_exn (detail ~dir (run_id r))).info.outcome))
+            (match (Result.get_exn (detail ~dir (run_id r))).info.outcome with
+            | Some o -> Run.string_of_result o.Run.result
+            | None -> "running"))
         [ "run-live"; "run-dead" ];
       [%expect {|
     running

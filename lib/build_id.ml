@@ -1,2 +1,4 @@
 let value =
-  Option.map_or ~default:"unknown" Build_info.V1.Version.to_string (Build_info.V1.version ())
+  match Build_info.V1.version () with
+  | Some x -> Build_info.V1.Version.to_string x
+  | None -> "unknown"

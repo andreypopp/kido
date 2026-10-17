@@ -230,7 +230,7 @@ let%test_module "Tests" =
           (fun r -> Format.printf "%a " Style.pp (style theme r))
           [ `Plain; `Dim; `Session; `Current ];
         Format.printf "@.rows=%s error=%s@."
-          (Option.map_or ~default:"-" Color.to_hex theme.current_rows)
+          (match theme.current_rows with Some x -> Color.to_hex x | None -> "-")
           (Option.get_or ~default:"-" err)
       in
       let reply values = String.concat "\x1f" values in
