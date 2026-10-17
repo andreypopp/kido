@@ -31,7 +31,7 @@ final class PaneChrome: NSView {
     var content = CGRect.zero
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
-        NSRect(x: max(0, bounds.width - 153), y: 8, width: min(145, bounds.width), height: 32)
+        NSRect(x: max(0, bounds.width - 153), y: subviews.contains { $0 is PaneFind } ? 48 : 8, width: min(145, bounds.width), height: 32)
     }
     var hotZone: CGRect {
         CGRect(x: toolbarFrame.minX - 24, y: toolbarFrame.minY,
@@ -60,7 +60,7 @@ final class PaneChrome: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden else { return nil }
         let local = convert(point, from: superview)
-        if subviews.contains(where: { !$0.isHidden && $0.alphaValue > 0 && $0.frame.contains(local) }) { return super.hitTest(point) }
+        if subviews.contains(where: { !$0.isHidden && $0.alphaValue > 0 && $0.frame.contains(local) }), let hit = super.hitTest(point), hit !== self { return hit }
         return bounds.contains(local) && !content.contains(local) ? self : nil
     }
     override func mouseDown(with event: NSEvent) {
@@ -94,8 +94,69 @@ final class PaneDropPreview: NSView {
     }
 }
 
-final class PaneToolbar: NSGlassEffectView {
-    private let separator = NSView()
+class PaneCapsule: NSView {
+    private let runtime: GhosttyRuntime
+    private let radius: CGFloat
+    private let edge = CALayer()
+    private let highlight = CAShapeLayer()
+    private let separators: [CALayer]
+    var separatorX: [CGFloat] = [] { didSet { needsLayout = true } }
+
+    init(runtime: GhosttyRuntime, radius: CGFloat, separators: Int = 0) {
+        self.runtime = runtime
+        self.radius = radius
+        self.separators = (0..<separators).map { _ in CALayer() }
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = radius
+        let shadow = NSShadow()
+        shadow.shadowColor = .black.withAlphaComponent(0.2)
+        shadow.shadowOffset = NSSize(width: 0, height: -6)
+        shadow.shadowBlurRadius = 9
+        self.shadow = shadow
+        edge.borderWidth = 0.5
+        edge.cornerRadius = radius + 0.5
+        highlight.fillColor = CGColor(gray: 1, alpha: 0.12)
+        highlight.fillRule = .evenOdd
+        highlight.cornerRadius = radius
+        highlight.masksToBounds = true
+        for sublayer in [edge, highlight] + self.separators { layer?.addSublayer(sublayer) }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override var wantsUpdateLayer: Bool { true }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+    override func updateLayer() {
+        let background = runtime.background, foreground = runtime.foreground
+        layer?.backgroundColor = NSColor(srgbRed: background.redComponent * 0.92 + foreground.redComponent * 0.08,
+                                         green: background.greenComponent * 0.92 + foreground.greenComponent * 0.08,
+                                         blue: background.blueComponent * 0.92 + foreground.blueComponent * 0.08, alpha: 1).cgColor
+        edge.borderColor = foreground.withAlphaComponent(0.12).cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            for separator in separators { separator.backgroundColor = NSColor.separatorColor.cgColor }
+        }
+    }
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        edge.frame = bounds.insetBy(dx: -0.5, dy: -0.5)
+        highlight.frame = bounds
+        let path = CGMutablePath()
+        path.addRoundedRect(in: bounds, cornerWidth: radius, cornerHeight: radius)
+        path.addRoundedRect(in: bounds.offsetBy(dx: 0, dy: -0.5), cornerWidth: radius, cornerHeight: radius)
+        highlight.path = path
+        for (separator, x) in zip(separators, separatorX) {
+            separator.frame = CGRect(x: x, y: (bounds.height - 14) / 2, width: 1 / (window?.backingScaleFactor ?? 2), height: 14)
+        }
+        CATransaction.commit()
+    }
+}
+
+final class PaneToolbar: PaneCapsule {
     private let grip = IconButton("line.3.horizontal", "Drag pane", size: 15)
     private let zoom = IconButton("arrow.up.left.and.arrow.down.right", "Zoom pane", size: 15)
     private let right = IconButton("rectangle.split.2x1", "Split right", size: 15)
@@ -106,29 +167,16 @@ final class PaneToolbar: NSGlassEffectView {
         NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
     }
 
-    init() {
-        super.init(frame: .zero)
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 145, height: 32))
+    init(runtime: GhosttyRuntime) {
+        super.init(runtime: runtime, radius: 12, separators: 1)
         for (button, x) in [(grip, 3.0), (right, 29.0), (down, 55.0), (zoom, 81.0), (close, 116.0)] {
             button.frame = NSRect(x: x, y: 3, width: 26, height: 26)
-            content.addSubview(button)
+            addSubview(button)
         }
-        separator.frame = NSRect(x: 111, y: 9, width: 0.5, height: 14)
-        separator.wantsLayer = true
-        content.addSubview(separator)
-        cornerRadius = 12
-        contentView = content
+        separatorX = [111]
         alphaValue = 0
-        updateSeparator()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        updateSeparator()
-    }
-    private func updateSeparator() {
-        effectiveAppearance.performAsCurrentDrawingAppearance { separator.layer?.backgroundColor = NSColor.separatorColor.cgColor }
-    }
     func update(command: @escaping (PaneCommand) -> Void, zoomed: Bool, drag: @escaping (NSEvent) -> Void) {
         grip.isEnabled = !zoomed
         grip.press = zoomed ? nil : drag
@@ -141,9 +189,5 @@ final class PaneToolbar: NSGlassEffectView {
         zoom.image = Self.zoomImages[zoomed ? 1 : 0]
         zoom.toolTip = zoomed ? "Unzoom pane" : "Zoom pane"
         zoom.setAccessibilityLabel(zoom.toolTip)
-    }
-    override func layout() {
-        super.layout()
-        separator.frame.size.width = 1 / (window?.backingScaleFactor ?? 2)
     }
 }
