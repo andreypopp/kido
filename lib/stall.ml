@@ -1,4 +1,4 @@
-let stalled_since ~root ~threshold ~wake ~now (s : Run.pi) =
+let stalled_since ~root ~threshold ~wake ~now ~reported_at =
   let working =
     Option.exists
       (fun (r : Tmux.Program_status.record) ->
@@ -6,7 +6,7 @@ let stalled_since ~root ~threshold ~wake ~now (s : Run.pi) =
         && match r.state with Working _ -> true | _ -> false)
       root
   in
-  working && Float.(now - max s.ts (Option.value wake ~default:neg_infinity) >= threshold)
+  working && Float.(now - max reported_at (Option.value wake ~default:neg_infinity) >= threshold)
 
 let wake_file ~dir = Filename.concat dir "wake"
 let wake ~dir = Option.flat_map Timestamp.of_string (Fs.read (wake_file ~dir))

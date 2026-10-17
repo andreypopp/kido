@@ -245,13 +245,13 @@ let observe m =
 
 type indicator = Running | Waiting | Done | Failed | Stalled | Ended of Run.result option
 
-let finished : P.result -> indicator = function Success -> Done | Failure -> Failed
-
 let indicator m (r : S.row) =
   let unseen_outcome, unseen_exit = unseen m r.pane in
   let outcome source =
     Option.flat_map
-      (fun (s, (o : P.outcome)) -> if Stdlib.(s = source) then Some (finished o.result) else None)
+      (fun (s, (o : P.outcome)) ->
+        if Stdlib.(s = source) then Some (match o.result with Success -> Done | Failure -> Failed)
+        else None)
       unseen_outcome
   in
   let agent (a : P.agent) =
@@ -305,13 +305,6 @@ let glyph theme : indicator -> span =
   | Stalled -> span `Stalled "!"
   | Ended (Some Completed) -> span `Dim "✓"
   | Ended _ -> span `Dim "×"
-
-let program_glyph theme : Tmux.Program_status.state -> span option = function
-  | Idle -> None
-  | Working _ -> Some (glyph theme Running)
-  | Blocked _ -> Some (glyph theme Waiting)
-  | Done -> Some (glyph theme Done)
-  | Error -> Some (glyph theme Failed)
 
 let elapsed secs =
   let s = max 0 (Float.to_int secs) in
@@ -392,7 +385,15 @@ let parts m : line -> span list * span list * span list =
         ],
         [ span role (" " ^ List.hd (String.split_on_char '\n' a.text)) ] )
   | Program (prefix, r) ->
-      ( [ span `Dim prefix; Option.value ~default:(plain " ") (program_glyph m.theme r.state) ],
+      ( [
+          span `Dim prefix;
+          (match r.state with
+          | Idle -> plain " "
+          | Working _ -> glyph m.theme Running
+          | Blocked _ -> glyph m.theme Waiting
+          | Done -> glyph m.theme Done
+          | Error -> glyph m.theme Failed);
+        ],
         [ plain r.title ],
         if String.is_empty r.caption then [] else [ plain " "; span `Dim r.caption ] )
   | Row (prefix, _, r) -> (
@@ -407,12 +408,6 @@ let parts m : line -> span list * span list * span list =
               (match r.lifecycle with
               | Live { run = Some run; _ } -> Some run.started
               | Live { run = None; _ } | Ended _ -> None) ))
-
-let spans m line =
-  let lead, title, tail = parts m line in
-  lead @ title @ tail
-
-let row_text m line = String.concat "" (List.map (fun s -> s.text) (spans m line))
 
 let pane_of : line -> Tmux.pane_id option = function
   | Row (_, _, r) -> Some r.pane
@@ -783,6 +778,15 @@ let%test_module "Tests" =
   (module struct
     open View_fixture
 
+    let run_info ?(kind = Run.Agent) ?(parent = "") ?outcome name : Sidebar.lingering =
+      { name; parent = Test_fixture.owned parent; outcome; kind; started = test_at }
+
+    let spans m line =
+      let lead, title, tail = parts m line in
+      lead @ title @ tail
+
+    let row_text m line = String.concat "" (List.map (fun s -> s.text) (spans m line))
+
     let opts ?(dir = temp ()) () : Sidebar.options =
       {
         interval = Sidebar.default_interval;
@@ -801,35 +805,39 @@ let%test_module "Tests" =
       let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
       { m with at = !clock }
 
+    let empty_snap = (model ~dir:"" ()).snap
     let server = Some (1, { Tmux_pane.started_at = 1_700_000_000; pid = 42 })
 
     let rendered_model (m : Sidebar.model) =
-      fst (Sidebar.step { m with snap = Sidebar.empty } { m.snap with server })
+      fst (Sidebar.step { m with snap = empty_snap } { m.snap with server })
 
     let rendered (m : Sidebar.model) = make ~standalone:false (rendered_model m)
 
-    let rows ?dir ?(current = "sess") ?(at = test_at) ?(pi = session "") panes st =
-      let m = model ?dir ~clock:(ref at) () in
-      List.iter
-        (fun (_, (id, parent)) ->
-          if not (String.is_empty parent) then ignore (Test_fixture.run ~dir:m.opts.dir ~parent id))
-        st;
+    let rows ?(lingering = []) ?(current = "sess") ?(at = test_at) ?(pi = session "") panes st =
+      let m = model ~dir:"" ~clock:(ref at) () in
+      let lingering =
+        lingering
+        @ List.filter_map
+            (fun (_, (id, parent)) ->
+              if String.is_empty parent then None else Some (id, run_info ~parent ""))
+            st
+      in
       let states = states (List.map (fun (pane, (id, _)) -> (pane, (id, pi))) st) in
       let panes = with_programs states panes in
       let snap =
         {
-          Sidebar.empty with
+          empty_snap with
           client = client current;
           panes;
           states;
-          lingering = Sidebar.lingering_subagents ~dir:m.opts.dir (Run.marked ~dir:m.opts.dir panes);
+          lingering = Sidebar.String_map.of_list lingering;
         }
       in
       let tui = rendered { m with snap } in
       Array.to_list tui.lines |> List.map (row_text tui)
 
-    let render ?dir ?current ?at ?pi panes st =
-      List.iter print_endline (rows ?dir ?current ?at ?pi panes st)
+    let render ?lingering ?current ?at ?pi panes st =
+      List.iter print_endline (rows ?lingering ?current ?at ?pi panes st)
 
     let%expect_test "a subagent's window nests under the pane that spawned it" =
       render
@@ -1042,18 +1050,18 @@ let%test_module "Tests" =
 
     let%expect_test
         "a lingering subagent shows its own name, dead or alive, and its outcome once recorded" =
-      let dir = temp () in
-      let id = new_run ~dir "fix the flaky test" in
-      render ~dir [ pane ~window:"@20" ~dead_at:1. ~run:id "%30" ] [];
-      render ~dir [ pane ~window:"@20" ~run:id "%30" ] [];
-      render ~dir [ pane ~window:"@20" ~run:id "%30"; shell_pane "@20" "%31" ] [];
+      let lingering = [ ("helper", run_info "fix the flaky test") ] in
+      render ~lingering [ pane ~window:"@20" ~dead_at:1. ~run:"helper" "%30" ] [];
+      render ~lingering [ pane ~window:"@20" ~run:"helper" "%30" ] [];
+      render ~lingering [ pane ~window:"@20" ~run:"helper" "%30"; shell_pane "@20" "%31" ] [];
       List.iter
-        (fun result ->
-          render ~dir
-            [ pane ~window:"@20" ~dead_at:1. ~run:(new_run ~dir ~result "subagent") "%30" ]
+        (fun outcome ->
+          render
+            ~lingering:[ ("helper", run_info ~outcome "subagent") ]
+            [ pane ~window:"@20" ~dead_at:1. ~run:"helper" "%30" ]
             [])
         [ Run.Completed; Failed; Died; Stopped ];
-      render ~dir [ pane ~window:"@20" ~dead_at:1. ~run:"no-such-run" "%30" ] [];
+      render [ pane ~window:"@20" ~dead_at:1. ~run:"no-such-run" "%30" ] [];
       [%expect
         {|
     sess
@@ -1076,17 +1084,18 @@ let%test_module "Tests" =
     |}]
 
     let%expect_test "a running bash run shows its elapsed time, and its outcome once it ended" =
-      let dir = temp () in
-      let run = new_run ~dir ~kind:Bash "build" in
       List.iter
-        (fun d -> render ~dir ~at:(test_at +. d) [ pane ~window:"@20" ~run "%30" ] [])
+        (fun d ->
+          render
+            ~lingering:[ ("build", run_info ~kind:Bash "build") ]
+            ~at:(test_at +. d)
+            [ pane ~window:"@20" ~run:"build" "%30" ]
+            [])
         [ 0.; 65. ];
-      render ~dir ~at:(test_at +. 65.)
-        [
-          pane ~window:"@20" ~dead_at:1.
-            ~run:(new_run ~dir ~kind:Bash ~result:Completed "build")
-            "%30";
-        ]
+      render
+        ~lingering:[ ("build", run_info ~kind:Bash ~outcome:Completed "build") ]
+        ~at:(test_at +. 65.)
+        [ pane ~window:"@20" ~dead_at:1. ~run:"build" "%30" ]
         [];
       [%expect
         {|
@@ -1099,15 +1108,15 @@ let%test_module "Tests" =
     |}]
 
     let%expect_test "a live subagent uses its run start unless it has activity text" =
-      let dir = temp () in
-      let run = new_run ~dir "helper" in
-      let panes = [ agent_pane ~run "@20" "%30" "helper" ] in
+      let panes = [ agent_pane ~run:"helper" "@20" "%30" "helper" ] in
       List.iter
         (fun activity ->
-          render ~dir ~at:(test_at +. 65.)
+          render
+            ~lingering:[ ("helper", run_info "helper") ]
+            ~at:(test_at +. 65.)
             ~pi:(session ~activity ~ts:(test_at +. 60.) "")
             panes
-            [ ("%30", agent_state run "") ])
+            [ ("%30", agent_state "helper" "") ])
         [ ""; "checking tests"; "" ];
       [%expect
         {|
@@ -1141,27 +1150,21 @@ let%test_module "Tests" =
 
     (* With the interval alone, a displayed second changes up to a whole tick late. *)
     let%expect_test "a live run wakes the tick at its next second boundary" =
-      let dir = temp () in
       let clock = ref test_at in
-      let wait panes =
-        let side, _ =
-          Sidebar.step (model ~dir ~clock ())
-            {
-              Sidebar.empty with
-              client = client "sess";
-              panes;
-              lingering = Sidebar.lingering_subagents ~dir (Run.marked ~dir panes);
-            }
-        in
-        Printf.printf "%.3f\n" (next_wait (make ~standalone:false side))
-      in
-      let bash = [ pane ~window:"@20" ~run:(new_run ~dir ~kind:Bash "build") "%30" ] in
-      let agent = [ pane ~window:"@20" ~run:(new_run ~dir "helper") "%30" ] in
       List.iter
-        (fun (at, panes) ->
+        (fun (at, kind) ->
           clock := test_at +. at;
-          wait panes)
-        [ (2.3, bash); (2.95, bash); (2.95, agent) ];
+          let side, _ =
+            Sidebar.step (model ~dir:"" ~clock ())
+              {
+                empty_snap with
+                client = client "sess";
+                panes = [ pane ~window:"@20" ~run:"helper" "%30" ];
+                lingering = Sidebar.String_map.singleton "helper" (run_info ~kind "helper");
+              }
+          in
+          Printf.printf "%.3f\n" (next_wait (make ~standalone:false side)))
+        [ (2.3, Run.Bash); (2.95, Bash); (2.95, Agent) ];
       [%expect {|
     0.100
     0.050
@@ -1170,10 +1173,11 @@ let%test_module "Tests" =
 
     let%expect_test
         "a lingering subagent still nests, and a live split of a keepAlive pi is the bug report" =
-      let dir = temp () in
-      let id = new_run ~dir ~parent:"root-sess" "subagent" in
-      render ~dir
-        [ agent_pane "@13" "%22" "orchestrator"; pane ~window:"@20" ~dead_at:1. ~run:id "%30" ]
+      render
+        ~lingering:[ ("helper", run_info ~parent:"root-sess" "subagent") ]
+        [
+          agent_pane "@13" "%22" "orchestrator"; pane ~window:"@20" ~dead_at:1. ~run:"helper" "%30";
+        ]
         [ ("%22", agent_state "root-sess" "") ];
       render
         [
@@ -1230,7 +1234,7 @@ let%test_module "Tests" =
             "%1"
         in
         {
-          Sidebar.empty with
+          empty_snap with
           client = client "alpha";
           active = Some (Tmux.pane_id_of_string "%1");
           panes = [ p ];
@@ -1256,7 +1260,7 @@ let%test_module "Tests" =
       in
       let snap =
         {
-          Sidebar.empty with
+          empty_snap with
           client = client "alpha";
           active = Some (Tmux.pane_id_of_string "%1");
           panes =
@@ -1300,7 +1304,7 @@ let%test_module "Tests" =
             (update
                (Snapshot
                   {
-                    Sidebar.empty with
+                    empty_snap with
                     server;
                     client = client "alpha";
                     active = Option.map Tmux.pane_id_of_string active;
@@ -1392,7 +1396,7 @@ let%test_module "Tests" =
             (update
                (Snapshot
                   {
-                    Sidebar.empty with
+                    empty_snap with
                     server;
                     client = client "alpha";
                     active = Some (Tmux.pane_id_of_string active);
@@ -1511,7 +1515,7 @@ let%test_module "Tests" =
           m with
           snap =
             {
-              Sidebar.empty with
+              empty_snap with
               client = client "alpha";
               panes = with_programs (states [ ("%2", ("i", session "")) ]) panes;
               states = states [ ("%2", ("i", session "")) ];

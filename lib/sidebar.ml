@@ -186,7 +186,7 @@ let track ~prev m =
       | Pi_agent { pi; _ } ->
           Stall.stalled_since
             ~root:(Tmux.Program_status.root p.program_status)
-            ~threshold:m.opts.threshold ~wake:m.snap.wake ~now:m.at pi
+            ~threshold:m.opts.threshold ~wake:m.snap.wake ~now:m.at ~reported_at:pi.ts
       | Terminal | Some_agent _ | Ssh _ -> false
     in
     let pane_data, changed =
@@ -241,16 +241,6 @@ let pane_label m (d : pane) =
     if pi_run m.snap.lingering p then None
     else Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run
   in
-  let live_title () =
-    let kind = Pane_kind.classify ~states:m.snap.states p in
-    match (kind, lingering) with
-    | (Pi_agent _ | Some_agent _ | Ssh { pane = Remote_agent _; _ }), _ ->
-        Option.value ~default:"" (Pane_kind.title p kind)
-    | (Terminal | Ssh { pane = Remote_terminal; _ }), Some l
-      when List.is_empty p.program_status.records ->
-        l.name
-    | (Terminal | Ssh { pane = Remote_terminal; _ }), _ -> Pane_status.label d.track p
-  in
   let title, lifecycle =
     match lingering with
     | Some l when Option.is_some l.outcome || Option.is_some p.dead_at ->
@@ -259,7 +249,14 @@ let pane_label m (d : pane) =
           | _ -> l.name),
           Ended { result = l.outcome; run = l.kind } )
     | _ ->
-        ( live_title (),
+        ( (let kind = Pane_kind.classify ~states:m.snap.states p in
+           match (kind, lingering) with
+           | (Pi_agent _ | Some_agent _ | Ssh { pane = Remote_agent _; _ }), _ ->
+               Option.value ~default:"" (Pane_kind.title p kind)
+           | (Terminal | Ssh { pane = Remote_terminal; _ }), Some l
+             when List.is_empty p.program_status.records ->
+               l.name
+           | (Terminal | Ssh { pane = Remote_terminal; _ }), _ -> Pane_status.label d.track p),
           Live
             {
               status = d.status;

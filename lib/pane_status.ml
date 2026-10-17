@@ -68,12 +68,13 @@ type kind =
 [@@deriving yojson_of]
 
 type tag = [ `Running | `Waiting | `Stalled | `Idle ] [@@deriving equal]
+type shown = [ `Running | `Waiting | `Stalled | `Idle of outcome option ] [@@deriving equal]
 type retained = { outcome : outcome; id : string; at : float }
 
 type episode = {
   finals : result String_map.t;
   retained : retained option;
-  shown : (tag * outcome option) option;
+  shown : shown option;
   since : float;
 }
 
@@ -109,11 +110,15 @@ let advance ~now ~serial ~(tag : tag) (records : Tmux.Program_status.record list
   in
   let retained =
     match (e.shown, tag) with
-    | Some (`Idle, _), (`Running | `Waiting | `Stalled) -> None
+    | Some (`Idle _), (`Running | `Waiting | `Stalled) -> None
     | _ -> e.retained
   in
   let retained = Option.or_ ~else_:retained entered in
-  let key = (tag, match tag with `Idle -> Option.map (fun r -> r.outcome) retained | _ -> None) in
+  let key =
+    match tag with
+    | `Idle -> `Idle (Option.map (fun r -> r.outcome) retained)
+    | (`Running | `Waiting | `Stalled) as tag -> tag
+  in
   {
     finals =
       List.fold_left
@@ -122,13 +127,10 @@ let advance ~now ~serial ~(tag : tag) (records : Tmux.Program_status.record list
         String_map.empty records;
     retained;
     shown = Some key;
-    since =
-      (if Option.equal (Pair.equal equal_tag (Option.equal equal_outcome)) e.shown (Some key) then
-         e.since
-       else now);
+    since = (if Option.equal equal_shown e.shown (Some key) then e.since else now);
   }
 
-let idle_outcome e = match e.shown with Some (`Idle, outcome) -> outcome | _ -> None
+let idle_outcome e = match e.shown with Some (`Idle outcome) -> outcome | _ -> None
 
 let representative retained (records : Tmux.Program_status.record list) =
   let first p = List.find_opt p records in

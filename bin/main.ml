@@ -27,9 +27,8 @@ let run name body =
   | exception Yojson.Json_error msg -> fail msg
   | exception Unix.Unix_error (e, fn, arg) -> fail (Fs.unix_message e fn arg)
 
-let width s = String.fold (fun n c -> if Char.code c land 0xC0 = 0x80 then n else n + 1) 0 s
-
 let table rows =
+  let width s = String.fold (fun n c -> if Char.code c land 0xC0 = 0x80 then n else n + 1) 0 s in
   let widths =
     List.fold_left
       (fun ws row -> List.map2 (fun w c -> max w (width c + 2)) ws row)

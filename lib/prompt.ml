@@ -36,10 +36,6 @@ let deliver_or_paste ~inbox ~payload ~pane ~name ~run text =
     | Error (Unavailable _) -> Error (not_accepting ~name ~run)
     | Error (Refused m | Failed m) -> Error m
 
-let in_scope (self : Tmux_pane.t) ~whole_session (p : Tmux_pane.t) =
-  String.equal p.session_name self.session_name
-  && (whole_session || p.window_index = self.window_index)
-
 type error = No_prompt | Not_found | Several | Failed of string
 
 let prompt ~dir ~self ~window text =
@@ -55,7 +51,8 @@ let prompt ~dir ~self ~window text =
       List.filter_map
         (fun (p : Tmux_pane.t) ->
           if
-            (not (in_scope self ~whole_session p))
+            (not (String.equal p.session_name self.session_name))
+            || ((not whole_session) && p.window_index <> self.window_index)
             || Option.is_some (Run.window_pane ~runs panes p.window_id)
           then None
           else

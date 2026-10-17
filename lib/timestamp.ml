@@ -13,13 +13,6 @@ let to_string t =
   Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d%sZ" (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
     tm.tm_hour tm.tm_min tm.tm_sec frac
 
-let days_from_civil y m d =
-  let y = if m <= 2 then y - 1 else y in
-  let era = (if y >= 0 then y else y - 399) / 400 in
-  let yoe = y - (era * 400) in
-  let doy = (((153 * if m > 2 then m - 3 else m + 9) + 2) / 5) + d - 1 in
-  (era * 146097) + (yoe * 365) + (yoe / 4) - (yoe / 100) + doy - 719468
-
 let of_string s =
   try
     Scanf.sscanf s "%4d-%2d-%2dT%2d:%2d:%2d%[.0-9]%s@!" (fun y mo d h mi sec frac zone ->
@@ -35,7 +28,12 @@ let of_string s =
         in
         Option.map
           (fun offset ->
-            let whole = (((((days_from_civil y mo d * 24) + h) * 60) + mi - offset) * 60) + sec in
+            let y = if mo <= 2 then y - 1 else y in
+            let era = (if y >= 0 then y else y - 399) / 400 in
+            let yoe = y - (era * 400) in
+            let doy = (((153 * if mo > 2 then mo - 3 else mo + 9) + 2) / 5) + d - 1 in
+            let days = (era * 146097) + (yoe * 365) + (yoe / 4) - (yoe / 100) + doy - 719468 in
+            let whole = (((((days * 24) + h) * 60) + mi - offset) * 60) + sec in
             Float.of_int whole +. if String.is_empty frac then 0. else Float.of_string ("0" ^ frac))
           offset)
   with Scanf.Scan_failure _ | End_of_file | Failure _ -> None

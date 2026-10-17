@@ -28,11 +28,10 @@ let classify ~states (p : Tmux_pane.t) =
 
 let title (p : Tmux_pane.t) = function
   | Ssh { pane = Remote_terminal; _ } -> None
-  | Ssh { pane = Remote_agent { name }; _ } ->
+  | Some_agent { name } | Ssh { pane = Remote_agent { name }; _ } ->
       Some (if String.is_empty p.title then name else p.title)
   | Terminal -> None
   | Pi_agent { pi; _ } -> Some (Run.display_name [ p ] pi)
-  | Some_agent { name } -> Some (if String.is_empty p.title then name else p.title)
 
 let%test_module "Tests" =
   (module struct

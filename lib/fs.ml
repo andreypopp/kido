@@ -104,6 +104,7 @@ let%test_module "Tests" =
       Out_channel.with_open_bin real (fun oc -> output_string oc "#!/bin/sh\n");
       Unix.chmod real 0o755;
       Unix.symlink (Filename.concat dir "real-kido") (Filename.concat dir "kido-under-test");
+      print_endline (show (invoked_path ~path:"" (Filename.concat dir "kido-under-test")));
       print_endline (show (invoked_path ~path:("/nonexistent:" ^ dir) "kido-under-test"));
       print_endline (show (invoked_path ~path:dir (Filename.concat dir "sub/../kido-under-test")));
       Printf.printf "empty falls back to the executable: %b\n"
@@ -112,6 +113,7 @@ let%test_module "Tests" =
         (String.equal (invoked_path ~path:dir "not-there") Sys.executable_name);
       [%expect
         {|
+    $DIR/kido-under-test
     $DIR/kido-under-test
     $DIR/kido-under-test
     empty falls back to the executable: true

@@ -84,20 +84,16 @@ let format =
     ]
 
 let fields = 29
-
-let split_n n s =
-  let rec go n from =
-    match String.index_from_opt s from sep.[0] with
-    | Some i when n > 1 -> String.sub s from (i - from) :: go (n - 1) (i + 1)
-    | _ -> [ String.sub s from (String.length s - from) ]
-  in
-  go n 0
-
 let int s = Option.get_or ~default:0 (int_of_string_opt s)
 let time s = match int s with 0 -> None | n -> Some (Float.of_int n)
 
 let parse_line line =
-  match Array.of_list (split_n fields line) with
+  let rec split n from =
+    match String.index_from_opt line from sep.[0] with
+    | Some i when n > 1 -> String.sub line from (i - from) :: split (n - 1) (i + 1)
+    | _ -> [ String.sub line from (String.length line - from) ]
+  in
+  match Array.of_list (split fields 0) with
   | f when Array.length f < fields -> None
   | f ->
       let program_status =

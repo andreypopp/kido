@@ -1,11 +1,11 @@
-let bare_shell_word command =
-  match String.trim command with
-  | "" -> None
-  | word when String.exists (String.contains " \t\n\"'$`\\;|&<>(){}[]*?~!#") word -> None
-  | word -> Some word
-
 let command ~path ~login user =
-  match Option.flat_map bare_shell_word user with
+  match
+    Option.map String.trim user
+    |> Option.filter (fun word ->
+        not
+          (String.is_empty word
+          || String.exists (String.contains " \t\n\"'$`\\;|&<>(){}[]*?~!#") word))
+  with
   | None -> (login, user)
   | Some word -> (
       let resolved =
@@ -27,9 +27,6 @@ let with_env base add =
     (Array.filter (fun kv -> not (replaced kv)) base)
     (Array.of_list (List.map (fun (k, v) -> k ^ "=" ^ v) add))
 
-let resolve_login_shell candidates =
-  List.find_opt Fs.is_executable candidates |> Option.get_or ~default:"/bin/sh"
-
 let argv path mode command =
   let head =
     match (mode, command) with
@@ -46,7 +43,9 @@ let run () =
   in
   let path, command =
     command ~path:(Fs.getenv "PATH")
-      ~login:(resolve_login_shell [ global_option "default-shell"; Fs.getenv "SHELL" ])
+      ~login:
+        (List.find_opt Fs.is_executable [ global_option "default-shell"; Fs.getenv "SHELL" ]
+        |> Option.get_or ~default:"/bin/sh")
       (match global_option Tmux_vars.user_command with "" -> None | c -> Some c)
   in
   let zdotdir = Sys.getenv_opt "ZDOTDIR" and env = Unix.environment () in

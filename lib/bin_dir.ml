@@ -78,12 +78,10 @@ let%test_module "Tests" =
       Fs.mkdir_p (root // "share");
       Unix.symlink real (root // "bin/kido");
       Unix.symlink (versioned // "share/kido") (root // "share/kido");
-      let exe = Fs.invoked_path ~path:"" (root // "bin/kido") in
-      Printf.printf "invoked_path unresolved: %b\n" (String.equal exe (root // "bin/kido"));
+      let exe = root // "bin/kido" in
       Printf.printf "bin dir unresolved: %b\n"
         (Option.equal String.equal (of_exe exe) (Some (root // "share/kido/bin")));
       [%expect {|
-    invoked_path unresolved: true
     bin dir unresolved: true
     |}]
 

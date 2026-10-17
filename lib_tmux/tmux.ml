@@ -74,18 +74,6 @@ let binary =
 
 let argv bin args = Array.of_list (bin :: "-u" :: args)
 
-let read_all fd =
-  let buf = Buffer.create 4096 and chunk = Bytes.create 65536 in
-  let rec go () =
-    match Unix.read fd chunk 0 (Bytes.length chunk) with
-    | 0 -> Buffer.contents buf
-    | n ->
-        Buffer.add_subbytes buf chunk 0 n;
-        go ()
-    | exception Unix.Unix_error (EINTR, _, _) -> go ()
-  in
-  go ()
-
 type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 
 let spawn ?socket args =
@@ -119,7 +107,19 @@ let one_shot_exec ?socket ?(stdin = "") args =
       (try Fs.write_all p.stdin stdin with Unix.Unix_error (EPIPE, _, _) -> ());
       Unix.close p.stdin;
       let out =
-        Fun.protect ~finally:(fun () -> Unix.close p.stdout) (fun () -> read_all p.stdout)
+        Fun.protect
+          ~finally:(fun () -> Unix.close p.stdout)
+          (fun () ->
+            let buf = Buffer.create 4096 and chunk = Bytes.create 65536 in
+            let rec go () =
+              match Unix.read p.stdout chunk 0 (Bytes.length chunk) with
+              | 0 -> Buffer.contents buf
+              | n ->
+                  Buffer.add_subbytes buf chunk 0 n;
+                  go ()
+              | exception Unix.Unix_error (EINTR, _, _) -> go ()
+            in
+            go ())
       in
       match snd (Unix.waitpid [] p.pid) with
       | WEXITED 0 -> Ok (String.trim out)
@@ -456,13 +456,6 @@ let jump t ~client ~session ~window pane =
     @ release_args client)
 
 let release_side_focus t client = run t (release_args client)
-
-(* On a closed window the fork's display-message exits 0 and prints an empty
-   line, so only the echoed id answers. *)
-let window_exists t window_id =
-  match exec t [ "display-message"; "-p"; "-t"; string_of_window_id window_id; "#{window_id}" ] with
-  | Ok out -> String.equal out (string_of_window_id window_id)
-  | Error _ -> false
 
 type window = { window_id : window_id; pane_id : pane_id; pane_pid : int }
 

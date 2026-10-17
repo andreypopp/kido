@@ -77,8 +77,7 @@ let set ~dir ~session ~asks ~now =
     | [] -> Ok ()
     | (a : entry) :: rest -> (
         if String.is_empty (String.trim a.text) then Error "no question given"
-        else if not (String.equal (Msg.valid_utf_8 a.text) a.text) then
-          Error "question is not valid UTF-8"
+        else if not (String.is_valid_utf_8 a.text) then Error "question is not valid UTF-8"
         else
           match a.id with
           | Some id when List.mem ~eq:String.equal id seen -> Error ("duplicate ask " ^ id)

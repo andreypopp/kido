@@ -77,7 +77,7 @@ let agents ~dir ~threshold ~self ~caller ~session ~panes =
           && (List.is_empty m.tools || List.mem ~eq:String.equal "message_agent" m.tools);
         model = s.model;
         since_report = Float.to_int (now -. s.ts);
-        stalled = Stall.stalled_since ~root ~threshold ~wake ~now s;
+        stalled = Stall.stalled_since ~root ~threshold ~wake ~now ~reported_at:s.ts;
       })
   |> Tree.order ~id:(fun a -> a.id) ~parent:(fun a -> a.parent)
 

@@ -274,8 +274,8 @@ let select ~dir target =
 let max_screen_bytes = 64 * 1024
 
 let truncate_screen data =
-  let n = String.length data in
-  if n > max_screen_bytes then String.sub data (n - max_screen_bytes) max_screen_bytes else data
+  if String.length data <= max_screen_bytes then data
+  else String.drop (String.length data - max_screen_bytes) data
 
 let save_screen tmux ~dir id pane =
   Option.flat_map

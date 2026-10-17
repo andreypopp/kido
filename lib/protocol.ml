@@ -270,6 +270,9 @@ let%test_module "Tests" =
   (module struct
     open View_fixture
 
+    let run_info ?(kind = Run.Agent) ?(parent = "") ?outcome name : Sidebar.lingering =
+      { name; parent = Test_fixture.owned parent; outcome; kind; started = test_at }
+
     let opts ?(dir = temp ()) () : Sidebar.options =
       {
         interval = Sidebar.default_interval;
@@ -284,18 +287,20 @@ let%test_module "Tests" =
       let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
       { m with at = !clock }
 
-    let prepared ~dir panes states =
+    let empty_snap = (model ~dir:"" ()).snap
+
+    let prepared ~dir ~lingering panes states =
       let panes = with_programs states panes in
       fst
         (Sidebar.step (model ~dir ())
            {
-             Sidebar.empty with
+             empty_snap with
              server = Some (1, { Tmux_pane.started_at = test_at |> Float.to_int; pid = 42 });
              client = client "alpha";
              active = Some (Tmux.pane_id_of_string "%1");
              panes;
              states;
-             lingering = Sidebar.lingering_subagents ~dir (Run.marked ~dir panes);
+             lingering = Sidebar.String_map.of_list lingering;
            })
 
     (* The feed's wire format: key order, the server identity, plain titles, each pane's lifecycle,
@@ -303,6 +308,7 @@ let%test_module "Tests" =
     let%expect_test "a snapshot as the feed sends it" =
       let dir = temp () in
       let id = new_run ~dir "helper" in
+      let build = new_run ~dir ~kind:Bash "build" in
       ignore
         (Run.record_outcome ~dir (Test_fixture.run_id id) { result = Failed; text = ""; at = None });
       let panes =
@@ -311,7 +317,7 @@ let%test_module "Tests" =
           pane ~session:"alpha" ~window:"@1" ~command:"bash" ~prompt:test_at "%2";
           pane ~session:"alpha" ~window:"@1" ~command:"vim" ~alternate:true "%3";
           pane ~session:"alpha" ~window:"@4" ~dead_at:1. ~run:id "%4";
-          pane ~session:"alpha" ~window:"@6" ~run:(new_run ~dir ~kind:Bash "build") "%6";
+          pane ~session:"alpha" ~window:"@6" ~run:build "%6";
         ]
         @ [
             {
@@ -327,7 +333,12 @@ let%test_module "Tests" =
             ("%5", ("asker", session ""));
           ]
       in
-      let m = prepared ~dir panes states in
+      let m =
+        prepared ~dir
+          ~lingering:
+            [ (id, run_info ~outcome:Failed "helper"); (build, run_info ~kind:Bash "build") ]
+          panes states
+      in
       let json m = Option.get_exn_or "client" (snapshot m) in
       print_endline (Yojson.Safe.pretty_to_string (json m));
       print_endline
@@ -507,7 +518,14 @@ let%test_module "Tests" =
       in
       ignore (Test_fixture.run ~dir ~parent:"root" "kid");
       let states = states [ ("%1", ("root", session "")); ("%2", ("kid", session "")) ] in
-      let m = prepared ~dir panes states in
+      let m =
+        prepared ~dir
+          ~lingering:
+            [
+              ("kid", run_info ~parent:"root" ""); (run, run_info ~kind:Bash ~parent:"root" "build");
+            ]
+          panes states
+      in
       print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (snapshot m)));
       [%expect
         {|
@@ -872,7 +890,7 @@ let%test_module "Tests" =
               };
           snap =
             {
-              Sidebar.empty with
+              empty_snap with
               server = Some (1, { Tmux_pane.started_at = 1780000000; pid = 12345 });
             };
           sessions =
@@ -883,7 +901,7 @@ let%test_module "Tests" =
       List.iter (fun (i : Sidebar.item) -> emit (lifecycle i.row.lifecycle)) (List.drop 2 items);
       print_endline
         (Option.map_or ~default:"no snapshot before a server identity" Yojson.Safe.to_string
-           (snapshot { m with snap = Sidebar.empty }));
+           (snapshot { m with snap = empty_snap }));
       emit
         (Option.get_exn_or "error snapshot"
            (snapshot { m with snap = { m.snap with err = Some "tmux: gone" }; sessions = [] }));

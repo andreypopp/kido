@@ -31,7 +31,6 @@ module Program_status : sig
   val empty : t
   val root : t -> record option
   val parse : string -> (t, string) result
-  val progress : record -> int option
   val app : t -> record -> string option
 
   type node = { record : record; depth : int; children : node list }
@@ -77,7 +76,6 @@ val jump :
   t -> client:string -> session:session_id -> window:window_id -> pane_id -> (unit, string) result
 
 val release_side_focus : t -> string -> (unit, string) result
-val window_exists : t -> window_id -> bool
 
 type window = { window_id : window_id; pane_id : pane_id; pane_pid : int }
 

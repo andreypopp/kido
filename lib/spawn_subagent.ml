@@ -90,11 +90,10 @@ let parse (f : flags) =
   in
   { mode; no_parent = f.no_parent; tools; keep_alive = f.keep_alive; command }
 
-let thinking_levels = [ "off"; "minimal"; "low"; "medium"; "high"; "xhigh"; "max" ]
-
 (* A model no configured provider can run makes pi print "Use /login ..." and exit 0 having run
    no turn. pi --list-models prints a header, then one row per model: provider, model id. *)
 let validate_model ~path command =
+  let thinking_levels = [ "off"; "minimal"; "low"; "medium"; "high"; "xhigh"; "max" ] in
   let open Result.Infix in
   let argument =
     match command with

@@ -56,15 +56,6 @@ rm -rf -- "$_kido_dir"
 unset _kido_dir
 |}
 
-let files ~bin_dir mode =
-  let with_path integration =
-    integration ^ Option.map_or ~default:"" Bin_dir.path_prepend_script bin_dir
-  in
-  match mode with
-  | Plain -> []
-  | Zsh -> [ (".zshenv", zshenv); ("integration.zsh", with_path Embedded.zsh_integration) ]
-  | Bash -> [ ("env.bash", bash_env); ("integration.bash", with_path Embedded.bash_integration) ]
-
 let shell_args = function Bash -> [ "--login"; "--posix" ] | Plain | Zsh -> [ "-l" ]
 let bash_version_probe = {|echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"|}
 let ps0_major = 4
@@ -81,7 +72,16 @@ let bash_has_ps0 out =
 let local ~zdotdir ~bin_dir mode =
   let prime env =
     let dir = Filename.temp_dir "kido-shell." "" in
-    let files = files ~bin_dir mode in
+    let files =
+      let with_path integration =
+        integration ^ Option.map_or ~default:"" Bin_dir.path_prepend_script bin_dir
+      in
+      match mode with
+      | Plain -> []
+      | Zsh -> [ (".zshenv", zshenv); ("integration.zsh", with_path Embedded.zsh_integration) ]
+      | Bash ->
+          [ ("env.bash", bash_env); ("integration.bash", with_path Embedded.bash_integration) ]
+    in
     match
       List.iter (fun (name, body) -> Fs.write ~perm:0o600 (Filename.concat dir name) body) files
     with

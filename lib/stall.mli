@@ -3,7 +3,7 @@ val stalled_since :
   threshold:float ->
   wake:Timestamp.t option ->
   now:Timestamp.t ->
-  Run.pi ->
+  reported_at:Timestamp.t ->
   bool
 
 val wake : dir:string -> Timestamp.t option

@@ -34,9 +34,6 @@ type snapshot = {
   asks : ask list;
 }
 
-val empty : snapshot
-val lingering_subagents : dir:string -> Run.t Tmux.Pane_map.t -> lingering String_map.t
-
 type reading = { wall : Timestamp.t; mono : Mtime.t }
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
 type run = { kind : Run.kind; started : Timestamp.t }

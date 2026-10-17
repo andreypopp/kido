@@ -124,11 +124,6 @@ let take t =
         t.bytes <- 0;
         Some batch)
 
-let credit t lines n =
-  Mutex.protect t.mu (fun () ->
-      t.sent <- t.sent + lines;
-      t.streamed <- t.streamed + n)
-
 let send t text =
   match Option.flat_map (Run.read_pi ~dir:t.dir) t.meta.parent with
   | Some { inbox; pid; _ } when Run.alive pid && not (String.is_empty inbox) ->
@@ -150,7 +145,10 @@ let deliver t =
   | None -> None
   | Some (text, lines, n) ->
       let ok = try send t text with Sys_error _ | Unix.Unix_error _ | Failure _ -> false in
-      if ok then credit t lines n;
+      if ok then
+        Mutex.protect t.mu (fun () ->
+            t.sent <- t.sent + lines;
+            t.streamed <- t.streamed + n);
       Some ok
 
 let drain fd =

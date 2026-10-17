@@ -130,11 +130,6 @@ let forest t =
   |> List.sort (fun a b -> List.compare String.compare (path a) (path b))
   |> build
 
-let progress r =
-  match r.state with
-  | Working progress | Blocked { progress; _ } -> progress
-  | Idle | Done | Error -> None
-
 let yojson_of_t t =
   let record r =
     let state =
@@ -151,7 +146,11 @@ let yojson_of_t t =
       @ optional "app" (fun s -> `String s) r.app
       @ optional "kind" yojson_of_kind
           (match r.state with Blocked { kind; _ } -> kind | _ -> None)
-      @ optional "progress" (fun n -> `Int n) (progress r)
+      @ optional "progress"
+          (fun n -> `Int n)
+          (match r.state with
+          | Working progress | Blocked { progress; _ } -> progress
+          | Idle | Done | Error -> None)
       @ optional "title" (fun s -> `String s) r.title
       @ optional "msg" (fun s -> `String s) r.msg)
   in
