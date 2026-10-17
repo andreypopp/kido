@@ -1,8 +1,3 @@
-let grace () =
-  match Option.flat_map Int.of_string (Sys.getenv_opt "KIDO_LINGER_SECONDS") with
-  | Some n when n > 0 -> Float.of_int n
-  | _ -> 30.
-
 type close = Window of Tmux.window_id | Pane of { window : Tmux.window_id; pane : Tmux.pane_id }
 
 let release tmux = function
@@ -115,13 +110,13 @@ let send ~dir (e : ending) =
       meta = { e.meta with name = Run.name { meta = e.meta; pi = Run.read_pi ~dir e.meta.id } };
     }
   in
-  match Option.map Run.string_of_id e.meta.parent with
+  match e.meta.parent with
   | None -> Ok ()
   | Some parent -> (
       match Run.live_parent ~dir parent with
       | Error m -> Error (Msg.Failed m)
       | Ok { inbox = ""; _ } ->
-          Error (Unavailable (Printf.sprintf "session %s has no inbox" parent))
+          Error (Unavailable (Printf.sprintf "session %s has no inbox" (Run.string_of_id parent)))
       | Ok target ->
           Msg.deliver_envelope ~path:target.inbox
             {
@@ -147,7 +142,7 @@ let sweep tmux ~dir ~grace ~runs panes ~now =
     List.find_map
       (fun (_, (r : Run.t)) -> if Run.equal_id r.meta.id p then Some (Run.holder r) else None)
       (Tmux.Pane_map.bindings runs)
-    |> Option.get_lazy (fun () -> Run.live_pi ~dir (Run.string_of_id p))
+    |> Option.get_lazy (fun () -> Run.live_pi ~dir p)
     |> Option.is_some
   in
   let mark ((closing, endings) as acc) (p : Tmux_pane.t) (m : Run.meta) text =
@@ -195,10 +190,8 @@ let%test_module "Tests" =
         dead_at = Option.map (fun secs -> now -. Float.of_int secs) dead;
       }
 
-    let id s = Result.get_exn (Run.parse_id s)
-
     let run ~dir ?(kind = Run.Agent) ?(parent = "") name id_s =
-      let i = id id_s in
+      let i = Test_fixture.run_id id_s in
       Run.create ~dir i "task";
       Run.write_meta ~dir
         {

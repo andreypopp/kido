@@ -18,7 +18,7 @@ let id_of_yojson json =
   | `String s when Result.is_ok (parse_id s) -> s
   | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid ask id" json
 
-type t = { id : id; session : string; text : string; created : Timestamp.t } [@@deriving yojson]
+type t = { id : id; session : Run.id; text : string; created : Timestamp.t } [@@deriving yojson]
 
 let path ~dir id = Filename.concat (Filename.concat dir "asks") (id ^ ".json")
 let read ~dir id = Fs.read_json (path ~dir id) t_of_yojson
@@ -44,7 +44,7 @@ let caller ~dir caller =
   else Ok caller
 
 let invalidate ?(removed = false) ~dir ~self ask =
-  if not (String.equal self ask.session) then
+  if not (Option.exists (Run.equal_id ask.session) self) then
     Option.iter
       (fun (s : Run.pi) ->
         if not (String.is_empty s.inbox) then
@@ -72,7 +72,7 @@ type entries = entry list [@@deriving of_yojson]
 type answer = { id : id; text : string } [@@deriving yojson_of]
 
 let set ~dir ~session ~asks ~now =
-  let existing = list ~dir |> List.filter (fun (a : t) -> String.equal a.session session) in
+  let existing = list ~dir |> List.filter (fun (a : t) -> Run.equal_id a.session session) in
   let rec validate seen = function
     | [] -> Ok ()
     | (a : entry) :: rest -> (

@@ -1,4 +1,4 @@
-type id = string [@@deriving equal, yojson_of]
+type id = string [@@deriving equal, compare, yojson_of]
 
 let parse_id s =
   if
@@ -75,20 +75,12 @@ let alive pid =
   | exception Unix.Unix_error _ -> false
 
 let read_pi ~dir id = Fs.read_json (pi_path ~dir id) pi_of_yojson
-
-let live_pi ~dir id =
-  Result.to_opt (parse_id id)
-  |> Option.flat_map (read_pi ~dir)
-  |> Option.filter (fun p -> alive p.pid)
+let live_pi ~dir id = Option.filter (fun p -> alive p.pid) (read_pi ~dir id)
 
 let live_parent ~dir id =
   Option.to_result
     (Printf.sprintf "no live process holds session %S; the parent is gone, nothing sent" id)
     (live_pi ~dir id)
-
-let caller ~dir s =
-  Result.to_opt (parse_id s)
-  |> Option.flat_map (fun id -> Option.map (Pair.make id) (read_pi ~dir id))
 
 let held ~dir id pid =
   match read_pi ~dir id with
@@ -156,11 +148,10 @@ let create_meta ~dir m =
   with Unix.Unix_error (EEXIST, _, _) -> ()
 
 let read_meta ~dir id = Fs.read_json (meta_path ~dir id) meta_of_yojson
-let find ~dir s = Option.flat_map (read_meta ~dir) (Result.to_opt (parse_id s))
 
 type t = { meta : meta; pi : pi option }
 
-let load ~dir s = Option.map (fun meta -> { meta; pi = read_pi ~dir meta.id }) (find ~dir s)
+let load ~dir id = Option.map (fun meta -> { meta; pi = read_pi ~dir meta.id }) (read_meta ~dir id)
 let holder r = Option.filter (fun p -> alive p.pid) r.pi
 
 let name { meta; pi } =
@@ -225,7 +216,10 @@ let list ~dir =
   | exception Sys_error _ -> []
   | names ->
       Array.sort String.compare names;
-      Array.to_list names |> List.filter (fun name -> Sys.is_directory (Filename.concat runs name))
+      Array.to_list names
+      |> List.filter_map (fun name ->
+          Result.to_opt (parse_id name)
+          |> Option.filter (fun _ -> Sys.is_directory (Filename.concat runs name)))
 
 let max_screen_bytes = 64 * 1024
 
@@ -253,7 +247,9 @@ let marked ~dir panes =
     (fun m (p : Tmux_pane.t) ->
       Option.map_or ~default:m
         (fun r -> Tmux.Pane_map.add p.pane_id r m)
-        (Option.flat_map (load ~dir) p.run))
+        (Option.flat_map
+           (fun run -> Option.flat_map (load ~dir) (Result.to_opt (parse_id run)))
+           p.run))
     Tmux.Pane_map.empty panes
 
 let window_pane ~(runs : t Tmux.Pane_map.t) panes window =
@@ -272,7 +268,7 @@ let agents runs =
     (fun pane (r : t) ->
       holder r
       |> Option.filter (fun (s : pi) -> Option.equal Tmux.equal_pane_id s.pane (Some pane))
-      |> Option.map (fun s -> (string_of_id r.meta.id, s)))
+      |> Option.map (Pair.make r.meta.id))
     runs
 
 let%test_module "Tests" =

@@ -24,10 +24,10 @@ type ask = { ask : Ask.t; name : string; target : ask_target }
 
 type snapshot = {
   server : (int * Tmux_pane.server) option;
-  client : Tmux_pane.client_state option;
+  client : Tmux.client option;
   active : Tmux.pane_id option;
   panes : Tmux_pane.t list;
-  states : (string * Run.pi) Tmux.Pane_map.t;
+  states : (Run.id * Run.pi) Tmux.Pane_map.t;
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;

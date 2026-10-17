@@ -207,50 +207,18 @@ let server tmux =
       | _ -> Error (Printf.sprintf "unreadable tmux server identity %S" out))
     (Tmux.exec tmux [ "display-message"; "-p"; "#{start_time} #{pid}" ])
 
-type client_state = { session : string; session_id : session_id; focused : bool }
-
-let client_sep = "\x1f"
-
-let client_format =
-  String.concat client_sep
-    [
-      "#{client_name}";
-      "#{client_session}";
-      "#{session_id}";
-      "#{client_flags}";
-      "#{client_control_mode}";
-    ]
-
-let client_fields line =
-  match String.split ~by:client_sep line with
-  | name :: session :: session_id :: flags :: control :: _ ->
-      Some (name, session, session_id_of_string session_id, flags, control)
-  | _ -> None
-
-let parse_client_state lines client =
-  List.find_map
-    (fun line ->
-      match client_fields line with
-      | Some (name, session, session_id, flags, _) when String.equal name client ->
-          Some { session; session_id; focused = String.mem ~sub:"side-status-focus" flags }
-      | _ -> None)
-    lines
-
 let client_state tmux client =
   Option.flat_map
-    (fun lines -> parse_client_state lines client)
-    (Result.to_opt (Tmux.list_clients tmux ~format:client_format))
+    (List.find_opt (fun (c : Tmux.client) -> String.equal c.name client))
+    (Result.to_opt (Tmux.list_clients tmux))
 
-let real_clients lines =
-  List.filter_map
-    (fun line ->
-      match client_fields line with
-      | Some (name, _, _, _, control) when not (String.is_empty name || String.equal control "1") ->
-          Some name
-      | _ -> None)
-    lines
+let real_clients session =
+  List.filter_map (fun (c : Tmux.client) ->
+      if equal_session_id c.session_id session && not (String.is_empty c.name || c.control) then
+        Some c.name
+      else None)
 
-let resolve_client tmux ~pane ~tmux_env =
+let resolve_client tmux ~pane ~session =
   let live =
     match pane with
     | None -> None
@@ -261,21 +229,9 @@ let resolve_client tmux ~pane ~tmux_env =
         | Ok id when not (String.is_empty id) -> Some (session_id_of_string id)
         | _ -> None)
   in
-  let target =
-    match (live, String.split_on_char ',' tmux_env) with
-    | Some id, _ -> Some id
-    | None, _ :: _ :: id :: _ when not (String.is_empty id) ->
-        Some (session_id_of_string ("$" ^ id))
-    | None, _ -> None
-  in
-  match
-    Option.map
-      (fun t ->
-        Tmux.exec tmux [ "list-clients"; "-t"; string_of_session_id t; "-F"; client_format ])
-      target
-  with
-  | Some (Ok out) -> (
-      match real_clients (String.split_on_char '\n' out) with [ c ] -> Some c | _ -> None)
+  let target = Option.or_ ~else_:session live in
+  match Option.map (fun t -> Result.map (real_clients t) (Tmux.list_clients tmux)) target with
+  | Some (Ok [ c ]) -> Some c
   | _ -> None
 
 let mark_run tmux pane run =
@@ -314,32 +270,6 @@ let rank_sessions tmux ids =
 
 let%test_module "Tests" =
   (module struct
-    let%expect_test "client state" =
-      let clients =
-        [
-          String.concat client_sep [ "/dev/ttys001"; "other"; "$1"; "attached,UTF-8"; "0" ];
-          String.concat client_sep
-            [ "/dev/ttys012"; "work"; "$0"; "attached,side-status-focus,UTF-8"; "0" ];
-          "junk";
-        ]
-      in
-      List.iter
-        (fun c ->
-          Printf.printf "%s: %s\n" c
-            (Option.map_or ~default:"-"
-               (fun (s : client_state) ->
-                 Printf.sprintf "%s %s focused=%b" s.session
-                   (string_of_session_id s.session_id)
-                   s.focused)
-               (parse_client_state clients c)))
-        [ "/dev/ttys012"; "/dev/ttys001"; "/dev/ttys999" ];
-      [%expect
-        {|
-    /dev/ttys012: work $0 focused=true
-    /dev/ttys001: other $1 focused=false
-    /dev/ttys999: -
-    |}]
-
     let%expect_test "optional pane ids use an empty string for none" =
       List.iter
         (fun json ->
@@ -357,24 +287,25 @@ let%test_module "Tests" =
     pane
     |}]
 
-    let%expect_test "standalone inference excludes control and unnamed clients" =
-      let line = String.concat "\x1f" in
-      let clients =
-        [
-          line [ "control"; "work"; "$0"; ""; "1" ];
-          line [ "/dev/ttys001"; "work"; "$0"; "attached"; "0" ];
-          line [ ""; "work"; "$0"; ""; "0" ];
-          "junk";
-        ]
+    let%expect_test "standalone inference excludes control, unnamed and other-session clients" =
+      let client name session control : Tmux.client =
+        {
+          name;
+          session = "work";
+          session_id = session_id_of_string session;
+          focused = false;
+          control;
+        }
       in
-      List.iter print_endline (real_clients clients);
-      (match real_clients [ line [ "invalid"; "work"; "0"; ""; "0" ] ] with
-      | _ -> print_endline "parsed"
-      | exception Invalid_argument e -> print_endline e);
-      [%expect {|
-        /dev/ttys001
-        "0" is not a session id ($N)
-        |}]
+      List.iter print_endline
+        (real_clients (session_id_of_string "$0")
+           [
+             client "control" "$0" true;
+             client "/dev/ttys001" "$0" false;
+             client "" "$0" false;
+             client "/dev/ttys002" "$1" false;
+           ]);
+      [%expect {| /dev/ttys001 |}]
 
     let pane ?(session = "a") ?(created = 100.) ?order ?(session_id = "$0") ?(index = 0)
         ?(window = "@1") ?(active = false) ?(attached = false) ?(running = false) ?start ?prompt

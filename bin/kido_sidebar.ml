@@ -5,7 +5,7 @@ module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
 type span = Mosaic.span = { text : string; style : Style.t }
-type program = { id : string; state : Tmux.Program_status.state; title : string; caption : string }
+type program = { state : Tmux.Program_status.state; title : string; caption : string }
 
 type line =
   | Header of { name : string; current : bool }
@@ -74,42 +74,28 @@ let lines ?(search = "") (side : S.model) =
           panes
   and draw session (item : S.item) tree nested =
     out := Row (tree, session, item.row) :: !out;
-    let rec programs prefix depth trailing rows =
-      match rows with
+    let rec programs prefix depth trailing = function
       | [] -> ()
-      | r :: rest ->
-          let children, siblings =
-            List.take_drop_while (fun c -> String.prefix ~pre:(r.id ^ "/") c.id) rest
-          in
-          let current_depth = List.length (String.split_on_char '/' r.id) in
-          let nested = prefix ^ String.make (2 * (current_depth - depth)) ' ' in
+      | (n : Tmux.Program_status.node) :: siblings ->
+          let r = n.record in
+          let nested = prefix ^ String.make (2 * (n.depth - depth)) ' ' in
           let stem = if List.is_empty siblings && not trailing then " " else "│" in
           let branch = if String.equal stem " " then "└" else "├" in
-          out := Program (nested ^ branch, r) :: !out;
-          programs (nested ^ stem ^ " ") (current_depth + 1) false children;
+          let title =
+            Option.filter (fun s -> not (String.is_empty s)) r.title |> Option.value ~default:r.id
+          in
+          out :=
+            Program
+              (nested ^ branch, { state = r.state; title; caption = Option.value ~default:"" r.msg })
+            :: !out;
+          programs (nested ^ stem ^ " ") (n.depth + 1) false n.children;
           programs prefix depth trailing siblings
     in
     programs nested 1
       (not (List.is_empty item.children))
       (match Tmux.Pane_map.find_opt item.row.pane side.pane_data with
       | None -> []
-      | Some { pane = p; _ } ->
-          let status = p.program_status in
-          List.filter
-            (fun (r : Tmux.Program_status.record) -> not (String.is_empty r.id))
-            status.records
-          |> List.sort (fun (a : Tmux.Program_status.record) (b : Tmux.Program_status.record) ->
-              List.compare String.compare (String.split_on_char '/' a.id)
-                (String.split_on_char '/' b.id))
-          |> List.map (fun (r : Tmux.Program_status.record) ->
-              {
-                id = r.id;
-                state = r.state;
-                title =
-                  Option.filter (fun s -> not (String.is_empty s)) r.title
-                  |> Option.value ~default:r.id;
-                caption = Option.value ~default:"" r.msg;
-              }));
+      | Some { pane = p; _ } -> Tmux.Program_status.forest p.program_status);
     let n = List.length item.children in
     List.iteri
       (fun i child ->
@@ -401,7 +387,7 @@ let parts m : line -> span list * span list * span list =
       ( [],
         [
           span role
-            ((if String.is_empty name then String.take 8 a.session else name)
+            ((if String.is_empty name then String.take 8 (Run.string_of_id a.session) else name)
             ^ " " ^ Ask.string_of_id a.id);
         ],
         [ span role (" " ^ List.hd (String.split_on_char '\n' a.text)) ] )
@@ -665,7 +651,7 @@ let update msg m =
       in
       let m =
         let focused (s : S.snapshot) =
-          Option.exists (fun (c : Tmux_pane.client_state) -> c.focused) s.client
+          Option.exists (fun (c : Tmux.client) -> c.focused) s.client
         in
         if
           ((not (Option.equal Tmux.equal_pane_id snap.active was.active))

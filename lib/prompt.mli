@@ -1,11 +1,11 @@
-val not_accepting : name:string -> run:string option -> string
+val not_accepting : name:string -> run:Run.id option -> string
 
 val deliver_or_paste :
   inbox:string ->
   payload:string ->
   pane:Tmux.pane_id option ->
   name:string ->
-  run:string option ->
+  run:Run.id option ->
   string ->
   ([ `Inbox | `Pasted ], string) result
 

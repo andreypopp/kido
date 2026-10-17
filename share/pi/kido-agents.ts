@@ -77,7 +77,7 @@ const IDLE_EXIT_MS = (Number(process.env.KIDO_IDLE_EXIT_SECONDS) || 30) * 1000;
 
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
-// Must comfortably exceed Control.stop_escalation (lib/control.ml, default 5s), which `kido tool stop_run` can itself block for.
+// Must comfortably exceed KIDO_STOP_ESCALATION_MS (bin/main.ml, default 5s), which `kido tool stop_run` can itself block for.
 const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
 
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;

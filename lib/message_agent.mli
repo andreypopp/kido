@@ -2,13 +2,13 @@ type recipient =
   | Named of string
   | Descendant of string
   | Descendant_run of Run.id
-  | Parent of string
+  | Parent of Run.id
 
 type spec = { kind : Msg.kind; reply_to : string; id : string }
 type failure = Unavailable of string | Failed of string
 type send_error = No_text | Not_sent of string
 
-val reaches : dir:string -> caller:Run.id option -> string -> bool
+val reaches : dir:string -> caller:Run.id option -> Run.id -> bool
 (** Whether run [id] is the caller's own or its descendant; a caller that is no agent reaches
     everything. *)
 
@@ -18,7 +18,7 @@ val resolve :
   self:Tmux.pane_id option ->
   caller:(Run.id * Run.pi) option ->
   recipient ->
-  (string * Run.pi, string) result
+  (Run.id * Run.pi, string) result
 
 val deliver :
   dir:string ->
@@ -26,7 +26,7 @@ val deliver :
   panes:Tmux_pane.t list ->
   self:Tmux.pane_id option ->
   spec ->
-  string * Run.pi ->
+  Run.id * Run.pi ->
   string ->
   ([ `Inbox | `Pasted ], failure) result
 
@@ -45,7 +45,7 @@ val notify_parent :
   self:Tmux.pane_id option ->
   caller:(Run.id * Run.pi) option ->
   warn:(string -> unit) ->
-  parent:string ->
-  run:string ->
+  parent:Run.id option ->
+  run:Run.id option ->
   string ->
   (string, send_error) result

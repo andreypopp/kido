@@ -1,7 +1,7 @@
 type t =
   | Terminal
   | Some_agent of { name : string }
-  | Pi_agent of { id : string; pi : Run.pi }
+  | Pi_agent of { id : Run.id; pi : Run.pi }
   | Ssh of { user : string; host : string; pane : ssh_kind }
 
 and ssh_kind = Remote_terminal | Remote_agent of { name : string }
@@ -40,7 +40,9 @@ let%test_module "Tests" =
 
     let%expect_test "only a root app identifies a pane" =
       let p = pane ~cmd:"pi" "%1" in
-      let states = Tmux.Pane_map.singleton p.pane_id ("local", Test_fixture.pi ()) in
+      let states =
+        Tmux.Pane_map.singleton p.pane_id (Test_fixture.run_id "local", Test_fixture.pi ())
+      in
       List.iter
         (fun (body, local) ->
           let status = Result.get_exn (Tmux.Program_status.parse body) in
@@ -51,7 +53,7 @@ let%test_module "Tests" =
             (match kind with
             | Terminal -> "terminal"
             | Some_agent { name } -> "native " ^ name
-            | Pi_agent { id; _ } -> "local " ^ id
+            | Pi_agent { id; _ } -> "local " ^ Run.string_of_id id
             | Ssh { user; host; _ } -> "ssh " ^ user ^ "@" ^ host))
         [
           ({|{"serial":1,"records":[]}|}, true);

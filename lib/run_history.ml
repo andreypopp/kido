@@ -17,10 +17,11 @@ let list ?owner ~dir () =
 
 type detail = { info : info; task : string; screen : string option; report : string option }
 
-let detail ~dir id_str =
+let detail ~dir id =
   let open Result.Infix in
-  let* id = Run.parse_id id_str in
-  let+ info = Option.to_result (Printf.sprintf "run %S: no such run" id_str) (load ~dir id_str) in
+  let+ info =
+    Option.to_result (Printf.sprintf "run %S: no such run" (Run.string_of_id id)) (load ~dir id)
+  in
   {
     info;
     task = Option.get_or ~default:"" (Run.read_task ~dir id);
@@ -37,9 +38,7 @@ let refine_no_turn_detail text screen =
     Printf.sprintf "%s (the pane showed: \"%s\")" text login_line
   else text
 
-let run_outcome ~dir ~warn ~result ~text ~unreported id_str =
-  let open Result.Infix in
-  let* id = Run.parse_id id_str in
+let run_outcome ~dir ~warn ~result ~text ~unreported id =
   let meta = Run.read_meta ~dir id in
   let text =
     match (meta, result) with
@@ -60,19 +59,17 @@ let run_outcome ~dir ~warn ~result ~text ~unreported id_str =
       Ok ()
   | _ ->
       if Run.record_outcome ~dir id outcome then Ok ()
-      else Error (Printf.sprintf "run %s already has an outcome, or is gone" id_str)
+      else Error (Printf.sprintf "run %s already has an outcome, or is gone" (Run.string_of_id id))
 
 let%test_module "Tests" =
   (module struct
     open Test_fixture
 
-    let id s = Result.get_exn (Run.parse_id s)
-
     let outcome ~dir run result =
-      ignore (Run.record_outcome ~dir (id run) { result; text = ""; at = Some 1_700_000_090. })
+      ignore (Run.record_outcome ~dir (run_id run) { result; text = ""; at = Some 1_700_000_090. })
 
     let show_outcome ~dir run =
-      match Run.read_outcome ~dir (id run) with
+      match Run.read_outcome ~dir (run_id run) with
       | None -> print_endline "no outcome"
       | Some o -> Printf.printf "outcome %s %S\n" (Run.string_of_result o.result) o.text
 
@@ -82,7 +79,7 @@ let%test_module "Tests" =
       ignore (run ~dir ~parent:"other" ~started_at:3. "other");
       ignore (run ~dir ~parent:"root" ~pid:(Unix.getpid ()) ~started_at:2. "new");
       outcome ~dir "old" Completed;
-      list ~owner:(id "root") ~dir ()
+      list ~owner:(run_id "root") ~dir ()
       |> List.iter (fun (r : info) ->
           Printf.printf "%s %s\n" (Run.string_of_id r.meta.id)
             (Option.map_or ~default:"running"
@@ -102,7 +99,7 @@ let%test_module "Tests" =
           print_endline
             (Option.map_or ~default:"running"
                (fun o -> Run.string_of_result o.Run.result)
-               (Result.get_exn (detail ~dir r)).info.outcome))
+               (Result.get_exn (detail ~dir (run_id r))).info.outcome))
         [ "run-live"; "run-dead" ];
       [%expect {|
     running
@@ -111,7 +108,9 @@ let%test_module "Tests" =
 
     let record_outcome ~dir ?(unreported = false) result r =
       match
-        run_outcome ~dir ~warn:(Printf.printf "warning: %s\n") ~result ~text:"" ~unreported r
+        Result.flat_map
+          (run_outcome ~dir ~warn:(Printf.printf "warning: %s\n") ~result ~text:"" ~unreported)
+          (Run.parse_id r)
       with
       | Ok () -> ()
       | Error m -> Printf.printf "refused: %s\n" m

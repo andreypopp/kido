@@ -24,10 +24,10 @@ type ask = { ask : Ask.t; name : string; target : ask_target }
 
 type snapshot = {
   server : (int * Tmux_pane.server) option;
-  client : Tmux_pane.client_state option;
+  client : Tmux.client option;
   active : Tmux.pane_id option;
   panes : Tmux_pane.t list;
-  states : (string * Run.pi) Tmux.Pane_map.t;
+  states : (Run.id * Run.pi) Tmux.Pane_map.t;
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
@@ -61,7 +61,7 @@ let lingering_subagents ~dir runs =
     runs String_map.empty
 
 let take ~opts conn prev client =
-  Option.iter (fun (c : Tmux_pane.client_state) -> Tmux.Client.follow conn c.session_id) client;
+  Option.iter (fun (c : Tmux.client) -> Tmux.Client.follow conn c.session_id) client;
   let tmux = Tmux.Client.tmux conn in
   let read =
     let open Result.Infix in
@@ -84,9 +84,7 @@ let take ~opts conn prev client =
         server;
         client;
         active =
-          Option.flat_map
-            (fun (c : Tmux_pane.client_state) -> Tmux_pane.active_pane panes c.session)
-            client;
+          Option.flat_map (fun (c : Tmux.client) -> Tmux_pane.active_pane panes c.session) client;
         panes;
         states = Run.agents runs;
         wake = Stall.wake ~dir:opts.dir;
@@ -194,7 +192,7 @@ let track ~prev m =
               match kind with
               | Pi_agent { id; _ } ->
                   List.find_map
-                    (fun a -> if String.equal a.ask.session id then Some a.ask.id else None)
+                    (fun a -> if Run.equal_id a.ask.session id then Some a.ask.id else None)
                     m.snap.asks
               | Terminal | Some_agent _ | Ssh _ -> None
             in
@@ -274,7 +272,7 @@ let order_windows_by_tree windows states lingering =
         List.fold_left
           (fun acc (p : Tmux_pane.t) ->
             match Tmux.Pane_map.find_opt p.pane_id states with
-            | Some (id, _) -> String_map.add id (window_id w, p.pane_id) acc
+            | Some (id, _) -> String_map.add (Run.string_of_id id) (window_id w, p.pane_id) acc
             | _ -> acc)
           acc w)
       String_map.empty windows
@@ -426,9 +424,7 @@ let rebuild m =
           id = s.id;
           name = s.name;
           current =
-            Option.exists
-              (fun (c : Tmux_pane.client_state) -> String.equal s.name c.session)
-              m.snap.client;
+            Option.exists (fun (c : Tmux.client) -> String.equal s.name c.session) m.snap.client;
           nodes = append_windows m (order_windows_by_tree s.windows m.snap.states m.snap.lingering);
         })
       order
@@ -455,7 +451,7 @@ let step m (snap : snapshot) =
      try Stall.record_pause ~dir:m.opts.dir clock.wall with Unix.Unix_error _ | Sys_error _ -> ());
   let client =
     match snap.client with
-    | Some (c : Tmux_pane.client_state) -> (
+    | Some (c : Tmux.client) -> (
         match
           List.find_opt
             (fun (p : Tmux_pane.t) ->
@@ -622,7 +618,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
       match target with
       | None -> Error "asking agent has no pane"
       | Some p -> jump { session = p.session_id; window = p.window_id; pane })
-  | Delete_ask id -> Ask.remove ~dir ~self:"" id
+  | Delete_ask id -> Ask.remove ~dir ~self:None id
   | Release_side_focus -> Tmux.release_side_focus tmux client
   | Reorder_session ({ source; anchor; position } as move) ->
       let open Result.Infix in
@@ -693,7 +689,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
              let windows = windows_in_order panes (Run.agents runs) lingering in
              let active =
                Option.flat_map
-                 (fun (c : Tmux_pane.client_state) ->
+                 (fun (c : Tmux.client) ->
                    List.find_opt
                      (fun (p : Tmux_pane.t) -> String.equal p.session_name c.session && p.active)
                      (List.concat_map (fun w -> w.panes) windows))
@@ -734,9 +730,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
                match
                  Array.find_idx
                    (fun (s : Tmux_pane.session) ->
-                     Option.exists
-                       (fun (c : Tmux_pane.client_state) -> String.equal c.session s.name)
-                       current)
+                     Option.exists (fun (c : Tmux.client) -> String.equal c.session s.name) current)
                    sessions
                with
                | Some (i, _) -> (
@@ -915,7 +909,13 @@ let%test_module "Tests" =
       in
       let ask id session : ask =
         {
-          ask = { id = Result.get_exn (Ask.parse_id id); session; text = ""; created = test_at };
+          ask =
+            {
+              id = Result.get_exn (Ask.parse_id id);
+              session = Test_fixture.run_id session;
+              text = "";
+              created = test_at;
+            };
           name = "";
           target = Revivable;
         }
@@ -1207,7 +1207,7 @@ let%test_module "Tests" =
     let%expect_test "lingering reads each tick's record afresh: a reported name, an outcome" =
       let dir = temp () in
       let id = new_run ~dir "subagent" in
-      let i = Result.get_exn (Run.parse_id id) in
+      let i = Test_fixture.run_id id in
       let show () =
         let (l : lingering) =
           String_map.find id

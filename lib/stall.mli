@@ -1,5 +1,3 @@
-val stall_threshold : unit -> float
-
 val stalled_since :
   root:Tmux.Program_status.record option ->
   threshold:float ->

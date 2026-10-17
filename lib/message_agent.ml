@@ -2,7 +2,7 @@ type recipient =
   | Named of string
   | Descendant of string
   | Descendant_run of Run.id
-  | Parent of string
+  | Parent of Run.id
 
 type address = Name of string | Run of Run.id
 type spec = { kind : Msg.kind; reply_to : string; id : string }
@@ -13,7 +13,9 @@ let decide ~panes to_ by = function
   | [] -> None
   | [ e ] -> Some (Ok e)
   | many ->
-      List.map (fun (id, s) -> Printf.sprintf "%s (%s)" id (Run.display_name panes s)) many
+      List.map
+        (fun (id, s) -> Printf.sprintf "%s (%s)" (Run.string_of_id id) (Run.display_name panes s))
+        many
       |> List.sort String.compare |> String.concat ", "
       |> Printf.sprintf "%S matches several agents by %s: %s" to_ by
       |> fun m -> Some (Error m)
@@ -25,10 +27,11 @@ let match_target ~panes sessions to_ =
   match decide ~panes to_ "name" (List.filter named sessions) with
   | Some r -> Some r
   | None -> (
-      match List.find_opt (fun (id, _) -> String.equal id to_) sessions with
+      match List.find_opt (fun (id, _) -> String.equal (Run.string_of_id id) to_) sessions with
       | Some e -> Some (Ok e)
       | None ->
-          decide ~panes to_ "id" (List.filter (fun (id, _) -> String.prefix ~pre:to_ id) sessions))
+          decide ~panes to_ "id"
+            (List.filter (fun (id, _) -> String.prefix ~pre:to_ (Run.string_of_id id)) sessions))
 
 let resolve_target states panes ~self address =
   let open Result.Infix in
@@ -36,9 +39,8 @@ let resolve_target states panes ~self address =
     match address with
     | Name to_ -> (to_, fun states -> match_target ~panes states to_)
     | Run id ->
-        let id = Run.string_of_id id in
-        ( id,
-          fun states -> Option.map (fun s -> Ok (id, s)) (List.assoc_opt ~eq:String.equal id states)
+        ( Run.string_of_id id,
+          fun states -> Option.map (fun s -> Ok (id, s)) (List.assoc_opt ~eq:Run.equal_id id states)
         )
   in
   let* caller = List_runs.caller_pane panes self in
@@ -48,7 +50,9 @@ let resolve_target states panes ~self address =
       match matched states with
       | Some (Error m) -> Error (m ^ ", none in this tmux session")
       | Some (Ok (id, _)) ->
-          Error (Printf.sprintf "%s (%s) is in another tmux session, not this one" to_ id)
+          Error
+            (Printf.sprintf "%s (%s) is in another tmux session, not this one" to_
+               (Run.string_of_id id))
       | None -> Error (Printf.sprintf "no agent session matches %S" to_))
 
 let reaches ~dir ~caller id =
@@ -56,7 +60,7 @@ let reaches ~dir ~caller id =
     (fun c ->
       Option.exists
         (fun (m : Run.meta) -> List.mem ~eq:Run.equal_id c (m.id :: Run.ancestors ~dir m))
-        (Run.find ~dir id))
+        (Run.read_meta ~dir id))
     caller
 
 let resolve ~dir ~panes ~self ~caller recipient =
@@ -75,7 +79,7 @@ let resolve ~dir ~panes ~self ~caller recipient =
     | Descendant_run id -> descendant (Run id)
     | Parent session -> Result.map (fun s -> (session, s)) (Run.live_parent ~dir session)
   in
-  if Option.exists (fun c -> String.equal (Run.string_of_id c) id) caller then
+  if Option.exists (Run.equal_id id) caller then
     Error (Run.display_name panes target ^ " is this agent")
   else Ok e
 
@@ -107,7 +111,7 @@ let deliver ~dir ~caller ~panes ~self spec (id, (target : Run.pi)) text =
       }
     in
     let run =
-      match Run.find ~dir id with
+      match Run.read_meta ~dir id with
       | Some { kind = Agent; _ } -> Some id
       | Some { kind = Pi | Bash | Stream; _ } | None -> None
     in
@@ -187,11 +191,11 @@ let report_notice ~warn ~dir run report =
             head_within report Msg.max_notice_bytes)
 
 let notify_parent ~dir ~self ~caller ~warn ~parent ~run text =
-  if String.is_empty parent then
-    Error
-      (Not_sent "this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent")
-  else
-    let run = Result.to_opt (Run.parse_id run) in
-    send ~dir ~self ~caller (Parent parent)
-      { kind = Notice; reply_to = ""; id = "" }
-      (report_notice ~warn ~dir run text)
+  match parent with
+  | None ->
+      Error
+        (Not_sent "this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent")
+  | Some parent ->
+      send ~dir ~self ~caller (Parent parent)
+        { kind = Notice; reply_to = ""; id = "" }
+        (report_notice ~warn ~dir run text)

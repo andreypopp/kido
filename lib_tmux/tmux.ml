@@ -10,6 +10,19 @@ type session_id = string [@@deriving equal, to_string, yojson_of]
 
 let session_id_of_string s = id_of_string ~what:"session" '$' s
 
+type env = { socket : string; session : session_id option }
+
+let env_of_string s =
+  match String.split_on_char ',' s with
+  | [] | [ "" ] -> None
+  | socket :: _ :: id :: _ ->
+      Some
+        {
+          socket;
+          session = (try Some (session_id_of_string ("$" ^ id)) with Invalid_argument _ -> None);
+        }
+  | socket :: _ -> Some { socket; session = None }
+
 type window_id = string [@@deriving equal, to_string, yojson_of]
 
 let window_id_of_string s = id_of_string ~what:"window" '@' s
@@ -107,17 +120,35 @@ let one_shot_exec ?socket ?(stdin = "") args =
 let lines out = String.split_on_char '\n' out
 let side_focus_flag = "side-status-focus"
 
-let one_shot_client_session ?socket client =
-  Option.flat_map
-    (fun out ->
-      List.find_map
-        (fun line ->
-          match String.split_on_char '\x1f' line with
-          | [ name; id ] when String.equal name client -> Some (session_id_of_string id)
-          | _ -> None)
-        (lines out))
-    (Result.to_opt
-       (one_shot_exec ?socket [ "list-clients"; "-F"; "#{client_name}\x1f#{session_id}" ]))
+type client = {
+  name : string;
+  session : string;
+  session_id : session_id;
+  focused : bool;
+  control : bool;
+}
+
+let client_format =
+  "#{client_name}\x1f#{client_session}\x1f#{session_id}\x1f#{client_flags}\x1f#{client_control_mode}"
+
+let parse_clients =
+  List.filter_map (fun line ->
+      match String.split ~by:"\x1f" line with
+      | name :: session :: session_id :: flags :: control :: _ ->
+          Some
+            {
+              name;
+              session;
+              session_id = session_id_of_string session_id;
+              focused = String.mem ~sub:side_focus_flag flags;
+              control = String.equal control "1";
+            }
+      | _ -> None)
+
+let one_shot_clients ?socket () =
+  Result.map
+    (fun out -> parse_clients (lines out))
+    (one_shot_exec ?socket [ "list-clients"; "-F"; client_format ])
 
 type event = Block of (string list, string) result | Notification of string
 type parser = Outside | Inside of { id : string; lines : string list }
@@ -153,9 +184,9 @@ let is_state_change = function
       true
   | _ -> false
 
-type t = { socket : string option; channel : client option }
+type t = { socket : string option; channel : connection option }
 
-and client = {
+and connection = {
   client : string;
   socket : string option;
   mutable link : link;
@@ -179,7 +210,7 @@ let create ?socket () = { socket; channel = None }
 
 module Client = struct
   type tmux = t
-  type t = client
+  type t = connection
 
   let debounce = 0.05
   let run_timeout = 2.
@@ -242,7 +273,12 @@ module Client = struct
         reply t ch ~deadline
 
   let dial (t : t) =
-    let session = one_shot_client_session ?socket:t.socket t.client in
+    let session =
+      Result.to_opt (one_shot_clients ?socket:t.socket ())
+      |> Option.flat_map
+           (List.find_map (fun c ->
+                if String.equal c.name t.client then Some c.session_id else None))
+    in
     let args =
       [ "-T"; "hyperlinks"; "-C"; "attach-session"; "-f"; "no-output,ignore-size" ]
       @ Option.map_or ~default:[] (fun s -> [ "-t"; string_of_session_id s ]) session
@@ -378,15 +414,14 @@ let list_panes (t : t) ~format =
 
 let run t args = Result.map ignore (exec t args)
 
-let list_clients (t : t) ~format =
+let list_clients (t : t) =
   match
     Option.map
-      (fun c -> Client.run c ~command:("list-clients -F " ^ Filename.quote format))
+      (fun c -> Client.run c ~command:("list-clients -F " ^ Filename.quote client_format))
       t.channel
   with
-  | Some (Ok (_ :: _ as lines)) -> Ok lines
-  | None | Some (Ok [] | Error _) ->
-      Result.map lines (one_shot_exec ?socket:t.socket [ "list-clients"; "-F"; format ])
+  | Some (Ok (_ :: _ as lines)) -> Ok (parse_clients lines)
+  | None | Some (Ok [] | Error _) -> one_shot_clients ?socket:t.socket ()
 
 let release_args client = [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
 
@@ -503,6 +538,30 @@ let%test_module "Tests" =
     "$x" false
     "$1x" false
     |}]
+
+    let%expect_test "client lines parse into clients" =
+      let line = String.concat "\x1f" in
+      List.iter
+        (fun c ->
+          Printf.printf "%s %s %s focused=%b control=%b\n" c.name c.session c.session_id c.focused
+            c.control)
+        (parse_clients
+           [
+             line [ "/dev/ttys001"; "other"; "$1"; "attached,UTF-8"; "0" ];
+             line [ "/dev/ttys012"; "work"; "$0"; "attached,side-status-focus,UTF-8"; "0" ];
+             line [ "control"; "work"; "$0"; ""; "1" ];
+             "junk";
+           ]);
+      (match parse_clients [ line [ "invalid"; "work"; "0"; ""; "0" ] ] with
+      | _ -> print_endline "parsed"
+      | exception Invalid_argument e -> print_endline e);
+      [%expect
+        {|
+        /dev/ttys001 other $1 focused=false control=false
+        /dev/ttys012 work $0 focused=true control=false
+        control work $0 focused=false control=true
+        "0" is not a session id ($N)
+        |}]
 
     let%expect_test "pane ids reject integer overflow" =
       let largest = "%" ^ string_of_int max_int in

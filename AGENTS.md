@@ -483,7 +483,7 @@ The sidebar uses it to decide whether a program has taken the terminal.
   line.
 - A window linked into two sessions has one pane id in several sessions.
   `Sidebar.step` finds the client's pane by active pane id **and**
-  `Tmux_pane.client_state.session_id`.
+  `Tmux.client.session_id`.
 - `-S` takes a socket path as supplied. A bare name is relative to
   the working directory, not `/tmp/tmux-<uid>/`.
   `-L` creates its socket directory.

@@ -5,7 +5,7 @@ val list : ?owner:Run.id -> dir:string -> unit -> info list
 
 type detail = { info : info; task : string; screen : string option; report : string option }
 
-val detail : dir:string -> string -> (detail, string) result
+val detail : dir:string -> Run.id -> (detail, string) result
 
 val run_outcome :
   dir:string ->
@@ -13,5 +13,5 @@ val run_outcome :
   result:Run.result ->
   text:string ->
   unreported:bool ->
-  string ->
+  Run.id ->
   (unit, string) result

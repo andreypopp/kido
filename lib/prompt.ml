@@ -4,7 +4,8 @@ let not_accepting ~name ~run =
   name ^ " is not accepting messages"
   ^ Option.map_or ~default:""
       (fun run ->
-        Printf.sprintf "; after it exits, resume it with spawn_subagent(resume: %s) and resend" run)
+        Printf.sprintf "; after it exits, resume it with spawn_subagent(resume: %s) and resend"
+          (Run.string_of_id run))
       run
 
 let send_prompt pane text =

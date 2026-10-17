@@ -114,6 +114,22 @@ let app t record =
   in
   find record.id
 
+type node = { record : record; depth : int; children : node list }
+
+let forest t =
+  let path r = String.split_on_char '/' r.id in
+  let rec build = function
+    | [] -> []
+    | r :: rest ->
+        let children, siblings =
+          List.take_drop_while (fun c -> String.prefix ~pre:(r.id ^ "/") c.id) rest
+        in
+        { record = r; depth = List.length (path r); children = build children } :: build siblings
+  in
+  List.filter (fun r -> not (String.is_empty r.id)) t.records
+  |> List.sort (fun a b -> List.compare String.compare (path a) (path b))
+  |> build
+
 let progress r =
   match r.state with
   | Working progress | Blocked { progress; _ } -> progress
@@ -208,6 +224,27 @@ let%test_module "Tests" =
     QR: invalid program status
     QUJ: invalid program status
     |}]
+
+    let%expect_test "forest nests under the nearest present ancestor, in segment order" =
+      let t =
+        parse
+          {|{"serial":1,"records":[{"id":"","state":"idle"},{"id":"a","state":"idle"},{"id":"a/x/9","state":"idle"},{"id":"a/x/10","state":"idle"},{"id":"ab","state":"idle"},{"id":"a-b","state":"idle"}]}|}
+        |> Result.get_or_failwith
+      in
+      let rec show indent =
+        List.iter (fun n ->
+            Printf.printf "%s%s depth=%d\n" indent n.record.id n.depth;
+            show (indent ^ "  ") n.children)
+      in
+      show "" (forest t);
+      [%expect
+        {|
+        a depth=1
+          a/x/10 depth=3
+          a/x/9 depth=3
+        a-b depth=1
+        ab depth=1
+        |}]
 
     let%expect_test "app inherits from the nearest ancestor" =
       let get s = parse s |> Result.get_or_failwith in

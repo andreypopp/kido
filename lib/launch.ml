@@ -69,6 +69,9 @@ let server_conf ~exe ~user_conf =
              Tmux_vars.user_command kido kido_shell;
          ])
 
+let lookup env name =
+  Option.get_or ~default:"" (Array.find_map (String.chop_prefix ~pre:(name ^ "=")) env)
+
 let server_env ~bin_dir env =
   let env =
     Array.filter
@@ -80,9 +83,7 @@ let server_env ~bin_dir env =
       env
   in
   match bin_dir with
-  | Some dir ->
-      let path = Array.find_map (String.chop_prefix ~pre:"PATH=") env in
-      Shell.with_env env [ ("PATH", Bin_dir.path_with_first dir (Option.value ~default:"" path)) ]
+  | Some dir -> Shell.with_env env [ ("PATH", Bin_dir.path_with_first dir (lookup env "PATH")) ]
   | None -> env
 
 let digest ~revision ~conf ~env =
@@ -146,45 +147,42 @@ let mismatch ~socket bin =
 
 let argv ~socket bin args = Tmux.argv bin ("-S" :: socket :: args)
 
-let new_session ~dir ~detach =
+let new_session ~dir ~env ~detach =
   let open Result.Infix in
   let* user_conf =
-    user_conf ~xdg_config_home:(Fs.getenv "XDG_CONFIG_HOME") ~home:(Fs.getenv "HOME")
+    user_conf ~xdg_config_home:(lookup env "XDG_CONFIG_HOME") ~home:(lookup env "HOME")
   in
   let conf = Filename.concat dir "server.conf" in
   let* conf_text = server_conf ~exe:(Lazy.force Fs.self) ~user_conf in
   Fs.write conf conf_text;
   let env =
-    Shell.with_env
-      (server_env ~bin_dir:(Bin_dir.own ()) (Unix.environment ()))
-      [ (Tmux_vars.server, stamp) ]
+    Shell.with_env (server_env ~bin_dir:(Bin_dir.own ()) env) [ (Tmux_vars.server, stamp) ]
   in
   Ok (env, [ "-f"; conf; "new-session" ] @ (if detach then [ "-d" ] else []) @ [ "-s"; "main" ])
 
-let run ~dir ~tmux =
+let run ~dir ~env ~inside =
   let open Result.Infix in
-  if not (String.is_empty tmux) then
-    Error
-      (Printf.sprintf "already inside tmux (%s); run kido from a plain terminal"
-         (List.hd (String.split_on_char ',' tmux)))
-  else
-    let* socket = State.server_socket ~create:true ~dir in
-    let bin = Lazy.force Tmux.binary in
-    match probe_server ~socket bin with
-    | Mismatch -> Error (mismatch ~socket bin)
-    | Up _ -> Unix.execvpe bin (argv ~socket bin [ "attach-session" ]) (Unix.environment ())
-    | Down ->
-        let* env, args = new_session ~dir ~detach:false in
-        Unix.execvpe bin (argv ~socket bin args) env
+  match inside with
+  | Some (e : Tmux.env) ->
+      Error (Printf.sprintf "already inside tmux (%s); run kido from a plain terminal" e.socket)
+  | None -> (
+      let* socket = State.server_socket ~create:true ~dir in
+      let bin = Lazy.force Tmux.binary in
+      match probe_server ~socket bin with
+      | Mismatch -> Error (mismatch ~socket bin)
+      | Up _ -> Unix.execvpe bin (argv ~socket bin [ "attach-session" ]) env
+      | Down ->
+          let* env, args = new_session ~dir ~env ~detach:false in
+          Unix.execvpe bin (argv ~socket bin args) env)
 
-let ensure ~dir =
+let ensure ~dir ~env =
   let open Result.Infix in
   let* socket = State.server_socket ~create:true ~dir in
   let bin = Lazy.force Tmux.binary in
   let resolve server =
     let tmux =
       if String.contains bin '/' then Some (Fs.abs bin)
-      else Fs.look_path ~path:(Fs.getenv "PATH") bin
+      else Fs.look_path ~path:(lookup env "PATH") bin
     in
     match tmux with
     | Some tmux -> Ok { tmux; socket; protocol = Protocol.value; server; expected = stamp }
@@ -194,7 +192,7 @@ let ensure ~dir =
   | Up server -> resolve server
   | Mismatch -> Error (mismatch ~socket bin)
   | Down -> (
-      let* env, args = new_session ~dir ~detach:true in
+      let* env, args = new_session ~dir ~env ~detach:true in
       let ((out, _, err) as p) = Unix.open_process_args_full bin (argv ~socket bin args) env in
       ignore (In_channel.input_all out);
       let stderr = String.trim (In_channel.input_all err) in

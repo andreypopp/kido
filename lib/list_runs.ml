@@ -12,15 +12,19 @@ let yojson_of_status (state : status) =
     | Some Done -> "done"
     | Some Error -> "error")
 
+type parent = Run.id option
+
+let yojson_of_parent p = `String (Option.map_or ~default:"" Run.string_of_id p)
+
 type agent_info = {
-  id : string;
+  id : Run.id;
   name : string;
   named : bool;
   pane : Tmux.pane_id;
   window : Tmux.window_id;
   status : status;
   activity : string;
-  parent : string;
+  parent : parent;
   depth : int;
   self : bool;
   cwd : string;
@@ -65,7 +69,7 @@ let agents ~dir ~threshold ~self ~caller ~session ~panes =
       |> Option.filter (fun (p : Tmux_pane.t) -> equal_session_id session p.session_id)
       |> Option.map (fun p -> (id, s, p, (Pane_map.find pane runs).meta)))
   |> List.sort (fun (a, (sa : Run.pi), _, _) (b, (sb : Run.pi), _, _) ->
-      match Float.compare sa.ts sb.ts with 0 -> String.compare a b | c -> c)
+      match Float.compare sa.ts sb.ts with 0 -> Run.compare_id a b | c -> c)
   |> List.map (fun (id, (s : Run.pi), (p : Tmux_pane.t), (m : Run.meta)) ->
       let root = Program_status.root p.program_status in
       {
@@ -76,7 +80,7 @@ let agents ~dir ~threshold ~self ~caller ~session ~panes =
         window = p.window_id;
         status = Option.map (fun (r : Program_status.record) -> r.state) root;
         activity = s.activity;
-        parent = Option.map_or ~default:"" Run.string_of_id m.parent;
+        parent = m.parent;
         depth = Run.depth ~dir m;
         self = Option.exists (Run.equal_id m.id) caller;
         cwd = p.current_path;
@@ -88,7 +92,7 @@ let agents ~dir ~threshold ~self ~caller ~session ~panes =
         since_report = Float.to_int (now -. s.ts);
         stalled = Stall.stalled_since ~root ~threshold ~wake ~now s;
       })
-  |> Tree.order ~id:(fun a -> a.id) ~parent:(fun a -> Some a.parent)
+  |> Tree.order ~id:(fun a -> a.id) ~parent:(fun a -> a.parent)
 
 type row =
   | Peer of agent_info
@@ -99,18 +103,16 @@ let list_runs ~dir ~threshold ~self ~caller ~session ~panes =
   let open Result.Infix in
   let+ agents = agents ~dir ~threshold ~self ~caller ~session ~panes in
   let own = Option.filter (fun _ -> List.exists (fun a -> a.self) agents) caller in
-  let parent =
-    Option.map_or ~default:"" (fun a -> a.parent) (List.find_opt (fun a -> a.self) agents)
-  in
+  let parent = Option.flat_map (fun a -> a.parent) (List.find_opt (fun a -> a.self) agents) in
   let visible =
     List.filter_map
       (fun a ->
         if a.self then None
-        else if (not (String.is_empty parent)) && String.equal a.id parent then Some (Parent a)
-        else if String.equal parent a.parent then
-          if String.is_empty parent then Some (Peer a)
+        else if Option.exists (Run.equal_id a.id) parent then Some (Parent a)
+        else if Option.equal Run.equal_id parent a.parent then
+          if Option.is_none parent then Some (Peer a)
           else
-            match Run.find ~dir a.id with
+            match Run.read_meta ~dir a.id with
             | Some ({ kind = Agent; _ } as m) when Option.is_none (Run.effective_outcome ~dir m) ->
                 Some (Peer a)
             | _ -> None
@@ -133,8 +135,7 @@ let list_runs ~dir ~threshold ~self ~caller ~session ~panes =
             Own
               {
                 run = r;
-                agent =
-                  List.find_opt (fun a -> String.equal a.id (Run.string_of_id r.meta.id)) agents;
+                agent = List.find_opt (fun a -> Run.equal_id a.id r.meta.id) agents;
                 window =
                   Option.map
                     (fun (p : Tmux_pane.t) -> p.window_id)
@@ -148,9 +149,9 @@ let yojson_of_row row =
   let fields, kind, relationship, extra =
     match row with
     | Peer a ->
-        (agent_fields a, (if String.is_empty a.parent then "agent" else "subagent"), "peer", [])
+        (agent_fields a, (if Option.is_none a.parent then "agent" else "subagent"), "peer", [])
     | Parent a ->
-        (agent_fields a, (if String.is_empty a.parent then "agent" else "subagent"), "parent", [])
+        (agent_fields a, (if Option.is_none a.parent then "agent" else "subagent"), "parent", [])
     | Own { run = r; agent = a; window } ->
         let m = r.meta in
         let fields =
@@ -158,12 +159,12 @@ let yojson_of_row row =
           | Some a when Option.is_none r.outcome -> agent_fields a
           | _ ->
               [
-                ("id", `String (Run.string_of_id m.id));
+                ("id", Run.yojson_of_id m.id);
                 ("name", `String (Option.map_or ~default:m.name (fun a -> a.name) a));
                 ("named", `Bool false);
                 ("pane", Tmux_pane.yojson_of_optional_id m.pane);
                 ("window", `String (Option.map_or ~default:"" string_of_window_id window));
-                ("parent", `String (Option.map_or ~default:"" Run.string_of_id m.parent));
+                ("parent", yojson_of_parent m.parent);
                 ("cwd", `String m.cwd);
                 ("canMessage", `Bool false);
                 ("canReply", `Bool false);
@@ -171,7 +172,7 @@ let yojson_of_row row =
         in
         let extra =
           [
-            ("run", `String (Run.string_of_id m.id));
+            ("run", Run.yojson_of_id m.id);
             ("state", `String (if Option.is_none r.outcome then "running" else "ended"));
             ("startedAt", Timestamp.yojson_of_t m.started_at);
           ]

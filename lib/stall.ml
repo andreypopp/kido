@@ -1,5 +1,3 @@
-let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
-
 let stalled_since ~root ~threshold ~wake ~now (s : Run.pi) =
   let working =
     Option.exists

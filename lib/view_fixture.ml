@@ -21,7 +21,7 @@ let states l =
   List.fold_left
     (fun m (pane, (id, (s : Run.pi))) ->
       let pane = Tmux.pane_id_of_string pane in
-      Tmux.Pane_map.add pane (id, { s with pane = Some pane }) m)
+      Tmux.Pane_map.add pane (Test_fixture.run_id id, { s with pane = Some pane }) m)
     Tmux.Pane_map.empty l
 
 let with_programs states panes =
@@ -31,7 +31,7 @@ let with_programs states panes =
       | Some (id, _) ->
           {
             p with
-            run = Some (Option.value p.run ~default:id);
+            run = Some (Option.value p.run ~default:(Run.string_of_id id));
             program_status =
               Result.get_exn
                 (Tmux.Program_status.parse
@@ -69,4 +69,11 @@ let ssh_pane ?command_line prompt start running status =
     ?command_line "%1"
 
 let client session =
-  Some { Tmux_pane.session; session_id = Tmux.session_id_of_string "$0"; focused = false }
+  Some
+    {
+      Tmux.name = "/dev/ttys000";
+      session;
+      session_id = Tmux.session_id_of_string "$0";
+      focused = false;
+      control = false;
+    }

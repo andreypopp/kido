@@ -1,4 +1,4 @@
-type id [@@deriving equal]
+type id [@@deriving equal, compare, yojson]
 
 val parse_id : string -> (id, string) result
 val new_id : unit -> id
@@ -42,9 +42,8 @@ type pi = {
 
 val alive : int -> bool
 val read_pi : dir:string -> id -> pi option
-val live_pi : dir:string -> string -> pi option
-val live_parent : dir:string -> string -> (pi, string) result
-val caller : dir:string -> string -> (id * pi) option
+val live_pi : dir:string -> id -> pi option
+val live_parent : dir:string -> id -> (pi, string) result
 
 val write_pi : dir:string -> id -> holder:int -> pi -> (unit, pi) result
 (** [Error] is the record of another live process holding the run. *)
@@ -64,11 +63,10 @@ val create_meta : dir:string -> meta -> unit
 (** Writes [meta] unless the run already has one. *)
 
 val read_meta : dir:string -> id -> meta option
-val find : dir:string -> string -> meta option
 
 type t = { meta : meta; pi : pi option }
 
-val load : dir:string -> string -> t option
+val load : dir:string -> id -> t option
 val holder : t -> pi option
 
 val name : t -> string
@@ -98,7 +96,7 @@ val read_outcome : dir:string -> id -> outcome option
 val effective_outcome : dir:string -> meta -> outcome option
 (** [None] only while the run is still alive. *)
 
-val list : dir:string -> string list
+val list : dir:string -> id list
 
 val save_screen : Tmux.t -> dir:string -> id -> Tmux.pane_id option -> string option
 (** Saves a pane's screen with 1000 lines of history, bounded to its tail, into the run's directory
@@ -106,4 +104,4 @@ val save_screen : Tmux.t -> dir:string -> id -> Tmux.pane_id option -> string op
 
 val marked : dir:string -> Tmux_pane.t list -> t Tmux.Pane_map.t
 val window_pane : runs:t Tmux.Pane_map.t -> Tmux_pane.t list -> Tmux.window_id -> Tmux_pane.t option
-val agents : t Tmux.Pane_map.t -> (string * pi) Tmux.Pane_map.t
+val agents : t Tmux.Pane_map.t -> (id * pi) Tmux.Pane_map.t

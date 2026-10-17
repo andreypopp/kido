@@ -38,11 +38,11 @@ val list_panes : Tmux.t -> (t list, string) result
 type server = { started_at : int; pid : int } [@@deriving equal, yojson_of]
 
 val server : Tmux.t -> (server, string) result
+val client_state : Tmux.t -> string -> Tmux.client option
 
-type client_state = { session : string; session_id : Tmux.session_id; focused : bool }
+val resolve_client :
+  Tmux.t -> pane:Tmux.pane_id option -> session:Tmux.session_id option -> string option
 
-val client_state : Tmux.t -> string -> client_state option
-val resolve_client : Tmux.t -> pane:Tmux.pane_id option -> tmux_env:string -> string option
 val mark_run : Tmux.t -> Tmux.pane_id -> string -> (unit, string) result
 
 val mark_ssh :

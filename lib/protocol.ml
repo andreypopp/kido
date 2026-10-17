@@ -237,7 +237,7 @@ let snapshot (m : model) =
                    `Assoc
                      [
                        ("id", `String (Ask.string_of_id a.id));
-                       ("session", `String a.session);
+                       ("session", Run.yojson_of_id a.session);
                        ("name", `String entry.name);
                        ("text", `String a.text);
                        ("created", Timestamp.yojson_of_t a.created);
@@ -304,9 +304,7 @@ let%test_module "Tests" =
       let dir = temp () in
       let id = new_run ~dir "helper" in
       ignore
-        (Run.record_outcome ~dir
-           (Result.get_exn (Run.parse_id id))
-           { result = Failed; text = ""; at = None });
+        (Run.record_outcome ~dir (Test_fixture.run_id id) { result = Failed; text = ""; at = None });
       let panes =
         [
           pane ~session:"alpha" ~window:"@1" ~title:"orchestrator" ~active:true "%1";
@@ -811,7 +809,7 @@ let%test_module "Tests" =
         List.map (fun s -> live (Terminal s)) shells
         @ List.map (fun status -> live (Some_agent { name = "claude-code"; status })) agents
         @ [
-            live (Pi_agent { id = "pi-session-id"; status = List.hd agents });
+            live (Pi_agent { id = Test_fixture.run_id "pi-session-id"; status = List.hd agents });
             live
               (Ssh
                  {

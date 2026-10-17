@@ -1,14 +1,14 @@
 type status = Tmux.Program_status.state option
 
 type agent_info = {
-  id : string;
+  id : Run.id;
   name : string;
   named : bool;
   pane : Tmux.pane_id;
   window : Tmux.window_id;
   status : status;
   activity : string;
-  parent : string;
+  parent : Run.id option;
   depth : int;
   self : bool;
   cwd : string;
@@ -23,7 +23,7 @@ type agent_info = {
 val caller_pane : Tmux_pane.t list -> Tmux.pane_id option -> (Tmux_pane.t, string) result
 
 val in_session :
-  Tmux_pane.t list -> (string * Run.pi) list -> Tmux.session_id -> (string * Run.pi) list
+  Tmux_pane.t list -> (Run.id * Run.pi) list -> Tmux.session_id -> (Run.id * Run.pi) list
 
 val agents :
   dir:string ->

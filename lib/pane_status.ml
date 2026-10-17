@@ -63,7 +63,7 @@ type remote =
 type kind =
   | Terminal of shell
   | Some_agent of { name : string; status : agent }
-  | Pi_agent of { id : string; status : agent }
+  | Pi_agent of { id : Run.id; status : agent }
   | Ssh of { user : string; host : string; pane : remote }
 [@@deriving yojson_of]
 
@@ -80,7 +80,7 @@ type episode = {
 type command = { start : float; observed : float; promoted : bool }
 type root = Agent of string | Program [@@deriving equal]
 
-type identity = { root : root; session : string option; ssh : (string * string) option }
+type identity = { root : root; session : Run.id option; ssh : (string * string) option }
 [@@deriving equal]
 
 type track = {
@@ -603,7 +603,7 @@ let%test_module "Tests" =
         Printf.printf "%-20s %s\n" label (text test_at k)
       in
       let p = pane ~title:"agent" "%1" in
-      let pi_kind id : Pane_kind.t = Pi_agent { id; pi = session "" } in
+      let pi_kind id : Pane_kind.t = Pi_agent { id = Test_fixture.run_id id; pi = session "" } in
       step "pi done" (pi_kind "a") (records ~serial:1 [ ("", pi ^ {|"done"|}) ] p);
       step "same" (pi_kind "a") (records ~serial:2 [ ("", pi ^ {|"done"|}) ] p);
       step "new session id" (pi_kind "b") (records ~serial:3 [ ("", pi ^ {|"done"|}) ] p);

@@ -99,23 +99,21 @@ let local ~zdotdir ~bin_dir mode =
           :: Option.map_or ~default:[] (fun old -> [ ("KIDO_ORIG_ZDOTDIR", old) ]) zdotdir)
   | Bash -> prime (fun dir -> [ ("ENV", Filename.concat dir "env.bash") ])
 
-let bash_version path =
-  match
-    Unix.open_process_args_full path [| path; "-c"; bash_version_probe |] (Unix.environment ())
-  with
-  | exception Unix.Unix_error _ -> ""
-  | (out, _, _) as p -> (
-      let v = In_channel.input_all out in
-      match Unix.close_process_full p with WEXITED 0 -> v | _ -> "")
-
-let local_mode ~dotdir path =
+let local_mode ~dotdir ~env path =
   match Filename.basename path with
   | "zsh"
     when List.exists
            (fun name -> Fs.is_file (Filename.concat dotdir name))
            [ ".zshrc"; ".zshenv"; ".zprofile"; ".zlogin" ] ->
       Zsh
-  | "bash" when bash_has_ps0 (bash_version path) -> Bash
+  | "bash"
+    when bash_has_ps0
+           (match Unix.open_process_args_full path [| path; "-c"; bash_version_probe |] env with
+           | exception Unix.Unix_error _ -> ""
+           | (out, _, _) as p -> (
+               let v = In_channel.input_all out in
+               match Unix.close_process_full p with WEXITED 0 -> v | _ -> "")) ->
+      Bash
   | _ -> Plain
 
 let base64 s =
@@ -241,17 +239,18 @@ let%test_module "Tests" =
     let%expect_test
         "local_mode: unknown shells are plain; zsh needs dotfiles; bash is asked its version" =
       let home = Sh.temp () in
+      let local_mode = local_mode ~dotdir:home ~env:(Unix.environment ()) in
       List.iter
-        (fun p -> print_endline (show_mode (local_mode ~dotdir:home p)))
+        (fun p -> print_endline (show_mode (local_mode p)))
         [ "/bin/sh"; "/usr/bin/fish"; "/bin/ksh" ];
       let zsh = Sh.write (Sh.temp () // "zsh") "#!/bin/sh\n" in
-      print_endline (show_mode (local_mode ~dotdir:home zsh));
+      print_endline (show_mode (local_mode zsh));
       ignore (Sh.write ~perm:0o644 (home // ".zshrc") "\n");
-      print_endline (show_mode (local_mode ~dotdir:home zsh));
+      print_endline (show_mode (local_mode zsh));
       List.iter
         (fun v ->
           let bash = Sh.write (Sh.temp () // "bash") ("#!/bin/sh\nprintf '" ^ v ^ "'\n") in
-          Printf.printf "%S %s\n" v (show_mode (local_mode ~dotdir:home bash)))
+          Printf.printf "%S %s\n" v (show_mode (local_mode bash)))
         [ "5.2\\n"; "4.4\\n"; "4.4"; "10.0\\n"; "4.3\\n"; "3.2\\n"; "\\n"; ".\\n"; "x.y\\n"; "" ];
       [%expect
         {|

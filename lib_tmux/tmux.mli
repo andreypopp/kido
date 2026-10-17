@@ -1,6 +1,10 @@
 type pane_id [@@deriving compare, equal, string, yojson]
 type window_id [@@deriving equal, string, yojson_of]
 type session_id [@@deriving equal, string, yojson_of]
+type env = { socket : string; session : session_id option }
+
+val env_of_string : string -> env option
+(** [$TMUX], [socket,pid,session]; [None] when empty. *)
 
 module Pane_map : Map.S with type key = pane_id
 
@@ -29,6 +33,11 @@ module Program_status : sig
   val parse : string -> (t, string) result
   val progress : record -> int option
   val app : t -> record -> string option
+
+  type node = { record : record; depth : int; children : node list }
+
+  val forest : t -> node list
+  (** Non-root records under their nearest present ancestor, in path-segment order. *)
 end
 
 type t
@@ -52,7 +61,16 @@ val argv : string -> string list -> string array
 val exec : t -> ?stdin:string -> string list -> (string, string) result
 val run : t -> string list -> (unit, string) result
 val list_panes : t -> format:string -> (string list, string) result
-val list_clients : t -> format:string -> (string list, string) result
+
+type client = {
+  name : string;
+  session : string;
+  session_id : session_id;
+  focused : bool;
+  control : bool;
+}
+
+val list_clients : t -> (client list, string) result
 
 val jump :
   t -> client:string -> session:session_id -> window:window_id -> pane_id -> (unit, string) result

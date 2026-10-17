@@ -1,5 +1,3 @@
-let stop_escalation () = Timestamp.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.
-
 let wait_for within cond =
   let deadline = Unix.gettimeofday () +. within in
   let rec go () =
@@ -26,11 +24,7 @@ let kill_run_pane ?(before = ignore) pane_id =
       `Killed
 
 let record_stopped ~dir id =
-  Result.iter
-    (fun id ->
-      ignore
-        (Run.record_outcome ~dir id { result = Stopped; text = ""; at = Some (Timestamp.now ()) }))
-    (Run.parse_id id)
+  ignore (Run.record_outcome ~dir id { result = Stopped; text = ""; at = Some (Timestamp.now ()) })
 
 let request ~dir ~caller ~panes ~self kind target =
   Message_agent.deliver ~dir ~caller ~panes ~self { kind; reply_to = ""; id = "" } target ""
@@ -49,7 +43,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
     if force then Ok () else Error (what ^ "; pass --force to kill its window instead")
   in
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let runs = List.filter_map (Run.find ~dir) (Run.list ~dir) in
+  let runs = List.filter_map (Run.read_meta ~dir) (Run.list ~dir) in
   let ids =
     List.filter
       (fun (m : Run.meta) ->
@@ -65,7 +59,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
         List.filter
           (fun (m : Run.meta) ->
             let named =
-              match Run.live_pi ~dir (Run.string_of_id m.id) with
+              match Run.live_pi ~dir m.id with
               | Some s -> (not (String.is_empty s.name)) && String.equal_caseless s.name to_
               | None -> String.equal_caseless m.name to_
             in
@@ -93,8 +87,8 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
   match meta.kind with
   | Bash | Stream -> (
       let label = "async run " ^ Reap.quote (Run.label meta) in
-      if not (Message_agent.reaches ~dir ~caller:(Option.map fst caller) (Run.string_of_id meta.id))
-      then Error (label ^ " is not this agent's descendant")
+      if not (Message_agent.reaches ~dir ~caller:(Option.map fst caller) meta.id) then
+        Error (label ^ " is not this agent's descendant")
       else
         let ending =
           Reap.record_ending ~dir meta

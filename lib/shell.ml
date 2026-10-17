@@ -49,18 +49,18 @@ let run () =
       ~login:(resolve_login_shell [ global_option "default-shell"; Fs.getenv "SHELL" ])
       (match global_option Tmux_vars.user_command with "" -> None | c -> Some c)
   in
-  let zdotdir = Sys.getenv_opt "ZDOTDIR" in
+  let zdotdir = Sys.getenv_opt "ZDOTDIR" and env = Unix.environment () in
   let mode =
     Prime.local_mode
       ~dotdir:(match zdotdir with None | Some "" -> Fs.getenv "HOME" | Some d -> d)
-      path
+      ~env path
   in
   let mode, add =
     match Prime.local ~zdotdir ~bin_dir:(Bin_dir.own ()) mode with
     | add -> (mode, add)
     | exception (Sys_error _ | Unix.Unix_error _) -> (Prime.Plain, [])
   in
-  Unix.execve path (Array.of_list (argv path mode command)) (with_env (Unix.environment ()) add)
+  Unix.execve path (Array.of_list (argv path mode command)) (with_env env add)
 
 let%test_module "Tests" =
   (module struct
@@ -145,7 +145,7 @@ let%test_module "Tests" =
           let run argv env = Sh.output ~stdin:"true\nexit\n" ~env zsh argv in
           Sh.check "the pristine shell reports nothing without kido"
             (not (Sh.osc133 (run [ zsh; "-l" ] (Sh.base ~path ~home zsh))));
-          let mode = Prime.local_mode ~dotdir:home zsh in
+          let mode = Prime.local_mode ~dotdir:home ~env:(Unix.environment ()) zsh in
           Sh.check "a zsh with dotfiles is primed" (Stdlib.( = ) mode Prime.Zsh);
           let add = Prime.local ~zdotdir:None ~bin_dir:None mode in
           let out =

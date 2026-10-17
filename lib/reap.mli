@@ -1,7 +1,3 @@
-val grace : unit -> float
-(** Seconds a finished subagent's window is left alone before a sweep may close it, from
-    [KIDO_LINGER_SECONDS] (default 30), the same knob share/pi/kido-agents.ts reads. *)
-
 type close = Window of Tmux.window_id | Pane of { window : Tmux.window_id; pane : Tmux.pane_id }
 
 val release : Tmux.t -> close -> (unit, string) result

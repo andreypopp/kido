@@ -143,8 +143,7 @@ let%test_module "Tests" =
 
     let show_run ~dir run_id =
       match
-        async_run ~dir ~knobs ~warn:(Printf.printf "\nwarning: %s")
-          ~id:(Result.get_exn (Run.parse_id run_id))
+        async_run ~dir ~knobs ~warn:(Printf.printf "\nwarning: %s") ~id:(Test_fixture.run_id run_id)
       with
       | Ok code -> Printf.printf "\n-> %d\n" code
       | Error m -> Printf.printf "\nrefused: %s\n" m

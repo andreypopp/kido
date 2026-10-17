@@ -107,7 +107,24 @@ let self_pane () =
   Option.map Tmux.pane_id_of_string
     (Option.filter (Fun.negate String.is_empty) (Sys.getenv_opt "TMUX_PANE"))
 
-let caller dir = Run.caller ~dir (Fs.getenv "PI_SESSION_ID")
+let env_run_id name =
+  Option.map
+    (fun s -> ok (Run.parse_id s))
+    (Option.filter (Fun.negate String.is_empty) (Sys.getenv_opt name))
+
+let caller dir =
+  Option.flat_map
+    (fun id -> Option.map (Pair.make id) (Run.read_pi ~dir id))
+    (Result.to_opt (Run.parse_id (Fs.getenv "PI_SESSION_ID")))
+
+let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
+
+(* The same knob share/pi/kido-agents.ts reads. *)
+let linger () =
+  match Option.flat_map Int.of_string (Sys.getenv_opt "KIDO_LINGER_SECONDS") with
+  | Some n when n > 0 -> Float.of_int n
+  | _ -> 30.
+
 let resolved_dir server = Fs.abs (Option.get_lazy State.dir server)
 
 let print r =
@@ -167,7 +184,8 @@ let stop_run =
        let dir = state_dir () in
        print
          (Control.stop ~dir ~self:(self_pane ()) ~caller:(caller dir)
-            ~escalation:(Control.stop_escalation ()) ~warn:(error "tool stop_run") ~force to_)
+            ~escalation:(Timestamp.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.)
+            ~warn:(error "tool stop_run") ~force to_)
 
 let runs =
   cmd "runs" "List subagent and async runs, or show one."
@@ -206,7 +224,7 @@ let runs =
            end;
            0
        | [ id ] ->
-           let d = ok (Run_history.detail ~dir id) in
+           let d = ok (Run_history.detail ~dir (ok (Run.parse_id id))) in
            let m = d.info.meta in
            let cd = "cd " ^ Filename.quote m.cwd ^ " && " in
            let resume =
@@ -273,7 +291,8 @@ let run_outcome =
      fun () ->
        ok
          (Run_history.run_outcome ~dir:(state_dir ()) ~warn:(error "run-outcome") ~result ~text
-            ~unreported id);
+            ~unreported
+            (ok (Run.parse_id id)));
        0
 
 let async_run =
@@ -302,8 +321,8 @@ let notify_parent =
        sent
          (Message_agent.notify_parent ~dir ~self:(self_pane ()) ~caller:(caller dir)
             ~warn:(error "tool notify_parent")
-            ~parent:(Fs.getenv "KIDO_AGENT_PARENT_SESSION")
-            ~run:(Fs.getenv "KIDO_AGENT_RUN_ID") (stdin ()))
+            ~parent:(env_run_id "KIDO_AGENT_PARENT_SESSION")
+            ~run:(env_run_id "KIDO_AGENT_RUN_ID") (stdin ()))
 
 let list_runs =
   cmd ~group:"tool " "list_runs" "List peers, the caller's parent and its own agent and bash runs."
@@ -316,7 +335,7 @@ let list_runs =
        in
        let panes = ok (Lazy.force panes) and dir = state_dir () in
        let rows =
-         List_runs.list_runs ~dir ~threshold:(Stall.stall_threshold ()) ~self:(self_pane ())
+         List_runs.list_runs ~dir ~threshold:(stall_threshold ()) ~self:(self_pane ())
            ~caller:(Option.map fst (caller dir))
            ~session ~panes
          |> Result.map_err (fun e -> e ^ "\nusage: kido tool list_runs [--session ID] [--json]")
@@ -385,9 +404,7 @@ let set_asks =
          with Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error (e, _) ->
            failwith (Printexc.to_string e)
        in
-       let result =
-         ok (Ask.set ~dir ~session:(Run.string_of_id id) ~asks ~now:(Timestamp.now ()))
-       in
+       let result = ok (Ask.set ~dir ~session:id ~asks ~now:(Timestamp.now ())) in
        print_endline (Yojson.Safe.to_string (`List (List.map Ask.yojson_of_answer result)));
        0
 
@@ -397,10 +414,7 @@ let remove_ask =
      fun () ->
        let dir = state_dir () in
        let self = ok (Ask.caller ~dir (caller dir)) in
-       ok
-         (Ask.remove ~dir
-            ~self:(Option.map_or ~default:"" (fun (id, _) -> Run.string_of_id id) self)
-            (ok (Ask.parse_id id)));
+       ok (Ask.remove ~dir ~self:(Option.map fst self) (ok (Ask.parse_id id)));
        0
 
 let get_asks =
@@ -416,7 +430,7 @@ let get_asks =
        let asks =
          Ask.list ~dir
          |> List.filter_map (fun (a : Ask.t) ->
-             if Option.map_or ~default:true (String.equal a.session) session then
+             if Option.map_or ~default:true (String.equal (Run.string_of_id a.session)) session then
                Some (a, Run.load ~dir a.session)
              else None)
        in
@@ -445,7 +459,7 @@ let get_agent =
          let panes = ok (Tmux_pane.list_panes (Tmux.create ())) in
          let agents =
            ok
-             (List_runs.agents ~dir ~threshold:(Stall.stall_threshold ()) ~self:(self_pane ())
+             (List_runs.agents ~dir ~threshold:(stall_threshold ()) ~self:(self_pane ())
                 ~caller:(Option.map fst (caller dir))
                 ~session:None ~panes)
          in
@@ -455,30 +469,32 @@ let get_agent =
        end
        else begin
          if String.is_empty session then failwith "usage: kido get-agent SESSION";
+         let id = Result.to_opt (Run.parse_id session) in
          let fields =
-           [ ("id", `String session); ("alive", `Bool (Option.is_some (Run.live_pi ~dir session))) ]
+           [
+             ("id", `String session);
+             ("alive", `Bool (Option.exists (fun id -> Option.is_some (Run.live_pi ~dir id)) id));
+           ]
          in
          let fields =
            if not children then fields
            else
              fields
-             @ (match Run.parse_id session with
-               | Ok id -> (
+             @ (match id with
+               | Some id -> (
                    match Run.read_meta ~dir id with
                    | Some m -> [ ("keepAlive", `Bool m.keep_alive) ]
                    | None when Sys.file_exists (Run.meta_path ~dir id) -> []
                    | None -> [ ("keepAlive", `Bool false) ])
-               | Error _ -> [ ("keepAlive", `Bool false) ])
+               | None -> [ ("keepAlive", `Bool false) ])
              @ [
                  ( "childrenAlive",
                    `Bool
                      (List.exists
-                        (fun id ->
-                          match Run.find ~dir id with
+                        (fun child ->
+                          match Run.read_meta ~dir child with
                           | Some m ->
-                              Option.exists
-                                (fun o -> String.equal (Run.string_of_id o) session)
-                                m.parent
+                              Option.exists (fun id -> Option.exists (Run.equal_id id) m.parent) id
                               && Option.is_none (Run.effective_outcome ~dir m)
                           | None -> false)
                         (Run.list ~dir)) );
@@ -531,7 +547,7 @@ let snapshot =
          in
          let cmd =
            match Tmux.Pane_map.find_opt p.pane_id states with
-           | Some (id, _) -> "pi --session " ^ id
+           | Some (id, _) -> "pi --session " ^ Run.string_of_id id
            | _ -> (
                match Tmux.Program_status.root p.program_status with
                | Some { app = Some "pi"; _ } -> "pi"
@@ -714,7 +730,8 @@ let server =
      fun () ->
        print_endline
          (Yojson.Safe.to_string
-            (Launch.yojson_of_endpoint (ok (Launch.ensure ~dir:(resolved_dir server)))));
+            (Launch.yojson_of_endpoint
+               (ok (Launch.ensure ~dir:(resolved_dir server) ~env:(Unix.environment ())))));
        0
 
 let get_inbox =
@@ -817,7 +834,7 @@ let reap =
          let dir = state_dir () in
          let tmux = Tmux.create () in
          let panes = ok (Tmux_pane.list_panes tmux) in
-         Reap.collect tmux ~dir ~grace:(Reap.grace ()) ~runs:(Run.marked ~dir panes) panes
+         Reap.collect tmux ~dir ~grace:(linger ()) ~runs:(Run.marked ~dir panes) panes
            ~now:(Unix.gettimeofday ());
          0)
 
@@ -860,16 +877,18 @@ let sidebar =
             "tmux client to act on; defaults to $(b,TMUX_SIDE_CLIENT), and is required without it.")
   in
   let side = Fs.getenv "TMUX_SIDE_CLIENT" in
-  match (Sys.argv, side, Sys.getenv_opt "TMUX") with
+  let env = Sys.getenv_opt "TMUX" in
+  let inside = Option.flat_map Tmux.env_of_string env in
+  match (Sys.argv, side, env) with
   | _, "", _ when Array.length Sys.argv = 1 || Option.is_some server ->
       run "" (fun () ->
-          match Launch.run ~dir:(resolved_dir server) ~tmux:(Fs.getenv "TMUX") with
+          match Launch.run ~dir:(resolved_dir server) ~env:(Unix.environment ()) ~inside with
           | Ok _ -> 0
           | Error m -> failwith m)
   | _, _, None ->
       error "" "must run inside tmux";
       1
-  | _, _, Some tmux_env ->
+  | _, _, Some _ ->
       run "" (fun () ->
           let dir = state_dir () in
           let tmux = Tmux.create () in
@@ -877,7 +896,9 @@ let sidebar =
             match client with
             | Some c when not (String.is_empty c) -> Some c
             | _ when not (String.is_empty side) -> Some side
-            | _ -> Tmux_pane.resolve_client tmux ~pane:(self_pane ()) ~tmux_env
+            | _ ->
+                Tmux_pane.resolve_client tmux ~pane:(self_pane ())
+                  ~session:(Option.flat_map (fun (e : Tmux.env) -> e.session) inside)
           in
           match client with
           | None ->
@@ -885,14 +906,7 @@ let sidebar =
               1
           | Some client ->
               Kido_sidebar.run ~standalone:(String.is_empty side)
-                {
-                  interval;
-                  client;
-                  tmux;
-                  dir;
-                  threshold = Stall.stall_threshold ();
-                  grace = Reap.grace ();
-                };
+                { interval; client; tmux; dir; threshold = stall_threshold (); grace = linger () };
               0)
 
 type input = Line of string | Eof | Read_error of string
@@ -928,8 +942,8 @@ let rpc =
              client;
              tmux = Tmux.create ~socket ();
              dir;
-             threshold = Stall.stall_threshold ();
-             grace = Reap.grace ();
+             threshold = stall_threshold ();
+             grace = linger ();
            }
          in
          let lock = Mutex.create () and input = Queue.create () in
