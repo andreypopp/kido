@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Kido pane chrome — hover toolbar and find bar</title>
+<style>
+:root{color-scheme:light}
+body{margin:0;padding:28px 40px 40px;background:#ececec;font:13px/1.4 -apple-system,system-ui,sans-serif;color:#222}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:0 auto 18px;max-width:1100px}
+.controls button,.controls select{border:1px solid #ccc;border-radius:7px;background:#fff;padding:5px 10px;font:inherit}
+.hint{margin-left:auto;font-size:12px;color:#777}
+.app{--bg:#192028;--glass:#21272e;--text:#dddddd;--muted:#9a9a9a;--border:#ffffff13;--window:#ffffff13;--guide:#ffffff1f;--separator:#ffffff33;--fg:#e6e6e6;--accent:#0a84ff;--capsule:color-mix(in srgb,var(--bg) 92%,var(--fg) 8%);--capsule-edge:color-mix(in srgb,var(--fg) 12%,transparent);--dim:#19202899;--match:#ffd60a;--match-current:#ff9f0a;position:relative;width:min(1100px,100%);height:620px;margin:auto;background:var(--bg);color:var(--text);border-radius:18px;overflow:hidden;box-shadow:0 18px 60px #0003,0 0 0 .5px #0002;font-size:13px}
+.app.light{--bg:#fefaf1;--glass:#f0ebe2;--text:#000000d9;--muted:#00000080;--border:#00000013;--window:#00000013;--guide:#0000001f;--separator:#0000002b;--fg:#1a1a1a;--accent:#007aff;--dim:#fefaf199;--match:#ffe066;--match-current:#ff9f0a}
+.chrome{position:absolute;left:0;right:0;top:0;height:52px;border-bottom:.5px solid var(--guide)}
+.lights{position:absolute;left:19px;top:19px;display:flex;gap:9px}
+.lights i{height:14px;width:14px;border-radius:50%;background:linear-gradient(#ff5f57,#ff817a);box-shadow:inset 0 0 0 .5px #e64b43,0 1px 2px #0002}
+.lights i:nth-child(2){background:linear-gradient(#ffb51b,#ffdb55);box-shadow:inset 0 0 0 .5px #dfa009,0 1px 2px #0002}
+.lights i:nth-child(3){background:linear-gradient(#49c827,#99e477);box-shadow:inset 0 0 0 .5px #49ae25,0 1px 2px #0002}
+.tabs{position:absolute;left:96px;right:8px;top:8px;height:36px;display:flex;align-items:center}
+.tab{width:160px;height:28px;line-height:28px;text-align:center;font-size:11px;color:var(--muted);border-radius:7px;margin:0 1px 0 2px}
+.tab.active{color:var(--text);background:var(--window);box-shadow:0 0 0 .5px var(--border),inset 0 0 0 .5px var(--border)}
+.panes{position:absolute;inset:52px 0 0 0;display:flex}
+.pane{position:relative;flex:1;min-width:0;overflow:hidden;font:12px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace}
+.pane+.pane{border-left:1px solid var(--guide)}
+.pane.narrow{flex:0 0 var(--narrow,300px)}
+.pane .text{padding:14px 20px;white-space:pre;color:var(--text)}
+.pane .text .m{background:var(--match);color:#000;border-radius:2px}.pane .text .m.cur{background:var(--match-current)}
+.pane .dimmer{position:absolute;inset:0;background:var(--dim);pointer-events:none}
+.pane.focused .dimmer{display:none}
+.pill{position:absolute;left:8px;top:8px;height:22px;white-space:nowrap;display:flex;align-items:center;padding:0 9px;border-radius:8px;background:var(--capsule);box-shadow:0 0 0 .5px var(--capsule-edge),0 6px 18px #0003,inset 0 .5px 0 #ffffff1f;font:600 11px -apple-system,system-ui,sans-serif;letter-spacing:.04em;color:var(--text)}.pill.entering{color:var(--muted)}.pill[hidden]{display:none}
+.pane.find-row .pill{top:48px}.pill.history{left:50%;transform:translateX(-50%);font-weight:400;letter-spacing:0;color:var(--muted);padding:0 2px 0 9px}.pill.history .sep{margin:0 4px 0 8px}.pill.history b{font-weight:500;color:var(--accent);padding:0 7px;height:18px;line-height:18px;border-radius:6px}.pill.history b:hover{background:color-mix(in srgb,var(--text) 12%,transparent)}
+.float{position:absolute;right:48px;bottom:40px;width:420px;height:230px;border-radius:10px;background:var(--bg);box-shadow:0 0 0 .5px var(--guide),0 14px 40px #0006;overflow:hidden}
+.float .text{padding:10px 14px}
+.glass{position:absolute;height:32px;border-radius:12px;background:var(--capsule);box-shadow:0 0 0 .5px var(--capsule-edge),0 6px 18px #0003,inset 0 .5px 0 #ffffff1f;display:flex;align-items:center;padding:3px;box-sizing:border-box;font:13px -apple-system,system-ui,sans-serif;color:var(--text)}
+.toolbar{top:8px;right:8px;width:145px;opacity:0;transition:opacity .15s}
+.toolbar.shown{opacity:1}
+.find.open~.toolbar.shown{top:48px}
+.ib{width:26px;height:26px;border:0;background:none;border-radius:8px;color:var(--muted);display:grid;place-items:center;padding:0;flex-shrink:0;cursor:default}
+.ib svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.ib:hover{color:var(--text);background:color-mix(in srgb,var(--text) 12%,transparent)}
+.ib:disabled{opacity:.35;background:none}
+.ib:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent)}
+.sep{width:.5px;height:14px;background:var(--separator);margin:0 4.75px;flex-shrink:0}
+.toolbar .sep{margin:0 2px 0 4px}
+.find{top:8px;right:8px;width:var(--find-width);display:none}
+.find.open{display:flex}
+.find .mag{display:grid;place-items:center;width:22px;height:26px;color:var(--muted);flex-shrink:0}.find .mag svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+.find input{flex:1;min-width:0;height:26px;border:0;background:none;color:var(--text);font:13px -apple-system,system-ui,sans-serif;outline:none;padding:0 2px}
+.find input::placeholder{color:var(--muted)}
+.find.unfocused input{color:var(--muted)}
+.find .count{flex-shrink:0;font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted);padding:0 6px 0 4px;white-space:nowrap}
+.find .count.failed{color:#ff453a}.light .find .count.failed{color:#ff3b30}
+.find .count.busy::before{content:"";display:inline-block;width:9px;height:9px;margin:0 5px -1px 0;border-radius:50%;border:1.5px solid var(--muted);border-top-color:transparent;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.find.compact .count span.long{display:none}.find:not(.compact) .count span.short{display:none}
+.find .ring{position:absolute;inset:0;border-radius:12px;pointer-events:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 40%,transparent)}
+.find.unfocused .ring,.find:not(.focused) .ring{display:none}
+.zone{position:absolute;top:0;right:0;width:calc(145px + 8px + 24px);height:calc(32px + 8px + 24px);outline:1px dashed color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:-1px;pointer-events:none;display:none}
+.show-zones .zone{display:block}
+.find.open~.zone{top:40px}
+.footnote{max-width:1100px;margin:16px auto 0;font-size:12px;color:#666;line-height:1.5}
+.gallery{max-width:1100px;margin:22px auto 0;display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.gallery h3{grid-column:1/-1;margin:8px 0 0;font-size:12px;font-weight:600;color:#444}
+.card{position:relative;height:56px;border-radius:10px;overflow:hidden;font:12px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace}
+.card .cap{position:absolute;left:10px;bottom:6px;font:11px -apple-system,system-ui,sans-serif;color:var(--muted)}
+.card .glass{top:8px;right:8px}
+</style></head><body>
+<div class="controls"><strong>Pane chrome · find bar</strong>
+<label>State <select id="state"><option value="toolbar">Hover toolbar alone</option><option value="empty">Find · empty, focused</option><option value="searching">Find · searching</option><option value="matches">Find · 12 matches</option><option value="iofn" selected>Find · 3 of 12</option><option value="none">Find · no matches</option><option value="failed">Find · search failed</option><option value="copyalone">Copy mode · COPY pill alone</option><option value="copyentering">Copy mode · entering (COPY…)</option><option value="copy">Copy mode · find open, (loaded)</option><option value="returned">Find open · focus back in pane</option></select></label>
+<label><input type="checkbox" id="hovered" checked> Pane hovered (toolbar shown)</label>
+<label>Layout <select id="layout"><option value="split">Two panes</option><option value="narrow">Narrow pane (300pt)</option><option value="float">Floating pane</option></select></label>
+<label>Theme <select id="theme"><option>Dark</option><option selected>Light</option></select></label>
+<label><input type="checkbox" id="zones"> Show hover zones</label>
+<span class="hint">Cmd-F focus · Return/Shift-Return navigate · Esc or × closes</span></div>
+
+<div class="app light" id="app">
+<header class="chrome"><div class="lights" aria-hidden="true"><i></i><i></i><i></i></div><div class="tabs" aria-hidden="true"><span class="tab">@kido</span><span class="tab active">@app</span><span class="tab">tests</span></div></header>
+<div class="panes" id="panes">
+<section class="pane focused" id="paneA" aria-label="Pane 1">
+<div class="text" id="textA"></div>
+<div class="dimmer"></div>
+<div class="pill" id="copyPill" hidden>COPY</div>
+<div class="pill history" id="historyPill" hidden><span>Older history not loaded</span><span class="sep"></span><b role="button" tabindex="0">Load more</b></div>
+<div class="glass find" id="find" role="search" aria-label="Find in Terminal"><div class="ring"></div><span class="mag" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 4 4"/></svg></span><input id="query" type="text" placeholder="Find in Terminal" aria-label="Find in Terminal" autocomplete="off" spellcheck="false"><span class="count" id="count" role="status" aria-live="polite"></span><span class="sep"></span><button class="ib" id="prev" aria-label="Previous match" title="Previous match (Shift-Return)"><svg viewBox="0 0 16 16"><path d="m4 10 4-4 4 4"/></svg></button><button class="ib" id="next" aria-label="Next match" title="Next match (Return)"><svg viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg></button><span class="sep"></span><button class="ib" id="done" aria-label="Done" title="Done (Escape)"><svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div>
+<div class="glass toolbar" id="toolbar" role="toolbar" aria-label="Pane"><button class="ib" aria-label="Drag pane"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></svg></button><button class="ib" aria-label="Split right"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M8 3v10"/></svg></button><button class="ib" aria-label="Split down"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 8h12"/></svg></button><button class="ib" aria-label="Zoom pane"><svg viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9"/></svg></button><span class="sep"></span><button class="ib" aria-label="Close pane"><svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div>
+<div class="zone" id="zone"></div>
+</section>
+<section class="pane" id="paneB" aria-label="Pane 2"><div class="text">$ make verify
+dune build ....................... ok
+dune test --force ................ ok
+go test ./test_e2e/ .............. ok
+PASS  build
+PASS  unit
+PASS  e2e
+$ █</div><div class="dimmer"></div></section>
+</div>
+</div>
+
+<section class="gallery" id="gallery" aria-label="Find bar states"></section>
+
+<p class="footnote">Design proposal, no live search. The find bar is a glass capsule in the hover toolbar's family: 32pt tall, 12pt radius, 26pt icon buttons, 0.5pt separators, anchored at the pane's top-right where the toolbar sits. It is persistent while open; the hover toolbar keeps its trigger zone and, while find is open, appears below the capsule at the same right edge. Behaviour is unchanged: Cmd-F opens or focuses; Return / Shift-Return and Cmd-G / Shift-Cmd-G navigate; Escape or × closes and clears highlights; copy mode keeps its COPY label and “(loaded)” counts.</p>
+
+<script>
+const $=id=>document.getElementById(id);
+const sample=['$ rg -n "sidebar" App/*.swift','App/SidebarView.swift:171: let recenter = next.map { $0.client != snapshot?.client }','App/SidebarRow.swift:25:  let close = IconButton("xmark", "Close pane", size: 10)','App/WindowOwner.swift:196: sidebar.tabs.close = { [weak self] tab in','App/WindowTabs.swift:137: func labelFont(_ tab: SessionModel.Tab) -> NSFont','App/SidebarFeed/Rows.swift:239: let (title, quietShell) = item.rowTitle(status:)','App/SessionView.swift:65:  recent.removeAll { windows[$0] == nil }','$ █'];
+const states={
+ toolbar:{find:false},
+ empty:{find:true,query:'',count:'',focus:'field'},
+ searching:{find:true,query:'sidebar',count:'busy',focus:'field'},
+ matches:{find:true,query:'sidebar',count:'12 matches',short:'12',focus:'field',hl:true},
+ iofn:{find:true,query:'sidebar',count:'3 of 12',short:'3/12',focus:'field',hl:true,cur:3},
+ none:{find:true,query:'sidebarz',count:'No matches',short:'0',focus:'field'},
+ failed:{find:true,query:'sidebar',count:'Search failed',short:'Failed',failed:true,focus:'field'},
+ copyalone:{find:false,copy:true,history:true},
+ copyentering:{find:false,copy:true,entering:true},
+ copy:{find:true,query:'sidebar',count:'12 matches (loaded)',short:'12 (loaded)',focus:'pane',copy:true,hl:true,history:true},
+ returned:{find:true,query:'sidebar',count:'3 of 12',short:'3/12',focus:'pane',hl:true,cur:3},
+};
+function highlight(text,on,cur){if(!on)return text.replace(/</g,'&lt;');let i=0;return text.replace(/</g,'&lt;').replace(/sidebar/gi,m=>{i++;return '<span class="m'+(i===cur?' cur':'')+'">'+m+'</span>'})}
+function findWidth(paneWidth){return Math.max(200,Math.min(420,paneWidth-16))}
+function render(){const s=states[$('state').value],layout=$('layout').value,hovered=$('hovered').checked;const app=$('app');app.classList.toggle('light',$('theme').value==='Light');app.classList.toggle('show-zones',$('zones').checked);
+ const paneA=$('paneA'),paneB=$('paneB');paneA.classList.toggle('narrow',layout==='narrow');paneB.hidden=layout==='float';paneA.style.flex=layout==='float'?'1':'';
+ const parts=['copyPill','historyPill','find','toolbar','zone'].map(id=>document.getElementById(id)||document.querySelector('.float #'+id));let host=paneA;const old=document.querySelector('.float');if(old){parts.forEach(e=>paneA.append(e));old.remove()}
+ if(layout==='float'){const f=document.createElement('section');f.className='float pane focused';f.setAttribute('aria-label','Floating pane');f.innerHTML='<div class="text"></div>';paneA.append(f);host=f;parts.forEach(e=>f.append(e))}else{parts.forEach(e=>paneA.append(e))}
+ const paneWidth=host.getBoundingClientRect().width;
+ const find=$('find');find.classList.toggle('open',!!s.find);find.classList.toggle('focused',s.focus==='field');find.classList.toggle('unfocused',s.focus==='pane');
+ const w=s.find?findWidth(paneWidth):0,compact=w<300;find.classList.toggle('compact',compact);host.classList.toggle('find-row',!!s.find&&paneWidth-16-w<72);find.style.setProperty('--find-width',w+'px');paneA.style.setProperty('--find-width',w+'px');host.style.setProperty('--find-width',w+'px');
+ $('query').value=s.query||'';const c=$('count');c.className='count'+(s.count==='busy'?' busy':'')+(s.failed?' failed':'');c.innerHTML=s.count==='busy'?'<span class="long">Searching…</span><span class="short">…</span>':'<span class="long"></span><span class="short"></span>';if(s.count&&s.count!=='busy'){c.querySelector('.long').textContent=s.count;c.querySelector('.short').textContent=s.short||s.count}
+ const nav=!s.hl;$('prev').disabled=nav;$('next').disabled=nav;
+ const text=(layout==='float'?host:paneA).querySelector('.text');text.innerHTML=sample.map(l=>highlight(l,s.hl,s.cur)).join('\n');if(layout!=='float')$('textA').innerHTML=text.innerHTML;
+ $('copyPill').hidden=!s.copy;$('copyPill').textContent=s.entering?'COPY…':'COPY';$('copyPill').classList.toggle('entering',!!s.entering);$('historyPill').hidden=!s.history;
+ const tb=$('toolbar');tb.className='glass toolbar'+(hovered?' shown':'');
+ if(s.focus==='field'&&document.activeElement!==$('query'))$('query').focus({preventScroll:true});if(s.focus!=='field')$('query').blur();
+ gallery()}
+function gallery(){const g=$('gallery');g.replaceChildren();{const h=document.createElement('h3');h.textContent='Copy and history pills, light and dark';g.append(h);for(const theme of ['light','']){const card=document.createElement('div');card.className='card app '+theme;card.style.background='var(--bg)';card.innerHTML='<div class="pill" style="left:10px">COPY</div><div class="pill entering" style="left:72px">COPY…</div><div class="pill history" style="left:auto;right:10px;transform:none"><span>Older history not loaded</span><span class="sep"></span><b>Load more</b></div><span class="cap">'+(theme?'light':'dark')+' · pills</span>';g.append(card)}}const h=document.createElement('h3');h.textContent='All find states, light and dark (380pt capsule)';g.append(h);const list=[['empty','','',false,'field'],['searching','sidebar','busy',false,'field'],['matches','sidebar','12 matches',true,'field'],['iofn','sidebar','3 of 12',true,'field'],['none','sidebarz','No matches',false,'field'],['failed','sidebar','Search failed',false,'field','failed'],['copy','sidebar','12 matches (loaded)',true,'pane'],['compact','sidebar','3/12',true,'field','compact']];for(const theme of ['light','']){for(const [name,q,count,nav,focus,extra] of list){const card=document.createElement('div');card.className='card app '+theme;card.style.background='var(--bg)';const f=$('find').cloneNode(true);f.removeAttribute('id');f.className='glass find open'+(focus==='field'?' focused':' unfocused')+(extra==='compact'?' compact':'');f.style.setProperty('--find-width',extra==='compact'?'200px':'380px');f.querySelector('input').value=q;const c=f.querySelector('.count');c.className='count'+(count==='busy'?' busy':'')+(extra==='failed'?' failed':'');c.innerHTML=count==='busy'?'<span class="long">Searching…</span><span class="short">…</span>':'<span class="long"></span><span class="short"></span>';if(count&&count!=='busy'){c.querySelector('.long').textContent=count;c.querySelector('.short').textContent=count}f.querySelectorAll('button').forEach((b,i)=>{b.disabled=i<2&&!nav;b.tabIndex=-1});f.querySelector('input').tabIndex=-1;card.append(f);const cap=document.createElement('span');cap.className='cap';cap.textContent=(theme?'light · ':'dark · ')+name;card.append(cap);g.append(card)}}}
+for(const id of ['state','hovered','layout','theme','zones'])$(id).onchange=render;
+$('done').onclick=()=>{$('state').value='toolbar';render()};
+$('query').addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();$('done').click()}if(e.key==='Enter'){e.preventDefault();$('state').value=e.shiftKey?'iofn':'returned';render()}});
+document.addEventListener('keydown',e=>{if(e.metaKey&&e.key==='f'){e.preventDefault();if($('state').value==='toolbar')$('state').value='empty';render();$('query').focus()}});
+new ResizeObserver(render).observe($('app'));render();
+</script></body></html>
