@@ -953,6 +953,53 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 
+    func testCaptionDisplayDelay() async throws {
+        func fixture(_ caption: String) throws -> Snapshot {
+            try sidebarFixture { object in
+                var sessions = object["sessions"] as! [[String: Any]]
+                var nodes = sessions[0]["nodes"] as! [[String: Any]]
+                nodes[0]["lifecycle"] = agentLifecycle(["Running", ["progress": NSNull()]], msg: caption)
+                sessions[0]["nodes"] = nodes
+                object["sessions"] = sessions
+            }
+        }
+        let initial = try fixture("")
+        let changed = try fixture("Delayed caption")
+        let id = try XCTUnwrap(sidebarRows(changed).first { $0.tail == "Delayed caption" }?.id)
+        window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 500),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+        let list = SidebarView()
+        window.contentView = list
+        list.layoutSubtreeIfNeeded()
+        list.show(initial)
+        XCTAssertEqual(list.captionDelay, 0.2)
+        let shownAt = ProcessInfo.processInfo.systemUptime
+        list.show(changed)
+        let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == id })
+        XCTAssertEqual(list.visualRows[index].tail, "")
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 32)
+        try await wait("caption deadline") { list.visualRows[index].tail == "Delayed caption" }
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - shownAt, 0.2)
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 48)
+        let hiddenAt = ProcessInfo.processInfo.systemUptime
+        list.show(initial)
+        XCTAssertEqual(list.visualRows[index].tail, "Delayed caption")
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 48)
+        try await wait("caption hide deadline") { list.visualRows[index].tail.isEmpty }
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - hiddenAt, 0.2)
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 32)
+        list.update(.running(changed))
+        XCTAssertEqual(list.visualRows[index].tail, "")
+        list.update(.restarting("Reconnect test"))
+        list.update(.running(changed))
+        XCTAssertEqual(list.visualRows[index].tail, "Delayed caption", "identical reconnect snapshot must show its caption immediately")
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 48)
+        list.update(.restarting("Reconnect during drag"))
+        list.show(changed, pin: id)
+        list.update(.running(try fixture("Reconnected caption")))
+        XCTAssertEqual(list.visualRows[index].tail, "Reconnected caption", "drag during reconnect must not seed old captions")
+    }
+
     func testNestedSidebarRowHeightsAndNavigation() throws {
         var fixture: [String: Any] = [:]
         let live = try sidebarFixture { object in
@@ -1061,6 +1108,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                           styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         window.colorSpace = .displayP3
         let list = SidebarView()
+        list.captionDelay = 0
         window.contentView = list
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
         defer { SidebarView.visualNow = nil }
