@@ -3,7 +3,6 @@
   "set_status",
   "message_agent",
   "ask_agent",
-  "set_asks",
   "spawn_subagent",
   "steer_subagent",
   "interrupt_subagent",

@@ -46,7 +46,7 @@ not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`4.0`. It versions only the RPC surface between the binary and its client,
+`5.0`. It versions only the RPC surface between the binary and its client,
 not anything in the tmux server. Thus, changing it never requires a
 server restart.
 
@@ -132,7 +132,7 @@ Each frontend:
 RPC sends complete text. The external view truncates and styles it.
 
 The tick reads tmux topology, live agent reports, process information,
-run metadata and outstanding asks. Only root apps `pi` and `claude-code`
+run metadata. Only root apps `pi` and `claude-code`
 identify agents. A pane run supplies local pi identity but does not
 identify an agent pane. The tick also performs the reap sweep. These operations
 are idempotent when a TUI sidebar runs beside RPC.
@@ -173,23 +173,7 @@ shows an elapsed caption. It schedules its own redraw at the next second
 boundary.
 
 `Sidebar` derives run kind and the optional running start time once in
-its typed rows. It also resolves ask targets once in the typed snapshot.
-Neither frontend performs these operations.
-
-An outstanding ask makes its local pi agent Waiting, with the ask as its
-source. The ask also appears in a separate snapshot list.
-The list matches the TUI's `a` mode:
-
-- Stable id.
-- Agent display name.
-- Full question text. The TUI shows its first line.
-- A live-pane association that distinguishes ended asks.
-
-Agent session identity and creation time support stable identity and
-ordering. Ended and revivable report whether activation needs revival
-and whether its directory/session file exist. Paths remain private
-persistence details. The model polls revival availability. Thus, removing
-a file changes the snapshot even without an ask-file change.
+its typed rows. Neither frontend performs these operations.
 
 The client's location comes from its session's active pane.
 For linked windows, it matches both pane and session. A modal pane
@@ -201,7 +185,7 @@ The first model tick emits a snapshot once a client location is known.
 Subsequent ticks wait for relevant tmux control notifications or the poll
 interval. The tick combines notifications before it reads fresh state.
 Polling also observes changes without tmux notifications, including agent
-reports and asks.
+reports.
 
 `Sidebar.step` rebuilds when its snapshot change test detects a change,
 or when a command debounce or stall tracking becomes due. RPC serializes
@@ -230,16 +214,14 @@ pane's kind (design-program-status.md) contains its status.
 
 An agent's status uses this precedence:
 
-1. Waiting: an outstanding ask of a local pi, or a blocked record.
-   The outstanding ask has precedence over blocked records.
+1. Waiting: a blocked record.
 2. Stalled: a local pi with a working root and a stale heartbeat,
    rebased against wake.
 3. Running.
 4. Idle.
 
-Bytewise record id resolves ties. For several asks, the oldest has
-precedence. A shell's status is its OSC 133 phase plus a generic report.
-It uses the same reduction without asks or stall.
+Bytewise record id resolves ties. A shell's status is its OSC 133 phase
+plus a generic report. It uses the same reduction without stall.
 
 Outcomes come from per-record transitions into done or error.
 They have the read's pane serial and remain pending while other records
@@ -312,31 +294,28 @@ Switching uses fresh state through the same functions as the CLI,
 not an order from the client. A reply reports the switch operation.
 It is not an accompanying post-switch snapshot.
 
-Jump, activate-ask, delete-ask and release-side-focus also contain integer
+Jump and release-side-focus also contain integer
 ids and return correlated, typed results. `Sidebar`'s request GADT and
 handle function control these actions for the TUI and RPC.
 Only `Protocol` decodes JSON and encodes replies.
 
 Jump takes a full location and validates it against fresh topology before
 switching. It keeps the session for linked windows.
-Ask activation takes an id, rereads the authoritative ask, resolves its
-live holder or revives it, then jumps.
-It prefers the current session's occurrence of a linked live pane.
-
-Deletion uses human semantics and notifies the live asker best-effort.
 Release changes tmux side-status keyboard focus, not the frontend cursor
 or OS focus. Every tmux call in these paths uses the model's explicit
-socket, including revived window creation.
+socket.
 
 Search clearing after successful activation and standalone picker exit
 remain TUI-local. Each frontend can recover from request errors and
 syscall failures at its execution boundary. These failures do not occupy
 `snapshot.error`.
 
-A revived window can remain after a later jump fails.
-There is no rollback or automatic replay. Concurrent views can still
-revive one ended ask twice before a live holder reports.
-pi resolution keeps tmux's command-client `PATH` semantics.
+Protocol 5.0 changes from 4.0:
+- Removed: the snapshot asks list and the activate-ask and delete-ask
+  requests.
+- Changed: agent Waiting carries the blocked kind and progress directly,
+  like a generic report's Waiting. Only an OSC 7501 blocked record makes
+  an agent Waiting.
 
 Protocol 3.1 changes from 3.0:
 - Added: reorder-session and reorder-window requests, replying `reordered`.
@@ -462,7 +441,6 @@ Navigation includes:
 - Relative switches.
 - Pane activation.
 - Session and top-level window reordering.
-- Ask activation/deletion.
 - Release of tmux side-status keyboard focus.
 
 It does not include:

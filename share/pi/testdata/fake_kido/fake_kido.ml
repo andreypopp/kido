@@ -25,22 +25,6 @@ let append path text =
         Out_channel.output_string channel text)
 
 let log path json = append (Fs.getenv path) (Yojson.Safe.to_string json ^ "\n")
-let member key = function `Assoc fields -> List.assoc_opt ~eq:String.equal key fields | _ -> None
-
-let member_string key json =
-  match member key json with Some (`String string) -> Some string | _ -> None
-
-let session_equal session json =
-  match (member_string "session" json, session) with
-  | Some left, Some right -> String.equal left right
-  | None, None -> true
-  | _ -> false
-
-let asks_of_file path =
-  match Fs.read path with
-  | Some raw -> ( match Yojson.Safe.from_string raw with `List asks -> asks | _ -> [])
-  | None -> []
-
 let last_arg args = match List.rev args with last :: _ -> Some last | [] -> None
 
 let run () =
@@ -59,7 +43,6 @@ let run () =
       "set_status";
       "spawn_subagent";
       "async_bash";
-      "set_asks";
     ]
   in
   if
@@ -72,72 +55,6 @@ let run () =
     else command
   in
   match command with
-  | "get-asks" | "set_asks" | "remove-ask" ->
-      let path = Filename.concat (Fs.getenv "KIDO_FAKE_STATE_DIR") "asks.json" in
-      let asks = asks_of_file path in
-      if String.equal command "get-asks" then (
-        let index = List.find_index (String.equal "--session") args |> Option.get in
-        let session = List.nth args (index + 1) in
-        let snapshot =
-          `List (List.filter (fun ask -> session_equal (Some session) ask) asks)
-          |> Yojson.Safe.to_string
-        in
-        if Sys.file_exists (Filename.dirname path) then append (path ^ ".read") (snapshot ^ "\n");
-        delay "KIDO_FAKE_ASKS_DELAY_MS";
-        print_string snapshot;
-        exit 0)
-      else if String.equal command "set_asks" then (
-        let session = Sys.getenv_opt "PI_SESSION_ID" in
-        let entries =
-          match Yojson.Safe.from_string (In_channel.input_all stdin) with
-          | `List entries -> entries
-          | _ -> []
-        in
-        let result =
-          List.mapi
-            (fun index entry ->
-              let id =
-                match member "id" entry with
-                | Some (`String "") | None -> `String ("A" ^ string_of_int (7 + index))
-                | Some id -> id
-              in
-              let text = Option.value ~default:`Null (member "text" entry) in
-              `Assoc [ ("id", id); ("text", text) ])
-            entries
-        in
-        Fs.mkdir_p (Filename.dirname path);
-        Fs.write (path ^ ".setting") "";
-        delay "KIDO_FAKE_SET_DELAY_MS";
-        let others = List.filter (fun ask -> not (session_equal session ask)) asks in
-        let kept =
-          List.map
-            (fun entry ->
-              match entry with
-              | `Assoc fields ->
-                  `Assoc
-                    (fields
-                    @ [
-                        ( "session",
-                          match session with Some session -> `String session | None -> `Null );
-                      ])
-              | other -> other)
-            result
-        in
-        Fs.write path (Yojson.Safe.to_string (`List (others @ kept)));
-        print_string (Yojson.Safe.to_string (`List result));
-        exit 0)
-      else
-        let kept =
-          List.filter
-            (fun ask ->
-              match (member "id" ask, last_arg args) with
-              | Some (`String id), Some last -> not (String.equal id last)
-              | _ -> true)
-            asks
-        in
-        Fs.write path (Yojson.Safe.to_string (`List kept));
-        Fs.write (path ^ ".removed") (Yojson.Safe.to_string (json_of_strings argv));
-        exit 0
   | "get-inbox" ->
       if String.equal (Fs.getenv "KIDO_FAKE_INBOX_FAIL") "1" then exit 1;
       let directory = Fs.getenv "KIDO_FAKE_INBOX_DIR" in

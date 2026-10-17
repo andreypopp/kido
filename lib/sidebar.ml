@@ -25,9 +25,6 @@ type lingering = {
   started : Timestamp.t;
 }
 
-type ask_target = Live of Tmux.pane_id | Revivable | Unavailable
-type ask = { ask : Ask.t; name : string; target : ask_target }
-
 type snapshot = {
   server : (int * Tmux.server) option;
   client : Tmux.client option;
@@ -36,7 +33,6 @@ type snapshot = {
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
-  asks : ask list;
 }
 
 let empty =
@@ -48,7 +44,6 @@ let empty =
     wake = None;
     err = None;
     lingering = String_map.empty;
-    asks = [];
   }
 
 let active snap =
@@ -97,18 +92,6 @@ let take ~opts conn prev client =
         wake = Stall.wake ~dir:opts.dir;
         err = None;
         lingering = lingering_subagents ~dir:opts.dir state.runs;
-        asks =
-          List.map
-            (fun (a : Ask.t) ->
-              let run = Run.load ~dir:opts.dir a.session in
-              let target =
-                match Ask.availability run with
-                | Live pane -> Live pane
-                | Revivable _ -> Revivable
-                | Unavailable _ -> Unavailable
-              in
-              { ask = a; name = Ask.name ~state:visible run; target })
-            (Ask.list ~dir:opts.dir);
       }
 
 let same a b =
@@ -133,7 +116,6 @@ let same a b =
        (fun x y -> Stdlib.( = ) (session x) (session y))
        a.state.agents b.state.agents
   && String_map.equal Stdlib.( = ) a.lingering b.lingering
-  && List.equal Stdlib.( = ) a.asks b.asks
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }
 
@@ -199,17 +181,9 @@ let track ~prev m =
           if Tmux.Pane_map.mem p.pane_id data then (data, changed)
           else
             let kind = Pane_kind.classify ~states p in
-            let ask =
-              match kind with
-              | Pi_agent { id; _ } ->
-                  List.find_map
-                    (fun a -> if Run.equal_id a.ask.session id then Some a.ask.id else None)
-                    m.snap.asks
-              | Terminal | Some_agent _ | Ssh _ -> None
-            in
             let stalled = stalled_at m p kind in
             let track, status =
-              Pane_status.observe ~now:m.at ~ask ~stalled p kind
+              Pane_status.observe ~now:m.at ~stalled p kind
                 (Option.map (fun d -> d.track) (Tmux.Pane_map.find_opt p.pane_id m.pane_data))
             in
             ( Tmux.Pane_map.add p.pane_id { pane = p; track; status } data,
@@ -501,8 +475,6 @@ type _ request =
   | Select_window : switched -> (client, string) result request
   | Select_session : Tmux.session_id -> (client, string) result request
   | Jump : client -> (client, string) result request
-  | Activate_ask : Ask.id -> (client, string) result request
-  | Delete_ask : Ask.id -> (unit, string) result request
   | Release_side_focus : (unit, string) result request
   | Reorder_session : Tmux.session_id move -> (unit, string) result request
   | Reorder_window : Tmux.session_id * Tmux.window_id move -> (unit, string) result request
@@ -599,36 +571,6 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
           state.panes
       then jump target
       else Error "no such pane in session/window"
-  | Activate_ask id -> (
-      let open Result.Infix in
-      let* ask =
-        match Ask.read ~dir id with
-        | Some ask -> Ok ask
-        | None -> Error ("no ask " ^ Ask.string_of_id id)
-      in
-      let* current =
-        match Tmux.find_client tmux client with
-        | Some c -> Ok c
-        | None -> Error "no current tmux session"
-      in
-      let* pane = Ask.target ~tmux ~dir ~session:current.session_id ask in
-      let* state = State.read ~dir tmux in
-      let candidates =
-        List.filter (fun (p : State.pane) -> Tmux.equal_pane_id p.pane_id pane) state.panes
-      in
-      let target =
-        match
-          List.find_opt
-            (fun (p : State.pane) -> Tmux.equal_session_id p.session_id current.session_id)
-            candidates
-        with
-        | Some p -> Some p
-        | None -> List.head_opt candidates
-      in
-      match target with
-      | None -> Error "asking agent has no pane"
-      | Some p -> jump { session = p.session_id; window = p.window_id; pane })
-  | Delete_ask id -> Ask.remove ~dir ~self:None id
   | Release_side_focus -> Tmux.release_side_focus tmux client
   | Reorder_session ({ source; anchor; position } as move) ->
       let open Result.Infix in
@@ -946,39 +888,6 @@ let%test_module "Tests" =
         ssh
         a run
         π - kido
-        |}]
-
-    let%expect_test "an outstanding ask outranks a blocked record; several asks take the first" =
-      let st = [ ("%1", ("pi-1", session "")) ] in
-      let p =
-        {
-          (pane ~title:"agent" "%1") with
-          program_status =
-            Result.get_exn
-              (Tmux.Program_status.parse
-                 {|{"serial":3,"records":[{"id":"","app":"pi","state":"blocked","kind":"auth"}]}|});
-        }
-      in
-      let ask id session : ask =
-        {
-          ask =
-            {
-              id = Result.get_exn (Ask.parse_id id);
-              session = Test_fixture.run_id session;
-              text = "";
-              created = test_at;
-            };
-          name = "";
-          target = Revivable;
-        }
-      in
-      List.iter
-        (fun asks -> print_endline (label (tick { (snap_of ~l:st [ p ]) with asks }) p))
-        [ []; [ ask "A0" "other"; ask "Ab" "pi-1"; ask "Aa" "pi-1" ] ];
-      [%expect
-        {|
-        "agent" ["Pi_agent",{"id":"pi-1","status":{"since":1700000000.0,"msg":null,"state":["Waiting",{"source":["Blocked",{"kind":"auth"}],"progress":null}]}}]
-        "agent" ["Pi_agent",{"id":"pi-1","status":{"since":1700000000.0,"msg":null,"state":["Waiting",{"source":["Ask",{"id":"Ab"}],"progress":null}]}}]
         |}]
 
     let%expect_test

@@ -163,7 +163,7 @@ let read ~dir tmux =
         agents =
           Pane_map.filter_map
             (fun pane (r : Run.t) ->
-              Run.holder r
+              Option.filter (fun (p : Run.pi) -> Run.alive p.pid) r.pi
               |> Option.filter (fun (s : Run.pi) -> Option.equal equal_pane_id s.pane (Some pane))
               |> Option.map (Pair.make r.meta.id))
             runs;

@@ -15,7 +15,7 @@ let inbox_path ~dir name =
          Fs.sun_path_max path)
   else Ok path
 
-type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop | Asks
+type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop
 
 let string_of_kind = function
   | Message -> "message"
@@ -26,7 +26,6 @@ let string_of_kind = function
   | Steer -> "steer"
   | Interrupt -> "interrupt"
   | Stop -> "stop"
-  | Asks -> "asks"
 
 let yojson_of_kind k = `String (string_of_kind k)
 

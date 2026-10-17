@@ -474,18 +474,15 @@ let release_side_focus t client = run t (release_args client)
 
 type window = { window_id : window_id; pane_id : pane_id; pane_pid : int }
 
-let new_window t ?setup ~session ~name ~cwd ~env command =
+let new_window t ~setup ~session ~name ~cwd ~env command =
   let open Result.Infix in
-  let initial_name, setup =
-    match setup with
-    | None -> (name, [])
-    | Some (temporary_name, options) ->
-        let target = string_of_session_id session ^ ":=" ^ temporary_name in
-        ( temporary_name,
-          List.concat_map
-            (fun (key, value) -> [ ";"; "set-option"; "-p"; "-t"; target; key; value ])
-            options
-          @ [ ";"; "rename-window"; "-t"; target; name ] )
+  let temporary_name, options = setup in
+  let target = string_of_session_id session ^ ":=" ^ temporary_name in
+  let setup =
+    List.concat_map
+      (fun (key, value) -> [ ";"; "set-option"; "-p"; "-t"; target; key; value ])
+      options
+    @ [ ";"; "rename-window"; "-t"; target; name ]
   in
   let* out =
     exec t
@@ -498,7 +495,7 @@ let new_window t ?setup ~session ~name ~cwd ~env command =
          "-t";
          string_of_session_id session ^ ":";
          "-n";
-         initial_name;
+         temporary_name;
          "-c";
          cwd;
        ]

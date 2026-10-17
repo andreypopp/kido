@@ -1,6 +1,6 @@
 val inbox_path : dir:string -> string -> (string, string) result
 
-type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop | Asks
+type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop
 
 val string_of_kind : kind -> string
 

@@ -82,17 +82,4 @@ func TestPiSessionNameEverywhere(t *testing.T) {
 	}
 	h.expectKido(root, "not a name", nil, `kido tool message_agent: no agent session matches "\207\128 - Unnamed - kido"`, "tool", "message_agent", "π - Unnamed - kido")
 	h.expectKido(root, "id works", nil, "delivered to π - Unnamed - kido by inbox", "tool", "message_agent", "unnamed-sess")
-	h.agentStatus("unnamed-session", unnamed, "--name", "Asker", "--inbox", in.Path)
-	if _, rc := setOneAsk(h, unnamed, "What next?"); rc != 0 {
-		t.Fatal("ask failed")
-	}
-	h.agentStatus("unnamed-session", unnamed, "--name", "New Asker", "--inbox", in.Path)
-	if asks := openAsks(h, "unnamed-session"); len(asks) != 1 || asks[0].Name != "New Asker" {
-		t.Fatalf("live ask name: %+v", asks)
-	}
-	f.waitLast(func(s feedSnapshot) bool { return len(s.Asks) == 1 && s.Asks[0].Name == "New Asker" }, "RPC ask rename")
-	h.agentStatus("unnamed-session", unnamed, "--remove")
-	if asks := openAsks(h, "unnamed-session"); asks[0].Name != "New Asker" || !asks[0].Ended {
-		t.Fatalf("ended ask's name, its run's last: %+v", asks)
-	}
 }

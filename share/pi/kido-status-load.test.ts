@@ -366,11 +366,6 @@ test("a /reload leaves exactly one listener, on the same socket", async () => {
 test("the registered tools are exactly the shared list both suites check subcommand parity against", async () => {
   const fixtures = createFakePi();
   loadExtensions(fixtures.pi);
-  // set_asks registers on session start; the session's own kido calls are not
-  // what this test reads, so the seam fails them instead of spawning anything.
-  const seam = (globalThis as any).__kidoPiExtensionSeam;
-  seam.host.runKido = async () => ({ ok: false, error: "fixtureless" });
-  await seam.agents.sessionStarted();
   const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "testdata", "tools.json");
   const expected: string[] = JSON.parse(readFileSync(fixturePath, "utf8"));
   const registered = [...fixtures.tools.keys()];

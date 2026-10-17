@@ -219,33 +219,6 @@ parameters:
 
 - `summary` (string, required): A short summary of the finished work to send to your parent. Your parent reads the first 4000 bytes; anything longer is kept in full in this run's directory and the notice says where, so nothing is lost.
 
-### set_asks
-
-description:
-
-```
-Replace your tracked user asks with this complete list: the questions that need the user's decision now. Keep an ask's id to keep it, with new text to reword it; omit id for a new ask; an ask you leave out is removed; [] clears them all. An unknown id is an error. Returns the resulting asks with their ids. Top-level agents only.
-```
-
-promptSnippet:
-
-```
-set_asks(asks) - set the complete list of questions that need the user's decision
-```
-
-promptGuidelines (merged into the system prompt's rules while the tool is registered):
-
-```
-Call set_asks at the end of every turn that changed what needs the user's decision: you asked something new, the user answered or dismissed an ask, or an ask became moot. The list is the whole set: send every ask that is still open, with its id.
-Use one decision per ask. Status updates, FYIs and 'should I continue?' are not asks.
-Write an ask to be read on its own, away from this conversation: name the project or thread, what is being decided, the options, and your recommendation if you have one.
-An ask is tracked in addition to your reply, not instead of it: still put the question in your reply text, but never announce that you set asks, nor list ask ids; the user sees asks in the UI.
-```
-
-parameters:
-
-- `asks` (object[], required): <no description>
-
 ## Messages the extension injects at runtime
 
 Built inside share/pi/kido-agents.ts's closures; quoted here with their source line. `<from>` is the sender's name, else its session id, else its pane, else "another agent".
@@ -333,6 +306,20 @@ notice from <from> (a subagent or background run's report, not the user):
 subagent <run id> is idle without reporting: its last turn ended and it did not call notify_parent. Continue it with message_agent, or end it with stop_run.
 ```
 delivered as: sent through `kido tool notify_parent --status`, so it is not the child's report: it leaves no report file and carries no guidance
+
+### a spawn's result (spawn_subagent)
+
+```
+spawned <name> (window <window id>, pane <pane id>, run <run id>); its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id. A fork adds ", forked from this session's context" before the semicolon.
+```
+delivered as: tool result
+
+### a resume's result (spawn_subagent)
+
+```
+resumed <run id> (window <window id>, pane <pane id>); it is back with its context and idle - send it a message to continue, since it is waiting for one; its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id
+```
+delivered as: tool result
 
 ### message_agent's result while answering an ask
 

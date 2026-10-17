@@ -262,7 +262,6 @@ export function createFakePi() {
     getSessionName: (): string | undefined => pi.sessionName,
     getSettings: (): { tuiMode?: "regular" | "fullscreen" } => ({ tuiMode: "regular" }),
     getAllTools: () => [...tools.values()],
-    appendEntry(_customType: string, _data: unknown) {},
     registerTool(tool: any) {
       tools.set(tool.name, tool);
     },
@@ -286,10 +285,7 @@ export function createFakePi() {
   }
   const autocompleteFactories: Array<(current: any) => any> = [];
   const notifications: Array<{ message: string; type?: string }> = [];
-  let editorText = "";
   const ui = {
-    setEditorText(text: string) { editorText = text; },
-    getEditorText() { return editorText; },
     setWidget(key: string, content: ((tui: unknown, theme: any) => { render(width: number): string[]; handleMouse?(event: any): unknown }) | undefined, options?: unknown) {
       widgets.set(key, { content, options });
     },
@@ -327,7 +323,7 @@ export const fakeTheme = {
 export function fakeCtx(sessionId = "self-session", ui?: unknown, idle: () => boolean = () => true) {
   return {
     hasUI: true,
-    sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined, getSessionFile: () => "/tmp/" + sessionId + ".json", getLeafId: () => null, getBranch: () => [] },
+    sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined, getSessionFile: () => "/tmp/" + sessionId + ".json" },
     model: undefined,
     isIdle: idle,
     hasPendingMessages: () => false,

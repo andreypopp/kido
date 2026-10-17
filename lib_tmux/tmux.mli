@@ -86,7 +86,7 @@ type window = { window_id : window_id; pane_id : pane_id; pane_pid : int }
 
 val new_window :
   t ->
-  ?setup:string * (string * string) list ->
+  setup:string * (string * string) list ->
   session:session_id ->
   name:string ->
   cwd:string ->

@@ -66,8 +66,8 @@ func (r *kidoRun) mustServer(tmux string) endpoint {
 	if !filepath.IsAbs(e.Socket) || !sameFile(e.Socket, r.kidoSock) {
 		r.t.Errorf("socket = %q, want the absolute path of %s", e.Socket, r.kidoSock)
 	}
-	if e.Protocol != "4.0" {
-		r.t.Errorf("binary protocol = %q, want 4.0", e.Protocol)
+	if e.Protocol != "5.0" {
+		r.t.Errorf("binary protocol = %q, want 5.0", e.Protocol)
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{12}$`).MatchString(e.Expected) {
 		r.t.Errorf("expected stamp = %q, want 12 hex digits", e.Expected)
@@ -130,7 +130,7 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	}
 	r.mustKido("set-environment", "-gu", "KIDO_SERVER")
 	out, _, code := r.server("")
-	if want := `"protocol":"4.0","server":null,"expected":"` + first.Expected + `"`; code != 0 || !strings.Contains(out, want) {
+	if want := `"protocol":"5.0","server":null,"expected":"` + first.Expected + `"`; code != 0 || !strings.Contains(out, want) {
 		t.Errorf("unstamped server: exit %d, JSON %q, want %s", code, out, want)
 	}
 

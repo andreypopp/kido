@@ -1,4 +1,4 @@
-# kido rpc protocol 4.0
+# kido rpc protocol 5.0
 
 fork revision: 336cb9a1d437a52ec03a0f8dba7538ccb586f1c5
 
@@ -28,10 +28,10 @@ first on PATH), all with fixed placeholder paths. Install paths do not change
 it; a fork bump, an edit to kido-tmux.conf, to the generated configuration or
 to the launch environment does.
 
-The first stdout line is {"hello":{"protocol":"4.0"}} when KIDO_SERVER equals
+The first stdout line is {"hello":{"protocol":"5.0"}} when KIDO_SERVER equals
 the binary's stamp. A differing or absent stamp produces
-{"hello":{"protocol":"4.0","server":"other","expected":"0123456789ab"}} or
-{"hello":{"protocol":"4.0","server":null,"expected":"0123456789ab"}}, followed
+{"hello":{"protocol":"5.0","server":"other","expected":"0123456789ab"}} or
+{"hello":{"protocol":"5.0","server":null,"expected":"0123456789ab"}}, followed
 by {"error":"server stamp does not match binary stamp"}, then exit 2.
 expected is the binary's stamp; the server needs a restart.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
@@ -69,26 +69,12 @@ The full location must exist in fresh server topology; invalid membership
 returns an error without switching. Jump selects the pane and releases
 the named client's side-status keyboard focus.
 
-{"id":9,"activate-ask":"A12345678"} resolves the authoritative ask by id,
-jumps to its live session's pane, or revives pi from its saved session file
-in its recorded cwd, in the named client's current tmux session. A live
-pane linked into that session stays there; otherwise its first session
-occurrence is selected. Success replies
-{"reply":{"id":9,"activated":{"session":"$3","window":"@12","pane":"%9"}}}.
-A missing ask, cwd, session file or pane returns an error. Revival does
-not remove the ask. Creation followed by a failed jump is not rolled back
-or retried. pi is resolved through the tmux command client's PATH.
-
-{"id":10,"delete-ask":"A12345678"} removes the ask as the user and sends
-the asking agent a best-effort removal note through its live inbox.
-Success replies {"reply":{"id":10,"deleted":true}}; a missing ask errors.
 {"id":11,"release-side-focus":true} releases the named tmux client's
 side-status keyboard focus and replies {"reply":{"id":11,"released":true}}.
-All four requests require integer ids, use the existing error envelope,
+Both requests require integer ids, use the existing error envelope,
 and keep the stream alive on errors. No cursor or OS focus is affected.
-Jump's payload has exactly the three identifier fields; ask ids follow
-the ask tool's syntax. Release accepts only true. Multiple recognized
-operations in one object are invalid. Outer extra fields are ignored.
+Jump's payload has exactly the three identifier fields. Release accepts
+only true. Multiple recognized operations in one object are invalid. Outer extra fields are ignored.
 
 Creation and absolute window/session selection also require integer ids:
 {"id":12,"new-window":"@12"} creates a detached default-shell window
@@ -143,6 +129,16 @@ renumber-windows is on, move-window -r -t '$S' follows; off, gaps stay.
 When the moved window was the session's current window, select-window
 selects it again in the same tmux command; attached clients can briefly
 see the fallback. No client is switched and no pane is selected.
+
+## Changes from 4.0 to 5.0
+
+- Removed: the top-level snapshot `asks` list and the activate-ask and
+  delete-ask requests with their `activated` and `deleted` replies.
+- Changed: agent Waiting carries the blocked record's `kind` and
+  `progress` directly, the same shape as a generic report's Waiting; the
+  `source` field and its Ask case are gone. Only an OSC 7501 blocked
+  record makes an agent Waiting.
+- Unchanged: other requests, replies, sessions, ordering and snapshot v.
 
 ## Changes from 3.1 to 4.0
 
@@ -226,7 +222,6 @@ None is emitted before the first valid server identity and topology read:
   "v": 2,
   "server_instance": { "started_at": 1780000000, "pid": 12345 },
   "client": { "session": "$1", "window": "@2", "pane": "%3" },
-  "asks": [],
   "error": null,
   "sessions": [
     {
@@ -272,14 +267,6 @@ None is emitted before the first valid server identity and topology read:
   A changed pair means a new server: the feed drops its tracking, and a
   frontend drops its seen and posted state for that destination.
 - **`client`**: the named client's current session, window and pane ids.
-- **`asks`**: outstanding asks in creation-time/id order, including ended
-  sessions. Each entry has `id`, agent `session`, display `name`, full
-  `text`, `created` (RFC 3339 UTC), `pane` (live holder's pane id or null),
-  `ended` (no live holder), and `revivable` (ended, with an existing cwd
-  directory and session file). Revival availability is polled; it does not
-  promise a successful future activation. Pane is a display association,
-  not a jump target: activate by ask id to resolve current topology.
-  Session-file paths and cwd are not exposed.
 - **`error`**: null or a transient error string; the stream continues. A
   failed read keeps the last good identity and topology, tracks no
   transitions and prunes no panes.
@@ -348,19 +335,15 @@ group's place. Groups are the "group" rows the app may draw differently.
 
 ```json
 ["Running",{"progress":42}]
-["Waiting",{"source":["Blocked",{"kind":"permission"}],"progress":null}]
-["Waiting",{"source":["Ask",{"id":"A12345678"}],"progress":null}]
+["Waiting",{"kind":"permission","progress":null}]
 ["Stalled"]
 ["Idle",{"outcome":null}]
 ["Idle",{"outcome":{"serial":17,"result":"success"}}]
 ["Idle",{"outcome":{"serial":18,"result":"failure"}}]
 ```
 
-  Precedence is waiting > stalled > running > idle. An outstanding ask of
-  a local pi session is Waiting with source Ask (the oldest in `asks`
-  order among several; the question is in `asks`), progress null; it outranks
-  blocked records. Otherwise the blocked record with the smallest
-  bytewise id gives Waiting with its kind (`permission`, `question`,
+  Precedence is waiting > stalled > running > idle. The blocked record
+  with the smallest bytewise id gives Waiting with its kind (`permission`, `question`,
   `auth`, or null for absent or unrecognized) and progress. Stalled is a
   local pi with a working root and a stale run heartbeat (rebased across
   sleep); native and remote agents never stall, and any blocked record
@@ -368,7 +351,7 @@ group's place. Groups are the "group" rows the app may draw differently.
   `msg` comes from the representative record (blocked, then working, then
   the retained outcome's record, then idle, then any, ties by id), falling
   back to local pi's run activity; a local pi message equal to its title,
-  or prefixing it as `msg - `, is dropped. An ask supplies the source only.
+  or prefixing it as `msg - `, is dropped.
 - SHELL is `{"phase","report"}`; phase is one of:
 
 ```json
@@ -393,7 +376,7 @@ group's place. Groups are the "group" rows the app may draw differently.
   the phase.
 - `report` is null or `{"since","msg","state"}`, the pane's generic OSC
   7501 records reduced blocked > working > idle with the agent rules
-  above, without asks or stall:
+  above, without stall:
 
 ```json
 ["Running",{"progress":42}]
@@ -477,7 +460,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"4.0","server":"0123456789ab","expected":"0123456789ab"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"5.0","server":"0123456789ab","expected":"0123456789ab"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_SERVER stamp, or null when absent, even when it matches expected.
 expected is the binary's own stamp, always a string. The app compares server

@@ -54,8 +54,7 @@ this way, with the subagent's description as its title.
 
 `Pane_status.observe` reduces all records for a pane to one status.
 A terminal's generic report uses this order: blocked > working > idle.
-An agent adds an outstanding ask above blocked, and stall between blocked
-and working. The smallest bytewise id resolves ties.
+An agent adds stall between blocked and working. The smallest bytewise id resolves ties.
 
 The **representative** record supplies the message and a terminal's title.
 It is the first available record in this order:
@@ -267,8 +266,7 @@ Pi and Claude Code report their status through OSC 7501.
 - Detected: root app `pi` and a pane run.
 - Title: the `name` in `pi.json` when set, otherwise the pane title.
 - Status: as `Some_agent`, from the pi root (pi 1.1's native emitter).
-  An open ask makes it waiting on that ask. kido removes `msg` if it
-  repeats the title. If there is no `msg`, the `pi.json` `activity`
+  kido removes `msg` if it repeats the title. If there is no `msg`, the `pi.json` `activity`
   supplies the message.
 - Stall: a working root and a `pi.json` report older than the stall
   threshold (heartbeat), unless the host has slept since that report.
@@ -276,7 +274,6 @@ Pi and Claude Code report their status through OSC 7501.
   - The inbox for `kido prompt` and `message_agent`/ask/steer/interrupt.
   - Name addressing when named.
   - `list_runs`.
-  - Asks.
   - Parent links.
   - Run records.
 
@@ -310,7 +307,7 @@ Pi and Claude Code report their status through OSC 7501.
   the non-final records.
 - For `Pi_agent`, the run gives identity and name. OSC 7501 gives status.
 - A pane's kind determines only its row and `kido prompt` scope.
-  Messaging, control, `list_runs`, asks and runs use runs by id.
+  Messaging, control, `list_runs` and runs use runs by id.
   Thus, local pi remains reachable if its root clears or another root
   replaces it.
 

@@ -17,9 +17,7 @@ type feedStatus struct {
 	Msg      *string
 	State    string
 	Progress *int
-	Source   string
 	Kind     *string
-	Ask      *string
 	Outcome  *feedOutcome
 }
 
@@ -95,39 +93,23 @@ func decodeStatus(raw json.RawMessage, report bool) (*feedStatus, error) {
 		return nil, err
 	}
 	s.Since, s.Msg = wire.Since, wire.Msg
-	var source json.RawMessage
 	cases := map[string]any{
 		"Running": &struct {
 			Progress **int `json:"progress"`
 		}{&s.Progress},
 		"Waiting": &struct {
-			Source   *json.RawMessage `json:"source"`
-			Progress **int            `json:"progress"`
-		}{&source, &s.Progress},
+			Kind     **string `json:"kind"`
+			Progress **int    `json:"progress"`
+		}{&s.Kind, &s.Progress},
 		"Idle": &struct {
 			Outcome **feedOutcome `json:"outcome"`
 		}{&s.Outcome},
 	}
-	if report {
-		cases["Waiting"] = &struct {
-			Kind     **string `json:"kind"`
-			Progress **int    `json:"progress"`
-		}{&s.Kind, &s.Progress}
-	} else {
+	if !report {
 		cases["Stalled"] = nil
 	}
 	var err error
 	s.State, err = feedVariant(wire.State, cases)
-	if err == nil && s.State == "Waiting" && !report {
-		s.Source, err = feedVariant(source, map[string]any{
-			"Blocked": &struct {
-				Kind **string `json:"kind"`
-			}{&s.Kind},
-			"Ask": &struct {
-				ID **string `json:"id"`
-			}{&s.Ask},
-		})
-	}
 	if err == nil && s.Outcome != nil {
 		result := feedValue(s.Outcome.Result)
 		if result != "success" && result != "failure" {

@@ -22,9 +22,6 @@ type lingering = {
   started : Timestamp.t;
 }
 
-type ask_target = Live of Tmux.pane_id | Revivable | Unavailable
-type ask = { ask : Ask.t; name : string; target : ask_target }
-
 type snapshot = {
   server : (int * Tmux.server) option;
   client : Tmux.client option;
@@ -33,7 +30,6 @@ type snapshot = {
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
-  asks : ask list;
 }
 
 val active : snapshot -> Tmux.pane_id option
@@ -90,10 +86,6 @@ type _ request =
       (** Select the given session's active window and pane; returns their location. *)
   | Jump : client -> (client, string) result request
       (** Switch the client to the given pane, keeping its session; returns where it landed. *)
-  | Activate_ask : Ask.id -> (client, string) result request
-      (** Jump to the asking pane, reviving its ended session first; returns where it landed. *)
-  | Delete_ask : Ask.id -> (unit, string) result request
-      (** Delete the ask and notify its live asker best-effort; Ok means it was removed. *)
   | Release_side_focus : (unit, string) result request
       (** Return tmux keyboard focus to the terminal; Ok means the client refresh succeeded. *)
   | Reorder_session : Tmux.session_id move -> (unit, string) result request

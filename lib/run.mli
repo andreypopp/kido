@@ -67,7 +67,6 @@ val read_meta : dir:string -> id -> meta option
 type t = { meta : meta; pi : pi option }
 
 val load : dir:string -> id -> t option
-val holder : t -> pi option
 
 val name : t -> string
 (** The name its pi last reported, else the meta's. *)

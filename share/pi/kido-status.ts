@@ -26,7 +26,7 @@ export type Sender =
   | { kind: "human"; pane: string };
 
 export type Envelope = { id: string; from: Sender; text: string } & (
-  | { kind: "message" | "ask" | "notice" | "steer" | "interrupt" | "stop" | "asks" }
+  | { kind: "message" | "ask" | "notice" | "steer" | "interrupt" | "stop" }
   | { kind: "reply"; replyTo: string }
   | { kind: "stream"; run: string; output: string }
   | { kind: "unrecognised"; claimed: string }
@@ -65,7 +65,6 @@ export function parseEnvelope(text: string): Envelope | null {
     case "steer":
     case "interrupt":
     case "stop":
-    case "asks":
       return { ...base, kind };
     case "reply":
       return { ...base, kind, replyTo: str(obj.replyTo) };
@@ -94,10 +93,9 @@ let caller: { PI_SESSION_ID?: string; PI_SESSION_FILE?: string } = {};
 
 // kido names its caller from these two, which pi sets only for its own bash tool's
 // commands: a pi started from another pi's bash inherits that caller and must not pass it on.
-// A user's action from this pi's UI has no caller.
-function kidoEnv(user = false): NodeJS.ProcessEnv {
+function kidoEnv(): NodeJS.ProcessEnv {
   const { PI_SESSION_ID: _id, PI_SESSION_FILE: _file, ...env } = process.env;
-  return user ? env : { ...env, ...caller };
+  return { ...env, ...caller };
 }
 
 // Detached and stdio-ignored, so a Ctrl+C on pi's process group does not kill it.
@@ -148,8 +146,6 @@ export interface CompletionProvider {
 }
 
 interface SessionUI {
-  setEditorText(text: string): void;
-  getEditorText(): string;
   setWidget(key: string, content: ((tui: unknown, theme: Theme) => { render(width: number): string[]; invalidate(): void }) | undefined, options?: { placement: "aboveEditor" | "belowEditor" }): void;
   notify?(message: string, type?: string): void;
   // Missing before pi 0.87.1.
@@ -169,7 +165,7 @@ export interface StatusHost {
   inboxOpen(): boolean;
   setActivity(text: string): void;
   deliver(text: string, deliverAs?: DeliverAs): void;
-  runKido(args: string[], opts: { input?: string; timeoutMs: number; user?: boolean }): Promise<RunKidoResult>;
+  runKido(args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult>;
 }
 
 // Hooks rather than the agent half's own pi.on handlers, because the order
@@ -285,7 +281,7 @@ export default function (pi: ExtensionAPI) {
     }
     const agents = seam().agents;
     if (agents) return agents.handleEnvelope(env);
-    if (env.kind !== "asks" && env.text) deliver(env.text);
+    if (env.text) deliver(env.text);
     return "ok";
   };
 
@@ -420,12 +416,12 @@ export default function (pi: ExtensionAPI) {
   // Awaited but never blocking the event loop: a blocked process cannot accept an
   // inbox connection. On failure it yields the line kido printed on stderr, the
   // only part a model can act on.
-  const runKido = (args: string[], opts: { input?: string; timeoutMs: number; user?: boolean }): Promise<RunKidoResult> => {
+  const runKido = (args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult> => {
     const command = kido;
     if (!command) return Promise.resolve({ ok: false, error: "kido is not on PATH" });
     const label = `kido ${args.slice(0, args[0] === "tool" ? 2 : 1).join(" ")}`;
     return new Promise((resolve) => {
-      const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: kidoEnv(opts.user) });
+      const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: kidoEnv() });
       const finish = (result: RunKidoResult): void => {
         clearTimeout(timer);
         resolve(result);

@@ -213,9 +213,9 @@ let%test_module "Tests" =
         [ Some "0123456789ab"; Some "other"; None ];
       [%expect
         {|
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"4.0","server":"0123456789ab","expected":"0123456789ab"}
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"4.0","server":"other","expected":"0123456789ab"}
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"4.0","server":null,"expected":"0123456789ab"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"5.0","server":"0123456789ab","expected":"0123456789ab"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"5.0","server":"other","expected":"0123456789ab"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"5.0","server":null,"expected":"0123456789ab"}
         |}]
 
     let%expect_test "the stamp ignores install paths and follows the template, env and fork" =

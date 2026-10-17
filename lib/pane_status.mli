@@ -1,12 +1,9 @@
 type result = Success | Failure
 type outcome = { serial : int; result : result } [@@deriving yojson_of]
 
-type source = Blocked of { kind : Tmux.Program_status.kind option } | Ask of { id : Ask.id }
-[@@deriving yojson_of]
-
 type agent_state =
   | Running of { progress : int option }
-  | Waiting of { source : source; progress : int option }
+  | Waiting of { kind : Tmux.Program_status.kind option; progress : int option }
   | Stalled
   | Idle of { outcome : outcome option }
 [@@deriving yojson_of]
@@ -47,14 +44,6 @@ type kind =
 
 type track
 
-val observe :
-  now:float ->
-  ask:Ask.id option ->
-  stalled:bool ->
-  State.pane ->
-  Pane_kind.t ->
-  track option ->
-  track * kind
-
+val observe : now:float -> stalled:bool -> State.pane -> Pane_kind.t -> track option -> track * kind
 val pending : track -> bool
 val label : track -> State.pane -> string

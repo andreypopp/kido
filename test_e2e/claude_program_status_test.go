@@ -65,7 +65,7 @@ func TestClaudeNativeProgramStatus(t *testing.T) {
 				outcome = feedValue(a.Outcome.Result)
 			}
 			return r.Title == "✳ Reply with ok" && a.State == c.status && outcome == c.outcome &&
-				(c.state != "blocked" || a.Source == "Blocked" && a.Kind != nil && *a.Kind == "permission") &&
+				(c.state != "blocked" || a.Kind != nil && *a.Kind == "permission") &&
 				len(r.ProgramStatus.Records) == 1 && r.ProgramStatus.Records[0].State == c.state &&
 				r.ProgramStatus.Records[0].ID == "" && r.ProgramStatus.Records[0].App == "claude-code" &&
 				r.ProgramStatus.Records[0].Msg == c.msg && (c.state != "blocked" || r.ProgramStatus.Records[0].Kind == "permission") &&

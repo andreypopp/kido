@@ -54,16 +54,6 @@ type feedSnapshot struct {
 		Current bool      `json:"current"`
 		Nodes   []feedRow `json:"nodes"`
 	} `json:"sessions"`
-	Asks []struct {
-		ID        string  `json:"id"`
-		Session   string  `json:"session"`
-		Name      string  `json:"name"`
-		Text      string  `json:"text"`
-		Created   string  `json:"created"`
-		Pane      *string `json:"pane"`
-		Ended     bool    `json:"ended"`
-		Revivable bool    `json:"revivable"`
-	} `json:"asks"`
 	raw string
 }
 
@@ -616,41 +606,10 @@ func TestRpcFailures(t *testing.T) {
 		if msg := stderr.String(); !strings.HasPrefix(msg, "kido rpc: "+c.want) {
 			t.Errorf("%q: stderr %q, want kido rpc: %s...", c.args, msg, c.want)
 		}
-		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"4.0\"}}\n" {
+		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"5.0\"}}\n" {
 			t.Errorf("%q: unexpected stdout %q", c.args, out)
 		}
 	}
-}
-
-// A failed poll is sent as "error" and the feed keeps going; the next good
-// poll clears it. The failure is an asks directory the feed cannot read.
-func TestRpcRecoversFromAnError(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a directory of mode 000")
-	}
-	t.Parallel()
-	h := start(t, "alpha")
-	h.in("set-option", "-g", "side-status-command", "false")
-	asks := filepath.Join(h.stateDir, "asks")
-	if err := os.Mkdir(asks, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(asks, 0o700) })
-	f := h.startFeed("alpha")
-	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 1 }, "the first line")
-
-	if err := os.Chmod(asks, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	before := f.last()
-	failed := f.waitLast(func(s feedSnapshot) bool { return s.Error != nil }, "the error line")
-	if failed.ServerInstance != before.ServerInstance || len(failed.Sessions) != 1 {
-		t.Errorf("a failed read dropped the last good identity or topology: %s", failed.raw)
-	}
-	if err := os.Chmod(asks, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	f.waitLast(func(s feedSnapshot) bool { return s.Error == nil && len(s.Sessions) == 1 }, "the recovery")
 }
 
 // A stdin that cannot be read ends the feed with exit 1, as EOF ends it

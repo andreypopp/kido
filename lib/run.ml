@@ -159,7 +159,6 @@ let read_meta ~dir id = Fs.read_json (meta_path ~dir id) meta_of_yojson
 type t = { meta : meta; pi : pi option }
 
 let load ~dir id = Option.map (fun meta -> { meta; pi = read_pi ~dir meta.id }) (read_meta ~dir id)
-let holder r = Option.filter (fun p -> alive p.pid) r.pi
 
 let name { meta; pi } =
   match pi with Some { name; _ } when not (String.is_empty name) -> name | _ -> meta.name
