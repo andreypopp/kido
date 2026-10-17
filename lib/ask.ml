@@ -38,8 +38,7 @@ let caller ~dir caller =
   if
     Option.exists
       (fun (id, _) ->
-        Option.is_some
-          (Option.flat_map (fun (m : Subrun.meta) -> m.parent) (Subrun.read_meta ~dir id)))
+        Option.is_some (Option.flat_map (fun (m : Run.meta) -> m.parent) (Run.read_meta ~dir id)))
       caller
   then Error "user asks are for top-level agents only"
   else Ok caller
@@ -47,7 +46,7 @@ let caller ~dir caller =
 let invalidate ?(removed = false) ~dir ~self ask =
   if not (String.equal self ask.session) then
     Option.iter
-      (fun (s : Subrun.pi) ->
+      (fun (s : Run.pi) ->
         if not (String.is_empty s.inbox) then
           ignore
             (Msg.deliver_envelope ~path:s.inbox
@@ -64,7 +63,7 @@ let invalidate ?(removed = false) ~dir ~self ask =
                  run = "";
                  output = "";
                }))
-      (Subrun.live_pi ~dir ask.session)
+      (Run.live_pi ~dir ask.session)
 
 type entry = { id : id option; [@default None] [@yojson_drop_if Option.is_none] text : string }
 [@@deriving of_yojson]
@@ -131,9 +130,9 @@ let remove ~dir ~self id =
       | exception Unix.Unix_error (ENOENT, _, _) -> Error ("no ask " ^ id))
 
 let name ~panes run =
-  match (Option.flat_map Subrun.holder run, run) with
-  | Some pi, _ -> State.display_name panes pi
-  | None, Some r -> Subrun.name r
+  match (Option.flat_map Run.holder run, run) with
+  | Some pi, _ -> Run.display_name panes pi
+  | None, Some r -> Run.name r
   | None, None -> ""
 
 let to_json ~panes ask run =
@@ -141,15 +140,15 @@ let to_json ~panes ask run =
     (`Assoc
        [
          ("name", `String (name ~panes run));
-         ("ended", `Bool (Option.is_none (Option.flat_map Subrun.holder run)));
+         ("ended", `Bool (Option.is_none (Option.flat_map Run.holder run)));
        ])
 
 let revival run =
-  let cwd = Option.map_or ~default:"" (fun (r : Subrun.run) -> r.meta.cwd) run
+  let cwd = Option.map_or ~default:"" (fun (r : Run.t) -> r.meta.cwd) run
   and file =
     Option.map_or ~default:""
-      (fun (p : Subrun.pi) -> p.session_file)
-      (Option.flat_map (fun (r : Subrun.run) -> r.pi) run)
+      (fun (p : Run.pi) -> p.session_file)
+      (Option.flat_map (fun (r : Run.t) -> r.pi) run)
   in
   let directory =
     try match (Unix.stat cwd).st_kind with Unix.S_DIR -> true | _ -> false
@@ -160,8 +159,8 @@ let revival run =
   else Ok (cwd, file)
 
 let target ~tmux ~dir ~session ask =
-  let run = Subrun.load ~dir ask.session in
-  match Option.flat_map Subrun.holder run with
+  let run = Run.load ~dir ask.session in
+  match Option.flat_map Run.holder run with
   | Some { pane = Some pane; _ } -> Ok pane
   | _ ->
       Result.flat_map

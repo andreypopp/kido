@@ -29,9 +29,8 @@ let record_stopped ~dir id =
   Result.iter
     (fun id ->
       ignore
-        (Subrun.record_outcome ~dir id
-           { result = Stopped; text = ""; at = Some (Timestamp.now ()) }))
-    (Subrun.parse_id id)
+        (Run.record_outcome ~dir id { result = Stopped; text = ""; at = Some (Timestamp.now ()) }))
+    (Run.parse_id id)
 
 let request ~dir ~caller ~panes ~self kind target =
   Message_agent.deliver ~dir ~caller ~panes ~self { kind; reply_to = ""; id = "" } target ""
@@ -41,7 +40,7 @@ let interrupt ~dir ~self ~caller to_ =
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
   let* ((_, target) as e) = Message_agent.resolve ~dir ~panes ~self ~caller (Descendant to_) in
   match request ~dir ~caller ~panes ~self Interrupt e with
-  | Ok _ -> Ok ("interrupted " ^ State.display_name panes target)
+  | Ok _ -> Ok ("interrupted " ^ Run.display_name panes target)
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
 let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
@@ -50,29 +49,27 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
     if force then Ok () else Error (what ^ "; pass --force to kill its window instead")
   in
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let runs = List.filter_map (Subrun.find ~dir) (Subrun.list ~dir) in
+  let runs = List.filter_map (Run.find ~dir) (Run.list ~dir) in
   let ids =
     List.filter
-      (fun (m : Subrun.meta) ->
-        let id = Subrun.string_of_id m.id in
+      (fun (m : Run.meta) ->
+        let id = Run.string_of_id m.id in
         String.equal id to_ || (String.length to_ >= 8 && String.prefix ~pre:to_ id))
       runs
   in
   let matches =
-    match
-      List.find_opt (fun (m : Subrun.meta) -> String.equal (Subrun.string_of_id m.id) to_) ids
-    with
+    match List.find_opt (fun (m : Run.meta) -> String.equal (Run.string_of_id m.id) to_) ids with
     | Some m -> [ m ]
     | None when not (List.is_empty ids) -> ids
     | None ->
         List.filter
-          (fun (m : Subrun.meta) ->
+          (fun (m : Run.meta) ->
             let named =
-              match Subrun.live_pi ~dir (Subrun.string_of_id m.id) with
+              match Run.live_pi ~dir (Run.string_of_id m.id) with
               | Some s -> (not (String.is_empty s.name)) && String.equal_caseless s.name to_
               | None -> String.equal_caseless m.name to_
             in
-            named && Option.is_none (Subrun.read_outcome ~dir m.id))
+            named && Option.is_none (Run.read_outcome ~dir m.id))
           runs
   in
   let* meta =
@@ -84,21 +81,19 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
           (Printf.sprintf "%S matches several runs: %s" to_
              (String.concat ", "
                 (List.sort String.compare
-                   (List.map (fun (m : Subrun.meta) -> Subrun.string_of_id m.id) many))))
+                   (List.map (fun (m : Run.meta) -> Run.string_of_id m.id) many))))
   in
   let* () =
     match meta.kind with
     | Pi -> Ok ()
     | Agent | Bash | Stream ->
-        if Option.is_none (Subrun.read_outcome ~dir meta.id) then Ok ()
-        else Error (Printf.sprintf "run %s has already ended" (Subrun.string_of_id meta.id))
+        if Option.is_none (Run.read_outcome ~dir meta.id) then Ok ()
+        else Error (Printf.sprintf "run %s has already ended" (Run.string_of_id meta.id))
   in
   match meta.kind with
   | Bash | Stream -> (
-      let label = "async run " ^ Reap.quote (Subrun.label meta) in
-      if
-        not
-          (Message_agent.reaches ~dir ~caller:(Option.map fst caller) (Subrun.string_of_id meta.id))
+      let label = "async run " ^ Reap.quote (Run.label meta) in
+      if not (Message_agent.reaches ~dir ~caller:(Option.map fst caller) (Run.string_of_id meta.id))
       then Error (label ^ " is not this agent's descendant")
       else
         let ending =
@@ -112,7 +107,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
           | () -> true
           | exception Unix.Unix_error _ -> false
         in
-        let gone = (not signalled) || wait_for escalation (fun () -> not (Subrun.alive meta.pid)) in
+        let gone = (not signalled) || wait_for escalation (fun () -> not (Run.alive meta.pid)) in
         (if not gone then try Unix.kill meta.pid Sys.sigkill with Unix.Unix_error _ -> ());
         Option.iter
           (fun e -> Result.iter_err (fun e -> warn (Msg.string_of_error e)) (Reap.send ~dir e))
@@ -131,7 +126,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
       let* ((id, target) as e) =
         Message_agent.resolve ~dir ~panes ~self ~caller (Descendant_run meta.id)
       in
-      let name = "subagent " ^ State.display_name panes target in
+      let name = "subagent " ^ Run.display_name panes target in
       let degrade () =
         match kill_run_pane ~before:(fun () -> record_stopped ~dir id) target.pane with
         | Ok `Killed -> Ok (Printf.sprintf "killed %s's pane" name)
@@ -140,7 +135,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
       in
       let escalate refusal =
         record_stopped ~dir id;
-        let gone () = Option.is_none (Subrun.live_pi ~dir id) in
+        let gone () = Option.is_none (Run.live_pi ~dir id) in
         if wait_for escalation gone then Ok ("stopped " ^ name)
         else
           let after = Timestamp.duration escalation in

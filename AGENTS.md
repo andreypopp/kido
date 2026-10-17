@@ -154,7 +154,7 @@ Conventions:
 
 - **Errors.** A `lib/` failure is a `result`. Use a string error
   that contains the message to print. If the caller or message differs
-  by case, use a variant (`Subrun.write_pi` returns `Error holder`).
+  by case, use a variant (`Run.write_pi` returns `Error holder`).
   The I/O exceptions `Unix_error` and `Sys_error` propagate.
   Do not catch them to rethrow them.
 - **Subcommands.** A subcommand body in `bin/main.ml` returns its
@@ -251,7 +251,9 @@ Conventions:
       tmux_pane.ml     kido's pane view, topology reads, ordering, navigation and marks
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON
-      state.ml         the state directory, pane agents and their kinds, staleness
+      state.ml         the server state directory and socket
+      pane_kind.ml     pane classification, titles and agent display names
+      stall.ml         heartbeat staleness and the wake marker
       reporting.ml     kido agent-status: the claim of a pi's run
       procs.ml         ssh argument parsing and whitespace fields
       msg.ml           the inbox wire protocol and its client: v0 raw prompt,
@@ -259,10 +261,11 @@ Conventions:
       tree.ml          the parent-first walk behind list_runs and the sidebar
       reap.ml          which subagent windows are finished with, and when;
                        an ending's text and its send to the parent's inbox
-      subrun.ml        the record of one run in runs/<id>/: meta, pi.json, outcome
+      run.ml           run records in runs/<id>/, marked panes and live pane agents
       prompt.ml, message_agent.ml (also ask_agent and notify_parent),
       list_runs.ml, spawn_subagent.ml, async_bash.ml,
-      async_run.ml (its wrapper), async_stream.ml, runs.ml,
+      async_run.ml (its wrapper), async_stream.ml,
+      run_history.ml (the runs history reader),
       control.ml (stop_run, interrupt_subagent)
                        one subcommand or family each
       fs.ml, timestamp.ml  files, paths, executable lookup, time;
@@ -568,12 +571,12 @@ replaces the whole file. There is **no locking**. Policy resolves races:
   `PI_SESSION_FILE`, for its bash tool. `kido-status.ts` sets both for
   every kido process it starts. kido never finds the caller from its
   pane. The launcher and the e2e harness remove both variables.
-- **One live holder per run.** `Subrun.write_pi` creates `pi.json`
+- **One live holder per run.** `Run.write_pi` creates `pi.json`
   with `Unix.link` from its own pid-named temporary file.
   This is atomic and fails if the record is taken.
   Only the pid named in an existing record can overwrite it while
   that pid is alive. Once that pid is dead, another pid can overwrite it.
-  `Subrun.release` follows the same rule and writes pid 0.
+  `Run.release` follows the same rule and writes pid 0.
   Nothing deletes `pi.json`.
 
   A refusal is `Error holder`.
@@ -583,7 +586,7 @@ replaces the whole file. There is **no locking**. Policy resolves races:
   overwrites a live session.
 - Only a pi with a UI claims a run. A headless pi claims nothing.
 - **A pane's agent is its `@kido_run`.** The claim marks its pane.
-  `State.agents` accepts a mark only if the run's `pi.json` names that
+  `Run.agents` accepts a mark only if the run's `pi.json` names that
   pane and a live pid. Thus, a stale mark is no agent.
 - **The kind decides collection.** `Reap.sweep` and `kido prompt`
   read the marked run's meta. A `pi` run is never collected, and its

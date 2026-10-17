@@ -67,7 +67,7 @@ let local_time t =
          (abs offset / 60)
          (abs offset mod 60))
 
-let held_message id (s : Subrun.pi) =
+let held_message id (s : Run.pi) =
   Printf.sprintf "session %s is already open in pane %s (pid %d); this process is not tracked" id
     (Option.map_or ~default:"" Tmux.string_of_pane_id s.pane)
     s.pid
@@ -107,7 +107,7 @@ let self_pane () =
   Option.map Tmux.pane_id_of_string
     (Option.filter (Fun.negate String.is_empty) (Sys.getenv_opt "TMUX_PANE"))
 
-let caller dir = Subrun.caller ~dir (Fs.getenv "PI_SESSION_ID")
+let caller dir = Run.caller ~dir (Fs.getenv "PI_SESSION_ID")
 let resolved_dir server = Fs.abs (Option.get_lazy State.dir server)
 
 let print r =
@@ -176,24 +176,25 @@ let runs =
        let dir = state_dir () in
        match args with
        | [] ->
-           let infos = Runs.list ~dir () in
+           let infos = Run_history.list ~dir () in
            if json then
-             print_endline (Yojson.Safe.to_string (`List (List.map Runs.yojson_of_info infos)))
+             print_endline
+               (Yojson.Safe.to_string (`List (List.map Run_history.yojson_of_info infos)))
            else begin
              let now = Timestamp.now () in
              table
                ([ "ID"; "NAME"; "PARENT"; "STARTED"; "DURATION"; "OUTCOME"; "CWD" ]
                :: List.map
-                    (fun ({ meta = m; outcome } : Runs.info) ->
+                    (fun ({ meta = m; outcome } : Run_history.info) ->
                       let outcome, ended =
                         match outcome with
                         | None -> ("running", Some now)
-                        | Some o -> (Subrun.string_of_result o.result, o.at)
+                        | Some o -> (Run.string_of_result o.result, o.at)
                       in
                       [
-                        Subrun.string_of_id m.id;
+                        Run.string_of_id m.id;
                         m.name;
-                        Option.map_or ~default:"" Subrun.string_of_id m.parent;
+                        Option.map_or ~default:"" Run.string_of_id m.parent;
                         local_time m.started_at;
                         Option.map_or ~default:"-"
                           (fun t -> Timestamp.duration (Float.round (t -. m.started_at)))
@@ -205,7 +206,7 @@ let runs =
            end;
            0
        | [ id ] ->
-           let d = ok (Runs.detail ~dir id) in
+           let d = ok (Run_history.detail ~dir id) in
            let m = d.info.meta in
            let cd = "cd " ^ Filename.quote m.cwd ^ " && " in
            let resume =
@@ -215,14 +216,15 @@ let runs =
              | Pi ->
                  "pi --session "
                  ^ Option.map_or ~default:id
-                     (fun (p : Subrun.pi) -> Filename.quote p.session_file)
-                     (Subrun.read_pi ~dir m.id)
+                     (fun (p : Run.pi) -> Filename.quote p.session_file)
+                     (Run.read_pi ~dir m.id)
              | Agent | Bash | Stream -> "kido tool spawn_subagent --resume " ^ id
            and fork = cd ^ "pi --fork " ^ id in
            if json then
              print_endline
                (Yojson.Safe.to_string
-                  (Yojson.Safe.Util.combine (Runs.yojson_of_info d.info)
+                  (Yojson.Safe.Util.combine
+                     (Run_history.yojson_of_info d.info)
                      (`Assoc
                         ([
                            ("task", `String d.task);
@@ -234,8 +236,8 @@ let runs =
              let line k v = Printf.printf "%-10s%s\n" (k ^ ":") v in
              line "id" id;
              line "name" m.name;
-             line "kind" (Subrun.string_of_kind m.kind);
-             line "parent" (Option.map_or ~default:"" Subrun.string_of_id m.parent);
+             line "kind" (Run.string_of_kind m.kind);
+             line "parent" (Option.map_or ~default:"" Run.string_of_id m.parent);
              line "cwd" m.cwd;
              if not (String.is_empty m.model) then line "model" m.model;
              if not (List.is_empty m.tools) then line "tools" ("[" ^ String.concat " " m.tools ^ "]");
@@ -244,7 +246,7 @@ let runs =
              (match d.info.outcome with
              | None -> line "outcome" "running"
              | Some o ->
-                 line "outcome" (Subrun.string_of_result o.result);
+                 line "outcome" (Run.string_of_result o.result);
                  Option.iter (fun at -> line "ended" (local_time at)) o.at;
                  if not (String.is_empty o.text) then line "detail" o.text);
              Option.iter (line "report") d.report;
@@ -263,15 +265,15 @@ let run_outcome =
   @@ let+ result =
        Arg.(
          required
-         & opt (some (enum [ ("completed", Subrun.Completed); ("failed", Failed) ])) None
+         & opt (some (enum [ ("completed", Run.Completed); ("failed", Failed) ])) None
          & info [ "result" ] ~docv:"RESULT" ~doc:"completed or failed.")
      and+ text = str "text" "TEXT" "Optional detail."
      and+ unreported = flag "unreported" "The child never called notify_parent: tell its parent so."
      and+ id = arg "RUN_ID" in
      fun () ->
        ok
-         (Runs.run_outcome ~dir:(state_dir ()) ~warn:(error "run-outcome") ~result ~text ~unreported
-            id);
+         (Run_history.run_outcome ~dir:(state_dir ()) ~warn:(error "run-outcome") ~result ~text
+            ~unreported id);
        0
 
 let async_run =
@@ -285,7 +287,7 @@ let async_run =
             ~knobs:(Async_stream.knobs Sys.getenv_opt)
             ~warn:(error "async-run")
             ~id:
-              (Subrun.parse_id
+              (Run.parse_id
                  (if String.is_empty run_id then Fs.getenv "KIDO_AGENT_RUN_ID" else run_id)
               |> Result.map_err (fun _ ->
                   "--run-id is required (or $KIDO_AGENT_RUN_ID)\n\
@@ -314,7 +316,7 @@ let list_runs =
        in
        let panes = ok (Lazy.force panes) and dir = state_dir () in
        let rows =
-         List_runs.list_runs ~dir ~threshold:(State.stall_threshold ()) ~self:(self_pane ())
+         List_runs.list_runs ~dir ~threshold:(Stall.stall_threshold ()) ~self:(self_pane ())
            ~caller:(Option.map fst (caller dir))
            ~session ~panes
          |> Result.map_err (fun e -> e ^ "\nusage: kido tool list_runs [--session ID] [--json]")
@@ -362,11 +364,11 @@ let set_status =
               activity on"
        | Some (id, s) -> (
            match
-             Subrun.write_pi ~dir id ~holder:s.pid
+             Run.write_pi ~dir id ~holder:s.pid
                { s with activity = Reporting.one_line activity ~max:256 }
            with
            | Ok () -> 0
-           | Error holder -> failwith (held_message (Subrun.string_of_id id) holder))
+           | Error holder -> failwith (held_message (Run.string_of_id id) holder))
 
 let set_asks =
   cmd ~group:"tool " "set_asks" "Set the complete user ask list, read as JSON from stdin."
@@ -384,7 +386,7 @@ let set_asks =
            failwith (Printexc.to_string e)
        in
        let result =
-         ok (Ask.set ~dir ~session:(Subrun.string_of_id id) ~asks ~now:(Timestamp.now ()))
+         ok (Ask.set ~dir ~session:(Run.string_of_id id) ~asks ~now:(Timestamp.now ()))
        in
        print_endline (Yojson.Safe.to_string (`List (List.map Ask.yojson_of_answer result)));
        0
@@ -397,7 +399,7 @@ let remove_ask =
        let self = ok (Ask.caller ~dir (caller dir)) in
        ok
          (Ask.remove ~dir
-            ~self:(Option.map_or ~default:"" (fun (id, _) -> Subrun.string_of_id id) self)
+            ~self:(Option.map_or ~default:"" (fun (id, _) -> Run.string_of_id id) self)
             (ok (Ask.parse_id id)));
        0
 
@@ -415,11 +417,11 @@ let get_asks =
          Ask.list ~dir
          |> List.filter_map (fun (a : Ask.t) ->
              if Option.map_or ~default:true (String.equal a.session) session then
-               Some (a, Subrun.load ~dir a.session)
+               Some (a, Run.load ~dir a.session)
              else None)
        in
        let panes =
-         if List.exists (fun (_, r) -> Option.is_some (Option.flat_map Subrun.holder r)) asks then
+         if List.exists (fun (_, r) -> Option.is_some (Option.flat_map Run.holder r)) asks then
            ok (Tmux_pane.list_panes (Tmux.create ()))
          else []
        in
@@ -443,7 +445,7 @@ let get_agent =
          let panes = ok (Tmux_pane.list_panes (Tmux.create ())) in
          let agents =
            ok
-             (List_runs.agents ~dir ~threshold:(State.stall_threshold ()) ~self:(self_pane ())
+             (List_runs.agents ~dir ~threshold:(Stall.stall_threshold ()) ~self:(self_pane ())
                 ~caller:(Option.map fst (caller dir))
                 ~session:None ~panes)
          in
@@ -454,19 +456,17 @@ let get_agent =
        else begin
          if String.is_empty session then failwith "usage: kido get-agent SESSION";
          let fields =
-           [
-             ("id", `String session); ("alive", `Bool (Option.is_some (Subrun.live_pi ~dir session)));
-           ]
+           [ ("id", `String session); ("alive", `Bool (Option.is_some (Run.live_pi ~dir session))) ]
          in
          let fields =
            if not children then fields
            else
              fields
-             @ (match Subrun.parse_id session with
+             @ (match Run.parse_id session with
                | Ok id -> (
-                   match Subrun.read_meta ~dir id with
+                   match Run.read_meta ~dir id with
                    | Some m -> [ ("keepAlive", `Bool m.keep_alive) ]
-                   | None when Sys.file_exists (Subrun.meta_path ~dir id) -> []
+                   | None when Sys.file_exists (Run.meta_path ~dir id) -> []
                    | None -> [ ("keepAlive", `Bool false) ])
                | Error _ -> [ ("keepAlive", `Bool false) ])
              @ [
@@ -474,14 +474,14 @@ let get_agent =
                    `Bool
                      (List.exists
                         (fun id ->
-                          match Subrun.find ~dir id with
+                          match Run.find ~dir id with
                           | Some m ->
                               Option.exists
-                                (fun o -> String.equal (Subrun.string_of_id o) session)
+                                (fun o -> String.equal (Run.string_of_id o) session)
                                 m.parent
-                              && Option.is_none (Subrun.effective_outcome ~dir m)
+                              && Option.is_none (Run.effective_outcome ~dir m)
                           | None -> false)
-                        (Subrun.list ~dir)) );
+                        (Run.list ~dir)) );
                ]
          in
          print_endline (Yojson.Safe.to_string (`Assoc fields));
@@ -495,7 +495,7 @@ let snapshot =
   @@ let+ () = Term.const () in
      fun () ->
        let panes = ok (Tmux_pane.list_panes (Tmux.create ())) in
-       let states = State.agents (State.runs ~dir:(state_dir ()) panes) in
+       let states = Run.agents (Run.marked ~dir:(state_dir ()) panes) in
        let q = Filename.quote in
        let tm = Unix.localtime (Unix.time ()) in
        Printf.printf
@@ -696,9 +696,9 @@ let agent_status =
      run "agent-status" (fun () ->
          let dir = state_dir () in
          let session = Fs.getenv "PI_SESSION_ID" in
-         let id = ok (Subrun.parse_id session) in
+         let id = ok (Run.parse_id session) in
          match
-           if remove then Subrun.release ~dir id ~holder:(Unix.getppid ())
+           if remove then Run.release ~dir id ~holder:(Unix.getppid ())
            else
              Reporting.agent_status ~dir ~pane:(self_pane ()) ~id
                ~session_file:(Fs.getenv "PI_SESSION_FILE") ~inbox ~activity ~model ~name
@@ -817,7 +817,7 @@ let reap =
          let dir = state_dir () in
          let tmux = Tmux.create () in
          let panes = ok (Tmux_pane.list_panes tmux) in
-         Reap.collect tmux ~dir ~grace:(Reap.grace ()) ~runs:(State.runs ~dir panes) panes
+         Reap.collect tmux ~dir ~grace:(Reap.grace ()) ~runs:(Run.marked ~dir panes) panes
            ~now:(Unix.gettimeofday ());
          0)
 
@@ -836,7 +836,7 @@ let close_run =
          let dir = state_dir () in
          let tmux = Tmux.create () in
          let panes = ok (Tmux_pane.list_panes tmux) in
-         (match Reap.decide ~runs:(State.runs ~dir panes) panes window_id with
+         (match Reap.decide ~runs:(Run.marked ~dir panes) panes window_id with
          | Ok c -> ok (Reap.release tmux c)
          | Error refusal -> error "close-run" refusal);
          0)
@@ -890,7 +890,7 @@ let sidebar =
                   client;
                   tmux;
                   dir;
-                  threshold = State.stall_threshold ();
+                  threshold = Stall.stall_threshold ();
                   grace = Reap.grace ();
                 };
               0)
@@ -928,7 +928,7 @@ let rpc =
              client;
              tmux = Tmux.create ~socket ();
              dir;
-             threshold = State.stall_threshold ();
+             threshold = Stall.stall_threshold ();
              grace = Reap.grace ();
            }
          in

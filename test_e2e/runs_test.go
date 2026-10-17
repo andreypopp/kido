@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// runInfo is lib/runs.ml's info as JSON, just the fields these tests
+// runInfo is lib/run_history.ml's info as JSON, just the fields these tests
 // read, with the outcome flattened: "running" when there is none.
 type runInfo struct {
 	ID          string

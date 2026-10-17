@@ -4083,7 +4083,7 @@ async function withHeartbeatEnv<T>(ms: number, fn: () => Promise<T>): Promise<T>
 }
 
 // The second incident: two pi processes on one session id. kido refuses
-// the newcomer's claim (exit 6, Subrun.write_pi), and what this
+// the newcomer's claim (exit 6, Run.write_pi), and what this
 // pins is everything that must then NOT happen - no second report, no
 // heartbeat, no removal report on the way out, all of which would be
 // writes to a record that belongs to the process still running. The

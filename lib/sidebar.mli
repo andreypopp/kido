@@ -14,8 +14,8 @@ val default_interval : float
 type lingering = {
   name : string;
   parent : string;
-  outcome : Subrun.result option;
-  kind : Subrun.kind;
+  outcome : Run.result option;
+  kind : Run.kind;
   started : Timestamp.t;
 }
 
@@ -27,7 +27,7 @@ type snapshot = {
   client : Tmux_pane.client_state option;
   active : Tmux.pane_id option;
   panes : Tmux_pane.t list;
-  states : (string * Subrun.pi) Tmux.Pane_map.t;
+  states : (string * Run.pi) Tmux.Pane_map.t;
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
@@ -35,15 +35,15 @@ type snapshot = {
 }
 
 val empty : snapshot
-val lingering_subagents : dir:string -> Subrun.run Tmux.Pane_map.t -> lingering String_map.t
+val lingering_subagents : dir:string -> Run.t Tmux.Pane_map.t -> lingering String_map.t
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
-type run = { kind : Subrun.kind; started : Timestamp.t }
+type run = { kind : Run.kind; started : Timestamp.t }
 
 type lifecycle =
   | Live of { status : Pane_status.kind; run : run option }
-  | Ended of { result : Subrun.result option; run : Subrun.kind }
+  | Ended of { result : Run.result option; run : Run.kind }
 
 type row = { pane : Tmux.pane_id; window : Tmux.window_id; title : string; lifecycle : lifecycle }
 

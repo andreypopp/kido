@@ -1,10 +1,10 @@
 type recipient =
   | Named of string
   | Descendant of string
-  | Descendant_run of Subrun.id
+  | Descendant_run of Run.id
   | Parent of string
 
-type address = Name of string | Run of Subrun.id
+type address = Name of string | Run of Run.id
 type spec = { kind : Msg.kind; reply_to : string; id : string }
 type failure = Unavailable of string | Failed of string
 type send_error = No_text | Not_sent of string
@@ -13,13 +13,13 @@ let decide ~panes to_ by = function
   | [] -> None
   | [ e ] -> Some (Ok e)
   | many ->
-      List.map (fun (id, s) -> Printf.sprintf "%s (%s)" id (State.display_name panes s)) many
+      List.map (fun (id, s) -> Printf.sprintf "%s (%s)" id (Run.display_name panes s)) many
       |> List.sort String.compare |> String.concat ", "
       |> Printf.sprintf "%S matches several agents by %s: %s" to_ by
       |> fun m -> Some (Error m)
 
 let match_target ~panes sessions to_ =
-  let named (_, (s : Subrun.pi)) =
+  let named (_, (s : Run.pi)) =
     (not (String.is_empty s.name)) && String.equal_caseless s.name to_
   in
   match decide ~panes to_ "name" (List.filter named sessions) with
@@ -36,7 +36,7 @@ let resolve_target states panes ~self address =
     match address with
     | Name to_ -> (to_, fun states -> match_target ~panes states to_)
     | Run id ->
-        let id = Subrun.string_of_id id in
+        let id = Run.string_of_id id in
         ( id,
           fun states -> Option.map (fun s -> Ok (id, s)) (List.assoc_opt ~eq:String.equal id states)
         )
@@ -55,32 +55,32 @@ let reaches ~dir ~caller id =
   Option.for_all
     (fun c ->
       Option.exists
-        (fun (m : Subrun.meta) -> List.mem ~eq:Subrun.equal_id c (m.id :: Subrun.ancestors ~dir m))
-        (Subrun.find ~dir id))
+        (fun (m : Run.meta) -> List.mem ~eq:Run.equal_id c (m.id :: Run.ancestors ~dir m))
+        (Run.find ~dir id))
     caller
 
 let resolve ~dir ~panes ~self ~caller recipient =
   let open Result.Infix in
   let caller = Option.map fst caller in
-  let agents = List.map snd (Tmux.Pane_map.bindings (State.agents (State.runs ~dir panes))) in
+  let agents = List.map snd (Tmux.Pane_map.bindings (Run.agents (Run.marked ~dir panes))) in
   let descendant address =
     let* ((id, target) as e) = resolve_target agents panes ~self address in
     if reaches ~dir ~caller id then Ok e
-    else Error (State.display_name panes target ^ " is not this agent's descendant")
+    else Error (Run.display_name panes target ^ " is not this agent's descendant")
   in
   let* ((id, target) as e) =
     match recipient with
     | Named to_ -> resolve_target agents panes ~self (Name to_)
     | Descendant to_ -> descendant (Name to_)
     | Descendant_run id -> descendant (Run id)
-    | Parent session -> Result.map (fun s -> (session, s)) (Subrun.live_parent ~dir session)
+    | Parent session -> Result.map (fun s -> (session, s)) (Run.live_parent ~dir session)
   in
-  if Option.exists (fun c -> String.equal (Subrun.string_of_id c) id) caller then
-    Error (State.display_name panes target ^ " is this agent")
+  if Option.exists (fun c -> String.equal (Run.string_of_id c) id) caller then
+    Error (Run.display_name panes target ^ " is this agent")
   else Ok e
 
-let deliver ~dir ~caller ~panes ~self spec (id, (target : Subrun.pi)) text =
-  let name = State.display_name panes target in
+let deliver ~dir ~caller ~panes ~self spec (id, (target : Run.pi)) text =
+  let name = Run.display_name panes target in
   let kind = Msg.string_of_kind spec.kind in
   let is_message = match spec.kind with Message -> true | _ -> false in
   if (not is_message) && String.is_empty target.inbox then
@@ -92,7 +92,7 @@ let deliver ~dir ~caller ~panes ~self spec (id, (target : Subrun.pi)) text =
     let from : Msg.from =
       match caller with
       | Some (id, s) ->
-          { session = Subrun.string_of_id id; name = State.display_name panes s; pane = self }
+          { session = Run.string_of_id id; name = Run.display_name panes s; pane = self }
       | None -> { session = ""; name = ""; pane = self }
     in
     let envelope : Msg.envelope =
@@ -107,7 +107,7 @@ let deliver ~dir ~caller ~panes ~self spec (id, (target : Subrun.pi)) text =
       }
     in
     let run =
-      match Subrun.find ~dir id with
+      match Run.find ~dir id with
       | Some { kind = Agent; _ } -> Some id
       | Some { kind = Pi | Bash | Stream; _ } | None -> None
     in
@@ -141,17 +141,17 @@ let send ~dir ~self ~caller recipient spec text =
                   "no agent session is calling ($PI_SESSION_ID names none), so an answer could not \
                    be addressed back; nothing sent - %s"
                   alternative))
-      | Ask, Some (_, (s : Subrun.pi)) when String.is_empty s.inbox ->
+      | Ask, Some (_, (s : Run.pi)) when String.is_empty s.inbox ->
           Error
             (Not_sent
                (Printf.sprintf
                   "%s has no inbox for an answer to arrive on, and only a long-lived process has \
                    one; nothing sent - %s"
-                  (State.display_name panes s) alternative))
+                  (Run.display_name panes s) alternative))
       | _ -> Ok ()
     in
     let* ((id, target) as e) = not_sent (resolve ~dir ~panes ~self ~caller recipient) in
-    let name = State.display_name panes target in
+    let name = Run.display_name panes target in
     let status =
       Option.flat_map (Tmux_pane.find panes) target.pane
       |> Option.flat_map (fun (p : Tmux_pane.t) -> Tmux.Program_status.root p.program_status)
@@ -176,9 +176,9 @@ let report_notice ~warn ~dir run report =
     match run with
     | None -> head_within report Msg.max_notice_bytes
     | Some id -> (
-        match Subrun.write_report ~dir id report with
+        match Run.write_report ~dir id report with
         | () ->
-            let suffix = "\n\nfull report: " ^ Subrun.report_path ~dir id in
+            let suffix = "\n\nfull report: " ^ Run.report_path ~dir id in
             head_within report (Msg.max_notice_bytes - String.length suffix) ^ suffix
         | exception Unix.Unix_error (e, fn, arg) ->
             warn
@@ -191,7 +191,7 @@ let notify_parent ~dir ~self ~caller ~warn ~parent ~run text =
     Error
       (Not_sent "this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent")
   else
-    let run = Result.to_opt (Subrun.parse_id run) in
+    let run = Result.to_opt (Run.parse_id run) in
     send ~dir ~self ~caller (Parent parent)
       { kind = Notice; reply_to = ""; id = "" }
       (report_notice ~warn ~dir run text)

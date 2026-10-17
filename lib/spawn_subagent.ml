@@ -18,7 +18,7 @@ type flags = {
 
 type mode =
   | Fresh of { name : string; task : string; fork : string; model : string }
-  | Resume of Subrun.id
+  | Resume of Run.id
 
 type request = {
   mode : mode;
@@ -86,7 +86,7 @@ let parse (f : flags) =
         refuse
           "--resume continues a run's own session; --fork starts a new one from somebody else's, \
            and the two cannot both be asked for"
-      else match Subrun.parse_id f.resume with Error e -> refuse e | Ok run -> Ok (Resume run)
+      else match Run.parse_id f.resume with Error e -> refuse e | Ok run -> Ok (Resume run)
     else if String.is_empty f.name then refuse "--name is required"
     else if String.is_empty f.task_file then refuse "--task-file is required"
     else
@@ -180,25 +180,24 @@ let validate_model ~path command =
                argument
                (String.concat ", " (List.map group providers)))
 
-let create_run_window ?resume ~dir (meta : Subrun.meta) ~session command =
+let create_run_window ?resume ~dir (meta : Run.meta) ~session command =
   let env =
     [
-      "KIDO_AGENT_TASK_FILE=" ^ Subrun.task_path ~dir meta.id;
-      "KIDO_AGENT_RUN_ID=" ^ Subrun.string_of_id meta.id;
+      "KIDO_AGENT_TASK_FILE=" ^ Run.task_path ~dir meta.id;
+      "KIDO_AGENT_RUN_ID=" ^ Run.string_of_id meta.id;
     ]
     @ Option.map_or ~default:[]
-        (fun p -> [ "KIDO_AGENT_PARENT_SESSION=" ^ Subrun.string_of_id p ])
+        (fun p -> [ "KIDO_AGENT_PARENT_SESSION=" ^ Run.string_of_id p ])
         meta.parent
   in
   let tmux = Tmux.create () in
   let open Result.Infix in
   let fail e =
     ignore
-      (Subrun.record_outcome ~dir meta.id
-         { result = Failed; text = e; at = Some (Timestamp.now ()) });
+      (Run.record_outcome ~dir meta.id { result = Failed; text = e; at = Some (Timestamp.now ()) });
     Error e
   in
-  let id = Subrun.string_of_id meta.id in
+  let id = Run.string_of_id meta.id in
   let* w =
     match
       Tmux.new_window tmux
@@ -209,8 +208,8 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session command =
     | Error e -> fail e
   in
   let meta = { meta with pane = Some w.pane_id; pid = w.pane_pid } in
-  Subrun.write_meta ~dir meta;
-  Option.iter (fun delivered -> Subrun.reset_for_resume ~dir meta.id ~delivered) resume;
+  Run.write_meta ~dir meta;
+  Option.iter (fun delivered -> Run.reset_for_resume ~dir meta.id ~delivered) resume;
   Ok
     (match meta.kind with
     | Bash | Stream ->
@@ -219,7 +218,7 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session command =
             Tmux.string_of_window_id w.window_id;
             Tmux.string_of_pane_id w.pane_id;
             id;
-            Subrun.output_path ~dir meta.id;
+            Run.output_path ~dir meta.id;
           ]
     | Pi | Agent ->
         String.concat " "
@@ -234,7 +233,7 @@ let spawn ~dir ~self ~caller ~path req =
   let parent = if req.no_parent then None else Option.map fst caller in
   let depth =
     Option.map_or ~default:0
-      (fun id -> 1 + Option.map_or ~default:0 (Subrun.depth ~dir) (Subrun.read_meta ~dir id))
+      (fun id -> 1 + Option.map_or ~default:0 (Run.depth ~dir) (Run.read_meta ~dir id))
       parent
   in
   let* () =
@@ -248,20 +247,20 @@ let spawn ~dir ~self ~caller ~path req =
           (Printf.sprintf
              "refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)"
              depth max_depth)
-    | Some id, Some (_, (s : Subrun.pi)) when not (Subrun.alive s.pid) ->
+    | Some id, Some (_, (s : Run.pi)) when not (Run.alive s.pid) ->
         Error
           (Printf.sprintf
              "the calling session %S is not live; the child would be closed within moments as an \
               orphan by the reap sweep - pass --no-parent for a child owned by nobody"
-             (Subrun.string_of_id id))
+             (Run.string_of_id id))
     | _ -> Ok ()
   in
   let is_pi = match req.command with "pi" :: _ -> true | _ -> false in
   let* meta, command, mint =
     match req.mode with
     | Fresh f ->
-        let id = Subrun.new_id () in
-        let meta : Subrun.meta =
+        let id = Run.new_id () in
+        let meta : Run.meta =
           {
             id;
             name = f.name;
@@ -280,22 +279,21 @@ let spawn ~dir ~self ~caller ~path req =
            forked child still holds its run id. *)
         let flags =
           (if String.is_empty f.fork then [] else [ "--fork"; f.fork ])
-          @ [ "--session-id"; Subrun.string_of_id id ]
+          @ [ "--session-id"; Run.string_of_id id ]
         in
         Ok (meta, (if is_pi then insert_after_head flags req.command else req.command), false)
     | Resume run ->
         let* meta =
           Option.to_result
-            (Printf.sprintf "run %S: no readable %s" (Subrun.string_of_id run)
-               (Subrun.meta_path ~dir run))
-            (Subrun.read_meta ~dir run)
+            (Printf.sprintf "run %S: no readable %s" (Run.string_of_id run) (Run.meta_path ~dir run))
+            (Run.read_meta ~dir run)
         in
-        let id = Subrun.string_of_id meta.id in
+        let id = Run.string_of_id meta.id in
         let* () =
           match meta.kind with
           | Pi ->
               Error (Printf.sprintf "run %S is not a subagent run: kido did not start its pi" id)
-          | _ when Subrun.alive meta.pid ->
+          | _ when Run.alive meta.pid ->
               Error
                 (Printf.sprintf
                    "run %S is still running (pid %d); resuming a live agent makes no sense" id
@@ -305,7 +303,7 @@ let spawn ~dir ~self ~caller ~path req =
         (* With no pi session file the id is free rather than stale, so --session-id mints one
            under it and the stored task is delivered again. *)
         let session =
-          Option.map (fun (p : Subrun.pi) -> p.session_file) (Subrun.read_pi ~dir run)
+          Option.map (fun (p : Run.pi) -> p.session_file) (Run.read_pi ~dir run)
           |> Option.filter Fs.is_file
         in
         let mint = Option.is_none session in
@@ -347,8 +345,8 @@ let spawn ~dir ~self ~caller ~path req =
   let meta = { meta with tools; parent; keep_alive = meta.keep_alive || req.keep_alive } in
   (match req.mode with
   | Fresh { task; _ } ->
-      Subrun.create ~dir meta.id task;
-      Subrun.write_meta ~dir meta
+      Run.create ~dir meta.id task;
+      Run.write_meta ~dir meta
   | Resume _ -> ());
   let resume = match req.mode with Fresh _ -> None | Resume _ -> Some mint in
   let+ line = create_run_window ?resume ~dir meta ~session:pane.session_id command in
@@ -356,7 +354,7 @@ let spawn ~dir ~self ~caller ~path req =
     (fun (old : Tmux_pane.t) ->
       Result.iter
         (fun c -> ignore (Reap.release (Tmux.create ()) c))
-        (Reap.decide ~runs:(State.runs ~dir panes) panes old.window_id))
+        (Reap.decide ~runs:(Run.marked ~dir panes) panes old.window_id))
     (Option.flat_map (Tmux_pane.find panes)
        (Option.filter (fun _ -> Option.is_some resume) meta.pane));
   line

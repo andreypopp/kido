@@ -5,14 +5,14 @@ val stop_escalation : unit -> float
 val interrupt :
   dir:string ->
   self:Tmux.pane_id option ->
-  caller:(Subrun.id * Subrun.pi) option ->
+  caller:(Run.id * Run.pi) option ->
   string ->
   (string, string) result
 
 val stop :
   dir:string ->
   self:Tmux.pane_id option ->
-  caller:(Subrun.id * Subrun.pi) option ->
+  caller:(Run.id * Run.pi) option ->
   escalation:float ->
   warn:(string -> unit) ->
   force:bool ->

@@ -1,13 +1,13 @@
 val agent_status :
   dir:string ->
   pane:Tmux.pane_id option ->
-  id:Subrun.id ->
+  id:Run.id ->
   session_file:string ->
   inbox:string ->
   activity:string ->
   model:string ->
   name:string ->
-  (unit, Subrun.pi) result
+  (unit, Run.pi) result
 (** Claims run [id] for the calling pi and marks its pane. [Error] is another live process holding
     the run. *)
 

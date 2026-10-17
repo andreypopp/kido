@@ -15,12 +15,11 @@ let pane ?ssh ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "")
     ssh;
   }
 
-let session ?(ts = test_at) ?(activity = "") pane : Subrun.pi =
-  Test_fixture.pi ~pane ~ts ~activity ()
+let session ?(ts = test_at) ?(activity = "") pane : Run.pi = Test_fixture.pi ~pane ~ts ~activity ()
 
 let states l =
   List.fold_left
-    (fun m (pane, (id, (s : Subrun.pi))) ->
+    (fun m (pane, (id, (s : Run.pi))) ->
       let pane = Tmux.pane_id_of_string pane in
       Tmux.Pane_map.add pane (id, { s with pane = Some pane }) m)
     Tmux.Pane_map.empty l
@@ -41,10 +40,10 @@ let with_programs states panes =
       | None -> p)
     panes
 
-let new_run ~dir ?(parent = "") ?(kind = Subrun.Agent) ?result name =
-  let id = Subrun.new_id () in
-  Subrun.create ~dir id "task";
-  Subrun.write_meta ~dir
+let new_run ~dir ?(parent = "") ?(kind = Run.Agent) ?result name =
+  let id = Run.new_id () in
+  Run.create ~dir id "task";
+  Run.write_meta ~dir
     {
       id;
       name;
@@ -59,9 +58,9 @@ let new_run ~dir ?(parent = "") ?(kind = Subrun.Agent) ?result name =
       started_at = test_at;
     };
   Option.iter
-    (fun result -> ignore (Subrun.record_outcome ~dir id { result; text = ""; at = None }))
+    (fun result -> ignore (Run.record_outcome ~dir id { result; text = ""; at = None }))
     result;
-  Subrun.string_of_id id
+  Run.string_of_id id
 
 let ssh_pane ?command_line prompt start running status =
   pane ~ssh:("deploy", "build-box") ~session:"alpha" ~command:"ssh" ~pid:4242 ~prompt ~start

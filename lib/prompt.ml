@@ -48,17 +48,17 @@ let prompt ~dir ~self ~window text =
   else
     let* panes = failed (Tmux_pane.list_panes (Tmux.create ())) in
     let* self = failed (List_runs.caller_pane panes self) in
-    let runs = State.runs ~dir panes in
-    let states = State.agents runs in
+    let runs = Run.marked ~dir panes in
+    let states = Run.agents runs in
     let candidates whole_session =
       List.filter_map
         (fun (p : Tmux_pane.t) ->
           if
             (not (in_scope self ~whole_session p))
-            || Option.is_some (State.run_pane ~runs panes p.window_id)
+            || Option.is_some (Run.window_pane ~runs panes p.window_id)
           then None
           else
-            match State.pane_kind ~states p with
+            match Pane_kind.classify ~states p with
             | Terminal | Ssh { pane = Remote_terminal; _ } -> None
             | (Some_agent _ | Pi_agent _ | Ssh _) as kind -> Some (p, kind))
         panes
@@ -68,7 +68,7 @@ let prompt ~dir ~self ~window text =
     | [ (p, kind) ] ->
         let inbox, name =
           match kind with
-          | Pi_agent { pi; _ } -> (pi.inbox, State.display_name panes pi)
+          | Pi_agent { pi; _ } -> (pi.inbox, Run.display_name panes pi)
           | Some_agent _ | Terminal | Ssh _ -> ("", p.title)
         in
         failed

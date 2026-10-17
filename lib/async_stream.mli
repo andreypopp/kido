@@ -5,7 +5,7 @@ val knobs : (string -> string option) -> knobs
 
 type t
 
-val start : dir:string -> knobs -> Subrun.meta -> t
+val start : dir:string -> knobs -> Run.meta -> t
 (** Starts the sender thread for a run. A parent that cannot be resolved is not an error: every send
     fails and every line counts as unstreamed. *)
 

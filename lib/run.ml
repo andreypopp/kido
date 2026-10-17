@@ -152,13 +152,20 @@ let create_meta ~dir m =
 let read_meta ~dir id = Fs.read_json (meta_path ~dir id) meta_of_yojson
 let find ~dir s = Option.flat_map (read_meta ~dir) (Result.to_opt (parse_id s))
 
-type run = { meta : meta; pi : pi option }
+type t = { meta : meta; pi : pi option }
 
 let load ~dir s = Option.map (fun meta -> { meta; pi = read_pi ~dir meta.id }) (find ~dir s)
 let holder r = Option.filter (fun p -> alive p.pid) r.pi
 
 let name { meta; pi } =
   match pi with Some { name; _ } when not (String.is_empty name) -> name | _ -> meta.name
+
+let display_name panes (s : pi) =
+  if not (String.is_empty s.name) then s.name
+  else
+    Option.map_or ~default:""
+      (fun (p : Tmux_pane.t) -> p.title)
+      (Option.flat_map (Tmux_pane.find panes) s.pane)
 
 let ancestors ~dir m =
   let rec up seen m =
@@ -234,6 +241,33 @@ let save_screen tmux ~dir id pane =
            (Tmux.exec tmux
               [ "capture-pane"; "-p"; "-t"; Tmux.string_of_pane_id pane; "-S"; "-1000" ])))
     pane
+
+let marked ~dir panes =
+  List.fold_left
+    (fun m (p : Tmux_pane.t) ->
+      Option.map_or ~default:m
+        (fun r -> Tmux.Pane_map.add p.pane_id r m)
+        (Option.flat_map (load ~dir) p.run))
+    Tmux.Pane_map.empty panes
+
+let window_pane ~(runs : t Tmux.Pane_map.t) panes window =
+  List.find_opt
+    (fun (p : Tmux_pane.t) ->
+      Tmux.equal_window_id p.window_id window
+      && Option.is_some p.run
+      &&
+      match Tmux.Pane_map.find_opt p.pane_id runs with
+      | Some { meta = { kind = Pi; _ }; _ } -> false
+      | _ -> true)
+    panes
+
+let agents runs =
+  Tmux.Pane_map.filter_map
+    (fun pane (r : t) ->
+      holder r
+      |> Option.filter (fun (s : pi) -> Option.equal Tmux.equal_pane_id s.pane (Some pane))
+      |> Option.map (fun s -> (string_of_id r.meta.id, s)))
+    runs
 
 let%test_module "Tests" =
   (module struct

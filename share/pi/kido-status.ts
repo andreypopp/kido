@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 // Read once at module scope; a test re-imports the module to change it.
 const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
 
-// A timeout here is not a refusal: Subrun.write_pi (lib/subrun.ml) is what actually decides who holds the run.
+// A timeout here is not a refusal: Run.write_pi (lib/run.ml) is what actually decides who holds the run.
 const CLAIM_TIMEOUT_MS = 5000;
 
 export type RunKidoResult = { ok: true; out: string } | { ok: false; error: string; code?: number };

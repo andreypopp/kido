@@ -66,13 +66,16 @@ val create_meta : dir:string -> meta -> unit
 val read_meta : dir:string -> id -> meta option
 val find : dir:string -> string -> meta option
 
-type run = { meta : meta; pi : pi option }
+type t = { meta : meta; pi : pi option }
 
-val load : dir:string -> string -> run option
-val holder : run -> pi option
+val load : dir:string -> string -> t option
+val holder : t -> pi option
 
-val name : run -> string
+val name : t -> string
 (** The name its pi last reported, else the meta's. *)
+
+val display_name : Tmux_pane.t list -> pi -> string
+(** The name its pi last reported, else the title of the pane it holds. *)
 
 val ancestors : dir:string -> meta -> id list
 (** The owners above the run, nearest first. *)
@@ -100,3 +103,7 @@ val list : dir:string -> string list
 val save_screen : Tmux.t -> dir:string -> id -> Tmux.pane_id option -> string option
 (** Saves a pane's screen with 1000 lines of history, bounded to its tail, into the run's directory
     and returns it; [None] for an empty pane id or a failed capture. *)
+
+val marked : dir:string -> Tmux_pane.t list -> t Tmux.Pane_map.t
+val window_pane : runs:t Tmux.Pane_map.t -> Tmux_pane.t list -> Tmux.window_id -> Tmux_pane.t option
+val agents : t Tmux.Pane_map.t -> (string * pi) Tmux.Pane_map.t

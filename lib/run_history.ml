@@ -1,35 +1,31 @@
-type info = { meta : Subrun.meta; outcome : Subrun.outcome option }
+type info = { meta : Run.meta; outcome : Run.outcome option }
 
 let yojson_of_info { meta; outcome } =
-  Yojson.Safe.Util.combine (Subrun.yojson_of_meta meta)
-    (`Assoc
-       (Option.map_or ~default:[] (fun o -> [ ("outcome", Subrun.yojson_of_outcome o) ]) outcome))
+  Yojson.Safe.Util.combine (Run.yojson_of_meta meta)
+    (`Assoc (Option.map_or ~default:[] (fun o -> [ ("outcome", Run.yojson_of_outcome o) ]) outcome))
 
 let load ?owner ~dir id =
-  Subrun.load ~dir id
-  |> Option.filter (fun (r : Subrun.run) ->
-      Option.for_all (fun o -> Option.equal Subrun.equal_id (Some o) r.meta.parent) owner)
-  |> Option.map (fun (r : Subrun.run) ->
-      {
-        meta = { r.meta with name = Subrun.name r };
-        outcome = Subrun.effective_outcome ~dir r.meta;
-      })
+  Run.load ~dir id
+  |> Option.filter (fun (r : Run.t) ->
+      Option.for_all (fun o -> Option.equal Run.equal_id (Some o) r.meta.parent) owner)
+  |> Option.map (fun (r : Run.t) ->
+      { meta = { r.meta with name = Run.name r }; outcome = Run.effective_outcome ~dir r.meta })
 
 let list ?owner ~dir () =
-  List.filter_map (load ?owner ~dir) (Subrun.list ~dir)
+  List.filter_map (load ?owner ~dir) (Run.list ~dir)
   |> List.sort (fun a b -> Float.compare b.meta.started_at a.meta.started_at)
 
 type detail = { info : info; task : string; screen : string option; report : string option }
 
 let detail ~dir id_str =
   let open Result.Infix in
-  let* id = Subrun.parse_id id_str in
+  let* id = Run.parse_id id_str in
   let+ info = Option.to_result (Printf.sprintf "run %S: no such run" id_str) (load ~dir id_str) in
   {
     info;
-    task = Option.get_or ~default:"" (Subrun.read_task ~dir id);
-    screen = Subrun.read_screen ~dir id;
-    report = (if Subrun.has_report ~dir id then Some (Subrun.report_path ~dir id) else None);
+    task = Option.get_or ~default:"" (Run.read_task ~dir id);
+    screen = Run.read_screen ~dir id;
+    report = (if Run.has_report ~dir id then Some (Run.report_path ~dir id) else None);
   }
 
 (* pi prints this and exits 0 when it cannot resolve a provider for the model it was given: the one
@@ -43,16 +39,16 @@ let refine_no_turn_detail text screen =
 
 let run_outcome ~dir ~warn ~result ~text ~unreported id_str =
   let open Result.Infix in
-  let* id = Subrun.parse_id id_str in
-  let meta = Subrun.read_meta ~dir id in
+  let* id = Run.parse_id id_str in
+  let meta = Run.read_meta ~dir id in
   let text =
     match (meta, result) with
-    | Some m, Subrun.Failed ->
+    | Some m, Run.Failed ->
         Option.map_or ~default:text (refine_no_turn_detail text)
-          (Subrun.save_screen (Tmux.create ()) ~dir id m.pane)
+          (Run.save_screen (Tmux.create ()) ~dir id m.pane)
     | _ -> text
   in
-  let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in
+  let outcome : Run.outcome = { result; text; at = Some (Timestamp.now ()) } in
   match meta with
   | Some meta when unreported ->
       Option.iter
@@ -63,22 +59,22 @@ let run_outcome ~dir ~warn ~result ~text ~unreported id_str =
         (Reap.record_ending ~dir meta outcome);
       Ok ()
   | _ ->
-      if Subrun.record_outcome ~dir id outcome then Ok ()
+      if Run.record_outcome ~dir id outcome then Ok ()
       else Error (Printf.sprintf "run %s already has an outcome, or is gone" id_str)
 
 let%test_module "Tests" =
   (module struct
     open Test_fixture
 
-    let id s = Result.get_exn (Subrun.parse_id s)
+    let id s = Result.get_exn (Run.parse_id s)
 
     let outcome ~dir run result =
-      ignore (Subrun.record_outcome ~dir (id run) { result; text = ""; at = Some 1_700_000_090. })
+      ignore (Run.record_outcome ~dir (id run) { result; text = ""; at = Some 1_700_000_090. })
 
     let show_outcome ~dir run =
-      match Subrun.read_outcome ~dir (id run) with
+      match Run.read_outcome ~dir (id run) with
       | None -> print_endline "no outcome"
-      | Some o -> Printf.printf "outcome %s %S\n" (Subrun.string_of_result o.result) o.text
+      | Some o -> Printf.printf "outcome %s %S\n" (Run.string_of_result o.result) o.text
 
     let%expect_test "runs: filter by parent, still newest first" =
       let dir = Filename.temp_dir "kido-state" "" in
@@ -88,9 +84,9 @@ let%test_module "Tests" =
       outcome ~dir "old" Completed;
       list ~owner:(id "root") ~dir ()
       |> List.iter (fun (r : info) ->
-          Printf.printf "%s %s\n" (Subrun.string_of_id r.meta.id)
+          Printf.printf "%s %s\n" (Run.string_of_id r.meta.id)
             (Option.map_or ~default:"running"
-               (fun o -> Subrun.string_of_result o.Subrun.result)
+               (fun o -> Run.string_of_result o.Run.result)
                r.outcome));
       [%expect {|
     new running
@@ -105,7 +101,7 @@ let%test_module "Tests" =
         (fun r ->
           print_endline
             (Option.map_or ~default:"running"
-               (fun o -> Subrun.string_of_result o.Subrun.result)
+               (fun o -> Run.string_of_result o.Run.result)
                (Result.get_exn (detail ~dir r)).info.outcome))
         [ "run-live"; "run-dead" ];
       [%expect {|

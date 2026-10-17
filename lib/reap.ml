@@ -20,7 +20,7 @@ let decide ~runs panes window_id =
       (Printf.sprintf "%s is a client's current window; leaving it for the user to read"
          (Tmux.string_of_window_id window_id))
   else
-    match State.run_pane ~runs panes window_id with
+    match Run.window_pane ~runs panes window_id with
     | None ->
         Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.string_of_window_id window_id))
     | Some { dead_at = None; _ } ->
@@ -34,7 +34,7 @@ let decide ~runs panes window_id =
           (close_of panes window_id run.pane_id)
 
 type detail = Bash | Streamed of { unstreamed : int } | Agent of { unreported : bool }
-type ending = { meta : Subrun.meta; outcome : Subrun.outcome; detail : detail }
+type ending = { meta : Run.meta; outcome : Run.outcome; detail : detail }
 
 let quote s =
   let b = Buffer.create (String.length s + 2) in
@@ -55,12 +55,12 @@ let quote s =
 
 let body ~dir e =
   let b = Buffer.create 256 in
-  let result = Subrun.string_of_result e.outcome.result in
+  let result = Run.string_of_result e.outcome.result in
   (match e.detail with
   | (Bash | Streamed _) as detail -> (
-      let output = Subrun.output_path ~dir e.meta.id in
-      Printf.bprintf b "async run %s %s: %s\n" (quote (Subrun.label e.meta)) result e.outcome.text;
-      Printf.bprintf b "run: %s\n" (Subrun.string_of_id e.meta.id);
+      let output = Run.output_path ~dir e.meta.id in
+      Printf.bprintf b "async run %s %s: %s\n" (quote (Run.label e.meta)) result e.outcome.text;
+      Printf.bprintf b "run: %s\n" (Run.string_of_id e.meta.id);
       Printf.bprintf b "output: %s\n" output;
       match detail with
       | Streamed { unstreamed } ->
@@ -95,32 +95,30 @@ let body ~dir e =
         Printf.bprintf b
           "subagent %s %s without reporting: it never called notify_parent, so this is the whole \
            account of it\n"
-          (quote (Subrun.label e.meta))
+          (quote (Run.label e.meta))
           result
       else
         Printf.bprintf b
           "subagent %s ended without recording an outcome of its own, so kido recorded it as %s; \
            whether it called notify_parent is not known, and any report it sent stands\n"
-          (quote (Subrun.label e.meta))
+          (quote (Run.label e.meta))
           result;
       if not (String.is_empty e.outcome.text) then Printf.bprintf b "detail: %s\n" e.outcome.text;
-      Printf.bprintf b "run: %s\n" (Subrun.string_of_id e.meta.id);
-      Printf.bprintf b "resume: spawn_subagent(resume: %s)\n"
-        (quote (Subrun.string_of_id e.meta.id)));
+      Printf.bprintf b "run: %s\n" (Run.string_of_id e.meta.id);
+      Printf.bprintf b "resume: spawn_subagent(resume: %s)\n" (quote (Run.string_of_id e.meta.id)));
   Buffer.contents b
 
 let send ~dir (e : ending) =
   let e =
     {
       e with
-      meta =
-        { e.meta with name = Subrun.name { meta = e.meta; pi = Subrun.read_pi ~dir e.meta.id } };
+      meta = { e.meta with name = Run.name { meta = e.meta; pi = Run.read_pi ~dir e.meta.id } };
     }
   in
-  match Option.map Subrun.string_of_id e.meta.parent with
+  match Option.map Run.string_of_id e.meta.parent with
   | None -> Ok ()
   | Some parent -> (
-      match Subrun.live_parent ~dir parent with
+      match Run.live_parent ~dir parent with
       | Error m -> Error (Msg.Failed m)
       | Ok { inbox = ""; _ } ->
           Error (Unavailable (Printf.sprintf "session %s has no inbox" parent))
@@ -129,38 +127,35 @@ let send ~dir (e : ending) =
             {
               kind = Notice;
               id = Msg.new_id ();
-              from = { session = ""; name = Subrun.label e.meta; pane = None };
+              from = { session = ""; name = Run.label e.meta; pane = None };
               reply_to = "";
               text = body ~dir e;
               run = "";
               output = "";
             })
 
-let record_ending ~dir (meta : Subrun.meta) outcome =
-  if not (Subrun.record_outcome ~dir meta.id outcome) then None
+let record_ending ~dir (meta : Run.meta) outcome =
+  if not (Run.record_outcome ~dir meta.id outcome) then None
   else
     let detail =
-      match meta.kind with
-      | Subrun.Bash | Stream -> Bash
-      | Pi | Agent -> Agent { unreported = false }
+      match meta.kind with Run.Bash | Stream -> Bash | Pi | Agent -> Agent { unreported = false }
     in
     Some { meta; outcome; detail }
 
 let sweep tmux ~dir ~grace ~runs panes ~now =
   let live p =
     List.find_map
-      (fun (_, (r : Subrun.run)) ->
-        if Subrun.equal_id r.meta.id p then Some (Subrun.holder r) else None)
+      (fun (_, (r : Run.t)) -> if Run.equal_id r.meta.id p then Some (Run.holder r) else None)
       (Tmux.Pane_map.bindings runs)
-    |> Option.get_lazy (fun () -> Subrun.live_pi ~dir (Subrun.string_of_id p))
+    |> Option.get_lazy (fun () -> Run.live_pi ~dir (Run.string_of_id p))
     |> Option.is_some
   in
-  let mark ((closing, endings) as acc) (p : Tmux_pane.t) (m : Subrun.meta) text =
+  let mark ((closing, endings) as acc) (p : Tmux_pane.t) (m : Run.meta) text =
     let window = p.window_id in
     let closes = function Window w | Pane { window = w; _ } -> Tmux.equal_window_id w window in
     match close_of panes window p.pane_id with
     | Some close when not (Tmux_pane.window_focused panes window || List.exists closes closing) ->
-        ignore (Subrun.save_screen tmux ~dir m.id (Some p.pane_id));
+        ignore (Run.save_screen tmux ~dir m.id (Some p.pane_id));
         let ending =
           record_ending ~dir m
             (match m.kind with
@@ -200,12 +195,12 @@ let%test_module "Tests" =
         dead_at = Option.map (fun secs -> now -. Float.of_int secs) dead;
       }
 
-    let id s = Result.get_exn (Subrun.parse_id s)
+    let id s = Result.get_exn (Run.parse_id s)
 
-    let run ~dir ?(kind = Subrun.Agent) ?(parent = "") name id_s =
+    let run ~dir ?(kind = Run.Agent) ?(parent = "") name id_s =
       let i = id id_s in
-      Subrun.create ~dir i "task";
-      Subrun.write_meta ~dir
+      Run.create ~dir i "task";
+      Run.write_meta ~dir
         {
           id = i;
           name;
@@ -258,8 +253,8 @@ let%test_module "Tests" =
     let%expect_test "a bash ending's notice carries the run's name, status, id and output tail" =
       let dir = temp () in
       let i = run ~dir ~kind:Bash "build" "run-named" in
-      Fs.write (Subrun.output_path ~dir i) "boom\n";
-      let meta = Option.get_exn_or "meta" (Subrun.read_meta ~dir i) in
+      Fs.write (Run.output_path ~dir i) "boom\n";
+      let meta = Option.get_exn_or "meta" (Run.read_meta ~dir i) in
       let emit e = print_string (String.replace ~sub:dir ~by:"DIR" (body ~dir e)) in
       emit { meta; outcome = { result = Failed; text = "exit status 3"; at = None }; detail = Bash };
       emit
@@ -280,7 +275,7 @@ let%test_module "Tests" =
           outcome = { result = Completed; text = "exit status 0"; at = None };
           detail = Streamed { unstreamed = 0 };
         };
-      Fs.remove (Subrun.output_path ~dir i);
+      Fs.remove (Run.output_path ~dir i);
       print_string
         (body ~dir { meta; outcome = { result = Failed; text = "x"; at = None }; detail = Bash }
         |> String.split_on_char '\n' |> List.last_opt |> Option.get_exn_or "line"
@@ -310,7 +305,7 @@ let%test_module "Tests" =
     let%expect_test "an agent ending's notice, reported and unreported" =
       let dir = temp () in
       let i = run ~dir ~parent:"root-sess" "kid" "run-agent" in
-      let meta = Option.get_exn_or "meta" (Subrun.read_meta ~dir i) in
+      let meta = Option.get_exn_or "meta" (Run.read_meta ~dir i) in
       print_string
         (body ~dir
            {
@@ -340,9 +335,9 @@ let%test_module "Tests" =
     let%expect_test "a bash notice keeps the output's tail, whole characters only" =
       let dir = temp () in
       let i = run ~dir ~kind:Bash "build" "run-tail" in
-      let meta = Option.get_exn_or "meta" (Subrun.read_meta ~dir i) in
+      let meta = Option.get_exn_or "meta" (Run.read_meta ~dir i) in
       let tail output =
-        Fs.write (Subrun.output_path ~dir i) output;
+        Fs.write (Run.output_path ~dir i) output;
         match
           body ~dir
             {

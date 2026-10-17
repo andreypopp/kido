@@ -428,7 +428,7 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	}
 	conf := filepath.Join(h.stateDir, "server.conf")
 	// KIDO_LINGER_SECONDS/KIDO_STALL_THRESHOLD_MS/KIDO_STREAM_* shorten the
-	// window-lifecycle grace, State.stall_threshold and the streaming
+	// window-lifecycle grace, Stall.stall_threshold and the streaming
 	// wrapper's batch/backoff the same way for everything the inner server
 	// runs, so real production values (30s, 3min, 250ms) don't put every
 	// timing test past the 5s settle; global per server, so 3s (not

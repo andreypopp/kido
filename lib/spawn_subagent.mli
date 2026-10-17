@@ -21,7 +21,7 @@ val check_window_name : string -> (unit, string) result
 val create_run_window :
   ?resume:bool ->
   dir:string ->
-  Subrun.meta ->
+  Run.meta ->
   session:Tmux.session_id ->
   string list ->
   (string, string) result
@@ -30,7 +30,7 @@ val create_run_window :
 val spawn :
   dir:string ->
   self:Tmux.pane_id option ->
-  caller:(Subrun.id * Subrun.pi) option ->
+  caller:(Run.id * Run.pi) option ->
   path:string ->
   request ->
   (string, string) result

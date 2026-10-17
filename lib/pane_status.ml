@@ -265,7 +265,7 @@ let shell ~now ~fullscreen ~serial (records : Tmux.Program_status.record list) r
   let episode, report = report ~now ~serial records t.episode in
   ({ t with episode }, { phase; report })
 
-let observe ~now ~ask ~stalled (p : Tmux_pane.t) (kind : State.pane_kind) prev =
+let observe ~now ~ask ~stalled (p : Tmux_pane.t) (kind : Pane_kind.t) prev =
   let status = p.program_status in
   let identity =
     {
@@ -292,7 +292,7 @@ let observe ~now ~ask ~stalled (p : Tmux_pane.t) (kind : State.pane_kind) prev =
   in
   let serial = status.serial and records = status.records in
   let agent ~ask ~stalled ~dedupe ~fallback =
-    let title = Option.value ~default:"" (State.pane_title p kind) in
+    let title = Option.value ~default:"" (Pane_kind.title p kind) in
     let e, status =
       agent ~now ~serial ~ask ~stalled
         ~msg:(fun msg ->
@@ -427,7 +427,7 @@ let%test_module "Tests" =
       List.iter
         (fun (d, ask, stalled, label, p) ->
           now := !now +. d;
-          let t, k = observe ~now:!now ~ask ~stalled p (State.pane_kind ~states p) !track in
+          let t, k = observe ~now:!now ~ask ~stalled p (Pane_kind.classify ~states p) !track in
           track := Some t;
           Printf.printf "%-22s %s\n" label (text test_at k))
         steps
@@ -594,7 +594,7 @@ let%test_module "Tests" =
         root idle              idle:failure@4 since=+5.0
         |}]
 
-    let%expect_test "a root app, State session or ssh destination change resets tracking" =
+    let%expect_test "a root app, Run session or ssh destination change resets tracking" =
       let track = ref None and now = ref test_at in
       let step label kind p =
         now := !now +. 1.;
@@ -603,18 +603,16 @@ let%test_module "Tests" =
         Printf.printf "%-20s %s\n" label (text test_at k)
       in
       let p = pane ~title:"agent" "%1" in
-      let pi_kind id : State.pane_kind = Pi_agent { id; pi = session "" } in
+      let pi_kind id : Pane_kind.t = Pi_agent { id; pi = session "" } in
       step "pi done" (pi_kind "a") (records ~serial:1 [ ("", pi ^ {|"done"|}) ] p);
       step "same" (pi_kind "a") (records ~serial:2 [ ("", pi ^ {|"done"|}) ] p);
       step "new session id" (pi_kind "b") (records ~serial:3 [ ("", pi ^ {|"done"|}) ] p);
-      let claude_kind : State.pane_kind = Some_agent { name = "claude-code" } in
+      let claude_kind : Pane_kind.t = Some_agent { name = "claude-code" } in
       step "claude replaces pi" claude_kind (records ~serial:4 [ ("", claude ^ {|"done"|}) ] p);
       step "same claude" claude_kind (records ~serial:5 [ ("", claude ^ {|"done"|}) ] p);
       step "root cleared" Terminal p;
       step "claude again" claude_kind (records ~serial:6 [ ("", claude ^ {|"done"|}) ] p);
-      let ssh host : State.pane_kind =
-        Ssh { user = "u"; host; pane = Remote_agent { name = "pi" } }
-      in
+      let ssh host : Pane_kind.t = Ssh { user = "u"; host; pane = Remote_agent { name = "pi" } } in
       step "remote pi" (ssh "one") (records ~serial:7 [ ("", pi ^ {|"done"|}) ] p);
       step "same destination" (ssh "one") (records ~serial:8 [ ("", pi ^ {|"done"|}) ] p);
       step "new destination" (ssh "two") (records ~serial:9 [ ("", pi ^ {|"done"|}) ] p);

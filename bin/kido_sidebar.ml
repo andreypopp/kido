@@ -257,7 +257,7 @@ let observe m =
     in
     { m with views }
 
-type indicator = Running | Waiting | Done | Failed | Stalled | Ended of Subrun.result option
+type indicator = Running | Waiting | Done | Failed | Stalled | Ended of Run.result option
 
 let finished : P.result -> indicator = function Success -> Done | Failure -> Failed
 
@@ -382,7 +382,7 @@ let caption (r : S.row) =
       s.report
   in
   match r.lifecycle with
-  | Ended { result; _ } -> Option.map Subrun.string_of_result result
+  | Ended { result; _ } -> Option.map Run.string_of_result result
   | Live { status = Some_agent { status; _ } | Pi_agent { status; _ }; _ }
   | Live { status = Ssh { pane = Remote_agent { status; _ }; _ }; _ } ->
       agent status
@@ -839,7 +839,7 @@ let%test_module "Tests" =
           client = client current;
           panes;
           states;
-          lingering = Sidebar.lingering_subagents ~dir:m.opts.dir (State.runs ~dir:m.opts.dir panes);
+          lingering = Sidebar.lingering_subagents ~dir:m.opts.dir (Run.marked ~dir:m.opts.dir panes);
         }
       in
       let tui = rendered { m with snap } in
@@ -1069,7 +1069,7 @@ let%test_module "Tests" =
           render ~dir
             [ pane ~window:"@20" ~dead_at:1. ~run:(new_run ~dir ~result "subagent") "%30" ]
             [])
-        [ Subrun.Completed; Failed; Died; Stopped ];
+        [ Run.Completed; Failed; Died; Stopped ];
       render ~dir [ pane ~window:"@20" ~dead_at:1. ~run:"no-such-run" "%30" ] [];
       [%expect
         {|
@@ -1167,7 +1167,7 @@ let%test_module "Tests" =
               Sidebar.empty with
               client = client "sess";
               panes;
-              lingering = Sidebar.lingering_subagents ~dir (State.runs ~dir panes);
+              lingering = Sidebar.lingering_subagents ~dir (Run.marked ~dir panes);
             }
         in
         Printf.printf "%.3f\n" (next_wait (make ~standalone:false side))

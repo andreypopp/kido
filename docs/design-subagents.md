@@ -326,8 +326,8 @@ window.
 
 Each spawn owns `<state>/runs/<run-id>/`. kido writes it before creating
 the window, so the child can read its task as soon as tmux starts it.
-The run id is the abstract type `Subrun.id`, not a bare string.
-`Subrun.parse_id` is the only check that the id names nothing outside
+The run id is the abstract type `Run.id`, not a bare string.
+`Run.parse_id` is the only check that the id names nothing outside
 that directory.
 
 Each location where an id enters the module applies this check:
@@ -337,7 +337,7 @@ Each location where an id enters the module applies this check:
 - A `Tmux_pane.t`'s `run` reader
 - A `KIDO_AGENT_RUN_ID` reader
 
-Every function that takes a `Subrun.id` trusts it. design.md, "Who is
+Every function that takes a `Run.id` trusts it. design.md, "Who is
 authoritative for what", gives the layout of the directory and the
 writer of each file. Two files have reasons that belong to subagents:
 
@@ -765,7 +765,7 @@ receives the output during the run. It includes only the
 "N lines not streamed" count above, if that count is nonzero.
 
 **Exactly one ending.** The outcome has one recorded write; the first
-write wins. The winner sends the notice. `Subrun.record_outcome` links a
+write wins. The winner sends the notice. `Run.record_outcome` links a
 completed temporary file with `Unix.link`. The same write, read in the
 same way, decides the winner. No flag or "notified" marker is necessary.
 Three observers can win:
@@ -1030,7 +1030,7 @@ during use as a window disappears after its linger.
 - A child can start shutdown when its parent dies. The sweep can close
   its window during shutdown and record `died` before the child records
   its own outcome. Whatever it managed to write first
-  wins (`Subrun.record_outcome` links a completed temporary file with
+  wins (`Run.record_outcome` links a completed temporary file with
   `Unix.link`).
 - Nesting stops at depth 2 within each parent chain.
 - `--no-parent` makes an ordinary top-level run, with depth 0. Its children

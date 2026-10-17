@@ -56,18 +56,18 @@ let rec pump ~file ~stream ~wake ~caught ~watch ~deadline child buf =
         pump ~file ~stream ~wake ~caught ~watch ~deadline child buf
 
 let status_of = function
-  | Unix.WEXITED 0 -> (Subrun.Completed, "exit status 0", 0)
+  | Unix.WEXITED 0 -> (Run.Completed, "exit status 0", 0)
   | WEXITED n -> (Failed, Printf.sprintf "exit status %d" n, n)
   | WSIGNALED s | WSTOPPED s -> (Failed, "signal: " ^ signal_name s, 1)
 
 let async_run ~dir ~knobs ~warn ~id =
   let open Result.Infix in
-  let run_id = Subrun.string_of_id id in
+  let run_id = Run.string_of_id id in
   let* meta =
-    Option.to_result (Printf.sprintf "run %s has no meta" run_id) (Subrun.read_meta ~dir id)
+    Option.to_result (Printf.sprintf "run %s has no meta" run_id) (Run.read_meta ~dir id)
   in
   let* argv =
-    match Subrun.read_command ~dir id with
+    match Run.read_command ~dir id with
     | Some (_ :: _ as argv) -> Ok argv
     | _ -> Error (Printf.sprintf "run %s has no command" run_id)
   in
@@ -84,7 +84,7 @@ let async_run ~dir ~knobs ~warn ~id =
   let signals = Sys.[ sigterm; sighup; sigint ] in
   let previous = List.map (fun s -> (s, Sys.signal s (Signal_handle handler))) signals in
   let file =
-    Unix.openfile (Subrun.output_path ~dir id) [ O_WRONLY; O_CREAT; O_TRUNC; O_CLOEXEC ] 0o644
+    Unix.openfile (Run.output_path ~dir id) [ O_WRONLY; O_CREAT; O_TRUNC; O_CLOEXEC ] 0o644
   in
   let stream =
     match meta.kind with
@@ -97,8 +97,8 @@ let async_run ~dir ~knobs ~warn ~id =
       | Some s -> Reap.Streamed { unstreamed = Async_stream.close s }
       | None -> Reap.Bash
     in
-    let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in
-    if Subrun.record_outcome ~dir id outcome then
+    let outcome : Run.outcome = { result; text; at = Some (Timestamp.now ()) } in
+    if Run.record_outcome ~dir id outcome then
       Result.iter_err
         (fun e -> warn (Msg.string_of_error e))
         (Reap.send ~dir { meta; outcome; detail })
@@ -144,15 +144,15 @@ let%test_module "Tests" =
     let show_run ~dir run_id =
       match
         async_run ~dir ~knobs ~warn:(Printf.printf "\nwarning: %s")
-          ~id:(Result.get_exn (Subrun.parse_id run_id))
+          ~id:(Result.get_exn (Run.parse_id run_id))
       with
       | Ok code -> Printf.printf "\n-> %d\n" code
       | Error m -> Printf.printf "\nrefused: %s\n" m
 
-    let outcome ~dir (meta : Subrun.meta) =
-      match Subrun.read_outcome ~dir meta.id with
+    let outcome ~dir (meta : Run.meta) =
+      match Run.read_outcome ~dir meta.id with
       | None -> print_endline "no outcome"
-      | Some o -> Printf.printf "outcome %s %S\n" (Subrun.string_of_result o.result) o.text
+      | Some o -> Printf.printf "outcome %s %S\n" (Run.string_of_result o.result) o.text
 
     let bash ?parent ~dir name command = run ~dir ~name ~kind:Bash ?parent ~command name
 
@@ -167,7 +167,7 @@ let%test_module "Tests" =
           show_run ~dir name;
           outcome ~dir meta;
           Printf.printf "output file: %S\n"
-            (Option.get_or ~default:"none" (Fs.read (Subrun.output_path ~dir meta.id))))
+            (Option.get_or ~default:"none" (Fs.read (Run.output_path ~dir meta.id))))
         [
           ("build", [ "sh"; "-c"; "printf out; printf err >&2; exit 3" ]);
           ("ok", [ "true" ]);
@@ -206,7 +206,7 @@ let%test_module "Tests" =
       let dir = Filename.temp_dir "kido-state" "" in
       let parent = "nobody-alive-reports-this" in
       let lost = bash ~dir ~parent "raced" [ "true" ] in
-      ignore (Subrun.record_outcome ~dir lost.id { result = Stopped; text = ""; at = None });
+      ignore (Run.record_outcome ~dir lost.id { result = Stopped; text = ""; at = None });
       show_run ~dir "raced";
       outcome ~dir lost;
       let _ = bash ~dir ~parent "won" [ "true" ] in
@@ -265,7 +265,7 @@ let%test_module "Tests" =
           [| "KIDO_STATE_DIR=" ^ dir; "PATH=" ^ Sys.getenv "PATH" |]
           Unix.stdin Unix.stdout Unix.stderr
       in
-      let output = Subrun.output_path ~dir meta.id in
+      let output = Run.output_path ~dir meta.id in
       let deadline = Unix.gettimeofday () +. 5. in
       while (not (Sys.file_exists output)) && Float.(Unix.gettimeofday () < deadline) do
         Unix.sleepf 0.02

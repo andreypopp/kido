@@ -14,8 +14,8 @@ let default_interval = 0.1
 type lingering = {
   name : string;
   parent : string;
-  outcome : Subrun.result option;
-  kind : Subrun.kind;
+  outcome : Run.result option;
+  kind : Run.kind;
   started : Timestamp.t;
 }
 
@@ -27,7 +27,7 @@ type snapshot = {
   client : Tmux_pane.client_state option;
   active : Tmux.pane_id option;
   panes : Tmux_pane.t list;
-  states : (string * Subrun.pi) Tmux.Pane_map.t;
+  states : (string * Run.pi) Tmux.Pane_map.t;
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
@@ -49,13 +49,12 @@ let empty =
 
 let lingering_subagents ~dir runs =
   Tmux.Pane_map.fold
-    (fun _ (r : Subrun.run) ->
-      String_map.add (Subrun.string_of_id r.meta.id)
+    (fun _ (r : Run.t) ->
+      String_map.add (Run.string_of_id r.meta.id)
         {
-          name = Subrun.name r;
-          parent = Option.map_or ~default:"" Subrun.string_of_id r.meta.parent;
-          outcome =
-            Option.map (fun (o : Subrun.outcome) -> o.result) (Subrun.read_outcome ~dir r.meta.id);
+          name = Run.name r;
+          parent = Option.map_or ~default:"" Run.string_of_id r.meta.parent;
+          outcome = Option.map (fun (o : Run.outcome) -> o.result) (Run.read_outcome ~dir r.meta.id);
           kind = r.meta.kind;
           started = r.meta.started_at;
         })
@@ -77,7 +76,7 @@ let take ~opts conn prev client =
   | Error e -> { prev with client; active = None; err = Some e }
   | Ok (server, panes) ->
       let panes = List.filter (fun (p : Tmux_pane.t) -> not p.modal) panes in
-      let runs = State.runs ~dir:opts.dir panes in
+      let runs = Run.marked ~dir:opts.dir panes in
       if not (List.is_empty panes) then
         Reap.collect opts.tmux ~dir:opts.dir ~grace:opts.grace ~runs panes
           ~now:(Unix.gettimeofday ());
@@ -89,16 +88,16 @@ let take ~opts conn prev client =
             (fun (c : Tmux_pane.client_state) -> Tmux_pane.active_pane panes c.session)
             client;
         panes;
-        states = State.agents runs;
-        wake = State.wake ~dir:opts.dir;
+        states = Run.agents runs;
+        wake = Stall.wake ~dir:opts.dir;
         err = None;
         lingering = lingering_subagents ~dir:opts.dir runs;
         asks =
           List.map
             (fun (a : Ask.t) ->
-              let run = Subrun.load ~dir:opts.dir a.session in
+              let run = Run.load ~dir:opts.dir a.session in
               let target =
-                match Option.flat_map Subrun.holder run with
+                match Option.flat_map Run.holder run with
                 | Some { pane = Some pane; _ } -> Live pane
                 | _ -> if Result.is_ok (Ask.revival run) then Revivable else Unavailable
               in
@@ -117,7 +116,7 @@ let same a b =
       pane_active = false;
     }
   in
-  let session (_, (s : Subrun.pi)) = { s with ts = 0. } in
+  let session (_, (s : Run.pi)) = { s with ts = 0. } in
   Option.equal Stdlib.( = ) a.server b.server
   && Option.equal Stdlib.( = ) a.client b.client
   && Option.equal Tmux.equal_pane_id a.active b.active
@@ -137,11 +136,11 @@ let detect_pause prev now =
   Float.(now.wall - prev.wall - mono > 5.)
 
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
-type run = { kind : Subrun.kind; started : Timestamp.t }
+type run = { kind : Run.kind; started : Timestamp.t }
 
 type lifecycle =
   | Live of { status : Pane_status.kind; run : run option }
-  | Ended of { result : Subrun.result option; run : Subrun.kind }
+  | Ended of { result : Run.result option; run : Run.kind }
 
 type row = { pane : Tmux.pane_id; window : Tmux.window_id; title : string; lifecycle : lifecycle }
 
@@ -177,10 +176,10 @@ let make ~now opts =
 let track ~prev m =
   if Option.is_some m.snap.err then (m, false)
   else
-    let stalled_at (m : model) (p : Tmux_pane.t) (kind : State.pane_kind) =
+    let stalled_at (m : model) (p : Tmux_pane.t) (kind : Pane_kind.t) =
       match kind with
       | Pi_agent { pi; _ } ->
-          State.stalled_since
+          Stall.stalled_since
             ~root:(Tmux.Program_status.root p.program_status)
             ~threshold:m.opts.threshold ~wake:m.snap.wake ~now:m.at pi
       | Terminal | Some_agent _ | Ssh _ -> false
@@ -190,7 +189,7 @@ let track ~prev m =
         (fun (data, changed) (p : Tmux_pane.t) ->
           if Tmux.Pane_map.mem p.pane_id data then (data, changed)
           else
-            let kind = State.pane_kind ~states:m.snap.states p in
+            let kind = Pane_kind.classify ~states:m.snap.states p in
             let ask =
               match kind with
               | Pi_agent { id; _ } ->
@@ -210,7 +209,8 @@ let track ~prev m =
                    (fun d ->
                      not
                        (Bool.equal stalled
-                          (stalled_at prev d.pane (State.pane_kind ~states:prev.snap.states d.pane))))
+                          (stalled_at prev d.pane
+                             (Pane_kind.classify ~states:prev.snap.states d.pane))))
                    (Tmux.Pane_map.find_opt p.pane_id prev.pane_data) ))
         (Tmux.Pane_map.empty, false) m.snap.panes
     in
@@ -219,7 +219,7 @@ let track ~prev m =
       || Tmux.Pane_map.exists
            (fun pane d ->
              (not (Tmux.Pane_map.mem pane pane_data))
-             && stalled_at prev d.pane (State.pane_kind ~states:prev.snap.states d.pane))
+             && stalled_at prev d.pane (Pane_kind.classify ~states:prev.snap.states d.pane))
            prev.pane_data )
 
 let pi_run lingering (p : Tmux_pane.t) =
@@ -237,10 +237,10 @@ let pane_label m (d : pane) =
     else Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run
   in
   let live_title () =
-    let kind = State.pane_kind ~states:m.snap.states p in
+    let kind = Pane_kind.classify ~states:m.snap.states p in
     match (kind, lingering) with
     | (Pi_agent _ | Some_agent _ | Ssh { pane = Remote_agent _; _ }), _ ->
-        Option.value ~default:"" (State.pane_title p kind)
+        Option.value ~default:"" (Pane_kind.title p kind)
     | (Terminal | Ssh { pane = Remote_terminal; _ }), Some l
       when List.is_empty p.program_status.records ->
         l.name
@@ -250,7 +250,7 @@ let pane_label m (d : pane) =
     match lingering with
     | Some l when Option.is_some l.outcome || Option.is_some p.dead_at ->
         ( (match Tmux.Pane_map.find_opt p.pane_id m.snap.states with
-          | Some (_, s) -> State.display_name [ p ] s
+          | Some (_, s) -> Run.display_name [ p ] s
           | _ -> l.name),
           Ended { result = l.outcome; run = l.kind } )
     | _ ->
@@ -452,7 +452,7 @@ let step m (snap : snapshot) =
   let pending = Tmux.Pane_map.exists (fun _ d -> Pane_status.pending d.track) m.pane_data in
   let clock = read_clock () in
   (if detect_pause m.clock clock then
-     try State.record_pause ~dir:m.opts.dir clock.wall with Unix.Unix_error _ | Sys_error _ -> ());
+     try Stall.record_pause ~dir:m.opts.dir clock.wall with Unix.Unix_error _ | Sys_error _ -> ());
   let client =
     match snap.client with
     | Some (c : Tmux_pane.client_state) -> (
@@ -645,8 +645,8 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
           (fun (s : Tmux_pane.session) -> Tmux.equal_session_id s.id session)
           (Tmux_pane.order_sessions panes)
         |> Option.map_or ~default:[] (fun (s : Tmux_pane.session) ->
-            let runs = State.runs ~dir panes in
-            order_windows_by_tree s.windows (State.agents runs) (lingering_subagents ~dir runs)
+            let runs = Run.marked ~dir panes in
+            order_windows_by_tree s.windows (Run.agents runs) (lingering_subagents ~dir runs)
             |> List.filter_map (fun (w : placement) ->
                 match w.anchor with None -> Some (List.hd w.panes).window_id | Some _ -> None))
       in
@@ -688,9 +688,9 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
         (Result.flat_map
            (fun panes ->
              let next = match direction with Next -> true | Prev -> false in
-             let runs = State.runs ~dir panes in
+             let runs = Run.marked ~dir panes in
              let lingering = lingering_subagents ~dir runs in
-             let windows = windows_in_order panes (State.agents runs) lingering in
+             let windows = windows_in_order panes (Run.agents runs) lingering in
              let active =
                Option.flat_map
                  (fun (c : Tmux_pane.client_state) ->
@@ -792,12 +792,12 @@ let%test_module "Tests" =
         | Live { status; run } ->
             Yojson.Safe.to_string (Pane_status.yojson_of_kind status)
             ^ Option.map_or ~default:""
-                (fun (r : run) -> " run=" ^ Subrun.string_of_kind r.kind ^ " started")
+                (fun (r : run) -> " run=" ^ Run.string_of_kind r.kind ^ " started")
                 run
         | Ended { result; run } ->
             Printf.sprintf "ended %s run=%s"
-              (Option.map_or ~default:"unknown" Subrun.string_of_result result)
-              (Subrun.string_of_kind run))
+              (Option.map_or ~default:"unknown" Run.string_of_result result)
+              (Run.string_of_kind run))
 
     let tick ?(m = model ()) snap = fst (track ~prev:m { m with snap = { snap with server } })
 
@@ -818,7 +818,7 @@ let%test_module "Tests" =
         (fun (p, outcome) ->
           let snap = snap outcome p in
           print_endline (label (tick snap) (List.hd snap.panes)))
-        [ (p, None); ({ p with dead_at = Some 1. }, None); (p, Some Subrun.Completed) ];
+        [ (p, None); ({ p with dead_at = Some 1. }, None); (p, Some Run.Completed) ];
       [%expect
         {|
         "helper" ["Pi_agent",{"id":"run","status":{"since":1700000000.0,"msg":"checking tests","state":["Running",{"progress":null}]}}] run=agent started
@@ -826,7 +826,7 @@ let%test_module "Tests" =
         "helper" ended completed run=agent
         |}]
 
-    let%expect_test "a run ends with its local pi State name even after its root was cleared" =
+    let%expect_test "a run ends with its local pi Run name even after its root was cleared" =
       let dir = temp () in
       let id = new_run ~dir "the run" in
       let st = states [ ("%30", ("pi-1", { (session "") with name = "Named" })) ] in
@@ -837,7 +837,7 @@ let%test_module "Tests" =
             empty with
             states = st;
             panes = [ p ];
-            lingering = lingering_subagents ~dir (State.runs ~dir [ p ]);
+            lingering = lingering_subagents ~dir (Run.marked ~dir [ p ]);
           }
       in
       print_endline (label m p);
@@ -974,7 +974,7 @@ let%test_module "Tests" =
       ( states (List.map (fun (pane, id, _) -> (pane, (id, session ""))) edges),
         List.fold_left
           (fun m (id, parent) ->
-            let kind : Subrun.kind = if String.is_empty parent then Pi else Agent in
+            let kind : Run.kind = if String.is_empty parent then Pi else Agent in
             String_map.add id { name = ""; parent; outcome = None; kind; started = test_at } m)
           String_map.empty
           (runs @ List.map (fun (_, id, parent) -> (id, parent)) edges) )
@@ -1207,18 +1207,17 @@ let%test_module "Tests" =
     let%expect_test "lingering reads each tick's record afresh: a reported name, an outcome" =
       let dir = temp () in
       let id = new_run ~dir "subagent" in
-      let i = Result.get_exn (Subrun.parse_id id) in
+      let i = Result.get_exn (Run.parse_id id) in
       let show () =
         let (l : lingering) =
           String_map.find id
-            (lingering_subagents ~dir (State.runs ~dir [ pane ~dead_at:1. ~run:id "%30" ]))
+            (lingering_subagents ~dir (Run.marked ~dir [ pane ~dead_at:1. ~run:id "%30" ]))
         in
-        Printf.printf "%s %s\n" l.name
-          (Option.map_or ~default:"-" Subrun.string_of_result l.outcome)
+        Printf.printf "%s %s\n" l.name (Option.map_or ~default:"-" Run.string_of_result l.outcome)
       in
       show ();
-      ignore (Subrun.write_pi ~dir i ~holder:0 { (Test_fixture.pi ()) with name = "renamed" });
-      ignore (Subrun.record_outcome ~dir i { result = Completed; text = ""; at = None });
+      ignore (Run.write_pi ~dir i ~holder:0 { (Test_fixture.pi ()) with name = "renamed" });
+      ignore (Run.record_outcome ~dir i { result = Completed; text = ""; at = None });
       show ();
       [%expect {|
     subagent -

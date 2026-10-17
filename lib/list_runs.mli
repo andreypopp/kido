@@ -23,13 +23,13 @@ type agent_info = {
 val caller_pane : Tmux_pane.t list -> Tmux.pane_id option -> (Tmux_pane.t, string) result
 
 val in_session :
-  Tmux_pane.t list -> (string * Subrun.pi) list -> Tmux.session_id -> (string * Subrun.pi) list
+  Tmux_pane.t list -> (string * Run.pi) list -> Tmux.session_id -> (string * Run.pi) list
 
 val agents :
   dir:string ->
   threshold:float ->
   self:Tmux.pane_id option ->
-  caller:Subrun.id option ->
+  caller:Run.id option ->
   session:Tmux.session_id option ->
   panes:Tmux_pane.t list ->
   (agent_info list, string) result
@@ -40,7 +40,7 @@ val list_runs :
   dir:string ->
   threshold:float ->
   self:Tmux.pane_id option ->
-  caller:Subrun.id option ->
+  caller:Run.id option ->
   session:Tmux.session_id option ->
   panes:Tmux_pane.t list ->
   (row list, string) result

@@ -1,6 +1,6 @@
-type info = { meta : Subrun.meta; outcome : Subrun.outcome option } [@@deriving yojson_of]
+type info = { meta : Run.meta; outcome : Run.outcome option } [@@deriving yojson_of]
 
-val list : ?owner:Subrun.id -> dir:string -> unit -> info list
+val list : ?owner:Run.id -> dir:string -> unit -> info list
 (** Newest first. *)
 
 type detail = { info : info; task : string; screen : string option; report : string option }
@@ -10,7 +10,7 @@ val detail : dir:string -> string -> (detail, string) result
 val run_outcome :
   dir:string ->
   warn:(string -> unit) ->
-  result:Subrun.result ->
+  result:Run.result ->
   text:string ->
   unreported:bool ->
   string ->

@@ -52,7 +52,7 @@ val observe :
   ask:Ask.id option ->
   stalled:bool ->
   Tmux_pane.t ->
-  State.pane_kind ->
+  Pane_kind.t ->
   track option ->
   track * kind
 

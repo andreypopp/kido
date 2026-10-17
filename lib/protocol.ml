@@ -175,9 +175,7 @@ let lifecycle = function
         [
           `String "Ended";
           `Assoc
-            [
-              ("result", `String (Option.map_or ~default:"unknown" Subrun.string_of_result result));
-            ];
+            [ ("result", `String (Option.map_or ~default:"unknown" Run.string_of_result result)) ];
         ]
 
 let snapshot (m : model) =
@@ -211,7 +209,7 @@ let snapshot (m : model) =
         ( "run",
           match r.lifecycle with
           | Live { run = Some { kind; _ }; _ } | Ended { run = kind; _ } ->
-              `String (Subrun.string_of_kind kind)
+              `String (Run.string_of_kind kind)
           | Live { run = None; _ } -> `Null );
         ( "started",
           match r.lifecycle with
@@ -298,7 +296,7 @@ let%test_module "Tests" =
              active = Some (Tmux.pane_id_of_string "%1");
              panes;
              states;
-             lingering = Sidebar.lingering_subagents ~dir (State.runs ~dir panes);
+             lingering = Sidebar.lingering_subagents ~dir (Run.marked ~dir panes);
            })
 
     (* The feed's wire format: key order, the server identity, plain titles, each pane's lifecycle,
@@ -307,8 +305,8 @@ let%test_module "Tests" =
       let dir = temp () in
       let id = new_run ~dir "helper" in
       ignore
-        (Subrun.record_outcome ~dir
-           (Result.get_exn (Subrun.parse_id id))
+        (Run.record_outcome ~dir
+           (Result.get_exn (Run.parse_id id))
            { result = Failed; text = ""; at = None });
       let panes =
         [
@@ -832,7 +830,7 @@ let%test_module "Tests" =
           ]
         @ List.map
             (fun result -> Sidebar.Ended { result; run = Agent })
-            [ None; Some Subrun.Completed; Some Failed; Some Died; Some Stopped ]
+            [ None; Some Run.Completed; Some Failed; Some Died; Some Stopped ]
       in
       let items =
         List.mapi

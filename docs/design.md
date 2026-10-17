@@ -103,14 +103,14 @@ title.
 
 A trusted `@kido_ssh` pane option takes precedence as `Ssh`. It contains
 `Remote_agent` for a remote pi or Claude Code root, or `Remote_terminal`
-otherwise. Otherwise, `State.pane_kind` classifies a pane as:
+otherwise. Otherwise, `Pane_kind.classify` classifies a pane as:
 
 - `Pi_agent`: a pi root with a pane run;
 - `Some_agent`: a `claude-code` root or pi without a pane run;
 - `Terminal`: any other case.
 
 A pane run is the run that `@kido_run` names, if its `pi.json` names
-this pane and a live pid (`State.agents`). A mark that a moved session
+this pane and a live pid (`Run.agents`). A mark that a moved session
 left in another pane is thus no agent. One pane has at most one pane
 run, so no rule picks between two records of one pane.
 
@@ -185,7 +185,7 @@ has one foreground.
 **One holder per run.** The first live process holds the run. Without
 this rule, a second process could overwrite the first process's pane,
 pid and inbox. This can happen with two pi processes from one session
-file, or two calls to `pi --session <file>`. `Subrun.write_pi` makes the
+file, or two calls to `pi --session <file>`. `Run.write_pi` makes the
 claim in the write path, without a lock, through three rules:
 
 - If no `pi.json` exists, the writer creates it with `Unix.link` from
@@ -200,7 +200,7 @@ claim in the write path, without a lock, through three rules:
   takeover therefore rereads the written record and informs the losing
   process. No other write needs a second read.
 
-`Subrun.release` uses the same rule: it writes pid 0 for the holder.
+`Run.release` uses the same rule: it writes pid 0 for the holder.
 Thus, a second process cannot release the running session's run on
 exit, and the name and session file stay. A refusal is `Error holder`,
 and `kido agent-status` exits **6**. This separate code lets pi's
@@ -891,7 +891,7 @@ never passes this flag, because a live pi session is the caller.
 Nesting has a limit of two levels below the root.
 `kido tool spawn_subagent` accepts no `--depth` flag, and no run stores
 a depth. A run's depth is the number of runs above it in the parent
-chain of run metas (`Subrun.depth`). kido follows only owner edges.
+chain of run metas (`Run.depth`). kido follows only owner edges.
 A child with a parent has that parent's depth plus one. A run with no
 parent has depth 0, whether started with `--no-parent` or resumed without
 a caller. Its children start at depth 1. Nothing from the caller's depth
@@ -984,7 +984,7 @@ to print. `kido close-run` parses flags and prints around that one call.
 **The sweep.** `Reap.sweep` runs at every sidebar poll tick. It collects
 subagent windows in a live session. `kido reap` calls the same function
 manually, for a test or operator. The sweep uses the pane list and the
-marked panes' runs (`State.runs`) of the sidebar snapshot from
+marked panes' runs (`Run.marked`) of the sidebar snapshot from
 `Sidebar.take`, through `Reap.collect`. The tick reads each marked run
 once and shares it with the rows; only a parent that no pane marks is
 read again.
@@ -1053,7 +1053,7 @@ one-shot `kido reap` apply the rule in its single sweep.
 
 Without grace, a child already shutting down can lose its window during
 exit. It can receive `died` before recording its own outcome.
-`Subrun.record_outcome` uses an atomic link to preserve the first written
+`Run.record_outcome` uses an atomic link to preserve the first written
 outcome. Only a child that has not yet written an outcome risks this.
 
 **The screen capture.** Only the sweep sees a marked window's dead pane
@@ -1063,7 +1063,7 @@ saves its visible screen and bounded scrollback with
 `capture-pane -S -1000`. It saves them in the run directory before the
 caller closes the window.
 
-`Subrun.save_screen` writes `<run-dir>/screen` with a temporary file and
+`Run.save_screen` writes `<run-dir>/screen` with a temporary file and
 rename. The last writer wins. Unlike
 `record_outcome`, this does not use first-write-wins. Outcomes need
 precedence: an earlier `stopped` must not lose to `completed`. Two
@@ -1073,7 +1073,7 @@ First-write-wins would also prevent `kido tool spawn_subagent --resume`
 from replacing an old screen. Only a sweep writes this file. The first
 attempt's screen would then survive every later attempt without a way
 to replace it. Instead, `kido tool spawn_subagent --resume` clears it.
-`Subrun.reset_for_resume` removes both screen and outcome.
+`Run.reset_for_resume` removes both screen and outcome.
 
 During a second attempt, the run shows no screen instead of the first
 attempt's stale screen. `kido runs <id>` prints the screen when present.
@@ -1087,7 +1087,7 @@ availability.
 
 Losing a screen is better than leaving an uncollected window. A
 `capture-pane` error or lost race never prevents closure. The byte cap,
-`Subrun.max_screen_bytes`, is much smaller than a task's 1MB and much
+`Run.max_screen_bytes`, is much smaller than a task's 1MB and much
 larger than an activity line's 256 bytes. An unresponsive agent's
 scrollback otherwise has no size limit. Truncation keeps the end,
 because the last output is the most likely crash diagnostic.
@@ -1190,7 +1190,7 @@ sweep collects that window, and the pi is no subagent.
   exists.
   Otherwise, it launches `pi --session-id <run-id>` to create the session.
 - It continues the existing run, preserving task, history and id.
-  `Subrun.read_meta` supplies the window name and cwd. Resume leaves the
+  `Run.read_meta` supplies the window name and cwd. Resume leaves the
   task file unchanged. It clears `delivered` only if the pi session file
   is missing. Thus, a newly created session receives the stored task again.
 - It uses the model, tools allowlist and `keepAlive` from spawn meta.
@@ -1203,17 +1203,17 @@ sweep collects that window, and the pi is no subagent.
   Recorded values are defaults, not limits. Resume intentionally cannot
   turn `keepAlive` *off*, with the same asymmetry as `--model`.
 - It writes the *new* pane, pid and parent edge into the same meta file.
-  Documentation says a fresh spawn calls `Subrun.write_meta` once, but
+  Documentation says a fresh spawn calls `Run.write_meta` once, but
   code does not enforce that restriction. Resume changes these live facts.
 - It clears an existing outcome. Only this operation outside
-  `Subrun.record_outcome` may change an outcome. The atomic-link
+  `Run.record_outcome` may change an outcome. The atomic-link
   "first writer wins" rule still prevents *exit paths describing the
   same ending* from overwriting each other. Resume is not an exit-path
   race. A human or agent intentionally declares the run alive again.
   This occurs strictly *before* any exit path can describe the new attempt.
 
-Resume refuses an unknown run id (`Subrun.read_meta` returns `None`).
-It also refuses a run with a live recorded pid (`Subrun.alive`), even
+Resume refuses an unknown run id (`Run.read_meta` returns `None`).
+It also refuses a run with a live recorded pid (`Run.alive`), even
 with an outcome. Shutdown can write an outcome before process exit.
 Resuming a live agent is not meaningful. It refuses a `pi` run: kido
 did not start it, its meta records no pid, and a resume would rewrite a
@@ -1371,7 +1371,7 @@ nothing.
 accepts no target. It reads `KIDO_AGENT_PARENT_SESSION` from its own
 environment. `kido tool spawn_subagent` sets this parent edge. The
 child's pi and every process it starts inherit the edge. The command
-reads the parent's run by id (`Subrun.live_parent`), the same question
+reads the parent's run by id (`Run.live_parent`), the same question
 as `kido get-agent`.
 
 An absent variable means a root session. Both command and tool refuse
@@ -1484,7 +1484,7 @@ instead writes `failed` and describes the cause: an unreported wrapper
 ending or a parent ending. See `design-subagents.md`, "Exactly one
 ending". `kido tool stop_run` writes `stopped`.
 
-**Written once.** `Subrun.record_outcome` uses `Unix.link` to link a
+**Written once.** `Run.record_outcome` uses `Unix.link` to link a
 complete temporary file into place. It atomically refuses overwrite.
 Several exit paths can race, but the first recorded ending wins.
 A later, less precise guess never overwrites it. This rule determines
@@ -1573,14 +1573,14 @@ is not weaker, only later. It still detects an unresponsive agent one
 threshold after wake, instead of immediately. An agent that reports
 after wake uses its fresh timestamp, as if no pause occurred.
 
-`State.stalled_since`'s `~wake` parameter supplies the marker reading.
+`Stall.stalled_since`'s `~wake` parameter supplies the marker reading.
 A tick caller reads the marker once and uses that reading for every
 session. To decide redraw, the sidebar asks the same question at two
 instants. Separate reads would use different baselines and prevent a
 valid comparison. They also kept a file open per session on the 100ms
 path for a value that changes once per suspend.
 
-`kido tool list_runs` reads the marker once through `State.wake` and
+`kido tool list_runs` reads the marker once through `Stall.wake` and
 passes it the same way. It asks once and exits. The marker is on disk,
 not only in sidebar memory, because each call starts a fresh process
 without its own tick. `ask_agent` calls `get-agent --context`, which

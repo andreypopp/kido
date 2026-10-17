@@ -15,10 +15,10 @@ let async_bash ~dir ~self ~caller ~exe ~name ~stream (command, rest) =
   let* () = Spawn_subagent.check_window_name name in
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
   let* pane = List_runs.caller_pane panes self in
-  let id = Subrun.new_id () in
-  Subrun.create ~dir id (String.concat " " args);
-  Subrun.write_command ~dir id argv;
-  let meta : Subrun.meta =
+  let id = Run.new_id () in
+  Run.create ~dir id (String.concat " " args);
+  Run.write_command ~dir id argv;
+  let meta : Run.meta =
     {
       id;
       name;
@@ -33,9 +33,9 @@ let async_bash ~dir ~self ~caller ~exe ~name ~stream (command, rest) =
       started_at = Timestamp.now ();
     }
   in
-  Subrun.write_meta ~dir meta;
+  Run.write_meta ~dir meta;
   Spawn_subagent.create_run_window ~dir meta ~session:pane.session_id
-    [ exe; "async-run"; "--run-id"; Subrun.string_of_id id ]
+    [ exe; "async-run"; "--run-id"; Run.string_of_id id ]
 
 let%test_module "Tests" =
   (module struct

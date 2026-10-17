@@ -51,7 +51,7 @@ let sanitize line =
 type stream = {
   dir : string;
   knobs : knobs;
-  meta : Subrun.meta;
+  meta : Run.meta;
   mu : Mutex.t;
   partial : Buffer.t;
   pending : string Queue.t;
@@ -113,7 +113,7 @@ let take t =
           t.bytes <- 0;
           Some
             ( Printf.sprintf "... %d bytes streamed for this run; the rest is only in %s" run_budget
-                (Subrun.output_path ~dir:t.dir t.meta.id),
+                (Run.output_path ~dir:t.dir t.meta.id),
               0,
               0 )
         end
@@ -130,8 +130,8 @@ let credit t lines n =
       t.streamed <- t.streamed + n)
 
 let send t text =
-  match Option.flat_map (Subrun.read_pi ~dir:t.dir) t.meta.parent with
-  | Some { inbox; pid; _ } when Subrun.alive pid && not (String.is_empty inbox) ->
+  match Option.flat_map (Run.read_pi ~dir:t.dir) t.meta.parent with
+  | Some { inbox; pid; _ } when Run.alive pid && not (String.is_empty inbox) ->
       Result.is_ok
         (Msg.deliver_envelope ~path:inbox
            {
@@ -140,8 +140,8 @@ let send t text =
              from = { session = ""; name = t.meta.name; pane = None };
              reply_to = "";
              text;
-             run = Subrun.string_of_id t.meta.id;
-             output = Subrun.output_path ~dir:t.dir t.meta.id;
+             run = Run.string_of_id t.meta.id;
+             output = Run.output_path ~dir:t.dir t.meta.id;
            })
   | _ -> false
 
@@ -233,9 +233,9 @@ let%test_module "Tests" =
     let run ?(parent = "root-sess") inbox =
       let dir = Filename.temp_dir "kido-state" "" in
       holding ~dir ~inbox "root-sess";
-      let meta : Subrun.meta =
+      let meta : Run.meta =
         {
-          id = Subrun.new_id ();
+          id = Run.new_id ();
           name = "chatty";
           kind = Bash;
           parent = owned parent;
@@ -410,7 +410,7 @@ let%test_module "Tests" =
         (unstreamed > 0);
       print_endline
         (String.replace ~sub:dir ~by:"<dir>" (List.find is_budget got)
-        |> String.replace ~sub:(Subrun.string_of_id meta.id) ~by:"<run>");
+        |> String.replace ~sub:(Run.string_of_id meta.id) ~by:"<run>");
       [%expect
         {|
     budget lines 1, last true, unstreamed > 0 true

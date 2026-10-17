@@ -16,7 +16,7 @@ let one_line s ~max =
 
 let agent_status ~dir ~pane ~id ~session_file ~inbox ~activity ~model ~name =
   let pid = Unix.getppid () and now = Timestamp.now () in
-  Subrun.create_meta ~dir
+  Run.create_meta ~dir
     {
       id;
       name = "";
@@ -30,11 +30,11 @@ let agent_status ~dir ~pane ~id ~session_file ~inbox ~activity ~model ~name =
       keep_alive = false;
       started_at = now;
     };
-  Subrun.write_pi ~dir id ~holder:pid
+  Run.write_pi ~dir id ~holder:pid
     { pid; pane; ts = now; inbox; activity = one_line activity ~max:256; model; name; session_file }
   |> Result.map (fun () ->
       Option.iter
-        (fun pane -> ignore (Tmux_pane.mark_run (Tmux.create ()) pane (Subrun.string_of_id id)))
+        (fun pane -> ignore (Tmux_pane.mark_run (Tmux.create ()) pane (Run.string_of_id id)))
         pane)
 
 let%test_module "Tests" =
