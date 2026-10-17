@@ -254,16 +254,18 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             }
         }
         try await settle()
-        if dark {
-            let changed = expectation(description: "appearance config changed")
-            runtime.onConfigChange = { [weak self] in self?.session.updateBackground(); changed.fulfill() }
-            runtime.onColorSchemeChange = { [weak self] in self?.session.updateColorScheme() }
-            window.appearance = NSAppearance(named: .darkAqua)
-            NSApp.appearance = NSAppearance(named: .darkAqua)
-            await fulfillment(of: [changed], timeout: 20)
-            try await settle()
-        }
+        if dark { try await darken() }
         return clipboardMode
+    }
+
+    func darken() async throws {
+        let changed = expectation(description: "appearance config changed")
+        runtime.onConfigChange = { [weak self] in self?.session.updateBackground(); changed.fulfill() }
+        runtime.onColorSchemeChange = { [weak self] in self?.session.updateColorScheme() }
+        window.appearance = NSAppearance(named: .darkAqua)
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        await fulfillment(of: [changed], timeout: 20)
+        try await settle()
     }
 
     func settle() async throws {
@@ -918,13 +920,30 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
     }
 
-    func testHistoryPill() async throws {
-        try await start(history: 100000)
+    func hover(_ pane: PaneView, _ inside: Bool) async throws {
+        let chrome = try XCTUnwrap(terminal?.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane.pane })
+        let point = inside ? NSPoint(x: chrome.toolbarFrame.midX, y: chrome.toolbarFrame.maxY + 4) : NSPoint(x: 20, y: chrome.bounds.maxY - 20)
+        chrome.mouseMoved(with: try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: chrome.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                                                                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)))
+        try await wait("toolbar alpha", within: 2) {
+            let toolbars = chrome.subviews.compactMap { $0 as? PaneToolbar }
+            return inside ? toolbars.contains { $0.alphaValue == 1 } : toolbars.allSatisfy { $0.alphaValue == 0 }
+        }
+        try await Task.sleep(for: .milliseconds(300))
+    }
+
+    func testHistoryPill() async throws { try await historyPill(dark: false) }
+    func testHistoryPillDark() async throws { try await historyPill(dark: true) }
+
+    private func historyPill(dark: Bool, testName: String = #function) async throws {
+        try await start(dark: dark, history: 100000)
         try await paint(lines: historyChunkSize + 1000)
         let pane = try XCTUnwrap(terminal?.panes.first)
         pane.requestScroll(historyChunkSize)
         try await wait("Load more visible") { pane.visualPill }
-        try await snapshot("history-top", pill: true)
+        try await snapshot("history-top", pill: true, testName: testName)
+        try await hover(pane, true)
+        try await snapshot("history-toolbar", pill: true, testName: testName)
     }
 
     private func agentLifecycle(_ state: [Any], msg: Any = NSNull()) -> [Any] {

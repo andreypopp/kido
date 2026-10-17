@@ -69,7 +69,7 @@ extension VisualTests {
     }
 
     private func label(_ pane: PaneView) -> String? {
-        pane.subviews.compactMap { $0.isHidden ? nil : ($0 as? NSBox)?.contentView as? NSTextField }.first?.stringValue
+        pane.visualCopyLabel
     }
 
     private func screen(_ pane: PaneView) -> [String] {
@@ -829,7 +829,7 @@ extension VisualTests {
     }
 
     private func found(_ pane: PaneView) -> String? {
-        pane.find?.subviews.compactMap { $0 as? NSTextField }.first { !($0 is NSSearchField) }?.stringValue
+        pane.find?.subviews.compactMap { $0 as? NSTextField }.first { $0 !== pane.find?.field }?.stringValue
     }
 
     private func at(_ pane: PaneView, _ x: Int, _ y: Int, _ step: String) async throws {
@@ -934,7 +934,7 @@ extension VisualTests {
         XCTAssertNotNil(pane.find, "n reopens the remembered query")
         XCTAssertTrue(window.firstResponder === pane)
         try await at(pane, 0, base + 2, "n after Escape")
-        try XCTUnwrap(pane.find?.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Done" }).performClick(nil)
+        try XCTUnwrap(pane.find?.subviews.compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == "Done" }).performClick(nil)
         XCTAssertNil(pane.find, "Done closes the bar")
         try await at(pane, 0, base + 2, "Done keeps copy mode")
         keys(pane, "n")
@@ -1056,6 +1056,84 @@ extension VisualTests {
         keys(pane, "kkkv$j")
         try await snapshot("copy-alternate", testName: testName)
         keys(pane, "q")
+    }
+
+    private func findThree(_ pane: PaneView, _ expected: String) async throws {
+        pane.showFind()
+        try type(pane, "sidebar")
+        try await wait("matches", within: 5) { self.found(pane)?.hasPrefix("1") == true }
+        pane.find?.next()
+        pane.find?.next()
+        XCTAssertEqual(found(pane), expected)
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
+    func testPaneChromeSnapshots() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, ["$ rg -n sidebar App", "App/sidebar.swift:17: sidebar.next", "App/row.swift:25: let close = x",
+                              "App/owner.swift:96: sidebar.tabs", "App/tabs.swift:37: labelFont(tab)", "App/feed.swift:39: sidebar.title",
+                              "App/sidebar_list.swift: sidebar", "App/view.swift:65: sidebar.recent", "App/main.swift: sidebar, sidebar",
+                              "App/keys.swift: let sidebar = 1", "App/done.swift:9: sidebar()", "$ "].joined(separator: "\r\n"), until: "sidebar()")
+        let chrome = try XCTUnwrap(terminal?.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane.pane })
+        for theme in ["light", "dark"] {
+            try await hover(pane, true)
+            XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 547, y: 8, width: 145, height: 32))
+            try await snapshot("\(theme)-toolbar")
+            pane.showFind()
+            pane.layoutSubtreeIfNeeded()
+            let find = try XCTUnwrap(pane.find)
+            XCTAssertEqual(find.frame, NSRect(x: 272, y: 8, width: 420, height: 32))
+            XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 547, y: 48, width: 145, height: 32), "the toolbar goes below find")
+            XCTAssertEqual(find.accessibilityLabel(), "Find in Terminal")
+            XCTAssertTrue(find.field.nextKeyView?.nextKeyView?.nextKeyView?.nextKeyView === pane, "field, Previous, Next, Done, then the pane")
+            try await snapshot("\(theme)-find-empty")
+            find.close()
+            try await findThree(pane, "3 of 12")
+            try await snapshot("\(theme)-find-3-of-12")
+            XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(PaneView.toggleCopyMode(_:)), with: nil))
+            try await wait("loaded count", within: 2) { self.found(pane) == "12 matches (loaded)" }
+            XCTAssertTrue(window.firstResponder === pane)
+            XCTAssertEqual(label(pane), "COPY")
+            try await snapshot("\(theme)-copy-find")
+            keys(pane, "\u{1b}")
+            XCTAssertNil(pane.find)
+            XCTAssertEqual(chrome.toolbarFrame.minY, 8, "the toolbar returns when find closes")
+            try await snapshot("\(theme)-copy-toolbar")
+            try await hover(pane, false)
+            try await snapshot("\(theme)-copy")
+            keys(pane, "q")
+            try await wait("copy exit restored", within: 2) { !pane.resizeDirty }
+            let check = pane.onCopyCheck
+            pane.onCopyCheck = { _ in }
+            pane.toggleCopyMode(nil)
+            if case .entering(let deadline) = pane.copyMode { deadline.cancel() }
+            XCTAssertEqual(label(pane), "COPY…")
+            try await snapshot("\(theme)-copy-entering")
+            pane.endCopy()
+            pane.onCopyCheck = check
+            window.setContentSize(NSSize(width: 300, height: 560))
+            try await settle()
+            try await hover(pane, true)
+            try await findThree(pane, "3/12")
+            XCTAssertEqual(pane.find?.frame, NSRect(x: 8, y: 8, width: 284, height: 32))
+            XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 147, y: 48, width: 145, height: 32))
+            try await snapshot("\(theme)-narrow")
+            XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(PaneView.toggleCopyMode(_:)), with: nil))
+            try await wait("compact loaded count", within: 2) { self.found(pane) == "12 (loaded)" }
+            try await snapshot("\(theme)-copy-narrow")
+            keys(pane, "\u{1b}\u{1b}")
+            XCTAssertNil(pane.copyMode)
+            try await wait("copy exit restored", within: 2) { !pane.resizeDirty }
+            window.setContentSize(NSSize(width: 700, height: 560))
+            try await settle()
+            guard theme == "light" else { break }
+            try await hover(pane, true)
+            try await findThree(pane, "3 of 12")
+            try await darken()
+            try await snapshot("theme-switch-dark")
+            try field(pane, #selector(NSResponder.cancelOperation(_:)))
+            XCTAssertNil(pane.find)
+        }
     }
 
     func testCopyLabelSnapshots() async throws { try await copySnapshots(dark: false) }
