@@ -30,8 +30,8 @@ a TypeScript extension. It uses fake agent binaries to test the same paths.
 | `set_status(activity)` | `kido tool set_status -- <activity>` |
 | `message_agent(to, message, replyTo?)` | `kido tool message_agent [--reply-to ID] -- <to>` |
 | `ask_agent(to, question, timeoutMs?)` | `kido tool ask_agent --id ID -- <to>` |
-| `spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?)` | `kido tool spawn_subagent --name NAME --task-file - [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] -- pi ...` |
-| `spawn_subagent(resume, model?, tools?, keepAlive?)` | `kido tool spawn_subagent --resume RUN_ID [--model M] [--tools T,...] [--keep-alive] -- pi ...` |
+| `spawn_subagent(task, name?, model?, tools?, fork?)` | `kido tool spawn_subagent --name NAME --task-file - [--fork SESSION_ID] [--model M] [--tools T,...] -- pi ...` |
+| `spawn_subagent(resume, model?, tools?, fork?)` | `kido tool spawn_subagent --resume RUN_ID [--model M] [--tools T,...] -- pi ...` |
 | `steer_subagent(to, message)` | `kido tool steer_subagent -- <to>` |
 | `interrupt_subagent(to)` | `kido tool interrupt_subagent -- <to>` |
 | `stop_run(to, force?)` | `kido tool stop_run [--force] -- <to>` |
@@ -395,7 +395,10 @@ The summary goes only to the parent as a `notice` envelope. Its address
 is the session in the child's environment, not a session from a lookup.
 
 The command **keeps the report whole**. The notice enters the parent's
-next turn, so the text sent to the parent has a 4000-byte bound.
+next turn, so the text sent to the parent has a 4000-byte bound. The
+guidance that ends every notice - the child stays alive, so end it with
+`stop_run` or continue it with `message_agent` - is part of that
+bound.
 Discarding the rest, as the tool would, cuts the report mid-sentence
 without indicating that more text exists.
 
@@ -405,10 +408,12 @@ of the report plus a final line that names the file:
 
     full report: <state>/runs/<run-id>/report
 
-The report's start and final line together remain within the cap.
-A report within the cap arrives byte for byte and leaves no file.
-Nothing is lost, so no file reference is necessary. The command removes
-any partial rune from the end of the report's start. The send path
+The report's start, the final line and the guidance together remain
+within the cap. Every real report is kept whole in `report`, whether it
+fits in the notice or not, so nothing is lost. A report that fits
+arrives byte for byte and needs no file reference. A status notice
+writes no report file and carries no guidance. The command removes any
+partial rune from the end of the report's start. The send path
 refuses a message that is not valid UTF-8, like `Run_ending.body` in the other
 direction.
 
@@ -419,13 +424,14 @@ if the write fails, because the parent must receive something.
 `kido runs <id>` includes one `report:` line for a run that leaves a
 report file.
 
-Nothing notifies on a settled turn because a turn can settle for reasons
-unrelated to the task. For example, answering a sibling's `ask_agent`
-settles a turn. An automatic notice would send the parent the report
-meant for the sibling (design.md, "Notifying the parent").
+A settle is not itself a report. A turn can settle for reasons
+unrelated to the task, such as answering a sibling's `ask_agent`;
+kido never sends that turn's text to the parent. It says only that the
+child is idle without a report (see below).
 
-A turn that ends in a provider error is the only exception. kido retains
-the last `agent_end` result and checks it in `agent_settled`.
+A turn that ends in a provider error is a status notice. kido retains
+the last `agent_end` result and checks the stop reason in
+`agent_settled`.
 If the turn stops on `"error"`, the child immediately sends its parent
 one notice through `notify_parent`'s path. The notice names the error and
 explains how to continue the run. An aborted turn, such as a turn the
@@ -450,9 +456,9 @@ that never arrives.
 Two observers can send the notice. They correspond to the two ways a
 run can end without a report:
 
-- The child's own shutdown after an idle self-exit, a quit or a lost
-  parent, if the session never calls `notify_parent`. The notice comes
-  from the outcome-recording location, `kido run-outcome --unreported`.
+- The child's own shutdown after a quit or a lost parent, if the run
+  has no report file. The notice comes from the outcome-recording
+  location, `kido run-outcome`.
 - A sweep of a marked run pane dead past the linger, or collected as an
   orphan, with no recorded outcome. The notice states that it is unknown
   whether the child called `notify_parent`. Any report that the child
@@ -475,56 +481,42 @@ turn sees it between tool calls and decides whether to act.
 A `steer` envelope works the same way, for the same reason ("What steers
 and what queues", above). A message and an ask still wait for the turn.
 
-**Idle self-exit.** The session-id test above identifies the real child.
-After settling a turn and staying idle for thirty seconds, that child
-calls pi's own shutdown. It does not shut down if its run metadata's
-`keepAlive` is true at the idle check. While `keepAlive` is true, the timer
-re-arms. Metadata edits take effect at the next check.
+**The parent ends a child.** A child has no idle timer. After it
+reports, or after a turn settles with nothing to do, it stays alive.
+Only its parent (`stop_run`), the user, or the orphan rule ends it. The
+session-id test above identifies the real child; a root session has no
+parent to be stopped by.
 
-The same clock also arms when the task arrives. A child with its task
-has everything it needs; after thirty seconds, kido stops waiting.
-This delivery timer covers a child that never reaches its first turn.
-The clock starts from delivery, not session start. Thus, it does not
-affect a resumed run waiting idle for a message, or a session without a
-task file.
+**A report is not an ending.** `kido tool notify_parent` delivers the
+report and keeps the whole report in the run's `report` file. The file
+is one fact of the run, written only by a delivered report, and it is
+what decides the ending of a stop: `stop_run` records `completed`
+for a child that reported, and `stopped` for one that did not. The
+notice a parent receives says how to act on a report: end the child with
+`stop_run` when nothing more is needed, or continue it with
+`message_agent`.
 
-Delivery is not itself work. The first actual sign of work clears the
-clock. New work, or a message ready for delivery, restarts the clock.
-If a client is viewing the window, the timer re-arms and tries later
-instead of removing the window.
+**A settled turn with no report sends the parent one notice.** The
+child's own `agent_settled` listener, on `ctx.isIdle()`, sends it
+through `kido tool notify_parent --status`. The notice states that the
+child is idle and did not report, and how to continue or end it. A
+provider error's notice takes the same path. Without these notices a
+quiet child would wait forever with nobody told.
 
-One call to pi's shutdown does not prove that the session ends.
-After every shutdown call, the clock re-arms, as it does for other
-conditions that prevent exit. The session's own ending clears it.
-A root session, with no parent in its environment, never arms the clock.
+The `--status` flag writes no report file and carries no parent
+guidance: a status is not the child's account of its work. The child
+remembers that it told the parent this turn, so repeated settles send no
+more. New work clears that memory and the per-turn report flag; the
+run's `report` file stays, because a report was delivered. An aborted
+turn sends nothing, because
+someone stopped it deliberately; an error notice is its turn's notice.
+A child that never starts a turn and never exits sends no notice: only a
+settled turn is evidence. `kido runs` still shows it as running.
 
-**A session with a live child of its own is not idle**, even when it is
-quiet. "I have spawned it and I am waiting for its report" settles a turn
-in the same way as finished work. A clock that cannot distinguish them
-shuts down the parent thirty seconds after it spawns. The orphan rule
-then closes the child during its work.
-
-Thus, the timer first asks `kido get-agent --children <session>`.
-If the answer is yes or inconclusive, the timer re-arms.
-It also re-arms if the run's own `keepAlive` field is true, as for a
-focused window.
-
-The check reads **run records**, not the session's memory.
-A live child is a run whose meta names this session as its parent, with
-no recorded outcome and a live pid. `kido runs` shows that run as running.
-A child continues after the turn that spawns it. `/reload` forgets
-everything in memory. The record remains and contains the parent edge.
-
-A child with a dead process but no outcome yet reads as ended.
-This is the safe result: a dead child that prevents parent exit would
-never let the parent become idle again. An error or timeout is
-inconclusive. The timer re-arms until kido definitely reports that no
-child is alive.
-
-**Shutdown.** The child uses one teardown, whether it quits, self-exits,
+**Shutdown.** The child uses one teardown, whether it quits,
 is stopped or loses its parent:
 
-1. The child stops the parent poll and idle timer.
+1. The child stops the parent poll.
 2. The child releases every waiting ask.
 3. The child closes the inbox.
 4. The child records `completed` if the session is idle, or `failed`
@@ -535,8 +527,8 @@ is stopped or loses its parent:
 
    For a session where no turn ran, the detail also names pi's
    "Use /login" line if the captured screen contains it. This is the only such ending with a cause known without
-   opening the screen. If the session never calls `notify_parent`, the
-   command also uses `--unreported`.
+   opening the screen. kido records the outcome as unreported when the
+   run has no report file, and tells the parent so.
 5. The child releases its run: `pi.json` stays, with pid 0.
 
 `/reload` runs the same handler but omits all run-ending parts because
@@ -547,7 +539,7 @@ run's pane after it has been dead for thirty seconds, and captures its
 screen. If no outcome exists, it records `died`.
 A window with the user's own split keeps that split and loses its mark.
 It becomes an ordinary user window (design.md, "Window lifecycle" and
-"Idle self-exit, and resuming a run").
+"Ending a child, and resuming a run").
 
 ## Redirecting one, and ending one from outside
 
@@ -612,14 +604,13 @@ under that id with `--session-id` and clears the run's delivered marker.
 Thus, the child receives the stored task again instead of skipping it
 as already delivered.
 
-The resumed run uses its recorded model, tool allowlist and `keepAlive`.
-Arguments after `--` can override the model and tools.
-`--keep-alive` can enable `keepAlive`, but cannot disable a recorded true
-value (design.md, "Idle self-exit, and resuming a run").
+The resumed run uses its recorded model and tool allowlist.
+Arguments after `--` can override the model and tools (design.md,
+"Ending a child, and resuming a run").
 
 The caller that resumes becomes the parent edge. Thus, an agent that
 resumes becomes the run's new parent. A human at a bare shell resumes a
-parentless session that does not self-exit.
+parentless session that nothing but the user ends.
 
 `--no-parent` explicitly requests a parentless session. Thus, an agent
 can transfer a run instead of becoming its parent. kido checks that the
@@ -767,7 +758,7 @@ Three observers can win:
 |---|---|---|---|
 | the wrapper | its own `wait(2)`, or a signal it can catch | `completed`/`failed` | yes, with the exit status |
 | a sweep's rule 1 (`Reap.sweep`) | a marked run pane dead for the grace | `failed`, "ended without its wrapper reporting" | yes, if it won |
-| `kido tool stop_run` | a deliberate stop | `stopped`, "stopped by its parent" | yes, if it won |
+| `kido tool stop_run` | a deliberate stop | `completed` if the run reported, else `stopped` | yes, if it won |
 
 The wrapper covers every ending that it survives long enough to observe.
 Thus, it forwards `SIGTERM`, `SIGHUP` and `SIGINT` to the command.
@@ -822,6 +813,10 @@ stop any run.
 For an agent run, stop asks its inbox to shut down. It waits up to five
 seconds and kills the pane if necessary. `--force` permits a pane kill
 when no usable inbox exists.
+
+For an agent run the ending follows the report file: a child that
+already reported ends as `completed`, and one stopped first as `stopped`
+(design.md, "Ending a child, and resuming a run").
 
 A bash run needs no `--force`. Stop records `stopped` with the text
 "stopped by its parent" before sending TERM to the wrapper pid.
@@ -968,8 +963,8 @@ The commands refuse these calls and state what to do instead:
   notify.
 - `kido tool set_status`: no run exists for the activity.
 
-The child of a `--no-parent` spawn has no idle self-exit, no orphan rule
-and no report to its parent. The user can close its live window.
+The child of a `--no-parent` spawn has no orphan rule and no report to
+its parent. The user can close its live window.
 The sweep still collects a dead marked pane.
 
 ## In the sidebar
@@ -995,9 +990,10 @@ another session.
 
 A lingering window shows its run's outcome in the field column.
 A completed run has a dimmed `✓`. Every other outcome has a dimmed `×`,
-including `failed`, `died` and `stopped`. A deliberate stop is not a
-failure, but it does not finish the work. A window without an outcome
-yet keeps the `×`.
+including `failed`, `died` and `stopped`. A stop after a report is
+`completed`: the work finished. A stop before it is not a failure, but
+it did not finish the work. A window without an outcome yet keeps the
+`×`.
 
 The arriving outcome changes the row from a name to a result.
 Showing success a tick early would be the only false claim this column
@@ -1028,8 +1024,8 @@ during use as a window disappears after its linger.
 - Nesting stops at depth 2 within each parent chain.
 - `--no-parent` makes an ordinary top-level run, with depth 0. Its children
   start at depth 1. No depth ceiling or restriction carries over from the
-  caller. This also applies to resume. It has no idle self-exit, no orphan
-  rule and no parent to report to. The user can close its live window.
+  caller. This also applies to resume. It has no orphan rule and no
+  parent to report to. The user can close its live window.
   The sweep still collects its dead marked pane.
 - `kido tool ask_agent` deliberately refuses calls from a shell because
   the answer has nowhere to arrive. A human who needs a round trip must

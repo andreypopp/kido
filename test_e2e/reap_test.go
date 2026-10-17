@@ -74,11 +74,11 @@ func (h *harness) subagentWindow(session, name, sessionID, parentSession string)
 // under test - how the first draft of these tests passed. Also needed by
 // spawn_subagent callers with an invented parent: kido refuses to create
 // the window unless the parent session names somebody alive.
-func (h *harness) liveParent(session, sessionID string) {
+func (h *harness) liveParent(session, sessionID string, extra ...string) {
 	h.t.Helper()
 	pane := h.in("display-message", "-p", "-t", session+":", "#{pane_id}")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus(sessionID, pane)
+	h.agentStatus(sessionID, pane, extra...)
 }
 
 // killPane simulates a subagent killed outright, which no in-process

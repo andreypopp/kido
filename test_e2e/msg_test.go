@@ -310,10 +310,14 @@ func TestNotifyParentReachesTheSessionItsEnvironmentNames(t *testing.T) {
 		"tool", "notify_parent")
 
 	got := envelopes(in)
-	if len(got) != 1 || field(got[0], "kind") != "notice" || field(got[0], "text") != "the answer is 42" {
-		t.Errorf("parent inbox received %q, want one notice carrying the text", in.Received())
+	if len(got) != 1 || field(got[0], "kind") != "notice" || field(got[0], "text") != "the answer is 42"+parentGuidance {
+		t.Errorf("parent inbox received %q, want one notice carrying the text and how to act on it", in.Received())
 	}
 }
+
+// parentGuidance is what every notify_parent notice tells the parent: the
+// report does not end the child, so the parent decides.
+const parentGuidance = "\n\nThe child stays alive after it reports. End it with stop_run when you need nothing more from it. To continue it, use message_agent."
 
 const maxNotice = 4000
 
@@ -328,11 +332,13 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(report), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	env := func(run string) []string {
+		return []string{"KIDO_AGENT_PARENT_SESSION=parent-sess", "KIDO_AGENT_RUN_ID=" + run}
+	}
 	notify := func(run, text string) string {
 		t.Helper()
-		env := []string{"KIDO_AGENT_PARENT_SESSION=parent-sess", "KIDO_AGENT_RUN_ID=" + run}
 		before := len(in.Received())
-		h.expectKido(caller, text, env, "delivered to parent by inbox", "tool", "notify_parent")
+		h.expectKido(caller, text, env(run), "delivered to parent by inbox", "tool", "notify_parent")
 		got := envelopes(in)
 		if len(got) != before+1 {
 			t.Fatalf("parent inbox received %q, want one more notice", in.Received())
@@ -341,19 +347,19 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 	}
 
 	short := "the merge is done; two conflicts, both in README.md"
-	if n := notify(run, short); n != short {
-		t.Errorf("a report under the cap arrived as %q, want it byte for byte", n)
+	if n := notify(run, short); n != short+parentGuidance {
+		t.Errorf("a report under the cap arrived as %q, want it byte for byte followed by the guidance", n)
 	}
-	if _, err := os.Stat(report); !os.IsNotExist(err) {
-		t.Errorf("a report under the cap left %s behind (%v)", report, err)
+	if kept, err := os.ReadFile(report); err != nil || string(kept) != short {
+		t.Errorf("a report under the cap kept %q (%v), want the whole report in %s", kept, err, report)
 	}
 
 	long := strings.Repeat("findings and more findings. ", 200) + "CONCLUSION: ship it"
 	n := notify(run, long)
 	kept, _ := os.ReadFile(report)
-	if string(kept) != long || len(n) > maxNotice || !strings.HasSuffix(n, "\n\nfull report: "+report) ||
-		!strings.HasPrefix(n, long[:100]) {
-		t.Errorf("a report over the cap: kept %d of %d bytes, notice of %d bytes %q; want it kept whole, the notice within %d bytes, starting with the report and naming %s",
+	if string(kept) != long || len(n) > maxNotice || !strings.Contains(n, "\n\nfull report: "+report) ||
+		!strings.HasPrefix(n, long[:100]) || !strings.HasSuffix(n, parentGuidance) {
+		t.Errorf("a report over the cap: kept %d of %d bytes, notice of %d bytes %q; want it kept whole, the notice within %d bytes, starting with the report, naming %s and ending with the guidance",
 			len(kept), len(long), len(n), n, maxNotice, report)
 	}
 
@@ -361,8 +367,20 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 		t.Errorf("the head of a multi-byte report was not cut on a rune boundary: %q", n)
 	}
 
-	if n := notify("", strings.Repeat("x", 4500)); len(n) != maxNotice || strings.Contains(n, "full report:") {
-		t.Errorf("a report with no run is %d bytes %q, want truncated to %d, naming no file", len(n), n, maxNotice)
+	// A status notice is not a report: no guidance, no report file, and the
+	// report a real one left stays as it was.
+	before := len(in.Received())
+	h.expectKido(caller, "idle now", env(run), "delivered to parent by inbox", "tool", "notify_parent", "--status")
+	got := envelopes(in)
+	if len(got) != before+1 || field(got[before], "text") != "idle now" {
+		t.Errorf("a status notice arrived as %q, want the status text alone", in.Received())
+	}
+	if kept, _ := os.ReadFile(report); string(kept) == "idle now" {
+		t.Error("a status notice replaced the run's report")
+	}
+
+	if n := notify("", strings.Repeat("x", 4500)); len(n) > maxNotice || strings.Contains(n, "full report:") || !strings.HasSuffix(n, parentGuidance) {
+		t.Errorf("a report with no run is %d bytes %q, want it within %d bytes, naming no file and keeping the guidance", len(n), n, maxNotice)
 	}
 }
 

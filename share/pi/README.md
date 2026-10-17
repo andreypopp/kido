@@ -170,8 +170,10 @@ nothing useful until a session has started and kido has been found:
   resolving run ids (unique prefixes of at least eight characters) before
   unambiguous running names. It stops descendant agent or bash runs,
   asking an agent to shut down with pane-kill escalation, or signalling
-  a bash wrapper by pid. Bash needs no force flag and records
-  "stopped by its parent". `steer_subagent` and `interrupt_subagent`
+  a bash wrapper by pid. An agent that already reported ends as
+  completed; one stopped before it reported ends as stopped. Bash needs
+  no force flag and records "stopped by its parent". `steer_subagent`
+  and `interrupt_subagent`
   remain agent-only; both `spawn_subagent` and `async_bash` return the
   run id to use with `stop_run`.
 - `set_status(activity)` runs `kido tool set_status -- <text>`, free text
@@ -266,17 +268,28 @@ text rather than being dropped.
 
 ### Notices to a parent
 
-A subagent no longer notifies its parent automatically. `notify_parent(summary)`
-runs `kido tool notify_parent`, sent only when the model itself decides
+A subagent reports with `notify_parent(summary)`, which runs
+`kido tool notify_parent`. It sends only when the model itself decides
 its work is done - a settled turn can be triggered by anything, a peer's
 `ask_agent` included, and only the subagent's own model knows whether a
-given turn was actually its delegated work finishing. A subagent that
-crashes or is idle-reaped without calling it tells its parent nothing;
-the run record still holds the outcome (`kido runs`). A standing
-instruction to call it, appended to the system prompt on every turn
-(`before_agent_start`, gated on this being a subagent at all) is what
-tells a spawned child this is its job - see docs/design.md, "Notifying
-the parent".
+given turn was actually its delegated work finishing. Reporting does not
+end the child: it stays alive until the parent ends it with `stop_run`,
+or continues it with `message_agent`. The parent's notice says so.
+
+A settled turn with no report sends the parent one notice of its own,
+through `kido tool notify_parent --status`: the child is idle and did
+not report. A provider error's notice takes the same path. That flag
+writes no report file and carries no guidance, so a later stop of an
+unreported child still records `stopped`.
+
+A standing instruction to call `notify_parent`, appended to the system
+prompt on every turn (`before_agent_start`, gated on this being a
+subagent at all), is what tells a spawned child this is its job - see
+docs/design.md, "Notifying the parent".
+
+A crash or a lost parent produces the run's ending notice (see
+docs/design.md, "Notifying the parent"). The run record also holds the
+outcome (`kido runs`).
 
 ### Cycles
 
@@ -303,7 +316,9 @@ was mis-delivered. A refused ask is not delivered to the model at all.
   which delivers a `stop` envelope; this session answers one addressed to it
   with `ctx.shutdown()`, the same teardown a normal exit runs
   (`session_shutdown`: inbox closed, own run's outcome recorded, record
-  removed). `kido tool stop_run` escalates to killing the target's pane
+  removed). An agent that already reported ends as completed; one
+  stopped before it reported ends as stopped. `kido tool stop_run`
+  escalates to killing the target's pane
   if it does not go within a few seconds - see docs/design.md, "Interrupt and
   stop".
 - `notify_parent(summary)` runs `kido tool notify_parent`, piping `summary` on
@@ -313,7 +328,8 @@ was mis-delivered. A refused ask is not delivered to the model at all.
   spawned, so there is nobody to tell, and both the tool and the command
   say so. Call this once, when the model itself judges its delegated work
   is actually done; nothing calls it automatically (see
-  "Notices to a parent" above).
+  "Notices to a parent" above). Reporting does not end this session: the
+  parent ends it with `stop_run`, or continues it with `message_agent`.
 
 All three are refused - on the wire, as `refused` - unless the sender can
 be verified as an ancestor of this session (the same ancestor walk

@@ -257,7 +257,6 @@ let runs =
              line "cwd" m.cwd;
              if not (String.is_empty m.model) then line "model" m.model;
              if not (List.is_empty m.tools) then line "tools" ("[" ^ String.concat " " m.tools ^ "]");
-             if m.keep_alive then print_string "keepAlive: true\n";
              line "started" (local_time m.started_at);
              (match d.info.outcome with
              | None -> line "outcome" "running"
@@ -284,12 +283,10 @@ let run_outcome =
          & opt (some (enum [ ("completed", Run.Completed); ("failed", Failed) ])) None
          & info [ "result" ] ~docv:"RESULT" ~doc:"completed or failed.")
      and+ text = str "text" "TEXT" "Optional detail."
-     and+ unreported = flag "unreported" "The child never called notify_parent: tell its parent so."
      and+ id = arg "RUN_ID" in
      fun () ->
        ok
          (Run_ending.run_outcome ~dir:(state_dir ()) ~warn:(error "run-outcome") ~result ~text
-            ~unreported
             (ok (Run.parse_id id)));
        0
 
@@ -313,14 +310,14 @@ let async_run =
 
 let notify_parent =
   cmd ~group:"tool " "notify_parent" "Send this subagent's report, read from stdin, to its parent."
-  @@ let+ () = Term.const () in
+  @@ let+ status = flag "status" "This notice is the child's status, not a report of its work." in
      fun () ->
        let dir = state_dir () in
        sent
          (Message_agent.notify_parent ~dir ~self:(self_pane ()) ~caller:(caller dir)
             ~warn:(error "tool notify_parent")
             ~parent:(env_run_id "KIDO_AGENT_PARENT_SESSION")
-            ~run:(env_run_id "KIDO_AGENT_RUN_ID") (stdin ()))
+            ~run:(env_run_id "KIDO_AGENT_RUN_ID") ~status (stdin ()))
 
 let list_runs =
   cmd ~group:"tool " "list_runs" "List peers, the caller's parent and its own agent and bash runs."
@@ -442,13 +439,7 @@ let get_asks =
 let get_agent =
   cmd "get-agent" "Print an agent session's liveness as JSON."
   @@ let+ session = Arg.(value & pos 0 string "" & info [] ~docv:"SESSION")
-     and+ context = flag "context" "Print the live agent graph for internal message validation."
-     and+ children =
-       Arg.(
-         value & flag
-         & info [ "children" ]
-             ~doc:"Include child-run liveness and the session's own run keepAlive.")
-     in
+     and+ context = flag "context" "Print the live agent graph for internal message validation." in
      fun () ->
        let dir = state_dir () in
        if context then begin
@@ -466,25 +457,14 @@ let get_agent =
        else begin
          if String.is_empty session then failwith "usage: kido get-agent SESSION";
          let id = Result.to_opt (Run.parse_id session) in
-         let fields =
-           [
-             ("id", `String session);
-             ("alive", `Bool (Option.exists (fun id -> Option.is_some (Run.live_pi ~dir id)) id));
-           ]
-         in
-         let fields =
-           if not children then fields
-           else
-             fields
-             @ (match id with
-               | None -> [ ("keepAlive", `Bool false) ]
-               | Some id -> (
-                   match Run.keep_alive ~dir id with
-                   | Some k -> [ ("keepAlive", `Bool k) ]
-                   | None -> []))
-             @ [ ("childrenAlive", `Bool (Option.exists (Run.children_alive ~dir) id)) ]
-         in
-         print_endline (Yojson.Safe.to_string (`Assoc fields));
+         print_endline
+           (Yojson.Safe.to_string
+              (`Assoc
+                 [
+                   ("id", `String session);
+                   ( "alive",
+                     `Bool (Option.exists (fun id -> Option.is_some (Run.live_pi ~dir id)) id) );
+                 ]));
          0
        end
 
@@ -504,23 +484,6 @@ let prompt =
        | Error Not_found -> refuse "agent not found" 4
        | Error Several -> refuse "multiple agents found" 5
        | Error (Failed m) -> failwith m
-
-let get_window =
-  cmd "get-window" "Print a window's focus as JSON."
-  @@ let+ window = arg "WINDOW_ID" in
-     fun () ->
-       if String.is_empty window then failwith "usage: kido get-window WINDOW_ID";
-       let window = Tmux.window_id_of_string window in
-       let dir = state_dir () in
-       let state = ok (State.read ~dir (Tmux.create ())) in
-       print_endline
-         (Yojson.Safe.to_string
-            (`Assoc
-               [
-                 ("id", Tmux.yojson_of_window_id window);
-                 ("focused", `Bool (State.window_focused state window));
-               ]));
-       0
 
 let switch name doc kind =
   cmd name doc
@@ -579,11 +542,10 @@ let spawn_subagent =
        str "fork" "SESSION_ID"
          "Seed the child's session with this pi session's transcript, so it starts holding the \
           caller's context."
-     and+ keep_alive = flag "keep-alive" "The child does not self-reap after going idle."
      and+ no_parent =
        flag "no-parent"
-         "Spawn with no parent edge at all: the child reports to nobody, arms no idle timer, and \
-          is never reaped as an orphan."
+         "Spawn with no parent edge at all: the child reports to nobody and is never reaped as an \
+          orphan."
      and+ command = rest in
      created "tool spawn_subagent" (fun () ->
          let dir = state_dir () in
@@ -596,11 +558,11 @@ let spawn_subagent =
                   why
                   ^ "\n\
                      usage: kido tool spawn_subagent [--no-parent] --name NAME --task-file FILE|- \
-                     [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n\
+                     [--fork SESSION_ID] [--model M] [--tools T,...] [-- COMMAND...]\n\
                     \   or: kido tool spawn_subagent --resume RUN_ID [--no-parent] [--tools T,...] \
-                     [--keep-alive] [-- COMMAND...]")
+                     [-- COMMAND...]")
            @@ Spawn_subagent.parse
-                { name; task_file; model; tools; resume; fork; keep_alive; no_parent; command }))
+                { name; task_file; model; tools; resume; fork; no_parent; command }))
 
 let async_bash =
   Cmd.v (Cmd.info "async_bash" ~doc:"Run a command in the background, in its own tmux window.")
@@ -924,7 +886,6 @@ let () =
         get_asks;
         remove_ask;
         prompt;
-        get_window;
         switch_session;
         switch_window;
         shell;

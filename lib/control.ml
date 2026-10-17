@@ -23,9 +23,6 @@ let kill_run_pane ~dir ?(before = ignore) pane_id =
       let+ () = Reap.release tmux (Pane { window = p.window_id; pane = p.pane_id }) in
       `Killed
 
-let record_stopped ~dir id =
-  ignore (Run.record_outcome ~dir id { result = Stopped; text = ""; at = Some (Timestamp.now ()) })
-
 let interrupt ~dir ~self ~caller to_ =
   let open Result.Infix in
   let* state = State.read ~dir (Tmux.create ()) in
@@ -86,14 +83,19 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
         Message_agent.resolve ~dir ~state ~self ~caller (Descendant_run meta.id)
       in
       let name = "subagent " ^ State.run_display_name state target in
+      let record_stop () =
+        ignore
+          (Run_ending.record_ending ~dir meta
+             { result = Run_ending.stop_result ~dir meta; text = ""; at = Some (Timestamp.now ()) })
+      in
       let degrade () =
-        match kill_run_pane ~dir ~before:(fun () -> record_stopped ~dir id) target.pane with
+        match kill_run_pane ~dir ~before:record_stop target.pane with
         | Ok `Killed -> Ok (Printf.sprintf "killed %s's pane" name)
         | Ok `Gone -> Ok (Printf.sprintf "%s's pane was already gone" name)
         | Error m -> Error (Printf.sprintf "%s %s" name m)
       in
       let escalate refusal =
-        record_stopped ~dir id;
+        record_stop ();
         let gone () = Option.is_none (Run.live_pi ~dir id) in
         if wait_for escalation gone then Ok ("stopped " ^ name)
         else

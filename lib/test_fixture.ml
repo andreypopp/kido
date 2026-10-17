@@ -36,7 +36,6 @@ let run ~dir ?(name = "") ?(kind = Run.Agent) ?(parent = "") ?pane ?(pid = 0) ?(
       cwd;
       model = "";
       tools = [];
-      keep_alive = false;
       started_at;
     }
   in

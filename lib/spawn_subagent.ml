@@ -10,7 +10,6 @@ type flags = {
   tools : string option;
   resume : string;
   fork : string;
-  keep_alive : bool;
   no_parent : bool;
   command : string list;
 }
@@ -19,13 +18,7 @@ type mode =
   | Fresh of { name : string; task : string; fork : string; model : string }
   | Resume of Run.id
 
-type request = {
-  mode : mode;
-  no_parent : bool;
-  tools : string list option;
-  keep_alive : bool;
-  command : string list;
-}
+type request = { mode : mode; no_parent : bool; tools : string list option; command : string list }
 
 let read_task path =
   if String.equal path "-" then begin
@@ -88,7 +81,7 @@ let parse (f : flags) =
   let tools =
     Option.map (fun s -> if String.is_empty s then [] else String.split_on_char ',' s) f.tools
   in
-  { mode; no_parent = f.no_parent; tools; keep_alive = f.keep_alive; command }
+  { mode; no_parent = f.no_parent; tools; command }
 
 (* A model no configured provider can run makes pi print "Use /login ..." and exit 0 having run
    no turn. pi --list-models prints a header, then one row per model: provider, model id. *)
@@ -215,7 +208,6 @@ let spawn ~dir ~self ~caller ~path req =
             cwd = pane.current_path;
             model = f.model;
             tools = [];
-            keep_alive = false;
             started_at = Timestamp.now ();
           }
         in
@@ -284,7 +276,7 @@ let spawn ~dir ~self ~caller ~path req =
   let* () = validate_model ~path command in
   (* A resume keeps the run's own cwd: pi sessions are project-scoped, and `pi --session` from
      another directory asks to fork instead of resuming. *)
-  let meta = { meta with tools; parent; keep_alive = meta.keep_alive || req.keep_alive } in
+  let meta = { meta with tools; parent } in
   (match req.mode with
   | Fresh { task; _ } ->
       Run.create ~dir meta.id task;

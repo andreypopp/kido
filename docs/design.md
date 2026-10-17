@@ -78,14 +78,15 @@ file:
   write it at spawn and rewrite it at resume. The first claim of a pi
   writes it for a `pi` run with `Unix.link`, so a later claim leaves it.
   It contains the id, name, kind, parent, pane and pid that kido started,
-  cwd, model, tools and keepAlive. The parent is an optional run id:
+  cwd, model and tools. The parent is an optional run id:
   absent for a top-level run, or the id of the run that owns it.
 - `pi.json`: written only by the pi that holds the run. It contains the
   pid and pane of the holder, the heartbeat timestamp, inbox socket,
   free-text activity, model, session name and pi session file. kido
   never deletes it.
 - `outcome`: the first write wins.
-- the task text, command, output, report, delivered marker and screen.
+- the task text, command, output, report, delivered marker
+  and screen.
 
 `meta.pane` and `meta.pid` (what kido started) and `pi.pane` and
 `pi.pid` (where the holder runs) are separate facts. They differ before
@@ -248,22 +249,15 @@ command `kido get-agent <session>`. It reads the run's `pi.json` by id.
 It prints `{"id": SESSION, "alive": bool}`. An unknown session or a dead
 holder returns false.
 
-One read decides the result, without debounce. The optional `--children`
-flag scans run records and adds `"childrenAlive": bool` and
-`"keepAlive": bool`. `keepAlive` comes from the session's run meta, or is
-false if no run exists. If the meta exists but cannot be read or
-decoded, the output omits `keepAlive`. For this inconclusive result, the
-idle timer rearms instead of shutting down the child.
+One read decides the result, without debounce.
 
 `get-agent` is a separate subcommand, not a `kido tool list_runs` flag.
 It shares only a command prefix, not pane listing or session scope.
-Without a pane list, the timer also avoids a tmux round trip every five
+Without a pane list, the poll avoids a tmux round trip every five
 seconds per subagent, for the subagent's lifetime.
 
-Two consequences are intentional. First, `false` ends the session on
-that poll. A dead parent therefore causes a prompt response. `keepAlive`
-protects against the idle-exit timer, not against an orphan surviving
-its parent. However, a child can poll between a quit and
+`false` ends the session on that poll. A dead parent therefore causes a
+prompt response. However, a child can poll between a quit and
 `pi --session`. It then reads a definite "false" and exits, even if the
 parent restarts.
 
@@ -873,7 +867,7 @@ reports to nobody. Existing mechanisms support a run without a parent:
 - A run without a parent is exempt from the orphan rule of the sweep.
   The sweep still collects its dead marked pane.
 - Without `KIDO_AGENT_PARENT_SESSION`, the child fails the subagent
-  test, arms no idle timer and cannot call `notify_parent`.
+  test and cannot call `notify_parent`.
 - Without a caller, `--resume` defaults to no parent.
 
 `--no-parent` also works with `--resume`. It makes the resumed run
@@ -1096,78 +1090,57 @@ Unavailable kido supplies no evidence and never causes shutdown. If
 the parent is dead, the child calls pi's `shutdown`. This uses the same
 teardown as a normal exit.
 
-## Idle self-exit, and resuming a run
+## Ending a child, and resuming a run
 
-After `KIDO_IDLE_EXIT_SECONDS` of idle time, a subagent calls pi's own
-`shutdown`. The default is 30, like the window linger default. The
-explanation below shows why these are separate numbers. No other signal
-distinguishes "done forever" from "waiting for follow-up". Without this
-timer, an idle child keeps its window, pi process and model context until
-someone quits it, stops it, or its parent dies. Five spawned children
-would all remain.
+A child has no idle timer. After it reports, or after a turn settles
+with nothing to do, it keeps its window, pi process and model context.
+Only three things end it:
 
-**One signal, reused.** The timer uses its own `agent_settled` listener.
-It trusts the same `agent_settled` / `ctx.isIdle()` event as the status
-report to identify a fully ended turn. It does not use a second,
-independently timed event. It arms on *every* settle, even without new
-result text. A settle with nothing to report is still idle.
+- its parent, with `stop_run`;
+- the user, who quits or kills the window;
+- the orphan rule, after its parent ends.
 
-New work cancels and restarts the timer. This includes `turn_start`,
-the rest of the `running` family and messages about to reach the model.
-The timer measures 30 seconds of idle time, not time since the first
-settle. An actively used child remains alive. Task delivery also arms
-it, covering a child whose pi never starts its first turn.
-`design-subagents.md`, "Idle self-exit", describes this case.
+The parent decides, because only the parent knows whether it needs more
+work. The child's report is not an ending.
 
-The clock also rearms after every `shutdown` call until the session
-ends.
+**A child that reports stays alive.** The notice a parent receives from
+`notify_parent` says so: end the child with `stop_run` when nothing more
+is needed, or continue it with `message_agent`. The tool descriptions
+and the subagent system prompt carry the same rule.
 
-**Only a child arms it**, using the session-id identity test under
-"The run id is the child's session id". `notify_parent` uses the same
-test for refusal. A root session must never collect itself. This
-includes a human's interactive pi started inside an agent's pane with
-that agent's environment.
+**Stopping a child that reported records `completed`.** `stop_run`
+records the ending before it asks the child to shut down, because the
+first write wins and the child's own exit must not overwrite it. It
+reads the run's `report` file, which `kido tool notify_parent` writes as
+the whole delivered report. A status notice writes no report file. A
+child stopped before it reported records `stopped`, so a deliberate stop
+of unfinished work stays visible as one.
 
-`spawn_subagent` also accepts a run-metadata `keepAlive` boolean for a
-long-lived helper. Each idle check reads it through
-`get-agent --children`. While true, the timer rearms. An edit takes
-effect at the next check.
+**A settled turn with no report sends the parent one notice.**
+`agent_settled` with `ctx.isIdle()` that did not follow a `notify_parent`
+call since the last new work calls `kido tool notify_parent --status`.
+The notice says the child is idle without reporting, and how to
+continue or end it. The `--status` flag writes no report file: it is not
+the child's account of its work, so stopping the child afterwards still
+records `stopped`. The session remembers
+that it sent the notice, so a repeated settle sends no second one. New
+work clears the notice and the per-turn report flag. An aborted turn
+sends nothing: someone stopped it deliberately. An error notice counts
+as the notice for its turn.
 
-**A session with a live child of its own is not idle.** Waiting for a
-child's report settles a turn just like finished work. Before shutdown,
-the timer calls `kido get-agent --children <session>`. It checks whether
-any session run remains active. Run metas supply the parent edge that
-survives a turn.
+A child that never starts a turn and never exits sends no notice. kido
+cannot tell it from a child at work. `kido runs` shows it as running,
+and the parent can end it with `stop_run`.
 
-Unless the answer is definitely no, the timer rearms. Errors and
-timeouts leave the session open. Exiting would also remove the child:
-the orphan rule closes the window of the child that the parent awaits.
-See `design-subagents.md`, "Idle self-exit".
+**The only automatic ending is the orphan rule.** A run whose parent's
+run has no live holder is collected by the sweep, which records `died`
+and tells the absent parent. See `design-subagents.md`, "Shutdown" and
+"Limits".
 
-**A window a client is looking at is not reaped out from under them.**
-Before shutdown, the timer calls `kido get-window <id>`. It prints
-`{"id": ID, "focused": bool}`, with false for a missing window.
-This uses `State.window_focused`, like the sweep. If focused, the timer
-rearms instead of exiting. The sweep also checks again on its next pass.
-Collection occurs after the user looks away.
-
-**The outcome is `completed`, not `stopped`**. Nobody intervenes; the
-child finishes its own work. `ctx.shutdown()` uses the normal exit's
-`session_shutdown` handler. `endOwnRun` accepts an absent reason,
-because plain shutdown has no reason. It records `completed` from its
-in-process settled flag, like any other quit. A child still waiting for
-its first turn instead records `failed`.
-
-**Two 30-second figures stack, and are not one number.** Idle self-exit
-runs inside the child's pi process. Only after shutdown does the
-separate 30-second sweep grace begin, before the window can close.
-See "Window lifecycle" above. Do not combine these settings. They run
-in different processes, use different environment variables and protect
-different things: a live child's exit decision and a dead child's pane
-awaiting collection.
-
-**`kido tool spawn_subagent --resume <run-id>`.** kido routinely collects
-idle children. Resume is the normal way to continue work with them.
+**`kido tool spawn_subagent --resume <run-id>`.** A finished run, for
+example one the parent stopped, starts again in a new window. Resume
+clears the old `report` file: the resumed attempt must report again. A
+child that is still alive is not resumed: message it to continue it.
 A bare `pi --session <id>` claims the run as a standalone session, in
 a window that kido did not create. Its run keeps the old parent, but no
 sweep collects that window, and the pi is no subagent.
@@ -1182,15 +1155,13 @@ sweep collects that window, and the pi is no subagent.
   `Run.read_meta` supplies the window name and cwd. Resume leaves the
   task file unchanged. It clears `delivered` only if the pi session file
   is missing. Thus, a newly created session receives the stored task again.
-- It uses the model, tools allowlist and `keepAlive` from spawn meta.
-  The idle timer reads `keepAlive` from the same meta on every check.
-  Model and tools use command-line arguments. A tool-restricted child
-  must not regain all tools on resume. A narrow toolset limits possible
-  damage; the depth ceiling does not provide that limit.
+- It uses the model and tools allowlist from spawn meta. They use
+  command-line arguments. A tool-restricted child must not regain all
+  tools on resume. A narrow toolset limits possible damage; the depth
+  ceiling does not provide that limit.
 
-  Explicit `--keep-alive`, or a command's own `--model`/`--tools`, takes precedence.
-  Recorded values are defaults, not limits. Resume intentionally cannot
-  turn `keepAlive` *off*, with the same asymmetry as `--model`.
+  A command's own `--model` or `--tools` takes precedence. Recorded
+  values are defaults, not limits.
 - It writes the *new* pane, pid and parent edge into the same meta file.
   Documentation says a fresh spawn calls `Run.write_meta` once, but
   code does not enforce that restriction. Resume changes these live facts.
@@ -1255,8 +1226,7 @@ A new task or name makes the model's intent ambiguous. The tool does
 not silently discard either choice. It accepts `model` and `tools`.
 If supplied, they follow `--`, as for a fresh spawn, and override meta
 defaults. If omitted, nothing follows `--`, and
-`kido tool spawn_subagent --resume` supplies the defaults. `keepAlive`
-behaves the same in both cases.
+`kido tool spawn_subagent --resume` supplies the defaults.
 
 ## Steer, interrupt and stop
 
@@ -1334,18 +1304,22 @@ whether a turn completes the work its parent needs. A "a turn settled,
 tell the parent" rule cannot distinguish that result from work for
 another agent.
 
-The content is exactly the model's summary. It does not come from
+The content is the model's summary. It does not come from
 `agent_end` message data, because the model writes it directly. The
-parent receives at most 4000 bytes. This exceeds the activity cap,
+parent receives at most 4000 bytes. Every report notice ends with the
+guidance that the child stays alive, so the parent must end it with
+`stop_run` or continue it with `message_agent`. That guidance is part of
+the bound. This exceeds the activity cap,
 because it carries work results, not a UI label. It is much smaller
 than `MAX_PROMPT_BYTES`, because the whole message enters the parent's
 context, rather than travelling as an arbitrary payload.
 
-The full report is not truncated. `kido tool notify_parent` stores a
-longer report in the run directory and names it in the notice. See
-`design-subagents.md`, "Reporting". The command enforces the cap, not
-the tool, so it can preserve the full report. The tool schema therefore
-has no duplicate `maxLength`.
+Every delivered report is kept whole in the run's `report` file, so a
+report that does not fit beside the guidance is not lost. The notice
+carries its start and names that file. A status notice writes no report
+file and carries no guidance. See `design-subagents.md`, "Reporting".
+The command enforces the cap, not the tool, so it can preserve the full
+report. The tool schema therefore has no duplicate `maxLength`.
 
 For the same reason, `set_status`'s `activity` is left out of its schema.
 The tool sends it unchanged to kido. Only `Reporting.one_line`
@@ -1615,7 +1589,6 @@ typing there. `kido-agents.ts` handles:
 - envelope dispatch beyond plain prompts;
 - ask tracking and the cycle edge;
 - task delivery;
-- the idle self-exit timer;
 - outcome reporting;
 - the parent-liveness poll.
 
@@ -1664,9 +1637,9 @@ exact points:
   session's parent edge during these operations.
 
 Without a status-half ordering dependency, the agent half listens
-independently. Its own `agent_settled` listener arms the idle self-exit
-timer without depending on status reporting. See "Idle self-exit, and
-resuming a run" above. None of these points sends a parent report.
+independently. Its own `agent_settled` listener sends the idle notice
+without depending on status reporting. See "Ending a child, and resuming
+a run" above. None of these points sends a parent report.
 The subagent decides when to call `notify_parent`.
 
 `runKido` uses asynchronous `spawn`, never `execFileSync`. A blocking
@@ -2176,8 +2149,6 @@ a separately built binary, so only environment values reach it. These
 variables are:
 
 - `KIDO_LINGER_SECONDS`, the sweep's grace;
-- `KIDO_IDLE_EXIT_SECONDS`, the separate idle self-exit timer that adds
-  to linger rather than sharing it (see "Idle self-exit, and resuming a run");
 - `KIDO_STALL_THRESHOLD_MS`;
 - `KIDO_STOP_ESCALATION_MS`;
 - `KIDO_HEARTBEAT_MS`;
@@ -2203,8 +2174,8 @@ and serve a session that neither started.
 
 ## Known limits
 
-- A child spawned with `--no-parent` has no parent to collect it. It
-  arms no idle timer, `notify_parent` has no target, and no sweep rule
+- A child spawned with `--no-parent` has no parent to collect it.
+  `notify_parent` has no target, and no sweep rule
   applies while it lives. The user must close its window. This is the
   flag's purpose, not a defect. It is the only agent type that kido
   never collects.

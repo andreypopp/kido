@@ -104,7 +104,7 @@ func TestPiClearedNameUsesPaneTitleForNestedProgramAndRunNameForEnding(t *testin
 	f := h.startFeed("alpha")
 	f.waitLast(func(s feedSnapshot) bool { return snapshotTitle(s, pane) == "π - Pane fallback - kido" }, "cleared pi exact pane title, not nested title")
 	h.waitFor(func() bool { return rowTitled(h.rowFor("Pane fallback"), "└◆π - Pane fallback - kido") }, settle, msgf("cleared pi sidebar title (rows %v)", h.rows()))
-	if out, rc := h.kidoAs(pane, "", nil, "run-outcome", "--result", "completed", "--unreported", "clear-child"); rc != 0 {
+	if out, rc := h.kidoAs(pane, "", nil, "run-outcome", "--result", "completed", "clear-child"); rc != 0 {
 		t.Fatalf("ending: %d %s", rc, out)
 	}
 	if got := envelopes(in)[0]; field(got, "from", "name") != "Launch" || !strings.Contains(field(got, "text"), `subagent "Launch"`) {

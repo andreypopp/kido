@@ -242,7 +242,6 @@ let%test_module "Tests" =
           cwd = "";
           model = "";
           tools = [];
-          keep_alive = false;
           started_at = 0.;
         }
       in

@@ -35,7 +35,6 @@ let meta ?(kind = Run.Agent) ?(parent = "") id name : Run.meta =
     cwd = "";
     model = "";
     tools = [];
-    keep_alive = false;
     started_at = test_at;
   }
 

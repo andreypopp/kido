@@ -188,7 +188,7 @@ func TestStopWithNoWayToAskNeedsForce(t *testing.T) {
 		if !strings.Contains(out, c.refusal) || !strings.Contains(out, "pass --force") || !strings.Contains(out, "rc=1") {
 			t.Errorf("%s: stop without --force = %q, want rc=1 and %q", c.name, out, c.refusal)
 		}
-		if got := h.runOutcomeNamed(c.name+"-unforced", runID); got != "running" || !h.paneExists(paneID) {
+		if got := h.runOutcome(runID, c.name+"-unforced"); got != "running" || !h.paneExists(paneID) {
 			t.Errorf("%s: after a refused stop outcome = %q, pane there = %v; want running and untouched", c.name, got, h.paneExists(paneID))
 		}
 
@@ -200,7 +200,7 @@ func TestStopWithNoWayToAskNeedsForce(t *testing.T) {
 		if !h.paneExists(bystander) || !h.windowExists(windowID) {
 			t.Errorf("%s: the user's split %s or its window %s went with the target's pane", c.name, bystander, windowID)
 		}
-		if got := h.runOutcomeNamed(c.name+"-forced", runID); got != "stopped" {
+		if got := h.runOutcome(runID, c.name+"-forced"); got != "stopped" {
 			t.Errorf("%s: outcome after stop --force = %q, want stopped", c.name, got)
 		}
 	}

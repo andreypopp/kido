@@ -29,8 +29,8 @@ func TestCommandLineRefusals(t *testing.T) {
 		{[]string{"async-run"}, "", "kido async-run: --run-id is required (or $KIDO_AGENT_RUN_ID)\nusage: kido async-run [--run-id ID]", 1},
 		{[]string{"tool", "async_bash"}, "", "kido tool async_bash: no command given\nusage: kido tool async_bash [--name NAME] [--stream] -- COMMAND [ARG...]", 1},
 		{[]string{"tool", "spawn_subagent", "--name", "kid"}, "", "kido tool spawn_subagent: --task-file is required\n" +
-			"usage: kido tool spawn_subagent [--no-parent] --name NAME --task-file FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
-			"   or: kido tool spawn_subagent --resume RUN_ID [--no-parent] [--tools T,...] [--keep-alive] [-- COMMAND...]", 1},
+			"usage: kido tool spawn_subagent [--no-parent] --name NAME --task-file FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [-- COMMAND...]\n" +
+			"   or: kido tool spawn_subagent --resume RUN_ID [--no-parent] [--tools T,...] [-- COMMAND...]", 1},
 	} {
 		cmd := exec.Command(kidoBin, c.args...)
 		cmd.Env = cleanEnv("KIDO_STATE_DIR="+state, "TMUX_PANE=%1")

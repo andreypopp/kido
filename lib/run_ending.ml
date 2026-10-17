@@ -99,6 +99,11 @@ let send ~dir (e : ending) =
               output = "";
             })
 
+let stop_result ~dir (meta : Run.meta) =
+  match meta.kind with
+  | Run.Agent when Run.has_report ~dir meta.id -> Run.Completed
+  | Agent | Bash | Stream | Pi -> Stopped
+
 let record_ending ~dir (meta : Run.meta) outcome =
   if not (Run.record_outcome ~dir meta.id outcome) then None
   else
@@ -116,7 +121,7 @@ let refine_no_turn_detail text screen =
     Printf.sprintf "%s (the pane showed: \"%s\")" text login_line
   else text
 
-let run_outcome ~dir ~warn ~result ~text ~unreported id =
+let run_outcome ~dir ~warn ~result ~text id =
   let meta = Run.read_meta ~dir id in
   let text =
     match (meta, result) with
@@ -128,7 +133,7 @@ let run_outcome ~dir ~warn ~result ~text ~unreported id =
   in
   let outcome : Run.outcome = { result; text; at = Some (Timestamp.now ()) } in
   match meta with
-  | Some meta when unreported ->
+  | Some ({ kind = Run.Agent; _ } as meta) when not (Run.has_report ~dir id) ->
       Option.iter
         (fun e ->
           Result.iter_err
@@ -268,10 +273,10 @@ let%test_module "Tests" =
       | None -> print_endline "no outcome"
       | Some o -> Printf.printf "outcome %s %S\n" (Run.string_of_result o.result) o.text
 
-    let record_outcome ~dir ?(unreported = false) result r =
+    let record_outcome ~dir result r =
       match
         Result.flat_map
-          (run_outcome ~dir ~warn:(Printf.printf "warning: %s\n") ~result ~text:"" ~unreported)
+          (run_outcome ~dir ~warn:(Printf.printf "warning: %s\n") ~result ~text:"")
           (Run.parse_id r)
       with
       | Ok () -> ()
@@ -280,6 +285,7 @@ let%test_module "Tests" =
     let%expect_test "run-outcome records one outcome, and only for a valid run id" =
       let dir = Filename.temp_dir "kido-state" "" in
       ignore (run ~dir ~pane:"%9" "run-x");
+      Run.write_report ~dir (run_id "run-x") "the report";
       show_outcome ~dir "run-x";
       record_outcome ~dir Completed "run-x";
       show_outcome ~dir "run-x";
@@ -293,22 +299,24 @@ let%test_module "Tests" =
     refused: invalid run id "../escape"
     |}]
 
-    (* The outcome write decides who speaks: without --unreported the child reported for itself, and a
-   run already stopped from outside was spoken for by its stopper. *)
-    let%expect_test "run-outcome --unreported tells the parent once, and only if it won the write" =
+    (* The outcome write decides who speaks: a run whose report is on record was spoken for by the
+   child itself, and a run already stopped from outside was spoken for by its stopper. *)
+    let%expect_test
+        "run-outcome tells the parent once for an unreported run, and only if it won the write" =
       let dir = Filename.temp_dir "kido-state" "" in
       let inbox, received = start_inbox ~reply:"ok\n" in
       holding ~dir ~inbox "root-sess";
       let child r = ignore (run ~dir ~name:"ttyfix" ~kind:Agent ~parent:"root-sess" r) in
       child "run-told";
-      record_outcome ~dir ~unreported:true Completed "run-told";
+      record_outcome ~dir Completed "run-told";
       child "run-self";
+      Run.write_report ~dir (run_id "run-self") "the report";
       record_outcome ~dir Completed "run-self";
       child "run-stopped";
       ignore
         (Run.record_outcome ~dir (run_id "run-stopped")
            { result = Stopped; text = ""; at = Some 1_700_000_090. });
-      record_outcome ~dir ~unreported:true Completed "run-stopped";
+      record_outcome ~dir Completed "run-stopped";
       List.iter (show_outcome ~dir) [ "run-told"; "run-self"; "run-stopped" ];
       List.iter
         (fun raw ->

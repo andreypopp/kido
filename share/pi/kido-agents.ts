@@ -67,11 +67,6 @@ const TASK_FILE = process.env.KIDO_AGENT_TASK_FILE || undefined;
 // A subagent's pi is a child of the tmux server, not of the parent's pi, so no OS parent-death signal reaches it; it polls instead.
 const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
 
-// Idle-to-self-shutdown, entirely inside the child's process; only once it fires does the
-// run's pane go dead and the sweep's grace clock begin. The two stack, even though both
-// default to 30 - not the same clock.
-const IDLE_EXIT_MS = (Number(process.env.KIDO_IDLE_EXIT_SECONDS) || 30) * 1000;
-
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
 // Must comfortably exceed KIDO_STOP_ESCALATION_MS (bin/main.ml, default 5s), which `kido tool stop_run` can itself block for.
@@ -185,6 +180,7 @@ export function streamBatch(lines: string[], output: string, alreadyDropped = 0)
 
 const NOTIFY_PARENT_INSTRUCTION =
   "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise. " +
+  "Reporting does not end this session: it stays alive until your parent ends it with stop_run, and the parent can continue it with message_agent. " +
   "When you reply to another agent's question with message_agent, that call is the entire response - end the turn there, with no summary or sign-off after it.";
 
 // One string in two tools' promptGuidelines on purpose: pi's buildRules de-duplicates identical rules.
@@ -565,7 +561,6 @@ export default function (pi: ExtensionAPI) {
   };
 
   const deliverNotice = (text: string, from: string): void => {
-    clearIdleExit();
     const noticeId = randomUUID();
     pendingNotices.set(noticeId, { from, text });
     renderNoticeWidget();
@@ -611,7 +606,6 @@ export default function (pi: ExtensionAPI) {
   const flushStreams = (): void => {
     if (streamBuffers.size === 0) return;
     clearStreamTimer();
-    clearIdleExit();
     for (const [run, entry] of [...streamBuffers]) {
       streamBuffers.delete(run);
       if (entry.lines.length === 0) continue;
@@ -771,13 +765,12 @@ export default function (pi: ExtensionAPI) {
 
   // Only a definite false from `kido get-agent` is evidence; anything else - an error, an
   // unreachable kido - is inconclusive and never shuts the session down on a guess.
-  const lookupBoolean = (res: RunKidoResult, id: string, field: "alive" | "childrenAlive" | "keepAlive" | "focused"): boolean | undefined => {
+  const lookupAlive = (res: RunKidoResult, id: string): boolean | undefined => {
     if (!res.ok) return undefined;
     try {
       const value: unknown = JSON.parse(res.out);
-      if (!value || typeof value !== "object" || !("id" in value) || value.id !== id) return undefined;
-      const result: unknown = Reflect.get(value, field);
-      if (typeof result === "boolean") return result;
+      if (!value || typeof value !== "object" || !("id" in value) || !("alive" in value) || value.id !== id) return undefined;
+      if (typeof value.alive === "boolean") return value.alive;
     } catch {}
     return undefined;
   };
@@ -785,7 +778,7 @@ export default function (pi: ExtensionAPI) {
   const parentIsAlive = async (): Promise<boolean> => {
     if (PARENT_SESSION === undefined) return true;
     const res = await runKido(["get-agent", PARENT_SESSION], { timeoutMs: 2000 });
-    return lookupBoolean(res, PARENT_SESSION, "alive") !== false;
+    return lookupAlive(res, PARENT_SESSION) !== false;
   };
 
   // Stops a tick from starting a second parentIsAlive() call while the previous one is
@@ -818,60 +811,23 @@ export default function (pi: ExtensionAPI) {
     pollInFlight = false;
   };
 
-  let reportedToParent = false;
+  let parentToldThisTurn = false;
   let settled = true;
 
   // "awaiting-first-turn" lasts until the first sign a turn began; a child whose pi could
   // not start its model at all settles at startup looking exactly like an idle child
   // otherwise, which is what puts "no turn ever ran" in its parent's notice. lastError is
-  // set only when a turn stopped on "error" (not an abort); notified keeps one notice per
-  // failure, since agent_settled can fire again with nothing new.
-  type RunPhase = { phase: "awaiting-first-turn" } | { phase: "worked"; lastError?: { text: string; notified: boolean } };
+  // set only when a turn stopped on "error"; notified keeps one notice per failure, since
+  // agent_settled can fire again with nothing new. stop is the last turn's stop reason.
+  type RunPhase =
+    | { phase: "awaiting-first-turn" }
+    | { phase: "worked"; lastError?: { text: string; notified: boolean }; stop?: string };
   let phase: RunPhase = { phase: "worked" };
-
-  let idleExitTimer: NodeJS.Timeout | null = null;
-
-  const clearIdleExit = (): void => {
-    if (idleExitTimer) {
-      clearTimeout(idleExitTimer);
-      idleExitTimer = null;
-    }
-  };
 
   const workStarted = (): void => {
     settled = false;
+    parentToldThisTurn = false;
     if (phase.phase === "awaiting-first-turn") phase = { phase: "worked" };
-    clearIdleExit();
-  };
-
-  const armIdleExit = (): void => {
-    if (!isSubagent()) return;
-    clearIdleExit();
-    idleExitTimer = setTimeout(async () => {
-      // A session with a child of its own still running is not idle, however quiet it has
-      // been; exiting would orphan the child for the sweep to close mid-work. Read from the
-      // run records, not process memory, since a child outlives the turn that spawned it.
-      const sessionId = seam().host?.sessionId() ?? "";
-      const children = await runKido(["get-agent", sessionId, "--children"], { timeoutMs: 2000 });
-      if (lookupBoolean(children, sessionId, "childrenAlive") !== false || lookupBoolean(children, sessionId, "keepAlive") !== false) {
-        armIdleExit();
-        return;
-      }
-      const listed = await fetchAgents();
-      const self = listed.ok ? listed.agents.find((a) => a.self) : undefined;
-      // A window a client is currently looking at is not reaped out from under them; the
-      // timer re-arms instead, so it is collected once the user looks away.
-      const focused = self?.window ? await runKido(["get-window", self.window], { timeoutMs: 2000 }) : null;
-      if (focused && self?.window && lookupBoolean(focused, self.window, "focused") === true) {
-        armIdleExit();
-        return;
-      }
-      // pi's shutdown only ends the session once it is not mid-compaction, re-checked on
-      // its next agent_settled; re-arming costs nothing once the session does end.
-      session?.shutdown();
-      armIdleExit();
-    }, IDLE_EXIT_MS);
-    idleExitTimer.unref();
   };
 
   pi.registerTool({
@@ -1001,7 +957,7 @@ export default function (pi: ExtensionAPI) {
         return reply(`${who} has been quiet for ${target.sinceReport}s while reporting working; likely stalled, refusing to wait for a reply`);
       }
       const alive = await runKido(["get-agent", target.id], { timeoutMs: 2000 });
-      if (lookupBoolean(alive, target.id, "alive") === false) return reply(`${who} is no longer running; refusing to wait for a reply`);
+      if (lookupAlive(alive, target.id) === false) return reply(`${who} is no longer running; refusing to wait for a reply`);
 
       // Checked synchronously, with no await before pendingOutbound.set below, so a teardown
       // either already caught this waiter with abandonPending or closed the inbox first.
@@ -1054,7 +1010,7 @@ export default function (pi: ExtensionAPI) {
           reading = true;
           runKido(["get-agent", targetID], { timeoutMs: 2000 }).then((res) => {
             reading = false;
-            if (lookupBoolean(res, targetID, "alive") === false) settle({ gaveUp: "gone" });
+            if (lookupAlive(res, targetID) === false) settle({ gaveUp: "gone" });
           });
         }, ASK_LIVENESS_POLL_MS);
         watch.unref();
@@ -1077,9 +1033,9 @@ export default function (pi: ExtensionAPI) {
     name: "spawn_subagent",
     label: "Spawn Subagent",
     description:
-      "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result; list_runs lists its run and stop_run stops it with the returned run id.",
+      "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result; it stays alive after it reports, so end it with stop_run when you need nothing more from it, or continue it with message_agent.",
     promptSnippet:
-      "spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?) or spawn_subagent(resume, model?, tools?, keepAlive?) - delegate a task to a new subagent, optionally forked from your own context, or resume a dead one, in its own window; list_runs lists it and stop_run stops it with its run id",
+      "spawn_subagent(task, name?, model?, tools?, fork?) or spawn_subagent(resume, model?, tools?, fork?) - delegate a task to a new subagent, optionally forked from your own context, or resume a dead one, in its own window; list_runs lists it and stop_run stops it with its run id",
     // pi's buildRules (system-prompt.js) merges these into the system prompt's rules section;
     // NOT_THE_USER_RULE is the same string in async_bash's list, de-duplicated to one bullet.
     promptGuidelines: [
@@ -1114,12 +1070,6 @@ export default function (pi: ExtensionAPI) {
             description: "Tool names the subagent may use - its capability ceiling. notify_parent is always included. Omit to leave it at pi's default set.",
           }),
         ),
-        keepAlive: Type.Optional(
-          Type.Boolean({
-            description:
-              "Keep the subagent alive after it goes idle instead of letting it self-reap after a short timeout. For a deliberately long-lived helper; defaults to false.",
-          }),
-        ),
         resume: Type.Optional(
           Type.String({
             description:
@@ -1146,7 +1096,6 @@ export default function (pi: ExtensionAPI) {
       if (name) args.push("--name", name);
       if (params.task) args.push("--task-file", "-");
       if (params.fork) args.push("--fork", own);
-      if (params.keepAlive) args.push("--keep-alive");
       if (params.tools) args.push("--tools", params.tools.join(","));
       args.push(...model, "--", "pi", ...(name ? ["--name", name] : []), ...model);
       const res = await runKido(args, { input: params.task, timeoutMs: SPAWN_TIMEOUT_MS });
@@ -1208,7 +1157,7 @@ export default function (pi: ExtensionAPI) {
       name: "stop_run",
       label: "Stop Run",
       description:
-        "Stop a descendant subagent or async_bash run found in list_runs. Asks a subagent to shut down, killing its pane if needed; sends TERM to a bash wrapper, which forwards it to its command.",
+        "Stop a descendant subagent or async_bash run found in list_runs. Asks a subagent to shut down, killing its pane if needed; sends TERM to a bash wrapper, which forwards it to its command. A child that already reported ends as completed; one stopped before it reported ends as stopped.",
       promptSnippet: "stop_run(to, force?) - end a descendant subagent or bash run found in list_runs",
       parameters: Type.Object(
         {
@@ -1298,7 +1247,7 @@ export default function (pi: ExtensionAPI) {
     name: "notify_parent",
     label: "Notify Parent",
     description:
-      "Tell your parent your work is done, carrying a short summary. Call this once, when you have an answer or have given up - nothing else reports it. Only meaningful for a subagent; refused for a session with no parent.",
+      "Tell your parent your work is done, carrying a short summary. Call this once, when you have an answer or have given up - nothing else reports it. You stay alive after this report: the parent ends you with stop_run, or continues you with message_agent. Only meaningful for a subagent; refused for a session with no parent.",
     promptSnippet: "notify_parent(summary) - tell your parent your work is done, once it actually is",
     parameters: Type.Object(
       {
@@ -1320,7 +1269,7 @@ export default function (pi: ExtensionAPI) {
       }
       const res = await runKido(["tool", "notify_parent"], { input: params.summary, timeoutMs: 5000 });
       if (!res.ok) return reply(`could not notify parent: ${res.error}`);
-      reportedToParent = true;
+      parentToldThisTurn = true;
       return reply(res.out || "notified parent");
     },
   });
@@ -1413,6 +1362,7 @@ export default function (pi: ExtensionAPI) {
     phase = {
       phase: "worked",
       lastError: last.stopReason === "error" ? { text: last.errorMessage || "no error message given", notified: false } : undefined,
+      stop: last.stopReason,
     };
   });
 
@@ -1420,15 +1370,29 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.isIdle()) return;
     settled = true;
     if (!isSubagent()) return;
-    armIdleExit();
-    if (phase.phase !== "worked" || !phase.lastError || phase.lastError.notified) return;
-    phase.lastError.notified = true;
-    const runID = ownRunID();
-    const text =
-      `subagent stopped on an error: ${trimErrorMessage(phase.lastError.text)}\n` +
-      `run: ${runID}\n` +
-      `message it to retry, or spawn_subagent(resume: "${runID}") once it has exited`;
-    await runKido(["tool", "notify_parent"], { input: text, timeoutMs: 5000 });
+    // A turn someone aborted was stopped deliberately; its silence is not news.
+    if (phase.phase === "worked" && phase.stop === "aborted") return;
+    if (phase.phase === "worked" && phase.lastError && !phase.lastError.notified) {
+      phase.lastError.notified = true;
+      parentToldThisTurn = true;
+      const runID = ownRunID();
+      const text =
+        `subagent stopped on an error: ${trimErrorMessage(phase.lastError.text)}\n` +
+        `run: ${runID}\n` +
+        `message it to retry, or spawn_subagent(resume: "${runID}") once it has exited`;
+      await runKido(["tool", "notify_parent", "--status"], { input: text, timeoutMs: 5000 });
+      return;
+    }
+    // A settled turn with no report leaves the parent waiting. Say so once for this turn;
+    // the child itself stays alive until the parent decides.
+    if (parentToldThisTurn) return;
+    parentToldThisTurn = true;
+    await runKido(["tool", "notify_parent", "--status"], {
+      input:
+        `subagent ${ownRunID()} is idle without reporting: its last turn ended and it did not call notify_parent. ` +
+        `Continue it with message_agent, or end it with stop_run.`,
+      timeoutMs: 5000,
+    });
   });
 
   // The task file is never unlinked (it is the run's record); the sibling "delivered"
@@ -1446,10 +1410,9 @@ export default function (pi: ExtensionAPI) {
     }
     if (!task.trim()) return;
     seam().host?.deliver(task);
-    // deliver() only hands pi a message and returns; the clock goes on here, after
-    // deliver's own workStarted has cleared it.
+    // deliver() only hands pi a message and returns. Set the phase after it: deliver's
+    // workStarted marks the session as worked, which would hide a first turn that never starts.
     phase = { phase: "awaiting-first-turn" };
-    armIdleExit();
   };
 
   // Records how this process's own run ended. Gated on ownRunID and on a real ending,
@@ -1464,7 +1427,6 @@ export default function (pi: ExtensionAPI) {
         ? ["failed", NO_FIRST_TURN_TEXT]
         : [settled ? "completed" : "failed", phase.lastError && `its last turn failed: ${trimErrorMessage(phase.lastError.text)}`];
     const args = ["run-outcome", "--result", result];
-    if (!reportedToParent) args.push("--unreported");
     if (text) args.push("--text", text);
     await runKido([...args, "--", runID], { timeoutMs: 3000 });
   };
@@ -1559,7 +1521,6 @@ export default function (pi: ExtensionAPI) {
       session = null;
       // abandonPending runs on every reason, reload included: a reload still tears the inbox down.
       stopParentLivenessPoll();
-      clearIdleExit();
       clearStreamTimer();
       abandonPending();
       await endOwnRun(reason);

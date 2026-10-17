@@ -239,7 +239,7 @@ Conventions:
 
     bin/main.ml        the cmdliner command table and the small commands:
                        set_status, get-agent, get-inbox,
-                       ssh, get-window, switch-session/window, server,
+                       ssh, switch-session/window, server,
                        runs, run-outcome, reap, rpc; failure printing,
                        and every human-readable rendering of library
                        results
@@ -898,7 +898,7 @@ A brief does not repeat them.
 - **One manager for each unit of work.** The top-level session gives a
   unit of work to one manager. The manager does not write code. It does
   these steps:
-  1. It spawns one implementer with `keepAlive`.
+  1. It spawns one implementer.
   2. When the implementer reports, the manager spawns the four read-only
      reviewers of a simplify pass, one angle each, so that review has
      fresh context.

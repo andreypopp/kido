@@ -54,12 +54,12 @@ func TestPiSessionNameEverywhere(t *testing.T) {
 	h.agentStatus("name-child", pane, "--name", "Renamed Agent", "--parent-session", "name-root")
 	h.expectKido(root, "", nil, "kido tool stop_run: subagent Renamed Agent has no inbox to ask nicely over; pass --force to kill its window instead", "tool", "stop_run", "@Renamed Agent")
 	report("Renamed Agent")
-	if out, rc := h.kidoAs(pane, "", nil, "run-outcome", "--result", "completed", "--unreported", "name-child"); rc != 0 {
+	if out, rc := h.kidoAs(pane, "", nil, "run-outcome", "--result", "completed", "name-child"); rc != 0 {
 		t.Fatalf("ending: %d %s", rc, out)
 	}
 	last := envelopes(parentInbox)
-	if got := last[len(last)-1]; !strings.Contains(field(got, "text"), `subagent "Renamed Agent"`) || field(got, "from", "name") != "Renamed Agent" {
-		t.Fatalf("ending notice: %v", got)
+	if got := last[len(last)-1]; !strings.Contains(field(got, "text"), "done") || field(got, "from", "name") != "Renamed Agent" {
+		t.Fatalf("reported-name notice: %v", got)
 	}
 	if rows := h.listedRuns(root); rows[0].Name != "Renamed Agent" {
 		t.Fatalf("ended but still live name: %+v", rows)

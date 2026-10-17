@@ -27,7 +27,6 @@ let agent_status ~dir ~pane ~id ~session_file ~inbox ~activity ~model ~name =
       cwd = Sys.getcwd ();
       model = "";
       tools = [];
-      keep_alive = false;
       started_at = now;
     };
   Run.write_pi ~dir id ~holder:pid

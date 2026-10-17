@@ -179,8 +179,8 @@ func TestSpawnModelMustBeAConfiguredProvidersOwn(t *testing.T) {
 	}
 }
 
-// A child ending itself with no turn ever run (`kido run-outcome
-// --unreported`, what share/pi/kido-agents.ts's idle self-exit calls) must
+// A child ending itself with no turn ever run (`kido run-outcome`, what
+// share/pi/kido-agents.ts's session end calls) must
 // save its own pane's screen before it exits, not leave that to a sweep
 // that may never run before the window closes. The window is kept alive
 // (`sleep 300`) so the screen file existing right after run-outcome
@@ -196,7 +196,7 @@ func TestRunOutcomeCapturesScreenBeforeWindowCloses(t *testing.T) {
 	// The sleep before run-outcome is not decoration: kido tool spawn_subagent
 	// writes meta.json only after Tmux.Exec.new_window returns, so calling
 	// run-outcome immediately could win the race against that file existing.
-	script := fmt.Sprintf(`echo %s; sleep 0.3; %s run-outcome --result failed --unreported --text "%s" -- "$KIDO_AGENT_RUN_ID"; sleep 300`,
+	script := fmt.Sprintf(`echo %s; sleep 0.3; %s run-outcome --result failed --text "%s" -- "$KIDO_AGENT_RUN_ID"; sleep 300`,
 		marker, kidoBin, noTurnText)
 	runID, windowID := h.spawnRun("no-turn-e2e", script)
 

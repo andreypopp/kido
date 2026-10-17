@@ -88,6 +88,11 @@ const injected: Array<[string, string, string]> = [
   ["a notice (deliverNotice)", "notice from <from> (a subagent or background run's report, not the user):\n<text> verbatim, as a custom message of type kido-notice; the TUI takes the header back off and shows it collapsed as \"notification from <from>: <first line>\"", "steer"],
   ["a stream batch (flushStreams)", "async run \"<name>\" output (run <id>)\n<the last lines, capped>; with lines dropped: \"... N lines omitted (see <output path>)\" first", "steer, at a moment that costs no turn"],
   ["an unknown kind", "[unrecognised message kind \"<kind>\" from <from>] <text>", "followUp"],
+  [
+    "a settled turn with no report (agent_settled)",
+    "notice from <from> (a subagent or background run's report, not the user):\nsubagent <run id> is idle without reporting: its last turn ended and it did not call notify_parent. Continue it with message_agent, or end it with stop_run.",
+    "sent through `kido tool notify_parent --status`, so it is not the child's report: it leaves no report file and carries no guidance",
+  ],
   ["message_agent's result while answering an ask", "delivered to <to> by inbox That message_agent call is the entire response - end the turn there, with no summary or sign-off after it.", "tool result"],
 ];
 for (const [when, text, how] of injected) {
@@ -106,5 +111,6 @@ subagent "<name>" ended without recording an outcome of its own, so kido recorde
 detail: <text>   [when there is one]
 run: <id>
 resume: spawn_subagent(resume: "<id>")`, "```", "");
-out.push("A notify_parent report over 4000 bytes is sent as its head plus:", "", "```", "\n\nfull report: <path>", "```", "");
+out.push("Every real notify_parent report is kept whole in the run's report file. One that does not fit beside the guidance in the 4000-byte notice is sent as its head plus:", "", "```", "\n\nfull report: <path>", "```", "");
+out.push("Every notify_parent notice also ends with:", "", "```", "The child stays alive after it reports. End it with stop_run when you need nothing more from it. To continue it, use message_agent.", "```", "");
 process.stdout.write(out.join("\n"));

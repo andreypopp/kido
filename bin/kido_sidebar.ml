@@ -1174,8 +1174,7 @@ let%test_module "Tests" =
     0.050
     |}]
 
-    let%expect_test
-        "a lingering subagent still nests, and a live split of a keepAlive pi is the bug report" =
+    let%expect_test "a lingering subagent still nests, and a live split of a pi is the bug report" =
       render
         ~lingering:[ ("helper", run_info ~parent:"root-sess" "subagent") ]
         [

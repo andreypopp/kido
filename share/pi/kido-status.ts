@@ -183,8 +183,7 @@ export interface AgentHooks {
   inboxLost(): void;
   // Called after the inbox is down and before the removal report.
   sessionEnding(reason?: ShutdownReason): Promise<void>;
-  // Resets the idle self-exit timer on every signal kido-status.ts already
-  // treats as "this session has work to do", so it never fires mid-turn.
+  // Every signal kido-status.ts already treats as "this session has work to do".
   workStarted(): void;
   handleEnvelope(env: Envelope): Promise<"ok" | "refused">;
 }
@@ -270,8 +269,8 @@ export default function (pi: ExtensionAPI) {
   // inside the loop and joins the run already under way. deliverAs is only consulted
   // while streaming: pi sends immediately when the session is idle.
   const deliver = (text: string, deliverAs: DeliverAs = "followUp"): void => {
-    // Must run before pi.sendUserMessage: the idle self-exit timer must not fire in
-    // the gap between this call and pi's own turn_start.
+    // Must run before pi.sendUserMessage, so work that starts now is never read as the
+    // previous turn's idle settle.
     seam().agents?.workStarted();
     pi.sendUserMessage(text, { deliverAs });
   };

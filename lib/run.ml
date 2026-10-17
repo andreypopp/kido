@@ -55,7 +55,6 @@ type meta = {
   cwd : string;
   model : string; [@default ""] [@yojson_drop_default.equal]
   tools : string list; [@default []] [@yojson_drop_default.equal]
-  keep_alive : bool; [@key "keepAlive"] [@default false] [@yojson_drop_default.equal]
   started_at : Timestamp.t; [@key "startedAt"]
 }
 [@@deriving yojson]
@@ -197,7 +196,7 @@ let prepare_start ~dir id = function
   | Fresh_start -> ()
   | (Continue_session | Restart_task) as start ->
       List.iter Fs.remove
-        ([ outcome_path ~dir id; screen_path ~dir id ]
+        ([ outcome_path ~dir id; screen_path ~dir id; report_path ~dir id ]
         @ match start with Restart_task -> [ delivered_path ~dir id ] | _ -> [])
 
 let read_outcome ~dir id = Fs.read_json (outcome_path ~dir id) outcome_of_yojson
@@ -225,19 +224,6 @@ let list ~dir =
       |> List.filter_map (fun name ->
           Result.to_opt (parse_id name)
           |> Option.filter (fun _ -> Sys.is_directory (Filename.concat runs name)))
-
-let keep_alive ~dir id =
-  match read_meta ~dir id with
-  | Some m -> Some m.keep_alive
-  | None -> if Sys.file_exists (meta_path ~dir id) then None else Some false
-
-let children_alive ~dir id =
-  List.exists
-    (fun child ->
-      match read_meta ~dir child with
-      | Some m -> Option.exists (equal_id id) m.parent && Option.is_none (effective_outcome ~dir m)
-      | None -> false)
-    (list ~dir)
 
 let select ~dir target =
   let runs = List.filter_map (read_meta ~dir) (list ~dir) in
@@ -325,7 +311,6 @@ let%test_module "Tests" =
         cwd = "";
         model = "";
         tools = [];
-        keep_alive = false;
         started_at = 0.;
       }
 
@@ -366,7 +351,6 @@ let%test_module "Tests" =
           cwd = "/tmp";
           model = "";
           tools = [];
-          keep_alive = false;
           started_at = Timestamp.now ();
         };
       let got = Option.get_exn_or "ReadMeta" (read_meta ~dir i) in
@@ -460,22 +444,31 @@ let%test_module "Tests" =
       Fs.write (in_run ~dir i "screen") "captured";
       ignore (record_outcome ~dir i { result = Died; text = ""; at = None });
       Fs.write (in_run ~dir i "delivered") "";
+      write_report ~dir i "the last life's report";
       prepare_start ~dir i Restart_task;
       Printf.printf "screen gone: %b\n" (Option.is_none (read_screen ~dir i));
       Printf.printf "outcome gone: %b\n" (Option.is_none (read_outcome ~dir i));
       Printf.printf "delivered gone: %b\n" (not (Sys.file_exists (in_run ~dir i "delivered")));
-      [%expect {|
+      Printf.printf "report gone: %b\n" (not (has_report ~dir i));
+      [%expect
+        {|
     screen gone: true
     outcome gone: true
     delivered gone: true
+    report gone: true
     |}]
 
-    let%expect_test "Continue_session keeps the delivered marker" =
+    let%expect_test "Continue_session keeps the delivered marker and clears the report" =
       let dir, i = fresh_run "run-screen-clear-2" in
       Fs.write (in_run ~dir i "delivered") "";
+      write_report ~dir i "the last life's report";
       prepare_start ~dir i Continue_session;
       Printf.printf "delivered kept: %b\n" (Sys.file_exists (in_run ~dir i "delivered"));
-      [%expect {| delivered kept: true |}]
+      Printf.printf "report gone: %b\n" (not (has_report ~dir i));
+      [%expect {|
+    delivered kept: true
+    report gone: true
+    |}]
 
     let%expect_test "effective_outcome: recorded, else derived from the process" =
       let dir = temp () in

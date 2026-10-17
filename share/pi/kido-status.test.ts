@@ -93,20 +93,6 @@ switch (args[0]) {
     break;
   }
   case "get-agent": {
-    if (args.includes("--children")) {
-      const logFile = process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG;
-      if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
-      const mode = process.env.KIDO_FAKE_CHILDREN_ALIVE;
-      if (mode === "fail") process.exit(1);
-      const respond = () => {
-        const meta = path.join(process.env.KIDO_FAKE_STATE_DIR, "runs", args[1], "meta.json");
-        const keepAlive = fs.existsSync(meta) && JSON.parse(fs.readFileSync(meta, "utf8")).keepAlive === true;
-        process.stdout.write(JSON.stringify({ id: args[1], alive: true, childrenAlive: mode === "1", keepAlive }) + "\\n");
-        process.exit(0);
-      };
-      if (mode === "timeout") setTimeout(respond, 10000); else respond();
-      break;
-    }
     const logFile = process.env.KIDO_FAKE_PARENT_ALIVE_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     // Named sessions answer "false" whatever the global mode says, so a test can
@@ -176,7 +162,7 @@ switch (args[0]) {
       // Logged either way: a test asserting a dropped delivery still needs to see
       // the attempt was made, with the right kind and target.
       const logFile = process.env.KIDO_FAKE_LOG;
-      if (logFile) fs.appendFileSync(logFile, JSON.stringify({ kind, replyTo, id, to, text, failed }) + "\\n");
+      if (logFile) fs.appendFileSync(logFile, JSON.stringify({ kind, replyTo, id, to, text, failed, args: argv }) + "\\n");
       if (failed) {
         process.stderr.write("kido tool " + args[0] + ": no agent listening on the inbox\\n");
         process.exit(1);
@@ -203,12 +189,6 @@ switch (args[0]) {
   case "run-outcome": {
     const logFile = process.env.KIDO_FAKE_RUN_OUTCOME_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
-    process.exit(0);
-  }
-  case "get-window": {
-    const logFile = process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
-    process.stdout.write(JSON.stringify({ id: args[1], focused: process.env.KIDO_FAKE_WINDOW_FOCUSED === "1" }) + "\\n");
     process.exit(0);
   }
   case "interrupt_subagent":
@@ -244,12 +224,8 @@ interface Fixture {
   parentAliveCalls(): string[][];
   setInboxFail(fail: boolean): void;
   setMessageFailTo(to: string | undefined): void;
-  setWindowFocused(focused: boolean): void;
-  windowFocusedCallCount(): number;
-  setChildrenAlive(alive: boolean): void;
-  childrenAliveCalls(): string[][];
   selfInboxPath(): string;
-  lastLogFor(to: string, kind?: string): { id: string; replyTo: string; to: string; text: string; failed?: boolean } | undefined;
+  lastLogFor(to: string, kind?: string): { id: string; replyTo: string; to: string; text: string; failed?: boolean; args: string[] } | undefined;
   lastSpawnArgs(): string[] | undefined;
   lastSpawnTask(): string | undefined;
   lastSpawnCaller(): string | undefined;
@@ -263,7 +239,7 @@ interface Fixture {
   statusReportsWithRemove(): string[][];
   agentsCallCount(): number;
   lastControlArgs(): string[] | undefined;
-  waitForLog(to: string, kind?: string, ms?: number): Promise<{ id: string; replyTo: string; to: string; text: string; failed?: boolean }>;
+  waitForLog(to: string, kind?: string, ms?: number): Promise<{ id: string; replyTo: string; to: string; text: string; failed?: boolean; args: string[] }>;
   sessions: Array<() => Promise<unknown>>;
   restore(): Promise<void>;
 }
@@ -326,10 +302,6 @@ function makeFixture(): Fixture {
   writeFileSync(asyncBashLogFile, "");
   writeFileSync(agentsCallLogFile, "");
   writeFileSync(parentAliveLogFile, "");
-  const windowFocusedLogFile = join(dir, "get-window.jsonl");
-  writeFileSync(windowFocusedLogFile, "");
-  const childrenAliveLogFile = join(dir, "get-agent --children.jsonl");
-  writeFileSync(childrenAliveLogFile, "");
 
   const saved = {
     ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("KIDO_AGENT_"))),
@@ -349,10 +321,6 @@ function makeFixture(): Fixture {
     KIDO_FAKE_PARENT_ALIVE: process.env.KIDO_FAKE_PARENT_ALIVE,
     KIDO_FAKE_PARENT_ALIVE_DELAY_MS: process.env.KIDO_FAKE_PARENT_ALIVE_DELAY_MS,
     KIDO_FAKE_DEAD_FILE: process.env.KIDO_FAKE_DEAD_FILE,
-    KIDO_FAKE_WINDOW_FOCUSED_LOG: process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG,
-    KIDO_FAKE_WINDOW_FOCUSED: process.env.KIDO_FAKE_WINDOW_FOCUSED,
-    KIDO_FAKE_CHILDREN_ALIVE_LOG: process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG,
-    KIDO_FAKE_CHILDREN_ALIVE: process.env.KIDO_FAKE_CHILDREN_ALIVE,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
     KIDO_FAKE_INBOX_FAIL: process.env.KIDO_FAKE_INBOX_FAIL,
     KIDO_FAKE_MESSAGE_FAIL_TO: process.env.KIDO_FAKE_MESSAGE_FAIL_TO,
@@ -378,10 +346,6 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_DEAD_FILE = deadSessionsFile;
   delete process.env.KIDO_FAKE_PARENT_ALIVE; // default: the parent is alive
   delete process.env.KIDO_FAKE_PARENT_ALIVE_DELAY_MS;
-  process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG = windowFocusedLogFile;
-  delete process.env.KIDO_FAKE_WINDOW_FOCUSED; // default: not focused
-  process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG = childrenAliveLogFile;
-  delete process.env.KIDO_FAKE_CHILDREN_ALIVE; // default: this session started nothing
   process.env.KIDO_FAKE_INBOX_DIR = inboxDir;
   delete process.env.KIDO_FAKE_INBOX_FAIL;
   delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
@@ -417,20 +381,6 @@ function makeFixture(): Fixture {
     setMessageFailTo(to) {
       if (to) process.env.KIDO_FAKE_MESSAGE_FAIL_TO = to;
       else delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
-    },
-    setWindowFocused(focused) {
-      if (focused) process.env.KIDO_FAKE_WINDOW_FOCUSED = "1";
-      else delete process.env.KIDO_FAKE_WINDOW_FOCUSED;
-    },
-    windowFocusedCallCount() {
-      return jsonLines(windowFocusedLogFile).length;
-    },
-    setChildrenAlive(alive) {
-      if (alive) process.env.KIDO_FAKE_CHILDREN_ALIVE = "1";
-      else delete process.env.KIDO_FAKE_CHILDREN_ALIVE;
-    },
-    childrenAliveCalls() {
-      return jsonLines(childrenAliveLogFile);
     },
     lastSpawnArgs() {
       return last(jsonLines(spawnLogFile))?.args;
@@ -2612,7 +2562,7 @@ test("list_runs returns both kinds and tool prompts crosslink listing and stoppi
     assert.match(stop.description, /sends TERM to a bash wrapper/);
     for (const name of ["spawn_subagent", "async_bash"]) {
       const tool = s.tools.get(name);
-      assert.match(tool.description, /list_runs.*stop_run/);
+      assert.match(tool.description, /stop_run/);
       assert.match(tool.promptSnippet, /list_runs.*stop_run/);
       assert.ok(tool.promptGuidelines.some((r: string) => /list_runs.*stop_run/.test(r)));
     }
@@ -2655,7 +2605,7 @@ test("spawn_subagent and ask_agent's descriptions teach the notify_parent patter
     const s = await startSession(fx);
     assert.match(
       s.tools.get("spawn_subagent").description!,
-      /Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result; list_runs.*stop_run/,
+      /Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result; it stays alive after it reports, so end it with stop_run.*continue it with message_agent/,
     );
     assert.match(
       s.tools.get("ask_agent").description!,
@@ -3049,11 +2999,9 @@ test("a missing KIDO_AGENT_TASK_FILE does not break session_start", async () => 
   }
 });
 
-// Pins a real incident: a child whose pi could not start a model at all never ran
-// a turn, so the old settled-turn-only idle-exit armed nothing and it ran forever,
-// indistinguishable to its parent from a child hard at work. The clock is now
-// armed from the task's own delivery instead.
-test("a child whose task is delivered but whose first turn never starts self-exits and records that no turn ever ran", async () => {
+// A child whose pi could not start a model at all never ran a turn; when it
+// ends, the ending says so, so the parent can tell it from one that ended mid-work.
+test("a child whose first turn never starts records that no turn ever ran when it ends", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@7" }]);
@@ -3066,29 +3014,25 @@ test("a child whose task is delivered but whose first turn never starts self-exi
         const s = await startWithShutdownSpy(fx, factory, "never-started-run");
         assert.ok(s.delivered.some((d) => d.text === "do the important thing"), "the task was delivered, as it was in the incident");
 
-        await pollUntil(() => s.shutdowns() > 0, 2000, "the idle self-exit to fire for a child that never started a turn");
+        await new Promise((r) => setTimeout(r, 300));
+        assert.equal(s.shutdowns(), 0, "no timer ends a child that never started a turn");
 
         await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
         const args = fx.lastRunOutcomeArgs();
         assert.ok(args, "an outcome is recorded for a run that ended this way");
         assert.deepEqual(args!.slice(0, 3), ["run-outcome", "--result", "failed"], "a child that never worked did not complete");
-        assert.ok(args!.includes("--unreported"), "and its parent is owed the one notice its silence earns");
-        assert.match(argAfter(args!, "--text") ?? "", /no turn/i, "the notice's detail tells a parent 'never started' from 'ended mid-work'");
+        assert.match(argAfter(args!, "--text") ?? "", /no turn/i, "the outcome's detail tells a parent 'never started' from 'ended mid-work'");
         assert.equal(args![args!.length - 1], "never-started-run", "recorded against this run");
       },
-      {
-        KIDO_AGENT_TASK_FILE: taskFile,
-        KIDO_PARENT_POLL_MS: "5000",
-        KIDO_IDLE_EXIT_SECONDS: "0.05",
-      },
+      { KIDO_AGENT_TASK_FILE: taskFile, KIDO_PARENT_POLL_MS: "5000" },
     );
   } finally {
     await fx.restore();
   }
 });
 
-// Negative control: a child whose task does start a turn is unaffected.
-test("a child whose task starts a turn is untouched by the startup clock", async () => {
+// Negative control: a child whose task starts a turn gets the ordinary ending.
+test("a child whose task starts a turn ends as completed", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@7" }]);
@@ -3100,48 +3044,63 @@ test("a child whose task starts a turn is untouched by the startup clock", async
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory, "working-run");
         await s.emit("agent_start", {});
-
-        await new Promise((r) => setTimeout(r, 300)); // six idle windows
-        assert.equal(s.shutdowns(), 0, "a child whose first turn started is never shut down out from under its own work");
-
         await s.emit("agent_settled", {}, { isIdle: () => true });
-        await pollUntil(() => s.shutdowns() > 0, 2000, "the ordinary idle self-exit still fires after a settled turn");
+        await new Promise((r) => setTimeout(r, 300));
+        assert.equal(s.shutdowns(), 0, "a settled child is never shut down out from under its own work");
         await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
         assert.deepEqual(
           fx.lastRunOutcomeArgs(),
-          ["run-outcome", "--result", "completed", "--unreported", "--", "working-run"],
+          ["run-outcome", "--result", "completed", "--", "working-run"],
           "the outcome a working child has always got, detail and all",
         );
       },
-      {
-        KIDO_AGENT_TASK_FILE: taskFile,
-        KIDO_PARENT_POLL_MS: "5000",
-        KIDO_IDLE_EXIT_SECONDS: "0.05",
-      },
+      { KIDO_AGENT_TASK_FILE: taskFile, KIDO_PARENT_POLL_MS: "5000" },
     );
   } finally {
     await fx.restore();
   }
 });
 
-// A settled turn and a plain shutdown must not tell the parent anything on their
-// own; a subagent that wants that calls notify_parent itself.
-test("a settled turn sends no automatic notice, and neither does a plain shutdown", async () => {
+// A settled turn with no report would leave the parent waiting forever now
+// that nothing ends the child; say once per turn that it is idle and unreported.
+test("a settled turn without a report tells the parent once that the child is idle; a reported one does not", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
-    await asSubagent(DEFAULT_SESSION, async () => {
+    await asSubagent("idle-run", async () => {
       const factory = await freshExtensions();
-      const s = await startSession(fx, { factory });
+      const s = await startWithShutdownSpy(fx, factory, "idle-run");
+      await s.emit("agent_start", {});
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      const first = await fx.waitForLog("boss-session", "notice");
+      assert.match(first!.text, /idle without reporting/, "the notice says the child is idle and did not report");
+      assert.match(first!.text, /stop_run/, "it tells the parent how to end the child");
+      assert.match(first!.text, /message_agent/, "and how to continue it");
+      assert.ok(jsonLines(fx.logFile)[0].args.includes("--status"), "the idle notice is a status, not a report");
+
       await s.emit("agent_settled", {}, { isIdle: () => true });
       await new Promise((r) => setTimeout(r, 200));
-      assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "a settle must send no notice on its own");
-      await s.emit("session_shutdown");
-      await new Promise((r) => setTimeout(r, 200));
-      assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "a plain shutdown must send no notice either");
+      assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 1, "one notice per settled turn, not repeats");
+      assert.equal(s.shutdowns(), 0, "the child stays alive until its parent decides");
     });
   } finally {
     await fx.restore();
+  }
+
+  const fx2 = makeFixture();
+  try {
+    fx2.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    await asSubagent("reported-run", async () => {
+      const factory = await freshExtensions();
+      const s = await startWithShutdownSpy(fx2, factory, "reported-run");
+      const res = await s.tools.get("notify_parent").execute("c1", { summary: "done" });
+      assert.match(res.content[0].text, /delivered/, "the report went out");
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(jsonLines(fx2.logFile).filter((l) => l.kind === "notice").length, 1, "only the child's own report: a reported turn needs no idle notice");
+    });
+  } finally {
+    await fx2.restore();
   }
 });
 
@@ -3456,6 +3415,7 @@ test("a subagent's errored turn notifies the parent at once, naming the error an
       assert.match(sent!.text, /prompt-capture: no capture for this system prompt/);
       assert.match(sent!.text, /run-errored/, "names the run id so the parent can act on it");
       assert.match(sent!.text, /resume|retry/i, "says how to continue it");
+      assert.ok(sent!.args.includes("--status"), "an error notice is a status, not a report: a later stop must record stopped");
     });
   } finally {
     await fx.restore();
@@ -3527,9 +3487,8 @@ test("once per error: a redundant settle does not resend, and a later fresh fail
   }
 });
 
-// The backstop: even with no immediate notice, the idle-exit ending notice a
-// silent child gets must carry the last turn's own error.
-test("the idle-exit ending's outcome text carries the last turn's error when the child never reported", async () => {
+// A silent child's ending must carry the last turn's own error.
+test("the ending outcome text carries the last turn's error when the child never reported", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
@@ -3541,7 +3500,7 @@ test("the idle-exit ending's outcome text carries the last turn's error when the
       await fx.waitForLog("boss-session", "notice");
       await s.emit("session_shutdown");
       const args = fx.lastRunOutcomeArgs();
-      assert.deepEqual(args?.slice(0, 4), ["run-outcome", "--result", "completed", "--unreported"]);
+      assert.deepEqual(args?.slice(0, 3), ["run-outcome", "--result", "completed"]);
       const i = args!.indexOf("--text");
       assert.ok(i >= 0, "the ending outcome carries a --text detail");
       assert.match(args![i + 1], /last turn failed/);
@@ -3560,7 +3519,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
       const factory = await freshExtensions();
       const s = await startSession(fx, { factory, sessionId: "run-completed" });
       await s.emit("session_shutdown");
-      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--unreported", "--", "run-completed"]);
+      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--", "run-completed"]);
     });
   } finally {
     await fx.restore();
@@ -3574,7 +3533,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
       const s = await startSession(fx2, { factory, sessionId: "run-failed" });
       await s.emit("agent_start");
       await s.emit("session_shutdown");
-      assert.deepEqual(fx2.lastRunOutcomeArgs(), ["run-outcome", "--result", "failed", "--unreported", "--", "run-failed"]);
+      assert.deepEqual(fx2.lastRunOutcomeArgs(), ["run-outcome", "--result", "failed", "--", "run-failed"]);
     });
   } finally {
     await fx2.restore();
@@ -3608,7 +3567,7 @@ test("a session_shutdown that is a reload or a session replacement records no ou
       const factory = await freshExtensions();
       const s = await startSession(fx, { factory, sessionId: "run-quit" });
       await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
-      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--unreported", "--", "run-quit"]);
+      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--", "run-quit"]);
     });
   } finally {
     await fx.restore();
@@ -3686,20 +3645,17 @@ test("a process that merely inherited a subagent's environment is not a subagent
         assert.match(result.content[0].text, /no parent/i, "notify_parent refuses rather than reporting to the real child's parent");
         assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "and sends nothing");
 
-        // Several times over both the 50ms idle interval and the 20ms
-        // parent poll, whose parent is gone: neither clock belongs to this
-        // process, so neither may end it.
+        // Several times over the 20ms parent poll, whose parent is gone: the
+        // child's clock does not belong to this process, so it may not end it.
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await new Promise((r) => setTimeout(r, 300));
-        assert.equal(s.shutdowns(), 0, "it never self-exits on a child's idle timer or a child's parent poll");
+        assert.equal(s.shutdowns(), 0, "it never self-exits on a child's parent poll");
+        assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "nor does it send an idle notice as a child");
 
         await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
         assert.equal(fx.lastRunOutcomeArgs(), undefined, "the real child's run is never given an outcome");
       },
-      {
-        KIDO_PARENT_POLL_MS: "20",
-        KIDO_IDLE_EXIT_SECONDS: "0.05",
-      },
+      { KIDO_PARENT_POLL_MS: "20" },
     );
   } finally {
     await fx.restore();
@@ -3730,15 +3686,13 @@ test("a real subagent, fresh or resumed, is still a subagent in every respect", 
           assert.equal(sent!.text, "done", `${runID}: the notice reaches the parent`);
 
           await s.emit("agent_settled", {}, { isIdle: () => true });
-          await pollUntil(() => s.shutdowns() > 0, 2000, `${runID}: idle self-exit still fires`);
+          await new Promise((r) => setTimeout(r, 300));
+          assert.equal(s.shutdowns(), 0, `${runID}: nothing ends a reported child but its parent`);
 
           await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
           assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--", runID], `${runID}: the outcome is recorded against the run`);
         },
-        {
-          KIDO_PARENT_POLL_MS: "5000",
-          KIDO_IDLE_EXIT_SECONDS: "0.05",
-        },
+        { KIDO_PARENT_POLL_MS: "5000" },
       );
     } finally {
       await fx.restore();
@@ -3768,12 +3722,12 @@ test("an unresolved session id is not a subagent, whatever the environment claim
 
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await new Promise((r) => setTimeout(r, 300));
-        assert.equal(s.shutdowns(), 0, "and no idle self-exit armed on an unverified claim");
+        assert.equal(s.shutdowns(), 0, "and no child's clock armed on an unverified claim");
 
         const result = await s.tools.get("notify_parent").execute("call-1", { summary: "nobody to tell" });
         assert.match(result.content[0].text, /no parent/i, "notify_parent refuses rather than guessing");
       },
-      { KIDO_IDLE_EXIT_SECONDS: "0.05" },
+      {},
     );
   } finally {
     await fx.restore();
@@ -4706,208 +4660,9 @@ test("a live target that takes its time is still waited for, and its reply is wh
   }
 });
 
-async function withIdleExitEnv<T>(seconds: number, fn: () => Promise<T>): Promise<T> {
-  return withEnv({ KIDO_IDLE_EXIT_SECONDS: String(seconds) }, fn);
-}
-
-test("idle self-exit: a settled turn with no further work shuts the session down after the configured idle interval, measured", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    await withParentEnv("boss-session", 5000, async () => {
-      await withIdleExitEnv(0.1, async () => {
-        const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(fx, factory);
-        const t0 = Date.now();
-        await s.emit("agent_settled", {}, { isIdle: () => true });
-        await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() after the idle interval");
-        const elapsed = Date.now() - t0;
-        assert.ok(elapsed >= 100, `shut down after ${elapsed}ms, want at least the configured 100ms idle interval`);
-        assert.ok(elapsed < 1500, `shut down after ${elapsed}ms, want well under 1500ms - it must not wait on the heartbeat or the parent poll`);
-      });
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("idle self-exit: new work resets the timer instead of letting it fire mid-turn", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    await withParentEnv("boss-session", 5000, async () => {
-      await withIdleExitEnv(0.15, async () => {
-        const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(fx, factory);
-        await s.emit("agent_settled", {}, { isIdle: () => true }); // arms the 150ms timer
-        await new Promise((r) => setTimeout(r, 80)); // well under it
-        await s.emit("turn_start"); // new work: must cancel the pending shutdown
-        await new Promise((r) => setTimeout(r, 100)); // would have fired by 150ms from the settle, had it not reset
-        assert.equal(s.shutdowns(), 0, "new work must cancel the pending idle self-exit");
-        await s.emit("agent_settled", {}, { isIdle: () => true }); // the follow-up turn settles too
-        await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() once idle again after the follow-up");
-      });
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("idle self-exit: a root session (no parent) never arms the timer", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }]);
-    const saved = process.env.KIDO_AGENT_PARENT_SESSION;
-    delete process.env.KIDO_AGENT_PARENT_SESSION;
-    try {
-      await withIdleExitEnv(0.05, async () => {
-        const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(fx, factory);
-        await s.emit("agent_settled", {}, { isIdle: () => true });
-        await new Promise((r) => setTimeout(r, 300)); // several times the configured interval
-        assert.equal(s.shutdowns(), 0, "a root session must never self-reap");
-      });
-    } finally {
-      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_SESSION;
-      else process.env.KIDO_AGENT_PARENT_SESSION = saved;
-    }
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("idle self-exit: keepAlive is read from the run at each check", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    await withParentEnv("boss-session", 5000, async () => {
-      await withIdleExitEnv(0.05, async () => {
-        const meta = join(fx.runsDir, DEFAULT_SESSION, "meta.json");
-        mkdirSync(dirname(meta), { recursive: true });
-        writeFileSync(meta, JSON.stringify({ keepAlive: true }));
-        const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(fx, factory);
-        await s.emit("agent_settled", {}, { isIdle: () => true });
-        await new Promise((r) => setTimeout(r, 300));
-        assert.equal(s.shutdowns(), 0, "keepAlive must prevent idle shutdown");
-        await pollUntil(() => fx.childrenAliveCalls().length >= 2, 2000, "keepAlive re-arming");
-        writeFileSync(meta, JSON.stringify({ keepAlive: false }));
-        await pollUntil(() => s.shutdowns() > 0, 2000, "shutdown after keepAlive is disabled");
-      });
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("idle self-exit: a focused window re-arms instead of shutting down, then exits once unfocused", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    fx.setWindowFocused(true);
-    await withParentEnv("boss-session", 5000, async () => {
-      await withIdleExitEnv(0.05, async () => {
-        const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(fx, factory);
-        await s.emit("agent_settled", {}, { isIdle: () => true });
-        await new Promise((r) => setTimeout(r, 600));
-        assert.equal(s.shutdowns(), 0, "a focused window must not be closed out from under the user");
-        assert.ok(
-          fx.windowFocusedCallCount() >= 2,
-          `get-window was checked ${fx.windowFocusedCallCount()} times, want re-arming to have checked more than once`,
-        );
-
-        fx.setWindowFocused(false);
-        await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() once the window is no longer focused");
-      });
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
-// Pins a real incident: a parent spawned a child, settled its own turn to wait
-// for the report - indistinguishable from a finished session - and the orphan
-// rule closed the child's window mid-work 30s later.
-test("idle self-exit: a live child run re-arms the clock, and the session exits once that child has ended", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    fx.setChildrenAlive(true);
-    await withParentEnv("boss-session", 5000, async () => {
-      await withIdleExitEnv(0.05, async () => {
-        const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(fx, factory);
-        await s.emit("agent_settled", {}, { isIdle: () => true });
-        await new Promise((r) => setTimeout(r, 600));
-        assert.equal(s.shutdowns(), 0, "a session waiting on a child it spawned is not idle");
-        assert.ok(
-          fx.childrenAliveCalls().length >= 2,
-          `get-agent --children was asked ${fx.childrenAliveCalls().length} times, want re-arming to have asked more than once`,
-        );
-
-        // Negative control: the last child ends and the clock resumes.
-        fx.setChildrenAlive(false);
-        await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() once the child has ended");
-      });
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
-for (const mode of ["fail", "timeout"]) {
-  test(`idle self-exit: a ${mode} children check re-arms until it definitely answers false`, { timeout: 15000 }, async () => {
-    const fx = makeFixture();
-    try {
-      fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-      process.env.KIDO_FAKE_CHILDREN_ALIVE = mode;
-      await withParentEnv("boss-session", 5000, async () => {
-        await withIdleExitEnv(0.05, async () => {
-          const factory = await freshExtensions();
-          const s = await startWithShutdownSpy(fx, factory);
-          await s.emit("agent_settled", {}, { isIdle: () => true });
-          await pollUntil(() => fx.childrenAliveCalls().length >= 2 || s.shutdowns() > 0, 6000, "another children check or shutdown");
-          if (mode === "timeout") await new Promise((resolve) => setTimeout(resolve, 2500));
-          assert.equal(s.shutdowns(), 0, "an inconclusive children check must not shut down the session");
-          assert.ok(fx.childrenAliveCalls().length >= 2, "the children check must re-arm");
-          fx.setChildrenAlive(false);
-          await pollUntil(() => s.shutdowns() > 0, 5000, "shutdown after a definite no-live-children answer");
-        });
-      });
-    } finally {
-      await fx.restore();
-    }
-  });
-}
-
-// pi may decline a shutdown request while mid-compaction; the clock must not
-// take ctx.shutdown() at its word, and re-arms so a declined request is asked for again.
-test("idle self-exit: a shutdown pi declined is asked for again", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
-    await withParentEnv("boss-session", 5000, async () => {
-      await withIdleExitEnv(0.05, async () => {
-        const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(fx, factory);
-        await s.emit("agent_settled", {}, { isIdle: () => true });
-        await pollUntil(() => s.shutdowns() > 0, 2000, "the first ctx.shutdown() attempt");
-        await s.emit("session_before_compact");
-        await s.emit("session_compact", {}, { isIdle: () => true });
-        await pollUntil(
-          () => s.shutdowns() > 1,
-          2000,
-          "a second ctx.shutdown() after the declined attempt's idle window",
-        );
-      });
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a child that never called notify_parent flags its silence as it ends, and one that did does not", async () => {
+// A child that reported and then ended: kido derives "unreported" from the
+// report file it wrote, so the child's own ending is not made to speak for it.
+test("a child that reported and a silent one record the same ending args; kido decides who speaks", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
@@ -4916,14 +4671,13 @@ test("a child that never called notify_parent flags its silence as it ends, and 
       const s = await startSession(fx, { factory, sessionId: "run-silent" });
       await s.emit("session_shutdown");
       assert.deepEqual(fx.lastRunOutcomeArgs(), [
-        "run-outcome", "--result", "completed", "--unreported", "--", "run-silent",
-      ], "a silent child asks kido to speak for it");
+        "run-outcome", "--result", "completed", "--", "run-silent",
+      ], "kido decides who speaks from the report file, so the child asks for nothing more");
     });
   } finally {
     await fx.restore();
   }
 
-  // Negative control: a child that reported must not get a second notice too.
   const fx2 = makeFixture();
   try {
     fx2.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
@@ -4935,26 +4689,9 @@ test("a child that never called notify_parent flags its silence as it ends, and 
       await s.emit("session_shutdown");
       assert.deepEqual(fx2.lastRunOutcomeArgs(), [
         "run-outcome", "--result", "completed", "--", "run-spoke",
-      ], "a child that reported must not have a second ending sent for it");
+      ], "a child that reported gets the same ending args");
     });
   } finally {
     await fx2.restore();
-  }
-});
-
-test("spawn_subagent passes --keep-alive through only when keepAlive is set", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    const s = await startSession(fx);
-    const spawn = s.tools.get("spawn_subagent");
-
-    await spawn.execute("c1", { task: "a", name: "kid-a" });
-    assert.ok(!fx.lastSpawnArgs()!.includes("--keep-alive"), "omitted keepAlive must not pass --keep-alive");
-
-    await spawn.execute("c2", { task: "b", name: "kid-b", keepAlive: true });
-    assert.ok(fx.lastSpawnArgs()!.includes("--keep-alive"), "keepAlive: true must pass --keep-alive");
-  } finally {
-    await fx.restore();
   }
 });

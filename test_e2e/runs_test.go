@@ -41,9 +41,9 @@ func (r *runInfo) UnmarshalJSON(b []byte) error {
 // spawnRun is runSpawn but lets the caller supply the command's script
 // directly: runSpawn's own fixed "env; pwd; sleep" script never exits on
 // its own, which every test here needs control over.
-func (h *harness) spawnRun(name, script string) (runID, windowID string) {
+func (h *harness) spawnRun(name, script string, parentExtra ...string) (runID, windowID string) {
 	h.t.Helper()
-	h.liveParent("alpha", "root-e2e")
+	h.liveParent("alpha", "root-e2e", parentExtra...)
 	outFile := filepath.Join(h.dir, name+".out")
 	cmd := fmt.Sprintf("PI_SESSION_ID=root-e2e %s tool spawn_subagent --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote(script), outFile)
@@ -78,9 +78,15 @@ func (h *harness) writeTaskFile(name string) string {
 	return path
 }
 
-func (h *harness) runOutcome(runID string) string {
+// runOutcome reads one run's outcome; a tag keeps two reads of one run
+// from reusing the first read's output file.
+func (h *harness) runOutcome(runID string, tag ...string) string {
 	h.t.Helper()
-	out := h.runKido("alpha", runID+"-show.out", "runs", "--json", runID)
+	name := runID + "-show.out"
+	if len(tag) > 0 {
+		name = runID + "-" + tag[0] + "-show.out"
+	}
+	out := h.runKido("alpha", name, "runs", "--json", runID)
 	var info runInfo
 	line := strings.SplitN(out, "\n", 2)[0] // drop runKido's own trailing "rc=0" line
 	if err := json.Unmarshal([]byte(line), &info); err != nil {
@@ -108,10 +114,11 @@ func TestRunRecordSurvivesReapAsDied(t *testing.T) {
 	}
 }
 
-// Same shape, but the child reports itself before exiting, standing in
-// for pi's sendCompletionNotice (the e2e suite cannot host the
+// Same shape, but the child records its own ending before exiting,
+// standing in for pi's session end (the e2e suite cannot host the
 // extension). The recorded outcome must win over the sweep's own Died
-// guess for the same dead, marked window.
+// guess for the same dead, marked window. The child never reported, so
+// kido adds the one unreported ending notice.
 func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -128,7 +135,10 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	if got := h.runOutcome(runID); got != "completed" {
 		t.Errorf("run %s outcome = %q, want %q (the sweep's own Died guess must not win the race)", runID, got, "completed")
 	}
-	h.stableCount(in, 0, "a child that recorded its own ending is left to its own report")
+	h.stableCount(in, 1, "a child that ended without reporting is spoken for once, and the sweep adds nothing")
+	if got := in.Received()[0]; !strings.Contains(got, "completed without reporting") {
+		t.Errorf("parent inbox received %q, want the one unreported ending notice", got)
+	}
 }
 
 // A child's screen output must survive the sweep collecting its window,
@@ -177,30 +187,6 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	if got := h.runOutcome(runID); got != "stopped" {
 		t.Errorf("run %s outcome = %q, want %q", runID, got, "stopped")
 	}
-}
-
-// get-agent --children answers for one parent's runs that have not ended.
-func TestGetAgentChildrenCmd(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	alive := func(tag, session string) string {
-		return firstLine(h.runKido("alpha", "children-"+tag+".out", "get-agent", session, "--children"))
-	}
-	check := func(tag, session, want string) {
-		t.Helper()
-		if got := alive(tag, session); got != want {
-			t.Errorf("get-agent --children %s (%s) = %q, want %q", session, tag, got, want)
-		}
-	}
-
-	check("before", "root-e2e", `{"id":"root-e2e","alive":false,"keepAlive":false,"childrenAlive":false}`)
-	_, windowID := h.spawnRun("kid-e2e", "exec sleep 300")
-	check("running", "root-e2e", `{"id":"root-e2e","alive":true,"keepAlive":false,"childrenAlive":true}`)
-	check("other", "other-sess", `{"id":"other-sess","alive":false,"keepAlive":false,"childrenAlive":false}`)
-	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
-	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
-		msgf("the sidebar's sweep to close window %s", windowID))
-	check("ended", "root-e2e", `{"id":"root-e2e","alive":true,"keepAlive":false,"childrenAlive":false}`)
 }
 
 // `kido runs` and `kido runs <id>` render lib's run records for a human

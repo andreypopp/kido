@@ -98,24 +98,17 @@ func TestGetAgentCmd(t *testing.T) {
 		{"dead-sess", false},
 		{"never-existed", false},
 	} {
-		for _, children := range []bool{false, true} {
-			args := []string{"get-agent", c.session}
-			want := map[string]any{"id": c.session, "alive": c.alive}
-			if children {
-				args = append(args, "--children")
-				want["childrenAlive"] = false
-				want["keepAlive"] = false
-			}
-			got := firstLine(h.runKido("alpha", fmt.Sprintf("alive-%d-%t.out", i, children), args...))
-			var value map[string]any
-			if err := json.Unmarshal([]byte(got), &value); err != nil {
-				t.Fatalf("get-agent: %s: %v", got, err)
-			}
-			b, _ := json.Marshal(want)
-			actual, _ := json.Marshal(value)
-			if string(actual) != string(b) {
-				t.Errorf("get-agent %v = %s, want %s", args, actual, b)
-			}
+		args := []string{"get-agent", c.session}
+		want := map[string]any{"id": c.session, "alive": c.alive}
+		got := firstLine(h.runKido("alpha", fmt.Sprintf("alive-%d.out", i), args...))
+		var value map[string]any
+		if err := json.Unmarshal([]byte(got), &value); err != nil {
+			t.Fatalf("get-agent: %s: %v", got, err)
+		}
+		b, _ := json.Marshal(want)
+		actual, _ := json.Marshal(value)
+		if string(actual) != string(b) {
+			t.Errorf("get-agent %v = %s, want %s", args, actual, b)
 		}
 	}
 	if got := strings.TrimSpace(h.runKido("alpha", "empty-session.out", "get-agent", "''")); got != "kido get-agent: usage: kido get-agent SESSION\nrc=1" {

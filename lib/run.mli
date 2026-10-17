@@ -23,7 +23,6 @@ type meta = {
   cwd : string;
   model : string;
   tools : string list;
-  keep_alive : bool;
   started_at : Timestamp.t;
 }
 [@@deriving yojson_of]
@@ -80,7 +79,11 @@ val depth : dir:string -> meta -> int
 (** The number of parent edges above the run. *)
 
 val write_report : dir:string -> id -> string -> unit
+(** Replaces the run's report with the whole delivered report. *)
+
 val has_report : dir:string -> id -> bool
+(** The run has delivered a report of its work, not only a status notice. *)
+
 val read_task : dir:string -> id -> string option
 
 val record_outcome : dir:string -> id -> outcome -> bool
@@ -98,11 +101,6 @@ val effective_outcome : dir:string -> meta -> outcome option
 (** [None] only while the run is still alive. *)
 
 val list : dir:string -> id list
-
-val keep_alive : dir:string -> id -> bool option
-(** [Some false] without a meta file; [None] when it exists but is unreadable. *)
-
-val children_alive : dir:string -> id -> bool
 
 val select : dir:string -> string -> (meta, string) Stdlib.result
 (** An exact id first, else a prefix of 8 or more characters, else the live name of a run without an

@@ -184,26 +184,45 @@ let send ~dir ~self ~caller recipient spec text =
 
 let head_within s max = Msg.valid_utf_8 (Msg.utf_8_prefix s max)
 
-let report_notice ~warn ~dir run report =
-  if String.length report <= Msg.max_notice_bytes then report
-  else
-    match run with
-    | None -> head_within report Msg.max_notice_bytes
-    | Some id -> (
-        match Run.write_report ~dir id report with
-        | () ->
-            let suffix = "\n\nfull report: " ^ Run.report_path ~dir id in
-            head_within report (Msg.max_notice_bytes - String.length suffix) ^ suffix
-        | exception Unix.Unix_error (e, fn, arg) ->
-            warn
-              (Printf.sprintf "keeping the whole report failed (%s); sending a truncated one"
-                 (Fs.unix_message e fn arg));
-            head_within report Msg.max_notice_bytes)
+let parent_guidance =
+  "\n\n\
+   The child stays alive after it reports. End it with stop_run when you need nothing more from \
+   it. To continue it, use message_agent."
 
-let notify_parent ~dir ~self ~caller ~warn ~parent ~run text =
+let report_notice ~dir ~status run report =
+  if status then head_within report Msg.max_notice_bytes
+  else
+    let budget = Msg.max_notice_bytes - String.length parent_guidance in
+    match run with
+    | None -> head_within report budget
+    | Some id ->
+        if String.length report <= budget then report
+        else
+          let suffix = "\n\nfull report: " ^ Run.report_path ~dir id in
+          head_within report (budget - String.length suffix) ^ suffix
+
+let notify_parent ~dir ~self ~caller ~warn ~parent ~run ~status text =
   match parent with
   | None ->
       Error
         (Not_sent "this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent")
-  | Some parent ->
-      send ~dir ~self ~caller (Parent parent) Notice (report_notice ~warn ~dir run text)
+  | Some parent -> (
+      let notice = report_notice ~dir ~status run text in
+      match
+        send ~dir ~self ~caller (Parent parent) Notice
+          (if status then notice else notice ^ parent_guidance)
+      with
+      | Error e -> Error e
+      | Ok sent ->
+          if not status then
+            Option.iter
+              (fun id ->
+                try Run.write_report ~dir id text
+                with Unix.Unix_error (e, fn, arg) ->
+                  warn
+                    (Printf.sprintf
+                       "keeping the whole report failed (%s); the parent got the notice, but kido \
+                        runs will not name a report"
+                       (Fs.unix_message e fn arg)))
+              run;
+          Ok sent)

@@ -27,7 +27,6 @@ let async_bash ~dir ~self ~caller ~exe ~name ~stream (command, rest) =
       cwd = pane.current_path;
       model = "";
       tools = [];
-      keep_alive = false;
       started_at = Timestamp.now ();
     }
   in

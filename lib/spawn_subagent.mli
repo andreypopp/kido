@@ -5,7 +5,6 @@ type flags = {
   tools : string option;
   resume : string;
   fork : string;
-  keep_alive : bool;
   no_parent : bool;
   command : string list;
 }

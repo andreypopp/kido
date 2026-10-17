@@ -47,5 +47,8 @@ val notify_parent :
   warn:(string -> unit) ->
   parent:Run.id option ->
   run:Run.id option ->
+  status:bool ->
   string ->
   (string, send_error) result
+(** [status] states that the notice is the child's status, not a report of its work. Such a notice
+    writes no report file and carries no parent guidance. *)
