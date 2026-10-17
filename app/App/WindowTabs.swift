@@ -81,6 +81,7 @@ final class WindowTabs: NSView {
     #if KIDO_VISUAL
     static var visualReduceMotion: Bool?
     var visualAnimating: Bool { progress < 1 }
+    func visualFinishAnimation() { progress = 1 }
     func visualPresentedLabelRect(_ index: Int) -> NSRect {
         let geometry = geometry(dragPoint)
         return label(presented(index, geometry), geometry.width)
