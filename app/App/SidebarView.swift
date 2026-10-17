@@ -136,6 +136,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var failure: String?
     private let fonts = SidebarFonts()
     private var tick: Timer?
+    private var captionTimer: Timer?
+    private var captions = SidebarCaptions()
+    var captionDelay: TimeInterval = 0.2
 
     override var isFlipped: Bool { true }
 
@@ -218,10 +221,13 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             show(nil)
             feedNote = ("Starting…", .secondaryLabelColor)
         case .restarting(let message):
+            captionTimer?.invalidate()
+            captionTimer = nil
             feedNote = ("The sidebar feed is not running, retrying…\n\(message)", .secondaryLabelColor)
         case .running(let snapshot):
+            if feedNote != nil { captions = SidebarCaptions() }
+            show(snapshot, captionTick: feedNote != nil)
             feedNote = nil
-            show(snapshot)
         }
         noteChanged()
     }
@@ -253,8 +259,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         needsLayout = true
     }
 
-    func show(_ next: Snapshot?, pin: SidebarRow.ID? = nil) {
-        if pin == nil, renderedCollapsed == collapsed, renderedSeen == seen.value, next.map({ snapshot?.sameSidebarContent(as: $0) == true }) ?? (snapshot == nil) {
+    func show(_ next: Snapshot?, pin: SidebarRow.ID? = nil, captionTick: Bool = false) {
+        if !captionTick, pin == nil, renderedCollapsed == collapsed, renderedSeen == seen.value, next.map({ snapshot?.sameSidebarContent(as: $0) == true }) ?? (snapshot == nil) {
             snapshot = next
             return
         }
@@ -269,9 +275,19 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let first = pin.flatMap { id in items.firstIndex { $0.id == id } } ?? table.rows(in: table.visibleRect).location
         let anchor = first == NSNotFound ? nil : entry(first).map { ($0.id, origin.y - table.rect(ofRow: first).minY) }
         let recenter = dragging == nil && next.map { $0.client != snapshot?.client } ?? false
+        let previousInstance = snapshot?.serverInstance
         snapshot = next
         let previous = items
-        items = sidebarRows(snapshot, seen: seen.value)
+        if next == nil || next?.serverInstance != previousInstance { captions = SidebarCaptions() }
+        items = captions.apply(sidebarRows(snapshot, seen: seen.value), now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
+        captionTimer?.invalidate()
+        captionTimer = nil
+        if let deadline = captions.deadline {
+            let timer = Timer(timeInterval: max(0, deadline - ProcessInfo.processInfo.systemUptime), target: self,
+                              selector: #selector(captionsChanged), userInfo: nil, repeats: false)
+            captionTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
         if collapsed {
             switch dragging {
             case .session: items = items.filter { $0.kind == .header }
@@ -294,8 +310,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 items[index].id != editing?.id && previous.first(where: { $0.id == items[index].id }) != items[index]
             }), columnIndexes: [0])
             resizeRows(IndexSet(items.indices))
-        } else if previous.map(\.id) == items.map(\.id), previous.map(\.height) == items.map(\.height) {
+        } else if previous.map(\.id) == items.map(\.id) {
             table.reloadData(forRowIndexes: IndexSet(items.indices.filter { items[$0] != previous[$0] }), columnIndexes: [0])
+            resizeRows(IndexSet(items.indices.filter { items[$0].height != previous[$0].height }))
         } else { table.reloadData() }
         if let edit = editing, let selection, window?.firstResponder !== editor {
             window?.makeFirstResponder(edit.cell.nameField)
@@ -317,6 +334,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         }
         updateTick()
     }
+
+    @objc private func captionsChanged() { show(snapshot, captionTick: true) }
 
     private var startedRows: IndexSet {
         let visible = table.rows(in: table.visibleRect)
