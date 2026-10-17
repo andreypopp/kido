@@ -1,5 +1,3 @@
-let sun_path_max = 103
-
 let inbox_path ~dir name =
   let dir =
     Filename.concat
@@ -11,10 +9,10 @@ let inbox_path ~dir name =
   else if String.contains name '/' then
     Error (Printf.sprintf "name %S contains a path separator" name)
   else if String.mem ~sub:".." name then Error (Printf.sprintf "name %S contains %S" name "..")
-  else if String.length path > sun_path_max then
+  else if String.length path > Fs.sun_path_max then
     Error
       (Printf.sprintf "socket path is %d bytes, over the %d-byte limit: %s" (String.length path)
-         sun_path_max path)
+         Fs.sun_path_max path)
   else Ok path
 
 type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop | Asks

@@ -4,6 +4,16 @@ let is_file p = try Sys.file_exists p && not (Sys.is_directory p) with Sys_error
 let is_executable p =
   is_file p && match Unix.access p [ X_OK ] with () -> true | exception Unix.Unix_error _ -> false
 
+let stat p = try Some (Unix.stat p) with Unix.Unix_error _ -> None
+
+let same_file a b =
+  match (a, b) with
+  | Some (a : Unix.stats), Some (b : Unix.stats) -> a.st_dev = b.st_dev && a.st_ino = b.st_ino
+  | _ -> false
+
+(* sun_path holds 104 bytes on macOS and 108 on Linux; one limit, the smaller, minus the NUL. *)
+let sun_path_max = 103
+
 let clean p =
   let rec go acc = function
     | [] -> List.rev acc

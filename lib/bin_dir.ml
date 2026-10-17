@@ -11,18 +11,9 @@ let split path = if String.is_empty path then [] else String.split_on_char ':' p
 let path_with_first dir path =
   String.concat ":" (dir :: List.filter (fun e -> not (String.equal e dir)) (split path))
 
-let stat p = try Some (Unix.stat p) with Unix.Unix_error _ -> None
-
-let same a b =
-  match (a, b) with
-  | Some (a : Unix.stats), Some (b : Unix.stats) -> a.st_dev = b.st_dev && a.st_ino = b.st_ino
-  | _ -> false
-
-let same_file a b = same (stat a) (stat b)
-
 let look_path_past ~path ~dir name =
-  let dir_st = stat dir and shim_st = stat (Filename.concat dir name) in
-  let is_dir e = same (stat e) dir_st in
+  let dir_st = Fs.stat dir and shim_st = Fs.stat (Filename.concat dir name) in
+  let is_dir e = Fs.same_file (Fs.stat e) dir_st in
   let entries = List.map (fun e -> if String.is_empty e then "." else e) (split path) in
   let search =
     match List.drop_while (fun e -> not (is_dir e)) entries with
@@ -32,7 +23,9 @@ let look_path_past ~path ~dir name =
   List.find_map
     (fun e ->
       let c = Filename.concat e name in
-      if (not (is_dir e)) && Fs.is_executable c && not (same (stat c) shim_st) then Some c else None)
+      if (not (is_dir e)) && Fs.is_executable c && not (Fs.same_file (Fs.stat c) shim_st) then
+        Some c
+      else None)
     search
 
 let path_prepend_script dir =

@@ -12,7 +12,6 @@ val stamp : string
 type server = Down | Up of string option | Mismatch
 
 val probe_server : socket:string -> string -> server
-val tmux_safe : string -> string -> (unit, string) result
 
 val run : dir:string -> env:string array -> inside:Tmux.env option -> ('a, string) result
 (** Execs tmux, so returns only its refusal. *)

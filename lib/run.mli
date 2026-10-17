@@ -98,6 +98,15 @@ val effective_outcome : dir:string -> meta -> outcome option
 
 val list : dir:string -> id list
 
+val keep_alive : dir:string -> id -> bool option
+(** [Some false] without a meta file; [None] when it exists but is unreadable. *)
+
+val children_alive : dir:string -> id -> bool
+
+val select : dir:string -> string -> (meta, string) Stdlib.result
+(** An exact id first, else a prefix of 8 or more characters, else the live name of a run without an
+    outcome. *)
+
 val save_screen : Tmux.t -> dir:string -> id -> Tmux.pane_id option -> string option
 (** Saves a pane's screen with 1000 lines of history, bounded to its tail, into the run's directory
     and returns it; [None] for an empty pane id or a failed capture. *)

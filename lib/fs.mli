@@ -1,6 +1,9 @@
 val getenv : string -> string
 val is_file : string -> bool
 val is_executable : string -> bool
+val stat : string -> Unix.stats option
+val same_file : Unix.stats option -> Unix.stats option -> bool
+val sun_path_max : int
 val look_path : path:string -> string -> string option
 val invoked_path : path:string -> string -> string
 val candidates : string -> string list

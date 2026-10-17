@@ -56,6 +56,7 @@ module Client : sig
   val dials : t -> int
 end
 
+val safe : string -> string -> (unit, string) result
 val binary : string Lazy.t
 val argv : string -> string list -> string array
 val exec : t -> ?stdin:string -> string list -> (string, string) result

@@ -1,5 +1,11 @@
 module String_map = Map.Make (String)
 
+module Run_map = Map.Make (struct
+  type t = Run.id
+
+  let compare = Run.compare_id
+end)
+
 type options = {
   interval : float;
   client : string;
@@ -13,7 +19,7 @@ let default_interval = 0.1
 
 type lingering = {
   name : string;
-  parent : string;
+  parent : Run.id option;
   outcome : Run.result option;
   kind : Run.kind;
   started : Timestamp.t;
@@ -53,7 +59,7 @@ let lingering_subagents ~dir runs =
       String_map.add (Run.string_of_id r.meta.id)
         {
           name = Run.name r;
-          parent = Option.map_or ~default:"" Run.string_of_id r.meta.parent;
+          parent = r.meta.parent;
           outcome = Option.map (fun (o : Run.outcome) -> o.result) (Run.read_outcome ~dir r.meta.id);
           kind = r.meta.kind;
           started = r.meta.started_at;
@@ -272,25 +278,26 @@ let order_windows_by_tree windows states lingering =
         List.fold_left
           (fun acc (p : Tmux_pane.t) ->
             match Tmux.Pane_map.find_opt p.pane_id states with
-            | Some (id, _) -> String_map.add (Run.string_of_id id) (window_id w, p.pane_id) acc
+            | Some (id, _) -> Run_map.add id (window_id w, p.pane_id) acc
             | _ -> acc)
           acc w)
-      String_map.empty windows
+      Run_map.empty windows
   in
   let parent_of_window (w : Tmux_pane.t list) =
-    Option.value ~default:""
-      (List.find_map
-         (fun (p : Tmux_pane.t) ->
-           Option.flat_map (fun r -> String_map.find_opt r lingering) p.run
-           |> Option.map (fun l -> l.parent)
-           |> Option.filter (Fun.negate String.is_empty))
-         w)
+    List.find_map
+      (fun (p : Tmux_pane.t) ->
+        Option.flat_map (fun r -> String_map.find_opt r lingering) p.run
+        |> Option.flat_map (fun l -> l.parent))
+      w
   in
   let ordered =
     Tree.order
       ~id:(fun (w, _) -> window_id w)
       ~parent:(fun (_, found) -> Option.map fst found)
-      (List.map (fun w -> (w, String_map.find_opt (parent_of_window w) by_session)) windows)
+      (List.map
+         (fun w ->
+           (w, Option.flat_map (fun id -> Run_map.find_opt id by_session) (parent_of_window w)))
+         windows)
   in
   List.fold_left
     (fun (placed, out) (w, found) ->
@@ -805,7 +812,7 @@ let%test_module "Tests" =
           panes = with_programs states [ p ];
           lingering =
             String_map.singleton "run"
-              { name = "helper"; parent = ""; outcome; kind = Agent; started = test_at };
+              { name = "helper"; parent = None; outcome; kind = Agent; started = test_at };
         }
       in
       List.iter
@@ -875,7 +882,7 @@ let%test_module "Tests" =
             panes;
             lingering =
               String_map.singleton "run"
-                { name = "a run"; parent = ""; outcome = None; kind = Bash; started = test_at };
+                { name = "a run"; parent = None; outcome = None; kind = Bash; started = test_at };
           }
       in
       List.iter
@@ -974,7 +981,8 @@ let%test_module "Tests" =
       ( states (List.map (fun (pane, id, _) -> (pane, (id, session ""))) edges),
         List.fold_left
           (fun m (id, parent) ->
-            let kind : Run.kind = if String.is_empty parent then Pi else Agent in
+            let parent = Test_fixture.owned parent in
+            let kind : Run.kind = if Option.is_none parent then Pi else Agent in
             String_map.add id { name = ""; parent; outcome = None; kind; started = test_at } m)
           String_map.empty
           (runs @ List.map (fun (_, id, parent) -> (id, parent)) edges) )

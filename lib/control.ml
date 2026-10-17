@@ -43,40 +43,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
     if force then Ok () else Error (what ^ "; pass --force to kill its window instead")
   in
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let runs = List.filter_map (Run.read_meta ~dir) (Run.list ~dir) in
-  let ids =
-    List.filter
-      (fun (m : Run.meta) ->
-        let id = Run.string_of_id m.id in
-        String.equal id to_ || (String.length to_ >= 8 && String.prefix ~pre:to_ id))
-      runs
-  in
-  let matches =
-    match List.find_opt (fun (m : Run.meta) -> String.equal (Run.string_of_id m.id) to_) ids with
-    | Some m -> [ m ]
-    | None when not (List.is_empty ids) -> ids
-    | None ->
-        List.filter
-          (fun (m : Run.meta) ->
-            let named =
-              match Run.live_pi ~dir m.id with
-              | Some s -> (not (String.is_empty s.name)) && String.equal_caseless s.name to_
-              | None -> String.equal_caseless m.name to_
-            in
-            named && Option.is_none (Run.read_outcome ~dir m.id))
-          runs
-  in
-  let* meta =
-    match matches with
-    | [ m ] -> Ok m
-    | [] -> Error (Printf.sprintf "no run matches %S" to_)
-    | many ->
-        Error
-          (Printf.sprintf "%S matches several runs: %s" to_
-             (String.concat ", "
-                (List.sort String.compare
-                   (List.map (fun (m : Run.meta) -> Run.string_of_id m.id) many))))
-  in
+  let* meta = Run.select ~dir to_ in
   let* () =
     match meta.kind with
     | Pi -> Ok ()
@@ -86,12 +53,12 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
   in
   match meta.kind with
   | Bash | Stream -> (
-      let label = "async run " ^ Reap.quote (Run.label meta) in
+      let label = "async run " ^ Run_ending.quote (Run.label meta) in
       if not (Message_agent.reaches ~dir ~caller:(Option.map fst caller) meta.id) then
         Error (label ^ " is not this agent's descendant")
       else
         let ending =
-          Reap.record_ending ~dir meta
+          Run_ending.record_ending ~dir meta
             { result = Stopped; text = "stopped by its parent"; at = Some (Timestamp.now ()) }
         in
         let signalled =
@@ -104,7 +71,8 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
         let gone = (not signalled) || wait_for escalation (fun () -> not (Run.alive meta.pid)) in
         (if not gone then try Unix.kill meta.pid Sys.sigkill with Unix.Unix_error _ -> ());
         Option.iter
-          (fun e -> Result.iter_err (fun e -> warn (Msg.string_of_error e)) (Reap.send ~dir e))
+          (fun e ->
+            Result.iter_err (fun e -> warn (Msg.string_of_error e)) (Run_ending.send ~dir e))
           ending;
         if gone && signalled then Ok (Printf.sprintf "stopped %s" label)
         else

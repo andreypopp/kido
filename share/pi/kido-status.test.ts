@@ -227,7 +227,7 @@ switch (args[0]) {
     const logFile = process.env.KIDO_FAKE_ASYNC_BASH_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     // Four fields, the last the run's output file, exactly as
-    // Spawn_subagent.create_run_window writes them for a bash run.
+    // Run_window.create writes them for a bash run.
     const runID = "fake-async-run-id";
     const output = process.env.KIDO_FAKE_STATE_DIR + "/runs/" + runID + "/output";
     process.stdout.write("@9 %9 " + runID + " " + output + "\\n");

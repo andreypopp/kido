@@ -290,7 +290,7 @@ let run_outcome =
      and+ id = arg "RUN_ID" in
      fun () ->
        ok
-         (Run_history.run_outcome ~dir:(state_dir ()) ~warn:(error "run-outcome") ~result ~text
+         (Run_ending.run_outcome ~dir:(state_dir ()) ~warn:(error "run-outcome") ~result ~text
             ~unreported
             (ok (Run.parse_id id)));
        0
@@ -382,10 +382,7 @@ let set_status =
              "no agent session is calling ($PI_SESSION_ID names none); there is nothing to set an \
               activity on"
        | Some (id, s) -> (
-           match
-             Run.write_pi ~dir id ~holder:s.pid
-               { s with activity = Reporting.one_line activity ~max:256 }
-           with
+           match Reporting.set_activity ~dir (id, s) activity with
            | Ok () -> 0
            | Error holder -> failwith (held_message (Run.string_of_id id) holder))
 
@@ -480,25 +477,10 @@ let get_agent =
            if not children then fields
            else
              fields
-             @ (match id with
-               | Some id -> (
-                   match Run.read_meta ~dir id with
-                   | Some m -> [ ("keepAlive", `Bool m.keep_alive) ]
-                   | None when Sys.file_exists (Run.meta_path ~dir id) -> []
-                   | None -> [ ("keepAlive", `Bool false) ])
-               | None -> [ ("keepAlive", `Bool false) ])
-             @ [
-                 ( "childrenAlive",
-                   `Bool
-                     (List.exists
-                        (fun child ->
-                          match Run.read_meta ~dir child with
-                          | Some m ->
-                              Option.exists (fun id -> Option.exists (Run.equal_id id) m.parent) id
-                              && Option.is_none (Run.effective_outcome ~dir m)
-                          | None -> false)
-                        (Run.list ~dir)) );
-               ]
+             @ (match Option.map_or ~default:(Some false) (Run.keep_alive ~dir) id with
+               | Some k -> [ ("keepAlive", `Bool k) ]
+               | None -> [])
+             @ [ ("childrenAlive", `Bool (Option.exists (Run.children_alive ~dir) id)) ]
          in
          print_endline (Yojson.Safe.to_string (`Assoc fields));
          0
@@ -769,34 +751,7 @@ let ssh =
            | st -> Stdlib.(st.st_kind = S_CHR)
            | exception Unix.Unix_error _ -> false
          in
-         let parsed = Procs.parse_ssh args in
-         let argv =
-           match parsed with
-           | Some a
-             when tty && List.is_empty a.command
-                  && not (String.exists (String.contains "NTWfsnOQVG") (Procs.ssh_letters a)) ->
-               ("ssh" :: a.opts) @ [ "-t"; "--"; a.dest; Prime.ssh_bootstrap ]
-           | _ -> "ssh" :: args
-         in
-         let pane = self_pane () in
-         let destination =
-           match pane with
-           | None -> None
-           | Some _ -> (
-               let ic = Unix.open_process_args_in ssh (Array.of_list ("ssh" :: "-G" :: args)) in
-               let lines = In_channel.input_all ic |> String.lines in
-               let status = Unix.close_process_in ic in
-               let field key = List.find_map (String.chop_prefix ~pre:(key ^ " ")) lines in
-               match (status, field "user", field "hostname") with
-               | Unix.WEXITED 0, Some user, Some host -> Some (user ^ "@" ^ host)
-               | _ -> None)
-         in
-         Option.iter
-           (fun pane ->
-             ignore
-               (Tmux_pane.mark_ssh (Tmux.create ()) pane destination
-                  (Option.flat_map Procs.ssh_connection_args parsed)))
-           pane;
+         let argv = Ssh.prepare ~ssh ~tty ~pane:(self_pane ()) args in
          Unix.execve ssh (Array.of_list argv) (Unix.environment ()))
 
 (* Go's time.Duration syntax, which every caller of --interval already speaks: "100ms", "5s",

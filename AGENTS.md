@@ -203,7 +203,7 @@ Conventions:
 - **Cmdliner docs.** A bare `$` is markup.
   It produces "unescaped $" on `--help`.
   Write environment variables as `$(b,NAME)`.
-- **Quoting.** `Reap.quote` in `lib/reap.ml` deliberately uses
+- **Quoting.** `Run_ending.quote` in `lib/run_ending.ml` deliberately uses
   Go-style `%q` quoting. OCaml `%S` escapes non-ASCII agent names.
 - **Inbox JSON.** Write `from.session` even when it is empty.
   It has no default annotation.
@@ -248,20 +248,24 @@ Conventions:
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
       tmux_vars.ml     names of kido's tmux user options and environment variables
-      tmux_pane.ml     kido's pane view, topology reads, ordering, navigation and marks
+      tmux_pane.ml     kido's pane view, topology reads, ordering, navigation and run marks
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON
       state.ml         the server state directory and socket
       pane_kind.ml     pane classification, titles and agent display names
       stall.ml         heartbeat staleness and the wake marker
       reporting.ml     kido agent-status: the claim of a pi's run
-      procs.ml         ssh argument parsing and whitespace fields
+      ssh.ml           kido ssh: argument parsing, priming and the pane's ssh marks
       msg.ml           the inbox wire protocol and its client: v0 raw prompt,
                        v1 envelope, the unix-socket sender and notify
       tree.ml          the parent-first walk behind list_runs and the sidebar
-      reap.ml          which subagent windows are finished with, and when;
-                       an ending's text and its send to the parent's inbox
-      run.ml           run records in runs/<id>/, marked panes and live pane agents
+      reap.ml          which subagent windows are finished with, and when
+      run_ending.ml    a run's ending: the outcome write that decides who speaks,
+                       its text and its send to the parent's inbox
+      run.ml           run records in runs/<id>/, run selection, marked panes
+                       and live pane agents
+      run_window.ml    the tracked run window that both launchers create,
+                       and its name checks
       prompt.ml, message_agent.ml (also ask_agent and notify_parent),
       list_runs.ml, spawn_subagent.ml, async_bash.ml,
       async_run.ml (its wrapper), async_stream.ml,
@@ -346,8 +350,8 @@ It refuses these paths:
 - A directory not owned by the user.
 - A directory accessible to the group or others.
 - A directory path that contains a comma.
-- A socket path that cannot fit the platform's `sun_path`, including
-  its terminator.
+- A socket path over 103 bytes, the macOS `sun_path` limit without its
+  terminator, on every platform.
 
 To debug the default server, use
 `kido-tmux -u -S ~/.local/state/kido/socket`.
@@ -875,7 +879,7 @@ Never delete one half of a pair.
   The local is called `ret`.
 - **A tmux command reaching a further parser has no surviving escape.**
   The generated `server.conf` (tmux -> sh) and a `new-window` window
-  name (tmux -> sh -> tmux) use `Launch.tmux_safe`.
+  name (tmux -> sh -> tmux) use `Tmux.safe`.
   It refuses `'`, `"`, `$`, `#`, `\`, a backtick, a newline
   or a carriage return.
   It quotes a space.

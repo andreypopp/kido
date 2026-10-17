@@ -221,6 +221,52 @@ let list ~dir =
           Result.to_opt (parse_id name)
           |> Option.filter (fun _ -> Sys.is_directory (Filename.concat runs name)))
 
+let keep_alive ~dir id =
+  match read_meta ~dir id with
+  | Some m -> Some m.keep_alive
+  | None -> if Sys.file_exists (meta_path ~dir id) then None else Some false
+
+let children_alive ~dir id =
+  List.exists
+    (fun child ->
+      match read_meta ~dir child with
+      | Some m -> Option.exists (equal_id id) m.parent && Option.is_none (effective_outcome ~dir m)
+      | None -> false)
+    (list ~dir)
+
+let select ~dir target =
+  let runs = List.filter_map (read_meta ~dir) (list ~dir) in
+  let ids =
+    List.filter
+      (fun m ->
+        let id = string_of_id m.id in
+        String.equal id target || (String.length target >= 8 && String.prefix ~pre:target id))
+      runs
+  in
+  let matches =
+    match List.find_opt (fun m -> String.equal (string_of_id m.id) target) ids with
+    | Some m -> [ m ]
+    | None when not (List.is_empty ids) -> ids
+    | None ->
+        List.filter
+          (fun m ->
+            let named =
+              match live_pi ~dir m.id with
+              | Some s -> (not (String.is_empty s.name)) && String.equal_caseless s.name target
+              | None -> String.equal_caseless m.name target
+            in
+            named && Option.is_none (read_outcome ~dir m.id))
+          runs
+  in
+  match matches with
+  | [ m ] -> Ok m
+  | [] -> Error (Printf.sprintf "no run matches %S" target)
+  | many ->
+      Error
+        (Printf.sprintf "%S matches several runs: %s" target
+           (String.concat ", "
+              (List.sort String.compare (List.map (fun m -> string_of_id m.id) many))))
+
 let max_screen_bytes = 64 * 1024
 
 let truncate_screen data =

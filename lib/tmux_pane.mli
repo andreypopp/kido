@@ -44,17 +44,10 @@ val resolve_client :
   Tmux.t -> pane:Tmux.pane_id option -> session:Tmux.session_id option -> string option
 
 val mark_run : Tmux.t -> Tmux.pane_id -> string -> (unit, string) result
-
-val mark_ssh :
-  Tmux.t ->
-  Tmux.pane_id ->
-  string option ->
-  Procs.ssh_connection_args option ->
-  (unit, string) result
-
 val rank_sessions : Tmux.t -> Tmux.session_id list -> (unit, string) result
 val shell : t -> shell
 val find : t list -> Tmux.pane_id -> t option
+val caller_pane : t list -> Tmux.pane_id option -> (t, string) result
 
 type session = { name : string; id : Tmux.session_id; windows : t list list }
 

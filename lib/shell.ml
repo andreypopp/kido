@@ -14,7 +14,7 @@ let command ~path ~login user =
       in
       match Filename.basename resolved with
       | "zsh" | "bash" -> (resolved, None)
-      | _ when Bin_dir.same_file resolved login -> (login, None)
+      | _ when Fs.same_file (Fs.stat resolved) (Fs.stat login) -> (login, None)
       | _ -> (login, user))
 
 let with_env base add =

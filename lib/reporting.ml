@@ -37,6 +37,9 @@ let agent_status ~dir ~pane ~id ~session_file ~inbox ~activity ~model ~name =
         (fun pane -> ignore (Tmux_pane.mark_run (Tmux.create ()) pane (Run.string_of_id id)))
         pane)
 
+let set_activity ~dir (id, (s : Run.pi)) activity =
+  Run.write_pi ~dir id ~holder:s.pid { s with activity = one_line activity ~max:256 }
+
 let%test_module "Tests" =
   (module struct
     let%expect_test "one_line blanks control bytes and cuts on a rune boundary" =

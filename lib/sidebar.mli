@@ -13,7 +13,7 @@ val default_interval : float
 
 type lingering = {
   name : string;
-  parent : string;
+  parent : Run.id option;
   outcome : Run.result option;
   kind : Run.kind;
   started : Timestamp.t;

@@ -36,19 +36,6 @@ type agent_info = {
 }
 [@@deriving yojson_of]
 
-let caller_pane panes self =
-  Option.to_result
-    (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" string_of_pane_id self))
-    (Option.flat_map (Tmux_pane.find panes) self)
-
-let in_session panes states session =
-  List.filter
-    (fun (_, (s : Run.pi)) ->
-      Option.exists
-        (fun (p : Tmux_pane.t) -> equal_session_id session p.session_id)
-        (Option.flat_map (Tmux_pane.find panes) s.pane))
-    states
-
 let agents ~dir ~threshold ~self ~caller ~session ~panes =
   let open Result.Infix in
   let+ session =

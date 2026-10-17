@@ -20,11 +20,6 @@ type agent_info = {
 }
 [@@deriving yojson_of]
 
-val caller_pane : Tmux_pane.t list -> Tmux.pane_id option -> (Tmux_pane.t, string) result
-
-val in_session :
-  Tmux_pane.t list -> (Run.id * Run.pi) list -> Tmux.session_id -> (Run.id * Run.pi) list
-
 val agents :
   dir:string ->
   threshold:float ->

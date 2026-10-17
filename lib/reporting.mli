@@ -11,4 +11,6 @@ val agent_status :
 (** Claims run [id] for the calling pi and marks its pane. [Error] is another live process holding
     the run. *)
 
-val one_line : string -> max:int -> string
+val set_activity : dir:string -> Run.id * Run.pi -> string -> (unit, Run.pi) result
+(** Replaces the caller's activity, keeping its holder. [Error] is another live process holding the
+    run. *)

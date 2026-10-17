@@ -48,7 +48,7 @@ let prompt ~dir ~self ~window text =
   if String.is_empty text then Error No_prompt
   else
     let* panes = failed (Tmux_pane.list_panes (Tmux.create ())) in
-    let* self = failed (List_runs.caller_pane panes self) in
+    let* self = failed (Tmux_pane.caller_pane panes self) in
     let runs = Run.marked ~dir panes in
     let states = Run.agents runs in
     let candidates whole_session =

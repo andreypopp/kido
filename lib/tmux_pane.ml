@@ -148,6 +148,11 @@ let parse_line line =
 let parse lines = List.filter_map parse_line lines
 let find panes id = List.find_opt (fun p -> equal_pane_id p.pane_id id) panes
 
+let caller_pane panes self =
+  Option.to_result
+    (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" string_of_pane_id self))
+    (Option.flat_map (find panes) self)
+
 type session = { name : string; id : session_id; windows : t list list }
 
 let order_sessions panes =
@@ -236,28 +241,6 @@ let resolve_client tmux ~pane ~session =
 
 let mark_run tmux pane run =
   Tmux.run tmux [ "set-option"; "-p"; "-t"; string_of_pane_id pane; Tmux_vars.run; run ]
-
-let mark_ssh tmux pane destination args =
-  let target = [ "-t"; string_of_pane_id pane ] in
-  let mark =
-    Option.map
-      (fun destination -> [ "set-option"; "-p" ] @ target @ [ Tmux_vars.ssh; destination ])
-      destination
-  in
-  let unset = [ "set-option"; "-p"; "-u" ] @ target @ [ Tmux_vars.ssh_args ] in
-  let record =
-    match args with
-    | None -> unset
-    | Some args ->
-        [ "set-option"; "-p" ] @ target
-        @ [ Tmux_vars.ssh_args; Procs.ssh_connection_args_json args ]
-  in
-  match Tmux.run tmux (match mark with None -> record | Some mark -> mark @ [ ";" ] @ record) with
-  | Ok () -> Ok ()
-  | Error _ as error ->
-      ignore (Tmux.run tmux unset);
-      Option.iter (fun mark -> ignore (Tmux.run tmux mark)) mark;
-      error
 
 let rank_sessions tmux ids =
   Tmux.run tmux

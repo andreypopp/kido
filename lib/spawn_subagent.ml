@@ -2,7 +2,6 @@ let max_depth = 2
 
 (* MAX_PROMPT_BYTES in share/pi/kido-status.ts: both deliver a session's first user message. *)
 let max_task_bytes = 1024 * 1024
-let max_window_name_len = 64
 
 type flags = {
   name : string;
@@ -27,15 +26,6 @@ type request = {
   keep_alive : bool;
   command : string list;
 }
-
-let check_window_name name =
-  let open Result.Infix in
-  let* () = Launch.tmux_safe "window name" name in
-  if String.length name > max_window_name_len then
-    Error
-      (Printf.sprintf "refusing window name %S: %d bytes is over the %d byte limit" name
-         (String.length name) max_window_name_len)
-  else Ok ()
 
 let read_task path =
   if String.equal path "-" then begin
@@ -90,8 +80,8 @@ let parse (f : flags) =
     else if String.is_empty f.name then refuse "--name is required"
     else if String.is_empty f.task_file then refuse "--task-file is required"
     else
-      let* () = invalid (check_window_name f.name) in
-      let* () = invalid (Launch.tmux_safe "--fork" f.fork) in
+      let* () = invalid (Run_window.check_name f.name) in
+      let* () = invalid (Tmux.safe "--fork" f.fork) in
       let+ task = invalid (read_task f.task_file) in
       Fresh { name = f.name; task; fork = f.fork; model = f.model }
   in
@@ -142,8 +132,7 @@ let validate_model ~path command =
     | Ok out ->
         let rows =
           List.filter_map
-            (fun line ->
-              match Procs.split_fields line with [ p :: m :: _ ] -> Some (p, m) | _ -> None)
+            (fun line -> match Text.fields line with p :: m :: _ -> Some (p, m) | _ -> None)
             (List.drop 1 (String.lines out))
         in
         let configured id = List.exists (fun (p, m) -> String.equal (p ^ "/" ^ m) id) rows in
@@ -180,56 +169,12 @@ let validate_model ~path command =
                argument
                (String.concat ", " (List.map group providers)))
 
-let create_run_window ?resume ~dir (meta : Run.meta) ~session command =
-  let env =
-    [
-      "KIDO_AGENT_TASK_FILE=" ^ Run.task_path ~dir meta.id;
-      "KIDO_AGENT_RUN_ID=" ^ Run.string_of_id meta.id;
-    ]
-    @ Option.map_or ~default:[]
-        (fun p -> [ "KIDO_AGENT_PARENT_SESSION=" ^ Run.string_of_id p ])
-        meta.parent
-  in
-  let tmux = Tmux.create () in
-  let open Result.Infix in
-  let fail e =
-    ignore
-      (Run.record_outcome ~dir meta.id { result = Failed; text = e; at = Some (Timestamp.now ()) });
-    Error e
-  in
-  let id = Run.string_of_id meta.id in
-  let* w =
-    match
-      Tmux.new_window tmux
-        ~setup:(id, [ (Tmux_vars.run, id); ("remain-on-exit", "on") ])
-        ~session ~name:meta.name ~cwd:meta.cwd ~env command
-    with
-    | Ok w -> Ok w
-    | Error e -> fail e
-  in
-  let meta = { meta with pane = Some w.pane_id; pid = w.pane_pid } in
-  Run.write_meta ~dir meta;
-  Option.iter (fun delivered -> Run.reset_for_resume ~dir meta.id ~delivered) resume;
-  Ok
-    (match meta.kind with
-    | Bash | Stream ->
-        String.concat " "
-          [
-            Tmux.string_of_window_id w.window_id;
-            Tmux.string_of_pane_id w.pane_id;
-            id;
-            Run.output_path ~dir meta.id;
-          ]
-    | Pi | Agent ->
-        String.concat " "
-          [ Tmux.string_of_window_id w.window_id; Tmux.string_of_pane_id w.pane_id; id ])
-
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 
 let spawn ~dir ~self ~caller ~path req =
   let open Result.Infix in
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let* pane = List_runs.caller_pane panes self in
+  let* pane = Tmux_pane.caller_pane panes self in
   let parent = if req.no_parent then None else Option.map fst caller in
   let depth =
     Option.map_or ~default:0
@@ -349,7 +294,7 @@ let spawn ~dir ~self ~caller ~path req =
       Run.write_meta ~dir meta
   | Resume _ -> ());
   let resume = match req.mode with Fresh _ -> None | Resume _ -> Some mint in
-  let+ line = create_run_window ?resume ~dir meta ~session:pane.session_id command in
+  let+ line = Run_window.create ?resume ~dir meta ~session:pane.session_id command in
   Option.iter
     (fun (old : Tmux_pane.t) ->
       Result.iter

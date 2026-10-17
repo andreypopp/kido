@@ -286,7 +286,7 @@ the rules where it can start background work.
 starts the child as `pi --fork <session> --session-id <run-id>`.
 The task is its first message. Everything else uses the fresh spawn path:
 
-- The same `Spawn_subagent.create_run_window` and `run_env`
+- The same `Run_window.create` and `run_env`
 - Its own run id
 - The parent edge
 - The mark
@@ -312,7 +312,7 @@ correct answer, and the model does not supply it.
 needs a task and a clean context.
 
 The flag reaches tmux's command line. Thus, the window name's rule
-(`Launch.tmux_safe`) applies: kido refuses an unsafe value instead of
+(`Tmux.safe`) applies: kido refuses an unsafe value instead of
 quoting it. kido refuses `--fork` and `--resume` together. `--resume`
 continues a run's own session; `--fork` starts a new session from another
 session.
@@ -409,7 +409,7 @@ The report's start and final line together remain within the cap.
 A report within the cap arrives byte for byte and leaves no file.
 Nothing is lost, so no file reference is necessary. The command removes
 any partial rune from the end of the report's start. The send path
-refuses a message that is not valid UTF-8, like `Reap.body` in the other
+refuses a message that is not valid UTF-8, like `Run_ending.body` in the other
 direction.
 
 A sender without a run directory has nowhere to keep the report.
@@ -658,7 +658,7 @@ in its own detached window. It tells the caller once the command ends.
 Its structure is a spawn with a command as its child, not a pi session.
 It uses the same components:
 
-- `Spawn_subagent.create_run_window`
+- `Run_window.create`
 - `run_env`
 - The `@kido_run` mark
 - The run record
@@ -797,10 +797,10 @@ without recording its own outcome ("Reporting", above). The sweep records
 Neither kind of run sends a notice without a parent session.
 `kido tool async_bash` at a human's shell produces such a run.
 
-The three observers share one notice builder: `Reap.body`, over a
-`Reap.ending`. Thus, the notice does not differ according to which
+The three observers share one notice builder: `Run_ending.body`, over a
+`Run_ending.ending`. Thus, the notice does not differ according to which
 process observes the build's ending. Observers outside the run use one
-write-then-decide function, `Reap.record_ending`. A third observer can call
+write-then-decide function, `Run_ending.record_ending`. A third observer can call
 this function instead of implementing the same invariant again.
 
 The wrapper writes for itself because it is inside the run's own
@@ -809,7 +809,7 @@ from a write that loses. `Reap.sweep` sends nothing. It returns the runs
 whose parents the caller must now notify.
 
 `Reap.collect`, called from `kido reap` and the sidebar's poll, sweeps,
-releases, then sends each ending with `Reap.send`. A window sweep does
+releases, then sends each ending with `Run_ending.send`. A window sweep does
 not need to know what an inbox is. It can know only that a run ends
 without a report.
 

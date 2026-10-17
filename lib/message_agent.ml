@@ -43,8 +43,13 @@ let resolve_target states panes ~self address =
           fun states -> Option.map (fun s -> Ok (id, s)) (List.assoc_opt ~eq:Run.equal_id id states)
         )
   in
-  let* caller = List_runs.caller_pane panes self in
-  match matched (List_runs.in_session panes states caller.session_id) with
+  let* caller = Tmux_pane.caller_pane panes self in
+  let in_session (_, (s : Run.pi)) =
+    Option.exists
+      (fun (p : Tmux_pane.t) -> Tmux.equal_session_id caller.session_id p.session_id)
+      (Option.flat_map (Tmux_pane.find panes) s.pane)
+  in
+  match matched (List.filter in_session states) with
   | Some r -> r
   | None -> (
       match matched states with

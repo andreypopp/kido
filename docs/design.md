@@ -320,7 +320,7 @@ heartbeat reports. Status and title are not report fields.
 A pi session that accepts prompts as real user messages listens on a
 unix stream socket and reports its path. `kido get-inbox <pid>` prints
 `{"path": "<state>/inbox/<pid>.sock"}` as an absolute path. It creates
-nothing and refuses paths beyond the kernel's `sun_path` limit. Just
+nothing and refuses paths over the same 103-byte limit. Just
 before binding, the extension creates the state directory, then the
 uid-private inbox directory, with mode 0700.
 
@@ -851,7 +851,7 @@ on stdin to `kido tool spawn_subagent`. kido decides to store it in a
 file. Another backend could instead write it inside a sandbox.
 
 The model also writes the window name, which does enter the command
-line. `Launch.tmux_safe` refuses characters that cannot survive the
+line. `Tmux.safe` refuses characters that cannot survive the
 nested tmux, sh and tmux parsers. kido also refuses names over 64 bytes,
 instead of silently changing them.
 
@@ -1391,10 +1391,11 @@ a sweep. See `design-subagents.md`, "Reporting". An ending needs no
 judgment about the work. Without this limited notice, a parent could
 wait forever for a child that no longer exists.
 
-`Reap.body` supplies the ending notice's text, and `Reap.send` sends it. Unlike `notify_parent`, this path never uses
-`Message_agent`. `Reap` is below the subcommand modules and can contact
-the inbox directly. The `Sidebar` sweep calls `Reap.collect` without a
-separate connection to a subcommand module. Plain messages and asks
+`Run_ending.body` supplies the ending notice's text, and `Run_ending.send`
+sends it. Unlike `notify_parent`, this path never uses `Message_agent`.
+`Run_ending` is below the subcommand modules and can contact the inbox
+directly. The `Sidebar` sweep calls `Reap.collect` without a separate
+connection to a subcommand module. Plain messages and asks
 still use `Message_agent` for target resolution and envelope marshalling.
 
 **Telling a child this is its job.** No other mechanism gives this
@@ -1967,6 +1968,7 @@ mode 0700. Start and connect refuse these paths:
 
 The socket path, including terminating NUL, must fit
 `sizeof(sockaddr_un.sun_path)`: 104 bytes on macOS, 108 on Linux.
+kido uses the smaller limit, 103 bytes without the NUL, on every platform.
 kido refuses a directory name with a comma, because `$TMUX` uses commas
 between socket path, pid and session. It refuses overlong paths before
 creating the directory. The error includes the path and maximum length.
@@ -1999,7 +2001,7 @@ line.
 
 Paths have two quoting layers: one for tmux and one for the shell that
 tmux uses to run the command.
-`Launch.tmux_safe` refuses a path with characters that cannot survive
+`Tmux.safe` refuses a path with characters that cannot survive
 quoting, before anything starts.
 
 Inner shell-level quotes apply only to paths with spaces. At spawn,

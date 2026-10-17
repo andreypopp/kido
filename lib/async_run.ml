@@ -94,14 +94,14 @@ let async_run ~dir ~knobs ~warn ~id =
   let report result text =
     let detail =
       match stream with
-      | Some s -> Reap.Streamed { unstreamed = Async_stream.close s }
-      | None -> Reap.Bash
+      | Some s -> Run_ending.Streamed { unstreamed = Async_stream.close s }
+      | None -> Run_ending.Bash
     in
     let outcome : Run.outcome = { result; text; at = Some (Timestamp.now ()) } in
     if Run.record_outcome ~dir id outcome then
       Result.iter_err
         (fun e -> warn (Msg.string_of_error e))
-        (Reap.send ~dir { meta; outcome; detail })
+        (Run_ending.send ~dir { meta; outcome; detail })
   in
   Fun.protect
     ~finally:(fun () ->

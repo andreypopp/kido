@@ -1,3 +1,12 @@
+let safe what s =
+  match Seq.find (String.contains "'\"$#\\`\n\r") (String.to_seq s) with
+  | Some c ->
+      Error
+        (Printf.sprintf
+           "refusing %s %S: it contains %S, which cannot survive tmux's own command-line parsing"
+           what s (String.make 1 c))
+  | None -> Ok ()
+
 let id_of_string ~what sigil s =
   if
     String.length s > 1

@@ -9,17 +9,8 @@ type endpoint = {
 }
 [@@deriving yojson_of]
 
-let tmux_safe what s =
-  match Seq.find (String.contains "'\"$#\\`\n\r") (String.to_seq s) with
-  | Some c ->
-      Error
-        (Printf.sprintf
-           "refusing %s %S: it contains %S, which cannot survive tmux's own command-line parsing"
-           what s (String.make 1 c))
-  | None -> Ok ()
-
 let conf_command path args =
-  match tmux_safe "path" path with
+  match Tmux.safe "path" path with
   | Error e -> Error ("cannot start a kido server: " ^ e)
   | Ok () ->
       let inner =

@@ -336,7 +336,7 @@ delivered as: tool result
 
 ## Notices kido itself composes (OCaml)
 
-lib/reap.ml (Reap.body), sent to the parent when a run ends without the child reporting; lib/message_agent.ml (Message_agent.notify_parent) for a report over the cap.
+lib/run_ending.ml (Run_ending.body), sent to the parent when a run ends without the child reporting; lib/message_agent.ml (Message_agent.notify_parent) for a report over the cap.
 
 ```
 async run "<name>" <result>: <text>
