@@ -240,9 +240,9 @@ Conventions:
     bin/main.ml        the cmdliner command table and the small commands:
                        set_status, get-agent, get-inbox,
                        ssh, get-window, switch-session/window, server,
-                       runs, run-outcome, reap, close-run,
-                       rpc; failure printing, and every human-readable
-                       rendering of library results
+                       runs, run-outcome, reap, rpc; failure printing,
+                       and every human-readable rendering of library
+                       results
     bin/kido_sidebar.ml  the library kido_sidebar: Mosaic rendering, keys, cursor
                        and inline tests; consumes Kido.Sidebar's model
     lib/               the library kido: domain logic and data, no presentation

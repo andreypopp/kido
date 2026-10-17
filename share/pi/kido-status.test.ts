@@ -205,11 +205,6 @@ switch (args[0]) {
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     process.exit(0);
   }
-  case "close-run": {
-    const logFile = process.env.KIDO_FAKE_CLOSE_RUN_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
-    process.exit(0);
-  }
   case "get-window": {
     const logFile = process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
@@ -261,7 +256,6 @@ interface Fixture {
   lastRunOutcomeArgs(): string[] | undefined;
   lastAsyncBashArgs(): string[] | undefined;
   runsDir: string;
-  waitForCloseRun(ms?: number): Promise<string[]>;
   lastStatusArgs(): string[] | undefined;
   setStatusCalls(): string[][];
   identityReports(): string[][];
@@ -312,7 +306,6 @@ function makeFixture(): Fixture {
   const agentsFile = join(dir, "agents.json");
   const logFile = join(dir, "log.jsonl");
   const spawnLogFile = join(dir, "spawn.jsonl");
-  const closeRunLogFile = join(dir, "close-run.jsonl");
   const statusLogFile = join(dir, "status.jsonl");
   const setStatusLogFile = join(dir, "set-status.jsonl");
   const controlLogFile = join(dir, "control.jsonl");
@@ -326,7 +319,6 @@ function makeFixture(): Fixture {
   writeFileSync(agentsFile, "[]");
   writeFileSync(logFile, "");
   writeFileSync(spawnLogFile, "");
-  writeFileSync(closeRunLogFile, "");
   writeFileSync(statusLogFile, "");
   writeFileSync(setStatusLogFile, "");
   writeFileSync(controlLogFile, "");
@@ -346,8 +338,6 @@ function makeFixture(): Fixture {
     KIDO_FAKE_AGENTS_FILE: process.env.KIDO_FAKE_AGENTS_FILE,
     KIDO_FAKE_LOG: process.env.KIDO_FAKE_LOG,
     KIDO_FAKE_SPAWN_LOG: process.env.KIDO_FAKE_SPAWN_LOG,
-    KIDO_FAKE_CLOSE_RUN_LOG: process.env.KIDO_FAKE_CLOSE_RUN_LOG,
-    KIDO_LINGER_SECONDS: process.env.KIDO_LINGER_SECONDS,
     KIDO_FAKE_STATUS_LOG: process.env.KIDO_FAKE_STATUS_LOG,
     KIDO_FAKE_SET_STATUS_LOG: process.env.KIDO_FAKE_SET_STATUS_LOG,
     KIDO_FAKE_CONTROL_LOG: process.env.KIDO_FAKE_CONTROL_LOG,
@@ -377,8 +367,6 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_AGENTS_FILE = agentsFile;
   process.env.KIDO_FAKE_LOG = logFile;
   process.env.KIDO_FAKE_SPAWN_LOG = spawnLogFile;
-  process.env.KIDO_FAKE_CLOSE_RUN_LOG = closeRunLogFile;
-  process.env.KIDO_LINGER_SECONDS = "0.05";
   process.env.KIDO_FAKE_STATUS_LOG = statusLogFile;
   process.env.KIDO_FAKE_SET_STATUS_LOG = setStatusLogFile;
   process.env.KIDO_FAKE_CONTROL_LOG = controlLogFile;
@@ -460,11 +448,6 @@ function makeFixture(): Fixture {
       return last(jsonLines(asyncBashLogFile));
     },
     runsDir: join(stateDir, "runs"),
-    async waitForCloseRun(ms = 2000) {
-      let found: string[] | undefined;
-      await pollUntil(() => (found = last(jsonLines(closeRunLogFile))) !== undefined, ms, "a kido close-run call");
-      return found!;
-    },
     lastStatusArgs() {
       return last(jsonLines(statusLogFile));
     },
@@ -3097,7 +3080,6 @@ test("a child whose task is delivered but whose first turn never starts self-exi
         KIDO_AGENT_TASK_FILE: taskFile,
         KIDO_PARENT_POLL_MS: "5000",
         KIDO_IDLE_EXIT_SECONDS: "0.05",
-        KIDO_LINGER_SECONDS: "0.05",
       },
     );
   } finally {
@@ -3135,7 +3117,6 @@ test("a child whose task starts a turn is untouched by the startup clock", async
         KIDO_AGENT_TASK_FILE: taskFile,
         KIDO_PARENT_POLL_MS: "5000",
         KIDO_IDLE_EXIT_SECONDS: "0.05",
-        KIDO_LINGER_SECONDS: "0.05",
       },
     );
   } finally {
@@ -3571,23 +3552,6 @@ test("the idle-exit ending's outcome text carries the last turn's error when the
   }
 });
 
-test("session_shutdown schedules the window linger helper for a subagent", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@7" }]);
-
-    await asSubagent(DEFAULT_SESSION, async () => {
-      const factory = await freshExtensions();
-      const s = await startSession(fx, { factory });
-      await s.emit("session_shutdown");
-      const args = await fx.waitForCloseRun();
-      assert.deepEqual(args, ["close-run", "@7"], "the linger helper closes this session's own window");
-    }, { KIDO_LINGER_SECONDS: "0.05" });
-  } finally {
-    await fx.restore();
-  }
-});
-
 test("session_shutdown records this run's own outcome as completed when it ends idle, or failed otherwise", async () => {
   const fx = makeFixture();
   try {
@@ -3696,63 +3660,6 @@ test("session_shutdown never records an outcome for a root session", async () =>
   }
 });
 
-// The same reload gate that keeps recordOwnOutcome from recording a live run as
-// finished must also keep the linger from closing the child's window under it.
-test("a reload shutdown schedules no linger; a quit does", async () => {
-  const reload = makeFixture();
-  try {
-    reload.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@9" }]);
-    await asSubagent(DEFAULT_SESSION, async () => {
-      const factory = await freshExtensions();
-      const s = await startSession(reload, { factory });
-      await s.emit("session_shutdown", { type: "session_shutdown", reason: "reload" });
-      const closeRunLog = await reload
-        .waitForCloseRun(50)
-        .then(() => "called")
-        .catch(() => "not called");
-      assert.equal(closeRunLog, "not called", "a reload must not schedule this session's own window to close");
-    }, { KIDO_LINGER_SECONDS: "0.05" });
-  } finally {
-    await reload.restore();
-  }
-
-  // Negative control: an actual quit still schedules the linger.
-  const quit = makeFixture();
-  try {
-    quit.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@9" }]);
-    await asSubagent(DEFAULT_SESSION, async () => {
-      const factory = await freshExtensions();
-      const s = await startSession(quit, { factory });
-      await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
-      const args = await quit.waitForCloseRun();
-      assert.deepEqual(args, ["close-run", "@9"], "a quit still schedules this session's own window to close");
-    }, { KIDO_LINGER_SECONDS: "0.05" });
-  } finally {
-    await quit.restore();
-  }
-});
-
-test("session_shutdown never schedules a window linger for a root session", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@7" }]);
-    process.env.KIDO_LINGER_SECONDS = "0.05";
-    try {
-      const s = await startSession(fx);
-      await s.emit("session_shutdown");
-      const closeRunLog = await fx
-        .waitForCloseRun(50)
-        .then(() => "called")
-        .catch(() => "not called");
-      assert.equal(closeRunLog, "not called", "a root session's window must never be scheduled for close");
-    } finally {
-      delete process.env.KIDO_LINGER_SECONDS;
-    }
-  } finally {
-    await fx.restore();
-  }
-});
-
 // Pins a real incident: every KIDO_AGENT_* variable is inherited by anything an
 // agent's process starts, so a nested pi run (a human debugging, a tool shelling
 // out) arrives with a child's entire environment. Trusting it killed two live
@@ -3787,17 +3694,11 @@ test("a process that merely inherited a subagent's environment is not a subagent
         assert.equal(s.shutdowns(), 0, "it never self-exits on a child's idle timer or a child's parent poll");
 
         await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
-        const closeRunLog = await fx
-          .waitForCloseRun(200)
-          .then(() => "called")
-          .catch(() => "not called");
-        assert.equal(closeRunLog, "not called", "the real agent's window is never scheduled to close");
-        assert.equal(fx.lastRunOutcomeArgs(), undefined, "and the real child's run is never given an outcome");
+        assert.equal(fx.lastRunOutcomeArgs(), undefined, "the real child's run is never given an outcome");
       },
       {
         KIDO_PARENT_POLL_MS: "20",
         KIDO_IDLE_EXIT_SECONDS: "0.05",
-        KIDO_LINGER_SECONDS: "0.05",
       },
     );
   } finally {
@@ -3833,12 +3734,10 @@ test("a real subagent, fresh or resumed, is still a subagent in every respect", 
 
           await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
           assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--", runID], `${runID}: the outcome is recorded against the run`);
-          assert.deepEqual(await fx.waitForCloseRun(), ["close-run", "@7"], `${runID}: its own window is still lingered`);
         },
         {
           KIDO_PARENT_POLL_MS: "5000",
           KIDO_IDLE_EXIT_SECONDS: "0.05",
-          KIDO_LINGER_SECONDS: "0.05",
         },
       );
     } finally {

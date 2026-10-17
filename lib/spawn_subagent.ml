@@ -293,7 +293,7 @@ let spawn ~dir ~self ~caller ~path req =
   let+ line = Run_window.create ~start ~dir meta ~session:pane.session_id command in
   Option.iter
     (fun (old : State.pane) ->
-      Result.iter
+      Option.iter
         (fun c -> ignore (Reap.release (Tmux.create ()) c))
         (Reap.decide state old.window_id))
     (Option.flat_map (State.find state)

@@ -11,23 +11,23 @@ import (
 	"time"
 )
 
-func TestCloseRunSkipsTopLevelPiMark(t *testing.T) {
+func TestReapSkipsTopLevelPiMark(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.hideSidebar()
 	top := h.promptPane("alpha", "top-level")
-	window := h.windowID(top)
 	sub, _ := h.subagentWindow("alpha", "close-child", "close-child", "")
 	h.in("join-pane", "-d", "-s", sub, "-t", top)
 	h.in("set-option", "-p", "-t", sub, "remain-on-exit", "on")
 	h.killPane(sub)
 	h.waitFor(func() bool { return h.paneDead(sub) }, settle, msgf("child pane to die"))
-	out := h.runKido("alpha", "close.out", "close-run", window)
-	if h.paneExists(sub) {
-		t.Errorf("close-run left dead child %s behind the live Pi mark: %q", sub, out)
-	}
+	var out string
+	h.waitFor(func() bool {
+		out = h.runKido("alpha", "reap.out", "reap")
+		return !h.paneExists(sub)
+	}, settle, msgf("kido reap to collect dead child %s behind the live Pi mark", sub))
 	if !h.paneExists(top) {
-		t.Fatal("close-run killed the top-level Pi pane")
+		t.Fatalf("kido reap killed the top-level Pi pane: %q", out)
 	}
 }
 
@@ -81,8 +81,8 @@ func (h *harness) liveParent(session, sessionID string) {
 	h.agentStatus(sessionID, pane)
 }
 
-// killPane covers the case no linger helper or in-process poll can:
-// neither runs when a subagent is killed outright.
+// killPane simulates a subagent killed outright, which no in-process
+// shutdown path can do.
 func (h *harness) killPane(paneID string) {
 	h.t.Helper()
 	pid, err := strconv.Atoi(h.in("display-message", "-p", "-t", paneID, "#{pane_pid}"))
@@ -228,33 +228,37 @@ func TestReapNeverClosesASessionsLastWindow(t *testing.T) {
 	}
 }
 
-// The linger helper checks focus once and gives up, so a user reading
-// the window when it fires would leak it for good without the sweep,
-// which runs the same focus rule on every poll and collects the window
-// the moment they switch away.
+// The sweep runs its focus rule on every poll, so a user reading a
+// finished run's window keeps it open and the next poll after they
+// switch away collects it. The run recorded its own completion first:
+// that outcome must survive the close, not become the sweep's guess.
 func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	const childSession = "linger-child-e2e"
-	h.liveParent("alpha", "root-e2e")
-	paneID, windowID := h.subagentWindow("alpha", "linger-e2e", childSession, "root-e2e")
-	home := h.activeWindowID("alpha")
+	script := fmt.Sprintf(`sleep 0.5; %s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"; sleep 1`,
+		kidoBin)
+	runID, windowID := h.spawnRun("completed-sweep-e2e", script)
+	h.waitFor(func() bool { return h.runOutcome(runID) == "completed" }, settle,
+		msgf("run %s to record its own completed outcome", runID))
 
-	h.in("switch-client", "-c", h.client, "-t", windowID) // read the subagent's last screen
+	home := h.activeWindowID("alpha")
+	h.in("switch-client", "-c", h.client, "-t", windowID) // read the run's last screen
 	h.waitFor(func() bool { return h.activeWindowID("alpha") == windowID }, settle,
 		msgf("client to switch to window %s", windowID))
-	h.killPane(paneID)
-
-	if out := h.runKido("alpha", "linger.out", "close-run", windowID); !strings.Contains(out, "current window") {
-		t.Errorf("kido close-run output = %q, want it to say it left a focused window alone", out)
-	}
 	h.stays(func() bool { return h.windowExists(windowID) },
-		"the window the user is reading was closed")
+		"the focused window of a completed run was closed")
+	if got := h.runOutcome(runID); got != "completed" {
+		t.Errorf("run %s outcome = %q while focused, want %q", runID, got, "completed")
+	}
 
 	h.in("switch-client", "-c", h.client, "-t", home)
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
-		msgf("window %s to be collected on a later sweep, now that the user has left it", windowID))
+		msgf("window %s to be collected after the user left it", windowID))
+	if got := h.runOutcome(runID); got != "completed" {
+		t.Errorf("run %s outcome = %q after the sweep closed it, want %q (the sweep's guess must not overwrite it)",
+			runID, got, "completed")
+	}
 }
 
 func (h *harness) paneDead(paneID string) bool {
@@ -404,36 +408,6 @@ func TestReapCancelsSubagentOfDeadParent(t *testing.T) {
 	}
 	if h.windowExists(windowID) {
 		t.Errorf("window %s is still open after one `kido reap`, though its parent is gone", windowID)
-	}
-}
-
-// A window the client has actually switched to must be left open, since
-// the user may have gone there to read a finishing subagent's last screen.
-func TestCloseRunLeavesFocusedWindowAlone(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-
-	paneID := h.newWindow("alpha", "focus-e2e", "sh", "-c", "exec sleep 300")
-	windowID := h.windowID(paneID)
-
-	h.in("switch-client", "-c", h.client, "-t", windowID)
-	h.waitFor(func() bool { return h.activeWindowID("alpha") == windowID }, settle,
-		msgf("client to switch to window %s", windowID))
-
-	h.runKido("alpha", "close.out", "close-run", windowID)
-
-	if !h.windowExists(windowID) {
-		t.Errorf("window %s was closed although the client had it focused", windowID)
-	}
-}
-
-// A bad window id names the command once: Cli.run already prefixes it.
-func TestCloseRunRefusesABadWindowID(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	want := `kido close-run: "@1x" is not a window id (@N)` + "\nrc=1"
-	if got := strings.TrimSpace(h.runKido("alpha", "bad.out", "close-run", "@1x")); got != want {
-		t.Errorf("close-run @1x = %q, want %q", got, want)
 	}
 }
 

@@ -182,10 +182,9 @@ func TestSpawnModelMustBeAConfiguredProvidersOwn(t *testing.T) {
 // A child ending itself with no turn ever run (`kido run-outcome
 // --unreported`, what share/pi/kido-agents.ts's idle self-exit calls) must
 // save its own pane's screen before it exits, not leave that to a sweep
-// that may never run before the window closes - `kido close-run` never
-// captures a screen at all. The window is kept alive (`sleep 300`) so
-// the screen file existing right after run-outcome returns is proof the
-// capture happened at self-report time.
+// that may never run before the window closes. The window is kept alive
+// (`sleep 300`) so the screen file existing right after run-outcome
+// returns is proof the capture happened at self-report time.
 func TestRunOutcomeCapturesScreenBeforeWindowCloses(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

@@ -302,8 +302,8 @@ was mis-delivered. A refused ask is not delivered to the model at all.
 - `stop_run(to, force?)` runs `kido tool stop_run [--force] -- <to>`,
   which delivers a `stop` envelope; this session answers one addressed to it
   with `ctx.shutdown()`, the same teardown a normal exit runs
-  (`session_shutdown`: inbox closed, record removed, own window's linger
-  scheduled). `kido tool stop_run` escalates to killing the target's pane
+  (`session_shutdown`: inbox closed, own run's outcome recorded, record
+  removed). `kido tool stop_run` escalates to killing the target's pane
   if it does not go within a few seconds - see docs/design.md, "Interrupt and
   stop".
 - `notify_parent(summary)` runs `kido tool notify_parent`, piping `summary` on

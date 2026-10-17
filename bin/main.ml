@@ -737,25 +737,6 @@ let reap =
            ~now:(Unix.gettimeofday ());
          0)
 
-(* Strict about the argument: kill-window resolves any target syntax, so any other spelling would
-   pass the focus check (matching no pane) and kill a window the user may be reading. *)
-let close_run =
-  Cmd.v (Cmd.info "close-run" ~doc:"Collect a finished run's pane, or its whole window.")
-  @@ let+ args = rest in
-     run "close-run" (fun () ->
-         let window_id =
-           match args with
-           | [ w ] when not (String.is_empty w) -> w
-           | _ -> failwith "usage: kido close-run WINDOW_ID"
-         in
-         let window_id = Tmux.window_id_of_string window_id in
-         let dir = state_dir () in
-         let tmux = Tmux.create () in
-         (match Reap.decide (ok (State.read ~dir tmux)) window_id with
-         | Ok c -> ok (Reap.release tmux c)
-         | Error refusal -> error "close-run" refusal);
-         0)
-
 (* The fork sets TMUX_SIDE_CLIENT only for the side-status-command job, so its absence is exactly
    "not started as a side column". *)
 let sidebar =
@@ -949,7 +930,6 @@ let () =
         shell;
         ssh;
         reap;
-        close_run;
         rpc;
       ]
   in

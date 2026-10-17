@@ -64,15 +64,12 @@ const TASK_FILE = process.env.KIDO_AGENT_TASK_FILE || undefined;
 
 // Read once at module scope; a test re-imports the module to change one.
 
-// Shared with lib/reap.ml's sweep - both must read the same variable, or one side closes a window first.
-const LINGER_SECONDS = Number(process.env.KIDO_LINGER_SECONDS) || 30;
-
 // A subagent's pi is a child of the tmux server, not of the parent's pi, so no OS parent-death signal reaches it; it polls instead.
 const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
 
-// Idle-to-self-shutdown, entirely inside the child's process; only once it fires does
-// endOwnRun's linger helper start the second, independent LINGER_SECONDS clock. The two
-// stack, even though both default to 30 - not the same clock.
+// Idle-to-self-shutdown, entirely inside the child's process; only once it fires does the
+// run's pane go dead and the sweep's grace clock begin. The two stack, even though both
+// default to 30 - not the same clock.
 const IDLE_EXIT_MS = (Number(process.env.KIDO_IDLE_EXIT_SECONDS) || 30) * 1000;
 
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
@@ -1455,16 +1452,13 @@ export default function (pi: ExtensionAPI) {
     armIdleExit();
   };
 
-  // The two things that happen exactly once, when this process's own run actually ends:
-  // record how it ended, and schedule its window's linger. Gated on it actually being the
-  // run's own child (ownRunID) and this being the run ending, not a /reload rebuilding the
-  // extension runtime in the same process - an outcome is first-write-wins, so a reload recording
-  // "completed" would leave the run's real ending unrecordable.
+  // Records how this process's own run ended. Gated on ownRunID and on a real ending,
+  // not a /reload: an outcome is first-write-wins, so a reload's "completed" would hide
+  // the real ending.
   const endOwnRun = async (reason?: ShutdownReason): Promise<void> => {
-    const host = seam().host;
     const runID = ownRunID();
     // pi fires session_shutdown for five reasons; only "quit" (or an absent reason) ends the run.
-    if (!runID || !host || (reason !== undefined && reason !== "quit")) return;
+    if (!runID || (reason !== undefined && reason !== "quit")) return;
     const [result, text] =
       phase.phase === "awaiting-first-turn"
         ? ["failed", NO_FIRST_TURN_TEXT]
@@ -1473,12 +1467,6 @@ export default function (pi: ExtensionAPI) {
     if (!reportedToParent) args.push("--unreported");
     if (text) args.push("--text", text);
     await runKido([...args, "--", runID], { timeoutMs: 3000 });
-    const listed = await fetchAgents();
-    const window = listed.ok ? listed.agents.find((a) => a.self)?.window : undefined;
-    const kido = host.kidoPath();
-    // sleep, then `kido close-run`, as its own process since this one's event loop is gone
-    // by the time the sleep fires. windowID and kido's path go as sh's $0/$1 so neither needs shell-quoting.
-    if (window && kido) host.spawnDetached("sh", ["-c", `sleep ${LINGER_SECONDS} && exec "$0" close-run "$1"`, kido, window]);
   };
 
   const hooks: AgentHooks = {

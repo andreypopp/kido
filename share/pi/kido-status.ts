@@ -160,7 +160,6 @@ export type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
 // Accessors, not shared variables, so there is exactly one owner of each.
 export interface StatusHost {
-  kidoPath(): string | null;
   // Null until session_start has resolved one, and forever in a pi with no kido or
   // no tmux. kido-agents.ts checks it against KIDO_AGENT_RUN_ID to tell a real
   // subagent from a process that merely inherited one's environment.
@@ -171,7 +170,6 @@ export interface StatusHost {
   setActivity(text: string): void;
   deliver(text: string, deliverAs?: DeliverAs): void;
   runKido(args: string[], opts: { input?: string; timeoutMs: number; user?: boolean }): Promise<RunKidoResult>;
-  spawnDetached(cmd: string, args: string[]): void;
 }
 
 // Hooks rather than the agent half's own pi.on handlers, because the order
@@ -461,7 +459,6 @@ export default function (pi: ExtensionAPI) {
   };
 
   seam().host = {
-    kidoPath: () => kido,
     sessionId: () => reporter?.sessionId ?? null,
     inboxOpen,
     setActivity: (text: string) => {
@@ -471,7 +468,6 @@ export default function (pi: ExtensionAPI) {
     },
     deliver,
     runKido,
-    spawnDetached,
   };
 
   pi.on("session_start", async (_event, ctx) => {

@@ -349,7 +349,7 @@ writer of each file. Two files have reasons that belong to subagents:
   A completion's screen supplies no evidence, so nothing keeps it.
 
   A sweep captures the pane it will close when the child cannot capture
-  it. Both write the same file. `kido close-run` captures nothing.
+  it. The two writes share one file.
 
 An outcome has one write per run attempt. Nothing overwrites it until a
 resume clears it. design.md's "Run outcomes" gives the rules for each
@@ -537,20 +537,13 @@ is stopped or loses its parent:
    "Use /login" line if the captured screen contains it. This is the only such ending with a cause known without
    opening the screen. If the session never calls `notify_parent`, the
    command also uses `--unreported`.
-5. The child starts a detached helper to run `kido close-run` after the
-   linger.
-6. The child releases its run: `pi.json` stays, with pid 0.
+5. The child releases its run: `pi.json` stays, with pid 0.
 
 `/reload` runs the same handler but omits all run-ending parts because
 the run continues.
 
-**The window, and the pane.** The helper collects the run's pane after
-thirty seconds. It does not collect the pane while a client is in the
-window or the run continues. If this is the window's only pane, the
-window also closes unless it is the session's last window.
-
-The sidebar's sweep supplies a second collection path. It collects a
-marked run's pane dead for the same thirty seconds and captures its
+**The window, and the pane.** The sidebar's sweep collects a marked
+run's pane after it has been dead for thirty seconds, and captures its
 screen. If no outcome exists, it records `died`.
 A window with the user's own split keeps that split and loses its mark.
 It becomes an ordinary user window (design.md, "Window lifecycle" and
@@ -773,7 +766,7 @@ Three observers can win:
 | Observer | Discovers the ending | Records | Notifies |
 |---|---|---|---|
 | the wrapper | its own `wait(2)`, or a signal it can catch | `completed`/`failed` | yes, with the exit status |
-| a sweep's rule 1 (`Reap.sweep`) | a marked window dead for the linger | `failed`, "ended without its wrapper reporting" | yes, if it won |
+| a sweep's rule 1 (`Reap.sweep`) | a marked run pane dead for the grace | `failed`, "ended without its wrapper reporting" | yes, if it won |
 | `kido tool stop_run` | a deliberate stop | `stopped`, "stopped by its parent" | yes, if it won |
 
 The wrapper covers every ending that it survives long enough to observe.

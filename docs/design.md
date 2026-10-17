@@ -916,7 +916,8 @@ parent edge. Trusting that claim would let an extension act on another
 process's run.
 
 A nested pi would trust the inherited `KIDO_AGENT_RUN_ID`. On exit, it
-would schedule `kido close-run` for the real agent's window. Instead, the extension checks its own identity. It is a
+would record the real run's outcome as its own. Instead, the extension
+checks its own identity. It is a
 subagent only when `KIDO_AGENT_PARENT_SESSION` is set *and* its pi
 session id equals `KIDO_AGENT_RUN_ID`. The real child meets both
 conditions through `--session-id` and `--session`. A nested pi creates
@@ -945,41 +946,27 @@ window. A window that nothing can find again is worse than no window.
 
 A spawned window enables `remain-on-exit` on the run's pane through
 `set-option -p`, not a window option. The pane survives its command's
-exit. This gives the user time to read during linger. It also gives the
-sweep a pane to find if linger never runs.
+exit. Thus, a dead pane stays for the sweep's grace.
 
 The `new-window` command list also sets `@kido_run` and
 `remain-on-exit` on the new pane. Thus, no snapshot sees an unmarked run
 window, and an immediately failing child keeps its pane and last screen.
 
-**The linger helper.** Before exiting, a subagent starts a detached
-`sh -c 'sleep N && exec kido close-run @id'`. This helper survives the
-pi process, whose event loop ends before the sleep expires. The helper
-receives the window but collects only the run's pane. The window belongs
-to its occupants; kido creates only one pane there.
+Before closing a run's pane, the sweep saves its last screen. It
+collects only the run's pane, so a user's split pane remains. "The
+sweep" below gives the pane and window rules.
 
-If the run occupies the whole window, the helper closes the window.
-If the user has a split pane, that pane remains. Killing the run's pane
-returns the window to ordinary use. `@kido_run` exists only on that pane
-and disappears with it, without a separate unmark step.
-
-The helper refuses any client's current window. The user can be reading
-the child's last screen there. This protects both pane and window
-collection: killing a pane removes its screen and resizes the remaining
-panes. The helper also refuses a session's only window, because closing
-it destroys the session and detaches every client. It refuses a run
-whose pane remains alive.
-
-The helper checks once without retry. A later sweep collects what it
-leaves. `Reap.decide` applies the same checks in this order:
+`Reap.decide` applies the same checks in this order, for
+`kido tool spawn_subagent --resume` collecting the previous attempt's
+pane:
 
 1. Focus.
 2. Whether the run is still running.
 3. Which unit to release.
-4. The last-window refusal.
+4. The last-window rule.
 
-It returns either a `Reap.close` for the caller to release, or a refusal
-to print. `kido close-run` parses flags and prints around that one call.
+It returns the `Reap.close` to release, or `None` when the window stays
+open. The caller releases a close and ignores `None`.
 
 **The sweep.** `Reap.sweep` runs at every sidebar poll tick. It collects
 subagent windows in a live session. `kido reap` calls the same function
@@ -1097,9 +1084,7 @@ larger than an activity line's 256 bytes. An unresponsive agent's
 scrollback otherwise has no size limit. Truncation keeps the end,
 because the last output is the most likely crash diagnostic.
 
-Both helper and sweep use the same 30-second grace from one environment
-variable. They run in different processes. A shorter sweep linger
-would close the window before the helper.
+The sweep uses a 30-second grace from `KIDO_LINGER_SECONDS`.
 
 **Parent death.** The child's pi belongs to the tmux server, not the
 parent's pi process. Thus, no OS parent-death signal reaches it. It
@@ -1162,10 +1147,9 @@ See `design-subagents.md`, "Idle self-exit".
 **A window a client is looking at is not reaped out from under them.**
 Before shutdown, the timer calls `kido get-window <id>`. It prints
 `{"id": ID, "focused": bool}`, with false for a missing window.
-This uses `State.window_focused`, like `kido close-run` and the
-sweep. If focused, the timer rearms instead of exiting. The sweep also
-checks again on its next pass. Collection occurs after the user looks
-away.
+This uses `State.window_focused`, like the sweep. If focused, the timer
+rearms instead of exiting. The sweep also checks again on its next pass.
+Collection occurs after the user looks away.
 
 **The outcome is `completed`, not `stopped`**. Nobody intervenes; the
 child finishes its own work. `ctx.shutdown()` uses the normal exit's
@@ -1176,7 +1160,7 @@ its first turn instead records `failed`.
 
 **Two 30-second figures stack, and are not one number.** Idle self-exit
 runs inside the child's pi process. Only after shutdown does the
-separate 30-second window linger begin, before a sweep can close it.
+separate 30-second sweep grace begin, before the window can close.
 See "Window lifecycle" above. Do not combine these settings. They run
 in different processes, use different environment variables and protect
 different things: a live child's exit decision and a dead child's pane
@@ -1327,8 +1311,8 @@ only pane in a session's only window, because that would end the
 session. `--force` cannot bypass this refusal.
 
 Stop does not refuse a focused window. This intentionally differs from
-linger and sweep, which act automatically. Those must protect a screen
-that the user can be reading. A stop instead names an explicit target.
+the sweep, which acts automatically and must protect a screen that the
+user can be reading. A stop instead names an explicit target.
 
 **No inbox means no quiet stop.** Without an inbox, an agent cannot
 receive a request. Stop immediately kills its pane instead. This is
@@ -1473,10 +1457,10 @@ remains alive for retry. Thus, this notice is neither an outcome nor a
 work report.
 
 The child's own outcomes are `completed` and `failed`. The shutdown
-handler reports them through `kido run-outcome` and schedules window
-linger. It records `completed` if the session ends idle after reaching
-its first turn. It records `failed` otherwise. kido cannot distinguish
-more cases from outside the process.
+handler reports them through `kido run-outcome`; the sweep closes the
+window after its grace. It records `completed` if the session ends idle
+after reaching its first turn. It records `failed` otherwise. kido
+cannot distinguish more cases from outside the process.
 
 `run-outcome` accepts no other values. `died` and `stopped` are kido's
 external judgments. A model-authored process cannot claim these about
@@ -1633,7 +1617,6 @@ typing there. `kido-agents.ts` handles:
 - task delivery;
 - the idle self-exit timer;
 - outcome reporting;
-- window linger;
 - the parent-liveness poll.
 
 The two files have different responsibilities. Either can load alone,
@@ -1647,7 +1630,7 @@ one socket and one identity-report coalescing key exist. Neither may
 be duplicated. The halves communicate through two slots.
 
 The status half publishes accessors for the kido path, session id and
-inbox-open state, plus shared `deliver`, `runKido` and `spawnDetached`.
+inbox-open state, plus shared `deliver` and `runKido`.
 The agent half publishes only hooks with actual callers. It retains no
 published hook for a possible future reader.
 
@@ -1676,9 +1659,9 @@ exact points:
 - Parent polling and task delivery occur after inbox binding or adoption.
   The first task turn can already receive an answer. They occur before
   the first report, which carries `--inbox`.
-- Shutdown records the outcome and schedules linger after this module
-  stops serving the inbox, but before the removal report. kido can still
-  resolve the session's parent edge and window during these operations.
+- Shutdown records the outcome after this module stops serving the
+  inbox, but before the removal report. kido can still resolve the
+  session's parent edge during these operations.
 
 Without a status-half ordering dependency, the agent half listens
 independently. Its own `agent_settled` listener arms the idle self-exit
@@ -2192,7 +2175,7 @@ Durations used by e2e also read environment variables. The suite uses
 a separately built binary, so only environment values reach it. These
 variables are:
 
-- `KIDO_LINGER_SECONDS`, shared by the sweep and extension helper;
+- `KIDO_LINGER_SECONDS`, the sweep's grace;
 - `KIDO_IDLE_EXIT_SECONDS`, the separate idle self-exit timer that adds
   to linger rather than sharing it (see "Idle self-exit, and resuming a run");
 - `KIDO_STALL_THRESHOLD_MS`;

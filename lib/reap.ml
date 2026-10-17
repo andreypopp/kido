@@ -10,23 +10,12 @@ let close_of state window pane =
   else Some (Window window)
 
 let decide state window_id =
-  if State.window_focused state window_id then
-    Error
-      (Printf.sprintf "%s is a client's current window; leaving it for the user to read"
-         (Tmux.string_of_window_id window_id))
+  if State.window_focused state window_id then None
   else
     match State.find_window_run state window_id with
-    | None ->
-        Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.string_of_window_id window_id))
-    | Some { dead_at = None; _ } ->
-        Error
-          (Printf.sprintf "%s's run is still going; leaving it"
-             (Tmux.string_of_window_id window_id))
-    | Some run ->
-        Option.to_result
-          (Printf.sprintf "%s is its session's only window; closing it would destroy the session"
-             (Tmux.string_of_window_id window_id))
-          (close_of state window_id run.pane_id)
+    | None -> None
+    | Some { dead_at = None; _ } -> None
+    | Some run -> close_of state window_id run.pane_id
 
 let sweep tmux ~dir ~grace ({ panes; runs; agents } as state : State.t) ~now =
   let live p =
@@ -77,7 +66,7 @@ let%test_module "Tests" =
         dead_at = Option.map (fun secs -> now -. Float.of_int secs) dead;
       }
 
-    let%expect_test "decide: close-run's refusals and closes" =
+    let%expect_test "decide: closes, or none" =
       let show w panes =
         match
           let runs =
@@ -93,34 +82,31 @@ let%test_module "Tests" =
           in
           decide { panes; runs; agents = Tmux.Pane_map.empty } (Tmux.window_id_of_string w)
         with
-        | Ok (Window w) -> Printf.printf "close %s\n" (Tmux.string_of_window_id w)
-        | Ok (Pane { window; pane }) ->
+        | Some (Window w) -> Printf.printf "close %s\n" (Tmux.string_of_window_id w)
+        | Some (Pane { window; pane }) ->
             Printf.printf "close %s pane %s\n" (Tmux.string_of_window_id window)
               (Tmux.string_of_pane_id pane)
-        | Error why -> print_endline why
+        | None -> print_endline "none"
       in
       let focused = pane ~watched:true "%1" "@1" in
       show "@2" [ focused; pane ~run:"run-x" ~dead:1 "%2" "@2"; pane "%3" "@2" ];
       show "@2" [ focused; pane ~run:"run-x" ~dead:1 "%2" "@2" ];
       show "@2" [ focused; pane ~run:"run-x" "%2" "@2"; pane ~dead:1 "%3" "@2" ];
-      show "@2"
-        [ pane "%1" "@1"; pane ~run:"run-x" ~dead:1 "%2" "@2"; pane ~watched:true "%3" "@2" ];
-      show "@1" [ pane ~run:"run-x" ~dead:1 "%1" "@1"; pane "%2" "@1" ];
-      show "@1" [ focused; pane "%2" "@2" ];
-      show "@2" [ focused; pane ~dead:1 "%2" "@2" ];
+      show "@2" [ pane "%1" "@1"; pane ~run:"run-x" "%2" "@2"; pane "%3" "@2" ];
+      show "@2" [ pane "%1" "@1"; pane ~dead:1 "%2" "@2" ];
       show "@1" [ pane ~run:"run-x" ~dead:1 "%1" "@1" ];
+      show "@1" [ pane ~run:"run-x" ~dead:1 "%1" "@1"; pane "%2" "@1" ];
       show "@2"
         [ focused; pane ~run:"run-x" ~dead:1 "%2" "@2"; pane ~run:"run-y" ~dead:1 "%3" "@2" ];
       [%expect
         {|
     close @2 pane %2
     close @2
-    @2's run is still going; leaving it
-    @2 is a client's current window; leaving it for the user to read
+    none
+    none
+    none
+    none
     close @1 pane %1
-    @1 is a client's current window; leaving it for the user to read
-    @2 has no run pane; leaving it
-    @1 is its session's only window; closing it would destroy the session
     close @2 pane %2
     |}]
   end)
