@@ -48,13 +48,18 @@ var (
 	// real launch - plus tmuxDir, for the one binding that runs a literal
 	// "tmux" (the C-s popup).
 	serverPathPrefix string
+	e2ePrefix        string
 )
+
+const childPrefixEnv = "KIDO_E2E_PREFIX"
 
 const (
 	sideWidth = 40 // side-status-width; the separator sits at column 40
 	outerCols = 200
 	outerRows = 50
-	settle    = 5 * time.Second // kido polls every 100ms
+	settle    = 5 * time.Second         // kido polls every 100ms
+	quiet     = 500 * time.Millisecond  // five 100ms ticks: enough for a rule to fire, short enough to repeat
+	linger    = 1300 * time.Millisecond // the harness's 1s linger plus one read past it
 	// shell is pane_current_command for a bare pane: the inner config
 	// pins default-shell to /bin/bash, which exists on both CI runners
 	// and on dev machines.
@@ -68,6 +73,64 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Exit(code)
+}
+
+// buildPrefix lays kido out as an install does, <prefix>/bin beside
+// <prefix>/share/kido, so a kido pane gets the bin directory's shims and a
+// shim finds the kido and kido-tmux it works back to. A child test reuses
+// its parent's prefix, which is already complete.
+func buildPrefix(dir string, fresh bool, tmuxBin string) (nodeBin string, err error) {
+	nodeBin = filepath.Join(dir, "node")
+	if !fresh {
+		return nodeBin, nil
+	}
+	if err := installKido(dir); err != nil {
+		return "", err
+	}
+	if nodeBin, err = buildFakeAgent(dir, dir, "node"); err != nil {
+		return "", err
+	}
+	// A resume that names no command defaults to "pi" (lib/spawn_subagent.ml),
+	// which is where the tool allowlist is spelled onto the command line - so
+	// that one fixture needs the literal name "pi" to resolve, not a fake
+	// standing in under some other name. The only way to make a name resolve
+	// is to put its directory on a PATH, so this fake gets a directory holding
+	// nothing else: a directory holding the others too would shadow whatever
+	// real "node" or "kido" is installed on the machine running the suite, for
+	// every pane that inherits that PATH, and a shell startup file that runs
+	// one of those names (nvm's, on a GitHub Ubuntu runner, runs `node -v`)
+	// would hang on a fake that never exits. TestSpawnResumeCarriesToolsOntoThePiCommandLine
+	// puts this directory on its own server's PATH and nobody else's.
+	if err := os.MkdirAll(piBinDir, 0o755); err != nil {
+		return "", err
+	}
+	if _, err = buildFakeAgent(dir, piBinDir, "pi"); err != nil {
+		return "", err
+	}
+	if tmuxBin == "" {
+		return nodeBin, nil
+	}
+	// A production kido resolves the tmux binary through a "kido-tmux"
+	// sibling (Tmux.Exec.resolve_binary); cleanEnv strips KIDO_TMUX from every
+	// environment this harness builds, including the servers' own, so without
+	// this symlink the built kidoBin would fall through to "tmux" on PATH
+	// instead - exercising a resolution step no install ever takes.
+	if err := os.Symlink(tmuxBin, filepath.Join(filepath.Dir(kidoBin), "kido-tmux")); err != nil {
+		return "", err
+	}
+	// share/tmux/kido-tmux.conf's C-s binding runs a literal "tmux", resolved
+	// through the inner server's own PATH the way a production kido pane
+	// resolves it through the share/bin/tmux shim - which a bare go build here
+	// has no installed copy of. This directory stands in for it, holding only
+	// the patched fork under that name so nothing else on PATH is shadowed;
+	// only the popup test puts it on a server's PATH.
+	if err := os.MkdirAll(tmuxDir, 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Symlink(tmuxBin, filepath.Join(tmuxDir, "tmux")); err != nil {
+		return "", err
+	}
+	return nodeBin, nil
 }
 
 func setup(m *testing.M) (int, error) {
@@ -99,66 +162,26 @@ func setup(m *testing.M) (int, error) {
 			return 0, fmt.Errorf("tmux fork revision %q differs from pin %s; rebuild with scripts/install-tmux-fork.sh", strings.TrimSpace(string(revision)), fields[1])
 		}
 	}
-	dir, err := os.MkdirTemp("", "kido-e2e-bin")
-	if err != nil {
-		return 0, err
-	}
-	defer os.RemoveAll(dir)
-
-	// kido is laid out as an install lays it out, <prefix>/bin beside
-	// <prefix>/share/kido, so a kido pane gets the bin directory's shims
-	// and a shim finds the kido and kido-tmux it works back to.
-	if err := installKido(dir); err != nil {
-		return 0, err
+	var err error
+	dir := os.Getenv(childPrefixEnv)
+	fresh := dir == ""
+	if fresh {
+		dir, err = os.MkdirTemp("", "kido-e2e-bin")
+		if err != nil {
+			return 0, err
+		}
+		defer os.RemoveAll(dir)
 	}
 	kidoBin = filepath.Join(dir, "bin", "kido")
 	shareDir = filepath.Join(dir, "share", "kido")
-	if nodeBin, err = buildFakeAgent(dir, dir, "node"); err != nil {
-		return 0, err
-	}
-	// A resume that names no command defaults to "pi" (lib/spawn_subagent.ml),
-	// which is where the tool allowlist is spelled onto the command line -
-	// so that one fixture needs the literal name "pi" to resolve, not a
-	// fake standing in under some other name. The only way to make a name
-	// resolve is to put its directory on a PATH, so this fake gets a
-	// directory holding nothing else: a directory holding the others too
-	// would shadow whatever real "node" or "kido" is installed
-	// on the machine running the suite, for every pane that inherits that
-	// PATH, and a shell startup file that runs one of those names (nvm's,
-	// on a GitHub Ubuntu runner, runs `node -v`) would hang on a fake that
-	// never exits. TestSpawnResumeCarriesToolsOntoThePiCommandLine puts
-	// this directory on its own server's PATH and nobody else's.
 	piBinDir = filepath.Join(dir, "pi-bin")
-	if err := os.MkdirAll(piBinDir, 0o755); err != nil {
-		return 0, err
-	}
-	if _, err = buildFakeAgent(dir, piBinDir, "pi"); err != nil {
-		return 0, err
-	}
+	tmuxDir = filepath.Join(dir, "tmux-bin")
+	e2ePrefix = dir
 	tmuxBin, tmuxWhy = findTmux()
-	// A production kido resolves the tmux binary through a "kido-tmux"
-	// sibling (Tmux.Exec.resolve_binary); cleanEnv strips KIDO_TMUX from
-	// every environment this harness builds, including the servers' own, so
-	// without this symlink the built kidoBin would fall through to "tmux" on
-	// PATH instead - exercising a resolution step no install ever takes.
+	if nodeBin, err = buildPrefix(dir, fresh, tmuxBin); err != nil {
+		return 0, err
+	}
 	if tmuxBin != "" {
-		if err := os.Symlink(tmuxBin, filepath.Join(filepath.Dir(kidoBin), "kido-tmux")); err != nil {
-			return 0, err
-		}
-		// share/tmux/kido-tmux.conf's C-s binding runs a literal "tmux", resolved
-		// through the inner server's own PATH the way a production kido
-		// pane resolves it through the share/bin/tmux shim - which a bare
-		// go build here has no installed copy of. This directory stands in
-		// for it, holding only the patched fork under that name so nothing
-		// else on PATH is shadowed; only the popup test puts it on a
-		// server's PATH.
-		tmuxDir = filepath.Join(dir, "tmux-bin")
-		if err := os.MkdirAll(tmuxDir, 0o755); err != nil {
-			return 0, err
-		}
-		if err := os.Symlink(tmuxBin, filepath.Join(tmuxDir, "tmux")); err != nil {
-			return 0, err
-		}
 		serverPathPrefix = filepath.Dir(kidoBin) + string(os.PathListSeparator) + tmuxDir
 		if err := startWatchdog(); err != nil {
 			return 0, err
@@ -476,7 +499,7 @@ set -g side-status-command "%s%s"
 		if len(pids) > 1 {
 			t.Errorf("more than one control client attached to %s: %v", h.inner, pids)
 		}
-		started := descendants(socketPath("", h.inner))
+		started := descendants(socketPath(h.inner))
 		killServer(h.inner)
 		killServer(h.outer)
 		for _, pid := range pids {
@@ -542,7 +565,7 @@ func (h *harness) expectedStamp() string {
 // returns nothing once the server is gone, which is why callers must ask
 // before killing it.
 func controlClientPIDs(socket string) []string {
-	out, err := exec.Command(tmuxBin, "-S", socketPath("", socket), "list-clients", "-F",
+	out, err := exec.Command(tmuxBin, "-S", socketPath(socket), "list-clients", "-F",
 		"#{client_pid}\t#{client_control_mode}").Output()
 	if err != nil {
 		return nil
@@ -622,7 +645,7 @@ func processGone(pid string, budget time.Duration) bool {
 // resolved, so a name is a request to kill whatever server answers to it
 // anywhere, rather than the one this test started.
 func killServer(socket string) {
-	path := socketPath("", socket)
+	path := socketPath(socket)
 	exec.Command(tmuxBin, "-S", path, "kill-server").Run()
 	os.Remove(path)
 }

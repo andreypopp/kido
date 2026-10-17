@@ -129,17 +129,18 @@ func TestStateDirectoryResolution(t *testing.T) {
 			t.Fatalf("%+v: %v: %s", c, err, out)
 		}
 	}
-}
 
-func TestServerCreatesPrivateDirectory(t *testing.T) {
-	t.Parallel()
-	r := newKidoRun(t)
-	r.state = filepath.Join(r.state, "new")
-	r.kidoSock = filepath.Join(r.state, "socket")
-	watchSocketPath(r.kidoSock)
-	r.mustServer("")
-	st, err := os.Stat(r.state)
-	if err != nil || st.Mode().Perm() != 0o700 {
-		t.Fatalf("created state directory: %v (%v), want 0700", st, err)
+	probe := filepath.Join(base, "probe")
+	cmd := exec.Command(kidoBin, "get-inbox", "123")
+	cmd.Env = cleanEnv("HOME="+home, "KIDO_STATE_DIR="+probe)
+	out, err := cmd.CombinedOutput()
+	var got struct {
+		Path string `json:"path"`
+	}
+	if err != nil || json.Unmarshal(out, &got) != nil || got.Path != filepath.Join(probe, "inbox/123.sock") {
+		t.Fatalf("get-inbox: %v: %s", err, out)
+	}
+	if _, err := os.Stat(probe); !os.IsNotExist(err) {
+		t.Errorf("get-inbox created state directory: %v", err)
 	}
 }

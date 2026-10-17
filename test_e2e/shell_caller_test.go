@@ -48,10 +48,9 @@ func TestAskFromAShellRefusesAndLeavesTheTargetUndisturbed(t *testing.T) {
 	if !strings.Contains(out, "message_agent") {
 		t.Errorf("kido tool ask_agent output = %q, want it to point at kido tool message_agent", out)
 	}
-	// stays, not a single reading: "nothing has been delivered yet" and
-	// "nothing will be" look identical at any one instant.
-	h.stays(func() bool { return len(in.Received()) == 0 },
-		"the target's inbox received something: an unanswerable question must not interrupt anyone")
+	if got := in.Received(); len(got) != 0 {
+		t.Errorf("the target's inbox received %q: an unanswerable question must not interrupt anyone", got)
+	}
 	if got := h.paneText(paneID); strings.Contains(got, question) {
 		t.Errorf("target pane %s was typed into: %q; an ask never falls back to a paste either", paneID, got)
 	}

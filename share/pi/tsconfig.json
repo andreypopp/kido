@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "strict": true,
+    "noUnusedLocals": true,
     "noEmit": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
@@ -9,5 +10,10 @@
     "erasableSyntaxOnly": true,
     "skipLibCheck": true
   },
-  "include": ["kido-status.ts", "kido-agents.ts", "kido-status.test.ts"]
+  "include": [
+    "kido-status.ts",
+    "kido-agents.ts",
+    "kido-fixture.ts",
+    "kido-status-*.test.ts"
+  ]
 }

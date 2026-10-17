@@ -21,6 +21,7 @@ func withoutLocale(env []string) []string {
 
 func TestServerWithoutLocale(t *testing.T) {
 	requireTmux(t)
+	t.Parallel()
 	env := withoutLocale(launcherEnv(t))
 	var first string
 	t.Cleanup(func() {
@@ -52,6 +53,7 @@ func TestServerWithoutLocale(t *testing.T) {
 }
 
 func TestRpcWithoutLocale(t *testing.T) {
+	t.Parallel()
 	h := start(t, "alpha")
 	const name = "日本語 café"
 	h.in("rename-window", "-t", "alpha:", name)

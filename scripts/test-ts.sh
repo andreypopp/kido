@@ -31,6 +31,10 @@ process.exit(maj >= 24 ? 0 : 1);
 fi
 
 cd "$(dirname "$0")/../share/pi"
+repo=$(cd ../.. && pwd)
+(cd "$repo" && dune build share/pi/testdata/fake_kido/fake_kido.exe)
+KIDO_FAKE_KIDO="$repo/${DUNE_BUILD_DIR:-_build}/default/share/pi/testdata/fake_kido/fake_kido.exe"
+export KIDO_FAKE_KIDO
 if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
 	npm install --silent
 	touch node_modules
@@ -40,4 +44,4 @@ fi
 ./node_modules/.bin/tsc --strict --noEmit --module NodeNext --moduleResolution NodeNext \
 	--target ES2024 --allowImportingTsExtensions --erasableSyntaxOnly --skipLibCheck \
 	--typeRoots ./node_modules/@types ../../.pi/tests/no-git-writes.test.ts
-exec node --test --test-reporter=spec kido-status.test.ts ../../.pi/tests/no-git-writes.test.ts
+exec node --test --test-concurrency=4 --test-reporter=spec kido-status-*.test.ts ../../.pi/tests/no-git-writes.test.ts

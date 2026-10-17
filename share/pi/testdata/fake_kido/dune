@@ -1,0 +1,11 @@
+(executable
+ (name fake_kido)
+ (flags
+  (:standard
+   -open
+   Containers
+   -open
+   Ppx_yojson_conv_lib.Yojson_conv.Primitives))
+ (libraries kido_fs containers ppx_yojson_conv_lib unix yojson)
+ (preprocess
+  (pps ppx_yojson_conv)))

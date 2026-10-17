@@ -107,17 +107,15 @@ sleeps = {
     'test_e2e/async_ending_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
     'test_e2e/conn_test.go': {'time.Sleep(20 * time.Millisecond)': 1},
     'test_e2e/control_test.go': {'time.Sleep(10 * time.Millisecond)': 1},
-    'test_e2e/launch_test.go': {'time.Sleep(100 * time.Millisecond)': 3},
+    'test_e2e/launch_test.go': {'time.Sleep(100 * time.Millisecond)': 2},
     'test_e2e/leak_check_test.go': {'time.Sleep(50 * time.Millisecond)': 2},
-    'test_e2e/reap_test.go': {'time.Sleep(100 * time.Millisecond)': 1, 'time.Sleep(1200 * time.Millisecond)': 1},
+    'test_e2e/reap_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/render_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
-    'test_e2e/rpc_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/ssh_prime_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
-    'test_e2e/stall_test.go': {'time.Sleep(6 * time.Second)': 1},
-    'test_e2e/standalone_test.go': {'time.Sleep(60 * time.Millisecond)': 2, 'time.Sleep(time.Second)': 1},
+    'test_e2e/standalone_test.go': {'time.Sleep(60 * time.Millisecond)': 2},
     'test_e2e/stream_test.go': {'time.Sleep(300 * time.Millisecond)': 1},
     'test_e2e/switch_session_test.go': {'time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)) + 50*time.Millisecond)': 1},
-    'test_e2e/watchdog_test.go': {'time.Sleep(100 * time.Millisecond)': 1, 'time.Sleep(110 * time.Second)': 2, 'time.Sleep(200 * time.Millisecond)': 3},
+    'test_e2e/watchdog_test.go': {'time.Sleep(110 * time.Second)': 1, 'time.Sleep(200 * time.Millisecond)': 2},
 }
 for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go')):
     if path == 'test_e2e/harness_test.go':
@@ -130,6 +128,10 @@ for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go')):
             report(path, text, match.start(), 'time.Sleep outside harness/allowlist')
         else:
             allowed[statement] -= 1
+for path, statements in sleeps.items():
+    for statement, left in statements.items():
+        if left:
+            report(path, '', 0, f'stale time.Sleep allowance {statement!r} ({left} unused)')
 
 for path in candidates('kill-server', glob.glob('test_e2e/*.go') + glob.glob('scripts/*')):
     text = pathlib.Path(path).read_text()

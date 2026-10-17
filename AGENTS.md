@@ -295,6 +295,8 @@ Conventions:
       tmux/            kido-tmux.conf, the defaults the launcher writes into
                        server.conf (embedded, not installed)
       pi/              the two pi extensions, which the pi shim loads with --extension
+      pi/testdata/fake_kido/  the TypeScript suite's fake kido, built by
+                       scripts/test-ts.sh
     .pi/prompts/       gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed
     .pi/extensions/    no-git-writes, the spawned agent's bash-tool guard
     scripts/           install-tmux-fork.sh, the fork build;
@@ -732,6 +734,37 @@ CI builds the fork at the pinned revision, cached by SHA.
 While you work, use `dune test` for repeated checks.
 After you read an expect diff, `dune promote` accepts it.
 
+**Test speed.** Tests stay very fast, because fast tests give fast
+iterations. `make verify` prints the time of each stage on its
+PASS/FAIL line. A full local run takes about 35 s. A change that makes
+a stage slower needs a reason.
+
+- Wait for the event, not for a time. A test that only waits longer
+  than necessary is a defect. `scripts/lint.sh` permits `time.Sleep`
+  in e2e only through its table of exact statements. The usual reason
+  is tmux's whole-second timestamps.
+- An absence check waits for the harness's `quiet` window. Do not add
+  one where a positive assertion shows the same fact.
+- Shorten a product timer through the inner server's environment
+  (see "The e2e harness" below).
+- Every e2e test calls `t.Parallel()`. A serial test needs a verified
+  reason in a comment. e2e wall time is the CPU of all tests divided
+  by the cores, so each tmux server start costs the whole suite. Put
+  cases that need the same setup in one test, on one server.
+- Test pure logic in a unit test, not through a tmux server.
+- In the TypeScript suite, the fake `kido` is the OCaml executable
+  `share/pi/testdata/fake_kido`. A Node process start costs about
+  70 ms. A fake delay is a `KIDO_FAKE_*` gate that the test releases,
+  not a delay that the test waits out. A test that reads only the
+  registered tools needs no fixture.
+- A test earns its time. Do not keep a test that repeats another test,
+  the prompt snapshot or the compiler.
+
+To find slow tests:
+
+    make verify STAGES=e2e | grep '^--- ' | sort -t'(' -k2 -nr | head -20
+    make verify STAGES=ts | grep '^✔' | sort -t'(' -k2 -nr | head -20
+
 **Prefer e2e tests.** Use `test_e2e/` to test behaviour that a user or
 agent can observe through the binary. This includes a subcommand's
 output, exit code, and effects on tmux or state.
@@ -905,7 +938,9 @@ A brief does not repeat them.
   3. The manager merges their findings and decides which to apply.
   4. It gives the findings to apply to the same implementer with
      `message_agent`. The implementer keeps its context.
-  5. It reports to the top-level session: the result, and each finding
+  5. It writes the docs that the change needs itself, in `docs/`,
+     this file and READMEs. The implementer reports the facts.
+  6. It reports to the top-level session: the result, and each finding
      with the reason it was applied or rejected. Then it stops the
      implementer.
 - **Do the task yourself.** An implementer or reviewer does not spawn
@@ -975,8 +1010,9 @@ A brief does not repeat them.
   If a failure is in a file you do not own, report it.
   Do not fix it.
 - **Docs are not per task.**
-  Unless the brief assigns them, do not edit `docs/` or this file.
-  Put prose that a change needs in your report.
+  An implementer or reviewer does not edit `docs/`, this file or
+  READMEs. Put prose that a change needs in your report.
+  The manager writes the docs.
 - **Report through `notify_parent`, under 4000 characters**.
   Start with what you built and the pre-fix failures.
 

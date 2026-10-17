@@ -142,9 +142,9 @@ func (h *harness) typeScript(pane, outName, script string) string {
 
 // stays asserts cond keeps holding for a while: a window never closed
 // and one not closed yet look identical at any single instant.
-func (h *harness) stays(cond func() bool, why string) {
+func (h *harness) stays(d time.Duration, cond func() bool, why string) {
 	h.t.Helper()
-	deadline := time.Now().Add(2 * time.Second) // the harness's linger is 1s
+	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if !cond() {
 			h.t.Fatalf("%s\n%s", why, h.diagnose())
@@ -166,7 +166,7 @@ func TestSidebarReapsFinishedSubagentWindow(t *testing.T) {
 	stateFile := filepath.Join(h.stateDir, "runs", childSession, "pi.json")
 	h.waitFor(func() bool { _, err := os.Stat(stateFile); return err == nil }, settle,
 		msgf("the subagent's state record %s to be written", stateFile))
-	h.stays(func() bool { return h.windowExists(windowID) },
+	h.stays(quiet, func() bool { return h.windowExists(windowID) },
 		"a running subagent's window was closed")
 
 	h.killPane(paneID)
@@ -195,11 +195,11 @@ func TestReapLeavesAWindowItDidNotCreate(t *testing.T) {
 	if out := h.runKido("alpha", "reap.out", "reap"); !strings.Contains(out, "rc=0") {
 		t.Errorf("kido reap output = %q, want a clean exit", out)
 	}
-	h.stays(func() bool { return h.windowExists(windowID) },
+	h.stays(linger, func() bool { return h.windowExists(windowID) },
 		"a window kido did not create was closed: only a run's own pane may be reaped")
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
 	h.killPane(paneID)
-	h.stays(func() bool { return h.windowExists(windowID) },
+	h.stays(linger, func() bool { return h.windowExists(windowID) },
 		"a dead pane kido did not create was collected: only a run's own pane may be reaped")
 }
 
@@ -221,10 +221,28 @@ func TestReapNeverClosesASessionsLastWindow(t *testing.T) {
 	h.killPane(paneID)
 
 	h.runKido("alpha", "last.out", "reap")
-	h.stays(func() bool { return h.windowExists(windowID) },
+	h.stays(linger, func() bool { return h.windowExists(windowID) },
 		"a session's only window was closed, which destroys the session")
 	if !strings.Contains(h.in("list-sessions", "-F", "#{session_name}"), "solo") {
 		t.Error("session solo is gone; closing its last window destroyed it")
+	}
+
+	// A run's pane in that same only window is still collected when the user
+	// split it: the pane goes, the split and the session stay.
+	h.in("new-session", "-d", "-s", "split", "-c", h.dir, "sh", "-c", "exec sleep 300")
+	h.waitRow("split")
+	paneID = h.in("list-panes", "-t", "split", "-F", "#{pane_id}")
+	windowID = h.windowID(paneID)
+	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
+	h.in("set-option", "-p", "-t", paneID, "@kido_run", "solo-split-e2e")
+	h.agentRunMeta("solo-split-e2e", paneID, "", "")
+	split := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowID, "sh", "-c", "exec sleep 300")
+	h.killPane(paneID)
+	h.runScript("alpha", "solo-split.out", "KIDO_LINGER_SECONDS=0 "+kidoBin+" reap")
+	h.waitFor(func() bool { return !h.paneExists(paneID) }, settle,
+		msgf("the run's dead pane %s to be collected from session solo's only window", paneID))
+	if !h.paneExists(split) || !strings.Contains(h.in("list-sessions", "-F", "#{session_name}"), "split") {
+		t.Errorf("the split %s or session split went with the run's pane", split)
 	}
 }
 
@@ -246,7 +264,7 @@ func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 	h.in("switch-client", "-c", h.client, "-t", windowID) // read the run's last screen
 	h.waitFor(func() bool { return h.activeWindowID("alpha") == windowID }, settle,
 		msgf("client to switch to window %s", windowID))
-	h.stays(func() bool { return h.windowExists(windowID) },
+	h.stays(quiet, func() bool { return h.windowExists(windowID) },
 		"the focused window of a completed run was closed")
 	if got := h.runOutcome(runID); got != "completed" {
 		t.Errorf("run %s outcome = %q while focused, want %q", runID, got, "completed")
@@ -329,7 +347,7 @@ func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 		return fmt.Sprintf("window %s to be drawn as a plain window with the user's shell, rows are %q",
 			runWindowID, h.rows())
 	})
-	h.stays(plain, fmt.Sprintf("the sidebar went back to drawing window %s as a run: %q", runWindowID, h.rows()))
+	h.stays(quiet, plain, fmt.Sprintf("the sidebar went back to drawing window %s as a run: %q", runWindowID, h.rows()))
 
 	if err := os.WriteFile(stop, nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -352,7 +370,7 @@ func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 	h.waitPaneCommand(parentPane, "sleep")
 
 	_, windowID := h.subagentWindow("alpha", "kid-e2e", "cancel-child-e2e", "parent-e2e")
-	h.stays(func() bool { return h.windowExists(windowID) },
+	h.stays(quiet, func() bool { return h.windowExists(windowID) },
 		"a subagent's window was closed while its parent was still alive")
 
 	h.killPane(parentPane)
@@ -379,7 +397,7 @@ func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
 	h.programStatus(parentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", parentPane, "#{pane_title}"), "π - "))
 	h.agentStatus("intruder-collision-e2e", parentPane)
 
-	h.stays(func() bool { return h.windowExists(windowID) },
+	h.stays(quiet, func() bool { return h.windowExists(windowID) },
 		"a subagent's window was closed by another session claiming its parent's pane, though the parent's process was alive")
 }
 
@@ -424,7 +442,7 @@ func TestReapLeavesARunAloneWithinItsLinger(t *testing.T) {
 	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
 
 	h.runScript("alpha", "reap-young.out", "KIDO_LINGER_SECONDS=600 "+kidoBin+" reap")
-	h.stays(func() bool { return h.windowExists(windowID) },
+	h.stays(linger, func() bool { return h.windowExists(windowID) },
 		"a run's window was closed within its linger")
 	if _, ok := h.runMeta("young", runID)["screen"]; ok {
 		t.Errorf("run %s has a screen saved for a window the sweep left alone", runID)
@@ -435,31 +453,5 @@ func TestReapLeavesARunAloneWithinItsLinger(t *testing.T) {
 		msgf("`kido reap` to close window %s once its linger has passed", windowID))
 	if screen, _ := h.runMeta("old", runID)["screen"].(string); !strings.Contains(screen, "young-screen-e2e") {
 		t.Errorf("run %s screen = %q, want the closed window's last screen", runID, screen)
-	}
-}
-
-// A session's only window is never closed (the test above), but a run's
-// pane in it is still collected when the user split it: the pane goes,
-// the split and the session stay.
-func TestReapTakesARunPaneFromASessionsOnlyWindow(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-
-	h.in("new-session", "-d", "-s", "solo", "-c", h.dir, "sh", "-c", "exec sleep 300")
-	h.waitRow("solo")
-	paneID := h.in("list-panes", "-t", "solo", "-F", "#{pane_id}")
-	windowID := h.windowID(paneID)
-	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
-	h.in("set-option", "-p", "-t", paneID, "@kido_run", "solo-split-e2e")
-	h.agentRunMeta("solo-split-e2e", paneID, "", "")
-	split := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowID, "sh", "-c", "exec sleep 300")
-	h.killPane(paneID)
-
-	time.Sleep(1200 * time.Millisecond) // the harness's linger is 1s
-	h.runKido("alpha", "solo-split.out", "reap")
-	h.waitFor(func() bool { return !h.paneExists(paneID) }, settle,
-		msgf("the run's dead pane %s to be collected from session solo's only window", paneID))
-	if !h.paneExists(split) || !strings.Contains(h.in("list-sessions", "-F", "#{session_name}"), "solo") {
-		t.Errorf("the split %s or session solo went with the run's pane", split)
 	}
 }

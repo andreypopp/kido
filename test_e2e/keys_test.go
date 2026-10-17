@@ -35,19 +35,49 @@ func TestPrefixKShowHide(t *testing.T) {
 	h.waitFocused(true)
 }
 
-func TestPrefixKToggleFocus(t *testing.T) {
+// Every route into and out of sidebar focus, on one server: prefix k,
+// Escape and C-c, C-s, a prefix command reaching the pane, and a mouse
+// click in the pane.
+func TestSidebarFocusToggles(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	if h.clientFocused() {
-		t.Fatal("the sidebar has focus before prefix k")
+		t.Fatal("the sidebar has focus before the test starts")
 	}
+
 	h.prefix("k")
 	h.waitFocused(true)
 	h.prefix("k")
 	h.waitFocused(false)
+
+	focusSidebar(h)
+	h.sendKeys("Escape")
+	h.waitFocused(false)
+	focusSidebar(h)
+	h.sendKeys("C-c")
+	h.waitFocused(false)
+
+	h.sendKeys("C-s")
+	h.waitFocused(true)
+	h.sendKeys("C-s")
+	h.waitFocused(false)
+
+	focusSidebar(h)
+	before := len(h.panes())
+	h.prefix("c") // new window in the client's session
+	h.waitFor(func() bool { return len(h.panes()) == before+1 }, settle,
+		msgf("a window created by prefix c (had %d panes)", before))
+	if !h.clientFocused() {
+		t.Error("the prefix command cleared side-status-focus")
+	}
+
+	h.click(sideWidth+20, 5)
+	h.waitFocused(false)
 }
 
-func TestMotionKeys(t *testing.T) {
+// Movement, first/last and Enter on one six-row layout: two sessions,
+// one with a split, so headers are stepped over rather than selected.
+func TestSidebarMotionKeys(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.in("split-window", "-d", "-t", "alpha:")
@@ -57,8 +87,6 @@ func TestMotionKeys(t *testing.T) {
 	focusSidebar(h)
 
 	// Lines: 1 alpha, 2 ┌ shell, 3 └ shell, 4 beta, 5 ┌ shell, 6 └ shell.
-	// The selection starts on alpha's active pane, line 2. Every pane row
-	// reads the same, so assert the line, not the text.
 	h.waitSelectedLine(2)
 	for _, c := range []struct {
 		key  string
@@ -75,127 +103,17 @@ func TestMotionKeys(t *testing.T) {
 		h.sendKeys(c.key)
 		h.waitSelectedLine(c.want)
 	}
-}
 
-func TestFirstLastKeys(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	h.newSession("beta")
-	h.in("split-window", "-d", "-t", "beta:")
-	h.waitRows(5)
-	focusSidebar(h)
-
-	// Lines: 1 alpha, 2 ╶ shell, 3 beta, 4 ┌ shell, 5 └ shell.
 	h.sendKeys("G")
-	h.waitSelectedLine(5)
-
+	h.waitSelectedLine(6)
 	h.sendKeys("g")
 	h.sendKeys("g")
 	h.waitSelectedLine(2)
-}
 
-func TestEnterJumps(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	h.newSession("beta")
-	h.waitRows(4)
-	focusSidebar(h)
-
-	h.sendKeys("G") // beta's pane
+	h.sendKeys("G")
 	h.waitSelected(shell)
 	h.sendKeys("Enter")
-
 	h.waitSession("beta")
-	h.waitFocused(false)
-}
-
-func TestEscReleasesFocus(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	focusSidebar(h)
-	h.sendKeys("Escape")
-	h.waitFocused(false)
-
-	focusSidebar(h)
-	h.sendKeys("C-c")
-	h.waitFocused(false)
-}
-
-// Focused keys route to the side job and never reach the client-level
-// bindings in share/tmux/kido-tmux.conf, so S-Up/S-Down inside the sidebar must
-// call the same window-switching path as `kido switch-window` itself.
-func TestSidebarNavShiftUpDownSwitchesWindow(t *testing.T) {
-	t.Parallel()
-	h := setupSwitchWindowSessions(t) // sessions a, c, b (created order), each with two windows
-
-	focusSidebar(h)
-	h.waitWindow("a", "a0")
-
-	// Lines: 1 a, 2 a0, 3 a1, 4 c, 5 c0, 6 c1, 7 b, 8 b0, 9 b1.
-	h.waitSelectedLine(2)
-
-	h.sendKeys("S-Down") // a0 -> a1, inside session a
-	h.waitWindow("a", "a1")
-	h.waitSelectedLine(3)
-	if !h.clientFocused() {
-		t.Fatal("shift+down released the sidebar's keyboard focus")
-	}
-
-	h.sendKeys("S-Down") // a1 -> c0, crossing into session c
-	h.waitWindow("c", "c0")
-	h.waitSelectedLine(5)
-	if !h.clientFocused() {
-		t.Fatal("shift+down released the sidebar's keyboard focus")
-	}
-
-	h.sendKeys("S-Up") // c0 -> a1, back across the session boundary
-	h.waitWindow("a", "a1")
-	h.waitSelectedLine(3)
-	if !h.clientFocused() {
-		t.Fatal("shift+up released the sidebar's keyboard focus")
-	}
-}
-
-// With the sidebar unfocused the keys go to the pane, not the side job;
-// they must still reach the client-level binding in share/tmux/kido-tmux.conf.
-func TestSidebarNavShiftUpDownUnfocusedSwitchesWindow(t *testing.T) {
-	t.Parallel()
-	h := setupSwitchWindowSessions(t)
-	h.waitWindow("a", "a0")
-	if h.clientFocused() {
-		t.Fatal("the sidebar has focus before the test starts")
-	}
-
-	h.sendKeys("S-Down") // a0 -> a1
-	h.waitWindow("a", "a1")
-	if h.clientFocused() {
-		t.Fatal("shift+down gave the sidebar keyboard focus")
-	}
-
-	h.sendKeys("S-Down") // a1 -> c0, crossing into session c
-	h.waitWindow("c", "c0")
-	if h.clientFocused() {
-		t.Fatal("shift+down gave the sidebar keyboard focus")
-	}
-
-	h.sendKeys("S-Up") // c0 -> a1
-	h.waitWindow("a", "a1")
-	if h.clientFocused() {
-		t.Fatal("shift+up gave the sidebar keyboard focus")
-	}
-}
-
-// C-s toggles keyboard focus exactly as prefix k does, with no prefix.
-func TestCtrlSTogglesFocusWithSidebarShown(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	if h.clientFocused() {
-		t.Fatal("the sidebar has focus before C-s")
-	}
-
-	h.sendKeys("C-s")
-	h.waitFocused(true)
-	h.sendKeys("C-s")
 	h.waitFocused(false)
 }
 
@@ -229,18 +147,4 @@ func outerScreenLines(h *harness) []string {
 		out = append(out, ansi.Strip(l))
 	}
 	return out
-}
-
-func TestPrefixPassthrough(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	focusSidebar(h)
-	before := len(h.panes())
-
-	h.prefix("c") // new window in the client's session
-	h.waitFor(func() bool { return len(h.panes()) == before+1 }, settle,
-		msgf("a window created by prefix c (had %d panes)", before))
-	if !h.clientFocused() {
-		t.Error("the prefix command cleared side-status-focus")
-	}
 }

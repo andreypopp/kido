@@ -204,8 +204,9 @@ func TestMessagePastesOnlyWithoutAnInbox(t *testing.T) {
 	h.expectKido(caller, "hello", nil,
 		"kido tool ask_agent: pastee is not accepting messages; after it exits, resume it with spawn_subagent(resume: "+run+") and resend",
 		"tool", "ask_agent", "--", "target")
-	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "got: hello") },
-		"a message to a closed inbox was pasted")
+	if got := h.paneText(pane); strings.Contains(got, "got: hello") {
+		t.Errorf("a message to a closed inbox was pasted: %q", got)
+	}
 
 	nope := startInbox(t, "nope\n")
 	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
@@ -213,8 +214,9 @@ func TestMessagePastesOnlyWithoutAnInbox(t *testing.T) {
 	h.expectKido(caller, "never pasted", nil,
 		fmt.Sprintf(`kido tool message_agent: inbox %s: answered "nope", want "ok"`, nope.Path),
 		"tool", "message_agent", "--", "target")
-	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "never pasted") },
-		"a message the inbox may have taken was pasted as well")
+	if got := h.paneText(pane); strings.Contains(got, "never pasted") {
+		t.Errorf("a message the inbox may have taken was pasted as well: %q", got)
+	}
 }
 
 // A non-message kind must never fall back to a paste: a notice's text is
@@ -252,8 +254,9 @@ func TestAskReplyAndNoticeNeverPaste(t *testing.T) {
 	h.agentStatus("target", pane, "--inbox", startInbox(t, "refused\n").Path)
 	h.expectKido(caller, "touch /tmp/pwned", nil, "kido tool ask_agent: victim refused the ask", "tool", "ask_agent", "--", "target")
 
-	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "got:") },
-		"an ask, reply or notice was pasted into the target's pane")
+	if got := h.paneText(pane); strings.Contains(got, "got:") {
+		t.Errorf("an ask, reply or notice was pasted into the target's pane: %q", got)
+	}
 }
 
 // A steer reaches a descendant however deep; nothing reaches a peer, an

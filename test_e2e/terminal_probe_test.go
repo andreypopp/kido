@@ -9,6 +9,7 @@ import (
 )
 
 func TestSidebarDoesNotLeakTerminalReplies(t *testing.T) {
+	t.Parallel()
 	h := start(t, "alpha")
 	h.in("set-option", "-g", "allow-passthrough", "on")
 	h.in("set-option", "-g", "status-interval", "1")
@@ -44,7 +45,7 @@ func TestSidebarDoesNotLeakTerminalReplies(t *testing.T) {
 	paneReplies := filepath.Join(h.dir, "pane-replies")
 	paneDone := filepath.Join(h.dir, "pane-done")
 	payload := "\033Ptmux;\033\033[?1004$p\033\\\033Ptmux;\033\033[c\033\\"
-	command := fmt.Sprintf("stty raw -echo; printf '%%s' %s; end=$((SECONDS+4)); reply=; while [ $SECONDS -lt $end ] && IFS= read -r -t 2 -n 1 byte; do reply=$reply$byte; done; printf '%%s' \"$reply\" > %s; : > %s",
+	command := fmt.Sprintf("stty raw -echo; printf '%%s' %s; end=$((SECONDS+4)); reply=; while [ $SECONDS -lt $end ] && IFS= read -r -t 2 -n 1 byte; do reply=$reply$byte; case $reply in *c) break;; esac; done; printf '%%s' \"$reply\" > %s; : > %s",
 		shellQuote(payload), shellQuote(paneReplies), shellQuote(paneDone))
 	h.in("split-window", "-d", "/bin/bash", "--noprofile", "--norc", "-c", command)
 	h.waitFor(func() bool { _, err := os.Stat(paneDone); return err == nil }, settle, msgf("inactive pane receives its query replies"))
@@ -58,6 +59,7 @@ func TestSidebarDoesNotLeakTerminalReplies(t *testing.T) {
 }
 
 func TestTerminalProbeReceivesFragmentedReplies(t *testing.T) {
+	t.Parallel()
 	h := start(t, "alpha")
 	h.in("set-option", "-g", "allow-passthrough", "on")
 	h.in("set-option", "-g", "status-interval", "1")
@@ -69,7 +71,7 @@ func TestTerminalProbeReceivesFragmentedReplies(t *testing.T) {
 	queries := filepath.Join(h.dir, "side-queries")
 	script := filepath.Join(h.dir, "side-probe")
 	payload := "\033Ptmux;\033\033_Gi=31338,a=q;AAAA\033\033\\\033\\"
-	body := fmt.Sprintf("stty raw -echo; : > %s; IFS= read -r -t 4 -n 1 trigger; printf '%%s' %s; end=$((SECONDS+4)); reply=; while [ $SECONDS -lt $end ] && IFS= read -r -t 2 -n 1 byte; do reply=$reply$byte; done; printf '%%s' \"$reply\" > %s; : > %s",
+	body := fmt.Sprintf("stty raw -echo; : > %s; IFS= read -r -t 4 -n 1 trigger; printf '%%s' %s; end=$((SECONDS+4)); reply=; endseq=$(printf '\\033\\\\'); while [ $SECONDS -lt $end ] && IFS= read -r -t 2 -n 1 byte; do reply=$reply$byte; case $reply in *\"$endseq\") break;; esac; done; printf '%%s' \"$reply\" > %s; : > %s",
 		shellQuote(ready), shellQuote(payload), shellQuote(replies), shellQuote(done))
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

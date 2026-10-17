@@ -45,7 +45,7 @@ func setupSearch(t *testing.T) *harness {
 	return h
 }
 
-func TestSearchFilters(t *testing.T) {
+func TestSearchFiltersBackspaceAndEnter(t *testing.T) {
 	t.Parallel()
 	h := setupSearch(t)
 
@@ -57,18 +57,11 @@ func TestSearchFilters(t *testing.T) {
 		rows := h.rows()
 		return len(rows) == 3 && rows[0] == "beta" // + pane row + prompt
 	}, settle, msgf("only beta listed"))
-
-	// Esc cancels: the full list comes back and the prompt goes away.
 	h.sendKeys("Escape")
 	h.waitSearchClosed(searchRows)
 	if !h.clientFocused() {
 		t.Error("Esc leaving the search also released the keyboard")
 	}
-}
-
-func TestSearchBackspaceCloses(t *testing.T) {
-	t.Parallel()
-	h := setupSearch(t)
 
 	h.sendKeys("/")
 	h.sendLiteral("ga")
@@ -82,17 +75,11 @@ func TestSearchBackspaceCloses(t *testing.T) {
 	if !h.clientFocused() {
 		t.Error("Backspace closing the search released the keyboard")
 	}
-}
-
-func TestSearchEnterJumps(t *testing.T) {
-	t.Parallel()
-	h := setupSearch(t)
 
 	h.sendKeys("/")
 	h.sendLiteral("gam")
 	h.waitSearch("/gam")
 	h.sendKeys("Enter")
-
 	h.waitSession("gamma")
 	h.waitFocused(false)
 	h.waitSearchClosed(searchRows)

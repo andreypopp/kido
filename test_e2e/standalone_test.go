@@ -111,18 +111,14 @@ func (p *picker) mustBeAlive() {
 	}
 }
 
-func TestStandaloneQuitsOnQ(t *testing.T) {
+func TestStandaloneQuitsOnQAndCtrlC(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	p := startPicker(h, "alpha")
 	p.keys("q")
 	p.waitExit()
-}
 
-func TestStandaloneQuitsOnCtrlC(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	p := startPicker(h, "alpha")
+	p = startPicker(h, "alpha")
 	p.keys("C-c")
 	p.waitExit()
 }
@@ -183,17 +179,18 @@ func TestSidebarIgnoresQ(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.newSession("beta")
-	h.waitRows(4)
+	h.newSession("gamma")
+	h.waitRows(6)
 	focusSidebar(h)
 
-	h.sendKeys("G") // beta's pane: not where a fresh sidebar would start
-	h.waitSelectedLine(4)
+	h.sendKeys("G") // gamma's pane: not where a fresh sidebar would start
+	h.waitSelectedLine(6)
 
 	h.sendKeys("q")
-	time.Sleep(time.Second)
-	if got := h.selectedIndex(); got != 4 {
-		t.Fatalf("selection moved to line %d after q: the sidebar was quit and restarted", got)
-	}
+	// A sidebar that restarted starts its selection on line 2, where k is a
+	// no-op; one that ignored q moves to the previous session's pane.
+	h.sendKeys("k")
+	h.waitSelectedLine(4)
 	if !h.clientFocused() {
 		t.Fatal("q released the sidebar's keyboard focus")
 	}

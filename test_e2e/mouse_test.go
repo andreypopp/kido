@@ -20,14 +20,6 @@ func TestMouseClickJumps(t *testing.T) {
 	h.waitFocused(false)
 }
 
-func TestMouseClickInPaneReleasesFocus(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	focusSidebar(h)
-	h.click(sideWidth+20, 5)
-	h.waitFocused(false)
-}
-
 func TestMouseWheelScrolls(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

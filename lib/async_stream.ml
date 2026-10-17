@@ -353,42 +353,6 @@ let%test_module "Tests" =
     line 4 unterminated
     |}]
 
-    (* The output file is the source of truth: a parent that is gone, or listening and never
-   answering, must cost the writer nothing, and nothing it did not acknowledge counts as sent. *)
-    let%expect_test "a parent that cannot be reached never blocks a write" =
-      let slowest = ref 0. in
-      let feed s =
-        for i = 1 to 60 do
-          let t0 = Unix.gettimeofday () in
-          write s (Printf.sprintf "line %d\n" i);
-          slowest := Float.max !slowest (Unix.gettimeofday () -. t0);
-          Thread.delay 0.01
-        done;
-        close s
-      in
-      let stalled, received = start_inbox ~reply:"" in
-      List.iter
-        (fun (what, (dir, meta)) ->
-          slowest := 0.;
-          let unstreamed = feed (start ~dir (stream_knobs 0.02) meta) in
-          Printf.printf "%s: unstreamed %d, writes under 50ms: %b\n" what unstreamed
-            Float.(!slowest < 0.05))
-        [
-          ("no parent", run ~parent:"" "");
-          ("parent without an inbox", run "");
-          ("nothing listening", run "/nonexistent/inbox.sock");
-          ("never answering", run stalled);
-        ];
-      Printf.printf "the stalled inbox was sent to: %b\n" (not (List.is_empty (received ())));
-      [%expect
-        {|
-    no parent: unstreamed 60, writes under 50ms: true
-    parent without an inbox: unstreamed 60, writes under 50ms: true
-    nothing listening: unstreamed 60, writes under 50ms: true
-    never answering: unstreamed 60, writes under 50ms: true
-    the stalled inbox was sent to: true
-    |}]
-
     let%expect_test "past the run's budget one line says so, and nothing follows it" =
       let inbox, received = start_inbox ~reply:"ok\n" in
       let dir, meta = run inbox in

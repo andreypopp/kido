@@ -420,7 +420,7 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	if out := h.runKido("alpha", "reap.out", "reap"); !strings.Contains(out, "rc=0") {
 		t.Errorf("kido reap output = %q, want a clean exit", out)
 	}
-	h.stays(func() bool { return h.windowExists(windowID) },
+	h.stays(quiet, func() bool { return h.windowExists(windowID) },
 		"a child spawned with --no-parent was closed as an orphan; an empty parent edge is exempt from rule 2")
 }
 

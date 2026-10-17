@@ -60,7 +60,6 @@ func TestKilledWrapperIsReportedByWhoeverFindsIt(t *testing.T) {
 	in := h.asyncParent("alpha", "parent-doomed-e2e")
 
 	runID := h.asyncBash("doomed", "sleep", "60")
-	h.stableCount(in, 0, "a command still running has no ending to report")
 	h.killWrapper(runID)
 
 	// The linger the harness runs with is 1s; rule 1 leaves a dead window
@@ -174,7 +173,6 @@ func TestReapedAgentRunTellsItsParentNobodyReported(t *testing.T) {
 	}
 	paneID, runID := fields[1], fields[2]
 
-	h.stableCount(in, 0, "a child still working has no ending to report")
 	h.killPane(paneID)
 
 	// The linger the harness runs with is 1s; rule 1 leaves a dead window

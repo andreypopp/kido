@@ -81,12 +81,18 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 
 	h.in("send-keys", "-t", pane, kidoBin+" ssh -tt "+opts+" localhost 'exec \"$SHELL\" -i'", "Enter")
 	h.waitPaneCommand(pane, "ssh")
-	remote("sleep 1")
-	if reports(sshSettle) {
+	// A command whose output proves the far side ran it, not merely echoed
+	// the typed line: anything the remote rc reports is due before this.
+	remote("echo kido-remote-$((21*2))")
+	h.waitFor(func() bool {
+		return strings.Contains(h.in("capture-pane", "-p", "-t", pane), "kido-remote-42")
+	}, sshSettle, msgf("the unprimed remote shell to run a command"))
+	// Negative control: this far side says nothing on its own. Five sidebar
+	// ticks (100ms each) let a report that its rc already sent reach the row.
+	if reports(500 * time.Millisecond) {
 		remote("exit")
 		t.Skip("localhost's own dotfiles already report to kido, so priming cannot be shown to be the cause here")
 	}
-	// Negative control: this far side says nothing on its own.
 	if h.shellRow("╶✓ssh "+localSSHDestination(t), "32") {
 		t.Fatalf("the unprimed remote reported after all; rows are %q", h.rows())
 	}

@@ -82,15 +82,16 @@ func TestSSHRow(t *testing.T) {
 		kidoBin+" ssh -F /dev/null -o ProxyCommand="+h.sshProxy()+" deploy@example.test", "Enter")
 	h.waitPaneCommand(pane, "ssh")
 	h.waitRow("ssh deploy@example.test")
-}
 
-func TestSSHRowDirect(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	pane := h.newWindow("alpha", "", kidoBin, "ssh", "-F", "/dev/null",
-		"-o", "ProxyCommand="+h.sshProxy(), "deploy@example.test")
-	h.waitPaneCommand(pane, "ssh")
+	// OSC 133 markers cross the connection and land on the local pane, so
+	// the row must name the far side's running command too.
+	script := "{ sleep 1; printf '\\033]133;C\\007';" +
+		" sleep 2; printf '\\033]133;A\\007';" +
+		" sleep 1; printf '\\033]133;C;cmdline=sleep 45\\007'; } >/dev/tty &\n" +
+		"exec " + kidoBin + " ssh -F /dev/null -o ProxyCommand=" + h.sshProxy() + " deploy@example.test\n"
+	h.newWindow("alpha", "", "sh", "-c", script)
 	h.waitRow("ssh deploy@example.test")
+	h.waitRow("ssh deploy@example.test: sleep 45")
 }
 
 // A plain zsh pane through kido's OSC 133 integration must carry the
@@ -139,13 +140,13 @@ func TestShellStatusRow(t *testing.T) {
 	// that from marking the pane as having run something.
 	h.waitShellRow("╶ zsh", "")
 
-	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
+	h.in("send-keys", "-t", pane, "sleep 2", "Enter")
 	h.waitPaneCommand(pane, "sleep")
 	// The row shows the 133;C command line in place of #{pane_current_command}
-	// ("sleep 5", not "sleep"; ssh_remote_test.go pins the remote case).
+	// ("sleep 2", not "sleep"; ssh_remote_test.go pins the remote case).
 	// Read once, not polled: zsh's preexec fires 133;C before the command
 	// runs, so waitPaneCommand above already ordered this after it.
-	h.waitShellRow("╶◼sleep 5", "")
+	h.waitShellRow("╶◼sleep 2", "")
 
 	h.waitFor(func() bool { return h.shellRow("╶✓zsh", "32") },
 		10*time.Second, msgf("the row a checkmark after the sleep"))
@@ -236,10 +237,10 @@ func TestBashShellStatusRow(t *testing.T) {
 	// bash's first prompt fires no "D" at all - nothing has run.
 	h.waitShellRow("╶ bash", "")
 
-	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
+	h.in("send-keys", "-t", pane, "sleep 2", "Enter")
 	h.waitPaneCommand(pane, "sleep")
 	// Read once rather than poll, for the reason TestShellStatusRow gives.
-	h.waitShellRow("╶◼sleep 5", "")
+	h.waitShellRow("╶◼sleep 2", "")
 
 	h.waitFor(func() bool { return h.shellRow("╶✓bash", "32") },
 		10*time.Second, msgf("the row a checkmark after the sleep"))

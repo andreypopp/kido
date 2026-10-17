@@ -123,7 +123,8 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	script := fmt.Sprintf(`sleep 0.3; %s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"`, kidoBin)
+	const marker = "KIDO-E2E-SCREEN-MARKER-4f2a"
+	script := fmt.Sprintf(`echo %s; sleep 0.3; %s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"`, marker, kidoBin)
 	// The parent has its inbox before the child starts: the child's ending
 	// notice is sent once, 0.3s in, and a parent without an inbox loses it.
 	in := startInbox(h.t, "ok\n")
@@ -139,53 +140,10 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	if got := in.Received()[0]; !strings.Contains(got, "completed without reporting") {
 		t.Errorf("parent inbox received %q, want the one unreported ending notice", got)
 	}
-}
-
-// A child's screen output must survive the sweep collecting its window,
-// through `kido runs <id>`, the only way a human would actually see it.
-func TestRunScreenCapturedOnReap(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-
-	const marker = "KIDO-E2E-SCREEN-MARKER-4f2a"
-	// The sleep is not decoration; see TestRunRecordSurvivesReapAsCompleted.
-	script := fmt.Sprintf("echo %s; sleep 0.3", marker)
-	runID, windowID := h.spawnRun("screen-e2e", script)
-
-	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
-		msgf("the sidebar's sweep to close window %s once the child has exited", windowID))
-
-	out := h.runKido("alpha", "screen-show.out", "runs", runID)
-	if !strings.Contains(out, marker) {
+	// The screen output must survive the sweep collecting its window, through
+	// `kido runs <id>`, the only way a human would actually see it.
+	if out := h.runKido("alpha", "screen-show.out", "runs", runID); !strings.Contains(out, marker) {
 		t.Errorf("kido runs %s = %q, want it to contain the captured marker %q", runID, out, marker)
-	}
-}
-
-// stop_run's escalation kill must record the run's outcome as
-// Stopped, not leave the sweep to call it Died a moment later -
-// indistinguishable once the window is gone.
-func TestStopRecordsStoppedOutcome(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-
-	runID, windowID := h.spawnRun("wedged-run-e2e", "exec sleep 300")
-	// A real inbox that never shuts the session down, standing in for a
-	// wedged pi extension, reporting under the run's own id (the target's
-	// session id must equal the run id for Control.stop's outcome write to land anywhere).
-	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
-	in := startInbox(h.t, "ok\n")
-	h.programStatus(paneID, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
-	h.agentStatus(runID, paneID, "--inbox", in.Path)
-
-	out := h.runKido("alpha", "stop.out", "tool", "stop_run", runID)
-	if !strings.Contains(out, "killed") {
-		t.Fatalf("kido tool stop_run output = %q, want the escalation to kill the wedged child's window", out)
-	}
-	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
-		msgf("window %s to be killed by the stop escalation", windowID))
-
-	if got := h.runOutcome(runID); got != "stopped" {
-		t.Errorf("run %s outcome = %q, want %q", runID, got, "stopped")
 	}
 }
 

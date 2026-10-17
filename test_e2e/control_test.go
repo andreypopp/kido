@@ -93,6 +93,9 @@ func TestStopKillsAWedgedChildAfterEscalation(t *testing.T) {
 	}
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("window %s to be killed after the escalation timeout", windowID))
+	if got := h.runOutcome("wedged-e2e"); got != "stopped" {
+		t.Errorf("run wedged-e2e outcome = %q, want stopped: the escalation must record it, not leave it to the sweep", got)
+	}
 }
 
 // Negative control: a target whose record goes away shortly after being
@@ -121,8 +124,9 @@ func TestStopDoesNotKillAHealthyChild(t *testing.T) {
 	if strings.Contains(out, "killed") {
 		t.Errorf("kido tool stop_run output = %q, want no escalation: the target stopped in time", out)
 	}
-	h.stays(func() bool { return h.windowExists(windowID) },
-		"a healthy child's window must never be killed")
+	if !h.windowExists(windowID) {
+		t.Error("a healthy child's window was killed")
+	}
 }
 
 // recordedRun spawns a run whose pane records itself as the agent of the
@@ -243,7 +247,9 @@ func TestInterruptAndStopReachOnlyDescendants(t *testing.T) {
 	if got := child.Received(); len(got) != 1 || !strings.Contains(got[0], `"kind":"interrupt"`) {
 		t.Errorf("child's inbox = %q, want the one interrupt", got)
 	}
-	h.stableCount(peer, 0, "nothing may reach a peer that is not the caller's descendant")
+	if got := peer.Received(); len(got) != 0 {
+		t.Errorf("a peer that is not the caller's descendant was reached: %q", got)
+	}
 
 	if out := h.runKido("alpha", "human.out", "tool", "interrupt_subagent", "peer-e2e"); !strings.Contains(out, "rc=0") {
 		t.Errorf("interrupt_subagent peer-e2e from a human's shell = %q, want rc=0", out)

@@ -122,7 +122,7 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), settle)
 	defer cancel()
-	control := exec.CommandContext(ctx, tmuxBin, "-u", "-S", socketPath("", h.inner), "-C", "attach-session", "-t", "alpha")
+	control := exec.CommandContext(ctx, tmuxBin, "-u", "-S", socketPath(h.inner), "-C", "attach-session", "-t", "alpha")
 	control.Env = cleanEnv()
 	control.Stdin = strings.NewReader("show-options -p -v -t " + pane + " @kido_ssh_args\ndetach-client\n")
 	if out, err := control.CombinedOutput(); err != nil || !strings.Contains(string(out), "\n"+string(encoded)+"\n") {

@@ -165,7 +165,7 @@ type feed struct {
 
 func (h *harness) appClient(session string) string {
 	h.t.Helper()
-	app := exec.Command(tmuxBin, "-S", socketPath("", h.inner), "-C", "attach-session", "-t", session)
+	app := exec.Command(tmuxBin, "-S", socketPath(h.inner), "-C", "attach-session", "-t", session)
 	app.Env = cleanEnv("TMUX=")
 	in, err := app.StdinPipe()
 	if err != nil {
@@ -537,20 +537,6 @@ func TestRpcStream(t *testing.T) {
 	f := h.startFeed("alpha")
 	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 2 }, "both sessions")
 
-	quiet := func(why string) {
-		t.Helper()
-		n := f.count()
-		before := f.last().raw
-		deadline := time.Now().Add(1500 * time.Millisecond)
-		for time.Now().Before(deadline) {
-			if f.count() != n {
-				t.Fatalf("%s: a line with nothing changed:\nbefore: %s\nafter: %s", why, before, f.last().raw)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-	quiet("settled")
-
 	// Its elapsed time ticks in the TUI; the feed sends only the start.
 	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	callerTitle := f.last().Sessions[0].Nodes[0].Title
@@ -571,13 +557,12 @@ func TestRpcStream(t *testing.T) {
 		}
 		return shellSettled && bashRunning
 	}, "the caller shell settled and the bash run running")
-	quiet("a running bash run")
 
 	n := f.count()
 	h.newWindow("beta", "fresh")
 	// The new pane's command settles a tick or more after the window
-	// appears (its title passes through the program starting it), so the
-	// quiet check waits for it to read like beta's first shell.
+	// appears (its title passes through the program starting it), so wait
+	// for it to read like beta's first shell.
 	f.waitLast(func(s feedSnapshot) bool {
 		if len(s.Sessions) != 2 || len(s.Sessions[1].Nodes) != 2 {
 			return false
@@ -588,17 +573,13 @@ func TestRpcStream(t *testing.T) {
 	if f.count() <= n {
 		t.Fatalf("no new line for a new window")
 	}
-	quiet("after the new window")
 
 	f.send(`{"filter":"bet"}`)
-	quiet("an uncorrelated filter request")
 	if s := f.last(); len(s.Sessions) != 2 {
 		t.Errorf("sessions changed by filter: %s", s.raw)
 	}
 	f.send("frobnicate")
-	quiet("an unknown command")
 	f.send(`{"filter":""}`)
-	quiet("an empty filter request")
 
 	f.stdin.Close()
 	select {

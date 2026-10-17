@@ -33,6 +33,8 @@ for (const command of allowed) {
 }
 for (const command of blocked) {
   test(`block: ${command}`, () => assert.equal(blocksGitWrite(command, "parent"), true));
-  test(`top-level: ${command}`, () => assert.equal(blocksGitWrite(command, undefined), false));
 }
+test("top-level: every blocked command is allowed with no parent session", () => {
+  for (const command of blocked) assert.equal(blocksGitWrite(command, undefined), false);
+});
 test("empty parent session is top-level", () => assert.equal(blocksGitWrite("git stash", ""), false));

@@ -79,6 +79,24 @@ func TestAskSetSessionScope(t *testing.T) {
 	if code != 0 || out != "[]" || len(asks) != 1 || asks[0].ID != id || asks[0].Text != "Other decision?" {
 		t.Fatalf("clear crossed sessions: exit %d, %s, %+v", code, out, asks)
 	}
+
+	// The caller's session names the ask, not the pane's current agent.
+	h.programStatus(pane, "state=idle:app=pi", "Agent")
+	h.agentStatus("agent-session", pane)
+	agent := h.caller(pane)
+	h.agentStatus("headless-session", pane)
+	if out, code := h.kidoAs(pane, `[{"text":"Whose question?"}]`, agent, "tool", "set_asks"); code != 0 {
+		t.Fatalf("caller session: exit %d, %s", code, out)
+	}
+	named := false
+	for _, a := range openAsks(h, "") {
+		if a.Text == "Whose question?" {
+			named = a.Session == "agent-session"
+		}
+	}
+	if !named {
+		t.Fatalf("asks = %+v, want the question from agent-session", openAsks(h, ""))
+	}
 }
 
 func TestAskSetLifecycle(t *testing.T) {
@@ -211,18 +229,3 @@ func TestAskSetLifecycle(t *testing.T) {
 // A headless pi in an agent's pane reports after the agent, so it is the
 // pane's latest record; the agent's own set_asks still names the agent,
 // since the caller is the session pi names, not whoever reported the pane.
-func TestAskNamesTheCallingSessionNotThePane(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	h.programStatus(pane, "state=idle:app=pi", "Agent")
-	h.agentStatus("agent-session", pane)
-	agent := h.caller(pane)
-	h.agentStatus("headless-session", pane)
-	if id, code := h.kidoAs(pane, `[{"text":"Whose question?"}]`, agent, "tool", "set_asks"); code != 0 {
-		t.Fatal(id)
-	}
-	if asks := openAsks(h, ""); len(asks) != 1 || asks[0].Session != "agent-session" {
-		t.Fatalf("asks = %+v, want one from agent-session", asks)
-	}
-}

@@ -53,6 +53,7 @@ func (h *harness) rowCount() int { h.t.Helper(); return len(h.rows()) }
 // A new window shows up at once, long before the next poll: kido keeps one
 // control-mode client and tmux tells it about the change.
 func TestNotificationRefreshesBeforeNextPoll(t *testing.T) {
+	t.Parallel()
 	h := start(t, "alpha", slowPoll)
 	h.waitControlClients(1)
 	h.waitRow("alpha")
@@ -69,6 +70,7 @@ func TestNotificationRefreshesBeforeNextPoll(t *testing.T) {
 // When the connection drops, kido re-dials and is live again within a
 // couple of seconds, leaving exactly one control client behind.
 func TestReconnectsAfterConnectionDrops(t *testing.T) {
+	t.Parallel()
 	h := start(t, "alpha", slowPoll)
 	before := h.rowCount()
 
@@ -90,6 +92,7 @@ func TestReconnectsAfterConnectionDrops(t *testing.T) {
 // up to date within a couple of seconds. detach-on-destroy is turned off
 // first so the pty client (and with it kido) survives the kill.
 func TestSessionKillRefreshesQuickly(t *testing.T) {
+	t.Parallel()
 	h := start(t, "alpha", slowPoll)
 	h.waitControlClients(1)
 	h.in("set-option", "-g", "detach-on-destroy", "off")
@@ -115,6 +118,7 @@ func TestSessionKillRefreshesQuickly(t *testing.T) {
 // client must follow so a split there still shows up before the next poll,
 // not only after it.
 func TestControlClientFollowsSessionSwitch(t *testing.T) {
+	t.Parallel()
 	h := start(t, "alpha", slowPoll)
 	h.waitControlClients(1)
 	h.newSession("beta")

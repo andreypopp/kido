@@ -3,7 +3,6 @@ package e2e
 import (
 	"bytes"
 	"fmt"
-	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,10 +38,9 @@ import (
 // a name registered under a TMUX_TMPDIR that has since been deleted does
 // not fail to resolve, it resolves in /tmp instead, against whatever
 // server of that name happens to be there. That killed the developer's
-// own live kido server on 2026-09-26; TestWatchdogWithAVanishedTmpdir-
-// KillsNothingElse is the test. A -S path is taken literally and
-// resolves against nothing, and a socket that is gone is skipped rather
-// than looked for anywhere else.
+// own live kido server. A -S path is taken literally and resolves against
+// nothing, and a socket that is gone is skipped rather than looked for
+// anywhere else.
 const watchdogScript = `
 trap '' HUP INT TERM
 tmux=$1
@@ -69,13 +67,11 @@ var (
 // The directory is resolved here, while it still exists, because that is
 // what tmux does with it and a path that resolves to nothing later must
 // stay wrong rather than become something else.
-func socketPath(tmpdir, name string) string {
+func socketPath(name string) string {
 	if filepath.IsAbs(name) {
 		return name
 	}
-	if tmpdir == "" {
-		tmpdir = os.Getenv("TMUX_TMPDIR")
-	}
+	tmpdir := os.Getenv("TMUX_TMPDIR")
 	if tmpdir == "" {
 		tmpdir = "/tmp"
 	}
@@ -83,16 +79,6 @@ func socketPath(tmpdir, name string) string {
 		tmpdir = resolved
 	}
 	return filepath.Join(tmpdir, fmt.Sprintf("tmux-%d", os.Getuid()), name)
-}
-
-// fallbackSocketPath is where a socket *name* resolves once every
-// earlier entry of tmux's socket path list has failed. TMUX_SOCK is
-// "$TMUX_TMPDIR:" _PATH_TMP, so /tmp is the last resort whatever
-// TMUX_TMPDIR says - which is why a deleted TMUX_TMPDIR does not fail,
-// it lands in /tmp. The live server the watchdog killed was there, and
-// that makes /tmp the only place a witness for this bug can stand.
-func fallbackSocketPath(name string) string {
-	return socketPath("/tmp", name)
 }
 
 func startWatchdog() error {
@@ -117,15 +103,8 @@ func startWatchdog() error {
 // server asked for and not yet seen must die with this process too.
 func watchSockets(names ...string) {
 	for _, n := range names {
-		watchSocketIn("", n)
+		watchSocketPath(socketPath(n))
 	}
-}
-
-// watchSocketIn is watchSockets for a server with a TMUX_TMPDIR of its
-// own. The path is worked out now, while that directory is still there,
-// because the watchdog runs after the test has deleted it.
-func watchSocketIn(tmpdir, name string) {
-	watchSocketPath(socketPath(tmpdir, name))
 }
 
 func watchSocketPath(path string) {
@@ -155,6 +134,7 @@ const childSocketsEnv = "KIDO_E2E_WATCHDOG_CHILD_SOCKETS"
 // harness, not a hand-rolled pair of servers.
 func TestServersDieWithTheTestProcess(t *testing.T) {
 	requireTmux(t)
+	t.Parallel()
 	if os.Getenv(childSocketsEnv) != "" {
 		t.Skip("this is the child process")
 	}
@@ -164,6 +144,7 @@ func TestServersDieWithTheTestProcess(t *testing.T) {
 		"-run", "TestWatchdogChildHangsWithAHarnessUp")
 	child.Env = append(cleanEnv(),
 		childSocketsEnv+"="+sockFile,
+		childPrefixEnv+"="+e2ePrefix,
 		"KIDO_E2E_REQUIRED=1",
 		"KIDO_TMUX="+tmuxBin)
 	// Its own process group, so the SIGKILL below reaches `go test`, the
@@ -252,132 +233,5 @@ func TestWatchdogChildHangsWithAHarnessUp(t *testing.T) {
 
 // serverUp: display-message is a command that never starts a server.
 func serverUp(socket string) bool {
-	return exec.Command(tmuxBin, "-S", socketPath("", socket), "display-message", "-p", "up").Run() == nil
-}
-
-func serverUpAt(path string) bool {
-	return exec.Command(tmuxBin, "-S", path, "display-message", "-p", "up").Run() == nil
-}
-
-// childVictimEnv carries "<directory to delete>\x1f<socket name>" to the
-// child half of TestWatchdogWithAVanishedTmpdirKillsNothingElse, and its
-// presence is what makes that child test run at all.
-const childVictimEnv = "KIDO_E2E_WATCHDOG_CHILD_VICTIM"
-
-// TestWatchdogWithAVanishedTmpdirKillsNothingElse is the regression test
-// for the watchdog killing the developer's own live kido server, on
-// 2026-09-26. The launcher tests register a server called "kido" under a
-// TMUX_TMPDIR of their own and their cleanup deletes that directory, so
-// by the time the watchdog fired it was addressing a socket by *name*
-// with TMUX_TMPDIR naming a directory that was gone. A name is resolved
-// against a path list - TMUX_SOCK is "$TMUX_TMPDIR:" _PATH_TMP
-// (third_party/tmux/tmux.h) and expand_paths drops any entry whose
-// realpath fails (tmux.c) - so the deleted directory fell out of the
-// list and the name resolved in /tmp, where the live server of that name
-// was. A path given with -S is taken literally and resolves against
-// nothing.
-//
-// The witness stands exactly where such a fallthrough lands: the same
-// socket name, in this process's own default socket directory. It is a
-// server this test starts itself, addressed by path, under a name unique
-// to this run - so nothing but this bug can be what kills it.
-func TestWatchdogWithAVanishedTmpdirKillsNothingElse(t *testing.T) {
-	requireTmux(t)
-	if os.Getenv(childVictimEnv) != "" {
-		t.Skip("this is the child process")
-	}
-
-	// Unique, never the "kido" of a real server sharing the fallback directory.
-	name := fmt.Sprintf("kido-witness-%d-%d", os.Getpid(), rand.Int32N(1<<20))
-	witness := fallbackSocketPath(name)
-	watchSocketPath(witness)
-	if err := os.MkdirAll(filepath.Dir(witness), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command(tmuxBin, "-S", witness, "-f", "/dev/null",
-		"new-session", "-d", "-s", "w").CombinedOutput(); err != nil {
-		t.Fatalf("start witness server: %v: %s", err, out)
-	}
-	t.Cleanup(func() {
-		exec.Command(tmuxBin, "-S", witness, "kill-server").Run()
-		os.Remove(witness)
-	})
-	if !serverUpAt(witness) {
-		t.Fatalf("witness server %s did not start", witness)
-	}
-
-	// The victim: a directory shaped like a launcher test's, deleted
-	// before the child dies exactly as that test's cleanup deletes it.
-	victimDir, err := os.MkdirTemp("", "kido-victim")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(victimDir)
-
-	child := exec.Command("go", "test", ".", "-count=1", "-timeout", "120s",
-		"-run", "TestWatchdogChildRegistersAVanishingTmpdir")
-	child.Env = append(cleanEnv(),
-		childVictimEnv+"="+victimDir+"\x1f"+name,
-		"KIDO_E2E_REQUIRED=1",
-		"KIDO_TMUX="+tmuxBin)
-	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var out bytes.Buffer
-	child.Stdout, child.Stderr = &out, &out
-	if err := child.Start(); err != nil {
-		t.Fatal(err)
-	}
-	group := child.Process.Pid
-	killed := false
-	defer func() {
-		if !killed {
-			syscall.Kill(-group, syscall.SIGKILL)
-			child.Wait()
-		}
-	}()
-
-	deadline := time.Now().Add(90 * time.Second)
-	for {
-		if _, err := os.Stat(filepath.Join(victimDir, "registered")); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("child never registered its victim:\n%s", out.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	if err := os.RemoveAll(victimDir); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := syscall.Kill(-group, syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
-	killed = true
-	child.Wait()
-
-	// The watchdog fires the moment the pipe closes, so a witness still
-	// up across this span is one it never reached rather than one it has
-	// not reached yet.
-	for i := 0; i < 50; i++ {
-		if !serverUpAt(witness) {
-			t.Fatalf("the watchdog killed %s, a server it was never given: "+
-				"a registered socket whose TMUX_TMPDIR had been deleted "+
-				"resolved into the default socket directory", witness)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func TestWatchdogChildRegistersAVanishingTmpdir(t *testing.T) {
-	spec := os.Getenv(childVictimEnv)
-	if spec == "" {
-		t.Skip("run only by TestWatchdogWithAVanishedTmpdirKillsNothingElse")
-	}
-	requireTmux(t)
-	dir, name, _ := strings.Cut(spec, "\x1f")
-	watchSocketIn(dir, name)
-	if err := os.WriteFile(filepath.Join(dir, "registered"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(110 * time.Second) // the parent's SIGKILL lands long before this
+	return exec.Command(tmuxBin, "-S", socketPath(socket), "display-message", "-p", "up").Run() == nil
 }

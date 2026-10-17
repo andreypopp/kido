@@ -246,15 +246,18 @@ func (r *kidoRun) firstPane() string {
 	return strings.Split(r.mustKido("list-panes", "-a", "-F", "#{pane_id}"), "\n")[0]
 }
 
-// A launcher at a plain terminal leaves a server on its directory's socket,
-// with the side column drawn and running this kido, not whatever else on
-// the machine is called kido.
-func TestKidoStartsAServerWithASidebar(t *testing.T) {
+// The launcher's default world on one server: session main, the side
+// column, a second kido attaching, a nested kido refusing, and the first
+// pane's primed shell.
+func TestLauncherDefaultEnvironment(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
 	r.launch("first")
 	r.waitUp()
 
+	if got := r.mustKido("list-sessions", "-F", "#{session_name}"); got != "main" {
+		t.Errorf("session name = %q, want main", got)
+	}
 	r.waitFor(func() bool { return r.sidebarUp("first") }, "the side column to be drawn")
 	if got := r.mustKido("show", "-sv", "get-clipboard"); got != "request" {
 		t.Errorf("get-clipboard = %q, want request", got)
@@ -265,17 +268,6 @@ func TestKidoStartsAServerWithASidebar(t *testing.T) {
 	if got := r.mustKido("show-options", "-gv", "default-command"); !strings.Contains(got, "shell") {
 		t.Errorf("default-command = %q, want `kido shell`", got)
 	}
-}
-
-// A second `kido` attaches rather than starting anything: pinned by the
-// session count (one server, one session, two clients), not merely by a
-// second client existing, which a second server on a second socket would
-// also give.
-func TestASecondKidoAttaches(t *testing.T) {
-	t.Parallel()
-	r := newKidoRun(t)
-	r.launch("first")
-	r.waitUp()
 	r.waitFor(func() bool { return r.realClients() == 1 }, "the first client to attach")
 
 	r.launch("second")
@@ -283,23 +275,11 @@ func TestASecondKidoAttaches(t *testing.T) {
 	if got := r.mustKido("list-sessions", "-F", "#{session_name}"); strings.Contains(got, "\n") {
 		t.Errorf("sessions = %q, want the one the first kido made", got)
 	}
-}
-
-// The assertion with teeth is the last one: the server it was typed into
-// gained no client. A refusal that printed its message and attached
-// anyway would satisfy everything before it.
-func TestKidoInsideAKidoPaneRefuses(t *testing.T) {
-	t.Parallel()
-	r := newKidoRun(t)
-	r.launch("first")
-	r.waitUp()
-	r.waitFor(func() bool { return r.realClients() == 1 }, "the first client to attach")
 
 	out := filepath.Join(r.dir, "refusal")
 	pane := r.firstPane()
 	r.mustKido("send-keys", "-t", pane,
 		fmt.Sprintf("%q 2>%q; echo rc=$? >>%q", kidoBin, out, out), "Enter")
-
 	var body string
 	r.waitFor(func() bool {
 		b, err := os.ReadFile(out)
@@ -312,33 +292,15 @@ func TestKidoInsideAKidoPaneRefuses(t *testing.T) {
 	if strings.Contains(body, "rc=0") {
 		t.Errorf("kido exited 0 after refusing: %q", body)
 	}
-
-	// Over a span: "no client yet" and "no client ever" look the same at
-	// any one reading.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if n := r.realClients(); n != 1 {
-			t.Fatalf("the kido server has %d real clients, want the one that was there before the refusal", n)
-		}
-		time.Sleep(100 * time.Millisecond)
+	// The refusing kido has exited; it cannot attach later.
+	if n := r.realClients(); n != 2 {
+		t.Errorf("the kido server has %d real clients, want the two that were there before the refusal", n)
 	}
-}
-
-// What `kido shell` is for: the launched pane reports a prompt and its
-// running command line with no kido line in any dotfile - checked for
-// kido's name so the claim cannot be satisfied by a stray block.
-func TestFirstPaneShellIsPrimed(t *testing.T) {
-	t.Parallel()
-	r := newKidoRun(t)
-	r.launch("first")
-	r.waitUp()
-	pane := r.firstPane()
 
 	r.waitFor(func() bool {
 		return reportedPrompt(r.mustKido("display-message", "-p", "-t", pane, "#{pane_last_prompt_time}"))
 	}, "the pane's shell to report its first prompt")
 	assertNoKidoInHome(t, r.home)
-
 	r.mustKido("send-keys", "-t", pane, "sleep 2", "Enter")
 	deadline := time.Now().Add(settle)
 	for time.Now().Before(deadline) {
@@ -375,9 +337,10 @@ func assertNoKidoInHome(t *testing.T, home string) {
 	}
 }
 
-// The user's own kido.conf is read, and an option it sets is what the
-// server ends up with.
-func TestKidoConfIsHonoured(t *testing.T) {
+// The user's kido.conf is read, its values win over kido's own defaults
+// except for the options kido owns, ~/.tmux.conf is never read, and the
+// first window keeps its spawn-time name when automatic-rename is off.
+func TestKidoConfAndTmuxConf(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
 	conf := filepath.Join(r.config, "kido")
@@ -386,7 +349,11 @@ func TestKidoConfIsHonoured(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(conf, "kido.conf"),
 		[]byte("set -g @kido-e2e from-kido-conf\nset -g side-status-width 33\n"+
-			"set -g side-status-command false\n"), 0o644); err != nil {
+			"set -g side-status-command false\nset -g automatic-rename off\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.home, ".tmux.conf"),
+		[]byte("set -g @kido-e2e from-tmux-conf\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -395,12 +362,18 @@ func TestKidoConfIsHonoured(t *testing.T) {
 	if got := r.mustKido("show-options", "-gv", "@kido-e2e"); got != "from-kido-conf" {
 		t.Errorf("@kido-e2e = %q, want the value kido.conf set", got)
 	}
-	if got := r.mustKido("show-options", "-gv", "side-status-width"); got != "33" { // kido's own default, shows which layer wins
+	if got := r.mustKido("show-options", "-gv", "side-status-width"); got != "33" {
 		t.Errorf("side-status-width = %q, want kido.conf's 33 over kido's default", got)
 	}
-	// What kido owns is set after kido.conf is sourced.
 	if got := r.mustKido("show-options", "-gv", "side-status-command"); !strings.Contains(got, kidoBin) {
 		t.Errorf("side-status-command = %q, want the kido under test over kido.conf's", got)
+	}
+	if got := r.mustKido("show-options", "-gqv", "@kido-e2e"); got == "from-tmux-conf" {
+		t.Errorf("@kido-e2e = %q: the user's ~/.tmux.conf was read", got)
+	}
+	want := filepath.Base(kidoBin)
+	if got := r.mustKido("list-windows", "-F", "#{window_name}"); got != want {
+		t.Errorf("first window name = %q, want %q (the kido binary's basename, since the pane runs `kido shell`)", got, want)
 	}
 }
 
@@ -465,25 +438,6 @@ func TestKidoConfDefaultCommandNamingAShellIsPrimed(t *testing.T) {
 	}
 }
 
-// A kido server reads no ~/.tmux.conf: a config written for stock tmux
-// fights the side column. Positive control is the test above, the same
-// option name set from the file kido does read.
-func TestTmuxConfIsIgnored(t *testing.T) {
-	t.Parallel()
-	r := newKidoRun(t)
-	if err := os.WriteFile(filepath.Join(r.home, ".tmux.conf"),
-		[]byte("set -g @kido-e2e from-tmux-conf\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	r.launch("first")
-	r.waitUp()
-	r.waitFor(func() bool { return r.sidebarUp("first") }, "the side column to be drawn")
-	if got := r.mustKido("show-options", "-gqv", "@kido-e2e"); got != "" {
-		t.Errorf("@kido-e2e = %q: the user's ~/.tmux.conf was read", got)
-	}
-}
-
 // With no XDG_CONFIG_HOME, kido.conf is read from ~/.config.
 func TestKidoConfUnderDotConfig(t *testing.T) {
 	t.Parallel()
@@ -536,6 +490,7 @@ func TestKidoAtAPathWithASpace(t *testing.T) {
 
 func TestLauncherWaitsForShellExit(t *testing.T) {
 	requireTmux(t)
+	t.Parallel()
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("no zsh for the shell exit hook")
 	}
@@ -606,25 +561,28 @@ func TestLauncherRefusals(t *testing.T) {
 		"#!/bin/sh\necho 'protocol version mismatch (client 8, server 7)' >&2\nexit 1\n")
 	for _, c := range []struct {
 		bin    string
+		args   []string
 		env    []string
 		stderr string
 	}{
-		{kidoBin, []string{"HOME="}, "kido: $HOME is not defined"},
-		{quoted, nil, fmt.Sprintf(`kido: cannot start a kido server: refusing path %q: it contains "'"`, quoted)},
-		{kidoBin, []string{"KIDO_TMUX=" + mismatch},
+		{kidoBin, nil, []string{"HOME="}, "kido: $HOME is not defined"},
+		{quoted, nil, nil, fmt.Sprintf(`kido: cannot start a kido server: refusing path %q: it contains "'"`, quoted)},
+		{kidoBin, nil, []string{"KIDO_TMUX=" + mismatch},
 			`kido: the kido server on socket `},
+		{kidoBin, []string{"server"}, []string{"KIDO_TMUX=" + mismatch},
+			`kido server: the kido server on socket `},
 	} {
 		env := launcherEnv(t, c.env...)
-		cmd := exec.Command(c.bin)
+		cmd := exec.Command(c.bin, c.args...)
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if code := cmd.ProcessState.ExitCode(); code != 1 || !strings.HasPrefix(string(out), c.stderr) {
-			t.Errorf("%s: exit %d (%v), output %q; want exit 1 and %q", c.bin, code, err, out, c.stderr)
+			t.Errorf("%s %v: exit %d (%v), output %q; want exit 1 and %q", c.bin, c.args, code, err, out, c.stderr)
 		}
 		for _, kv := range env {
 			if sock, ok := strings.CutPrefix(kv, "KIDO_STATE_DIR="); ok {
 				if _, err := os.Stat(filepath.Join(sock, "socket")); err == nil {
-					t.Errorf("%s: a server started on %s", c.bin, sock)
+					t.Errorf("%s %v: a server started on %s", c.bin, c.args, sock)
 				}
 			}
 		}

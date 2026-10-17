@@ -83,6 +83,9 @@ func (r *kidoRun) mustServer(tmux string) endpoint {
 func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
+	r.state = filepath.Join(r.state, "new")
+	r.kidoSock = filepath.Join(r.state, "socket")
+	watchSocketPath(r.kidoSock)
 	confDir := filepath.Join(r.config, "kido")
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -92,6 +95,9 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	}
 
 	first := r.mustServer("")
+	if st, err := os.Stat(r.state); err != nil || st.Mode().Perm() != 0o700 {
+		t.Fatalf("created state directory: %v (%v), want 0700", st, err)
+	}
 	if first.Server != first.Expected {
 		t.Fatalf("server stamp = %q, want the expected %q", first.Server, first.Expected)
 	}
@@ -127,13 +133,9 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	if want := `"protocol":"4.0","server":null,"expected":"` + first.Expected + `"`; code != 0 || !strings.Contains(out, want) {
 		t.Errorf("unstamped server: exit %d, JSON %q, want %s", code, out, want)
 	}
-}
 
-// Inside tmux it does what it does outside: the launcher's refusal is
-// about attaching, which `kido server` never does.
-func TestKidoServerInsideTmux(t *testing.T) {
-	t.Parallel()
-	r := newKidoRun(t)
+	// Inside tmux it does what it does outside: the launcher's refusal is
+	// about attaching, which `kido server` never does.
 	r.mustServer("/tmp/tmux-1/default,1234,0")
 	if got := r.mustKido("list-sessions", "-F", "#{session_name}"); got != "main" {
 		t.Errorf("sessions = %q, want main", got)

@@ -13,6 +13,7 @@ import (
 // tell the two apart.
 func TestLeakCheckIgnoresUnrelatedServer(t *testing.T) {
 	requireTmux(t)
+	t.Parallel()
 	h := start(t, "leak-a")
 
 	scratch := "kido-leak-scratch-" + strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -56,6 +57,7 @@ func TestLeakCheckIgnoresUnrelatedServer(t *testing.T) {
 // reap the old one would look like - must still be visible.
 func TestLeakCheckCatchesAccumulation(t *testing.T) {
 	requireTmux(t)
+	t.Parallel()
 	h := start(t, "leak-b")
 
 	client := exec.Command(tmuxBin, "-S", h.inner, "-C", "attach-session")
@@ -89,6 +91,7 @@ func TestLeakCheckCatchesAccumulation(t *testing.T) {
 // a control client that outlived its server is still caught even after
 // it drops off the server's own client list.
 func TestProcessGoneDetectsLingering(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("sleep", "5")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

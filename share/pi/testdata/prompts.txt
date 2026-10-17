@@ -334,6 +334,20 @@ subagent <run id> is idle without reporting: its last turn ended and it did not 
 ```
 delivered as: sent through `kido tool notify_parent --status`, so it is not the child's report: it leaves no report file and carries no guidance
 
+### a spawn's result (spawn_subagent)
+
+```
+spawned <name> (window <window id>, pane <pane id>, run <run id>); its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id. A fork adds ", forked from this session's context" before the semicolon.
+```
+delivered as: tool result
+
+### a resume's result (spawn_subagent)
+
+```
+resumed <run id> (window <window id>, pane <pane id>); it is back with its context and idle - send it a message to continue, since it is waiting for one; its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id
+```
+delivered as: tool result
+
 ### message_agent's result while answering an ask
 
 ```

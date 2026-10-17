@@ -106,73 +106,121 @@ func setupSwitchWindowSessions(t *testing.T) *harness {
 	return h
 }
 
-func TestSwitchWindowOrder(t *testing.T) {
+// Session/window order, the real key bindings, the focused and unfocused
+// sidebar keys, and the session switch, all on one a/c/b layout built once.
+func TestSwitchOrderAndKeys(t *testing.T) {
 	t.Parallel()
-	h := setupSwitchWindowSessions(t)
+	h := setupSwitchWindowSessions(t) // a, c, b by creation, each with two windows
 
 	h.runSwitchWindow("next") // a0 -> a1 (inside session a)
 	h.waitWindow("a", "a1")
-
 	h.runSwitchWindow("next") // a1 -> c0 (crosses into session c; tmux's own next-window would wrap to a0)
 	h.waitWindow("c", "c0")
-
 	h.runSwitchWindow("next") // c0 -> c1
 	h.waitWindow("c", "c1")
-
 	h.runSwitchWindow("next") // c1 -> b0 (crosses into session b)
 	h.waitWindow("b", "b0")
-
 	h.runSwitchWindow("next") // b0 -> b1
 	h.waitWindow("b", "b1")
-
 	h.runSwitchWindow("next") // b1 -> wrap -> a0, the very first window
 	h.waitWindow("a", "a0")
-}
-
-func TestSwitchWindowOrderPrev(t *testing.T) {
-	t.Parallel()
-	h := setupSwitchWindowSessions(t)
 
 	h.runSwitchWindow("prev") // a0 -> wrap -> b1, the very last window
 	h.waitWindow("b", "b1")
-
 	h.runSwitchWindow("prev") // b1 -> b0
 	h.waitWindow("b", "b0")
-
 	h.runSwitchWindow("prev") // b0 -> c1 (crosses into session c)
 	h.waitWindow("c", "c1")
-
 	h.runSwitchWindow("prev") // c1 -> c0
 	h.waitWindow("c", "c0")
-
 	h.runSwitchWindow("prev") // c0 -> a1 (crosses into session a)
 	h.waitWindow("a", "a1")
-
 	h.runSwitchWindow("prev") // a1 -> a0
 	h.waitWindow("a", "a0")
-}
-
-// The actual key binding in share/tmux/kido-tmux.conf and the README:
-// bind-key -n ... run-shell "kido switch-window next --client
-// '#{client_name}'", proving #{client_name} expands when run-shell fires
-// from a key binding, not just when the test drives kido with --client.
-func TestSwitchWindowBinding(t *testing.T) {
-	t.Parallel()
-	h := setupSwitchWindowSessions(t)
 
 	h.in("bind-key", "-n", "S-Down", "run-shell",
 		fmt.Sprintf("%s switch-window next --client '#{client_name}'", kidoBin))
 	h.in("bind-key", "-n", "S-Up", "run-shell",
 		fmt.Sprintf("%s switch-window prev --client '#{client_name}'", kidoBin))
-
 	h.sendKeys("S-Down") // a0 -> a1
 	h.waitWindow("a", "a1")
-
 	h.sendKeys("S-Down") // a1 -> c0 (crosses into session c)
 	h.waitWindow("c", "c0")
-
 	h.sendKeys("S-Up") // c0 -> a1
 	h.waitWindow("a", "a1")
+
+	// One skip step: a marked subagent window must be stepped over.
+	h.markSubagent("a", "a1")
+	h.markSubagent("c", "c1")
+	h.selectWindow("a", "a0")
+	h.runSwitchWindow("next") // a0 -> c0, skipping a1
+	h.waitWindow("c", "c0")
+	h.runSwitchWindow("next") // c0 -> b0, skipping c1
+	h.waitWindow("b", "b0")
+	h.in("set-option", "-p", "-t", "a:a1", "@kido_run", "")
+	h.in("set-option", "-p", "-t", "c:c1", "@kido_run", "")
+	h.selectWindow("a", "a0")
+
+	focusSidebar(h)
+	h.waitSelectedLine(2)
+	h.sendKeys("S-Down") // a0 -> a1, inside session a
+	h.waitWindow("a", "a1")
+	h.waitSelectedLine(3)
+	if !h.clientFocused() {
+		t.Fatal("shift+down released the sidebar's keyboard focus")
+	}
+	h.sendKeys("S-Down") // a1 -> c0, crossing into session c
+	h.waitWindow("c", "c0")
+	h.waitSelectedLine(5)
+	if !h.clientFocused() {
+		t.Fatal("shift+down released the sidebar's keyboard focus")
+	}
+	h.sendKeys("S-Up") // c0 -> a1, back across the session boundary
+	h.waitWindow("a", "a1")
+	h.waitSelectedLine(3)
+	if !h.clientFocused() {
+		t.Fatal("shift+up released the sidebar's keyboard focus")
+	}
+
+	h.sendKeys("Escape")
+	h.waitFocused(false)
+	h.selectWindow("a", "a0")
+	h.waitWindow("a", "a0")
+	h.sendKeys("S-Down") // a0 -> a1
+	h.waitWindow("a", "a1")
+	if h.clientFocused() {
+		t.Fatal("shift+down gave the sidebar keyboard focus")
+	}
+	h.sendKeys("S-Down") // a1 -> c0
+	h.waitWindow("c", "c0")
+	if h.clientFocused() {
+		t.Fatal("shift+down gave the sidebar keyboard focus")
+	}
+	h.sendKeys("S-Up") // c0 -> a1
+	h.waitWindow("a", "a1")
+	if h.clientFocused() {
+		t.Fatal("shift+up gave the sidebar keyboard focus")
+	}
+
+	h.runSwitchSession("next") // a -> c (kido order; tmux name order would say b)
+	h.waitSession("c")
+	h.runSwitchSession("next") // c -> b
+	h.waitSession("b")
+	h.runSwitchSession("next") // b -> wrap -> a
+	h.waitSession("a")
+	h.runSwitchSession("prev") // a -> wrap -> b
+	h.waitSession("b")
+
+	h.in("bind-key", "-n", "S-Down", "run-shell",
+		fmt.Sprintf("%s switch-session next --client '#{client_name}'", kidoBin))
+	h.in("bind-key", "-n", "S-Up", "run-shell",
+		fmt.Sprintf("%s switch-session prev --client '#{client_name}'", kidoBin))
+	h.in("switch-client", "-c", h.client, "-t", "a")
+	h.waitSession("a")
+	h.sendKeys("S-Down") // a -> c
+	h.waitSession("c")
+	h.sendKeys("S-Up") // c -> a
+	h.waitSession("a")
 }
 
 func TestSwitchWindowBindingIsSilent(t *testing.T) {
@@ -193,7 +241,7 @@ func TestSwitchWindowBindingIsSilent(t *testing.T) {
 	}
 }
 
-func TestSwitchWindowSingleWindow(t *testing.T) {
+func TestSwitchSingleWindowAndSession(t *testing.T) {
 	t.Parallel()
 	h := start(t, "solo")
 
@@ -201,112 +249,17 @@ func TestSwitchWindowSingleWindow(t *testing.T) {
 	h.waitSession("solo")
 	h.runSwitchWindow("prev")
 	h.waitSession("solo")
+	h.runSwitchSession("next")
+	h.waitSession("solo")
+	h.runSwitchSession("prev")
+	h.waitSession("solo")
 }
 
-// a1 and c1, each marked @kido_run, must be stepped over entirely: the
-// walk becomes a0, c0, b0, b1, not the six-window list
-// TestSwitchWindowOrder walks.
-func TestSwitchWindowSkipsSubagentWindows(t *testing.T) {
+// A session name containing "." is not a tmux target syntax if it is passed
+// where a target is expected: both switch-window and switch-session must treat
+// the whole name as one session.
+func TestSwitchIntoADottedSessionName(t *testing.T) {
 	t.Parallel()
-	h := setupSwitchWindowSessions(t)
-	h.markSubagent("a", "a1")
-	h.markSubagent("c", "c1")
-
-	h.runSwitchWindow("next") // a0 -> c0, skipping a1
-	h.waitWindow("c", "c0")
-	h.runSwitchWindow("next") // c0 -> b0, skipping c1
-	h.waitWindow("b", "b0")
-	h.runSwitchWindow("next") // b0 -> b1
-	h.waitWindow("b", "b1")
-	h.runSwitchWindow("next") // b1 -> wrap -> a0
-	h.waitWindow("a", "a0")
-
-	h.runSwitchWindow("prev") // a0 -> wrap -> b1
-	h.waitWindow("b", "b1")
-	h.runSwitchWindow("prev") // b1 -> b0
-	h.waitWindow("b", "b0")
-	h.runSwitchWindow("prev") // b0 -> c0, skipping c1
-	h.waitWindow("c", "c0")
-	h.runSwitchWindow("prev") // c0 -> a0, skipping a1
-	h.waitWindow("a", "a0")
-}
-
-// Starting from a subagent window reached some other way (not by
-// cycling with S-Up/S-Down) must still skip over further subagent
-// windows: a1, c0 and c1 are marked, so from a1 next must cross two
-// consecutive subagent windows to reach b0 - landing on c0 unskipped is
-// exactly the bug an unfixed walk starting outside its own reachable set
-// would show.
-func TestSwitchWindowFromInsideSubagent(t *testing.T) {
-	t.Parallel()
-	h := setupSwitchWindowSessions(t)
-	h.markSubagent("a", "a1")
-	h.markSubagent("c", "c0")
-	h.markSubagent("c", "c1")
-
-	h.selectWindow("a", "a1") // land inside a subagent window directly
-	h.runSwitchWindow("next") // a1 -> b0, skipping c0 and c1
-	h.waitWindow("b", "b0")
-
-	h.selectWindow("c", "c1") // another subagent window, deeper in the run
-	h.runSwitchWindow("prev") // c1 -> a0, skipping c0 and a1
-	h.waitWindow("a", "a0")
-}
-
-// The degenerate case where only one window on the whole server is not
-// a subagent's: switch-window is a no-op when that window is already
-// current, but still reaches it from inside any subagent window - not a
-// blanket no-op on count<2, which would strand a user inside a subagent
-// window with one top-level window elsewhere.
-func TestSwitchWindowSoleTopLevelWindow(t *testing.T) {
-	t.Parallel()
-	h := setupSwitchWindowSessions(t)
-	for _, w := range []struct{ session, window string }{
-		{"a", "a1"}, {"c", "c0"}, {"c", "c1"}, {"b", "b0"}, {"b", "b1"},
-	} {
-		h.markSubagent(w.session, w.window)
-	}
-
-	// a0 is the sole top-level window and already current: no-op.
-	h.runSwitchWindow("next")
-	h.waitWindow("a", "a0")
-	h.runSwitchWindow("prev")
-	h.waitWindow("a", "a0")
-
-	// From inside a subagent window, either direction reaches the lone
-	// top-level window rather than stalling.
-	h.selectWindow("c", "c0")
-	h.runSwitchWindow("next")
-	h.waitWindow("a", "a0")
-
-	h.selectWindow("b", "b1")
-	h.runSwitchWindow("prev")
-	h.waitWindow("a", "a0")
-}
-
-// The other degenerate case: every window carries the mark, so there is
-// no top-level window to land on. switch-window must not spin (the walk
-// is bounded to one pass) and must not move the client anywhere.
-func TestSwitchWindowAllSubagentWindows(t *testing.T) {
-	t.Parallel()
-	h := setupSwitchWindowSessions(t)
-	for _, w := range []struct{ session, window string }{
-		{"a", "a0"}, {"a", "a1"}, {"c", "c0"}, {"c", "c1"}, {"b", "b0"}, {"b", "b1"},
-	} {
-		h.markSubagent(w.session, w.window)
-	}
-
-	h.runSwitchWindow("next")
-	h.waitWindow("a", "a0")
-	h.runSwitchWindow("prev")
-	h.waitWindow("a", "a0")
-}
-
-// A session name containing a dot is the case tmux's target parser gets
-// wrong: `switch-client -t team.build` splits the name and looks for
-// pane "build" of window "team", failing with "can't find pane". Both
-// switch commands therefore target a session by its id.
-func TestSwitchWindowIntoADottedSessionName(t *testing.T) {
 	h := start(t, "plain")
 	h.renameWindow("plain", 0, "p0")
 	h.newSessionSpaced("team.build")
@@ -315,29 +268,16 @@ func TestSwitchWindowIntoADottedSessionName(t *testing.T) {
 	h.selectWindow("plain", "p0")
 	h.runSwitchWindow("next")
 	h.waitWindow("team.build", "t0")
-
 	h.runSwitchWindow("prev")
 	h.waitWindow("plain", "p0")
-}
-
-// switch-session targets a session by name too, and breaks the same way.
-func TestSwitchSessionIntoADottedSessionName(t *testing.T) {
-	h := start(t, "plain")
-	h.newSessionSpaced("team.build")
 
 	h.waitSession("plain")
 	h.runSwitchSession("next")
 	h.waitSession("team.build")
-
 	h.runSwitchSession("prev")
 	h.waitSession("plain")
 }
 
-// A subagent's window opened after its parent's sibling sits later in
-// tmux's order than in the sidebar, which hoists it under its parent:
-// a0, s, a1, a2 on screen, a0, a1, s, a2 in tmux. Picked from the
-// sidebar, s is left the way the sidebar reads - down to a1, up to a0 -
-// not from its tmux index, which skipped a1 for a2.
 func TestSwitchWindowFromHoistedSubagent(t *testing.T) {
 	t.Parallel()
 	h := start(t, "a")

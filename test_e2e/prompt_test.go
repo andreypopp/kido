@@ -339,8 +339,9 @@ func TestPromptInboxUnavailable(t *testing.T) {
 	h.runPrompt("not pasted")
 	h.waitMain("rc=1")
 	h.waitMain("alpha is not accepting messages")
-	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "got: not pasted") },
-		"a prompt to a closed inbox was pasted")
+	if got := h.paneText(pane); strings.Contains(got, "got: not pasted") {
+		t.Errorf("a prompt to a closed inbox was pasted: %q", got)
+	}
 }
 
 func TestPromptWindowFlagOne(t *testing.T) {

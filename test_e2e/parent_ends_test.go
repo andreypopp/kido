@@ -46,7 +46,7 @@ func TestReportedChildStaysAlive(t *testing.T) {
 
 	runID, windowID, _ := h.reportedChild("reported-e2e", "report")
 	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
-	h.stays(func() bool {
+	h.stays(quiet, func() bool {
 		return h.windowExists(windowID) && h.in("display-message", "-p", "-t", paneID, "#{pane_dead}") == "0"
 	}, "a child that reported was ended by something other than its parent")
 	if got := h.runOutcome(runID, "reported"); got != "running" {
@@ -54,62 +54,40 @@ func TestReportedChildStaysAlive(t *testing.T) {
 	}
 }
 
-// Stopping a child that already reported is the normal end of its work,
-// not a failed one.
-func TestStopAfterReportRecordsCompleted(t *testing.T) {
+// Stopping a child is the normal end of its work or a stop before it
+// finished: one table, one server, three children.
+func TestStopOutcomes(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	runID, windowID, parent := h.reportedChild("stop-after-report-e2e", "report")
-	out := h.runKido("alpha", "stop-after-report.out", "tool", "stop_run", runID)
-	if !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido tool stop_run = %q, want a successful stop", out)
-	}
-	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
-		msgf("stopped child's window %s to close", windowID))
-	if got := h.runOutcome(runID, "stop-after-reported"); got != "completed" {
-		t.Errorf("run %s outcome = %q, want completed: it reported before it was stopped", runID, got)
-	}
-	if len(parent.Received()) != 1 {
-		t.Errorf("parent inbox = %q, want only the child's own report: a completed ending needs no second notice", parent.Received())
-	}
-}
-
-// A status notice is not a report: it says nothing about the work, so a
-// child that only reported an error or that it was idle did not finish.
-func TestStopAfterStatusNoticeRecordsStopped(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-
-	runID, windowID, parent := h.reportedChild("stop-after-status-e2e", "status")
-	if out := h.runKido("alpha", "stop-after-status.out", "tool", "stop_run", runID); !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido tool stop_run = %q, want a successful stop", out)
-	}
-	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
-		msgf("stopped child's window %s to close", windowID))
-	if got := h.runOutcome(runID, "stop-after-status"); got != "stopped" {
-		t.Errorf("run %s outcome = %q, want stopped: a status notice is not a report", runID, got)
-	}
-	if len(parent.Received()) != 1 {
-		t.Errorf("parent inbox = %q, want only the child's status notice", parent.Received())
-	}
-	if _, err := os.Stat(filepath.Join(h.stateDir, "runs", runID, "report")); !os.IsNotExist(err) {
-		t.Errorf("a status notice left a report file (%v); only a real report may", err)
-	}
-}
-
-// A child stopped before it reported did not finish its work.
-func TestStopBeforeReportRecordsStopped(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-
-	runID, windowID, _ := h.reportedChild("stop-before-report-e2e", "")
-	if out := h.runKido("alpha", "stop-before-report.out", "tool", "stop_run", runID); !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido tool stop_run = %q, want a successful stop", out)
-	}
-	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
-		msgf("stopped child's window %s to close", windowID))
-	if got := h.runOutcome(runID, "stop-before-reported"); got != "stopped" {
-		t.Errorf("run %s outcome = %q, want stopped: it never reported", runID, got)
+	for _, c := range []struct {
+		name, notice, outcome, run string
+	}{
+		{"stop-after-report-e2e", "report", "completed", "stop-after-reported"},
+		{"stop-after-status-e2e", "status", "stopped", "stop-after-status"},
+		{"stop-before-report-e2e", "", "stopped", "stop-before-reported"},
+	} {
+		runID, windowID, parent := h.reportedChild(c.name, c.notice)
+		out := h.runKido("alpha", c.name+".out", "tool", "stop_run", runID)
+		if !strings.Contains(out, "rc=0") {
+			t.Fatalf("%s: kido tool stop_run = %q, want a successful stop", c.name, out)
+		}
+		h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
+			msgf("%s: stopped child's window %s to close", c.name, windowID))
+		if got := h.runOutcome(runID, c.run); got != c.outcome {
+			t.Errorf("%s: run %s outcome = %q, want %q", c.name, runID, got, c.outcome)
+		}
+		wantReceived := 0
+		if c.notice != "" {
+			wantReceived = 1
+		}
+		if len(parent.Received()) != wantReceived {
+			t.Errorf("%s: parent inbox = %q, want %d notice(s)", c.name, parent.Received(), wantReceived)
+		}
+		if c.notice != "report" {
+			if _, err := os.Stat(filepath.Join(h.stateDir, "runs", runID, "report")); !os.IsNotExist(err) {
+				t.Errorf("%s: a status notice left a report file (%v); only a real report may", c.name, err)
+			}
+		}
 	}
 }
