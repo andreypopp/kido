@@ -26,9 +26,9 @@ public struct SidebarRow: Equatable, Sendable {
     public let id: ID
     public let kind: Kind
     public let indent: Int
-    public let height: Double
+    public var height: Double
     public let title: String
-    public let tail: String
+    public var tail: String
     public let status: Status
     public var indicatorDescription = ""
     public let started: Date?
@@ -300,4 +300,39 @@ public func sidebarElapsed(started: Date, now: Date) -> String {
     let s = max(0, Int(now.timeIntervalSince(started)))
     return s < 60 ? "\(s)s" : s < 3600 ? String(format: "%dm%02ds", s / 60, s % 60)
         : String(format: "%dh%02dm", s / 3600, (s / 60) % 60)
+}
+
+public struct SidebarCaptions {
+    private struct Caption {
+        var shown: String
+        var pending: (text: String, deadline: TimeInterval)?
+    }
+    private var captions: [SidebarRow.ID: Caption] = [:]
+    public init() {}
+    public var deadline: TimeInterval? { captions.values.compactMap { $0.pending?.deadline }.min() }
+
+    public mutating func apply(_ rows: [SidebarRow], now: TimeInterval, delay: TimeInterval) -> [SidebarRow] {
+        let present = Set(rows.map(\.id))
+        captions = captions.filter { present.contains($0.key) }
+        return rows.map { raw in
+            guard case .pane = raw.kind else { return raw }
+            var caption = captions[raw.id] ?? Caption(shown: raw.tail)
+            if raw.tail == caption.shown { caption.pending = nil }
+            else {
+                if caption.pending?.text != raw.tail { caption.pending = (raw.tail, now + delay) }
+                if let pending = caption.pending, now >= pending.deadline {
+                    caption.shown = pending.text
+                    caption.pending = nil
+                }
+            }
+            captions[raw.id] = caption
+            var row = raw
+            row.tail = caption.shown
+            row.height = caption.shown.isEmpty ? 32 : 48
+            row.guides = raw.guides.map { guide in
+                .init(x: guide.x, top: guide.top, bottom: guide.bottom + row.height - raw.height)
+            }
+            return row
+        }
+    }
 }
