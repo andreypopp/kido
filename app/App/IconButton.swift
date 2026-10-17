@@ -4,7 +4,7 @@ final class IconButton: NSButton {
     static let sidebarSymbols = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular, scale: .small)
     var invoke: () -> Void = {}
     var press: ((NSEvent) -> Void)?
-    enum HoverStyle { case iconOnly, background, close }
+    enum HoverStyle { case iconOnly, background, close, text }
     private let hoverStyle: HoverStyle
     private var hovered = false
 
@@ -17,17 +17,21 @@ final class IconButton: NSButton {
         toolTip = label
         setAccessibilityLabel(label)
         isBordered = false
-        if hoverStyle != .background {
+        if hoverStyle == .iconOnly || hoverStyle == .close {
             focusRingType = .none
             (cell as? NSButtonCell)?.highlightsBy = []
         }
-        imagePosition = .imageOnly
-        contentTintColor = .secondaryLabelColor
+        imagePosition = hoverStyle == .text ? .noImage : .imageOnly
+        (cell as? NSButtonCell)?.imageDimsWhenDisabled = false
+        updateHover()
         target = self
         action = #selector(invokeAction)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.35 } }
+    private var radius: CGFloat { hoverStyle == .close ? 4 : hoverStyle == .text ? 6 : 8 }
+    override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill() }
     @objc private func invokeAction() { invoke() }
     override func mouseDown(with event: NSEvent) {
         if let press { window?.makeFirstResponder(self); press(event) } else { super.mouseDown(with: event) }
@@ -54,15 +58,15 @@ final class IconButton: NSButton {
     }
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            if hovered && hoverStyle != .iconOnly {
+            if hovered && isEnabled && hoverStyle != .iconOnly {
                 NSColor.labelColor.withAlphaComponent(hoverStyle == .close ? 0.10 : 0.12).setFill()
-                NSBezierPath(roundedRect: bounds, xRadius: hoverStyle == .close ? 4 : 8, yRadius: hoverStyle == .close ? 4 : 8).fill()
+                NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
             }
             super.draw(dirtyRect)
         }
     }
     private func updateHover() {
-        contentTintColor = hovered ? .labelColor : .secondaryLabelColor
+        contentTintColor = hoverStyle == .text ? .controlAccentColor : hovered ? .labelColor : .secondaryLabelColor
         needsDisplay = true
     }
 }
