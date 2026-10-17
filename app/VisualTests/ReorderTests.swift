@@ -629,8 +629,9 @@ import TmuxControl
         tabs.move = { if case .window(_, let source, let anchor, let placement) = $0 { moves.append("\(source) \(placement) \(anchor)") } }
         let labels = ids.indices.map { tabs.labelRect($0) }
         let width = labels[1].minX - labels[0].minX
-        func settled() async throws {
-            try await wait("animation ends") { !tabs.visualAnimating }
+        // AppKit's animator stops while the display sleeps, so only the first slide is awaited, and only on an awake display.
+        func settled() {
+            tabs.visualFinishAnimation()
             for index in ids.indices { XCTAssertEqual(tabs.visualPresentedLabelRect(index), tabs.labelRect(index)) }
         }
 
@@ -643,26 +644,27 @@ import TmuxControl
         send(tabs, .leftMouseUp, labels[0].midX + width)
         XCTAssertEqual(moves, ["@1 before @3"], "the drop uses the target layout, not the in-flight frames")
         XCTAssertTrue(tabs.visualAnimating, "the dropped tab settles into its slot")
-        try await settled()
+        if CGDisplayIsAsleep(CGMainDisplayID()) == 0 { try await wait("animation ends") { !tabs.visualAnimating } }
+        settled()
 
         send(tabs, .leftMouseDown, labels[3].midX)
         send(tabs, .leftMouseDragged, labels[1].midX)
-        try await settled()
+        settled()
         tabs.animated { tabs.entries = entries([ids[0], ids[3], ids[1], ids[2]]) }
         XCTAssertFalse(tabs.visualAnimating, "a press without its drag is ended by the change")
         tabs.entries = entries(ids)
         send(tabs, .leftMouseDown, labels[3].midX)
         send(tabs, .leftMouseDragged, labels[3].midX - 10)
         send(tabs, .leftMouseDragged, labels[1].midX)
-        try await settled()
+        settled()
         send(tabs, .leftMouseUp, labels[1].midX, -40)
         XCTAssertTrue(tabs.visualAnimating, "a cancel slides the tabs back")
         XCTAssertEqual(tabs.labelRect(1), labels[1])
-        try await settled()
+        settled()
 
         tabs.animated { tabs.entries = entries([ids[1], ids[0], ids[2], ids[3]]) }
         XCTAssertTrue(tabs.visualAnimating, "a reorder revert slides")
-        try await settled()
+        settled()
         tabs.entries = entries(ids)
         XCTAssertFalse(tabs.visualAnimating, "a snapshot update outside a drag is instant")
         tabs.animated { tabs.entries = entries(ids + [WindowID(number: 9)]) }

@@ -313,7 +313,8 @@ private final class VsyncGate: @unchecked Sendable {
         await mainQueueFence()
         XCTAssertEqual(frames - initial, ticks, "animated shader installs follow manual ticks, not a second draw timer")
         XCTAssertGreaterThanOrEqual(changes.count, 3, "Kitty changes while available shader draws only on host ticks")
-        for interval in zip(changes.dropFirst(), changes).map({ $0.0.time - $0.1.time }) {
+        // changes[0] is the first draw, not a change; its interval depends on the drain before the first tick.
+        for interval in zip(changes.dropFirst(2), changes.dropFirst()).map({ $0.0.time - $0.1.time }) {
             XCTAssertEqual(interval, 0.4, accuracy: 0.18)
         }
         XCTAssertTrue(pane.feed(Data("\u{1b}_Ga=a,i=1,s=1\u{1b}\\".utf8)))
