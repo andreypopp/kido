@@ -9,6 +9,9 @@ type options = {
   grace : float;
 }
 
+val resolve_client :
+  Tmux.t -> pane:Tmux.pane_id option -> session:Tmux.session_id option -> string option
+
 val default_interval : float
 
 type lingering = {
@@ -23,16 +26,17 @@ type ask_target = Live of Tmux.pane_id | Revivable | Unavailable
 type ask = { ask : Ask.t; name : string; target : ask_target }
 
 type snapshot = {
-  server : (int * Tmux_pane.server) option;
+  server : (int * Tmux.server) option;
   client : Tmux.client option;
-  active : Tmux.pane_id option;
-  panes : Tmux_pane.t list;
-  states : (Run.id * Run.pi) Tmux.Pane_map.t;
+  state : State.t;
+  visible : State.t;
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
   asks : ask list;
 }
+
+val active : snapshot -> Tmux.pane_id option
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
@@ -48,7 +52,7 @@ type node = Group of { name : string; first : item; rest : item list } | Item of
 and item = { row : row; children : node list }
 
 type section = { id : Tmux.session_id; name : string; current : bool; nodes : node list }
-type pane = { pane : Tmux_pane.t; track : Pane_status.track; status : Pane_status.kind }
+type pane = { pane : State.pane; track : Pane_status.track; status : Pane_status.kind }
 
 type model = {
   opts : options;

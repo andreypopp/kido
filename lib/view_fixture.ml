@@ -3,13 +3,13 @@ let temp () = Filename.temp_dir "kido-ui" ""
 
 let pane ?ssh ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pid = 0) ?run
     ?dead_at ?(alternate = false) ?(running = false) ?start ?prompt ?exit ?(command_line = "")
-    ?(active = false) pane_id : Tmux_pane.t =
+    ?(active = false) pane_id : State.pane =
   {
     (Test_fixture.pane ~session ~created:0. ~window ~cmd:command ~title ~pid ?run ~active
        ~attached:active ~running ?start ?prompt pane_id)
     with
     alternate_on = alternate;
-    last_exit = Option.map (fun (code, at) -> { Tmux_pane.code; at }) exit;
+    last_exit = Option.map (fun (code, at) -> { State.code; at }) exit;
     command_line;
     dead_at;
     ssh;
@@ -24,39 +24,49 @@ let states l =
       Tmux.Pane_map.add pane (Test_fixture.run_id id, { s with pane = Some pane }) m)
     Tmux.Pane_map.empty l
 
-let with_programs states panes =
-  List.map
-    (fun (p : Tmux_pane.t) ->
-      match Tmux.Pane_map.find_opt p.pane_id states with
-      | Some (id, _) ->
-          {
-            p with
-            run = Some (Option.value p.run ~default:(Run.string_of_id id));
-            program_status =
-              Result.get_exn
-                (Tmux.Program_status.parse
-                   {|{"serial":1,"records":[{"id":"","app":"pi","state":"working"}]}|});
-          }
-      | None -> p)
-    panes
+let meta ?(kind = Run.Agent) ?(parent = "") id name : Run.meta =
+  {
+    id;
+    name;
+    kind;
+    parent = Test_fixture.owned parent;
+    pane = None;
+    pid = 0;
+    cwd = "";
+    model = "";
+    tools = [];
+    keep_alive = false;
+    started_at = test_at;
+  }
+
+let state l panes : State.t =
+  let agents = states l in
+  {
+    panes =
+      List.map
+        (fun (p : State.pane) ->
+          match Tmux.Pane_map.find_opt p.pane_id agents with
+          | Some (id, _) ->
+              {
+                p with
+                run = Some (Option.value p.run ~default:(Run.string_of_id id));
+                program_status =
+                  (if List.is_empty p.program_status.records then
+                     Result.get_exn
+                       (Tmux.Program_status.parse
+                          {|{"serial":1,"records":[{"id":"","app":"pi","state":"working"}]}|})
+                   else p.program_status);
+              }
+          | None -> p)
+        panes;
+    runs = Tmux.Pane_map.map (fun (id, pi) -> { Run.meta = meta id ""; pi = Some pi }) agents;
+    agents;
+  }
 
 let new_run ~dir ?(parent = "") ?(kind = Run.Agent) ?result name =
   let id = Run.new_id () in
   Run.create ~dir id "task";
-  Run.write_meta ~dir
-    {
-      id;
-      name;
-      kind;
-      parent = Test_fixture.owned parent;
-      pane = None;
-      pid = 0;
-      cwd = "";
-      model = "";
-      tools = [];
-      keep_alive = false;
-      started_at = test_at;
-    };
+  Run.write_meta ~dir (meta ~kind ~parent id name);
   Option.iter
     (fun result -> ignore (Run.record_outcome ~dir id { result; text = ""; at = None }))
     result;

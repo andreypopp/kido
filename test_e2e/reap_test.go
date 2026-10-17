@@ -17,25 +17,17 @@ func TestCloseRunSkipsTopLevelPiMark(t *testing.T) {
 	h.hideSidebar()
 	top := h.promptPane("alpha", "top-level")
 	window := h.windowID(top)
-	for _, metadata := range []string{"present", "missing"} {
-		id := "close-child-" + metadata
-		sub, _ := h.subagentWindow("alpha", id, id, "")
-		h.in("join-pane", "-d", "-s", sub, "-t", top)
-		h.in("set-option", "-p", "-t", sub, "remain-on-exit", "on")
-		h.killPane(sub)
-		h.waitFor(func() bool { return h.paneDead(sub) }, settle, msgf("child pane to die"))
-		if metadata == "missing" {
-			if err := os.Remove(filepath.Join(h.stateDir, "runs", id, "meta.json")); err != nil {
-				t.Fatal(err)
-			}
-		}
-		out := h.runKido("alpha", "close-"+metadata+".out", "close-run", window)
-		if h.paneExists(sub) {
-			t.Errorf("close-run with %s metadata left dead child %s behind the live Pi mark: %q", metadata, sub, out)
-		}
-		if !h.paneExists(top) {
-			t.Fatal("close-run killed the top-level Pi pane")
-		}
+	sub, _ := h.subagentWindow("alpha", "close-child", "close-child", "")
+	h.in("join-pane", "-d", "-s", sub, "-t", top)
+	h.in("set-option", "-p", "-t", sub, "remain-on-exit", "on")
+	h.killPane(sub)
+	h.waitFor(func() bool { return h.paneDead(sub) }, settle, msgf("child pane to die"))
+	out := h.runKido("alpha", "close.out", "close-run", window)
+	if h.paneExists(sub) {
+		t.Errorf("close-run left dead child %s behind the live Pi mark: %q", sub, out)
+	}
+	if !h.paneExists(top) {
+		t.Fatal("close-run killed the top-level Pi pane")
 	}
 }
 

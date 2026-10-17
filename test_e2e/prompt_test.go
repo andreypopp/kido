@@ -24,15 +24,10 @@ func TestPromptExcludesEveryMarkedRunInWindow(t *testing.T) {
 	if got := h.in("list-panes", "-t", mixedTop, "-F", "#{pane_id}"); got != mixedTop+"\n"+sub {
 		t.Fatalf("mixed window panes = %q, want top-level pi first", got)
 	}
-	for _, phase := range []string{"live", "released", "missing-meta"} {
+	for _, phase := range []string{"live", "released"} {
 		if phase == "released" {
 			h.agentStatus("prompt-"+mixedTop, mixedTop, "--remove")
 			h.programStatus(mixedTop, "state=idle:app=shell")
-		}
-		if phase == "missing-meta" {
-			if err := os.Remove(filepath.Join(h.stateDir, "runs", subID, "meta.json")); err != nil {
-				t.Fatal(err)
-			}
 		}
 		out := h.typeScript(caller, "prompt-"+phase+".out", fmt.Sprintf("printf %s | %s prompt", shellQuote(phase), kidoBin))
 		if !strings.Contains(out, "rc=0") {

@@ -43,30 +43,28 @@ let prompt ~dir ~self ~window text =
   let failed r = Result.map_err (fun m -> Failed m) r in
   if String.is_empty text then Error No_prompt
   else
-    let* panes = failed (Tmux_pane.list_panes (Tmux.create ())) in
-    let* self = failed (Tmux_pane.caller_pane panes self) in
-    let runs = Run.marked ~dir panes in
-    let states = Run.agents runs in
+    let* ({ agents = states; _ } as state : State.t) = failed (State.read ~dir (Tmux.create ())) in
+    let* self = failed (State.caller_pane state self) in
     let candidates whole_session =
       List.filter_map
-        (fun (p : Tmux_pane.t) ->
+        (fun (p : State.pane) ->
           if
             (not (String.equal p.session_name self.session_name))
             || ((not whole_session) && p.window_index <> self.window_index)
-            || Option.is_some (Run.window_pane ~runs panes p.window_id)
+            || Option.is_some (State.find_window_run state p.window_id)
           then None
           else
             match Pane_kind.classify ~states p with
             | Terminal | Ssh { pane = Remote_terminal; _ } -> None
             | (Some_agent _ | Pi_agent _ | Ssh _) as kind -> Some (p, kind))
-        panes
+        state.panes
     in
     match match candidates false with [] when not window -> candidates true | found -> found with
     | [] -> Error Not_found
     | [ (p, kind) ] ->
         let inbox, name =
           match kind with
-          | Pi_agent { pi; _ } -> (pi.inbox, Run.display_name panes pi)
+          | Pi_agent { pi; _ } -> (pi.inbox, State.display_name state pi)
           | Some_agent _ | Terminal | Ssh _ -> ("", p.title)
         in
         failed

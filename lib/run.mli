@@ -8,6 +8,7 @@ val output_path : dir:string -> id -> string
 val report_path : dir:string -> id -> string
 val meta_path : dir:string -> id -> string
 
+type optional_id = Tmux.pane_id option [@@deriving yojson]
 type kind = Pi | Agent | Bash | Stream
 
 val string_of_kind : kind -> string
@@ -17,7 +18,7 @@ type meta = {
   name : string;
   kind : kind;
   parent : id option;
-  pane : Tmux_pane.optional_id;
+  pane : optional_id;
   pid : int;
   cwd : string;
   model : string;
@@ -31,7 +32,7 @@ val label : meta -> string
 
 type pi = {
   pid : int;
-  pane : Tmux_pane.optional_id;
+  pane : optional_id;
   ts : Timestamp.t;
   inbox : string;
   activity : string;
@@ -72,9 +73,6 @@ val holder : t -> pi option
 val name : t -> string
 (** The name its pi last reported, else the meta's. *)
 
-val display_name : Tmux_pane.t list -> pi -> string
-(** The name its pi last reported, else the title of the pane it holds. *)
-
 val ancestors : dir:string -> meta -> id list
 (** The owners above the run, nearest first. *)
 
@@ -113,7 +111,3 @@ val select : dir:string -> string -> (meta, string) Stdlib.result
 val save_screen : Tmux.t -> dir:string -> id -> Tmux.pane_id option -> string option
 (** Saves a pane's screen with 1000 lines of history, bounded to its tail, into the run's directory
     and returns it; [None] for an empty pane id or a failed capture. *)
-
-val marked : dir:string -> Tmux_pane.t list -> t Tmux.Pane_map.t
-val window_pane : runs:t Tmux.Pane_map.t -> Tmux_pane.t list -> Tmux.window_id -> Tmux_pane.t option
-val agents : t Tmux.Pane_map.t -> (id * pi) Tmux.Pane_map.t

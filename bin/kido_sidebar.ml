@@ -211,13 +211,13 @@ let unseen m pane =
 let observe m =
   if Option.is_some m.side.snap.err then m
   else
-    let now = m.side.at in
+    let now = m.side.at and active = S.active m.side.snap in
     let views =
       Tmux.Pane_map.mapi
         (fun pane (d : S.pane) ->
           let prev = Tmux.Pane_map.find_opt pane m.views in
           let raw =
-            (match Tmux_pane.shell d.pane with Running -> true | _ -> false)
+            (match State.shell d.pane with Running -> true | _ -> false)
             && not d.pane.alternate_on
           in
           let hold =
@@ -228,7 +228,7 @@ let observe m =
                 if raw then Some Drawn else prev
             | _ -> None
           in
-          if Option.equal Tmux.equal_pane_id (Some pane) m.side.snap.active then
+          if Option.equal Tmux.equal_pane_id (Some pane) active then
             let outcome, exit = outcomes d in
             {
               report = Option.map (fun (source, (o : P.outcome)) -> (source, o.serial)) outcome;
@@ -479,7 +479,7 @@ let request (opts : S.options) req =
 
 let release_focus m =
   match request m.side.opts S.Release_side_focus with
-  | Ok () -> Option.map_or ~default:m (focus m) m.side.snap.active
+  | Ok () -> Option.map_or ~default:m (focus m) (S.active m.side.snap)
   | Error e -> { m with status = e }
 
 type msg =
@@ -645,13 +645,12 @@ let update msg m =
         let focused (s : S.snapshot) =
           Option.exists (fun (c : Tmux.client) -> c.focused) s.client
         in
-        if
-          ((not (Option.equal Tmux.equal_pane_id snap.active was.active))
-          || (focused was && not (focused snap)))
-          && Option.is_some snap.active
-        then
-          match m.mode with Windows -> Option.map_or ~default:m (focus m) snap.active | Asks -> m
-        else m
+        match S.active snap with
+        | Some active
+          when (not (Option.equal Tmux.equal_pane_id (Some active) (S.active was)))
+               || (focused was && not (focused snap)) -> (
+            match m.mode with Windows -> focus m active | Asks -> m)
+        | _ -> m
       in
       (m, tick ~wait:(next_wait m) m)
   | Mouse ev -> (
@@ -806,7 +805,12 @@ let%test_module "Tests" =
       { m with at = !clock }
 
     let empty_snap = (model ~dir:"" ()).snap
-    let server = Some (1, { Tmux_pane.started_at = 1_700_000_000; pid = 42 })
+
+    let snap_of ?(l = []) panes =
+      let state = state l panes in
+      { empty_snap with Sidebar.state; visible = state }
+
+    let server = Some (1, { Tmux.started_at = 1_700_000_000; pid = 42 })
 
     let rendered_model (m : Sidebar.model) =
       fst (Sidebar.step { m with snap = empty_snap } { m.snap with server })
@@ -822,14 +826,11 @@ let%test_module "Tests" =
               if String.is_empty parent then None else Some (id, run_info ~parent ""))
             st
       in
-      let states = states (List.map (fun (pane, (id, _)) -> (pane, (id, pi))) st) in
-      let panes = with_programs states panes in
+      let l = List.map (fun (pane, (id, _)) -> (pane, (id, pi))) st in
       let snap =
         {
-          empty_snap with
+          (snap_of ~l panes) with
           client = client current;
-          panes;
-          states;
           lingering = Sidebar.String_map.of_list lingering;
         }
       in
@@ -1157,9 +1158,8 @@ let%test_module "Tests" =
           let side, _ =
             Sidebar.step (model ~dir:"" ~clock ())
               {
-                empty_snap with
+                (snap_of [ pane ~window:"@20" ~run:"helper" "%30" ]) with
                 client = client "sess";
-                panes = [ pane ~window:"@20" ~run:"helper" "%30" ];
                 lingering = Sidebar.String_map.singleton "helper" (run_info ~kind "helper");
               }
           in
@@ -1231,14 +1231,9 @@ let%test_module "Tests" =
         let p =
           pane ~session:"alpha" ~command:"zsh" ~prompt:(test_at -. 1.) ~running ~start:test_at
             ?exit:(if running then None else Some (0, test_at))
-            "%1"
+            ~active:true "%1"
         in
-        {
-          empty_snap with
-          client = client "alpha";
-          active = Some (Tmux.pane_id_of_string "%1");
-          panes = [ p ];
-        }
+        { (snap_of [ p ]) with client = client "alpha" }
       in
       let tick d running =
         clock := !clock +. d;
@@ -1258,16 +1253,11 @@ let%test_module "Tests" =
           (make ~standalone:false
              { (model ~dir ~clock ()) with opts = { (opts ~dir ()) with threshold = 60. } })
       in
+      let l = [ ("%1", ("i", session ~ts:!clock "")) ] in
       let snap =
         {
-          empty_snap with
+          (snap_of ~l [ pane ~session:"alpha" ~title:"wedged" ~active:true "%1" ]) with
           client = client "alpha";
-          active = Some (Tmux.pane_id_of_string "%1");
-          panes =
-            with_programs
-              (states [ ("%1", ("i", session ~ts:!clock "")) ])
-              [ pane ~session:"alpha" ~title:"wedged" "%1" ];
-          states = states [ ("%1", ("i", session ~ts:!clock "")) ];
         }
       in
       let stalled () =
@@ -1295,6 +1285,12 @@ let%test_module "Tests" =
     +30s: stalled=true
     |}]
 
+    let activate active panes =
+      List.map
+        (fun (p : State.pane) ->
+          { p with active = Option.exists (String.equal (Tmux.string_of_pane_id p.pane_id)) active })
+        panes
+
     let drive ?(clock = ref test_at) () =
       let m = ref (make ~standalone:false (model ~clock ())) in
       let tick ?(d = 0.) ?active panes =
@@ -1302,14 +1298,7 @@ let%test_module "Tests" =
         m :=
           fst
             (update
-               (Snapshot
-                  {
-                    empty_snap with
-                    server;
-                    client = client "alpha";
-                    active = Option.map Tmux.pane_id_of_string active;
-                    panes;
-                  })
+               (Snapshot { (snap_of (activate active panes)) with server; client = client "alpha" })
                !m);
         Array.iter
           (fun l -> match l with Header _ -> () | _ -> print_endline (row_text !m l))
@@ -1320,7 +1309,7 @@ let%test_module "Tests" =
     let records json p =
       {
         p with
-        Tmux_pane.program_status =
+        State.program_status =
           Result.get_exn (Tmux.Program_status.parse ({|{"serial":|} ^ json ^ "}"));
       }
 
@@ -1395,13 +1384,7 @@ let%test_module "Tests" =
           fst
             (update
                (Snapshot
-                  {
-                    empty_snap with
-                    server;
-                    client = client "alpha";
-                    active = Some (Tmux.pane_id_of_string active);
-                    panes;
-                  })
+                  { (snap_of (activate (Some active) panes)) with server; client = client "alpha" })
                !m);
         let row = Array.find_map (function Row (_, _, r) -> Some r | _ -> None) !m.lines in
         Printf.printf "%-14s %s\n" label
@@ -1513,13 +1496,7 @@ let%test_module "Tests" =
       let m =
         {
           m with
-          snap =
-            {
-              empty_snap with
-              client = client "alpha";
-              panes = with_programs (states [ ("%2", ("i", session "")) ]) panes;
-              states = states [ ("%2", ("i", session "")) ];
-            };
+          snap = { (snap_of ~l:[ ("%2", ("i", session "")) ] panes) with client = client "alpha" };
         }
       in
       let show filter =

@@ -432,6 +432,21 @@ let list_clients (t : t) =
   | Some (Ok (_ :: _ as lines)) -> Ok (parse_clients lines)
   | None | Some (Ok [] | Error _) -> one_shot_clients ?socket:t.socket ()
 
+let find_client t name =
+  Option.flat_map
+    (List.find_opt (fun (c : client) -> String.equal c.name name))
+    (Result.to_opt (list_clients t))
+
+type server = { started_at : int; pid : int } [@@deriving equal, yojson_of]
+
+let server t =
+  Result.flat_map
+    (fun out ->
+      match List.map int_of_string_opt (String.split_on_char ' ' out) with
+      | [ Some started_at; Some pid ] when started_at > 0 && pid > 0 -> Ok { started_at; pid }
+      | _ -> Error (Printf.sprintf "unreadable tmux server identity %S" out))
+    (exec t [ "display-message"; "-p"; "#{start_time} #{pid}" ])
+
 let release_args client = [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
 
 let jump t ~client ~session ~window pane =

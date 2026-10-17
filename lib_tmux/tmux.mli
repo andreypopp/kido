@@ -71,6 +71,11 @@ type client = {
 }
 
 val list_clients : t -> (client list, string) result
+val find_client : t -> string -> client option
+
+type server = { started_at : int; pid : int } [@@deriving equal, yojson_of]
+
+val server : t -> (server, string) result
 
 val jump :
   t -> client:string -> session:session_id -> window:window_id -> pane_id -> (unit, string) result

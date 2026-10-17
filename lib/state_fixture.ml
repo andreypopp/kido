@@ -1,6 +1,6 @@
 let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(window = "@1")
     ?(active = false) ?(attached = false) ?(running = false) ?start ?prompt ?run ?(pid = 0)
-    ?(cmd = "") ?(cwd = "") ?(title = "") id : Tmux_pane.t =
+    ?(cmd = "") ?(cwd = "") ?(title = "") id : State.pane =
   {
     session_name = session;
     session_id = Tmux.session_id_of_string session_id;

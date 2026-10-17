@@ -29,11 +29,10 @@ type ask_target = Live of Tmux.pane_id | Revivable | Unavailable
 type ask = { ask : Ask.t; name : string; target : ask_target }
 
 type snapshot = {
-  server : (int * Tmux_pane.server) option;
+  server : (int * Tmux.server) option;
   client : Tmux.client option;
-  active : Tmux.pane_id option;
-  panes : Tmux_pane.t list;
-  states : (Run.id * Run.pi) Tmux.Pane_map.t;
+  state : State.t;
+  visible : State.t;
   wake : float option;
   err : string option;
   lingering : lingering String_map.t;
@@ -44,14 +43,18 @@ let empty =
   {
     server = None;
     client = None;
-    active = None;
-    panes = [];
-    states = Tmux.Pane_map.empty;
+    state = State.empty;
+    visible = State.empty;
     wake = None;
     err = None;
     lingering = String_map.empty;
     asks = [];
   }
+
+let active snap =
+  if Option.is_some snap.err then None
+  else
+    Option.flat_map (fun (c : Tmux.client) -> State.active_pane snap.visible c.session) snap.client
 
 let lingering_subagents ~dir runs =
   Tmux.Pane_map.fold
@@ -74,28 +77,26 @@ let take ~opts conn prev client =
     let* server =
       match prev.server with
       | Some (dial, _) when Int.equal dial (Tmux.Client.dials conn) -> Ok prev.server
-      | _ -> Result.map (fun s -> Some (Tmux.Client.dials conn, s)) (Tmux_pane.server tmux)
+      | _ -> Result.map (fun s -> Some (Tmux.Client.dials conn, s)) (Tmux.server tmux)
     in
-    Result.map (fun panes -> (server, panes)) (Tmux_pane.list_panes tmux)
+    Result.map (fun state -> (server, state)) (State.read ~dir:opts.dir tmux)
   in
   match read with
-  | Error e -> { prev with client; active = None; err = Some e }
-  | Ok (server, panes) ->
-      let panes = List.filter (fun (p : Tmux_pane.t) -> not p.modal) panes in
-      let runs = Run.marked ~dir:opts.dir panes in
-      if not (List.is_empty panes) then
-        Reap.collect opts.tmux ~dir:opts.dir ~grace:opts.grace ~runs panes
-          ~now:(Unix.gettimeofday ());
+  | Error e -> { prev with client; err = Some e }
+  | Ok (server, state) ->
+      if not (List.is_empty state.panes) then
+        Reap.collect opts.tmux ~dir:opts.dir ~grace:opts.grace state ~now:(Unix.gettimeofday ());
+      let visible =
+        { state with panes = List.filter (fun (p : State.pane) -> not p.modal) state.panes }
+      in
       {
         server;
         client;
-        active =
-          Option.flat_map (fun (c : Tmux.client) -> Tmux_pane.active_pane panes c.session) client;
-        panes;
-        states = Run.agents runs;
+        state;
+        visible;
         wake = Stall.wake ~dir:opts.dir;
         err = None;
-        lingering = lingering_subagents ~dir:opts.dir runs;
+        lingering = lingering_subagents ~dir:opts.dir state.runs;
         asks =
           List.map
             (fun (a : Ask.t) ->
@@ -106,12 +107,12 @@ let take ~opts conn prev client =
                 | Revivable _ -> Revivable
                 | Unavailable _ -> Unavailable
               in
-              { ask = a; name = Ask.name ~panes run; target })
+              { ask = a; name = Ask.name ~state:visible run; target })
             (Ask.list ~dir:opts.dir);
       }
 
 let same a b =
-  let drawn (p : Tmux_pane.t) =
+  let drawn (p : State.pane) =
     {
       p with
       window_index = 0;
@@ -124,11 +125,13 @@ let same a b =
   let session (_, (s : Run.pi)) = { s with ts = 0. } in
   Option.equal Stdlib.( = ) a.server b.server
   && Option.equal Stdlib.( = ) a.client b.client
-  && Option.equal Tmux.equal_pane_id a.active b.active
+  && Option.equal Tmux.equal_pane_id (active a) (active b)
   && Option.is_none a.err && Option.is_none b.err
   && Option.equal Float.equal a.wake b.wake
-  && List.equal (fun x y -> Stdlib.( = ) (drawn x) (drawn y)) a.panes b.panes
-  && Tmux.Pane_map.equal (fun x y -> Stdlib.( = ) (session x) (session y)) a.states b.states
+  && List.equal (fun x y -> Stdlib.( = ) (drawn x) (drawn y)) a.visible.panes b.visible.panes
+  && Tmux.Pane_map.equal
+       (fun x y -> Stdlib.( = ) (session x) (session y))
+       a.state.agents b.state.agents
   && String_map.equal Stdlib.( = ) a.lingering b.lingering
   && List.equal Stdlib.( = ) a.asks b.asks
 
@@ -153,7 +156,7 @@ type node = Group of { name : string; first : item; rest : item list } | Item of
 and item = { row : row; children : node list }
 
 type section = { id : Tmux.session_id; name : string; current : bool; nodes : node list }
-type pane = { pane : Tmux_pane.t; track : Pane_status.track; status : Pane_status.kind }
+type pane = { pane : State.pane; track : Pane_status.track; status : Pane_status.kind }
 
 type model = {
   opts : options;
@@ -181,7 +184,7 @@ let make ~now opts =
 let track ~prev m =
   if Option.is_some m.snap.err then (m, false)
   else
-    let stalled_at (m : model) (p : Tmux_pane.t) (kind : Pane_kind.t) =
+    let stalled_at (m : model) (p : State.pane) (kind : Pane_kind.t) =
       match kind with
       | Pi_agent { pi; _ } ->
           Stall.stalled_since
@@ -189,12 +192,13 @@ let track ~prev m =
             ~threshold:m.opts.threshold ~wake:m.snap.wake ~now:m.at ~reported_at:pi.ts
       | Terminal | Some_agent _ | Ssh _ -> false
     in
+    let states = m.snap.state.agents and prev_states = prev.snap.state.agents in
     let pane_data, changed =
       List.fold_left
-        (fun (data, changed) (p : Tmux_pane.t) ->
+        (fun (data, changed) (p : State.pane) ->
           if Tmux.Pane_map.mem p.pane_id data then (data, changed)
           else
-            let kind = Pane_kind.classify ~states:m.snap.states p in
+            let kind = Pane_kind.classify ~states p in
             let ask =
               match kind with
               | Pi_agent { id; _ } ->
@@ -214,20 +218,19 @@ let track ~prev m =
                    (fun d ->
                      not
                        (Bool.equal stalled
-                          (stalled_at prev d.pane
-                             (Pane_kind.classify ~states:prev.snap.states d.pane))))
+                          (stalled_at prev d.pane (Pane_kind.classify ~states:prev_states d.pane))))
                    (Tmux.Pane_map.find_opt p.pane_id prev.pane_data) ))
-        (Tmux.Pane_map.empty, false) m.snap.panes
+        (Tmux.Pane_map.empty, false) m.snap.visible.panes
     in
     ( { m with pane_data },
       changed
       || Tmux.Pane_map.exists
            (fun pane d ->
              (not (Tmux.Pane_map.mem pane pane_data))
-             && stalled_at prev d.pane (Pane_kind.classify ~states:prev.snap.states d.pane))
+             && stalled_at prev d.pane (Pane_kind.classify ~states:prev_states d.pane))
            prev.pane_data )
 
-let pi_run lingering (p : Tmux_pane.t) =
+let pi_run lingering (p : State.pane) =
   Option.exists
     (fun run ->
       match String_map.find_opt run lingering with
@@ -237,6 +240,7 @@ let pi_run lingering (p : Tmux_pane.t) =
 
 let pane_label m (d : pane) =
   let p = d.pane in
+  let states = m.snap.state.agents in
   let lingering =
     if pi_run m.snap.lingering p then None
     else Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run
@@ -244,12 +248,12 @@ let pane_label m (d : pane) =
   let title, lifecycle =
     match lingering with
     | Some l when Option.is_some l.outcome || Option.is_some p.dead_at ->
-        ( (match Tmux.Pane_map.find_opt p.pane_id m.snap.states with
-          | Some (_, s) -> Run.display_name [ p ] s
+        ( (match Tmux.Pane_map.find_opt p.pane_id states with
+          | Some (_, s) -> State.display_name m.snap.state s
           | _ -> l.name),
           Ended { result = l.outcome; run = l.kind } )
     | _ ->
-        ( (let kind = Pane_kind.classify ~states:m.snap.states p in
+        ( (let kind = Pane_kind.classify ~states p in
            match (kind, lingering) with
            | (Pi_agent _ | Some_agent _ | Ssh { pane = Remote_agent _; _ }), _ ->
                Option.value ~default:"" (Pane_kind.title p kind)
@@ -266,24 +270,24 @@ let pane_label m (d : pane) =
   in
   { pane = p.pane_id; window = p.window_id; title; lifecycle }
 
-type placement = { panes : Tmux_pane.t list; anchor : Tmux.pane_id option }
+type placement = { panes : State.pane list; anchor : Tmux.pane_id option }
 
 let order_windows_by_tree windows states lingering =
-  let window_id (w : Tmux_pane.t list) = (List.hd w).window_id in
+  let window_id (w : State.pane list) = (List.hd w).window_id in
   let by_session =
     List.fold_left
       (fun acc w ->
         List.fold_left
-          (fun acc (p : Tmux_pane.t) ->
+          (fun acc (p : State.pane) ->
             match Tmux.Pane_map.find_opt p.pane_id states with
             | Some (id, _) -> Run_map.add id (window_id w, p.pane_id) acc
             | _ -> acc)
           acc w)
       Run_map.empty windows
   in
-  let parent_of_window (w : Tmux_pane.t list) =
+  let parent_of_window (w : State.pane list) =
     List.find_map
-      (fun (p : Tmux_pane.t) ->
+      (fun (p : State.pane) ->
         Option.flat_map (fun r -> String_map.find_opt r lingering) p.run
         |> Option.flat_map (fun l -> l.parent))
       w
@@ -308,10 +312,10 @@ let order_windows_by_tree windows states lingering =
     ([], []) ordered
   |> snd |> List.rev
 
-let windows_in_order panes states lingering =
+let windows_in_order (state : State.t) lingering =
   List.concat_map
-    (fun (s : Tmux_pane.session) -> order_windows_by_tree s.windows states lingering)
-    (Tmux_pane.order_sessions panes)
+    (fun (s : State.session) -> order_windows_by_tree s.windows state.agents lingering)
+    (State.order_sessions state)
 
 let window_target ~next ~session ~window ~lingering windows =
   let first w = List.hd w.panes in
@@ -322,7 +326,7 @@ let window_target ~next ~session ~window ~lingering windows =
           (fun candidate ->
             Tmux.equal_session_id (first candidate).session_id (first w).session_id
             && List.exists
-                 (fun (p : Tmux_pane.t) -> Tmux.equal_pane_id p.pane_id anchor)
+                 (fun (p : State.pane) -> Tmux.equal_pane_id p.pane_id anchor)
                  candidate.panes)
           windows)
       w.anchor
@@ -342,7 +346,7 @@ let window_target ~next ~session ~window ~lingering windows =
           (fun p ->
             let siblings =
               List.concat_map
-                (fun (pane : Tmux_pane.t) ->
+                (fun (pane : State.pane) ->
                   List.filter
                     (fun w ->
                       Tmux.equal_session_id (first w).session_id session
@@ -370,7 +374,7 @@ let window_target ~next ~session ~window ~lingering windows =
             if k = 0 then None
             else if
               List.for_all
-                (fun (p : Tmux_pane.t) -> Option.is_none p.run || pi_run lingering p)
+                (fun (p : State.pane) -> Option.is_none p.run || pi_run lingering p)
                 roots.(j).panes
             then Some (first roots.(j))
             else find ((j + (if next then 1 else -1) + n) mod n) (k - 1)
@@ -398,7 +402,7 @@ let append_windows m placements =
     if drawn.(i) then None
     else begin
       drawn.(i) <- true;
-      let item (p : Tmux_pane.t) =
+      let item (p : State.pane) =
         let kids =
           List.rev (Option.get_or ~default:[] (Tmux.Pane_map.find_opt p.pane_id anchored))
         in
@@ -421,16 +425,17 @@ let append_windows m placements =
   |> List.rev
 
 let rebuild m =
-  let order = Tmux_pane.order_sessions m.snap.panes in
+  let order = State.order_sessions m.snap.visible in
   let sessions =
     List.map
-      (fun (s : Tmux_pane.session) ->
+      (fun (s : State.session) ->
         {
           id = s.id;
           name = s.name;
           current =
             Option.exists (fun (c : Tmux.client) -> String.equal s.name c.session) m.snap.client;
-          nodes = append_windows m (order_windows_by_tree s.windows m.snap.states m.snap.lingering);
+          nodes =
+            append_windows m (order_windows_by_tree s.windows m.snap.state.agents m.snap.lingering);
         })
       order
   in
@@ -439,9 +444,9 @@ let rebuild m =
 let poll ?wait ~(opts : options) conn (prev : snapshot) =
   Option.iter (fun timeout -> Tmux.Client.await_notifications conn ~timeout) wait;
   let client = ref prev.client in
-  let failed e = { prev with client = !client; active = None; err = Some e } in
+  let failed e = { prev with client = !client; err = Some e } in
   match
-    client := Tmux_pane.client_state (Tmux.Client.tmux conn) opts.client;
+    client := Tmux.find_client (Tmux.Client.tmux conn) opts.client;
     take ~opts conn prev !client
   with
   | snap -> snap
@@ -455,22 +460,21 @@ let step m (snap : snapshot) =
   (if detect_pause m.clock clock then
      try Stall.record_pause ~dir:m.opts.dir clock.wall with Unix.Unix_error _ | Sys_error _ -> ());
   let client =
-    match snap.client with
-    | Some (c : Tmux.client) -> (
+    match (snap.client, active snap) with
+    | Some (c : Tmux.client), Some active -> (
         match
           List.find_opt
-            (fun (p : Tmux_pane.t) ->
-              Option.equal Tmux.equal_pane_id (Some p.pane_id) snap.active
-              && Tmux.equal_session_id p.session_id c.session_id)
-            snap.panes
+            (fun (p : State.pane) ->
+              Tmux.equal_pane_id p.pane_id active && Tmux.equal_session_id p.session_id c.session_id)
+            snap.visible.panes
         with
         | Some p -> Some { session = p.session_id; window = p.window_id; pane = p.pane_id }
         | None -> m.client)
-    | None -> m.client
+    | _ -> m.client
   in
   let pane_data =
     if
-      Option.equal Tmux_pane.equal_server (Option.map snd was.server) (Option.map snd snap.server)
+      Option.equal Tmux.equal_server (Option.map snd was.server) (Option.map snd snap.server)
       || Option.is_none was.server
     then m.pane_data
     else Tmux.Pane_map.empty
@@ -518,7 +522,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
       match window with
       | Some window -> Ok (`Window window)
       | None -> (
-          match Tmux_pane.client_state tmux client with
+          match Tmux.find_client tmux client with
           | Some c -> Ok (`Session c.session_id)
           | None -> Error "no current tmux session")
     in
@@ -559,24 +563,24 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
   match request with
   | Select_window target -> (
       let open Result.Infix in
-      let* panes = Tmux_pane.list_panes tmux in
+      let* state = State.read ~dir tmux in
       match
         List.find_opt
-          (fun (p : Tmux_pane.t) ->
+          (fun (p : State.pane) ->
             Tmux.equal_session_id p.session_id target.session
             && Tmux.equal_window_id p.window_id target.window
             && p.pane_active)
-          panes
+          state.panes
       with
       | None -> Error "no such window in session"
       | Some p -> jump { session = target.session; window = target.window; pane = p.pane_id })
   | Select_session session -> (
       let open Result.Infix in
-      let* panes = Tmux_pane.list_panes tmux in
+      let* state = State.read ~dir tmux in
       match
         List.find_opt
-          (fun (p : Tmux_pane.t) -> Tmux.equal_session_id p.session_id session && p.active)
-          panes
+          (fun (p : State.pane) -> Tmux.equal_session_id p.session_id session && p.active)
+          state.panes
       with
       | None -> Error "no such window in session"
       | Some p -> jump { session; window = p.window_id; pane = p.pane_id })
@@ -584,14 +588,14 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
   | New_session -> create None
   | Jump target ->
       let open Result.Infix in
-      let* panes = Tmux_pane.list_panes tmux in
+      let* state = State.read ~dir tmux in
       if
         List.exists
-          (fun (p : Tmux_pane.t) ->
+          (fun (p : State.pane) ->
             Tmux.equal_session_id p.session_id target.session
             && Tmux.equal_window_id p.window_id target.window
             && Tmux.equal_pane_id p.pane_id target.pane)
-          panes
+          state.panes
       then jump target
       else Error "no such pane in session/window"
   | Activate_ask id -> (
@@ -602,19 +606,19 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
         | None -> Error ("no ask " ^ Ask.string_of_id id)
       in
       let* current =
-        match Tmux_pane.client_state tmux client with
+        match Tmux.find_client tmux client with
         | Some c -> Ok c
         | None -> Error "no current tmux session"
       in
       let* pane = Ask.target ~tmux ~dir ~session:current.session_id ask in
-      let* panes = Tmux_pane.list_panes tmux in
+      let* state = State.read ~dir tmux in
       let candidates =
-        List.filter (fun (p : Tmux_pane.t) -> Tmux.equal_pane_id p.pane_id pane) panes
+        List.filter (fun (p : State.pane) -> Tmux.equal_pane_id p.pane_id pane) state.panes
       in
       let target =
         match
           List.find_opt
-            (fun (p : Tmux_pane.t) -> Tmux.equal_session_id p.session_id current.session_id)
+            (fun (p : State.pane) -> Tmux.equal_session_id p.session_id current.session_id)
             candidates
         with
         | Some p -> Some p
@@ -627,27 +631,29 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
   | Release_side_focus -> Tmux.release_side_focus tmux client
   | Reorder_session ({ source; anchor; position } as move) ->
       let open Result.Infix in
-      let* panes = Tmux_pane.list_panes tmux in
-      let ids = List.map (fun (s : Tmux_pane.session) -> s.id) (Tmux_pane.order_sessions panes) in
+      let* state = State.read ~dir tmux in
+      let ids = List.map (fun (s : State.session) -> s.id) (State.order_sessions state) in
       let* () = movable ~eq:Tmux.equal_session_id ~missing:"no such session" ids move in
-      Tmux_pane.rank_sessions tmux
-        (List.concat_map
-           (fun id ->
-             if Tmux.equal_session_id id source then []
-             else if Tmux.equal_session_id id anchor then
-               match position with Before -> [ source; id ] | After -> [ id; source ]
-             else [ id ])
-           ids)
+      List.concat_map
+        (fun id ->
+          if Tmux.equal_session_id id source then []
+          else if Tmux.equal_session_id id anchor then
+            match position with Before -> [ source; id ] | After -> [ id; source ]
+          else [ id ])
+        ids
+      |> List.mapi (fun i id ->
+          (if i = 0 then [] else [ ";" ])
+          @ [ "set-option"; "-t"; Tmux.string_of_session_id id; Tmux_vars.order; string_of_int i ])
+      |> List.concat |> Tmux.run tmux
   | Reorder_window (session, ({ source; anchor; position } as move)) ->
       let open Result.Infix in
-      let* panes = Tmux_pane.list_panes tmux in
+      let* state = State.read ~dir tmux in
       let roots =
         List.find_opt
-          (fun (s : Tmux_pane.session) -> Tmux.equal_session_id s.id session)
-          (Tmux_pane.order_sessions panes)
-        |> Option.map_or ~default:[] (fun (s : Tmux_pane.session) ->
-            let runs = Run.marked ~dir panes in
-            order_windows_by_tree s.windows (Run.agents runs) (lingering_subagents ~dir runs)
+          (fun (s : State.session) -> Tmux.equal_session_id s.id session)
+          (State.order_sessions state)
+        |> Option.map_or ~default:[] (fun (s : State.session) ->
+            order_windows_by_tree s.windows state.agents (lingering_subagents ~dir state.runs)
             |> List.filter_map (fun (w : placement) ->
                 match w.anchor with None -> Some (List.hd w.panes).window_id | Some _ -> None))
       in
@@ -687,22 +693,21 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
   | Switch_window direction ->
       switched
         (Result.flat_map
-           (fun panes ->
+           (fun (state : State.t) ->
              let next = match direction with Next -> true | Prev -> false in
-             let runs = Run.marked ~dir panes in
-             let lingering = lingering_subagents ~dir runs in
-             let windows = windows_in_order panes (Run.agents runs) lingering in
+             let lingering = lingering_subagents ~dir state.runs in
+             let windows = windows_in_order state lingering in
              let active =
                Option.flat_map
                  (fun (c : Tmux.client) ->
                    List.find_opt
-                     (fun (p : Tmux_pane.t) -> String.equal p.session_name c.session && p.active)
+                     (fun (p : State.pane) -> String.equal p.session_name c.session && p.active)
                      (List.concat_map (fun w -> w.panes) windows))
-                 (Tmux_pane.client_state tmux client)
+                 (Tmux.find_client tmux client)
              in
              match
                Option.flat_map
-                 (fun (a : Tmux_pane.t) ->
+                 (fun (a : State.pane) ->
                    window_target ~next ~session:a.session_id ~window:a.window_id ~lingering windows)
                  active
              with
@@ -722,19 +727,19 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
                         Tmux.string_of_window_id target.window_id;
                       ])
              | None -> Ok None)
-           (Tmux_pane.list_panes tmux))
+           (State.read ~dir tmux))
   | Switch_session direction ->
       switched
         (Result.flat_map
-           (fun panes ->
-             let sessions = Array.of_list (Tmux_pane.order_sessions panes) in
+           (fun (state : State.t) ->
+             let sessions = Array.of_list (State.order_sessions state) in
              let length = Array.length sessions in
              if length < 2 then Ok None
              else
-               let current = Tmux_pane.client_state tmux client in
+               let current = Tmux.find_client tmux client in
                match
                  Array.find_idx
-                   (fun (s : Tmux_pane.session) ->
+                   (fun (s : State.session) ->
                      Option.exists (fun (c : Tmux.client) -> String.equal c.session s.name) current)
                    sessions
                with
@@ -744,7 +749,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
                                mod length)
                    in
                    let active =
-                     List.find_opt (fun (p : Tmux_pane.t) -> p.active) (List.concat target.windows)
+                     List.find_opt (fun (p : State.pane) -> p.active) (List.concat target.windows)
                    in
                    match active with
                    | Some p ->
@@ -760,11 +765,54 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
                             ])
                    | None -> Ok None)
                | None -> Ok None)
-           (Tmux_pane.list_panes tmux))
+           (State.read ~dir tmux))
+
+let real_clients session =
+  List.filter_map (fun (c : Tmux.client) ->
+      if Tmux.equal_session_id c.session_id session && not (String.is_empty c.name || c.control)
+      then Some c.name
+      else None)
+
+let resolve_client tmux ~pane ~session =
+  let live =
+    match pane with
+    | None -> None
+    | Some pane -> (
+        match
+          Tmux.exec tmux
+            [ "display-message"; "-p"; "-t"; Tmux.string_of_pane_id pane; "#{session_id}" ]
+        with
+        | Ok id when not (String.is_empty id) -> Some (Tmux.session_id_of_string id)
+        | _ -> None)
+  in
+  let target = Option.or_ ~else_:session live in
+  match Option.map (fun t -> Result.map (real_clients t) (Tmux.list_clients tmux)) target with
+  | Some (Ok [ c ]) -> Some c
+  | _ -> None
 
 let%test_module "Tests" =
   (module struct
     open View_fixture
+
+    let%expect_test "standalone inference excludes control, unnamed and other-session clients" =
+      let client name session control : Tmux.client =
+        {
+          name;
+          session = "work";
+          session_id = Tmux.session_id_of_string session;
+          focused = false;
+          control;
+        }
+      in
+      List.iter print_endline
+        (real_clients (Tmux.session_id_of_string "$0")
+           [
+             client "control" "$0" true;
+             client "/dev/ttys001" "$0" false;
+             client "" "$0" false;
+             client "/dev/ttys002" "$1" false;
+           ]);
+      [%expect {| /dev/ttys001 |}]
 
     let model ?(dir = temp ()) ?(clock = ref test_at) () =
       let m =
@@ -781,10 +829,10 @@ let%test_module "Tests" =
       in
       { m with at = !clock }
 
-    let server = Some (1, { Tmux_pane.started_at = 1_700_000_000; pid = 42 })
+    let server = Some (1, { Tmux.started_at = 1_700_000_000; pid = 42 })
     let agent_pane ?run w p title = pane ~window:w ~title ?run p
 
-    let label m (p : Tmux_pane.t) =
+    let label m (p : State.pane) =
       let row = pane_label m (Tmux.Pane_map.find p.pane_id m.pane_data) in
       Printf.sprintf "%S %s" row.title
         (match row.lifecycle with
@@ -798,16 +846,23 @@ let%test_module "Tests" =
               (Option.map_or ~default:"unknown" Run.string_of_result result)
               (Run.string_of_kind run))
 
+    let snap_of ?(l = []) panes =
+      let state = state l panes in
+      { empty with state; visible = state }
+
+    let lingering ~dir pane id =
+      lingering_subagents ~dir
+        (Tmux.Pane_map.singleton (Tmux.pane_id_of_string pane)
+           (Option.get_exn_or "run" (Run.load ~dir (Test_fixture.run_id id))))
+
     let tick ?(m = model ()) snap = fst (track ~prev:m { m with snap = { snap with server } })
 
     let%expect_test "a run ends on death or a recorded outcome, which replaces unknown" =
       let p = agent_pane ~run:"run" "@20" "%30" "helper" in
-      let states = states [ ("%30", ("run", session ~activity:"checking tests" "")) ] in
+      let l = [ ("%30", ("run", session ~activity:"checking tests" "")) ] in
       let snap outcome p =
         {
-          empty with
-          states;
-          panes = with_programs states [ p ];
+          (snap_of ~l [ p ]) with
           lingering =
             String_map.singleton "run"
               { name = "helper"; parent = None; outcome; kind = Agent; started = test_at };
@@ -816,7 +871,7 @@ let%test_module "Tests" =
       List.iter
         (fun (p, outcome) ->
           let snap = snap outcome p in
-          print_endline (label (tick snap) (List.hd snap.panes)))
+          print_endline (label (tick snap) (List.hd snap.state.panes)))
         [ (p, None); ({ p with dead_at = Some 1. }, None); (p, Some Run.Completed) ];
       [%expect
         {|
@@ -828,16 +883,10 @@ let%test_module "Tests" =
     let%expect_test "a run ends with its local pi Run name even after its root was cleared" =
       let dir = temp () in
       let id = new_run ~dir "the run" in
-      let st = states [ ("%30", ("pi-1", { (session "") with name = "Named" })) ] in
+      let st = [ ("%30", ("pi-1", { (session "") with name = "Named" })) ] in
       let p = pane ~window:"@20" ~dead_at:1. ~run:id ~title:"π - pane" "%30" in
       let m =
-        tick ~m:(model ~dir ())
-          {
-            empty with
-            states = st;
-            panes = [ p ];
-            lingering = lingering_subagents ~dir (Run.marked ~dir [ p ]);
-          }
+        tick ~m:(model ~dir ()) { (snap_of ~l:st [ p ]) with lingering = lingering ~dir "%30" id }
       in
       print_endline (label m p);
       [%expect {| "Named" ended unknown run=agent |}]
@@ -845,13 +894,12 @@ let%test_module "Tests" =
     let%expect_test
         "titles: pi name or title, native pane title or app, shell record, app or command" =
       let st =
-        states
-          [ ("%1", ("pi-1", { (session "") with name = "named" })); ("%10", ("pi-2", session "")) ]
+        [ ("%1", ("pi-1", { (session "") with name = "named" })); ("%10", ("pi-2", session "")) ]
       in
       let records json p =
         {
           p with
-          Tmux_pane.program_status =
+          State.program_status =
             Result.get_exn
               (Tmux.Program_status.parse (Printf.sprintf {|{"serial":1,"records":%s}|} json));
         }
@@ -875,9 +923,7 @@ let%test_module "Tests" =
       let m =
         tick
           {
-            empty with
-            states = st;
-            panes;
+            (snap_of ~l:st panes) with
             lingering =
               String_map.singleton "run"
                 { name = "a run"; parent = None; outcome = None; kind = Bash; started = test_at };
@@ -885,7 +931,7 @@ let%test_module "Tests" =
       in
       List.iter
         (fun p ->
-          print_endline (pane_label m (Tmux.Pane_map.find p.Tmux_pane.pane_id m.pane_data)).title)
+          print_endline (pane_label m (Tmux.Pane_map.find p.State.pane_id m.pane_data)).title)
         panes;
       [%expect
         {|
@@ -902,7 +948,7 @@ let%test_module "Tests" =
         |}]
 
     let%expect_test "an outstanding ask outranks a blocked record; several asks take the first" =
-      let st = states [ ("%1", ("pi-1", session "")) ] in
+      let st = [ ("%1", ("pi-1", session "")) ] in
       let p =
         {
           (pane ~title:"agent" "%1") with
@@ -926,7 +972,7 @@ let%test_module "Tests" =
         }
       in
       List.iter
-        (fun asks -> print_endline (label (tick { empty with states = st; panes = [ p ]; asks }) p))
+        (fun asks -> print_endline (label (tick { (snap_of ~l:st [ p ]) with asks }) p))
         [ []; [ ask "A0" "other"; ask "Ab" "pi-1"; ask "Aa" "pi-1" ] ];
       [%expect
         {|
@@ -955,14 +1001,14 @@ let%test_module "Tests" =
               | Terminal { phase = Idle _; _ } -> "debouncing"
               | _ -> "other"))
       in
-      let snap = { empty with client = client "sess"; panes = [ p ] } in
-      let other = Some (1, { Tmux_pane.started_at = 1_700_000_000; pid = 43 }) in
+      let snap = { (snap_of [ p ]) with client = client "sess" } in
+      let other = Some (1, { Tmux.started_at = 1_700_000_000; pid = 43 }) in
       step "first" 0. server snap;
       step "same server" 0.3 server snap;
       step "read error" 0.1 server { snap with err = Some "gone" };
       step "new server" 0.1 other snap;
       step "debounced" 0.3 other snap;
-      step "removed" 0.1 other { snap with panes = [] };
+      step "removed" 0.1 other { (snap_of []) with client = snap.client };
       step "back" 0.1 other snap;
       [%expect
         {|
@@ -987,7 +1033,7 @@ let%test_module "Tests" =
 
     let marked edges =
       List.map
-        (List.map (fun (p : Tmux_pane.t) ->
+        (List.map (fun (p : State.pane) ->
              match
                List.find_opt
                  (fun (pane, _, _) -> String.equal pane (Tmux.string_of_pane_id p.pane_id))
@@ -1094,7 +1140,7 @@ let%test_module "Tests" =
           Printf.printf "%s:%s %s -> %s\n" session window
             (if next then "next" else "prev")
             (Option.map_or ~default:"null"
-               (fun (p : Tmux_pane.t) ->
+               (fun (p : State.pane) ->
                  Tmux.string_of_session_id p.session_id ^ ":" ^ Tmux.string_of_window_id p.window_id)
                target))
         [
@@ -1119,7 +1165,7 @@ let%test_module "Tests" =
             (fun next ->
               print_endline
                 (Option.map_or ~default:"null"
-                   (fun (p : Tmux_pane.t) -> Tmux.string_of_window_id p.window_id)
+                   (fun (p : State.pane) -> Tmux.string_of_window_id p.window_id)
                    (window_target ~next ~session:root.session_id ~window:root.window_id
                       ~lingering:String_map.empty windows)))
             [ true; false ])
@@ -1170,8 +1216,12 @@ let%test_module "Tests" =
       let states, lingering = agents edges in
       let windows =
         windows_in_order
-          (marked edges [ w "201"; w "209"; w "202"; w "203"; w "212" ] |> List.concat)
-          states lingering
+          {
+            State.empty with
+            panes = marked edges [ w "201"; w "209"; w "202"; w "203"; w "212" ] |> List.concat;
+            agents = states;
+          }
+          lingering
       in
       List.iter
         (fun (next, window) ->
@@ -1179,7 +1229,7 @@ let%test_module "Tests" =
             (if next then "next" else "prev")
             window
             (Option.map_or ~default:"-"
-               (fun (p : Tmux_pane.t) -> Tmux.string_of_window_id p.window_id)
+               (fun (p : State.pane) -> Tmux.string_of_window_id p.window_id)
                (window_target ~next ~session:(Tmux.session_id_of_string "$0")
                   ~window:
                     (Tmux.window_id_of_string
@@ -1215,10 +1265,7 @@ let%test_module "Tests" =
       let id = new_run ~dir "subagent" in
       let i = Test_fixture.run_id id in
       let show () =
-        let (l : lingering) =
-          String_map.find id
-            (lingering_subagents ~dir (Run.marked ~dir [ pane ~dead_at:1. ~run:id "%30" ]))
-        in
+        let l = String_map.find id (lingering ~dir "%30" id) in
         Printf.printf "%s %s\n" l.name (Option.map_or ~default:"-" Run.string_of_result l.outcome)
       in
       show ();
@@ -1232,29 +1279,23 @@ let%test_module "Tests" =
 
     let%expect_test
         "same ignores a heartbeat's ts and catches any other change; panes compare by exclusion" =
-      let snap ts =
-        { empty with panes = [ pane "%1" ]; states = states [ ("%1", ("i", session ~ts "")) ] }
-      in
+      let l ts = [ ("%1", ("i", session ~ts "")) ] in
+      let snap ts = snap_of ~l:(l ts) [ pane "%1" ] in
       Printf.printf "ts only: %b\n" (same (snap test_at) (snap (test_at +. 60.)));
-      Printf.printf "status: %b\n"
-        (same (snap test_at)
-           { (snap test_at) with panes = with_programs (snap test_at).states (snap test_at).panes });
+      let s = snap test_at in
+      Printf.printf "holder died: %b\n"
+        (same s { s with state = { s.state with agents = Tmux.Pane_map.empty } });
       let p = pane ~command:"zsh" "%1" in
-      Printf.printf "layout: %b\n"
-        (same { empty with panes = [ p ] }
-           { empty with panes = [ { p with window_layout = "x" } ] });
-      Printf.printf "window name: %b\n"
-        (same { empty with panes = [ p ] } { empty with panes = [ { p with window_name = "x" } ] });
+      let panes p = snap_of [ p ] in
+      Printf.printf "layout: %b\n" (same (panes p) (panes { p with window_layout = "x" }));
+      Printf.printf "window name: %b\n" (same (panes p) (panes { p with window_name = "x" }));
       Printf.printf "exit: %b\n"
-        (same { empty with panes = [ p ] }
-           { empty with panes = [ { p with last_exit = Some { code = 1; at = 1. } } ] });
-      Printf.printf "command: %b\n"
-        (same { empty with panes = [ p ] }
-           { empty with panes = [ { p with current_command = "vim" } ] });
+        (same (panes p) (panes { p with last_exit = Some { code = 1; at = 1. } }));
+      Printf.printf "command: %b\n" (same (panes p) (panes { p with current_command = "vim" }));
       [%expect
         {|
     ts only: true
-    status: false
+    holder died: false
     layout: true
     window name: false
     exit: false

@@ -37,12 +37,20 @@ let kind_of_yojson json =
   | `String s when List.mem_assoc ~eq:String.equal s kinds -> List.assoc ~eq:String.equal s kinds
   | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "kind" json
 
+type optional_id = Tmux.pane_id option
+
+let yojson_of_optional_id = function None -> `String "" | Some id -> Tmux.yojson_of_pane_id id
+
+let optional_id_of_yojson = function
+  | `String "" -> None
+  | json -> Some (Tmux.pane_id_of_yojson json)
+
 type meta = {
   id : id;
   name : string;
   kind : kind;
   parent : id option; [@default None] [@yojson_drop_if Option.is_none]
-  pane : Tmux_pane.optional_id;
+  pane : optional_id;
   pid : int;
   cwd : string;
   model : string; [@default ""] [@yojson_drop_default.equal]
@@ -56,7 +64,7 @@ let label m = if String.is_empty m.name then string_of_id m.id else m.name
 
 type pi = {
   pid : int;
-  pane : Tmux_pane.optional_id;
+  pane : optional_id;
   ts : Timestamp.t;
   inbox : string; [@default ""] [@yojson_drop_default.equal]
   activity : string; [@default ""] [@yojson_drop_default.equal]
@@ -156,13 +164,6 @@ let holder r = Option.filter (fun p -> alive p.pid) r.pi
 
 let name { meta; pi } =
   match pi with Some { name; _ } when not (String.is_empty name) -> name | _ -> meta.name
-
-let display_name panes (s : pi) =
-  if not (String.is_empty s.name) then s.name
-  else
-    Option.map_or ~default:""
-      (fun (p : Tmux_pane.t) -> p.title)
-      (Option.flat_map (Tmux_pane.find panes) s.pane)
 
 let ancestors ~dir m =
   let rec up seen m =
@@ -292,38 +293,26 @@ let save_screen tmux ~dir id pane =
               [ "capture-pane"; "-p"; "-t"; Tmux.string_of_pane_id pane; "-S"; "-1000" ])))
     pane
 
-let marked ~dir panes =
-  List.fold_left
-    (fun m (p : Tmux_pane.t) ->
-      Option.map_or ~default:m
-        (fun r -> Tmux.Pane_map.add p.pane_id r m)
-        (Option.flat_map
-           (fun run -> Option.flat_map (load ~dir) (Result.to_opt (parse_id run)))
-           p.run))
-    Tmux.Pane_map.empty panes
-
-let window_pane ~(runs : t Tmux.Pane_map.t) panes window =
-  List.find_opt
-    (fun (p : Tmux_pane.t) ->
-      Tmux.equal_window_id p.window_id window
-      && Option.is_some p.run
-      &&
-      match Tmux.Pane_map.find_opt p.pane_id runs with
-      | Some { meta = { kind = Pi; _ }; _ } -> false
-      | _ -> true)
-    panes
-
-let agents runs =
-  Tmux.Pane_map.filter_map
-    (fun pane (r : t) ->
-      holder r
-      |> Option.filter (fun (s : pi) -> Option.equal Tmux.equal_pane_id s.pane (Some pane))
-      |> Option.map (Pair.make r.meta.id))
-    runs
-
 let%test_module "Tests" =
   (module struct
     open Test_support
+
+    let%expect_test "optional pane ids use an empty string for none" =
+      List.iter
+        (fun json ->
+          match optional_id_of_yojson json with
+          | id -> print_endline (Yojson.Safe.to_string (yojson_of_optional_id id))
+          | exception Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error (Failure e, _) ->
+              print_endline e)
+        [ `String ""; `String "%0"; `String "%123"; `String "%"; `String "@1"; `Null ];
+      [%expect {|
+    ""
+    "%0"
+    "%123"
+    pane
+    pane
+    pane
+    |}]
 
     let temp () = Filename.temp_dir "kido-state" ""
     let id s = Result.get_exn (parse_id s)

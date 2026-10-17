@@ -216,7 +216,7 @@ decoded UTF-8. Optional app is the record's own app. Consumers inherit app
 from the nearest ancestor with one, including root across missing parents.
 
 Topology is the authoritative source. Every topology read includes
-`#{pane_program_status}` in `Tmux_pane.format` and parses it once into
+`#{pane_program_status}` in `State.format` and parses it once into
 each pane. This applies to control-mode and one-shot views.
 `%program-status` notifications only wake the tick. The tick ignores
 their payload.
@@ -279,7 +279,7 @@ These are display state, not wire state.
 ## Server identity
 
 `server_instance` is tmux's `#{start_time}` and `#{pid}`.
-The model reads it once with `Tmux_pane.server` on its control connection,
+The model reads it once with `Tmux.server` on its control connection,
 and again after each reconnect (`Tmux.Client.dials`).
 
 A failed read keeps the last good identity and topology, sets `error`,
@@ -513,8 +513,8 @@ only feedback.
 
 The handler rewrites the complete session order. It places the source
 beside its anchor in the current order. Every session receives a dense
-rank in one tmux invocation through `Tmux_pane.rank_sessions`.
-That module also reads the rank.
+rank in one tmux invocation, as the `@kido-order` option that
+`State.order_sessions` sorts by.
 
 Window order remains tmux's window index. Only top-level roots of the
 session's tree can move. The handler refuses a grouped session because

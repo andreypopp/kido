@@ -334,7 +334,7 @@ Each location where an id enters the module applies this check:
 
 - `kido run-outcome`
 - `spawn_subagent --resume`
-- A `Tmux_pane.t`'s `run` reader
+- A `State.pane`'s `run` reader
 - A `KIDO_AGENT_RUN_ID` reader
 
 Every function that takes a `Run.id` trusts it. design.md, "Who is
@@ -729,7 +729,7 @@ which kido already resolves. They do not copy the state resolver.
 
 `kido tool async_bash` prints the spawn line with a fourth field: the
 run's output file. kido determines where it keeps a run's output.
-A tool that reconstructs the path would duplicate `State.dir`'s pane
+A tool that reconstructs the path would duplicate `Server_dir.dir`'s pane
 socket derivation and default environment precedence. Thus, the tool's
 single call supplies the path.
 

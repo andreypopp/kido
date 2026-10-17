@@ -135,7 +135,7 @@ These requirements are fixed:
 - **Every stanza compiles with `-open Containers`.** Every `.ml`
   has an `.mli` unless it contains only types or constants. The test-helper modules
   `Sh`, `Test_support`, `Test_fixture`, `View_fixture` and
-  `Tmux_pane_fixture` have no `.mli`.
+  `State_fixture` have no `.mli`.
   Only `tmux.mli` exposes `lib_tmux/program_status.ml`.
 
   JSON uses yojson with ppx_yojson_conv. Equality and comparison use
@@ -248,10 +248,12 @@ Conventions:
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
       tmux_vars.ml     names of kido's tmux user options and environment variables
-      tmux_pane.ml     kido's pane view, topology reads, ordering, navigation and run marks
+      state.ml         the pane view and its one read: every pane, the runs
+                       their marks name and their live agents; ordering,
+                       navigation, a window's run pane and agent display names
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON
-      state.ml         the server state directory and socket
+      server_dir.ml    the server state directory and socket
       pane_kind.ml     pane classification, titles and agent display names
       stall.ml         heartbeat staleness and the wake marker
       reporting.ml     kido agent-status: the claim of a pi's run
@@ -274,7 +276,7 @@ Conventions:
                        one subcommand or family each
       fs.ml, timestamp.ml  files, paths, executable lookup, time;
                        Fs is the shared kido_fs library used by kido and tmux
-      test_fixture.ml, test_support.ml, view_fixture.ml, tmux_pane_fixture.ml, sh.ml
+      test_fixture.ml, test_support.ml, view_fixture.ml, state_fixture.ml, sh.ml
                        shared inline-test scaffolding
       test/            test_tool_parity.ml, the built-binary exception
       test/tmux_server/  the Client and pane-read tests against a real tmux, run only with $KIDO_TMUX
@@ -335,7 +337,7 @@ The launcher, `kido server`, `rpc` and `switch-session/window`
 accept `--server DIR`. `switch-window` prints nothing.
 A server is its state directory. Its socket is `<dir>/socket`.
 
-`State.dir` resolves the default. Inside a pane, `$TMUX` has priority
+`Server_dir.dir` resolves the default. Inside a pane, `$TMUX` has priority
 if its socket is named `socket` and `server.conf` exists beside it.
 Otherwise, the order is:
 
@@ -456,7 +458,7 @@ Consequences:
 - **These are hooks only.** No control-mode notification exists for them.
   kido reads the `#{pane_command_*}` formats when it polls.
   Do not search for `%pane-command-started`.
-- **Timestamps are whole seconds.** `Tmux_pane.shell` compares
+- **Timestamps are whole seconds.** `State.shell` compares
   `last_prompt > command_start`. A tie resolves to *running*.
   A false idle when a command starts is the worse error.
 - **`cmd_status` is cleared on `C`,** so the last exit code is absent
@@ -464,7 +466,7 @@ Consequences:
   from one read. It keeps this as the Idle phase's `last` until the
   next command is promoted to running.
 
-`Tmux_pane.shell` also corrects a stuck flag.
+`State.shell` also corrects a stuck flag.
 A `C` with no `D` leaves `PANE_CMDRUNNING` set.
 A later prompt's `A` makes `shell` report idle without clearing the flag.
 Each of these two fork changes would remove a workaround:
@@ -519,17 +521,17 @@ The sidebar uses it to decide whether a program has taken the terminal.
   `automatic-rename` can read a transient process name.
   Rename the window to a fixed name. This turns `automatic-rename` off.
 
-## Format-string invariants (`lib/tmux_pane.ml`)
+## Format-string invariants (`lib/state.ml`)
 
-`Tmux_pane.format` joins fields with `\x1f`.
-`Tmux_pane.parse` parses them by position.
+`State.format` joins fields with `\x1f`.
+`State.parse` parses them by position.
 
 - `#{pane_title}` stays **last** because it can contain anything.
 - `pane_command_duration` is deliberately **absent**.
   It changes every second and would redraw the sidebar once a second forever.
-- If you add a field, increase `Tmux_pane.fields`.
+- If you add a field, increase `State.fields`.
   Both the split count and the short-line guard in `parse_line` read it.
-  The inline "field count pinned" test in `lib/tmux_pane.ml` connects
+  The inline "field count pinned" test in `lib/state.ml` connects
   the two. The "fixture generated from the format" test checks a
   case that the "parse:" test misses. The manually typed fixture in
   the "parse:" test still passes if it omits a new field.
@@ -590,8 +592,8 @@ replaces the whole file. There is **no locking**. Policy resolves races:
   overwrites a live session.
 - Only a pi with a UI claims a run. A headless pi claims nothing.
 - **A pane's agent is its `@kido_run`.** The claim marks its pane.
-  `Run.agents` accepts a mark only if the run's `pi.json` names that
-  pane and a live pid. Thus, a stale mark is no agent.
+  `State.read` accepts a mark as an agent only if the run's `pi.json`
+  names that pane and a live pid at the read. Thus, a stale mark is no agent.
 - **The kind decides collection.** `Reap.sweep` and `kido prompt`
   read the marked run's meta. A `pi` run is never collected, and its
   window stays a prompt candidate.
@@ -842,11 +844,11 @@ Never delete one half of a pair.
   and `TestKidoSSHPrimesARemoteShell` in
   `test_e2e/ssh_prime_test.go`.
 - **`Sidebar.same` compares panes by exclusion.**
-  A new `Tmux_pane.t` field participates in equality unless its local
+  A new `State.pane` field participates in equality unless its local
   `drawn` blanks it.
   Failure causes extra redraws, which is the safe direction.
 - **A window's panes are ordered oldest first**, by pane id number
-  (`Tmux_pane.order_sessions`).
+  (`State.order_sessions`).
   This is not list-panes layout order: `split-window
   -b` puts a new pane first.
   The tree, the group glyph's row 0, `kido switch-session` and
@@ -866,7 +868,7 @@ Never delete one half of a pair.
   `Kido_sidebar.lines` builds tree prefixes before the indicator column.
 - **A standalone kido finds its client from a filtered count.**
   `#{client_name}` from a popup is unanswerable.
-  `Tmux_pane.resolve_client` checks who is attached to the pane's session.
+  `Sidebar.resolve_client` checks who is attached to the pane's session.
   It ignores kido's control-mode connections, one per real client.
   It reads control mode from its boolean, not an empty tty.
   A read-only client also has an empty tty.
@@ -889,7 +891,9 @@ Never delete one half of a pair.
 These rules apply to every agent that kido spawns into this repo.
 A brief does not repeat them.
 
-- **Do the task yourself.** Do not spawn subagents.
+- **Do the task yourself.** Do not spawn subagents, except the four
+  read-only reviewers of a simplify pass, one angle each, so that review
+  has fresh context.
   Do not call `ask_agent`.
   Nobody waits for a question.
 - **No git writes.** Do not commit, push, reset, add, checkout or stash.

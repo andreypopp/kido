@@ -157,7 +157,7 @@ let run ~dir ~env ~inside =
   | Some (e : Tmux.env) ->
       Error (Printf.sprintf "already inside tmux (%s); run kido from a plain terminal" e.socket)
   | None -> (
-      let* socket = State.server_socket ~create:true ~dir in
+      let* socket = Server_dir.server_socket ~create:true ~dir in
       let bin = Lazy.force Tmux.binary in
       match probe_server ~socket bin with
       | Mismatch -> Error (mismatch ~socket bin)
@@ -168,7 +168,7 @@ let run ~dir ~env ~inside =
 
 let ensure ~dir ~env =
   let open Result.Infix in
-  let* socket = State.server_socket ~create:true ~dir in
+  let* socket = Server_dir.server_socket ~create:true ~dir in
   let bin = Lazy.force Tmux.binary in
   let resolve server =
     let tmux =

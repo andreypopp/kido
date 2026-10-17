@@ -34,7 +34,17 @@ let agent_status ~dir ~pane ~id ~session_file ~inbox ~activity ~model ~name =
     { pid; pane; ts = now; inbox; activity = one_line activity ~max:256; model; name; session_file }
   |> Result.map (fun () ->
       Option.iter
-        (fun pane -> ignore (Tmux_pane.mark_run (Tmux.create ()) pane (Run.string_of_id id)))
+        (fun pane ->
+          ignore
+            (Tmux.run (Tmux.create ())
+               [
+                 "set-option";
+                 "-p";
+                 "-t";
+                 Tmux.string_of_pane_id pane;
+                 Tmux_vars.run;
+                 Run.string_of_id id;
+               ]))
         pane)
 
 let set_activity ~dir (id, (s : Run.pi)) activity =

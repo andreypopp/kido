@@ -19,7 +19,7 @@ kido classifies a pane with these sources:
 
 tmux puts the OSC 7501 payload in the per-pane variable
 `#{pane_program_status}`. Topology is the authoritative source.
-Every topology read includes this variable in `Tmux_pane.format` and
+Every topology read includes this variable in `State.format` and
 parses it once into the pane. This applies to control-mode and one-shot
 views. `%program-status` notifications only wake the tick.
 kido ignores their payload.

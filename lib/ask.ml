@@ -128,17 +128,17 @@ let remove ~dir ~self id =
           Ok ()
       | exception Unix.Unix_error (ENOENT, _, _) -> Error ("no ask " ^ id))
 
-let name ~panes run =
+let name ~state run =
   match (Option.flat_map Run.holder run, run) with
-  | Some pi, _ -> Run.display_name panes pi
+  | Some pi, _ -> State.display_name state pi
   | None, Some r -> Run.name r
   | None, None -> ""
 
-let to_json ~panes ask run =
+let to_json ~state ask run =
   Yojson.Safe.Util.combine (yojson_of_t ask)
     (`Assoc
        [
-         ("name", `String (name ~panes run));
+         ("name", `String (name ~state run));
          ("ended", `Bool (Option.is_none (Option.flat_map Run.holder run)));
        ])
 

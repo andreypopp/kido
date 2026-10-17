@@ -11,8 +11,8 @@ let async_bash ~dir ~self ~caller ~exe ~name ~stream (command, rest) =
   let argv = if List.is_empty rest then [ "bash"; "-c"; command ] else args in
   let name = if String.is_empty name then derived_name command else name in
   let* () = Run_window.check_name name in
-  let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let* pane = Tmux_pane.caller_pane panes self in
+  let* state = State.read ~dir (Tmux.create ()) in
+  let* pane = State.caller_pane state self in
   let id = Run.new_id () in
   Run.create ~dir id (String.concat " " args);
   Run.write_command ~dir id argv;

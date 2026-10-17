@@ -36,32 +36,32 @@ type agent_info = {
 }
 [@@deriving yojson_of]
 
-let agents ~dir ~threshold ~self ~caller ~session ~panes =
+let agents ~dir ~threshold ~self ~caller ~session ~state:({ runs; agents; _ } as state : State.t) =
   let open Result.Infix in
   let+ session =
     match session with
     | Some session -> Ok session
     | None -> (
-        match Option.flat_map (Tmux_pane.find panes) self with
+        match Option.flat_map (State.find state) self with
         | Some p -> Ok p.session_id
         | None ->
             Error
               (Printf.sprintf "no tmux session for pane %S; pass --session"
                  (Option.map_or ~default:"" string_of_pane_id self)))
   in
-  let wake = Stall.wake ~dir and now = Timestamp.now () and runs = Run.marked ~dir panes in
-  Pane_map.bindings (Run.agents runs)
+  let wake = Stall.wake ~dir and now = Timestamp.now () in
+  Pane_map.bindings agents
   |> List.filter_map (fun (pane, (id, (s : Run.pi))) ->
-      Tmux_pane.find panes pane
-      |> Option.filter (fun (p : Tmux_pane.t) -> equal_session_id session p.session_id)
+      State.find state pane
+      |> Option.filter (fun (p : State.pane) -> equal_session_id session p.session_id)
       |> Option.map (fun p -> (id, s, p, (Pane_map.find pane runs).meta)))
   |> List.sort (fun (a, (sa : Run.pi), _, _) (b, (sb : Run.pi), _, _) ->
       match Float.compare sa.ts sb.ts with 0 -> Run.compare_id a b | c -> c)
-  |> List.map (fun (id, (s : Run.pi), (p : Tmux_pane.t), (m : Run.meta)) ->
+  |> List.map (fun (id, (s : Run.pi), (p : State.pane), (m : Run.meta)) ->
       let root = Program_status.root p.program_status in
       {
         id;
-        name = Run.display_name panes s;
+        name = State.display_name state s;
         named = not (String.is_empty s.name);
         pane = p.pane_id;
         window = p.window_id;
@@ -86,9 +86,9 @@ type row =
   | Parent of agent_info
   | Own of { run : Run_history.info; agent : agent_info option; window : Tmux.window_id option }
 
-let list_runs ~dir ~threshold ~self ~caller ~session ~panes =
+let list_runs ~dir ~threshold ~self ~caller ~session ~(state : State.t) =
   let open Result.Infix in
-  let+ agents = agents ~dir ~threshold ~self ~caller ~session ~panes in
+  let+ agents = agents ~dir ~threshold ~self ~caller ~session ~state in
   let own = Option.filter (fun _ -> List.exists (fun a -> a.self) agents) caller in
   let parent = Option.flat_map (fun a -> a.parent) (List.find_opt (fun a -> a.self) agents) in
   let visible =
@@ -125,8 +125,8 @@ let list_runs ~dir ~threshold ~self ~caller ~session ~panes =
                 agent = List.find_opt (fun a -> Run.equal_id a.id r.meta.id) agents;
                 window =
                   Option.map
-                    (fun (p : Tmux_pane.t) -> p.window_id)
-                    (Option.flat_map (Tmux_pane.find panes) r.meta.pane);
+                    (fun (p : State.pane) -> p.window_id)
+                    (Option.flat_map (State.find state) r.meta.pane);
               })
   in
   visible @ runs
@@ -149,7 +149,7 @@ let yojson_of_row row =
                 ("id", Run.yojson_of_id m.id);
                 ("name", `String (Option.map_or ~default:m.name (fun a -> a.name) a));
                 ("named", `Bool false);
-                ("pane", Tmux_pane.yojson_of_optional_id m.pane);
+                ("pane", Run.yojson_of_optional_id m.pane);
                 ("window", `String (Option.map_or ~default:"" string_of_window_id window));
                 ("parent", yojson_of_parent m.parent);
                 ("cwd", `String m.cwd);

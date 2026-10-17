@@ -26,7 +26,7 @@ val agents :
   self:Tmux.pane_id option ->
   caller:Run.id option ->
   session:Tmux.session_id option ->
-  panes:Tmux_pane.t list ->
+  state:State.t ->
   (agent_info list, string) result
 
 type row [@@deriving yojson_of]
@@ -37,5 +37,5 @@ val list_runs :
   self:Tmux.pane_id option ->
   caller:Run.id option ->
   session:Tmux.session_id option ->
-  panes:Tmux_pane.t list ->
+  state:State.t ->
   (row list, string) result

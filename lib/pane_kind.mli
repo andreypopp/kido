@@ -6,5 +6,5 @@ type t =
 
 and ssh_kind = Remote_terminal | Remote_agent of { name : string }
 
-val classify : states:(Run.id * Run.pi) Tmux.Pane_map.t -> Tmux_pane.t -> t
-val title : Tmux_pane.t -> t -> string option
+val classify : states:(Run.id * Run.pi) Tmux.Pane_map.t -> State.pane -> t
+val title : State.pane -> t -> string option

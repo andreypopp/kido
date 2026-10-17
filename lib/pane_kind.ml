@@ -6,7 +6,7 @@ type t =
 
 and ssh_kind = Remote_terminal | Remote_agent of { name : string }
 
-let classify ~states (p : Tmux_pane.t) =
+let classify ~states (p : State.pane) =
   let app =
     Tmux.Program_status.root p.program_status
     |> Option.flat_map (fun (r : Tmux.Program_status.record) -> r.app)
@@ -26,16 +26,16 @@ let classify ~states (p : Tmux_pane.t) =
   | _, _, Some "claude-code" -> Some_agent { name = "claude-code" }
   | _ -> Terminal
 
-let title (p : Tmux_pane.t) = function
+let title (p : State.pane) = function
   | Ssh { pane = Remote_terminal; _ } -> None
   | Some_agent { name } | Ssh { pane = Remote_agent { name }; _ } ->
       Some (if String.is_empty p.title then name else p.title)
   | Terminal -> None
-  | Pi_agent { pi; _ } -> Some (Run.display_name [ p ] pi)
+  | Pi_agent { pi; _ } -> Some (State.display_name { State.empty with panes = [ p ] } pi)
 
 let%test_module "Tests" =
   (module struct
-    open Tmux_pane_fixture
+    open State_fixture
 
     let%expect_test "only a root app identifies a pane" =
       let p = pane ~cmd:"pi" "%1" in

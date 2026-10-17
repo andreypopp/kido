@@ -46,7 +46,8 @@ func TestSidebarIgnoresAPopup(t *testing.T) {
 // An RPC feed started while a popup stands reports the pane under the
 // popup as its client's: that is a picker's own case, run inside the
 // popup it opened. With the popup's pane dropped and nothing active in its
-// place, the feed would know no client pane.
+// place, the feed would know no client pane. Like the sidebar, the feed
+// lists no row for the popup.
 func TestSidebarFeedDrawsUnderAPopup(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -56,6 +57,9 @@ func TestSidebarFeedDrawsUnderAPopup(t *testing.T) {
 
 	openPopup(h)
 
-	h.startFeed("alpha").waitLast(func(s feedSnapshot) bool { return s.Client.Pane == under },
+	s := h.startFeed("alpha").waitLast(func(s feedSnapshot) bool { return s.Client.Pane == under },
 		"the client's pane under the popup")
+	if rows := s.drawn(); len(rows) != 3 || hasLine(rows, "sleep") {
+		t.Fatalf("feed rows with a popup open: %q, want alpha and its two panes, no popup", rows)
+	}
 }

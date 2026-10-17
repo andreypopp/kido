@@ -23,6 +23,11 @@ let control_clients () =
   |> String.lines
   |> List.filter (String.prefix ~pre:"1 ")
 
+let read_panes conn =
+  Result.map
+    (fun (s : Kido.State.t) -> s.panes)
+    (Kido.State.read ~dir:(Filename.get_temp_dir_name ()) (Tmux.Client.tmux conn))
+
 let probe () =
   Sys.set_signal Sys.sigpipe Signal_ignore;
   let conn = Tmux.Client.connect (Tmux.create ()) ~client:"" in
@@ -30,10 +35,10 @@ let probe () =
   show (Tmux.exec (Tmux.Client.tmux conn) [ "display-message"; "-p"; "it's #{session_name}" ]);
   show (Tmux.exec (Tmux.Client.tmux conn) [ "bogus" ]);
   List.iter
-    (fun (p : Kido.Tmux_pane.t) ->
+    (fun (p : Kido.State.pane) ->
       Printf.printf "pane %s %s %s\n" p.session_name (string_of_window_id p.window_id)
         (string_of_pane_id p.pane_id))
-    (Result.get_exn (Kido.Tmux_pane.list_panes (Tmux.Client.tmux conn)));
+    (Result.get_exn (read_panes conn));
   Printf.printf "a fresh connection notifies: %b\n"
     Float.(elapsed (fun () -> Tmux.Client.await_notifications conn ~timeout:5.) < 1.);
   let quiet = elapsed (fun () -> Tmux.Client.await_notifications conn ~timeout:0.3) in
@@ -58,14 +63,13 @@ let probe () =
   show (Tmux.exec (Tmux.Client.tmux conn) [ "run-shell"; "sleep 3" ]);
   show (Tmux.exec (Tmux.Client.tmux conn) [ "display-message"; "-p"; "stuck" ]);
   show (Tmux.exec (Tmux.Client.tmux conn) [ "display-message"; "-p"; "gap" ]);
-  Printf.printf "panes through the fallback: %d\n"
-    (List.length (Result.get_exn (Kido.Tmux_pane.list_panes (Tmux.Client.tmux conn))));
+  Printf.printf "panes through the fallback: %d\n" (List.length (Result.get_exn (read_panes conn)));
   Unix.sleepf 0.25;
   show (Tmux.exec (Tmux.Client.tmux conn) [ "display-message"; "-p"; "back" ]);
   Printf.printf "control clients after the redial: [%s]\n" (String.concat "; " (control_clients ()));
   ignore (tmux [ "kill-server" ]);
   show (Tmux.exec (Tmux.Client.tmux conn) [ "display-message"; "-p"; "gone" ]);
-  (match Kido.Tmux_pane.list_panes (Tmux.Client.tmux conn) with
+  (match read_panes conn with
   | Ok _ -> print_endline "fallback without a server: panes"
   | Error _ -> print_endline "fallback without a server: failed");
   Tmux.Client.close conn;

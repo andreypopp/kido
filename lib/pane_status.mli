@@ -51,10 +51,10 @@ val observe :
   now:float ->
   ask:Ask.id option ->
   stalled:bool ->
-  Tmux_pane.t ->
+  State.pane ->
   Pane_kind.t ->
   track option ->
   track * kind
 
 val pending : track -> bool
-val label : track -> Tmux_pane.t -> string
+val label : track -> State.pane -> string

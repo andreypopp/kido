@@ -172,8 +172,8 @@ let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | 
 
 let spawn ~dir ~self ~caller ~path req =
   let open Result.Infix in
-  let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let* pane = Tmux_pane.caller_pane panes self in
+  let* state = State.read ~dir (Tmux.create ()) in
+  let* pane = State.caller_pane state self in
   let parent = if req.no_parent then None else Option.map fst caller in
   let depth =
     Option.map_or ~default:0
@@ -294,10 +294,10 @@ let spawn ~dir ~self ~caller ~path req =
   | Resume _ -> ());
   let+ line = Run_window.create ~start ~dir meta ~session:pane.session_id command in
   Option.iter
-    (fun (old : Tmux_pane.t) ->
+    (fun (old : State.pane) ->
       Result.iter
         (fun c -> ignore (Reap.release (Tmux.create ()) c))
-        (Reap.decide ~runs:(Run.marked ~dir panes) panes old.window_id))
-    (Option.flat_map (Tmux_pane.find panes)
+        (Reap.decide state old.window_id))
+    (Option.flat_map (State.find state)
        (Option.filter (fun _ -> match start with Fresh_start -> false | _ -> true) meta.pane));
   line

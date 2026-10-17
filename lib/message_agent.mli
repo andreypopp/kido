@@ -14,7 +14,7 @@ val reaches : dir:string -> caller:Run.id option -> Run.id -> bool
 
 val resolve :
   dir:string ->
-  panes:Tmux_pane.t list ->
+  state:State.t ->
   self:Tmux.pane_id option ->
   caller:(Run.id * Run.pi) option ->
   recipient ->
@@ -23,7 +23,7 @@ val resolve :
 val deliver :
   dir:string ->
   caller:(Run.id * Run.pi) option ->
-  panes:Tmux_pane.t list ->
+  state:State.t ->
   self:Tmux.pane_id option ->
   spec ->
   Run.id * Run.pi ->

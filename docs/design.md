@@ -60,7 +60,7 @@ The kind in the run's meta makes this decision, not the mark alone. A
 `pi` run is never collected. `kido prompt` does not skip a window whose
 mark names a `pi` run.
 
-**The runs directory, for everything else.** `State.dir` resolves the
+**The runs directory, for everything else.** `Server_dir.dir` resolves the
 server's state directory once at the command boundary. It uses this
 order:
 
@@ -110,7 +110,7 @@ otherwise. Otherwise, `Pane_kind.classify` classifies a pane as:
 - `Terminal`: any other case.
 
 A pane run is the run that `@kido_run` names, if its `pi.json` names
-this pane and a live pid (`Run.agents`). A mark that a moved session
+this pane and a live pid when `State.read` reads it (`State.t.agents`). A mark that a moved session
 left in another pane is thus no agent. One pane has at most one pane
 run, so no rule picks between two records of one pane.
 
@@ -983,11 +983,16 @@ to print. `kido close-run` parses flags and prints around that one call.
 
 **The sweep.** `Reap.sweep` runs at every sidebar poll tick. It collects
 subagent windows in a live session. `kido reap` calls the same function
-manually, for a test or operator. The sweep uses the pane list and the
-marked panes' runs (`Run.marked`) of the sidebar snapshot from
-`Sidebar.take`, through `Reap.collect`. The tick reads each marked run
-once and shares it with the rows; only a parent that no pane marks is
-read again.
+manually, for a test or operator. The sweep uses the sidebar snapshot's
+`State.t` from `Sidebar.take`, through `Reap.collect`: every pane and
+the runs that their marks name and their live agents, from one
+`State.read`. The tick reads each marked run and its holder's liveness
+once and shares them with the rows; only a parent that is no live
+agent is read again. Thus, a holder's death between two ticks is a
+change. The state keeps modal panes. The sweep acts only on the pane of
+a run that kido started in its own window, never a modal pane.
+`Sidebar.take` filters modal panes out once, into the snapshot's
+`visible`, which the rows and the feed read.
 
 Several sidebars, one per client, can sweep simultaneously. A sidebar
 can ask tmux to close a window another sidebar already closed. This
@@ -1157,7 +1162,7 @@ See `design-subagents.md`, "Idle self-exit".
 **A window a client is looking at is not reaped out from under them.**
 Before shutdown, the timer calls `kido get-window <id>`. It prints
 `{"id": ID, "focused": bool}`, with false for a missing window.
-This uses `Tmux_pane.window_focused`, like `kido close-run` and the
+This uses `State.window_focused`, like `kido close-run` and the
 sweep. If focused, the timer rearms instead of exiting. The sweep also
 checks again on its next pass. Collection occurs after the user looks
 away.
@@ -1745,7 +1750,7 @@ that window's second pane. The group glyph does not hide its window
 relationship. Window rows run from oldest pane to newest, by numeric
 pane id. tmux allocates these numbers monotonically. `list-panes`
 uses layout order, and `split-window -b` places a new pane above an
-older pane. `Tmux_pane.order_sessions` sorts once, so all readers agree
+older pane. `State.order_sessions` sorts once, so all readers agree
 on row 0.
 
 A window nested under a parent's pane does not follow tmux window order.
@@ -1947,7 +1952,7 @@ UTF-8 does not depend on the invoking locale.
 
 `kido --server DIR`, `kido server --server DIR`, and outside-pane helpers
 explicitly select the directory. Without this option, they use
-`State.dir`. Inside a pane, it uses the socket's dirname from `$TMUX`
+`Server_dir.dir`. Inside a pane, it uses the socket's dirname from `$TMUX`
 if the basename is `socket` and `server.conf` exists beside it. The
 config marker distinguishes kido from a plain tmux socket named `socket`.
 

@@ -1,41 +1,607 @@
-let dir () =
-  let socket =
-    Option.flat_map Tmux.env_of_string (Sys.getenv_opt "TMUX")
-    |> Option.map (fun (e : Tmux.env) -> e.socket)
-    |> Option.filter (fun s ->
-        String.equal (Filename.basename s) "socket"
-        && Sys.file_exists (Filename.concat (Filename.dirname s) "server.conf"))
+open Tmux
+
+type exit = { code : int; at : float }
+
+type pane = {
+  session_name : string;
+  session_id : session_id;
+  session_created : float;
+  session_order : int option;
+  window_index : int;
+  window_id : window_id;
+  window_name : string;
+  window_layout : string;
+  pane_id : pane_id;
+  active : bool;
+  pane_active : bool;
+  pane_pid : int;
+  current_command : string;
+  current_path : string;
+  alternate_on : bool;
+  command_running : bool;
+  command_start : float option;
+  last_prompt : float option;
+  last_exit : exit option;
+  command_line : string;
+  dead_at : float option;
+  run : string option;
+  ssh : (string * string) option;
+  session_attached : bool;
+  modal : bool;
+  program_status : Program_status.t;
+  title : string;
+}
+
+type shell = Unintegrated | Idle | Running
+
+let shell p =
+  match (p.last_prompt, p.command_start) with
+  | None, _ -> Unintegrated
+  | Some prompt, Some start when p.command_running && Float.(prompt <= start) -> Running
+  | Some _, _ -> Idle
+
+let sep = "\x1f"
+
+let format =
+  (* While a popup is open, the fork makes it active and the covered pane pane_last. *)
+  let pane_active = "#{?#{window_modal_pane},#{pane_last},#{pane_active}}" in
+  String.concat sep
+    [
+      "#{session_name}";
+      "#{session_id}";
+      "#{session_created}";
+      "#{window_index}";
+      "#{window_id}";
+      "#{window_name}";
+      "#{window_layout}";
+      "#{pane_id}";
+      "#{&&:#{window_active}," ^ pane_active ^ "}";
+      "#{pane_pid}";
+      "#{pane_current_command}";
+      "#{pane_current_path}";
+      "#{alternate_on}";
+      "#{pane_command_running}";
+      "#{pane_command_start_time}";
+      "#{pane_last_prompt_time}";
+      "#{pane_command_status}";
+      "#{pane_command_end_time}";
+      "#{pane_command_line}";
+      "#{pane_dead}";
+      "#{pane_dead_time}";
+      "#{session_attached}";
+      "#{" ^ Tmux_vars.run ^ "}";
+      pane_active;
+      "#{" ^ Tmux_vars.ssh ^ "}";
+      "#{pane_program_status}";
+      "#{pane_modal_flag}";
+      "#{" ^ Tmux_vars.order ^ "}";
+      "#{pane_title}";
+    ]
+
+let fields = 29
+let int s = Option.get_or ~default:0 (int_of_string_opt s)
+let time s = match int s with 0 -> None | n -> Some (Float.of_int n)
+
+let parse_line line =
+  let rec split n from =
+    match String.index_from_opt line from sep.[0] with
+    | Some i when n > 1 -> String.sub line from (i - from) :: split (n - 1) (i + 1)
+    | _ -> [ String.sub line from (String.length line - from) ]
   in
-  match socket with
-  | Some socket -> Filename.dirname socket
-  | None -> (
-      match (Sys.getenv_opt "KIDO_STATE_DIR", Sys.getenv_opt "XDG_STATE_HOME") with
-      | Some d, _ when not (String.is_empty d) -> d
-      | _, Some x when not (String.is_empty x) -> Filename.concat x "kido"
-      | _ -> Filename.concat (Sys.getenv "HOME") ".local/state/kido")
+  match Array.of_list (split fields 0) with
+  | f when Array.length f < fields -> None
+  | f ->
+      let program_status =
+        Result.get_or ~default:Program_status.empty (Program_status.parse f.(25))
+      in
+      Some
+        {
+          session_name = f.(0);
+          session_id = session_id_of_string f.(1);
+          session_created = Float.of_int (int f.(2));
+          session_order =
+            Option.filter
+              (fun n -> String.equal (string_of_int n) f.(27))
+              (int_of_string_opt f.(27));
+          window_index = int f.(3);
+          window_id = window_id_of_string f.(4);
+          window_name = f.(5);
+          window_layout = f.(6);
+          pane_id = pane_id_of_string f.(7);
+          active = String.equal f.(8) "1";
+          pane_pid = int f.(9);
+          current_command = f.(10);
+          current_path = f.(11);
+          alternate_on = String.equal f.(12) "1";
+          command_running = String.equal f.(13) "1";
+          command_start = time f.(14);
+          last_prompt = time f.(15);
+          last_exit =
+            Option.map
+              (fun code -> { code; at = Float.of_int (int f.(17)) })
+              (int_of_string_opt f.(16));
+          command_line = f.(18);
+          dead_at = (if String.equal f.(19) "1" then time f.(20) else None);
+          session_attached = not (String.equal f.(21) "" || String.equal f.(21) "0");
+          run = (if String.is_empty f.(22) then None else Some f.(22));
+          pane_active = String.equal f.(23) "1";
+          ssh =
+            (match String.rindex_opt f.(24) '@' with
+            | Some i when i > 0 && i < String.length f.(24) - 1 ->
+                Some
+                  (String.sub f.(24) 0 i, String.sub f.(24) (i + 1) (String.length f.(24) - i - 1))
+            | _ -> None);
+          program_status;
+          modal = String.equal f.(26) "1";
+          title = f.(28);
+        }
 
-let check_dir ~dir =
-  match Unix.lstat dir with
-  | st
-    when Stdlib.(st.st_kind <> Unix.S_DIR)
-         || st.st_uid <> Unix.getuid ()
-         || st.st_perm land 0o077 <> 0 ->
-      Error
-        (Printf.sprintf
-           "unsafe server directory %S: must be a directory owned by the user and inaccessible to \
-            group and others (mode 0700)"
-           dir)
-  | _ -> Ok ()
-  | exception Unix.Unix_error (ENOENT, _, _) -> Ok ()
+let parse lines = List.filter_map parse_line lines
 
-let server_socket ~create ~dir =
-  let socket = Filename.concat dir "socket" in
-  if String.contains dir ',' then
-    Error (Printf.sprintf "server directory %S must not contain a comma" dir)
-  else if String.length socket > Fs.sun_path_max then
-    Error
-      (Printf.sprintf "server socket path %S is too long (maximum %d bytes)" socket Fs.sun_path_max)
-  else begin
-    if create then Fs.mkdir_p ~perm:0o700 dir;
-    Result.map (fun () -> socket) (check_dir ~dir)
-  end
+type t = { panes : pane list; runs : Run.t Pane_map.t; agents : (Run.id * Run.pi) Pane_map.t }
+
+let read ~dir tmux =
+  Result.map
+    (fun lines ->
+      let panes = parse lines in
+      let runs =
+        List.fold_left
+          (fun m p ->
+            Option.map_or ~default:m
+              (fun r -> Pane_map.add p.pane_id r m)
+              (Option.flat_map
+                 (fun run -> Option.flat_map (Run.load ~dir) (Result.to_opt (Run.parse_id run)))
+                 p.run))
+          Pane_map.empty panes
+      in
+      {
+        panes;
+        runs;
+        agents =
+          Pane_map.filter_map
+            (fun pane (r : Run.t) ->
+              Run.holder r
+              |> Option.filter (fun (s : Run.pi) -> Option.equal equal_pane_id s.pane (Some pane))
+              |> Option.map (Pair.make r.meta.id))
+            runs;
+      })
+    (Tmux.list_panes tmux ~format)
+
+let empty = { panes = []; runs = Pane_map.empty; agents = Pane_map.empty }
+let find t id = List.find_opt (fun p -> equal_pane_id p.pane_id id) t.panes
+
+let caller_pane t self =
+  Option.to_result
+    (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" string_of_pane_id self))
+    (Option.flat_map (find t) self)
+
+let display_name t (s : Run.pi) =
+  if not (String.is_empty s.name) then s.name
+  else Option.map_or ~default:"" (fun p -> p.title) (Option.flat_map (find t) s.pane)
+
+let find_window_run t window =
+  List.find_opt
+    (fun p ->
+      equal_window_id p.window_id window
+      &&
+      match Pane_map.find_opt p.pane_id t.runs with
+      | Some { meta = { kind = Agent | Bash | Stream; _ }; _ } -> true
+      | Some { meta = { kind = Pi; _ }; _ } | None -> false)
+    t.panes
+
+type session = { name : string; id : session_id; windows : pane list list }
+
+let order_sessions t =
+  let add groups p =
+    let mine, others =
+      List.partition (fun (first, _) -> String.equal first.session_name p.session_name) groups
+    in
+    let first, windows = match mine with [ g ] -> g | _ -> (p, []) in
+    match windows with
+    | (q :: _ as w) :: ws when equal_window_id q.window_id p.window_id ->
+        (first, (p :: w) :: ws) :: others
+    | ws -> (first, [ p ] :: ws) :: others
+  in
+  List.fold_left add [] t.panes
+  |> List.sort (fun (a, _) (b, _) ->
+      match (a.session_order, b.session_order) with
+      | Some x, Some y when x <> y -> Int.compare x y
+      | Some _, None -> -1
+      | None, Some _ -> 1
+      | _ -> (
+          match Float.compare a.session_created b.session_created with
+          | 0 -> String.compare a.session_name b.session_name
+          | c -> c))
+  |> List.map (fun (first, windows) ->
+      let by_age = List.sort (fun a b -> compare_pane_id a.pane_id b.pane_id) in
+      { name = first.session_name; id = first.session_id; windows = List.rev_map by_age windows })
+
+let in_window window_id p = equal_window_id p.window_id window_id
+
+let window_focused t window_id =
+  List.exists (fun p -> in_window window_id p && p.active && p.session_attached) t.panes
+
+let last_window t window_id =
+  match List.find_opt (in_window window_id) t.panes with
+  | None -> false
+  | Some { session_id; _ } ->
+      List.filter (fun p -> equal_session_id p.session_id session_id) t.panes
+      |> List.map (fun p -> p.window_id)
+      |> List.uniq ~eq:equal_window_id |> List.length <= 1
+
+let last_pane t window_id = List.count (in_window window_id) t.panes <= 1
+
+let active_pane t session =
+  List.find_map
+    (fun p -> if String.equal p.session_name session && p.active then Some p.pane_id else None)
+    t.panes
+
+let%test_module "Tests" =
+  (module struct
+    let pane ?(session = "a") ?(created = 100.) ?order ?(session_id = "$0") ?(index = 0)
+        ?(window = "@1") ?(active = false) ?(attached = false) ?(running = false) ?start ?prompt
+        ?run ?(pid = 0) ?(cmd = "") ?(cwd = "") ?(title = "") id : pane =
+      {
+        session_name = session;
+        session_id = session_id_of_string session_id;
+        session_created = created;
+        session_order = order;
+        window_index = index;
+        window_id = window_id_of_string window;
+        window_name = "";
+        window_layout = "";
+        pane_id = pane_id_of_string id;
+        active;
+        pane_active = active;
+        pane_pid = pid;
+        current_command = cmd;
+        current_path = cwd;
+        alternate_on = false;
+        command_running = running;
+        command_start = start;
+        last_prompt = prompt;
+        last_exit = None;
+        command_line = "";
+        dead_at = None;
+        run;
+        ssh = None;
+        session_attached = attached;
+        modal = false;
+        program_status = Program_status.empty;
+        title;
+      }
+
+    let opt f = Option.map_or ~default:"-" f
+    let time = opt (Printf.sprintf "%.0f")
+
+    let show (p : pane) =
+      Printf.printf
+        "%s %s created=%.0f order=%s win=%d %s %s %s %s active=%b pane_active=%b pid=%d cmd=%s \
+         cwd=%s alt=%b running=%b start=%s prompt=%s exit=%s line=%S dead=%s run=%s ssh=%s \
+         attached=%b modal=%b title=%S\n"
+        p.session_name
+        (string_of_session_id p.session_id)
+        p.session_created
+        (opt string_of_int p.session_order)
+        p.window_index (string_of_window_id p.window_id) p.window_name p.window_layout
+        (string_of_pane_id p.pane_id) p.active p.pane_active p.pane_pid p.current_command
+        p.current_path p.alternate_on p.command_running (time p.command_start) (time p.last_prompt)
+        (opt (fun (e : exit) -> Printf.sprintf "%d@%.0f" e.code e.at) p.last_exit)
+        p.command_line (time p.dead_at) (opt Fun.id p.run)
+        (opt (fun (user, host) -> user ^ "@" ^ host) p.ssh)
+        p.session_attached p.modal p.title
+
+    let line = String.concat sep
+    let state panes = { empty with panes }
+
+    let%expect_test "the format: title last, no ticking duration, field count pinned" =
+      let tokens = String.split ~by:sep format in
+      Printf.printf "last=%s duration=%b fields=%d const=%d\n"
+        (List.hd (List.rev tokens))
+        (String.mem ~sub:"pane_command_duration" format)
+        (List.length tokens) fields;
+      [%expect {| last=#{pane_title} duration=false fields=29 const=29 |}]
+
+    let%expect_test "a fixture generated from the format parses into every field" =
+      let values =
+        List.mapi
+          (fun i _ ->
+            match i with
+            | 1 -> "$1"
+            | 4 -> "@4"
+            | 7 -> "%7"
+            | 8 | 12 | 13 | 19 | 21 | 23 | 26 -> "1"
+            | 16 -> "16"
+            | 24 -> "deploy@realm@example.test"
+            | 25 -> {|{"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}|}
+            | 27 -> "-27"
+            | 2 | 3 | 9 | 14 | 15 | 17 | 20 -> string_of_int (1_000_000 + i)
+            | _ -> Printf.sprintf "str%d" i)
+          (String.split ~by:sep format)
+      in
+      List.iter
+        (fun p ->
+          show p;
+          Option.iter (fun (user, host) -> Printf.printf "user=%S host=%S\n" user host) p.ssh;
+          print_endline (Yojson.Safe.to_string (Program_status.yojson_of_t p.program_status)))
+        (parse [ line values ]);
+      [%expect
+        {|
+    str0 $1 created=1000002 order=-27 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true modal=true title="str28"
+    user="deploy@realm" host="example.test"
+    {"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}
+    |}]
+
+    let%expect_test "rejected program status keeps the pane with no records" =
+      List.iter
+        (fun status ->
+          let values =
+            List.mapi
+              (fun i _ ->
+                match i with
+                | 1 -> "$1"
+                | 4 -> "@4"
+                | 7 -> "%7"
+                | 25 -> status
+                | 28 -> "kept"
+                | _ -> "")
+              (String.split ~by:sep format)
+          in
+          List.iter
+            (fun (p : pane) ->
+              Printf.printf "%s %s %s\n" (string_of_pane_id p.pane_id) p.title
+                (Yojson.Safe.to_string (Program_status.yojson_of_t p.program_status)))
+            (parse [ line values ]))
+        [
+          "invalid JSON";
+          {|{"serial":7,"records":[{"id":"","state":"working","msg":"aG Vs bG8="}]}|};
+          {|{"serial":0,"records":[]}|};
+        ];
+      [%expect
+        {|
+    %7 kept {"serial":0,"records":[]}
+    %7 kept {"serial":0,"records":[]}
+    %7 kept {"serial":0,"records":[]}
+    |}]
+
+    let%expect_test
+        "parse: a live pane, a junk line, an empty status, a dead run, a malformed order, a title \
+         holding the separator" =
+      List.iter show
+        (parse
+           [
+             line
+               [
+                 "work";
+                 "$1";
+                 "1700000000";
+                 "2";
+                 "@7";
+                 "win";
+                 "layout";
+                 "%3";
+                 "1";
+                 "4242";
+                 "claude";
+                 "/tmp";
+                 "0";
+                 "1";
+                 "1700000100";
+                 "1700000050";
+                 "2";
+                 "1700000090";
+                 "make test";
+                 "0";
+                 "";
+                 "1";
+                 "";
+                 "1";
+                 "";
+                 {|{"serial":0,"records":[]}|};
+                 "0";
+                 "3";
+                 "✳ Title";
+               ];
+             "junk";
+             line
+               [
+                 "work";
+                 "$1";
+                 "1700000000";
+                 "2";
+                 "@7";
+                 "win";
+                 "layout";
+                 "%3";
+                 "0";
+                 "4242";
+                 "zsh";
+                 "/tmp";
+                 "1";
+                 "0";
+                 "";
+                 "1700000050";
+                 "";
+                 "";
+                 "";
+                 "0";
+                 "";
+                 "0";
+                 "";
+                 "1";
+                 "";
+                 {|{"serial":0,"records":[]}|};
+                 "1";
+                 "";
+                 "zsh";
+               ];
+             line
+               [
+                 "work";
+                 "$1";
+                 "1700000000";
+                 "2";
+                 "@7";
+                 "kid";
+                 "layout";
+                 "%3";
+                 "0";
+                 "4242";
+                 "";
+                 "/tmp";
+                 "0";
+                 "0";
+                 "";
+                 "";
+                 "";
+                 "";
+                 "";
+                 "1";
+                 "1700000200";
+                 "1";
+                 "run-abc";
+                 "0";
+                 "";
+                 {|{"serial":0,"records":[]}|};
+                 "";
+                 "007";
+                 "kid\x1fmore";
+               ];
+           ]);
+      [%expect
+        {|
+    work $1 created=1700000000 order=3 win=2 @7 win layout %3 active=true pane_active=true pid=4242 cmd=claude cwd=/tmp alt=false running=true start=1700000100 prompt=1700000050 exit=2@1700000090 line="make test" dead=- run=- ssh=- attached=true modal=false title="\226\156\179 Title"
+    work $1 created=1700000000 order=- win=2 @7 win layout %3 active=false pane_active=true pid=4242 cmd=zsh cwd=/tmp alt=true running=false start=- prompt=1700000050 exit=- line="" dead=- run=- ssh=- attached=false modal=true title="zsh"
+    work $1 created=1700000000 order=- win=2 @7 kid layout %3 active=false pane_active=false pid=4242 cmd= cwd=/tmp alt=false running=false start=- prompt=- exit=- line="" dead=1700000200 run=run-abc ssh=- attached=true modal=false title="kid\031more"
+    |}]
+
+    let%expect_test
+        "shell: integration, idle, running, the stuck flag healed, a tie read as running" =
+      List.iter
+        (fun (name, p) ->
+          Printf.printf "%s: %s\n" name
+            (match shell p with Unintegrated -> "none" | Idle -> "idle" | Running -> "running"))
+        [
+          ("no integration", pane "%1");
+          ("no integration, stale running flag", pane ~running:true ~start:100. "%1");
+          ("idle at the prompt", pane ~prompt:200. ~start:100. "%1");
+          ("command running", pane ~running:true ~start:300. ~prompt:200. "%1");
+          ( "stuck C without D, healed by the next prompt",
+            pane ~running:true ~start:300. ~prompt:400. "%1" );
+          ( "command started in the prompt's second",
+            pane ~running:true ~start:300. ~prompt:300. "%1" );
+        ];
+      [%expect
+        {|
+    no integration: none
+    no integration, stale running flag: none
+    idle at the prompt: idle
+    command running: running
+    stuck C without D, healed by the next prompt: idle
+    command started in the prompt's second: running
+    |}]
+
+    let%expect_test
+        "order_sessions: oldest session first, windows in list order, panes oldest first" =
+      List.iter
+        (fun (s : session) ->
+          Printf.printf "%s %s:" s.name (string_of_session_id s.id);
+          List.iter
+            (fun w ->
+              Printf.printf " %s[%s]"
+                (string_of_window_id (List.hd w).window_id)
+                (String.concat " " (List.map (fun (p : pane) -> string_of_pane_id p.pane_id) w)))
+            s.windows;
+          print_newline ())
+        (order_sessions
+           (state
+              [
+                pane ~session:"b" ~session_id:"$2" ~created:200. ~window:"@3" "%1";
+                pane ~session:"b" ~session_id:"$2" ~created:200. ~window:"@4" "%2";
+                pane ~session:"a" ~window:"@1" "%3";
+                pane ~session:"a" ~window:"@1" "%4";
+                pane ~session:"a" ~window:"@2" "%5";
+                pane ~session:"c" ~session_id:"$3" ~created:100. ~window:"@5" "%10";
+                pane ~session:"c" ~session_id:"$3" ~created:100. ~window:"@5" "%9";
+              ]));
+
+      [%expect {|
+    a $0: @1[%3 %4] @2[%5]
+    c $3: @5[%9 %10]
+    b $2: @3[%1] @4[%2]
+    |}]
+
+    let%expect_test
+        "order_sessions: ranked first by rank, ties and the unranked by creation then name" =
+      List.iter
+        (fun (s : session) -> Printf.printf "%s " s.name)
+        (order_sessions
+           (state
+              [
+                pane ~session:"new" ~session_id:"$1" ~created:400. "%1";
+                pane ~session:"r2" ~session_id:"$2" ~created:100. ~order:2 "%2";
+                pane ~session:"old" ~session_id:"$3" ~created:50. "%3";
+                pane ~session:"r0b" ~session_id:"$4" ~created:300. ~order:0 "%4";
+                pane ~session:"r0a" ~session_id:"$5" ~created:300. ~order:0 "%5";
+                pane ~session:"r1" ~session_id:"$6" ~created:500. ~order:1 "%6";
+                pane ~session:"r0" ~session_id:"$7" ~created:200. ~order:0 "%7";
+              ]));
+      print_newline ();
+      List.iter
+        (fun (s : session) -> Printf.printf "%s " s.name)
+        (order_sessions
+           (state
+              (parse
+                 (List.map
+                    (fun (name, id, order) ->
+                      line
+                        (List.mapi
+                           (fun i _ ->
+                             match i with
+                             | 0 -> name
+                             | 1 -> id
+                             | 2 -> "100"
+                             | 4 -> "@" ^ string_of_int i
+                             | 7 -> "%" ^ String.sub id 1 (String.length id - 1)
+                             | 27 -> order
+                             | _ -> "")
+                           (String.split ~by:sep format)))
+                    [
+                      ("plus", "$1", "+1");
+                      ("hex", "$2", "0x1");
+                      ("word", "$3", "first");
+                      ("ranked", "$4", "5");
+                      ("empty", "$5", "");
+                      ("negative", "$6", "-1");
+                    ]))));
+      [%expect
+        {|
+        r0 r0a r0b r1 r2 old new
+        negative ranked empty hex plus word
+        |}]
+
+    let focus_panes =
+      state
+        [
+          pane ~session_id:"$0" ~window:"@1" ~active:true ~attached:true "%1";
+          pane ~session_id:"$0" ~window:"@2" ~attached:true "%2";
+          pane ~session_id:"$1" ~window:"@3" ~active:true "%3";
+          pane ~session_id:"$1" ~window:"@3" ~run:"run-1" "%4";
+        ]
+
+    let%expect_test "focus, last window, last pane" =
+      List.iter
+        (fun w ->
+          Printf.printf "%s: focused=%b last_window=%b last_pane=%b\n" w
+            (window_focused focus_panes (window_id_of_string w))
+            (last_window focus_panes (window_id_of_string w))
+            (last_pane focus_panes (window_id_of_string w)))
+        [ "@1"; "@2"; "@3"; "@999" ];
+      [%expect
+        {|
+    @1: focused=true last_window=false last_pane=true
+    @2: focused=false last_window=false last_pane=true
+    @3: focused=false last_window=true last_pane=false
+    @999: focused=false last_window=false last_pane=true
+    |}]
+  end)

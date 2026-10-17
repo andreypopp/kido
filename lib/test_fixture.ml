@@ -1,4 +1,4 @@
-include Tmux_pane_fixture
+include State_fixture
 include Test_support
 
 let pi ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_700_000_000.) ?(inbox = "") ?(activity = "")

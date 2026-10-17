@@ -4,18 +4,18 @@ let release tmux = function
   | Window w -> Tmux.run tmux [ "kill-window"; "-t"; Tmux.string_of_window_id w ]
   | Pane { pane; _ } -> Tmux.run tmux [ "kill-pane"; "-t"; Tmux.string_of_pane_id pane ]
 
-let close_of panes window pane =
-  if not (Tmux_pane.last_pane panes window) then Some (Pane { window; pane })
-  else if Tmux_pane.last_window panes window then None
+let close_of state window pane =
+  if not (State.last_pane state window) then Some (Pane { window; pane })
+  else if State.last_window state window then None
   else Some (Window window)
 
-let decide ~runs panes window_id =
-  if Tmux_pane.window_focused panes window_id then
+let decide state window_id =
+  if State.window_focused state window_id then
     Error
       (Printf.sprintf "%s is a client's current window; leaving it for the user to read"
          (Tmux.string_of_window_id window_id))
   else
-    match Run.window_pane ~runs panes window_id with
+    match State.find_window_run state window_id with
     | None ->
         Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.string_of_window_id window_id))
     | Some { dead_at = None; _ } ->
@@ -26,21 +26,18 @@ let decide ~runs panes window_id =
         Option.to_result
           (Printf.sprintf "%s is its session's only window; closing it would destroy the session"
              (Tmux.string_of_window_id window_id))
-          (close_of panes window_id run.pane_id)
+          (close_of state window_id run.pane_id)
 
-let sweep tmux ~dir ~grace ~runs panes ~now =
+let sweep tmux ~dir ~grace ({ panes; runs; agents } as state : State.t) ~now =
   let live p =
-    List.find_map
-      (fun (_, (r : Run.t)) -> if Run.equal_id r.meta.id p then Some (Run.holder r) else None)
-      (Tmux.Pane_map.bindings runs)
-    |> Option.get_lazy (fun () -> Run.live_pi ~dir p)
-    |> Option.is_some
+    Tmux.Pane_map.exists (fun _ (id, _) -> Run.equal_id id p) agents
+    || Option.is_some (Run.live_pi ~dir p)
   in
-  let mark ((closing, endings) as acc) (p : Tmux_pane.t) (m : Run.meta) text =
+  let mark ((closing, endings) as acc) (p : State.pane) (m : Run.meta) text =
     let window = p.window_id in
     let closes = function Window w | Pane { window = w; _ } -> Tmux.equal_window_id w window in
-    match close_of panes window p.pane_id with
-    | Some close when not (Tmux_pane.window_focused panes window || List.exists closes closing) ->
+    match close_of state window p.pane_id with
+    | Some close when not (State.window_focused state window || List.exists closes closing) ->
         ignore (Run.save_screen tmux ~dir m.id (Some p.pane_id));
         let ending =
           Run_ending.record_ending ~dir m
@@ -52,7 +49,7 @@ let sweep tmux ~dir ~grace ~runs panes ~now =
     | _ -> acc
   in
   List.fold_left
-    (fun acc (p : Tmux_pane.t) ->
+    (fun acc (p : State.pane) ->
       match Tmux.Pane_map.find_opt p.pane_id runs with
       | Some { meta = { kind = Agent | Bash | Stream; pane = Some pane; _ } as m; _ }
         when Tmux.equal_pane_id pane p.pane_id ->
@@ -63,8 +60,8 @@ let sweep tmux ~dir ~grace ~runs panes ~now =
       | _ -> acc)
     ([], []) panes
 
-let collect tmux ~dir ~grace ~runs panes ~now =
-  let closing, endings = sweep tmux ~dir ~grace ~runs panes ~now in
+let collect tmux ~dir ~grace state ~now =
+  let closing, endings = sweep tmux ~dir ~grace state ~now in
   List.iter (fun c -> ignore (release tmux c)) closing;
   List.iter (fun e -> ignore (Run_ending.send ~dir e)) endings
 
@@ -72,7 +69,7 @@ let%test_module "Tests" =
   (module struct
     let now = 1_700_000_000.
 
-    let pane ?run ?dead ?(watched = false) pane_id window_id : Tmux_pane.t =
+    let pane ?run ?dead ?(watched = false) pane_id window_id : State.pane =
       {
         (Test_fixture.pane ~session:"s" ~created:0. ~window:window_id ~active:watched
            ~attached:watched ?run pane_id)
@@ -82,7 +79,20 @@ let%test_module "Tests" =
 
     let%expect_test "decide: close-run's refusals and closes" =
       let show w panes =
-        match decide ~runs:Tmux.Pane_map.empty panes (Tmux.window_id_of_string w) with
+        match
+          let runs =
+            List.fold_left
+              (fun m (p : State.pane) ->
+                Option.map_or ~default:m
+                  (fun id ->
+                    Tmux.Pane_map.add p.pane_id
+                      { Run.meta = View_fixture.meta (Test_fixture.run_id id) ""; pi = None }
+                      m)
+                  p.run)
+              Tmux.Pane_map.empty panes
+          in
+          decide { panes; runs; agents = Tmux.Pane_map.empty } (Tmux.window_id_of_string w)
+        with
         | Ok (Window w) -> Printf.printf "close %s\n" (Tmux.string_of_window_id w)
         | Ok (Pane { window; pane }) ->
             Printf.printf "close %s pane %s\n" (Tmux.string_of_window_id window)

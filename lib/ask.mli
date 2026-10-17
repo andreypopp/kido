@@ -24,5 +24,5 @@ val target :
   tmux:Tmux.t -> dir:string -> session:Tmux.session_id -> t -> (Tmux.pane_id, string) result
 
 val remove : dir:string -> self:Run.id option -> id -> (unit, string) result
-val name : panes:Tmux_pane.t list -> Run.t option -> string
-val to_json : panes:Tmux_pane.t list -> t -> Run.t option -> Yojson.Safe.t
+val name : state:State.t -> Run.t option -> string
+val to_json : state:State.t -> t -> Run.t option -> Yojson.Safe.t

@@ -10,13 +10,13 @@ let wait_for within cond =
   in
   go ()
 
-let kill_run_pane ?(before = ignore) pane_id =
+let kill_run_pane ~dir ?(before = ignore) pane_id =
   let open Result.Infix in
   let tmux = Tmux.create () in
-  let* panes = Tmux_pane.list_panes tmux in
-  match Option.flat_map (Tmux_pane.find panes) pane_id with
+  let* state = State.read ~dir tmux in
+  match Option.flat_map (State.find state) pane_id with
   | None -> Ok `Gone
-  | Some p when Tmux_pane.last_window panes p.window_id && Tmux_pane.last_pane panes p.window_id ->
+  | Some p when State.last_window state p.window_id && State.last_pane state p.window_id ->
       Error "it is its session's only pane; killing it would destroy the session"
   | Some p ->
       before ();
@@ -28,10 +28,10 @@ let record_stopped ~dir id =
 
 let interrupt ~dir ~self ~caller to_ =
   let open Result.Infix in
-  let* panes = Tmux_pane.list_panes (Tmux.create ()) in
-  let* ((_, target) as e) = Message_agent.resolve ~dir ~panes ~self ~caller (Descendant to_) in
-  match Message_agent.deliver ~dir ~caller ~panes ~self Interrupt e "" with
-  | Ok _ -> Ok ("interrupted " ^ Run.display_name panes target)
+  let* state = State.read ~dir (Tmux.create ()) in
+  let* ((_, target) as e) = Message_agent.resolve ~dir ~state ~self ~caller (Descendant to_) in
+  match Message_agent.deliver ~dir ~caller ~state ~self Interrupt e "" with
+  | Ok _ -> Ok ("interrupted " ^ State.display_name state target)
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
 let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
@@ -39,7 +39,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
   let unforced what =
     if force then Ok () else Error (what ^ "; pass --force to kill its window instead")
   in
-  let* panes = Tmux_pane.list_panes (Tmux.create ()) in
+  let* state = State.read ~dir (Tmux.create ()) in
   let* meta = Run.select ~dir to_ in
   let* () =
     match meta.kind with
@@ -73,7 +73,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
           ending;
         if gone && signalled then Ok (Printf.sprintf "stopped %s" label)
         else
-          match kill_run_pane meta.pane with
+          match kill_run_pane ~dir meta.pane with
           | Ok `Killed -> Ok (Printf.sprintf "stopped %s; killed its pane" label)
           | Ok `Gone -> Ok (Printf.sprintf "stopped %s; its pane was already gone" label)
           | Error m ->
@@ -83,11 +83,11 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
   | Pi -> Error "a top-level pi run cannot be stopped with stop_run"
   | Agent -> (
       let* ((id, target) as e) =
-        Message_agent.resolve ~dir ~panes ~self ~caller (Descendant_run meta.id)
+        Message_agent.resolve ~dir ~state ~self ~caller (Descendant_run meta.id)
       in
-      let name = "subagent " ^ Run.display_name panes target in
+      let name = "subagent " ^ State.display_name state target in
       let degrade () =
-        match kill_run_pane ~before:(fun () -> record_stopped ~dir id) target.pane with
+        match kill_run_pane ~dir ~before:(fun () -> record_stopped ~dir id) target.pane with
         | Ok `Killed -> Ok (Printf.sprintf "killed %s's pane" name)
         | Ok `Gone -> Ok (Printf.sprintf "%s's pane was already gone" name)
         | Error m -> Error (Printf.sprintf "%s %s" name m)
@@ -105,7 +105,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
                 Printf.sprintf "did not accept the stop request (%s) and was still there after %s" m
                   after
           in
-          match kill_run_pane target.pane with
+          match kill_run_pane ~dir target.pane with
           | Ok _ -> Ok (Printf.sprintf "%s %s; killed its pane" name why)
           | Error m ->
               Error (Printf.sprintf "%s %s, and its pane could not be killed: %s" name why m)
@@ -114,7 +114,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
         let* () = unforced (name ^ " has no inbox to ask nicely over") in
         degrade ()
       else
-        match Message_agent.deliver ~dir ~caller ~panes ~self Stop e "" with
+        match Message_agent.deliver ~dir ~caller ~state ~self Stop e "" with
         | Error (Message_agent.Unavailable m) ->
             let* () = unforced (Printf.sprintf "%s could not be asked to stop (%s)" name m) in
             degrade ()

@@ -213,8 +213,8 @@ type reading =
   | Prompt
   | Command of { command : string; started_at : float; prompted : bool }
 
-let reading ~transport (p : Tmux_pane.t) =
-  match (Tmux_pane.shell p, p.command_start, p.last_exit) with
+let reading ~transport (p : State.pane) =
+  match (State.shell p, p.command_start, p.last_exit) with
   | _, Some started_at, _ when transport ->
       Command { command = p.command_line; started_at; prompted = Option.is_some p.last_prompt }
   | _, None, _ when transport -> Unintegrated
@@ -267,7 +267,7 @@ let shell ~now ~fullscreen ~serial (records : Tmux.Program_status.record list) r
   let episode, report = report ~now ~serial records t.episode in
   ({ t with episode }, { phase; report })
 
-let observe ~now ~ask ~stalled (p : Tmux_pane.t) (kind : Pane_kind.t) prev =
+let observe ~now ~ask ~stalled (p : State.pane) (kind : Pane_kind.t) prev =
   let status = p.program_status in
   let identity =
     {
@@ -344,7 +344,7 @@ let observe ~now ~ask ~stalled (p : Tmux_pane.t) (kind : Pane_kind.t) prev =
 
 let pending t = Option.exists (fun c -> not c.promoted) t.command
 
-let label t (p : Tmux_pane.t) =
+let label t (p : State.pane) =
   let status = p.program_status in
   match representative t.episode.retained status.records with
   | Some { title = Some title; _ } -> title
@@ -355,7 +355,7 @@ let%test_module "Tests" =
   (module struct
     open View_fixture
 
-    let records ?(serial = 1) rs (p : Tmux_pane.t) =
+    let records ?(serial = 1) rs (p : State.pane) =
       let record (id, state) = Printf.sprintf {|{"id":%S,%s}|} id state in
       {
         p with

@@ -203,8 +203,8 @@ let snapshot (m : model) =
         ( "program_status",
           Tmux.Program_status.yojson_of_t
             (Option.map_or ~default:Tmux.Program_status.empty
-               (fun (p : Tmux_pane.t) -> p.program_status)
-               (Tmux_pane.find m.snap.panes r.pane)) );
+               (fun (p : State.pane) -> p.program_status)
+               (State.find m.snap.visible r.pane)) );
         ( "run",
           match r.lifecycle with
           | Live { run = Some { kind; _ }; _ } | Ended { run = kind; _ } ->
@@ -222,7 +222,7 @@ let snapshot (m : model) =
       `Assoc
         [
           ("v", `Int 2);
-          ("server_instance", Tmux_pane.yojson_of_server server);
+          ("server_instance", Tmux.yojson_of_server server);
           ("client", location c);
           ( "asks",
             `List
@@ -289,17 +289,16 @@ let%test_module "Tests" =
 
     let empty_snap = (model ~dir:"" ()).snap
 
-    let prepared ~dir ~lingering panes states =
-      let panes = with_programs states panes in
+    let prepared ~dir ~lingering panes l =
+      let state = state l panes in
       fst
         (Sidebar.step (model ~dir ())
            {
              empty_snap with
-             server = Some (1, { Tmux_pane.started_at = test_at |> Float.to_int; pid = 42 });
+             server = Some (1, { Tmux.started_at = test_at |> Float.to_int; pid = 42 });
              client = client "alpha";
-             active = Some (Tmux.pane_id_of_string "%1");
-             panes;
-             states;
+             state;
+             visible = state;
              lingering = Sidebar.String_map.of_list lingering;
            })
 
@@ -326,18 +325,17 @@ let%test_module "Tests" =
             };
           ]
       in
-      let states =
-        states
-          [
-            ("%1", ("root", session ~activity:"reading the contract" ""));
-            ("%5", ("asker", session ""));
-          ]
+      let l =
+        [
+          ("%1", ("root", session ~activity:"reading the contract" ""));
+          ("%5", ("asker", session ""));
+        ]
       in
       let m =
         prepared ~dir
           ~lingering:
             [ (id, run_info ~outcome:Failed "helper"); (build, run_info ~kind:Bash "build") ]
-          panes states
+          panes l
       in
       let json m = Option.get_exn_or "client" (snapshot m) in
       print_endline (Yojson.Safe.pretty_to_string (json m));
@@ -517,14 +515,14 @@ let%test_module "Tests" =
         ]
       in
       ignore (Test_fixture.run ~dir ~parent:"root" "kid");
-      let states = states [ ("%1", ("root", session "")); ("%2", ("kid", session "")) ] in
+      let l = [ ("%1", ("root", session "")); ("%2", ("kid", session "")) ] in
       let m =
         prepared ~dir
           ~lingering:
             [
               ("kid", run_info ~parent:"root" ""); (run, run_info ~kind:Bash ~parent:"root" "build");
             ]
-          panes states
+          panes l
       in
       print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (snapshot m)));
       [%expect
@@ -889,10 +887,7 @@ let%test_module "Tests" =
                 pane = Tmux.pane_id_of_string "%0";
               };
           snap =
-            {
-              empty_snap with
-              server = Some (1, { Tmux_pane.started_at = 1780000000; pid = 12345 });
-            };
+            { empty_snap with server = Some (1, { Tmux.started_at = 1780000000; pid = 12345 }) };
           sessions =
             [ { id = Tmux.session_id_of_string "$0"; name = "session"; current = true; nodes } ];
         }
