@@ -65,7 +65,7 @@ let prompt ~dir ~self ~window text =
     | [ (p, kind) ] ->
         let inbox, name =
           match kind with
-          | Pi_agent { pi; _ } -> (pi.inbox, State.display_name state pi)
+          | Pi_agent { pi; _ } -> (pi.inbox, State.run_display_name state pi)
           | Some_agent _ | Terminal | Ssh _ -> ("", p.title)
         in
         failed

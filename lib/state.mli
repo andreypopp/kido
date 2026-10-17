@@ -44,7 +44,7 @@ val shell : pane -> shell
 val find : t -> Tmux.pane_id -> pane option
 val caller_pane : t -> Tmux.pane_id option -> (pane, string) result
 
-val display_name : t -> Run.pi -> string
+val run_display_name : t -> Run.pi -> string
 (** The name its pi last reported, else the title of the pane it holds. *)
 
 val find_window_run : t -> Tmux.window_id -> pane option

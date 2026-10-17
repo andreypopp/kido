@@ -179,7 +179,7 @@ let caller_pane t self =
   | Some id ->
       Option.to_result (Printf.sprintf "pane %S not found" (string_of_pane_id id)) (find t id)
 
-let display_name t (s : Run.pi) =
+let run_display_name t (s : Run.pi) =
   if not (String.is_empty s.name) then s.name
   else match Option.flat_map (find t) s.pane with Some p -> p.title | None -> ""
 

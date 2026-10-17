@@ -61,7 +61,7 @@ let agents ~dir ~threshold ~self ~caller ~session ~state:({ runs; agents; _ } as
       let root = Program_status.root p.program_status in
       {
         id;
-        name = State.display_name state s;
+        name = State.run_display_name state s;
         named = not (String.is_empty s.name);
         pane = p.pane_id;
         window = p.window_id;

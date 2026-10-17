@@ -31,7 +31,7 @@ let title (p : State.pane) = function
   | Some_agent { name } | Ssh { pane = Remote_agent { name }; _ } ->
       Some (if String.is_empty p.title then name else p.title)
   | Terminal -> None
-  | Pi_agent { pi; _ } -> Some (State.display_name { State.empty with panes = [ p ] } pi)
+  | Pi_agent { pi; _ } -> Some (State.run_display_name { State.empty with panes = [ p ] } pi)
 
 let%test_module "Tests" =
   (module struct

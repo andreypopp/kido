@@ -249,7 +249,7 @@ let pane_label m (d : pane) =
     match lingering with
     | Some l when Option.is_some l.outcome || Option.is_some p.dead_at ->
         ( (match Tmux.Pane_map.find_opt p.pane_id states with
-          | Some (_, s) -> State.display_name m.snap.state s
+          | Some (_, s) -> State.run_display_name m.snap.state s
           | _ -> l.name),
           Ended { result = l.outcome; run = l.kind } )
     | _ ->

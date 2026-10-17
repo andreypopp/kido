@@ -131,7 +131,7 @@ let remove ~dir ~self id =
 
 let name ~state run =
   match (Option.flat_map Run.holder run, run) with
-  | Some pi, _ -> State.display_name state pi
+  | Some pi, _ -> State.run_display_name state pi
   | None, Some r -> Run.name r
   | None, None -> ""
 

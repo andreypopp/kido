@@ -31,7 +31,7 @@ let interrupt ~dir ~self ~caller to_ =
   let* state = State.read ~dir (Tmux.create ()) in
   let* ((_, target) as e) = Message_agent.resolve ~dir ~state ~self ~caller (Descendant to_) in
   match Message_agent.deliver ~dir ~caller ~state ~self Interrupt e "" with
-  | Ok _ -> Ok ("interrupted " ^ State.display_name state target)
+  | Ok _ -> Ok ("interrupted " ^ State.run_display_name state target)
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
 let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
@@ -85,7 +85,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
       let* ((id, target) as e) =
         Message_agent.resolve ~dir ~state ~self ~caller (Descendant_run meta.id)
       in
-      let name = "subagent " ^ State.display_name state target in
+      let name = "subagent " ^ State.run_display_name state target in
       let degrade () =
         match kill_run_pane ~dir ~before:(fun () -> record_stopped ~dir id) target.pane with
         | Ok `Killed -> Ok (Printf.sprintf "killed %s's pane" name)
