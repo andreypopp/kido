@@ -1,10 +1,20 @@
 import AppKit
 import GhosttyKit
 
-final class PaneFind: NSView, NSSearchFieldDelegate {
-    private weak var pane: PaneView?
-    let field = NSSearchField()
+final class PaneFind: PaneCapsule, NSTextFieldDelegate {
+    weak var pane: PaneView?
+    let field = NSTextField()
+    private let magnifier = NSImageView(image: NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)!
+        .withSymbolConfiguration(.init(pointSize: 14, weight: .regular))!)
     private let count = NSTextField(labelWithString: "")
+    private let spinner = CAShapeLayer()
+    private let ring = CALayer()
+    private let previousButton = IconButton("chevron.up", "Previous match", size: 15)
+    private let nextButton = IconButton("chevron.down", "Next match", size: 15)
+    private let done = IconButton("xmark", "Done", size: 15)
+    private var focus: NSKeyValueObservation?
+    private enum Status: Equatable { case none, searching, matches(Int), at(Int, of: Int), failed, loaded(Int) }
+    private var status = Status.none { didSet { showStatus() } }
     private var token = UUID()
     private var matches: [Int] = []
     private var index = 0
@@ -17,40 +27,111 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
     private var autoNavigate = true
     private var loaded: Bool { pane?.copyMode != nil }
 
-    init(_ pane: PaneView) {
+    init(_ pane: PaneView, runtime: GhosttyRuntime) {
         self.pane = pane
-        super.init(frame: .zero)
-        wantsLayer = true
-        field.placeholderString = "Find in Terminal"
+        super.init(runtime: runtime, radius: 12, separators: 2)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilitySubrole(.init(rawValue: "AXLandmarkSearch"))
+        setAccessibilityLabel("Find in Terminal")
+        magnifier.contentTintColor = .secondaryLabelColor
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 13)
+        field.placeholderAttributedString = NSAttributedString(string: "Find in Terminal", attributes: [
+            .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor])
+        field.setAccessibilityLabel("Find in Terminal")
         field.delegate = self
-        field.sendsSearchStringImmediately = true
-        addSubview(field)
-        addSubview(count)
-        for (title, action) in [("↑", #selector(previous)), ("↓", #selector(next)), ("Done", #selector(close))] {
-            let button = NSButton(title: title, target: self, action: action)
-            button.bezelStyle = .rounded
-            addSubview(button)
-        }
+        count.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        spinner.lineWidth = 1.5
+        spinner.fillColor = nil
+        spinner.path = CGPath(ellipseIn: CGRect(x: 0.75, y: 0.75, width: 7.5, height: 7.5), transform: nil)
+        spinner.strokeEnd = 0.75
+        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+        spin.toValue = -2 * Double.pi
+        spin.duration = 1
+        spin.repeatCount = .infinity
+        spinner.add(spin, forKey: "spin")
+        ring.borderWidth = 3
+        ring.cornerRadius = 15
+        layer?.addSublayer(spinner)
+        layer?.addSublayer(ring)
+        previousButton.toolTip = "Previous match (Shift-Return)"
+        nextButton.toolTip = "Next match (Return)"
+        done.toolTip = "Done (Escape)"
+        previousButton.invoke = { [weak self] in self?.previous() }
+        nextButton.invoke = { [weak self] in self?.next() }
+        done.invoke = { [weak self] in self?.close() }
+        for view in [magnifier, field, count, previousButton, nextButton, done] { addSubview(view) }
+        field.nextKeyView = previousButton
+        previousButton.nextKeyView = nextButton
+        nextButton.nextKeyView = done
+        done.nextKeyView = pane
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    override func layout() {
-        super.layout()
-        field.frame = NSRect(x: 8, y: 6, width: max(60, bounds.width - 300), height: 24)
-        count.frame = NSRect(x: field.frame.maxX + 8, y: 9, width: 130, height: 18)
-        for (index, button) in subviews.dropFirst(2).enumerated() {
-            button.frame = NSRect(x: bounds.width - 150 + CGFloat(index) * 46, y: 5, width: index == 2 ? 56 : 40, height: 26)
+    override var nextResponder: NSResponder? { get { pane } set { super.nextResponder = pane } }
+    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(field) }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        focus = window?.observe(\.firstResponder) { [weak self] _, _ in MainActor.assumeIsolated { self?.needsDisplay = true } }
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        let focused = field.currentEditor() != nil, text: NSColor = focused ? .labelColor : .secondaryLabelColor
+        if field.textColor != text { field.textColor = text }
+        ring.isHidden = !focused
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            ring.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.4).cgColor
+            spinner.strokeColor = NSColor.secondaryLabelColor.cgColor
         }
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            NSColor.windowBackgroundColor.setFill()
-            bounds.fill()
-            NSColor.separatorColor.setFill()
-            NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
+    private func showStatus() {
+        let compact = bounds.width < 300
+        let (text, navigable) = switch status {
+        case .none: ("", false)
+        case .searching: (compact ? "…" : "Searching…", false)
+        case .matches(0): (compact ? "0" : "No matches", false)
+        case .matches(let total): (compact ? "\(total)" : "\(total) matches", total > 0)
+        case .at(let index, let total): (compact ? "\(index)/\(total)" : "\(index) of \(total)", true)
+        case .failed: (compact ? "Failed" : "Search failed", false)
+        case .loaded(let total): (compact ? "\(total) (loaded)" : total > 0 ? "\(total) matches (loaded)" : "No matches (loaded)", total > 0)
         }
+        count.textColor = status == .failed ? .systemRed : .secondaryLabelColor
+        previousButton.isEnabled = navigable
+        nextButton.isEnabled = navigable
+        guard count.stringValue != text else { return }
+        count.stringValue = text
+        NSAccessibility.post(element: count, notification: .announcementRequested, userInfo: [
+            .announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        needsLayout = true
+    }
+
+    override func layout() {
+        showStatus()
+        let width = bounds.width
+        for (button, x) in [(previousButton, width - 91), (nextButton, width - 65), (done, width - 29)] {
+            button.frame = NSRect(x: x, y: 3, width: 26, height: 26)
+        }
+        separatorX = [width - 96.5, width - 34.5]
+        let label = count.fittingSize
+        count.frame = NSRect(x: width - 105 - label.width, y: (bounds.height - label.height) / 2, width: label.width, height: label.height)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        spinner.isHidden = status != .searching
+        spinner.frame = CGRect(x: count.frame.minX - 12, y: 11.5, width: 9, height: 9)
+        ring.frame = bounds.insetBy(dx: -3, dy: -3)
+        CATransaction.commit()
+        let left = spinner.isHidden ? count.frame.minX - 2 : spinner.frame.minX - 4
+        magnifier.frame = NSRect(x: 3, y: 3, width: 22, height: 26)
+        let height = field.fittingSize.height
+        field.frame = NSRect(x: 25, y: (bounds.height - height) / 2, width: max(0, left - 25), height: height)
+        super.layout()
     }
 
     func controlTextDidChange(_ notification: Notification) { search() }
@@ -61,7 +142,7 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         matches = []
         index = 0
         target = nil
-        count.stringValue = field.stringValue.isEmpty || loaded ? "" : "Searching…"
+        status = field.stringValue.isEmpty || loaded ? .none : .searching
         restartGhostty()
         pane?.onSearch(loaded ? "" : field.stringValue, token)
     }
@@ -72,20 +153,18 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         matches = []
         target = nil
         navigating = false
-        count.stringValue = field.stringValue.isEmpty ? "" : "Searching…"
+        status = field.stringValue.isEmpty ? .none : .searching
         action("search:")
     }
 
     func finished(_ matches: [Int], token: UUID) {
         guard token == self.token else { return }
         self.matches = matches
-        if matches.isEmpty { count.stringValue = "No matches" }
-        else if autoNavigate { land() }
-        else { count.stringValue = "\(matches.count) matches" }
+        if autoNavigate, !matches.isEmpty { land() } else { status = .matches(matches.count) }
     }
 
     func failed(_ token: UUID) {
-        if token == self.token { count.stringValue = "Search failed" }
+        if token == self.token { status = .failed }
     }
 
     @objc func next() { move(1) }
@@ -105,7 +184,7 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
 
     private func land() {
         guard let pane else { return }
-        count.stringValue = "\(index + 1) of \(matches.count)"
+        status = .at(index + 1, of: matches.count)
         target = index
         pane.onFindCoverage(matches[index], token)
         if matches[index] <= pane.scrollPosition().retainedHistoryRows { navigate() }
@@ -122,7 +201,7 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
     func ghosttyTotal(_ total: Int) {
         self.total = max(0, total)
         guard loaded else { return navigate() }
-        count.stringValue = total > 0 ? "\(total) matches (loaded)" : "No matches (loaded)"
+        status = .loaded(total)
         guard autoNavigate, total > 0, selected == nil, !navigating else { return }
         navigating = true
         pane?.resetScroll()
@@ -187,7 +266,6 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         let pane = pane
         removeFromSuperview()
         pane?.find = nil
-        pane?.needsLayout = true
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
