@@ -545,6 +545,17 @@ extension VisualTests {
         try await sentinel(pane, since: start)
     }
 
+    func testEntryIgnoresAButtonHeldOutsideThePane() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "ready\r\n", until: "ready")
+        let held = try XCTUnwrap(class_getClassMethod(NSEvent.self, #selector(getter: NSEvent.pressedMouseButtons)))
+        let hardware = method_setImplementation(held, imp_implementationWithBlock({ (_: AnyClass) in 1 } as @convention(block) (AnyClass) -> Int))
+        defer { method_setImplementation(held, hardware) }
+        XCTAssertEqual(NSEvent.pressedMouseButtons, 1)
+        try await enter(pane)
+        keys(pane, "q")
+    }
+
     func testPendingInputRefusalsAndLateWork() async throws {
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
