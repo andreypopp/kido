@@ -27,6 +27,6 @@ let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(
     ssh = None;
     session_attached = attached;
     modal = false;
-    program_status = { serial = 0; records = [] };
+    program_status = Tmux.Program_status.empty;
     title;
   }

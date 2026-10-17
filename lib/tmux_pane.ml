@@ -101,9 +101,7 @@ let parse_line line =
   | f when Array.length f < fields -> None
   | f ->
       let program_status =
-        Result.get_or
-          ~default:Program_status.{ serial = 0; records = [] }
-          (Program_status.parse f.(25))
+        Result.get_or ~default:Program_status.empty (Program_status.parse f.(25))
       in
       Some
         {
@@ -407,7 +405,7 @@ let%test_module "Tests" =
         ssh = None;
         session_attached = attached;
         modal = false;
-        program_status = { serial = 0; records = [] };
+        program_status = Program_status.empty;
         title;
       }
 

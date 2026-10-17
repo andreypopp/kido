@@ -22,8 +22,9 @@ module Program_status : sig
     msg : string option;
   }
 
-  type t = { serial : int; records : record list } [@@deriving yojson_of]
+  type t = private { serial : int; records : record list } [@@deriving yojson_of]
 
+  val empty : t
   val root : t -> record option
   val parse : string -> (t, string) result
   val progress : record -> int option

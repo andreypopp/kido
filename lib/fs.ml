@@ -74,9 +74,7 @@ let write_temp ?(perm = 0o644) path data place =
   Fun.protect
     ~finally:(fun () -> remove tmp)
     (fun () ->
-      Fun.protect
-        ~finally:(fun () -> Unix.close fd)
-        (fun () -> ignore (Unix.write_substring fd data 0 (String.length data)));
+      Fun.protect ~finally:(fun () -> Unix.close fd) (fun () -> write_all fd data);
       place tmp path)
 
 let write_atomic ?perm path data = write_temp ?perm path data Unix.rename

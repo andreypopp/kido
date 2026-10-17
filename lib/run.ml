@@ -1,10 +1,16 @@
-type id = string [@@deriving equal, yojson]
+type id = string [@@deriving equal, yojson_of]
 
 let parse_id s =
   if
     String.is_empty s || String.mem ~sub:"/" s || String.mem ~sub:"\\" s || String.prefix ~pre:"." s
   then Error (Printf.sprintf "invalid run id %S" s)
   else Ok s
+
+let id_of_yojson json =
+  let reject = Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error in
+  match json with
+  | `String s -> ( match parse_id s with Ok id -> id | Error e -> reject e json)
+  | _ -> reject "invalid run id" json
 
 let new_id () = Msg.new_id ()
 let string_of_id (id : id) = id
@@ -290,6 +296,26 @@ let%test_module "Tests" =
         keep_alive = false;
         started_at = 0.;
       }
+
+    let%expect_test "meta rejects path traversal in id and parent" =
+      let json = yojson_of_meta (meta (id "safe")) in
+      List.iter
+        (fun field ->
+          let fields = match json with `Assoc fields -> fields | _ -> assert false in
+          let json =
+            `Assoc ((field, `String "../x") :: List.remove_assoc ~eq:String.equal field fields)
+          in
+          let rejected =
+            match meta_of_yojson json with
+            | _ -> false
+            | exception Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error _ -> true
+          in
+          Printf.printf "%s rejected: %b\n" field rejected)
+        [ "id"; "parent" ];
+      [%expect {|
+        id rejected: true
+        parent rejected: true
+        |}]
 
     let in_run ~dir i name = Filename.concat (Filename.dirname (task_path ~dir i)) name
 

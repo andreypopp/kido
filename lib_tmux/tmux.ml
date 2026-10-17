@@ -16,12 +16,14 @@ let window_id_of_string s = id_of_string ~what:"window" '@' s
 
 type pane_id = string [@@deriving equal, to_string, yojson_of]
 
-let pane_id_of_string s = id_of_string ~what:"pane" '%' s
+let pane_id_of_string s =
+  let s = id_of_string ~what:"pane" '%' s in
+  if Option.is_none (int_of_string_opt (String.drop 1 s)) then
+    invalid_arg (Printf.sprintf "%S is not a pane id (number exceeds int range)" s);
+  s
 
 let compare_pane_id a b =
-  Int.compare
-    (Option.get_or ~default:0 (int_of_string_opt (String.drop 1 a)))
-    (Option.get_or ~default:0 (int_of_string_opt (String.drop 1 b)))
+  Int.compare (int_of_string (String.drop 1 a)) (int_of_string (String.drop 1 b))
 
 module Pane_map = Map.Make (struct
   type t = pane_id
@@ -501,6 +503,21 @@ let%test_module "Tests" =
     "$x" false
     "$1x" false
     |}]
+
+    let%expect_test "pane ids reject integer overflow" =
+      let largest = "%" ^ string_of_int max_int in
+      Printf.printf "largest compares: %b\n"
+        (compare_pane_id (pane_id_of_string largest) (pane_id_of_string "%0") > 0);
+      let rejected =
+        match pane_id_of_string (largest ^ "0") with
+        | _ -> false
+        | exception Invalid_argument _ -> true
+      in
+      Printf.printf "overflow rejected: %b\n" rejected;
+      [%expect {|
+        largest compares: true
+        overflow rejected: true
+        |}]
 
     let feed stream =
       let _, events =

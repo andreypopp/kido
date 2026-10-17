@@ -20,6 +20,7 @@ type record = {
 
 type t = { serial : int; records : record list }
 
+let empty = { serial = 0; records = [] }
 let root t = List.find_opt (fun r -> String.is_empty r.id) t.records
 
 let decode s =

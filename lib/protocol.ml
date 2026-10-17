@@ -202,8 +202,7 @@ let snapshot (m : model) =
         ("lifecycle", lifecycle r.lifecycle);
         ( "program_status",
           Tmux.Program_status.yojson_of_t
-            (Option.map_or
-               ~default:{ Tmux.Program_status.serial = 0; records = [] }
+            (Option.map_or ~default:Tmux.Program_status.empty
                (fun (p : Tmux_pane.t) -> p.program_status)
                (Tmux_pane.find m.snap.panes r.pane)) );
         ( "run",
