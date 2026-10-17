@@ -107,7 +107,7 @@ sleeps = {
     'test_e2e/async_ending_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
     'test_e2e/conn_test.go': {'time.Sleep(20 * time.Millisecond)': 1},
     'test_e2e/control_test.go': {'time.Sleep(10 * time.Millisecond)': 1},
-    'test_e2e/launch_test.go': {'time.Sleep(100 * time.Millisecond)': 2},
+    'test_e2e/launch_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/leak_check_test.go': {'time.Sleep(50 * time.Millisecond)': 2},
     'test_e2e/reap_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/render_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
