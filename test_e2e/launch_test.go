@@ -301,18 +301,12 @@ func TestLauncherDefaultEnvironment(t *testing.T) {
 		return reportedPrompt(r.mustKido("display-message", "-p", "-t", pane, "#{pane_last_prompt_time}"))
 	}, "the pane's shell to report its first prompt")
 	assertNoKidoInHome(t, r.home)
+	// #{pane_command_line} still holds the refusal's command line until
+	// the next command starts, so wait for the new one.
 	r.mustKido("send-keys", "-t", pane, "sleep 2", "Enter")
-	deadline := time.Now().Add(settle)
-	for time.Now().Before(deadline) {
-		if line := r.mustKido("display-message", "-p", "-t", pane, "#{pane_command_line}"); line != "" {
-			if !strings.Contains(line, "sleep 2") {
-				t.Errorf("#{pane_command_line} = %q, want the command the pane is running", line)
-			}
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatal("#{pane_command_line} never reported the running command")
+	r.waitFor(func() bool {
+		return strings.Contains(r.mustKido("display-message", "-p", "-t", pane, "#{pane_command_line}"), "sleep 2")
+	}, "#{pane_command_line} to report the running command")
 }
 
 // assertNoKidoInHome: priming must leave the user's dotfiles alone.
