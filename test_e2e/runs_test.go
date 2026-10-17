@@ -124,10 +124,10 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	h := start(t, "alpha")
 
 	script := fmt.Sprintf(`sleep 0.3; %s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"`, kidoBin)
-	runID, windowID := h.spawnRun("done-e2e", script)
-	// The parent gets an inbox only now, spawnRun having recorded it without
-	// one; the sweep waits out the 1s linger before it looks.
-	in := h.asyncParent("alpha", "root-e2e")
+	// The parent has its inbox before the child starts: the child's ending
+	// notice is sent once, 0.3s in, and a parent without an inbox loses it.
+	in := startInbox(h.t, "ok\n")
+	runID, windowID := h.spawnRun("done-e2e", script, "--inbox", in.Path)
 
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("the sidebar's sweep to close window %s once the child has exited", windowID))
