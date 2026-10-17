@@ -143,30 +143,32 @@ let to_json ~panes ask run =
          ("ended", `Bool (Option.is_none (Option.flat_map Run.holder run)));
        ])
 
-let revival run =
-  let cwd = Option.map_or ~default:"" (fun (r : Run.t) -> r.meta.cwd) run
-  and file =
-    Option.map_or ~default:""
-      (fun (p : Run.pi) -> p.session_file)
-      (Option.flat_map (fun (r : Run.t) -> r.pi) run)
-  in
-  let directory =
-    try match (Unix.stat cwd).st_kind with Unix.S_DIR -> true | _ -> false
-    with Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
-  in
-  if not directory then Error ("ask directory is gone: " ^ cwd)
-  else if not (Fs.is_file file) then Error ("pi session file is gone: " ^ file)
-  else Ok (cwd, file)
+type availability = Live of Tmux.pane_id | Revivable of string * string | Unavailable of string
+
+let availability run =
+  match Option.flat_map Run.holder run with
+  | Some { pane = Some pane; _ } -> Live pane
+  | _ ->
+      let cwd = Option.map_or ~default:"" (fun (r : Run.t) -> r.meta.cwd) run
+      and file =
+        Option.map_or ~default:""
+          (fun (p : Run.pi) -> p.session_file)
+          (Option.flat_map (fun (r : Run.t) -> r.pi) run)
+      in
+      let directory =
+        try match (Unix.stat cwd).st_kind with Unix.S_DIR -> true | _ -> false
+        with Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
+      in
+      if not directory then Unavailable ("ask directory is gone: " ^ cwd)
+      else if not (Fs.is_file file) then Unavailable ("pi session file is gone: " ^ file)
+      else Revivable (cwd, file)
 
 let target ~tmux ~dir ~session ask =
-  let run = Run.load ~dir ask.session in
-  match Option.flat_map Run.holder run with
-  | Some { pane = Some pane; _ } -> Ok pane
-  | _ ->
-      Result.flat_map
-        (fun (cwd, file) ->
-          Result.map
-            (fun (w : Tmux.window) -> w.pane_id)
-            (Tmux.new_window tmux ~session ~name:("ask-" ^ ask.id) ~cwd ~env:[]
-               [ "pi"; "--session"; file ]))
-        (revival run)
+  match availability (Run.load ~dir ask.session) with
+  | Live pane -> Ok pane
+  | Unavailable error -> Error error
+  | Revivable (cwd, file) ->
+      Result.map
+        (fun (w : Tmux.window) -> w.pane_id)
+        (Tmux.new_window tmux ~session ~name:("ask-" ^ ask.id) ~cwd ~env:[]
+           [ "pi"; "--session"; file ])

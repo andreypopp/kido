@@ -26,14 +26,11 @@ let kill_run_pane ?(before = ignore) pane_id =
 let record_stopped ~dir id =
   ignore (Run.record_outcome ~dir id { result = Stopped; text = ""; at = Some (Timestamp.now ()) })
 
-let request ~dir ~caller ~panes ~self kind target =
-  Message_agent.deliver ~dir ~caller ~panes ~self { kind; reply_to = ""; id = "" } target ""
-
 let interrupt ~dir ~self ~caller to_ =
   let open Result.Infix in
   let* panes = Tmux_pane.list_panes (Tmux.create ()) in
   let* ((_, target) as e) = Message_agent.resolve ~dir ~panes ~self ~caller (Descendant to_) in
-  match request ~dir ~caller ~panes ~self Interrupt e with
+  match Message_agent.deliver ~dir ~caller ~panes ~self Interrupt e "" with
   | Ok _ -> Ok ("interrupted " ^ Run.display_name panes target)
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
@@ -117,7 +114,7 @@ let stop ~dir ~self ~caller ~escalation ~warn ~force to_ =
         let* () = unforced (name ^ " has no inbox to ask nicely over") in
         degrade ()
       else
-        match request ~dir ~caller ~panes ~self Stop e with
+        match Message_agent.deliver ~dir ~caller ~panes ~self Stop e "" with
         | Error (Message_agent.Unavailable m) ->
             let* () = unforced (Printf.sprintf "%s could not be asked to stop (%s)" name m) in
             degrade ()

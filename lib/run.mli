@@ -90,7 +90,10 @@ val record_outcome : dir:string -> id -> outcome -> bool
     directory is gone. *)
 
 val read_screen : dir:string -> id -> string option
-val reset_for_resume : dir:string -> id -> delivered:bool -> unit
+
+type start = Fresh_start | Continue_session | Restart_task
+
+val prepare_start : dir:string -> id -> start -> unit
 val read_outcome : dir:string -> id -> outcome option
 
 val effective_outcome : dir:string -> meta -> outcome option

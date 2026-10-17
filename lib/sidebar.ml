@@ -101,9 +101,10 @@ let take ~opts conn prev client =
             (fun (a : Ask.t) ->
               let run = Run.load ~dir:opts.dir a.session in
               let target =
-                match Option.flat_map Run.holder run with
-                | Some { pane = Some pane; _ } -> Live pane
-                | _ -> if Result.is_ok (Ask.revival run) then Revivable else Unavailable
+                match Ask.availability run with
+                | Live pane -> Live pane
+                | Revivable _ -> Revivable
+                | Unavailable _ -> Unavailable
               in
               { ask = a; name = Ask.name ~panes run; target })
             (Ask.list ~dir:opts.dir);

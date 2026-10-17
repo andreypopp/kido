@@ -8,9 +8,9 @@ type t = { id : id; session : Run.id; text : string; created : Timestamp.t }
 val read : dir:string -> id -> t option
 val list : dir:string -> t list
 
-val revival : Run.t option -> (string * string, string) result
-(** The directory and pi session file a revived pi of the ask's run starts from. *)
+type availability = Live of Tmux.pane_id | Revivable of string * string | Unavailable of string
 
+val availability : Run.t option -> availability
 val caller : dir:string -> (Run.id * Run.pi) option -> ((Run.id * Run.pi) option, string) result
 
 type entry = { id : id option; text : string }

@@ -201,7 +201,7 @@ let spawn ~dir ~self ~caller ~path req =
     | _ -> Ok ()
   in
   let is_pi = match req.command with "pi" :: _ -> true | _ -> false in
-  let* meta, command, mint =
+  let* meta, command, start =
     match req.mode with
     | Fresh f ->
         let id = Run.new_id () in
@@ -226,7 +226,8 @@ let spawn ~dir ~self ~caller ~path req =
           (if String.is_empty f.fork then [] else [ "--fork"; f.fork ])
           @ [ "--session-id"; Run.string_of_id id ]
         in
-        Ok (meta, (if is_pi then insert_after_head flags req.command else req.command), false)
+        let command = if is_pi then insert_after_head flags req.command else req.command in
+        Ok (meta, command, Run.Fresh_start)
     | Resume run ->
         let* meta =
           Option.to_result
@@ -251,7 +252,6 @@ let spawn ~dir ~self ~caller ~path req =
           Option.map (fun (p : Run.pi) -> p.session_file) (Run.read_pi ~dir run)
           |> Option.filter Fs.is_file
         in
-        let mint = Option.is_none session in
         let command =
           if not is_pi then req.command
           else
@@ -268,7 +268,7 @@ let spawn ~dir ~self ~caller ~path req =
             if (not (String.is_empty meta.model)) && lacks "--model" then [ "--model"; meta.model ]
             else []
         in
-        Ok (meta, command, mint)
+        Ok (meta, command, if Option.is_none session then Run.Restart_task else Run.Continue_session)
   in
   let tools = Option.get_or ~default:meta.tools req.tools in
   let tools =
@@ -293,13 +293,12 @@ let spawn ~dir ~self ~caller ~path req =
       Run.create ~dir meta.id task;
       Run.write_meta ~dir meta
   | Resume _ -> ());
-  let resume = match req.mode with Fresh _ -> None | Resume _ -> Some mint in
-  let+ line = Run_window.create ?resume ~dir meta ~session:pane.session_id command in
+  let+ line = Run_window.create ~start ~dir meta ~session:pane.session_id command in
   Option.iter
     (fun (old : Tmux_pane.t) ->
       Result.iter
         (fun c -> ignore (Reap.release (Tmux.create ()) c))
         (Reap.decide ~runs:(Run.marked ~dir panes) panes old.window_id))
     (Option.flat_map (Tmux_pane.find panes)
-       (Option.filter (fun _ -> Option.is_some resume) meta.pane));
+       (Option.filter (fun _ -> match start with Fresh_start -> false | _ -> true) meta.pane));
   line

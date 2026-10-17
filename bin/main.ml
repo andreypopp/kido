@@ -154,19 +154,18 @@ let message_agent =
   @@ let+ reply_to = str "reply-to" "ID" "Id of an earlier ask this message answers."
      and+ to_ = address "TO" in
      ( Message_agent.Named to_,
-       Message_agent.
-         { kind = (if String.is_empty reply_to then Message else Reply); reply_to; id = "" } )
+       if String.is_empty reply_to then Message_agent.Message else Message_agent.Reply reply_to )
 
 let ask_agent =
   send "ask_agent" "Ask another agent a question, read from stdin; its answer comes as a reply."
   @@ let+ id = str "id" "ID" "Id to assign this envelope; a fresh one is generated if omitted."
      and+ to_ = address "TO" in
-     (Message_agent.Named to_, Message_agent.{ kind = Ask; reply_to = ""; id })
+     (Message_agent.Named to_, Message_agent.Ask (if String.is_empty id then None else Some id))
 
 let steer_subagent =
   send "steer_subagent" "Steer a descendant agent mid-turn with a message read from stdin."
   @@ let+ to_ = address "AGENT" in
-     (Message_agent.Descendant to_, Message_agent.{ kind = Steer; reply_to = ""; id = "" })
+     (Message_agent.Descendant to_, Message_agent.Steer)
 
 let interrupt_subagent =
   cmd ~group:"tool " "interrupt_subagent" "Abort a descendant agent's current turn."

@@ -190,10 +190,14 @@ let record_outcome ~dir id o =
 
 let read_screen ~dir id = Fs.read (screen_path ~dir id)
 
-let reset_for_resume ~dir id ~delivered =
-  let paths = [ outcome_path ~dir id; screen_path ~dir id ] in
-  let paths = if delivered then paths @ [ delivered_path ~dir id ] else paths in
-  List.iter Fs.remove paths
+type start = Fresh_start | Continue_session | Restart_task
+
+let prepare_start ~dir id = function
+  | Fresh_start -> ()
+  | (Continue_session | Restart_task) as start ->
+      List.iter Fs.remove
+        ([ outcome_path ~dir id; screen_path ~dir id ]
+        @ match start with Restart_task -> [ delivered_path ~dir id ] | _ -> [])
 
 let read_outcome ~dir id = Fs.read_json (outcome_path ~dir id) outcome_of_yojson
 
@@ -463,13 +467,13 @@ let%test_module "Tests" =
       Printf.printf "%b\n" (record_outcome ~dir:(temp ()) i { result = Died; text = ""; at = None });
       [%expect {| false |}]
 
-    let%expect_test "ResetForResume clears outcome, screen, and (when asked) the delivered marker" =
+    let%expect_test "Restart_task clears outcome, screen, and the delivered marker" =
       let dir, i = fresh_run "run-screen-clear" in
-      reset_for_resume ~dir i ~delivered:true;
+      prepare_start ~dir i Restart_task;
       Fs.write (in_run ~dir i "screen") "captured";
       ignore (record_outcome ~dir i { result = Died; text = ""; at = None });
       Fs.write (in_run ~dir i "delivered") "";
-      reset_for_resume ~dir i ~delivered:true;
+      prepare_start ~dir i Restart_task;
       Printf.printf "screen gone: %b\n" (Option.is_none (read_screen ~dir i));
       Printf.printf "outcome gone: %b\n" (Option.is_none (read_outcome ~dir i));
       Printf.printf "delivered gone: %b\n" (not (Sys.file_exists (in_run ~dir i "delivered")));
@@ -479,10 +483,10 @@ let%test_module "Tests" =
     delivered gone: true
     |}]
 
-    let%expect_test "ResetForResume keeps the delivered marker unless asked" =
+    let%expect_test "Continue_session keeps the delivered marker" =
       let dir, i = fresh_run "run-screen-clear-2" in
       Fs.write (in_run ~dir i "delivered") "";
-      reset_for_resume ~dir i ~delivered:false;
+      prepare_start ~dir i Continue_session;
       Printf.printf "delivered kept: %b\n" (Sys.file_exists (in_run ~dir i "delivered"));
       [%expect {| delivered kept: true |}]
 

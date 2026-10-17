@@ -4,7 +4,7 @@ type recipient =
   | Descendant_run of Run.id
   | Parent of Run.id
 
-type spec = { kind : Msg.kind; reply_to : string; id : string }
+type spec = Message | Reply of string | Ask of string option | Notice | Steer | Interrupt | Stop
 type failure = Unavailable of string | Failed of string
 type send_error = No_text | Not_sent of string
 

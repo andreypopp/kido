@@ -2,7 +2,7 @@ val max_name_len : int
 val check_name : string -> (unit, string) result
 
 val create :
-  ?resume:bool ->
+  ?start:Run.start ->
   dir:string ->
   Run.meta ->
   session:Tmux.session_id ->

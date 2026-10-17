@@ -9,7 +9,7 @@ let check_name name =
          (String.length name) max_name_len)
   else Ok ()
 
-let create ?resume ~dir (meta : Run.meta) ~session command =
+let create ?(start = Run.Fresh_start) ~dir (meta : Run.meta) ~session command =
   let env =
     [
       "KIDO_AGENT_TASK_FILE=" ^ Run.task_path ~dir meta.id;
@@ -38,7 +38,7 @@ let create ?resume ~dir (meta : Run.meta) ~session command =
   in
   let meta = { meta with pane = Some w.pane_id; pid = w.pane_pid } in
   Run.write_meta ~dir meta;
-  Option.iter (fun delivered -> Run.reset_for_resume ~dir meta.id ~delivered) resume;
+  Run.prepare_start ~dir meta.id start;
   Ok
     (match meta.kind with
     | Bash | Stream ->

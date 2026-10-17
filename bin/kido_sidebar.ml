@@ -477,17 +477,13 @@ let redraw m side =
 
 let set_search m search = redraw { m with search } m.side
 
-let request m req =
-  try
-    let opts = m.side.opts in
-    (m, S.handle ~tmux:opts.tmux ~dir:opts.dir ~client:opts.client req)
-  with
-  | Sys_error e -> (m, Error e)
-  | Unix.Unix_error (e, fn, arg) -> (m, Error (Fs.unix_message e fn arg))
+let request (opts : S.options) req =
+  try S.handle ~tmux:opts.tmux ~dir:opts.dir ~client:opts.client req with
+  | Sys_error e -> Error e
+  | Unix.Unix_error (e, fn, arg) -> Error (Fs.unix_message e fn arg)
 
 let release_focus m =
-  let m, response = request m S.Release_side_focus in
-  match response with
+  match request m.side.opts S.Release_side_focus with
   | Ok () -> Option.map_or ~default:m (focus m) m.side.snap.active
   | Error e -> { m with status = e }
 
@@ -508,8 +504,7 @@ let jump m =
   match req with
   | None -> (m, Mosaic.Cmd.none)
   | Some req -> (
-      let m, response = request m req in
-      match response with
+      match request m.side.opts req with
       | Error e -> ({ m with status = e }, Mosaic.Cmd.none)
       | Ok c ->
           let m = if Option.is_some m.search then focus (set_search m None) c.pane else m in
@@ -554,8 +549,9 @@ let key m (k : Mosaic.Event.key) =
     | Windows, None -> if m.standalone then (m, Mosaic.Cmd.quit) else none (release_focus m)
   in
   let cycle direction =
-    let m, response = request m (S.Switch_window direction) in
-    match response with Ok _ -> m | Error e -> { m with status = e }
+    match request m.side.opts (S.Switch_window direction) with
+    | Ok _ -> m
+    | Error e -> { m with status = e }
   in
   match m.search with
   | Some filter when not (String.is_empty text) -> none (set_search m (Some (filter ^ text)))
@@ -594,8 +590,9 @@ let key m (k : Mosaic.Event.key) =
       | _ when is 'd' && match m.mode with Asks -> true | Windows -> false -> (
           match CCArray.get_safe m.lines m.cursor with
           | Some (Ask { ask = a; _ }) -> (
-              let m, response = request m (S.Delete_ask a.id) in
-              match response with Ok () -> none m | Error e -> none { m with status = e })
+              match request m.side.opts (S.Delete_ask a.id) with
+              | Ok () -> none m
+              | Error e -> none { m with status = e })
           | _ -> none m)
       | _ when is '/' && match m.mode with Windows -> true | Asks -> false ->
           none (set_search m (Some ""))

@@ -5,7 +5,7 @@ type recipient =
   | Parent of Run.id
 
 type address = Name of string | Run of Run.id
-type spec = { kind : Msg.kind; reply_to : string; id : string }
+type spec = Message | Reply of string | Ask of string option | Notice | Steer | Interrupt | Stop
 type failure = Unavailable of string | Failed of string
 type send_error = No_text | Not_sent of string
 
@@ -88,15 +88,25 @@ let resolve ~dir ~panes ~self ~caller recipient =
     Error (Run.display_name panes target ^ " is this agent")
   else Ok e
 
-let deliver ~dir ~caller ~panes ~self spec (id, (target : Run.pi)) text =
+let deliver ~dir ~caller ~panes ~self spec (run_id, (target : Run.pi)) text =
   let name = Run.display_name panes target in
-  let kind = Msg.string_of_kind spec.kind in
-  let is_message = match spec.kind with Message -> true | _ -> false in
+  let kind, id, reply_to =
+    match spec with
+    | Message -> (Msg.Message, None, "")
+    | Reply ask -> (Msg.Reply, None, ask)
+    | Ask id -> (Msg.Ask, id, "")
+    | Notice -> (Msg.Notice, None, "")
+    | Steer -> (Msg.Steer, None, "")
+    | Interrupt -> (Msg.Interrupt, None, "")
+    | Stop -> (Msg.Stop, None, "")
+  in
+  let tag = Msg.string_of_kind kind in
+  let is_message = match spec with Message -> true | _ -> false in
   if (not is_message) && String.is_empty target.inbox then
     Error
       (Failed
          (Printf.sprintf
-            "%s has no inbox to send a %s to; only a plain message can be sent as v0 text" name kind))
+            "%s has no inbox to send a %s to; only a plain message can be sent as v0 text" name tag))
   else
     let from : Msg.from =
       match caller with
@@ -105,19 +115,11 @@ let deliver ~dir ~caller ~panes ~self spec (id, (target : Run.pi)) text =
       | None -> { session = ""; name = ""; pane = self }
     in
     let envelope : Msg.envelope =
-      {
-        kind = spec.kind;
-        id = (if String.is_empty spec.id then Msg.new_id () else spec.id);
-        from;
-        reply_to = spec.reply_to;
-        text;
-        run = "";
-        output = "";
-      }
+      { kind; id = Option.get_lazy Msg.new_id id; from; reply_to; text; run = ""; output = "" }
     in
     let run =
-      match Run.read_meta ~dir id with
-      | Some { kind = Agent; _ } -> Some id
+      match Run.read_meta ~dir run_id with
+      | Some { kind = Agent; _ } -> Some run_id
       | Some { kind = Pi | Bash | Stream; _ } | None -> None
     in
     if is_message then
@@ -129,7 +131,7 @@ let deliver ~dir ~caller ~panes ~self spec (id, (target : Run.pi)) text =
     else
       match Msg.deliver_envelope ~path:target.inbox envelope with
       | Ok () -> Ok `Inbox
-      | Error (Msg.Refused _) -> Error (Failed (Printf.sprintf "%s refused the %s" name kind))
+      | Error (Msg.Refused _) -> Error (Failed (Printf.sprintf "%s refused the %s" name tag))
       | Error (Msg.Unavailable _) -> Error (Unavailable (Prompt.not_accepting ~name ~run))
       | Error (Msg.Failed m) -> Error (Failed m)
 
@@ -142,15 +144,15 @@ let send ~dir ~self ~caller recipient spec text =
     let* panes = not_sent (Tmux_pane.list_panes (Tmux.create ())) in
     let alternative = "use kido tool message_agent instead, which is one-way and needs no reply" in
     let* () =
-      match (spec.kind, caller) with
-      | Ask, None ->
+      match (spec, caller) with
+      | Ask _, None ->
           Error
             (Not_sent
                (Printf.sprintf
                   "no agent session is calling ($PI_SESSION_ID names none), so an answer could not \
                    be addressed back; nothing sent - %s"
                   alternative))
-      | Ask, Some (_, (s : Run.pi)) when String.is_empty s.inbox ->
+      | Ask _, Some (_, (s : Run.pi)) when String.is_empty s.inbox ->
           Error
             (Not_sent
                (Printf.sprintf
@@ -166,7 +168,7 @@ let send ~dir ~self ~caller recipient spec text =
       |> Option.flat_map (fun (p : Tmux_pane.t) -> Tmux.Program_status.root p.program_status)
       |> Option.map (fun (r : Tmux.Program_status.record) -> r.state)
     in
-    match (deliver ~dir ~caller ~panes ~self spec e text, spec.kind, status) with
+    match (deliver ~dir ~caller ~panes ~self spec e text, spec, status) with
     | Ok `Pasted, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)
     | Ok `Inbox, Message, Some (Working _) ->
         let steerable = reaches ~dir ~caller:(Option.map fst caller) id in
@@ -201,6 +203,4 @@ let notify_parent ~dir ~self ~caller ~warn ~parent ~run text =
       Error
         (Not_sent "this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent")
   | Some parent ->
-      send ~dir ~self ~caller (Parent parent)
-        { kind = Notice; reply_to = ""; id = "" }
-        (report_notice ~warn ~dir run text)
+      send ~dir ~self ~caller (Parent parent) Notice (report_notice ~warn ~dir run text)

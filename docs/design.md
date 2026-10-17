@@ -1073,7 +1073,7 @@ First-write-wins would also prevent `kido tool spawn_subagent --resume`
 from replacing an old screen. Only a sweep writes this file. The first
 attempt's screen would then survive every later attempt without a way
 to replace it. Instead, `kido tool spawn_subagent --resume` clears it.
-`Run.reset_for_resume` removes both screen and outcome.
+`Run.prepare_start` removes both screen and outcome for either resume mode.
 
 During a second attempt, the run shows no screen instead of the first
 attempt's stale screen. `kido runs <id>` prints the screen when present.
