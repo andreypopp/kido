@@ -8,7 +8,7 @@ private final class TerminalView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-private final class Overlay: NSBox {
+private final class Overlay: PaneCapsule {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
@@ -29,8 +29,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onLoadMore: () -> Void = {}
     var onScrollTop: () -> Void = {}
     var onCopyCheck: (@escaping @MainActor @Sendable (Bool) -> Void) -> Void = { $0(true) }
+    var onFindChange: () -> Void = {}
     let scroller = PaneScroller()
-    var find: PaneFind?
+    var find: PaneFind? { didSet { needsLayout = true; onFindChange() } }
+    var chromeViews: [NSView] { [historyLimit, copyLabel] + [find].compactMap { $0 } }
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
     var copyFind: (query: String?, older: Bool) = (nil, true)
@@ -82,9 +84,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private let terminal = TerminalView()
-    private let historyLimit = NSBox()
-    private let copyLabel = Overlay()
-    @objc private func loadMoreHistory() { if copyMode == nil { onLoadMore() } }
+    private let historyLimit: PaneCapsule
+    private let copyLabel: Overlay
+    private func loadMoreHistory() { if copyMode == nil { onLoadMore() } }
     private var pressed: Set<Int> = []
     private struct ScrollGeometry {
         var sampledTmuxHistoryRows = 0
@@ -139,10 +141,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     private func openFind(navigate: Bool) {
         guard find == nil else { return }
-        let bar = PaneFind(self)
+        let bar = PaneFind(self, runtime: runtime)
         find = bar
-        addSubview(bar)
-        needsLayout = true
         guard let query = copyFind.query else { return }
         copyFind.query = nil
         bar.field.stringValue = query
@@ -151,7 +151,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     static func owner(_ responder: NSResponder?) -> PaneView? {
         var view = responder as? NSView
-        while let current = view, !(current is PaneView) { view = current.superview }
+        while let current = view, !(current is PaneView) { view = (current as? PaneFind)?.pane ?? current.superview }
         return view as? PaneView
     }
 
@@ -464,6 +464,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     #if KIDO_STRESS || KIDO_VISUAL
     var visualPill: Bool { !historyLimit.isHidden }
+    var visualCopyLabel: String? { copyLabel.isHidden ? nil : (copyLabel.subviews[0] as? NSTextField)?.stringValue }
     var wheelRowHeight: CGFloat { rowHeight }
     var wheelDistance: Double? { scrollDistance }
     private var finalRenderDisposition: [String: Any] = [:]
@@ -683,15 +684,17 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         terminal.frame = bounds
         rowHeight = cell.height
         presentScroll()
-        find?.frame = NSRect(x: 0, y: max(0, bounds.height - 36), width: bounds.width, height: 36)
-        historyLimit.frame.size = historyLimit.contentView!.fittingSize
-        historyLimit.frame.size.width += 16
-        historyLimit.frame.size.height += 4
-        historyLimit.frame.origin = NSPoint(x: (bounds.width - historyLimit.frame.width) / 2, y: max(0, bounds.height - historyLimit.frame.height - (find == nil ? 8 : 44)))
-        copyLabel.frame.size = copyLabel.contentView!.fittingSize
-        copyLabel.frame.size.width += 16
-        copyLabel.frame.size.height += 4
-        copyLabel.frame.origin = NSPoint(x: 8, y: max(0, bounds.height - copyLabel.frame.height - (find == nil ? 8 : 44)))
+        guard let chrome = copyLabel.superview?.bounds else { return }
+        let capsule = min(420, max(200, chrome.width - 16))
+        find?.frame = NSRect(x: chrome.width - 8 - capsule, y: 8, width: capsule, height: 32)
+        let y: CGFloat = find != nil && chrome.width - 16 - capsule < 72 ? 48 : 8
+        let copy = copyLabel.subviews[0], label = historyLimit.subviews[0], loadMore = historyLimit.subviews[1]
+        copy.frame = NSRect(origin: NSPoint(x: 7, y: 4), size: copy.fittingSize)
+        copyLabel.frame = NSRect(x: 8, y: y, width: copy.frame.width + 14, height: 22)
+        label.frame = NSRect(origin: NSPoint(x: 7, y: 4), size: label.fittingSize)
+        historyLimit.separatorX = [label.frame.maxX + 6]
+        loadMore.frame = NSRect(x: label.frame.maxX + 10.5, y: 2, width: ceil((loadMore as? NSButton)?.attributedTitle.size().width ?? 0) + 14, height: 18)
+        historyLimit.frame = NSRect(x: (chrome.width - loadMore.frame.maxX - 2) / 2, y: y, width: loadMore.frame.maxX + 2, height: 22)
     }
 
     // Freed in deinit, so the last reference must be dropped on the main
@@ -806,6 +809,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         self.pane = pane
         self.host = host
         self.onInput = onInput
+        historyLimit = PaneCapsule(runtime: runtime, radius: 8, separators: 1)
+        copyLabel = Overlay(runtime: runtime, radius: 8)
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         wantsLayer = true
         layer?.masksToBounds = true
@@ -872,20 +877,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let label = NSTextField(labelWithString: "Older history not loaded")
         label.font = .systemFont(ofSize: 11)
         label.textColor = .secondaryLabelColor
-        let loadMore = NSButton(title: "Load more", target: self, action: #selector(loadMoreHistory))
-        loadMore.bezelStyle = .rounded
-        loadMore.controlSize = .small
-        let copyText = NSTextField(labelWithString: "COPY")
-        copyText.font = .systemFont(ofSize: 11, weight: .semibold)
-        for (box, content) in [(historyLimit, NSStackView(views: [label, loadMore])), (copyLabel, copyText)] {
-            box.boxType = .custom
-            box.borderWidth = 0
-            box.fillColor = .windowBackgroundColor
-            box.cornerRadius = 5
-            box.contentViewMargins = NSSize(width: 8, height: 2)
-            box.contentView = content
-            box.isHidden = true
-            addSubview(box)
+        let loadMore = IconButton("", "Load more", hoverStyle: .text)
+        loadMore.title = "Load more"
+        loadMore.font = .systemFont(ofSize: 11, weight: .medium)
+        loadMore.toolTip = nil
+        loadMore.invoke = { [weak self] in self?.loadMoreHistory() }
+        for (pill, views) in [(historyLimit, [label, loadMore]), (copyLabel, [NSTextField(labelWithString: "")])] {
+            for view in views { pill.addSubview(view) }
+            pill.isHidden = true
         }
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
         // The callback must not reenter the surface (ghostty.h).
@@ -1179,7 +1178,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     private func presentCopy() {
         copyLabel.isHidden = copyMode == nil
-        (copyLabel.contentView as? NSTextField)?.stringValue = if case .entering = copyMode { "COPY…" } else { "COPY" }
+        let entering = if case .entering = copyMode { true } else { false }
+        (copyLabel.subviews[0] as? NSTextField)?.attributedStringValue = NSAttributedString(string: entering ? "COPY…" : "COPY", attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .kern: 0.44, .foregroundColor: entering ? NSColor.secondaryLabelColor : .labelColor])
         needsLayout = true
         presentScroll()
     }

@@ -147,9 +147,11 @@ import GhosttyKit
         }
     }
 
-    var background: NSColor {
+    var background: NSColor { color("background") }
+    var foreground: NSColor { color("foreground") }
+
+    private func color(_ key: String) -> NSColor {
         var color = ghostty_config_color_s()
-        let key = "background"
         guard ghostty_config_get(config, &color, key, UInt(key.utf8.count)) else { return .black }
         return NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1)
     }
