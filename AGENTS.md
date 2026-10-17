@@ -22,10 +22,10 @@ supplies context that the code does not contain:
 pane classification and status reads. Before you change these mechanisms,
 read these files. The code comments and this file do not repeat them.
 
-Proposed features have RFC drafts in `rfc/`, with one markdown file per
-proposal. An RFC describes a feature that is not built yet. When the
-feature is complete, its agreed design moves into `docs/`. The RFC is
-then deleted.
+Work in progress has a plan in `plans/`, with one markdown file per
+plan. A plan describes work that is not complete. When the work is
+complete, its agreed design moves into `docs/`. The plan is then
+deleted.
 
 ## Code rules
 
@@ -895,9 +895,21 @@ Never delete one half of a pair.
 These rules apply to every agent that kido spawns into this repo.
 A brief does not repeat them.
 
-- **Do the task yourself.** Do not spawn subagents, except the four
-  read-only reviewers of a simplify pass, one angle each, so that review
-  has fresh context.
+- **One manager for each unit of work.** The top-level session gives a
+  unit of work to one manager. The manager does not write code. It does
+  these steps:
+  1. It spawns one implementer with `keepAlive`.
+  2. When the implementer reports, the manager spawns the four read-only
+     reviewers of a simplify pass, one angle each, so that review has
+     fresh context.
+  3. The manager merges their findings and decides which to apply.
+  4. It gives the findings to apply to the same implementer with
+     `message_agent`. The implementer keeps its context.
+  5. It reports to the top-level session: the result, and each finding
+     with the reason it was applied or rejected. Then it stops the
+     implementer.
+- **Do the task yourself.** An implementer or reviewer does not spawn
+  subagents.
   Do not call `ask_agent`.
   Nobody waits for a question.
 - **No git writes.** Do not commit, push, reset, add, checkout or stash.
