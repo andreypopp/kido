@@ -1132,8 +1132,9 @@ windows use Display P3, matching the references rather than the attached
 monitor's calibrated profile. The off-screen floating-sidebar fill takes its
 rounded corners from the sidebar layer; the transparent corners show the
 underlying window/terminal, not a cached opaque material rectangle.
-`make visual` also launches a private, background copy and sends SIGTERM to its
-main-dispatch handler, checking natural exit after asynchronous quit completion.
+Each visual target also launches a private, background copy and sends SIGTERM
+to its main-dispatch handler, checking natural exit after asynchronous quit
+completion.
 Liquid Glass (sidebar and pane toolbar) and animation/scroll smoothness are
 not covered. Re-record with `make visual RECORD=1` after intentional visual
 changes, a macOS update or a different backing scale, and review the images
@@ -1160,9 +1161,31 @@ and free to stderr with its timing.
 ### Test speed
 
 The test-speed rules in AGENTS.md ("Tests") apply to the app's tests.
-`make visual` runs one `xcodebuild test`, which builds the app. The suite takes
-about 130 s of test time. To profile it, read the per-test `durationInSeconds`
-of the newest result bundle:
+Each visual target runs one `xcodebuild test`, which builds the app, and then
+`app/scripts/quit-check.py`:
+
+- `make visual` runs every test. It is the pre-commit and release gate.
+- `make visual-fast` skips the tests that `app/VisualTests/slow.txt` names,
+  about 17 s of test time.
+- `make visual-slow` runs only those tests.
+
+`slow.txt` names one `Class/testName` per line, followed by
+`# inherent: <reason>` or `# fix: <cause>`. An `inherent` test needs its cost
+for its check: real ssh, a large history, real child processes, or a fixed
+window that is the check. A `fix` test is known debt: a test change can make it
+fast. A name whose class or test does not exist in `app/VisualTests/*.swift`
+stops the target before `xcodebuild` runs.
+
+An implementer runs `make test` and `make visual-fast` while it works. Before
+the manager reports, the manager runs `make visual-slow` or `make visual`. An
+implementer works on a slow test only when the manager reports that it fails.
+
+A new test is fast by default: it is not in `slow.txt`. Write it to take less
+than 0.5 s. It goes into `slow.txt` only as an `inherent` entry, when it is an
+important check that cannot be made fast, and the manager approves the entry.
+
+To profile the suite, read the per-test `durationInSeconds` of the newest
+result bundle:
 
     xcrun xcresulttool get test-results tests --path \
       app/build/xcode.noindex/derived-visual/Logs/Test/Test-Visual-<timestamp>.xcresult
@@ -1180,8 +1203,6 @@ of the newest result bundle:
   idle-CPU windows depend on that settle.
 - A fixed wait remains only where it is the check ("never activates", quiet
   windows) or where no event exists.
-- The remaining slow tests use real ssh (`RemoteTests`) or measure idle CPU over
-  fixed windows (`VsyncTests`).
 
 ### Stress harness
 
