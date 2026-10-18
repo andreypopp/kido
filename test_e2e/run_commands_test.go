@@ -104,6 +104,21 @@ func TestRunEndingsAndRefusals(t *testing.T) {
 		t.Errorf("signalled run = %+v, want failed/signal TERM", info)
 	}
 
+	hupPidFile := filepath.Join(h.dir, "hup.pid")
+	hup := h.startRun(caller, "run", "--name", "run-hup", "--", "sh", "-c",
+		"trap '' HUP; echo $$ > "+shellQuote(hupPidFile)+"; exec sleep 300")
+	hupPID, err := strconv.Atoi(strings.TrimSpace(h.waitFileNonEmpty(hupPidFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = syscall.Kill(hupPID, syscall.SIGKILL) }()
+
+	h.in("kill-pane", "-t", hup.paneID())
+	h.waitFor(func() bool { return !h.paneExists(hup.paneID()) }, settle, msgf("the HUP run's pane to close"))
+	if out, rc := h.kidoAs(caller, "", nil, "run-wait", hup.ID); rc != 0 || out != "died" {
+		t.Fatalf("run-wait = %d %q, want died while the process survives", rc, out)
+	}
+
 	for _, c := range []struct {
 		args []string
 		code int
@@ -150,6 +165,32 @@ func TestRunStopRecordsThenCloses(t *testing.T) {
 	}
 	if info := h.runInfo(done.ID); info.Outcome != "completed" {
 		t.Fatalf("completed stop outcome = %+v", info)
+	}
+
+	phased := h.startRun(caller, "run", "--name", "run-phased", "--", "sleep", "300")
+	if out, rc := h.kidoAs(caller, "", nil, "run-stop", phased.ID, "--record-only", "--result", "completed"); rc != 0 || !strings.Contains(out, "recorded run "+phased.ID) {
+		t.Fatalf("run-stop --record-only = %d %q, want a record", rc, out)
+	}
+	if info := h.runInfo(phased.ID); info.Outcome != "completed" {
+		t.Errorf("record-only outcome = %+v, want completed", info)
+	}
+	if !h.paneExists(phased.paneID()) {
+		t.Error("run-stop --record-only closed the pane")
+	}
+	if out, rc := h.kidoAs(caller, "", nil, "run-stop", phased.ID); rc != 5 || !strings.Contains(out, "already ended") {
+		t.Errorf("run-stop of a record-only run = %d %q, want exit 5 at once", rc, out)
+	}
+	if out, rc := h.kidoAs(caller, "", nil, "run-stop", phased.ID, "--cleanup"); rc != 0 {
+		t.Fatalf("run-stop --cleanup = %d %q", rc, out)
+	}
+	h.waitFor(func() bool { return !h.paneExists(phased.paneID()) }, settle, msgf("--cleanup to close the pane"))
+	for _, args := range [][]string{
+		{"run-stop", phased.ID, "--cleanup", "--result", "completed"},
+		{"run-stop", phased.ID, "--cleanup", "--record-only"},
+	} {
+		if out, rc := h.kidoAs(caller, "", nil, args...); rc != 1 {
+			t.Errorf("kido %v = %d %q, want exit 1", args, rc, out)
+		}
 	}
 
 	lonely := h.startRun(caller, "run", "--name", "run-lonely", "--", "sleep", "300")

@@ -128,6 +128,28 @@ test("list_runs keeps every running run and the newest twenty ended ones", async
   }
 });
 
+test("a live grandchild carries its agent entry's run id, so stop_run names its run", async () => {
+  const fx = makeFixture();
+  try {
+    fx.writeAgent("root", "mid", { session: "mid-session", run: "mid-run" });
+    fx.writeAgent("mid-session", "grand", { session: "grand-session", run: "grand-run" });
+    fx.setPanes([selfPane(), agentPane({ pane: "%3", session: "grand-session", name: "grand" })]);
+    fx.setRuns([{ id: "grand-run", name: "grand", parent: "mid-run", pane: "%3", session: "grand-session" }]);
+    await asSubagent(
+      fx,
+      "mid-session",
+      async () => {
+        const s = await startNamedSession(fx, "mid", "mid-session");
+        await s.tools.get("stop_run").execute("c", { to: "grand", force: true });
+        assert.ok(fx.runStopCalls()[0]?.includes("grand-run"), "stop_run passes the descendant's run id, not its session id");
+      },
+      { parent: "root", name: "mid", run: "mid-run" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("a top-level pi lists the run-child %N children it started", async () => {
   const fx = makeFixture();
   try {

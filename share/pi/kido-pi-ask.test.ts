@@ -15,6 +15,7 @@ import {
   customMessages,
   pendingState,
   settlesWithin,
+  shellStatus,
   type Inbox,
   type Fixture,
 } from "./kido-pi-fixture.ts";
@@ -222,10 +223,38 @@ test("ask_agent releases its waiter when the target dies mid-wait, long before t
       await pollUntil(() => inbox.received().length === 1, 2000, "the ask to go out");
       assert.equal(await pendingState(p), "pending", "a live target is still being waited for");
 
-      fx.setPanes([selfPane()]);
+      fx.setPanes([selfPane(), { ...agentPane({ pane: "%2", session: "peer-a", name: "peer-a", inbox: inbox.path }), pane_dead: "1", pane_program_status: shellStatus() }]);
       const result = await settlesWithin(p, 3000);
       assert.match(result.content[0].text, /stopped running before answering/);
       assert.ok(result.content[0].text.includes(sent(inbox).id), "the error names the ask id");
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+// A failed tmux read is no evidence: only a successful read that shows the
+// target absent settles the ask as stopped.
+test("a failed tmux read does not settle a waiting ask as gone", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    fx.setPanes([selfPane(), agentPane({ pane: "%2", session: "peer-a", name: "peer-a", inbox: inbox.path })]);
+    const s = await startNamedSession(fx, "Self", SELF);
+    await withEnv({ KIDO_ASK_POLL_MS: "20" }, async () => {
+      const p = s.tools.get("ask_agent").execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 });
+      await pollUntil(() => inbox.received().length === 1, 2000, "the ask to go out");
+      const before = fx.tmuxCalls().length;
+      process.env.KIDO_FAKE_TMUX_FAIL = "1";
+      try {
+        await pollUntil(() => fx.tmuxCalls().length >= before + 2, 2000, "two failed liveness reads");
+        assert.equal(await pendingState(p), "pending", "an unreadable pane is not a gone target");
+      } finally {
+        delete process.env.KIDO_FAKE_TMUX_FAIL;
+      }
+      const ask = sent(inbox);
+      assert.equal(await sendToInbox(fx.inboxPath(SELF), envelope("reply", "still here", { replyTo: ask.id, from: ask.from })), "ok");
+      assert.equal((await p).content[0].text, "still here");
     });
   } finally {
     await fx.restore();

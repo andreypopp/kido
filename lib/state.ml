@@ -192,6 +192,13 @@ let pi_root (p : pane) =
 
 let find t id = List.find_opt (fun p -> equal_pane_id p.pane_id id) t.panes
 
+let read_pane tmux id =
+  let state lines = { panes = parse lines; runs = Pane_map.empty } in
+  match Tmux.exec tmux [ "list-panes"; "-t"; Tmux.string_of_pane_id id; "-F"; format ] with
+  | Ok lines -> Ok (state (String.lines lines))
+  | Error e -> (
+      match Tmux.list_panes tmux ~format with Ok lines -> Ok (state lines) | Error _ -> Error e)
+
 let run_pane state (m : Run.meta) =
   let id = Some (Run.string_of_id m.id) in
   Option.bind

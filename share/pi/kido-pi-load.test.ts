@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { copyFileSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 
 import { join, dirname } from "node:path";
 
@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import kidoPi from "./kido-pi.ts";
 
-import { makeFixture, createFakePi, startSession, freshExtension, pollUntil, sendToInbox, envelope, customMessages, pendingState, settlesWithin } from "./kido-pi-fixture.ts";
+import { makeFixture, createFakePi, selfPane, startSession, freshExtension, withEnv, pollUntil, sendToInbox, envelope, customMessages, pendingState, settlesWithin } from "./kido-pi-fixture.ts";
 
 // Negative control: the file that claimed the slot still registers everything
 // when run again (what a /reload does) - a guard refusing every second factory
@@ -92,6 +92,101 @@ test("a session_shutdown that is not a reload still closes and unlinks the inbox
     await assert.rejects(
       () => sendToInbox(s.inboxPath, envelope("message", "after", { from: { session: "peer-a", name: "peer-a" } })),
       /ENOENT|ECONNREFUSED/,
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a /reload restores an outstanding run-wait, including a run that ended in the gap", async () => {
+  const fx = makeFixture();
+  try {
+    const gate = join(fx.stateDir, "gate");
+    fx.setPanes([selfPane()]);
+    await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "completed", text: "" }) }, async () => {
+      const s1 = await startSession(fx, { factory: await freshExtension() });
+      await s1.tools.get("async_bash").execute("c", { command: "make", name: "build" });
+      await pollUntil(() => customMessages(s1, "kido-stream").length === 0 && fx.runWaitCalls().length === 1, 2000, "the first run-wait");
+      await s1.emit("session_shutdown", { reason: "reload" });
+      writeFileSync(gate, "");
+      const s2 = await startSession(fx, { factory: await freshExtension() });
+      await pollUntil(() => customMessages(s2, "kido-notice").some((m) => String(m.message.content).includes('async run "build" completed')), 2000, "the ending notice after the reload");
+      assert.equal(fx.runWaitCalls().filter((call) => call.includes("fake-run-id")).length, 2, "the reload started a fresh run-wait for the same run");
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a /reload keeps this session's pane options, and a real shutdown unsets them", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s1 = await startSession(fx, { factory: await freshExtension() });
+    await s1.emit("session_shutdown", { reason: "reload" });
+    const unsetSession = fx.optionWrites().filter((write) => write.key === "@kido_session" && write.value === undefined);
+    assert.deepEqual(unsetSession, [], "a reload must keep the options a child's notify_parent reads");
+
+    const s2 = await startSession(fx, { factory: await freshExtension() });
+    await s2.emit("session_shutdown", { reason: "quit" });
+    const unsetAfterQuit = fx.optionWrites().filter((write) => write.key === "@kido_session" && write.value === undefined);
+    assert.equal(unsetAfterQuit.length, 1, "a real shutdown unsets the options");
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a reload detaches the old run-wait waiter, so only the restored watch reports", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const ready = join(fx.stateDir, "waiter-ready");
+    const exitGate = join(fx.stateDir, "waiter-exit");
+    await withEnv({ KIDO_FAKE_RUN_WAIT_READY: ready, KIDO_FAKE_RUN_WAIT_EXIT_GATE: exitGate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "completed", text: "" }) }, async () => {
+      const s1 = await startSession(fx, { factory: await freshExtension() });
+      await s1.tools.get("async_bash").execute("c", { command: "make", name: "build" });
+      await pollUntil(() => existsSync(ready), 2000, "the waiter's stdout to arrive");
+      await s1.emit("session_shutdown", { reason: "reload" });
+      writeFileSync(exitGate, "");
+      const s2 = await startSession(fx, { factory: await freshExtension() });
+      await pollUntil(() => customMessages(s2, "kido-notice").some((m) => String(m.message.content).includes('async run "build" completed')), 2000, "the restored ending");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(customMessages(s1, "kido-notice").length, 0, "the old module sent no ending");
+      assert.equal(customMessages(s2, "kido-notice").filter((m) => String(m.message.content).includes('async run "build"')).length, 1, "the restored watch sent exactly one notice");
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a reload keeps a spent stream budget, so it sends no new budget", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const gate = join(fx.stateDir, "gate");
+    const output = join(fx.stateDir, "runs", "fake-run-id", "output");
+    await withEnv(
+      { KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_STREAM_POLL_MS: "20", KIDO_STREAM_FLUSH_MS: "20", KIDO_STREAM_MAX_WAIT_MS: "40", KIDO_STREAM_BUDGET_BYTES: "1" },
+      async () => {
+        const s1 = await startSession(fx, { factory: await freshExtension() });
+        await s1.tools.get("async_bash").execute("c", { command: "make", name: "build", stream: true });
+        appendFileSync(output, "first\n");
+        await pollUntil(async () => {
+          await s1.emit("turn_end", { toolResults: [{}] });
+          return customMessages(s1, "kido-stream").some((m) => String(m.message.content).includes("first"));
+        }, 2000, "the first batch");
+        appendFileSync(output, "spend\n");
+        await pollUntil(async () => {
+          await s1.emit("turn_end", { toolResults: [{}] });
+          return customMessages(s1, "kido-stream").some((m) => String(m.message.content).includes("output budget spent"));
+        }, 2000, "the budget line");
+        await s1.emit("session_shutdown", { reason: "reload" });
+        const parked = (globalThis as unknown as { __kidoPiExtensionWatches?: Array<{ budget: number; budgetTold: boolean }> }).__kidoPiExtensionWatches;
+        assert.equal(parked?.length, 1, "the spent watch is parked");
+        assert.equal(parked[0]!.budgetTold, true, "the budget line is remembered");
+        assert.ok(parked[0]!.budget <= 0, "the spent budget is remembered");
+        await startSession(fx, { factory: await freshExtension() });
+      },
     );
   } finally {
     await fx.restore();

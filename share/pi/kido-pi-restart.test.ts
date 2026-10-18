@@ -250,3 +250,74 @@ test("the spawn and notify_parent descriptions say message it, never resume", as
     await fx.restore();
   }
 });
+
+// A restarted child's old run must stay history: the live pane and its current
+// run are the address, whatever order the run list comes back in.
+test("after a restart the live child stays the address and its old run stays history", async () => {
+  const fx = makeFixture();
+  try {
+    const { s, child } = await endedChild(fx, { sessionFile: true });
+    await withEnv({ KIDO_FAKE_RUN_ID: "restarted-run" }, () => s.tools.get("message_agent").execute("c", { to: "kid", message: "carry on" }));
+    const output = join(fx.stateDir, "runs", "restarted-run", "output");
+    fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid", inbox: fx.inboxPath(child.session) })]);
+    fx.setRuns([
+      { id: "restarted-run", name: "kid", parent: "%1", pane: "%2", session: child.session, startedAt: "2023-11-14T22:01:00Z", output },
+      { id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session, startedAt: "2023-11-14T22:00:00Z", outcome: { result: "completed", text: "" } },
+    ]);
+    const listed = JSON.parse((await s.tools.get("list_runs").execute("c", {})).content[0].text) as Array<{ id: string; name: string; run: string; state: string }>;
+    const live = listed.find((row) => row.id === child.session);
+    assert.ok(live, "the live child is listed");
+    assert.equal(live.state, "running", "the live child is running");
+    assert.equal(live.run, "restarted-run", "the live child names its current run, not its ended one");
+    const old = listed.find((row) => row.id === "fake-run-id");
+    assert.equal(old?.state, "ended", "the old run stays as history");
+  } finally {
+    await fx.restore();
+  }
+});
+
+// Two callers that both see an ended child must not restart it twice: discovery,
+// restart and publication are one serialized step per child.
+test("concurrent messages to an ended child restart it once", async () => {
+  const fx = makeFixture();
+  try {
+    const { s, child } = await endedChild(fx, { sessionFile: true });
+    const gate = join(fx.stateDir, "restart-gate");
+    const inbox = await fx.startInboxAt(fx.inboxPath(child.session));
+    await withEnv({ KIDO_FAKE_RUN_ID: "restarted-run", KIDO_FAKE_RUN_GATE: gate }, async () => {
+      const first = s.tools.get("message_agent").execute("c", { to: "kid", message: "first" });
+      await pollUntil(() => fx.runCalls().length === 2, 3000, "the first restart to reach run-child");
+      const before = fx.runsCalls().length;
+      const second = s.tools.get("message_agent").execute("c", { to: "kid", message: "second" });
+      await pollUntil(() => fx.runsCalls().length > before, 2000, "the second caller's discovery before the lock");
+      writeFileSync(gate, "");
+      await first;
+      assert.equal((await second).content[0].text, "delivered to kid by inbox");
+      assert.equal(fx.runCalls().length, 2, "one restart, not two");
+      assert.deepEqual(inbox.received().map((payload) => JSON.parse(payload).text), ["second"]);
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+// A request that stalls after the receiver accepted it is uncertain, never
+// retryable: a retry duplicates the message the receiver already has.
+test("an inbox answer that stalls after the request was sent is not retried", async () => {
+  const fx = makeFixture();
+  try {
+    const { s, child } = await endedChild(fx);
+    const inbox = await fx.startInboxAt(fx.inboxPath(child.session));
+    const release = inbox.hold();
+    await withEnv({ KIDO_FAKE_RUN_ID: "restarted-run" }, async () => {
+      const result = s.tools.get("message_agent").execute("c", { to: "kid", message: "once" });
+      await pollUntil(() => inbox.received().length >= 1, 4000, "the request to reach the inbox");
+      const text = (await result).content[0].text;
+      release();
+      assert.equal(inbox.received().length, 1, "the request was delivered once, not retried");
+      assert.match(text, /timed out|may have arrived/, "the answer says delivery is uncertain");
+    });
+  } finally {
+    await fx.restore();
+  }
+});

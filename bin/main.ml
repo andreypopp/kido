@@ -352,11 +352,16 @@ let run_stop =
          value & opt float 0.
          & info [ "wait" ] ~docv:"SECS"
              ~doc:"Seconds to wait for the run to end before signalling its process group.")
-     and+ result =
+     and+ given_result =
        Arg.(
          value
-         & opt (enum [ ("stopped", Run.Stopped); ("completed", Run.Completed) ]) Run.Stopped
+         & opt (some (enum [ ("stopped", Run.Stopped); ("completed", Run.Completed) ])) None
          & info [ "result" ] ~docv:"RESULT" ~doc:"stopped or completed; default stopped.")
+     and+ record_only =
+       flag "record-only" "Record the result only; leave the process and its pane running."
+     and+ cleanup =
+       flag "cleanup"
+         "Stop the process and close the pane of a run that already has an outcome; record nothing."
      and+ id = arg "RUN_ID" in
      fun () ->
        match Run.parse_id id with
@@ -364,31 +369,50 @@ let run_stop =
            error "run-stop" m;
            3
        | Ok id -> (
-           match
-             Run_stop.stop ~dir:(state_dir ()) ~wait
-               ~escalation:(Timestamp.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.)
-               ~result id
-           with
-           | Error (Run_stop.No_run m) ->
+           let result = Option.value ~default:Run.Stopped given_result in
+           let mode =
+             if record_only && cleanup then
+               Error "choose one of --record-only and --cleanup, not both"
+             else if cleanup && Option.is_some given_result then
+               Error "--cleanup records nothing, so it cannot take --result"
+             else if record_only then Ok Run_stop.Record_only
+             else if cleanup then Ok Run_stop.Cleanup
+             else Ok Run_stop.Record_and_stop
+           in
+           match mode with
+           | Error m ->
                error "run-stop" m;
-               3
-           | Error (Run_stop.Ended m) ->
-               error "run-stop" m;
-               5
-           | Ok pane -> (
-               match pane with
-               | Run_stop.Killed ->
-                   Printf.printf "stopped run %s; killed its pane\n" (Run.string_of_id id);
-                   0
-               | Run_stop.No_pane | Run_stop.Already_gone ->
-                   Printf.printf "stopped run %s; its pane was already gone\n" (Run.string_of_id id);
-                   0
-               | Run_stop.Refused m ->
-                   error "run-stop"
-                     (Printf.sprintf
-                        "run %s was recorded stopped, but its pane could not be killed: %s"
-                        (Run.string_of_id id) m);
-                   1))
+               1
+           | Ok mode -> (
+               match
+                 Run_stop.stop ~dir:(state_dir ()) ~wait
+                   ~escalation:(Timestamp.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.)
+                   ~result ~mode id
+               with
+               | Error (Run_stop.No_run m) ->
+                   error "run-stop" m;
+                   3
+               | Error (Run_stop.Ended m) ->
+                   error "run-stop" m;
+                   5
+               | Ok pane -> (
+                   match (mode, pane) with
+                   | Run_stop.Record_only, _ ->
+                       Printf.printf "recorded run %s\n" (Run.string_of_id id);
+                       0
+                   | _, Run_stop.Killed ->
+                       Printf.printf "stopped run %s; killed its pane\n" (Run.string_of_id id);
+                       0
+                   | _, (Run_stop.No_pane | Run_stop.Already_gone) ->
+                       Printf.printf "stopped run %s; its pane was already gone\n"
+                         (Run.string_of_id id);
+                       0
+                   | _, Run_stop.Refused m ->
+                       error "run-stop"
+                         (Printf.sprintf
+                            "run %s was recorded stopped, but its pane could not be killed: %s"
+                            (Run.string_of_id id) m);
+                       1)))
 
 let prompt =
   cmd "prompt" "Send a prompt, read from stdin, to the agent in the caller's window or session."

@@ -154,6 +154,49 @@ test("spawn_subagent refuses depth 3, a missing name, and a task over the cap", 
   }
 });
 
+test("spawn_subagent and async_bash refuse a name that is not one safe path component, before any write", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startNamedSession(fx, "Self");
+    for (const name of ["../other", "a/b", ".", ".."]) {
+      const message = (await s.tools.get("spawn_subagent").execute("c", { task: "x", name })).content[0].text;
+      assert.match(message, /^could not spawn subagent: refusing window name/, `${JSON.stringify(name)} was not refused: ${message}`);
+      assert.equal(existsSync(join(fx.stateDir, "agents", SELF, name)), false, `${JSON.stringify(name)} wrote a directory`);
+      const bash = (await s.tools.get("async_bash").execute("c", { command: "true", name })).content[0].text;
+      assert.match(bash, /^could not start background command: refusing window name/);
+    }
+    assert.equal(fx.runCalls().length, 0, "no refused name started a run");
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("async_bash tees the whole command, so every line and the exit status survive", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startNamedSession(fx, "Self");
+    await withEnv({ KIDO_FAKE_RUN_EXEC: "1" }, async () => {
+      for (const [id, command, expected, result, text] of [
+        ["run-lines", "echo first; echo last", "first\nlast\n", "completed", ""],
+        ["run-and", "echo make-output && echo run-output", "make-output\nrun-output\n", "completed", ""],
+        ["run-exit", "echo before; exit 7", "before\n", "failed", "exit 7"],
+      ] as const) {
+        await withEnv({ KIDO_FAKE_RUN_ID: id }, async () => {
+          await s.tools.get("async_bash").execute("c", { command, name: id });
+          assert.equal(readFileSync(join(fx.stateDir, "runs", id, "output"), "utf8"), expected, `${command} lost output`);
+          const row = JSON.parse(readFileSync(fx.runsFile, "utf8")).find((r: { id: string }) => r.id === id);
+          assert.equal(row.outcome.result, result, `${command} recorded the wrong result`);
+          assert.equal(row.outcome.text, text, `${command} recorded the wrong status`);
+        });
+      }
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("async_bash requires a name, runs through bash with the tee line, and returns the run and output", async () => {
   const fx = makeFixture();
   try {
@@ -165,7 +208,7 @@ test("async_bash requires a name, runs through bash with the tee line, and retur
     const result = await asyncBash.execute("c", { command: "make -j8", name: "build" });
     assert.match(result.content[0].text, /^started run fake-run-id \(build\) in window @9;/);
     const argv = fx.runCalls()[0]!;
-    assert.deepEqual(argv, ["run-child", "%1", "--name", "build", "--", "bash", "-o", "pipefail", "-c", 'make -j8 2>&1 | tee "$KIDO_RUN_OUTPUT"']);
+    assert.deepEqual(argv, ["run-child", "%1", "--name", "build", "--", "bash", "-o", "pipefail", "-c", '{\nmake -j8\n} 2>&1 | tee "$KIDO_RUN_OUTPUT"']);
     assert.match(result.content[0].text, /read .*runs\/fake-run-id\/output with the read tool/);
     assert.match(
       (await asyncBash.execute("c", { command: "make", name: "build" })).content[0].text,
@@ -247,7 +290,7 @@ test("a stream run's output arrives in batches, capped, before the ending notice
     fx.setPanes([selfPane()]);
     const gate = join(fx.stateDir, "gate");
     await withEnv(
-      { KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "completed", text: "" }), KIDO_STREAM_POLL_MS: "20" },
+      { KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "completed", text: "" }), KIDO_STREAM_POLL_MS: "20", KIDO_STREAM_FLUSH_MS: "20", KIDO_STREAM_MAX_WAIT_MS: "60" },
       async () => {
         const s = await startNamedSession(fx, "Self");
         await s.tools.get("async_bash").execute("c", { command: "make", name: "build", stream: true });
@@ -273,6 +316,65 @@ test("a stream run's output arrives in batches, capped, before the ending notice
         const notice = kinds.lastIndexOf("kido-notice");
         assert.equal(kinds[notice - 1], "kido-stream", "the held output is delivered before the ending");
         assert.match(String(s.messages[notice - 1]!.message.content), /final line/);
+      },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a stream batch rides a tool boundary, and a run's spent output budget says the rest is only in the file", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const gate = join(fx.stateDir, "gate");
+    const output = join(fx.stateDir, "runs", "fake-run-id", "output");
+    await withEnv(
+      {
+        KIDO_FAKE_RUN_WAIT_GATE: gate,
+        KIDO_STREAM_POLL_MS: "20",
+        KIDO_STREAM_FLUSH_MS: "5000",
+        KIDO_STREAM_MAX_WAIT_MS: "5000",
+        KIDO_STREAM_BUDGET_BYTES: "1",
+      },
+      async () => {
+        const s = await startNamedSession(fx, "Self");
+        await s.tools.get("async_bash").execute("c", { command: "make", name: "build", stream: true });
+        appendFileSync(output, "from a tool\n");
+        await pollUntil(async () => {
+          await s.emit("turn_end", { toolResults: [{}] });
+          return customMessages(s, "kido-stream").some((m) => String(m.message.content).includes("from a tool"));
+        }, 3000, "a tool boundary to carry the held batch");
+        appendFileSync(output, "after the budget\n");
+        await pollUntil(async () => {
+          await s.emit("turn_end", { toolResults: [{}] });
+          return customMessages(s, "kido-stream").some((m) => String(m.message.content).includes("output budget spent"));
+        }, 3000, "the budget line");
+        assert.equal(readFileSync(output, "utf8").includes("from a tool"), true, "the output file still has everything");
+      },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a working agent holds stream lines past the idle deadline, and agent_end starts the schedule", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const gate = join(fx.stateDir, "gate");
+    const output = join(fx.stateDir, "runs", "fake-run-id", "output");
+    await withEnv(
+      { KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_STREAM_POLL_MS: "20", KIDO_STREAM_FLUSH_MS: "50", KIDO_STREAM_MAX_WAIT_MS: "200" },
+      async () => {
+        const s = await startNamedSession(fx, "Self");
+        await s.tools.get("async_bash").execute("c", { command: "make", name: "build", stream: true });
+        await s.emit("turn_start");
+        appendFileSync(output, "held while working\n");
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        assert.equal(customMessages(s, "kido-stream").length, 0, "the idle schedule must not run while the agent works");
+        await s.emit("agent_end", { messages: [] });
+        await pollUntil(() => customMessages(s, "kido-stream").some((m) => String(m.message.content).includes("held while working")), 2000, "the held batch after agent_end");
       },
     );
   } finally {
@@ -307,8 +409,10 @@ test("stop_run asks a subagent to stop first, then records completed when it had
 
     const result = await s.tools.get("stop_run").execute("c", { to: "kid" });
     assert.match(result.content[0].text, /^stopped kid; /);
+    assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--record-only", "--result", "completed"], "the ending is recorded before the child is asked to shut down");
     assert.equal(JSON.parse(inbox.received()[0]!).kind, "stop", "the child is asked to shut down over its inbox");
-    assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--wait", "5", "--result", "completed"]);
+    assert.deepEqual(fx.runStopCalls()[1], ["run-stop", "fake-run-id", "--cleanup", "--wait", "5"]);
+    assert.equal(fx.runOutcomeCalls().length, 0, "run-outcome is for the run's own report, not the caller's judgment");
   } finally {
     await fx.restore();
   }
@@ -327,15 +431,36 @@ test("stop_run with force skips the request, and a subagent with no inbox needs 
 
     await s.tools.get("stop_run").execute("c", { to: "kid", force: true });
     assert.equal(inbox.received().length, 0, "force skips the stop request");
-    assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--wait", "5"]);
+    assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--record-only"]);
+    assert.deepEqual(fx.runStopCalls()[1], ["run-stop", "fake-run-id", "--cleanup", "--wait", "5"]);
 
+    fx.setRuns([{ id: "fake-run-id", name: "kid", kind: "agent", parent: "%1", pane: "%2", session: child.session }]);
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid" })]);
     assert.equal(
       (await s.tools.get("stop_run").execute("c", { to: "kid" })).content[0].text,
       "subagent kid has no inbox to ask nicely over; pass --force to kill its window instead",
     );
+    assert.equal(fx.runStopCalls().length, 2, "a refused stop records nothing");
     await s.tools.get("stop_run").execute("c", { to: "kid", force: true });
-    assert.equal(fx.runStopCalls().length, 2);
+    assert.equal(fx.runStopCalls().length, 4);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("the stop wrapper's deadline outlives run-stop's wait and escalation", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const gate = join(fx.stateDir, "stop-gate");
+    await withEnv({ KIDO_FAKE_RUN_STOP_GATE: gate, KIDO_STOP_ESCALATION_MS: "50" }, async () => {
+      const s = await startNamedSession(fx, "Self");
+      await s.tools.get("async_bash").execute("c", { command: "make", name: "build" });
+      const stopped = s.tools.get("stop_run").execute("c", { to: "build" });
+      await pollUntil(() => fx.runStopCalls().length === 1, 2000, "run-stop to start");
+      writeFileSync(gate, "");
+      assert.equal((await stopped).content[0].text, "stopped run fake-run-id; killed its pane");
+    });
   } finally {
     await fx.restore();
   }
@@ -348,6 +473,7 @@ test("stop_run refuses an unrelated run and resolves a unique prefix of at least
     fx.setRuns([{ id: "abcdef0123456789", name: "job", kind: "bash", parent: "%1" }]);
     const s = await startNamedSession(fx, "Self");
     assert.equal((await s.tools.get("stop_run").execute("c", { to: "nope" })).content[0].text, 'no run matches "nope"');
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: "a" })).content[0].text, 'no run matches "a"', "a prefix shorter than the minimum is not a prefix");
     assert.equal((await s.tools.get("stop_run").execute("c", { to: "abcdef01" })).content[0].text, "stopped run abcdef0123456789; killed its pane");
   } finally {
     await fx.restore();

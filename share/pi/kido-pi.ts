@@ -46,7 +46,7 @@ export type Envelope = { id: string; from: Sender; text: string } & (
   | { kind: "unrecognised"; claimed: string }
 );
 
-type RunResult = { ok: true; out: string } | { ok: false; error: string };
+type RunResult = { ok: true; out: string } | { ok: false; error: string; code?: number };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -200,7 +200,7 @@ async function runCommand(command: string, args: string[], opts: { timeoutMs: nu
     child.on("error", (err) => finish({ ok: false, error: err instanceof Error ? err.message : String(err) }));
     child.on("close", (code) => {
       if (code === 0) finish({ ok: true, out: Buffer.concat(stdout).toString("utf8").trim() });
-      else finish({ ok: false, error: Buffer.concat(stderr).toString("utf8").trim() || `${command} exited with code ${code}` });
+      else finish({ ok: false, error: Buffer.concat(stderr).toString("utf8").trim() || `${command} exited with code ${code}`, ...(code === null ? {} : { code }) });
     });
   });
 }
@@ -460,8 +460,23 @@ export type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 type InboxHold = { server: Server; path: string } &
   ({ state: "owned"; handler: (sock: Socket) => void } | { state: "parked"; waiting: Socket[] });
 
+type WatchData = {
+  run: string;
+  name: string;
+  output: string;
+  target: { kind: "agent"; entry: AgentEntry } | { kind: "bash"; stream: boolean };
+  offset: number;
+  lines: string[];
+  dropped: number;
+  partial: string;
+  budget: number;
+  budgetTold: boolean;
+  idleDelay: number;
+};
+
 declare global {
   var __kidoPiExtensionInbox: InboxHold | undefined;
+  var __kidoPiExtensionWatches: WatchData[] | undefined;
   var __kidoPiExtensionCopy: string | undefined;
   var __kidoPiExtensionClearQueue: AgentSession["clearQueue"] | undefined;
 }
@@ -621,6 +636,9 @@ export function streamBatch(lines: string[], output: string, alreadyDropped = 0)
 }
 
 function checkName(name: string): string | null {
+  if (name === "" || name === "." || name === ".." || name.includes("/")) {
+    return `refusing window name ${quote(name)}: it must be one path-safe name, not an empty, dot or slashed path`;
+  }
   const bad = ["'", '"', "$", "#", "\\", "`", "\n", "\r"].find((c) => name.includes(c));
   if (bad) return `refusing window name ${quote(name)}: it contains ${quote(bad)}, which cannot survive tmux's own command-line parsing`;
   if (Buffer.byteLength(name, "utf8") > MAX_NAME_BYTES) {
@@ -941,13 +959,12 @@ export default function (pi: ExtensionAPI) {
   type Snapshot = { rows: AgentRow[]; all: AgentRow[]; mySession: string; entries: AgentEntry[]; runs: RunRow[] };
 
   const discovery = async (): Promise<Snapshot> => {
-    const panes = await listPanes();
+    const [panes, runs] = await Promise.all([listPanes(), myRuns()]);
     const entries = dir ? agentEntries(dir) : [];
     const own = dir && ownSessionId ? ownEntries(dir, ownSessionId) : [];
     const bySession = bySessionOf(entries);
     const ownBySession = bySessionOf(own);
     const ownByRun = new Map(own.map((e) => [e.run, e]));
-    const runs = await myRuns();
     const mySession = panes.find((p) => p.pane === pane)?.session ?? "";
     const all: AgentRow[] = [];
 
@@ -974,7 +991,7 @@ export default function (pi: ExtensionAPI) {
         model: entry?.model ?? "",
         kind: entry?.parent ? "subagent" : "agent",
         relationship: self ? "own" : isParent ? "parent" : isPeer ? "peer" : "other",
-        run: "",
+        run: entry?.run ?? "",
         state: "running",
         tmux: p.session,
         inbox: p.inbox,
@@ -989,8 +1006,9 @@ export default function (pi: ExtensionAPI) {
         if (ended > 20) continue;
       }
       const entry = agentRun(r, ownByRun, ownBySession);
+      const current = !entry || entry.run === r.id;
       const paneInfo = r.pane ? panes.find((p) => p.pane === r.pane) : undefined;
-      const live = !!paneInfo && isAgentPane(paneInfo) && (!entry || paneInfo.agentSession === entry.session);
+      const live = current && !!paneInfo && isAgentPane(paneInfo) && (!entry || paneInfo.agentSession === entry.session);
       const livePane = live ? paneInfo : undefined;
       const name = entry?.name || r.name || "";
       const task = entry ? readTextFile(join(entry.dir, "task")) : undefined;
@@ -1009,7 +1027,7 @@ export default function (pi: ExtensionAPI) {
       all.push({
         id: r.id,
         name,
-        named: name !== "",
+        named: current && name !== "",
         pane: r.pane ?? "",
         window: livePane?.window ?? "",
         status: livePane ? (rootRecord(livePane.programStatus)?.state ?? "unknown") : "unknown",
@@ -1060,11 +1078,13 @@ export default function (pi: ExtensionAPI) {
   };
 
   const matchAddress = (rows: AgentRow[], wanted: string): Address | null => {
-    const byName = decide(rows.filter((a) => a.named && a.name && a.name.toLowerCase() === wanted.toLowerCase()), wanted, "name");
-    if (byName) return byName;
-    const exact = rows.find((a) => a.id === wanted);
+    const live = rows.filter((a) => a.state !== "ended");
+    const either = <T>(f: (group: AgentRow[]) => T | null): T | null => f(live) ?? f(rows);
+    const named = either((group) => decide(group.filter((a) => a.named && a.name && a.name.toLowerCase() === wanted.toLowerCase()), wanted, "name"));
+    if (named) return named;
+    const exact = either((group) => group.find((a) => a.id === wanted) ?? null);
     if (exact) return { agent: exact };
-    return decide(rows.filter((a) => a.id.startsWith(wanted)), wanted, "id");
+    return either((group) => decide(group.filter((a) => a.id.startsWith(wanted)), wanted, "id"));
   };
 
   type Resolution = { snapshot: Snapshot } & ({ agent: AgentRow } | { error: string; agent?: undefined });
@@ -1148,6 +1168,11 @@ export default function (pi: ExtensionAPI) {
       const sock = createConnection(path);
       let out = "";
       let finished = false;
+      let sent = false;
+      const failure = (detail: string): SendResult =>
+        sent
+          ? { ok: false, kind: "failed", message: `inbox ${path}: ${detail} after the request was sent; it may have arrived` }
+          : { ok: false, kind: "unavailable", message: `inbox ${path}: ${detail}` };
       const finish = (result: SendResult): void => {
         if (finished) return;
         finished = true;
@@ -1155,9 +1180,12 @@ export default function (pi: ExtensionAPI) {
         sock.destroy();
         resolve(result);
       };
-      const timer = setTimeout(() => finish({ ok: false, kind: "unavailable", message: `inbox ${path}: timed out` }), 2000);
+      const timer = setTimeout(() => finish(failure("timed out")), 2000);
       timer.unref();
-      sock.on("connect", () => sock.end(payload));
+      sock.on("connect", () => {
+        sent = true;
+        sock.end(payload);
+      });
       sock.on("data", (chunk: Buffer) => {
         out += chunk.toString("utf8");
       });
@@ -1167,7 +1195,7 @@ export default function (pi: ExtensionAPI) {
         else if (reply === "refused") finish({ ok: false, kind: "refused", message: `inbox ${path}: refused` });
         else finish({ ok: false, kind: "failed", message: `inbox ${path}: answered ${JSON.stringify(reply)}, want "ok"` });
       });
-      sock.on("error", (err) => finish({ ok: false, kind: "unavailable", message: `inbox ${path}: ${err.message}` }));
+      sock.on("error", (err) => finish(failure(err.message)));
     });
 
   const notAccepting = (name: string): string => `${name} is not accepting messages`;
@@ -1224,20 +1252,28 @@ export default function (pi: ExtensionAPI) {
     return deliveryText(parentPane.name || parentSession, "notice", await sendEnvelope(parentPane.inbox, { kind: "notice" }, body));
   };
 
-  type Watch = {
-    run: string;
-    name: string;
-    output: string;
-    target: { kind: "agent"; entry: AgentEntry } | { kind: "bash"; stream: boolean };
+  type Watch = WatchData & {
     timer: NodeJS.Timeout | null;
+    flushTimer: NodeJS.Timeout | null;
     waiter: ChildProcess | null;
-    offset: number;
-    partial: string;
-    lines: string[];
-    dropped: number;
+    detach: (() => void) | null;
   };
 
   const watches = new Map<string, Watch>();
+
+  const watchData = (run: string, name: string, output: string, agent: AgentEntry | null, stream: boolean): WatchData => ({
+    run,
+    name,
+    output,
+    target: agent ? { kind: "agent", entry: agent } : { kind: "bash", stream },
+    offset: 0,
+    lines: [],
+    dropped: 0,
+    partial: "",
+    budget: envMs("KIDO_STREAM_BUDGET_BYTES", 256 * 1024),
+    budgetTold: false,
+    idleDelay: envMs("KIDO_STREAM_FLUSH_MS", 1000),
+  });
 
   type TailRead = { data: Buffer; skipped: number; end: number } | { error: string };
 
@@ -1259,20 +1295,74 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const flushWatch = (watch: Watch): void => {
-    if (watch.lines.length === 0) return;
-    const batch = streamBatch(watch.lines, watch.output, watch.dropped);
-    watch.lines = [];
-    watch.dropped = 0;
+  const sendStream = (watch: Watch, body: string): void => {
     pi.sendMessage(
       {
         customType: STREAM_CUSTOM_TYPE,
-        content: `async run ${JSON.stringify(watch.name)} output (run ${watch.run})\n${batch}`,
+        content: `async run ${JSON.stringify(watch.name)} output (run ${watch.run})\n${body}`,
         display: true,
         details: { from: watch.name, run: watch.run, output: watch.output },
       },
       { deliverAs: "steer", triggerTurn: true },
     );
+  };
+
+  const flushWatch = (watch: Watch): boolean => {
+    if (watch.lines.length === 0) return false;
+    if (watch.budget <= 0) {
+      watch.lines = [];
+      watch.dropped = 0;
+      if (watch.timer) clearInterval(watch.timer);
+      watch.timer = null;
+      if (!watch.budgetTold) {
+        watch.budgetTold = true;
+        sendStream(watch, `... output budget spent; the rest is only in ${watch.output}`);
+      }
+      return true;
+    }
+    const batch = streamBatch(watch.lines, watch.output, watch.dropped);
+    watch.lines = [];
+    watch.dropped = 0;
+    watch.budget -= Buffer.byteLength(batch, "utf8");
+    sendStream(watch, batch);
+    return true;
+  };
+
+  const clearFlush = (watch: Watch): void => {
+    if (watch.flushTimer) clearTimeout(watch.flushTimer);
+    watch.flushTimer = null;
+  };
+
+  const streamBase = (): number => envMs("KIDO_STREAM_FLUSH_MS", 1000);
+  const streamCap = (): number => envMs("KIDO_STREAM_MAX_WAIT_MS", 30000);
+
+  let agentWorking = false;
+
+  const scheduleFlush = (watch: Watch): void => {
+    if (agentWorking || watch.lines.length === 0 || watch.flushTimer || !watch.timer) return;
+    watch.idleDelay = Math.min(watch.idleDelay, streamCap());
+    watch.flushTimer = setTimeout(() => {
+      watch.flushTimer = null;
+      if (flushWatch(watch)) watch.idleDelay = Math.min(watch.idleDelay * 2, streamCap());
+    }, watch.idleDelay);
+    watch.flushTimer.unref();
+  };
+
+  const scheduleIdleStreams = (): void => {
+    for (const watch of watches.values()) {
+      if (watch.target.kind !== "bash" || !watch.target.stream) continue;
+      watch.idleDelay = streamBase();
+      scheduleFlush(watch);
+    }
+  };
+
+  const flushStreams = (): void => {
+    for (const watch of watches.values()) {
+      if (watch.target.kind !== "bash" || !watch.target.stream) continue;
+      clearFlush(watch);
+      watch.idleDelay = streamBase();
+      flushWatch(watch);
+    }
   };
 
   const tailWatch = (watch: Watch, final: boolean): void => {
@@ -1296,7 +1386,12 @@ export default function (pi: ExtensionAPI) {
       watch.dropped += watch.lines.length - STREAM_BUFFER_LINES;
       watch.lines = watch.lines.slice(watch.lines.length - STREAM_BUFFER_LINES);
     }
-    flushWatch(watch);
+    if (final) {
+      clearFlush(watch);
+      flushWatch(watch);
+    } else if (!agentWorking) {
+      scheduleFlush(watch);
+    }
   };
 
   const lastOutput = (path: string): { tail: string; omitted: number } | { error: string } => {
@@ -1329,34 +1424,27 @@ export default function (pi: ExtensionAPI) {
     return body;
   };
 
-  const watch = (run: string, name: string, output: string, agent: AgentEntry | null, stream: boolean): void => {
+  const watch = (data: WatchData): void => {
     const command = kido;
-    if (!command || watches.has(run)) return;
-    const entry: Watch = {
-      run,
-      name,
-      output,
-      target: agent ? { kind: "agent", entry: agent } : { kind: "bash", stream },
-      timer: null,
-      waiter: null,
-      offset: 0,
-      partial: "",
-      lines: [],
-      dropped: 0,
-    };
-    watches.set(run, entry);
-    if (stream) {
+    if (!command || watches.has(data.run)) return;
+    const entry: Watch = { ...data, timer: null, flushTimer: null, waiter: null, detach: null };
+    watches.set(data.run, entry);
+    if (entry.target.kind === "bash" && entry.target.stream) {
       entry.timer = setInterval(() => tailWatch(entry, false), envMs("KIDO_STREAM_POLL_MS", 1000));
       entry.timer.unref();
+      if (entry.lines.length > 0) scheduleFlush(entry);
     }
-    const waiter = spawn(command, ["run-wait", run, "--json"], { stdio: ["ignore", "pipe", "ignore"], env: process.env });
+    const waiter = spawn(command, ["run-wait", entry.run, "--json"], { stdio: ["ignore", "pipe", "ignore"], env: process.env });
     entry.waiter = waiter;
     const chunks: Buffer[] = [];
-    waiter.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
-    waiter.on("error", () => {});
-    waiter.on("close", () => {
+    const onData = (chunk: Buffer): void => {
+      chunks.push(chunk);
+    };
+    const onError = (): void => {};
+    const onClose = (): void => {
       if (entry.timer) clearInterval(entry.timer);
-      watches.delete(run);
+      clearFlush(entry);
+      watches.delete(entry.run);
       let outcome: { result: string; text: string } | null = null;
       try {
         const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8").trim());
@@ -1366,8 +1454,16 @@ export default function (pi: ExtensionAPI) {
       } catch {}
       if (!outcome) return;
       if (entry.target.kind === "bash" && entry.target.stream) tailWatch(entry, true);
-      deliverNotice(endingBody(entry, outcome), name);
-    });
+      deliverNotice(endingBody(entry, outcome), entry.name);
+    };
+    waiter.stdout?.on("data", onData);
+    waiter.on("error", onError);
+    waiter.on("close", onClose);
+    entry.detach = () => {
+      waiter.stdout?.removeListener("data", onData);
+      waiter.removeListener("close", onClose);
+      waiter.removeListener("error", onError);
+    };
   };
 
   let parentPane: string | null = null;
@@ -1382,11 +1478,13 @@ export default function (pi: ExtensionAPI) {
     parentReading = false;
   };
 
-  const paneReading = async (target: string): Promise<{ session: string; programStatus: string } | null> => {
+  type PaneReading = { ok: true; session: string; programStatus: string } | { ok: false };
+
+  const paneReading = async (target: string): Promise<PaneReading> => {
     const res = await runCommand("tmux", ["display-message", "-p", "-t", target, "-F", "#{@kido_session}\x1f#{pane_program_status}"], { timeoutMs: 2000 });
-    if (!res.ok || !res.out) return null;
+    if (!res.ok || !res.out) return { ok: false };
     const [session = "", programStatus = ""] = res.out.split("\x1f");
-    return { session, programStatus };
+    return { ok: true, session, programStatus };
   };
 
   // The parent is a pi pane; kido writes nothing for it. A failed tmux read is
@@ -1402,7 +1500,7 @@ export default function (pi: ExtensionAPI) {
         try {
           if (parentPane) {
             const reading = await paneReading(parentPane);
-            if (reading && reading.session === parentSession && rootRecord(reading.programStatus)?.app === "pi") return;
+            if (reading.ok && reading.session === parentSession && rootRecord(reading.programStatus)?.app === "pi") return;
           }
           const { ok, panes } = await listPanesResult();
           if (!ok) return;
@@ -1530,8 +1628,49 @@ export default function (pi: ExtensionAPI) {
     const started = await startChild(parent, entry.name, entry.dir, command);
     if ("error" in started) return null;
     writeAgentJson(entry.dir, { session: entry.session, run: started.created.id, model: entry.model, tools: entry.tools, fork: entry.fork });
-    watch(started.created.id, entry.name, started.created.output, { ...entry, run: started.created.id }, false);
+    watch(watchData(started.created.id, entry.name, started.created.output, { ...entry, run: started.created.id }, false));
     return started.created.id;
+  };
+
+  const restartLocks = new Map<string, Promise<unknown>>();
+
+  const withRestartLock = <T>(session: string, fn: () => Promise<T>): Promise<T> => {
+    const previous = restartLocks.get(session) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    restartLocks.set(
+      session,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
+  };
+
+  type RestartPrep =
+    | { error: string }
+    | { snapshot: Snapshot; entry: AgentEntry | null; restartedRun: string | null; firstPrompt: string | null };
+
+  const prepareRestart = async (
+    address: string,
+    message: string | null,
+    initial: Snapshot,
+    refuse: (entry: AgentEntry) => string | null,
+  ): Promise<RestartPrep> => {
+    const first = endedTarget(address, resolveIn(initial, address));
+    if (!first) return { snapshot: initial, entry: null, restartedRun: null, firstPrompt: null };
+    return withRestartLock(first.entry.session, async () => {
+      const snapshot = await discovery();
+      const ended = endedTarget(address, resolveIn(snapshot, address));
+      if (!ended) return { snapshot, entry: null, restartedRun: null, firstPrompt: null };
+      const refusal = refuse(ended.entry);
+      if (refusal) return { error: refusal };
+      if (ended.starting) return { snapshot, entry: ended.entry, restartedRun: null, firstPrompt: null };
+      const firstPrompt = message !== null && sessionFileOf(ended.entry) ? message : null;
+      const run = await restartChild(ended.entry, firstPrompt);
+      if (!run) return { error: "could not restart it" };
+      return { snapshot, entry: ended.entry, restartedRun: run, firstPrompt };
+    });
   };
 
   const sendWhenBound = async (path: string, spec: { kind: string; id?: string; replyTo?: string }, text: string, deadline: number): Promise<SendResult> => {
@@ -1569,7 +1708,7 @@ export default function (pi: ExtensionAPI) {
     for (const run of await myRuns()) {
       if (run.outcome || watches.has(run.id) || !run.output) continue;
       const entry = agentRun(run, byRun, bySession);
-      watch(run.id, entry?.name || run.name || run.id, run.output, entry ?? null, false);
+      watch(watchData(run.id, entry?.name || run.name || run.id, run.output, entry ?? null, false));
     }
   };
 
@@ -1791,38 +1930,29 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       if (!params.message) return reply(`could not message ${params.to}: the message is empty; nothing sent`);
       if (!params.message.isWellFormed()) return reply(`could not message ${params.to}: the message is not valid UTF-8`);
-      let to = params.to;
       const askerPane = params.replyTo ? pendingInboundAsks.get(params.replyTo) : undefined;
       if (askerPane && params.replyTo) pendingInboundAsks.delete(params.replyTo);
-      // Re-resolved from the asker's pane: a /reload since the ask arrived can
-      // have moved the asker to a new session id, but not its pane.
-      const snapshot = await discovery();
-      if (askerPane) to = snapshot.all.find((a) => a.pane === askerPane)?.id ?? to;
       const kind = params.replyTo ? "reply" : "message";
       const spec = params.replyTo ? { kind, replyTo: params.replyTo } : { kind };
-      const restartMessage = async (entry: AgentEntry, starting: boolean): Promise<string> => {
-        const row = entryRow(entry);
-        const bound = Date.now() + 5000;
-        if (starting) {
-          const sent = sendText(row, kind, await sendWhenBound(row.inbox, spec, params.message, bound), snapshot.entries);
-          return sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`;
-        }
-        const firstPrompt = sessionFileOf(entry) ? params.message : null;
-        const run = await restartChild(entry, firstPrompt);
-        if (!run) return `could not message ${params.to}: could not restart it`;
-        if (firstPrompt !== null) return restartedReply(entry.name, run);
-        const sent = sendText(row, kind, await sendWhenBound(row.inbox, spec, params.message, bound), snapshot.entries);
-        return sent.ok ? `restarted ${entry.name} as run ${run} and ${sent.text}` : `could not message ${params.to}: ${sent.text}`;
-      };
-      const restarted = endedTarget(to, resolveIn(snapshot, to));
-      if (restarted) return reply(await restartMessage(restarted.entry, restarted.starting));
-      const resolved = resolveIn(snapshot, to);
+      const snapshot = await discovery();
+      const address = askerPane ? snapshot.all.find((a) => a.pane === askerPane)?.id ?? params.to : params.to;
+      const prep = await prepareRestart(address, params.message, snapshot, () => null);
+      if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error}`);
+      const bound = Date.now() + 5000;
+      if (prep.entry) {
+        if (prep.firstPrompt !== null) return reply(restartedReply(prep.entry.name, prep.restartedRun ?? ""));
+        const row = entryRow(prep.entry);
+        const sent = sendText(row, kind, await sendWhenBound(row.inbox, spec, params.message, bound), prep.snapshot.entries);
+        if (!sent.ok) return reply(`could not message ${params.to}: ${sent.text}`);
+        return reply(prep.restartedRun ? `restarted ${prep.entry.name} as run ${prep.restartedRun} and ${sent.text}` : sent.text);
+      }
+      const resolved = resolveIn(prep.snapshot, address);
       const target = resolved.agent;
       if (!target) return reply(`could not message ${params.to}: ${resolutionError(resolved)}`);
       if (isMyself(target)) return reply(`${agentName(target)} is this agent`);
       if (target.kind === "bash") return reply(`could not message ${params.to}: ${agentName(target)} is a background command, not an agent; it cannot be messaged`);
       if (!target.canMessage) return reply(`could not message ${params.to}: ${agentName(target)} has no inbox to reach it on`);
-      const sent = sendText(target, kind, await sendEnvelope(target.inbox, spec, params.message), snapshot.entries);
+      const sent = sendText(target, kind, await sendEnvelope(target.inbox, spec, params.message), prep.snapshot.entries);
       if (!sent.ok) return reply(`could not message ${params.to}: ${sent.text}`);
       return reply(askerPane ? `${sent.text} ${STOP_AFTER_ASK_REPLY}` : sent.text);
     },
@@ -1855,19 +1985,18 @@ export default function (pi: ExtensionAPI) {
       const startedAt = Date.now();
       const timeoutMs = params.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
       const deadline = startedAt + timeoutMs;
-      const snapshot = await discovery();
-      const resolved = resolveIn(snapshot, params.to);
-      let target = resolved.agent;
-      let restartInbox = "";
-      const restarted = endedTarget(params.to, resolved);
-      if (restarted) {
-        if (!canReply(restarted.entry, childInbox(restarted.entry))) return reply(cannotReply(restarted.entry.name));
-        if (!restarted.starting && !(await restartChild(restarted.entry, null))) {
-          return reply(`could not ask ${params.to}: could not restart it`);
-        }
-        restartInbox = childInbox(restarted.entry);
-        target = entryRow(restarted.entry);
+      const first = await discovery();
+      const prepared = await prepareRestart(params.to, null, first, (entry) =>
+        canReply(entry, childInbox(entry)) ? null : cannotReply(entry.name),
+      );
+      if ("error" in prepared) {
+        return reply(prepared.error.startsWith("could not restart") ? `could not ask ${params.to}: ${prepared.error}` : prepared.error);
       }
+      const snapshot = prepared.snapshot;
+      const resolved = resolveIn(snapshot, params.to);
+      const target = prepared.entry ? entryRow(prepared.entry) : resolved.agent;
+      const restartInbox = prepared.entry ? childInbox(prepared.entry) : "";
+      const restarted = prepared.entry !== null;
       if (!target) return reply(`could not ask ${params.to}: ${resolutionError(resolved)}`);
       const who = agentName(target);
       if (isMyself(target)) return reply("cannot ask yourself");
@@ -1916,16 +2045,16 @@ export default function (pi: ExtensionAPI) {
 
       if (!settled) {
         let reading = false;
-        const targetPane = target.pane;
+        const t = target;
         watch = setInterval(() => {
           if (reading) return;
           reading = true;
-          const alive = targetPane
-            ? paneReading(targetPane).then((r) => !!r && r.session === target.id && rootRecord(r.programStatus)?.app === "pi")
-            : listPanes().then((panes) => panes.some((p) => isAgentPane(p) && p.agentSession === target.id));
-          void alive.then((ok) => {
+          const gone = t.pane
+            ? paneReading(t.pane).then((r) => r.ok && !(r.session === t.id && rootRecord(r.programStatus)?.app === "pi"))
+            : listPanesResult().then((r) => r.ok && !r.panes.some((p) => isAgentPane(p) && p.agentSession === t.id));
+          void gone.then((absent) => {
             reading = false;
-            if (!ok) settle({ gaveUp: "gone" });
+            if (absent) settle({ gaveUp: "gone" });
           });
         }, envMs("KIDO_ASK_POLL_MS", 5000));
         watch.unref();
@@ -2032,9 +2161,9 @@ export default function (pi: ExtensionAPI) {
     const candidates = all.filter((a) => a.relationship === "own" || isDescendant(a, entries));
     let matches = candidates.filter((a) => a.id === wanted || a.run === wanted);
     if (!matches.length) {
-      matches = candidates.filter(
-        (a) => (a.id.length >= MIN_ID_PREFIX && a.id.startsWith(wanted)) || (a.run.length >= MIN_ID_PREFIX && a.run.startsWith(wanted)),
-      );
+      matches = wanted.length >= MIN_ID_PREFIX
+        ? candidates.filter((a) => a.id.startsWith(wanted) || (a.run !== "" && a.run.startsWith(wanted)))
+        : [];
     }
     if (!matches.length) {
       matches = candidates.filter((a) => a.named && a.name.toLowerCase() === wanted.toLowerCase() && a.state === "running");
@@ -2046,20 +2175,26 @@ export default function (pi: ExtensionAPI) {
     const target = matches.at(0);
     if (!target) return `no run matches ${quote(to)}`;
     const run = target.run || target.id;
+    const stopWait = 5;
+    const stopDeadline = (wait: number): number => wait * 1000 + envMs("KIDO_STOP_ESCALATION_MS", 5000) + 1500;
     if (target.kind === "bash") {
-      const res = await runCommand(command, ["run-stop", run], { timeoutMs: envMs("KIDO_STOP_TIMEOUT_MS", 8000) });
+      const res = await runCommand(command, ["run-stop", run], { timeoutMs: stopDeadline(0) });
       return res.ok ? res.out : res.error;
     }
     const name = target.name || target.id;
     const entry = entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
-    if (!force) {
-      if (!target.inbox) return `subagent ${name} has no inbox to ask nicely over; pass --force to kill its window instead`;
+    if (!force && !target.inbox) return `subagent ${name} has no inbox to ask nicely over; pass --force to kill its window instead`;
+    const recordArgs = ["run-stop", run, "--record-only", ...(entry && exists(join(entry.dir, "report")) ? ["--result", "completed"] : [])];
+    const recorded = await runCommand(command, recordArgs, { timeoutMs: stopDeadline(stopWait) });
+    if (!recorded.ok && recorded.code !== 5) return recorded.error;
+    let requestFailure = "";
+    if (!force && target.inbox) {
       const request = await sendEnvelope(target.inbox, { kind: "stop" }, "");
-      if (!request.ok && request.kind !== "refused") return `subagent ${name} could not be asked to stop (${request.message})`;
+      if (!request.ok && request.kind !== "refused") requestFailure = request.message;
     }
-    const args = ["run-stop", run, "--wait", "5", ...(entry && exists(join(entry.dir, "report")) ? ["--result", "completed"] : [])];
-    const res = await runCommand(command, args, { timeoutMs: envMs("KIDO_STOP_TIMEOUT_MS", 8000) });
-    return res.ok ? `stopped ${name}; ${res.out}` : res.error;
+    const res = await runCommand(command, ["run-stop", run, "--cleanup", "--wait", String(stopWait)], { timeoutMs: stopDeadline(stopWait) });
+    if (res.ok) return requestFailure ? `stopped ${name}; ${res.out}; the stop request failed: ${requestFailure}` : `stopped ${name}; ${res.out}`;
+    return requestFailure ? `${res.error}; the stop request failed: ${requestFailure}` : res.error;
   };
 
   pi.registerTool({
@@ -2148,7 +2283,7 @@ export default function (pi: ExtensionAPI) {
       }
       const created = started.created;
       writeAgentJson(childDir, { ...record, run: created.id });
-      watch(created.id, name, created.output, { ...record, run: created.id, name, parent: ownSessionId, dir: childDir }, false);
+      watch(watchData(created.id, name, created.output, { ...record, run: created.id, name, parent: ownSessionId, dir: childDir }, false));
       const window = windowOf(created.pane);
       return reply(
         `spawned ${name} (window ${window}, pane ${created.pane}, run ${created.id})${params.fork ? ", forked from this session's context" : ""}; ${SPAWN_RESULT_RULE}`,
@@ -2196,11 +2331,11 @@ export default function (pi: ExtensionAPI) {
       }
       const parent = parentKey();
       if (!parent) return reply("could not start background command: this session has no pane to parent a run from");
-      const line = `${params.command} 2>&1 | tee "$KIDO_RUN_OUTPUT"`;
+      const line = `{\n${params.command}\n} 2>&1 | tee "$KIDO_RUN_OUTPUT"`;
       const started = await startChild(parent, params.name, null, ["bash", "-o", "pipefail", "-c", line]);
       if ("error" in started) return reply(`could not start background command: ${started.error}`);
       const created = started.created;
-      watch(created.id, params.name, created.output, null, !!params.stream);
+      watch(watchData(created.id, params.name, created.output, null, !!params.stream));
       const window = windowOf(created.pane);
       return reply(
         `started run ${created.id}${params.name ? ` (${params.name})` : ""} in window ${window}; list_runs lists it and stop_run("${created.id}") stops it; ` +
@@ -2298,11 +2433,6 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.hasUI || !ownSessionId || !kido) return;
     active = true;
 
-    await writeOptions([
-      [OPTION_SESSION, ownSessionId],
-      [OPTION_NAME, pi.getSessionName() ?? ""],
-    ]);
-
     if (!adoptInbox()) {
       stopInbox();
       try {
@@ -2310,7 +2440,12 @@ export default function (pi: ExtensionAPI) {
       } catch {}
     }
     const hold = inboxOpen() ? heldInbox() : null;
-    if (hold) await writeOptions([[OPTION_INBOX, hold.path]]);
+    const options: Array<[string, string]> = [
+      [OPTION_SESSION, ownSessionId],
+      [OPTION_NAME, pi.getSessionName() ?? ""],
+    ];
+    if (hold) options.push([OPTION_INBOX, hold.path]);
+    await writeOptions(options);
 
     // The task file is the run's record; the sibling "delivered" marker, written
     // only after a successful read, stops a /reload from delivering it twice.
@@ -2335,6 +2470,11 @@ export default function (pi: ExtensionAPI) {
         }
       }
     }
+    const parked = globalThis.__kidoPiExtensionWatches;
+    globalThis.__kidoPiExtensionWatches = undefined;
+    if (parked) {
+      for (const data of parked) watch(data);
+    }
     startParentWatch();
   });
 
@@ -2343,6 +2483,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   const running = (): void => {
+    agentWorking = true;
     workStarted();
     void watchLiveChildren();
   };
@@ -2350,8 +2491,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_start", running);
   pi.on("tool_execution_start", running);
   pi.on("tool_call", running);
+  pi.on("turn_end", (event: { toolResults?: unknown[] }) => {
+    if (event?.toolResults?.length) flushStreams();
+  });
 
   pi.on("agent_end", (event: { messages?: { role?: string; stopReason?: string; errorMessage?: string }[] }) => {
+    agentWorking = false;
+    scheduleIdleStreams();
     const assistants = (event?.messages ?? []).filter((m) => m?.role === "assistant");
     const last = assistants[assistants.length - 1];
     if (!last) return;
@@ -2365,6 +2511,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_settled", async (_event: unknown, ctx: { isIdle(): boolean }) => {
     if (!ctx.isIdle()) return;
+    agentWorking = false;
+    scheduleIdleStreams();
     settled = true;
     if (!edge) return;
     if (ending.kind === "aborted") return;
@@ -2386,16 +2534,38 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
-    stopInbox({ keepListening: event?.reason === "reload" });
+    const reload = event?.reason === "reload";
+    stopInbox({ keepListening: reload });
     abandonPending();
     stopParentWatch();
+    if (reload) {
+      globalThis.__kidoPiExtensionWatches = [...watches.values()].map(
+        (entry): WatchData => ({
+          run: entry.run,
+          name: entry.name,
+          output: entry.output,
+          target: entry.target,
+          offset: entry.offset,
+          lines: entry.lines,
+          dropped: entry.dropped,
+          partial: entry.partial,
+          budget: entry.budget,
+          budgetTold: entry.budgetTold,
+          idleDelay: entry.idleDelay,
+        }),
+      );
+    } else {
+      globalThis.__kidoPiExtensionWatches = undefined;
+    }
     for (const entry of watches.values()) {
       if (entry.timer) clearInterval(entry.timer);
+      clearFlush(entry);
+      if (reload) entry.detach?.();
       entry.waiter?.kill();
     }
     watches.clear();
     await endOwnRun(event?.reason);
-    if (active) await unsetOptions();
+    if (active && !reload) await unsetOptions();
     active = false;
     session = null;
   });

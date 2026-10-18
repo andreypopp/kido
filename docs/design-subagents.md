@@ -339,8 +339,9 @@ or loses its parent:
    turn failed names that error.
 4. It unsets its four pane options.
 
-`/reload` keeps the inbox listening and records no outcome, because the
-run continues. `/new`, `/resume` and `/fork` record nothing either: the
+`/reload` keeps the inbox listening, keeps the pane options and its
+`run-wait` watches, and records no outcome, because the run continues
+(design.md, "The inbox"). `/new`, `/resume` and `/fork` record nothing either: the
 process continues as another session.
 
 **The window, and the pane.** The sweep collects a marked run's pane
@@ -366,8 +367,9 @@ of at least eight characters, an unambiguous running name. It removes
 one leading `@`.
 
 - A bash run: `kido run-stop ID`.
-- A subagent: the stop request over its inbox, then `kido run-stop ID
-  --wait 5`, with `--result completed` if a `report` exists. A healthy
+- A subagent: `kido run-stop ID --record-only` records `completed` if
+  a `report` exists, else `stopped`. Then the stop request goes over its
+  inbox, and `kido run-stop ID --cleanup --wait 5` follows. A healthy
   child ends itself within the wait. kido escalates for one that does
   not (design.md, "Window lifecycle"). `force` skips the request.
   Without an inbox and without `force`, the stop is refused.
@@ -398,7 +400,14 @@ new run under the same session. The rules:
   found. An `async_bash` run is refused: "a background command, not an
   agent".
 - A name resolves to a live agent first, then to the newest ended child
-  of the sender.
+  of the sender. After a restart, the old runs of the session are
+  history: only the run in `agent.json` takes the name, so they never
+  compete with the live child for its address.
+- A child restarts once at a time. Discovery, the restart and the
+  `agent.json` write run under a lock for that child's session; the
+  delivery follows after the lock. Thus, two concurrent messages to an
+  ended child start one run: the second sees the first's live run and
+  is delivered to it. Another child's restart does not wait.
 - PARENT is the sender's current run id or pane, not the one at the
   spawn. A stale parent would make the sweep's orphan rule close the
   child at once.
@@ -468,10 +477,26 @@ shows it like any other run.
 ## Streaming a run's output
 
 With `stream: true`, the parent tails the run's `output` file every
-`KIDO_STREAM_POLL_MS` (default 1000) and sends what is new as one
-collapsed custom message (`deliverAs: "steer"`, `triggerTurn: true`).
-A batch steers into a running turn without costing a turn. An idle
-parent starts one.
+`KIDO_STREAM_POLL_MS` (default 1000) and holds the new lines. It sends
+the held lines as one collapsed custom message (`deliverAs: "steer"`,
+`triggerTurn: true`) at one of two times:
+
+- While the parent works, at a tool boundary: a `turn_end` that ran
+  tools. The batch steers into the running work without costing a
+  turn. A long turn without tools holds its lines until it ends.
+- While the parent is idle, on the idle schedule: the first held batch
+  goes after `KIDO_STREAM_FLUSH_MS` (default 1000). Each batch sent this
+  way doubles the delay, up to `KIDO_STREAM_MAX_WAIT_MS` (default
+  30000). Each starts a turn, so a long noisy command starts fewer and
+  fewer turns. A tool boundary resets the delay. `agent_end` starts the
+  schedule for lines held during the work.
+
+Each run has a budget of `KIDO_STREAM_BUDGET_BYTES` (default 256 KiB)
+of sent batches. After the budget is spent, one last message reads
+`... output budget spent; the rest is only in <path>`, and the run
+sends no more batches and stops tailing. The budget is checked before
+each batch, so the last batch can pass it by up to one batch. The
+ending notice still follows.
 
 A batch keeps a tail of up to 200 lines within a 16KB line budget. It
 keeps a single overlong last line, truncated to 16KB. One line above the
@@ -485,8 +510,9 @@ parent reads the rest of the file and sends it before the ending
 notice. Thus, the model never reads "this is how it ended" before the
 corresponding output.
 
-kido stores no stream flag. A parent that restarts re-watches a bash run
-for its ending only, not for batches. `stream` defaults to off.
+kido stores no stream flag. A `/reload` keeps the watch and its held
+lines. A parent that restarts re-watches a bash run for its ending
+only, not for batches. `stream` defaults to off.
 
 ## A human at a shell
 

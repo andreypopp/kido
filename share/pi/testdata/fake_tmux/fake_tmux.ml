@@ -65,12 +65,13 @@ let run () =
       let format = Option.value ~default:"" (Fake_common.arg_after "-F" argv) in
       List.iter (fun row -> print_endline (render row format)) rows
   | "display-message" :: _ -> (
+      if String.equal (Fs.getenv "KIDO_FAKE_TMUX_FAIL") "1" then exit 1;
       match Fake_common.arg_after "-F" argv with
       | None -> exit 1
-      | Some format ->
-          List.iter
-            (fun row -> print_endline (render row format))
-            (rows_for_target rows (Fake_common.arg_after "-t" argv)))
+      | Some format -> (
+          match rows_for_target rows (Fake_common.arg_after "-t" argv) with
+          | [] -> exit 1
+          | found -> List.iter (fun row -> print_endline (render row format)) found))
   | [] -> exit 1
   | command :: _ ->
       prerr_endline ("fake tmux: unsupported command " ^ command);

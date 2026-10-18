@@ -279,6 +279,19 @@ other reason closes the server and unlinks the socket. A notice has no
 paste fallback and is sent exactly once. Thus, the reload gap must not
 discard it.
 
+A reload also keeps the four pane options, because the socket stays
+bound and the session continues. Unsetting them would make the parent
+look gone during the gap: a child's `notify_parent` would find no
+parent, and its parent watch would end it. Only the other reasons unset
+them. The `run-wait` watches survive in
+`globalThis.__kidoPiExtensionWatches`, with all their stream state: the
+offset, the held lines, the budget and the idle schedule. The old
+module detaches each waiter before it kills it, so only the reloaded
+module can send an ending. Its `session_start` restarts one waiter for
+each. A run
+that ended during the gap is reported by its new waiter, so its notice
+is not lost.
+
 The wire protocol uses one message per connection, with these steps:
 
 1. Connect.
@@ -424,7 +437,11 @@ claims any identity. A peer-credential check would add no protection.
 nothing was sent: the path is empty or unusable, the socket file is
 missing, or a stale socket has no listener. After connection, kido
 reports each failure as `Msg.Failed`. The message can already have
-arrived, so a retry could deliver it twice.
+arrived, so a retry could deliver it twice. The extension's sends use
+the same rule: a timeout or error before the connection is
+`unavailable`, and only that is retried while a restarted child binds
+its inbox. A timeout or error after the connection is `failed`, never
+retried.
 
 kido permits a bracketed paste and separate Enter only when the pane
 has no `@kido_inbox`, or `kido prompt` selects a native-only agent pane.
@@ -553,10 +570,11 @@ ask ends, regardless of how the process stops. A target can be alive at
 the send and dead a second later. Without another check, the asker would
 wait for the whole `timeoutMs`.
 
-A waiting ask therefore polls the target's pane every
-`KIDO_ASK_POLL_MS` (five seconds), with the same reading and trust rule
-as the parent watch. A pane that no longer shows the target's session
-under a pi root settles the waiter. A failed read supplies no evidence.
+A waiting ask therefore reads the target's pane every
+`KIDO_ASK_POLL_MS` (five seconds), or every pane with `list-panes -a`
+when the target's pane is not known, as after a restart. A successful
+read that does not show the target's session under a pi root settles
+the waiter. A failed read supplies no evidence and settles nothing.
 The poll prevents overlapping reads, and its timer is unref'd, so the
 wait never keeps pi's event loop open.
 
@@ -596,7 +614,9 @@ The model also writes the window name, which does enter the command
 line. `Tmux.safe` refuses characters that cannot survive the nested
 tmux, sh and tmux parsers. kido also refuses names over 64 bytes,
 instead of silently changing them. The extension applies the same rule
-before it calls kido.
+before it calls kido. The extension also uses the name as a directory,
+`agents/<parent>/<name>/`. Thus, it refuses an empty name, `.`, `..`
+and a name with `/` before it writes anything.
 
 ### Failure leaves a record
 
@@ -619,7 +639,7 @@ window.
 | `kido runs [--json] [--parent P] [ID]` | lists runs newest first, with a SESSION column, or one run; each JSON row has the run's `output` path |
 | `kido run-outcome ID --result completed\|failed [--text T]` | the run's own report of its ending |
 | `kido run-wait ID [--json]` | blocks until the run has ended; prints the result, or the outcome object |
-| `kido run-stop ID [--wait SECS] [--result stopped\|completed]` | records the result, then ends the process |
+| `kido run-stop ID [--wait SECS] [--result stopped\|completed] [--record-only\|--cleanup]` | records the result, then ends the process and closes its pane |
 
 `run` and `run-child` mint an opaque id, write `meta.json` and
 `command`, and create the window through `Run_window.start`. `--name` is required, because a
@@ -639,14 +659,27 @@ pane without a pi root); 3 a bad or unknown run id; 4 a refused window
 name; 5 `run-stop` of a run that has already ended (an outcome, or a dead or
 gone pane).
 
-`run-wait` polls at the sidebar's tick.
+`run-wait` polls at the sidebar's tick. Each poll reads the outcome
+file, then the panes of the run's own window (`State.read_pane`), not
+the whole server. tmux gives the same error for a gone pane and for a
+failed server, so after an error one `list-panes -a` tells them apart.
+`run-stop` waits with the same read. A pid is never evidence: a killed pane whose process survives
+its HUP has ended, and `run-wait` reports `died`.
 
 **run-stop** records its result first, so that an ending that the pane
 produces later cannot replace it. Then it waits `--wait` seconds
 (default 0) for the pane to die, sends TERM to the pane's process
 group, KILL after `KIDO_STOP_ESCALATION_MS`, and kills the pane under
 the last-window refusal (`Reap.close_of`). A refusal exits 1 with the
-outcome recorded. `--result completed` is for a subagent that reported
+outcome recorded. A run that has already ended (an outcome, or a dead
+or gone pane) exits 5 at once.
+
+The two phases can also run separately, for a caller that must act
+between them. `--record-only` records the result and exits; it exits 5
+for a run that has already ended. `--cleanup` does only the second
+phase: it waits, signals and closes the pane of a run that has an
+outcome, and records nothing. Thus, it refuses `--result`.
+`Run_stop.mode` holds the three cases. `--result completed` is for a subagent that reported
 before it was stopped. `kido run-stop` sends no notice; the caller's
 `run-wait` reports the ending.
 
@@ -841,8 +874,16 @@ envelope only because it claims an ancestor sender. The chain walk
 stops at a repeated session, so a corrupt map entry that names itself
 as parent cannot let a session stop itself.
 
-**Escalation.** An unresponsive child does not answer. `stop_run` sends
-its request, then runs `kido run-stop ID --wait 5`. A healthy child
+**Escalation.** An unresponsive child does not answer. `stop_run` first
+records the outcome with `kido run-stop ID --record-only`. The child's
+own shutdown writes `completed` or `failed`, so a request sent before
+the record would let that write win. A failed record other than exit 5
+ends the stop before the request. Then it sends its request, and runs
+`kido run-stop ID --cleanup --wait 5` whatever the request returned: a
+recorded stop must also end the process. A request that fails is
+reported beside the cleanup's result. The extension's deadline for
+`run-stop` is its `--wait` plus `KIDO_STOP_ESCALATION_MS` plus 1.5 s,
+so that the KILL and the pane cleanup always run. A healthy child
 ends itself within the wait. Otherwise, kido sends TERM to the pane's
 process group, KILL after `KIDO_STOP_ESCALATION_MS`, and kills the
 pane. A refused request does not cancel the stop: the escalation still
@@ -1473,9 +1514,11 @@ variables are:
 - `KIDO_PARENT_POLL_MS`;
 - `KIDO_ASK_POLL_MS`;
 - `KIDO_SPAWN_TIMEOUT_MS`;
-- `KIDO_STOP_TIMEOUT_MS`;
 - `KIDO_AGENT_LIST_TTL_MS`;
-- `KIDO_STREAM_POLL_MS`, the extension's output tail.
+- `KIDO_STREAM_POLL_MS`, the extension's output tail;
+- `KIDO_STREAM_FLUSH_MS`, `KIDO_STREAM_MAX_WAIT_MS` and
+  `KIDO_STREAM_BUDGET_BYTES`, the stream schedule and its per-run
+  budget.
 
 The extension reads its variables when it uses them. Its tests set them
 in the environment of the process under test.
