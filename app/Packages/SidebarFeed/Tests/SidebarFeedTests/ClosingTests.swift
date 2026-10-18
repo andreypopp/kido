@@ -3,8 +3,8 @@ import Testing
 import TmuxControl
 @testable import SidebarFeed
 
-@Test(arguments: [false, true]) func closingPaneIncludesDescendants(_ waiting: Bool) throws {
-    let child = pane(2, lifecycle: agent(waiting ? blocked() : working()))
+@Test(arguments: [false, true]) func closingPaneIncludesDescendants(_ waitingState: Bool) throws {
+    let child = pane(2, lifecycle: agent(waitingState ? waiting() : working()))
     let snapshot: Snapshot = try decode(snapshotObject([pane(0, children: [pane(1, children: [child])]), pane(3)]))
     #expect(closeScope(snapshot, target: .pane(PaneID(number: 0))).running)
     #expect(closeScope(snapshot, target: .pane(PaneID(number: 1))).running)
@@ -14,7 +14,7 @@ import TmuxControl
 
 @Test func closingWindowIncludesEveryPaneAndDescendants() throws {
     let group: [String: Any] = ["kind": "window", "id": "@0", "window": "@0", "name": "group", "children":
-        [pane(0), pane(1, window: 0, children: [pane(2, lifecycle: agent(blocked()))])]]
+        [pane(0), pane(1, window: 0, children: [pane(2, lifecycle: agent(waiting()))])]]
     let snapshot: Snapshot = try decode(snapshotObject([group, pane(3)]))
     #expect(closeScope(snapshot, target: .window(WindowID(number: 0))).running)
     #expect(!closeScope(snapshot, target: .pane(PaneID(number: 0))).running)

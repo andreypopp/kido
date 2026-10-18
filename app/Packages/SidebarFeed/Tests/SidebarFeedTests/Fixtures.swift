@@ -5,7 +5,6 @@ var null: NSNull { NSNull() }
 
 func idle(_ outcome: Any = null) -> [Any] { ["Idle", ["outcome": outcome]] }
 func outcome(_ serial: Int, _ result: String) -> [String: Any] { ["serial": serial, "result": result] }
-func blocked(_ kind: Any = null) -> [Any] { ["Waiting", ["source": ["Blocked", ["kind": kind]], "progress": null]] }
 
 func agent(_ state: [Any] = idle(), msg: Any = null, name: String = "claude-code") -> [Any] {
     ["Live", ["Some_agent", ["name": name, "status": report(state, msg: msg)]]]
@@ -28,7 +27,7 @@ func pane(_ id: Int, window: Int? = nil, title: String = "", lifecycle: [Any] = 
 }
 
 func snapshotObject(_ nodes: [[String: Any]], client: Int = 0, window: Int? = nil, sessions: [Int] = [0], error: Any = null) -> [String: Any] {
-    ["v": 2, "client": ["session": "$0", "window": "@\(window ?? client)", "pane": "%\(client)"], "server_instance": ["started_at": 1780000000, "pid": 12345], "asks": [], "error": error,
+    ["v": 2, "client": ["session": "$0", "window": "@\(window ?? client)", "pane": "%\(client)"], "server_instance": ["started_at": 1780000000, "pid": 12345], "error": error,
      "sessions": sessions.map { ["id": "$\($0)", "name": "session-\($0)", "current": $0 == 0, "nodes": nodes] }]
 }
 

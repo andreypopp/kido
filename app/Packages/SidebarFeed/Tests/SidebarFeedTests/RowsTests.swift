@@ -7,7 +7,7 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     func item(_ id: Int, _ window: Int, run: String? = nil, started: Double? = nil, tail: String = "", children: [[String: Any]] = []) -> [String: Any] {
         let lifecycle = run == "bash" || run == "stream"
             ? terminal(running(), report: id == 2 ? report(waiting()) : null)
-            : agent(id == 2 ? blocked() : working(), msg: tail.isEmpty ? null : tail)
+            : agent(id == 2 ? waiting() : working(), msg: tail.isEmpty ? null : tail)
         return pane(id, window: window, title: "pane-\(id)", lifecycle: lifecycle, run: run, started: started,
                     records: id == 0 ? records : [], serial: serial, children: children)
     }
@@ -159,9 +159,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
         (remote(["Remote_terminal", ["interactive": true, "status": shell(running(), report: report(working()))]]), nil, "ssh alice@devbox", false, .running, "running", ""),
         (remote(["Remote_terminal", ["interactive": true, "status": shell(exited(2))]]), nil, "ssh alice@devbox", false, .error, "failed", ""),
         (agent(working(42), msg: "Thinking"), nil, "zsh", false, .running, "running", "Thinking 42%"),
-        (agent(blocked("permission"), msg: "Approve deployment"), nil, "zsh", false, .waiting, "waiting", "Approve deployment"),
-        (agent(["Waiting", ["source": ["Ask", ["id": "ask-id"]], "progress": null]]), nil, "zsh", false, .waiting, "waiting", ""),
-        (agent(["Stalled"]), nil, "zsh", false, .stalled, "stalled", ""),
+        (agent(waiting("permission"), msg: "Approve deployment"), nil, "zsh", false, .waiting, "waiting", "Approve deployment"),
         (agent(idle(outcome(17, "success")), msg: "Finished"), nil, "zsh", false, .done, "done", "Finished"),
         (agent(idle(outcome(18, "failure")), msg: "Failed"), nil, "zsh", false, .error, "failed", "Failed"),
         (["Ended", ["result": "unknown"]], "bash", "zsh", false, .quiet, "gone", ""),
@@ -232,14 +230,6 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(rows[1].guides == [.init(x: 20, top: 22, bottom: 32)])
     #expect(rows[2].guides == [.init(x: 35, top: 22, bottom: 48), .init(x: 20, top: 0, bottom: 48)])
     #expect(rows[3].guides == [.init(x: 35, top: 0, bottom: 22), .init(x: 20, top: 0, bottom: 22)])
-}
-
-@Test func stalledPaneMakesItsAncestorTabRed() throws {
-    let snapshot = try decode(snapshotObject([pane(0, children: [pane(1, window: 1, lifecycle: agent(["Stalled"]))])]))
-    let row = try #require(sidebarRows(snapshot).first { $0.target?.pane == PaneID(number: 1) })
-    #expect(row.status == .stalled && row.indicatorDescription == "stalled")
-    #expect(row.status.mergingTabStatus(.quiet) == .error)
-    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .error)
 }
 
 @Test func programIDsOrderBySlashComponents() throws {

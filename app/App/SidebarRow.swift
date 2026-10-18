@@ -6,7 +6,7 @@ func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bo
     case .quiet: .secondaryLabelColor.withAlphaComponent(NSColor.secondaryLabelColor.alphaComponent * 0.45)
     case .running, .done: .systemGreen
     case .waiting: .systemOrange
-    case .error, .stalled: .systemRed
+    case .error: .systemRed
     }
     if status == .done {
         let direction: CGFloat = flipped ? 1 : -1

@@ -15,7 +15,7 @@ The previous banner can still be selected for comparison. Its optional version/f
 Two independent checks, one sheet.
 
 - **Server stamp.** A kido server records `KIDO_SERVER`, a 12-hex stamp derived from the tmux fork revision and the generated server config, so it changes only when the server itself would differ. `kido server` reports `server` (the running server's stamp, or null for an older or unstamped server) and `expected` (what this kido would create). Compatible means server == expected. A stamp says only *different*, never older or newer, so this cause never uses upgrade wording: the server must be restarted (locally by the destructive Restart, remotely by the user on the host, then Reconnect).
-- **RPC protocol.** Separate from the stamp, currently 4.0. The app requires exactly 4.0 from the kido it talks to: the bundled kido locally, the installed kido over SSH. A remote kido speaking an older version means upgrade kido on the host; a newer one means update Kido.app on this Mac. Locally the bundled kido should always match, so a mismatch means reinstall or update Kido.app.
+- **RPC protocol.** Separate from the stamp, currently 5.0. The app requires exactly 5.0 from the kido it talks to: the bundled kido locally, the installed kido over SSH. A remote kido speaking an older version means upgrade kido on the host; a newer one means update Kido.app on this Mac. Locally the bundled kido should always match, so a mismatch means reinstall or update Kido.app.
 
 ## Cases
 

@@ -117,10 +117,7 @@ public struct NotifierState: Equatable, Sendable {
             let caption = item.caption
             let body: String
             switch reason {
-            case .waiting:
-                if case .waiting(.ask(let id), _) = item.agent?.state {
-                    body = snapshot.asks.first { $0.id == id }.map { "Asks: " + $0.text } ?? "Waiting"
-                } else { body = caption.isEmpty ? "Waiting" : "Waiting: " + caption }
+            case .waiting: body = caption.isEmpty ? "Waiting" : "Waiting: " + caption
             case .failure(.command, _):
                 if case .idle(let exit?) = item.shell?.phase {
                     body = "Exit \(exit.code): " + exit.command
