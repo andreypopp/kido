@@ -29,6 +29,12 @@ private class AlertEscape: NSView {
 }
 
 @MainActor final class WindowOwner: NSObject, NSWindowDelegate {
+    #if KIDO_VISUAL
+    static var reorderTimeout: TimeInterval = 2
+    static var visualPreparedUploads = 0
+    #else
+    static let reorderTimeout: TimeInterval = 2
+    #endif
     let runtime: GhosttyRuntime
     let host: Host
     let ownerID = String(UUID().uuidString.prefix(8))
@@ -586,6 +592,9 @@ private class AlertEscape: NSView {
         guard !pane.disposed, pane.acceptingInput, admitsUpload() else { return }
         let id = UUID().uuidString.lowercased(), generation = generation
         uploads[id] = (pane, Task { [weak self] in
+            #if KIDO_VISUAL
+            defer { WindowOwner.visualPreparedUploads += 1 }
+            #endif
             let planned: Result<Upload, Failure>
             do throws(Failure) { planned = .success(try await prepare(id)) } catch { planned = .failure(error) }
             guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil, !pane.disposed, pane.acceptingInput else { return }
@@ -917,7 +926,7 @@ private class AlertEscape: NSView {
         }
         sidebar.list.failed(nil)
         showOrder()
-        DispatchQueue.main.asyncAfter(deadline: .now() + (host == .local ? 2 : 5)) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + (host == .local ? Self.reorderTimeout : 5)) { [weak self] in
             self?.endHold(token)
             if self?.reorder.state.pending?.token == token { debug("reorder \(move) timed out") }
             self?.settleOrder { $0.expire(token) }

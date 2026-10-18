@@ -1196,10 +1196,18 @@ result bundle:
       app/build/xcode.noindex/derived-visual/Logs/Test/Test-Visual-<timestamp>.xcresult
 
 - A product deadline is not waited out. Under `KIDO_VISUAL`,
-  `PaneView.pasteEventTimeout` (30 s), `PaneView.clipboardTimeout` (8 s) and
-  `Upload.promiseTimeout` are settable. Production builds keep them constant.
+  `PaneView.pasteEventTimeout` (30 s), `PaneView.clipboardTimeout` (8 s),
+  `PaneView.copyEntryTimeout` (2 s), `WindowOwner.reorderTimeout` (2 s, local
+  host), `Upload.promiseTimeout` and `WindowView.toolbarFadeDuration` (0.15 s)
+  are settable. Production builds keep them constant.
   A test sets a short value only around the step that tests expiry, and waits
   for the expiry event.
+- `wait` polls its predicate every 2 ms. Where the product can signal the
+  event, a test waits for a `KIDO_VISUAL` probe instead of a fixed time.
+  `PaneToolbar.visualAnimationsEnded` counts finished toolbar fades.
+  `Upload.visualImagePreparation` holds image preparation at its start.
+  `WindowOwner.visualPreparedUploads` counts upload preparations that ended,
+  whatever the outcome.
 - `drain` ticks Ghostty and fences the main queue. It ends after three rounds
   with no new `GhosttyRuntime.visualWakeups`, not after a fixed time.
   It does not wait for tmux replies or child processes, so it is not a quiet
