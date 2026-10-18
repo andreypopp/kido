@@ -309,6 +309,9 @@ Conventions:
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     test_e2e/          tests driving kido inside a real tmux server, in Go
 
+Before you change `lib_tmux/`, read `lib_tmux/AGENTS.md`. pi does not
+load it for an agent that starts at the repo root.
+
 `prompt`, `switch-session`, `reap` and `runs` remain,
 even without production callers. e2e calls `reap` for a deterministic
 sweep. `runs` is the CLI reader of run history.
