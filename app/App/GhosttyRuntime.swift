@@ -22,6 +22,10 @@ import GhosttyKit
             ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
     }
     nonisolated private let ticking = OSAllocatedUnfairLock(initialState: false)
+    #if KIDO_VISUAL
+    nonisolated private let wakeups = OSAllocatedUnfairLock(initialState: 0)
+    nonisolated var visualWakeups: Int { wakeups.withLock { $0 } }
+    #endif
     #if KIDO_STRESS
     private final class WakeProbe: Sendable {
         let run: @Sendable () -> Void
@@ -60,6 +64,9 @@ import GhosttyKit
             supports_paste_events: true,
             wakeup_cb: { @Sendable userdata in
                 let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(userdata!).takeUnretainedValue()
+                #if KIDO_VISUAL
+                runtime.wakeups.withLock { $0 += 1 }
+                #endif
                 #if KIDO_STRESS
                 let probe = runtime.wakeProbe.withLock { $0 }
                 probe?.run()

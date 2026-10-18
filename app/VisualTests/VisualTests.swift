@@ -32,8 +32,18 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
+    func mainQueueFence() async {
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+    }
+
     func drain(_ runtime: GhosttyRuntime) async throws {
-        for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+        var quiet = 0
+        for _ in 0..<20 where quiet < 3 {
+            ghostty_app_tick(runtime.app)
+            let wakeups = runtime.visualWakeups
+            await mainQueueFence()
+            quiet = runtime.visualWakeups == wakeups ? quiet + 1 : 0
+        }
     }
 
     func wait(_ description: String, within seconds: Double = 20, _ predicate: @escaping @MainActor () -> Bool) async throws {
@@ -451,7 +461,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
         XCTAssertGreaterThanOrEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).minX, 116)
-        try await Task.sleep(for: .milliseconds(200))
+        await mainQueueFence()
         if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "collapsed", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         _ = try await command(["kill-window", "-t", child])
@@ -634,7 +644,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertEqual(native.convert(native.bounds, to: root), nativeFrame)
         XCTAssertTrue(sidebar.list.containsFocus)
         XCTAssertEqual(terminal.frame, frame)
-        try await Task.sleep(for: .milliseconds(200))
+        try await wait("floating layout settled") {
+            let floating = sidebar.tabs.convert(sidebar.tabs.bounds, to: root)
+            return floating.minX > tabFrame.minX && floating.minX >= nativeFrame.maxX && floating.maxX == tabFrame.maxX
+        }
         let floatingTabFrame = sidebar.tabs.convert(sidebar.tabs.bounds, to: root)
         XCTAssertGreaterThan(floatingTabFrame.minX, tabFrame.minX)
         XCTAssertGreaterThanOrEqual(floatingTabFrame.minX, nativeFrame.maxX)
