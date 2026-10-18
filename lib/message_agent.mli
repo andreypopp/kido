@@ -28,7 +28,7 @@ val deliver :
   spec ->
   Run.id * Run.pi ->
   string ->
-  ([ `Inbox | `Pasted ], failure) result
+  (Prompt.via, failure) result
 
 val send :
   dir:string ->

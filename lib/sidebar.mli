@@ -83,5 +83,9 @@ type _ request =
   | Reorder_window : Tmux.session_id * Tmux.window_id move -> (unit, string) result request
       (** Move a top-level window before or after another in its session, keeping the session's
           current window. *)
+  | Prompt_resolve : Tmux.pane_id -> (Prompt.candidate list, Prompt.error) result request
+      (** The agents a prompt from the given pane can reach, closest first. *)
+  | Prompt_send : Prompt.send -> (Prompt.via, Prompt.error) result request
+      (** Send text to one of those agents. *)
 
 val handle : tmux:Tmux.t -> dir:string -> client:string -> 'a request -> 'a

@@ -125,13 +125,13 @@ let deliver ~dir ~caller ~state ~self spec (run_id, (target : Run.pi)) text =
     in
     if is_message then
       Result.map_err
-        (fun m -> Failed m)
-        (Prompt.deliver_or_paste ~inbox:target.inbox
+        (fun (e : Prompt.error) -> Failed e.message)
+        (Prompt.deliver ~tmux:(Tmux.create ()) ~inbox:target.inbox
            ~payload:(Yojson.Safe.to_string (Msg.yojson_of_envelope envelope))
            ~pane:target.pane ~name ~run text)
     else
       match Msg.deliver_envelope ~path:target.inbox envelope with
-      | Ok () -> Ok `Inbox
+      | Ok () -> Ok Prompt.Inbox
       | Error (Msg.Refused _) -> Error (Failed (Printf.sprintf "%s refused the %s" name tag))
       | Error (Msg.Unavailable _) -> Error (Unavailable (Prompt.not_accepting ~name ~run))
       | Error (Msg.Failed m) -> Error (Failed m)
@@ -172,14 +172,14 @@ let send ~dir ~self ~caller recipient spec text =
       r.state
     in
     match (deliver ~dir ~caller ~state ~self spec e text, spec, status) with
-    | Ok `Pasted, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)
-    | Ok `Inbox, Message, Some (Working _) ->
+    | Ok Prompt.Paste, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)
+    | Ok Prompt.Inbox, Message, Some (Working _) ->
         let steerable = reaches ~dir ~caller:(Option.map fst caller) id in
         Ok
           (Printf.sprintf "queued for %s: it is running and reads this when its current turn ends%s"
              name
              (if steerable then "; to reach it now, use steer_subagent" else ""))
-    | Ok `Inbox, _, _ -> Ok (Printf.sprintf "delivered to %s by inbox" name)
+    | Ok Prompt.Inbox, _, _ -> Ok (Printf.sprintf "delivered to %s by inbox" name)
     | Error (Unavailable m | Failed m), _, _ -> Error (Not_sent m)
 
 let head_within s max = Msg.valid_utf_8 (Msg.utf_8_prefix s max)

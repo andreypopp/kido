@@ -511,6 +511,34 @@ and selects it again only in that case. Thus, it never reverses a
 concurrent selection of another window. It switches no client and
 selects no pane. Attached clients can see the fallback briefly.
 
+## Prompting an agent
+
+Kido.app sends a selection to an agent through the mechanism of
+`kido prompt`. The app always shows a picker with the closest agent
+selected first. Thus, a resolve returns every candidate in order, and a
+send names its target.
+
+`Prompt` has one scope rule. It returns the agent panes of
+the caller's session: the caller's window first, then the others in
+`State` order. `kido prompt` filters it to the caller's window. If the
+caller's window has no candidates and `--window` is absent, it widens to
+the whole list. The RPC returns the whole list.
+The app derives "same window" from each candidate's `window`.
+
+`Prompt_resolve` and `Prompt_send` are `Sidebar` requests. Each reads
+state once. A send accepts only a target that is a candidate of its pane
+in that fresh state. Thus, a stale picker cannot reach a run window or a
+terminal. `Prompt.deliver` returns a typed error whose kind tells the
+client if a resend is safe. `refused` means that nothing was delivered.
+`unknown` means that the text can have arrived: an inbox failure after
+connect or a failed paste. A partial paste is possible. `invalid` means
+that the request cannot succeed against current state. The wire shape
+names panes and agents only, never a run or a pi.
+
+A send runs on the RPC loop and stops snapshots while it runs. The paste
+path sleeps 0.1 s between the paste and Enter. The inbox path waits up to
+the 2 s timeout of `Msg.deliver`. A manual send accepts this delay.
+
 ## Client boundary
 
 A client uses RPC and its own tmux control client. Navigation and shell

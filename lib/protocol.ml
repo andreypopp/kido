@@ -55,6 +55,7 @@ let decode line =
                       "release-side-focus";
                       "reorder-session";
                       "reorder-window";
+                      "prompt";
                     ])
                 fields
             with
@@ -67,6 +68,25 @@ let decode line =
                 Some
                   (if String.equal key "switch-window" then Any (Sidebar.Switch_window direction)
                    else Any (Sidebar.Switch_session direction))
+            | [ ("prompt", `Assoc prompt) ] -> (
+                match
+                  ( List.assoc_opt ~eq:String.equal "pane" prompt,
+                    List.assoc_opt ~eq:String.equal "target" prompt,
+                    List.assoc_opt ~eq:String.equal "text" prompt )
+                with
+                | Some pane, None, None when List.length prompt = 1 ->
+                    Option.map
+                      (fun pane -> Any (Sidebar.Prompt_resolve pane))
+                      (identifier Tmux.pane_id_of_string (Some pane))
+                | Some pane, Some target, Some (`String text) when List.length prompt = 3 -> (
+                    match
+                      ( identifier Tmux.pane_id_of_string (Some pane),
+                        identifier Tmux.pane_id_of_string (Some target) )
+                    with
+                    | Some pane, Some target ->
+                        Some (Any (Sidebar.Prompt_send { Prompt.pane; target; text }))
+                    | _ -> None)
+                | _ -> None)
             | [ ("jump", `Assoc location) ] when List.length location = 3 -> (
                 match
                   ( identifier Tmux.session_id_of_string
@@ -118,7 +138,17 @@ let decode line =
   | _ -> Ignored
   | exception Yojson.Json_error _ -> Ignored
 
-let error id message = `Assoc [ ("reply", `Assoc [ ("id", `Int id); ("error", `String message) ]) ]
+let error_with_kind ?kind id message =
+  `Assoc
+    [
+      ( "reply",
+        `Assoc
+          (("id", `Int id)
+          :: ("error", `String message)
+          :: (match kind with Some kind -> [ ("kind", `String kind) ] | None -> [])) );
+    ]
+
+let error id message = error_with_kind id message
 
 let location (c : Sidebar.client) =
   `Assoc
@@ -141,6 +171,11 @@ let switched = function
         ]
   | None -> `Null
 
+let prompt_kind = function
+  | Prompt.Refused -> "refused"
+  | Prompt.Unknown -> "unknown"
+  | Prompt.Invalid -> "invalid"
+
 let reply : type a. int -> a Sidebar.request -> a -> Yojson.Safe.t =
  fun id request response ->
   match request with
@@ -154,6 +189,32 @@ let reply : type a. int -> a Sidebar.request -> a -> Yojson.Safe.t =
   | Sidebar.Release_side_focus -> result_reply id "released" (fun () -> `Bool true) response
   | Sidebar.Reorder_session _ -> result_reply id "reordered" (fun () -> `Bool true) response
   | Sidebar.Reorder_window _ -> result_reply id "reordered" (fun () -> `Bool true) response
+  | Sidebar.Prompt_resolve _ -> (
+      match response with
+      | Error e -> error_with_kind ~kind:(prompt_kind e.kind) id e.message
+      | Ok candidates ->
+          result_reply id "prompt"
+            (fun candidates ->
+              `Assoc [ ("candidates", `List (List.map Prompt.yojson_of_candidate candidates)) ])
+            (Ok candidates))
+  | Sidebar.Prompt_send { Prompt.target; _ } -> (
+      match response with
+      | Error e -> error_with_kind ~kind:(prompt_kind e.kind) id e.message
+      | Ok via ->
+          result_reply id "prompt"
+            (fun via ->
+              `Assoc
+                [
+                  ( "delivered",
+                    `Assoc
+                      [
+                        ("pane", Tmux.yojson_of_pane_id target);
+                        ( "via",
+                          `String
+                            (match via with Prompt.Inbox -> "inbox" | Prompt.Paste -> "paste") );
+                      ] );
+                ])
+            (Ok via))
 
 open Sidebar
 
@@ -629,7 +690,12 @@ let%test_module "Tests" =
                     (Tmux.string_of_session_id session)
                     (Tmux.string_of_window_id source)
                     (match position with Before -> "before" | After -> "after")
-                    (Tmux.string_of_window_id anchor))
+                    (Tmux.string_of_window_id anchor)
+              | Sidebar.Prompt_resolve pane ->
+                  Printf.printf "%d:prompt-resolve %s\n" id (Tmux.string_of_pane_id pane)
+              | Sidebar.Prompt_send { Prompt.pane; target; text } ->
+                  Printf.printf "%d:prompt-send %s %s %s\n" id (Tmux.string_of_pane_id pane)
+                    (Tmux.string_of_pane_id target) text)
           | Invalid (id, error) -> Printf.printf "%d:%s\n" id error
           | Ignored -> print_endline "ignored")
         [
@@ -660,6 +726,15 @@ let%test_module "Tests" =
           {|{"id":59,"jump":{"session":"$3","relative-to":"$1","placement":"before"}}|};
           {|{"id":60,"select-window":{"session":"$3","window":"@12","relative-to":"@9","placement":"after"}}|};
           {|{"id":61,"reorder-window":{"session":"$3","relative-to":"$1","placement":"before"}}|};
+          {|{"id":70,"prompt":{"pane":"%9"}}|};
+          {|{"id":71,"prompt":{"pane":"%9","target":"%12","text":"hello"}}|};
+          {|{"id":72,"prompt":{"target":"%12","text":"x"}}|};
+          {|{"id":73,"prompt":{"pane":"%9","text":"x"}}|};
+          {|{"id":74,"prompt":{"pane":"%9","target":"%12","text":"x","extra":true}}|};
+          {|{"id":75,"prompt":{"pane":"%9","target":"12","text":"x"}}|};
+          {|{"id":76,"prompt":{"pane":"9","target":"%12","text":"x"}}|};
+          {|{"id":77,"prompt":{"pane":"%9","target":"%12","text":""}}|};
+          {|{"id":78,"prompt":{"pane":"%9","target":"%12"}}|};
         ];
       [%expect
         {|
@@ -690,6 +765,15 @@ let%test_module "Tests" =
     59:invalid or unknown request
     60:invalid or unknown request
     61:invalid or unknown request
+    70:prompt-resolve %9
+    71:prompt-send %9 %12 hello
+    72:invalid or unknown request
+    73:invalid or unknown request
+    74:invalid or unknown request
+    75:invalid or unknown request
+    76:invalid or unknown request
+    77:prompt-send %9 %12 
+    78:invalid or unknown request
     |}]
 
     let%expect_test "rpc surface" =
@@ -721,6 +805,30 @@ let%test_module "Tests" =
         (fun result ->
           emit (reply 52 (Sidebar.Reorder_window (Tmux.session_id_of_string "$3", move)) result))
         [ Ok (); Error "no such top-level window in session" ];
+      let prompt_candidate : Prompt.candidate =
+        {
+          pane = Tmux.pane_id_of_string "%9";
+          session = Tmux.session_id_of_string "$3";
+          window = Tmux.window_id_of_string "@12";
+          title = "π - alpha";
+        }
+      in
+      let prompt_send : Prompt.send =
+        {
+          pane = Tmux.pane_id_of_string "%9";
+          target = Tmux.pane_id_of_string "%12";
+          text = "hello";
+        }
+      in
+      emit
+        (reply 70 (Sidebar.Prompt_resolve (Tmux.pane_id_of_string "%9")) (Ok [ prompt_candidate ]));
+      emit (reply 71 (Sidebar.Prompt_send prompt_send) (Ok Prompt.Inbox));
+      emit
+        (reply 72 (Sidebar.Prompt_send prompt_send)
+           (Error { Prompt.kind = Prompt.Refused; message = "alpha is not accepting messages" }));
+      emit
+        (reply 73 (Sidebar.Prompt_send prompt_send)
+           (Error { Prompt.kind = Prompt.Unknown; message = "paste failed" }));
       let opts : Sidebar.options =
         { interval = 0.1; client = "app"; tmux = Tmux.create (); dir = "/unused"; grace = 30. }
       in
@@ -856,6 +964,10 @@ let%test_module "Tests" =
         {"reply":{"id":7,"error":"invalid or unknown request"}}
         {"reply":{"id":52,"reordered":true}}
         {"reply":{"id":52,"error":"no such top-level window in session"}}
+        {"reply":{"id":70,"prompt":{"candidates":[{"pane":"%9","session":"$3","window":"@12","title":"π - alpha"}]}}}
+        {"reply":{"id":71,"prompt":{"delivered":{"pane":"%12","via":"inbox"}}}}
+        {"reply":{"id":72,"error":"alpha is not accepting messages","kind":"refused"}}
+        {"reply":{"id":73,"error":"paste failed","kind":"unknown"}}
         {"v":2,"server_instance":{"started_at":1780000000,"pid":12345},"client":{"session":"$0","window":"@1","pane":"%0"},"error":null,"sessions":[{"id":"$0","name":"session","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"window","children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"agent","started":100.0,"children":[]},{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"","lifecycle":["Live",["Terminal",{"phase":["Idle",{"last":null}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"bash","started":100.0,"children":[]}]},{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"agent","started":100.0,"children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"agent","started":100.0,"children":[]}]}]}]}
         ["Live",["Terminal",{"phase":["Idle",{"last":{"code":1,"command":"false","started_at":100.0,"ended_at":101.0}}],"report":null}]]
         ["Live",["Terminal",{"phase":["Running",{"origin":["Command",{"command":"make","started_at":100.0}],"fullscreen":false}],"report":null}]]

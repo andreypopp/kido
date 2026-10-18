@@ -613,13 +613,15 @@ replaces the whole file. There is **no locking**. Policy resolves races:
 For a `Pi_agent`, `kido prompt` prefers the recorded inbox socket.
 `kido-status.ts` binds one.
 `kido prompt` uses a tmux paste **only** when the record names no inbox
-(`Prompt.deliver_or_paste`).
+(`Prompt.deliver`).
 An advertised but unavailable inbox is an error, not permission to paste.
 
 Other socket errors also return without a fallback.
 The message may already have arrived.
 Sending it again would deliver it twice.
 A `Some_agent` receives a paste. `Terminal` is excluded.
+The RPC prompt request uses the same scope rule and `Prompt.deliver`
+(docs/design-rpc.md, "Prompting an agent").
 
 Runs remain authoritative for coordination and run history,
 even when the pane's current root app is replaced or cleared.

@@ -130,8 +130,39 @@ When the moved window was the session's current window, select-window
 selects it again in the same tmux command; attached clients can briefly
 see the fallback. No client is switched and no pane is selected.
 
+Prompting sends text to an agent through the mechanism of `kido prompt`.
+A resolve sends nothing:
+{"id":21,"prompt":{"pane":"%9"}}
+replies
+{"reply":{"id":21,"prompt":{"candidates":[{"pane":"%12","session":"$1","window":"@3","title":"claude-code"}]}}}.
+The candidates are the agent panes of `pane`'s session, closest first:
+the agents of `pane`'s window, then the other agents in feed order
+(window order, panes oldest first). Panes in run windows, terminals and
+ssh panes without a remote agent are never candidates. `pane` itself is
+a candidate if it is an agent. An empty list means no agent. `title` is
+the plain, uncut title of the pane's snapshot item.
+A send delivers `text` verbatim to one candidate:
+{"id":22,"prompt":{"pane":"%9","target":"%12","text":"explain this"}}
+replies
+{"reply":{"id":22,"prompt":{"delivered":{"pane":"%12","via":"inbox"}}}}.
+`via` is "inbox" when the pane advertises an inbox socket, else "paste":
+a bracketed paste, then Enter. An advertised inbox is never replaced by a
+paste. The prompt object has exactly `pane`, or `pane`, `target` and a
+string `text`; ids are pane ids (% followed by digits). Other shapes are
+"invalid or unknown request".
+A prompt error adds a `kind` to the error envelope:
+{"reply":{"id":22,"error":"claude-code is not accepting messages","kind":"refused"}}.
+- `refused`: nothing was delivered; the client may send again. The
+  advertised inbox does not accept, or fresh state could not be read.
+- `unknown`: the text may have arrived (an inbox failure after connect, a
+  failed paste); the client must not send it again.
+- `invalid`: empty text, `pane` not found in fresh state, or `target` not a
+  candidate of `pane`.
+
 ## Changes from 4.0 to 5.0
 
+- Added: the prompt request, with `candidates` and `delivered` replies and
+  the error `kind`.
 - Removed: the top-level snapshot `asks` list and the activate-ask and
   delete-ask requests with their `activated` and `deleted` replies.
 - Changed: agent Waiting carries the blocked record's `kind` and

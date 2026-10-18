@@ -432,6 +432,8 @@ type _ request =
   | Release_side_focus : (unit, string) result request
   | Reorder_session : Tmux.session_id move -> (unit, string) result request
   | Reorder_window : Tmux.session_id * Tmux.window_id move -> (unit, string) result request
+  | Prompt_resolve : Tmux.pane_id -> (Prompt.candidate list, Prompt.error) result request
+  | Prompt_send : Prompt.send -> (Prompt.via, Prompt.error) result request
 
 let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> a =
  fun ~tmux ~dir ~client request ->
@@ -526,6 +528,8 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
       then jump target
       else Error "no such pane in session/window"
   | Release_side_focus -> Tmux.release_side_focus tmux client
+  | Prompt_resolve pane -> Prompt.resolve ~tmux ~dir pane
+  | Prompt_send request -> Prompt.send ~tmux ~dir request
   | Reorder_session ({ source; anchor; position } as move) ->
       let open Result.Infix in
       let* state = State.read ~dir tmux in
