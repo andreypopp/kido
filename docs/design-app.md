@@ -471,6 +471,62 @@ open when copy mode starts stays, and it only highlights until a query edit or
 `n`/`N`. After the bar closes, `n`/`N` reopen it with the same query and
 direction. Copy mode exit closes the bar and starts no whole-history search.
 
+In copy mode the app handles the mouse itself and forwards no mouse event to
+Ghostty. Thus, no mouse report, `cursor-click-to-move` key or `copy-on-select`
+write reaches the pty or the pasteboard, also under mouse-reporting and
+alternate-screen programs. Mouse and keyboard share the copy cursor and the
+`v`/`V` state. A click places the cursor. A drag selects. A double-click
+selects a word and a triple-click selects the wrapped line (`V`). A drag after
+a double or triple click extends by word or line. A Shift-click extends the
+selection in its mode. A drag past the top or bottom edge scrolls every 50 ms
+through the same scroll path as the keys, only within loaded rows. It never
+loads history. Outside copy mode, Ghostty keeps its own mouse selection, and
+the mouse never enters copy mode.
+
+A right-click on a selection, in copy mode or not, opens a context menu with
+two items: Copy (⌘C) and Prompt with Selection…. The menu is built for each
+click. Outside copy mode, Ghostty's `right-click-action` selects the word
+before the menu opens. In copy mode, a right-click inside the selection or on
+an empty cell keeps the selection, and a right-click on another word selects
+that word. The copy cursor alone is not a selection. With no text and no
+selection, no menu opens. Copy acts like `y` in copy mode and like Ghostty's
+copy outside it. In copy mode, `p` opens the prompt box when a selection
+exists. Mouse input is ignored while copy mode is still entering.
+
+The prompt box (`PanePrompt`) is a pane capsule at the bottom left: x 8,
+bottom 8, width min(pane width − 16, 560). The find bar and the COPY pill do
+not move. It captures the selection text when it opens. Then it sends a
+`prompt` resolve request for the pane. The head is a target popup that shows
+"Resolving…" until the reply arrives. It lists the agents in the pane's window
+first, in kido's order, and preselects the first. A candidate is in the same
+window when its `window` equals the pane's window. With no candidate, the head
+reads "No agent in this window or session", and the field and Send are
+disabled. Below the text field, a fixed quote shows the first two lines and
+"+N lines". Its tooltip shows the full text. Return sends, Shift-Return adds a
+newline, and Escape closes the box and keeps copy mode and the selection.
+While the text view has focus, ⌘ chords go to it, not to the pane. The sent
+text is the prompt with ":" added unless it ends with one. Then follows each
+selection line with "> ", without the selection's trailing newline. A send
+always names the picked target. States:
+
+- Sending: a spinner, and the inputs are disabled.
+- Delivered: the box closes, the selection clears and copy mode exits.
+- `refused`: kido's message and Retry. Send stays disabled until Retry or an
+  edit.
+- `unknown`: kido's message with "It may have arrived; not resent." and Copy
+  Prompt. Send is hidden, and the box never sends again by itself.
+- `invalid`, or an error with no `kind`: the message only. Send stays
+  disabled until an edit.
+- A failure of the feed after the send request was written (the helper ended
+  or the connection closed) is `unknown`, because the text may have arrived.
+
+A failed resolve shows its message, and Retry resolves again. The box closes on
+a pane switch, pane removal, feed disconnect and copy mode exit. A late reply
+to a closed box does nothing.
+
+The `Feed` has no timeout for a request. Thus, a `prompt` send that blocks
+kido's RPC loop until the inbox times out does not restart the helper.
+
 ### Clipboard
 
 Live OSC 52 writes copy text to the Mac general pasteboard. Reads use Ghostty's
