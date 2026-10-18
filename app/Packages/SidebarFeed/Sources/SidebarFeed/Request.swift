@@ -6,6 +6,7 @@ public enum RPCRequest: Equatable, Sendable {
     case jump(Snapshot.Position), selectWindow(SessionID, WindowID), selectSession(SessionID)
     case newWindow(WindowID), newSession, releaseSideFocus
     case reorder(ReorderMove)
+    case prompt(pane: PaneID, text: String?, target: PaneID?)
 
     public func data(id: Int) throws -> Data {
         let operation: [String: Any] = switch self {
@@ -21,15 +22,30 @@ public enum RPCRequest: Equatable, Sendable {
             ["reorder-session": ["session": s.description, "relative-to": anchor.description, "placement": placement.rawValue]]
         case .reorder(.window(let s, let w, let anchor, let placement)):
             ["reorder-window": ["session": s.description, "window": w.description, "relative-to": anchor.description, "placement": placement.rawValue]]
+        case .prompt(let pane, let text, let target):
+            ["prompt": {
+                var prompt: [String: Any] = ["pane": pane.description]
+                if let text { prompt["text"] = text }
+                if let target { prompt["target"] = target.description }
+                return prompt
+            }()]
         }
         return try JSONSerialization.data(withJSONObject: operation.merging(["id": id]) { _, new in new }) + Data([10])
     }
 
+    public static func composePrompt(prompt: String, selection: String) -> String {
+        var quoted = selection
+        if quoted.hasSuffix("\n") { quoted.removeLast() }
+        let lines = quoted.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }.joined(separator: "\n")
+        return (prompt.hasSuffix(":") ? prompt : prompt + ":") + "\n" + lines
+    }
+
     public func accepts(_ value: RPCEvent.Reply.Value) -> Bool {
         switch (self, value) {
-        case (_, .error), (.switchWindow, .switched), (.switchSession, .switched), (.jump, .jumped),
+        case (_, .error), (.prompt(_, _, _), .promptError(_, _)), (.switchWindow, .switched), (.switchSession, .switched), (.jump, .jumped),
              (.selectWindow, .selected), (.selectSession, .selected), (.newWindow, .created), (.newSession, .created),
              (.releaseSideFocus, .released), (.reorder, .reordered): true
+        case (.prompt(_, nil, _), .prompt(.candidates)), (.prompt(_, .some, _), .prompt(.delivered)): true
         default: false
         }
     }
