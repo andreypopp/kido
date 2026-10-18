@@ -52,7 +52,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         func finish() { if !finished { finished = true; done.fulfill() } }
         @MainActor func poll() {
             if finished { return }
-            if predicate() { finish() } else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() } }
+            if predicate() { finish() } else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.002) { poll() } }
         }
         // One block at the original deadline, never a poll's own clock check: after a main-queue stall,
         // main-queue timers due earlier than this deadline still run before the verdict.
@@ -842,8 +842,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let revision = pane.scrollRevision
         for _ in 0..<30 {
             pane.scrollWheel(with: try XCTUnwrap(pane.wheelEvent(y: 1)))
-            try await Task.sleep(for: .milliseconds(30))
+            await mainQueueFence()
         }
+        try await drain(runtime)
+        let fenced = expectation(description: "client queue fenced")
+        connection.send([Command("display-message", "-p", "")]) { _ in fenced.fulfill() }
+        await fulfillment(of: [fenced], timeout: 2)
         try await settle()
         XCTAssertEqual(connection.visualMetadataQueries - queries, 0, "idle empty wheel gesture must not query tmux metadata")
         XCTAssertEqual(pane.scrollRevision, revision, "clamped wheel packets must not invalidate an already-applied viewport")
@@ -946,20 +950,23 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func hover(_ pane: PaneView, _ inside: Bool) async throws {
         let chrome = try XCTUnwrap(terminal?.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane.pane })
+        let ended = chrome.subviews.compactMap { $0 as? PaneToolbar }.first?.visualAnimationsEnded ?? 0
         let point = inside ? NSPoint(x: chrome.toolbarFrame.midX, y: chrome.toolbarFrame.maxY + 4) : NSPoint(x: 20, y: chrome.bounds.maxY - 20)
         chrome.mouseMoved(with: try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: chrome.convert(point, to: nil), modifierFlags: [], timestamp: 0,
                                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)))
-        try await wait("toolbar alpha", within: 2) {
-            let toolbars = chrome.subviews.compactMap { $0 as? PaneToolbar }
-            return inside ? toolbars.contains { $0.alphaValue == 1 } : toolbars.allSatisfy { $0.alphaValue == 0 }
+        try await wait("toolbar fade settled", within: 2) {
+            guard let toolbar = chrome.subviews.compactMap({ $0 as? PaneToolbar }).first else { return true }
+            return toolbar.visualAnimationsEnded > ended && (inside ? toolbar.alphaValue == 1 : toolbar.alphaValue == 0)
         }
-        try await Task.sleep(for: .milliseconds(300))
     }
 
     func testHistoryPill() async throws { try await historyPill(dark: false) }
     func testHistoryPillDark() async throws { try await historyPill(dark: true) }
 
     private func historyPill(dark: Bool, testName: String = #function) async throws {
+        let fade = WindowView.toolbarFadeDuration
+        WindowView.toolbarFadeDuration = 0
+        defer { WindowView.toolbarFadeDuration = fade }
         try await start(dark: dark, history: 100000)
         try await paint(lines: historyChunkSize + 1000)
         let pane = try XCTUnwrap(terminal?.panes.first)
