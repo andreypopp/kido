@@ -448,17 +448,21 @@ import TmuxControl
         XCTAssertEqual(list.visualDiagnostic, "no such top-level window in session")
         XCTAssertNil(owner.reorder.state.pending)
 
+        let reorderTimeout = WindowOwner.reorderTimeout
+        defer { WindowOwner.reorderTimeout = reorderTimeout }
         try press(table, pane, drag: true)
         let again = try XCTUnwrap(table.visualDrag)
         list.tableView(table, draggingSession: again.session, willBeginAt: .zero, forRowIndexes: [pane])
         _ = list.visualScroll.draggingUpdated(try drop(list, at: center(table, 0)))
         let retry = try drop(list, at: center(table, gap))
         XCTAssertEqual(list.visualScroll.draggingUpdated(retry), .move)
+        WindowOwner.reorderTimeout = 0.1
         XCTAssertTrue(list.visualScroll.performDragOperation(retry))
         list.tableView(table, draggingSession: again.session, endedAt: .zero, operation: .move)
         XCTAssertEqual(list.visualDiagnostic, "", "a new drop clears the old error")
         XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id))
         try await wait("an unanswered drop times out") { owner.reorder.state.pending == nil }
+        WindowOwner.reorderTimeout = reorderTimeout
         XCTAssertEqual(list.visualRows.map(\.id), rows.map(\.id))
         XCTAssertEqual(list.visualDiagnostic, "The server did not answer the reorder request")
         sent[1].reply(.success(.reordered))

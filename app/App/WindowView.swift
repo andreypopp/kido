@@ -18,6 +18,11 @@ private extension NSCursor.FrameResizePosition {
 }
 
 final class WindowView: NSView {
+    #if KIDO_VISUAL
+    @MainActor static var toolbarFadeDuration: TimeInterval = 0.15
+    #else
+    static let toolbarFadeDuration: TimeInterval = 0.15
+    #endif
     private weak var connection: Connection?
     private let runtime: GhosttyRuntime
     var windowID: WindowID?
@@ -365,7 +370,10 @@ final class WindowView: NSView {
         }
         guard let toolbar, toolbar.superview === chrome else { return }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
+            context.duration = Self.toolbarFadeDuration
+            #if KIDO_VISUAL
+            context.completionHandler = { MainActor.assumeIsolated { toolbar.visualAnimationsEnded += 1 } }
+            #endif
             toolbar.animator().alphaValue = show ? 1 : 0
         }
         invalidateCursorRects()
