@@ -174,7 +174,7 @@ Relative/control-containing paths or noisy/malformed stdout are errors. Explicit
 Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
-Discovery requires the binary's RPC protocol to be exactly 4.0, as does
+Discovery requires the binary's RPC protocol to be exactly 5.0, as does
 RPC hello; both major and minor must match. Server compatibility is separate:
 the opaque server stamp must equal the expected stamp from the same binary's
 discovery JSON. A null stamp is incompatible. The app has no stamp constant.
@@ -743,7 +743,7 @@ banner as discovery, without automatic retry. Window and session navigation
 use numbered RPC requests. Replies can interleave with
 snapshots and arrive out of order; pending callbacks live on the feed reader
 queue and complete once, including failure when the connection ends or restarts.
-The app decodes v2 snapshots of protocol 4.0 only. Pane items carry a plain
+The app decodes v2 snapshots of protocol 5.0 only. Pane items carry a plain
 `title`, a typed `lifecycle` (Live pane kind with its agent or shell status,
 or Ended with a run result) and the raw `program_status`; their variants,
 null rules and percentages are enforced, and a malformed snapshot restarts
@@ -795,7 +795,7 @@ agent or agent run is drawn like its sidebar row: semibold, with the display-onl
 @ prefix when that row has one; other tabs are regular with no @. WindowView's active
 pane, read from tmux layouts and `%window-pane-changed`, is shared with terminal
 focus. Each tab combines its window and descendants into one status mark,
-ranked error (including stalled and unseen failed outcomes, command exits
+ranked error (including unseen failed outcomes, command exits
 too) > waiting > running > done (unseen) > quiet. With the sidebar collapsed
 or floating, tabs use the pane row marks: red dot, orange dot, green running
 dot and green check. Docked tabs show only red and orange; quiet shows nothing.
@@ -885,7 +885,7 @@ and progress percentage, joined by a space; Ended rows show their result
 except completed or unknown, which show none: the green check alone marks
 completion, while accessibility still reads "gone, completed". A run's
 start metadata drives the clock even when a caption is shown. The indicator comes from the agent state
-(running, waiting, stalled, idle with an outcome), else for shells: a live
+(running, waiting, idle with an outcome), else for shells: a live
 run without a report is running, a report wins over the phase (fullscreen
 included), otherwise fullscreen has none, Unknown has none, Running is running and Idle shows its last command
 exit. Ended completed is done, failed and died are errors, stopped and
@@ -893,11 +893,10 @@ unknown are quiet. The indicator sits in the leading slot, centered at
 x=20pt plus 15pt per nesting level and vertically on the title line; the
 header plus center is 15pt from the right edge. Indicators are 6pt dots:
 idle and quiet gray (secondaryLabelColor at 45%), running/compacting green,
-waiting rows of any kind orange, failures and stalled red. Done/completed is
+waiting rows of any kind orange, failures red. Done/completed is
 a plain green checkmark, about 6×4pt at a 2pt stroke, visually centered on
 the dot position. Tabs aggregate the same mapping, with running and done
-marks visible only when the sidebar is collapsed or floating; a stalled pane
-always gives its window tab a red dot.
+marks visible only when the sidebar is collapsed or floating.
 
 There are no window or child gaps and no divider rows. Each session retains
 its 16pt bottom gap. The header plus is 11pt, matching its label.
@@ -944,8 +943,7 @@ cancels deferred focus, which is consumed on pane changes as well as window
 topology. Pending requests fail once on disconnect and are never replayed.
 Replies do not synthesize topology.
 
-Snapshots require asks and every pane's program_status. Asks are decoded only;
-there is no ask UI. Pane indicators come from the typed lifecycle, never
+Pane indicators come from the typed lifecycle, never
 re-derived from raw program records. A tab's mark summarizes its window and
 descendants' row statuses in error > waiting > running > unseen done > quiet
 order; docked tabs show only error and waiting marks.
@@ -981,9 +979,9 @@ it is not a kido run, and `Item.indicator(seen)` shows waiting (an agent
 or a shell program report, in any phase) or an unseen error. The
 indicator keeps the sidebar's precedence, so a quiet report masks a
 command exit for the banner exactly as for the row. Waiting is one plain
-reason: a changed ask or kind while still waiting does not repost. A
+reason: a changed kind while still waiting does not repost. A
 failure's reason is its outcome source and identity, so a new failure
-reposts. Done, finished runs, successes, running, stalled, Ended rows and
+reposts. Done, finished runs, successes, running, Ended rows and
 a command exit of 130 never notify.
 
 **One notifier, entries per window.** Every `WindowOwner` has its own
@@ -1021,8 +1019,7 @@ deliberate.
 **Content.** Title is the sidebar row's title. Subtitle is the session
 name; for a remote window `user@host · session`, using the resolved
 identity the window title shows; for a `kido ssh` remote agent in a Local
-window, `session · destination`. Body: `Asks: <ask text>` for an
-outstanding ask (from `snapshot.asks`), else `Waiting` or
+window, `session · destination`. Body: `Waiting` or
 `Waiting: <caption>`, else `Exit <code>: <command>` for a command, else
 `Failed` or `Failed: <caption>`. Nothing is truncated by the app.
 Identifier is owner and pane, so a repost replaces; thread identifier is
