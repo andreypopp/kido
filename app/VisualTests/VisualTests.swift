@@ -365,9 +365,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         func fixture(_ status: String = "waiting", review: String = "Review changes") throws -> Snapshot {
             func item(_ pane: [String], children: [[String: Any]] = [], status: String = "idle") -> [String: Any] {
                 let state: [Any] = switch status {
-                case "waiting": ["Waiting", ["source": ["Blocked", ["kind": NSNull()]], "progress": NSNull()]]
+                case "waiting": ["Waiting", ["kind": NSNull(), "progress": NSNull()]]
                 case "failed", "done": ["Idle", ["outcome": ["serial": 1, "result": status == "done" ? "success" : "failure"]]]
-                case "stalled": ["Stalled"]
                 default: ["Idle", ["outcome": NSNull()]]
                 }
                 return ["kind": "pane", "run": pane[0] == child ? "agent" as Any : NSNull(), "started": NSNull(), "id": pane[1], "pane": pane[1], "window": pane[0],
@@ -380,7 +379,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                      item(pane, children: i == 0 ? [item([child, childPane], status: status)] : [])
                  }], item(try XCTUnwrap(panes.first { $0[0] == last }))]
             let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": child, "pane": childPane],
-                "server_instance": ["started_at": 1791000000, "pid": 4242], "asks": [], "sessions": [["id": "$0", "name": "visual", "current": true,
+                "server_instance": ["started_at": 1791000000, "pid": 4242], "sessions": [["id": "$0", "name": "visual", "current": true,
                     "nodes": nodes]]]
             return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
         }
@@ -443,8 +442,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertFalse(window.isVisible)
         XCTAssertFalse(window.isKeyWindow)
         XCTAssertFalse(NSApp.isActive)
-        updateTabs(.running(try fixture("stalled")))
-        XCTAssertEqual(sidebar.tabs.entries[1].status, .error)
         updateTabs(.running(try fixture("done")))
         XCTAssertEqual(sidebar.tabs.entries[1].status, .done)
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
@@ -536,7 +533,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         sidebar.splitView.setPosition(292, ofDividerAt: 0)
         sidebar.viewDidLayout()
         let row = try XCTUnwrap(self.terminal?.panes.first)
-        let object: [String: Any] = ["v": 2, "asks": [], "client": ["session": "$0", "window": connection.model.window!.description, "pane": row.pane.description],
+        let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": connection.model.window!.description, "pane": row.pane.description],
             "server_instance": ["started_at": 1791000000, "pid": 4242],
             "sessions": [["id": "$0", "name": "visual", "current": true, "nodes": [["kind": "pane", "id": row.pane.description,
                 "pane": row.pane.description, "window": connection.model.window!.description, "program_status": ["serial": 0, "records": []], "title": "Terminal",
@@ -1147,10 +1144,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             runs[0]["lifecycle"] = ["Ended", ["result": "completed"]]
             runs[0]["started"] = NSNull()
             nodes[0]["children"] = runs
-            children[0]["lifecycle"] = agentLifecycle(["Waiting", ["source": ["Blocked", ["kind": NSNull()]], "progress": NSNull()]],
+            children[0]["lifecycle"] = agentLifecycle(["Waiting", ["kind": NSNull(), "progress": NSNull()]],
                                                       msg: "Rebuilding the sidebar cards and testing nested window corners")
             var agents = children[0]["children"] as! [[String: Any]]
-            agents[0]["lifecycle"] = agentLifecycle(["Stalled"])
+            agents[0]["lifecycle"] = agentLifecycle(["Idle", ["outcome": ["serial": 1, "result": "failure"]]])
             children[0]["children"] = agents
             children[1]["lifecycle"] = shellLifecycle(["code": 0, "command": "make -C ../kido-app/app demo", "started_at": 1791131000, "ended_at": 1791131001])
             nodes[1]["children"] = children
@@ -1305,7 +1302,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             #!/bin/sh
             exec python3 -u -c '
             import json, sys
-            print(json.dumps(dict(hello=dict(protocol="4.0"))))
+            print(json.dumps(dict(hello=dict(protocol="5.0"))))
             snapshot = json.load(open("\(fixture.path)"))
             print(json.dumps(snapshot))
             held = None
@@ -1442,8 +1439,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func testServerCompatibilityFields() throws {
         for (stamp, version, compatible) in [
-            ("null", "4.0", false), ("\"other\"", "4.0", false),
-            ("\"0123456789ab\"", "4.0", true), ("\"0123456789ab\"", "3.1", false)
+            ("null", "5.0", false), ("\"other\"", "5.0", false),
+            ("\"0123456789ab\"", "5.0", true), ("\"0123456789ab\"", "4.0", false)
         ] {
             let json = "{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"\(version)\",\"server\":\(stamp),\"expected\":\"0123456789ab\"}"
             let server = try JSONDecoder().decode(Server.self, from: Data(json.utf8))
@@ -1731,11 +1728,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 XCTAssertEqual(alert.buttons[0].hasDestructiveAction, host == .local)
                 if host == .local { XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[1].cell) }
             }
-            for version in ["3.1", "4.1"] {
+            for version in ["3.1", "5.1"] {
                 let alert = WindowOwner.mismatchAlert(host: host, server: ServerStamp("same"), binary: try XCTUnwrap(RPCVersion(version)))
-                XCTAssertTrue(alert.informativeText.contains("needs kido RPC 4.0"))
+                XCTAssertTrue(alert.informativeText.contains("needs kido RPC 5.0"))
                 XCTAssertTrue(alert.informativeText.contains("speaks \(version)"))
                 if host != .local && version == "3.1" { XCTAssertTrue(alert.informativeText.contains("Upgrade kido there")) }
+                if version == "5.1" { XCTAssertTrue(alert.informativeText.contains("Update Kido.app, then reconnect.")) }
             }
         }
     }
@@ -1831,7 +1829,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertNil(owner.testConnection)
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
-        print("RPC E2E hello 4.0; unstamped server refused; local mismatch alert prepared off-screen")
+        print("RPC E2E hello 5.0; unstamped server refused; local mismatch alert prepared off-screen")
     }
 
     func testSidebarHeadersKeysAndAccessibility() throws {

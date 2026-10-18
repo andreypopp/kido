@@ -125,7 +125,7 @@ import XCTest
         let list = SidebarView()
         window.contentView = list
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
-        {"v":2,"asks":[],"client":{"session":"$0","window":"@0","pane":"%0"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"$0","name":"main","current":true,"nodes":[]},{"id":"$1","name":"work","current":false,"nodes":[]}]}
+        {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"$0","name":"main","current":true,"nodes":[]},{"id":"$1","name":"work","current":false,"nodes":[]}]}
         """.utf8))
         list.update(.running(snapshot))
         window.layoutIfNeeded()
