@@ -95,12 +95,17 @@ final class PaneDropPreview: NSView {
 }
 
 class PaneCapsule: NSView {
+    weak var pane: PaneView?
+    let spinner = CAShapeLayer()
     private let runtime: GhosttyRuntime
     private let radius: CGFloat
     private let edge = CALayer()
     private let highlight = CAShapeLayer()
     private let separators: [CALayer]
+    private let ring = CALayer()
+    private var focus: NSKeyValueObservation?
     var separatorX: [CGFloat] = [] { didSet { needsLayout = true } }
+    var focused: Bool { false }
 
     init(runtime: GhosttyRuntime, radius: CGFloat, separators: Int = 0) {
         self.runtime = runtime
@@ -120,10 +125,27 @@ class PaneCapsule: NSView {
         highlight.fillRule = .evenOdd
         highlight.cornerRadius = radius
         highlight.masksToBounds = true
-        for sublayer in [edge, highlight] + self.separators { layer?.addSublayer(sublayer) }
+        spinner.lineWidth = 1.5
+        spinner.fillColor = nil
+        spinner.path = CGPath(ellipseIn: CGRect(x: 0.75, y: 0.75, width: 7.5, height: 7.5), transform: nil)
+        spinner.strokeEnd = 0.75
+        spinner.isHidden = true
+        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+        spin.toValue = -2 * Double.pi
+        spin.duration = 1
+        spin.repeatCount = .infinity
+        spinner.add(spin, forKey: "spin")
+        ring.borderWidth = 3
+        ring.cornerRadius = radius + 3
+        for sublayer in [edge, highlight] + self.separators + [spinner, ring] { layer?.addSublayer(sublayer) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var wantsUpdateLayer: Bool { true }
+    override var nextResponder: NSResponder? { get { pane } set { super.nextResponder = pane } }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        focus = window?.observe(\.firstResponder) { [weak self] _, _ in MainActor.assumeIsolated { self?.needsLayout = true; self?.needsDisplay = true } }
+    }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
@@ -136,6 +158,8 @@ class PaneCapsule: NSView {
         edge.borderColor = foreground.withAlphaComponent(0.12).cgColor
         effectiveAppearance.performAsCurrentDrawingAppearance {
             for separator in separators { separator.backgroundColor = NSColor.separatorColor.cgColor }
+            spinner.strokeColor = NSColor.secondaryLabelColor.cgColor
+            ring.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.4).cgColor
         }
     }
     override func layout() {
@@ -152,6 +176,8 @@ class PaneCapsule: NSView {
         for (separator, x) in zip(separators, separatorX) {
             separator.frame = CGRect(x: x, y: (bounds.height - 14) / 2, width: 1 / (window?.backingScaleFactor ?? 2), height: 14)
         }
+        ring.frame = bounds.insetBy(dx: -3, dy: -3)
+        ring.isHidden = !focused
         CATransaction.commit()
     }
 }

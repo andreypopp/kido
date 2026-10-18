@@ -198,6 +198,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    @discardableResult
+    func fakeFeedScript(_ scratch: URL, _ python: String) throws -> URL {
+        let script = scratch.appendingPathComponent("kido")
+        try ("#!/bin/sh\nexec python3 -u -c '\n" + python + "\n'\n").write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        return script
+    }
+
     var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
 
     private func loadRuntime() throws {
@@ -1307,13 +1315,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         for navigation in ["switch-window", "switch-session"] {
             let scratch = app.appendingPathComponent("build/sbfix/\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-            let script = scratch.appendingPathComponent("kido")
             let fixture = scratch.appendingPathComponent("feed.json")
             let object = try JSONSerialization.jsonObject(with: Data(contentsOf: app.appendingPathComponent("VisualTests/Fixtures/live-feed.json")))
             try JSONSerialization.data(withJSONObject: object).write(to: fixture)
-            try """
-            #!/bin/sh
-            exec python3 -u -c '
+            let script = try fakeFeedScript(scratch, """
             import json, sys
             print(json.dumps(dict(hello=dict(protocol="5.0"))))
             snapshot = json.load(open("\(fixture.path)"))
@@ -1335,9 +1340,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                         print(json.dumps(dict(reply=reply)))
                         print(json.dumps(snapshot))
                         print(json.dumps(dict(reply=held)))
-                '
-            """.write(to: script, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+            """)
             var starts = 0
             var snapshots = 0
             let feed = Feed(serverDir: scratch.path, locate: { done in
