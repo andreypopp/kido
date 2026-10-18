@@ -611,7 +611,10 @@ remains visible while the authoritative capture is in flight. After replay and
 the successful restored viewport apply, an asynchronous tokened render fences
 completion, not visibility. Its acknowledgement must match the pane's epoch,
 backing dimensions, inset and viewport revision/target. Superseded requests
-coalesce; a current discarded request gets one asynchronous retry. Backend
+coalesce. Ghostty discards a tokened presentation when the layer's pixel size
+changes between the draw and the main-queue commit, when a newer surface
+generation commits first, or when the surface is unrealized or zero-sized; a
+current discarded request gets one asynchronous retry. Backend
 failure remains incomplete and diagnostic, without a visibility hold. tmux sends no `%output` for panes outside the client's session,
 so a window that left it is synced again when next shown. Surfaces of closed windows and sessions are freed.
 
@@ -1127,7 +1130,11 @@ single panes at three heights, splits, floats, zoom, fractional history,
 alternate screen, settled resize and the Load more pill. A test-only
 `KIDO_VISUAL` build condition exposes an occlusion bypass through
 `@testable`; normal builds retain their occlusion policy. Each image waits
-for a tokened Ghostty presented-frame callback, not a timed delay. Native fixture
+for a tokened Ghostty presented-frame callback, not a timed delay. The fence
+applies pending window layout first and retries a discarded frame at most
+twice: the settle poll can end before a pane takes its new size, and Ghostty
+discards the frame drawn at the old size. A refused request or backend failure
+fails the test. Native fixture
 windows use Display P3, matching the references rather than the attached
 monitor's calibrated profile. The off-screen floating-sidebar fill takes its
 rounded corners from the sidebar layer; the transparent corners show the
