@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Kido copy mode — selection, context menu and prompt composer</title>
+<style>
+:root{color-scheme:light}
+body{margin:0;padding:28px 40px 40px;background:#ececec;font:13px/1.4 -apple-system,system-ui,sans-serif;color:#222}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:0 auto 18px;max-width:1100px}
+.controls button,.controls select{border:1px solid #ccc;border-radius:7px;background:#fff;padding:5px 10px;font:inherit}
+.hint{margin-left:auto;font-size:12px;color:#777}
+.app{--bg:#192028;--glass:#21272e;--text:#dddddd;--muted:#9a9a9a;--border:#ffffff13;--window:#ffffff13;--guide:#ffffff1f;--separator:#ffffff33;--fg:#e6e6e6;--accent:#0a84ff;--capsule:color-mix(in srgb,var(--bg) 92%,var(--fg) 8%);--capsule-edge:color-mix(in srgb,var(--fg) 12%,transparent);--dim:#19202899;--sel:color-mix(in srgb,var(--accent) 35%,transparent);--error:#ff453a;--ok:#30d158;position:relative;width:min(1100px,100%);height:620px;margin:auto;background:var(--bg);color:var(--text);border-radius:18px;overflow:hidden;box-shadow:0 18px 60px #0003,0 0 0 .5px #0002;font-size:13px}
+.app.light{--bg:#fefaf1;--glass:#f0ebe2;--text:#000000d9;--muted:#00000080;--border:#00000013;--window:#00000013;--guide:#0000001f;--separator:#0000002b;--fg:#1a1a1a;--accent:#007aff;--dim:#fefaf199;--sel:color-mix(in srgb,var(--accent) 28%,transparent);--error:#ff3b30;--ok:#34c759}
+.chrome{position:absolute;left:0;right:0;top:0;height:52px;border-bottom:.5px solid var(--guide)}
+.lights{position:absolute;left:19px;top:19px;display:flex;gap:9px}
+.lights i{height:14px;width:14px;border-radius:50%;background:linear-gradient(#ff5f57,#ff817a);box-shadow:inset 0 0 0 .5px #e64b43,0 1px 2px #0002}
+.lights i:nth-child(2){background:linear-gradient(#ffb51b,#ffdb55);box-shadow:inset 0 0 0 .5px #dfa009,0 1px 2px #0002}
+.lights i:nth-child(3){background:linear-gradient(#49c827,#99e477);box-shadow:inset 0 0 0 .5px #49ae25,0 1px 2px #0002}
+.tabs{position:absolute;left:96px;right:8px;top:8px;height:36px;display:flex;align-items:center}
+.tab{width:160px;height:28px;line-height:28px;text-align:center;font-size:11px;color:var(--muted);border-radius:7px;margin:0 1px 0 2px}
+.tab.active{color:var(--text);background:var(--window);box-shadow:0 0 0 .5px var(--border),inset 0 0 0 .5px var(--border)}
+.panes{position:absolute;inset:52px 0 0 0;display:flex}
+.pane{position:relative;flex:1;min-width:0;overflow:hidden;font:12px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace}
+.pane+.pane{border-left:1px solid var(--guide)}
+.pane.narrow{flex:0 0 320px}
+.pane .text{padding:14px 20px;white-space:pre;color:var(--text);user-select:none}
+.pane .text .s{background:var(--sel);border-radius:2px}
+.pane .text .caret{display:inline-block;width:7px;height:14px;vertical-align:-2px;box-shadow:inset 0 0 0 1.5px var(--text)}
+.pane .dimmer{position:absolute;inset:0;background:var(--dim);pointer-events:none}
+.pane.focused .dimmer{display:none}
+.capsule{background:var(--capsule);box-shadow:0 0 0 .5px var(--capsule-edge),0 6px 18px #0003,inset 0 .5px 0 #ffffff1f;color:var(--text);font:13px -apple-system,system-ui,sans-serif}
+.pill{position:absolute;left:8px;top:8px;height:22px;white-space:nowrap;display:flex;align-items:center;padding:0 9px;border-radius:8px;font:600 11px -apple-system,system-ui,sans-serif;letter-spacing:.04em}
+.glass{position:absolute;height:32px;border-radius:12px;display:flex;align-items:center;padding:3px;box-sizing:border-box}
+.toolbar{top:8px;right:8px;width:145px}
+.toolbar.below{top:48px}
+.find{top:8px;right:8px;width:320px}
+.find .mag{display:grid;place-items:center;width:22px;height:26px;color:var(--muted)}.find .mag svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+.find span.q{flex:1;color:var(--muted);padding:0 2px}
+.find .count{font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted);padding:0 6px 0 4px}
+.ib{width:26px;height:26px;border:0;background:none;border-radius:8px;color:var(--muted);display:grid;place-items:center;padding:0;flex-shrink:0;cursor:default}
+.ib svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.ib:hover{color:var(--text);background:color-mix(in srgb,var(--text) 12%,transparent)}
+.ib:disabled{opacity:.35;background:none}
+.ib:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent)}
+.sep{width:.5px;height:14px;background:var(--separator);margin:0 4.75px;flex-shrink:0}
+/* context menu */
+.menu{position:absolute;min-width:232px;padding:5px;border-radius:10px;background:color-mix(in srgb,var(--bg) 84%,var(--fg) 16%);box-shadow:0 0 0 .5px #0003,0 10px 30px #0005;font:13px -apple-system,system-ui,sans-serif;z-index:5;display:none}
+.menu.open{display:block}
+.menu .item{display:flex;align-items:center;height:22px;padding:0 9px 0 22px;border-radius:5px;color:var(--text);position:relative}
+.menu .item .key{margin-left:auto;color:var(--muted);font-size:12px;padding-left:18px}
+.menu .item.hl{background:var(--accent);color:#fff}.menu .item.hl .key{color:#fff}
+.menu .item.disabled{color:var(--muted);opacity:.55}
+.menu .item .sub{position:absolute;left:22px;top:21px;font-size:11px;color:var(--muted);line-height:12px}
+.menu .item.with-sub{height:36px;align-items:flex-start;padding-top:3px}
+.menu .item .chev{margin-left:auto;font-size:11px;color:var(--muted)}
+.menu .item.hl .chev{color:#fff}
+.menu hr{border:0;border-top:.5px solid var(--separator);margin:5px 0}
+.menu .item.checked::before{content:"✓";position:absolute;left:7px;font-size:11px}
+/* composer */
+.composer{position:absolute;left:8px;right:8px;bottom:8px;border-radius:12px;padding:0;box-sizing:border-box;display:none;flex-direction:column;z-index:4;max-width:560px}
+.composer.open{display:flex}
+.composer.focused{box-shadow:0 0 0 .5px var(--capsule-edge),0 6px 18px #0003,inset 0 .5px 0 #ffffff1f,0 0 0 3px color-mix(in srgb,var(--accent) 40%,transparent)}
+.composer .head{display:flex;align-items:center;height:32px;padding:3px 3px 0 3px;gap:2px}
+.composer .to{display:flex;align-items:center;gap:5px;height:26px;padding:0 7px 0 9px;border-radius:8px;font-size:12px;color:var(--text);border:0;background:none;font-family:inherit}
+.composer .to b{font-weight:600}.composer .to .lbl{color:var(--muted)}
+.composer .to .chev{width:9px;height:9px;fill:none;stroke:var(--muted);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.composer .to.pick:hover{background:color-mix(in srgb,var(--text) 12%,transparent)}
+.composer .to:not(.pick) .chev{display:none}.composer .to.none{color:var(--muted);pointer-events:none}.composer .to.none b{font-weight:400}
+.composer .head .spacer{flex:1}
+.composer .quote{margin:4px 11px 0 11px;cursor:default;padding:4px 10px;border-left:2px solid color-mix(in srgb,var(--accent) 60%,transparent);font:11px/15px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);white-space:pre;overflow:hidden;text-overflow:ellipsis;max-height:45px}
+.composer .quote .more{font-family:-apple-system,system-ui,sans-serif;font-style:italic}
+.composer textarea{margin:2px 11px 0 11px;padding:0 2px;border:0;background:none;color:var(--text);font:13px/18px -apple-system,system-ui,sans-serif;resize:none;outline:none;min-height:18px;max-height:108px;overflow:auto}
+.composer textarea::placeholder{color:var(--muted)}
+.composer textarea:disabled{color:var(--muted)}
+.composer .foot{display:flex;align-items:center;height:32px;padding:0 3px 3px 11px;gap:6px}
+.composer .foot .status{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.composer .foot .status.err{color:var(--error)}.composer .foot .status.ok{color:var(--ok)}
+.composer .foot .status .spin{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--muted);border-top-color:transparent;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.composer .foot .spacer{flex:1}
+.composer .foot .hintk{font-size:11px;color:var(--muted);margin-right:4px}
+.composer .send{width:26px;height:26px;border:0;border-radius:8px;background:var(--accent);color:#fff;display:grid;place-items:center;padding:0}
+.composer .send svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.composer .send:disabled{background:color-mix(in srgb,var(--text) 14%,transparent);color:var(--muted)}
+.composer .retry{height:22px;border:0;border-radius:6px;background:color-mix(in srgb,var(--text) 10%,transparent);color:var(--text);font:12px -apple-system,system-ui,sans-serif;padding:0 9px}
+.picker{position:absolute;left:3px;top:36px;min-width:240px;padding:5px;border-radius:10px;background:color-mix(in srgb,var(--bg) 84%,var(--fg) 16%);box-shadow:0 0 0 .5px #0003,0 10px 30px #0005;z-index:6;display:none}
+.picker.open{display:block}
+.picker .item{display:flex;align-items:center;gap:8px;height:24px;padding:0 9px 0 22px;border-radius:5px;position:relative;font-size:13px}
+.picker .item .dot{width:6px;height:6px;border-radius:50%;background:var(--ok)}.picker .item .dot.att{background:#ff9f0a}
+.picker .item .where{margin-left:auto;font-size:11px;color:var(--muted)}
+.picker .item.hl{background:var(--accent);color:#fff}.picker .item.hl .where{color:#fff}
+.picker .item.checked::before{content:"✓";position:absolute;left:7px;font-size:11px}
+.picker .group{font-size:11px;color:var(--muted);padding:4px 9px 2px}
+.footnote{max-width:1100px;margin:16px auto 0;font-size:12px;color:#666;line-height:1.5}
+.gallery{max-width:1100px;margin:22px auto 0;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.gallery h3{grid-column:1/-1;margin:8px 0 0;font-size:12px;font-weight:600;color:#444}
+.card{position:relative;height:150px;border-radius:10px;overflow:hidden}
+.card .cap{position:absolute;left:10px;top:6px;font:11px -apple-system,system-ui,sans-serif;color:var(--muted)}
+.card .composer{max-width:none}
+.sentas{max-width:1100px;margin:14px auto 0;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px 14px;white-space:pre;color:#333}
+</style></head><body>
+<div class="controls"><strong>Copy mode · selection and prompt</strong>
+<label>Selection <select id="selection"><option value="drag">Drag · 3 lines</option><option value="word">Double-click · word</option><option value="line">Triple-click · line</option><option value="extend">Shift-click · extended</option><option value="none">None (caret only)</option></select></label>
+<label>Stage <select id="stage"><option value="menu">Context menu</option><option value="resolving">Box · resolving</option><option value="empty" selected>Box · empty, one agent</option><option value="typing">Box · typing</option><option value="picker">Box · picker open</option><option value="none">Box · no agent</option><option value="sending">Box · sending</option><option value="failed-refused">Box · refused (Retry)</option><option value="failed-unknown">Box · delivery unknown (Copy Prompt)</option><option value="failed-invalid">Box · invalid</option></select></label>
+<label>Chrome <select id="chrome"><option value="none">COPY pill only</option><option value="toolbar">+ hover toolbar</option><option value="find">+ find open (toolbar below)</option></select></label>
+<label>Layout <select id="layout"><option value="split">Two panes</option><option value="narrow">Narrow pane (320pt)</option></select></label>
+<label>Theme <select id="theme"><option>Dark</option><option selected>Light</option></select></label>
+<span class="hint">p or right-click → Prompt · Enter sends · ⇧↩ newline · Esc cancels</span></div>
+
+<div class="app light" id="app">
+<header class="chrome"><div class="lights" aria-hidden="true"><i></i><i></i><i></i></div><div class="tabs" aria-hidden="true"><span class="tab">@kido</span><span class="tab active">@app</span><span class="tab">tests</span></div></header>
+<div class="panes">
+<section class="pane focused" id="paneA" aria-label="Pane 1, copy mode">
+<div class="text" id="text"></div>
+<div class="dimmer"></div>
+<div class="pill capsule" id="copyPill">COPY</div>
+<div class="glass capsule find" id="find" hidden><span class="mag"><svg viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 4 4"/></svg></span><span class="q">retry</span><span class="count">2 (loaded)</span><span class="sep"></span><button class="ib" aria-label="Previous match"><svg viewBox="0 0 16 16"><path d="m4 10 4-4 4 4"/></svg></button><button class="ib" aria-label="Next match"><svg viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg></button><span class="sep"></span><button class="ib" aria-label="Done"><svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div>
+<div class="glass capsule toolbar" id="toolbar" hidden><button class="ib" aria-label="Drag pane"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></svg></button><button class="ib" aria-label="Split right"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M8 3v10"/></svg></button><button class="ib" aria-label="Split down"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 8h12"/></svg></button><button class="ib" aria-label="Zoom pane"><svg viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9"/></svg></button><span class="sep"></span><button class="ib" aria-label="Close pane"><svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div>
+
+<div class="menu" id="menu" role="menu" aria-label="Selection"><div class="item" role="menuitem">Copy<span class="key">⌘C</span></div><div class="item hl" id="menuPrompt" role="menuitem">Prompt with Selection…<span class="key">p</span></div></div>
+
+<div class="composer capsule" id="composer" role="dialog" aria-label="Prompt with selection"><div class="head"><button class="to pick" id="to" aria-haspopup="menu" aria-label="Send to"><span class="lbl">Prompt</span><b id="toName">@kido-app</b><span class="lbl" id="toWhere">in this window</span><svg class="chev" viewBox="0 0 10 10"><path d="m2.5 4 2.5 2.5L7.5 4"/></svg></button><span class="spacer"></span><button class="ib" id="cancel" aria-label="Cancel" title="Cancel (Escape)"><svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div><textarea id="prompt" rows="1" placeholder="Ask about the selection" aria-label="Prompt"></textarea><div class="quote" id="quote" title=""></div><div class="foot"><span class="status" id="status"></span><span class="spacer"></span><span class="hintk" id="hintk">↩ send · ⇧↩ newline</span><button class="send" id="send" aria-label="Send prompt" title="Send (Return)"><svg viewBox="0 0 16 16"><path d="M2.5 8h10M8.5 3.5 13 8l-4.5 4.5"/></svg></button></div>
+<div class="picker" id="picker" role="menu" aria-label="Send to"><div class="group">This window</div><div class="item checked" role="menuitemradio" aria-checked="true"><span class="dot"></span>@kido-app<span class="where">%12</span></div><div class="item" role="menuitemradio" aria-checked="false"><span class="dot att"></span>Claude Code<span class="where">%15</span></div><div class="group">Session main</div><div class="item" role="menuitemradio" aria-checked="false"><span class="dot"></span>@working-on-kido<span class="where">window kido · %3</span></div></div></div>
+</section>
+<section class="pane" id="paneB" aria-label="Pane 2"><div class="text">$ make verify
+dune build ....................... ok
+dune test --force ................ ok
+go test ./test_e2e/ .............. ok
+PASS  build
+PASS  unit
+PASS  e2e
+$ █</div><div class="dimmer"></div></section>
+</div>
+</div>
+
+<div class="sentas" id="sentas"></div>
+<section class="gallery" id="gallery" aria-label="Composer states"></section>
+
+<p class="footnote">Design proposal, nothing is sent. Copy mode gains mouse selection (drag, double-click word, triple-click line, Shift-click extend) in the accent selection color. Right-click (also on empty cells, for the existing selection) opens a native NSMenu with Copy and Prompt with Selection…; <code>p</code> in copy mode does the same. The prompt box sits at the bottom-left of the pane in the pane capsule style: a target popup (window agents first, then the session; absent with “No agent in this window or session”), a growing text field (Enter sends, Shift-Enter newline), the quoted selection below it, status and Send. Delivery closes the box, clears the selection and exits copy mode. The text is sent as the prompt, a colon, and every selection line prefixed “&gt; ”.</p>
+
+<script>
+const $=id=>document.getElementById(id);
+const lines=['$ make verify','dune build ....................... ok','dune test --force ................ FAIL','File "lib/prompt.ml", line 41, characters 12-19:','Error: This expression has type string but an expression was expected of type','         Tmux.pane_id option','make: *** [verify] Error 1','$ '];
+const sel={drag:{from:[3,0],to:[5,34]},word:{from:[3,6],to:[3,22]},line:{from:[2,0],to:[2,lines[2].length]},extend:{from:[1,0],to:[6,30]},none:null};
+const agents={one:[{name:'@kido-app',where:'running'}],many:[{name:'@kido-app',where:'running'},{name:'@sidebar-tests',where:'needs your input'}],none:[]};
+function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function selectedText(key){const r=sel[key];if(!r)return '';const [fy,fx]=r.from,[ty,tx]=r.to;return lines.slice(fy,ty+1).map((l,i)=>l.slice(i===0?fx:0,fy+i===ty?tx:undefined)).join('\n')}
+function renderText(key){const r=sel[key];$('text').innerHTML=lines.map((l,y)=>{if(!r||y<r.from[0]||y>r.to[0]){return esc(l)+(y===lines.length-1?'<span class="caret"></span>':'')}const a=y===r.from[0]?r.from[1]:0,b=y===r.to[0]?r.to[1]:l.length;return esc(l.slice(0,a))+'<span class="s">'+esc(l.slice(a,b))+'</span>'+esc(l.slice(b))}).join('\n')}
+function render(){const stage=$('stage').value,chrome=$('chrome').value,selection=$('selection').value,layout=$('layout').value;$('app').classList.toggle('light',$('theme').value==='Light');$('paneA').classList.toggle('narrow',layout==='narrow');
+ renderText(selection);const text=selectedText(selection),count=text?text.split('\n').length:0;
+ $('find').hidden=chrome!=='find';$('toolbar').hidden=chrome==='none';$('toolbar').classList.toggle('below',chrome==='find');
+ const menu=$('menu');menu.classList.toggle('open',stage==='menu'&&selection!=='none');
+ const r=sel[selection]||sel.drag;const anchorY=52+14+(r.to[0]+.5)*21.6,anchorX=20+Math.min(r.to[1],40)*7.2;menu.style.left=Math.min(anchorX,($('paneA').clientWidth||600)-250)+'px';menu.style.top=(anchorY-52)+'px';
+ const comp=$('composer');const open=stage!=='menu';comp.classList.toggle('open',open);
+ const to=$('to');const resolving=stage==='resolving',none=stage==='none';to.className='to'+(none||resolving?' none':' pick');$('toName').textContent=resolving?'Resolving…':none?'No agent in this window or session':'@kido-app';$('toWhere').textContent=resolving||none?'':'in this window';$('to').querySelector('.lbl').textContent=resolving||none?'':'Prompt';
+ $('picker').classList.toggle('open',stage==='picker');
+ const q=$('quote');if(text){const first=text.split('\n');q.hidden=false;q.innerHTML=esc(first.slice(0,2).join('\n'))+(count>2?'\n<span class="more">+'+(count-2)+' line'+(count-2>1?'s':'')+'</span>':'');q.title=text}else{q.hidden=true}
+ const ta=$('prompt');ta.value=['typing','picker','sending','failed-refused','failed-unknown','failed-invalid'].includes(stage)?'Why does make verify fail here? Fix the type error in lib/prompt.ml and rerun it.':'';ta.disabled=stage==='sending'||none||resolving;ta.style.height='18px';ta.style.height=Math.min(90,ta.scrollHeight)+'px';
+ const st=$('status');st.className='status';st.innerHTML='';if(stage==='sending'){st.innerHTML='<span class="spin"></span>Sending to @kido-app…'}else if(stage==='failed-refused'){st.className='status err';st.innerHTML='@kido-app is not accepting messages &nbsp;<button class="retry">Retry</button>'}else if(stage==='failed-unknown'){st.className='status err';st.innerHTML='Could not send: connection reset. It may have arrived; not resent. &nbsp;<button class="retry">Copy Prompt</button>'}else if(stage==='failed-invalid'){st.className='status err';st.textContent='no such pane'}
+ $('hintk').hidden=!['typing','empty','picker'].includes(stage);$('send').disabled=!ta.value||ta.disabled||stage==='failed-refused';$('send').hidden=stage==='failed-unknown';if(stage==='failed-refused')$('send').disabled=true;
+ comp.classList.toggle('focused',['empty','typing'].includes(stage));
+ $('sentas').textContent=text&&ta.value?'Sent through the prompt RPC, as kido prompt would deliver it:\n\n'+ta.value+(ta.value.trim().endsWith(':')?'':':')+'\n'+text.replace(/\n$/,'').split('\n').map(l=>'> '+l).join('\n'):'Select text and type a prompt to see what is sent.';
+ gallery(text)}
+function gallery(text){const g=$('gallery');g.replaceChildren();const h=document.createElement('h3');h.textContent='Composer states, light and dark';g.append(h);const specs=[['resolving','','resolving'],['empty','',''],['typing','Why does make verify fail here?',''],['no agent','','none'],['sending','Why does make verify fail here?','sending'],['refused','Why does make verify fail here?','failed'],['delivery unknown','Why does make verify fail here?','error'],['invalid','Why does make verify fail here?','invalid']];for(const theme of ['light','']){for(const [name,val,state] of specs){const card=document.createElement('div');card.className='card app '+theme;card.style.background='var(--bg)';const c=$('composer').cloneNode(true);c.removeAttribute('id');c.className='composer capsule open'+(name==='empty'||name==='typing'?' focused':'');c.querySelector('.picker').className='picker';const to=c.querySelector('.to');to.className='to'+(state==='none'||state==='resolving'?' none':' pick');to.querySelector('b').textContent=state==='resolving'?'Resolving…':state==='none'?'No agent in this window or session':'@kido-app';to.querySelectorAll('.lbl')[0].textContent=state==='none'||state==='resolving'?'':'Prompt';to.querySelectorAll('.lbl')[1].textContent=state==='none'||state==='resolving'?'':'in this window';const ta=c.querySelector('textarea');ta.value=val;ta.disabled=state==='sending'||state==='none'||state==='resolving';ta.style.height='18px';const st=c.querySelector('.status');st.className='status';st.innerHTML=state==='sending'?'<span class="spin"></span>Sending to @kido-app…':state==='failed'?'@kido-app is not accepting messages &nbsp;<button class="retry">Retry</button>':state==='error'?'Could not send: connection reset. Not resent. &nbsp;<button class="retry">Copy Prompt</button>':state==='invalid'?'no such pane':'';if(['failed','error','invalid'].includes(state))st.classList.add('err');c.querySelector('.hintk').hidden=!!state;const send=c.querySelector('.send');send.disabled=!val||ta.disabled||state==='failed';send.hidden=state==='error';c.querySelectorAll('button,textarea').forEach(e=>e.tabIndex=-1);card.append(c);const cap=document.createElement('span');cap.className='cap';cap.textContent=(theme?'light':'dark')+' · '+name;card.append(cap);g.append(card)}}}
+for(const id of ['selection','stage','chrome','layout','theme'])$(id).onchange=render;
+$('menuPrompt').onclick=()=>{$('stage').value='resolving';render();setTimeout(()=>{if($('stage').value==='resolving'){$('stage').value='empty';render();$('prompt').focus()}},500)};document.addEventListener('keydown',e=>{if(e.key==='p'&&!(e.target instanceof HTMLTextAreaElement)&&!(e.target instanceof HTMLInputElement)&&$('selection').value!=='none'&&!$('composer').classList.contains('open')){e.preventDefault();$('menuPrompt').click()}});
+$('cancel').onclick=()=>{$('composer').classList.remove('open')};
+$('to').onclick=()=>{$('stage').value=$('stage').value==='picker'?'typing':'picker';render()};
+$('prompt').addEventListener('input',()=>{const ta=$('prompt');ta.style.height='18px';ta.style.height=Math.min(108,ta.scrollHeight)+'px';$('send').disabled=!ta.value});
+$('prompt').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();if(!$('prompt').value)return;$('stage').value='sending';render();setTimeout(()=>{if($('stage').value==='sending'){$('composer').classList.remove('open');$('selection').value='none';render()}},900)}if(e.key==='Escape'){e.preventDefault();$('cancel').click()}});
+$('paneA').addEventListener('contextmenu',e=>{e.preventDefault();if($('selection').value==='none')$('selection').value='word';$('stage').value='menu';render();$('menu').style.left=(e.clientX-$('paneA').getBoundingClientRect().left)+'px';$('menu').style.top=(e.clientY-$('paneA').getBoundingClientRect().top)+'px'});
+render();
+</script></body></html>
