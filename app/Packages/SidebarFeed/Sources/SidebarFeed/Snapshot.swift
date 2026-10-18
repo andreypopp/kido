@@ -16,7 +16,6 @@ public struct Snapshot: Decodable, Equatable, Sendable {
 
     public let client: Position
     public let serverInstance: ServerInstance
-    public let asks: [Ask]
     public let error: String?
     public var sessions: [SessionNodes]
 
@@ -24,7 +23,7 @@ public struct Snapshot: Decodable, Equatable, Sendable {
         client == other.client && serverInstance == other.serverInstance && sessions == other.sessions
     }
 
-    private enum CodingKeys: String, CodingKey { case v, client, server_instance, asks, error, sessions }
+    private enum CodingKeys: String, CodingKey { case v, client, server_instance, error, sessions }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -32,7 +31,6 @@ public struct Snapshot: Decodable, Equatable, Sendable {
         guard v == 2 else { throw DecodingError.dataCorruptedError(forKey: .v, in: c, debugDescription: "not a v2 snapshot: v \(v)") }
         client = try c.decode(Position.self, forKey: .client)
         serverInstance = try c.decode(ServerInstance.self, forKey: .server_instance)
-        asks = try c.decode([Ask].self, forKey: .asks)
         error = try c.decodeIfPresent(String.self, forKey: .error)
         sessions = try c.decode([SessionNodes].self, forKey: .sessions)
     }
@@ -164,25 +162,25 @@ public enum PaneKind: Decodable, Equatable, Sendable {
     }
     public enum Remote: Equatable, Sendable {
         case terminal(interactive: Bool, ShellStatus)
-        case agent(name: String, AgentStatus)
+        case agent(name: String, Report)
     }
     case terminal(ShellStatus)
-    case someAgent(name: String, AgentStatus)
-    case piAgent(id: String, AgentStatus)
+    case someAgent(name: String, Report)
+    case piAgent(id: String, Report)
     case ssh(Destination, Remote)
     public init(from decoder: Decoder) throws {
         var v = try Variant(decoder)
         switch v.tag {
         case "Terminal": self = .terminal(try v.payload())
-        case "Some_agent": self = try v.fields { .someAgent(name: try $0.decode(String.self, forKey: "name"), try $0.decode(AgentStatus.self, forKey: "status")) }
-        case "Pi_agent": self = try v.fields { .piAgent(id: try $0.decode(String.self, forKey: "id"), try $0.decode(AgentStatus.self, forKey: "status")) }
+        case "Some_agent": self = try v.fields { .someAgent(name: try $0.decode(String.self, forKey: "name"), try $0.decode(Report.self, forKey: "status")) }
+        case "Pi_agent": self = try v.fields { .piAgent(id: try $0.decode(String.self, forKey: "id"), try $0.decode(Report.self, forKey: "status")) }
         case "Ssh":
             self = try v.fields { c in
                 let destination = Destination(user: try c.decode(String.self, forKey: "user"), host: try c.decode(String.self, forKey: "host"))
                 var remote = try Variant(c.superDecoder(forKey: "pane"))
                 return switch remote.tag {
                 case "Remote_terminal": .ssh(destination, try remote.fields { .terminal(interactive: try $0.decode(Bool.self, forKey: "interactive"), try $0.decode(ShellStatus.self, forKey: "status")) })
-                case "Remote_agent": .ssh(destination, try remote.fields { .agent(name: try $0.decode(String.self, forKey: "name"), try $0.decode(AgentStatus.self, forKey: "status")) })
+                case "Remote_agent": .ssh(destination, try remote.fields { .agent(name: try $0.decode(String.self, forKey: "name"), try $0.decode(Report.self, forKey: "status")) })
                 default: throw remote.unknown()
                 }
             }
@@ -197,15 +195,10 @@ public struct Outcome: Decodable, Equatable, Sendable {
     public let result: Result
 }
 
-public struct AgentStatus: Decodable, Equatable, Sendable {
+public struct Report: Decodable, Equatable, Sendable {
     public enum State: Equatable, Sendable {
-        public enum Source: Equatable, Sendable {
-            case blocked(ProgramStatus.Record.Kind?)
-            case ask(id: String)
-        }
         case running(progress: Int?)
-        case waiting(Source, progress: Int?)
-        case stalled
+        case waiting(ProgramStatus.Record.Kind?, progress: Int?)
         case idle(Outcome?)
     }
     public let since: Date
@@ -219,19 +212,7 @@ public struct AgentStatus: Decodable, Equatable, Sendable {
         var v = try Variant(c.superDecoder(forKey: .state))
         switch v.tag {
         case "Running": state = try v.fields { .running(progress: try $0.progress()) }
-        case "Waiting":
-            state = try v.fields { c in
-                var source = try Variant(c.superDecoder(forKey: "source"))
-                let progress = try c.progress()
-                switch source.tag {
-                case "Blocked": return .waiting(try source.fields { .blocked(try $0.decode(ProgramStatus.Record.Kind?.self, forKey: "kind")) }, progress: progress)
-                case "Ask":
-                    guard progress == nil else { throw DecodingError.dataCorruptedError(forKey: "progress", in: c, debugDescription: "an ask has no progress") }
-                    return .waiting(try source.fields { .ask(id: try $0.decode(String.self, forKey: "id")) }, progress: nil)
-                default: throw source.unknown()
-                }
-            }
-        case "Stalled": try v.end(); state = .stalled
+        case "Waiting": state = try v.fields { .waiting(try $0.decode(ProgramStatus.Record.Kind?.self, forKey: "kind"), progress: try $0.progress()) }
         case "Idle": state = try v.fields { .idle(try $0.decode(Outcome?.self, forKey: "outcome")) }
         default: throw v.unknown()
         }
@@ -253,29 +234,6 @@ public struct ShellStatus: Decodable, Equatable, Sendable {
         case unknown
         case idle(last: Exit?)
         case running(Command?, fullscreen: Bool)
-    }
-    public struct Report: Decodable, Equatable, Sendable {
-        public enum State: Equatable, Sendable {
-            case running(progress: Int?)
-            case waiting(ProgramStatus.Record.Kind?, progress: Int?)
-            case idle(Outcome?)
-        }
-        public let since: Date
-        public let msg: String?
-        public let state: State
-        private enum CodingKeys: String, CodingKey { case since, msg, state }
-        public init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            since = Date(timeIntervalSince1970: try c.decode(Double.self, forKey: .since))
-            msg = try c.decode(String?.self, forKey: .msg)
-            var v = try Variant(c.superDecoder(forKey: .state))
-            switch v.tag {
-            case "Running": state = try v.fields { .running(progress: try $0.progress()) }
-            case "Waiting": state = try v.fields { .waiting(try $0.decode(ProgramStatus.Record.Kind?.self, forKey: "kind"), progress: try $0.progress()) }
-            case "Idle": state = try v.fields { .idle(try $0.decode(Outcome?.self, forKey: "outcome")) }
-            default: throw v.unknown()
-            }
-        }
     }
     public let phase: Phase
     public let report: Report?
