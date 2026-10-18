@@ -16,9 +16,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     #if KIDO_VISUAL
     @MainActor static var pasteEventTimeout: TimeInterval = 30
     @MainActor static var clipboardTimeout: TimeInterval = 8
+    @MainActor static var copyEntryTimeout: TimeInterval = 2
     #else
     static let pasteEventTimeout: TimeInterval = 30
     static let clipboardTimeout: TimeInterval = 8
+    static let copyEntryTimeout: TimeInterval = 2
     #endif
 
     let pane: PaneID
@@ -789,7 +791,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var visualCaptured: Bool { scrollGeometry.captured }
     var visualPasteEventExpired: Bool { pasteEvent.map { DispatchTime.now() >= $0.deadline } ?? true }
     func visualRefuseInput() { acceptingInput = false }
-    static var visualConversion: (() async -> Void)?
     static var renderOffscreen = false
     private var visualFrames: [UInt64: (Bool) -> Void] = [:]
     var visualReady: Bool { !resizeDirty && finalEpoch == nil && restoreRequested == nil && scrollPending == nil && rendering == nil }
@@ -1156,7 +1157,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         unmarkText()
         lastPerformKeyEvent = nil
         presentCopy()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: deadline)
+        DispatchQueue.main.asyncAfter(deadline: .now() + PaneView.copyEntryTimeout, execute: deadline)
         onCopyCheck { [weak self] admitted in
             guard let self, case .entering(let current) = copyMode, current === deadline else { return }
             guard admitted, grid.withLock({ state in
@@ -1377,9 +1378,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
               let tiff = board.data(forType: .tiff) else { return complete(state, contents, available: available) }
         clipboard = (state, mimes, list, nil, .distantFuture)
         Task { [weak self] in
-            #if KIDO_VISUAL
-            await PaneView.visualConversion?()
-            #endif
             let converted = try? await Upload(image: tiff)
             guard let self, clipboard?.state == state else { return }
             clipboard = nil

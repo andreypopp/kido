@@ -89,7 +89,7 @@ import XCTest
         }
         try await superseded(try await paste())
         let old = PaneView.pasteEventTimeout
-        PaneView.pasteEventTimeout = 0.3
+        PaneView.pasteEventTimeout = 0.1
         defer { PaneView.pasteEventTimeout = old }
         let expired = try await paste()
         try await wait("paste event expired") { pane.visualPasteEventExpired }
@@ -349,7 +349,6 @@ import XCTest
 
     func testHiddenUnapprovedReadAndEightSecondDeadline() async throws {
         let old = PaneView.clipboardTimeout
-        PaneView.clipboardTimeout = 0.5
         defer { PaneView.clipboardTimeout = old }
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
@@ -368,6 +367,7 @@ import XCTest
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+        PaneView.clipboardTimeout = 0.5
         XCTAssertTrue(pane.feed(Data("\u{1b}]52;c;?\u{7}".utf8)))
         try await drain(runtime)
         let respond = try XCTUnwrap(owner.preparedAlert?.respond)
