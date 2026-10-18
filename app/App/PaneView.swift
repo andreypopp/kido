@@ -13,6 +13,14 @@ private final class Overlay: PaneCapsule {
 }
 
 final class PaneView: NSView, @preconcurrency NSTextInputClient {
+    #if KIDO_VISUAL
+    @MainActor static var pasteEventTimeout: TimeInterval = 30
+    @MainActor static var clipboardTimeout: TimeInterval = 8
+    #else
+    static let pasteEventTimeout: TimeInterval = 30
+    static let clipboardTimeout: TimeInterval = 8
+    #endif
+
     let pane: PaneID
     let born = DispatchTime.now()
     private let onInput: @MainActor @Sendable (Data) -> Void
@@ -749,6 +757,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     #if KIDO_VISUAL
     var visualBeeps = 0
     var visualCaptured: Bool { scrollGeometry.captured }
+    var visualPasteEventExpired: Bool { pasteEvent.map { DispatchTime.now() >= $0.deadline } ?? true }
     func visualRefuseInput() { acceptingInput = false }
     static var visualConversion: (() async -> Void)?
     static var renderOffscreen = false
@@ -1316,7 +1325,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func listClipboard(_ state: UnsafeMutableRawPointer) {
-        pasteEvent = (runtime.pasteboard.changeCount, .now() + 30, pasting)
+        pasteEvent = (runtime.pasteboard.changeCount, .now() + PaneView.pasteEventTimeout, pasting)
         complete(state, [], available: pasting == nil ? PasteboardMIME.available(runtime.pasteboard) : ["text/plain"])
     }
 
@@ -1355,7 +1364,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         guard let state else { return }
         guard acceptingInput else { return ghostty_surface_cancel_clipboard_request(surface, state) }
         guard clipboard == nil else { return deny(state) }
-        clipboard = (state, mimes, list, nil, .now() + 8)
+        clipboard = (state, mimes, list, nil, .now() + PaneView.clipboardTimeout)
         guard let owner = window?.delegate as? WindowOwner else { return finishClipboard(false) }
         owner.requestClipboard(self, scope)
     }

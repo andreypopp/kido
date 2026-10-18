@@ -37,7 +37,7 @@ import XCTest
                             XCTAssertFalse(GhosttyRuntime.action(runtime.app, target, action), "local non-OSC 8 links must use Ghostty's opener")
                         }
                     }
-                    for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+                    try await wait("OSC 8 links handled") { handled.count == 2 }
                     XCTAssertEqual(handled, ["https://example.com/osc8?x=1", "file:///tmp/kido-link-test"])
                     continue
                 }
@@ -46,7 +46,7 @@ import XCTest
                     let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
                     if type == .leftMouseDown { pane.mouseDown(with: event) } else { pane.mouseUp(with: event) }
                 }
-                for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+                try await wait("Cmd-click handled") { handled.last == text }
                 XCTAssertEqual(handled.last, text, "\(host.label) Cmd-click must reach the app URL handler")
                 XCTAssertEqual(opened.map(\.absoluteString), handled.filter { $0.hasPrefix("https:") }, "non-HTTP links must not reach NSWorkspace")
             }
