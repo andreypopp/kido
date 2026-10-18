@@ -2,17 +2,13 @@ import AppKit
 import GhosttyKit
 
 final class PaneFind: PaneCapsule, NSTextFieldDelegate {
-    weak var pane: PaneView?
     let field = NSTextField()
     private let magnifier = NSImageView(image: NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)!
         .withSymbolConfiguration(.init(pointSize: 14, weight: .regular))!)
     private let count = NSTextField(labelWithString: "")
-    private let spinner = CAShapeLayer()
-    private let ring = CALayer()
     private let previousButton = IconButton("chevron.up", "Previous match", size: 15)
     private let nextButton = IconButton("chevron.down", "Next match", size: 15)
     private let done = IconButton("xmark", "Done", size: 15)
-    private var focus: NSKeyValueObservation?
     private enum Status: Equatable { case none, searching, matches(Int), at(Int, of: Int), failed, loaded(Int) }
     private var status = Status.none { didSet { showStatus() } }
     private var token = UUID()
@@ -28,8 +24,8 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
     private var loaded: Bool { pane?.copyMode != nil }
 
     init(_ pane: PaneView, runtime: GhosttyRuntime) {
-        self.pane = pane
         super.init(runtime: runtime, radius: 12, separators: 2)
+        self.pane = pane
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilitySubrole(.init(rawValue: "AXLandmarkSearch"))
@@ -44,19 +40,6 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         field.setAccessibilityLabel("Find in Terminal")
         field.delegate = self
         count.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        spinner.lineWidth = 1.5
-        spinner.fillColor = nil
-        spinner.path = CGPath(ellipseIn: CGRect(x: 0.75, y: 0.75, width: 7.5, height: 7.5), transform: nil)
-        spinner.strokeEnd = 0.75
-        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-        spin.toValue = -2 * Double.pi
-        spin.duration = 1
-        spin.repeatCount = .infinity
-        spinner.add(spin, forKey: "spin")
-        ring.borderWidth = 3
-        ring.cornerRadius = 15
-        layer?.addSublayer(spinner)
-        layer?.addSublayer(ring)
         previousButton.toolTip = "Previous match (Shift-Return)"
         nextButton.toolTip = "Next match (Return)"
         done.toolTip = "Done (Escape)"
@@ -72,23 +55,13 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    override var nextResponder: NSResponder? { get { pane } set { super.nextResponder = pane } }
+    override var focused: Bool { field.currentEditor() != nil }
     override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(field) }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        focus = window?.observe(\.firstResponder) { [weak self] _, _ in MainActor.assumeIsolated { self?.needsDisplay = true } }
-    }
 
     override func updateLayer() {
         super.updateLayer()
-        let focused = field.currentEditor() != nil, text: NSColor = focused ? .labelColor : .secondaryLabelColor
+        let text: NSColor = focused ? .labelColor : .secondaryLabelColor
         if field.textColor != text { field.textColor = text }
-        ring.isHidden = !focused
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            ring.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.4).cgColor
-            spinner.strokeColor = NSColor.secondaryLabelColor.cgColor
-        }
     }
 
     private func showStatus() {
@@ -125,7 +98,6 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         CATransaction.setDisableActions(true)
         spinner.isHidden = status != .searching
         spinner.frame = CGRect(x: count.frame.minX - 12, y: 11.5, width: 9, height: 9)
-        ring.frame = bounds.insetBy(dx: -3, dy: -3)
         CATransaction.commit()
         let left = spinner.isHidden ? count.frame.minX - 2 : spinner.frame.minX - 4
         magnifier.frame = NSRect(x: 3, y: 3, width: 22, height: 26)

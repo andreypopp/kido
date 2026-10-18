@@ -20,6 +20,7 @@ private extension NSCursor.FrameResizePosition {
 final class WindowView: NSView {
     private weak var connection: Connection?
     private let runtime: GhosttyRuntime
+    var windowID: WindowID?
     private var shown: (layout: Layout, visible: Layout)?
     private(set) var active: PaneID? {
         didSet {
@@ -180,6 +181,7 @@ final class WindowView: NSView {
     func focus(_ pane: PaneID) {
         active = pane
         for chrome in subviews.compactMap({ $0 as? PaneChrome }) { chrome.dimmed = chrome.pane != active }
+        for view in panes where view.pane != pane { view.closePrompt() }
         focusActive(force: false)
     }
 

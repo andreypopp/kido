@@ -28,6 +28,50 @@ public struct ServerStamp: Decodable, Equatable, Sendable, CustomStringConvertib
     public init(from decoder: Decoder) throws { description = try decoder.singleValueContainer().decode(String.self) }
 }
 
+public struct PromptCandidate: Decodable, Equatable, Sendable {
+    public let pane: PaneID
+    public let session: SessionID
+    public let window: WindowID
+    public let title: String
+    public init(pane: PaneID, session: SessionID, window: WindowID, title: String) {
+        self.pane = pane
+        self.session = session
+        self.window = window
+        self.title = title
+    }
+}
+
+public enum PromptErrorKind: String, Decodable, Sendable {
+    case refused, unknown, invalid
+}
+
+public enum PromptVia: String, Decodable, Sendable {
+    case inbox, paste
+}
+
+public struct PromptDelivered: Decodable, Equatable, Sendable {
+    public let pane: PaneID
+    public let via: PromptVia
+    public init(pane: PaneID, via: PromptVia) {
+        self.pane = pane
+        self.via = via
+    }
+}
+
+public enum PromptReply: Decodable, Sendable {
+    case candidates([PromptCandidate])
+    case delivered(PromptDelivered)
+    private enum CodingKeys: String, CodingKey { case candidates, delivered }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard c.allKeys.count == 1 else {
+            throw DecodingError.dataCorruptedError(forKey: .candidates, in: c, debugDescription: "invalid prompt reply")
+        }
+        if c.contains(.candidates) { self = .candidates(try c.decode([PromptCandidate].self, forKey: .candidates)) }
+        else { self = .delivered(try c.decode(PromptDelivered.self, forKey: .delivered)) }
+    }
+}
+
 public enum RPCEvent: Decodable, Sendable {
     public enum Hello: Decodable, Sendable {
         case accepted(RPCVersion)
@@ -48,18 +92,24 @@ public enum RPCEvent: Decodable, Sendable {
         }
         public let id: Int
         public enum Value: Sendable {
-            case switched(Target?), jumped(Snapshot.Position), created(Snapshot.Position), selected(Snapshot.Position), released, reordered
-            case error(String)
+            case switched(Target?), jumped(Snapshot.Position), created(Snapshot.Position), selected(Snapshot.Position), released, reordered, prompt(PromptReply)
+            case error(String), promptError(String, PromptErrorKind)
         }
         public let value: Value
-        private enum CodingKeys: String, CodingKey { case id, switched, jumped, created, selected, released, reordered, error }
+        private enum CodingKeys: String, CodingKey { case id, switched, jumped, created, selected, released, reordered, prompt, error, kind }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decode(Int.self, forKey: .id)
-            guard c.allKeys.filter({ $0 != .id }).count == 1 else {
+            let payloads = c.allKeys.filter { [.switched, .jumped, .created, .selected, .released, .reordered, .prompt, .error].contains($0) }
+            guard payloads.count == 1, !c.contains(.kind) || c.contains(.error) else {
                 throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "invalid RPC reply")
             }
-            if c.contains(.error) { value = .error(try c.decode(String.self, forKey: .error)) }
+            if c.contains(.error) {
+                let message = try c.decode(String.self, forKey: .error)
+                if let kind = try c.decodeIfPresent(PromptErrorKind.self, forKey: .kind) { value = .promptError(message, kind) }
+                else { value = .error(message) }
+            }
+            else if c.contains(.prompt) { value = .prompt(try c.decode(PromptReply.self, forKey: .prompt)) }
             else if c.contains(.switched) { value = .switched(try c.decodeIfPresent(Target.self, forKey: .switched)) }
             else if c.contains(.jumped) { value = .jumped(try c.decode(Snapshot.Position.self, forKey: .jumped)) }
             else if c.contains(.created) { value = .created(try c.decode(Snapshot.Position.self, forKey: .created)) }
