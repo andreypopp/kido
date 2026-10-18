@@ -270,13 +270,6 @@ Hover/drag users can hit the strip instead of terminal content; last-column
 drag selection is untested. Reserve space or narrow/condition hit testing
 (small-to-medium). Status: accepted overlap; selection impact untested.
 
-## Outstanding asks have no app UI
-
-RPC 2.0 asks are decoded, including ended and revivable askers, but the app
-has no activation or deletion UI. Live waiting rows remain accessible through
-normal sidebar navigation; ended askers cannot be revived from Kido.app.
-Use kido's ask view instead. Status: accepted migration scope.
-
 ## Feed restart can lose or re-arm outcomes
 
 The app's seen record survives a feed restart, but kido's outcome tracking
