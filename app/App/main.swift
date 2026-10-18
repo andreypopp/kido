@@ -269,5 +269,5 @@ func milliseconds(since start: DispatchTime) -> String {
 
 let delegate = AppDelegate()
 NSApplication.shared.delegate = delegate
-NSApplication.shared.setActivationPolicy(background ? .accessory : .regular)
+NSApplication.shared.setActivationPolicy(background ? .prohibited : .regular)
 NSApplication.shared.run()
