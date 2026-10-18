@@ -11,7 +11,7 @@ struct BundledTools: Sendable {
     var tmux: String { prefix + "/bin/kido-tmux" }
 
     init(resources: URL, environment: [String: String]) {
-        prefix = resources.appendingPathComponent("kido").path
+        prefix = resources.appendingPathComponent("kido").resolvingSymlinksInPath().path
         build = try? String(contentsOfFile: prefix + "/BUILD-ID", encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         var env = environment.filter { key, _ in
             key != "TMUX" && key != "TMUX_PANE" && key != "KIDO_TMUX" && key != "KIDO_STATE_DIR" && !key.hasPrefix("KIDO_AGENT_")
