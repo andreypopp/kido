@@ -564,7 +564,7 @@ import SidebarFeed
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber,
                                                     context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         pane.keyDown(with: escape)
-        try await Task.sleep(for: .seconds(2))
+        try await Task.sleep(for: .seconds(2)) // the cancelled 60 MiB transfer writes until its child exits
         let staged = published().filter { $0.hasPrefix(".") }
         XCTAssertEqual(staged.count, 1)
         XCTAssertEqual(published().count, 3, "cancel leaves only the dot-staged directory")
@@ -671,7 +671,7 @@ import SidebarFeed
                        "The program in this pane runs over ssh on localhost (\(NSUserName())@localhost). Nested ssh sessions are not detected.")
         XCTAssertEqual(owner.preparedAlert?.alert.buttons.map(\.title), ["Upload", "Cancel"])
         owner.respondToAlert(.alertSecondButtonReturn)
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(for: .seconds(1)) // the cancelled upload's ssh child must not reply
         XCTAssertNil(owner.preparedAlert)
         XCTAssertEqual(published(), [], "Cancel uploads nothing")
         XCTAssertEqual(pasted(), "")
@@ -719,7 +719,7 @@ import SidebarFeed
                                                     context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         drop(pane, board, [file])
         pane.keyDown(with: escape)
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(for: .seconds(1)) // the option lookup's reply must not arrive
         XCTAssertNil(owner.preparedAlert, "Escape during the option lookup drops its reply")
         XCTAssertEqual(pasted(), before, "the lookup takes Escape, so the pane gets nothing")
 
@@ -731,7 +731,7 @@ import SidebarFeed
             try await until(reason + ": refused") { owner.preparedAlert != nil && owner.preparedAlert?.alert.buttons.count == 1 }
             XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "The ssh session in this pane changed after you confirmed; nothing was uploaded.", reason)
             owner.respondToAlert(.alertFirstButtonReturn)
-            try await Task.sleep(for: .seconds(1))
+            try await Task.sleep(for: .seconds(1)) // the refused transfer's child must not paste
             XCTAssertEqual(published().count, 2, reason)
             XCTAssertEqual(pasted(), before, reason)
         }
