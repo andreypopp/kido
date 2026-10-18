@@ -72,7 +72,7 @@ import XCTest
         XCTAssertEqual(tabs.addWindow.frame.width, 28)
 
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
-        {"v":2,"asks":[],"client":{"session":"$0","window":"@7","pane":"%4"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"pane","id":"%4","pane":"%4","window":"@7","title":"shell","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[{"id":"child","state":"working"}]},"run":null,"started":null,"children":[]}]}]}
+        {"v":2,"client":{"session":"$0","window":"@7","pane":"%4"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"pane","id":"%4","pane":"%4","window":"@7","title":"shell","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[{"id":"child","state":"working"}]},"run":null,"started":null,"children":[]}]}]}
         """.utf8))
         let list = SidebarView()
         list.frame = NSRect(x: 0, y: 0, width: 300, height: 110)
@@ -135,7 +135,7 @@ import XCTest
             let session = try XCTUnwrap(model.session)
             let phase = running ? "[\"Running\",{\"origin\":[\"Command\",{\"command\":\"sleep 60\",\"started_at\":1791000000}],\"fullscreen\":false}]" : "[\"Unknown\"]"
             let json = """
-            {"v":2,"asks":[],"client":{"session":"\(session)","window":"\(created)","pane":"\(pane.pane)"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"\(session)","name":"s","current":true,"nodes":[{"kind":"pane","id":"\(pane.pane)","pane":"\(pane.pane)","window":"\(created)","title":"job","lifecycle":["Live",["Terminal",{"phase":\(phase),"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]}]}
+            {"v":2,"client":{"session":"\(session)","window":"\(created)","pane":"\(pane.pane)"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"\(session)","name":"s","current":true,"nodes":[{"kind":"pane","id":"\(pane.pane)","pane":"\(pane.pane)","window":"\(created)","title":"job","lifecycle":["Live",["Terminal",{"phase":\(phase),"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]}]}
             """
             owner.testReceive(try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8)))
         }
