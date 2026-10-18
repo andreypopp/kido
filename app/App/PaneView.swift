@@ -40,9 +40,32 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onFindChange: () -> Void = {}
     let scroller = PaneScroller()
     var find: PaneFind? { didSet { needsLayout = true; onFindChange() } }
-    var chromeViews: [NSView] { [historyLimit, copyLabel] + [find].compactMap { $0 } }
+    var prompt: PanePrompt? { didSet { needsLayout = true; onFindChange() } }
+    var chromeViews: [NSView] { [historyLimit, copyLabel] + [find].compactMap { $0 } + [prompt].compactMap { $0 } }
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
+    private enum MouseDrag {
+        case cell(anchor: (x: Int, y: Int), last: (x: Int, y: Int))
+        case word(start: (x: Int, y: Int), end: (x: Int, y: Int), anchor: (x: Int, y: Int), last: (x: Int, y: Int))
+        case line(row: Int, last: (x: Int, y: Int))
+
+        var last: (x: Int, y: Int) {
+            switch self {
+            case .cell(_, let last), .word(_, _, _, let last), .line(_, let last): last
+            }
+        }
+
+        func moved(to cell: (x: Int, y: Int)) -> MouseDrag {
+            switch self {
+            case .cell(let anchor, _): .cell(anchor: anchor, last: cell)
+            case .word(let start, let end, let anchor, _): .word(start: start, end: end, anchor: anchor, last: cell)
+            case .line(let row, _): .line(row: row, last: cell)
+            }
+        }
+    }
+    private var mouseDrag: MouseDrag?
+    private var dragPoint: NSPoint?
+    private var autoscroll: Timer?
     var copyFind: (query: String?, older: Bool) = (nil, true)
     private(set) var copyingLines = false
     enum Freeze { case off, entering, frozen }
@@ -159,7 +182,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     static func owner(_ responder: NSResponder?) -> PaneView? {
         var view = responder as? NSView
-        while let current = view, !(current is PaneView) { view = (current as? PaneFind)?.pane ?? current.superview }
+        while let current = view, !(current is PaneView) {
+            view = (current as? PaneFind)?.pane ?? (current as? PanePrompt)?.pane ?? current.superview
+        }
         return view as? PaneView
     }
 
@@ -473,6 +498,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     #if KIDO_STRESS || KIDO_VISUAL
     var visualPill: Bool { !historyLimit.isHidden }
     var visualCopyLabel: String? { copyLabel.isHidden ? nil : (copyLabel.subviews[0] as? NSTextField)?.stringValue }
+    var visualPressed: Int { pressed.count }
     var wheelRowHeight: CGFloat { rowHeight }
     var wheelDistance: Double? { scrollDistance }
     private var finalRenderDisposition: [String: Any] = [:]
@@ -653,10 +679,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                                            windowNumber: window!.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 0)!)
         }
         let position = scrollPosition()
-        var text = ghostty_text_s()
-        guard ghostty_surface_read_selection(surface, &text), let bytes = text.text else { return false }
-        defer { ghostty_surface_free_text(surface, &text) }
-        let selected = String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
+        let selected = readSelection()
         note("fractional click selected=\(selected) offset=\(position.offset) history=\(position.retainedHistoryRows) distance=\(scrollDistance ?? -1)")
         return scrollDistance == 20 && position.retainedHistoryRows - position.offset == 20 && selected == "row\(position.offset)"
     }
@@ -703,7 +726,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         historyLimit.separatorX = [label.frame.maxX + 6]
         loadMore.frame = NSRect(x: label.frame.maxX + 10.5, y: 2, width: ceil((loadMore as? NSButton)?.attributedTitle.size().width ?? 0) + 14, height: 18)
         historyLimit.frame = NSRect(x: (chrome.width - loadMore.frame.maxX - 2) / 2, y: y, width: loadMore.frame.maxX + 2, height: 22)
+        if let prompt {
+            let width = min(560, chrome.width - 16)
+            let height = prompt.preferredHeight
+            prompt.frame = NSRect(x: 8, y: chrome.height - 8 - height, width: width, height: height)
+        }
     }
+
+    func promptNeedsLayout() { needsLayout = true; onFindChange() }
 
     // Freed in deinit, so the last reference must be dropped on the main
     // thread, and never while the reader may feed it (Connection).
@@ -793,6 +823,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         invalidateClipboard()
         grid.withLock { $0.ready = false; $0.epoch += 1 }
         find?.close()
+        closePrompt()
+        stopAutoscroll()
         if let paste {
             self.paste = nil
             complete(paste.state, "")
@@ -1177,6 +1209,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let dirty = grid.withLock { $0.freeze = .off; return $0.dirty }
         copyMode = nil
         copyFind = (nil, true)
+        stopAutoscroll()
+        closePrompt()
         presentCopy()
         if case .entering = mode { find?.search(navigate: false) }
         guard restore, superview != nil, acceptingInput else { return }
@@ -1195,9 +1229,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func select(_ anchor: (x: Int, y: Int), _ cursor: (x: Int, y: Int)) -> Bool {
-        func point(_ p: (x: Int, y: Int)) -> ghostty_point_s {
-            ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_EXACT, x: UInt32(p.x), y: UInt32(p.y))
-        }
         var selection = ghostty_selection_s(top_left: point(anchor), bottom_right: point(cursor), rectangle: false)
         return ghostty_surface_set_selection(surface, &selection)
     }
@@ -1237,16 +1268,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             guard let find else { return copyFind.query == nil ? () : openFind(navigate: true) }
             if copyFind.older == (name == "n") { find.next() } else { find.previous() }
         case "y", "v", "V", "h", "l", "w", "b", "e", "^", "j", "k", "0", "$", "^u", "^d", "g", "G": copyMove(name)
+        case "p": openPrompt()
         default: break
         }
     }
 
     func copyMove(_ name: String, to point: (x: Int, y: Int)? = nil) {
         if case .entering = copyMode { return }
-        var value = ghostty_selection_s()
-        guard ghostty_surface_selection(surface, &value) else { return endCopy() }
-        var anchor = (x: Int(value.top_left.x), y: Int(value.top_left.y))
-        var cursor = (x: Int(value.bottom_right.x), y: Int(value.bottom_right.y))
+        guard let bounds = selectionBounds() else { return endCopy() }
+        var anchor = bounds.0
+        var cursor = bounds.1
         var lines = false, selecting = false
         switch copyMode {
         case .lines(let a, let c): (anchor, cursor, lines) = (a, c, true)
@@ -1288,10 +1319,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             case "e": GHOSTTY_POINT_MOTION_WORD_END
             default: GHOSTTY_POINT_MOTION_FIRST_NONBLANK
             }
-            var moved = ghostty_point_s()
-            let point = ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_EXACT, x: UInt32(cursor.x), y: UInt32(cursor.y))
-            guard ghostty_surface_move_point(surface, point, motion, &moved) else { return endCopy() }
-            cursor = (Int(moved.x), Int(moved.y))
+            guard let moved = movePoint(motion, cursor) else { return endCopy() }
+            cursor = moved
         case "j": cursor.y += 1
         case "k": cursor.y -= 1
         case "0": cursor.x = 0
@@ -1596,34 +1625,294 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         ghostty_surface_mouse_pos(surface, pos.x, y, Self.mods(event.modifierFlags))
     }
 
+    private func point(_ cell: (x: Int, y: Int)) -> ghostty_point_s {
+        ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_EXACT, x: UInt32(cell.x), y: UInt32(cell.y))
+    }
+
+    private func gridCell(_ point: NSPoint) -> (x: Int, y: Int) {
+        var bar = ghostty_surface_scrollbar_s()
+        _ = ghostty_surface_scrollbar(surface, &bar)
+        let size = ghostty_surface_size(surface)
+        let columns = max(1, Int(size.columns)), rows = max(1, Int(bar.len))
+        let x = min(max(0, Int(floor(point.x / max(1, cell.width)))), columns - 1)
+        let viewportRow = min(max(0, Int(floor((bounds.height - point.y - renderInsets.top) / max(1, cell.height)))), rows - 1)
+        let y = min(max(0, Int(bar.offset) + viewportRow), max(0, Int(bar.total) - 1))
+        return (x, y)
+    }
+
+    private func gridCell(_ event: NSEvent) -> (x: Int, y: Int) {
+        gridCell(convert(event.locationInWindow, from: nil))
+    }
+
+    private func movePoint(_ motion: ghostty_point_motion_e, _ from: (x: Int, y: Int)) -> (x: Int, y: Int)? {
+        var moved = ghostty_point_s()
+        guard ghostty_surface_move_point(surface, point(from), motion, &moved) else { return nil }
+        return (Int(moved.x), Int(moved.y))
+    }
+
+    private func decodedText(_ text: inout ghostty_text_s) -> String? {
+        guard let bytes = text.text else { return nil }
+        defer { ghostty_surface_free_text(surface, &text) }
+        return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
+    }
+
+    private func cellText(_ cell: (x: Int, y: Int)) -> String? {
+        var text = ghostty_text_s()
+        let selection = ghostty_selection_s(top_left: point(cell), bottom_right: point(cell), rectangle: false)
+        guard ghostty_surface_read_text(surface, selection, &text), let value = decodedText(&text) else { return nil }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : value
+    }
+
+    private func wordRange(at cell: (x: Int, y: Int)) -> (start: (x: Int, y: Int), end: (x: Int, y: Int))? {
+        guard cellText(cell) != nil else { return nil }
+        var start = cell
+        if let previous = movePoint(GHOSTTY_POINT_MOTION_WORD_PREVIOUS, cell),
+           let previousEnd = movePoint(GHOSTTY_POINT_MOTION_WORD_END, previous),
+           previousEnd.y > cell.y || (previousEnd.y == cell.y && previousEnd.x >= cell.x),
+           let right = movePoint(GHOSTTY_POINT_MOTION_RIGHT, previous), cellText(right) != nil {
+            start = previous
+        }
+        guard var end = movePoint(GHOSTTY_POINT_MOTION_WORD_END, start) else { return nil }
+        if start == cell, let right = movePoint(GHOSTTY_POINT_MOTION_RIGHT, cell), cellText(right) == nil { end = cell }
+        return (start, end)
+    }
+
+    private func selectWord(_ word: (start: (x: Int, y: Int), end: (x: Int, y: Int))) {
+        copyMode = .selecting
+        if !select(word.start, word.end) { endCopy() }
+    }
+
+    func readSelection() -> String {
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_selection(surface, &text) else { return "" }
+        return decodedText(&text) ?? ""
+    }
+
+    private func selectionBounds() -> ((x: Int, y: Int), (x: Int, y: Int))? {
+        var value = ghostty_selection_s()
+        guard ghostty_surface_selection(surface, &value) else { return nil }
+        return ((Int(value.top_left.x), Int(value.top_left.y)), (Int(value.bottom_right.x), Int(value.bottom_right.y)))
+    }
+
+    private var hasSelection: Bool {
+        guard ghostty_surface_has_selection(surface) else { return false }
+        if case .cursor = copyMode { return false }
+        if case .entering = copyMode { return false }
+        return true
+    }
+
+    private func selectionContains(_ cell: (x: Int, y: Int)) -> Bool {
+        guard let (top, bottom) = selectionBounds() else { return false }
+        return (cell.y > top.y || (cell.y == top.y && cell.x >= top.x))
+            && (cell.y < bottom.y || (cell.y == bottom.y && cell.x <= bottom.x))
+    }
+
+    private func edgeOverflow(_ point: NSPoint) -> (above: CGFloat, below: CGFloat) {
+        (point.y - (bounds.height - renderInsets.top), renderInsets.bottom - point.y)
+    }
+
+    private func applyDrag(_ cell: (x: Int, y: Int)) {
+        guard let drag = mouseDrag else { return }
+        switch drag {
+        case .cell(let anchor, _):
+            if case .selecting = copyMode {} else {
+                copyMode = .selecting
+                if !select(anchor, cell) { return endCopy() }
+            }
+            copyMove("", to: cell)
+        case .word(let start, let end, let anchor, _):
+            guard let word = wordRange(at: cell) else { return }
+            let (top, bottom) = cell.y < anchor.y || (cell.y == anchor.y && cell.x < anchor.x) ? (word.start, end) : (start, word.end)
+            copyMode = .selecting
+            if !select(top, bottom) { endCopy() }
+        case .line(let row, _):
+            let columns = Int(ghostty_surface_size(surface).columns)
+            copyMode = .lines(anchor: (0, row), cursor: (columns - 1, cell.y))
+            if !selectLines(row, cell.y) { endCopy() }
+        }
+    }
+
+    private func stopAutoscroll() {
+        autoscroll?.invalidate()
+        autoscroll = nil
+    }
+
+    private func updateAutoscroll() {
+        guard let point = dragPoint else { return stopAutoscroll() }
+        let overflow = edgeOverflow(point)
+        guard overflow.above > 0 || overflow.below > 0 else { return stopAutoscroll() }
+        guard autoscroll == nil else { return }
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoscrollTick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        autoscroll = timer
+    }
+
+    private func autoscrollTick() {
+        guard let point = dragPoint, copyMode != nil else { return stopAutoscroll() }
+        let overflow = edgeOverflow(point)
+        guard overflow.above > 0 || overflow.below > 0 else { return stopAutoscroll() }
+        let position = scrollPosition()
+        let distance = position.retainedHistoryRows - position.offset
+        let step = max(1, Int((max(overflow.above, overflow.below) / 40).rounded(.down)) + 1)
+        let next = overflow.above > 0 ? min(position.retainedHistoryRows, distance + step) : max(0, distance - step)
+        guard next != distance else { return stopAutoscroll() }
+        requestScroll(next)
+        let cell = gridCell(point)
+        let row = position.retainedHistoryRows - next + (overflow.above > 0 ? 0 : position.rows - 1)
+        applyDrag((cell.x, max(0, row)))
+    }
+
     override func mouseDown(with event: NSEvent) {
-        _ = button(event, GHOSTTY_MOUSE_PRESS)
+        guard copyMode != nil else { return _ = button(event, GHOSTTY_MOUSE_PRESS) }
+        guard !disposed else { return }
+        if case .entering = copyMode { return }
+        window?.makeFirstResponder(self)
+        snapScroll()
+        stopAutoscroll()
+        let cell = gridCell(event)
+        dragPoint = convert(event.locationInWindow, from: nil)
+        if event.modifierFlags.contains(.shift), let selection = selectionBounds() {
+            switch copyMode {
+            case .lines(let anchor, _):
+                mouseDrag = .line(row: anchor.y, last: cell)
+            case .selecting:
+                mouseDrag = .cell(anchor: selection.0, last: cell)
+            default:
+                copyMode = .selecting
+                mouseDrag = .cell(anchor: cell, last: cell)
+            }
+            copyMove("", to: cell)
+            return
+        }
+        if event.clickCount >= 3 {
+            let columns = Int(ghostty_surface_size(surface).columns)
+            copyMode = .lines(anchor: (0, cell.y), cursor: (columns - 1, cell.y))
+            mouseDrag = .line(row: cell.y, last: cell)
+            if !selectLines(cell.y, cell.y) { endCopy() }
+        } else if event.clickCount == 2, let word = wordRange(at: cell) {
+            mouseDrag = .word(start: word.start, end: word.end, anchor: cell, last: cell)
+            selectWord(word)
+        } else {
+            copyMode = .cursor
+            mouseDrag = .cell(anchor: cell, last: cell)
+            if !select(cell, cell) { endCopy() }
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
-        _ = button(event, GHOSTTY_MOUSE_RELEASE)
-        ghostty_surface_mouse_pressure(surface, 0, 0)
+        guard copyMode != nil else {
+            _ = button(event, GHOSTTY_MOUSE_RELEASE)
+            ghostty_surface_mouse_pressure(surface, 0, 0)
+            return
+        }
+        stopAutoscroll()
+        mouseDrag = nil
+        dragPoint = nil
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        if !button(event, GHOSTTY_MOUSE_PRESS) { super.rightMouseDown(with: event) }
+        guard copyMode != nil else {
+            let captured = ghostty_surface_mouse_captured(surface)
+            let consumed = button(event, GHOSTTY_MOUSE_PRESS)
+            if !captured {
+                let removed = pressed.remove(event.buttonNumber) ?? pressed.remove(1)
+                if removed != nil {
+                    _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, Self.mods(event.modifierFlags))
+                }
+                if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+            } else if !consumed {
+                super.rightMouseDown(with: event)
+            }
+            return
+        }
+        if case .entering = copyMode { return }
+        window?.makeFirstResponder(self)
+        selectForMenu(event)
+        if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+    }
+
+    func selectForMenu(_ event: NSEvent) {
+        guard copyMode != nil else { return }
+        let cell = gridCell(event)
+        if case .cursor = copyMode {
+            if let word = wordRange(at: cell) { selectWord(word) }
+        } else if !selectionContains(cell), let word = wordRange(at: cell) {
+            selectWord(word)
+        }
     }
 
     override func rightMouseUp(with event: NSEvent) {
-        if !button(event, GHOSTTY_MOUSE_RELEASE) { super.rightMouseUp(with: event) }
+        if copyMode == nil { _ = button(event, GHOSTTY_MOUSE_RELEASE) }
     }
 
-    override func otherMouseDown(with event: NSEvent) { _ = button(event, GHOSTTY_MOUSE_PRESS) }
-    override func otherMouseUp(with event: NSEvent) { _ = button(event, GHOSTTY_MOUSE_RELEASE) }
+    override func otherMouseDown(with event: NSEvent) { if copyMode == nil { _ = button(event, GHOSTTY_MOUSE_PRESS) } }
+    override func otherMouseUp(with event: NSEvent) { if copyMode == nil { _ = button(event, GHOSTTY_MOUSE_RELEASE) } }
     override func mouseEntered(with event: NSEvent) { position(event) }
     override func mouseMoved(with event: NSEvent) { position(event) }
-    override func mouseDragged(with event: NSEvent) { position(event) }
+    override func mouseDragged(with event: NSEvent) {
+        guard copyMode != nil else { return position(event) }
+        guard let drag = mouseDrag else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let cell = gridCell(point)
+        guard cell != drag.last else { return }
+        mouseDrag = drag.moved(to: cell)
+        dragPoint = point
+        updateAutoscroll()
+        applyDrag(cell)
+    }
     override func rightMouseDragged(with event: NSEvent) { position(event) }
     override func otherMouseDragged(with event: NSEvent) { position(event) }
 
     override func mouseExited(with event: NSEvent) {
         guard NSEvent.pressedMouseButtons == 0, copyMode == nil else { return }
         ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard hasSelection else { return nil }
+        let menu = NSMenu()
+        let copy = NSMenuItem(title: "Copy", action: #selector(copySelectionItem(_:)), keyEquivalent: "c")
+        copy.keyEquivalentModifierMask = .command
+        copy.target = self
+        menu.addItem(copy)
+        let prompt = NSMenuItem(title: "Prompt with Selection…", action: #selector(promptSelectionItem(_:)), keyEquivalent: "")
+        prompt.target = self
+        menu.addItem(prompt)
+        return menu
+    }
+
+    @objc func copySelectionItem(_ sender: Any?) {
+        if copyMode != nil { copyMove("y") }
+        else { _ = ghostty_surface_binding_action(surface, "copy_to_clipboard", 17) }
+    }
+
+    @objc func promptSelectionItem(_ sender: Any?) { openPrompt() }
+
+    func openPrompt() {
+        if let prompt { window?.makeFirstResponder(prompt.textView); return }
+        if case .entering = copyMode { return }
+        guard hasSelection else { return }
+        let selection = readSelection()
+        guard !selection.isEmpty else { return }
+        let prompt = PanePrompt(self, runtime: runtime, selection: selection)
+        self.prompt = prompt
+        window?.makeFirstResponder(prompt.textView)
+        prompt.resolve()
+    }
+
+    func closePrompt() {
+        guard let prompt else { return }
+        self.prompt = nil
+        prompt.removeFromSuperview()
+        if (window?.firstResponder as? NSView)?.isDescendant(of: prompt) == true { window?.makeFirstResponder(self) }
+    }
+
+    func promptDelivered() {
+        closePrompt()
+        if copyMode != nil { endCopy() } else { _ = ghostty_surface_set_selection(surface, nil) }
+        window?.makeFirstResponder(self)
     }
 
     override func pressureChange(with event: NSEvent) {
@@ -1866,6 +2155,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     // as in Ghostty's own app.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown, window?.firstResponder === self else { return false }
+        if prompt != nil, let responder = window?.firstResponder as? NSView, responder.isDescendant(of: self) { return false }
         let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
         let chord = event.charactersIgnoringModifiers?.lowercased()
         if mods == [.command, .shift] && chord == "c" { toggleCopyMode(nil); return true }
