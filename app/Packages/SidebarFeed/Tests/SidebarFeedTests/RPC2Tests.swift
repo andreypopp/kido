@@ -14,7 +14,9 @@ import TmuxControl
         (.selectSession(s), #"{"id":7,"select-session":"$3"}"#),
         (.switchWindow(next: true), #"{"id":7,"switch-window":{"direction":"next"}}"#),
         (.switchSession(next: false), #"{"id":7,"switch-session":{"direction":"prev"}}"#),
-        (.releaseSideFocus, #"{"id":7,"release-side-focus":true}"#)
+        (.releaseSideFocus, #"{"id":7,"release-side-focus":true}"#),
+        (.prompt(pane: PaneID(number: 9), text: nil, target: nil), #"{"id":7,"prompt":{"pane":"%9"}}"#),
+        (.prompt(pane: PaneID(number: 9), text: "look:", target: PaneID(number: 12)), #"{"id":7,"prompt":{"pane":"%9","target":"%12","text":"look:"}}"#)
     ]
     for (request, json) in requests {
         #expect(try JSONSerialization.jsonObject(with: request.data(id: 7)) as? NSDictionary == JSONSerialization.jsonObject(with: Data(json.utf8)) as? NSDictionary)
@@ -24,7 +26,8 @@ import TmuxControl
         #expect((key == "jumped" ? RPCRequest.jump(p) : key == "selected" ? .selectWindow(s, w) : .newWindow(w)).accepts(reply.value))
         #expect(!RPCRequest.switchWindow(next: true).accepts(reply.value))
     }
-    for json in [#"{"id":7}"#, #"{"id":7,"released":false}"#, #"{"id":7,"created":{"session":"$3","window":"@12"}}"#, #"{"id":7,"switched":null,"error":"bad"}"#] {
+    for json in [#"{"id":7}"#, #"{"id":7,"released":false}"#, #"{"id":7,"created":{"session":"$3","window":"@12"}}"#, #"{"id":7,"switched":null,"error":"bad"}"#,
+                 #"{"id":7,"prompt":{"candidates":[]},"kind":"refused"}"#, #"{"id":7,"prompt":{}}"#, #"{"id":7,"error":"x","kind":"future"}"#, #"{"id":7,"prompt":{"candidates":[{"pane":"%1","session":"$1","window":"@1"}]}}"#] {
         #expect(throws: DecodingError.self) { try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(json.utf8)) }
     }
 }
@@ -52,4 +55,31 @@ import TmuxControl
     var item = nodes[0]
     item.removeValue(forKey: "program_status")
     #expect(throws: DecodingError.self) { try decode(item, as: Item.self) }
+}
+
+@Test func promptRequestsAndReplies() throws {
+    let pane = PaneID(number: 9), target = PaneID(number: 12)
+    #expect(RPCRequest.composePrompt(prompt: "Explain", selection: "a\n\nb\n") == "Explain:\n> a\n> \n> b")
+    #expect(RPCRequest.composePrompt(prompt: "Why:", selection: "a") == "Why:\n> a")
+    let candidates = try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(#"{"id":7,"prompt":{"candidates":[{"pane":"%12","session":"$3","window":"@4","title":"claude-code"}]}}"#.utf8))
+    guard case .prompt(.candidates(let list)) = candidates.value else { Issue.record("not candidates"); return }
+    #expect(list.map(\.pane) == [target])
+    #expect(list[0].title == "claude-code" && list[0].window == WindowID(number: 4))
+    #expect(RPCRequest.prompt(pane: pane, text: nil, target: nil).accepts(candidates.value))
+    #expect(!RPCRequest.prompt(pane: pane, text: "x", target: target).accepts(candidates.value))
+    let delivered = try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(#"{"id":7,"prompt":{"delivered":{"pane":"%12","session":"$3","window":"@4","title":"claude-code","via":"inbox"}}}"#.utf8))
+    guard case .prompt(.delivered(let value)) = delivered.value else { Issue.record("not delivered"); return }
+    #expect(value.pane == target && value.via == .inbox)
+    #expect(RPCRequest.prompt(pane: pane, text: "x", target: target).accepts(delivered.value))
+    #expect(!RPCRequest.prompt(pane: pane, text: nil, target: nil).accepts(delivered.value))
+    #expect(!RPCRequest.releaseSideFocus.accepts(delivered.value))
+    for (kind, text) in [("refused", "did not accept"), ("unknown", "may have arrived"), ("invalid", "no such pane")] {
+        let reply = try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(#"{"id":7,"error":"\#(text)","kind":"\#(kind)"}"#.utf8))
+        guard case .promptError(let message, let parsed) = reply.value else { Issue.record("not a prompt error"); return }
+        #expect(message == text && parsed == PromptErrorKind(rawValue: kind))
+        #expect(RPCRequest.prompt(pane: pane, text: "x", target: target).accepts(reply.value))
+    }
+    let plain = try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(#"{"id":7,"error":"invalid or unknown request"}"#.utf8))
+    guard case .error(let plainMessage) = plain.value else { Issue.record("not a plain error"); return }
+    #expect(plainMessage == "invalid or unknown request")
 }

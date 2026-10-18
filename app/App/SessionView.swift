@@ -55,6 +55,7 @@ final class SessionView: NSView {
         windows = [:]
         for w in listing {
             let view = old[w.id] ?? WindowView(runtime: runtime, connection: connection)
+            view.windowID = w.id
             if view.superview == nil {
                 view.frame = bounds
                 view.isHidden = true

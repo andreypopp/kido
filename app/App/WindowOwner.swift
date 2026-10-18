@@ -84,7 +84,7 @@ private class AlertEscape: NSView {
     private var intent = 0
     private var activating: Int?
     private var completing = false
-    var request: (RPCRequest, @escaping @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void) -> Void = { $1(.failure(.terminal("the RPC feed is not ready"))) }
+    var request: RPCRequestHandler = Feed.unavailable
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
 
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
@@ -208,7 +208,7 @@ private class AlertEscape: NSView {
         if !background { sidebar.isCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") }
         sidebar.changed = { [weak self] in self?.menuChanged() }
         request = { [weak self] request, done in
-            guard let feed = self?.feed else { return done(.failure(.terminal("the RPC feed is not ready"))) }
+            guard let feed = self?.feed else { return done(.failure(.terminal(Feed.notReady))) }
             feed.request(request, completed: done)
         }
         sidebar.list.navigate = { [weak self] in self?.perform($0) }
