@@ -104,9 +104,15 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     private var tabSnapshot: Snapshot?
     private var rpc: Feed?
 
+    func testBackgroundLaunchIsNotActivatable() {
+        XCTAssertTrue(background)
+        XCTAssertEqual(NSApp.activationPolicy(), .prohibited, "a background launch must not be activatable")
+    }
+
     func testVsyncMeasurement() async throws {
         guard ProcessInfo.processInfo.environment["KIDO_VSYNC_MEASURE"] == "1" else { throw XCTSkip("authorized on-screen measurement only") }
         try await start()
+        NSApp.setActivationPolicy(.regular)
         PaneView.renderOffscreen = false
         window.isReleasedWhenClosed = false
         window.setFrameOrigin(NSPoint(x: 200, y: 200))
