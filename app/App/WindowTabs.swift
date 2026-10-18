@@ -373,7 +373,7 @@ final class WindowTabs: NSView {
             element.setAccessibilityParent(self)
             element.setAccessibilityFrameInParentSpace(NSRect(x: origin(index, geometry), y: bounds.midY - 14, width: tabWidth, height: 28))
             let suffix: String = switch visibleStatus(tab.status) {
-            case .error, .stalled: " — error"
+            case .error: " — error"
             case .waiting: " — waiting"
             case .running: " — running"
             case .done: " — done"

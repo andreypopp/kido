@@ -6,9 +6,9 @@ import Testing
     #expect(RPCVersion(text) == nil)
 }
 
-@Test(arguments: [("2.1", false), ("3.0", false), ("4.0", true), ("3.2", false), ("0.9", false), ("4.1", false)]) func protocolCompatibility(_ text: String, _ compatible: Bool) throws {
+@Test(arguments: [("2.1", false), ("3.0", false), ("5.0", true), ("3.2", false), ("0.9", false), ("4.0", false), ("5.1", false)]) func protocolCompatibility(_ text: String, _ compatible: Bool) throws {
     #expect(try #require(RPCVersion(text)).compatible == compatible)
-    #expect(RPCVersion.required.description == "4.0")
+    #expect(RPCVersion.required.description == "5.0")
 }
 
 @Test func tolerantRawEnums() throws {
@@ -21,9 +21,9 @@ import Testing
 
 @Test func rpcEventsInterleave() throws {
     let lines = [
-        #"{"hello":{"protocol":"4.0"}}"#,
+        #"{"hello":{"protocol":"5.0"}}"#,
         #"{"reply":{"id":2,"switched":null}}"#,
-        #"{"v":2,"client":{"session":"$1","window":"@2","pane":"%3"},"server_instance":{"started_at":1780000000,"pid":12345},"asks":[],"error":null,"sessions":[]}"#,
+        #"{"v":2,"client":{"session":"$1","window":"@2","pane":"%3"},"server_instance":{"started_at":1780000000,"pid":12345},"error":null,"sessions":[]}"#,
         #"{"reply":{"id":1,"switched":{"session":"$3","window":"@12"}}}"#,
         #"{"reply":{"id":3,"error":"invalid or unknown request"}}"#,
     ]
@@ -37,7 +37,7 @@ import Testing
     #expect(error == "invalid or unknown request")
 }
 
-@Test(arguments: [(#"{"hello":{"protocol":"4.0","server":null,"expected":"0123456789ab"}}"#, nil), (#"{"hello":{"protocol":"4.0","server":"other","expected":"0123456789ab"}}"#, "other")]) func rejectedHello(_ line: String, _ stamp: String?) throws {
+@Test(arguments: [(#"{"hello":{"protocol":"5.0","server":null,"expected":"0123456789ab"}}"#, nil), (#"{"hello":{"protocol":"5.0","server":"other","expected":"0123456789ab"}}"#, "other")]) func rejectedHello(_ line: String, _ stamp: String?) throws {
     guard case .hello(.rejected(let binary, let server, let expected)) = try JSONDecoder().decode(RPCEvent.self, from: Data(line.utf8)) else { Issue.record("not rejected"); return }
     #expect(binary == .required)
     #expect(server?.description == stamp)

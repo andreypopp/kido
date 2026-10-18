@@ -5,7 +5,7 @@ import TmuxControl
 
 @Test func decodesContractTree() throws {
     let line = """
-    {"v":2,"client":{"session":"$1","window":"@2","pane":"%3"},"server_instance":{"started_at":1780000000,"pid":12345},"asks":[],"error":null,"sessions":[
+    {"v":2,"client":{"session":"$1","window":"@2","pane":"%3"},"server_instance":{"started_at":1780000000,"pid":12345},"error":null,"sessions":[
       {"id":"$1","name":"main","current":true,"nodes":[
         {"kind":"pane","id":"%3","pane":"%3","window":"@2","title":"kido","lifecycle":["Live",["Pi_agent",{"id":"pi-session-id","status":{"since":1780000000,"msg":"fixing tests","state":["Running",{"progress":null}]}}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[
           {"kind":"window","id":"@7","window":"@7","name":"build","children":[
@@ -46,38 +46,18 @@ import TmuxControl
         #"["Ended",{"result":"died"}]"#, #"["Ended",{"result":"stopped"}]"#
     ]
     for json in lifecycles { _ = try JSONDecoder().decode(Lifecycle.self, from: Data(json.utf8)) }
-    let agents: [(String, AgentStatus.State)] = [
+    let reports: [(String, Report.State)] = [
         (#"{"since":1780000000,"msg":null,"state":["Running",{"progress":42}]}"#, .running(progress: 42)),
-        (#"{"since":1780000000,"msg":"Approve deployment","state":["Waiting",{"source":["Blocked",{"kind":"permission"}],"progress":null}]}"#, .waiting(.blocked(.permission), progress: nil)),
-        (#"{"since":1780000000,"msg":null,"state":["Waiting",{"source":["Blocked",{"kind":null}],"progress":7}]}"#, .waiting(.blocked(nil), progress: 7)),
-        (#"{"since":1780000000,"msg":null,"state":["Waiting",{"source":["Ask",{"id":"ask-id"}],"progress":null}]}"#, .waiting(.ask(id: "ask-id"), progress: nil)),
-        (#"{"since":1780000000,"msg":null,"state":["Stalled"]}"#, .stalled),
+        (#"{"since":1780000000,"msg":"Approve deployment","state":["Waiting",{"kind":"permission","progress":null}]}"#, .waiting(.permission, progress: nil)),
+        (#"{"since":1780000000,"msg":null,"state":["Waiting",{"kind":null,"progress":7}]}"#, .waiting(nil, progress: 7)),
+        (#"{"since":1780000000,"msg":"Login required","state":["Waiting",{"kind":"auth","progress":null}]}"#, .waiting(.auth, progress: nil)),
         (#"{"since":1780000000,"msg":null,"state":["Idle",{"outcome":null}]}"#, .idle(nil)),
         (#"{"since":1780000000,"msg":"Finished","state":["Idle",{"outcome":{"serial":17,"result":"success"}}]}"#, .idle(Outcome(serial: 17, result: .success))),
         (#"{"since":1780000000,"msg":"Failed","state":["Idle",{"outcome":{"serial":18,"result":"failure"}}]}"#, .idle(Outcome(serial: 18, result: .failure)))
     ]
-    for (json, state) in agents { #expect(try JSONDecoder().decode(AgentStatus.self, from: Data(json.utf8)).state == state) }
-    let phases = [
-        #"{"phase":["Unknown"],"report":null}"#,
-        #"{"phase":["Idle",{"last":null}],"report":null}"#,
-        #"{"phase":["Idle",{"last":{"code":1,"command":"false","started_at":1780000000,"ended_at":1780000001}}],"report":null}"#,
-        #"{"phase":["Idle",{"last":{"code":1,"command":"false","started_at":1780000000.0,"ended_at":1780000001.75}}],"report":null}"#,
-        #"{"phase":["Running",{"origin":["Command",{"command":"make","started_at":1780000000}],"fullscreen":false}],"report":null}"#,
-        #"{"phase":["Running",{"origin":["Command",{"command":"","started_at":1780000000}],"fullscreen":true}],"report":null}"#,
-        #"{"phase":["Running",{"origin":["Unknown"],"fullscreen":true}],"report":null}"#
-    ]
-    for json in phases { _ = try JSONDecoder().decode(ShellStatus.self, from: Data(json.utf8)) }
-    let reports: [(String, ShellStatus.Report.State)] = [
-        (#"{"since":1780000000,"msg":null,"state":["Running",{"progress":42}]}"#, .running(progress: 42)),
-        (#"{"since":1780000000,"msg":"Login required","state":["Waiting",{"kind":"auth","progress":null}]}"#, .waiting(.auth, progress: nil)),
-        (#"{"since":1780000000,"msg":null,"state":["Idle",{"outcome":null}]}"#, .idle(nil)),
-        (#"{"since":1780000000,"msg":"Built","state":["Idle",{"outcome":{"serial":17,"result":"success"}}]}"#, .idle(Outcome(serial: 17, result: .success))),
-        (#"{"since":1780000000,"msg":"Build failed","state":["Idle",{"outcome":{"serial":18,"result":"failure"}}]}"#, .idle(Outcome(serial: 18, result: .failure)))
-    ]
-    for (json, state) in reports {
-        let status = try JSONDecoder().decode(ShellStatus.self, from: Data(#"{"phase":["Unknown"],"report":\#(json)}"#.utf8))
-        #expect(status.report?.state == state)
-    }
+    for (json, state) in reports { #expect(try JSONDecoder().decode(Report.self, from: Data(json.utf8)).state == state) }
+    let wrapped = try JSONDecoder().decode(ShellStatus.self, from: Data(#"{"phase":["Unknown"],"report":\#(reports[0].0)}"#.utf8))
+    #expect(wrapped.report?.state == reports[0].1)
     let pane = #"{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"zsh","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}"#
     guard case .item(let item) = try JSONDecoder().decode(SidebarFeed.Node.self, from: Data(pane.utf8)) else { Issue.record("not a pane"); return }
     #expect(item.title == "zsh" && item.run == nil && item.started == nil)
@@ -95,8 +75,8 @@ import TmuxControl
     #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"state":["Idle",{"outcome":null}]}}]]"#,
     #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Running",{"progress":101}]}}]]"#,
     #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Running",{}]}}]]"#,
-    #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Stalled",{}]}}]]"#,
-    #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Waiting",{"source":["Ask",{"id":"a"}],"progress":3}]}}]]"#,
+    #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Stalled"]}}]]"#,
+    #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Waiting",{"source":["Blocked",{"kind":"permission"}],"progress":3}]}}]]"#,
     #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Idle",{"outcome":{"serial":1,"result":"done"}}]}}]]"#,
     #"["Live",["Ssh",{"user":"alice","pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Unknown"],"report":null}}]}]]"#,
     #"["Live",["Ssh",{"user":"alice","host":"h","pane":["Remote_shell",{}]}]]"#,
@@ -159,7 +139,6 @@ func requiresServerInstance(_ instance: [String: Int]?) {
 
 @Test func decodesErrorAndEmptySessions() throws {
     let snapshot = try decode(snapshotObject([], sessions: [], error: "state unreadable"))
-    #expect(snapshot.asks.isEmpty)
     #expect(snapshot.error == "state unreadable")
     #expect(snapshot.sessions.isEmpty)
 }
@@ -177,9 +156,9 @@ func requiresServerInstance(_ instance: [String: Int]?) {
     }
 }
 
-@Test func decodesCapturedKido30Feed() throws {
-    let hello = #"{"hello":{"protocol":"4.0"}}"#
-    let line = #"{"v":2,"server_instance":{"started_at":1791708862,"pid":10744},"client":{"session":"$1","window":"@1","pane":"%1"},"asks":[],"error":null,"sessions":[{"id":"$0","name":"main","current":false,"nodes":[{"kind":"pane","id":"%0","pane":"%0","window":"@0","title":"zsh","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]},{"id":"$1","name":"probe","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"sleep","children":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"mpb-andre.local","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791708863.57487,"msg":"Approve","state":["Waiting",{"source":["Blocked",{"kind":"permission"}],"progress":null}]}}]],"program_status":{"serial":2,"records":[{"id":"","state":"blocked","app":"claude-code","kind":"permission","msg":"Approve"},{"id":"sub","state":"error","title":"Sub"}]},"run":null,"started":null,"children":[]},{"kind":"pane","id":"%2","pane":"%2","window":"@1","title":"builder","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":{"since":1791708863.57487,"msg":"Built","state":["Idle",{"outcome":{"serial":2,"result":"success"}}]}}]],"program_status":{"serial":2,"records":[{"id":"","state":"done","app":"builder","msg":"Built"}]},"run":null,"started":null,"children":[]}]},{"kind":"pane","id":"%3","pane":"%3","window":"@2","title":"mpb-andre.local","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791708863.57487,"msg":null,"state":["Waiting",{"source":["Blocked",{"kind":null}],"progress":null}]}}]],"program_status":{"serial":1,"records":[{"id":"","state":"blocked","app":"claude-code"}]},"run":null,"started":null,"children":[]},{"kind":"pane","id":"%4","pane":"%4","window":"@3","title":"less","lifecycle":["Live",["Terminal",{"phase":["Running",{"origin":["Unknown"],"fullscreen":true}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]}]}"#
+@Test func decodesCapturedKidoFeed() throws {
+    let hello = #"{"hello":{"protocol":"5.0"}}"#
+    let line = #"{"v":2,"server_instance":{"started_at":1791708862,"pid":10744},"client":{"session":"$1","window":"@1","pane":"%1"},"error":null,"sessions":[{"id":"$0","name":"main","current":false,"nodes":[{"kind":"pane","id":"%0","pane":"%0","window":"@0","title":"zsh","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]},{"id":"$1","name":"probe","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"sleep","children":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"mpb-andre.local","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791708863.57487,"msg":"Approve","state":["Waiting",{"kind":"permission","progress":null}]}}]],"program_status":{"serial":2,"records":[{"id":"","state":"blocked","app":"claude-code","kind":"permission","msg":"Approve"},{"id":"sub","state":"error","title":"Sub"}]},"run":null,"started":null,"children":[]},{"kind":"pane","id":"%2","pane":"%2","window":"@1","title":"builder","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":{"since":1791708863.57487,"msg":"Built","state":["Idle",{"outcome":{"serial":2,"result":"success"}}]}}]],"program_status":{"serial":2,"records":[{"id":"","state":"done","app":"builder","msg":"Built"}]},"run":null,"started":null,"children":[]}]},{"kind":"pane","id":"%3","pane":"%3","window":"@2","title":"mpb-andre.local","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791708863.57487,"msg":null,"state":["Waiting",{"kind":null,"progress":null}]}}]],"program_status":{"serial":1,"records":[{"id":"","state":"blocked","app":"claude-code"}]},"run":null,"started":null,"children":[]},{"kind":"pane","id":"%4","pane":"%4","window":"@3","title":"less","lifecycle":["Live",["Terminal",{"phase":["Running",{"origin":["Unknown"],"fullscreen":true}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]}]}"#
     guard case .hello(.accepted(let version)) = try JSONDecoder().decode(RPCEvent.self, from: Data(hello.utf8)) else { Issue.record("no hello"); return }
     #expect(version.compatible)
     guard case .snapshot(let snapshot) = try JSONDecoder().decode(RPCEvent.self, from: Data(line.utf8)) else { Issue.record("no snapshot"); return }
