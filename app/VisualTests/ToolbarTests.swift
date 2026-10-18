@@ -37,13 +37,16 @@ import TmuxControl
                 XCTAssertTrue(labels.contains("Window: Running" + (activity ? " — running" : "")))
                 XCTAssertTrue(labels.contains("Window: Done" + (activity ? " — done" : "")))
                 let image = try headerImage(tabs)
-                let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+                let pixels = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+                var data = [UInt8](repeating: 0, count: pixels.width * pixels.height * 4)
+                let context = try XCTUnwrap(CGContext(data: &data, width: pixels.width, height: pixels.height, bitsPerComponent: 8,
+                                                      bytesPerRow: pixels.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.draw(pixels, in: CGRect(x: 0, y: 0, width: pixels.width, height: pixels.height))
                 var green = 0
-                for y in 0..<bitmap.pixelsHigh {
-                    for x in 0..<bitmap.pixelsWide {
-                        let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
-                        if color.greenComponent > 0.5 && color.greenComponent > color.redComponent * 1.5 && color.greenComponent > color.blueComponent * 1.5 { green += 1 }
-                    }
+                for pixel in stride(from: 0, to: data.count, by: 4) {
+                    let red = Double(data[pixel]), greenComponent = Double(data[pixel + 1]), blue = Double(data[pixel + 2])
+                    if greenComponent > 127.5 && greenComponent > red * 1.5 && greenComponent > blue * 1.5 { green += 1 }
                 }
                 XCTAssertEqual(green > 0, activity, "\(mode) visible marks")
                 if mode != "floating" {
