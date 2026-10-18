@@ -8,12 +8,9 @@ public struct SidebarRow: Equatable, Sendable {
             switch self { case .header(let s), .pane(let s, _), .program(let s, _, _), .gap(let s): s }
         }
     }
-    public enum Status: Equatable, Sendable {
-        case quiet, running, waiting, error, done, stalled
-        func mergingTabStatus(_ other: Self) -> Self {
-            let ranked: [Self] = [.error, .waiting, .running, .done, .quiet]
-            return ranked.first { $0 == self || $0 == other || $0 == .error && (self == .stalled || other == .stalled) }!
-        }
+    public enum Status: Comparable, Sendable {
+        case error, waiting, running, done, quiet
+        func mergingTabStatus(_ other: Self) -> Self { min(self, other) }
     }
     public enum Kind: Equatable, Sendable {
         case header, pane(Snapshot.Position?), gap
@@ -96,7 +93,7 @@ extension Item {
         if case .live(.piAgent) = lifecycle { return true }
         return run == .agent
     }
-    var agent: AgentStatus? {
+    var agent: Report? {
         switch lifecycle {
         case .live(.someAgent(_, let status)), .live(.piAgent(_, let status)), .live(.ssh(_, .agent(_, let status))): status
         default: nil
@@ -135,21 +132,13 @@ extension Item {
     }
 
     var caption: String {
-        func compose(_ msg: String?, _ progress: Int?) -> String {
-            [msg ?? "", progress.map { "\($0)%" } ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
-        }
         if case .ended(let result) = lifecycle { return result == .unknown || result == .completed ? "" : result.rawValue }
-        if let agent {
-            switch agent.state {
-            case .running(let progress), .waiting(_, let progress): return compose(agent.msg, progress)
-            case .stalled, .idle: return compose(agent.msg, nil)
-            }
+        guard let report = agent ?? shell?.report else { return "" }
+        let progress: Int? = switch report.state {
+        case .running(let progress), .waiting(_, let progress): progress
+        case .idle: nil
         }
-        guard let report = shell?.report else { return "" }
-        switch report.state {
-        case .running(let progress), .waiting(_, let progress): return compose(report.msg, progress)
-        case .idle: return compose(report.msg, nil)
-        }
+        return [report.msg ?? "", progress.map { "\($0)%" } ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     var indicatedOutcome: (source: OutcomeSource, identity: OutcomeIdentity, failed: Bool)? {
@@ -177,23 +166,15 @@ extension Item {
             }
             return (status, result == .unknown ? "gone" : "gone, " + result.rawValue)
         }
-        if let agent {
-            switch agent.state {
-            case .running: return (.running, "running")
-            case .waiting: return (.waiting, "waiting")
-            case .stalled: return (.stalled, "stalled")
-            case .idle: return outcome()
-            }
-        }
-        guard let shell else { return (.quiet, "") }
-        if shell.report == nil, run != nil { return (.running, "running") }
-        if let report = shell.report {
+        if let report = agent ?? shell?.report {
             switch report.state {
             case .running: return (.running, "running")
             case .waiting: return (.waiting, "waiting")
             case .idle: return outcome()
             }
         }
+        guard let shell else { return (.quiet, "") }
+        if run != nil { return (.running, "running") }
         if case .running(_, fullscreen: true) = shell.phase { return (.quiet, "") }
         switch shell.phase {
         case .unknown: return (.quiet, "")
