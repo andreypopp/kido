@@ -45,15 +45,13 @@ private final class VsyncGate: @unchecked Sendable {
         XCTAssertEqual(try cvAllocations(), 0)
     }
 
+    private func drainAnimation(_ runtime: GhosttyRuntime) async throws {
+        for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+    }
+
     private func cvAllocations() throws -> UInt {
         let symbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "kido_cv_allocations"))
         return unsafeBitCast(symbol, to: (@convention(c) () -> UInt).self)()
-    }
-
-    private func mainQueueFence() async {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async { continuation.resume() }
-        }
     }
 
     private func assertIdleCPU(_ ids: Set<UInt64>) async throws {
@@ -221,7 +219,7 @@ private final class VsyncGate: @unchecked Sendable {
         window.contentView = pane
         pane.resize(cols: 80, rows: 24)
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         var frames = 0
         let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { frames += 1 }
         let renderer = rendererThread(false)
@@ -229,14 +227,14 @@ private final class VsyncGate: @unchecked Sendable {
         let activeCPU = try rendererCPU(only: [renderer])
         XCTAssertEqual(activeCPU.count, 1, "sampling this pane's renderer thread")
         try await flow([pane])
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         XCTAssertGreaterThan(frames, 0, "ordinary unavailable output installs IOSurfaces without token requests")
         XCTAssertGreaterThan(try rendererCPU(only: [renderer]).cpu - activeCPU.cpu, 0.003, "active renderer CPU exceeds idle tolerance")
         for enabled in [false, true] {
             try reload("window-vsync = \(enabled)\n")
             let before = frames
             try await flow([pane])
-            try await drain(runtime)
+            try await drainAnimation(runtime)
             XCTAssertGreaterThan(frames, before)
             if !enabled { XCTAssertFalse(ghostty_surface_take_vsync_demand(pane.surface)) }
             XCTAssertEqual(try cvAllocations(), 0)
@@ -270,13 +268,13 @@ private final class VsyncGate: @unchecked Sendable {
         ghostty_surface_set_vsync_state(pane.surface, GHOSTTY_VSYNC_AVAILABLE)
         pane.resize(cols: 80, rows: 24)
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         let renderer = rendererThread(false)
         XCTAssertNotEqual(renderer, 0)
         XCTAssertEqual(try rendererCPU(only: [renderer]).count, 1)
         let packets = ["a=T,i=1,f=24,s=1,v=1,c=8,r=4,q=2;/wAA", "a=f,i=1,f=24,s=1,v=1,z=400,q=2;AAD/", "a=a,i=1,r=1,z=400,s=3,v=1"]
         XCTAssertTrue(pane.feed(Data(("\u{1b}[?25l" + packets.map { "\u{1b}_G\($0)\u{1b}\\" }.joined()).utf8)))
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         var frames = 0
         var changes: [(time: Double, colour: Int)] = []
         let layer = try XCTUnwrap(pane.subviews.first?.layer)
@@ -318,7 +316,7 @@ private final class VsyncGate: @unchecked Sendable {
             XCTAssertEqual(interval, 0.4, accuracy: 0.18)
         }
         XCTAssertTrue(pane.feed(Data("\u{1b}_Ga=a,i=1,s=1\u{1b}\\".utf8)))
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         let gapFrames = frames
         let gapCPU = try rendererCPU(only: [renderer]).cpu
         try await Task.sleep(for: .seconds(3))
@@ -330,7 +328,7 @@ private final class VsyncGate: @unchecked Sendable {
         XCTAssertGreaterThan(frames - fallback, 3, "visible unavailable surface retains timer animation fallback")
         ghostty_surface_set_vsync_state(pane.surface, GHOSTTY_VSYNC_AVAILABLE)
         XCTAssertTrue(ghostty_surface_take_vsync_demand(pane.surface))
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         let regained = frames
         let regainedCPU = try rendererCPU(only: [renderer]).cpu
         try await Task.sleep(for: .seconds(3))
@@ -341,7 +339,7 @@ private final class VsyncGate: @unchecked Sendable {
         XCTAssertFalse(pane.visualVsync!.hasLink)
         ghostty_surface_set_vsync_state(pane.surface, GHOSTTY_VSYNC_UNAVAILABLE)
         _ = ghostty_surface_set_renderer_realized(pane.surface, false)
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         let hidden = frames
         try await Task.sleep(for: .seconds(3))
         XCTAssertEqual(frames, hidden, "hidden unavailable shader has no frames")
@@ -352,13 +350,13 @@ private final class VsyncGate: @unchecked Sendable {
         defer { pane.dispose() }
         pane.resize(cols: 80, rows: 24)
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         var times: [Double] = []
         let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { times.append(CACurrentMediaTime()) }
         defer { observation.invalidate() }
         let packets = ["a=T,i=1,f=24,s=1,v=1,q=2;/wAA", "a=f,i=1,f=24,s=1,v=1,z=400,q=2;AAD/", "a=a,i=1,r=1,z=400,s=3,v=1"]
         XCTAssertTrue(pane.feed(Data(("\u{1b}[?25l" + packets.map { "\u{1b}_G\($0)\u{1b}\\" }.joined()).utf8)))
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         times.removeAll()
         try await Task.sleep(for: .seconds(2))
         XCTAssertGreaterThanOrEqual(times.count, 4, "sparse Kitty updates continue without output or host ticks")
@@ -389,7 +387,7 @@ private final class VsyncGate: @unchecked Sendable {
             fixtures.append((pane, rendererThread(false)))
             if fixtures.count > 32 { fixtures.removeFirst().pane.dispose() }
         }
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         var panes = fixtures.map(\.pane)
         let ids = Set(fixtures.map(\.renderer))
         XCTAssertEqual(ids.count, 32)
@@ -398,7 +396,7 @@ private final class VsyncGate: @unchecked Sendable {
         XCTAssertEqual(activeCPU.count, panes.count)
         let activeFrames = frames
         try await flow(panes)
-        try await drain(runtime)
+        try await drainAnimation(runtime)
         XCTAssertGreaterThan(frames, activeFrames)
         XCTAssertGreaterThan(try rendererCPU(only: ids).cpu - activeCPU.cpu, 0.003)
         // Ghostty's compression delay is 250ms.
