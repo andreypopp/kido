@@ -241,11 +241,11 @@ private final class VsyncGate: @unchecked Sendable {
         }
         pane.isHidden = true
         let discarded = expectation(description: "hidden final frame discarded")
-        pane.visualFrame { XCTAssertFalse($0); discarded.fulfill() }
+        pane.visualFrame { XCTAssertEqual($0, GHOSTTY_RENDER_PRESENTATION_DISCARDED); discarded.fulfill() }
         await fulfillment(of: [discarded], timeout: 5)
         pane.isHidden = false
         let recovered = expectation(description: "realization recovery")
-        pane.visualFrame { XCTAssertTrue($0); recovered.fulfill() }
+        pane.visualFrame { XCTAssertEqual($0, GHOSTTY_RENDER_PRESENTATION_PRESENTED); recovered.fulfill() }
         await fulfillment(of: [recovered], timeout: 5)
         observation.invalidate()
         XCTAssertEqual(try cvAllocations(), 0)
