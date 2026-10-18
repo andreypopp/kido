@@ -40,6 +40,14 @@ while True:
         reply = dict(id=request["id"])
         if "switch-window" in request or "switch-session" in request: reply["switched"] = None
         elif "jump" in request: reply["jumped"] = request["jump"]
+        elif "prompt" in request:
+            prompt = request["prompt"]
+            if "text" not in prompt:
+                reply["prompt"] = {"candidates": [
+                    {"pane": "%2", "session": "$0", "window": "@1", "title": "tests"},
+                    {"pane": "%3", "session": "$0", "window": "@2", "title": "docs"}]}
+            else:
+                reply["prompt"] = {"delivered": {"pane": prompt.get("target", prompt["pane"]), "via": "paste"}}
         elif "release-side-focus" in request: reply["released"] = True
         else: reply["error"] = "fake server does not mutate topology"
         print(json.dumps(dict(reply=reply)))
