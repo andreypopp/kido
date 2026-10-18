@@ -1101,6 +1101,32 @@ keeps a test launch off screen: it never activates, never takes focus
 and keeps no preferences. `KIDO_APP_DEBUG=1` logs each switch, eviction
 and free to stderr with its timing.
 
+### Test speed
+
+The test-speed rules in AGENTS.md ("Tests") apply to the app's tests.
+`make visual` runs one `xcodebuild test`, which builds the app. The suite takes
+about 130 s of test time. To profile it, read the per-test `durationInSeconds`
+of the newest result bundle:
+
+    xcrun xcresulttool get test-results tests --path \
+      app/build/xcode.noindex/derived-visual/Logs/Test/Test-Visual-<timestamp>.xcresult
+
+- A product deadline is not waited out. Under `KIDO_VISUAL`,
+  `PaneView.pasteEventTimeout` (30 s), `PaneView.clipboardTimeout` (8 s) and
+  `Upload.promiseTimeout` are settable. Production builds keep them constant.
+  A test sets a short value only around the step that tests expiry, and waits
+  for the expiry event.
+- `drain` ticks Ghostty and fences the main queue. It ends after three rounds
+  with no new `GhosttyRuntime.visualWakeups`, not after a fixed time.
+  It does not wait for tmux replies or child processes, so it is not a quiet
+  window: an absence check uses a fixed, bounded wait.
+  `VsyncTests` keeps its own fixed 200 ms `drainAnimation`, because its
+  idle-CPU windows depend on that settle.
+- A fixed wait remains only where it is the check ("never activates", quiet
+  windows) or where no event exists.
+- The remaining slow tests use real ssh (`RemoteTests`) or measure idle CPU over
+  fixed windows (`VsyncTests`).
+
 ### Stress harness
 
 `make stress SEED=N DURATION=S [FIND=0]` builds the app with the
