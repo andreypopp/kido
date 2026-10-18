@@ -1,0 +1,63 @@
+ClipboardTests/testConsentCancellationRegistersAndLimits  # fix: about fifteen drain fences and clipboard-sheet round trips
+ClipboardTests/testDenySurvivesAnotherConnectionsAlwaysAllowAndReset  # fix: each consent step waits on a 20 ms poll across two owners
+ClipboardTests/testHiddenUnapprovedReadAndEightSecondDeadline  # fix: waits out the shortened 0.5 s clipboard deadline
+ClipboardTests/testModeFiveFiveTwoTwoCmdVEmitsPasteEventForOneRead  # fix: waits out the 0.3 s paste-event expiry plus many sheet and drain round trips
+ClipboardTests/testRichReadAsksSeparatelyAndResetDeniesIt  # fix: many drain fences and clipboard-sheet round trips
+ClosingUXTests/testConnectKeysRecentDoubleClickAndInlineError  # fix: two animated sheet attach and dismiss cycles on an offscreen window
+ClosingUXTests/testKillTargetsConfirmationCmdWAndNewWindowFocus  # inherent: eight window create/close confirmations with real sheets
+FileMenuTests/testRemoteDialogNativeInvalidInputStaysAttached  # fix: two sheet animations, each awaited through a main-queue hop
+NotificationTests/testPrivateServerNotifications  # inherent: real tmux tty OSC 7501/133 writes and four notification-state waits
+NotificationTests/testRoutingAndPendingJumps  # inherent: four AppDelegates and three pending-jump rounds
+RemoteTests/testCancelledOneShotRemainsInDrainUntilReaped  # inherent: real child process with a TERM trap, reaped through the drain
+RemoteTests/testKittyClipboardLocalhostRemoteWindow  # inherent: real ssh to localhost plus a clipboard query child
+RemoteTests/testLocalSSHPaneUploadsThroughItsRecordedArguments  # inherent: real ssh uploads and a fixed 1 s late-reply guard
+RemoteTests/testLocalhostUploadRidesTheMasterOnly  # inherent: real ssh master and fixed 0.3 s and 2 s transfer guards
+RemoteTests/testLocalhostWindowsAndRecovery  # inherent: real ssh outage and three failed reopen attempts
+RemoteTests/testOSC52LocalhostRemoteWindow  # inherent: real ssh to localhost plus a clipboard query child
+RemoteTests/testPrivateAgentPublication  # inherent: two real ssh-agents, keygen and a private tmux server
+RemoteTests/testStoppedChildIsReaped  # inherent: real SIGSTOP child that must be killed and reaped
+ReorderTests/testTabDragReflowsAndCommitsOnce  # fix: autoscroll animation waits plus a fixed 100 ms settle
+ReorderTests/testWindowDragStaysInItsSessionAndRevertsOnFailure  # fix: waits out the 2 s local reorder timeout
+ToolbarTests/testTabActivityMarks  # fix: two Ghostty runtimes, six snapshot compares and per-pixel scans
+UploadTests/testEscapeDuringImagePreparationPastesNothing  # fix: fixed 1 s absence sleep; wait for the cancelled preparation to end
+UploadTests/testImagePasteUploadsOnePrivatePNGAndPastesItsPath  # fix: PNG and TIFF encoding plus three paste waits
+UploadTests/testLocalDropPastesOriginalPathsThroughThePastePath  # fix: about fifteen drain fences, one per drop case
+UploadTests/testPromiseReplyAfterDeadlineCannotPasteOrLeaveFiles  # fix: 0.1 s promise timeout plus a 0.15 s late reply
+UploadTests/testPromiseSweepsPreserveAnotherProcessLock  # fix: spawns a python lock helper and waits for it twice
+UploadTests/testTooLargePromiseIsRefusedAndRemoved  # fix: fresh Ghostty runtime and window for one refusal wait
+UploadTests/testTooManyPromisesAreRefusedBeforeCallingReceivers  # fix: fresh Ghostty runtime and window for one refusal wait
+VisualTests/testCaptionDisplayDelay  # inherent: waits out two fixed 0.2 s sidebar caption deadlines
+VisualTests/testCopyRangesAndCursorDoesNotCopy  # fix: rawPane setup plus a 20 ms poll for each of ten copy entries
+VisualTests/testCopySearchBarFocusAndExits  # fix: rawPane plus a fixed 400 ms sleep and six waits
+VisualTests/testCopySearchIgnoresSupersededQueries  # fix: rawPane plus two fixed 100 ms sleeps
+VisualTests/testCopySearchMovesTheCursorAndSelectionEnd  # fix: rawPane plus several 20 ms polled waits
+VisualTests/testEmptyPaneWheelDoesNotFloodMetadata  # fix: thirty wheel events spaced by a fixed 30 ms, 900 ms in total
+VisualTests/testEntryRefusesEachHistoryLoadPhase  # inherent: 100k-line history loaded through three refusal phases
+VisualTests/testEntryWaitsForAdmittedParse  # fix: second phase waits out the product copy-mode entry deadline (the first hold is released early)
+VisualTests/testEveryLifecycleExitAndAnchor  # fix: rawPane plus eight exit paths, each settled with 20 ms polls
+VisualTests/testFloatingSidebar  # inherent: a second WindowOwner and floating-sidebar RPC round trips
+VisualTests/testHistoryChunksAndResizeAnchors  # inherent: 100k-line history, deep find and chunk reload checks
+VisualTests/testHistoryPill  # fix: 100k-line history, a 1000-line paint and a fixed 300 ms hover sleep
+VisualTests/testHistoryPillDark  # fix: 100k-line history, a 1000-line paint and a fixed 300 ms hover sleep
+VisualTests/testLineSelection  # fix: rawPane plus a 20 ms poll for each of fourteen copy entries
+VisualTests/testLoadedTopNeverLoads  # inherent: 30k-line history and a 25000-line paint
+VisualTests/testLocalMismatchEscapeCloses  # inherent: localMismatchOwners starts a kido server and owner, then awaits the mismatch sheet
+VisualTests/testLocalMismatchNativeClose  # inherent: localMismatchOwners starts a kido server and owner, then awaits the mismatch sheet
+VisualTests/testLocalMismatchNativeRestart  # inherent: three kido server restarts, each with a new PID
+VisualTests/testLocalMismatchNativeRestartOtherWindow  # inherent: one kido server restart shared by two owners
+VisualTests/testOSC52ClipboardConsentAndPrivatePaneTransport  # fix: a real python clipboard query child plus consent-sheet round trips
+VisualTests/testPaneChromeSnapshots  # fix: two themes, about fourteen snapshot compares and three 300 ms hover sleeps
+VisualTests/testPendingInputRefusalsAndLateWork  # fix: many sheet, conversion and late-reply waits on a synthetic pane
+VisualTests/testPrivateServerRPCAndProtocolSheet  # inherent: four RPC requests and two mismatch owners
+VisualTests/testPromptSnapshots  # fix: runs rawPane twice for light and dark, doubling setup and two snapshot compares
+VisualTests/testReorderAgainstPrivateServer  # fix: fixed 300 ms no-display guard plus reorder rounds
+VisualTests/testReorderHoldYieldsToEverythingElse  # inherent: a parked reorder request and four navigation rounds
+VisualTests/testSingle  # fix: three paint and settle passes plus three snapshot compares
+VisualTests/testSplitZoomFloat  # fix: three snapshot compares after three paint passes
+VisualTests/testSwitchWindowAndSessionOutputAndReconnect  # fix: two fake-feed scripts and seven event waits
+VisualTests/testWindowTabs  # fix: three new-window, one split and one rename round trip plus tab-layout waits
+VisualTests/testWordMotions  # fix: rawPane plus a 20 ms poll for each of sixteen copy entries
+VsyncTests/testAnimatedShaderManualHostTicksAndFallback  # inherent: two fixed 3 s shader fallback windows
+VsyncTests/testSparseKittyUpdatesWithoutHostTicks  # inherent: a fixed 2 s window checks the 0.4 s sparse update cadence
+VsyncTests/testThirtyTwoOffscreenSurfacesAndChurnNeverAllocateCV  # inherent: builds 32 surfaces and samples idle CPU over fixed windows
+VsyncTests/testUnavailableOutputHiddenDiscardRecovery  # inherent: fixed drain and frame windows around hidden-output recovery

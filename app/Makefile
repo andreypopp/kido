@@ -4,7 +4,7 @@ DERIVED := build/xcode.noindex/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: visual project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
+.PHONY: visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
 
 project:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
@@ -38,15 +38,31 @@ stress tsan-stress asan-stress:
 		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/bundle/stress/$@-$(SEED)
 
 RECORD ?= 0
-visual: DERIVED = build/xcode.noindex/derived-visual
-visual: project
+visual: VISUAL_FLAG =
+visual-fast: VISUAL_FLAG = skip
+visual-slow: VISUAL_FLAG = only
+visual visual-fast visual-slow: DERIVED = build/xcode.noindex/derived-visual
+visual visual-fast visual-slow: VISUAL_TMUX = $(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux)
+visual visual-fast visual-slow: project
 	mkdir -p build/bundle/visual/{home,state,tmp,config}
 	clang -dynamiclib -Werror -Wno-deprecated-declarations scripts/vsync-cv-count.c -framework CoreVideo -o build/bundle/visual/vsync-cv-count.dylib
+	@set -e; select=''; \
+	if test -n '$(VISUAL_FLAG)'; then \
+		while read -r name _; do \
+			case $$name in ''|'#'*) continue ;; esac; \
+			cls=$${name%%/*}; testname=$${name#*/}; \
+			files=$$(grep -l -e "final class $$cls: VisualTestCase" -e "^extension $$cls {" VisualTests/*.swift) || true; \
+			test -n "$$files" || { echo "slow.txt: no class $$cls" >&2; exit 1; }; \
+			grep -q "func $$testname()" $$files || { echo "slow.txt: no test $$testname in $$cls" >&2; exit 1; }; \
+			select="$$select -$(VISUAL_FLAG)-testing:VisualTests/$$name"; \
+		done < VisualTests/slow.txt; \
+		test '$(VISUAL_FLAG)' != only || test -n "$$select" || { echo "slow.txt: selects no tests" >&2; exit 1; }; \
+	fi; \
 	server=$$(mktemp -d /tmp/ka-visual-XXXXXX) || exit 1; \
-	trap '$(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) -S "$$server/socket" kill-server 2>/dev/null || true; rm -rf "$$server"' EXIT; \
+	trap '$(VISUAL_TMUX) -S "$$server/socket" kill-server 2>/dev/null || true; rm -rf "$$server"' EXIT; \
 	xcodebuild -quiet -project Kido.xcodeproj -scheme Visual -configuration Debug KIDO_VISUAL_SERVER="$$server" \
 		-destination platform=macOS -derivedDataPath $(DERIVED) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
-		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) test
+		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(VISUAL_TMUX) $$select test
 	python3 scripts/quit-check.py $(abspath $(APP))
 
 run: all
