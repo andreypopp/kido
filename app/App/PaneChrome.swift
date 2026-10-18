@@ -189,6 +189,9 @@ final class PaneToolbar: PaneCapsule {
     private let down = IconButton("rectangle.split.1x2", "Split down", size: 15)
     private let close = IconButton("xmark", "Close pane", size: 15)
     private var zoomed: Bool?
+    #if KIDO_VISUAL
+    var visualAnimationsEnded = 0
+    #endif
     private static let zoomImages = ["arrow.up.left.and.arrow.down.right", "arrow.down.right.and.arrow.up.left"].map {
         NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
     }

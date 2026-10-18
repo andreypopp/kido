@@ -183,14 +183,17 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
 
     func testPromiseReplyAfterDeadlineCannotPasteOrLeaveFiles() async throws {
         let (owner, pane, _, input, _) = try localPane()
-        Upload.promiseTimeout = 0.1
-        defer { Upload.promiseTimeout = 30 }
+        let old = Upload.promiseTimeout
+        Upload.promiseTimeout = 0.02
+        defer { Upload.promiseTimeout = old }
         let promise = PromisedFile()
         promise.stalled = true
         owner.uploadPromises([promise], to: pane)
         try await wait("promise requested", within: 2) { promise.destination != nil }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { promise.reply(recreate: true) }
+        try await wait("promise expired", within: 2) { !owner.uploading(pane) && owner.preparedAlert != nil }
+        promise.reply(recreate: true)
         try await wait("late reply cleaned", within: 2) { promise.didReply && !owner.uploading(pane) && self.removed(promise) }
+        Upload.promiseTimeout = old
         XCTAssertTrue(try XCTUnwrap(notice(owner)).contains("did not provide the files within 30 seconds"))
         XCTAssertTrue(input.data.isEmpty)
     }
@@ -386,15 +389,23 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
 
     func testEscapeDuringImagePreparationPastesNothing() async throws {
         let (owner, pane, board, input, root) = try localPane()
+        defer { Upload.visualImagePreparation = nil }
         func published() -> [String] { (try? FileManager.default.contentsOfDirectory(atPath: root + "/state/drops")) ?? [] }
+        let preparations = WindowOwner.visualPreparedUploads
+        var preparation: CheckedContinuation<Void, Never>?
+        Upload.visualImagePreparation = { await withCheckedContinuation { preparation = $0 } }
         board.clearContents()
         board.setData(pngData(width: 2, height: 2, type: .tiff), forType: .tiff)
         XCTAssertTrue(ghostty_surface_binding_action(pane.surface, "paste_from_clipboard", 20))
+        try await wait("image preparation started") { preparation != nil }
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber,
                                                     context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         pane.keyDown(with: escape)
-        try await Task.sleep(for: .seconds(1)) // the cancelled image preparation must not paste late
+        preparation?.resume()
+        try await wait("cancelled image preparation finished") { WindowOwner.visualPreparedUploads > preparations }
+        Upload.visualImagePreparation = nil
         try await drain(pane.runtime)
+        XCTAssertFalse(owner.uploading(pane))
         XCTAssertEqual(input.data, Data(), "a cancelled image preparation pastes nothing")
         XCTAssertEqual(published(), [])
         XCTAssertNil(owner.preparedAlert)
