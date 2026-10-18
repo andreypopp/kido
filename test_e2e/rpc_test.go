@@ -186,7 +186,7 @@ func feedCmd(h *harness, args ...string) *exec.Cmd {
 	cmd := exec.Command(kidoBin, append([]string{"rpc"}, args...)...)
 	// The knobs the inner server gives its own sidebar, so both agree.
 	cmd.Env = cleanEnv("TMUX=", "TMUX_PANE=", "KIDO_STATE_DIR="+serverDir(h.t),
-		"KIDO_LINGER_SECONDS=1", "KIDO_STALL_THRESHOLD_MS=3000")
+		"KIDO_LINGER_SECONDS=1")
 	return cmd
 }
 

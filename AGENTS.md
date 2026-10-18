@@ -13,7 +13,7 @@ supplies context that the code does not contain:
 - The inbox protocol and addressing.
 - The ask/reply cycle rule.
 - Spawning and the window lifecycle.
-- Run outcomes and the heartbeat.
+- Run outcomes.
 - The boundary between the two pi extensions.
 
 [docs/design-subagents.md](docs/design-subagents.md) describes subagents.
@@ -259,7 +259,6 @@ Conventions:
                        debounce, rows as data, the feed's v2 JSON
       server_dir.ml    the server state directory and socket
       pane_kind.ml     pane classification, titles and agent display names
-      stall.ml         heartbeat staleness and the wake marker
       reporting.ml     kido agent-status: the claim of a pi's run
       ssh.ml           kido ssh: argument parsing, priming and the pane's ssh marks
       msg.ml           the inbox wire protocol and its client: v0 raw prompt,
@@ -833,7 +832,7 @@ native program status.
   Otherwise, the developer's parent edge would enter the tests.
 - `settle = 5s` is the default wait deadline.
   Wait helpers poll at 100ms, kido's tick.
-  Shorten grace periods (linger, stop escalation, stall threshold)
+  Shorten grace periods (linger, stop escalation)
   only through the inner server's environment, never in-process.
   This keeps the sidebar and extension's helper in agreement
   ("Knobs" in docs/design.md).
@@ -932,14 +931,18 @@ A brief does not repeat them.
   unit of work to one manager. The manager does not write code. It does
   these steps:
   1. It spawns one implementer.
-  2. When the implementer reports, the manager spawns the four read-only
-     reviewers of a simplify pass, one angle each, so that review has
-     fresh context.
-  3. The manager merges their findings and decides which to apply.
-  4. It gives the findings to apply to the same implementer with
-     `message_agent`. The implementer keeps its context.
-  5. It writes the docs that the change needs itself, in `docs/`,
-     this file and READMEs. The implementer reports the facts.
+  2. When the implementer reports, the manager writes the docs that the
+     change needs itself, in `docs/`, this file and READMEs. The
+     implementer reports the facts.
+  3. The manager spawns the four read-only reviewers of a simplify pass,
+     one angle each, so that review has fresh context. They review the
+     code and the docs.
+  4. The manager merges their findings and decides which to apply. It
+     changes the docs that the findings affect.
+  5. It gives the findings to apply to the same implementer with
+     `message_agent`. The implementer keeps its context. The
+     implementer's final `make verify` runs after the last docs edit,
+     because `scripts/lint.sh` checks the references in the docs.
   6. It reports to the top-level session: the result, and each finding
      with the reason it was applied or rejected. Then it stops the
      implementer.

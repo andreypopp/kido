@@ -82,7 +82,7 @@ func feedVariant(raw json.RawMessage, cases map[string]any) (string, error) {
 	return tag, nil
 }
 
-func decodeStatus(raw json.RawMessage, report bool) (*feedStatus, error) {
+func decodeStatus(raw json.RawMessage) (*feedStatus, error) {
 	s := &feedStatus{}
 	var wire struct {
 		Since *float64        `json:"since"`
@@ -104,9 +104,6 @@ func decodeStatus(raw json.RawMessage, report bool) (*feedStatus, error) {
 		"Idle": &struct {
 			Outcome **feedOutcome `json:"outcome"`
 		}{&s.Outcome},
-	}
-	if !report {
-		cases["Stalled"] = nil
 	}
 	var err error
 	s.State, err = feedVariant(wire.State, cases)
@@ -153,7 +150,7 @@ func decodeShell(raw json.RawMessage) (*feedShell, error) {
 		}
 	}
 	if err == nil && wire.Report != nil && string(wire.Report) != "null" {
-		s.Report, err = decodeStatus(wire.Report, true)
+		s.Report, err = decodeStatus(wire.Report)
 	}
 	return s, err
 }
@@ -206,7 +203,7 @@ func (l *feedLifecycle) UnmarshalJSON(raw []byte) error {
 		if l.Kind == "Terminal" || l.Remote == "Remote_terminal" {
 			l.Shell, err = decodeShell(shell)
 		} else {
-			l.Agent, err = decodeStatus(agent, false)
+			l.Agent, err = decodeStatus(agent)
 		}
 	}
 	return err
@@ -262,8 +259,6 @@ func feedGlyph(r feedRow) string {
 			return "◼"
 		case "Waiting":
 			return "◆"
-		case "Stalled":
-			return "!"
 		}
 		switch {
 		case s.Outcome == nil:

@@ -430,7 +430,7 @@ func (h *harness) writeRecord(id, pane string, ts time.Time, extra map[string]an
 type listedAgent struct {
 	ID, Name, Pane, Window, Status, Parent, Cwd, Model string
 	Depth                                              int
-	Self, CanMessage, CanReply, Stalled                bool
+	Self, CanMessage, CanReply                         bool
 }
 
 func parseAgents(t *testing.T, out string) []listedAgent {
@@ -536,7 +536,7 @@ func TestListRunsScopesOrdersAndDecorates(t *testing.T) {
 		t.Fatalf("kido tool list_runs --json: rc=%d %s", rc, out)
 	}
 	if got, want := strings.Join(jsonKeys(t, out), " "),
-		"id name named pane window status activity parent depth self cwd canMessage canReply model sinceReport stalled kind relationship"; got != want {
+		"id name named pane window status activity parent depth self cwd canMessage canReply model kind relationship"; got != want {
 		t.Errorf("list_runs --json keys = %q, want %q", got, want)
 	}
 	var order []string

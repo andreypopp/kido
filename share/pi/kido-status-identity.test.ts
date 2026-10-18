@@ -282,8 +282,8 @@ test("parent-liveness poll: a slow reply does not let ticks pile up concurrent r
 // The second incident: two pi processes on one session id. kido refuses
 // the newcomer's claim (exit 6, Run.write_pi), and what this
 // pins is everything that must then NOT happen - no second report, no
-// heartbeat, no removal report on the way out, all of which would be
-// writes to a record that belongs to the process still running. The
+// removal report on the way out, all of which would be writes to a
+// record that belongs to the process still running. The
 // notify is the only thing the user gets, and it names where the other
 // one is.
 //
@@ -340,8 +340,7 @@ test("the first pi on a session id is tracked and goes on reporting", async () =
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx);
-    await s.emit("turn_start");
-    await pollUntil(() => fx.identityReports().length >= 3, 2000, "identity and initial work heartbeat from a tracked session");
+    await pollUntil(() => fx.identityReports().length >= 2, 2000, "the claim and the first identity report from a tracked session");
     for (const args of fx.identityReports()) {
       for (const flag of ["--status", "--title", "--ended"]) assert.ok(!args.includes(flag), args.join(" "));
     }
@@ -363,9 +362,8 @@ test("identity reports read the live pi session name on every report and rename 
     await pollUntil(() => fx.identityReports().some((args) => argAfter(args, "--name") === "Review - exact"), 2000, "rename report");
     const n = fx.identityReports().length;
     await s.emit("session_info_changed", {});
-    await s.emit("turn_start");
-    await pollUntil(() => fx.identityReports().length > n, 2000, "heartbeat carries name");
-    assert.equal(fx.identityReports().length, n + 1, "unchanged rename is coalesced; work heartbeat is not");
+    await pollForStable(() => fx.identityReports().length, 200, 2000, "the identity report count");
+    assert.equal(fx.identityReports().length, n, "an unchanged rename is coalesced");
     assert.equal(argAfter(fx.identityReports().at(-1)!, "--name"), "Review - exact");
     s.pi.sessionName = undefined;
     await s.emit("session_info_changed", {});
@@ -375,64 +373,7 @@ test("identity reports read the live pi session name on every report and rename 
   }
 });
 
-test("work sends identity heartbeats without putting status in the coalescing key", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    // Long enough that no heartbeat fires before the coalescing check, even on a loaded runner.
-    await withHeartbeatEnv(300, async () => {
-      const factory = await freshExtensions();
-      const s = await startSession(fx, { factory });
-      await s.emit("turn_start");
-      await s.emit("tool_execution_start");
-      await s.emit("tool_call");
-      await pollUntil(() => fx.identityReports().length >= 3, 2000, "the initial identity and work heartbeat reports");
-      assert.equal(fx.identityReports().length, 3, "coalescing must still drop the identical follow-ups");
-
-      await pollUntil(() => fx.identityReports().length >= 4, 5000, "a heartbeat re-report past KIDO_HEARTBEAT_MS");
-      await s.emit("session_shutdown");
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("the heartbeat stops once the session is no longer running", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    await withHeartbeatEnv(15, async () => {
-      const factory = await freshExtensions();
-      const s = await startSession(fx, { factory });
-      await s.emit("turn_start");
-      // Wait for a heartbeat to have actually fired, not merely the first report.
-      await pollUntil(() => fx.identityReports().length >= 3, 2000, "a heartbeat re-report");
-      await s.emit("agent_settled", {}, { isIdle: () => true });
-      // Polled for a window with no growth, rather than sampled twice: a fixed
-      // "sleep, then sleep again" lets a late arrival land in the second window
-      // instead of the first on a loaded runner. Count every identity report:
-      // a heartbeat that failed to stop keeps refreshing the timestamp while idle.
-      await pollForStable(
-        () => fx.statusReportCount(),
-        200,
-        3000,
-        "the status report count",
-      );
-      await s.emit("session_shutdown");
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
 async function withParentEnv<T>(session: string, pollMs: number, fn: () => Promise<T>): Promise<T> {
   const vars = { KIDO_AGENT_PARENT_SESSION: session, KIDO_PARENT_POLL_MS: String(pollMs) };
   return withEnv({ ...vars, KIDO_AGENT_RUN_ID: DEFAULT_SESSION }, fn);
-}
-
-// withHeartbeatEnv sets KIDO_HEARTBEAT_MS, restoring whatever was there
-// before - kido-status.ts reads it once at module scope, so a case using
-// it goes through freshExtensions() to pick it up (see withParentEnv).
-async function withHeartbeatEnv<T>(ms: number, fn: () => Promise<T>): Promise<T> {
-  return withEnv({ KIDO_HEARTBEAT_MS: String(ms) }, fn);
 }

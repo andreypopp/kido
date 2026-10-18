@@ -6,14 +6,7 @@ module Run_map = Map.Make (struct
   let compare = Run.compare_id
 end)
 
-type options = {
-  interval : float;
-  client : string;
-  tmux : Tmux.t;
-  dir : string;
-  threshold : float;
-  grace : float;
-}
+type options = { interval : float; client : string; tmux : Tmux.t; dir : string; grace : float }
 
 let default_interval = 0.1
 
@@ -30,7 +23,6 @@ type snapshot = {
   client : Tmux.client option;
   state : State.t;
   visible : State.t;
-  wake : float option;
   err : string option;
   lingering : lingering String_map.t;
 }
@@ -41,7 +33,6 @@ let empty =
     client = None;
     state = State.empty;
     visible = State.empty;
-    wake = None;
     err = None;
     lingering = String_map.empty;
   }
@@ -89,7 +80,6 @@ let take ~opts conn prev client =
         client;
         state;
         visible;
-        wake = Stall.wake ~dir:opts.dir;
         err = None;
         lingering = lingering_subagents ~dir:opts.dir state.runs;
       }
@@ -110,20 +100,11 @@ let same a b =
   && Option.equal Stdlib.( = ) a.client b.client
   && Option.equal Tmux.equal_pane_id (active a) (active b)
   && Option.is_none a.err && Option.is_none b.err
-  && Option.equal Float.equal a.wake b.wake
   && List.equal (fun x y -> Stdlib.( = ) (drawn x) (drawn y)) a.visible.panes b.visible.panes
   && Tmux.Pane_map.equal
        (fun x y -> Stdlib.( = ) (session x) (session y))
        a.state.agents b.state.agents
   && String_map.equal Stdlib.( = ) a.lingering b.lingering
-
-type reading = { wall : Timestamp.t; mono : Mtime.t }
-
-let read_clock () = { wall = Timestamp.now (); mono = Mtime_clock.now () }
-
-let detect_pause prev now =
-  let mono = Mtime.Span.to_float_ns (Mtime.span prev.mono now.mono) /. 1e9 in
-  Float.(now.wall - prev.wall - mono > 5.)
 
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
 type run = { kind : Run.kind; started : Timestamp.t }
@@ -148,7 +129,6 @@ type model = {
   client : client option;
   now : unit -> float;
   at : float;
-  clock : reading;
 }
 
 let make ~now opts =
@@ -160,49 +140,26 @@ let make ~now opts =
     client = None;
     now;
     at = now ();
-    clock = read_clock ();
   }
 
-let track ~prev m =
-  if Option.is_some m.snap.err then (m, false)
+let track m =
+  if Option.is_some m.snap.err then m
   else
-    let stalled_at (m : model) (p : State.pane) (kind : Pane_kind.t) =
-      match kind with
-      | Pi_agent { pi; _ } ->
-          Stall.stalled_since
-            ~root:(Tmux.Program_status.root p.program_status)
-            ~threshold:m.opts.threshold ~wake:m.snap.wake ~now:m.at ~reported_at:pi.ts
-      | Terminal | Some_agent _ | Ssh _ -> false
-    in
-    let states = m.snap.state.agents and prev_states = prev.snap.state.agents in
-    let pane_data, changed =
+    let states = m.snap.state.agents in
+    let pane_data =
       List.fold_left
-        (fun (data, changed) (p : State.pane) ->
-          if Tmux.Pane_map.mem p.pane_id data then (data, changed)
+        (fun data (p : State.pane) ->
+          if Tmux.Pane_map.mem p.pane_id data then data
           else
             let kind = Pane_kind.classify ~states p in
-            let stalled = stalled_at m p kind in
             let track, status =
-              Pane_status.observe ~now:m.at ~stalled p kind
+              Pane_status.observe ~now:m.at p kind
                 (Option.map (fun d -> d.track) (Tmux.Pane_map.find_opt p.pane_id m.pane_data))
             in
-            ( Tmux.Pane_map.add p.pane_id { pane = p; track; status } data,
-              changed
-              || Option.exists
-                   (fun d ->
-                     not
-                       (Bool.equal stalled
-                          (stalled_at prev d.pane (Pane_kind.classify ~states:prev_states d.pane))))
-                   (Tmux.Pane_map.find_opt p.pane_id prev.pane_data) ))
-        (Tmux.Pane_map.empty, false) m.snap.visible.panes
+            Tmux.Pane_map.add p.pane_id { pane = p; track; status } data)
+        Tmux.Pane_map.empty m.snap.visible.panes
     in
-    ( { m with pane_data },
-      changed
-      || Tmux.Pane_map.exists
-           (fun pane d ->
-             (not (Tmux.Pane_map.mem pane pane_data))
-             && stalled_at prev d.pane (Pane_kind.classify ~states:prev_states d.pane))
-           prev.pane_data )
+    { m with pane_data }
 
 let pi_run lingering (p : State.pane) =
   Option.exists
@@ -431,9 +388,6 @@ let poll ?wait ~(opts : options) conn (prev : snapshot) =
 let step m (snap : snapshot) =
   let was = m.snap in
   let pending = Tmux.Pane_map.exists (fun _ d -> Pane_status.pending d.track) m.pane_data in
-  let clock = read_clock () in
-  (if detect_pause m.clock clock then
-     try Stall.record_pause ~dir:m.opts.dir clock.wall with Unix.Unix_error _ | Sys_error _ -> ());
   let client =
     match (snap.client, active snap) with
     | Some (c : Tmux.client), Some active -> (
@@ -454,8 +408,8 @@ let step m (snap : snapshot) =
     then m.pane_data
     else Tmux.Pane_map.empty
   in
-  let m, stall_changed = track ~prev:m { m with at = m.now (); clock; snap; client; pane_data } in
-  if (not (same snap was)) || pending || stall_changed then (rebuild m, true) else (m, false)
+  let m = track { m with at = m.now (); snap; client; pane_data } in
+  if (not (same snap was)) || pending then (rebuild m, true) else (m, false)
 
 type direction = Next | Prev
 type switched = { session : Tmux.session_id; window : Tmux.window_id }
@@ -760,14 +714,7 @@ let%test_module "Tests" =
       let m =
         make
           ~now:(fun () -> !clock)
-          {
-            interval = default_interval;
-            client = "";
-            tmux = Tmux.create ();
-            dir;
-            threshold = 180.;
-            grace = 30.;
-          }
+          { interval = default_interval; client = ""; tmux = Tmux.create (); dir; grace = 30. }
       in
       { m with at = !clock }
 
@@ -798,7 +745,7 @@ let%test_module "Tests" =
         (Tmux.Pane_map.singleton (Tmux.pane_id_of_string pane)
            (Option.get_exn_or "run" (Run.load ~dir (Test_fixture.run_id id))))
 
-    let tick ?(m = model ()) snap = fst (track ~prev:m { m with snap = { snap with server } })
+    let tick ?(m = model ()) snap = track { m with snap = { snap with server } }
 
     let%expect_test "a run ends on death or a recorded outcome, which replaces unknown" =
       let p = agent_pane ~run:"run" "@20" "%30" "helper" in
@@ -1193,7 +1140,7 @@ let%test_module "Tests" =
     |}]
 
     let%expect_test
-        "same ignores a heartbeat's ts and catches any other change; panes compare by exclusion" =
+        "same ignores the report time and catches any other change; panes compare by exclusion" =
       let l ts = [ ("%1", ("i", session ~ts "")) ] in
       let snap ts = snap_of ~l:(l ts) [ pane "%1" ] in
       Printf.printf "ts only: %b\n" (same (snap test_at) (snap (test_at +. 60.)));
@@ -1215,29 +1162,5 @@ let%test_module "Tests" =
     window name: false
     exit: false
     command: false
-    |}]
-
-    let%expect_test "a pause is the wall clock outrunning the monotonic one" =
-      let reading wall mono_s : reading =
-        { wall; mono = Mtime.of_uint64_ns (Int64.of_float (mono_s *. 1e9)) }
-      in
-      List.iter
-        (fun (name, wall, mono) ->
-          Printf.printf "%-26s %b\n" name
-            (detect_pause (reading 1000. 1000.) (reading (1000. +. wall) (1000. +. mono))))
-        [
-          ("awake, tick on schedule", 0.1, 0.1);
-          ("awake, tick genuinely slow", 300., 300.);
-          ("just under the slack", 4.999, 0.);
-          ("just over the slack", 5.001, 0.);
-          ("asleep for minutes", 300., 0.05);
-        ];
-      [%expect
-        {|
-    awake, tick on schedule    false
-    awake, tick genuinely slow false
-    just under the slack       false
-    just over the slack        true
-    asleep for minutes         true
     |}]
   end)

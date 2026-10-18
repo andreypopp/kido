@@ -239,7 +239,7 @@ let observe m =
     in
     { m with views }
 
-type indicator = Running | Waiting | Done | Failed | Stalled | Ended of Run.result option
+type indicator = Running | Waiting | Done | Failed | Ended of Run.result option
 
 let indicator m (r : S.row) =
   let unseen_outcome, unseen_exit = unseen m r.pane in
@@ -254,7 +254,6 @@ let indicator m (r : S.row) =
     match a.state with
     | Running _ -> Some Running
     | Waiting _ -> Some Waiting
-    | Stalled -> Some Stalled
     | Idle _ -> outcome Agent
   in
   let shell (s : P.shell) =
@@ -298,7 +297,6 @@ let glyph theme : indicator -> span =
   | Waiting -> span `Waiting "◆"
   | Done -> span `Done "✓"
   | Failed -> span `Err "◼"
-  | Stalled -> span `Stalled "!"
   | Ended (Some Completed) -> span `Dim "✓"
   | Ended _ -> span `Dim "×"
 
@@ -346,17 +344,9 @@ let caption (r : S.row) =
     parts a.msg
       (match a.state with
       | Running { progress } | Waiting { progress; _ } -> progress
-      | Stalled | Idle _ -> None)
+      | Idle _ -> None)
   in
-  let shell (s : P.shell) =
-    Option.flat_map
-      (fun (r : P.report) ->
-        parts r.msg
-          (match r.state with
-          | Running { progress } | Waiting { progress; _ } -> progress
-          | Idle _ -> None))
-      s.report
-  in
+  let shell (s : P.shell) = Option.flat_map agent s.report in
   match r.lifecycle with
   | Ended { result; _ } -> Option.map Run.string_of_result result
   | Live { status = Some_agent { status; _ } | Pi_agent { status; _ }; _ }
@@ -743,14 +733,7 @@ let%test_module "Tests" =
     let row_text m line = String.concat "" (List.map (fun s -> s.text) (spans m line))
 
     let opts ?(dir = temp ()) () : Sidebar.options =
-      {
-        interval = Sidebar.default_interval;
-        client = "";
-        tmux = Tmux.create ();
-        dir;
-        threshold = 180.;
-        grace = 30.;
-      }
+      { interval = Sidebar.default_interval; client = ""; tmux = Tmux.create (); dir; grace = 30. }
 
     let agent_pane ?run w p title = pane ~window:w ~title ?run p
     let shell_pane w p = pane ~window:w ~command:"zsh" p
@@ -1170,7 +1153,7 @@ let%test_module "Tests" =
     (* The pane is driven through Update with a snapshot that never changes: the regression the pending
    gates exist for, since with them gone every assertion still describes a correct indicator while
    the row freezes because rebuild is never called. *)
-    let%expect_test "the debounce and the stall both redraw on a quiet tick" =
+    let%expect_test "the debounce redraws on a quiet tick" =
       let clock = ref test_at in
       let m = ref (make ~standalone:false (model ~clock ())) in
       let green () =
@@ -1202,32 +1185,6 @@ let%test_module "Tests" =
       tick 1. false;
       tick 0.45 false;
       tick 0.1 false;
-      let dir = temp () in
-      let m =
-        ref
-          (make ~standalone:false
-             { (model ~dir ~clock ()) with opts = { (opts ~dir ()) with threshold = 60. } })
-      in
-      let l = [ ("%1", ("i", session ~ts:!clock "")) ] in
-      let snap =
-        {
-          (snap_of ~l [ pane ~session:"alpha" ~title:"wedged" ~active:true "%1" ]) with
-          client = client "alpha";
-        }
-      in
-      let stalled () =
-        Array.exists
-          (fun r -> List.exists (fun (s : span) -> String.equal s.text "!") (spans !m r))
-          !m.lines
-      in
-      let tick d =
-        clock := !clock +. d;
-        m := fst (update (Snapshot snap) !m);
-        Printf.printf "+%.0fs: stalled=%b\n" d (stalled ())
-      in
-      tick 0.;
-      tick 30.;
-      tick 30.;
       [%expect
         {|
     +0.00s running: green=false
@@ -1235,9 +1192,6 @@ let%test_module "Tests" =
     +1.00s stopped: green=true
     +0.45s stopped: green=true
     +0.10s stopped: green=false
-    +0s: stalled=false
-    +30s: stalled=false
-    +30s: stalled=true
     |}]
 
     let activate active panes =

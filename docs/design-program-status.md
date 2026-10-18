@@ -53,8 +53,8 @@ and do not accept the cursor or clicks. Claude Code reports each subagent
 this way, with the subagent's description as its title.
 
 `Pane_status.observe` reduces all records for a pane to one status.
-A terminal's generic report uses this order: blocked > working > idle.
-An agent adds stall between blocked and working. The smallest bytewise id resolves ties.
+A terminal's generic report and an agent use this order: blocked >
+working > idle. The smallest bytewise id resolves ties.
 
 The **representative** record supplies the message and a terminal's title.
 It is the first available record in this order:
@@ -149,7 +149,7 @@ contains:
 - pi session file
 - Model
 - Activity text
-- Report time (heartbeat).
+- Report time: the last identity report. `list_runs` orders agents by it.
 
 These records supply identity and coordination. The claim also sets
 `@kido_run` on the pi's pane. The pane's run is the run that the mark
@@ -256,7 +256,7 @@ the run's name, elapsed time and outcome (below).
 - Detected: the root record's app. Examples: Claude Code
   (`app=claude-code`), pi without kido's extensions (`app=pi`, no run).
 - Title: the pane title, or `name` when that is empty.
-- Status: the records' reduction; never stalled.
+- Status: the records' reduction.
 - Supports: `kido prompt`, by paste, when it is the only agent in scope.
 
 Pi and Claude Code report their status through OSC 7501.
@@ -268,8 +268,6 @@ Pi and Claude Code report their status through OSC 7501.
 - Status: as `Some_agent`, from the pi root (pi 1.1's native emitter).
   kido removes `msg` if it repeats the title. If there is no `msg`, the `pi.json` `activity`
   supplies the message.
-- Stall: a working root and a `pi.json` report older than the stall
-  threshold (heartbeat), unless the host has slept since that report.
 - Supports: everything in `design.md` and `design-subagents.md`:
   - The inbox for `kido prompt` and `message_agent`/ask/steer/interrupt.
   - Name addressing when named.
@@ -315,7 +313,7 @@ Pi and Claude Code report their status through OSC 7501.
 
 The TUI makes each row from the title and status:
 
-- Glyphs for running, waiting, stalled, or an unseen success or failure.
+- Glyphs for running, waiting, or an unseen success or failure.
 - A caption from message and progress, or otherwise the run's elapsed clock.
 - The result of an ended run.
 

@@ -450,12 +450,11 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 		args = " " + strings.Join(kidoArgs, " ")
 	}
 	conf := filepath.Join(h.stateDir, "server.conf")
-	// KIDO_LINGER_SECONDS/KIDO_STALL_THRESHOLD_MS/KIDO_STREAM_* shorten the
-	// window-lifecycle grace, Stall.stall_threshold and the streaming
-	// wrapper's batch/backoff the same way for everything the inner server
-	// runs, so real production values (30s, 3min, 250ms) don't put every
-	// timing test past the 5s settle; global per server, so 3s (not
-	// shorter) leaves room for tests that sleep up to a second before
+	// KIDO_LINGER_SECONDS/KIDO_STREAM_* shorten the window-lifecycle grace
+	// and the streaming wrapper's batch/backoff the same way for everything
+	// the inner server runs, so real production values (30s, 250ms) don't
+	// put every timing test past the 5s settle; global per server, so 3s
+	// (not shorter) leaves room for tests that sleep up to a second before
 	// checking a status is still shown running.
 	// The shipped defaults are written first, byte for byte
 	// (share/tmux/kido-tmux.conf, as a real launch does),
@@ -473,7 +472,6 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	fmt.Fprintf(&body, `
 set-environment -g KIDO_LINGER_SECONDS 1
 set-environment -g KIDO_STOP_ESCALATION_MS 300
-set-environment -g KIDO_STALL_THRESHOLD_MS 3000
 set-environment -g KIDO_STREAM_BATCH_MS 100
 set-environment -g KIDO_STREAM_BACKOFF_MS 100
 set-environment -g KIDO_STREAM_BACKOFF_CAP_MS 500

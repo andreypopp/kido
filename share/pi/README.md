@@ -5,7 +5,7 @@ through OSC 7501 in interactive mode after terminal feature detection.
 Its pane title, set through OSC 0/2, names the session in kido.
 These work even without the kido extensions.
 
-- **`kido-status.ts`** reports identity, activity and heartbeat to kido,
+- **`kido-status.ts`** reports identity and activity to kido,
   and opens an *inbox* socket so kido can send a prompt into the session.
 - **`kido-agents.ts`** is agent coordination: the tools below, dispatch of
   everything but a plain prompt arriving on that inbox, and the subagent
@@ -88,21 +88,18 @@ Terminal stop sends clear without app. `PI_PROGRAM_STATUS=0` disables
 reporting and `=1` forces it.
 
 `kido-status.ts` claims the session identity at `session_start`, reports
-activity, model and inbox changes, and sends heartbeats when work starts
-and every thirty seconds while work or compaction is active. At
+activity, model and inbox changes. At
 `session_shutdown` it sends `--remove`, which releases the run and keeps
 its record, and closes and unlinks the inbox. Pi status, title and
-completion are not stored in the run. A tracked pi
-stalls only when the root record is working and its heartbeat is stale;
-a bare pi has no heartbeat and never stalls.
+completion are not stored in the run.
 
 - If `kido` is not on `PATH`, or pi is not running inside tmux, the kido
   extensions do nothing at all, quietly. OSC reporting is independent.
 - The initial identity claim is awaited. Later reports are fire-and-forget
   (detached, `stdio: "ignore"`); their missing binary, non-zero exit or spawn
   error never reaches pi and never prints to the TUI.
-- Identity reports coalesce activity, model, inbox and removal changes;
-  heartbeats bypass that key. Native OSC reports coalesce separately.
+- Identity reports coalesce activity, model, inbox and removal changes.
+  Native OSC reports coalesce separately.
 
 ## Inbox
 

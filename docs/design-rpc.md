@@ -138,7 +138,7 @@ identify an agent pane. The tick also performs the reap sweep. These operations
 are idempotent when a TUI sidebar runs beside RPC.
 
 The feed is not a passive file reader. RPC uses the default 100ms
-interval. Stall and linger settings come from the RPC process environment
+interval. Linger settings come from the RPC process environment
 through the same option readers as the TUI. They do not come from
 requests or per-client tmux options.
 
@@ -188,7 +188,7 @@ Polling also observes changes without tmux notifications, including agent
 reports.
 
 `Sidebar.step` rebuilds when its snapshot change test detects a change,
-or when a command debounce or stall tracking becomes due. RPC serializes
+or when a command debounce becomes due. RPC serializes
 rebuilt models. It sends a line only if it differs from the last snapshot
 sent. A rebuild with no wire-visible change produces nothing.
 The stream contains full current views, not a delta log or a record of
@@ -215,13 +215,11 @@ pane's kind (design-program-status.md) contains its status.
 An agent's status uses this precedence:
 
 1. Waiting: a blocked record.
-2. Stalled: a local pi with a working root and a stale heartbeat,
-   rebased against wake.
-3. Running.
-4. Idle.
+2. Running.
+3. Idle.
 
 Bytewise record id resolves ties. A shell's status is its OSC 133 phase
-plus a generic report. It uses the same reduction without stall.
+plus a generic report. It uses the same reduction.
 
 Outcomes come from per-record transitions into done or error.
 They have the read's pane serial and remain pending while other records
@@ -242,7 +240,7 @@ local pi's run activity supplies it. The model removes a local pi
 message that repeats its title.
 
 pi run records (`meta.json` and `pi.json`) contain identity, session
-name, inbox, parentage, activity, model and heartbeat, not status or
+name, inbox, parentage, activity, model and report time, not status or
 completion. pi addressing
 uses its reported session name, including when a nested program
 overwrites the OSC root. Unnamed pi sessions are addressable only by id.
@@ -316,6 +314,8 @@ Protocol 5.0 changes from 4.0:
 - Changed: agent Waiting carries the blocked kind and progress directly,
   like a generic report's Waiting. Only an OSC 7501 blocked record makes
   an agent Waiting.
+- Removed: the agent state Stalled. Agent precedence is
+  waiting > running > idle, the same as a generic report's.
 
 Protocol 3.1 changes from 3.0:
 - Added: reorder-session and reorder-window requests, replying `reordered`.

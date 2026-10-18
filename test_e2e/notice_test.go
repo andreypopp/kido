@@ -50,10 +50,10 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 		msgf("the parent's inbox to receive the child's notice"))
 	elapsed := time.Since(t0)
 	t.Logf("measured child-notice -> parent-inbox latency: %s", elapsed)
-	// Loose relative to settle: bounds a regression tying delivery to
-	// something interval-shaped, not the ordinary cost of spawning.
+	// Loose relative to settle: bounds a regression tying delivery to a
+	// periodic timer, not the ordinary cost of spawning.
 	if elapsed > 2*time.Second {
-		t.Errorf("notice delivery took %s, want well under the 30s heartbeat interval", elapsed)
+		t.Errorf("notice delivery took %s, want under 2s", elapsed)
 	}
 
 	msgs := in.Received()

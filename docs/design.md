@@ -81,7 +81,7 @@ file:
   cwd, model and tools. The parent is an optional run id:
   absent for a top-level run, or the id of the run that owns it.
 - `pi.json`: written only by the pi that holds the run. It contains the
-  pid and pane of the holder, the heartbeat timestamp, inbox socket,
+  pid and pane of the holder, the time of its last report, inbox socket,
   free-text activity, model, session name and pi session file. kido
   never deletes it.
 - `outcome`: the first write wins.
@@ -120,7 +120,7 @@ otherwise pastes. `list_runs` includes pane runs, regardless of the
 current root app. `get-agent` and the coordination tools read runs by
 id, not `pane_kind`.
 
-Native Claude Code has no identity, inbox or heartbeat. It never stalls.
+Native Claude Code has no identity or inbox.
 Its blocked message is the caption. A visit acknowledges completion, and
 clear restores a terminal row. The sidebar displays pane titles
 verbatim. Only a native-only agent with an empty title uses its root app
@@ -138,8 +138,7 @@ or dead `pi.json` is history: its name and session file stay for
 
 Two more files exist beside the runs. The `inbox/` directory contains
 one socket per pi session. Its mode is `0700`, like the state directory.
-Anyone who can write there can impersonate an agent's socket. The `wake`
-file is the staleness rebase marker described below.
+Anyone who can write there can impersonate an agent's socket.
 
 ## Identity
 
@@ -290,7 +289,7 @@ report also sets `@kido_run` on its pane, so a lost mark heals.
 `kido tool set_status -- <activity>` updates only the activity field.
 This command implements the `set_status` tool. It finds the calling run
 by `PI_SESSION_ID` and writes no other field. It is a second writer of
-`pi.json`: the next heartbeat replaces its value. Rewriting the previous
+`pi.json`: the next identity report replaces its value. Rewriting the previous
 record with only activity replaced preserves its identity and timestamp.
 
 Activity is the only field a model writes directly into a run. Both
@@ -306,8 +305,8 @@ text unchanged.
 
 The extension coalesces reports by activity, model, inbox path,
 release and name. A newly bound inbox changes the key. Its first report
-cannot match a duplicate from before the bind. kido does not combine
-heartbeat reports. Status and title are not report fields.
+cannot match a duplicate from before the bind. Status and title are not
+report fields.
 
 ## The inbox
 
@@ -1413,76 +1412,6 @@ and `kido runs` can still report it. The captured screen contains copied
 bytes, not a reference to another store. See "The screen capture"
 above. Its cap is 64KB.
 
-## Heartbeat and staleness
-
-A live pid can still be unresponsive. pi's identity extension sends a
-heartbeat when work starts. An unref'd timer sends another every thirty
-seconds while a turn or compaction is active. It stops when
-`ctx.isIdle()` is true at settle or compaction completion. The initial
-heartbeat refreshes an identity that can have been idle for hours.
-All heartbeats bypass the identity-report coalescing key.
-
-A pi is stalled only if both conditions apply:
-
-- Its pane's OSC 7501 root record says working.
-- Its `pi.json` heartbeat timestamp is at least three minutes old after
-  rebasing against the wake marker.
-
-Blocked, idle, done, error and absent roots never stall. A bare pi has
-no run and never stalls.
-The sidebar and one-shot agent graph use the same rule;
-`ask_agent` refuses a stalled target before sending anything.
-The sidebar also redraws when a refreshed heartbeat clears a stall,
-without redrawing on ordinary heartbeat-only changes.
-
-A heartbeat tick changes only one session field. The sidebar compares
-records to decide whether to redraw. It compares sessions with zeroed
-timestamps, so heartbeat-only changes cause no redraw. Only the stalled
-indicator uses the timestamp on screen. A separate check reads it
-against kido's clock. Thus, crossing the stall threshold causes redraw
-even on an otherwise quiet tick.
-
-### A sleeping machine is not a hundred wedged agents
-
-Staleness compares the current time with the wall-clock report time.
-During machine sleep, wall time advances but agent work does not.
-On wake, every running agent exceeds the threshold before missing a
-real heartbeat. The sidebar's `!` would correct itself. However,
-`ask_agent` refuses stalled targets, and a model stops a child reported
-as stalled. Thus, closing the lid could cause a healthy tree to be killed.
-
-Only the sidebar ticks continuously, so only it can detect this gap.
-Across one tick, it compares the wall-clock interval with the monotonic
-interval. `Sidebar.read_clock` creates each `Sidebar.reading` from a
-wall time and `Mtime.t` together. `Sidebar.detect_pause` detects a pause
-from the difference between intervals. A `Timestamp.t` or disk-read
-wall time alone has no monotonic component and cannot participate.
-
-After detection, the sidebar records the wake time in the state
-directory's `wake` file, but only if it is newer. Staleness then starts
-its threshold at the later of report time and recorded wake. The rule
-is not weaker, only later. It still detects an unresponsive agent one
-threshold after wake, instead of immediately. An agent that reports
-after wake uses its fresh timestamp, as if no pause occurred.
-
-`Stall.stalled_since`'s `~wake` parameter supplies the marker reading.
-A tick caller reads the marker once and uses that reading for every
-session. To decide redraw, the sidebar asks the same question at two
-instants. Separate reads would use different baselines and prevent a
-valid comparison. They also kept a file open per session on the 100ms
-path for a value that changes once per suspend.
-
-`kido tool list_runs` reads the marker once through `Stall.wake` and
-passes it the same way. It asks once and exits. The marker is on disk,
-not only in sidebar memory, because each call starts a fresh process
-without its own tick. `ask_agent` calls `get-agent --context`, which
-uses the same agent-row builder. Both must give the same result without
-pi's extension needing information about sleep.
-
-This does not cover a session without a running sidebar. Nothing there
-detects the gap. An ask against that session still has the original
-problem.
-
 ## pi extensions, and the seam between them
 
 The pi shim loads two extensions. After interactive terminal feature
@@ -1505,7 +1434,6 @@ subagent without either uses its elapsed clock.
 `kido-status.ts` handles:
 
 - identity reporting and coalescing;
-- the heartbeat;
 - the session claim;
 - the inbox server with plain v0 delivery.
 
@@ -2073,9 +2001,7 @@ a separately built binary, so only environment values reach it. These
 variables are:
 
 - `KIDO_LINGER_SECONDS`, the sweep's grace;
-- `KIDO_STALL_THRESHOLD_MS`;
 - `KIDO_STOP_ESCALATION_MS`;
-- `KIDO_HEARTBEAT_MS`;
 - `KIDO_PARENT_POLL_MS`;
 - `KIDO_ASK_POLL_MS`;
 - `KIDO_SPAWN_TIMEOUT_MS`;
@@ -2108,7 +2034,6 @@ and serve a session that neither started.
   pid, the run looks live until a pi claims it again.
 - Runs are never pruned. Each top-level pi session adds one run
   directory.
-- Pause detection needs a sidebar ticking when the machine sleeps.
 - A `kido ssh` session killed after ssh starts but before remote zsh
   reads `.zshenv` leaves its temporary directory. The exec removes the
   trap before cleanup runs. This leaves one nearly empty directory under

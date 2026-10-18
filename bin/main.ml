@@ -115,8 +115,6 @@ let caller dir =
   let+ pi = Run.read_pi ~dir id in
   (id, pi)
 
-let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
-
 (* The same knob share/pi/kido-agents.ts reads. *)
 let linger () =
   match Option.flat_map Int.of_string (Sys.getenv_opt "KIDO_LINGER_SECONDS") with
@@ -331,7 +329,7 @@ let list_runs =
        let dir = state_dir () in
        let state = ok (State.read ~dir (Tmux.create ())) in
        let rows =
-         List_runs.list_runs ~dir ~threshold:(stall_threshold ()) ~self:(self_pane ())
+         List_runs.list_runs ~dir ~self:(self_pane ())
            ~caller:(Option.map fst (caller dir))
            ~session ~state
          |> Result.map_err (fun e -> e ^ "\nusage: kido tool list_runs [--session ID] [--json]")
@@ -342,8 +340,8 @@ let list_runs =
          let words = String.split_on_char ' ' in
          let columns =
            words
-             "id name kind relationship status activity canReply model pane window stalled \
-              sinceReport parent depth cwd run state startedAt"
+             "id name kind relationship status activity canReply model pane window parent depth \
+              cwd run state startedAt"
          in
          let value json k =
            match Yojson.Safe.Util.member k json with
@@ -354,8 +352,8 @@ let list_runs =
          in
          table
            (words
-              "ID NAME KIND RELATIONSHIP STATUS ACTIVITY CAN_REPLY MODEL PANE WINDOW STALLED SINCE \
-               PARENT DEPTH CWD RUN STATE STARTED OUTCOME DETAIL"
+              "ID NAME KIND RELATIONSHIP STATUS ACTIVITY CAN_REPLY MODEL PANE WINDOW PARENT DEPTH \
+               CWD RUN STATE STARTED OUTCOME DETAIL"
            :: List.map
                 (fun json ->
                   List.map (value json) columns
@@ -392,7 +390,7 @@ let get_agent =
          let state = ok (State.read ~dir (Tmux.create ())) in
          let agents =
            ok
-             (List_runs.agents ~dir ~threshold:(stall_threshold ()) ~self:(self_pane ())
+             (List_runs.agents ~dir ~self:(self_pane ())
                 ~caller:(Option.map fst (caller dir))
                 ~session:None ~state)
          in
@@ -693,7 +691,7 @@ let sidebar =
               1
           | Some client ->
               Kido_sidebar.run ~standalone:(String.is_empty side)
-                { interval; client; tmux; dir; threshold = stall_threshold (); grace = linger () };
+                { interval; client; tmux; dir; grace = linger () };
               0)
 
 type input = Line of string | Eof | Read_error of string
@@ -729,7 +727,6 @@ let rpc =
              client;
              tmux = Tmux.create ~socket ();
              dir;
-             threshold = stall_threshold ();
              grace = linger ();
            }
          in

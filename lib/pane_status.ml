@@ -9,19 +9,10 @@ type outcome = { serial : int; result : result } [@@deriving equal, yojson_of]
 type agent_state =
   | Running of { progress : int option }
   | Waiting of { kind : Tmux.Program_status.kind option; progress : int option }
-  | Stalled
   | Idle of { outcome : outcome option }
 [@@deriving yojson_of]
 
 type agent = { since : float; msg : string option; state : agent_state } [@@deriving yojson_of]
-
-type report_state =
-  | Running of { progress : int option }
-  | Waiting of { kind : Tmux.Program_status.kind option; progress : int option }
-  | Idle of { outcome : outcome option }
-[@@deriving yojson_of]
-
-type report = { since : float; msg : string option; state : report_state } [@@deriving yojson_of]
 
 type exit = { code : int; command : string; started_at : float; ended_at : float }
 [@@deriving yojson_of]
@@ -50,7 +41,7 @@ let yojson_of_phase phase =
         fullscreen
   | Fullscreen -> running (`List [ `String "Unknown" ]) true
 
-type shell = { phase : phase; report : report option } [@@deriving yojson_of]
+type shell = { phase : phase; report : agent option } [@@deriving yojson_of]
 
 type remote =
   | Remote_terminal of { interactive : bool; status : shell }
@@ -64,8 +55,7 @@ type kind =
   | Ssh of { user : string; host : string; pane : remote }
 [@@deriving yojson_of]
 
-type tag = [ `Running | `Waiting | `Stalled | `Idle ] [@@deriving equal]
-type shown = [ `Running | `Waiting | `Stalled | `Idle of outcome option ] [@@deriving equal]
+type shown = [ `Running | `Waiting | `Idle of outcome option ] [@@deriving equal]
 type retained = { outcome : outcome; id : string; at : float }
 
 type episode = {
@@ -91,7 +81,7 @@ type track = {
 
 let debounce = 0.2
 
-let advance ~now ~serial ~(tag : tag) (records : Tmux.Program_status.record list) e =
+let advance ~now ~serial live (records : Tmux.Program_status.record list) e =
   let final (r : Tmux.Program_status.record) =
     match r.state with Done -> Some Success | Error -> Some Failure | _ -> None
   in
@@ -106,15 +96,14 @@ let advance ~now ~serial ~(tag : tag) (records : Tmux.Program_status.record list
       records
   in
   let retained =
-    match (e.shown, tag) with
-    | Some (`Idle _), (`Running | `Waiting | `Stalled) -> None
-    | _ -> e.retained
+    match (e.shown, live) with Some (`Idle _), (`Running _ | `Waiting _) -> None | _ -> e.retained
   in
   let retained = Option.or_ ~else_:retained entered in
   let key =
-    match tag with
+    match live with
     | `Idle -> `Idle (Option.map (fun r -> r.outcome) retained)
-    | (`Running | `Waiting | `Stalled) as tag -> tag
+    | `Running _ -> `Running
+    | `Waiting _ -> `Waiting
   in
   {
     finals =
@@ -162,49 +151,30 @@ let working records =
       match r.state with Working progress -> Some progress | _ -> None)
     records
 
-let core ~now ~serial ~stalled ~msg records e =
+let core ~now ~serial ~msg records e =
   let live =
     match (blocked records, working records) with
     | Some (kind, progress), _ -> `Waiting (kind, progress)
     | None, Some progress -> `Running progress
     | None, None -> `Idle
   in
-  let tag : tag =
-    match live with
-    | `Waiting _ -> `Waiting
-    | `Running _ when stalled -> `Stalled
-    | `Running _ -> `Running
-    | `Idle when stalled -> `Stalled
-    | `Idle -> `Idle
-  in
-  let e = advance ~now ~serial ~tag records e in
+  let e = advance ~now ~serial live records e in
   let msg =
     msg (Option.flat_map (fun (r : Tmux.Program_status.record) -> r.msg) (representative e records))
   in
-  (e, live, msg)
-
-let agent ~now ~serial ~stalled ~msg records e =
-  let e, live, msg = core ~now ~serial ~stalled ~msg records e in
   let state : agent_state =
     match live with
     | `Waiting (kind, progress) -> Waiting { kind; progress }
-    | `Running progress -> if stalled then Stalled else Running { progress }
-    | `Idle -> if stalled then Stalled else Idle { outcome = idle_outcome e }
+    | `Running progress -> Running { progress }
+    | `Idle -> Idle { outcome = idle_outcome e }
   in
   (e, ({ since = e.since; msg; state } : agent))
 
 let report ~now ~serial records e =
-  let e, live, msg = core ~now ~serial ~stalled:false ~msg:Fun.id records e in
+  let e, agent = core ~now ~serial ~msg:Fun.id records e in
   match (records, e.retained) with
   | [], None -> ({ e with shown = None }, None)
-  | _ ->
-      let state : report_state =
-        match live with
-        | `Waiting (kind, progress) -> Waiting { kind; progress }
-        | `Running progress -> Running { progress }
-        | `Idle -> Idle { outcome = idle_outcome e }
-      in
-      (e, Some { since = e.since; msg; state })
+  | _ -> (e, Some agent)
 
 type reading =
   | Unintegrated
@@ -266,7 +236,7 @@ let shell ~now ~fullscreen ~serial (records : Tmux.Program_status.record list) r
   let episode, report = report ~now ~serial records t.episode in
   ({ t with episode }, { phase; report })
 
-let observe ~now ~stalled (p : State.pane) (kind : Pane_kind.t) prev =
+let observe ~now (p : State.pane) (kind : Pane_kind.t) prev =
   let status = p.program_status in
   let identity =
     {
@@ -292,10 +262,10 @@ let observe ~now ~stalled (p : State.pane) (kind : Pane_kind.t) prev =
         }
   in
   let serial = status.serial and records = status.records in
-  let agent ~stalled ~dedupe ~fallback =
+  let agent ~dedupe ~fallback =
     let title = Option.value ~default:"" (Pane_kind.title p kind) in
     let e, status =
-      agent ~now ~serial ~stalled
+      core ~now ~serial
         ~msg:(fun msg ->
           match
             Option.filter
@@ -315,16 +285,16 @@ let observe ~now ~stalled (p : State.pane) (kind : Pane_kind.t) prev =
       let t, shell = shell ~now ~fullscreen ~serial records (reading ~transport:false p) t in
       (t, Terminal shell)
   | Some_agent { name } ->
-      let t, status = agent ~stalled:false ~dedupe:false ~fallback:None in
+      let t, status = agent ~dedupe:false ~fallback:None in
       (t, Some_agent { name; status })
   | Pi_agent { id; pi = session } ->
       let t, status =
-        agent ~stalled ~dedupe:true
+        agent ~dedupe:true
           ~fallback:(if String.is_empty session.activity then None else Some session.activity)
       in
       (t, Pi_agent { id; status })
   | Ssh { user; host; pane = Remote_agent { name } } ->
-      let t, status = agent ~stalled:false ~dedupe:false ~fallback:None in
+      let t, status = agent ~dedupe:false ~fallback:None in
       (t, Ssh { user; host; pane = Remote_agent { name; status } })
   | Ssh { user; host; pane = Remote_terminal } ->
       let interactive =
@@ -385,7 +355,6 @@ let%test_module "Tests" =
         (match a.state with
         | Running { progress = p } -> "running" ^ progress p
         | Waiting { kind; progress = p } -> "waiting:" ^ kind_name kind ^ progress p
-        | Stalled -> "stalled"
         | Idle { outcome = o } -> "idle" ^ outcome o)
         (a.since -. t0)
         (match a.msg with Some x -> Printf.sprintf " msg=%S" x | None -> "")
@@ -401,17 +370,7 @@ let%test_module "Tests" =
             Printf.sprintf "running %S %.0f" command (started_at -. test_at)
             ^ if fullscreen then " fullscreen" else ""
         | Fullscreen -> "running ? fullscreen")
-      ^
-      match s.report with
-      | Some (r : report) ->
-          Printf.sprintf " | report %s since=+%.1f%s"
-            (match r.state with
-            | Running { progress = p } -> "running" ^ progress p
-            | Waiting { kind; progress = p } -> "waiting:" ^ kind_name kind ^ progress p
-            | Idle { outcome = o } -> "idle" ^ outcome o)
-            (r.since -. t0)
-            (match r.msg with Some x -> Printf.sprintf " msg=%S" x | None -> "")
-      | None -> ""
+      ^ match s.report with Some a -> " | report " ^ agent_text t0 a | None -> ""
 
     let text t0 = function
       | Terminal s -> shell_text t0 s
@@ -425,28 +384,26 @@ let%test_module "Tests" =
     let run ?(states = Tmux.Pane_map.empty) steps =
       let track = ref None and now = ref test_at in
       List.iter
-        (fun (d, stalled, label, p) ->
+        (fun (d, label, p) ->
           now := !now +. d;
-          let t, k = observe ~now:!now ~stalled p (Pane_kind.classify ~states p) !track in
+          let t, k = observe ~now:!now p (Pane_kind.classify ~states p) !track in
           track := Some t;
           Printf.printf "%-22s %s\n" label (text test_at k))
         steps
 
     let pi = {|"app":"pi","state":|}
     let claude = {|"app":"claude-code","state":|}
-    let agent ?(serial = 1) ?(d = 1.) label rs = (d, false, label, records ~serial rs (pane "%1"))
+    let agent ?(serial = 1) ?(d = 1.) label rs = (d, label, records ~serial rs (pane "%1"))
 
-    let%expect_test "agent precedence: waiting > stalled > running > idle, ties bytewise" =
+    let%expect_test "agent precedence: waiting > running > idle, ties bytewise" =
       let pane rs = records rs (pane ~title:"agent" "%1") in
       let states = states [ ("%1", ("pi-1", session "")) ] in
       run ~states
         [
-          (0., false, "idle", pane [ ("", pi ^ {|"idle"|}) ]);
-          (1., false, "working", pane [ ("", pi ^ {|"working","progress":10|}) ]);
-          (1., true, "stalled", pane [ ("", pi ^ {|"working","progress":10|}) ]);
+          (0., "idle", pane [ ("", pi ^ {|"idle"|}) ]);
+          (1., "working", pane [ ("", pi ^ {|"working","progress":10|}) ]);
           ( 1.,
-            true,
-            "blocked child > stall",
+            "blocked > working",
             pane
               [
                 ("", pi ^ {|"working"|});
@@ -454,7 +411,6 @@ let%test_module "Tests" =
                 ("a", {|"state":"blocked","kind":"auth","progress":3|});
               ] );
           ( 1.,
-            false,
             "working ties by id",
             pane
               [
@@ -467,9 +423,8 @@ let%test_module "Tests" =
         {|
         idle                   idle since=+0.0
         working                running(10%) since=+1.0
-        stalled                stalled since=+2.0
-        blocked child > stall  waiting:auth(3%) since=+3.0
-        working ties by id     running(8%) since=+4.0
+        blocked > working      waiting:auth(3%) since=+2.0
+        working ties by id     running(8%) since=+3.0
         |}]
 
     let%expect_test "since moves only on a tag or idle-outcome change" =
@@ -555,7 +510,7 @@ let%test_module "Tests" =
       let track = ref None and now = ref test_at in
       let step label kind p =
         now := !now +. 1.;
-        let t, k = observe ~now:!now ~stalled:false p kind !track in
+        let t, k = observe ~now:!now p kind !track in
         track := Some t;
         Printf.printf "%-20s %s\n" label (text test_at k)
       in
@@ -591,7 +546,6 @@ let%test_module "Tests" =
         ?(rs = []) ?(serial = 1) label =
       let at = Option.map (fun s -> test_at +. s) in
       ( d,
-        false,
         label,
         records ~serial rs
           (pane ~command:"zsh" ?prompt:(at prompt) ?start:(at start) ~running
@@ -711,7 +665,6 @@ let%test_module "Tests" =
 
     let ssh ?(d = 0.1) ?(host = "box") ~prompt ~start ?(running = true) ?exit ?(cmd = "") label =
       ( d,
-        false,
         label,
         {
           (pane ~command:"ssh" ~prompt:(test_at +. prompt) ~start:(test_at +. start) ~running

@@ -31,12 +31,10 @@ type agent_info = {
   can_message : bool; [@key "canMessage"]
   can_reply : bool; [@key "canReply"]
   model : string;
-  since_report : int; [@key "sinceReport"]
-  stalled : bool;
 }
 [@@deriving yojson_of]
 
-let agents ~dir ~threshold ~self ~caller ~session ~state:({ runs; agents; _ } as state : State.t) =
+let agents ~dir ~self ~caller ~session ~state:({ runs; agents; _ } as state : State.t) =
   let open Result.Infix in
   let+ session =
     match session with
@@ -49,7 +47,6 @@ let agents ~dir ~threshold ~self ~caller ~session ~state:({ runs; agents; _ } as
               (Printf.sprintf "no tmux session for pane %S; pass --session"
                  (match self with Some x -> string_of_pane_id x | None -> "")))
   in
-  let wake = Stall.wake ~dir and now = Timestamp.now () in
   Pane_map.bindings agents
   |> List.filter_map (fun (pane, (id, (s : Run.pi))) ->
       State.find state pane
@@ -58,14 +55,16 @@ let agents ~dir ~threshold ~self ~caller ~session ~state:({ runs; agents; _ } as
   |> List.sort (fun (a, (sa : Run.pi), _, _) (b, (sb : Run.pi), _, _) ->
       match Float.compare sa.ts sb.ts with 0 -> Run.compare_id a b | c -> c)
   |> List.map (fun (id, (s : Run.pi), (p : State.pane), (m : Run.meta)) ->
-      let root = Program_status.root p.program_status in
       {
         id;
         name = State.run_display_name state s;
         named = not (String.is_empty s.name);
         pane = p.pane_id;
         window = p.window_id;
-        status = Option.map (fun (r : Program_status.record) -> r.state) root;
+        status =
+          Option.map
+            (fun (r : Program_status.record) -> r.state)
+            (Program_status.root p.program_status);
         activity = s.activity;
         parent = m.parent;
         depth = Run.depth ~dir m;
@@ -76,8 +75,6 @@ let agents ~dir ~threshold ~self ~caller ~session ~state:({ runs; agents; _ } as
           (not (String.is_empty s.inbox))
           && (List.is_empty m.tools || List.mem ~eq:String.equal "message_agent" m.tools);
         model = s.model;
-        since_report = Float.to_int (now -. s.ts);
-        stalled = Stall.stalled_since ~root ~threshold ~wake ~now ~reported_at:s.ts;
       })
   |> Tree.order ~id:(fun a -> a.id) ~parent:(fun a -> a.parent)
 
@@ -86,9 +83,9 @@ type row =
   | Parent of agent_info
   | Own of { run : Run_history.info; agent : agent_info option; window : Tmux.window_id option }
 
-let list_runs ~dir ~threshold ~self ~caller ~session ~(state : State.t) =
+let list_runs ~dir ~self ~caller ~session ~(state : State.t) =
   let open Result.Infix in
-  let+ agents = agents ~dir ~threshold ~self ~caller ~session ~state in
+  let+ agents = agents ~dir ~self ~caller ~session ~state in
   let own = Option.filter (fun _ -> List.exists (fun a -> a.self) agents) caller in
   let parent = Option.flat_map (fun a -> a.parent) (List.find_opt (fun a -> a.self) agents) in
   let visible =

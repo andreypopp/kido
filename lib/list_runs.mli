@@ -15,14 +15,11 @@ type agent_info = {
   can_message : bool;
   can_reply : bool;
   model : string;
-  since_report : int;
-  stalled : bool;
 }
 [@@deriving yojson_of]
 
 val agents :
   dir:string ->
-  threshold:float ->
   self:Tmux.pane_id option ->
   caller:Run.id option ->
   session:Tmux.session_id option ->
@@ -33,7 +30,6 @@ type row [@@deriving yojson_of]
 
 val list_runs :
   dir:string ->
-  threshold:float ->
   self:Tmux.pane_id option ->
   caller:Run.id option ->
   session:Tmux.session_id option ->

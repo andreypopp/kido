@@ -138,6 +138,9 @@ see the fallback. No client is switched and no pane is selected.
   `progress` directly, the same shape as a generic report's Waiting; the
   `source` field and its Ask case are gone. Only an OSC 7501 blocked
   record makes an agent Waiting.
+- Removed: the agent state `["Stalled"]`. A local pi with a working root
+  is Running however old its run's last report is; agent precedence is
+  waiting > running > idle, the same as a generic report's.
 - Unchanged: other requests, replies, sessions, ordering and snapshot v.
 
 ## Changes from 3.1 to 4.0
@@ -336,18 +339,15 @@ group's place. Groups are the "group" rows the app may draw differently.
 ```json
 ["Running",{"progress":42}]
 ["Waiting",{"kind":"permission","progress":null}]
-["Stalled"]
 ["Idle",{"outcome":null}]
 ["Idle",{"outcome":{"serial":17,"result":"success"}}]
 ["Idle",{"outcome":{"serial":18,"result":"failure"}}]
 ```
 
-  Precedence is waiting > stalled > running > idle. The blocked record
-  with the smallest bytewise id gives Waiting with its kind (`permission`, `question`,
-  `auth`, or null for absent or unrecognized) and progress. Stalled is a
-  local pi with a working root and a stale run heartbeat (rebased across
-  sleep); native and remote agents never stall, and any blocked record
-  outranks it. Running takes the smallest-id working record's progress.
+  Precedence is waiting > running > idle. The blocked record with the
+  smallest bytewise id gives Waiting with its kind (`permission`,
+  `question`, `auth`, or null for absent or unrecognized) and progress.
+  Running takes the smallest-id working record's progress.
   `msg` comes from the representative record (blocked, then working, then
   the retained outcome's record, then idle, then any, ties by id), falling
   back to local pi's run activity; a local pi message equal to its title,
@@ -376,7 +376,7 @@ group's place. Groups are the "group" rows the app may draw differently.
   the phase.
 - `report` is null or `{"since","msg","state"}`, the pane's generic OSC
   7501 records reduced blocked > working > idle with the agent rules
-  above, without stall:
+  above:
 
 ```json
 ["Running",{"progress":42}]

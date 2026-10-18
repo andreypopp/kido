@@ -50,7 +50,7 @@ the default. The sidebar's last row names the first invalid option.
 | `@kido-sidebar-session-style` | other sessions' names; `bg=` fills the row |
 | `@kido-sidebar-current-style` | the current session's name; `bg=` fills the row |
 | `@kido-sidebar-current-rows-style` | `bg=` fills the current session's rows |
-| `@kido-sidebar-running-style`, `-waiting-`, `-done-`, `-stalled-`, `-error-` | status glyphs |
+| `@kido-sidebar-running-style`, `-waiting-`, `-done-`, `-error-` | status glyphs |
 
 `side-status-style` sets the panel behind these rows. For example:
 

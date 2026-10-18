@@ -13,16 +13,16 @@ import { commandWork, fakeCtx, loadExtensions, makeFixture, startSessionCore, wi
 // TestIsAncestorRefusesSelfEdge's TS twin: a corrupted record whose "parent"
 // names itself must not make isAncestor(agents, X, X) true.
 test("isAncestor refuses a self-edge, even with a corrupted self-parent record", () => {
-  const self = { id: "x", name: "x", parent: "x", pane: "%1", self: true, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
+  const self = { id: "x", name: "x", parent: "x", pane: "%1", self: true, canMessage: true, window: "@1" };
   assert.equal(isAncestor([self], self, self), false);
 });
 
 // Without the `seen` set, a genuine cycle among records none of which is self
 // would loop forever instead of returning false.
 test("isAncestor terminates on a parent cycle that never reaches self", () => {
-  const a = { id: "a", name: "a", parent: "b", pane: "%1", self: false, canMessage: true, canReply: true, window: "@1", stalled: false, sinceReport: 0 };
-  const b = { id: "b", name: "b", parent: "a", pane: "%2", self: false, canMessage: true, canReply: true, window: "@2", stalled: false, sinceReport: 0 };
-  const self = { id: "self", name: "self", parent: "", pane: "%3", self: true, canMessage: true, window: "@3", stalled: false, sinceReport: 0 };
+  const a = { id: "a", name: "a", parent: "b", pane: "%1", self: false, canMessage: true, canReply: true, window: "@1" };
+  const b = { id: "b", name: "b", parent: "a", pane: "%2", self: false, canMessage: true, canReply: true, window: "@2" };
+  const self = { id: "self", name: "self", parent: "", pane: "%3", self: true, canMessage: true, window: "@3" };
   assert.equal(isAncestor([self, a, b], self, a), false);
   assert.equal(isAncestor([self, a, b], self, b), false);
 });
@@ -30,15 +30,15 @@ test("isAncestor terminates on a parent cycle that never reaches self", () => {
 // A dangling parent id (a race between a spawn and an exit can leave one) must
 // end the walk rather than loop on `cur` never changing.
 test("isAncestor terminates when a parent names nobody in the list", () => {
-  const orphan = { id: "orphan", name: "orphan", parent: "ghost-parent", pane: "%1", self: false, canMessage: true, canReply: true, window: "@1", stalled: false, sinceReport: 0 };
-  const self = { id: "self", name: "self", parent: "", pane: "%2", self: true, canMessage: true, window: "@2", stalled: false, sinceReport: 0 };
+  const orphan = { id: "orphan", name: "orphan", parent: "ghost-parent", pane: "%1", self: false, canMessage: true, canReply: true, window: "@1" };
+  const self = { id: "self", name: "self", parent: "", pane: "%2", self: true, canMessage: true, window: "@2" };
   assert.equal(isAncestor([self, orphan], self, orphan), false);
 });
 
 test("isAncestor finds a two-level ancestor", () => {
-  const grand = { id: "grand", name: "grand", parent: "", pane: "%1", self: true, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
-  const mid = { id: "mid", name: "mid", parent: "grand", pane: "%2", self: false, canMessage: true, canReply: true, window: "@2", stalled: false, sinceReport: 0 };
-  const child = { id: "child", name: "child", parent: "mid", pane: "%3", self: false, canMessage: true, canReply: true, window: "@3", stalled: false, sinceReport: 0 };
+  const grand = { id: "grand", name: "grand", parent: "", pane: "%1", self: true, canMessage: true, window: "@1" };
+  const mid = { id: "mid", name: "mid", parent: "grand", pane: "%2", self: false, canMessage: true, canReply: true, window: "@2" };
+  const child = { id: "child", name: "child", parent: "mid", pane: "%3", self: false, canMessage: true, canReply: true, window: "@3" };
   assert.equal(isAncestor([grand, mid, child], grand, child), true);
 });
 
@@ -250,26 +250,7 @@ test("ask_agent allows a parent, a peer and a self-peer, and refuses a child, a 
   }
 });
 
-test("ask_agent refuses a stalled target immediately, without sending anything", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([
-      { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true, stalled: true, sinceReport: 245 },
-    ]);
-    const s = await startSession(fx);
-    const ask = s.tools.get("ask_agent");
-
-    const result = await settlesWithin(ask.execute("c1", { to: "peer-a", question: "q" }), 500);
-    assert.match(result.content[0].text, /245s while reporting working; likely stalled, refusing to wait for a reply/);
-    assert.equal(fx.lastLogFor("peer-a", "ask"), undefined, "a stalled target must never actually be asked");
-  } finally {
-    await fx.restore();
-  }
-});
-
-// The assertion with teeth: timeoutMs 600000 against settlesWithin(..., 500) -
-// a version missing the liveness check would still answer correctly, only 600000ms later.
+// The assertion with teeth: timeoutMs 600000 against settlesWithin(..., 500) - a version missing the liveness check would still answer correctly, only 600000ms later.
 test("ask_agent refuses a target that is not alive, promptly and without sending anything", async () => {
   const fx = makeFixture();
   try {

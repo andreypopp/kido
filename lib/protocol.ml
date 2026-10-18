@@ -240,14 +240,7 @@ let%test_module "Tests" =
       { name; parent = Test_fixture.owned parent; outcome; kind; started = test_at }
 
     let opts ?(dir = temp ()) () : Sidebar.options =
-      {
-        interval = Sidebar.default_interval;
-        client = "";
-        tmux = Tmux.create ();
-        dir;
-        threshold = 180.;
-        grace = 30.;
-      }
+      { interval = Sidebar.default_interval; client = ""; tmux = Tmux.create (); dir; grace = 30. }
 
     let model ?(dir = temp ()) ?(clock = ref test_at) () =
       let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
@@ -729,14 +722,7 @@ let%test_module "Tests" =
           emit (reply 52 (Sidebar.Reorder_window (Tmux.session_id_of_string "$3", move)) result))
         [ Ok (); Error "no such top-level window in session" ];
       let opts : Sidebar.options =
-        {
-          interval = 0.1;
-          client = "app";
-          tmux = Tmux.create ();
-          dir = "/unused";
-          threshold = 180.;
-          grace = 30.;
-        }
+        { interval = 0.1; client = "app"; tmux = Tmux.create (); dir = "/unused"; grace = 30. }
       in
       let open Pane_status in
       let exit = { code = 1; command = "false"; started_at = 100.; ended_at = 101. } in
@@ -762,7 +748,7 @@ let%test_module "Tests" =
                (Idle { outcome = Some { serial = 17; result = Success } }, Some "Built");
                (Idle { outcome = Some { serial = 18; result = Failure } }, Some "Build failed");
              ]
-              : (report_state * string option) list)
+              : (agent_state * string option) list)
       in
       let agents : agent list =
         List.map
@@ -772,7 +758,6 @@ let%test_module "Tests" =
              (Waiting { kind = Some Permission; progress = None }, Some "Approve deployment");
              (Waiting { kind = Some Question; progress = None }, None);
              (Waiting { kind = None; progress = Some 5 }, None);
-             (Stalled, None);
              (Idle { outcome = None }, None);
              (Idle { outcome = Some { serial = 17; result = Success } }, Some "Finished");
              (Idle { outcome = Some { serial = 18; result = Failure } }, Some "Failed");
@@ -886,7 +871,6 @@ let%test_module "Tests" =
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":"Approve deployment","state":["Waiting",{"kind":"permission","progress":null}]}}]]
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":null,"state":["Waiting",{"kind":"question","progress":null}]}}]]
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":null,"state":["Waiting",{"kind":null,"progress":5}]}}]]
-        ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":null,"state":["Stalled"]}}]]
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":null,"state":["Idle",{"outcome":null}]}}]]
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":"Finished","state":["Idle",{"outcome":{"serial":17,"result":"success"}}]}}]]
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":"Failed","state":["Idle",{"outcome":{"serial":18,"result":"failure"}}]}}]]

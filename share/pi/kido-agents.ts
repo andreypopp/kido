@@ -210,8 +210,6 @@ interface AgentInfo {
   activity: string;
   canReply: boolean;
   window: string;
-  stalled: boolean;
-  sinceReport: number;
 }
 
 const NAME_WORD_SEPARATORS = /[\s\-_/]+/;
@@ -771,10 +769,6 @@ export default function (pi: ExtensionAPI) {
       }
       if (!target.canReply) {
         return reply(`${who} was spawned without the message_agent tool and cannot reply; use message_agent, or wait for its notify_parent notice`);
-      }
-      // Fail fast rather than wait out the timeout against a target that is never going to answer.
-      if (target.stalled) {
-        return reply(`${who} has been quiet for ${target.sinceReport}s while reporting working; likely stalled, refusing to wait for a reply`);
       }
       const alive = await runKido(["get-agent", target.id], { timeoutMs: 2000 });
       if (lookupAlive(alive, target.id) === false) return reply(`${who} is no longer running; refusing to wait for a reply`);

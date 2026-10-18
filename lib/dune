@@ -27,8 +27,6 @@
   dune-build-info
   unix
   yojson
-  mtime
-  mtime.clock
   tmux
   threads.posix)
  (inline_tests

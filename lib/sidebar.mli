@@ -1,13 +1,6 @@
 module String_map : Map.S with type key = string
 
-type options = {
-  interval : float;
-  client : string;
-  tmux : Tmux.t;
-  dir : string;
-  threshold : float;
-  grace : float;
-}
+type options = { interval : float; client : string; tmux : Tmux.t; dir : string; grace : float }
 
 val resolve_client :
   Tmux.t -> pane:Tmux.pane_id option -> session:Tmux.session_id option -> string option
@@ -27,14 +20,12 @@ type snapshot = {
   client : Tmux.client option;
   state : State.t;
   visible : State.t;
-  wake : float option;
   err : string option;
   lingering : lingering String_map.t;
 }
 
 val active : snapshot -> Tmux.pane_id option
 
-type reading = { wall : Timestamp.t; mono : Mtime.t }
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
 type run = { kind : Run.kind; started : Timestamp.t }
 
@@ -58,7 +49,6 @@ type model = {
   client : client option;
   now : unit -> float;
   at : float;
-  clock : reading;
 }
 
 val make : now:(unit -> float) -> options -> model

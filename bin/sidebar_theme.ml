@@ -2,8 +2,7 @@ module Tmux_vars = Kido.Tmux_vars
 module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
-type role =
-  [ `Plain | `Proc | `Dim | `Session | `Current | `Err | `Running | `Waiting | `Done | `Stalled ]
+type role = [ `Plain | `Proc | `Dim | `Session | `Current | `Err | `Running | `Waiting | `Done ]
 
 type t = {
   row : Style.t;
@@ -13,7 +12,6 @@ type t = {
   running : Style.t;
   waiting : Style.t;
   done_ : Style.t;
-  stalled : Style.t;
   session : Style.t;
   current : Style.t;
   current_rows : Color.t option;
@@ -30,7 +28,6 @@ let default =
     running = Style.make ~fg:Color.green ();
     waiting = Style.make ~fg:Color.yellow ~bold:true ();
     done_ = Style.make ~fg:Color.green ~bold:true ();
-    stalled = Style.make ~fg:Color.red ~bold:true ();
     session = Style.make ~fg:Color.default ();
     current = Style.make ~fg:Color.default ~bold:true ();
     current_rows = None;
@@ -44,7 +41,6 @@ let style t : role -> Style.t = function
   | `Running -> t.running
   | `Waiting -> t.waiting
   | `Done -> t.done_
-  | `Stalled -> t.stalled
   | `Session -> t.session
   | `Current -> t.current
 
@@ -59,7 +55,6 @@ let options =
     (Tmux_vars.sidebar_running_style, fun t s -> { t with running = s });
     (Tmux_vars.sidebar_waiting_style, fun t s -> { t with waiting = s });
     (Tmux_vars.sidebar_done_style, fun t s -> { t with done_ = s });
-    (Tmux_vars.sidebar_stalled_style, fun t s -> { t with stalled = s });
     (Tmux_vars.sidebar_session_style, fun t s -> { t with session = s });
     (Tmux_vars.sidebar_current_style, fun t s -> { t with current = s });
     (Tmux_vars.sidebar_current_rows_style, fun t (s : Style.t) -> { t with current_rows = s.bg });
@@ -172,7 +167,7 @@ let%test_module "Tests" =
     let%expect_test "every role names its foreground" =
       List.iter
         (fun r -> show_style (Ok (style default r)))
-        [ `Plain; `Current; `Session; `Proc; `Dim; `Err; `Running; `Waiting; `Done; `Stalled ];
+        [ `Plain; `Current; `Session; `Proc; `Dim; `Err; `Running; `Waiting; `Done ];
       [%expect
         {|
     Style{fg=#000000}
@@ -184,7 +179,6 @@ let%test_module "Tests" =
     Style{fg=#008000}
     Style{fg=#808000, attrs=[Bold]}
     Style{fg=#008000, attrs=[Bold]}
-    Style{fg=#800000, attrs=[Bold]}
     |}]
 
     let%expect_test "parse_style: tmux's style syntax" =
@@ -234,7 +228,7 @@ let%test_module "Tests" =
           (Option.get_or ~default:"-" err)
       in
       let reply values = String.concat "\x1f" values in
-      report (reply (List.init 11 (fun _ -> "")));
+      report (reply (List.init 10 (fun _ -> "")));
       report
         (reply
            [
@@ -245,14 +239,13 @@ let%test_module "Tests" =
              "";
              "";
              "";
-             "";
              "fg=#c9d1cf,bold,bg=#123c48";
              "fg=#fdf6e3,bold,bg=#1f5566";
              "bg=#0f3a47";
            ]);
-      report (reply [ ""; ""; "fg=bogus"; ""; ""; ""; ""; ""; "fg=worse"; ""; "" ]);
+      report (reply [ ""; ""; "fg=bogus"; ""; ""; ""; ""; ""; "fg=worse"; "" ]);
       report "fg=red";
-      report (reply (List.init 12 (fun _ -> "fg=red")));
+      report (reply (List.init 11 (fun _ -> "fg=red")));
       [%expect
         {|
     Style{fg=#000000} Style{fg=#808080} Style{fg=#000000} Style{fg=#000000, attrs=[Bold]}

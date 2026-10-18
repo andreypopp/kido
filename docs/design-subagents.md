@@ -12,7 +12,6 @@ from the tool call that creates it to the sweep that closes its window.
 - Session identity
 - The window lifecycle
 - Run outcomes
-- Staleness
 - The connection between the two pi extensions
 
 This document refers to those sections by name instead of repeating them.
@@ -42,7 +41,7 @@ The rule applies in one direction only: a tool names its command. A
 subcommand without a tool keeps the name that fits it. These include
 `shell`, `ssh`, `get-agent`, `prompt`, `reap`, `runs` and the
 other subcommands. `kido agent-status` also keeps its own name. It claims
-a session's run and reports its identity and heartbeat. In contrast, `set_status` writes only
+a session's run and reports its identity. In contrast, `set_status` writes only
 activity (design.md, "Every report is whole").
 
 Tests enforce this agreement. Both suites read one list in
@@ -150,8 +149,8 @@ has no own runs.
 
 Rows carry `kind` (`agent`, `subagent`, `bash`) and `relationship`
 (`peer`, `parent`, `own`). Live agents retain id, name, pane, window,
-status, activity, parent, depth, cwd, model, `canMessage`, `canReply`,
-`sinceReport` and `stalled`. Own runs add `run`, `startedAt`,
+status, activity, parent, depth, cwd, model, `canMessage` and
+`canReply`. Own runs add `run`, `startedAt`,
 `state` (`running` or `ended`) and the ending's `outcome` result and text.
 A bash run or an ended subagent without a live holder has no agent
 status and cannot reply.
@@ -165,9 +164,7 @@ unknown when the state is absent. pi's name is the session name in its
 
 Native Claude Code has no run and does not appear in the list.
 
-A pi is stalled only with a working root and an old `pi.json` heartbeat.
-A bare pi never stalls. One fresh tmux read supplies the graph; it is not
-a cache. `ask_agent` refuses a stalled target before sending. `canReply`
+One fresh tmux read supplies the graph; it is not a cache. `canReply`
 also reflects an agent run's tool allowlist.
 
 Names still resolve across the entire tmux session for messaging, asking,

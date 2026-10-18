@@ -1,6 +1,4 @@
-type role =
-  [ `Plain | `Proc | `Dim | `Session | `Current | `Err | `Running | `Waiting | `Done | `Stalled ]
-
+type role = [ `Plain | `Proc | `Dim | `Session | `Current | `Err | `Running | `Waiting | `Done ]
 type t
 
 val default : t

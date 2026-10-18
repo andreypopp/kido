@@ -5,9 +5,6 @@ import { createServer, type Server, type Socket } from "node:net";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Read once at module scope; a test re-imports the module to change it.
-const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
-
 // A timeout here is not a refusal: Run.write_pi (lib/run.ml) is what actually decides who holds the run.
 const CLAIM_TIMEOUT_MS = 5000;
 
@@ -259,8 +256,6 @@ export default function (pi: ExtensionAPI) {
   let model: string | undefined;
   let lastKey: string | null = null;
 
-  let heartbeatTimer: NodeJS.Timeout | null = null;
-
   // pi drains followUp only once the agent has decided to stop; "steer" is drained
   // inside the loop and joins the run already under way. deliverAs is only consulted
   // while streaming: pi sends immediately when the session is idle.
@@ -385,31 +380,17 @@ export default function (pi: ExtensionAPI) {
     setHeldInbox({ server, path, state: "owned", handler: onConnection });
   };
 
-  const startHeartbeat = (): void => {
-    if (!reporter || heartbeatTimer) return;
-    report("heartbeat");
-    heartbeatTimer = setInterval(() => report("heartbeat"), HEARTBEAT_MS);
-    heartbeatTimer.unref(); // a hung kido must never hold pi's event loop open
-  };
-  const stopHeartbeat = (): void => {
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
-    }
-  };
-
   const statusArgs = (opts: { remove?: boolean; inbox: string } = { inbox: "" }): string[] => [
     "agent-status", "--activity", activity, "--model", model ?? "", "--inbox", opts.inbox,
     "--name", pi.getSessionName() ?? "", ...(opts.remove ? ["--remove"] : []),
   ];
 
-  const report = (kind: "identity" | "heartbeat" | "removed"): void => {
+  const report = (remove = false): void => {
     if (!reporter) return;
-    const remove = kind === "removed";
     const inbox = inboxOpen() ? (heldInbox()?.path ?? "") : "";
     const key = JSON.stringify([activity, model ?? "", inbox, remove, pi.getSessionName() ?? ""]);
-    if (kind !== "heartbeat" && key === lastKey) return;
-    if (kind !== "heartbeat") lastKey = key;
+    if (key === lastKey) return;
+    lastKey = key;
     spawnDetached(reporter.kido, statusArgs({ remove, inbox }));
   };
 
@@ -458,7 +439,7 @@ export default function (pi: ExtensionAPI) {
     inboxOpen,
     setActivity: (text: string) => {
       activity = text;
-      if (reporter) report("identity");
+      if (reporter) report();
       else if (kido) spawnDetached(kido, ["tool", "set_status", "--", activity]);
     },
     deliver,
@@ -475,7 +456,6 @@ export default function (pi: ExtensionAPI) {
     caller = { PI_SESSION_ID: sessionId || undefined, PI_SESSION_FILE: ctx.sessionManager.getSessionFile() };
     model = ctx.model?.id;
     lastKey = null;
-    stopHeartbeat();
 
     // The claim is this same first report, awaited so an EXIT_SESSION_HELD refusal
     // can be read: a session id another live process holds is not this one's to
@@ -507,38 +487,27 @@ export default function (pi: ExtensionAPI) {
     // After the inbox, before the first report (which carries --inbox).
     await seam().agents?.sessionStarted();
 
-    report("identity");
+    report();
   });
 
-  pi.on("session_info_changed", () => report("identity"));
+  pi.on("session_info_changed", () => report());
 
   pi.on("model_select", (event) => {
     model = event.model.id;
-    report("identity");
+    report();
   });
 
   const running = () => {
     seam().agents?.workStarted();
-    startHeartbeat();
-    report("identity");
   };
   pi.on("agent_start", running);
   pi.on("turn_start", running);
   pi.on("tool_execution_start", running);
   pi.on("tool_call", running);
-  pi.on("session_before_compact", startHeartbeat);
-  const stopWhenIdle = (_event: unknown, ctx: { isIdle(): boolean }) => {
-    if (ctx.isIdle()) stopHeartbeat();
-  };
-  pi.on("session_compact", stopWhenIdle);
-  pi.on("session_compact_failed", stopWhenIdle);
-  pi.on("agent_settled", stopWhenIdle);
-
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
     // Both run synchronously before this handler's first await, which is what lets
     // ask_agent's inboxOpen() check stand in for "this session is shutting down".
     stopInbox({ keepListening: event?.reason === "reload" });
-    stopHeartbeat();
     // Before the removal report: kido must still have a record of this session while
     // the agent half resolves its parent edge and window.
     await seam().agents?.sessionEnding(event?.reason);
@@ -547,6 +516,6 @@ export default function (pi: ExtensionAPI) {
     // "new", "resume" and "fork" all end or move this process to a new session id, so
     // the old record must still be removed.
     if (event?.reason === "reload") return;
-    report("removed");
+    report(true);
   });
 }
