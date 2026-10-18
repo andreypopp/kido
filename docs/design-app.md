@@ -1155,7 +1155,12 @@ switching past the surface budget, and after closing all but one window.
 `KIDO_APP_SERVER` (a private 0700 directory) and `KIDO_APP_TMUX` point the app at a private
 server; `KIDO_APP_FEED` names a stand-in feed. `KIDO_APP_BACKGROUND=1`
 keeps a test launch off screen: it never activates, never takes focus
-and keeps no preferences. `KIDO_APP_DEBUG=1` logs each switch, eviction
+and keeps no preferences. The launch sets the activation policy
+`.prohibited`: macOS retries the deferred launch activation of an
+`.accessory` app when a window comes to the front, and then every later
+visibility check that reads `NSApp.isActive` fails. A cascade of such
+failures means activation, not leaks. The opt-in `testVsyncMeasurement`
+sets `.regular`, because it needs an unoccluded window. `KIDO_APP_DEBUG=1` logs each switch, eviction
 and free to stderr with its timing.
 
 ### Test speed
