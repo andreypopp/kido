@@ -47,8 +47,6 @@
    (>= v0.17))
   (ppx_string_conv
    (>= v0.17))
-  (mtime
-   (>= 2.2))
   mosaic
   dune-build-info
   (ppx_expect :with-test)

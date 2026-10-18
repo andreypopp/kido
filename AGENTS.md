@@ -684,6 +684,12 @@ Dependency resolution writes the committed `dune.lock`.
 `dune pkg lock` regenerates the lock.
 It always resolves against the newest opam-repository.
 Thus, a re-lock requires review.
+To change one dependency without other upgrades, pin the repositories
+for the re-lock only. In `dune-workspace`, temporarily add a
+`(repository ...)` stanza for each repository commit that
+`dune.lock/lock.dune` records, and a `(lock_dir (path dune.lock)
+(repositories ...))` stanza that names them. Run `dune pkg lock`, then
+remove the stanzas. The lock diff must show only the intended package.
 There is no `kido.opam`.
 `dune-project` is the only dependency list.
 
