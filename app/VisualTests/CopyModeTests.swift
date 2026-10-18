@@ -245,8 +245,10 @@ extension VisualTests {
         try await wait("clean exit drained the pause", within: 2) { self.connection.visualRestores == restores + 1 }
         try await settle()
         try await emit(pane, "resumed\r\n", until: "resumed")
-        try await wait("resumed output arrives live", within: 2) { self.screen(pane).contains("resumed") }
-        XCTAssertTrue(screen(pane).contains("while-paused"))
+        try await wait("resumed output arrives live", within: 2) {
+            let screen = self.screen(pane)
+            return screen.contains("resumed") && screen.contains("while-paused")
+        }
         try await enter(pane)
         connection.sync(pane.pane)
         try await roundTrip()
@@ -293,8 +295,13 @@ extension VisualTests {
 
         let beeps = pane.visualBeeps
         let late = hold("late\r\n", for: 4)
+        let entryTimeout = PaneView.copyEntryTimeout
+        PaneView.copyEntryTimeout = 0.5
+        defer { PaneView.copyEntryTimeout = entryTimeout }
         key(pane, "C", [.command, .shift], ignoring: "C")
+        try await wait("held entry admitted", within: 2) { pane.frozen }
         try await wait("deadline cancels a held entry", within: 3) { pane.copyMode == nil && pane.visualBeeps == beeps + 1 }
+        PaneView.copyEntryTimeout = entryTimeout
         connection.visualCopyCheck = nil
         pane.feedProbe.withLock { $0 = nil }
         XCTAssertFalse(pane.frozen)
@@ -325,7 +332,7 @@ extension VisualTests {
             }),
         ]
         for schedule in schedules {
-            XCTAssertTrue(pane.alternate, schedule.name)
+            try await wait("alternate screen: \(schedule.name)") { pane.alternate }
             let restores = connection.visualRestores
             connection.visualCopyCheck = { reply in
                 target.postProbe.withLock { $0 = {
@@ -469,7 +476,7 @@ extension VisualTests {
         let wrapped = wrappedFixture(pane)
         try await emit(pane, "\u{1b}[?1049h\u{1b}[Ha1\r\n\(wrapped)\r\na3", until: "a3")
         try await enter(pane)
-        XCTAssertTrue(pane.alternate)
+        try await wait("alternate screen") { pane.alternate }
         keys(pane, "kkVy")
         XCTAssertEqual(board.string(forType: .string), wrapped + "\n")
         try await enter(pane)
@@ -568,7 +575,7 @@ extension VisualTests {
         owner.window.makeFirstResponder(pane)
         pane.resize(cols: 80, rows: 24)
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
-        defer { PaneView.visualConversion = nil; pane.dispose(); owner.close(); board.releaseGlobally() }
+        defer { Upload.visualImagePreparation = nil; pane.dispose(); owner.close(); board.releaseGlobally() }
         nonisolated(unsafe) let target = pane
         func feed(_ text: String) async {
             await withCheckedContinuation { done in DispatchQueue.global().async { target.feed(Data(text.utf8)); done.resume() } }
@@ -613,7 +620,7 @@ extension VisualTests {
         board.clearContents()
         board.setData(pngData(width: 2, height: 2, type: .tiff), forType: .tiff)
         var convert: CheckedContinuation<Void, Never>?
-        PaneView.visualConversion = { await withCheckedContinuation { convert = $0 } }
+        Upload.visualImagePreparation = { await withCheckedContinuation { convert = $0 } }
         await feed("\u{1b}]5522;type=read;\(b64("image/png"))\u{1b}\\")
         try await wait("TIFF conversion started", within: 2) { convert != nil }
         refused("pending TIFF conversion")
@@ -654,7 +661,7 @@ extension VisualTests {
         try await emit(pane, "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1003h\u{1b}[?1006h\u{1b}[?1007h\u{1b}[H" + (0..<rows - 1).map { "alt-\($0)\r\n" }.joined() + "count-1",
                        until: "count-1")
         try await enter(pane)
-        XCTAssertTrue(pane.alternate)
+        try await wait("alternate screen") { pane.alternate }
         try await emit(pane, "\r\u{1b}[Kcount-2", until: "count-2")
         let count = board.changeCount
         keys(pane, "G0v$y")
@@ -996,7 +1003,7 @@ extension VisualTests {
         XCTAssertTrue(cursor(pane).map { $0 == start } == true, "no match leaves the cursor")
         try type(pane, "new-marker")
         try await at(pane, String("row-\(rows - 1000) ").count, start.y - 1000, "loaded match")
-        XCTAssertEqual(found(pane), "1 matches (loaded)")
+        try await wait("loaded count") { self.found(pane) == "1 matches (loaded)" }
         try await unchanged("loaded query")
         try field(pane, #selector(NSResponder.cancelOperation(_:)))
         keys(pane, "q")
@@ -1014,11 +1021,11 @@ extension VisualTests {
         let pane = try await rawPane()
         try await emit(pane, "primary match\r\n\u{1b}[?1049h\u{1b}[Halt one\r\nalt match two", until: "match two")
         try await enter(pane)
-        XCTAssertTrue(pane.alternate)
+        try await wait("alternate screen") { pane.alternate }
         key(pane, "?", .shift)
         try type(pane, "match")
         try await at(pane, 4, 1, "alternate match")
-        XCTAssertEqual(found(pane), "1 matches (loaded)", "only the frozen alternate screen")
+        try await wait("alternate loaded count") { self.found(pane) == "1 matches (loaded)" }
         try field(pane, #selector(NSResponder.insertNewline(_:)))
         keys(pane, "g0vn")
         try await at(pane, 4, 1, "alternate v end")
@@ -1048,7 +1055,7 @@ extension VisualTests {
         try await Task.sleep(for: .milliseconds(100))
         try await at(pane, 0, base - 2, "the released superseded event moves no cursor")
         try type(pane, "")
-        try await Task.sleep(for: .milliseconds(100))
+        try await wait("empty query clears the label", within: 2) { self.found(pane) == "" }
         try await at(pane, 0, base - 2, "an empty query moves nothing")
         try field(pane, #selector(NSResponder.cancelOperation(_:)))
         keys(pane, "q")
@@ -1074,11 +1081,15 @@ extension VisualTests {
         try await wait("matches", within: 5) { self.found(pane)?.hasPrefix("1") == true }
         pane.find?.next()
         pane.find?.next()
-        XCTAssertEqual(found(pane), expected)
-        try await Task.sleep(for: .milliseconds(500))
+        try await wait("find label \(expected)", within: 2) { self.found(pane) == expected }
+        try await drain(pane.runtime)
+        pane.layoutSubtreeIfNeeded()
     }
 
     func testPaneChromeSnapshots() async throws {
+        let fade = WindowView.toolbarFadeDuration
+        WindowView.toolbarFadeDuration = 0
+        defer { WindowView.toolbarFadeDuration = fade }
         let pane = try await rawPane()
         try await emit(pane, ["$ rg -n sidebar App", "App/sidebar.swift:17: sidebar.next", "App/row.swift:25: let close = x",
                               "App/owner.swift:96: sidebar.tabs", "App/tabs.swift:37: labelFont(tab)", "App/feed.swift:39: sidebar.title",
@@ -1518,9 +1529,13 @@ extension VisualTests {
     }
 
     func testPromptSnapshots() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
         for dark in [false, true] {
-            let pane = try await rawPane(dark: dark)
-            try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+            if dark {
+                try await darken()
+                window.makeFirstResponder(pane)
+            }
             let probe = PromptProbe()
             probe.candidates = [PromptCandidate(pane: PaneID(number: 12), session: SessionID(number: 0), window: WindowID(number: 0), title: "near"),
                                 PromptCandidate(pane: PaneID(number: 14), session: SessionID(number: 0), window: WindowID(number: 1), title: "far")]
@@ -1530,6 +1545,7 @@ extension VisualTests {
             try await snapshot(dark ? "prompt-dark" : "prompt-light")
             pane.closePrompt()
             keys(pane, "q")
+            try await wait("copy exit restored") { !pane.resizeDirty }
         }
     }
 }
