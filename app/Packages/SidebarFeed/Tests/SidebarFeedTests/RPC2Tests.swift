@@ -47,18 +47,9 @@ import TmuxControl
     var changedNodes = nodes
     changedNodes[0]["program_status"] = ["serial": 99, "records": []]
     object["sessions"] = [["id": "$0", "name": "workspace", "current": true, "nodes": changedNodes]]
-    object["asks"] = [["id": "A12345678", "session": "agent-session", "name": "Ada", "text": "Question?", "created": "2026-07-17T12:00:00Z", "pane": NSNull(), "ended": true, "revivable": false]]
     let rawChanged = try decode(object)
     #expect(snapshot != rawChanged && !snapshot.sameSidebarContent(as: rawChanged))
-    object.removeValue(forKey: "asks")
-    #expect(throws: DecodingError.self) { try decode(object) }
     var item = nodes[0]
     item.removeValue(forKey: "program_status")
     #expect(throws: DecodingError.self) { try decode(item, as: Item.self) }
-}
-
-@Test(arguments: ["2026-07-17T12:00:00Z", "2026-07-17T12:00:00.123Z"]) func outstandingAsks(_ created: String) throws {
-    let json = "{\"id\":\"A12345678\",\"session\":\"agent-session\",\"name\":\"Ada\",\"text\":\"Question?\",\"created\":\"\(created)\",\"pane\":null,\"ended\":true,\"revivable\":false}"
-    let ask = try JSONDecoder().decode(Ask.self, from: Data(json.utf8))
-    #expect(ask.session == "agent-session" && ask.ended && !ask.revivable && ask.pane == nil)
 }

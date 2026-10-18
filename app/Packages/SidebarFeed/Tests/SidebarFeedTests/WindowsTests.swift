@@ -3,7 +3,7 @@ import Testing
 import TmuxControl
 @testable import SidebarFeed
 
-private func windowsFixture(_ state: [Any] = blocked(), group: Bool = false) throws -> Snapshot {
+private func windowsFixture(_ state: [Any] = waiting(), group: Bool = false) throws -> Snapshot {
     func item(_ n: Int, children: [[String: Any]] = [], state: [Any] = idle()) -> [String: Any] {
         pane(n, title: "Pane \(n)", lifecycle: agent(state), children: children)
     }
@@ -36,7 +36,7 @@ private func windowsFixture(_ state: [Any] = blocked(), group: Bool = false) thr
 }
 
 @Test func projectionSharesRowStatus() throws {
-    for state in [idle(outcome(1, "failure")), blocked(), ["Stalled"], idle(outcome(1, "success")), working(), idle()] {
+    for state in [idle(outcome(1, "failure")), waiting(), idle(outcome(1, "success")), working(), idle()] {
         let snapshot = try windowsFixture(state)
         let projection = sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)])
         let status = try #require(sidebarRows(snapshot).first { $0.target?.window == WindowID(number: 2) }?.status)
@@ -83,8 +83,8 @@ private func windowsFixture(_ state: [Any] = blocked(), group: Bool = false) thr
 }
 
 @Test func nestedTabStatusPrecedence() throws {
-    let states: [[Any]] = [idle(), idle(outcome(1, "success")), working(), blocked(), idle(outcome(1, "failure")), ["Stalled"]]
-    let expected: [SidebarRow.Status] = [.quiet, .done, .running, .waiting, .error, .error]
+    let states: [[Any]] = [idle(), idle(outcome(1, "success")), working(), waiting(), idle(outcome(1, "failure"))]
+    let expected: [SidebarRow.Status] = [.quiet, .done, .running, .waiting, .error]
     for first in states.indices {
         for second in states.indices {
             let child = pane(1, lifecycle: agent(states[second]))
