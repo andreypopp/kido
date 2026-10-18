@@ -14,8 +14,29 @@ let one_line s ~max =
   let s = Buffer.contents b in
   String.rdrop_while (Char.equal ' ') (Msg.utf_8_prefix s max)
 
+let option_keys = [ Tmux_vars.session; Tmux_vars.name; Tmux_vars.inbox; Tmux_vars.activity ]
+
+let set_option tmux pane key value =
+  ignore
+    (Tmux.run tmux
+       [
+         "set-option";
+         "-p";
+         "-t";
+         Tmux.string_of_pane_id pane;
+         key;
+         one_line value ~max:(String.length value);
+       ])
+
+let options ~id ~name ~inbox ~activity =
+  List.map2
+    (fun key value -> (key, value))
+    option_keys
+    [ Run.string_of_id id; name; inbox; activity ]
+
 let agent_status ~dir ~pane ~id ~session_file ~inbox ~activity ~model ~name =
   let pid = Unix.getppid () and now = Timestamp.now () in
+  let activity = one_line activity ~max:256 in
   Run.create_meta ~dir
     {
       id;
@@ -30,24 +51,29 @@ let agent_status ~dir ~pane ~id ~session_file ~inbox ~activity ~model ~name =
       started_at = now;
     };
   Run.write_pi ~dir id ~holder:pid
-    { pid; pane; ts = now; inbox; activity = one_line activity ~max:256; model; name; session_file }
+    { pid; pane; ts = now; inbox; activity; model; name; session_file }
   |> Result.map (fun () ->
       Option.iter
         (fun pane ->
-          ignore
-            (Tmux.run (Tmux.create ())
-               [
-                 "set-option";
-                 "-p";
-                 "-t";
-                 Tmux.string_of_pane_id pane;
-                 Tmux_vars.run;
-                 Run.string_of_id id;
-               ]))
+          let tmux = Tmux.create () in
+          set_option tmux pane Tmux_vars.run (Run.string_of_id id);
+          List.iter
+            (fun (key, value) -> set_option tmux pane key value)
+            (options ~id ~name ~inbox ~activity))
         pane)
 
 let set_activity ~dir (id, (s : Run.pi)) activity =
-  Run.write_pi ~dir id ~holder:s.pid { s with activity = one_line activity ~max:256 }
+  let activity = one_line activity ~max:256 in
+  Run.write_pi ~dir id ~holder:s.pid { s with activity }
+  |> Result.map (fun () ->
+      Option.iter (fun pane -> set_option (Tmux.create ()) pane Tmux_vars.activity activity) s.pane)
+
+let unclaim ~pane =
+  let tmux = Tmux.create () in
+  List.iter
+    (fun key ->
+      ignore (Tmux.run tmux [ "set-option"; "-u"; "-p"; "-t"; Tmux.string_of_pane_id pane; key ]))
+    option_keys
 
 let%test_module "Tests" =
   (module struct

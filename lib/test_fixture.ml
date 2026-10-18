@@ -30,7 +30,7 @@ let run ~dir ?(name = "") ?(kind = Run.Agent) ?(parent = "") ?pane ?(pid = 0) ?(
       id;
       name;
       kind;
-      parent = owned parent;
+      parent = Option.map (fun id -> Run.Run id) (owned parent);
       pane = Option.map Tmux.pane_id_of_string pane;
       pid;
       cwd;

@@ -10,7 +10,8 @@ kido classifies a pane with these sources:
   - OSC 7501 ([spec](https://www.superlogical.com/rex/docs/build/program-status))
   - OSC 133 ([semantic prompts](https://gitlab.freedesktop.org/Per_Bothner/specifications/-/blob/master/proposals/semantic-prompts.md))
   - the pane title, OSC 0/2 ([xterm control sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands))
-- presence of state and run records (only for local pi agents)
+- the pane options of pi's harness (`@kido_session`, `@kido_name`,
+  `@kido_inbox`, `@kido_activity`), only for local pi agents
 - the pane option `@kido_ssh`, set by kido's ssh shim
 
 ## Sources
@@ -80,7 +81,7 @@ current state, or the current outcome at idle.
 Tracking resets when:
 
 - An agent's root app changes, appears or clears.
-- Its pane run changes.
+- Its `@kido_session` changes.
 - An ssh destination changes.
 
 A terminal report's app change or removal does not reset tracking.
@@ -151,9 +152,12 @@ contains:
 - Activity text
 - Report time: the last identity report. `list_runs` orders agents by it.
 
-These records supply identity and coordination. The claim also sets
-`@kido_run` on the pi's pane. The pane's run is the run that the mark
-names, if its `pi.json` names the pane and a live pid.
+These records supply the old harness's coordination. The claim also
+sets `@kido_run` and the four harness options on the pi's pane:
+`@kido_session`, `@kido_name`, `@kido_inbox` and `@kido_activity`
+(design.md, "Who is authoritative for what"). kido's classification and
+status read only the options, and trust them only while the pane has an
+OSC 7501 root with `app=pi`.
 
 ### The ssh mark
 
@@ -224,9 +228,10 @@ kido classifies a pane's kind, `pane_kind`, in this order:
    record from the remote side. If the app is `pi` or `claude-code`, the
    kind is `Remote_agent { name = app }`. Otherwise, it is
    `Remote_terminal`.
-2. A root record with `app = "pi"` and a pane run gives `Pi_agent`.
-3. A root record with `app = "claude-code"`, or `app = "pi"` without a
-   pane run, gives `Some_agent { name = app }`.
+2. A root record with `app = "pi"` on a pane with `@kido_session` gives
+   `Pi_agent`.
+3. A root record with `app = "claude-code"`, or `app = "pi"` without
+   `@kido_session`, gives `Some_agent { name = app }`.
 4. Anything else is `Terminal`.
 
 A run pane (`@kido_run`) can have any of these kinds. Its run record adds
@@ -254,7 +259,8 @@ the run's name, elapsed time and outcome (below).
 ### `Some_agent { name }`
 
 - Detected: the root record's app. Examples: Claude Code
-  (`app=claude-code`), pi without kido's extensions (`app=pi`, no run).
+  (`app=claude-code`), pi without kido's extensions (`app=pi`, no
+  `@kido_session`).
 - Title: the pane title, or `name` when that is empty.
 - Status: the records' reduction.
 - Supports: `kido prompt`, by paste, when it is the only agent in scope.
@@ -263,10 +269,10 @@ Pi and Claude Code report their status through OSC 7501.
 
 ### `Pi_agent`
 
-- Detected: root app `pi` and a pane run.
-- Title: the `name` in `pi.json` when set, otherwise the pane title.
+- Detected: root app `pi` and `@kido_session`.
+- Title: `@kido_name` when set, otherwise the pane title.
 - Status: as `Some_agent`, from the pi root (pi 1.1's native emitter).
-  kido removes `msg` if it repeats the title. If there is no `msg`, the `pi.json` `activity`
+  kido removes `msg` if it repeats the title. If there is no `msg`, `@kido_activity`
   supplies the message.
 - Supports: everything in `design.md` and `design-subagents.md`:
   - The inbox for `kido prompt` and `message_agent`/ask/steer/interrupt.
@@ -299,7 +305,8 @@ Pi and Claude Code report their status through OSC 7501.
 
 - A run's ending has the highest precedence. If its run has an outcome
   or the pane is dead, the pane is Ended with that outcome.
-  The outcome is unknown until recorded.
+  Without a recorded outcome, the dead pane's exit status or signal
+  gives it.
 - While present, a terminal report has precedence over its shell phase
   for the frontend's indicator and message. A shell prompt (`A`) clears
   the non-final records.

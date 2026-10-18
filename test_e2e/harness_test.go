@@ -505,9 +505,9 @@ set -g side-status-command "%s%s"
 				t.Errorf("leaked control client pid %s for socket %s", pid, h.inner)
 			}
 		}
-		// An async-run wrapper answers the server's hangup by writing its
-		// outcome into the state dir, after kill-server has returned; TempDir's
-		// removal runs next and must not race it.
+		// A run-wait notifier writes an ending into the state dir, after
+		// kill-server has returned; TempDir's removal runs next and must not
+		// race it.
 		waitDescendantsGone(t, h.inner, started)
 	})
 
@@ -1252,4 +1252,14 @@ func (h *harness) title(pane, title string) {
 		h.in("select-pane", "-t", pane, "-T", title)
 		return false
 	}, settle, msgf("pane %s titled %s", pane, title))
+}
+
+func (h *harness) reap(name string) {
+	h.t.Helper()
+	h.runScript("alpha", name, "KIDO_LINGER_SECONDS=0 "+kidoBin+" reap")
+}
+
+// firstLine strips runKido's own trailing "rc=N" line.
+func firstLine(s string) string {
+	return strings.SplitN(strings.TrimSpace(s), "\n", 2)[0]
 }

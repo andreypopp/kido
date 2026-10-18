@@ -15,7 +15,7 @@ let decide ~state to_ by = function
   | many ->
       List.map
         (fun (id, s) ->
-          Printf.sprintf "%s (%s)" (Run.string_of_id id) (State.run_display_name state s))
+          Printf.sprintf "%s (%s)" (Run.string_of_id id) (Pane_kind.display_name state s))
         many
       |> List.sort String.compare |> String.concat ", "
       |> Printf.sprintf "%S matches several agents by %s: %s" to_ by
@@ -69,14 +69,14 @@ let reaches ~dir ~caller id =
         (Run.read_meta ~dir id))
     caller
 
-let resolve ~dir ~state:({ agents; _ } as state : State.t) ~self ~caller recipient =
+let resolve ~dir ~state ~self ~caller recipient =
   let open Result.Infix in
   let caller = Option.map fst caller in
-  let agents = List.map snd (Tmux.Pane_map.bindings agents) in
+  let agents = State.live_agents ~dir state in
   let descendant address =
     let* ((id, target) as e) = resolve_target agents state ~self address in
     if reaches ~dir ~caller id then Ok e
-    else Error (State.run_display_name state target ^ " is not this agent's descendant")
+    else Error (Pane_kind.display_name state target ^ " is not this agent's descendant")
   in
   let* ((id, target) as e) =
     match recipient with
@@ -86,11 +86,11 @@ let resolve ~dir ~state:({ agents; _ } as state : State.t) ~self ~caller recipie
     | Parent session -> Result.map (fun s -> (session, s)) (Run.live_parent ~dir session)
   in
   if Option.exists (Run.equal_id id) caller then
-    Error (State.run_display_name state target ^ " is this agent")
+    Error (Pane_kind.display_name state target ^ " is this agent")
   else Ok e
 
 let deliver ~dir ~caller ~state ~self spec (run_id, (target : Run.pi)) text =
-  let name = State.run_display_name state target in
+  let name = Pane_kind.display_name state target in
   let kind, id, reply_to =
     match spec with
     | Message -> (Msg.Message, None, "")
@@ -112,7 +112,7 @@ let deliver ~dir ~caller ~state ~self spec (run_id, (target : Run.pi)) text =
     let from : Msg.from =
       match caller with
       | Some (id, s) ->
-          { session = Run.string_of_id id; name = State.run_display_name state s; pane = self }
+          { session = Run.string_of_id id; name = Pane_kind.display_name state s; pane = self }
       | None -> { session = ""; name = ""; pane = self }
     in
     let envelope : Msg.envelope =
@@ -159,11 +159,11 @@ let send ~dir ~self ~caller recipient spec text =
                (Printf.sprintf
                   "%s has no inbox for an answer to arrive on, and only a long-lived process has \
                    one; nothing sent - %s"
-                  (State.run_display_name state s) alternative))
+                  (Pane_kind.display_name state s) alternative))
       | _ -> Ok ()
     in
     let* ((id, target) as e) = not_sent (resolve ~dir ~state ~self ~caller recipient) in
-    let name = State.run_display_name state target in
+    let name = Pane_kind.display_name state target in
     let status =
       let open Option.Infix in
       let* pane = target.pane in

@@ -1,12 +1,14 @@
 type t =
   | Terminal
   | Some_agent of { name : string }
-  | Pi_agent of { id : Run.id; pi : Run.pi }
+  | Pi_agent of { session : string; name : string; inbox : string; activity : string }
   | Ssh of { user : string; host : string; pane : ssh_kind }
 
 and ssh_kind = Remote_terminal | Remote_agent of { name : string }
 
-let classify ~states (p : State.pane) =
+let option = Option.value ~default:""
+
+let classify (p : State.pane) =
   let app =
     Tmux.Program_status.root p.program_status
     |> Option.flat_map (fun (r : Tmux.Program_status.record) -> r.app)
@@ -20,8 +22,10 @@ let classify ~states (p : State.pane) =
       in
       Ssh { user; host; pane }
   | _, _, Some "pi" -> (
-      match Tmux.Pane_map.find_opt p.pane_id states with
-      | Some (id, pi) -> Pi_agent { id; pi }
+      match p.session with
+      | Some session ->
+          Pi_agent
+            { session; name = option p.name; inbox = option p.inbox; activity = option p.activity }
       | None -> Some_agent { name = "pi" })
   | _, _, Some "claude-code" -> Some_agent { name = "claude-code" }
   | _ -> Terminal
@@ -31,44 +35,10 @@ let title (p : State.pane) = function
   | Some_agent { name } | Ssh { pane = Remote_agent { name }; _ } ->
       Some (if String.is_empty p.title then name else p.title)
   | Terminal -> None
-  | Pi_agent { pi; _ } -> Some (State.run_display_name { State.empty with panes = [ p ] } pi)
+  | Pi_agent { name; _ } -> Some (if String.is_empty name then p.title else name)
 
-let%test_module "Tests" =
-  (module struct
-    open State_fixture
-
-    let%expect_test "only a root app identifies a pane" =
-      let p = pane ~cmd:"pi" "%1" in
-      let states =
-        Tmux.Pane_map.singleton p.pane_id (Test_fixture.run_id "local", Test_fixture.pi ())
-      in
-      List.iter
-        (fun (body, local) ->
-          let status = Result.get_exn (Tmux.Program_status.parse body) in
-          let p = { p with program_status = status } in
-          let states = if local then states else Tmux.Pane_map.empty in
-          let kind = classify ~states p in
-          print_endline
-            (match kind with
-            | Terminal -> "terminal"
-            | Some_agent { name } -> "native " ^ name
-            | Pi_agent { id; _ } -> "local " ^ Run.string_of_id id
-            | Ssh { user; host; _ } -> "ssh " ^ user ^ "@" ^ host))
-        [
-          ({|{"serial":1,"records":[]}|}, true);
-          ({|{"serial":1,"records":[{"id":"child","app":"pi","state":"idle"}]}|}, true);
-          ({|{"serial":1,"records":[{"id":"","app":"pi","state":"idle"}]}|}, true);
-          ({|{"serial":1,"records":[{"id":"","app":"pi","state":"idle"}]}|}, false);
-          ({|{"serial":1,"records":[{"id":"","app":"claude-code","state":"idle"}]}|}, true);
-          ({|{"serial":1,"records":[{"id":"","app":"builder","state":"idle"}]}|}, true);
-        ];
-      [%expect
-        {|
-    terminal
-    terminal
-    local local
-    native pi
-    native claude-code
-    terminal
-    |}]
-  end)
+let display_name state (s : Run.pi) =
+  if not (String.is_empty s.name) then s.name
+  else
+    Option.bind (Option.bind s.pane (State.find state)) (fun p -> title p (classify p))
+    |> Option.value ~default:""

@@ -29,7 +29,7 @@ type remote =
 type kind =
   | Terminal of shell
   | Some_agent of { name : string; status : agent }
-  | Pi_agent of { id : Run.id; status : agent }
+  | Pi_agent of { session : string; status : agent }
   | Ssh of { user : string; host : string; pane : remote }
 [@@deriving yojson_of]
 

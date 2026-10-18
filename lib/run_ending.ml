@@ -80,35 +80,56 @@ let send ~dir (e : ending) =
       meta = { e.meta with name = Run.name { meta = e.meta; pi = Run.read_pi ~dir e.meta.id } };
     }
   in
+  let deliver ~path =
+    Msg.deliver_envelope ~path
+      {
+        kind = Notice;
+        id = Msg.new_id ();
+        from = { session = ""; name = Run.label e.meta; pane = None };
+        reply_to = "";
+        text = body ~dir e;
+        run = "";
+        output = "";
+      }
+  in
   match e.meta.parent with
   | None -> Ok ()
-  | Some parent -> (
+  | Some (Run parent) -> (
       match Run.live_parent ~dir parent with
       | Error m -> Error (Msg.Failed m)
       | Ok { inbox = ""; _ } ->
           Error (Unavailable (Printf.sprintf "session %s has no inbox" (Run.string_of_id parent)))
-      | Ok target ->
-          Msg.deliver_envelope ~path:target.inbox
-            {
-              kind = Notice;
-              id = Msg.new_id ();
-              from = { session = ""; name = Run.label e.meta; pane = None };
-              reply_to = "";
-              text = body ~dir e;
-              run = "";
-              output = "";
-            })
+      | Ok target -> deliver ~path:target.inbox)
+  | Some (Pane pane) -> (
+      match State.read ~dir (Tmux.create ()) with
+      | Error m -> Error (Msg.Failed m)
+      | Ok state -> (
+          match State.find state pane with
+          | None ->
+              Error (Unavailable (Printf.sprintf "pane %s is gone" (Tmux.string_of_pane_id pane)))
+          | Some p -> (
+              match p.inbox with
+              | Some inbox -> deliver ~path:inbox
+              | None ->
+                  Error
+                    (Unavailable
+                       (Printf.sprintf "pane %s has no inbox" (Tmux.string_of_pane_id pane))))))
 
 let stop_result ~dir (meta : Run.meta) =
   match meta.kind with
   | Run.Agent when Run.has_report ~dir meta.id -> Run.Completed
   | Agent | Bash | Stream | Pi -> Stopped
 
-let record_ending ~dir (meta : Run.meta) outcome =
+let record_ending ?detail ~dir (meta : Run.meta) outcome =
   if not (Run.record_outcome ~dir meta.id outcome) then None
   else
     let detail =
-      match meta.kind with Run.Bash | Stream -> Bash | Pi | Agent -> Agent { unreported = false }
+      match detail with
+      | Some detail -> detail
+      | None -> (
+          match meta.kind with
+          | Run.Bash | Stream -> Bash
+          | Pi | Agent -> Agent { unreported = false })
     in
     Some { meta; outcome; detail }
 

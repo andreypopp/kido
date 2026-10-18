@@ -10,7 +10,7 @@ val stop_result : dir:string -> Run.meta -> Run.result
 (** The ending a deliberate stop records: [Completed] for an agent that reported, [Stopped]
     otherwise. *)
 
-val record_ending : dir:string -> Run.meta -> Run.outcome -> ending option
+val record_ending : ?detail:detail -> dir:string -> Run.meta -> Run.outcome -> ending option
 (** Writes the outcome and returns the ending when this writer won the write. *)
 
 val run_outcome :

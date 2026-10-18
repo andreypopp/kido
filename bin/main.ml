@@ -170,6 +170,31 @@ let interrupt_subagent =
        let dir = state_dir () in
        print (Control.interrupt ~dir ~self:(self_pane ()) ~caller:(caller dir) to_)
 
+let stop_line = function
+  | Control.Run_stopped { label; result } -> (
+      match result.Run_stop.pane with
+      | Run_stop.Killed -> Ok (Printf.sprintf "stopped %s; killed its pane" label)
+      | Run_stop.No_pane | Run_stop.Already_gone ->
+          Ok (Printf.sprintf "stopped %s; its pane was already gone" label)
+      | Run_stop.Refused m ->
+          Error
+            (Printf.sprintf "%s was recorded stopped, but its pane could not be killed: %s" label m)
+      )
+  | Control.Agent_stopped { name } -> Ok ("stopped " ^ name)
+  | Control.Agent_killed { name; why = None; pane } -> (
+      match pane with
+      | Run_stop.Killed -> Ok (Printf.sprintf "killed %s's pane" name)
+      | Run_stop.No_pane | Run_stop.Already_gone ->
+          Ok (Printf.sprintf "%s's pane was already gone" name)
+      | Run_stop.Refused m -> Error (Printf.sprintf "%s %s" name m))
+  | Control.Agent_killed { name; why = Some why; pane } -> (
+      match pane with
+      | Run_stop.Killed -> Ok (Printf.sprintf "%s %s; killed its pane" name why)
+      | Run_stop.No_pane | Run_stop.Already_gone ->
+          Ok (Printf.sprintf "%s %s; its pane was already gone" name why)
+      | Run_stop.Refused m ->
+          Error (Printf.sprintf "%s %s, and its pane could not be killed: %s" name why m))
+
 let stop_run =
   cmd ~group:"tool " "stop_run" "Stop a descendant agent, or an async run."
   @@ let+ force =
@@ -178,100 +203,246 @@ let stop_run =
      fun () ->
        let dir = state_dir () in
        print
-         (Control.stop ~dir ~self:(self_pane ()) ~caller:(caller dir)
-            ~escalation:(Timestamp.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.)
-            ~warn:(error "tool stop_run") ~force to_)
+         (Result.flat_map stop_line
+            (Control.stop ~dir ~self:(self_pane ()) ~caller:(caller dir)
+               ~escalation:(Timestamp.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.)
+               ~warn:(error "tool stop_run") ~force to_))
 
-let runs =
-  cmd "runs" "List subagent and async runs, or show one."
-  @@ let+ json = flag "json" "Print JSON instead of a table." and+ args = rest in
+let session_for ~state s =
+  let of_pane () =
+    match self_pane () with
+    | None -> Error "no caller pane; pass --session"
+    | Some pane -> (
+        match State.find state pane with
+        | None ->
+            Error (Printf.sprintf "pane %s is not on this server" (Tmux.string_of_pane_id pane))
+        | Some p -> Ok p.session_id)
+  in
+  if String.is_empty s then of_pane ()
+  else if String.prefix ~pre:"$" s then Ok (Tmux.session_id_of_string s)
+  else
+    match List.find_opt (fun (p : State.pane) -> String.equal p.session_name s) state.panes with
+    | Some p -> Ok p.session_id
+    | None -> Error (Printf.sprintf "no session named %S" s)
+
+let start_run name parent name_arg cwd session envs command =
+  let dir = state_dir () in
+  match State.read ~dir (Tmux.create ()) with
+  | Error e ->
+      error name e;
+      1
+  | Ok state -> (
+      match session_for ~state session with
+      | Error e ->
+          error name e;
+          1
+      | Ok session -> (
+          match
+            Run_window.start ?parent ~kind:Run.Bash ~dir ~name:name_arg
+              ~cwd:(if String.is_empty cwd then Sys.getcwd () else cwd)
+              ~session ~env:envs command
+          with
+          | Ok c ->
+              Printf.printf "{\"id\":%S,\"pane\":%S,\"output\":%S}\n" (Run.string_of_id c.meta.id)
+                (Tmux.string_of_window_id c.window ^ "." ^ Tmux.string_of_pane_id c.pane)
+                c.output;
+              0
+          | Error (Run_window.Refused_name m) ->
+              error name m;
+              4
+          | Error (Run_window.Failed m) ->
+              error name m;
+              1))
+
+let run_options =
+  let+ name =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "name" ] ~docv:"NAME" ~doc:"The window name; required.")
+  and+ cwd = str "cwd" "DIR" "Working directory; defaults to the caller's."
+  and+ session = str "session" "S" "tmux session id or name; defaults to the caller's."
+  and+ env =
+    Arg.(
+      value & opt_all string []
+      & info [ "env" ] ~docv:"K=V" ~doc:"A variable for the run's window; repeatable.")
+  in
+  (name, cwd, session, env)
+
+let run_command =
+  cmd "run" "Start a run in its own tmux window."
+  @@ let+ name, cwd, session, env = run_options and+ command = rest in
      fun () ->
-       let dir = state_dir () in
+       if List.is_empty command then begin
+         error "run"
+           "no command given\n\
+            usage: kido run --name N [--cwd D] [--session S] [--env K=V]... -- CMD...";
+         1
+       end
+       else start_run "run" None name cwd session env command
+
+let run_child =
+  cmd "run-child" "Start a run under a parent run or pi pane."
+  @@ let+ name, cwd, session, env = run_options and+ args = rest in
+     fun () ->
        match args with
        | [] ->
-           let infos = Run_history.list ~dir () in
-           if json then
-             print_endline
-               (Yojson.Safe.to_string (`List (List.map Run_history.yojson_of_info infos)))
-           else begin
-             let now = Timestamp.now () in
-             table
-               ([ "ID"; "NAME"; "PARENT"; "STARTED"; "DURATION"; "OUTCOME"; "CWD" ]
-               :: List.map
-                    (fun ({ meta = m; outcome } : Run_history.info) ->
-                      let outcome, ended =
-                        match outcome with
-                        | None -> ("running", Some now)
-                        | Some o -> (Run.string_of_result o.result, o.at)
-                      in
-                      [
-                        Run.string_of_id m.id;
-                        m.name;
-                        (match m.parent with Some x -> Run.string_of_id x | None -> "");
-                        local_time m.started_at;
-                        (match ended with
-                        | Some t -> Timestamp.duration (Float.round (t -. m.started_at))
-                        | None -> "-");
-                        outcome;
-                        m.cwd;
-                      ])
-                    infos)
-           end;
-           0
-       | [ id ] ->
-           let d = ok (Run_history.detail ~dir (ok (Run.parse_id id))) in
-           let m = d.info.meta in
-           let cd = "cd " ^ Filename.quote m.cwd ^ " && " in
-           let resume =
-             cd
-             ^
-             match m.kind with
-             | Pi -> (
-                 "pi --session "
-                 ^
-                 match Run.read_pi ~dir m.id with
-                 | Some (p : Run.pi) -> Filename.quote p.session_file
-                 | None -> id)
-             | Agent | Bash | Stream -> "kido tool spawn_subagent --resume " ^ id
-           and fork = cd ^ "pi --fork " ^ id in
-           if json then
-             print_endline
-               (Yojson.Safe.to_string
-                  (Yojson.Safe.Util.combine
-                     (Run_history.yojson_of_info d.info)
-                     (`Assoc
-                        ([
-                           ("task", `String d.task);
-                           ("resume", `String resume);
-                           ("fork", `String fork);
-                         ]
-                        @ match d.screen with Some s -> [ ("screen", `String s) ] | None -> []))))
-           else begin
-             let line k v = Printf.printf "%-10s%s\n" (k ^ ":") v in
-             line "id" id;
-             line "name" m.name;
-             line "kind" (Run.string_of_kind m.kind);
-             line "parent" (match m.parent with Some x -> Run.string_of_id x | None -> "");
-             line "cwd" m.cwd;
-             if not (String.is_empty m.model) then line "model" m.model;
-             if not (List.is_empty m.tools) then line "tools" ("[" ^ String.concat " " m.tools ^ "]");
-             line "started" (local_time m.started_at);
-             (match d.info.outcome with
-             | None -> line "outcome" "running"
-             | Some o ->
-                 line "outcome" (Run.string_of_result o.result);
-                 Option.iter (fun at -> line "ended" (local_time at)) o.at;
-                 if not (String.is_empty o.text) then line "detail" o.text);
-             Option.iter (line "report") d.report;
-             line "resume" resume;
-             line "fork" fork;
-             Printf.printf "task:\n%s\n" d.task;
-             Option.iter (Printf.printf "screen:\n%s\n") d.screen
-           end;
-           0
-       | _ :: extra :: _ ->
-           Printf.ksprintf failwith "unknown argument %S\nusage: kido runs [--json] [<run-id>]"
-             extra
+           error "run-child"
+             "no parent given\n\
+              usage: kido run-child PARENT --name N [--cwd D] [--session S] [--env K=V]... -- \
+              CMD...";
+           1
+       | [ _ ] ->
+           error "run-child"
+             "no command given\n\
+              usage: kido run-child PARENT --name N [--cwd D] [--session S] [--env K=V]... -- \
+              CMD...";
+           1
+       | parent :: command -> (
+           let dir = state_dir () in
+           match State.read ~dir (Tmux.create ()) with
+           | Error e ->
+               error "run-child" e;
+               1
+           | Ok state -> (
+               match Run_window.resolve_parent ~dir ~state parent with
+               | Error m ->
+                   error "run-child" m;
+                   2
+               | Ok parent -> start_run "run-child" parent name cwd session env command))
+
+let runs =
+  cmd "runs" "List runs, or show one."
+  @@ let+ json = flag "json" "Print JSON instead of a table."
+     and+ parent =
+       str "parent" "P"
+         "Only runs under this parent: a run id, or the pane id %N of a top-level pi."
+     and+ args = rest in
+     fun () ->
+       let dir = state_dir () in
+       let state =
+         Option.get_or ~default:State.empty (Result.to_opt (State.read ~dir (Tmux.create ())))
+       in
+       let parent =
+         if String.is_empty parent then Ok None
+         else Result.map (fun parent -> Some parent) (Run.parse_parent parent)
+       in
+       match parent with
+       | Error m ->
+           error "runs" m;
+           2
+       | Ok parent -> (
+           match args with
+           | [] ->
+               let infos = Run_history.list ?parent ~dir ~state () in
+               if json then
+                 print_endline
+                   (Yojson.Safe.to_string (`List (List.map Run_history.yojson_of_info infos)))
+               else begin
+                 let now = Timestamp.now () in
+                 table
+                   ([ "ID"; "NAME"; "SESSION"; "PARENT"; "STARTED"; "DURATION"; "OUTCOME"; "CWD" ]
+                   :: List.map
+                        (fun ({ meta = m; outcome; session; _ } : Run_history.info) ->
+                          let outcome, ended =
+                            match outcome with
+                            | None -> ("running", Some now)
+                            | Some o -> (Run.string_of_result o.result, o.at)
+                          in
+                          [
+                            Run.string_of_id m.id;
+                            m.name;
+                            Option.value ~default:"" session;
+                            (match m.parent with
+                            | Some (Run.Run x) -> Run.string_of_id x
+                            | Some (Run.Pane p) -> Tmux.string_of_pane_id p
+                            | None -> "");
+                            local_time m.started_at;
+                            (match ended with
+                            | Some t -> Timestamp.duration (Float.round (t -. m.started_at))
+                            | None -> "-");
+                            outcome;
+                            m.cwd;
+                          ])
+                        infos)
+               end;
+               0
+           | [ id ] -> (
+               match Run.parse_id id with
+               | Error m ->
+                   error "runs" m;
+                   3
+               | Ok id -> (
+                   match Run_history.detail ~dir ~state id with
+                   | Error m ->
+                       error "runs" m;
+                       3
+                   | Ok d ->
+                       let m = d.info.meta in
+                       let cd = "cd " ^ Filename.quote m.cwd ^ " && " in
+                       let resume =
+                         cd
+                         ^
+                         match m.kind with
+                         | Pi -> (
+                             "pi --session "
+                             ^
+                             match Run.read_pi ~dir m.id with
+                             | Some (p : Run.pi) -> Filename.quote p.session_file
+                             | None -> Run.string_of_id id)
+                         | Agent | Bash | Stream ->
+                             "kido tool spawn_subagent --resume " ^ Run.string_of_id id
+                       and fork = cd ^ "pi --fork " ^ Run.string_of_id id in
+                       if json then
+                         print_endline
+                           (Yojson.Safe.to_string
+                              (Yojson.Safe.Util.combine
+                                 (Run_history.yojson_of_info d.info)
+                                 (`Assoc
+                                    ([
+                                       ("task", `String d.task);
+                                       ("resume", `String resume);
+                                       ("fork", `String fork);
+                                       ("output", `String (Run.output_path ~dir m.id));
+                                     ]
+                                    @
+                                    match d.screen with
+                                    | Some s -> [ ("screen", `String s) ]
+                                    | None -> []))))
+                       else begin
+                         let line k v = Printf.printf "%-10s%s\n" (k ^ ":") v in
+                         line "id" (Run.string_of_id id);
+                         line "name" m.name;
+                         line "kind" (Run.string_of_kind m.kind);
+                         line "session" (Option.value ~default:"" d.info.session);
+                         line "parent"
+                           (match m.parent with
+                           | Some parent -> Run.string_of_parent parent
+                           | None -> "");
+                         line "cwd" m.cwd;
+                         if not (String.is_empty m.model) then line "model" m.model;
+                         if not (List.is_empty m.tools) then
+                           line "tools" ("[" ^ String.concat " " m.tools ^ "]");
+                         line "started" (local_time m.started_at);
+                         (match d.info.outcome with
+                         | None -> line "outcome" "running"
+                         | Some o ->
+                             line "outcome" (Run.string_of_result o.result);
+                             Option.iter (fun at -> line "ended" (local_time at)) o.at;
+                             if not (String.is_empty o.text) then line "detail" o.text);
+                         line "output" (Run.output_path ~dir m.id);
+                         Option.iter (line "report") d.report;
+                         line "resume" resume;
+                         line "fork" fork;
+                         Printf.printf "task:\n%s\n" d.task;
+                         Option.iter (Printf.printf "screen:\n%s\n") d.screen
+                       end;
+                       0))
+           | _ :: extra :: _ ->
+               error "runs"
+                 (Printf.sprintf
+                    "unknown argument %S\nusage: kido runs [--json] [--parent P] [<run-id>]" extra);
+               1)
 
 let run_outcome =
   cmd "run-outcome" "Record a run's own outcome."
@@ -288,23 +459,80 @@ let run_outcome =
             (ok (Run.parse_id id)));
        0
 
-let async_run =
-  cmd "async-run" "Run an async run's command, recording and reporting how it ended."
-  @@ let+ run_id =
-       str "run-id" "ID" "The run this window is running; defaults to $(b,KIDO_AGENT_RUN_ID)."
-     in
+let run_wait =
+  cmd "run-wait" "Wait for a run to end and print its outcome."
+  @@ let+ notify =
+       flag "notify"
+         "Record the derived ending if it is not yet recorded, and tell the run's parent."
+     and+ json = flag "json" "Print the outcome object instead of its result."
+     and+ id = arg "RUN_ID" in
      fun () ->
-       ok
-         (Async_run.async_run ~dir:(state_dir ())
-            ~knobs:(Async_stream.knobs Sys.getenv_opt)
-            ~warn:(error "async-run")
-            ~id:
-              (Run.parse_id
-                 (if String.is_empty run_id then Fs.getenv "KIDO_AGENT_RUN_ID" else run_id)
-              |> Result.map_err (fun _ ->
-                  "--run-id is required (or $KIDO_AGENT_RUN_ID)\n\
-                   usage: kido async-run [--run-id ID]")
-              |> ok))
+       match Run.parse_id id with
+       | Error m ->
+           error "run-wait" m;
+           3
+       | Ok id -> (
+           match
+             Run_wait.wait ~dir:(state_dir ())
+               ~knobs:(Async_stream.knobs Sys.getenv_opt)
+               ~notify ~warn:(error "run-wait") id
+           with
+           | Error m ->
+               error "run-wait" m;
+               3
+           | Ok outcome ->
+               print_endline
+                 (if json then Yojson.Safe.to_string (Run.yojson_of_outcome outcome)
+                  else Run.string_of_result outcome.result);
+               0)
+
+let run_stop =
+  cmd "run-stop" "Record a run's ending, then stop its process and close its pane."
+  @@ let+ wait =
+       Arg.(
+         value & opt float 0.
+         & info [ "wait" ] ~docv:"SECS"
+             ~doc:"Seconds to wait for the run to end before signalling its process group.")
+     and+ result =
+       Arg.(
+         value
+         & opt (enum [ ("stopped", Run.Stopped); ("completed", Run.Completed) ]) Run.Stopped
+         & info [ "result" ] ~docv:"RESULT" ~doc:"stopped or completed; default stopped.")
+     and+ id = arg "RUN_ID" in
+     fun () ->
+       match Run.parse_id id with
+       | Error m ->
+           error "run-stop" m;
+           3
+       | Ok id -> (
+           match
+             Run_stop.stop ~dir:(state_dir ()) ~wait
+               ~escalation:(Timestamp.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.)
+               ~result id
+           with
+           | Error (Run_stop.No_run m) ->
+               error "run-stop" m;
+               3
+           | Error (Run_stop.Ended m) ->
+               error "run-stop" m;
+               5
+           | Error (Run_stop.Pi m) ->
+               error "run-stop" m;
+               1
+           | Ok t -> (
+               match t.pane with
+               | Run_stop.Killed ->
+                   Printf.printf "stopped run %s; killed its pane\n" (Run.string_of_id id);
+                   0
+               | Run_stop.No_pane | Run_stop.Already_gone ->
+                   Printf.printf "stopped run %s; its pane was already gone\n" (Run.string_of_id id);
+                   0
+               | Run_stop.Refused m ->
+                   error "run-stop"
+                     (Printf.sprintf
+                        "run %s was recorded stopped, but its pane could not be killed: %s"
+                        (Run.string_of_id id) m);
+                   1))
 
 let notify_parent =
   cmd ~group:"tool " "notify_parent" "Send this subagent's report, read from stdin, to its parent."
@@ -464,6 +692,13 @@ let switch_window =
 
 let created name f = run name (fun () -> print (f ()))
 
+let created_line ?output (c : Run_window.created) =
+  String.concat " "
+    ([
+       Tmux.string_of_window_id c.window; Tmux.string_of_pane_id c.pane; Run.string_of_id c.meta.id;
+     ]
+    @ match output with Some path -> [ path ] | None -> [])
+
 let spawn_subagent =
   Cmd.v (Cmd.info "spawn_subagent" ~doc:"Spawn a subagent in its own tmux window, or resume one.")
   @@ let+ name = str "name" "NAME" "Window name, and (by convention) the child's own --name."
@@ -493,20 +728,21 @@ let spawn_subagent =
      and+ command = rest in
      created "tool spawn_subagent" (fun () ->
          let dir = state_dir () in
-         Result.flat_map
-           (Spawn_subagent.spawn ~dir ~self:(self_pane ()) ~caller:(caller dir)
-              ~path:(Fs.getenv "PATH"))
-           (Result.map_err (function
-              | Spawn_subagent.Invalid why -> why
-              | Usage why ->
-                  why
-                  ^ "\n\
-                     usage: kido tool spawn_subagent [--no-parent] --name NAME --task-file FILE|- \
-                     [--fork SESSION_ID] [--model M] [--tools T,...] [-- COMMAND...]\n\
-                    \   or: kido tool spawn_subagent --resume RUN_ID [--no-parent] [--tools T,...] \
-                     [-- COMMAND...]")
-           @@ Spawn_subagent.parse
-                { name; task_file; model; tools; resume; fork; no_parent; command }))
+         Result.map created_line
+         @@ Result.flat_map
+              (Spawn_subagent.spawn ~dir ~self:(self_pane ()) ~caller:(caller dir)
+                 ~path:(Fs.getenv "PATH"))
+              (Result.map_err (function
+                 | Spawn_subagent.Invalid why -> why
+                 | Usage why ->
+                     why
+                     ^ "\n\
+                        usage: kido tool spawn_subagent [--no-parent] --name NAME --task-file \
+                        FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [-- COMMAND...]\n\
+                       \   or: kido tool spawn_subagent --resume RUN_ID [--no-parent] [--tools \
+                        T,...] [-- COMMAND...]")
+              @@ Spawn_subagent.parse
+                   { name; task_file; model; tools; resume; fork; no_parent; command }))
 
 let async_bash =
   Cmd.v (Cmd.info "async_bash" ~doc:"Run a command in the background, in its own tmux window.")
@@ -523,7 +759,8 @@ let async_bash =
              let dir = state_dir () in
              Async_bash.async_bash ~dir ~self:(self_pane ())
                ~caller:(Option.map fst (caller dir))
-               ~exe:(Lazy.force Fs.self) ~name ~stream (command, rest))
+               ~exe:(Lazy.force Fs.self) ~name ~stream (command, rest)
+             |> Result.map (fun c -> created_line ~output:c.Run_window.output c))
 
 let agent_status =
   Cmd.v
@@ -546,7 +783,13 @@ let agent_status =
          let session = Fs.getenv "PI_SESSION_ID" in
          let id = ok (Run.parse_id session) in
          match
-           if remove then Run.release ~dir id ~holder:(Unix.getppid ())
+           if remove then
+             Result.map
+               (fun () ->
+                 Option.iter
+                   (fun pane -> Reporting.unclaim ~pane)
+                   (Option.bind (Run.read_pi ~dir id) (fun (p : Run.pi) -> p.pane)))
+               (Run.release ~dir id ~holder:(Unix.getppid ()))
            else
              Reporting.agent_status ~dir ~pane:(self_pane ()) ~id
                ~session_file:(Fs.getenv "PI_SESSION_FILE") ~inbox ~activity ~model ~name
@@ -821,9 +1064,12 @@ let () =
         server;
         get_inbox;
         tool;
+        run_command;
+        run_child;
+        run_stop;
         runs;
         run_outcome;
-        async_run;
+        run_wait;
         get_agent;
         prompt;
         switch_session;

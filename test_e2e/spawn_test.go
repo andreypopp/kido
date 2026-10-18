@@ -284,7 +284,6 @@ func TestSpawnRefusesBeforeAskingTmux(t *testing.T) {
 		{[]string{"tool", "spawn_subagent", "--resume", "run-1", "--task-file", task},
 			"--resume keeps the run's original task; --task-file is refused alongside it"},
 		{[]string{"tool", "async_bash", "--"}, "no command given"},
-		{[]string{"tool", "async_bash", "--name", "kid$x", "--", "true"}, `refusing window name "kid$x": it contains "$"` + tmuxWords},
 	} {
 		cmd := exec.Command(kidoBin, c.args...)
 		cmd.Env = cleanEnv("KIDO_STATE_DIR="+filepath.Join(dir, "state"), "TMUX_PANE=%1", "TMUX=")

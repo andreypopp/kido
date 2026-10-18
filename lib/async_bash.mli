@@ -6,5 +6,7 @@ val async_bash :
   name:string ->
   stream:bool ->
   string * string list ->
-  (string, string) result
-(** Starts the run and returns its created line. *)
+  (Run_window.created, string) result
+(** Starts the run and returns its window, pane and output path. *)
+
+val start_notifier : exe:string -> dir:string -> Run.id -> unit

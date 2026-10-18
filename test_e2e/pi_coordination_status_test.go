@@ -5,74 +5,82 @@ import (
 	"testing"
 )
 
-func TestPiCoordinationSurvivesRootReplacement(t *testing.T) {
-	for _, status := range []string{"state=clear", "state=idle:app=builder"} {
-		t.Run(status, func(t *testing.T) {
-			t.Parallel()
-			h := start(t, "alpha")
-			parent := h.firstPane("alpha")
-			h.programStatus(parent, "state=idle:app=pi")
-			h.agentStatus("coord-parent", parent, "--name", "Parent", "--inbox", startInbox(t, "ok\n").Path)
-			child := h.piPane("alpha", "Child")
-			in := startInbox(t, "ok\n")
-			h.agentStatus("coord-child", child, "--name", "Child", "--inbox", in.Path, "--parent-session", "coord-parent")
-			h.agentRunMeta("coord-child", child, "Child", "coord-parent")
-			h.waitRow("Child")
-			feed := h.startFeed("alpha")
-			h.programStatus(child, status)
-			h.programStatus(parent, status)
-			feed.waitLast(func(s feedSnapshot) bool {
-				for _, session := range s.Sessions {
-					for _, row := range feedItems(session.Nodes) {
-						if row.Pane != nil && *row.Pane == child {
-							return row.isShell()
-						}
-					}
-				}
-				return false
-			}, "replaced root is a terminal despite live pi identity")
-			rows := h.listedRuns(parent)
-			wantStatus := "idle"
-			if status == "state=clear" {
-				wantStatus = "unknown"
+func TestPiOptionsAndPrompt(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	caller := h.firstPane("alpha")
+
+	t.Run("prompt takes the inbox option", func(t *testing.T) {
+		in := startInbox(t, "ok\n")
+		pane := h.piPane("alpha", "π - alpha")
+		h.setPiOptions(pane, "opt-inbox", "alpha", in.Path, "")
+		out, rc := h.kidoAs(caller, "over the socket", nil, "prompt")
+		if rc != 0 {
+			t.Fatalf("prompt over the inbox option = %d %q", rc, out)
+		}
+		h.waitInbox(in, "over the socket")
+		if got := h.paneText(pane); strings.Contains(got, "over the socket") {
+			t.Errorf("the option's inbox prompt was pasted too: %q", got)
+		}
+		h.programStatus(pane, "state=idle")
+	})
+
+	t.Run("claim writes and unsets the options", func(t *testing.T) {
+		pane := h.piPane("alpha", "π - claim")
+		in := startInbox(t, "ok\n")
+		h.agentStatus("opt-claim", pane, "--name", "Named", "--inbox", in.Path, "--activity", "doing")
+		for _, c := range []struct{ key, want string }{
+			{"@kido_session", "opt-claim"},
+			{"@kido_name", "Named"},
+			{"@kido_inbox", in.Path},
+			{"@kido_activity", "doing"},
+		} {
+			if got := h.in("display-message", "-p", "-t", pane, "#{"+c.key+"}"); got != c.want {
+				t.Errorf("%s = %q, want %q", c.key, got, c.want)
 			}
-			if len(rows) != 1 || rows[0].ID != "coord-child" || rows[0].Status != wantStatus {
-				t.Fatalf("live child lost after %s: %+v", status, rows)
+		}
+		if out, rc := h.kidoAs(pane, "", nil, "tool", "set_status", "--", "rewritten"); rc != 0 {
+			t.Fatalf("set_status: rc=%d: %s", rc, out)
+		}
+		if got := h.in("display-message", "-p", "-t", pane, "#{@kido_activity}"); got != "rewritten" {
+			t.Errorf("@kido_activity after set_status = %q, want rewritten", got)
+		}
+		h.agentStatus("opt-claim", pane, "--remove")
+		for _, key := range []string{"@kido_session", "@kido_name", "@kido_inbox", "@kido_activity"} {
+			if got := h.in("display-message", "-p", "-t", pane, "#{"+key+"}"); got != "" {
+				t.Errorf("%s after --remove = %q, want unset", key, got)
 			}
-			out, rc := h.kidoAs(parent, "", nil, "get-agent", "--context")
-			if rc != 0 {
-				t.Fatalf("identity graph lost after %s: %d %s", status, rc, out)
-			}
-			agents := parseAgents(t, out)
-			if len(agents) != 2 || !agents[0].Self || agents[1].ID != "coord-child" || !agents[1].CanMessage || !agents[1].CanReply {
-				t.Fatalf("coordination permissions lost after %s: %+v", status, agents)
-			}
-			// A resumed pi needs its run to still resolve to its pane.
-			if agents[0].Pane != parent || agents[1].Pane != child {
-				t.Fatalf("session resume lost after %s: %+v", status, agents)
-			}
-			h.expectKido(parent, "message", nil, "delivered to Child by inbox", "tool", "message_agent", "Child")
-			h.expectKido(parent, "question", nil, "delivered to Child by inbox", "tool", "ask_agent", "--id", "coord-ask", "Child")
-			h.expectKido(parent, "correction", nil, "delivered to Child by inbox", "tool", "steer_subagent", "Child")
-			h.expectKido(parent, "", nil, "interrupted Child", "tool", "interrupt_subagent", "Child")
-			stopped := make(chan bool, 1)
-			go func() {
-				defer close(stopped)
-				h.waitFor(func() bool {
-					for _, msg := range in.Received() {
-						if strings.Contains(msg, `"kind":"stop"`) {
-							return true
-						}
-					}
-					return false
-				}, settle, msgf("stop reaches healthy child"))
-				h.agentStatus("coord-child", child, "--remove")
-				stopped <- true
-			}()
-			out, rc = h.kidoAs(parent, "", nil, "tool", "stop_run", "Child")
-			if !<-stopped || rc != 0 || strings.Contains(out, "killed") || !h.paneExists(child) {
-				t.Fatalf("healthy child stop after %s: %d %s; pane alive=%v", status, rc, out, h.paneExists(child))
-			}
-		})
-	}
+		}
+		if got := h.in("display-message", "-p", "-t", pane, "#{@kido_run}"); got != "opt-claim" {
+			t.Errorf("@kido_run after --remove = %q, want kido's own mark kept", got)
+		}
+		h.programStatus(pane, "state=idle")
+	})
+
+	t.Run("options need a pi root", func(t *testing.T) {
+		in := startInbox(t, "ok\n")
+		pane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
+		h.programStatus(pane, "state=idle:app=pi", "π - alpha")
+		h.setPiOptions(pane, "opt-session", "Worker", in.Path, "checking")
+		h.waitRow("Worker")
+
+		f := h.startFeed("alpha")
+		f.waitLast(func(s feedSnapshot) bool {
+			r, ok := feedRowFor(s, pane)
+			return ok && r.isAgent() && r.Title == "Worker" && r.caption() == "checking"
+		}, "the local pi's name and activity from the options")
+
+		h.programStatus(pane, "state=idle")
+		f.waitLast(func(s feedSnapshot) bool {
+			r, ok := feedRowFor(s, pane)
+			return ok && r.isShell() && r.Title != "Worker"
+		}, "the stale options to stop making a pi")
+
+		if out, rc := h.kidoAs(caller, "must-not-arrive", nil, "prompt"); rc != 4 || !strings.Contains(out, "agent not found") {
+			t.Errorf("prompt with a stale inbox option = %d %q, want exit 4 and agent not found", rc, out)
+		}
+		if got := in.Received(); len(got) != 0 {
+			t.Errorf("a stale inbox option received %q", got)
+		}
+	})
 }

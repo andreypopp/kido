@@ -3,7 +3,6 @@ type exit = { code : int; at : float }
 type t = {
   panes : pane list;  (** Every pane on the server. *)
   runs : Run.t Tmux.Pane_map.t;  (** Runs, per-pane. *)
-  agents : (Run.id * Run.pi) Tmux.Pane_map.t;  (** Runs, which are agents, per-pane. *)
 }
 
 and pane = {
@@ -28,24 +27,33 @@ and pane = {
   last_exit : exit option;
   command_line : string;
   dead_at : float option;
+  dead_status : int option;
+  dead_signal : string option;
   run : string option;
   ssh : (string * string) option;
   session_attached : bool;
   modal : bool;
   program_status : Tmux.Program_status.t;
+  session : string option;
+  name : string option;
+  inbox : string option;
+  activity : string option;
   title : string;
 }
 
 type shell = Unintegrated | Idle | Running
 
 val empty : t
+val pane_state : pane -> Run.pane_state
+val pi_root : pane -> bool
+val live_agents : dir:string -> t -> (Run.id * Run.pi) list
+val run_pane : t -> Run.meta -> pane option
+val run_ending : dir:string -> t -> Run.meta -> Run.outcome option
+val parent_ended : dir:string -> t -> Run.parent -> string option
 val read : dir:string -> Tmux.t -> (t, string) result
 val shell : pane -> shell
 val find : t -> Tmux.pane_id -> pane option
 val caller_pane : t -> Tmux.pane_id option -> (pane, string) result
-
-val run_display_name : t -> Run.pi -> string
-(** The name its pi last reported, else the title of the pane it holds. *)
 
 val find_window_run : t -> Tmux.window_id -> pane option
 (** The first pane in the window whose run is an agent, bash or stream run. *)

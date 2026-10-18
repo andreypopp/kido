@@ -167,14 +167,17 @@ let spawn ~dir ~self ~caller ~path req =
   let open Result.Infix in
   let* state = State.read ~dir (Tmux.create ()) in
   let* pane = State.caller_pane state self in
-  let parent = if req.no_parent then None else Option.map fst caller in
+  let parent =
+    if req.no_parent then None else Option.map (fun id -> Run.Run id) (Option.map fst caller)
+  in
+  let parent_id = Option.flat_map Run.parent_id parent in
   let depth =
-    match parent with
+    match parent_id with
     | Some id -> ( 1 + match Run.read_meta ~dir id with Some m -> Run.depth ~dir m | None -> 0)
     | None -> 0
   in
   let* () =
-    match (parent, caller) with
+    match (parent_id, caller) with
     | None, None when (not req.no_parent) && match req.mode with Fresh _ -> true | _ -> false ->
         Error
           "no calling agent session ($PI_SESSION_ID names none); pass --no-parent for a child \
@@ -193,7 +196,7 @@ let spawn ~dir ~self ~caller ~path req =
     | _ -> Ok ()
   in
   let is_pi = match req.command with "pi" :: _ -> true | _ -> false in
-  let* meta, command, start =
+  let* meta, command =
     match req.mode with
     | Fresh f ->
         let id = Run.new_id () in
@@ -218,7 +221,7 @@ let spawn ~dir ~self ~caller ~path req =
           @ [ "--session-id"; Run.string_of_id id ]
         in
         let command = if is_pi then insert_after_head flags req.command else req.command in
-        Ok (meta, command, Run.Fresh_start)
+        Ok (meta, command)
     | Resume run ->
         let* meta =
           Option.to_result
@@ -257,7 +260,7 @@ let spawn ~dir ~self ~caller ~path req =
             if (not (String.is_empty meta.model)) && lacks "--model" then [ "--model"; meta.model ]
             else []
         in
-        Ok (meta, command, if Option.is_none session then Run.Restart_task else Run.Continue_session)
+        Ok (meta, command)
   in
   let tools = Option.get_or ~default:meta.tools req.tools in
   let tools =
@@ -282,12 +285,4 @@ let spawn ~dir ~self ~caller ~path req =
       Run.create ~dir meta.id task;
       Run.write_meta ~dir meta
   | Resume _ -> ());
-  let+ line = Run_window.create ~start ~dir meta ~session:pane.session_id command in
-  Option.iter
-    (fun (old : State.pane) ->
-      Option.iter
-        (fun c -> ignore (Reap.release (Tmux.create ()) c))
-        (Reap.decide state old.window_id))
-    (Option.flat_map (State.find state)
-       (Option.filter (fun _ -> match start with Fresh_start -> false | _ -> true) meta.pane));
-  line
+  Run_window.create ~dir meta ~session:pane.session_id command

@@ -26,11 +26,11 @@ func TestRpcHelloAndRequests(t *testing.T) {
 			return false
 		}, settle, msgf("RPC line %s", want))
 	}
-	waitLine(`{"hello":{"protocol":"5.0"}}`)
+	waitLine(`{"hello":{"protocol":"6.0"}}`)
 	f.mu.Lock()
 	first := f.lines[0].raw
 	f.mu.Unlock()
-	if first != `{"hello":{"protocol":"5.0"}}` {
+	if first != `{"hello":{"protocol":"6.0"}}` {
 		t.Fatalf("first line: %s", first)
 	}
 	session := h.in("display-message", "-p", "-t", "alpha:", "#{session_id}")
@@ -157,7 +157,7 @@ func TestRpcServerStampRefusal(t *testing.T) {
 		if stamp != "" {
 			server = `"other-stamp"`
 		}
-		want := "{\"hello\":{\"protocol\":\"5.0\",\"server\":" + server + ",\"expected\":\"" + h.expectedStamp() +
+		want := "{\"hello\":{\"protocol\":\"6.0\",\"server\":" + server + ",\"expected\":\"" + h.expectedStamp() +
 			"\"}}\n{\"error\":\"server stamp does not match binary stamp\"}\n"
 		if out.String() != want {
 			t.Fatalf("refusal %q, want %q", out.String(), want)

@@ -46,7 +46,7 @@ not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`5.0`. It versions only the RPC surface between the binary and its client,
+`6.0`. It versions only the RPC surface between the binary and its client,
 not anything in the tmux server. Thus, changing it never requires a
 server restart.
 
@@ -133,8 +133,8 @@ RPC sends complete text. The external view truncates and styles it.
 
 The tick reads tmux topology, live agent reports, process information,
 run metadata. Only root apps `pi` and `claude-code`
-identify agents. A pane run supplies local pi identity but does not
-identify an agent pane. The tick also performs the reap sweep. These operations
+identify agents. The `@kido_session` option supplies local pi identity
+but does not identify an agent pane. The tick also performs the reap sweep. These operations
 are idempotent when a TUI sidebar runs beside RPC.
 
 The feed is not a passive file reader. RPC uses the default 100ms
@@ -172,8 +172,8 @@ a snapshot every second. For runs with no message or progress, the TUI
 shows an elapsed caption. It schedules its own redraw at the next second
 boundary.
 
-`Sidebar` derives run kind and the optional running start time once in
-its typed rows. Neither frontend performs these operations.
+`Sidebar` derives the optional running start time once in its typed
+rows. Neither frontend performs these operations.
 
 The client's location comes from its session's active pane.
 For linked windows, it matches both pane and session. A modal pane
@@ -208,8 +208,9 @@ their payload.
 `Pane_status.observe` calculates the lifecycle once per read.
 It keeps per-pane tracking across ticks in the model.
 For a run pane with a recorded outcome or a dead pane, Ended overrides
-any status. Its result is unknown until the outcome file exists.
-The model never infers the result from the process. Otherwise, the
+any status. Its result is the recorded outcome, else the ending that
+the dead pane gives (`State.run_ending`, design.md "Who is
+authoritative for what"). Otherwise, the
 pane's kind (design-program-status.md) contains its status.
 
 An agent's status uses this precedence:
@@ -236,15 +237,16 @@ Tracking resets on:
 
 Messages come from the representative record: blocked, working, the
 outcome's record, idle, then any. If that record supplies no message,
-local pi's run activity supplies it. The model removes a local pi
+the pane's `@kido_activity` option supplies it. The model removes a local pi
 message that repeats its title.
 
-pi run records (`meta.json` and `pi.json`) contain identity, session
-name, inbox, parentage, activity, model and report time, not status or
-completion. pi addressing
-uses its reported session name, including when a nested program
-overwrites the OSC root. Unnamed pi sessions are addressable only by id.
-Native agents without a pane run have no session id or inbox. `list_runs` does not list them. `kido prompt` can paste to them.
+The model reads a local pi's identity, name, inbox and activity from
+four pane options that pi's harness writes: `@kido_session`,
+`@kido_name`, `@kido_inbox` and `@kido_activity`. It trusts them only
+while the pane has an OSC 7501 root with `app=pi`. A snapshot's `run`
+is the id that the pane's `@kido_run` names, not data from the run's
+files. Native agents without `@kido_session` have no session id or
+inbox. `list_runs` does not list them. `kido prompt` can paste to them.
 
 Each frontend controls seen state. On every successful tick, the TUI
 marks the client's active pane's current outcomes seen. It keys them by
@@ -307,6 +309,12 @@ Search clearing after successful activation and standalone picker exit
 remain TUI-local. Each frontend can recover from request errors and
 syscall failures at its execution boundary. These failures do not occupy
 `snapshot.error`.
+
+Protocol 6.0 changes from 5.0:
+- Changed: an item's `run` is the pane's `@kido_run` id, or null. It was
+  the run's kind. The client needs no harness data.
+- Changed: `Pi_agent` carries `session`, the pane's `@kido_session`,
+  in place of `id`.
 
 Protocol 5.0 changes from 4.0:
 - Removed: the snapshot asks list and the activate-ask and delete-ask
@@ -534,6 +542,12 @@ client if a resend is safe. `refused` means that nothing was delivered.
 connect or a failed paste. A partial paste is possible. `invalid` means
 that the request cannot succeed against current state. The wire shape
 names panes and agents only, never a run or a pi.
+
+A candidate's inbox is the pane's `@kido_inbox` option, read with the
+pane, under the same `app=pi` root gate as the other harness options.
+A pane without the option receives a paste. An advertised inbox that
+does not accept is `refused`, never a paste: the text could otherwise
+arrive twice.
 
 A send runs on the RPC loop and stops snapshots while it runs. The paste
 path sleeps 0.1 s between the paste and Enter. The inbox path waits up to

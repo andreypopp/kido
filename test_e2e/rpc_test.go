@@ -269,7 +269,7 @@ func TestRpcMatchesTheTUI(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	_, childWindow := h.recordedRun("kid-e2e")
-	h.asyncBash("slow-e2e", "sleep", "300")
+	slowRun := h.asyncBash("slow-e2e", "sleep", "300")
 	h.newSession("beta")
 	const name = "beta-shells"
 	h.in("rename-window", "-t", "beta:", name)
@@ -335,7 +335,7 @@ func TestRpcMatchesTheTUI(t *testing.T) {
 		}
 		byTitle[r.Title] = r
 	}
-	if r := byTitle["slow-e2e"]; !r.isShell() || r.Run == nil || *r.Run != "bash" || r.Started == nil || r.caption() != "" {
+	if r := byTitle["slow-e2e"]; !r.isShell() || r.Run == nil || *r.Run != slowRun || r.Started == nil || r.caption() != "" {
 		t.Errorf("the lingering run's row: %+v in %s", r, s.raw)
 	}
 	for title, r := range byTitle {
@@ -424,7 +424,7 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 	_, streamPane, streamRun := h.asyncBashIDs([]string{"--stream"}, "feed-stream", "sleep", "300")
 	f := h.startFeed("alpha")
 	for _, c := range []struct {
-		pane, id, run string
+		pane, id, kind string
 	}{
 		{agentPane, agentRun, "agent"},
 		{bashPane, bashRun, "bash"},
@@ -445,23 +445,23 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if meta.Kind != c.run {
-			t.Fatalf("meta kind = %q, want %q", meta.Kind, c.run)
+		if meta.Kind != c.kind {
+			t.Fatalf("meta kind = %q, want %q", meta.Kind, c.kind)
 		}
 		want := float64(at.Unix()) + float64(at.Nanosecond())/1e9
 		f.waitLast(func(s feedSnapshot) bool {
 			r, ok := feedRowFor(s, c.pane)
-			return ok && !r.Lifecycle.Ended && r.Run != nil && *r.Run == c.run &&
+			return ok && !r.Lifecycle.Ended && r.Run != nil && *r.Run == c.id &&
 				r.Started != nil && *r.Started == want &&
-				(c.run != "agent" || r.isAgent() && r.caption() == "checking tests")
-		}, "live "+c.run+" run's kind and meta start time")
+				(c.kind != "agent" || r.isAgent() && r.caption() == "checking tests")
+		}, "live "+c.kind+" run's id and meta start time")
 
-		h.runKido("alpha", "end-"+c.run+".out", "run-outcome", "--result", "completed", "--", c.id)
+		h.runKido("alpha", "end-"+c.kind+".out", "run-outcome", "--result", "completed", "--", c.id)
 		f.waitLast(func(s feedSnapshot) bool {
 			r, ok := feedRowFor(s, c.pane)
-			return ok && r.Run != nil && *r.Run == c.run && r.Started == nil &&
+			return ok && r.Run != nil && *r.Run == c.id && r.Started == nil &&
 				r.Lifecycle.Ended && feedValue(r.Lifecycle.Result) == "completed"
-		}, "ended "+c.run+" retains run kind but clears started")
+		}, "ended "+c.kind+" retains its run id but clears started")
 	}
 	rootPane := h.in("display-message", "-p", "-t", "alpha:0", "#{pane_id}")
 	for _, agent := range []string{"pi", "claude-code"} {
@@ -477,11 +477,12 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 				h.agentStatus("root-e2e", rootPane, "--remove")
 				h.programStatus(rootPane, "state="+state+":app=claude-code:msg="+base64.StdEncoding.EncodeToString([]byte(status)), "feed-root")
 			}
+			mark := h.in("display-message", "-p", "-t", rootPane, "#{@kido_run}")
 			f.waitLast(func(s feedSnapshot) bool {
 				r, ok := feedRowFor(s, rootPane)
-				return ok && r.isAgent() && r.Run == nil && r.Started == nil &&
-					r.caption() == status
-			}, agent+" "+status+" top-level agent has no run or start time")
+				run := r.Run == nil && mark == "" || r.Run != nil && mark != "" && *r.Run == mark
+				return ok && r.isAgent() && run && r.Started == nil && r.caption() == status
+			}, agent+" "+status+" top-level agent carries its pane's run mark")
 		}
 	}
 }
@@ -530,7 +531,7 @@ func TestRpcStream(t *testing.T) {
 	// Its elapsed time ticks in the TUI; the feed sends only the start.
 	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	callerTitle := f.last().Sessions[0].Nodes[0].Title
-	h.asyncBash("tick-e2e", "sleep", "300")
+	tickRun := h.asyncBash("tick-e2e", "sleep", "300")
 	f.waitLast(func(s feedSnapshot) bool {
 		var shellSettled, bashRunning bool
 		for _, session := range s.Sessions {
@@ -540,7 +541,7 @@ func TestRpcStream(t *testing.T) {
 					shellSettled = r.isShell() && r.state() == "Unknown" && r.Started == nil &&
 						r.Title == callerTitle
 				}
-				if r.Run != nil && *r.Run == "bash" && r.Title == "tick-e2e" {
+				if r.Run != nil && *r.Run == tickRun && r.Title == "tick-e2e" {
 					bashRunning = !r.Lifecycle.Ended && r.Started != nil
 				}
 			}
@@ -606,7 +607,7 @@ func TestRpcFailures(t *testing.T) {
 		if msg := stderr.String(); !strings.HasPrefix(msg, "kido rpc: "+c.want) {
 			t.Errorf("%q: stderr %q, want kido rpc: %s...", c.args, msg, c.want)
 		}
-		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"5.0\"}}\n" {
+		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"6.0\"}}\n" {
 			t.Errorf("%q: unexpected stdout %q", c.args, out)
 		}
 	}

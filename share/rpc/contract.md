@@ -1,4 +1,4 @@
-# kido rpc protocol 5.0
+# kido rpc protocol 6.0
 
 fork revision: 336cb9a1d437a52ec03a0f8dba7538ccb586f1c5
 
@@ -28,10 +28,10 @@ first on PATH), all with fixed placeholder paths. Install paths do not change
 it; a fork bump, an edit to kido-tmux.conf, to the generated configuration or
 to the launch environment does.
 
-The first stdout line is {"hello":{"protocol":"5.0"}} when KIDO_SERVER equals
+The first stdout line is {"hello":{"protocol":"6.0"}} when KIDO_SERVER equals
 the binary's stamp. A differing or absent stamp produces
-{"hello":{"protocol":"5.0","server":"other","expected":"0123456789ab"}} or
-{"hello":{"protocol":"5.0","server":null,"expected":"0123456789ab"}}, followed
+{"hello":{"protocol":"6.0","server":"other","expected":"0123456789ab"}} or
+{"hello":{"protocol":"6.0","server":null,"expected":"0123456789ab"}}, followed
 by {"error":"server stamp does not match binary stamp"}, then exit 2.
 expected is the binary's stamp; the server needs a restart.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
@@ -159,6 +159,20 @@ A prompt error adds a `kind` to the error envelope:
 - `invalid`: empty text, `pane` not found in fresh state, or `target` not a
   candidate of `pane`.
 
+## Changes from 5.0 to 6.0
+
+- Changed: an item node's `run` is the run id that the pane's `@kido_run`
+  option names, or null. It was the run's kind (`"agent"`, `"bash"` or
+  `"stream"`). A top-level pi that claims a run now has a non-null `run`.
+- Changed: `Pi_agent` carries `session`, the pane's `@kido_session`
+  option, in place of `id`. A pi root with that option is a local pi; the
+  pane's run does not decide it.
+- Changed: an Ended pane's result is derived from the dead pane's exit
+  status or signal when no outcome is recorded, never `unknown`.
+- Unchanged: `started`, the Ended shape, the prompt request and
+  its replies, other requests, sessions, ordering and snapshot v. A prompt
+  candidate's inbox now comes from the pane's `@kido_inbox` option.
+
 ## Changes from 4.0 to 5.0
 
 - Added: the prompt request, with `candidates` and `delivered` replies and
@@ -269,9 +283,9 @@ None is emitted before the first valid server identity and topology read:
           "pane": "%3",
           "window": "@2",
           "title": "kido",
-          "lifecycle": ["Live", ["Pi_agent", {"id": "pi-session-id", "status": {"since": 1780000000.5, "msg": "fixing tests", "state": ["Running", {"progress": null}]}}]],
+          "lifecycle": ["Live", ["Pi_agent", {"session": "pi-session-id", "status": {"since": 1780000000.5, "msg": "fixing tests", "state": ["Running", {"progress": null}]}}]],
           "program_status": { "serial": 4, "records": [ { "id": "", "state": "working", "app": "pi" } ] },
-          "run": null,
+          "run": "pi-session-id",
           "started": null,
           "children": [
             {
@@ -335,35 +349,34 @@ group's place. Groups are the "group" rows the app may draw differently.
 - `id` = `pane` = the pane id `%N`, stable for the pane's life, including
   a dead lingering pane. `window` is its window id. Both are the jump target.
 - `title`: the plain resolved label, never a result or caption. Local pi:
-  its reported session name when set, otherwise the pane title verbatim (even
+  its `@kido_name` option when set, otherwise the pane title verbatim (even
   empty). Native and remote agents: the pane title, or the app name when it
   is empty; record titles never rename an agent. Terminals and remote
   terminals: the representative record's title, then its inherited app,
   then the foreground command (`ssh` for a remote terminal with no
-  records). A live run with no records: the run name. An ended run: when
-  the pane still has a pane run, even one whose root was cleared or
-  replaced, its session name or else the pane title; otherwise the run
-  name, which is the session name its pi last reported, else its launch
-  name.
+  records). A live run with no records: the run name. An ended run: its
+  `@kido_name` option or else the run name, which is the session name its
+  pi last reported, else its launch name.
 - `lifecycle`: `["Ended",{"result":R}]` for a run pane whose outcome is
   recorded or whose pane is dead, overriding any program or shell status.
-  R is `unknown` until an outcome is recorded (never inferred from the
-  process), then `completed`, `failed`, `died` or `stopped`. Ended always
+  R is the recorded outcome, else the ending derived from the dead pane:
+  `completed` for exit status 0, `failed` for another status or a signal,
+  `died` without either. Values are `completed`, `failed`, `died` and
+  `stopped`; kido no longer sends `unknown`. Ended always
   has a non-null `run`. Otherwise `["Live",KIND]`, one of:
 
 ```json
 ["Terminal",{"phase":["Idle",{"last":null}],"report":null}]
 ["Some_agent",{"name":"claude-code","status":AGENT}]
-["Pi_agent",{"id":"pi-session-id","status":AGENT}]
+["Pi_agent",{"session":"pi-session-id","status":AGENT}]
 ["Ssh",{"user":"alice","host":"example.org","pane":["Remote_terminal",{"interactive":true,"status":SHELL}]}]
 ["Ssh",{"user":"alice","host":"example.org","pane":["Remote_agent",{"name":"pi","status":AGENT}]}]
 ```
 
   Detection is OSC 7501 root app `pi` or `claude-code`, and the believed
   `@kido_ssh` mark (only while the foreground command is `ssh`). A pi root
-  with a pane run (the run its `@kido_run` mark names, held by a live pid
-  in that pane) is `Pi_agent`, whose `id` is that run's session id; other
-  agent roots are `Some_agent`. A run uses its
+  on a pane with the `@kido_session` option is `Pi_agent`, whose `session`
+  is that option's value; other agent roots are `Some_agent`. A run uses its
   actual kind: a subagent with no agent root yet is a `Terminal`.
 - AGENT is `{"since","msg","state"}`; state is one of:
 
@@ -381,7 +394,7 @@ group's place. Groups are the "group" rows the app may draw differently.
   Running takes the smallest-id working record's progress.
   `msg` comes from the representative record (blocked, then working, then
   the retained outcome's record, then idle, then any, ties by id), falling
-  back to local pi's run activity; a local pi message equal to its title,
+  back to local pi's `@kido_activity` option; a local pi message equal to its title,
   or prefixing it as `msg - `, is dropped.
 - SHELL is `{"phase","report"}`; phase is one of:
 
@@ -432,7 +445,7 @@ group's place. Groups are the "group" rows the app may draw differently.
   serial and title changes do not move it. It is for display.
 - Tracking resets when an agent's root app changes, appears or clears
   (including the agent exiting to the shell, or a shell becoming an
-  agent); when the pane run's session id or the ssh destination
+  agent); when the pane's `@kido_session` or the ssh destination
   changes; and when a pane leaves a successful topology read. A
   terminal's report changing app or clearing is not a reset: its
   retained report outcome stays. Linked occurrences of one pane share
@@ -450,10 +463,9 @@ group's place. Groups are the "group" rows the app may draw differently.
   including root across missing parents; inheritance is not materialized
   into these records. All records are included, raw: no visit or
   acknowledgement removes or hides any of them.
-- `run`: `"agent"` for a subagent run, `"bash"` for plain async_bash,
-  `"stream"` for async_bash launched with streaming, or null for anything
-  else. It remains set on ended or lingering run panes. The run's meta
-  records this classification at launch.
+- `run`: the run id that the pane's `@kido_run` option names, or null for
+  a pane without the option. It remains set on ended or lingering run
+  panes.
 - `started`: unix seconds as a number that may carry a fraction, equal to the run's meta.started_at
   while its pane is alive and no outcome has been recorded; null for ended
   runs, top-level agents, shells and ssh. Independent of `msg`.
@@ -491,7 +503,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"5.0","server":"0123456789ab","expected":"0123456789ab"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"6.0","server":"0123456789ab","expected":"0123456789ab"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_SERVER stamp, or null when absent, even when it matches expected.
 expected is the binary's own stamp, always a string. The app compares server

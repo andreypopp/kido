@@ -5,6 +5,11 @@ val interrupt :
   string ->
   (string, string) result
 
+type stopped =
+  | Run_stopped of { label : string; result : Run_stop.t }
+  | Agent_stopped of { name : string }
+  | Agent_killed of { name : string; why : string option; pane : Run_stop.pane_result }
+
 val stop :
   dir:string ->
   self:Tmux.pane_id option ->
@@ -13,6 +18,5 @@ val stop :
   warn:(string -> unit) ->
   force:bool ->
   string ->
-  (string, string) result
-(** The line naming how the target stopped. [warn] reports a notice to the parent that could not be
-    sent. *)
+  (stopped, string) result
+(** [warn] reports a notice to the parent that could not be sent. *)

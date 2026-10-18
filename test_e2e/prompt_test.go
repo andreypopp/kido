@@ -71,6 +71,22 @@ func (h *harness) agentPaneHere(target, title string) string {
 	return id
 }
 
+// setPiOptions writes the four pane options the way a harness does: plain
+// strings, no claim and no pi.json.
+func (h *harness) setPiOptions(pane, session, name, inbox, activity string) {
+	h.t.Helper()
+	for k, v := range map[string]string{
+		"@kido_session":  session,
+		"@kido_name":     name,
+		"@kido_inbox":    inbox,
+		"@kido_activity": activity,
+	} {
+		if v != "" {
+			h.in("set-option", "-p", "-t", pane, k, v)
+		}
+	}
+}
+
 func (h *harness) promptPane(session, title string) string {
 	id := h.piPane(session, title)
 	h.agentStatus("prompt-"+id, id)
@@ -332,9 +348,8 @@ func TestPromptInboxNative(t *testing.T) {
 func TestPromptInboxUnavailable(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	pane := h.promptPane("alpha", "π - alpha")
-	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("pi-1", pane, "--inbox", staleSocket(t))
+	pane := h.piPane("alpha", "π - alpha")
+	h.setPiOptions(pane, "pi-1", "alpha", staleSocket(t), "")
 
 	h.runPrompt("not pasted")
 	h.waitMain("rc=1")

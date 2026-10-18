@@ -1,4 +1,4 @@
-let value = "5.0"
+let value = "6.0"
 let matches ~expected server = Option.equal String.equal server (Some expected)
 
 let hello ~expected server =
@@ -259,10 +259,9 @@ let snapshot (m : model) =
             | Some (p : State.pane) -> p.program_status
             | None -> Tmux.Program_status.empty) );
         ( "run",
-          match r.lifecycle with
-          | Live { run = Some { kind; _ }; _ } | Ended { run = kind; _ } ->
-              `String (Run.string_of_kind kind)
-          | Live { run = None; _ } -> `Null );
+          match State.find m.snap.visible r.pane with
+          | Some (p : State.pane) -> ( match p.run with Some id -> `String id | None -> `Null)
+          | None -> `Null );
         ( "started",
           match r.lifecycle with
           | Live { run = Some { started; _ }; _ } -> `Float started
@@ -298,7 +297,13 @@ let%test_module "Tests" =
     open View_fixture
 
     let run_info ?(kind = Run.Agent) ?(parent = "") ?outcome name : Sidebar.lingering =
-      { name; parent = Test_fixture.owned parent; outcome; kind; started = test_at }
+      {
+        name;
+        parent = Option.map (fun id -> Run.Run id) (Test_fixture.owned parent);
+        outcome;
+        kind;
+        started = test_at;
+      }
 
     let opts ?(dir = temp ()) () : Sidebar.options =
       { interval = Sidebar.default_interval; client = ""; tmux = Tmux.create (); dir; grace = 30. }
@@ -326,8 +331,8 @@ let%test_module "Tests" =
    a running bash run's start, and rows grouped under their own session. *)
     let%expect_test "a snapshot as the feed sends it" =
       let dir = temp () in
-      let id = new_run ~dir "helper" in
-      let build = new_run ~dir ~kind:Bash "build" in
+      let id = new_run ~id:"helper" ~dir "helper" in
+      let build = new_run ~id:"build" ~dir ~kind:Bash "build" in
       ignore
         (Run.record_outcome ~dir (Test_fixture.run_id id) { result = Failed; text = ""; at = None });
       let panes =
@@ -392,7 +397,7 @@ let%test_module "Tests" =
                         [
                           "Pi_agent",
                           {
-                            "id": "root",
+                            "session": "root",
                             "status": {
                               "since": 1700000000.0,
                               "msg": "reading the contract",
@@ -405,7 +410,7 @@ let%test_module "Tests" =
                         "serial": 1,
                         "records": [ { "id": "", "state": "working", "app": "pi" } ]
                       },
-                      "run": null,
+                      "run": "root",
                       "started": null,
                       "children": []
                     },
@@ -461,7 +466,7 @@ let%test_module "Tests" =
                   "title": "helper",
                   "lifecycle": [ "Ended", { "result": "failed" } ],
                   "program_status": { "serial": 0, "records": [] },
-                  "run": "agent",
+                  "run": "helper",
                   "started": null,
                   "children": []
                 },
@@ -476,7 +481,7 @@ let%test_module "Tests" =
                     [ "Terminal", { "phase": [ "Unknown" ], "report": null } ]
                   ],
                   "program_status": { "serial": 0, "records": [] },
-                  "run": "bash",
+                  "run": "build",
                   "started": 1700000000.0,
                   "children": []
                 }
@@ -498,7 +503,7 @@ let%test_module "Tests" =
                     [
                       "Pi_agent",
                       {
-                        "id": "watcher",
+                        "session": "watcher",
                         "status": {
                           "since": 1700000000.0,
                           "msg": null,
@@ -511,7 +516,7 @@ let%test_module "Tests" =
                     "serial": 1,
                     "records": [ { "id": "", "state": "working", "app": "pi" } ]
                   },
-                  "run": null,
+                  "run": "watcher",
                   "started": null,
                   "children": []
                 }
@@ -519,12 +524,12 @@ let%test_module "Tests" =
             }
           ]
         }
-        {"v":2,"server_instance":{"started_at":1700000000,"pid":42},"client":{"session":"$0","window":"@1","pane":"%1"},"error":"tmux: gone","sessions":[{"id":"$0","name":"alpha","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"","children":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"orchestrator","lifecycle":["Live",["Pi_agent",{"id":"root","status":{"since":1700000000.0,"msg":"reading the contract","state":["Running",{"progress":null}]}}]],"program_status":{"serial":1,"records":[{"id":"","state":"working","app":"pi"}]},"run":null,"started":null,"children":[]},{"kind":"pane","id":"%2","pane":"%2","window":"@1","title":"bash","lifecycle":["Live",["Terminal",{"phase":["Idle",{"last":null}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]},{"kind":"pane","id":"%3","pane":"%3","window":"@1","title":"vim","lifecycle":["Live",["Terminal",{"phase":["Running",{"origin":["Unknown"],"fullscreen":true}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]},{"kind":"pane","id":"%4","pane":"%4","window":"@4","title":"helper","lifecycle":["Ended",{"result":"failed"}],"program_status":{"serial":0,"records":[]},"run":"agent","started":null,"children":[]},{"kind":"pane","id":"%6","pane":"%6","window":"@6","title":"build","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"bash","started":1700000000.0,"children":[]}]},{"id":"$1","name":"beta","current":false,"nodes":[{"kind":"pane","id":"%5","pane":"%5","window":"@5","title":"watcher","lifecycle":["Live",["Pi_agent",{"id":"watcher","status":{"since":1700000000.0,"msg":null,"state":["Running",{"progress":null}]}}]],"program_status":{"serial":1,"records":[{"id":"","state":"working","app":"pi"}]},"run":null,"started":null,"children":[]}]}]}
+        {"v":2,"server_instance":{"started_at":1700000000,"pid":42},"client":{"session":"$0","window":"@1","pane":"%1"},"error":"tmux: gone","sessions":[{"id":"$0","name":"alpha","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"","children":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"orchestrator","lifecycle":["Live",["Pi_agent",{"session":"root","status":{"since":1700000000.0,"msg":"reading the contract","state":["Running",{"progress":null}]}}]],"program_status":{"serial":1,"records":[{"id":"","state":"working","app":"pi"}]},"run":"root","started":null,"children":[]},{"kind":"pane","id":"%2","pane":"%2","window":"@1","title":"bash","lifecycle":["Live",["Terminal",{"phase":["Idle",{"last":null}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]},{"kind":"pane","id":"%3","pane":"%3","window":"@1","title":"vim","lifecycle":["Live",["Terminal",{"phase":["Running",{"origin":["Unknown"],"fullscreen":true}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]},{"kind":"pane","id":"%4","pane":"%4","window":"@4","title":"helper","lifecycle":["Ended",{"result":"failed"}],"program_status":{"serial":0,"records":[]},"run":"helper","started":null,"children":[]},{"kind":"pane","id":"%6","pane":"%6","window":"@6","title":"build","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"build","started":1700000000.0,"children":[]}]},{"id":"$1","name":"beta","current":false,"nodes":[{"kind":"pane","id":"%5","pane":"%5","window":"@5","title":"watcher","lifecycle":["Live",["Pi_agent",{"session":"watcher","status":{"since":1700000000.0,"msg":null,"state":["Running",{"progress":null}]}}]],"program_status":{"serial":1,"records":[{"id":"","state":"working","app":"pi"}]},"run":"watcher","started":null,"children":[]}]}]}
         |}]
 
     let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" =
       let dir = temp () in
-      let run = new_run ~dir ~parent:"root" ~kind:Bash "build" in
+      let run = new_run ~id:"build" ~dir ~parent:"root" ~kind:Bash "build" in
       let panes =
         [
           pane ~session:"alpha" ~window:"@1" ~title:"root" ~active:true "%1";
@@ -568,7 +573,7 @@ let%test_module "Tests" =
                     [
                       "Pi_agent",
                       {
-                        "id": "root",
+                        "session": "root",
                         "status": {
                           "since": 1700000000.0,
                           "msg": null,
@@ -581,7 +586,7 @@ let%test_module "Tests" =
                     "serial": 1,
                     "records": [ { "id": "", "state": "working", "app": "pi" } ]
                   },
-                  "run": null,
+                  "run": "root",
                   "started": null,
                   "children": [
                     {
@@ -601,7 +606,7 @@ let%test_module "Tests" =
                             [
                               "Pi_agent",
                               {
-                                "id": "kid",
+                                "session": "kid",
                                 "status": {
                                   "since": 1700000000.0,
                                   "msg": null,
@@ -616,7 +621,7 @@ let%test_module "Tests" =
                               { "id": "", "state": "working", "app": "pi" }
                             ]
                           },
-                          "run": "agent",
+                          "run": "kid",
                           "started": 1700000000.0,
                           "children": []
                         },
@@ -650,7 +655,7 @@ let%test_module "Tests" =
                         [ "Terminal", { "phase": [ "Unknown" ], "report": null } ]
                       ],
                       "program_status": { "serial": 0, "records": [] },
-                      "run": "bash",
+                      "run": "build",
                       "started": 1700000000.0,
                       "children": []
                     }
@@ -877,7 +882,7 @@ let%test_module "Tests" =
         List.map (fun s -> live (Terminal s)) shells
         @ List.map (fun status -> live (Some_agent { name = "claude-code"; status })) agents
         @ [
-            live (Pi_agent { id = Test_fixture.run_id "pi-session-id"; status = List.hd agents });
+            live (Pi_agent { session = "pi-session-id"; status = List.hd agents });
             live
               (Ssh
                  {
@@ -906,6 +911,7 @@ let%test_module "Tests" =
                   pane = Tmux.pane_id_of_string ("%" ^ string_of_int i);
                   window = Tmux.window_id_of_string "@1";
                   title = (if i = 0 then "title" else "");
+                  run = (if i < 2 then Some (Printf.sprintf "run-%d" i) else None);
                   lifecycle =
                     (match lifecycle with
                     | Sidebar.Live l when i < 2 ->
@@ -955,10 +961,10 @@ let%test_module "Tests" =
            (snapshot { m with snap = { m.snap with err = Some "tmux: gone" }; sessions = [] }));
       [%expect
         {|
-        5.0
-        {"hello":{"protocol":"5.0"}}
-        {"hello":{"protocol":"5.0","server":"other","expected":"0123456789ab"}}
-        {"hello":{"protocol":"5.0","server":null,"expected":"0123456789ab"}}
+        6.0
+        {"hello":{"protocol":"6.0"}}
+        {"hello":{"protocol":"6.0","server":"other","expected":"0123456789ab"}}
+        {"hello":{"protocol":"6.0","server":null,"expected":"0123456789ab"}}
         {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}
         {"reply":{"id":7,"switched":null}}
         {"reply":{"id":7,"error":"invalid or unknown request"}}
@@ -968,7 +974,7 @@ let%test_module "Tests" =
         {"reply":{"id":71,"prompt":{"delivered":{"pane":"%12","via":"inbox"}}}}
         {"reply":{"id":72,"error":"alpha is not accepting messages","kind":"refused"}}
         {"reply":{"id":73,"error":"paste failed","kind":"unknown"}}
-        {"v":2,"server_instance":{"started_at":1780000000,"pid":12345},"client":{"session":"$0","window":"@1","pane":"%0"},"error":null,"sessions":[{"id":"$0","name":"session","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"window","children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"agent","started":100.0,"children":[]},{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"","lifecycle":["Live",["Terminal",{"phase":["Idle",{"last":null}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"bash","started":100.0,"children":[]}]},{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"agent","started":100.0,"children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"agent","started":100.0,"children":[]}]}]}]}
+        {"v":2,"server_instance":{"started_at":1780000000,"pid":12345},"client":{"session":"$0","window":"@1","pane":"%0"},"error":null,"sessions":[{"id":"$0","name":"session","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"window","children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":100.0,"children":[]},{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"","lifecycle":["Live",["Terminal",{"phase":["Idle",{"last":null}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":100.0,"children":[]}]},{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":100.0,"children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":100.0,"children":[]}]}]}]}
         ["Live",["Terminal",{"phase":["Idle",{"last":{"code":1,"command":"false","started_at":100.0,"ended_at":101.0}}],"report":null}]]
         ["Live",["Terminal",{"phase":["Running",{"origin":["Command",{"command":"make","started_at":100.0}],"fullscreen":false}],"report":null}]]
         ["Live",["Terminal",{"phase":["Running",{"origin":["Command",{"command":"vim","started_at":100.0}],"fullscreen":true}],"report":null}]]
@@ -986,7 +992,7 @@ let%test_module "Tests" =
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":null,"state":["Idle",{"outcome":null}]}}]]
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":"Finished","state":["Idle",{"outcome":{"serial":17,"result":"success"}}]}}]]
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":"Failed","state":["Idle",{"outcome":{"serial":18,"result":"failure"}}]}}]]
-        ["Live",["Pi_agent",{"id":"pi-session-id","status":{"since":100.0,"msg":null,"state":["Running",{"progress":42}]}}]]
+        ["Live",["Pi_agent",{"session":"pi-session-id","status":{"since":100.0,"msg":null,"state":["Running",{"progress":42}]}}]]
         ["Live",["Ssh",{"user":"alice","host":"example.org","pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Unknown"],"report":null}}]}]]
         ["Live",["Ssh",{"user":"alice","host":"example.org","pane":["Remote_agent",{"name":"pi","status":{"since":100.0,"msg":null,"state":["Running",{"progress":42}]}}]}]]
         ["Ended",{"result":"unknown"}]

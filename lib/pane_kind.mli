@@ -1,10 +1,13 @@
 type t =
   | Terminal
   | Some_agent of { name : string }
-  | Pi_agent of { id : Run.id; pi : Run.pi }
+  | Pi_agent of { session : string; name : string; inbox : string; activity : string }
   | Ssh of { user : string; host : string; pane : ssh_kind }
 
 and ssh_kind = Remote_terminal | Remote_agent of { name : string }
 
-val classify : states:(Run.id * Run.pi) Tmux.Pane_map.t -> State.pane -> t
+val classify : State.pane -> t
 val title : State.pane -> t -> string option
+
+val display_name : State.t -> Run.pi -> string
+(** The @kido_name of the pane holding the pi, else its title. *)

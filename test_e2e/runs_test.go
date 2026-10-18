@@ -95,10 +95,11 @@ func (h *harness) runOutcome(runID string, tag ...string) string {
 	return info.Outcome
 }
 
-// A child killed outright (subrun's Died case) must leave a readable run
-// record once the sidebar's sweep has collected its window: the outcome
-// must survive the window closing, not just the pane dying.
-func TestRunRecordSurvivesReapAsDied(t *testing.T) {
+// A child killed outright must leave a readable run record once the
+// sidebar's sweep has collected its window: the outcome must survive the
+// window closing, not just the pane dying. The sweep takes the signal from
+// tmux's pane_dead_signal.
+func TestRunRecordSurvivesReapAsSignal(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
@@ -109,8 +110,8 @@ func TestRunRecordSurvivesReapAsDied(t *testing.T) {
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("the sidebar's sweep to close window %s", windowID))
 
-	if got := h.runOutcome(runID); got != "died" {
-		t.Errorf("run %s outcome = %q, want %q", runID, got, "died")
+	if got := h.runOutcome(runID); got != "failed" {
+		t.Errorf("run %s outcome = %q, want %q", runID, got, "failed")
 	}
 }
 
@@ -195,23 +196,25 @@ func TestRunsTableShowAndJSON(t *testing.T) {
 	kido := func(args ...string) string { t.Helper(); return kidoIn("IST-5:30", args...) }
 
 	row := func(cells ...string) string {
-		return fmt.Sprintf("%-7s%-7s%-8s%-27s%-10s%-11s%s\n", cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], cells[6])
+		return fmt.Sprintf("%-7s%-7s%-9s%-8s%-27s%-10s%-11s%s\n", cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], cells[6], cells[7])
 	}
 	if got, want := kido("runs"),
-		row("ID", "NAME", "PARENT", "STARTED", "DURATION", "OUTCOME", "CWD")+
-			row("run-b", "later", "", "2023-11-15T04:43:20+05:30", "-", "died", "")+
-			row("run-a", "kid", "root", "2023-11-15T03:43:20+05:30", "1m30s", "completed", "/tmp/some project"); got != want {
+		row("ID", "NAME", "SESSION", "PARENT", "STARTED", "DURATION", "OUTCOME", "CWD")+
+			row("run-b", "later", "", "", "2023-11-15T04:43:20+05:30", "-", "died", "")+
+			row("run-a", "kid", "", "root", "2023-11-15T03:43:20+05:30", "1m30s", "completed", "/tmp/some project"); got != want {
 		t.Errorf("kido runs:\n%s\nwant:\n%s", got, want)
 	}
 
 	if got, want := kido("runs", "run-a"), `id:       run-a
 name:     kid
 kind:     agent
+session:  
 parent:   root
 cwd:      /tmp/some project
 started:  2023-11-15T03:43:20+05:30
 outcome:  completed
 ended:    2023-11-15T03:44:50+05:30
+output:   `+state+`/runs/run-a/output
 resume:   cd '/tmp/some project' && kido tool spawn_subagent --resume run-a
 fork:     cd '/tmp/some project' && pi --fork run-a
 task:
@@ -236,7 +239,7 @@ do the thing
 			t.Fatal(err)
 		}
 	}
-	if got, want := strings.Join(keys, " "), "id name kind parent pane pid cwd startedAt outcome task resume fork"; got != want {
+	if got, want := strings.Join(keys, " "), "id name kind parent pane pid cwd startedAt session outcome task resume fork output"; got != want {
 		t.Errorf("kido runs --json run-a keys = %q, want %q", got, want)
 	}
 
@@ -295,8 +298,10 @@ func TestRunsListsAPiRun(t *testing.T) {
 	}
 	h.agentStatus("top-pi", pane, "--remove")
 	meta := h.runMeta("released", "top-pi")
-	if info := h.runInfo("top-pi"); info.Outcome != "completed" || meta["name"] != "Top" {
-		t.Fatalf("released pi run = %+v, %v, want completed and named Top", info, meta)
+	// Releasing the record only frees its holder: the pane still marks the
+	// run and shows a pi root, so the run is running until that pane dies.
+	if info := h.runInfo("top-pi"); info.Outcome != "running" || meta["name"] != "Top" {
+		t.Fatalf("released pi run = %+v, %v, want running and named Top", info, meta)
 	}
 	if !strings.HasSuffix(meta["resume"].(string), "&& pi --session '"+h.sessionFile("top-pi")+"'") {
 		t.Errorf("resume = %q, want a plain pi --session of its recorded file", meta["resume"])

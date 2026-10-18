@@ -20,4 +20,4 @@ val spawn :
   caller:(Run.id * Run.pi) option ->
   path:string ->
   request ->
-  (string, string) result
+  (Run_window.created, string) result

@@ -71,15 +71,10 @@ let reachable (state : State.t) (self : State.pane) =
                  title = Option.value ~default:"" (Pane_kind.title p kind);
                }
              in
-             match Pane_kind.classify ~states:state.agents p with
+             match Pane_kind.classify p with
              | Terminal | Ssh { pane = Remote_terminal; _ } -> None
-             | Pi_agent { pi; _ } as kind ->
-                 Some
-                   {
-                     candidate = candidate kind;
-                     inbox = pi.inbox;
-                     name = State.run_display_name state pi;
-                   }
+             | Pi_agent { inbox; name; _ } as kind ->
+                 Some { candidate = candidate kind; inbox; name }
              | (Some_agent _ | Ssh _) as kind ->
                  Some { candidate = candidate kind; inbox = ""; name = p.title })
          state.panes)

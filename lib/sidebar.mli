@@ -9,7 +9,7 @@ val default_interval : float
 
 type lingering = {
   name : string;
-  parent : Run.id option;
+  parent : Run.parent option;
   outcome : Run.result option;
   kind : Run.kind;
   started : Timestamp.t;
@@ -33,7 +33,13 @@ type lifecycle =
   | Live of { status : Pane_status.kind; run : run option }
   | Ended of { result : Run.result option; run : Run.kind }
 
-type row = { pane : Tmux.pane_id; window : Tmux.window_id; title : string; lifecycle : lifecycle }
+type row = {
+  pane : Tmux.pane_id;
+  window : Tmux.window_id;
+  title : string;
+  run : string option;
+  lifecycle : lifecycle;
+}
 
 type node = Group of { name : string; first : item; rest : item list } | Item of item
 and item = { row : row; children : node list }

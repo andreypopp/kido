@@ -9,6 +9,13 @@ val report_path : dir:string -> id -> string
 val meta_path : dir:string -> id -> string
 
 type optional_id = Tmux.pane_id option [@@deriving yojson]
+type parent = Run of id | Pane of Tmux.pane_id [@@deriving equal]
+
+val string_of_parent : parent -> string
+val yojson_of_parent : parent -> Yojson.Safe.t
+val parse_parent : string -> (parent, string) result
+val parent_id : parent -> id option
+
 type kind = Pi | Agent | Bash | Stream
 
 val string_of_kind : kind -> string
@@ -17,7 +24,7 @@ type meta = {
   id : id;
   name : string;
   kind : kind;
-  parent : id option;
+  parent : parent option;
   pane : optional_id;
   pid : int;
   cwd : string;
@@ -72,7 +79,7 @@ val name : t -> string
 (** The name its pi last reported, else the meta's. *)
 
 val ancestors : dir:string -> meta -> id list
-(** The owners above the run, nearest first. *)
+(** The owners above the run, nearest first. A pane parent ends the walk. *)
 
 val depth : dir:string -> meta -> int
 (** The number of parent edges above the run. *)
@@ -91,13 +98,13 @@ val record_outcome : dir:string -> id -> outcome -> bool
 
 val read_screen : dir:string -> id -> string option
 
-type start = Fresh_start | Continue_session | Restart_task
+type pane_state = Live | Dead of { status : int option; signal : string option }
 
-val prepare_start : dir:string -> id -> start -> unit
 val read_outcome : dir:string -> id -> outcome option
 
-val effective_outcome : dir:string -> meta -> outcome option
-(** [None] only while the run is still alive. *)
+val effective_outcome : dir:string -> pane:pane_state option -> meta -> outcome option
+(** [pane] is [None] when the run's pane is gone. An outcome file wins; else the pane derives the
+    ending. [None] only while the run's pane is alive and the run has no outcome. *)
 
 val list : dir:string -> id list
 

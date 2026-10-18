@@ -1,11 +1,13 @@
 type knobs = { batch : float; backoff_floor : float; backoff_cap : float }
 
+let env_names = [ "KIDO_STREAM_BATCH_MS"; "KIDO_STREAM_BACKOFF_MS"; "KIDO_STREAM_BACKOFF_CAP_MS" ]
+
 let knobs getenv =
-  let ms = Timestamp.ms_env getenv in
+  let ms name default = Timestamp.ms_env getenv name default in
   {
-    batch = ms "KIDO_STREAM_BATCH_MS" 0.25;
-    backoff_floor = ms "KIDO_STREAM_BACKOFF_MS" 0.5;
-    backoff_cap = ms "KIDO_STREAM_BACKOFF_CAP_MS" 10.;
+    batch = ms (List.nth env_names 0) 0.25;
+    backoff_floor = ms (List.nth env_names 1) 0.5;
+    backoff_cap = ms (List.nth env_names 2) 10.;
   }
 
 let batch_bytes = 4 * 1024
@@ -125,7 +127,7 @@ let take t =
         Some batch)
 
 let send t text =
-  match Option.flat_map (Run.read_pi ~dir:t.dir) t.meta.parent with
+  match match t.meta.parent with Some (Run.Run id) -> Run.read_pi ~dir:t.dir id | _ -> None with
   | Some { inbox; pid; _ } when Run.alive pid && not (String.is_empty inbox) ->
       Result.is_ok
         (Msg.deliver_envelope ~path:inbox
@@ -236,7 +238,7 @@ let%test_module "Tests" =
           id = Run.new_id ();
           name = "chatty";
           kind = Bash;
-          parent = owned parent;
+          parent = Option.map (fun id -> Run.Run id) (owned parent);
           pane = None;
           pid = 0;
           cwd = "";

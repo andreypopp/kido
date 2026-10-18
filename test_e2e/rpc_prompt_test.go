@@ -30,7 +30,9 @@ func TestRpcPrompt(t *testing.T) {
 	f.waitReply(fmt.Sprintf(`{"reply":{"id":2,"prompt":{"delivered":{"pane":%q,"via":"paste"}}}}`, same))
 	h.waitPaneText(same, "got: hello-paste")
 
-	in, inboxPane := h.agentWithInbox("alpha", "prompt-inbox-e2e")
+	in := startInbox(t, "ok\n")
+	inboxPane := h.piPane("alpha", "✳ Inbox")
+	h.setPiOptions(inboxPane, "prompt-inbox-e2e", "✳ Inbox", in.Path, "")
 	f.send(fmt.Sprintf(`{"id":3,"prompt":{"pane":%q,"target":%q,"text":"hello-inbox"}}`, caller, inboxPane))
 	f.waitReply(fmt.Sprintf(`{"reply":{"id":3,"prompt":{"delivered":{"pane":%q,"via":"inbox"}}}}`, inboxPane))
 	h.waitInbox(in, "hello-inbox")

@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -16,7 +15,7 @@ import (
 // one queued message is one LLM turn under pi's default drain), all of
 // them before the single completion notice (an ordering the wire cannot
 // give on its own, one connection per message with no sequencing), and
-// that notice must name the run and its exit status.
+// that notice must name the run and its exit code.
 //
 // The notice wait is scaled off the command's own idle duration
 // (lines*writeEvery), not the debounce-driven `settle` every other wait
@@ -81,8 +80,8 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 		t.Errorf("parent received %d completion notices, want exactly 1", notices)
 	}
 	t.Logf("%d lines arrived as %d stream envelopes, then one notice", lines, chunks)
-	if notice.From.Name != "chatty" || !strings.Contains(notice.Text, "exit status 2") {
-		t.Errorf("notice = %+v, want it to name chatty and exit status 2", notice)
+	if notice.From.Name != "chatty" || !strings.Contains(notice.Text, "exit 2") {
+		t.Errorf("notice = %+v, want it to name chatty and exit 2", notice)
 	}
 	if strings.Contains(notice.Text, "line 1\n") {
 		t.Errorf("notice = %+v, repeats output already streamed to the parent", notice)
@@ -110,23 +109,20 @@ func TestAsyncBashStreamEndsAcrossAParentRestart(t *testing.T) {
 		"sh", "-c", fmt.Sprintf("echo before; while [ ! -e %s ]; do sleep 0.05; done; echo after; sleep 30", gate))
 	h.waitFor(func() bool { return len(old.Received()) > 0 }, settle, msgf("the first batch to reach the original inbox"))
 
-	pid := h.wrapperPID(runID)
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	h.agentStatus("parent-stream-restart", pane, "--remove")
-	h.waitFor(func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH }, settle,
-		msgf("the streaming wrapper to end during the quit-then-resume gap"))
+	// The pi exits to its shell: its root record is dropped, so the run's
+	// children are orphans even though the pane lives.
+	h.programStatus(pane, "state=idle")
 	info := h.waitOutcome(runID)
 	if info.Outcome != "failed" || info.OutcomeText != "its parent ended" {
 		t.Fatalf("restart gap outcome = %q/%q, want failed/its parent ended", info.Outcome, info.OutcomeText)
 	}
-	restarted := startInbox(h.t, "ok\n")
-	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("parent-stream-restart", pane, "--inbox", restarted.Path)
+	before := len(old.Received())
 	if err := os.WriteFile(gate, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	h.stableCount(restarted, 0, "resuming the parent does not revive its ended streaming run")
+	h.stableCount(old, before, "an orphaned run tells its parent nothing more")
 	output, err := os.ReadFile(filepath.Join(h.stateDir, "runs", runID, "output"))
 	if err != nil {
 		t.Fatal(err)

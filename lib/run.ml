@@ -20,7 +20,6 @@ let task_path ~dir id = Filename.concat (dir_for ~dir id) "task"
 let command_path ~dir id = Filename.concat (dir_for ~dir id) "command"
 let output_path ~dir id = Filename.concat (dir_for ~dir id) "output"
 let report_path ~dir id = Filename.concat (dir_for ~dir id) "report"
-let delivered_path ~dir id = Filename.concat (dir_for ~dir id) "delivered"
 let meta_path ~dir id = Filename.concat (dir_for ~dir id) "meta.json"
 let outcome_path ~dir id = Filename.concat (dir_for ~dir id) "outcome"
 let screen_path ~dir id = Filename.concat (dir_for ~dir id) "screen"
@@ -45,11 +44,35 @@ let optional_id_of_yojson = function
   | `String "" -> None
   | json -> Some (Tmux.pane_id_of_yojson json)
 
+type parent = Run of id | Pane of Tmux.pane_id [@@deriving equal]
+
+let string_of_parent = function
+  | Run id -> string_of_id id
+  | Pane pane -> Tmux.string_of_pane_id pane
+
+let yojson_of_parent parent = `String (string_of_parent parent)
+
+let parse_parent s =
+  if String.prefix ~pre:"%" s then
+    match Tmux.pane_id_of_string s with
+    | pane -> Ok (Pane pane)
+    | exception Invalid_argument _ -> Error (Printf.sprintf "invalid pane id %S" s)
+  else Result.map (fun id -> Run id) (parse_id s)
+
+let parent_of_yojson = function
+  | `String s -> (
+      match parse_parent s with
+      | Ok parent -> parent
+      | Error e -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error e (`String s))
+  | json -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "parent" json
+
+let parent_id = function Run id -> Some id | Pane _ -> None
+
 type meta = {
   id : id;
   name : string;
   kind : kind;
-  parent : id option; [@default None] [@yojson_drop_if Option.is_none]
+  parent : parent option; [@default None] [@yojson_drop_if Option.is_none]
   pane : optional_id;
   pid : int;
   cwd : string;
@@ -166,7 +189,7 @@ let name { meta; pi } =
 let ancestors ~dir m =
   let rec up seen m =
     match m.parent with
-    | Some p when not (List.mem ~eq:equal_id p seen) ->
+    | Some (Run p) when not (List.mem ~eq:equal_id p seen) ->
         p :: (match read_meta ~dir p with Some x -> up (p :: seen) x | None -> [])
     | _ -> []
   in
@@ -188,30 +211,21 @@ let record_outcome ~dir id o =
       | exception Unix.Unix_error _ -> false)
 
 let read_screen ~dir id = Fs.read (screen_path ~dir id)
-
-type start = Fresh_start | Continue_session | Restart_task
-
-let prepare_start ~dir id = function
-  | Fresh_start -> ()
-  | (Continue_session | Restart_task) as start ->
-      List.iter Fs.remove
-        ([ outcome_path ~dir id; screen_path ~dir id; report_path ~dir id ]
-        @ match start with Restart_task -> [ delivered_path ~dir id ] | _ -> [])
-
 let read_outcome ~dir id = Fs.read_json (outcome_path ~dir id) outcome_of_yojson
 
-let effective_outcome ~dir m =
-  let ended result = Some { result; text = ""; at = None } in
-  match m.kind with
-  | Pi -> (
-      match read_pi ~dir m.id with
-      | Some { pid; _ } when alive pid -> None
-      | Some { pid = 0; _ } -> ended Completed
-      | _ -> ended Died)
-  | Agent | Bash | Stream -> (
-      match read_outcome ~dir m.id with
-      | Some _ as o -> o
-      | None -> if alive m.pid then None else ended Died)
+type pane_state = Live | Dead of { status : int option; signal : string option }
+
+let ended_by_pane = function
+  | None -> Some { result = Died; text = ""; at = None }
+  | Some Live -> None
+  | Some (Dead { status = Some 0; _ }) -> Some { result = Completed; text = ""; at = None }
+  | Some (Dead { status = Some n; _ }) ->
+      Some { result = Failed; text = Printf.sprintf "exit %d" n; at = None }
+  | Some (Dead { signal = Some s; _ }) -> Some { result = Failed; text = "signal " ^ s; at = None }
+  | Some (Dead { status = None; signal = None }) -> Some { result = Died; text = ""; at = None }
+
+let effective_outcome ~dir ~pane m =
+  match read_outcome ~dir m.id with Some _ as o -> o | None -> ended_by_pane pane
 
 let list ~dir =
   let runs = runs dir in
@@ -437,83 +451,37 @@ let%test_module "Tests" =
       Printf.printf "%b\n" (record_outcome ~dir:(temp ()) i { result = Died; text = ""; at = None });
       [%expect {| false |}]
 
-    let%expect_test "Restart_task clears outcome, screen, and the delivered marker" =
-      let dir, i = fresh_run "run-screen-clear" in
-      prepare_start ~dir i Restart_task;
-      Fs.write (in_run ~dir i "screen") "captured";
-      ignore (record_outcome ~dir i { result = Died; text = ""; at = None });
-      Fs.write (in_run ~dir i "delivered") "";
-      write_report ~dir i "the last life's report";
-      prepare_start ~dir i Restart_task;
-      Printf.printf "screen gone: %b\n" (Option.is_none (read_screen ~dir i));
-      Printf.printf "outcome gone: %b\n" (Option.is_none (read_outcome ~dir i));
-      Printf.printf "delivered gone: %b\n" (not (Sys.file_exists (in_run ~dir i "delivered")));
-      Printf.printf "report gone: %b\n" (not (has_report ~dir i));
-      [%expect
-        {|
-    screen gone: true
-    outcome gone: true
-    delivered gone: true
-    report gone: true
-    |}]
-
-    let%expect_test "Continue_session keeps the delivered marker and clears the report" =
-      let dir, i = fresh_run "run-screen-clear-2" in
-      Fs.write (in_run ~dir i "delivered") "";
-      write_report ~dir i "the last life's report";
-      prepare_start ~dir i Continue_session;
-      Printf.printf "delivered kept: %b\n" (Sys.file_exists (in_run ~dir i "delivered"));
-      Printf.printf "report gone: %b\n" (not (has_report ~dir i));
-      [%expect {|
-    delivered kept: true
-    report gone: true
-    |}]
-
-    let%expect_test "effective_outcome: recorded, else derived from the process" =
+    let%expect_test "effective_outcome: an outcome wins, else the pane decides" =
       let dir = temp () in
-      let show name kind ?pid ?outcome ?pi () =
+      let show name ?outcome pane () =
         let i = id name in
-        let m = { (meta ~kind i) with pid = Option.value pid ~default:0 } in
+        let m = meta i in
         write_meta ~dir m;
         Option.iter
           (fun result -> ignore (record_outcome ~dir i { result; text = ""; at = None }))
           outcome;
-        Option.iter
-          (fun pid ->
-            ignore
-              (write_pi ~dir i ~holder:pid
-                 {
-                   pid;
-                   pane = None;
-                   ts = 0.;
-                   inbox = "";
-                   activity = "";
-                   model = "";
-                   name = "";
-                   session_file = "";
-                 }))
-          pi;
-        Printf.printf "%s %s\n" name
-          (match effective_outcome ~dir m with
+        Printf.printf "%s %s %S\n" name
+          (match effective_outcome ~dir ~pane m with
           | Some o -> string_of_result o.result
           | None -> "running")
+          (match effective_outcome ~dir ~pane m with Some o -> o.text | None -> "")
       in
-      show "live" Agent ~pid:(Unix.getpid ()) ();
-      show "dead" Agent ~pid:(dead_pid ()) ();
-      show "stopped" Agent ~pid:(dead_pid ()) ~outcome:Stopped ();
-      show "pi-live" Pi ~pi:(Unix.getpid ()) ();
-      show "pi-released" Pi ~pi:0 ();
-      show "pi-dead" Pi ~pi:(dead_pid ()) ();
-      show "pi-never" Pi ();
+      show "running" (Some Live) ();
+      show "gone" None ();
+      show "exited" (Some (Dead { status = Some 0; signal = None })) ();
+      show "exit3" (Some (Dead { status = Some 3; signal = None })) ();
+      show "termed" (Some (Dead { status = None; signal = Some "TERM" })) ();
+      show "dead-no-status" (Some (Dead { status = None; signal = None })) ();
+      show "stopped" ~outcome:Stopped (Some (Dead { status = Some 3; signal = None })) ();
       [%expect
         {|
-        live running
-        dead died
-        stopped stopped
-        pi-live running
-        pi-released completed
-        pi-dead died
-        pi-never died
+        running running ""
+        gone died ""
+        exited completed ""
+        exit3 failed "exit 3"
+        termed failed "signal TERM"
+        dead-no-status died ""
+        stopped stopped ""
         |}]
 
     let%expect_test "one live holder per run" =
@@ -564,12 +532,13 @@ let%test_module "Tests" =
     let%expect_test "ancestors and depth follow parents, and a cycle ends the walk" =
       let dir = temp () in
       let edge i parent = write_meta ~dir (meta ~parent (id i)) in
+      let run s = Some (Run (id s)) in
       edge "root" None;
-      edge "kid" (Some "root");
+      edge "kid" (run "root");
       edge "loner" None;
-      edge "grandkid" (Some "loner");
-      edge "a" (Some "b");
-      edge "b" (Some "a");
+      edge "grandkid" (run "loner");
+      edge "a" (run "b");
+      edge "b" (run "a");
       List.iter
         (fun i ->
           let m = Option.get_exn_or "meta" (read_meta ~dir i) in

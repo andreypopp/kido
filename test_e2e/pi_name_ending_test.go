@@ -74,7 +74,7 @@ func TestPiRenamedRunActuallyDies(t *testing.T) {
 	f.waitLast(func(s feedSnapshot) bool {
 		return snapshotTitle(s, pane) == "Current" && strings.Contains(strings.Join(s.drawn(), "\n"), "×Current")
 	}, "dead child exact title")
-	h.waitFor(func() bool { return h.rowFor("Current") == "└×Current" }, settle, msgf("dead child exact sidebar title"))
+	h.waitFor(func() bool { return h.rowFor("Current") == "└×Current failed" }, settle, msgf("dead child exact sidebar title"))
 	h.in("select-window", "-t", h.windowID(root))
 	h.waitFor(func() bool { return len(in.Received()) == 1 }, settle, msgf("death notice"))
 	if got := envelopes(in)[0]; field(got, "from", "name") != "Current" || !strings.Contains(field(got, "text"), `subagent "Current"`) {

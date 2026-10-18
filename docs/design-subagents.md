@@ -354,8 +354,9 @@ writer and explains why the first recorded ending wins.
 
 `kido runs` lists every run, `pi` runs included, most recent first.
 Alternatively, it shows one run with its task, its screen if present,
-and its resume command. It shows a run with no outcome and a dead pid as
-`died`, without recording that guess.
+and its resume command. It derives the ending of a run with no outcome
+from its pane (design.md, "Who is authoritative for what"), without
+recording it.
 
 ## A child's life
 
@@ -533,7 +534,7 @@ the run continues.
 
 **The window, and the pane.** The sidebar's sweep collects a marked
 run's pane after it has been dead for thirty seconds, and captures its
-screen. If no outcome exists, it records `died`.
+screen. If no outcome exists, it records the pane's ending.
 A window with the user's own split keeps that split and loses its mark.
 It becomes an ordinary user window (design.md, "Window lifecycle" and
 "Ending a child, and resuming a run").
@@ -558,15 +559,11 @@ is advisory. A human at the CLI has no caller and can act on anything
 (design.md, "Steer, interrupt and stop").
 
 The sweep collects orphans. A marked run pane is an orphan if its run
-meta names a parent whose run has no live holder.
+meta names a parent that has ended (design.md, "Window lifecycle").
 The sweep collects it on one reading, unless its window is focused or
-collection would destroy the session. Before closing a bash run's pane,
-it records failure with the detail "its parent ended".
-The wrapper forwards the hangup to its command. A notice to the absent
-parent fails without an error report.
-
-The check reads the parent's run by id, not a pane. A session that
-claims the parent's pane changes only the pane's mark, not the answer.
+collection would destroy the session. Before closing the run's pane,
+it records failure with the detail "its parent ended". A notice to the
+absent parent fails without an error report.
 A one-shot `kido reap` also applies this rule. It needs no second sweep.
 
 The parent edge names the parent's **session**. A parent can quit and
@@ -582,6 +579,11 @@ session id and orphan its runs. `/reload` keeps the parent's claim and
 does not orphan its runs.
 
 ## Resuming a run
+
+Resume is broken until plans/harness-split.md replaces it with a
+restart through a message: it no longer clears the old outcome, so a
+resumed run reads as ended. This section describes its design until
+then.
 
 `kido tool spawn_subagent --resume <run-id>` starts a finished or dead run
 again in a window. It uses `pi --session <session file>` at the run's own
@@ -648,18 +650,19 @@ It uses the same components:
 `meta.json` always contains a `kind`: `pi`, `agent`, `bash` or `stream`.
 `agent` names a subagent run. `bash` and `stream` name plain and streamed
 `async_bash` runs. `pi` names a pi that kido did not start. This field is the source of truth for whether the
-wrapper streams.
+notifier streams.
 
-One word after `--` is a shell command line that runs under `bash -c`.
-This is the form a model writes ("make -j8 && ./run"). Several words are
-an argv that the wrapper executes as given. In either case, kido writes
-the command to the run's `command` file before creating the window.
-It also writes `meta.json`, which gives the wrapper the run's name and
-parent. After tmux answers, kido atomically adds the window's pane and
-pid to meta.
+One word after `--` is a shell command line. This is the form a model
+writes ("make -j8 && ./run"). Several words are an argv, which kido
+joins with each word quoted. The pane's command is
 
-The window's command line is always `kido async-run --run-id ID`.
-Text from the model never reaches tmux's parser. `--name` is optional.
+    bash -o pipefail -c '<command> 2>&1 | tee "$KIDO_RUN_OUTPUT"'
+
+with no wrapper around it (design.md, "Window lifecycle"). kido writes
+the command to the run's `command` file and `meta.json` before creating
+the window. After tmux answers, kido adds the window's pane and the
+pane's pid to meta. tmux `execvp`s the argv, so text from the model
+never reaches tmux's parser. `--name` is optional.
 Without a name, kido uses the basename of the command's first word.
 It retains only alphanumerics, `-`, `_` and `.`, with a 64-byte cap.
 For an empty result, it uses `bash`.
@@ -672,38 +675,30 @@ outcome and tells nobody.
 The spawn depth ceiling does not apply because a bash run starts no
 agents. An agent at the ceiling can still run a build.
 
-**The wrapper.** `kido async-run` is the window's command and the complete
-completion mechanism. It reads the run's argv and runs it. It tees
-stdout and stderr to the run's `output` file and to the pane. It waits
-and gets the exit status from `wait(2)`, not from tmux observations.
-Then it does these operations in order, never concurrently:
+**The notifier.** After it creates the window, `kido tool async_bash`
+starts a detached `kido run-wait ID --notify` (its own session, null
+descriptors). The notifier polls the panes at the sidebar's tick until
+the run has ended by design.md's status rule: the dead pane's
+`#{pane_dead_status}` or `#{pane_dead_signal}`, read by tmux, not by
+`wait(2)`. Then, in order:
 
-1. It records the outcome: `completed` for exit 0, or `failed` otherwise.
-   The text is the status ("exit status 3", "signal: killed").
-2. It sends one completion notice to the parent. This is a `notice`
-   envelope through the parent's inbox, addressed to the parent session
-   in the run's meta. The wrapper needs no `pi.json` of its own, like a
-   spawned child's report to its parent.
+1. It records the outcome: `completed` for exit 0, else `failed` with
+   the text `exit N` or `signal NAME`.
+2. If its write won, it sends one completion notice to the parent: a
+   `notice` envelope through the parent's inbox, addressed to the
+   parent session in the run's meta.
 
-The wrapper reports everything **before this process exits**.
-Thus, the feature does not depend on the window remaining.
-tmux sets `remain-on-exit` in a second call after `new-window`.
-A fast command can finish before kido marks its pane. The run record
-and notice do not depend on retaining the pane. The race only removes
-the dead pane from the screen.
+The `new-window` command list sets `@kido_run` and `remain-on-exit`
+before the command runs, so the dead pane stays for the notifier to
+read. The notifier is phase-1 scaffolding: plans/harness-split.md moves
+it into the pi extension as a plain `kido run-wait`.
 
-Thus, a missing window is not a creation failure. kido skips the mark,
-does not overwrite the command's outcome, and prints the ids as usual.
-The code explicitly permits this for the **bash or stream** case only.
-It depends entirely on a wrapper in the window that already reports
-for the run.
-
-An agent spawn that loses the same race records a failure. Nothing else
+An agent spawn whose window disappears records a failure. Nothing else
 can describe that run. The missing window has no marked pane, so neither
 sweep rule can reach it. A pi that disappears that quickly never reaches
 its task.
 
-The async wrapper and spawned agents inherit `$TMUX`. Thus, their kido
+The notifier and spawned agents inherit `$TMUX`. Thus, their kido
 calls resolve the parent's server directory without `KIDO_STATE_DIR`.
 Watcher scripts derive their run directory from `KIDO_AGENT_TASK_FILE`,
 which kido already resolves. They do not copy the state resolver.
@@ -716,7 +711,7 @@ single call supplies the path.
 
 The notice names the run itself:
 
-    async run "build" failed: exit status 3
+    async run "build" failed: exit 3
     run: 6f1c...
     output: <state>/runs/6f1c.../output
     --- last 4000 bytes of output (12034 omitted) ---
@@ -726,7 +721,7 @@ The envelope's `from` also names the run, for the same reason.
 A bash run has no `pi.json`. Thus, kido could otherwise identify only
 the *process* that observes the ending:
 
-- The wrapper's pane, which is not an agent. The parent would read
+- The run's pane, which is not an agent. The parent would read
   "notification from %47".
 - A sidebar that sweeps the pane.
 - An unrelated agent that types `kido tool stop_run`.
@@ -741,7 +736,7 @@ If the tail starts inside a UTF-8 character, kido removes that partial
 character. It replaces invalid UTF-8 with replacement characters.
 Thus, a log ending mid-character cannot prevent the run's only notice.
 
-A streamed run's wrapper notice has no tail because the parent already
+A streamed run's notice has no tail because the parent already
 receives the output during the run. It includes only the
 "N lines not streamed" count above, if that count is nonzero.
 
@@ -753,27 +748,18 @@ Three observers can win:
 
 | Observer | Discovers the ending | Records | Notifies |
 |---|---|---|---|
-| the wrapper | its own `wait(2)`, or a signal it can catch | `completed`/`failed` | yes, with the exit status |
-| a sweep's rule 1 (`Reap.sweep`) | a marked run pane dead for the grace | `failed`, "ended without its wrapper reporting" | yes, if it won |
+| the notifier | the dead pane, at its next poll | `completed`/`failed` from the pane | yes, with the exit status |
+| a sweep (`Reap.sweep`) | rule 1: a marked run pane dead for the grace; rule 2: an ended parent | the pane's ending, or `failed` "its parent ended" | yes, if it won |
 | `kido tool stop_run` | a deliberate stop | `completed` if the run reported, else `stopped` | yes, if it won |
 
-The wrapper covers every ending that it survives long enough to observe.
-Thus, it forwards `SIGTERM`, `SIGHUP` and `SIGINT` to the command.
-It then reports `failed` during its own exit. It cannot survive
-`SIGKILL`. If that signal leaves a marked dead pane without an outcome,
-rule 1 finds it and sends a notice.
-
-Killing the window removes the mark. If the window disappears and the
-wrapper dies without reporting, the sweep cannot report the ending.
-Recording `died` without a notice for a marked dead pane would leave the
-parent of a killed build waiting forever.
+The sweep covers a notifier that died. Killing the window removes the
+mark and the dead pane, so the notifier then reads the run as `died`.
 
 Both kinds of run have ending reports, but the claims differ.
-A bash process's completion is an exit code, which the wrapper's notice
-reports. An agent's completion is a judgement that only the model can
-make. Thus, a sweep's notice for an agent reports only that the run ends
-without recording its own outcome ("Reporting", above). The sweep records
-`died`.
+A bash process's completion is an exit code, which tmux reports. An
+agent's completion is a judgement that only the model can make. Thus, a
+sweep's notice for an agent reports only how its pane ended
+("Reporting", above).
 
 Neither kind of run sends a notice without a parent session.
 `kido tool async_bash` at a human's shell produces such a run.
@@ -784,9 +770,7 @@ process observes the build's ending. Observers outside the run use one
 write-then-decide function, `Run_ending.record_ending`. A third observer can call
 this function instead of implementing the same invariant again.
 
-The wrapper writes for itself because it is inside the run's own
-process. It is the only observer that can distinguish a failed write
-from a write that loses. `Reap.sweep` sends nothing. It returns the runs
+`Reap.sweep` sends nothing. It returns the runs
 whose parents the caller must now notify.
 
 `Reap.collect`, called from `kido reap` and the sidebar's poll, sweeps,
@@ -815,15 +799,13 @@ For an agent run the ending follows the report file: a child that
 already reported ends as `completed`, and one stopped first as `stopped`
 (design.md, "Ending a child, and resuming a run").
 
-A bash run needs no `--force`. Stop records `stopped` with the text
-"stopped by its parent" before sending TERM to the wrapper pid.
-The wrapper forwards TERM to its command. First-write-wins keeps the
-stopping outcome instead of the wrapper's generic signal error.
-Stop waits for the wrapper's pid and escalates with KILL if necessary.
-It sends the one ending notice with the output tail.
-
-Stopping a live wrapper does not depend on its pane. The existing
-pane-kill path removes a dead wrapper's lingering pane.
+A bash run needs no `--force`. Stop calls `kido run-stop`'s function
+(`Run_stop.stop`) with the text "stopped by its parent": it records
+`stopped` first, sends TERM to the pane's process group, KILL after
+`KIDO_STOP_ESCALATION_MS`, and kills the pane. First-write-wins keeps
+the stopping outcome instead of the pane's signal ending. Stop sends the
+one ending notice with the output tail; the notifier's later write
+loses and sends nothing.
 
 Except for stop and orphan collection, a bash run is deliberately not an
 agent. It has no `pi.json`, but appears among its caller's own runs
@@ -844,9 +826,9 @@ kido **coalesces** at both ends to bound the number of messages.
 It does not send an envelope for each line. The receiver's `turn_end`
 handler is one opportunity to flush held output.
 
-**The wrapper's side.** For a run whose meta kind is `stream`,
-`kido async-run` tees output into a third writer. This writer batches
-whole lines. It sends one `stream` envelope on a 250ms tick, or when at
+**The notifier's side.** For a run whose meta kind is `stream`, the
+notifier tails the run's `output` file at each poll and feeds the new
+bytes to a writer (`Async_stream`). This writer batches whole lines. It sends one `stream` envelope on a 250ms tick, or when at
 least 4KB of whole lines are pending.
 
 The writer removes ANSI escapes and control bytes below 0x20, except
@@ -862,7 +844,7 @@ Resuming the parent does not restart it.
 Sending output must never block the command's output. The tee to the
 output file is unconditional and is the source of truth.
 The stream tries to send from a buffer of whole lines.
-The wrapper's output pump writes to this buffer under a mutex.
+The notifier's tail writes to this buffer under a mutex.
 One separate thread sends the buffer's contents.
 
 A failed or stalled send discards its chunk instead of retrying it.
@@ -875,15 +857,16 @@ After acknowledgements reach at least 256KB for a run, the next batch
 reports this once and the stream stops sending. The batch that crosses
 the threshold arrives whole.
 
-The wrapper counts every line that the parent does not acknowledge.
+The notifier counts every line that the parent does not acknowledge.
 The completion notice contains the count as `N lines not streamed`.
 Thus, a model that receives output does not incorrectly believe it sees
 all output.
 
-The wrapper sends the notice **after** the final chunk. Before building
-the notice, it closes the stream, which flushes and waits for pending
-sends. The wire uses one connection per message, without sequencing.
-The wrapper sends messages one at a time. This is the only available
+The notifier sends the notice **after** the final chunk. Before building
+the notice, it reads the rest of the output file and closes the stream,
+which flushes and waits for pending sends. The wire uses one connection
+per message, without sequencing. The notifier sends messages one at a
+time. This is the only available
 ordering.
 
 **The receiver's side.** A `stream` envelope is the only kind that
@@ -1034,8 +1017,8 @@ during use as a window disappears after its linger.
   not a round-trip. A correction that cannot wait uses `steer_subagent`.
   It is not correlated, so it does not need to queue.
 - A child that exits before tmux sets `remain-on-exit` loses its window
-  and last screen. Only the run record remains. For a bash run, only the
-  screen is lost: the wrapper already records and reports the outcome.
+  and last screen. Only the run record remains. For a bash run, the
+  notifier then reads `died`.
   For an agent run, the spawn itself reports the failure. No other
   account follows.
 - A subagent's window moved to another tmux session is outside its

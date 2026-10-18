@@ -24,11 +24,17 @@ type pane = {
   last_exit : exit option;
   command_line : string;
   dead_at : float option;
+  dead_status : int option;
+  dead_signal : string option;
   run : string option;
   ssh : (string * string) option;
   session_attached : bool;
   modal : bool;
   program_status : Program_status.t;
+  session : string option;
+  name : string option;
+  inbox : string option;
+  activity : string option;
   title : string;
 }
 
@@ -75,10 +81,16 @@ let format =
       "#{pane_program_status}";
       "#{pane_modal_flag}";
       "#{" ^ Tmux_vars.order ^ "}";
+      "#{pane_dead_status}";
+      "#{pane_dead_signal}";
+      "#{" ^ Tmux_vars.session ^ "}";
+      "#{" ^ Tmux_vars.name ^ "}";
+      "#{" ^ Tmux_vars.inbox ^ "}";
+      "#{" ^ Tmux_vars.activity ^ "}";
       "#{pane_title}";
     ]
 
-let fields = 29
+let fields = 35
 let int s = Option.get_or ~default:0 (int_of_string_opt s)
 let time s = match int s with 0 -> None | n -> Some (Float.of_int n)
 
@@ -94,6 +106,7 @@ let parse_line line =
       let program_status =
         Result.get_or ~default:Program_status.empty (Program_status.parse f.(25))
       in
+      let nonempty s = if String.is_empty s then None else Some s in
       Some
         {
           session_name = f.(0);
@@ -123,7 +136,7 @@ let parse_line line =
           command_line = f.(18);
           dead_at = (if String.equal f.(19) "1" then time f.(20) else None);
           session_attached = not (String.equal f.(21) "" || String.equal f.(21) "0");
-          run = (if String.is_empty f.(22) then None else Some f.(22));
+          run = nonempty f.(22);
           pane_active = String.equal f.(23) "1";
           ssh =
             (match String.rindex_opt f.(24) '@' with
@@ -133,12 +146,18 @@ let parse_line line =
             | _ -> None);
           program_status;
           modal = String.equal f.(26) "1";
-          title = f.(28);
+          dead_status = int_of_string_opt f.(28);
+          dead_signal = Option.map String.uppercase_ascii (nonempty f.(29));
+          session = nonempty f.(30);
+          name = nonempty f.(31);
+          inbox = nonempty f.(32);
+          activity = nonempty f.(33);
+          title = f.(34);
         }
 
 let parse lines = List.filter_map parse_line lines
 
-type t = { panes : pane list; runs : Run.t Pane_map.t; agents : (Run.id * Run.pi) Pane_map.t }
+type t = { panes : pane list; runs : Run.t Pane_map.t }
 
 let read ~dir tmux =
   Result.map
@@ -157,31 +176,85 @@ let read ~dir tmux =
             | None -> m)
           Pane_map.empty panes
       in
-      {
-        panes;
-        runs;
-        agents =
-          Pane_map.filter_map
-            (fun pane (r : Run.t) ->
-              Option.filter (fun (p : Run.pi) -> Run.alive p.pid) r.pi
-              |> Option.filter (fun (s : Run.pi) -> Option.equal equal_pane_id s.pane (Some pane))
-              |> Option.map (Pair.make r.meta.id))
-            runs;
-      })
+      { panes; runs })
     (Tmux.list_panes tmux ~format)
 
-let empty = { panes = []; runs = Pane_map.empty; agents = Pane_map.empty }
+let empty = { panes = []; runs = Pane_map.empty }
+
+let pane_state (p : pane) =
+  if Option.is_none p.dead_at then Run.Live
+  else Run.Dead { status = p.dead_status; signal = p.dead_signal }
+
+let pi_root (p : pane) =
+  match Program_status.root p.program_status with
+  | Some r -> Option.equal String.equal (Program_status.app p.program_status r) (Some "pi")
+  | None -> false
+
 let find t id = List.find_opt (fun p -> equal_pane_id p.pane_id id) t.panes
+
+let live_agents ~dir (t : t) =
+  Tmux.Pane_map.bindings t.runs
+  |> List.filter_map (fun (pane, (r : Run.t)) ->
+      match Run.live_pi ~dir r.meta.id with
+      | Some pi when Option.equal equal_pane_id pi.pane (Some pane) -> Some (r.meta.id, pi)
+      | _ -> None)
+
+let run_pane state (m : Run.meta) =
+  let id = Some (Run.string_of_id m.id) in
+  match m.kind with
+  | Pi -> List.find_opt (fun p -> Option.equal String.equal p.run id) state.panes
+  | Agent | Bash | Stream ->
+      Option.bind
+        (Option.flat_map (find state) m.pane)
+        (fun p -> if Option.equal String.equal p.run id then Some p else None)
+
+let run_ending ~dir state (m : Run.meta) =
+  let pane = run_pane state m in
+  match m.kind with
+  | Pi -> (
+      match pane with
+      | Some p when Option.is_none p.dead_at && not (pi_root p) ->
+          Some { Run.result = Died; text = ""; at = None }
+      | _ -> Run.effective_outcome ~dir ~pane:(Option.map pane_state pane) m)
+  | Agent | Bash | Stream -> Run.effective_outcome ~dir ~pane:(Option.map pane_state pane) m
+
+let find_run state id =
+  Pane_map.fold
+    (fun _ (r : Run.t) found ->
+      match found with
+      | Some _ -> found
+      | None when Run.equal_id r.meta.id id -> Some r.meta
+      | None -> None)
+    state.runs None
+
+let parent_ended ~dir state = function
+  | Run.Run id -> (
+      match find_run state id with
+      | Some m ->
+          Option.map
+            (fun _ -> Printf.sprintf "run %s has ended" (Run.string_of_id id))
+            (run_ending ~dir state m)
+      | None -> (
+          match Run.read_meta ~dir id with
+          | None -> Some (Printf.sprintf "no run %s" (Run.string_of_id id))
+          | Some m ->
+              Option.map
+                (fun _ -> Printf.sprintf "run %s has ended" (Run.string_of_id id))
+                (run_ending ~dir state m)))
+  | Run.Pane pane -> (
+      match find state pane with
+      | None -> Some (Printf.sprintf "pane %s is gone" (Tmux.string_of_pane_id pane))
+      | Some p when Option.is_some p.dead_at ->
+          Some (Printf.sprintf "pane %s is dead" (Tmux.string_of_pane_id pane))
+      | Some p when not (pi_root p) ->
+          Some (Printf.sprintf "pane %s shows no pi root" (Tmux.string_of_pane_id pane))
+      | Some _ -> None)
 
 let caller_pane t self =
   match self with
   | None -> Error "pane \"\" not found"
   | Some id ->
       Option.to_result (Printf.sprintf "pane %S not found" (string_of_pane_id id)) (find t id)
-
-let run_display_name t (s : Run.pi) =
-  if not (String.is_empty s.name) then s.name
-  else match Option.flat_map (find t) s.pane with Some p -> p.title | None -> ""
 
 let find_window_run t window =
   List.find_opt
@@ -267,11 +340,17 @@ let%test_module "Tests" =
         last_exit = None;
         command_line = "";
         dead_at = None;
+        dead_status = None;
+        dead_signal = None;
         run;
         ssh = None;
         session_attached = attached;
         modal = false;
         program_status = Program_status.empty;
+        session = None;
+        name = None;
+        inbox = None;
+        activity = None;
         title;
       }
 
@@ -304,7 +383,19 @@ let%test_module "Tests" =
         (List.hd (List.rev tokens))
         (String.mem ~sub:"pane_command_duration" format)
         (List.length tokens) fields;
-      [%expect {| last=#{pane_title} duration=false fields=29 const=29 |}]
+      [%expect {| last=#{pane_title} duration=false fields=35 const=35 |}]
+
+    let%expect_test "a pane's dead signal is upper case at the parse edge" =
+      let values =
+        List.mapi
+          (fun i _ ->
+            match i with 1 -> "$1" | 4 -> "@4" | 7 -> "%7" | 19 -> "1" | 29 -> "term" | _ -> "")
+          (String.split ~by:sep format)
+      in
+      List.iter
+        (fun (p : pane) -> print_endline (Option.value ~default:"" p.dead_signal))
+        (parse [ line values ]);
+      [%expect {| TERM |}]
 
     let%expect_test "a fixture generated from the format parses into every field" =
       let values =
@@ -319,6 +410,8 @@ let%test_module "Tests" =
             | 24 -> "deploy@realm@example.test"
             | 25 -> {|{"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}|}
             | 27 -> "-27"
+            | 28 -> "3"
+            | 29 -> "TERM"
             | 2 | 3 | 9 | 14 | 15 | 17 | 20 -> string_of_int (1_000_000 + i)
             | _ -> Printf.sprintf "str%d" i)
           (String.split ~by:sep format)
@@ -331,7 +424,7 @@ let%test_module "Tests" =
         (parse [ line values ]);
       [%expect
         {|
-    str0 $1 created=1000002 order=-27 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true modal=true title="str28"
+    str0 $1 created=1000002 order=-27 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true modal=true title="str34"
     user="deploy@realm" host="example.test"
     {"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}
     |}]
@@ -347,7 +440,7 @@ let%test_module "Tests" =
                 | 4 -> "@4"
                 | 7 -> "%7"
                 | 25 -> status
-                | 28 -> "kept"
+                | 34 -> "kept"
                 | _ -> "")
               (String.split ~by:sep format)
           in
@@ -404,6 +497,12 @@ let%test_module "Tests" =
                  {|{"serial":0,"records":[]}|};
                  "0";
                  "3";
+                 "";
+                 "";
+                 "";
+                 "";
+                 "";
+                 "";
                  "✳ Title";
                ];
              "junk";
@@ -437,6 +536,12 @@ let%test_module "Tests" =
                  {|{"serial":0,"records":[]}|};
                  "1";
                  "";
+                 "";
+                 "";
+                 "";
+                 "";
+                 "";
+                 "";
                  "zsh";
                ];
              line
@@ -469,6 +574,12 @@ let%test_module "Tests" =
                  {|{"serial":0,"records":[]}|};
                  "";
                  "007";
+                 "";
+                 "";
+                 "";
+                 "";
+                 "";
+                 "";
                  "kid\x1fmore";
                ];
            ]);

@@ -724,7 +724,13 @@ let%test_module "Tests" =
     open View_fixture
 
     let run_info ?(kind = Run.Agent) ?(parent = "") ?outcome name : Sidebar.lingering =
-      { name; parent = Test_fixture.owned parent; outcome; kind; started = test_at }
+      {
+        name;
+        parent = Option.map (fun id -> Run.Run id) (Test_fixture.owned parent);
+        outcome;
+        kind;
+        started = test_at;
+      }
 
     let spans m line =
       let lead, title, tail = parts m line in

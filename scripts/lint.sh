@@ -104,7 +104,7 @@ for path in ['AGENTS.md', *glob.glob('docs/*.md'), 'share/pi/README.md']:
 # not entire files, so a new sleep in any of these files still fails.
 sleeps = {
     'test_e2e/async_bash_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
-    'test_e2e/async_ending_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
+    'test_e2e/async_ending_test.go': {'time.Sleep(1200 * time.Millisecond)': 1},
     'test_e2e/conn_test.go': {'time.Sleep(20 * time.Millisecond)': 1},
     'test_e2e/control_test.go': {'time.Sleep(10 * time.Millisecond)': 1},
     'test_e2e/launch_test.go': {'time.Sleep(100 * time.Millisecond)': 1},

@@ -154,7 +154,7 @@ func TestListRunsRenamedSubagentNameResolves(t *testing.T) {
 	}
 }
 
-func TestStopRunTerminatesWrapperAndCommandWithoutPane(t *testing.T) {
+func TestStopRunTerminatesTheCommandGroup(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	in := h.asyncParent("alpha", "root-stop-pid")
@@ -172,15 +172,6 @@ func TestStopRunTerminatesWrapperAndCommandWithoutPane(t *testing.T) {
 		Pid int `json:"pid"`
 	}
 	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		t.Fatal(err)
-	}
-	var record map[string]any
-	if err := json.Unmarshal(metaBytes, &record); err != nil {
-		t.Fatal(err)
-	}
-	record["pane"] = "%999999"
-	metaBytes, _ = json.Marshal(record)
-	if err := os.WriteFile(filepath.Join(h.stateDir, "runs", run, "meta.json"), metaBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out, rc := h.kidoAs(h.firstPane("alpha"), "", nil, "tool", "stop_run", run)
@@ -204,7 +195,12 @@ func TestListRunsKeepsAllRunningAndNewestTwentyEnded(t *testing.T) {
 	h.agentStatus("recent-root", caller)
 	for i := 0; i < 24; i++ {
 		id := fmt.Sprintf("recent-run-%02d", i)
-		h.agentRunMeta(id, caller, id, "recent-root")
+		pane := caller
+		if i < 2 {
+			pane = h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
+			h.in("set-option", "-p", "-t", pane, "@kido_run", id)
+		}
+		h.agentRunMeta(id, pane, id, "recent-root")
 		if i >= 2 {
 			outcome := []byte(`{"result":"completed","text":"done","at":"2023-11-14T22:13:20Z"}`)
 			if err := os.WriteFile(filepath.Join(h.stateDir, "runs", id, "outcome"), outcome, 0o644); err != nil {

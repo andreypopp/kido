@@ -238,7 +238,7 @@ func TestReapNeverClosesASessionsLastWindow(t *testing.T) {
 	h.agentRunMeta("solo-split-e2e", paneID, "", "")
 	split := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowID, "sh", "-c", "exec sleep 300")
 	h.killPane(paneID)
-	h.runScript("alpha", "solo-split.out", "KIDO_LINGER_SECONDS=0 "+kidoBin+" reap")
+	h.reap("solo-split.out")
 	h.waitFor(func() bool { return !h.paneExists(paneID) }, settle,
 		msgf("the run's dead pane %s to be collected from session solo's only window", paneID))
 	if !h.paneExists(split) || !strings.Contains(h.in("list-sessions", "-F", "#{session_name}"), "split") {
@@ -368,6 +368,7 @@ func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-e2e", "sh", "-c", parentScript)
 	h.waitPaneCommand(parentPane, "sleep")
+	h.programStatus(parentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", parentPane, "#{pane_title}"), "π - "))
 
 	_, windowID := h.subagentWindow("alpha", "kid-e2e", "cancel-child-e2e", "parent-e2e")
 	h.stays(quiet, func() bool { return h.windowExists(windowID) },
@@ -378,10 +379,10 @@ func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 		msgf("the sidebar's poll to cancel subagent window %s, whose parent is gone", windowID))
 }
 
-// Another session claiming the parent's own pane must never close a
-// healthy child's window: the claim decides only which run owns a pane,
-// and the sweep asks whether the parent's run is live, wherever it is.
-func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
+// A claim decides which run owns a pane. Taking the parent's pane means
+// the parent's run has no marked pane, so section 2.2 makes it ended and
+// its children are orphans.
+func TestSidebarOrphansChildrenWhenAParentPaneIsClaimed(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
@@ -389,6 +390,7 @@ func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
 		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-collision-e2e", "sh", "-c", parentScript)
 	h.waitPaneCommand(parentPane, "sleep")
+	h.programStatus(parentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", parentPane, "#{pane_title}"), "π - "))
 
 	_, windowID := h.subagentWindow("alpha", "kid-collision-e2e", "child-collision-e2e",
 		"parent-collision-e2e")
@@ -397,8 +399,8 @@ func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
 	h.programStatus(parentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", parentPane, "#{pane_title}"), "π - "))
 	h.agentStatus("intruder-collision-e2e", parentPane)
 
-	h.stays(quiet, func() bool { return h.windowExists(windowID) },
-		"a subagent's window was closed by another session claiming its parent's pane, though the parent's process was alive")
+	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
+		msgf("the child window %s to close once its parent's mark names no pane", windowID))
 }
 
 // The orphan rule from a one-shot `kido reap`: one reading of the
@@ -412,6 +414,7 @@ func TestReapCancelsSubagentOfDeadParent(t *testing.T) {
 		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-oneshot-e2e", "sh", "-c", parentScript)
 	h.waitPaneCommand(parentPane, "sleep")
+	h.programStatus(parentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", parentPane, "#{pane_title}"), "π - "))
 
 	_, windowID := h.subagentWindow("alpha", "kid-oneshot-e2e", "oneshot-child-e2e",
 		"parent-oneshot-e2e")

@@ -51,7 +51,7 @@ type remote =
 type kind =
   | Terminal of shell
   | Some_agent of { name : string; status : agent }
-  | Pi_agent of { id : Run.id; status : agent }
+  | Pi_agent of { session : string; status : agent }
   | Ssh of { user : string; host : string; pane : remote }
 [@@deriving yojson_of]
 
@@ -68,7 +68,7 @@ type episode = {
 type command = { start : float; observed : float; promoted : bool }
 type root = Agent of string | Program [@@deriving equal]
 
-type identity = { root : root; session : Run.id option; ssh : (string * string) option }
+type identity = { root : root; session : string option; ssh : (string * string) option }
 [@@deriving equal]
 
 type track = {
@@ -245,7 +245,7 @@ let observe ~now (p : State.pane) (kind : Pane_kind.t) prev =
         | Some_agent { name } | Ssh { pane = Remote_agent { name }; _ } -> Agent name
         | Pi_agent _ -> Agent "pi"
         | Terminal | Ssh { pane = Remote_terminal; _ } -> Program);
-      session = (match kind with Pi_agent { id; _ } -> Some id | _ -> None);
+      session = (match kind with Pi_agent { session; _ } -> Some session | _ -> None);
       ssh = (match kind with Ssh { user; host; _ } -> Some (user, host) | _ -> None);
     }
   in
@@ -287,12 +287,11 @@ let observe ~now (p : State.pane) (kind : Pane_kind.t) prev =
   | Some_agent { name } ->
       let t, status = agent ~dedupe:false ~fallback:None in
       (t, Some_agent { name; status })
-  | Pi_agent { id; pi = session } ->
+  | Pi_agent { session; activity; _ } ->
       let t, status =
-        agent ~dedupe:true
-          ~fallback:(if String.is_empty session.activity then None else Some session.activity)
+        agent ~dedupe:true ~fallback:(if String.is_empty activity then None else Some activity)
       in
-      (t, Pi_agent { id; status })
+      (t, Pi_agent { session; status })
   | Ssh { user; host; pane = Remote_agent { name } } ->
       let t, status = agent ~dedupe:false ~fallback:None in
       (t, Ssh { user; host; pane = Remote_agent { name; status } })
@@ -381,12 +380,12 @@ let%test_module "Tests" =
             (if interactive then " interactive" else "")
             (shell_text t0 status)
 
-    let run ?(states = Tmux.Pane_map.empty) steps =
+    let run steps =
       let track = ref None and now = ref test_at in
       List.iter
         (fun (d, label, p) ->
           now := !now +. d;
-          let t, k = observe ~now:!now p (Pane_kind.classify ~states p) !track in
+          let t, k = observe ~now:!now p (Pane_kind.classify p) !track in
           track := Some t;
           Printf.printf "%-22s %s\n" label (text test_at k))
         steps
@@ -397,8 +396,7 @@ let%test_module "Tests" =
 
     let%expect_test "agent precedence: waiting > running > idle, ties bytewise" =
       let pane rs = records rs (pane ~title:"agent" "%1") in
-      let states = states [ ("%1", ("pi-1", session "")) ] in
-      run ~states
+      run
         [
           (0., "idle", pane [ ("", pi ^ {|"idle"|}) ]);
           (1., "working", pane [ ("", pi ^ {|"working","progress":10|}) ]);
@@ -515,7 +513,9 @@ let%test_module "Tests" =
         Printf.printf "%-20s %s\n" label (text test_at k)
       in
       let p = pane ~title:"agent" "%1" in
-      let pi_kind id : Pane_kind.t = Pi_agent { id = Test_fixture.run_id id; pi = session "" } in
+      let pi_kind id : Pane_kind.t =
+        Pi_agent { session = id; name = ""; inbox = ""; activity = "" }
+      in
       step "pi done" (pi_kind "a") (records ~serial:1 [ ("", pi ^ {|"done"|}) ] p);
       step "same" (pi_kind "a") (records ~serial:2 [ ("", pi ^ {|"done"|}) ] p);
       step "new session id" (pi_kind "b") (records ~serial:3 [ ("", pi ^ {|"done"|}) ] p);

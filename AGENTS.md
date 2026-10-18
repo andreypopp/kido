@@ -252,9 +252,10 @@ Conventions:
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
       tmux_vars.ml     names of kido's tmux user options and environment variables
-      state.ml         the pane view and its one read: every pane, the runs
-                       their marks name and their live agents; ordering,
-                       navigation, a window's run pane and agent display names
+      state.ml         the pane view and its one read: every pane, its
+                       harness options and the runs their marks name; a run's
+                       ending from its pane; ordering, navigation and a
+                       window's run pane
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON
       server_dir.ml    the server state directory and socket
@@ -267,13 +268,14 @@ Conventions:
       reap.ml          which subagent windows are finished with, and when
       run_ending.ml    a run's ending: the outcome write that decides who speaks,
                        its text and its send to the parent's inbox
-      run.ml           run records in runs/<id>/, run selection, marked panes
-                       and live pane agents
+      run.ml           run records in runs/<id>/, run selection and the
+                       ending derived from a run's pane
       run_window.ml    the tracked run window that both launchers create,
                        and its name checks
       prompt.ml, message_agent.ml (also ask_agent and notify_parent),
       list_runs.ml, spawn_subagent.ml, async_bash.ml,
-      async_run.ml (its wrapper), async_stream.ml,
+      async_stream.ml, run_wait.ml (run-wait and the
+      async_bash notifier), run_stop.ml (run-stop),
       run_history.ml (the runs history reader),
       control.ml (stop_run, interrupt_subagent)
                        one subcommand or family each
@@ -377,7 +379,7 @@ There are no aliases. A different name causes a silent runtime failure,
 not a build failure. `lib/test/test_tool_parity.ml` runs each tool in
 `share/pi/testdata/tools.json` as a `kido tool` subcommand.
 
-A subcommand that no tool calls uses the clearest name (`async-run`).
+A subcommand that no tool calls uses the clearest name (`run-wait`).
 `async_bash` used the underscore before its tool existed.
 Renaming a command is harder after something calls it.
 
@@ -550,7 +552,10 @@ The sidebar uses it to decide whether a program has taken the terminal.
 ## Native agent status
 
 Only OSC 7501 root apps pi and claude-code identify agent panes.
-A pi's run supplies local pi identity and coordination, never detection.
+Four pane options supply local pi identity, never detection:
+`@kido_session`, `@kido_name`, `@kido_inbox` and `@kido_activity`.
+kido trusts them only while the pane has an OSC 7501 root with
+`app=pi` (docs/design.md, "Who is authoritative for what").
 ssh panes use the pane-scoped `@kido_ssh` mark.
 kido trusts this mark only while the foreground is `ssh`.
 `kido ssh` sets the mark before exec and leaves it in place.
@@ -572,13 +577,15 @@ the session.
 
 Pane titles display verbatim, including status glyphs and prefixes.
 For an empty title, native-only agents use the app name.
-If its reported session name is set, local pi uses that name.
+If its `@kido_name` is set, local pi uses that name.
 
 ## Agent runs, and delivering a prompt
 
 Runs use the server directory resolved above.
-Every tracked process has one directory `runs/<id>/`, and a pi's run id
-is its session id. Each file in it has one writer, and each write
+Every tracked process has one directory `runs/<id>/`. `kido run` and
+`kido run-child` mint an opaque id. The old harness passes a
+subagent's run id to pi as its session id, and a pi's claim uses its
+session id as its run id. Each file in it has one writer, and each write
 replaces the whole file. There is **no locking**. Policy resolves races:
 
 - **The caller is `PI_SESSION_ID`.** pi sets it, with
@@ -599,21 +606,28 @@ replaces the whole file. There is **no locking**. Policy resolves races:
   If only one side changes this exit code, a second pi silently
   overwrites a live session.
 - Only a pi with a UI claims a run. A headless pi claims nothing.
-- **A pane's agent is its `@kido_run`.** The claim marks its pane.
-  `State.read` accepts a mark as an agent only if the run's `pi.json`
-  names that pane and a live pid at the read. Thus, a stale mark is no agent.
+- **The claim writes the harness options.** After `Run.write_pi`
+  succeeds, `kido agent-status` sets `@kido_run` and the four options
+  on the claimed pane. `agent-status --remove` unsets the four.
+  A pane is a local pi only with a pi root and `@kido_session`.
+  Thus, a stale option is no agent.
+- **A run's status comes from its outcome and its pane, never a pid.**
+  `Run.effective_outcome`: the outcome file, else the dead pane's
+  `#{pane_dead_status}` (0 `completed`, N `failed` "exit N") or
+  `#{pane_dead_signal}` (`failed` "signal NAME"), else `died`.
+  Only the sweep, `run-outcome` and `run-stop` write an outcome.
 - **The kind decides collection.** `Reap.sweep` and `kido prompt`
   read the marked run's meta. A `pi` run is never collected, and its
   window stays a prompt candidate.
-- **The orphan rule reads the parent's run by id.** For a marked run
-  whose meta names a parent, `Reap.sweep` checks whether a live pid
-  holds that parent's run. If not, it collects the unfocused run even
-  while its command runs. A parentless run is exempt.
+- **The orphan rule reads the parent's status.** A `Run` parent has
+  ended by the status rule above; a `Pane` parent (`%N`) when its pane
+  is gone, dead or shows no pi root. Then `Reap.sweep` collects the
+  unfocused run even while its command runs and records `failed` "its
+  parent ended". A parentless run is exempt.
 
-For a `Pi_agent`, `kido prompt` prefers the recorded inbox socket.
-`kido-status.ts` binds one.
-`kido prompt` uses a tmux paste **only** when the record names no inbox
-(`Prompt.deliver`).
+For a `Pi_agent`, `kido prompt` uses the pane's `@kido_inbox`.
+`kido prompt` uses a tmux paste **only** when the pane has no
+`@kido_inbox` (`Prompt.deliver`).
 An advertised but unavailable inbox is an error, not permission to paste.
 
 Other socket errors also return without a fallback.
@@ -623,8 +637,9 @@ A `Some_agent` receives a paste. `Terminal` is excluded.
 The RPC prompt request uses the same scope rule and `Prompt.deliver`
 (docs/design-rpc.md, "Prompting an agent").
 
-Runs remain authoritative for coordination and run history,
-even when the pane's current root app is replaced or cleared.
+Runs remain authoritative for the old harness's coordination and for
+run history, even when the pane's current root app is replaced or
+cleared.
 
 `Prompt.send_prompt` **pastes rather than types**.
 `send-keys -l` writes raw bytes.

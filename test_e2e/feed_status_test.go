@@ -174,8 +174,8 @@ func (l *feedLifecycle) UnmarshalJSON(raw []byte) error {
 	l.Kind, err = feedVariant(live, map[string]any{
 		"Terminal": &shell,
 		"Pi_agent": &struct {
-			ID     **string         `json:"id"`
-			Status *json.RawMessage `json:"status"`
+			Session **string         `json:"session"`
+			Status  *json.RawMessage `json:"status"`
 		}{&l.Name, &agent},
 		"Some_agent": &struct {
 			Name   **string         `json:"name"`

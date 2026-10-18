@@ -33,11 +33,10 @@ func feedRowFor(s feedSnapshot, pane string) (feedRow, bool) {
 	return feedRow{}, false
 }
 
-// A dead run pane is Ended at once, its result unknown until an outcome is
-// recorded; the feed never infers died from the dead process. The run's
-// window stays the client's current one, which keeps the reaper from
+// A dead run pane is Ended at once, with the result its pane derives. The
+// run's window stays the client's current one, which keeps the reaper from
 // recording an outcome of its own.
-func TestRpcEndedRunIsUnknownUntilItsOutcome(t *testing.T) {
+func TestRpcEndedRunDerivesItsResultUntilItsOutcome(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.newWindow("alpha", "run", "sleep", "300")
@@ -54,9 +53,9 @@ func TestRpcEndedRunIsUnknownUntilItsOutcome(t *testing.T) {
 	h.in("respawn-pane", "-k", "-t", pane, "sh", "-c", "exit 3")
 	f.waitLast(func(s feedSnapshot) bool {
 		r, ok := feedRowFor(s, pane)
-		return ok && r.Lifecycle.Ended && feedValue(r.Lifecycle.Result) == "unknown" && r.Started == nil &&
-			r.Run != nil && *r.Run == "agent" && r.Title == "the run"
-	}, "the dead pane ended, its result unknown")
+		return ok && r.Lifecycle.Ended && feedValue(r.Lifecycle.Result) == "failed" && r.Started == nil &&
+			r.Run != nil && *r.Run == "ended-run" && r.Title == "the run"
+	}, "the dead pane ended as failed, from its exit status")
 	h.runKido("alpha", "outcome.out", "run-outcome", "--result", "completed", "--", "ended-run")
 	f.waitLast(func(s feedSnapshot) bool {
 		r, ok := feedRowFor(s, pane)

@@ -292,10 +292,9 @@ func TestStopSaysWhyItKilledAnUnwillingTarget(t *testing.T) {
 	}
 }
 
-// A bash run is stopped through its wrapper pid; it is found
-// through the parent in its meta, a finished one is no match, and a name
-// two running runs share names neither. When its pane cannot be killed
-// the stop is still recorded and its parent still told.
+// A bash run is stopped through its process group; it is found through
+// the parent in its meta, a finished one is no match, and a name two
+// running runs share names neither.
 func TestStopBashRunFindsItsRunAndSpeaksForIt(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -361,25 +360,4 @@ func TestStopBashRunFindsItsRunAndSpeaksForIt(t *testing.T) {
 		t.Errorf("stop ended run = %q, want a refusal", out)
 	}
 
-	// The run's window moved into a session of its own, its only pane: the
-	// stop records the ending and tells the parent, but may not kill it.
-	alone := runIn(caller, "alone", "sleep", "300")
-	h.hideSidebar()
-	h.killWrapper(alone)
-	h.in("new-session", "-d", "-s", "lonely", "sh", "-c", "exec sleep 300")
-	first := h.in("list-windows", "-t", "lonely", "-F", "#{window_id}")
-	h.in("move-window", "-s", h.windowID(h.in("list-panes", "-a", "-F", "#{pane_id}", "-f", "#{==:#{@kido_run},"+alone+"}")), "-t", "lonely:")
-	h.in("kill-window", "-t", first)
-	before := len(in.Received())
-	out := stop("alone", "--force", "alone")
-	if !strings.Contains(out, `async run "alone" was recorded stopped, but its pane could not be killed: it is its session's only pane; killing it would destroy the session`) || !strings.Contains(out, "rc=1") {
-		t.Errorf("stop of a session's only pane = %q, want it recorded but refused", out)
-	}
-	if info := h.runInfo(alone); info.Outcome != "stopped" || info.OutcomeText != "stopped by its parent" {
-		t.Errorf("run alone = %q/%q, want the stop recorded", info.Outcome, info.OutcomeText)
-	}
-	h.waitFor(func() bool { return len(in.Received()) > before }, settle, msgf("the parent to be told run alone was stopped"))
-	if got := in.Received()[before]; !strings.Contains(got, `async run \"alone\" stopped`) {
-		t.Errorf("notice = %q, want it to say run alone was stopped", got)
-	}
 }

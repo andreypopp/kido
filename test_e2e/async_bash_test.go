@@ -111,7 +111,7 @@ func TestAsyncBashNotifiesItsParentOnce(t *testing.T) {
 	}
 
 	got := in.Received()[0]
-	for _, want := range []string{`"kind":"notice"`, "build", "exit status 3", "out", "err", runID} {
+	for _, want := range []string{`"kind":"notice"`, "build", "exit 3", "out", "err", runID} {
 		if !strings.Contains(got, want) {
 			t.Errorf("notice = %q, want it to carry %q", got, want)
 		}
@@ -122,8 +122,8 @@ func TestAsyncBashNotifiesItsParentOnce(t *testing.T) {
 	if info.Kind != "bash" {
 		t.Errorf("kido runs reports kind %q, want \"bash\"", info.Kind)
 	}
-	if info.Outcome != "failed" || info.OutcomeText != "exit status 3" {
-		t.Errorf("kido runs reports outcome %q/%q, want failed/\"exit status 3\"", info.Outcome, info.OutcomeText)
+	if info.Outcome != "failed" || info.OutcomeText != "exit 3" {
+		t.Errorf("kido runs reports outcome %q/%q, want failed/\"exit 3\"", info.Outcome, info.OutcomeText)
 	}
 
 	body := h.waitFileContains(filepath.Join(h.stateDir, "runs", runID, "output"), "err")
@@ -142,7 +142,7 @@ func TestAsyncBashThatExitsInstantlyStillNotifiesOnce(t *testing.T) {
 
 	h.waitFor(func() bool { return len(in.Received()) > 0 }, settle,
 		msgf("the notice of a run that exited instantly"))
-	if got := in.Received()[0]; !strings.Contains(got, "instant") || !strings.Contains(got, "exit status 0") {
+	if got := in.Received()[0]; !strings.Contains(got, "instant") || !strings.Contains(got, "completed") {
 		t.Errorf("notice = %q, want it to name the run and its exit status", got)
 	}
 	h.stableCount(in, 1, "an instant exit is still one ending")
@@ -186,12 +186,12 @@ read -r -t 30 ignored
 		t.Fatal(err)
 	}
 	parentPane := h.newWindow("alpha", "orphan-parent", fake, "ignored")
+	h.programStatus(parentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", parentPane, "#{pane_title}"), "π - "))
 	fields := strings.Fields(h.waitFileNonEmpty(outFile))
 	if len(fields) < 3 {
 		t.Fatalf("async_bash output = %q", fields)
 	}
 	runID := fields[2]
-	wrapperPID := h.wrapperPID(runID)
 	childPID, err := strconv.Atoi(strings.TrimSpace(h.waitFileNonEmpty(childPIDFile)))
 	if err != nil {
 		t.Fatal(err)
@@ -201,8 +201,8 @@ read -r -t 30 ignored
 	}
 	h.in("send-keys", "-t", parentPane, "Enter")
 	h.waitFor(func() bool {
-		return syscall.Kill(wrapperPID, 0) == syscall.ESRCH && syscall.Kill(childPID, 0) == syscall.ESRCH
-	}, settle, msgf("orphan bash wrapper and command to exit after their parent quits"))
+		return syscall.Kill(childPID, 0) == syscall.ESRCH && !h.paneExists(parentPane)
+	}, settle, msgf("the orphan command to exit after its parent quits"))
 	info := h.waitOutcome(runID)
 	if info.Outcome != "failed" || info.OutcomeText != "its parent ended" {
 		t.Errorf("orphan outcome = %q/%q, want failed/its parent ended", info.Outcome, info.OutcomeText)
@@ -224,18 +224,17 @@ func TestAsyncBashWithNoParentStillRecordsItsOutcome(t *testing.T) {
 	runID := fields[2]
 
 	info := h.waitOutcome(runID)
-	if info.Outcome != "failed" || info.OutcomeText != "exit status 7" {
-		t.Errorf("kido runs reports %q/%q, want failed/\"exit status 7\"", info.Outcome, info.OutcomeText)
+	if info.Outcome != "failed" || info.OutcomeText != "exit 7" {
+		t.Errorf("kido runs reports %q/%q, want failed/\"exit 7\"", info.Outcome, info.OutcomeText)
 	}
 	h.stableCount(in, 0, "a run with no parent has nobody to tell")
 }
 
-// What a run is made of before its wrapper starts: a meta naming the
-// caller's own record as parent one level down, a window name derived
-// from a command line, the command kept as given, and a window running
-// `kido async-run` for it. Several words are an argv, not a command line
-// joined back together: `sh -c 'exit 3' ignored` joined would run
-// `sh -c exit` and succeed.
+// What a run is made of: a meta naming the caller's own record as parent
+// one level down, a window name derived from a command line, the command
+// kept as given, and a window running the command's own bash pipeline.
+// Several words are an argv, not a command line joined back together:
+// `sh -c 'exit 3' ignored` joined would run `sh -c exit` and succeed.
 func TestAsyncBashRecordsItsRunAndItsCommand(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -265,18 +264,19 @@ func TestAsyncBashRecordsItsRunAndItsCommand(t *testing.T) {
 			t.Errorf("run meta %s = %v, want %v", k, meta[k], want)
 		}
 	}
-	if started := h.startCommand(windowID); !strings.HasSuffix(started, "async-run --run-id "+runID) {
-		t.Errorf("run window's command = %q, want `kido async-run --run-id %s` and no --stream", started, runID)
+	started := h.startCommand(windowID)
+	if !strings.Contains(started, "bash -o pipefail -c") || !strings.Contains(started, "tee") || !strings.Contains(started, "KIDO_RUN_OUTPUT") {
+		t.Errorf("run window's command = %q, want the run's own bash pipeline into tee", started)
 	}
 
-	streamWindow, _, streamRun := h.asyncBashIDs([]string{"--stream"}, "streamed", "sleep", "300")
-	if started := h.startCommand(streamWindow); !strings.HasSuffix(started, "async-run --run-id "+streamRun) {
-		t.Errorf("--stream run window's command = %q, want the wrapper reading stream mode from meta", started)
+	streamWindow, _, _ := h.asyncBashIDs([]string{"--stream"}, "streamed", "sleep", "300")
+	if started := h.startCommand(streamWindow); strings.Contains(started, "async-run") {
+		t.Errorf("--stream run window's command = %q, want no wrapper", started)
 	}
 
 	argvRun := h.asyncBashWith(nil, "argv", "sh", "-c", "exit 3", "ignored")
-	if info := h.waitOutcome(argvRun); info.Outcome != "failed" || info.OutcomeText != "exit status 3" {
-		t.Errorf("argv run = %q/%q, want failed/\"exit status 3\" from the words run as an argv", info.Outcome, info.OutcomeText)
+	if info := h.waitOutcome(argvRun); info.Outcome != "failed" || info.OutcomeText != "exit 3" {
+		t.Errorf("argv run = %q/%q, want failed/\"exit 3\" from the words run as an argv", info.Outcome, info.OutcomeText)
 	}
 }
 

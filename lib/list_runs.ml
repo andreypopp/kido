@@ -34,7 +34,7 @@ type agent_info = {
 }
 [@@deriving yojson_of]
 
-let agents ~dir ~self ~caller ~session ~state:({ runs; agents; _ } as state : State.t) =
+let agents ~dir ~self ~caller ~session ~(state : State.t) =
   let open Result.Infix in
   let+ session =
     match session with
@@ -47,17 +47,19 @@ let agents ~dir ~self ~caller ~session ~state:({ runs; agents; _ } as state : St
               (Printf.sprintf "no tmux session for pane %S; pass --session"
                  (match self with Some x -> string_of_pane_id x | None -> "")))
   in
-  Pane_map.bindings agents
-  |> List.filter_map (fun (pane, (id, (s : Run.pi))) ->
-      State.find state pane
-      |> Option.filter (fun (p : State.pane) -> equal_session_id session p.session_id)
-      |> Option.map (fun p -> (id, s, p, (Pane_map.find pane runs).meta)))
+  State.live_agents ~dir state
+  |> List.filter_map (fun (id, (s : Run.pi)) ->
+      let open Option.Infix in
+      let* p = Option.bind s.pane (State.find state) in
+      let* r = Tmux.Pane_map.find_opt p.pane_id state.runs in
+      if not (equal_session_id session p.session_id) then None else Some (id, s, p, r.meta))
   |> List.sort (fun (a, (sa : Run.pi), _, _) (b, (sb : Run.pi), _, _) ->
       match Float.compare sa.ts sb.ts with 0 -> Run.compare_id a b | c -> c)
   |> List.map (fun (id, (s : Run.pi), (p : State.pane), (m : Run.meta)) ->
+      let name = Pane_kind.display_name state s in
       {
         id;
-        name = State.run_display_name state s;
+        name;
         named = not (String.is_empty s.name);
         pane = p.pane_id;
         window = p.window_id;
@@ -66,7 +68,7 @@ let agents ~dir ~self ~caller ~session ~state:({ runs; agents; _ } as state : St
             (fun (r : Program_status.record) -> r.state)
             (Program_status.root p.program_status);
         activity = s.activity;
-        parent = m.parent;
+        parent = Option.flat_map Run.parent_id m.parent;
         depth = Run.depth ~dir m;
         self = Option.exists (Run.equal_id m.id) caller;
         cwd = p.current_path;
@@ -97,7 +99,7 @@ let list_runs ~dir ~self ~caller ~session ~(state : State.t) =
           if Option.is_none parent then Some (Peer a)
           else
             match Run.read_meta ~dir a.id with
-            | Some ({ kind = Agent; _ } as m) when Option.is_none (Run.effective_outcome ~dir m) ->
+            | Some ({ kind = Agent; _ } as m) when Option.is_none (State.run_ending ~dir state m) ->
                 Some (Peer a)
             | _ -> None
         else None)
@@ -108,7 +110,7 @@ let list_runs ~dir ~self ~caller ~session ~(state : State.t) =
     match own with
     | None -> []
     | Some owner ->
-        Run_history.list ~owner ~dir ()
+        Run_history.list ~parent:(Run.Run owner) ~dir ~state ()
         |> List.filter (fun (r : Run_history.info) ->
             match r.outcome with
             | None -> true
@@ -150,7 +152,8 @@ let yojson_of_row row =
                 ("pane", Run.yojson_of_optional_id m.pane);
                 ( "window",
                   `String (match window with Some x -> string_of_window_id x | None -> "") );
-                ("parent", yojson_of_parent m.parent);
+                ( "parent",
+                  Option.value ~default:(`String "") (Option.map Run.yojson_of_parent m.parent) );
                 ("cwd", `String m.cwd);
                 ("canMessage", `Bool false);
                 ("canReply", `Bool false);
