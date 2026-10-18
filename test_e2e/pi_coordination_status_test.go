@@ -25,38 +25,6 @@ func TestPiOptionsAndPrompt(t *testing.T) {
 		h.programStatus(pane, "state=idle")
 	})
 
-	t.Run("claim writes and unsets the options", func(t *testing.T) {
-		pane := h.piPane("alpha", "π - claim")
-		in := startInbox(t, "ok\n")
-		h.agentStatus("opt-claim", pane, "--name", "Named", "--inbox", in.Path, "--activity", "doing")
-		for _, c := range []struct{ key, want string }{
-			{"@kido_session", "opt-claim"},
-			{"@kido_name", "Named"},
-			{"@kido_inbox", in.Path},
-			{"@kido_activity", "doing"},
-		} {
-			if got := h.in("display-message", "-p", "-t", pane, "#{"+c.key+"}"); got != c.want {
-				t.Errorf("%s = %q, want %q", c.key, got, c.want)
-			}
-		}
-		if out, rc := h.kidoAs(pane, "", nil, "tool", "set_status", "--", "rewritten"); rc != 0 {
-			t.Fatalf("set_status: rc=%d: %s", rc, out)
-		}
-		if got := h.in("display-message", "-p", "-t", pane, "#{@kido_activity}"); got != "rewritten" {
-			t.Errorf("@kido_activity after set_status = %q, want rewritten", got)
-		}
-		h.agentStatus("opt-claim", pane, "--remove")
-		for _, key := range []string{"@kido_session", "@kido_name", "@kido_inbox", "@kido_activity"} {
-			if got := h.in("display-message", "-p", "-t", pane, "#{"+key+"}"); got != "" {
-				t.Errorf("%s after --remove = %q, want unset", key, got)
-			}
-		}
-		if got := h.in("display-message", "-p", "-t", pane, "#{@kido_run}"); got != "opt-claim" {
-			t.Errorf("@kido_run after --remove = %q, want kido's own mark kept", got)
-		}
-		h.programStatus(pane, "state=idle")
-	})
-
 	t.Run("options need a pi root", func(t *testing.T) {
 		in := startInbox(t, "ok\n")
 		pane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")

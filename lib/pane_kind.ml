@@ -36,9 +36,3 @@ let title (p : State.pane) = function
       Some (if String.is_empty p.title then name else p.title)
   | Terminal -> None
   | Pi_agent { name; _ } -> Some (if String.is_empty name then p.title else name)
-
-let display_name state (s : Run.pi) =
-  if not (String.is_empty s.name) then s.name
-  else
-    Option.bind (Option.bind s.pane (State.find state)) (fun p -> title p (classify p))
-    |> Option.value ~default:""

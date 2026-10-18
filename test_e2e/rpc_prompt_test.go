@@ -46,7 +46,7 @@ func TestRpcPrompt(t *testing.T) {
 	f.waitReply(`{"reply":{"id":5,"error":"no prompt given","kind":"invalid"}}`)
 
 	refused := h.promptPane("alpha", "✳ Refused")
-	h.agentStatus("prompt-"+refused, refused, "--inbox", staleSocket(t))
+	h.setPiOptions(refused, "prompt-"+refused, h.paneTitle(refused), staleSocket(t), "")
 	f.send(fmt.Sprintf(`{"id":6,"prompt":{"pane":%q,"target":%q,"text":"must-not-arrive"}}`, caller, refused))
 	f.waitReply(fmt.Sprintf(
 		`{"reply":{"id":6,"error":"%s is not accepting messages","kind":"refused"}}`,

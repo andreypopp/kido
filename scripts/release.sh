@@ -37,19 +37,17 @@ for rev in "$old" "$sha"; do
   echo "+ (cd $work/$rev && dune build bin/main.exe)"
   (cd "$work/$rev" && dune build bin/main.exe)
   "$work/$rev/_build/default/bin/main.exe" --help=plain > "$work/$rev/top.help"
-  "$work/$rev/_build/default/bin/main.exe" tool --help=plain > "$work/$rev/tool.help"
 done
 python3 - "$work" "$old" "$sha" "$previous" "$version" <<'PY'
-import json,re,sys,pathlib
+import re,sys,pathlib
 root,old,new,previous,version=sys.argv[1:]
 def names(rev):
     p=pathlib.Path(root)/rev
-    tools=json.loads((p/'share/pi/testdata/tools.json').read_text())
-    result={'tool:'+n for n in tools}
-    for scope in ('top','tool'):
-        help=(p/(scope+'.help')).read_text().split('COMMANDS\n',1)[1]
-        help=re.split(r'\n[A-Z][A-Z ]*\n',help,maxsplit=1)[0]
-        result.update(scope+':'+x for x in re.findall(r'^       ([a-z][a-z_-]+)(?: |$)',help,re.M))
+    help=(p/'top.help').read_text().split('COMMANDS\n',1)[1]
+    help=re.split(r'\n[A-Z][A-Z ]*\n',help,maxsplit=1)[0]
+    result={'command:'+x for x in re.findall(r'^       ([a-z][a-z_-]+)(?: |$)',help,re.M)}
+    text=(p/'share/pi/testdata/prompts.txt').read_text().split('## Tools\n',1)[1].split('\n## ',1)[0]
+    result.update('tool:'+x for x in re.findall(r'^### (.+)$',text,re.M))
     return result
 before=tuple(map(int,previous.split('.')))
 after=tuple(map(int,version.split('.')))

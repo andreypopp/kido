@@ -11,7 +11,6 @@ type lingering = {
   name : string;
   parent : Run.parent option;
   outcome : Run.result option;
-  kind : Run.kind;
   started : Timestamp.t;
 }
 
@@ -27,11 +26,11 @@ type snapshot = {
 val active : snapshot -> Tmux.pane_id option
 
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
-type run = { kind : Run.kind; started : Timestamp.t }
+type run = { started : Timestamp.t }
 
 type lifecycle =
   | Live of { status : Pane_status.kind; run : run option }
-  | Ended of { result : Run.result option; run : Run.kind }
+  | Ended of { result : Run.result option }
 
 type row = {
   pane : Tmux.pane_id;

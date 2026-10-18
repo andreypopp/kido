@@ -296,12 +296,11 @@ let%test_module "Tests" =
   (module struct
     open View_fixture
 
-    let run_info ?(kind = Run.Agent) ?(parent = "") ?outcome name : Sidebar.lingering =
+    let run_info ?(parent = "") ?outcome name : Sidebar.lingering =
       {
         name;
         parent = Option.map (fun id -> Run.Run id) (Test_fixture.owned parent);
         outcome;
-        kind;
         started = test_at;
       }
 
@@ -332,7 +331,7 @@ let%test_module "Tests" =
     let%expect_test "a snapshot as the feed sends it" =
       let dir = temp () in
       let id = new_run ~id:"helper" ~dir "helper" in
-      let build = new_run ~id:"build" ~dir ~kind:Bash "build" in
+      let build = new_run ~id:"build" ~dir "build" in
       ignore
         (Run.record_outcome ~dir (Test_fixture.run_id id) { result = Failed; text = ""; at = None });
       let panes =
@@ -352,14 +351,13 @@ let%test_module "Tests" =
       in
       let l =
         [
-          ("%1", ("root", session ~activity:"reading the contract" ""));
-          ("%5", ("watcher", session ""));
+          ("%1", ("root", session ~activity:"reading the contract" ()));
+          ("%5", ("watcher", session ()));
         ]
       in
       let m =
         prepared ~dir
-          ~lingering:
-            [ (id, run_info ~outcome:Failed "helper"); (build, run_info ~kind:Bash "build") ]
+          ~lingering:[ (id, run_info ~outcome:Failed "helper"); (build, run_info "build") ]
           panes l
       in
       let json m = Option.get_exn_or "client" (snapshot m) in
@@ -529,7 +527,7 @@ let%test_module "Tests" =
 
     let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" =
       let dir = temp () in
-      let run = new_run ~id:"build" ~dir ~parent:"root" ~kind:Bash "build" in
+      let run = new_run ~id:"build" ~dir ~parent:"root" "build" in
       let panes =
         [
           pane ~session:"alpha" ~window:"@1" ~title:"root" ~active:true "%1";
@@ -539,13 +537,10 @@ let%test_module "Tests" =
         ]
       in
       ignore (Test_fixture.run ~dir ~parent:"root" "kid");
-      let l = [ ("%1", ("root", session "")); ("%2", ("kid", session "")) ] in
+      let l = [ ("%1", ("root", session ())); ("%2", ("kid", session ())) ] in
       let m =
         prepared ~dir
-          ~lingering:
-            [
-              ("kid", run_info ~parent:"root" ""); (run, run_info ~kind:Bash ~parent:"root" "build");
-            ]
+          ~lingering:[ ("kid", run_info ~parent:"root" ""); (run, run_info ~parent:"root" "build") ]
           panes l
       in
       print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (snapshot m)));
@@ -899,7 +894,7 @@ let%test_module "Tests" =
                  });
           ]
         @ List.map
-            (fun result -> Sidebar.Ended { result; run = Agent })
+            (fun result -> Sidebar.Ended { result })
             [ None; Some Run.Completed; Some Failed; Some Died; Some Stopped ]
       in
       let items =
@@ -914,12 +909,7 @@ let%test_module "Tests" =
                   run = (if i < 2 then Some (Printf.sprintf "run-%d" i) else None);
                   lifecycle =
                     (match lifecycle with
-                    | Sidebar.Live l when i < 2 ->
-                        Live
-                          {
-                            l with
-                            run = Some { kind = (if i = 0 then Agent else Bash); started = 100. };
-                          }
+                    | Sidebar.Live l when i < 2 -> Live { l with run = Some { started = 100. } }
                     | l -> l);
                 };
               children = [];

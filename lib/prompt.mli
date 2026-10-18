@@ -1,19 +1,7 @@
-val not_accepting : name:string -> run:Run.id option -> string
-
 type via = Inbox | Paste
 type send = { pane : Tmux.pane_id; target : Tmux.pane_id; text : string }
 type error_kind = Refused | Unknown | Invalid
 type error = { kind : error_kind; message : string }
-
-val deliver :
-  tmux:Tmux.t ->
-  inbox:string ->
-  payload:string ->
-  pane:Tmux.pane_id option ->
-  name:string ->
-  run:Run.id option ->
-  string ->
-  (via, error) result
 
 type candidate = {
   pane : Tmux.pane_id;

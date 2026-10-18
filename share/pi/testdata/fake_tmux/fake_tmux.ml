@@ -2,17 +2,6 @@
    command it receives and answers list-panes and display-message from a pane
    table that the test writes. *)
 
-let getenv key = Option.value ~default:"" (Sys.getenv_opt key)
-let json_of_strings strings = `List (List.map (fun s -> `String s) strings)
-
-let append path text =
-  if not (String.is_empty path) then
-    Out_channel.with_open_gen [ Open_append; Open_creat ] 0o644 path (fun channel ->
-        Out_channel.output_string channel text)
-
-let log_json argv =
-  append (getenv "KIDO_FAKE_TMUX_LOG") (Yojson.Safe.to_string (json_of_strings argv) ^ "\n")
-
 let read_table () = Fake_common.read_rows "KIDO_FAKE_TMUX_PANES"
 
 let key_of_token token =
@@ -58,16 +47,6 @@ let render row format =
   go 0;
   Buffer.contents buffer
 
-let arg_after flag args =
-  let rec find = function
-    | [] -> None
-    | key :: value :: _ when String.equal key flag -> Some value
-    | _ :: rest -> find rest
-  in
-  find args
-
-let has flag args = List.exists (String.equal flag) args
-
 let rows_for_target rows target =
   match target with
   | None -> rows
@@ -76,23 +55,22 @@ let rows_for_target rows target =
 let run () =
   let argv = Array.to_list Sys.argv |> List.tl in
   let argv = match argv with "-u" :: rest -> rest | argv -> argv in
-  log_json argv;
+  Fake_common.log "KIDO_FAKE_TMUX_LOG" (`List (List.map (fun s -> `String s) argv));
   let rows = read_table () in
   match argv with
-  | "set-option" :: _ | "set" :: _ -> ()
+  | "set-option" :: _ -> ()
   | "list-panes" :: _ ->
-      if String.equal (getenv "KIDO_FAKE_TMUX_FAIL") "1" then exit 1;
-      Fake_common.wait_gate (getenv "KIDO_FAKE_TMUX_GATE");
-      let format = Option.value ~default:"" (arg_after "-F" argv) in
-      let rows = if has "-a" argv then rows else rows_for_target rows (arg_after "-t" argv) in
+      if String.equal (Fs.getenv "KIDO_FAKE_TMUX_FAIL") "1" then exit 1;
+      Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_TMUX_GATE");
+      let format = Option.value ~default:"" (Fake_common.arg_after "-F" argv) in
       List.iter (fun row -> print_endline (render row format)) rows
   | "display-message" :: _ -> (
-      match arg_after "-F" argv with
+      match Fake_common.arg_after "-F" argv with
       | None -> exit 1
       | Some format ->
           List.iter
             (fun row -> print_endline (render row format))
-            (rows_for_target rows (arg_after "-t" argv)))
+            (rows_for_target rows (Fake_common.arg_after "-t" argv)))
   | [] -> exit 1
   | command :: _ ->
       prerr_endline ("fake tmux: unsupported command " ^ command);

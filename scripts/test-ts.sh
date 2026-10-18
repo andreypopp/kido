@@ -1,5 +1,5 @@
 #!/bin/sh
-# Typecheck the pi extensions and run their tests under node's native TypeScript support.
+# Typecheck the pi extension and run its tests under node's native TypeScript support.
 #
 # Skips cleanly when node is missing or too old; KIDO_TS_TEST_REQUIRED=1
 # fails instead, the same convention e2e uses for KIDO_E2E_REQUIRED.
@@ -46,4 +46,4 @@ fi
 ./node_modules/.bin/tsc --strict --noEmit --module NodeNext --moduleResolution NodeNext \
 	--target ES2024 --allowImportingTsExtensions --erasableSyntaxOnly --skipLibCheck \
 	--typeRoots ./node_modules/@types ../../.pi/tests/no-git-writes.test.ts
-exec node --test --test-concurrency=4 --test-reporter=spec kido-status-*.test.ts kido-pi-*.test.ts ../../.pi/tests/no-git-writes.test.ts
+exec node --test --test-concurrency=4 --test-reporter=spec kido-pi-*.test.ts ../../.pi/tests/no-git-writes.test.ts

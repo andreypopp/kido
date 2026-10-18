@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -26,7 +25,7 @@ func TestPromptExcludesEveryMarkedRunInWindow(t *testing.T) {
 	}
 	for _, phase := range []string{"live", "released"} {
 		if phase == "released" {
-			h.agentStatus("prompt-"+mixedTop, mixedTop, "--remove")
+			h.clearPiOptions(mixedTop)
 			h.programStatus(mixedTop, "state=idle:app=shell")
 		}
 		out := h.typeScript(caller, "prompt-"+phase+".out", fmt.Sprintf("printf %s | %s prompt", shellQuote(phase), kidoBin))
@@ -72,7 +71,7 @@ func (h *harness) agentPaneHere(target, title string) string {
 }
 
 // setPiOptions writes the four pane options the way a harness does: plain
-// strings, no claim and no pi.json.
+// strings and a run record.
 func (h *harness) setPiOptions(pane, session, name, inbox, activity string) {
 	h.t.Helper()
 	for k, v := range map[string]string{
@@ -81,7 +80,9 @@ func (h *harness) setPiOptions(pane, session, name, inbox, activity string) {
 		"@kido_inbox":    inbox,
 		"@kido_activity": activity,
 	} {
-		if v != "" {
+		if v == "" {
+			h.in("set-option", "-pu", "-t", pane, k)
+		} else {
 			h.in("set-option", "-p", "-t", pane, k, v)
 		}
 	}
@@ -203,7 +204,7 @@ func TestPromptMultiLine(t *testing.T) {
 
 	// No inbox socket: kido delivers through Tmux.Exec.send_prompt, not the
 	// socket path (TestPromptInboxNative).
-	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.piRoot(pane)
 	h.agentStatus("pi-1", pane)
 
 	// printf expands \n inside the pane, not the caller's shell.
@@ -269,21 +270,8 @@ func TestPromptExcludesSubagentWindow(t *testing.T) {
 	h := start(t, "alpha")
 	topLevel := h.promptPane("alpha", "✳ Claude") // a new window, not the shell's own
 
-	taskFile := filepath.Join(h.dir, "task.txt")
-	if err := os.WriteFile(taskFile, []byte("do the thing"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	outFile := filepath.Join(h.dir, "spawn.out")
-	cmd := fmt.Sprintf("%s tool spawn_subagent --no-parent --name sub-e2e --task-file %s -- %s -- > %s 2>&1",
-		kidoBin, taskFile, filepath.Join(piBinDir, "pi"), outFile)
-	h.sendLiteral(cmd)
-	h.sendKeys("Enter")
-	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
-	fields := strings.Fields(out)
-	if len(fields) != 3 {
-		t.Fatalf("kido tool spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
-	}
-	subPane := fields[1]
+	r := h.startRun(h.firstPane("alpha"), "run", "--name", "sub-e2e", "--", filepath.Join(piBinDir, "pi"), "--")
+	subPane := r.paneID()
 	h.waitPaneCommand(subPane, "pi")
 	h.programStatus(subPane, "state=idle:app=pi", "sub-e2e")
 	if status := h.in("display-message", "-p", "-t", subPane, "#{pane_program_status}"); !strings.Contains(status, `"app":"pi"`) {
@@ -334,8 +322,8 @@ func TestPromptInboxNative(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.promptPane("alpha", "π - alpha")
 	in := startInbox(t, "ok\n")
-	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	h.agentStatus("pi-1", pane, "--inbox", in.Path)
+	h.piRoot(pane)
+	h.setPiOptions(pane, "pi-1", h.paneTitle(pane), in.Path, "")
 
 	h.runPrompt("over the socket")
 	h.waitMain("rc=0")

@@ -1,7 +1,2 @@
-val wait :
-  dir:string ->
-  knobs:Async_stream.knobs ->
-  notify:bool ->
-  warn:(string -> unit) ->
-  Run.id ->
-  (Run.outcome, string) result
+val wait : dir:string -> Run.id -> (Run.outcome, string) result
+(** Blocks until the run has ended, polling at the sidebar's tick. *)

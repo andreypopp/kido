@@ -8,6 +8,3 @@ and ssh_kind = Remote_terminal | Remote_agent of { name : string }
 
 val classify : State.pane -> t
 val title : State.pane -> t -> string option
-
-val display_name : State.t -> Run.pi -> string
-(** The @kido_name of the pane holding the pi, else its title. *)

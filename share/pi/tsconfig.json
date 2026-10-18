@@ -10,13 +10,5 @@
     "erasableSyntaxOnly": true,
     "skipLibCheck": true
   },
-  "include": [
-    "kido-status.ts",
-    "kido-agents.ts",
-    "kido-pi.ts",
-    "kido-pi-fixture.ts",
-    "kido-fixture.ts",
-    "kido-status-*.test.ts",
-    "kido-pi-*.test.ts"
-  ]
+  "include": ["kido-pi.ts", "kido-pi-fixture.ts", "kido-pi-*.test.ts"]
 }

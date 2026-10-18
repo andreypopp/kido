@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"encoding/json"
 	"io"
 	"net"
 	"os"
@@ -90,29 +89,6 @@ func staleSocket(t testing.TB) string {
 		t.Fatalf("stale socket vanished: %v", err)
 	}
 	return path
-}
-
-// envelope is the inbox protocol's v1 message, as far as the suite reads it.
-type envelope struct {
-	Kind string `json:"kind"`
-	From struct {
-		Name string `json:"name"`
-	} `json:"from"`
-	Text string `json:"text"`
-}
-
-// parseEnvelope reports whether raw is a v1 envelope: a JSON object
-// carrying both "v" and "kind"; anything else is a v0 raw prompt.
-func parseEnvelope(raw string) (envelope, bool) {
-	var probe map[string]json.RawMessage
-	if json.Unmarshal([]byte(raw), &probe) != nil || probe["v"] == nil || probe["kind"] == nil {
-		return envelope{}, false
-	}
-	var env envelope
-	if json.Unmarshal([]byte(raw), &env) != nil {
-		return envelope{}, false
-	}
-	return env, true
 }
 
 var lookModernBash = sync.OnceValues(func() (bash, skip string) {

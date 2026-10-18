@@ -5,9 +5,9 @@ A tmux workflow to manage coding agents. It supports pi and Claude Code.
 Website: <https://kido.tools>
 
 Kido runs a modified tmux to collect status from every pane and show this
-information in a sidebar. Kido includes a small set of pi extensions for
-process management: subagents and an async bash tool. These extensions use
-tmux for supervision and status reporting.
+information in a sidebar. Kido includes a pi extension for process
+management: subagents and an async bash tool. Start pi as `kido-pi` to
+load it. The extension uses tmux for supervision and status reporting.
 
 ## Install
 
@@ -95,8 +95,8 @@ Done status continues until you visit the pane.
 
 Claude Code runs unmodified, without a kido shim or settings.
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables its native status.
-`kido prompt` can paste to a native agent pane. Only local pi identities
-appear in `list_runs`, accept `message_agent`, or answer `get-agent`.
+`kido prompt` can paste to a native agent pane. Only pi started as
+`kido-pi` appears in `list_runs` and accepts `message_agent`.
 Snapshots resume local pi identities or restart bare pi, not Claude Code.
 
 Shell panes with the OSC 133 integration use the same indicators:
@@ -157,7 +157,7 @@ curl -fsSL https://get.dune.build/install | sh -s - --release 3.24.2
 export PATH="$HOME/.local/bin:$PATH"
 git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
 make install   # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
-make test      # the unit tests and the pi extensions' suite (needs node 24)
+make test      # the unit tests and the pi extension's suite (needs node 24)
 make e2e       # drives kido inside a real tmux server
 dune tools install ocamlformat && dune fmt   # ocamlformat is a dune dev tool, not a dependency
 ```

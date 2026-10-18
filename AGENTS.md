@@ -14,7 +14,7 @@ supplies context that the code does not contain:
 - The ask/reply cycle rule.
 - Spawning and the window lifecycle.
 - Run outcomes.
-- The boundary between the two pi extensions.
+- The boundary between kido and its pi extension.
 
 [docs/design-subagents.md](docs/design-subagents.md) describes subagents.
 [docs/design-rpc.md](docs/design-rpc.md) describes the external-client RPC.
@@ -121,7 +121,7 @@ Always use ASD-STE100:
 These requirements are fixed:
 
 - **Layout.** `bin/main.ml` contains the cmdliner command table and
-  small command bodies (`set_status`, `get-agent`, `ssh`, ...).
+  small command bodies (`ssh`, `runs`, `run-outcome`, ...).
   It also contains failure printing and the CLI's tables and text.
   `lib/` is the library `kido`. Each domain or subcommand with its
   own logic has one module. `lib_tmux/` is the library `tmux`.
@@ -130,8 +130,8 @@ These requirements are fixed:
   Unit tests use ppx_expect. Put them at the bottom of the module
   under test, in a `let%test_module "Tests"` submodule. This includes
   the `kido_sidebar` library in `bin/`. Thus, `.mli` exports only
-  what production callers use. The out-of-line exceptions are
-  `lib/test/test_tool_parity.ml` and `lib/test/tmux_server/`.
+  what production callers use. The out-of-line exception is
+  `lib/test/tmux_server/`.
 - **Every stanza compiles with `-open Containers`.** Every `.ml`
   has an `.mli` unless it contains only types or constants. The test-helper modules
   `Sh`, `Test_support`, `Test_fixture`, `View_fixture` and
@@ -154,7 +154,7 @@ Conventions:
 
 - **Errors.** A `lib/` failure is a `result`. Use a string error
   that contains the message to print. If the caller or message differs
-  by case, use a variant (`Run.write_pi` returns `Error holder`).
+  by case, use a variant (`Run_stop.stop` returns `Error (No_run _)`).
   The I/O exceptions `Unix_error` and `Sys_error` propagate.
   Do not catch them to rethrow them.
 - **Subcommands.** A subcommand body in `bin/main.ml` returns its
@@ -207,12 +207,6 @@ Conventions:
 - **Cmdliner docs.** A bare `$` is markup.
   It produces "unescaped $" on `--help`.
   Write environment variables as `$(b,NAME)`.
-- **Quoting.** `Run_ending.quote` in `lib/run_ending.ml` deliberately uses
-  Go-style `%q` quoting. OCaml `%S` escapes non-ASCII agent names.
-- **Inbox JSON.** Write `from.session` even when it is empty.
-  It has no default annotation.
-  `Msg.yojson_of_envelope` adds `v` to the derived encoding.
-  The inline tests in `lib/msg.ml` fix the field set.
 - **Tmux I/O.** Do not inject tmux/ops records whose only other
   implementation is a test fake. Call `Tmux` directly.
   Test through e2e. `Tmux.t` is immutable.
@@ -238,9 +232,9 @@ Conventions:
 ## Layout
 
     bin/main.ml        the cmdliner command table and the small commands:
-                       set_status, get-agent, get-inbox,
-                       ssh, switch-session/window, server,
-                       runs, run-outcome, reap, rpc; failure printing,
+                       ssh, switch-session/window, server, run,
+                       run-child, runs, run-outcome, run-wait,
+                       run-stop, reap, rpc; failure printing,
                        and every human-readable rendering of library
                        results
     bin/kido_sidebar.ml  the library kido_sidebar: Mosaic rendering, keys, cursor
@@ -259,44 +253,36 @@ Conventions:
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
                        debounce, rows as data, the feed's v2 JSON
       server_dir.ml    the server state directory and socket
-      pane_kind.ml     pane classification, titles and agent display names
-      reporting.ml     kido agent-status: the claim of a pi's run
+      pane_kind.ml     pane classification and titles
       ssh.ml           kido ssh: argument parsing, priming and the pane's ssh marks
-      msg.ml           the inbox wire protocol and its client: v0 raw prompt,
-                       v1 envelope, the unix-socket sender and notify
-      tree.ml          the parent-first walk behind list_runs and the sidebar
-      reap.ml          which subagent windows are finished with, and when
-      run_ending.ml    a run's ending: the outcome write that decides who speaks,
-                       its text and its send to the parent's inbox
-      run.ml           run records in runs/<id>/, run selection and the
-                       ending derived from a run's pane
+      msg.ml           the inbox client: one payload over the unix socket
+      tree.ml          the parent-first walk behind the sidebar
+      reap.ml          which run panes are finished with, and when
+      run_ending.ml    a run's ending: the first-write-wins outcome write
+      run.ml           run records in runs/<id>/ and the ending derived
+                       from a run's pane
       run_window.ml    the tracked run window that both launchers create,
                        and its name checks
-      prompt.ml, message_agent.ml (also ask_agent and notify_parent),
-      list_runs.ml, spawn_subagent.ml, async_bash.ml,
-      async_stream.ml, run_wait.ml (run-wait and the
-      async_bash notifier), run_stop.ml (run-stop),
-      run_history.ml (the runs history reader),
-      control.ml (stop_run, interrupt_subagent)
+      prompt.ml, run_wait.ml (run-wait), run_stop.ml (run-stop),
+      run_history.ml (the runs history reader)
                        one subcommand or family each
       fs.ml, timestamp.ml  files, paths, executable lookup, time;
                        Fs is the shared kido_fs library used by kido and tmux
       test_fixture.ml, test_support.ml, view_fixture.ml, state_fixture.ml, sh.ml
                        shared inline-test scaffolding
-      test/            test_tool_parity.ml, the built-binary exception
       test/tmux_server/  the Client and pane-read tests against a real tmux, run only with $KIDO_TMUX
     lib_tmux/          the library tmux: tmux.ml and tmux.mli (server handles,
                        flat ids, operations, binary lookup and Client),
                        program_status.ml (OSC 7501 parsing, re-exported through
                        tmux.mli; no separate .mli)
     share/             the source of share/kido, installed by share/dune:
-      bin/             the bin directory's sh shims (kido, tmux, ssh, pi, kido-pi)
+      bin/             the bin directory's sh shims (kido, tmux, ssh, kido-pi)
       shim.sh          their shared helper
       bash/, zsh/      the OSC 133 integrations every primed shell sources
       tmux/            kido-tmux.conf, the defaults the launcher writes into
                        server.conf (embedded, not installed)
-      pi/              the two old pi extensions, which the pi shim loads with
-                       --extension, and kido-pi.ts, which the kido-pi shim loads
+      pi/              kido-pi.ts, the harness, which the kido-pi shim loads
+                       with --extension
       pi/testdata/fake_kido/, pi/testdata/fake_tmux/, pi/testdata/fake_common/
                        the TypeScript suite's fake kido and fake tmux, and
                        their shared helpers, built by scripts/test-ts.sh
@@ -373,17 +359,13 @@ To debug the default server, use
 control client and launcher.
 `share/bin/tmux` does the same for shell use.
 
-**Tool name == `kido tool` subcommand name.** Every subagent tool in
-`share/pi/` invokes the `kido tool` subcommand with its own name
-(table in docs/design-subagents.md).
-A new tool requires a subcommand with the same spelling.
-There are no aliases. A different name causes a silent runtime failure,
-not a build failure. `lib/test/test_tool_parity.ml` runs each tool in
-`share/pi/testdata/tools.json` as a `kido tool` subcommand.
-
-A subcommand that no tool calls uses the clearest name (`run-wait`).
-`async_bash` used the underscore before its tool existed.
-Renaming a command is harder after something calls it.
+**The harness is one pi extension.** `share/pi/kido-pi.ts` holds every
+agent tool. It calls only kido's run commands (`run-child`, `runs
+--json`, `run-wait --json`, `run-stop`, `run-outcome`) and tmux. These
+commands, their flags, exit codes and JSON are the contract between the
+two (docs/design.md, "The pi extension, kido-pi"). The extension never
+finds or parses kido's state directory; it reads only the output path
+that a run command prints. kido never reads the extension's files.
 
 ## The tmux fork
 
@@ -584,43 +566,24 @@ If its `@kido_name` is set, local pi uses that name.
 ## Agent runs, and delivering a prompt
 
 Runs use the server directory resolved above.
-Every tracked process has one directory `runs/<id>/`. `kido run` and
-`kido run-child` mint an opaque id. The old harness passes a
-subagent's run id to pi as its session id, and a pi's claim uses its
-session id as its run id. Each file in it has one writer, and each write
-replaces the whole file. There is **no locking**. Policy resolves races:
+Every run has one directory `runs/<id>/`. `kido run` and
+`kido run-child` mint an opaque id. A run id is not a pi session id: a
+restarted agent is a new run with the same session. `meta.json` and
+`command` are written once at the start. `outcome` has racing writers,
+and the first write wins. Each write replaces the whole file. There is
+**no locking**. Policy resolves races:
 
-- **The caller is `PI_SESSION_ID`.** pi sets it, with
-  `PI_SESSION_FILE`, for its bash tool. `kido-status.ts` sets both for
-  every kido process it starts. kido never finds the caller from its
-  pane. The launcher and the e2e harness remove both variables.
-- **One live holder per run.** `Run.write_pi` creates `pi.json`
-  with `Unix.link` from its own pid-named temporary file.
-  This is atomic and fails if the record is taken.
-  Only the pid named in an existing record can overwrite it while
-  that pid is alive. Once that pid is dead, another pid can overwrite it.
-  `Run.release` follows the same rule and writes pid 0.
-  Nothing deletes `pi.json`.
-
-  A refusal is `Error holder`.
-  For a refusal, `kido agent-status` exits **6**.
-  `share/pi/kido-status.ts` reads this code to stop reporting.
-  If only one side changes this exit code, a second pi silently
-  overwrites a live session.
-- Only a pi with a UI claims a run. A headless pi claims nothing.
-- **The claim writes the harness options.** After `Run.write_pi`
-  succeeds, `kido agent-status` sets `@kido_run` and the four options
-  on the claimed pane. `agent-status --remove` unsets the four.
-  A pane is a local pi only with a pi root and `@kido_session`.
-  Thus, a stale option is no agent.
+- **kido has no caller.** `run-child` takes its parent as an argument:
+  a run id, or the pane `%N` of a top-level pi. kido never finds a
+  caller from the environment or its pane.
+- **kido stores nothing for a pi session.** The extension writes the
+  four options on its pane. A pane is a local pi only with a pi root
+  and `@kido_session`. Thus, a stale option is no agent.
 - **A run's status comes from its outcome and its pane, never a pid.**
   `Run.effective_outcome`: the outcome file, else the dead pane's
   `#{pane_dead_status}` (0 `completed`, N `failed` "exit N") or
   `#{pane_dead_signal}` (`failed` "signal NAME"), else `died`.
   Only the sweep, `run-outcome` and `run-stop` write an outcome.
-- **The kind decides collection.** `Reap.sweep` and `kido prompt`
-  read the marked run's meta. A `pi` run is never collected, and its
-  window stays a prompt candidate.
 - **The orphan rule reads the parent's status.** A `Run` parent has
   ended by the status rule above; a `Pane` parent (`%N`) when its pane
   is gone, dead or shows no pi root. Then `Reap.sweep` collects the
@@ -638,10 +601,6 @@ Sending it again would deliver it twice.
 A `Some_agent` receives a paste. `Terminal` is excluded.
 The RPC prompt request uses the same scope rule and `Prompt.deliver`
 (docs/design-rpc.md, "Prompting an agent").
-
-Runs remain authoritative for the old harness's coordination and for
-run history, even when the pane's current root app is replaced or
-cleared.
 
 `Prompt.send_prompt` **pastes rather than types**.
 `send-keys -l` writes raw bytes.
@@ -798,9 +757,7 @@ output, exit code, and effects on tmux or state.
 Unit tests check pure library logic that e2e cannot reach or test
 precisely: parsers, formats and ordering. Layout above specifies their
 location.
-Do not write a unit test that execs the binary, except
-`lib/test/test_tool_parity.ml`. It runs each tool as a
-`kido tool` subcommand.
+Do not write a unit test that execs the binary.
 
 `make e2e` builds the fork into `build/tmux-fork/<revision>/`.
 It rebuilds only on a submodule bump.
@@ -1069,7 +1026,7 @@ It fast-forwards `~/Workspace/homebrew-tap`.
 It pushes from that SSH checkout.
 It never runs `brew upgrade`.
 
-`make preview-pi` atomically replaces the installed pi extensions.
+`make preview-pi` atomically replaces the installed pi extension.
 It backs up the originals once.
 `make unpreview-pi` restores them.
 Afterward, run `/reload` in the panes.

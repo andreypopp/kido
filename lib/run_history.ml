@@ -1,9 +1,15 @@
-type info = { meta : Run.meta; outcome : Run.outcome option; session : string option }
+type info = {
+  meta : Run.meta;
+  outcome : Run.outcome option;
+  session : string option;
+  output : string;
+}
 
-let yojson_of_info { meta; outcome; session } =
+let yojson_of_info { meta; outcome; session; output } =
   Yojson.Safe.Util.combine (Run.yojson_of_meta meta)
     (`Assoc
        (("session", `String (Option.value ~default:"" session))
+       :: ("output", `String output)
        :: (match outcome with Some o -> [ ("outcome", Run.yojson_of_outcome o) ] | None -> [])))
 
 let under parent (m : Run.meta) =
@@ -13,22 +19,22 @@ let under parent (m : Run.meta) =
   | Some _, None -> false
 
 let load ?parent ~dir ~state id =
-  Run.load ~dir id
-  |> Option.filter (fun (r : Run.t) -> under parent r.meta)
-  |> Option.map (fun (r : Run.t) ->
+  Option.filter (fun (m : Run.meta) -> under parent m) (Run.read_meta ~dir id)
+  |> Option.map (fun (meta : Run.meta) ->
       {
-        meta = { r.meta with name = Run.name r };
-        outcome = State.run_ending ~dir state r.meta;
+        meta;
+        outcome = State.run_ending ~dir state meta;
         session =
-          Option.bind (State.run_pane state r.meta) (fun p ->
+          Option.bind (State.run_pane state meta) (fun p ->
               if Option.is_none p.dead_at then p.session else None);
+        output = Run.output_path ~dir meta.id;
       })
 
 let list ?parent ~dir ~state () =
   List.filter_map (load ?parent ~dir ~state) (Run.list ~dir)
   |> List.sort (fun a b -> Float.compare b.meta.started_at a.meta.started_at)
 
-type detail = { info : info; task : string; screen : string option; report : string option }
+type detail = { info : info; screen : string option }
 
 let detail ~dir ~state id =
   let open Result.Infix in
@@ -37,12 +43,7 @@ let detail ~dir ~state id =
       (Printf.sprintf "run %S: no such run" (Run.string_of_id id))
       (load ~dir ~state id)
   in
-  {
-    info;
-    task = Option.get_or ~default:"" (Run.read_task ~dir id);
-    screen = Run.read_screen ~dir id;
-    report = (if Run.has_report ~dir id then Some (Run.report_path ~dir id) else None);
-  }
+  { info; screen = Run.read_screen ~dir id }
 
 let%test_module "Tests" =
   (module struct

@@ -157,7 +157,7 @@ let parse_line line =
 
 let parse lines = List.filter_map parse_line lines
 
-type t = { panes : pane list; runs : Run.t Pane_map.t }
+type t = { panes : pane list; runs : Run.meta Pane_map.t }
 
 let read ~dir tmux =
   Result.map
@@ -170,7 +170,7 @@ let read ~dir tmux =
               let open Option.Infix in
               let* run = p.run in
               let* id = Result.to_opt (Run.parse_id run) in
-              Run.load ~dir id
+              Run.read_meta ~dir id
             with
             | Some r -> Pane_map.add p.pane_id r m
             | None -> m)
@@ -192,55 +192,30 @@ let pi_root (p : pane) =
 
 let find t id = List.find_opt (fun p -> equal_pane_id p.pane_id id) t.panes
 
-let live_agents ~dir (t : t) =
-  Tmux.Pane_map.bindings t.runs
-  |> List.filter_map (fun (pane, (r : Run.t)) ->
-      match Run.live_pi ~dir r.meta.id with
-      | Some pi when Option.equal equal_pane_id pi.pane (Some pane) -> Some (r.meta.id, pi)
-      | _ -> None)
-
 let run_pane state (m : Run.meta) =
   let id = Some (Run.string_of_id m.id) in
-  match m.kind with
-  | Pi -> List.find_opt (fun p -> Option.equal String.equal p.run id) state.panes
-  | Agent | Bash | Stream ->
-      Option.bind
-        (Option.flat_map (find state) m.pane)
-        (fun p -> if Option.equal String.equal p.run id then Some p else None)
+  Option.bind
+    (Option.flat_map (find state) m.pane)
+    (fun p -> if Option.equal String.equal p.run id then Some p else None)
 
 let run_ending ~dir state (m : Run.meta) =
-  let pane = run_pane state m in
-  match m.kind with
-  | Pi -> (
-      match pane with
-      | Some p when Option.is_none p.dead_at && not (pi_root p) ->
-          Some { Run.result = Died; text = ""; at = None }
-      | _ -> Run.effective_outcome ~dir ~pane:(Option.map pane_state pane) m)
-  | Agent | Bash | Stream -> Run.effective_outcome ~dir ~pane:(Option.map pane_state pane) m
+  Run.effective_outcome ~dir ~pane:(Option.map pane_state (run_pane state m)) m
 
 let find_run state id =
   Pane_map.fold
-    (fun _ (r : Run.t) found ->
-      match found with
-      | Some _ -> found
-      | None when Run.equal_id r.meta.id id -> Some r.meta
-      | None -> None)
+    (fun _ (m : Run.meta) found ->
+      match found with Some _ -> found | None when Run.equal_id m.id id -> Some m | None -> None)
     state.runs None
 
 let parent_ended ~dir state = function
   | Run.Run id -> (
-      match find_run state id with
+      let m = match find_run state id with Some m -> Some m | None -> Run.read_meta ~dir id in
+      match m with
+      | None -> Some (Printf.sprintf "no run %s" (Run.string_of_id id))
       | Some m ->
           Option.map
             (fun _ -> Printf.sprintf "run %s has ended" (Run.string_of_id id))
-            (run_ending ~dir state m)
-      | None -> (
-          match Run.read_meta ~dir id with
-          | None -> Some (Printf.sprintf "no run %s" (Run.string_of_id id))
-          | Some m ->
-              Option.map
-                (fun _ -> Printf.sprintf "run %s has ended" (Run.string_of_id id))
-                (run_ending ~dir state m)))
+            (run_ending ~dir state m))
   | Run.Pane pane -> (
       match find state pane with
       | None -> Some (Printf.sprintf "pane %s is gone" (Tmux.string_of_pane_id pane))
@@ -258,12 +233,7 @@ let caller_pane t self =
 
 let find_window_run t window =
   List.find_opt
-    (fun p ->
-      equal_window_id p.window_id window
-      &&
-      match Pane_map.find_opt p.pane_id t.runs with
-      | Some { meta = { kind = Agent | Bash | Stream; _ }; _ } -> true
-      | Some { meta = { kind = Pi; _ }; _ } | None -> false)
+    (fun p -> equal_window_id p.window_id window && Pane_map.mem p.pane_id t.runs)
     t.panes
 
 type session = { name : string; id : session_id; windows : pane list list }

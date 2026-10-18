@@ -27,7 +27,7 @@ install:
 	chmod -R u+w "$(PREFIX)/bin/kido" "$(PREFIX)/share/kido"
 
 # unit tests; the end-to-end suite needs the patched tmux and is separate.
-# test-ts covers pi's two extensions under node and skips without one, so
+# test-ts covers pi's extension under node and skips without one, so
 # the OCaml tests above never gain a node dependency of their own.
 test:
 	dune test --force
@@ -55,12 +55,12 @@ clean-forks:
 
 preview-pi unpreview-pi:
 	@set -eu; prefix="$${KIDO_PREVIEW_PREFIX:-$$(brew --prefix kido)}"; dir=$$(cd "$$prefix/share/kido/pi" && pwd -P); \
-	for file in kido-agents.ts kido-status.ts; do \
-	  if test '$@' = preview-pi; then \
-	    test -e "$$dir/$$file.orig" || cp -p "$$dir/$$file" "$$dir/$$file.orig"; src="share/pi/$$file"; \
-	  else src="$$dir/$$file.orig"; fi; \
-	  tmp=$$(mktemp "$$dir/$$file.XXXXXX"); cp -p "$$src" "$$tmp"; mv "$$tmp" "$$dir/$$file"; \
-	done; echo 'Run /reload in the panes'
+	file=kido-pi.ts; \
+	if test '$@' = preview-pi; then \
+	  test -e "$$dir/$$file.orig" || cp -p "$$dir/$$file" "$$dir/$$file.orig"; src="share/pi/$$file"; \
+	else src="$$dir/$$file.orig"; fi; \
+	tmp=$$(mktemp "$$dir/$$file.XXXXXX"); cp -p "$$src" "$$tmp"; mv "$$tmp" "$$dir/$$file"; \
+	echo 'Run /reload in the panes'
 
 release:
 	bash scripts/release.sh '$(VERSION)' $(ARGS)

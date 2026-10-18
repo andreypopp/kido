@@ -1,8 +1,6 @@
 package e2e
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -216,89 +214,19 @@ func TestShimsReachTheRealPrograms(t *testing.T) {
 	}
 
 	name, args := run("pi 'hello  there'")
-	if name != "pi" || len(args) != 5 || args[0] != "--extension" || args[2] != "--extension" || args[4] != "hello  there" {
-		t.Fatalf("pi reached %s %q, want two --extension and the message", name, args)
+	if name != "pi" || !slices.Equal(args, []string{"hello  there"}) {
+		t.Fatalf("pi reached %s %q, want plain pi with unmodified user arguments", name, args)
 	}
-	for i, ext := range []string{"kido-status.ts", "kido-agents.ts"} {
-		if !sameFile(args[2*i+1], filepath.Join(shareDir, "pi", ext)) {
-			t.Errorf("--extension %s, want the shipped %s", args[2*i+1], ext)
-		}
+	name, args = run("kido-pi 'hello  there'")
+	if name != "pi" || len(args) != 3 || args[0] != "--extension" || args[2] != "hello  there" {
+		t.Fatalf("kido-pi reached %s %q, want one --extension and the message", name, args)
+	}
+	if !sameFile(args[1], filepath.Join(shareDir, "pi", "kido-pi.ts")) {
+		t.Errorf("--extension %s, want the shipped kido-pi.ts", args[1])
 	}
 
 	name, args = run("claude -p hi")
 	if name != "claude" || !slices.Equal(args, []string{"-p", "hi"}) {
 		t.Fatalf("claude reached %s %q, want unmodified user arguments", name, args)
-	}
-}
-
-// Runs the real pi, since whether two copies of an extension collide is
-// pi's behaviour, not something a fake can report. Once with no
-// extensions of its own, once with symlinks to this checkout pointing at
-// a different real path than the shipped copies - which pi does not
-// dedupe, so it's the extensions' own one-copy rule keeping tools single.
-// Skips where pi is not installed, which includes CI.
-func TestPiShimLoadsKidosToolsOnce(t *testing.T) {
-	t.Parallel()
-	if _, err := exec.LookPath("pi"); err != nil {
-		t.Skip("no pi on PATH")
-	}
-	checkout, err := filepath.Abs("../share/pi")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	probe := filepath.Join(dir, "probe.ts")
-	if err := os.WriteFile(probe, []byte(`import { writeFileSync } from "node:fs";
-export default function (pi: any) {
-  pi.on("session_start", () => {
-    writeFileSync(process.env.KIDO_E2E_PROBE_OUT!, JSON.stringify(pi.getAllTools().map((t: any) => t.name)));
-    setTimeout(() => process.exit(0), 50);
-  });
-}
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, links := range []bool{false, true} {
-		t.Run(fmt.Sprintf("links=%v", links), func(t *testing.T) {
-			agent := filepath.Join(t.TempDir(), "agent")
-			exts := filepath.Join(agent, "extensions")
-			if err := os.MkdirAll(exts, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if links {
-				for _, name := range []string{"kido-status.ts", "kido-agents.ts"} {
-					if err := os.Symlink(filepath.Join(checkout, name), filepath.Join(exts, name)); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			out := filepath.Join(t.TempDir(), "tools.json")
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, filepath.Join(shareDir, "bin", "pi"),
-				"--mode", "rpc", "--no-session", "-e", probe)
-			cmd.Dir = t.TempDir()
-			cmd.Env = cleanEnv("PATH="+filepath.Join(shareDir, "bin")+":"+os.Getenv("PATH"),
-				"PI_CODING_AGENT_DIR="+agent, "PI_OFFLINE=1", "KIDO_E2E_PROBE_OUT="+out,
-				"KIDO_STATE_DIR="+t.TempDir(), "TMUX=", "TMUX_PANE=")
-			log, _ := cmd.CombinedOutput()
-			b, err := os.ReadFile(out)
-			if err != nil {
-				t.Fatalf("pi never started a session: %v\n%s", err, log)
-			}
-			if strings.Contains(string(log), "conflicts") {
-				t.Errorf("pi reported conflicting extensions:\n%s", log)
-			}
-			var tools []string
-			if err := json.Unmarshal(b, &tools); err != nil {
-				t.Fatal(err)
-			}
-			for _, tool := range []string{"list_runs", "spawn_subagent", "notify_parent"} {
-				if n := strings.Count(","+strings.Join(tools, ",")+",", ","+tool+","); n != 1 {
-					t.Errorf("%s registered %d times, want once: %q", tool, n, tools)
-				}
-			}
-		})
 	}
 }

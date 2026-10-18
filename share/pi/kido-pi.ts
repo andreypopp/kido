@@ -38,15 +38,11 @@ const PANE_SEPARATOR = "\x1f";
 
 export type DeliverAs = "followUp" | "steer";
 
-export type Sender =
-  | { kind: "agent"; session: string; name?: string; pane?: string }
-  | { kind: "kido"; name: string; pane?: never }
-  | { kind: "human"; pane: string };
+export type Sender = { session: string; name?: string; pane?: string };
 
 export type Envelope = { id: string; from: Sender; text: string } & (
   | { kind: "message" | "ask" | "notice" | "steer" | "interrupt" | "stop" }
   | { kind: "reply"; replyTo: string }
-  | { kind: "stream"; output: string }
   | { kind: "unrecognised"; claimed: string }
 );
 
@@ -69,11 +65,7 @@ export function parseEnvelope(text: string): Envelope | null {
   const str = (v: unknown): string => (typeof v === "string" ? v : "");
   const from = isRecord(obj.from) ? obj.from : {};
   const [session, name, pane] = [str(from.session), str(from.name), str(from.pane)];
-  const sender: Sender = session
-    ? { kind: "agent", session, name: name || undefined, pane: pane || undefined }
-    : name
-      ? { kind: "kido", name }
-      : { kind: "human", pane };
+  const sender: Sender = { session, name: name || undefined, pane: pane || undefined };
   const base = { id: str(obj.id), from: sender, text: str(obj.text) };
   const kind = str(obj.kind);
   switch (kind) {
@@ -86,8 +78,6 @@ export function parseEnvelope(text: string): Envelope | null {
       return { ...base, kind };
     case "reply":
       return { ...base, kind, replyTo: str(obj.replyTo) };
-    case "stream":
-      return { ...base, kind, output: str(obj.output) };
     default:
       return { ...base, kind: "unrecognised", claimed: kind };
   }
@@ -192,9 +182,8 @@ function chain(bySession: Map<string, AgentEntry>, start: string): string[] {
 }
 
 async function runCommand(command: string, args: string[], opts: { timeoutMs: number } = { timeoutMs: KIDO_TIMEOUT_MS }): Promise<RunResult> {
-  const { PI_SESSION_ID: _id, PI_SESSION_FILE: _file, ...env } = process.env;
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
     const finish = (result: RunResult): void => {
       clearTimeout(timer);
       resolve(result);
@@ -371,11 +360,9 @@ type AgentRow = {
 type RunRow = {
   id: string;
   name?: string;
-  kind?: string;
   parent?: string;
   pane?: string;
   cwd?: string;
-  model?: string;
   startedAt?: string;
   session?: string;
   output?: string;
@@ -600,7 +587,7 @@ function utf8Prefix(text: string, max: number): string {
   return out;
 }
 
-// Go-style %q, as Run_ending.quote writes it: OCaml's %S would escape non-ASCII
+// Go-style %q: OCaml's %S would escape non-ASCII
 // agent names kido deliberately keeps readable.
 function quote(s: string): string {
   let out = '"';
@@ -724,37 +711,20 @@ export default function (pi: ExtensionAPI) {
     pi.sendUserMessage(text, { deliverAs });
   };
 
-  const labelFrom = (from: Sender): string => {
-    switch (from.kind) {
-      case "agent":
-        return from.name || from.session;
-      case "kido":
-        return from.name;
-      case "human":
-        return from.pane || "another agent";
-    }
-  };
+  const labelFrom = (from: Sender): string => from.name || from.session || from.pane || "another agent";
 
-  const messageSender = async (from: Sender): Promise<{ name: string; relation: SenderRelation } | null> => {
-    if (!dir) return null;
-    const entries = agentEntries(dir);
-    let sessionId = "";
-    if (from.kind === "agent") {
-      sessionId = from.session;
-    } else if (from.kind === "human" && from.pane) {
-      const owner = (await listPanes()).find((p) => p.pane === from.pane);
-      sessionId = owner && isAgentPane(owner) ? owner.agentSession : "";
-    }
-    const sender = entries.find((a) => a.session === sessionId);
-    const isParent = !!edge && sessionId === edge.parent;
-    if (!sender && !isParent) return null;
+  const messageSender = (from: Sender): { name: string; relation: SenderRelation } | null => {
+    if (!from.session) return null;
+    const entries = dir ? agentEntries(dir) : [];
+    const sender = entries.find((a) => a.session === from.session);
+    const isParent = !!edge && from.session === edge.parent;
     const isChild = !!ownSessionId && !!sender && sender.parent === ownSessionId;
     return { name: sender?.name || labelFrom(from), relation: isParent ? "parent" : isChild ? "child" : "peer" };
   };
 
   const handleInboundMessage = async (env: Envelope): Promise<void> => {
     if (!env.text) return;
-    const sender = await messageSender(env.from);
+    const sender = messageSender(env.from);
     if (!sender) {
       deliver(env.text);
       return;
@@ -812,8 +782,8 @@ export default function (pi: ExtensionAPI) {
 
   const handleInboundAsk = async (env: Envelope): Promise<"ok" | "refused"> => {
     const asker = env.from;
-    if (asker.kind === "agent" && [...pendingOutbound.values()].some((w) => w.targetSession === asker.session)) return "refused";
-    const sender = await messageSender(asker);
+    if ([...pendingOutbound.values()].some((w) => w.targetSession === asker.session)) return "refused";
+    const sender = messageSender(asker);
     const from = sender?.name ?? labelFrom(asker);
     const relation = sender?.relation ?? "peer";
     if (env.from.pane) pendingInboundAsks.set(env.id, env.from.pane);
@@ -856,23 +826,17 @@ export default function (pi: ExtensionAPI) {
   const isAncestor = (entries: AgentEntry[], selfSession: string, target: AgentEntry): boolean =>
     selfSession !== target.session && chain(bySessionOf(entries), target.session).includes(selfSession);
 
-  const senderIsAncestor = async (env: Envelope): Promise<boolean> => {
+  const senderIsAncestor = (env: Envelope): boolean => {
     const sender = env.from;
-    if (sender.kind === "kido") return true;
-    if (edge && sender.kind === "agent" && sender.session === edge.parent) return true;
+    if (!sender.session || sender.session === ownSessionId) return false;
+    if (edge && sender.session === edge.parent) return true;
     if (!dir || !ownSessionId) return false;
     const entries = agentEntries(dir);
-    if (sender.kind === "human") {
-      if (!sender.pane) return false;
-      const owner = (await listPanes()).find((p) => p.pane === sender.pane);
-      return !owner || !isAgentPane(owner);
-    }
-    const from = entries.find((a) => a.session === sender.session);
-    return !!from && isAncestor(entries, ownSessionId, from);
+    return chain(bySessionOf(entries), ownSessionId).includes(sender.session);
   };
 
   const handleInboundControl = async (env: Envelope, kind: "interrupt" | "stop"): Promise<"ok" | "refused"> => {
-    if (!(await senderIsAncestor(env))) return "refused";
+    if (!senderIsAncestor(env)) return "refused";
     if (kind === "interrupt") {
       await session?.abort();
     } else {
@@ -882,7 +846,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const handleInboundSteer = async (env: Envelope): Promise<"ok" | "refused"> => {
-    if (!(await senderIsAncestor(env))) return "refused";
+    if (!senderIsAncestor(env)) return "refused";
     if (env.text) deliver(`${labelFrom(env.from)} is redirecting this work: ${env.text}`, "steer");
     return "ok";
   };
@@ -905,8 +869,6 @@ export default function (pi: ExtensionAPI) {
       case "interrupt":
       case "stop":
         return handleInboundControl(env, env.kind);
-      case "stream":
-        return "ok";
       case "unrecognised":
         if (env.text) {
           deliver(`[unrecognised message kind ${JSON.stringify(env.claimed)} from ${labelFrom(env.from)}] ${env.text}`);
@@ -945,11 +907,9 @@ export default function (pi: ExtensionAPI) {
     return {
       id: value.id,
       name: str(value.name),
-      kind: str(value.kind),
       parent: str(value.parent),
       pane: str(value.pane),
       cwd: str(value.cwd),
-      model: str(value.model),
       startedAt: str(value.startedAt),
       session: str(value.session),
       output: str(value.output),
@@ -1060,7 +1020,7 @@ export default function (pi: ExtensionAPI) {
         cwd: r.cwd ?? "",
         canMessage: !!entry && !!livePane && livePane.inbox !== "",
         canReply: !!entry && canReply(entry, livePane?.inbox ?? ""),
-        model: entry?.model || r.model || "",
+        model: entry?.model ?? "",
         kind: entry ? "subagent" : "bash",
         relationship: "own",
         run: r.id,
@@ -1087,7 +1047,8 @@ export default function (pi: ExtensionAPI) {
   type Address = { agent: AgentRow } | { error: string };
 
   const decide = (candidates: AgentRow[], wanted: string, by: "name" | "id"): Address | null => {
-    if (candidates.length === 1) return { agent: candidates[0]! };
+    const only = candidates[0];
+    if (candidates.length === 1 && only) return { agent: only };
     if (candidates.length > 1) {
       const list = candidates
         .map((a) => `${a.id} (${agentName(a)})`)
@@ -1342,7 +1303,7 @@ export default function (pi: ExtensionAPI) {
     const read = readTail(path, 0, MAX_NOTICE_BYTES);
     if ("error" in read) return read;
     let start = 0;
-    while (start < read.data.length && (read.data[start]! & 0xc0) === 0x80) start++;
+    while (start < read.data.length && ((read.data.at(start) ?? 0) & 0xc0) === 0x80) start++;
     return { tail: read.data.subarray(start).toString("utf8"), omitted: read.skipped + start };
   };
 
@@ -1537,7 +1498,7 @@ export default function (pi: ExtensionAPI) {
     );
     if (matches.length <= 1) return matches[0] ?? null;
     const startedAt = (e: AgentEntry): string => runs.find((r) => r.id === e.run)?.startedAt ?? "";
-    return matches.sort((a, b) => startedAt(b).localeCompare(startedAt(a)))[0]!;
+    return matches.sort((a, b) => startedAt(b).localeCompare(startedAt(a))).at(0) ?? null;
   };
 
   const endedTarget = (to: string, resolved: Resolution): { entry: AgentEntry; starting: boolean } | null => {
@@ -2082,7 +2043,8 @@ export default function (pi: ExtensionAPI) {
     if (matches.length > 1) {
       return `${quote(to)} matches several runs: ${matches.map((a) => a.run || a.id).sort().join(", ")}`;
     }
-    const target = matches[0]!;
+    const target = matches.at(0);
+    if (!target) return `no run matches ${quote(to)}`;
     const run = target.run || target.id;
     if (target.kind === "bash") {
       const res = await runCommand(command, ["run-stop", run], { timeoutMs: envMs("KIDO_STOP_TIMEOUT_MS", 8000) });

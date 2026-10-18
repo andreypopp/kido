@@ -134,30 +134,15 @@ Claude Code sets `Claude Code` at startup, then a session summary
 ### Run records
 
 Every tracked process has one run, `<state>/runs/<run-id>/`. Its
-`meta.json` contains launch metadata: kind (pi, agent, bash or stream),
-name, parent and start. It contains the outcome after the run ends. The
-run's pane has the `@kido_run` mark. See
-[design-subagents.md](design-subagents.md).
+`meta.json` contains launch metadata: name, parent, pane, command and
+start. It contains the outcome after the run ends. The run's pane has
+the `@kido_run` mark. See design.md, "Who is authoritative for what".
 
-Each local pi session with a UI that runs kido's extensions
-(`kido-status.ts`) claims the run of its session id. Its `pi.json`
-contains:
-
-- pid
-- Pane
-- Name (pi's `/name`)
-- Inbox socket
-- pi session file
-- Model
-- Activity text
-- Report time: the last identity report. `list_runs` orders agents by it.
-
-These records supply the old harness's coordination. The claim also
-sets `@kido_run` and the four harness options on the pi's pane:
-`@kido_session`, `@kido_name`, `@kido_inbox` and `@kido_activity`
-(design.md, "Who is authoritative for what"). kido's classification and
-status read only the options, and trust them only while the pane has an
-OSC 7501 root with `app=pi`.
+A local pi that runs kido's extension (`kido-pi`) writes four pane
+options: `@kido_session`, `@kido_name`, `@kido_inbox` and
+`@kido_activity`. kido's classification and status read only these
+options, and trust them only while the pane has an OSC 7501 root with
+`app=pi`. kido stores nothing for a pi session.
 
 ### The ssh mark
 
@@ -310,11 +295,12 @@ Pi and Claude Code report their status through OSC 7501.
 - While present, a terminal report has precedence over its shell phase
   for the frontend's indicator and message. A shell prompt (`A`) clears
   the non-final records.
-- For `Pi_agent`, the run gives identity and name. OSC 7501 gives status.
+- For `Pi_agent`, `@kido_session` and `@kido_name` give identity and
+  name. OSC 7501 gives status.
 - A pane's kind determines only its row and `kido prompt` scope.
-  Messaging, control, `list_runs` and runs use runs by id.
-  Thus, local pi remains reachable if its root clears or another root
-  replaces it.
+  The extension's messaging and control use `@kido_inbox` and session
+  ids under the same trust rule, so a pane whose pi root clears is not
+  reachable as an agent.
 
 ## Frontends
 

@@ -171,8 +171,9 @@ func TestRunChildUnderARunAndAPaneParent(t *testing.T) {
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
 	h.programStatus(caller, "state=idle:app=pi", "parent")
-	h.agentStatus("parent-run", caller, "--name", "Parent")
+	h.setPiOptions(caller, "parent-run", "Parent", "", "")
 	callerPane := h.in("display-message", "-p", "-t", caller, "#{pane_id}")
+	h.agentRunMeta("parent-run", callerPane, "Parent", "")
 
 	byRun := h.startRun(caller, "run-child", "parent-run", "--name", "child-of-run", "--", "sleep", "300")
 	byPane := h.startRun(caller, "run-child", callerPane, "--name", "child-of-pane", "--", "sleep", "300")
@@ -182,14 +183,6 @@ func TestRunChildUnderARunAndAPaneParent(t *testing.T) {
 		}
 	}
 
-	listed := h.listedRuns(caller)
-	own := map[string]bool{}
-	for _, row := range listed {
-		own[row.ID] = true
-	}
-	if !own[byRun.ID] {
-		t.Fatalf("list_runs lost a run-parented child: %+v", listed)
-	}
 	out, rc := h.kidoAs(caller, "", nil, "runs", "--json", "--parent", callerPane)
 	if rc != 0 {
 		t.Fatalf("runs --parent %s: %d %q", callerPane, rc, out)
@@ -204,6 +197,9 @@ func TestRunChildUnderARunAndAPaneParent(t *testing.T) {
 		t.Errorf("runs --parent %s = %+v, want only %s", callerPane, paneRows, byPane.ID)
 	}
 
+	if out, rc := h.kidoAs(caller, "", nil, "run-outcome", "--result", "completed", "--", "parent-run"); rc != 0 {
+		t.Fatalf("ending the parent run: %d %q", rc, out)
+	}
 	h.programStatus(caller, "state=idle")
 	h.reap("reap-child.out")
 	for _, id := range []string{byRun.ID, byPane.ID} {

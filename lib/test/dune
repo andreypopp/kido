@@ -4,6 +4,6 @@
   (:standard -open Containers))
  (libraries kido containers unix yojson)
  (inline_tests
-  (deps ../../share/pi/testdata/tools.json ../../bin/main.exe))
+  (deps ../../bin/main.exe))
  (preprocess
   (pps ppx_expect)))

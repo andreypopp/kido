@@ -77,7 +77,7 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
 // A message steered or queued into a session otherwise reads exactly like the
 // user typing, and who is talking is the one thing the model cannot infer: the
 // header names the sender and their relationship, and only a peer's says "not the user".
-test("a message from an agent is labelled with its sender and their relationship; one from a shell stays the user's own words", async () => {
+test("every message with a session is labelled with its sender and their relationship, even a top-level peer; raw v0 text stays the user's own words", async () => {
   const fx = makeFixture();
   try {
     fx.writeAgent("root-x", "peer-a", { session: "peer-session", run: "peer-session" });
@@ -91,6 +91,7 @@ test("a message from an agent is labelled with its sender and their relationship
       await sendToInbox(s.inboxPath, envelope("message", "the refactor is in", { from: { session: "kid-session", name: "kid" } }));
       await sendToInbox(s.inboxPath, envelope("message", "can you review this?", { from: { session: "peer-session", name: "peer-a" } }));
       await sendToInbox(s.inboxPath, envelope("message", "sharing a pane does not make me the user", { from: { session: "hidden-peer-session", name: "hidden-peer" } }));
+      await sendToInbox(s.inboxPath, envelope("message", "no map entry names me", { from: { session: "stranger-session", name: "solo" } }));
 
       assert.deepEqual(
         labelled().map((m) => m.content),
@@ -99,6 +100,7 @@ test("a message from an agent is labelled with its sender and their relationship
           "message from @kid (your subagent):\nthe refactor is in",
           "message from @peer-a (another agent in this session, not the user):\ncan you review this?",
           "message from @hidden-peer (another agent in this session, not the user):\nsharing a pane does not make me the user",
+          "message from @solo (another agent in this session, not the user):\nno map entry names me",
         ],
         "one header line each, naming the sender and how they stand to this session, with the text from the next line on",
       );
@@ -113,11 +115,6 @@ test("a message from an agent is labelled with its sender and their relationship
         "regular mode draws the message in full regardless of ctrl-o",
       );
 
-      // Negative control: a human at a bare pane is no calling session, so no
-      // agent owns that pane - the user speaking, unlabelled.
-      await sendToInbox(s.inboxPath, envelope("message", "do this instead", { from: { session: "", pane: "%99" } as never }));
-      assert.ok(s.delivered.some((d) => d.text === "do this instead"), "a shell's message is the user's own words, delivered unlabelled");
-      assert.equal(labelled().length, 4, "and it is not dressed up as an agent's message");
     });
   } finally {
     await fx.restore();

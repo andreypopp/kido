@@ -15,16 +15,15 @@ func countRows(lines []string, sub string) int {
 	return n
 }
 
-// A user splitting a running async_bash run's window must see the split
+// A user splitting a running run's window must see the split
 // pane draw as the plain shell it is, not a second copy of the run:
 // @kido_run is pane-scoped with no window-scoped fallback, and
 // Run_window.create never marked the split.
 func TestSidebarShowsASplitBashRunPaneAsAnOrdinaryShell(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	h.asyncParent("alpha", "parent-split-e2e")
-
-	_, paneID, _ := h.asyncBashIDs(nil, "split-e2e", "sleep", "300")
+	started := h.startRun(h.firstPane("alpha"), "run", "--name", "split-e2e", "--", "sleep", "300")
+	paneID := started.paneID()
 	h.waitRow("split-e2e")
 	if n := countRows(h.rows(), "split-e2e"); n != 1 {
 		t.Fatalf("before the split: %d rows carry the run's name, want 1", n)

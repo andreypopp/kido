@@ -66,11 +66,7 @@ let lookup env name =
 let server_env ~bin_dir env =
   let env =
     Array.filter
-      (fun s ->
-        not
-          (List.exists
-             (fun pre -> String.prefix ~pre s)
-             [ "KIDO_STATE_DIR="; "PI_SESSION_ID="; "PI_SESSION_FILE=" ]))
+      (fun s -> not (List.exists (fun pre -> String.prefix ~pre s) [ "KIDO_STATE_DIR=" ]))
       env
   in
   match bin_dir with

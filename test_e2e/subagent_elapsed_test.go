@@ -46,14 +46,16 @@ func TestSubagentRowShowsElapsedUnlessActivity(t *testing.T) {
 		}
 	}
 	for _, activity := range []string{"checking tests", ""} {
-		if out, rc := h.kidoAs(pane, "", nil, "tool", "set_status", "--", activity); rc != 0 {
-			t.Fatalf("set_status: rc=%d: %s", rc, out)
+		if activity == "" {
+			h.in("set-option", "-pu", "-t", pane, "@kido_activity")
+		} else {
+			h.in("set-option", "-p", "-t", pane, "@kido_activity", activity)
 		}
 		h.waitFor(func() bool {
 			if activity == "" {
 				return seconds() >= first
 			}
-			return h.rowFor("elapsed-agent") == "└ π - elapsed-agent "+activity
+			return h.rowFor("elapsed-agent") == "└ elapsed-agent "+activity
 		}, settle, func() string { return fmt.Sprintf("activity %q, row %q", activity, h.rowFor("elapsed-agent")) })
 		f.waitLast(func(s feedSnapshot) bool {
 			for _, r := range feedItems(s.Sessions[0].Nodes) {

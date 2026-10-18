@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,59 +87,5 @@ func TestServerSocketPathTooLong(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("long path created a directory: %v", err)
-	}
-}
-
-func TestStateDirectoryResolution(t *testing.T) {
-	t.Parallel()
-	requireTmux(t)
-	base := serverDir(t)
-	pane := filepath.Join(base, "pane")
-	if err := os.Mkdir(pane, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	home := filepath.Join(base, "home")
-	xdg := filepath.Join(base, "xdg")
-	fallback := filepath.Join(base, "fallback")
-	for _, c := range []struct {
-		tmux, state, xdg, want string
-		marker                 bool
-	}{
-		{"", "", "", filepath.Join(home, ".local/state/kido"), false},
-		{"", "", xdg, filepath.Join(xdg, "kido"), false},
-		{"", fallback, xdg, fallback, false},
-		{filepath.Join(pane, "socket") + ",123,0", fallback, xdg, fallback, false},
-		{filepath.Join(pane, "ordinary") + ",123,0", fallback, xdg, fallback, true},
-		{filepath.Join(pane, "socket") + ",123,0", fallback, xdg, pane, true},
-		{filepath.Join(pane, "socket") + ",123,0", "", "", pane, true},
-	} {
-		if c.marker {
-			if err := os.WriteFile(filepath.Join(pane, "server.conf"), nil, 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		cmd := exec.Command(kidoBin, "get-inbox", "123")
-		cmd.Env = cleanEnv("HOME="+home, "XDG_STATE_HOME="+c.xdg, "KIDO_STATE_DIR="+c.state, "TMUX="+c.tmux)
-		out, err := cmd.CombinedOutput()
-		var got struct {
-			Path string `json:"path"`
-		}
-		if err != nil || json.Unmarshal(out, &got) != nil || got.Path != filepath.Join(c.want, "inbox/123.sock") {
-			t.Fatalf("%+v: %v: %s", c, err, out)
-		}
-	}
-
-	probe := filepath.Join(base, "probe")
-	cmd := exec.Command(kidoBin, "get-inbox", "123")
-	cmd.Env = cleanEnv("HOME="+home, "KIDO_STATE_DIR="+probe)
-	out, err := cmd.CombinedOutput()
-	var got struct {
-		Path string `json:"path"`
-	}
-	if err != nil || json.Unmarshal(out, &got) != nil || got.Path != filepath.Join(probe, "inbox/123.sock") {
-		t.Fatalf("get-inbox: %v: %s", err, out)
-	}
-	if _, err := os.Stat(probe); !os.IsNotExist(err) {
-		t.Errorf("get-inbox created state directory: %v", err)
 	}
 }

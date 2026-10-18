@@ -31,8 +31,7 @@ let filter text sessions =
     let rec node = function Item i -> item i | Group g -> List.concat_map item (g.first :: g.rest)
     and item i =
       (match i.row.lifecycle with
-        | Live { status = Some_agent _ | Pi_agent _; _ } | Ended { run = Agent; _ } ->
-            [ i.row.title ]
+        | Live { status = Some_agent _ | Pi_agent _; _ } | Ended _ -> [ i.row.title ]
         | Live { status = Ssh { user; host; pane = Remote_agent _ }; _ } ->
             [ i.row.title; user ^ "@" ^ host ]
         | Live { status = Ssh { user; host; _ }; _ } -> [ user ^ "@" ^ host ]
@@ -723,12 +722,11 @@ let%test_module "Tests" =
   (module struct
     open View_fixture
 
-    let run_info ?(kind = Run.Agent) ?(parent = "") ?outcome name : Sidebar.lingering =
+    let run_info ?(parent = "") ?outcome name : Sidebar.lingering =
       {
         name;
         parent = Option.map (fun id -> Run.Run id) (Test_fixture.owned parent);
         outcome;
-        kind;
         started = test_at;
       }
 
@@ -762,7 +760,7 @@ let%test_module "Tests" =
 
     let rendered (m : Sidebar.model) = make ~standalone:false (rendered_model m)
 
-    let rows ?(lingering = []) ?(current = "sess") ?(at = test_at) ?(pi = session "") panes st =
+    let rows ?(lingering = []) ?(current = "sess") ?(at = test_at) ?(pi = session ()) panes st =
       let m = model ~dir:"" ~clock:(ref at) () in
       let lingering =
         lingering
@@ -1033,13 +1031,13 @@ let%test_module "Tests" =
       List.iter
         (fun d ->
           render
-            ~lingering:[ ("build", run_info ~kind:Bash "build") ]
+            ~lingering:[ ("build", run_info "build") ]
             ~at:(test_at +. d)
             [ pane ~window:"@20" ~run:"build" "%30" ]
             [])
         [ 0.; 65. ];
       render
-        ~lingering:[ ("build", run_info ~kind:Bash ~outcome:Completed "build") ]
+        ~lingering:[ ("build", run_info ~outcome:Completed "build") ]
         ~at:(test_at +. 65.)
         [ pane ~window:"@20" ~dead_at:1. ~run:"build" "%30" ]
         [];
@@ -1059,9 +1057,7 @@ let%test_module "Tests" =
         (fun activity ->
           render
             ~lingering:[ ("helper", run_info "helper") ]
-            ~at:(test_at +. 65.)
-            ~pi:(session ~activity ~ts:(test_at +. 60.) "")
-            panes
+            ~at:(test_at +. 65.) ~pi:(session ~activity ()) panes
             [ ("%30", agent_state "helper" "") ])
         [ ""; "checking tests"; "" ];
       [%expect
@@ -1098,18 +1094,18 @@ let%test_module "Tests" =
     let%expect_test "a live run wakes the tick at its next second boundary" =
       let clock = ref test_at in
       List.iter
-        (fun (at, kind) ->
+        (fun at ->
           clock := test_at +. at;
           let side, _ =
             Sidebar.step (model ~dir:"" ~clock ())
               {
                 (snap_of [ pane ~window:"@20" ~run:"helper" "%30" ]) with
                 client = client "sess";
-                lingering = Sidebar.String_map.singleton "helper" (run_info ~kind "helper");
+                lingering = Sidebar.String_map.singleton "helper" (run_info "helper");
               }
           in
           Printf.printf "%.3f\n" (next_wait (make ~standalone:false side)))
-        [ (2.3, Run.Bash); (2.95, Bash); (2.95, Agent) ];
+        [ 2.3; 2.95; 2.95 ];
       [%expect {|
     0.100
     0.050
@@ -1411,7 +1407,7 @@ let%test_module "Tests" =
       let m =
         {
           m with
-          snap = { (snap_of ~l:[ ("%2", ("i", session "")) ] panes) with client = client "alpha" };
+          snap = { (snap_of ~l:[ ("%2", ("i", session ())) ] panes) with client = client "alpha" };
         }
       in
       let show filter =

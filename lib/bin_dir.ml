@@ -102,10 +102,9 @@ let%test_module "Tests" =
       let share = prefix // "share/kido" in
       copy ~perm:0o755 "../share/bin/tmux" (share // "bin/tmux");
       copy ~perm:0o755 "../share/bin/ssh" (share // "bin/ssh");
-      copy ~perm:0o755 "../share/bin/pi" (share // "bin/pi");
+      copy ~perm:0o755 "../share/bin/kido-pi" (share // "bin/kido-pi");
       copy "../share/shim.sh" (share // "shim.sh");
-      copy "../share/pi/kido-status.ts" (share // "pi/kido-status.ts");
-      copy "../share/pi/kido-agents.ts" (share // "pi/kido-agents.ts");
+      copy "../share/pi/kido-pi.ts" (share // "pi/kido-pi.ts");
       List.iter (fun name -> ignore (recorder (prefix // "bin") name)) [ "kido"; "kido-tmux" ];
       (prefix // "bin", share, share // "bin")
 
@@ -147,41 +146,37 @@ let%test_module "Tests" =
       Printf.printf "ssh: kido %b, args %b\n"
         (same prog (bin // "kido"))
         (List.equal String.equal args ("ssh" :: awkward));
-      (match run_shim path "pi" awkward with
-      | prog, "--extension" :: status :: "--extension" :: agents :: rest ->
-          Printf.printf "pi: real %b, extensions %b %b, args %b\n"
+      (match run_shim path "kido-pi" awkward with
+      | prog, "--extension" :: extension :: rest ->
+          Printf.printf "pi: real %b, extension %b, args %b\n"
             (String.equal prog (real // "pi"))
-            (same status (share // "pi/kido-status.ts"))
-            (same agents (share // "pi/kido-agents.ts"))
+            (same extension (share // "pi/kido-pi.ts"))
             (List.equal String.equal rest awkward)
       | r -> show "pi" r);
       [%expect
         {|
     tmux: kido-tmux true, args true
     ssh: kido true, args true
-    pi: real true, extensions true true, args true
+    pi: real true, extension true, args true
     |}]
 
-    (* pi reads these from its first argument: --extension in front would turn `pi install x` into a
-   session. *)
-    let%expect_test "the pi shim leaves pi's subcommands alone" =
+    let%expect_test "kido-pi adds its extension even in front of pi's own subcommands" =
       let root = Sh.temp () in
-      let _, _, shims = install root in
+      let _, share, shims = install root in
       ignore (recorder (root // "real") "pi");
       List.iter
         (fun sub ->
-          let _, args = run_shim (path_of [ shims; root // "real" ]) "pi" [ sub; "x" ] in
-          Printf.printf "%s: %s\n" sub (String.concat " " args))
-        [ "install"; "remove"; "uninstall"; "update"; "list"; "config"; "auth" ];
-      [%expect
-        {|
-    install: install x
-    remove: remove x
-    uninstall: uninstall x
-    update: update x
-    list: list x
-    config: config x
-    auth: auth x
+          let ok =
+            match run_shim (path_of [ shims; root // "real" ]) "kido-pi" [ sub; "x" ] with
+            | _, [ "--extension"; extension; got; "x" ] ->
+                String.equal got sub && same extension (share // "pi/kido-pi.ts")
+            | _ -> false
+          in
+          Printf.printf "%s: %b\n" sub ok)
+        [ "install"; "update" ];
+      [%expect {|
+    install: true
+    update: true
     |}]
 
     let%expect_test "a shim runs the program past its own directory, never the one ahead or itself"
@@ -194,18 +189,22 @@ let%test_module "Tests" =
       ignore (recorder after "pi");
       let ran path name = String.equal (fst (run_shim path name [])) (after // "pi") in
       Printf.printf "pi before the shim, one after: %b\n"
-        (ran (path_of [ before; shims; after ]) (shims // "pi"));
-      Printf.printf "through two installs' shims: %b\n" (ran (path_of [ shims; other; after ]) "pi");
+        (ran (path_of [ before; shims; after ]) (shims // "kido-pi"));
+      Printf.printf "through two installs' shims: %b\n"
+        (ran (path_of [ shims; other; after ]) "kido-pi");
       let out = Sh.temp () // "argv" in
       ignore
         (Sh.output
            ~env:[ "PATH=" ^ path_of [ before ]; "ARGV_OUT=" ^ out ]
-           (shims // "pi")
-           [ shims // "pi" ]);
+           (shims // "kido-pi")
+           [ shims // "kido-pi" ]);
       Printf.printf "by path, off PATH: %b\n"
         (String.prefix ~pre:((before // "pi") ^ "\000") (Option.get_or ~default:"" (Fs.read out)));
       (match
-         Sh.run ~env:[ "PATH=" ^ shims ^ ":/usr/bin:/bin" ] "/bin/sh" [ "/bin/sh"; "-c"; "exec pi" ]
+         Sh.run
+           ~env:[ "PATH=" ^ shims ^ ":/usr/bin:/bin" ]
+           "/bin/sh"
+           [ "/bin/sh"; "-c"; "exec kido-pi" ]
        with
       | WEXITED code, out ->
           Printf.printf "nothing past it: exit %d, %S\n" code

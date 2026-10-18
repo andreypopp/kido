@@ -22,7 +22,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,17 +89,15 @@ func buildPrefix(dir string, fresh bool, tmuxBin string) (nodeBin string, err er
 	if nodeBin, err = buildFakeAgent(dir, dir, "node"); err != nil {
 		return "", err
 	}
-	// A resume that names no command defaults to "pi" (lib/spawn_subagent.ml),
-	// which is where the tool allowlist is spelled onto the command line - so
-	// that one fixture needs the literal name "pi" to resolve, not a fake
-	// standing in under some other name. The only way to make a name resolve
-	// is to put its directory on a PATH, so this fake gets a directory holding
-	// nothing else: a directory holding the others too would shadow whatever
-	// real "node" or "kido" is installed on the machine running the suite, for
+	// A prompt test runs a fake pi in a pane so kido sees a pi root and can
+	// paste into it. The only way to make a name resolve is to put its
+	// directory on a PATH, so this fake gets a directory holding nothing
+	// else: a directory holding the others too would shadow whatever real
+	// "node" or "kido" is installed on the machine running the suite, for
 	// every pane that inherits that PATH, and a shell startup file that runs
 	// one of those names (nvm's, on a GitHub Ubuntu runner, runs `node -v`)
-	// would hang on a fake that never exits. TestSpawnResumeCarriesToolsOntoThePiCommandLine
-	// puts this directory on its own server's PATH and nobody else's.
+	// would hang on a fake that never exits. A test that needs it puts this
+	// directory on its own server's PATH and nobody else's.
 	if err := os.MkdirAll(piBinDir, 0o755); err != nil {
 		return "", err
 	}
@@ -270,14 +267,15 @@ func main() {
 }
 
 // cleanEnv strips KIDO_TMUX, so kido must resolve the tmux binary on its
-// own rather than through the harness's, and every KIDO_AGENT_* and
-// PI_SESSION_*, so a test run from inside a tracked agent's pane does not
-// leak that parent edge or caller into everything the harness spawns (including the inner server,
-// whose own environment is what new-window hands a spawned child).
+// own rather than through the harness's, and every KIDO_AGENT_*,
+// KIDO_RUN_* and KIDO_PI_STATE_DIR, so a test run from inside a tracked
+// agent's pane does not leak that parent edge or run into everything the
+// harness spawns (including the inner server, whose own environment is
+// what new-window hands a spawned child).
 func cleanEnv(extra ...string) []string {
 	env := make([]string, 0, len(os.Environ())+len(extra))
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "KIDO_STATE_DIR=") && !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") && !strings.HasPrefix(kv, "PI_SESSION_") && !strings.HasPrefix(kv, "TMUX=") && !strings.HasPrefix(kv, "TMUX_PANE=") {
+		if !strings.HasPrefix(kv, "KIDO_STATE_DIR=") && !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") && !strings.HasPrefix(kv, "KIDO_RUN_ID=") && !strings.HasPrefix(kv, "KIDO_RUN_OUTPUT=") && !strings.HasPrefix(kv, "KIDO_PI_STATE_DIR=") && !strings.HasPrefix(kv, "TMUX=") && !strings.HasPrefix(kv, "TMUX_PANE=") {
 			env = append(env, kv)
 		}
 	}
@@ -355,62 +353,15 @@ type harness struct {
 	t        *testing.T
 	dir      string // scratch: config, state, session working directory
 	stateDir string
-	outer    string   // outer socket name
-	inner    string   // inner socket path
-	client   string   // the inner client's name, e.g. /dev/ttys012
-	proxy    string   // ssh ProxyCommand script, written on demand
-	callers  sync.Map // pane id -> the session agentStatus last reported there
+	outer    string // outer socket name
+	inner    string // inner socket path
+	client   string // the inner client's name, e.g. /dev/ttys012
+	proxy    string // ssh ProxyCommand script, written on demand
 }
 
-// caller is the environment pi gives the commands its bash tool runs in
-// pane: PI_SESSION_ID and PI_SESSION_FILE of the session agentStatus last
-// reported there. A pane with no report gives none, as a human's shell does.
-func (h *harness) caller(pane string) []string {
-	if id, ok := h.callers.Load(pane); ok {
-		return h.callerOf(id.(string))
-	}
-	return nil
-}
-
-func (h *harness) callerOf(id string) []string {
-	return []string{"PI_SESSION_ID=" + id, "PI_SESSION_FILE=" + h.sessionFile(id)}
-}
-
-// callerShell is caller as shell assignments, for a command typed into
-// pane, or into the client's current pane when pane is "".
-func (h *harness) callerShell(pane string) string {
-	if pane == "" {
-		pane = h.in("display-message", "-p", "-c", h.client, "#{pane_id}")
-	}
-	var words []string
-	for _, kv := range h.caller(pane) {
-		k, v, _ := strings.Cut(kv, "=")
-		words = append(words, k+"="+shellQuote(v))
-	}
-	return strings.Join(words, " ")
-}
-
-// savedSession gives run id the pi session file its pi saved and the
-// record of that pi, released, as a run that ended leaves them.
-func (h *harness) savedSession(id string) {
-	h.t.Helper()
-	if err := os.WriteFile(h.sessionFile(id), []byte("{}"), 0o644); err != nil {
-		h.t.Fatal(err)
-	}
-	b, err := json.Marshal(map[string]any{"pid": 0, "pane": "", "ts": "2026-01-01T00:00:00Z", "sessionFile": h.sessionFile(id)})
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(h.stateDir, "runs", id, "pi.json"), b, 0o644); err != nil {
-		h.t.Fatal(err)
-	}
-}
-
-// sessionFile is the pi session file of session id, with a space to keep
-// the quoting of `pi --session <file>` honest.
-func (h *harness) sessionFile(id string) string {
-	return filepath.Join(h.dir, "session "+id+".jsonl")
-}
+// callerShell is the environment prefix a command typed into a pane gets.
+// kido reads nothing from it after the cut.
+func (h *harness) callerShell(string) string { return "" }
 
 var sanitize = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
@@ -505,7 +456,7 @@ set -g side-status-command "%s%s"
 				t.Errorf("leaked control client pid %s for socket %s", pid, h.inner)
 			}
 		}
-		// A run-wait notifier writes an ending into the state dir, after
+		// A child of the server can still write into the state dir after
 		// kill-server has returned; TempDir's removal runs next and must not
 		// race it.
 		waitDescendantsGone(t, h.inner, started)
@@ -1157,49 +1108,118 @@ func (h *harness) programStatus(pane, body string, title ...string) {
 	}, settle, msgf("terminal report %s", body))
 }
 
-// agentStatus reports sessionID from pane, in its directory, as pi's
-// extension does. A
-// "--parent-session P" in extra stands for the run meta `kido tool
-// spawn_subagent` writes before its child first reports: it is written
-// unless the run already has one.
-func (h *harness) agentStatus(sessionID, pane string, extra ...string) {
+func (h *harness) paneTitle(pane string) string {
 	h.t.Helper()
-	args := []string{"agent-status"}
-	if !slices.Contains(extra, "--name") {
-		args = append(args, "--name", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
-	}
-	for i := 0; i < len(extra); i++ {
-		if extra[i] != "--parent-session" {
-			args = append(args, extra[i])
-			continue
-		}
-		i++
-		if _, err := os.Stat(filepath.Join(h.stateDir, "runs", sessionID, "meta.json")); os.IsNotExist(err) {
-			h.agentRunMeta(sessionID, pane, "", extra[i])
-		}
-	}
-	cmd := exec.Command(kidoBin, args...)
-	cmd.Dir = h.in("display-message", "-p", "-t", pane, "#{pane_current_path}")
-	cmd.Env = cleanEnv(append([]string{"TMUX=" + h.inner + ",0,0", "TMUX_PANE=" + pane}, h.callerOf(sessionID)...)...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		h.t.Fatalf("kido agent-status %s: %v\n%s", sessionID, err, out)
-	}
-	h.callers.Store(pane, sessionID)
+	return strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - ")
 }
 
-// agentWithInbox sets up a window that looks to kido exactly like a live
-// pi session with an inbox: a real long-running pane, plus a state
-// record (via agentStatus, so its pid is this test binary's own and
-// stays alive) naming a real unix socket that answers "ok\n" to anything
-// and otherwise does nothing.
-func (h *harness) agentWithInbox(session, sessionID string) (*inbox, string) {
+// piRoot gives pane a pi root and its own title, as a pi does at startup.
+func (h *harness) piRoot(pane string) {
 	h.t.Helper()
-	paneID := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
-	h.waitPaneCommand(paneID, "sleep")
-	in := startInbox(h.t, "ok\n")
-	h.programStatus(paneID, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
-	h.agentStatus(sessionID, paneID, "--inbox", in.Path)
-	return in, paneID
+	h.programStatus(pane, "state=idle:app=pi", h.paneTitle(pane))
+}
+
+// agentStatus writes the four pane options a kido-pi session writes.
+func (h *harness) agentStatus(sessionID, pane string) {
+	h.t.Helper()
+	h.setPiOptions(pane, sessionID, h.paneTitle(pane), "", "")
+}
+
+// clearPiOptions unsets the four options in one tmux command list.
+func (h *harness) clearPiOptions(pane string) {
+	h.t.Helper()
+	args := []string{"set-option", "-pu", "-t", pane, "@kido_session"}
+	for _, key := range []string{"@kido_name", "@kido_inbox", "@kido_activity"} {
+		args = append(args, ";", "set-option", "-pu", "-t", pane, key)
+	}
+	h.in(args...)
+}
+
+// agentRunMeta writes a run meta naming pane as id's pane, so kido reads a
+// tracked run as it would one its own `kido run` created.
+func (h *harness) agentRunMeta(id, pane, name, parent string) {
+	h.t.Helper()
+	dir := filepath.Join(h.stateDir, "runs", id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		h.t.Fatal(err)
+	}
+	meta := map[string]any{
+		"id":        id,
+		"name":      name,
+		"pane":      pane,
+		"pid":       0,
+		"cwd":       h.dir,
+		"startedAt": time.Now().UTC().Format(time.RFC3339),
+	}
+	if parent != "" {
+		meta["parent"] = parent
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), b, 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	if strings.HasPrefix(pane, "%") && h.paneExists(pane) {
+		h.in("set-option", "-p", "-t", pane, "@kido_run", id)
+	}
+}
+
+func (h *harness) activeWindowID(session string) string {
+	h.t.Helper()
+	return h.in("display-message", "-p", "-t", session+":", "#{window_id}")
+}
+
+// hideSidebar removes the sidebar sweeper so a test about `kido reap` is
+// not decided by the other one racing it.
+func (h *harness) hideSidebar() {
+	h.t.Helper()
+	h.in("set", "-g", "side-status", "off")
+	h.waitFor(func() bool { return !h.sidebarVisible() }, settle, msgf("the sidebar to go away"))
+}
+
+// recordedRun starts a run-child under alpha's own pane, which it makes a
+// local pi first, and gives the run a pi pane with the four options. A
+// "--title" names the session.
+func (h *harness) recordedRun(name string, flags ...string) (runID, windowID string) {
+	h.t.Helper()
+	title := name
+	for i := 0; i < len(flags); i++ {
+		if flags[i] == "--title" {
+			i++
+			title = flags[i]
+		}
+	}
+	caller := h.firstPane("alpha")
+	h.liveParent("alpha", "root-"+name)
+	r := h.startRun(caller, "run-child", caller, "--name", name, "--", "sh", "-c", "exec sleep 300")
+	h.programStatus(r.paneID(), "state=idle:app=pi", title)
+	h.setPiOptions(r.paneID(), r.ID, title, "", "")
+	windowID, _, _ = strings.Cut(r.Pane, ".")
+	return r.ID, windowID
+}
+
+// asyncBash starts a bash run the way the extension does: the caller's
+// pipeline into the run's output file.
+func (h *harness) asyncBash(name string, command ...string) string {
+	h.t.Helper()
+	line := strings.Join(command, " ") + ` 2>&1 | tee "$KIDO_RUN_OUTPUT"`
+	return h.startRun(h.firstPane("alpha"), "run", "--name", name, "--", "bash", "-o", "pipefail", "-c", line).ID
+}
+
+func (h *harness) waitFileNonEmpty(path string) string {
+	h.t.Helper()
+	var content []byte
+	h.waitFor(func() bool {
+		b, err := os.ReadFile(path)
+		if err != nil || len(bytes.TrimSpace(b)) == 0 {
+			return false
+		}
+		content = b
+		return true
+	}, settle, msgf("%s to hold data", path))
+	return string(content)
 }
 
 // waitFileContains waits until path holds sub, then returns its whole
@@ -1257,9 +1277,4 @@ func (h *harness) title(pane, title string) {
 func (h *harness) reap(name string) {
 	h.t.Helper()
 	h.runScript("alpha", name, "KIDO_LINGER_SECONDS=0 "+kidoBin+" reap")
-}
-
-// firstLine strips runKido's own trailing "rc=N" line.
-func firstLine(s string) string {
-	return strings.SplitN(strings.TrimSpace(s), "\n", 2)[0]
 }

@@ -44,23 +44,10 @@ let root =
 
 let state ~dir panes metas =
   List.iter (Run.write_meta ~dir) metas;
-  let pane_of (m : Run.meta) =
-    match m.pane with
-    | Some p -> Some p
-    | None -> (
-        match m.kind with
-        | Run.Pi ->
-            let id = Some (Run.string_of_id m.id) in
-            List.find_opt (fun (p : State.pane) -> Option.equal String.equal p.run id) panes
-            |> Option.map (fun (p : State.pane) -> p.pane_id)
-        | Agent | Bash | Stream -> None)
-  in
   let runs =
     List.fold_left
-      (fun map m ->
-        match pane_of m with
-        | Some pane -> Tmux.Pane_map.add pane { Run.meta = m; pi = None } map
-        | None -> map)
+      (fun map (m : Run.meta) ->
+        match m.pane with Some pane -> Tmux.Pane_map.add pane m map | None -> map)
       Tmux.Pane_map.empty metas
   in
   { State.panes; runs }

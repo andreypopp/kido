@@ -1,34 +1,3 @@
-val inbox_path : dir:string -> string -> (string, string) result
-
-type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop
-
-val string_of_kind : kind -> string
-
-type from = { session : string; name : string; pane : Tmux.pane_id option }
-
-type envelope = {
-  kind : kind;
-  id : string;
-  from : from;
-  reply_to : string;
-  text : string;
-  run : string;
-  output : string;
-}
-[@@deriving yojson_of]
-
-val max_notice_bytes : int
-
-val utf_8_prefix : string -> int -> string
-(** At most [n] bytes of [s], cut back to a character boundary. *)
-
-val valid_utf_8 : string -> string
-(** Each invalid sequence replaced by U+FFFD. *)
-
-val new_id : unit -> string
-
 type error = Unavailable of string | Refused of string | Failed of string
 
-val string_of_error : error -> string
 val deliver : ?timeout:float -> path:string -> string -> (unit, error) result
-val deliver_envelope : path:string -> envelope -> (unit, error) result

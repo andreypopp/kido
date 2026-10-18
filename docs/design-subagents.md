@@ -1,69 +1,49 @@
 # Subagents, as built
 
 A subagent is a pi session that another agent starts in a separate tmux
-window in the same tmux session. Its first message is a task. Its run
-record remains after the session ends. This document describes a subagent
-from the tool call that creates it to the sweep that closes its window.
+window in the same tmux session. Its first message is a task. kido keeps
+its run record after the window closes, and the parent keeps its agent
+directory. This document describes a subagent from the tool call that
+creates it to the sweep that closes its window.
 
 [design.md](design.md) describes the mechanisms that subagents use:
 
+- The pi extension, kido-pi
 - The inbox
 - Addressing
-- Session identity
+- Identity
 - The window lifecycle
 - Run outcomes
-- The connection between the two pi extensions
 
 This document refers to those sections by name instead of repeating them.
 `AGENTS.md` describes what kido cannot change.
 
-## The tools, and their commands
+## The tools, and what they call
 
-Every tool calls a `kido tool` subcommand **of the same name**. Thus, the
-tools and commands use one vocabulary, not two. The e2e suite cannot host
-a TypeScript extension. It uses fake agent binaries to test the same paths.
+The ten tools are in `share/pi/kido-pi.ts`. No tool has a kido
+subcommand of its own. A tool that starts, waits for or stops a run
+calls a run command. Every other tool reads tmux and the extension's
+state directory, and writes to inboxes.
 
-| tool | command |
+| tool | what it uses |
 |---|---|
-| `list_runs()` | `kido tool list_runs --json` |
-| `set_status(activity)` | `kido tool set_status -- <activity>` |
-| `message_agent(to, message, replyTo?)` | `kido tool message_agent [--reply-to ID] -- <to>` |
-| `ask_agent(to, question, timeoutMs?)` | `kido tool ask_agent --id ID -- <to>` |
-| `spawn_subagent(task, name?, model?, tools?, fork?)` | `kido tool spawn_subagent --name NAME --task-file - [--fork SESSION_ID] [--model M] [--tools T,...] -- pi ...` |
-| `spawn_subagent(resume, model?, tools?, fork?)` | `kido tool spawn_subagent --resume RUN_ID [--model M] [--tools T,...] -- pi ...` |
-| `steer_subagent(to, message)` | `kido tool steer_subagent -- <to>` |
-| `interrupt_subagent(to)` | `kido tool interrupt_subagent -- <to>` |
-| `stop_run(to, force?)` | `kido tool stop_run [--force] -- <to>` |
-| `async_bash(command, name?, stream?)` | `kido tool async_bash [--name NAME] [--stream] -- COMMAND...` |
-| `notify_parent(summary)` | `kido tool notify_parent` |
+| `list_runs()` | `kido runs --json --parent P`, `agents/<me>/*`, one `tmux list-panes -a` |
+| `set_status(activity)` | `tmux set-option -p @kido_activity` |
+| `message_agent(to, message, replyTo?)` | the target's inbox; `kido run-child` to restart an ended child |
+| `ask_agent(to, question, timeoutMs?)` | the target's inbox; `kido run-child` to restart an ended child |
+| `spawn_subagent(task, name, model?, tools?, fork?)` | `pi --list-models`, `kido run-child P --name N --env ... -- kido-pi ...` |
+| `steer_subagent(to, message)` | the target's inbox |
+| `interrupt_subagent(to)` | the target's inbox |
+| `stop_run(to, force?)` | the target's inbox, then `kido run-stop` |
+| `async_bash(command, name, stream?)` | `kido run-child P --name N -- bash -o pipefail -c ...` |
+| `notify_parent(summary)` | the parent's inbox |
 
-The rule applies in one direction only: a tool names its command. A
-subcommand without a tool keeps the name that fits it. These include
-`shell`, `ssh`, `get-agent`, `prompt`, `reap`, `runs` and the
-other subcommands. `kido agent-status` also keeps its own name. It claims
-a session's run and reports its identity. In contrast, `set_status` writes only
-activity (design.md, "Every report is whole").
+P is the caller's `KIDO_RUN_ID` for a subagent, else its `$TMUX_PANE`.
+For each run that it starts, the parent also runs `kido run-wait ID
+--json` in the background ("Endings", below).
 
-Tests enforce this agreement. Both suites read one list in
-`share/pi/testdata/tools.json`. pi's suite checks that the registered
-tools have exactly those names. `lib/test/test_tool_parity.ml` runs each
-as a `kido tool` subcommand. A registered tool absent from the list fails
-pi's suite. A listed tool without a command fails the OCaml suite.
-
-Every command knows its caller from `PI_SESSION_ID`, which pi sets for
-its bash tool and the extension sets for the commands that it runs
-(design.md, "Identity"). No tool passes its own session as a flag.
-
-A tool forwards its arguments and lets its command refuse them.
-`spawn_subagent`'s schema does not express these rules:
-
-- `resume` excludes `task`, `name` and `fork`.
-- A spawn needs a task.
-
-The tool does not check these rules either. Every argument goes to
-`kido tool spawn_subagent`. The command refuses these combinations and
-spawns that exceed the nesting depth ceiling. Thus, one location contains
-the rules, and the model reads kido's own refusal.
+A tool checks its own arguments and refuses them with a reason. The
+model reads that reason as the tool result.
 
 **The suffix is the scope.** Each half of a tool's name has a meaning.
 The second half gives a rule:
@@ -75,195 +55,128 @@ The second half gives a rule:
 | `_run` / `_runs` | run listing and stopping | `list_runs`, `stop_run` |
 
 The scope includes descendants, not only children. Nesting permits two
-levels, so the controls can reach a grandchild. One predicate checks this
-for all three controls. It uses the `Descendant` and `Descendant_run`
-recipients of `Message_agent.resolve`. For agent controls, the receiver
-makes the corresponding check in `senderIsAncestor`.
+levels, so the controls can reach a grandchild. The sender walks the
+parent chain of the agent map. The receiver checks again in
+`senderIsAncestor`.
 
 The `_subagent` rule does not give protection. Trust is uid-scoped, and
 the inbox directory is `0700`. Any process that can reach the socket can
-write an envelope that claims any identity (design.md, the inbox). The
+write an envelope that claims any identity (design.md, "The inbox"). The
 rule gives a consistent vocabulary. A tool's name identifies whose work
 it can affect.
 
-**What steers and what queues.** `message_agent` queues messages.
-`steer_subagent` permits interleaving for a correction that is useful only
-before the work finishes. design.md ("Steer and followUp") gives the rule:
+**What steers and what queues.** `steer_subagent` and `notify_parent`
+steer; `message_agent` and `ask_agent` queue. design.md, "Steer and
+followUp", gives the rule and the envelope kinds ("v0 and v1").
 
-> Steer what is safe to interleave. Queue what must be answered in order.
-
-`steer_subagent` steers a correction from the agent that assigned the
-work. It has nothing to correlate and is useless after the work finishes.
-`notify_parent` steers information that the parent needs to assign the
-next work. `message_agent` queues messages with no correlation or
-authority. `ask_agent` also queues questions. An ask requires a correlated
-reply, so kido chooses `followUp` to keep questions ordered.
-
-The tool and command interface has no `--kind` flag. The command gives
-the kind: `message_agent --reply-to ID` is a reply, `ask_agent` is an ask,
-and `notify_parent` is a notice. Each states the fact once. A single
-`kido message --kind K` would state it twice with
-`--kind reply --reply-to ID`.
-
-An envelope carries these kinds:
-
-- message
-- ask
-- reply
-- notice
-- steer
-- interrupt
-- stop
-- stream
-
-A reply correlates on `kind: "reply"` (design.md, "v0 and v1").
-
-`kido tool ask_agent` sends and returns without waiting. The answer
-arrives on the asker's own inbox. Only a long-lived process has an inbox.
-If the caller has no inbox, the command refuses delivery. It tells the
-caller to use `message_agent` instead (design.md, "Ask and reply").
-
-`kido tool notify_parent` takes no target. It reads the parent edge from
-`KIDO_AGENT_PARENT_SESSION` (design.md, "Notifying the parent"). Tools
-register unconditionally. They report kido as unavailable until a session
-resolves it.
+`notify_parent` takes no target. Its parent is the parent edge
+(design.md, "Identity"). Tools register unconditionally. They report
+kido as unavailable outside kido.
 
 `set_status` and `notify_parent` have bounds of 256 and 4000 bytes,
-respectively. Their schemas do not repeat the bounds as `maxLength`:
-the commands control the byte bounds. An activity is a UI label, which
-the command truncates. A report is a work product, which the command
-keeps whole. Only the text *sent* to the parent has a bound
-("Reporting", below).
+respectively. Their schemas do not repeat the bounds as `maxLength`.
+The tool cuts an activity, because it is a UI label. It keeps a report
+whole, because it is a work product. Only the text *sent* to the parent
+has a bound ("Reporting", below).
 
-`list_runs` is the only tool for finding agents to message and runs to
+**list_runs** is the only tool for finding agents to message and runs to
 stop with `stop_run`. A top-level caller sees other top-level agents in
-its tmux session as peers. A subagent sees its parent and its live sibling
-subagents as peers. It does not see other top-level agents or its
-parent's bash jobs.
+its tmux session as peers. A subagent sees its parent and its live
+sibling subagents as peers. It does not see other top-level agents or
+its parent's bash runs.
 
-Both callers see their own runs. These include all running runs and the
-newest 20 ended runs by start time. The own-run group shows the newest
-runs first. The list excludes the caller itself and unrelated agents'
-runs. An untracked shell sees top-level agents in its tmux session and
-has no own runs.
+Both callers see their own runs: all running runs and the newest 20
+ended runs, newest first. The list excludes the caller itself and
+unrelated agents' runs. A live child merges into its pane's row: the row
+id is the child's session id, and `run` is its current run id. Children
+that `kido run-child %N` started for a top-level pi are listed too.
 
 Rows carry `kind` (`agent`, `subagent`, `bash`) and `relationship`
-(`peer`, `parent`, `own`). Live agents retain id, name, pane, window,
-status, activity, parent, depth, cwd, model, `canMessage` and
-`canReply`. Own runs add `run`, `startedAt`,
-`state` (`running` or `ended`) and the ending's `outcome` result and text.
-A bash run or an ended subagent without a live holder has no agent
-status and cannot reply.
+(`peer`, `parent`, `own`). The agent map decides `subagent` against
+`bash`, not kido. Live agents carry id, name, pane, window, status,
+activity, parent, depth, cwd, model, `canMessage` and `canReply`. Own
+runs add `run`, `startedAt`, `state` (`running` or `ended`), the
+ending's `outcome`, and a subagent's `task` and `report` from its agent
+directory.
 
-Pane runs define the coordination graph, regardless of the pane's root
-app. Clearing or replacing the root does not remove an identity, inbox,
-parent link or run history. pi's listed status is the pane root's OSC
-7501 state: working, blocked, done, error or idle. The listed status is
-unknown when the state is absent. pi's name is the session name in its
-`pi.json`, or the unchanged pane title when the session has no name.
+The listed status is the pane root's OSC 7501 state: working, blocked,
+done, error or idle, else unknown. The name is the pane's `@kido_name`,
+or its title when the session has no name. Native Claude Code has no
+`@kido_session` and does not appear in the list. `canReply` also reflects
+a subagent's tool allowlist.
 
-Native Claude Code has no run and does not appear in the list.
-
-One fresh tmux read supplies the graph; it is not a cache. `canReply`
-also reflects an agent run's tool allowlist.
-
-Names still resolve across the entire tmux session for messaging, asking,
-steering and interrupting. The list does not restrict addressing.
-The extension's autocomplete reads `list_runs` and excludes bash and
-ended rows.
-
-These internal checks use the live graph from the pure
-`get-agent --context` lookup, not the scoped display:
-
-- Sender validation
-- Ancestry
-- Self-window lookup
-- `resolveAgent`/`canReply` checks
-
-An unlisted sender is still an agent, and a grandparent remains an
-ancestor.
+Names still resolve across the entire tmux session for messaging,
+asking, steering and interrupting. The list does not restrict
+addressing. Sender checks, ancestry and `canReply` use the same
+snapshot: all panes and the whole agent map, not the scoped display.
+The `@` completion reads the list and excludes bash and ended rows.
 
 ## What a child is given
 
-`kido tool spawn_subagent` reads the caller's pane from `$TMUX_PANE`.
-From that pane, it reads the tmux session and working directory. The
-caller's run (`PI_SESSION_ID`) is the parent. It creates a detached
-window in that session, with the requested name, at the caller's
-directory. The window runs the command
-after `--`, or plain `pi`.
+**Names.** `spawn_subagent` and `async_bash` require `name`. The
+extension refuses a name with `'`, `"`, `$`, `#`, `\`, a backtick, a
+newline or a carriage return, and a name over 64 bytes, before kido
+sees it. kido's `run-child` applies the same rule (`Tmux.safe`). A name
+is unique within its parent, for live and ended children: the
+directory `agents/<parent>/<name>/` or a run of the same name exists, or
+it does not. A reused name is refused with "message it instead" (spawn)
+or "choose another name" (async_bash). A name a child of the same parent
+used means "message it" ("Restarting through a message", below).
 
-If the command is literally `pi`, kido inserts `--session-id <run-id>`
-after it. Thus, the run id is the child's pi session id, with no mapping
-to store. The extension adds `--name` and `--model` to pi's command.
-It passes tools only as kido's `--tools` flag. kido selects that list,
-or the stored list on resume, and records it in the run metadata.
-For a pi child with a parent, kido adds `notify_parent` to a non-empty
-list unless present. It emits `--tools` once. An empty list keeps pi's
-default tools; `--tools ''` also selects defaults on resume.
-A `--no-parent` child keeps its requested list.
-A narrow toolset limits possible effects; the depth ceiling does not.
+**Spawning.** `spawn_subagent` checks the model with
+`pi --list-models`. It checks the depth (maximum 2). Then it writes the
+child's agent directory, `task` and `agent.json` with an empty `run`,
+before the child starts. Then it runs:
 
-The spawn-specific environment uses `new-window`'s `-e` flags.
-Otherwise, the command receives tmux's global and session environment,
-not the caller's full environment. It takes `PATH` from the client when
-available:
+    kido run-child P --name N --env KIDO_AGENT_PARENT_SESSION=S \
+      --env KIDO_AGENT_DIR=D -- kido-pi --session-id <minted id> \
+      --name N [--model M] [--fork S] [--tools a,b,notify_parent]
+
+S is the caller's own pi session id. The extension mints the child's
+session id. It writes the run id that `run-child` prints into
+`agent.json`. A failed spawn removes the directory.
+
+The window's environment is what `run-child` gives every run
+(design.md, "Window lifecycle") plus the two `--env` values:
 
 | variable | what it carries |
 |---|---|
-| `KIDO_AGENT_PARENT_SESSION` | the parent's session id, the parent edge |
-| `KIDO_AGENT_TASK_FILE` | the task text, in the run's directory |
-| `KIDO_AGENT_RUN_ID` | the run id, which for a pi child is also the session id it must prove it holds |
-
-For a `--no-parent` spawn, kido omits the parent variable. It does not
-set it empty. The child's subagent test checks its presence ("A human at
-a shell", below).
+| `KIDO_RUN_ID` | the child's run id; the child's own runs name it as their parent |
+| `KIDO_RUN_OUTPUT` | the run's output path; a pi child writes nothing there |
+| `KIDO_AGENT_DIR` | the child's agent directory, which holds its task and its parent edge |
+| `KIDO_AGENT_PARENT_SESSION` | the parent's session id, read only by the repo's `no-git-writes` guard |
 
 The environment does not prove identity. Everything that the child's
 process starts inherits the environment. Thus, a pi started inside a
-subagent's pane receives the complete set. The child's extension trusts
-the parent edge only when its own pi session id is also
-`KIDO_AGENT_RUN_ID`. See design.md, "The run id is the child's session id".
-This prevents a nested pi from ending another session's run and closing
-another session's window.
+subagent's pane receives the complete set. The child trusts the parent
+edge only when `agent.json` in `KIDO_AGENT_DIR` names its own pi session
+id (design.md, "Identity"). This prevents a nested pi from reporting for
+another session and from recording another run's outcome.
 
-Depth is the length of the run's parent chain in run metas. No run stores
-it, and no caller can claim it. kido refuses a spawn at depth 3. A run
-without a parent is top-level, at depth 0, and its children start at depth
-1 (design.md, "The depth ceiling is derived").
+**Tools.** A non-empty `tools` list gets `notify_parent` if it lacks
+it, and goes to pi as `--tools`. An empty list keeps pi's default
+tools. `agent.json` records the list, so a restart uses it again. A
+narrow toolset limits possible effects; the depth ceiling does not.
 
-kido refuses a window name that contains a character tmux's parsers
-cannot pass, or that exceeds 64 bytes. If the model gives no name, the
-extension generates a hex name. kido refuses a task over 1MB.
+**Depth** is the length of the session's parent chain in the agent map.
+No record stores it, and no caller can claim it. The extension refuses a
+spawn at depth 3.
 
-The pane receives `remain-on-exit`, so it remains after its command exits.
-This is a pane option, so a later split does not inherit it. The pane
-also receives the pane-scoped option `@kido_run` (`set-option -p`). Its
-value is only the run id.
+The extension refuses a task over 1MB. The task never enters a command line: it
+is a file in the agent directory.
 
-The sweep, sidebar tree and window-cycling keys use `@kido_run` and the
-run's kind to identify the window as a subagent's window. The option
-lasts as long as the pane (design.md, "Who is authoritative for what").
-The child's claim sets the same mark again, with the same run id. If kido cannot mark the
-pane, it kills the window instead of leaving a window it cannot collect.
+The pane receives `remain-on-exit` and `@kido_run` in the `new-window`
+command list (design.md, "Window lifecycle"). The sweep, the sidebar
+tree and the window-cycling keys use `@kido_run` and the run's meta. The
+option lasts as long as the pane. A user's split reads no `@kido_run`,
+so the sweep and `run-stop` act on the run's pane only.
 
-The pane-scoped option distinguishes the run's pane from a later split
-that the user creates. A window option would apply to every pane,
-including splits, and could not identify the run's pane. A pane option
-has no such fallback and reads empty on the split.
-
-The sidebar draws the run's row on the pane with the option. It shows
-the running row, or the tombstone with its outcome. It draws every other
-pane as its actual shell or command. The sweep and `kido tool stop_run`
-act on the run's pane, not the whole window. The user's split remains.
-Killing the run's pane also clears `@kido_run`; no separate unmark step
-is necessary because the option exists nowhere else.
-
-The extension tool immediately returns
+The tool immediately returns
 `spawned <name> (window @N, pane %N, run <id>)`. It does not wait for the
-child. Both a spawn result and a resume result end with the same rule:
-the child's result arrives as a notice. Do not wait for, request or
-predict that result. The model reads the launch result when it has a
-child but no result, which is when it invents a result or blocks.
+child. The result ends with the rule that the child's result arrives as
+a notice. Do not wait for, request or predict that result. The model
+reads the launch result when it has a child but no result, which is when
+it invents a result or blocks.
 
 `spawn_subagent` and `async_bash` also register `promptGuidelines`:
 
@@ -274,96 +187,58 @@ child but no result, which is when it invents a result or blocks.
 
 Both tools share the last guideline as one identical string. A parent's
 message is not called "not the user": its instructions have the user's
-authority. Each guideline applies to its tool. Thus, the model receives
-the rules where it can start background work.
+authority.
 
 ## Forking the caller's context
 
-`spawn_subagent(fork: true)`, `kido tool spawn_subagent --fork SESSION_ID`,
-starts the child as `pi --fork <session> --session-id <run-id>`.
-The task is its first message. Everything else uses the fresh spawn path:
-
-- The same `Run_window.create` and `run_env`
-- Its own run id
-- The parent edge
-- The mark
-- The depth ceiling
-- The tool allowlist
-- Model handling
+`spawn_subagent(fork: true)` starts the child as
+`kido-pi --session-id <minted id> --fork <caller's session>`. The task
+is its first message. Everything else is a fresh spawn: its own run, the
+parent edge, the mark, the depth ceiling, the tool allowlist and the
+model.
 
 Only the source of the child's context changes. The child starts with
 the caller's whole transcript. The parent can assign a judgement, such
 as a merge or a decision between two options it already considered.
 The parent does not have to repeat its decisions and reasons.
 
-kido passes both flags to preserve its identity rule. A child proves
-its run identity with `sessionId() === KIDO_AGENT_RUN_ID`
-(design.md, "The run id is the child's session id").
-
 The forked session is the **caller's own**. pi gives the extension its
-id, and the extension passes that id. kido does not guess it from a pane.
-Nothing resolves a session that the model names. There is exactly one
-correct answer, and the model does not supply it.
+id. Nothing resolves a session that the model names. There is exactly
+one correct answer, and the model does not supply it. `--session-id`
+keeps the child's id the one that `agent.json` records, so the child
+can prove its edge.
 
 **Forking is for a short judgement step, not a long worker.** A worker
 needs a task and a clean context.
 
-The flag reaches tmux's command line. Thus, the window name's rule
-(`Tmux.safe`) applies: kido refuses an unsafe value instead of
-quoting it. kido refuses `--fork` and `--resume` together. `--resume`
-continues a run's own session; `--fork` starts a new session from another
-session.
+## The agent directory
 
-Unlike `--resume`, nothing checks that the source session exists.
-The source is the caller's own live session, so it exists by construction.
-If it somehow does not exist, pi's own error appears in the child's
-window.
+kido's run record (`<server state>/runs/<id>/`) holds what kido knows
+about a run: meta, outcome, output, screen (design.md, "Who is
+authoritative for what"). The extension's agent directory
+(`<kido-pi state>/agents/<parent-session>/<name>/`) holds what only the
+harness knows:
 
-## The run record
+- `agent.json`: `session`, `run`, `model`, `tools`, `fork`. The parent
+  writes it at spawn and at each restart.
+- `task`: the parent writes it before the child starts.
+- `delivered`: the child writes it after it delivers the task. Thus,
+  `/reload` does not deliver the task twice. A task that cannot be read
+  leaves no marker and stays eligible for the next attempt.
+- `session-file`: the child writes its pi session file at
+  `session_start`. A restart needs it.
+- `report`: `notify_parent` writes the whole report.
 
-Each spawn owns `<state>/runs/<run-id>/`. kido writes it before creating
-the window, so the child can read its task as soon as tmux starts it.
-The run id is the abstract type `Run.id`, not a bare string.
-`Run.parse_id` is the only check that the id names nothing outside
-that directory.
-
-Each location where an id enters the module applies this check:
-
-- `kido run-outcome`
-- `spawn_subagent --resume`
-- A `State.pane`'s `run` reader
-- A `KIDO_AGENT_RUN_ID` reader
-
-Every function that takes a `Run.id` trusts it. design.md, "Who is
-authoritative for what", gives the layout of the directory and the
-writer of each file. Two files have reasons that belong to subagents:
-
-- `delivered`: the child writes this after reading the task. Thus,
-  `/reload` does not deliver the task twice.
-- `screen`: the window's last screen and a bounded tail of scrollback.
-  The run's shutdown captures its pane before recording a failure
-  (`kido run-outcome`). At that moment, the pane is certainly alive.
-  A completion's screen supplies no evidence, so nothing keeps it.
-
-  A sweep captures the pane it will close when the child cannot capture
-  it. The two writes share one file.
-
-An outcome has one write per run attempt. Nothing overwrites it until a
-resume clears it. design.md's "Run outcomes" gives the rules for each
-writer and explains why the first recorded ending wins.
-
-`kido runs` lists every run, `pi` runs included, most recent first.
-Alternatively, it shows one run with its task, its screen if present,
-and its resume command. It derives the ending of a run with no outcome
-from its pane (design.md, "Who is authoritative for what"), without
-recording it.
+For a top-level parent, `<parent-session>` is its own pi session id,
+although `run-child` receives its pane. A parent that restarts under its
+own session id finds its children again. A forked or new parent session
+inherits none.
 
 ## A child's life
 
-**Start.** The child's extension binds its inbox before delivering the
-task, so it can receive questions during its first turn. It reads the
-task file and delivers it as its first user message, as it delivers an
-inbox prompt.
+**Start.** The child's extension binds its inbox before it delivers the
+task, so it can receive questions during its first turn. It reads
+`task` and delivers it as its first user message.
 
 Every turn's system prompt then contains these standing instructions:
 
@@ -372,172 +247,107 @@ Every turn's system prompt then contains these standing instructions:
 - A reply to another agent's question is the whole response.
 
 The system prompt contains the instructions instead of the task because
-the task arrives only once. Otherwise, a resume or a follow-up message
+the task arrives only once. Otherwise, a restart or a follow-up message
 from the parent would not include the instructions.
 
 **Watching the parent.** The child's pi is a child of the tmux server.
-Thus, no signal tells it that its parent has ended. It polls every five
-seconds with `kido get-agent <parent-session>`. The poll acts on one
-reading of the answer. That command reads the parent's `pi.json` by id
-and reports whether its pid is alive. The orphan sweep asks the same
-question.
-
-The poll does not list panes. Thus, each child uses one process and no
-tmux round trip every five seconds. A failure of kido to answer is the
-only inconclusive case and is never evidence. If the parent is dead, the
-child shuts down through the normal exit path.
+Thus, no signal tells it that its parent has ended. Every
+`KIDO_PARENT_POLL_MS` (five seconds), it reads `@kido_session` and
+`#{pane_program_status}` of the parent's pane with `display-message`.
+It finds that pane with one `list-panes -a`, and reads the list again
+only when the pane no longer matches. A pane that passes the trust rule
+and has the parent's `@kido_session` means that the parent is alive. A
+failed read is no evidence. When the parent is gone, the child shuts
+down through the normal exit path. A slow read holds later ticks back.
 
 **Reporting.** Nothing reports for the child. The child calls
 `notify_parent` itself, once, when its model judges the work done.
 The summary goes only to the parent as a `notice` envelope. Its address
-is the session in the child's environment, not a session from a lookup.
+is the parent edge, not a session from a lookup.
 
-The command **keeps the report whole**. The notice enters the parent's
-next turn, so the text sent to the parent has a 4000-byte bound. The
-guidance that ends every notice - the child stays alive, so end it with
-`stop_run` or continue it with `message_agent` - is part of that
-bound.
-Discarding the rest, as the tool would, cuts the report mid-sentence
-without indicating that more text exists.
+The tool **keeps the report whole**. The notice enters the parent's next
+turn, so the text sent to the parent has a 4000-byte bound. The guidance
+that ends every report notice - the child stays alive, so end it with
+`stop_run` or continue it with `message_agent` - is part of that bound.
 
-Thus, `kido tool notify_parent` writes the full text as `report` in the
-sender's own run directory, beside `task` and `output`. It sends the start
-of the report plus a final line that names the file:
+Thus, `notify_parent` writes the full text as `report` in the agent
+directory. A report that does not fit sends its start plus a final line
+that names the file:
 
-    full report: <state>/runs/<run-id>/report
+    full report: <kido-pi state>/agents/<parent>/<name>/report
 
 The report's start, the final line and the guidance together remain
-within the cap. Every real report is kept whole in `report`, whether it
-fits in the notice or not, so nothing is lost. A report that fits
-arrives byte for byte and needs no file reference. A status notice
-writes no report file and carries no guidance. The command removes any
-partial rune from the end of the report's start. The send path
-refuses a message that is not valid UTF-8, like `Run_ending.body` in the other
-direction.
-
-A sender without a run directory has nowhere to keep the report.
-This can be a session kido never spawned, with another session's parent
-edge. The command truncates that report. It also truncates the report
-if the write fails, because the parent must receive something.
-`kido runs <id>` includes one `report:` line for a run that leaves a
-report file.
+within the cap. A report that fits arrives byte for byte. The tool
+removes any partial character from the end of the report's start. It
+refuses a summary that is not valid UTF-8.
 
 A settle is not itself a report. A turn can settle for reasons
 unrelated to the task, such as answering a sibling's `ask_agent`;
-kido never sends that turn's text to the parent. It says only that the
-child is idle without a report (see below).
+kido never sends that turn's text to the parent.
 
-A turn that ends in a provider error is a status notice. kido retains
-the last `agent_end` result and checks the stop reason in
-`agent_settled`.
-If the turn stops on `"error"`, the child immediately sends its parent
-one notice through `notify_parent`'s path. The notice names the error and
-explains how to continue the run. An aborted turn, such as a turn the
-parent interrupts, is not a failure and sends nothing.
+**A settled turn with no report sends the parent one notice.** On
+`agent_settled` with `ctx.isIdle()`, a child that did not call
+`notify_parent` since its last new work tells the parent that it is
+idle without a report, and how to continue or end it. A turn that stops
+on a provider error sends the error instead, once per failed attempt,
+with how to retry. An aborted turn sends nothing: someone stopped it
+deliberately. These status notices write no `report` and carry no
+guidance: a status is not the child's account of its work. New work
+clears the per-turn memory. A child that never starts a turn and never
+exits sends no notice: only a settled turn is evidence.
 
-The notice does not count as the child's report. If the child then sends
-nothing, the ending notice below still arrives. Its detail contains the
-last error. The child still decides what to say about its work.
+**Endings.** The parent learns of every ending, report or not. For each
+run that it starts, the parent runs `kido run-wait ID --json` in the
+background. When it exits, the parent formats the notice:
 
-An **ending** is not a judgement. If the child shuts down without calling
-`notify_parent` in this session, it produces one notice that states this
-fact.
-The notice names the run, its recorded outcome, its run id and
-`spawn_subagent(resume:)` to continue it. It claims nothing about the
-work. It states only that the run ended without a report, which any
-observer can establish.
+    subagent "worker" completed without reporting: it never called notify_parent, so this is the whole account of it
+    detail: no turn ever ran: ...
+    run: 6f1c...
+    message it to continue it, or stop_run to end it
 
-Without this notice, the parent learns nothing here. A parent that
-assigns work and waits quietly for a report would wait for a report
-that never arrives.
+A child with a `report` file reads `subagent "worker" completed`, with
+no "message it" line. No notice has a resume line. A parent that
+restarts under its own session starts one `run-wait` per live child,
+once, at its first turn event. Its ended children are not watched.
 
-Two observers can send the notice. They correspond to the two ways a
-run can end without a report:
-
-- The child's own shutdown after a quit or a lost parent, if the run
-  has no report file. The notice comes from the outcome-recording
-  location, `kido run-outcome`.
-- A sweep of a marked run pane dead past the linger, or collected as an
-  orphan, with no recorded outcome. The notice states that it is unknown
-  whether the child called `notify_parent`. Any report that the child
-  sends remains valid.
-
-The atomic-link outcome write selects the sender, as for every other
-ending ("Exactly one ending", below). A run stopped from outside already
-has a notice from its stopper and an outcome on disk. It produces no
-extra notice when its child shuts down.
+Without this notice, a parent that assigns work and waits quietly for a
+report would wait for a report that never arrives. The notice claims
+nothing about the work, only how the run ended.
 
 The parent's UI displays a notice immediately as a dimmed
 `│ @<name> notifies: <first line>` line above the editor. Separately, the
-notice enters the model's context at the next turn boundary. In
-fullscreen mode, it is a collapsed message that a mouse click expands.
-Outside fullscreen mode, it is expanded. kido keeps visual arrival
-separate from model delivery.
-
-A notice steers instead of queuing as a follow-up. Thus, a parent in a
-turn sees it between tool calls and decides whether to act.
-A `steer` envelope works the same way, for the same reason ("What steers
-and what queues", above). A message and an ask still wait for the turn.
+notice enters the model's context at the next turn boundary as a
+collapsed message that a mouse click expands, or expanded outside
+fullscreen mode. A notice steers instead of queuing as a follow-up, so a
+parent in a turn sees it between tool calls.
 
 **The parent ends a child.** A child has no idle timer. After it
 reports, or after a turn settles with nothing to do, it stays alive.
-Only its parent (`stop_run`), the user, or the orphan rule ends it. The
-session-id test above identifies the real child; a root session has no
-parent to be stopped by.
+Only its parent (`stop_run`), the user, or the orphan rule ends it.
+`stop_run` records `completed` for a child that reported, and `stopped`
+for one that did not.
 
-**A report is not an ending.** `kido tool notify_parent` delivers the
-report and keeps the whole report in the run's `report` file. The file
-is one fact of the run, written only by a delivered report, and it is
-what decides the ending of a stop: `stop_run` records `completed`
-for a child that reported, and `stopped` for one that did not. The
-notice a parent receives says how to act on a report: end the child with
-`stop_run` when nothing more is needed, or continue it with
-`message_agent`.
+**Shutdown.** The child uses one teardown, whether it quits, is stopped
+or loses its parent:
 
-**A settled turn with no report sends the parent one notice.** The
-child's own `agent_settled` listener, on `ctx.isIdle()`, sends it
-through `kido tool notify_parent --status`. The notice states that the
-child is idle and did not report, and how to continue or end it. A
-provider error's notice takes the same path. Without these notices a
-quiet child would wait forever with nobody told.
+1. It closes the inbox, and releases every waiting ask.
+2. It stops the parent watch and its own `run-wait` processes.
+3. It records its run's outcome with `kido run-outcome`: `completed` if
+   the session is idle, `failed` otherwise. A session waiting for its
+   first turn reports idle but has done nothing. Thus, it records
+   `failed` with "no turn ever ran". The detail of a session whose last
+   turn failed names that error.
+4. It unsets its four pane options.
 
-The `--status` flag writes no report file and carries no parent
-guidance: a status is not the child's account of its work. The child
-remembers that it told the parent this turn, so repeated settles send no
-more. New work clears that memory and the per-turn report flag; the
-run's `report` file stays, because a report was delivered. An aborted
-turn sends nothing, because
-someone stopped it deliberately; an error notice is its turn's notice.
-A child that never starts a turn and never exits sends no notice: only a
-settled turn is evidence. `kido runs` still shows it as running.
+`/reload` keeps the inbox listening and records no outcome, because the
+run continues. `/new`, `/resume` and `/fork` record nothing either: the
+process continues as another session.
 
-**Shutdown.** The child uses one teardown, whether it quits,
-is stopped or loses its parent:
-
-1. The child stops the parent poll.
-2. The child releases every waiting ask.
-3. The child closes the inbox.
-4. The child records `completed` if the session is idle, or `failed`
-   otherwise. A session waiting for its first turn reports idle but has
-   done nothing. Thus, it records `failed`, with a detail that states no
-   turn ever ran. This lets the parent distinguish "never started" from
-   "ended mid-work".
-
-   For a session where no turn ran, the detail also names pi's
-   "Use /login" line if the captured screen contains it. This is the only such ending with a cause known without
-   opening the screen. kido records the outcome as unreported when the
-   run has no report file, and tells the parent so.
-5. The child releases its run: `pi.json` stays, with pid 0.
-
-`/reload` runs the same handler but omits all run-ending parts because
-the run continues.
-
-**The window, and the pane.** The sidebar's sweep collects a marked
-run's pane after it has been dead for thirty seconds, and captures its
-screen. If no outcome exists, it records the pane's ending.
-A window with the user's own split keeps that split and loses its mark.
-It becomes an ordinary user window (design.md, "Window lifecycle" and
-"Ending a child, and resuming a run").
+**The window, and the pane.** The sweep collects a marked run's pane
+after it has been dead for thirty seconds, and captures its screen. If
+no outcome exists, it records the pane's ending. A window with the
+user's own split keeps that split and loses its mark (design.md,
+"Window lifecycle").
 
 ## Redirecting one, and ending one from outside
 
@@ -548,404 +358,150 @@ Otherwise, an instruction arriving during a task would appear to be the
 child's own idea.
 
 `interrupt_subagent` aborts the target's current turn. It leaves the
-target idle with its context intact. `stop_run` asks the target to shut
-down and waits up to five seconds for its holder to end. If the holder
-is still live, it kills the pane. For a target with no inbox,
-or a stale inbox, it kills the pane immediately, and only with `force`.
+target idle with its context intact.
 
-All three controls reach descendants only. kido checks before sending,
-and the receiving extension checks on arrival, because the sender field
-is advisory. A human at the CLI has no caller and can act on anything
-(design.md, "Steer, interrupt and stop").
+`stop_run` resolves its target among the caller's own runs and its
+descendants, in this order: an exact run or session id, a unique prefix
+of at least eight characters, an unambiguous running name. It removes
+one leading `@`.
+
+- A bash run: `kido run-stop ID`.
+- A subagent: the stop request over its inbox, then `kido run-stop ID
+  --wait 5`, with `--result completed` if a `report` exists. A healthy
+  child ends itself within the wait. kido escalates for one that does
+  not (design.md, "Window lifecycle"). `force` skips the request.
+  Without an inbox and without `force`, the stop is refused.
+
+All three controls reach descendants only. The sender checks before
+sending, and the receiving extension checks on arrival, because the
+sender field is advisory (design.md, "Steer, interrupt and stop").
 
 The sweep collects orphans. A marked run pane is an orphan if its run
 meta names a parent that has ended (design.md, "Window lifecycle").
-The sweep collects it on one reading, unless its window is focused or
-collection would destroy the session. Before closing the run's pane,
-it records failure with the detail "its parent ended". A notice to the
-absent parent fails without an error report.
-A one-shot `kido reap` also applies this rule. It needs no second sweep.
+Before it closes the run's pane, it records `failed` with "its parent
+ended". A one-shot `kido reap` also applies this rule.
 
-The parent edge names the parent's **session**. A parent can quit and
-resume with `pi --session`, as a new process on the same session id.
-Its children belong to it again as soon as it claims its run.
-During the gap, no process holds that session id. Its children are then
-orphans, and the sweep acts on one reading.
+A top-level parent is its pane (`%N`): it has ended when its pane is
+gone, dead or shows no pi root. A subagent parent is its run. When pi
+exits, its root goes, so the next sweep collects its runs. `/new`,
+`/resume` and `/fork` change the parent's session id but keep a pi root
+on the pane. The sweep then keeps the children. A subagent's own parent
+watch, which reads `@kido_session`, ends it.
 
-This includes `kido tool async_bash` runs. The sweep reads their parent
-edge from the run meta. An agent child's own parent-liveness poll can
-also end the child. `/new`, `/resume` and `/fork` change the parent's
-session id and orphan its runs. `/reload` keeps the parent's claim and
-does not orphan its runs.
+## Restarting through a message
 
-## Resuming a run
+`message_agent` or `ask_agent` to an ended subagent restarts it as a
+new run under the same session. The rules:
 
-Resume is broken until plans/harness-split.md replaces it with a
-restart through a message: it no longer clears the old outcome, so a
-resumed run reads as ended. This section describes its design until
-then.
+- Only the parent restarts its child. The lookup is
+  `agents/<sender>/<name>/`, so another parent's ended child is not
+  found. An `async_bash` run is refused: "a background command, not an
+  agent".
+- A name resolves to a live agent first, then to the newest ended child
+  of the sender.
+- PARENT is the sender's current run id or pane, not the one at the
+  spawn. A stale parent would make the sweep's orphan rule close the
+  child at once.
+- With `session-file`, the restart is
+  `kido run-child P ... -- kido-pi --session <session-file> --name N [--model M] [--tools ...] <message>`.
+  The message is pi's first prompt, in argv, so there is no inbox race.
+- Without `session-file`, the restart uses `--session-id <id>` and no
+  prompt. The extension removes `delivered`, so the stored task is
+  delivered again. The message follows over the inbox, which the
+  sender waits for up to 5000 ms.
+- An ask never becomes pi's first prompt, because the ask id would be
+  lost. The child starts, then receives the ask envelope over its
+  inbox. The ask's deadline starts before the restart, so it includes
+  pi's start and the wait for the inbox.
+- The extension rewrites `agent.json` with the new run before it
+  delivers the message, removes the old `report` and starts a new
+  `run-wait`. A second message while the new run's inbox is not bound
+  waits for the inbox. It never starts a second run, because the run
+  in `agent.json` is live.
+- A stopped child restarts on a message. Stopped is not finished.
 
-`kido tool spawn_subagent --resume <run-id>` starts a finished or dead run
-again in a window. It uses `pi --session <session file>` at the run's own
-directory, under the original name. It uses the model recorded in meta,
-unless the command after `--` names a model. It uses the same window
-creation and mark as a fresh spawn. The run continues without a
-duplicate; kido clears its old outcome and screen.
-
-kido refuses a run while its recorded pid is alive, even if shutdown
-records an outcome. It does not refuse a run without a pi session file.
-The run id is the child's own session id. Without a file on disk, the
-id is free, not stale.
-
-If the run's `pi.json` names no pi session file that exists, the resume
-creates a fresh session
-under that id with `--session-id` and clears the run's delivered marker.
-Thus, the child receives the stored task again instead of skipping it
-as already delivered.
-
-The resumed run uses its recorded model and tool allowlist.
-Arguments after `--` can override the model and tools (design.md,
-"Ending a child, and resuming a run").
-
-The caller that resumes becomes the parent edge. Thus, an agent that
-resumes becomes the run's new parent. A human at a bare shell resumes a
-parentless session that nothing but the user ends.
-
-`--no-parent` explicitly requests a parentless session. Thus, an agent
-can transfer a run instead of becoming its parent. kido checks that the
-caller is a live agent before creating the window. The sweep keeps no
-history. A stale edge would cause orphan collection within seconds,
-without an explanation.
-
-`spawn_subagent(resume)` runs with the caller's own session.
-kido refuses `--task-file`, `--name` or `--fork` with `--resume` instead
-of guessing the model's intent. A fresh spawn and a resume are two
-variants of one parsed request. After each variant's specific part, they
-share these checks and operations:
-
-- The depth ceiling
-- The parent check
-- The model check
-- Window creation
-
-The `pi --fork <run-id>` line from `kido runs` remains a bare command.
-Forking a *finished run* from a shell creates a standalone session with
-a `pi` run of its own and no parent. In contrast, `spawn_subagent(fork)` forks the *caller's live
-session* into a child with a record ("Forking the caller's context",
-above).
+The sweep closes the old dead window like any dead run.
 
 ## An async bash run
 
-`kido tool async_bash [--name NAME] [--stream] -- COMMAND...` runs a command
-in its own detached window. It tells the caller once the command ends.
-Its structure is a spawn with a command as its child, not a pi session.
-It uses the same components:
+`async_bash(command, name, stream?)` runs a command in its own detached
+window. It tells the caller once the command ends. It is a run with a
+command as its child, not a pi session:
 
-- `Run_window.create`
-- `run_env`
-- The `@kido_run` mark
-- The run record
-- The sweep
+    kido run-child P --name N -- bash -o pipefail -c '<command> 2>&1 | tee "$KIDO_RUN_OUTPUT"'
 
-`meta.json` always contains a `kind`: `pi`, `agent`, `bash` or `stream`.
-`agent` names a subagent run. `bash` and `stream` name plain and streamed
-`async_bash` runs. `pi` names a pi that kido did not start. This field is the source of truth for whether the
-notifier streams.
-
-One word after `--` is a shell command line. This is the form a model
-writes ("make -j8 && ./run"). Several words are an argv, which kido
-joins with each word quoted. The pane's command is
-
-    bash -o pipefail -c '<command> 2>&1 | tee "$KIDO_RUN_OUTPUT"'
-
-with no wrapper around it (design.md, "Window lifecycle"). kido writes
-the command to the run's `command` file and `meta.json` before creating
-the window. After tmux answers, kido adds the window's pane and the
-pane's pid to meta. tmux `execvp`s the argv, so text from the model
-never reaches tmux's parser. `--name` is optional.
-Without a name, kido uses the basename of the command's first word.
-It retains only alphanumerics, `-`, `_` and `.`, with a 64-byte cap.
-For an empty result, it uses `bash`.
-
-The parent is the caller's run, from `PI_SESSION_ID`, not a flag. That
-run is the only correct answer to who must receive the notice. A command
-without a caller, such as one from a human's shell, has no parent. The run then records its
-outcome and tells nobody.
-
-The spawn depth ceiling does not apply because a bash run starts no
+There is no wrapper around the command (design.md, "Window lifecycle").
+tmux `execvp`s the argv, so text from the model never reaches tmux's
+parser. The depth ceiling does not apply, because a bash run starts no
 agents. An agent at the ceiling can still run a build.
 
-**The notifier.** After it creates the window, `kido tool async_bash`
-starts a detached `kido run-wait ID --notify` (its own session, null
-descriptors). The notifier polls the panes at the sidebar's tick until
-the run has ended by design.md's status rule: the dead pane's
-`#{pane_dead_status}` or `#{pane_dead_signal}`, read by tmux, not by
-`wait(2)`. Then, in order:
+The result names the run id and the output file. kido decides where a
+run's output is, and `run-child` prints it, so the extension never
+derives kido's state directory.
 
-1. It records the outcome: `completed` for exit 0, else `failed` with
-   the text `exit N` or `signal NAME`.
-2. If its write won, it sends one completion notice to the parent: a
-   `notice` envelope through the parent's inbox, addressed to the
-   parent session in the run's meta.
-
-The `new-window` command list sets `@kido_run` and `remain-on-exit`
-before the command runs, so the dead pane stays for the notifier to
-read. The notifier is phase-1 scaffolding: plans/harness-split.md moves
-it into the pi extension as a plain `kido run-wait`.
-
-An agent spawn whose window disappears records a failure. Nothing else
-can describe that run. The missing window has no marked pane, so neither
-sweep rule can reach it. A pi that disappears that quickly never reaches
-its task.
-
-The notifier and spawned agents inherit `$TMUX`. Thus, their kido
-calls resolve the parent's server directory without `KIDO_STATE_DIR`.
-Watcher scripts derive their run directory from `KIDO_AGENT_TASK_FILE`,
-which kido already resolves. They do not copy the state resolver.
-
-`kido tool async_bash` prints the spawn line with a fourth field: the
-run's output file. kido determines where it keeps a run's output.
-A tool that reconstructs the path would duplicate `Server_dir.dir`'s pane
-socket derivation and default environment precedence. Thus, the tool's
-single call supplies the path.
-
-The notice names the run itself:
+The parent's `run-wait` gives the ending, and the parent formats the
+notice:
 
     async run "build" failed: exit 3
     run: 6f1c...
-    output: <state>/runs/6f1c.../output
+    output: <server state>/runs/6f1c.../output
     --- last 4000 bytes of output (12034 omitted) ---
     ...
 
-The envelope's `from` also names the run, for the same reason.
-A bash run has no `pi.json`. Thus, kido could otherwise identify only
-the *process* that observes the ending:
+The notice contains the last 4000 bytes of the output file. It uses the
+tail, not the start, because failure information comes last. If the
+tail starts inside a UTF-8 character, the extension removes that partial
+character. The output file is the source of truth; nothing truncates
+it.
 
-- The run's pane, which is not an agent. The parent would read
-  "notification from %47".
-- A sidebar that sweeps the pane.
-- An unrelated agent that types `kido tool stop_run`.
+**Exactly one notice.** The parent's `run-wait` exits once, so the
+parent sends one notice for each run. The ending itself has one
+recorded write: `Run.record_outcome` links a complete temporary file
+with `Unix.link`, and the first write wins. `run-stop`, the sweep and
+the child's own `run-outcome` can race; the notice shows whichever won.
+A run whose parent is gone has nobody to tell.
 
-The run's name is the only correct answer. The parent's widget row shows
-that name.
-
-The output file is the source of truth. Nothing truncates it.
-For a run that does not stream, the notice contains its last 4000 bytes.
-It uses the tail, not the start, because failure information comes last.
-If the tail starts inside a UTF-8 character, kido removes that partial
-character. It replaces invalid UTF-8 with replacement characters.
-Thus, a log ending mid-character cannot prevent the run's only notice.
-
-A streamed run's notice has no tail because the parent already
-receives the output during the run. It includes only the
-"N lines not streamed" count above, if that count is nonzero.
-
-**Exactly one ending.** The outcome has one recorded write; the first
-write wins. The winner sends the notice. `Run.record_outcome` links a
-completed temporary file with `Unix.link`. The same write, read in the
-same way, decides the winner. No flag or "notified" marker is necessary.
-Three observers can win:
-
-| Observer | Discovers the ending | Records | Notifies |
-|---|---|---|---|
-| the notifier | the dead pane, at its next poll | `completed`/`failed` from the pane | yes, with the exit status |
-| a sweep (`Reap.sweep`) | rule 1: a marked run pane dead for the grace; rule 2: an ended parent | the pane's ending, or `failed` "its parent ended" | yes, if it won |
-| `kido tool stop_run` | a deliberate stop | `completed` if the run reported, else `stopped` | yes, if it won |
-
-The sweep covers a notifier that died. Killing the window removes the
-mark and the dead pane, so the notifier then reads the run as `died`.
-
-Both kinds of run have ending reports, but the claims differ.
-A bash process's completion is an exit code, which tmux reports. An
-agent's completion is a judgement that only the model can make. Thus, a
-sweep's notice for an agent reports only how its pane ended
-("Reporting", above).
-
-Neither kind of run sends a notice without a parent session.
-`kido tool async_bash` at a human's shell produces such a run.
-
-The three observers share one notice builder: `Run_ending.body`, over a
-`Run_ending.ending`. Thus, the notice does not differ according to which
-process observes the build's ending. Observers outside the run use one
-write-then-decide function, `Run_ending.record_ending`. A third observer can call
-this function instead of implementing the same invariant again.
-
-`Reap.sweep` sends nothing. It returns the runs
-whose parents the caller must now notify.
-
-`Reap.collect`, called from `kido reap` and the sidebar's poll, sweeps,
-releases, then sends each ending with `Run_ending.send`. A window sweep does
-not need to know what an inbox is. It can know only that a run ends
-without a report.
-
-**Stopping one.** `kido tool stop_run -- <name>` ends a run.
-It resolves the address in this order:
-
-1. The exact run id.
-2. A unique id prefix of at least eight characters.
-3. An unambiguous running run name, case-insensitive.
-
-It removes one leading `@` at the input boundary. For an ambiguous name,
-it lists the matching run ids. It refuses an explicitly addressed ended
-run. Both agent and bash runs obey descendant scope. Bash runs identify
-their caller through the parent in meta. A human with no caller can
-stop any run.
-
-For an agent run, stop asks its inbox to shut down. It waits up to five
-seconds and kills the pane if necessary. `--force` permits a pane kill
-when no usable inbox exists.
-
-For an agent run the ending follows the report file: a child that
-already reported ends as `completed`, and one stopped first as `stopped`
-(design.md, "Ending a child, and resuming a run").
-
-A bash run needs no `--force`. Stop calls `kido run-stop`'s function
-(`Run_stop.stop`) with the text "stopped by its parent": it records
-`stopped` first, sends TERM to the pane's process group, KILL after
-`KIDO_STOP_ESCALATION_MS`, and kills the pane. First-write-wins keeps
-the stopping outcome instead of the pane's signal ending. Stop sends the
-one ending notice with the output tail; the notifier's later write
-loses and sends nothing.
-
-Except for stop and orphan collection, a bash run is deliberately not an
-agent. It has no `pi.json`, but appears among its caller's own runs
-in `kido tool list_runs`. `message_agent` and `ask_agent` cannot address
-it. It has no status to report and nothing that can answer.
-Its run record stores facts that remain after a process ends.
-`kido runs` shows it like any other run.
+A bash run is not an agent. `message_agent` and `ask_agent` refuse it.
+`stop_run` reaches it, and the orphan rule collects it. `kido runs`
+shows it like any other run.
 
 ## Streaming a run's output
 
-`async_bash(command, name?, stream?)` and `kido tool async_bash --stream`
-request the command's output as it arrives, not only at the end.
-The tool interface uses one boolean because one flag controls the
-capability. A second tool would give it a second name. Every tool calls
-the subcommand of its own name.
+With `stream: true`, the parent tails the run's `output` file every
+`KIDO_STREAM_POLL_MS` (default 1000) and sends what is new as one
+collapsed custom message (`deliverAs: "steer"`, `triggerTurn: true`).
+A batch steers into a running turn without costing a turn. An idle
+parent starts one.
 
-kido **coalesces** at both ends to bound the number of messages.
-It does not send an envelope for each line. The receiver's `turn_end`
-handler is one opportunity to flush held output.
+A batch keeps a tail of up to 200 lines within a 16KB line budget. It
+keeps a single overlong last line, truncated to 16KB. One line above the
+tail reads `... N lines omitted (see <path>)`. N counts lines removed by
+the cap, lines dropped from the held 5000-line buffer, and a read gap
+over 256 KiB. The batch uses the tail, for the same reason as the
+notice. The batch's first line names the run.
 
-**The notifier's side.** For a run whose meta kind is `stream`, the
-notifier tails the run's `output` file at each poll and feeds the new
-bytes to a writer (`Async_stream`). This writer batches whole lines. It sends one `stream` envelope on a 250ms tick, or when at
-least 4KB of whole lines are pending.
+A partial last line waits for its newline. When the run ends, the
+parent reads the rest of the file and sends it before the ending
+notice. Thus, the model never reads "this is how it ended" before the
+corresponding output.
 
-The writer removes ANSI escapes and control bytes below 0x20, except
-tabs, from the sent text. The output file keeps the bytes as written.
-An unfinished line waits for its newline or for the close.
-Every send resolves the parent's inbox by session id. This reads the
-state directory without a tmux pane listing. Thus, the parent's current
-inbox receives the next batch.
-
-If the orphan sweep observes a quit-then-resume gap, the run ends.
-Resuming the parent does not restart it.
-
-Sending output must never block the command's output. The tee to the
-output file is unconditional and is the source of truth.
-The stream tries to send from a buffer of whole lines.
-The notifier's tail writes to this buffer under a mutex.
-One separate thread sends the buffer's contents.
-
-A failed or stalled send discards its chunk instead of retrying it.
-Late, out-of-order build output is worse than absent output, and the file
-contains all output. The sender uses a doubling backoff before the next
-attempt. A buffer over 64KB discards its oldest lines. Thus, a slow parent
-receives the tail.
-
-After acknowledgements reach at least 256KB for a run, the next batch
-reports this once and the stream stops sending. The batch that crosses
-the threshold arrives whole.
-
-The notifier counts every line that the parent does not acknowledge.
-The completion notice contains the count as `N lines not streamed`.
-Thus, a model that receives output does not incorrectly believe it sees
-all output.
-
-The notifier sends the notice **after** the final chunk. Before building
-the notice, it reads the rest of the output file and closes the stream,
-which flushes and waits for pending sends. The wire uses one connection
-per message, without sequencing. The notifier sends messages one at a
-time. This is the only available
-ordering.
-
-**The receiver's side.** A `stream` envelope is the only kind that
-reaches nobody on arrival. `kido-agents.ts` appends its lines to a per-run
-buffer. It gives the buffer to the model as **one** collapsed custom
-message at one of three moments:
-
-- At `turn_end`, **only if that turn ran tools**. This single `if` guard
-  makes streaming affordable. A turn with tool calls already commits to
-  its next LLM call, so the batch costs zero extra turns.
-
-  A turn without tool calls means the agent stops. Flushing then starts
-  another turn, whose `turn_end` also has no tool calls. More lines arrive during that
-  turn. The resulting loop ends only when the command ends. This is the
-  uncontrolled loop the design prevents, even through the coalesced
-  channel.
-- Otherwise, 1s after the last chunk, and at most 30s after the first
-  held chunk. Each chunk restarts one timer for the session, not one per
-  run. Thus, a burst becomes one batch. A quiet watcher's lines reach the
-  model a second after they are written. Each such flush costs one
-  actual turn.
-- Immediately before a run's completion notice. Thus, the model never
-  reads "this is how it ended" before the corresponding output.
-
-A batch keeps a tail of up to 200 lines within a 16KB line budget.
-It retains a single overlong last line, truncated to 16KB.
-One line above the tail reads `... N lines omitted (see <path>)`.
-N counts lines removed by the cap and lines discarded by the held
-5000-line buffer while waiting for a turn. One number is the only one
-the model can act on.
-
-The batch uses the tail, not the start, for the same reason as the
-completion notice. The row and the batch's first line contain the run's
-name. A bash run has no `pi.json`, so the label would otherwise use a
-pane id.
-
-`stream` defaults to off.
+kido stores no stream flag. A parent that restarts re-watches a bash run
+for its ending only, not for batches. `stream` defaults to off.
 
 ## A human at a shell
 
-The commands belong to the tools, but humans can also run them.
-This is a supported use. A bare shell has no `PI_SESSION_ID`, so it is
-no caller: no inbox, no session id and no parent. Every difference
-follows from this fact.
+A human uses kido's own commands, not the tools:
 
-What works:
+- `kido prompt` sends text to an agent in scope as v0 text, which the
+  agent reads as the user's own words (design.md, "Delivery, and when a
+  paste is allowed").
+- `kido run --name N -- CMD...` starts a parentless run.
+  `kido runs`, `kido run-wait`, `kido run-stop` and `kido run-outcome`
+  act on any run by id.
+- `kido-pi` in a pane starts a top-level agent.
 
-- `kido tool message_agent`: a one-way send with no sender requirements.
-  An agent whose run names an inbox receives a real user message.
-  An advertised but unavailable inbox is an error. Only an agent whose
-  run names no inbox receives a paste. The message arrives without a
-  label because a command with no caller is the user speaking. An agent's
-  own message has a header that names the sender (design.md, "The inbox").
-- `kido tool spawn_subagent --no-parent`: a standalone agent in a window,
-  owned by nobody (design.md, "A parentless spawn, and a parent that
-  must exist"). Setting `PI_SESSION_ID` to a live agent's session also
-  works and makes that agent the child's parent. kido refuses a dead or
-  invented agent instead of spawning the child.
-- `kido tool spawn_subagent --resume <id>`: parentless by default from a
-  shell, and with `--no-parent` from an agent.
-  `kido runs <id>` prints exactly this line.
-- `kido tool steer_subagent`, `interrupt_subagent`, `stop_run`: a shell
-  with no caller is nobody's ancestor. It can act on anything instead of
-  nothing (design.md, "Steer, interrupt and stop").
-- `kido tool list_runs` shows top-level agents from an untracked shell.
-  `kido runs` and `kido reap` are read-only or read-mostly and unscoped.
-
-The commands refuse these calls and state what to do instead:
-
-- `kido tool ask_agent`: the answer can arrive only on the asker's inbox.
-  A shell has no inbox. Delivering the question would use a target turn
-  for a question it cannot answer.
-- `kido tool notify_parent`: a shell is not spawned, so it has nobody to
-  notify.
-- `kido tool set_status`: no run exists for the activity.
-
-The child of a `--no-parent` spawn has no orphan rule and no report to
-its parent. The user can close its live window.
-The sweep still collects a dead marked pane.
+A shell has no inbox and no session. It cannot ask, steer, interrupt or
+receive a notice.
 
 ## In the sidebar
 
@@ -961,10 +517,9 @@ A multi-pane subagent window still ends with its own `└` on the row
 below, one column further inward. A one-pane window without a parent
 keeps its dot. Only an anchored window changes.
 
-The anchor is the parent edge that the walk finds. The run's meta file
-supplies the edge through its owner, for a live and a finished
-child alike. Thus, a finished child remains nested while its window
-lingers.
+The anchor is the parent edge in the run's meta: a run parent, or the
+pane of a top-level pi. The edge stays for a live and a finished child
+alike. Thus, a finished child remains nested while its window lingers.
 The sidebar draws a child as a root if its parent is absent or in
 another session.
 
@@ -982,160 +537,27 @@ agent's finished turn. A lingering row has no live agent to earn the
 green indicator. This is the TUI's `Kido_sidebar.indicator` for an `Ended`
 lifecycle.
 
-These nested windows no longer follow tmux's own order.
-Shift-Up and Shift-Down skip every window with a run pane, dead or alive.
-Thus, the keys cycle through windows the user opens. The user reaches
-subagent windows through the sidebar. Skipping a dead window without a
-liveness test is deliberate. Otherwise, the key's behavior would change
-during use as a window disappears after its linger.
-
-## The kido-pi extension
-
-`share/pi/kido-pi.ts` is the new harness, beside the old pair
-(design.md, "kido-pi, the harness in one extension"). The sections
-above describe the old pair. This section gives only what kido-pi does
-differently. Its tools keep the old names and schemas, except as
-described here. Each tool runs in TypeScript and no tool calls
-`kido tool`.
-
-**Names.** `spawn_subagent` and `async_bash` require `name`. The
-extension refuses a name with `'`, `"`, `$`, `#`, `\`, a backtick, a
-newline or a carriage return, and a name over 64 bytes. A name is
-unique within its parent, for live and ended children: the directory
-`agents/<parent>/<name>/` or a run of the same name exists, or it does
-not. A reused name is refused with "message it instead" (spawn) or
-"choose another name" (async_bash). The `resume` parameter does not
-exist.
-
-**Spawning.** `spawn_subagent` checks the model with
-`pi --list-models` and the depth (maximum 2). Then it writes the
-agent directory, `task` and `agent.json` with an empty `run`, before
-the child starts (design.md, "kido-pi, the harness in one extension",
-the parent edge). Then it runs:
-
-    kido run-child PARENT --name N --env KIDO_AGENT_PARENT_SESSION=S \
-      --env KIDO_AGENT_DIR=D -- kido-pi --session-id <minted id> \
-      --name N [--model M] [--fork S] [--tools a,b,notify_parent]
-
-PARENT is the caller's `KIDO_RUN_ID`, else its `$TMUX_PANE`. The
-extension then writes the run id into `agent.json`. A failed spawn
-removes the directory. `async_bash` runs
-`kido run-child PARENT --name N -- bash -o pipefail -c '<cmd> 2>&1 | tee "$KIDO_RUN_OUTPUT"'`.
-
-**Addressing.** The tools show names. A target resolves by caseless
-exact name, then exact session id, then a unique id prefix. A match
-in the caller's tmux session wins over a match elsewhere. Another
-parent's child has no name for the caller, but its session id still
-resolves. Messages go only through the target's inbox. A target
-without `@kido_inbox` is "not accepting messages"; the tools never
-paste.
-
-**list_runs** joins three reads: `kido runs --json --parent PARENT`,
-`agents/<me>/*` (task and report on a subagent row) and one
-`list-panes -a`. A live child merges into its pane's row. The row id is
-the child's session id, and `run` is its current run id. Children
-that `run-child %N` started for a top-level pi are listed too.
-
-**Endings.** For each run that it starts, the parent runs
-`kido run-wait ID --json` in the background. When it exits, the parent
-formats the notice in TypeScript, from the text of `Run_ending.body`.
-A subagent without a `report` file "never called notify_parent", and
-the notice says "message it to continue it, or stop_run to end it". No
-notice has a resume line. A bash notice has the output path and the
-last 4000 bytes of output. A parent that restarts under its own
-session starts one `run-wait` per live child, once, at its first turn
-event. Its ended children are not watched. kido stores no stream flag, so a
-re-watched bash run sends only its ending notice, not batches.
-
-The child records its own ending with `kido run-outcome` at shutdown,
-as the old pair does. The idle and error status notices go to the
-parent once per turn. They write no `report`.
-
-**Streaming.** With `stream: true`, the parent tails the run's
-`output` file every `KIDO_STREAM_POLL_MS` (default 1000) and sends
-batches of at most 200 lines or 16 KiB as `streamBatch` does. It keeps
-a buffer of 5000 lines. The `stream` envelope is not used.
-
-**Stopping.** `stop_run` on a bash run is `kido run-stop ID`. On a
-subagent, it first sends the stop request over the inbox, then runs
-`kido run-stop ID --wait 5`, with `--result completed` if a `report`
-exists. `force` skips the request. Without an inbox and without
-`force`, the stop is refused.
-
-**The parent watch.** Every `KIDO_PARENT_POLL_MS`, a child reads
-`@kido_session` and `#{pane_program_status}` of the parent's pane with
-`display-message`. It finds that pane with one `list-panes -a`, and
-reads the list again only when the pane no longer matches. A pane that
-passes the trust rule and has the parent's `@kido_session` means that
-the parent is alive. The ask's liveness poll reads the target's pane in
-the same way. A failed read
-is no evidence. When the parent is gone, the child shuts down.
-
-### Restarting through a message
-
-`message_agent` or `ask_agent` to an ended subagent restarts it as a
-new run under the same session. The rules:
-
-- Only the parent restarts its child. The lookup is
-  `agents/<sender>/<name>/`, so another parent's ended child is not
-  found. An `async_bash` run is refused: "a background command, not an
-  agent".
-- A name resolves to a live agent first, then to an ended child of the
-  sender.
-- PARENT is the sender's current run id or pane, not the one at the
-  spawn. A stale parent would make the sweep's orphan rule close the
-  child at once.
-- With `session-file`, the restart is
-  `kido run-child PARENT ... -- kido-pi --session <session-file> --name N [--model M] [--tools ...] <message>`.
-  The message is pi's first prompt, in argv, so there is no inbox race.
-- Without `session-file`, the restart uses `--session-id <id>` and no
-  prompt. The extension removes `delivered`, so the stored task is
-  delivered again. The message follows over the inbox, which the
-  sender waits for up to 5000 ms.
-- An ask never becomes pi's first prompt, because the ask id would be
-  lost. The child starts, then receives the ask envelope over its
-  inbox. The ask's deadline starts before the restart, so it includes
-  pi's start and the wait for the inbox.
-- The extension rewrites `agent.json` with the new run before it
-  delivers the message, removes the old `report` and starts a new
-  `run-wait`. A second message while the new run's inbox is not bound
-  waits for the inbox. It never starts a second run, because the run
-  in `agent.json` is live.
-- A stopped child restarts on a message. Stopped is not finished.
+These nested windows no longer follow tmux's own order. design.md,
+"The sidebar tree", gives the Shift-Up and Shift-Down order.
 
 ## Limits
 
-- If the sweep collects a child without a recorded outcome, it tells the
-  parent that the child ends, but not whether it reports. One notice
-  contains the run's name, outcome, id and resume instructions. Nothing
-  reconstructs the work's progress. Only the run record and captured
-  screen remain as evidence.
+- If the sweep collects a child without a recorded outcome, the parent's
+  notice gives how the pane ended, not whether the child finished its
+  work. Only the run record and captured screen remain as evidence.
 - A child can start shutdown when its parent dies. The sweep can close
-  its window during shutdown and record `died` before the child records
-  its own outcome. Whatever it managed to write first
-  wins (`Run.record_outcome` links a completed temporary file with
-  `Unix.link`).
+  its window during shutdown and record "its parent ended" before the
+  child records its own outcome. The first write wins.
 - Nesting stops at depth 2 within each parent chain.
-- `--no-parent` makes an ordinary top-level run, with depth 0. Its children
-  start at depth 1. No depth ceiling or restriction carries over from the
-  caller. This also applies to resume. It has no orphan rule and no
-  parent to report to. The user can close its live window.
-  The sweep still collects its dead marked pane.
-- `kido tool ask_agent` deliberately refuses calls from a shell because
-  the answer has nowhere to arrive. A human who needs a round trip must
-  use a long-lived process, or use `message_agent` and read the reply on
-  screen.
 - The `ask_agent` tool waits for a reply. kido selects `followUp` to keep
   correlated questions ordered (design.md, "Steer and followUp").
   Expected scheduling is the target's current work plus a reply turn,
   not a round-trip. A correction that cannot wait uses `steer_subagent`.
-  It is not correlated, so it does not need to queue.
 - A child that exits before tmux sets `remain-on-exit` loses its window
-  and last screen. Only the run record remains. For a bash run, the
-  notifier then reads `died`.
-  For an agent run, the spawn itself reports the failure. No other
-  account follows.
+  and last screen. Only the run record remains, and the parent's notice
+  reads `died`.
+- A re-watched bash run after a parent restart sends no batches.
 - A subagent's window moved to another tmux session is outside its
   parent's scope. The parent cannot reach it.
-- Everything assumes one machine: a shared filesystem, a shared pid
-  namespace, and a kido binary beside every agent.
+- Everything assumes one machine: a shared filesystem and a kido binary
+  beside every agent.

@@ -53,6 +53,27 @@ test("interrupt and stop are refused, with neither abort nor shutdown, for a pee
   }
 });
 
+test("a control is accepted from an ancestor at any depth, and refused from a descendant or a self-edge", async () => {
+  const fx = makeFixture();
+  try {
+    tree(fx);
+    fx.writeAgent("mid", "leaf", { session: "leaf" });
+    await asSubagent(fx, "leaf", async () => {
+      const s = await startWithSpies(fx, kidoPi, "leaf");
+      assert.equal(await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "root", name: "root" } })), "ok", "a grandparent may interrupt");
+      assert.equal(s.aborts(), 1);
+      assert.equal(await sendToInbox(s.inboxPath, envelope("stop", "", { from: { session: "leaf" } })), "refused", "a self-edge is no ancestor");
+    }, { parent: "mid", name: "leaf" });
+    await asSubagent(fx, "mid", async () => {
+      const s = await startWithSpies(fx, kidoPi, "mid");
+      assert.equal(await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "leaf", name: "leaf" } })), "refused", "a child may not interrupt its parent");
+      assert.equal(s.aborts(), 0);
+    }, { parent: "root", name: "mid" });
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("an interrupt does not answer until ctx.abort() settles, so a message sent right after is not orphaned", async () => {
   const fx = makeFixture();
   try {
@@ -76,22 +97,6 @@ test("an interrupt does not answer until ctx.abort() settles, so a message sent 
       assert.equal(await pendingState(sent, 50), "pending", "the answer waits for the abort");
       release();
       assert.equal(await sent, "ok");
-    }, { parent: "root", name: "mid" });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a control envelope from a human at the CLI is honoured; one claiming an agent's pane is not", async () => {
-  const fx = makeFixture();
-  try {
-    tree(fx);
-    await asSubagent(fx, "mid", async () => {
-      const s = await startWithSpies(fx, kidoPi, "mid");
-      assert.equal(await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "", pane: "%99" } })), "ok", "a human at a bare pane may interrupt");
-      assert.equal(s.aborts(), 1);
-      assert.equal(await sendToInbox(s.inboxPath, envelope("stop", "", { from: { session: "", pane: "%2" } })), "refused", "a pane an agent occupies is an agent, whatever from says");
-      assert.equal(s.shutdowns(), 0);
     }, { parent: "root", name: "mid" });
   } finally {
     await fx.restore();

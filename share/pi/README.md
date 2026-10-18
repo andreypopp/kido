@@ -1,338 +1,117 @@
-# pi extensions: kido-status and kido-agents
+# pi extension: kido-pi
 
-Two extensions, installed together. pi 1.2.0 natively reports status
-through OSC 7501 in interactive mode after terminal feature detection.
-Its pane title, set through OSC 0/2, names the session in kido.
-These work even without the kido extensions.
+`kido-pi.ts` is kido's harness for pi: the agent tools, the inbox, the
+subagent lifecycle and the pane options that kido reads. pi 1.2.0
+natively reports status through OSC 7501 in interactive mode after
+terminal feature detection. Its pane title, set through OSC 0/2, names
+the session in kido. These work without the extension.
 
-- **`kido-status.ts`** reports identity and activity to kido,
-  and opens an *inbox* socket so kido can send a prompt into the session.
-- **`kido-agents.ts`** is agent coordination: the tools below, dispatch of
-  everything but a plain prompt arriving on that inbox, and the subagent
-  lifecycle.
+The extension uses only kido's run commands (`run-child`, `runs --json`,
+`run-wait --json`, `run-stop`, `run-outcome`) and tmux (`set-option -p`,
+`list-panes -a`, `display-message`). It never finds or parses kido's
+state directory; it reads a run's output at the path a run command
+prints. Its own state is per user, in `$KIDO_PI_STATE_DIR`, else
+`$XDG_STATE_HOME/kido-pi`, else `~/.local/state/kido-pi`:
 
-The two kido extensions are separate because they are separate jobs —
-reporting identity and coordinating a fleet of agents — but they share
-one session's inbox and one identity report, so they find each other at
-load time through
-a pair of slots on `globalThis.__kidoPiExtensionSeam`.
-`kido-agents.ts` imports nothing but *types* from `kido-status.ts`, on
-purpose: pi evaluates each extension in a module registry of its own, so
-an ordinary import of the neighbouring file loads a second copy of it
-rather than reaching the one pi started (measured against pi 0.85.1 —
-list_runs answered `[]`). Load order does not matter either: pi may run
-either factory first, and neither reads the other's slot until a tool call
-or an event.
+- `inbox/<session-id>.sock`, the session's inbox;
+- `agents/<parent-session>/<name>/`, one directory for each child:
+  `agent.json`, `task`, `delivered`, `session-file` and `report`.
 
-Install both. Either kido extension on its own still loads and
-degrades quietly: without
-`kido-agents.ts`, an envelope arriving on the inbox is delivered as its
-own text rather than dispatched by kind; without `kido-status.ts`, the
-tools report kido as unavailable.
-
-The status half shells out to:
-
-```
-kido agent-status [--activity <text>] [--model <name>] [--name <name>] \
-     [--remove] [--inbox <path>]
-```
-
-kido reads `$TMUX_PANE`, `$PI_SESSION_ID` and `$PI_SESSION_FILE` from the
-environment. The extension sets the last two from its own session for
-every kido process it starts, as pi does for its bash tool, so kido knows
-which session calls it.
-
-The session id is the agent's identity and its run id: one live process
-holds the run, and a child names its parent by it. The first report of a
-session is the claim on that run, and is the one call this extension
-awaits: kido exits 6 if another live process already holds the run (two
-pi processes started from one session file), and the extension then
-reports nothing more, binds no inbox and tells the user once, naming the
-holder. Only a pi with a UI claims: a headless `pi --print` reports
-nothing. A subagent's parent is in its run's meta, which
-`kido tool spawn_subagent` writes; `KIDO_AGENT_PARENT_SESSION` names it to
-the child's extension (see docs/design-subagents.md, "What a child is
-given").
-
-Those variables are inherited by anything the session starts, so they are
-not on their own what makes this process a subagent: everything that acts
-like one (kido-agents.ts's `ownRunID`) also requires this session's own pi
-session id to equal `KIDO_AGENT_RUN_ID`, which only the child kido actually
-spawned can satisfy. See docs/design.md, "The run id is the child's session
-id".
+docs/design.md, "The pi extension, kido-pi", and docs/design-subagents.md
+give the design.
 
 ## Install
 
-Nothing to install: the `pi` in kido's bin directory runs the real pi with
-`--extension` for both files where the package ships them, so a
-pi started from a kido pane has them and one started anywhere else does
-not. A copy in `~/.pi/agent/extensions/` from an earlier kido registers
-nothing and can be deleted (docs/design.md, "One copy of each pi
-extension").
+Nothing to install: `kido-pi` in kido's bin directory runs the real pi
+with `--extension` for this file where the package ships it. A bare `pi`
+is plain pi, without the harness.
 
-To run them against a checkout, pass both (`-e` repeats); they need
-not be in the same directory, but there is no reason not to be:
+To run it against a checkout:
 
 ```sh
-pi -e /path/to/kido-status.ts -e /path/to/kido-agents.ts
+pi -e /path/to/kido-pi.ts
 ```
 
 ## Behaviour
 
-pi's native root record (`id=""`, `app=pi`) supplies working, blocked,
-done, idle and error. Native question, permission and auth dialogs report
-blocked, but extension custom UI does not. pi supplies no OSC title or
-progress; its pane title is "π - <name> - <cwd>". A message duplicating
-the session name is omitted from the caption; other messages remain.
-Terminal stop sends clear without app. `PI_PROGRAM_STATUS=0` disables
-reporting and `=1` forces it.
+Inside kido (`KIDO_RUN_ID` set, or `$TMUX` set and `kido` on PATH), a pi
+with a UI and a session id:
 
-`kido-status.ts` claims the session identity at `session_start`, reports
-activity, model and inbox changes. At
-`session_shutdown` it sends `--remove`, which releases the run and keeps
-its record, and closes and unlinks the inbox. Pi status, title and
-completion are not stored in the run.
+- writes `@kido_session` and `@kido_name` on its pane at
+  `session_start`, `@kido_inbox` after it binds the inbox, and
+  `@kido_activity` on `set_status`. It unsets the four at shutdown.
+- binds its inbox. A stale socket file is unlinked only after a connect
+  probe fails, so a second pi on the same session binds nothing.
+- for a subagent, delivers its task once, watches its parent's pane, and
+  records its own run's outcome with `kido run-outcome` at shutdown.
 
-- If `kido` is not on `PATH`, or pi is not running inside tmux, the kido
-  extensions do nothing at all, quietly. OSC reporting is independent.
-- The initial identity claim is awaited. Later reports are fire-and-forget
-  (detached, `stdio: "ignore"`); their missing binary, non-zero exit or spawn
-  error never reaches pi and never prints to the TUI.
-- Identity reports coalesce activity, model, inbox and removal changes.
-  Native OSC reports coalesce separately.
+Outside kido, without a UI or without a session id, it writes nothing and
+binds no inbox. The tools still register and report kido as unavailable.
 
 ## Inbox
 
-The inbox lets something outside the session — kido, a script, another agent —
-hand this pi session a prompt, so a session you are not typing into can still be
-given work.
+The inbox lets kido or another agent hand this pi session a message.
 
-On `session_start` the extension binds a unix **stream** socket and reports its
-path as `--inbox <path>` on identity reports. kido's agent tools send v1
-JSON envelopes; the inbox also accepts plain v0 prompts. On
-`session_shutdown` the socket is closed and the file unlinked.
-
-Where to bind is kido's decision, not the extension's: it runs `kido get-inbox
-<pid>`, which prints `{"path": "<state>/inbox/<pid>.sock"}` without creating
-anything. The extension creates the state directory and then the inbox
-directory mode 0700 immediately before binding. kido owns the state-directory precedence and the socket-path length
-budget; if the path would not fit, `get-inbox` exits non-zero and the extension
-simply runs without an inbox. Because the name is this pi's process id, no live
-process can own a leftover file at that path, so one is unlinked unconditionally
-before binding — no liveness probe, no fallback names.
-
-Protocol — a client:
+Protocol: a client
 
 1. connects,
-2. writes the prompt as UTF-8, with no framing,
+2. writes the payload as UTF-8, with no framing,
 3. half-closes its write half (`shutdown(SHUT_WR)`),
-4. reads `ok\n`, and closes.
-
-Plain v0 text is delivered by `kido-status.ts` itself — that is what the
-inbox was built for, and it works with `kido-agents.ts` absent. A v1
-envelope is handed to `kido-agents.ts` and dispatched by kind (below);
-with no agent half loaded it degrades to its own text rather than being
-lost.
+4. reads `ok\n` or `refused\n`, and closes.
 
 ```sh
 # with socat; any client that half-closes will do
 printf 'run the tests and summarise failures' | socat - UNIX-CONNECT:"$sock"
 ```
 
-The prompt then arrives as a real user message, always sent with `deliverAs:
-"followUp"`. That single mode is right in both states: `deliverAs` is only
-consulted while the agent is streaming, where `"followUp"` waits for it to
-finish all its tools — `"steer"` would redirect work the user is watching, which
-an externally injected prompt has no business doing — and when pi is idle the
-message is sent immediately and triggers a new turn.
+A v0 payload is plain text, which `kido prompt` sends. It arrives as a
+real user message with `deliverAs: "followUp"`. A v1 payload is a JSON
+envelope that the tools send, dispatched by kind:
 
-An empty message is ignored, and anything over 1 MiB is dropped rather than
-buffered. Like the status reporting, the inbox is silent and non-fatal: it never
-writes to pi's stdout or stderr, and if it cannot be created or served, status
-reporting carries on unaffected.
+- `message`: a custom message headed with its sender and relationship
+  (parent, subagent or peer), queued with `followUp`.
+- `ask`: the same, with the ask id and the exact `message_agent` call
+  for the reply. Refused on the wire if this session waits on an ask to
+  the same sender (a cycle).
+- `reply`: settles the waiting `ask_agent` call with that id, else
+  arrives as an ordinary message. A reply is never dropped.
+- `notice`: a dimmed row above the editor at once, then a collapsed
+  custom message steered into the current turn.
+- `steer`: joins the running turn (`deliverAs: "steer"`), labelled with
+  its sender.
+- `interrupt`, `stop`: `ctx.abort()`, `ctx.shutdown()`.
+- anything else: delivered as text marked with the unrecognised kind.
+
+`steer`, `interrupt` and `stop` are refused on the wire unless the sender
+is an ancestor of this session in the agent map. `from` is advisory.
+
+An empty message is ignored, and a payload over 1 MiB is dropped. A
+`/reload` keeps the socket bound; connections during the reload wait for
+the reloaded module.
 
 ## Tools
 
-These register unconditionally when `kido-agents.ts` loads, and simply do
-nothing useful until a session has started and kido has been found:
-
-- `list_runs()` runs `kido tool list_runs --json` and returns same-parent
-  peers, the caller's parent and its own subagent and bash runs, excluding
-  itself. A root sees other roots; a subagent sees its live siblings.
-  All running own runs and the newest 20 ended ones are included, with
-  kind, relationship, status and outcome. Autocomplete uses its live
-  agent rows; internal sender, ancestry and reply validation uses
-  `get-agent --context` so addressing stays session-wide.
-- `stop_run(to, force?)` runs `kido tool stop_run [--force] -- <to>`,
-  resolving run ids (unique prefixes of at least eight characters) before
-  unambiguous running names. It stops descendant agent or bash runs,
-  asking an agent to shut down with pane-kill escalation, or signalling
-  a bash wrapper by pid. An agent that already reported ends as
-  completed; one stopped before it reported ends as stopped. Bash needs
-  no force flag and records "stopped by its parent". `steer_subagent`
-  and `interrupt_subagent`
-  remain agent-only; both `spawn_subagent` and `async_bash` return the
-  run id to use with `stop_run`.
-- `set_status(activity)` runs `kido tool set_status -- <text>`, free text
-  capped at 256 bytes and shown next to this session in kido's sidebar,
-  separate from the OSC 7501 state above. An empty string
-  clears it. The extension keeps its own copy of the activity as well,
-  since that is what every later `kido agent-status` report carries; the
-  narrow command is what writes the record without touching anything
-  else on it.
-- `message_agent(to, message, replyTo?)` runs
-  `kido tool message_agent [--reply-to <id>] -- <to>`, piping `message` on
-  stdin. `to` is resolved by
-  an exact, case-insensitive name, then an exact session id, then a
-  unique id prefix, scoped to this tmux session; ambiguity is an error
-  naming the candidates rather than a guess. An agent with an inbox gets
-  it as a real user message; an identity with none
-  gets it pasted into its pane instead. Either way kido's stdout reports
-  which happened and to whom, and the tool relays that back verbatim.
-  `replyTo`, when given, is what makes it a reply - kido derives the
-  envelope kind from the flag - so the receiver's dispatch (below) can
-  correlate it with a pending `ask_agent`. The message waits for the
-  receiver's current turn to end, which the tool's own description says
-  out loud and which is the whole reason `steer_subagent` exists.
-  Descriptions are read by a model every time it chooses a tool, so a
-  cost that decides between two tools belongs in one.
-- `ask_agent(to, question, timeoutMs?)` runs
-  `kido tool ask_agent --id <id> -- <to>`, then blocks the tool call until a
-  matching `reply` envelope arrives at this session's own inbox - which is
-  also why `kido tool ask_agent` itself only sends, and why it refuses a
-  caller that has no inbox rather than delivering a question nobody
-  could answer: a short-lived subprocess has no inbox of its own to
-  receive the answer on (docs/design.md, "Ask and reply"). This tool is
-  unaffected - the session binds an inbox before it can register a
-  waiter at all. Default timeout is 5
-  minutes; a timeout returns an error naming the ask's id, and a reply
-  that arrives after the timeout
-  still reaches the model, as an ordinary message (see Inbox dispatch,
-  below). A wait also ends early, with a different error, if this
-  session's inbox goes away under it - `session_shutdown`, or a `/reload`
-  whose rebind fails - since an answer would then have nowhere to arrive
-  and waiting out the remaining five minutes would only pretend
-  otherwise. A `/reload` that rebinds normally does *not* end the wait:
-  the socket is named after the pid, which does not change, so a reply
-  still lands. Refused, before anything is sent: the target is an ancestor (a
-  subagent may not block the parent that spawned it), is outside this
-  tmux session, has no inbox (there is no way back over a paste), or is
-  the caller itself. If this session already has an ask outstanding to
-  the same target and that target asks it something in the meantime, the
-  reverse ask is refused on the wire rather than let both sides deadlock
-  (see "Cycles" below).
-
-### Inbox dispatch
-
-A payload's `kind` (see "Inbox" above) decides what happens to it, never
-silently: every kind, recognised or not, reaches the model as some form of
-text rather than being dropped.
-
-- `message` - delivered as the user message it always was.
-- `ask` - delivered with an explicit instruction to reply via
-  `message_agent(to, message, replyTo=<id>)`. Refused instead (see
-  "Cycles") if doing so would close a cycle.
-- `reply` - resolves the matching `ask_agent` call, if one is still
-  waiting on that id. If none is (the asker already timed out, or the id
-  is foreign), the answer is still delivered, as an ordinary message -
-  never dropped.
-- `notice` - a "notification from X" row appears above the editor the
-  instant the envelope arrives (a `ctx.ui.setWidget` line, outside the
-  transcript entirely), before anything about it is delivered. The text
-  itself is sent as a custom message and steered into the model's current
-  turn (`deliverAs: "steer"`, as a `steer` envelope gets, rather than the
-  `"followUp"` a message or an ask gets) rather than waiting for the turn
-  to end - a finished child a
-  parent does not know about defeats the point of spawning it. Once that
-  message actually reaches the transcript it renders collapsed
-  ("notification from X - ctrl-o to expand", full text behind pi's own
-  ctrl-o toggle) and the widget row for it is removed - the widget is a
-  stand-in for the wait, not a second copy, so a notice is shown once and
-  delivered to the model once. See docs/design.md, "Notifying the
-  parent", for why steer is safe here (it can only land between a
-  completed turn's tool results and the next model call, never mid-tool)
-  and why a message and an ask stay on followUp.
-- `steer` - a course correction from an ancestor, delivered as a user
-  message with `deliverAs: "steer"` so it joins the turn already running
-  instead of queueing behind it, and labelled with its sender, since an
-  instruction arriving mid-task would otherwise read as if this session
-  had told itself. Refused on the wire for a sender that is not an
-  ancestor, the same check `interrupt` and `stop` get and for the same
-  reason: `from` is advisory.
-- anything else - delivered anyway, marked as an unrecognised kind, so a
-  typo or a newer kido talking to an older extension is visible rather
-  than silently read as a plain message.
-
-### Notices to a parent
-
-A subagent reports with `notify_parent(summary)`, which runs
-`kido tool notify_parent`. It sends only when the model itself decides
-its work is done - a settled turn can be triggered by anything, a peer's
-`ask_agent` included, and only the subagent's own model knows whether a
-given turn was actually its delegated work finishing. Reporting does not
-end the child: it stays alive until the parent ends it with `stop_run`,
-or continues it with `message_agent`. The parent's notice says so.
-
-A settled turn with no report sends the parent one notice of its own,
-through `kido tool notify_parent --status`: the child is idle and did
-not report. A provider error's notice takes the same path. That flag
-writes no report file and carries no guidance, so a later stop of an
-unreported child still records `stopped`.
-
-A standing instruction to call `notify_parent`, appended to the system
-prompt on every turn (`before_agent_start`, gated on this being a
-subagent at all), is what tells a spawned child this is its job - see
-docs/design.md, "Notifying the parent".
-
-A crash or a lost parent produces the run's ending notice (see
-docs/design.md, "Notifying the parent"). The run record also holds the
-outcome (`kido runs`).
-
-### Cycles
-
-Each extension instance keeps its outstanding asks in memory only: an
-edge to a target exists exactly as long as an `ask_agent` call is waiting
-on it. If this session is holding an ask to X and receives an ask from X
-before that one resolves, it answers `refused` on the wire
-instead of `ok` - a distinct answer kido's `deliverInbox` reports as its
-own error, never triggering the send-keys paste fallback, since nothing
-was mis-delivered. A refused ask is not delivered to the model at all.
-
-- `steer_subagent(to, message)` runs `kido tool steer_subagent -- <to>`,
-  piping `message` on stdin. It delivers a `steer` envelope: the text
-  joins the turn the target is already running rather than waiting for it
-  to end, which is what makes it the tool for a correction that is
-  worthless once the work is done. Use `message_agent` when the message
-  can wait. Descendants only, like the two below - see docs/design.md,
-  "Steer, interrupt and stop".
-- `interrupt_subagent(to)` runs `kido tool interrupt_subagent -- <to>`, which
-  delivers an `interrupt` envelope; this session answers one addressed to
-  it with `ctx.abort()`, aborting the current turn without ending the
-  session.
-- `stop_run(to, force?)` runs `kido tool stop_run [--force] -- <to>`,
-  which delivers a `stop` envelope; this session answers one addressed to it
-  with `ctx.shutdown()`, the same teardown a normal exit runs
-  (`session_shutdown`: inbox closed, own run's outcome recorded, record
-  removed). An agent that already reported ends as completed; one
-  stopped before it reported ends as stopped. `kido tool stop_run`
-  escalates to killing the target's pane
-  if it does not go within a few seconds - see docs/design.md, "Interrupt and
-  stop".
-- `notify_parent(summary)` runs `kido tool notify_parent`, piping `summary` on
-  stdin and naming no target: the command reads the parent out of
-  `KIDO_AGENT_PARENT_SESSION` in its own environment. Refused, before
-  anything is sent, for a session with no parent - a root session was not
-  spawned, so there is nobody to tell, and both the tool and the command
-  say so. Call this once, when the model itself judges its delegated work
-  is actually done; nothing calls it automatically (see
-  "Notices to a parent" above). Reporting does not end this session: the
-  parent ends it with `stop_run`, or continues it with `message_agent`.
-
-All three are refused - on the wire, as `refused` - unless the sender can
-be verified as an ancestor of this session (the same ancestor walk
-`ask_agent`'s own refusal uses, in the opposite direction): a caller may
-only steer, interrupt or stop its own descendants, which is what the
-`_subagent` suffix in those names means. `kido tool steer_subagent`,
-`kido tool interrupt_subagent` and `kido tool stop_run` already enforce this
-before ever sending the envelope; this session
-checks it again on receipt, since `from` is advisory.
+- `list_runs()`: same-parent peers, the caller's parent, and its own
+  subagent and bash runs (all running, the newest 20 ended).
+- `set_status(activity)`: one line, at most 256 bytes, in
+  `@kido_activity`; an empty string clears it.
+- `message_agent(to, message, replyTo?)`: to an agent's inbox; with
+  `replyTo` a reply. To an ended child of this session, it restarts the
+  child with the message.
+- `ask_agent(to, question, timeoutMs?)`: sends an ask and blocks until
+  the reply, the timeout (5 minutes), an abort, the target's end or this
+  inbox's close. Refused for an ancestor, yourself, a target without an
+  inbox or without `message_agent`.
+- `spawn_subagent(task, name, model?, tools?, fork?)`: a child through
+  `kido run-child ... -- kido-pi`. Its ending arrives as a notice.
+- `async_bash(command, name, stream?)`: a command through
+  `kido run-child ... -- bash -o pipefail -c '... | tee "$KIDO_RUN_OUTPUT"'`.
+  Its ending arrives as a notice with the output tail; with `stream`,
+  batches of output arrive while it runs.
+- `steer_subagent(to, message)`, `interrupt_subagent(to)`: to a
+  descendant's inbox.
+- `stop_run(to, force?)`: a bash run through `kido run-stop`; a subagent
+  by a stop request, then `kido run-stop --wait 5`. A child that reported
+  ends as completed, else stopped.
+- `notify_parent(summary)`: a notice to the parent. The whole report is
+  kept in the agent directory's `report`.

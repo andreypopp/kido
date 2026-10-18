@@ -415,27 +415,21 @@ func TestRpcWindowRename(t *testing.T) {
 func TestRpcRunStartedWithActivity(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
+	caller := h.firstPane("alpha")
 	agentRun, agentWindow := h.recordedRun("feed-agent", "--title", "feed-agent")
 	agentPane := h.in("list-panes", "-t", agentWindow, "-F", "#{pane_id}")
-	if out, rc := h.kidoAs(agentPane, "", nil, "tool", "set_status", "--", "checking tests"); rc != 0 {
-		t.Fatalf("set_status: rc=%d: %s", rc, out)
-	}
-	_, bashPane, bashRun := h.asyncBashIDs(nil, "feed-bash", "sleep", "300")
-	_, streamPane, streamRun := h.asyncBashIDs([]string{"--stream"}, "feed-stream", "sleep", "300")
+	h.in("set-option", "-p", "-t", agentPane, "@kido_activity", "checking tests")
+	bash := h.startRun(caller, "run", "--name", "feed-bash", "--", "sleep", "300")
 	f := h.startFeed("alpha")
-	for _, c := range []struct {
-		pane, id, kind string
-	}{
-		{agentPane, agentRun, "agent"},
-		{bashPane, bashRun, "bash"},
-		{streamPane, streamRun, "stream"},
+	for _, c := range []struct{ pane, id string }{
+		{agentPane, agentRun},
+		{bash.paneID(), bash.ID},
 	} {
 		metaBytes, err := os.ReadFile(filepath.Join(h.stateDir, "runs", c.id, "meta.json"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		var meta struct {
-			Kind      string `json:"kind"`
 			StartedAt string `json:"startedAt"`
 		}
 		if err := json.Unmarshal(metaBytes, &meta); err != nil {
@@ -445,23 +439,19 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if meta.Kind != c.kind {
-			t.Fatalf("meta kind = %q, want %q", meta.Kind, c.kind)
-		}
 		want := float64(at.Unix()) + float64(at.Nanosecond())/1e9
 		f.waitLast(func(s feedSnapshot) bool {
 			r, ok := feedRowFor(s, c.pane)
 			return ok && !r.Lifecycle.Ended && r.Run != nil && *r.Run == c.id &&
-				r.Started != nil && *r.Started == want &&
-				(c.kind != "agent" || r.isAgent() && r.caption() == "checking tests")
-		}, "live "+c.kind+" run's id and meta start time")
+				r.Started != nil && *r.Started == want
+		}, "live run's id and meta start time")
 
-		h.runKido("alpha", "end-"+c.kind+".out", "run-outcome", "--result", "completed", "--", c.id)
+		h.runKido("alpha", "end-"+c.id+".out", "run-outcome", "--result", "completed", "--", c.id)
 		f.waitLast(func(s feedSnapshot) bool {
 			r, ok := feedRowFor(s, c.pane)
 			return ok && r.Run != nil && *r.Run == c.id && r.Started == nil &&
 				r.Lifecycle.Ended && feedValue(r.Lifecycle.Result) == "completed"
-		}, "ended "+c.kind+" retains its run id but clears started")
+		}, "ended run retains its run id but clears started")
 	}
 	rootPane := h.in("display-message", "-p", "-t", "alpha:0", "#{pane_id}")
 	for _, agent := range []string{"pi", "claude-code"} {
@@ -472,9 +462,9 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 			}
 			if agent == "pi" {
 				h.programStatus(rootPane, "state="+state+":app=pi", "feed-root")
-				h.agentStatus("root-e2e", rootPane, "--activity", status)
+				h.setPiOptions(rootPane, "root-e2e", h.paneTitle(rootPane), "", status)
 			} else {
-				h.agentStatus("root-e2e", rootPane, "--remove")
+				h.clearPiOptions(rootPane)
 				h.programStatus(rootPane, "state="+state+":app=claude-code:msg="+base64.StdEncoding.EncodeToString([]byte(status)), "feed-root")
 			}
 			mark := h.in("display-message", "-p", "-t", rootPane, "#{@kido_run}")

@@ -1,23 +1,3 @@
-let envelope raw =
-  match Yojson.Safe.from_string raw with
-  | `Assoc f as j
-    when List.mem_assoc ~eq:String.equal "v" f && List.mem_assoc ~eq:String.equal "kind" f ->
-      Some
-        (fun path ->
-          match
-            List.fold_left
-              (fun j k -> Yojson.Safe.Util.member k j)
-              j (String.split_on_char '.' path)
-          with
-          | `String s -> s
-          | _ -> "")
-  | _ | (exception Yojson.Json_error _) -> None
-
-let dead_pid () =
-  let pid = Unix.create_process "true" [| "true" |] Unix.stdin Unix.stdout Unix.stderr in
-  ignore (Unix.waitpid [] pid);
-  pid
-
 let start_inbox ~reply =
   let dir = Filename.temp_dir "kido-inbox" "" in
   let path = Filename.concat dir "inbox.sock" in

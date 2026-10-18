@@ -1,9 +1,9 @@
 package e2e
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -31,7 +31,7 @@ func TestKidoSeparateServerAndState(t *testing.T) {
 		t.Fatalf("pane ids = %s and %s, want a collision to test state isolation", pane, appPane)
 	}
 	for _, server := range []*kidoRun{r, &app} {
-		if got := server.shellIn(pane, "printf '%s' \"$KIDO_STATE_DIR$PI_SESSION_ID\""); got != "" {
+		if got := server.shellIn(pane, "printf '%s' \"$KIDO_STATE_DIR$KIDO_RUN_ID\""); got != "" {
 			t.Errorf("pane state and caller environment = %q, want absent", got)
 		}
 		if _, err := os.Stat(filepath.Join(server.state, "server.conf")); err != nil {
@@ -40,18 +40,11 @@ func TestKidoSeparateServerAndState(t *testing.T) {
 		if got := server.shellIn(pane, "tmux display-message -p '#{socket_path}'"); got != server.mustServer("").Socket {
 			t.Errorf("pane reaches %q, want %s", got, server.kidoSock)
 		}
-		if got := server.shellIn(pane, "KIDO_STATE_DIR=/must-not-use PI_SESSION_ID=isolated kido agent-status; echo $?"); got != "0" {
-			t.Fatalf("agent-status: %q", got)
+		if got := server.shellIn(pane, "KIDO_STATE_DIR=/must-not-use kido run --name isolated -- /bin/true >/dev/null; echo $?"); got != "0" {
+			t.Fatalf("run: %q", got)
 		}
-		body, err := os.ReadFile(filepath.Join(server.state, "runs", "isolated", "pi.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var record struct {
-			Pane string `json:"pane"`
-		}
-		if err := json.Unmarshal(body, &record); err != nil || record.Pane != pane {
-			t.Fatalf("state = %s (%v), want pane %s", body, err, pane)
+		if out := server.shellIn(pane, "KIDO_STATE_DIR=/must-not-use kido run --name isolated -- /bin/true"); !strings.Contains(out, server.state+"/runs/") {
+			t.Fatalf("the run did not use the server's own state: %q", out)
 		}
 	}
 	if r.realClients() != 1 || app.realClients() != 1 {

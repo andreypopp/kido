@@ -1,14 +1,5 @@
 open Tmux
 
-let not_accepting ~name ~run =
-  name ^ " is not accepting messages"
-  ^
-  match run with
-  | Some run ->
-      Printf.sprintf "; after it exits, resume it with spawn_subagent(resume: %s) and resend"
-        (Run.string_of_id run)
-  | None -> ""
-
 let send_prompt ~tmux pane text =
   let buf = Printf.sprintf "kido-prompt-%d" (Unix.getpid ()) in
   let open Result.Infix in
@@ -30,7 +21,7 @@ type send = { pane : pane_id; target : pane_id; text : string }
 type error_kind = Refused | Unknown | Invalid
 type error = { kind : error_kind; message : string }
 
-let deliver ~tmux ~inbox ~payload ~pane ~name ~run text =
+let deliver ~tmux ~inbox ~payload ~pane ~name text =
   if String.is_empty inbox then
     match pane with
     | None -> Error { kind = Invalid; message = "pane \"\" not found" }
@@ -43,7 +34,8 @@ let deliver ~tmux ~inbox ~payload ~pane ~name ~run text =
   else
     match Msg.deliver ~path:inbox payload with
     | Ok () -> Ok Inbox
-    | Error (Unavailable _) -> Error { kind = Refused; message = not_accepting ~name ~run }
+    | Error (Unavailable _) ->
+        Error { kind = Refused; message = name ^ " is not accepting messages" }
     | Error (Refused message) -> Error { kind = Refused; message }
     | Error (Failed message) -> Error { kind = Unknown; message }
 
@@ -117,8 +109,7 @@ let send ~tmux ~dir { pane; target; text } =
                 (string_of_pane_id pane);
           }
     | Some r ->
-        deliver ~tmux ~inbox:r.inbox ~payload:text ~pane:(Some r.candidate.pane) ~name:r.name
-          ~run:None text
+        deliver ~tmux ~inbox:r.inbox ~payload:text ~pane:(Some r.candidate.pane) ~name:r.name text
 
 type failure = No_prompt | Not_found | Several | Failed of string
 
@@ -140,5 +131,5 @@ let prompt ~dir ~self ~window text =
           (fun (e : error) -> Failed e.message)
           (Result.map ignore
              (deliver ~tmux ~inbox:r.inbox ~payload:text ~pane:(Some r.candidate.pane) ~name:r.name
-                ~run:None text))
+                text))
     | _ -> Error Several

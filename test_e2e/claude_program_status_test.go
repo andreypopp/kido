@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -72,21 +71,7 @@ func TestClaudeNativeProgramStatus(t *testing.T) {
 				(c.msg == "" || a.Msg != nil && *a.Msg == c.msg)
 		}, "Claude native "+c.state)
 	}
-	out, rc := h.kidoAs(h.firstPane("alpha"), "", nil, "tool", "list_runs", "--json")
-	var listed []map[string]any
-	if json.Unmarshal([]byte(out), &listed) != nil || rc != 0 || len(listed) != 0 {
-		t.Fatalf("native pane acquired an addressable identity: %d %q", rc, out)
-	}
-	out, rc = h.kidoAs(h.firstPane("alpha"), "", nil, "get-agent", "native")
-	var identity struct{ Alive bool }
-	if json.Unmarshal([]byte(out), &identity) != nil || rc != 0 || identity.Alive {
-		t.Fatalf("native pane became a session identity: %d %q", rc, out)
-	}
-	out, rc = h.kidoAs(h.firstPane("alpha"), "hi", nil, "tool", "message_agent", "--", "Reply with ok")
-	if rc == 0 || !strings.Contains(out, "no agent session matches") {
-		t.Fatalf("native pane became message-addressable: %d %q", rc, out)
-	}
-	out, rc = h.kidoAs(h.firstPane("alpha"), "a prompt", nil, "prompt")
+	out, rc := h.kidoAs(h.firstPane("alpha"), "a prompt", nil, "prompt")
 	if rc != 0 {
 		t.Fatalf("prompt to native pane: %d %q", rc, out)
 	}
