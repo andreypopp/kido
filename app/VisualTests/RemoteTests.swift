@@ -65,7 +65,7 @@ import SidebarFeed
         var launches: [[String]] = []
         let endpoint = try await Server.locate(prepare: { arguments in
             launches.append(arguments)
-            let output = arguments.first == "/bin/sh" ? "/tmp/kido\n/tmp/state ' $dir/kido-app\n" : "{\"tmux\":\"/tmp/tmux\",\"socket\":\"/tmp/state ' $dir/kido-app/socket\",\"server\":\"0123456789ab\",\"expected\":\"0123456789ab\",\"protocol\":\"4.0\"}\n"
+            let output = arguments.first == "/bin/sh" ? "/tmp/kido\n/tmp/state ' $dir/kido-app\n" : "{\"tmux\":\"/tmp/tmux\",\"socket\":\"/tmp/state ' $dir/kido-app/socket\",\"server\":\"0123456789ab\",\"expected\":\"0123456789ab\",\"protocol\":\"5.0\"}\n"
             return Launch("/usr/bin/printf", ["%s", output])
         })
         XCTAssertEqual(launches.last, ["/usr/bin/env", "SSH_AUTH_SOCK=" + endpoint.directory + "/agent.sock", "/tmp/kido", "server", "--server", endpoint.directory])
