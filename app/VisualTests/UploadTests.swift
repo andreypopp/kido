@@ -393,7 +393,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber,
                                                     context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         pane.keyDown(with: escape)
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(for: .seconds(1)) // the cancelled image preparation must not paste late
         try await drain(pane.runtime)
         XCTAssertEqual(input.data, Data(), "a cancelled image preparation pastes nothing")
         XCTAssertEqual(published(), [])

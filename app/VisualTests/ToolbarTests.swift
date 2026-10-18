@@ -78,7 +78,7 @@ import TmuxControl
                 if mode == "floating" { owner.sidebar.focusSidebar(nil) }
                 root.layoutSubtreeIfNeeded()
                 owner.window.display()
-                try await Task.sleep(for: .milliseconds(200))
+                await mainQueueFence()
                 XCTAssertTrue(owner.window.toolbar?.items.first { $0.itemIdentifier.rawValue == "windowTabs" }?.view === tabs.superview)
                 XCTAssertEqual(tabs.theme.background, owner.window.backgroundColor)
                 XCTAssertEqual(tabs.frame.height, 36)
@@ -148,7 +148,7 @@ import TmuxControl
                 if mode.hasPrefix("docked") { owner.sidebar.splitView.setPosition(mode == "docked-wide" ? 320 : 236, ofDividerAt: 0) }
                 if mode == "floating" { owner.sidebar.focusSidebar(nil) }
                 owner.window.display()
-                try await Task.sleep(for: .milliseconds(200))
+                await mainQueueFence()
                 if mode.hasPrefix("docked") {
                     let terminal = owner.sidebar.terminalHost.convert(owner.sidebar.terminalHost.bounds, to: owner.sidebar.splitView)
                     XCTAssertEqual(terminal.minX, 0)
@@ -288,7 +288,7 @@ import TmuxControl
         defer { owner.close() }
         owner.sidebar.isCollapsed = false
         owner.window.display()
-        try await Task.sleep(for: .milliseconds(200))
+        await mainQueueFence()
         let tabs = owner.sidebar.tabs
         let header = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 52), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         header.isReleasedWhenClosed = false
