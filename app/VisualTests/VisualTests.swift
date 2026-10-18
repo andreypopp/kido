@@ -329,10 +329,15 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await settle()
         let terminal = try XCTUnwrap(terminal)
         XCTAssertEqual(terminal.panes.contains { $0.visualPill }, pill)
+        window.contentView?.layoutSubtreeIfNeeded()
         for pane in terminal.panes.filter({ !$0.isHidden }) {
-            let frame = expectation(description: "Ghostty presented \(pane.pane)")
-            pane.visualFrame { success in XCTAssertTrue(success); frame.fulfill() }
-            await fulfillment(of: [frame], timeout: 10)
+            var status = GHOSTTY_RENDER_PRESENTATION_DISCARDED
+            for _ in 0..<3 where status == GHOSTTY_RENDER_PRESENTATION_DISCARDED {
+                let frame = expectation(description: "Ghostty presented \(pane.pane)")
+                pane.visualFrame { result in status = result; frame.fulfill() }
+                await fulfillment(of: [frame], timeout: 10)
+            }
+            XCTAssertEqual(status, GHOSTTY_RENDER_PRESENTATION_PRESENTED)
         }
         XCTAssertFalse(window.isVisible)
         XCTAssertFalse(window.isKeyWindow)
