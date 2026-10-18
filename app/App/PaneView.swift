@@ -336,7 +336,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     private func rendered(_ token: UInt64, status: ghostty_render_presentation_status_e) {
         #if KIDO_VISUAL
-        if let completion = visualFrames.removeValue(forKey: token) { completion(status == GHOSTTY_RENDER_PRESENTATION_PRESENTED); return }
+        if let completion = visualFrames.removeValue(forKey: token) { completion(status); return }
         #endif
         let success = status == GHOSTTY_RENDER_PRESENTATION_PRESENTED
         guard let request = rendering, request.token == token else { return }
@@ -792,17 +792,18 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var visualPasteEventExpired: Bool { pasteEvent.map { DispatchTime.now() >= $0.deadline } ?? true }
     func visualRefuseInput() { acceptingInput = false }
     static var renderOffscreen = false
-    private var visualFrames: [UInt64: (Bool) -> Void] = [:]
+    private var visualFrames: [UInt64: (ghostty_render_presentation_status_e) -> Void] = [:]
     var visualReady: Bool { !resizeDirty && finalEpoch == nil && restoreRequested == nil && scrollPending == nil && rendering == nil }
     var visualState: String {
         "insets=\(renderInsets.top),\(renderInsets.bottom) pill=\(!historyLimit.isHidden) find=\(find != nil) alternate=\(alternate) scroll=\(String(describing: scrollDistance))"
     }
     func visualScroll(_ distance: Double) { requestScrollDistance { _ in distance } }
-    func visualFrame(_ completion: @escaping (Bool) -> Void) {
+    func visualFrame(_ completion: @escaping (ghostty_render_presentation_status_e) -> Void) {
         renderSequence += 1
-        visualFrames[renderSequence] = completion
-        if !ghostty_surface_request_render_with_token(surface, renderSequence) {
-            visualFrames.removeValue(forKey: renderSequence)?(false)
+        let token = renderSequence
+        visualFrames[token] = completion
+        if !ghostty_surface_request_render_with_token(surface, token) {
+            visualFrames.removeValue(forKey: token)?(GHOSTTY_RENDER_PRESENTATION_BACKEND_FAILED)
         }
     }
     #endif
