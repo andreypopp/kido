@@ -2,9 +2,13 @@ import Foundation
 import SidebarFeed
 import TmuxControl
 
+typealias RPCRequestHandler = @MainActor @Sendable (RPCRequest, @escaping @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void) -> Void
+
 final class Feed: @unchecked Sendable {
     typealias Location = String
     typealias Locate = (@escaping @Sendable (Result<Location, Failure>) -> Void) -> Void
+    static let notReady = "the RPC feed is not ready"
+    @MainActor static let unavailable: RPCRequestHandler = { $1(.failure(.terminal(notReady))) }
 
     enum Status {
         case starting
@@ -65,7 +69,7 @@ final class Feed: @unchecked Sendable {
     }
 
     @MainActor func request(_ request: RPCRequest, completed: @escaping @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void) {
-        guard let input, case .running = status else { return completed(.failure(.terminal("the RPC feed is not ready"))) }
+        guard let input, case .running = status else { return completed(.failure(.terminal(Self.notReady))) }
         do throws(Failure) { try tools.validate() } catch {
             publish(.invalidBundle(error))
             return completed(.failure(error))
