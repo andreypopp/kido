@@ -270,6 +270,14 @@ Hover/drag users can hit the strip instead of terminal content; last-column
 drag selection is untested. Reserve space or narrow/condition hit testing
 (small-to-medium). Status: accepted overlap; selection impact untested.
 
+## Copy-mode mouse and context menu are verified off screen
+
+Visual tests call the mouse handlers and `menu(for:)` directly. Real AppKit
+delivery of clicks, drags, autoscroll and the context menu, on screen, is
+untested. A user `right-click-action` other than `context-menu` consumes the
+right-click in Ghostty outside copy mode, and no menu opens. The `prompt`
+RPC is tested only against a fake `kido rpc`. Status: untested.
+
 ## Feed restart can lose or re-arm outcomes
 
 The app's seen record survives a feed restart, but kido's outcome tracking

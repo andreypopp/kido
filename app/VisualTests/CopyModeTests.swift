@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import SidebarFeed
 import TmuxControl
 import UniformTypeIdentifiers
 import XCTest
@@ -407,9 +408,7 @@ extension VisualTests {
         nonisolated(unsafe) let target = pane
         await withCheckedContinuation { done in DispatchQueue.global().async { target.feed(Data("one\r\ntwo\r\nthree\r\n".utf8)); done.resume() } }
         func mouse(_ type: NSEvent.EventType, _ column: Int) -> NSEvent {
-            let point = pane.convert(NSPoint(x: pane.cell.width * (Double(column) + 0.5), y: pane.bounds.height - pane.cell.height / 2), to: nil)
-            return NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber,
-                                      context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)!
+            self.mouse(pane, type, at: NSPoint(x: pane.cell.width * (Double(column) + 0.5), y: pane.bounds.height - pane.cell.height / 2))
         }
         board.clearContents()
         board.setString("sentinel", forType: .string)
@@ -686,8 +685,7 @@ extension VisualTests {
         try await enter(pane)
         let point = pane.convert(NSPoint(x: 30, y: pane.bounds.height / 2), to: nil)
         func mouse(_ type: NSEvent.EventType) -> NSEvent {
-            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
-                               context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)!
+            self.mouse(pane, type, at: pane.convert(point, from: nil))
         }
         pane.mouseEntered(with: mouse(.mouseMoved))
         pane.mouseMoved(with: mouse(.mouseMoved))
@@ -698,8 +696,9 @@ extension VisualTests {
         pane.scrollWheel(with: try XCTUnwrap(pane.wheelEvent(y: 2, precise: false)))
         XCTAssertNotNil(pane.copyMode)
         pane.mouseDown(with: mouse(.leftMouseDown))
-        XCTAssertNil(pane.copyMode, "a click exits")
+        XCTAssertNotNil(pane.copyMode, "a click stays in copy mode")
         pane.mouseUp(with: mouse(.leftMouseUp))
+        keys(pane, "q")
         try await emit(pane, "\u{1b}[?1000l\u{1b}[?1003l\u{1b}[?1006lwheel-ready", until: "wheel-ready")
         try await enter(pane)
         for y: Int32 in [40, -40] { pane.scrollWheel(with: try XCTUnwrap(pane.wheelEvent(y: y))) }
@@ -1149,4 +1148,388 @@ extension VisualTests {
 
     func testCopyLabelSnapshots() async throws { try await copySnapshots(dark: false) }
     func testCopyLabelSnapshotsDark() async throws { try await copySnapshots(dark: true) }
+
+    private func mouse(_ pane: PaneView, _ type: NSEvent.EventType, at point: NSPoint, clickCount: Int = 1, shift: Bool = false) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: pane.convert(point, to: nil), modifierFlags: shift ? [.shift] : [], timestamp: 0,
+                           windowNumber: pane.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: clickCount,
+                           pressure: type == .leftMouseUp ? 0 : 1)!
+    }
+
+    private func mouse(_ pane: PaneView, _ type: NSEvent.EventType, x: Int, y: Int, clickCount: Int = 1, shift: Bool = false) -> NSEvent {
+        var bar = ghostty_surface_scrollbar_s()
+        _ = ghostty_surface_scrollbar(pane.surface, &bar)
+        return mouse(pane, type, at: NSPoint(x: (CGFloat(x) + 0.5) * pane.cell.width,
+                                             y: pane.bounds.height - pane.renderInsets.top - (CGFloat(y - Int(bar.offset)) + 0.5) * pane.cell.height),
+                     clickCount: clickCount, shift: shift)
+    }
+
+    private func drag(_ pane: PaneView, from: (Int, Int), to: (Int, Int)) {
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: from.0, y: from.1))
+        pane.mouseDragged(with: mouse(pane, .leftMouseDragged, x: to.0, y: to.1))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: to.0, y: to.1))
+    }
+
+    func testCopyModeMouseGestures() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        try await enter(pane)
+        let row = try XCTUnwrap(cursor(pane)).y - 3
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 6, y: row))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 6, y: row))
+        XCTAssertEqual(cursor(pane)?.x, 6, "a click places the cursor")
+        XCTAssertEqual(cursor(pane)?.y, row)
+        for x in [0, 4] {
+            pane.mouseDown(with: mouse(pane, .leftMouseDown, x: x, y: row, clickCount: 2))
+            XCTAssertEqual(pane.readSelection(), "alpha", "double-click on a word's first or last cell")
+            pane.mouseUp(with: mouse(pane, .leftMouseUp, x: x, y: row, clickCount: 2))
+        }
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 6, y: row, clickCount: 2))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 6, y: row, clickCount: 2))
+        XCTAssertEqual(pane.readSelection(), "beta")
+        keys(pane, "y")
+        XCTAssertEqual(board.string(forType: .string), "beta", "y copies a mouse selection and exits")
+        XCTAssertNil(pane.copyMode)
+        try await enter(pane)
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 0, y: row, clickCount: 3))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 0, y: row, clickCount: 3))
+        XCTAssertEqual(pane.readSelection().trimmingCharacters(in: .newlines), "alpha beta", "triple-click selects the line")
+        keys(pane, "q")
+        try await enter(pane)
+        drag(pane, from: (0, row), to: (9, row))
+        XCTAssertEqual(pane.readSelection(), "alpha beta", "a drag selects")
+        keys(pane, "y")
+        XCTAssertEqual(board.string(forType: .string), "alpha beta")
+        try await enter(pane)
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 0, y: row))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 0, y: row))
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 6, y: row, shift: true))
+        XCTAssertEqual(pane.readSelection(), "alpha b", "shift-click extends the cursor")
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 6, y: row, shift: true))
+        keys(pane, "q")
+        try await enter(pane)
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 6, y: row))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 6, y: row))
+        keys(pane, "h")
+        XCTAssertEqual(cursor(pane)?.x, 5, "the keyboard continues from a mouse cursor")
+        keys(pane, "q")
+    }
+
+    func testWordSelectionEdges() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "a long\r\n", until: "long")
+        try await enter(pane)
+        let row = try XCTUnwrap(cursor(pane)).y - 2
+        for (x, expected) in [(0, "a"), (2, "long")] {
+            pane.mouseDown(with: mouse(pane, .leftMouseDown, x: x, y: row, clickCount: 2))
+            XCTAssertEqual(pane.readSelection(), expected, "double-click at \(x)")
+            pane.mouseUp(with: mouse(pane, .leftMouseUp, x: x, y: row, clickCount: 2))
+        }
+        keys(pane, "q")
+    }
+
+    func testCopyModeAutoscrollStaysLoaded() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, (0..<60).map { "row-\($0)\r\n" }.joined(), until: "row-59")
+        try await enter(pane)
+        nonisolated(unsafe) var loads = 0
+        nonisolated(unsafe) var tops = 0
+        pane.onLoadMore = { loads += 1 }
+        pane.onScrollTop = { tops += 1 }
+        let from = try XCTUnwrap(cursor(pane))
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 0, y: from.y))
+        let outside = pane.convert(NSPoint(x: 4, y: pane.bounds.height + 12), to: nil)
+        let event = NSEvent.mouseEvent(with: .leftMouseDragged, location: outside, modifierFlags: [], timestamp: 0,
+                                       windowNumber: pane.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        pane.mouseDragged(with: event)
+        try await wait("autoscroll moved the frozen viewport", within: 2) { (pane.scrollTarget ?? 0) > 0 }
+        XCTAssertEqual(loads, 0, "autoscroll never loads older history")
+        XCTAssertEqual(tops, 0, "autoscroll never asks for the loaded top")
+        XCTAssertNotNil(pane.copyMode)
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 0, y: from.y))
+        keys(pane, "q")
+    }
+
+    func testContextMenuSelectionRules() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        let probe = mouse(pane, .rightMouseDown, x: 0, y: 0)
+        XCTAssertNil(pane.menu(for: probe), "no menu with no text and no selection")
+        pane.rightMouseDown(with: probe)
+        XCTAssertEqual(pane.visualPressed, 0, "the menu path releases Ghostty's right press")
+        try await enter(pane)
+        let last = try XCTUnwrap(cursor(pane)).y
+        let alpha = last - 3
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 0, y: alpha))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 0, y: alpha))
+        pane.selectForMenu(mouse(pane, .rightMouseDown, x: 0, y: alpha))
+        XCTAssertEqual(pane.readSelection(), "alpha", "a cursor-only cell has no selection to open")
+        let menu = try XCTUnwrap(pane.menu(for: mouse(pane, .rightMouseDown, x: 0, y: alpha)))
+        XCTAssertEqual(menu.items.map(\.title), ["Copy", "Prompt with Selection…"])
+        pane.selectForMenu(mouse(pane, .rightMouseDown, x: 6, y: alpha))
+        XCTAssertEqual(pane.readSelection(), "beta", "right-click on a word elsewhere selects it")
+        pane.selectForMenu(mouse(pane, .rightMouseDown, x: 5, y: alpha))
+        XCTAssertEqual(pane.readSelection(), "beta", "right-click on an empty cell keeps the selection")
+        _ = ghostty_surface_set_selection(pane.surface, nil)
+        pane.selectForMenu(mouse(pane, .rightMouseDown, x: 6, y: alpha))
+        XCTAssertEqual(pane.readSelection(), "beta", "right-click without a selection selects its word")
+        XCTAssertEqual(pane.menu(for: mouse(pane, .rightMouseDown, x: 6, y: alpha))?.items.count, 2)
+        pane.copySelectionItem(nil)
+        XCTAssertNil(pane.copyMode, "Copy in copy mode exits")
+        XCTAssertEqual(board.string(forType: .string), "beta")
+        let count = board.changeCount
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 0, y: alpha))
+        pane.mouseDragged(with: mouse(pane, .leftMouseDragged, x: 5, y: alpha))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 4, y: alpha))
+        XCTAssertEqual(pane.menu(for: mouse(pane, .rightMouseDown, x: 0, y: alpha))?.items.count, 2, "an ordinary selection has the menu")
+        pane.copySelectionItem(nil)
+        XCTAssertNil(pane.copyMode, "Copy outside copy mode keeps the live pane")
+        XCTAssertEqual(board.changeCount, count + 1)
+        XCTAssertEqual(board.string(forType: .string), "alpha")
+        try await enter(pane)
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 0, y: alpha))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 0, y: alpha))
+        keys(pane, "p")
+        XCTAssertNil(pane.prompt, "a cursor-only cell opens no box")
+        pane.promptSelectionItem(nil)
+        XCTAssertNil(pane.prompt, "the menu item opens no box for a cursor-only cell")
+        drag(pane, from: (0, alpha), to: (4, alpha))
+        keys(pane, "p")
+        XCTAssertNotNil(pane.prompt, "p opens the prompt for a selection")
+        pane.closePrompt()
+        keys(pane, "q")
+    }
+
+    private final class PromptProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [RPCRequest] = []
+        var candidates: [PromptCandidate] = []
+        var resolveFailure: Failure?
+        var reply: Result<RPCEvent.Reply.Value, Failure>?
+
+        func reset() {
+            lock.lock(); defer { lock.unlock() }
+            recorded = []
+        }
+        func record(_ request: RPCRequest) {
+            lock.lock(); defer { lock.unlock() }
+            recorded.append(request)
+        }
+        var sends: [RPCRequest] {
+            lock.lock(); defer { lock.unlock() }
+            return recorded.filter { if case .prompt(_, .some, _) = $0 { true } else { false } }
+        }
+    }
+
+    private func installPrompt(_ probe: PromptProbe) {
+        PanePrompt.visualRequest = { [probe] request, done in
+            probe.record(request)
+            switch request {
+            case .prompt(_, nil, _):
+                if let failure = probe.resolveFailure { done(.failure(failure)) }
+                else { done(.success(.prompt(.candidates(probe.candidates)))) }
+            case .prompt(_, .some, _):
+                if let reply = probe.reply { done(reply) }
+            default: break
+            }
+        }
+        PanePrompt.linger = 0
+    }
+
+    private func openPrompt(_ pane: PaneView, select: String = "alpha beta", waitResolved: Bool = true) async throws -> PanePrompt {
+        if pane.copyMode == nil { try await enter(pane) }
+        let last = try XCTUnwrap(cursor(pane)).y
+        let row = last - 3
+        drag(pane, from: (0, row), to: (select.count - 1, row))
+        XCTAssertEqual(pane.readSelection(), select, "prompt fixture selection")
+        pane.openPrompt()
+        let prompt = try XCTUnwrap(pane.prompt)
+        if waitResolved {
+            try await wait("prompt resolved", within: 2) { (prompt.targetButton.titleOfSelectedItem ?? "").isEmpty == false && prompt.targetButton.titleOfSelectedItem != "Resolving…" }
+        }
+        return prompt
+    }
+
+    private func sendEnabled(_ prompt: PanePrompt) -> Bool { !prompt.send.isHidden && prompt.send.isEnabled }
+
+    func testPromptBox() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        let probe = PromptProbe()
+        let near = PromptCandidate(pane: PaneID(number: 13), session: SessionID(number: 0), window: WindowID(number: 0), title: "near")
+        let far = PromptCandidate(pane: PaneID(number: 12), session: SessionID(number: 0), window: WindowID(number: 1), title: "far")
+        installPrompt(probe)
+
+        probe.candidates = [near, far]
+        probe.reply = .success(.prompt(.delivered(PromptDelivered(pane: far.pane, via: .inbox))))
+        var prompt = try await openPrompt(pane)
+        XCTAssertEqual(prompt.targetButton.titleOfSelectedItem, "Prompt @near in this window", "the closest same-window agent is preselected")
+        XCTAssertEqual(prompt.targetButton.numberOfItems, 2)
+        XCTAssertFalse(sendEnabled(prompt), "Send is disabled while the text is empty")
+        XCTAssertEqual(prompt.quote.stringValue, "alpha beta")
+        prompt.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(sendEnabled(prompt))
+        let quote = prompt.quote.stringValue
+        _ = ghostty_surface_set_selection(pane.surface, nil)
+        XCTAssertEqual(prompt.quote.stringValue, quote, "the quote is captured when the box opens")
+        prompt.targetButton.selectItem(at: 1)
+        prompt.chooseTarget()
+        prompt.newline(shift: false)
+        try await wait("delivered status", within: 2) { prompt.status.stringValue == "Sent to far" }
+        try await wait("box closes after delivery", within: 3) { pane.prompt == nil }
+        XCTAssertNil(pane.copyMode, "delivery exits copy mode")
+        XCTAssertEqual(probe.sends.count, 1)
+        guard case .prompt(let sentPane, let text, let target) = probe.sends[0] else { return XCTFail("not a prompt") }
+        XCTAssertEqual(sentPane, pane.pane)
+        XCTAssertEqual(target, far.pane, "the second picked candidate receives the send")
+        XCTAssertEqual(text, RPCRequest.composePrompt(prompt: "Explain", selection: "alpha beta"))
+
+        probe.reset()
+        probe.reply = nil
+        prompt = try await openPrompt(pane)
+        prompt.textView.insertText("one", replacementRange: NSRange(location: NSNotFound, length: 0))
+        prompt.newline(shift: true)
+        XCTAssertEqual(prompt.textView.string, "one\n", "Shift-Enter adds a newline")
+        XCTAssertEqual(probe.sends.count, 0)
+        prompt.textView.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertNil(pane.prompt, "Escape cancels")
+        XCTAssertNotNil(pane.copyMode, "Escape keeps copy mode")
+        XCTAssertEqual(pane.readSelection(), "alpha beta", "Escape keeps the selection")
+
+        probe.candidates = []
+        probe.reply = nil
+        prompt = try await openPrompt(pane)
+        XCTAssertEqual(prompt.targetButton.titleOfSelectedItem, "No agent in this window or session")
+        XCTAssertFalse(sendEnabled(prompt))
+        XCTAssertFalse(prompt.textView.isEditable)
+        prompt.cancel()
+
+        probe.candidates = [near]
+        probe.reply = .success(.promptError("near did not accept the prompt", .refused))
+        probe.reset()
+        prompt = try await openPrompt(pane)
+        prompt.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        prompt.newline(shift: false)
+        try await wait("refused message", within: 2) { prompt.status.stringValue == "near did not accept the prompt" }
+        XCTAssertFalse(prompt.retry.isHidden)
+        XCTAssertFalse(sendEnabled(prompt))
+        prompt.textView.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(sendEnabled(prompt), "editing re-enables Send")
+        XCTAssertTrue(prompt.retry.isHidden)
+        prompt.cancel()
+
+        probe.reply = .success(.promptError("no such pane", .invalid))
+        prompt = try await openPrompt(pane)
+        prompt.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        prompt.newline(shift: false)
+        try await wait("invalid message", within: 2) { prompt.status.stringValue == "no such pane" }
+        XCTAssertFalse(sendEnabled(prompt), "invalid leaves Send disabled")
+        prompt.textView.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(sendEnabled(prompt), "editing re-enables Send after invalid")
+        prompt.cancel()
+
+        probe.reply = .success(.promptError("Could not send", .unknown))
+        probe.reset()
+        prompt = try await openPrompt(pane)
+        prompt.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        prompt.newline(shift: false)
+        try await wait("unknown message", within: 2) { prompt.status.stringValue.contains("may have arrived; not resent") }
+        XCTAssertFalse(prompt.copyPrompt.isHidden)
+        XCTAssertFalse(sendEnabled(prompt))
+        await mainQueueFence()
+        XCTAssertEqual(probe.sends.count, 1, "an unknown outcome never resends")
+        prompt.cancel()
+
+        probe.reply = .failure(.terminal("RPC connection ended before the request completed"))
+        probe.reset()
+        prompt = try await openPrompt(pane)
+        prompt.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        prompt.newline(shift: false)
+        try await wait("lost reply is unknown", within: 2) { prompt.status.stringValue.contains("may have arrived; not resent") }
+        XCTAssertFalse(prompt.copyPrompt.isHidden)
+        XCTAssertFalse(sendEnabled(prompt))
+        prompt.cancel()
+
+        probe.reply = .failure(.terminal("the RPC feed is not ready"))
+        prompt = try await openPrompt(pane)
+        prompt.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        prompt.newline(shift: false)
+        try await wait("not-ready message", within: 2) { prompt.status.stringValue == "the RPC feed is not ready" }
+        XCTAssertFalse(sendEnabled(prompt))
+        prompt.cancel()
+
+        probe.resolveFailure = .terminal("no such pane")
+        probe.candidates = []
+        prompt = try await openPrompt(pane, waitResolved: false)
+        try await wait("resolve failure message", within: 2) { prompt.status.stringValue == "no such pane" }
+        XCTAssertEqual(prompt.targetButton.titleOfSelectedItem, "Prompt unavailable")
+        XCTAssertFalse(prompt.textView.isEditable)
+        XCTAssertFalse(prompt.retry.isHidden)
+        probe.resolveFailure = nil
+        probe.candidates = [near]
+        probe.reply = nil
+        prompt.retry.invoke()
+        try await wait("resolve retry ready", within: 2) { prompt.targetButton.titleOfSelectedItem == "Prompt @near in this window" && prompt.textView.isEditable }
+        prompt.cancel()
+        keys(pane, "q")
+    }
+
+    func testPromptFeedWaitsForADelayedReply() async throws {
+        let scratch = directory.appendingPathComponent("prompt-feed-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let gate = scratch.appendingPathComponent("gate")
+        let received = scratch.appendingPathComponent("received")
+        let script = try fakeFeedScript(scratch, """
+        import json, os, sys, time
+        print(json.dumps(dict(hello=dict(protocol="5.0"))))
+        snapshot = {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},
+                    "server_instance":{"started_at":1,"pid":2},"error":None,"sessions":[]}
+        print(json.dumps(snapshot))
+        for line in sys.stdin:
+            request = json.loads(line)
+            if "prompt" not in request: continue
+            open("\(received.path)", "w").close()
+            while not os.path.exists("\(gate.path)"): time.sleep(0.01)
+            reply = dict(id=request["id"], prompt=dict(delivered=dict(pane=request["prompt"].get("target", request["prompt"]["pane"]), via="inbox")))
+            print(json.dumps(dict(reply=reply)))
+            print(json.dumps(snapshot))
+        """)
+        nonisolated(unsafe) var starts = 0
+        nonisolated(unsafe) var snapshots = 0
+        let feed = Feed(serverDir: scratch.path, locate: { $0(.success("private-client")) }, onChange: { status in
+            if case .starting = status { starts += 1 }
+            if case .running = status { snapshots += 1 }
+        })
+        feed.testKido = script.path
+        defer { feed.stop() }
+        try await wait("fake feed ready", within: 5) { snapshots == 1 }
+        let delivered = expectation(description: "delayed prompt reply")
+        feed.request(.prompt(pane: PaneID(number: 2), text: "hello", target: PaneID(number: 2))) { result in
+            guard case .success(.prompt(.delivered(let value))) = result else { return XCTFail("missing delivered reply") }
+            XCTAssertEqual(value.pane, PaneID(number: 2))
+            XCTAssertEqual(value.via, .inbox)
+            delivered.fulfill()
+        }
+        try await wait("the fake received the prompt", within: 5) { FileManager.default.fileExists(atPath: received.path) }
+        XCTAssertEqual(starts, 1, "a slow request does not restart the helper")
+        if case .running = feed.status {} else { XCTFail("a slow request does not leave the feed unsettled") }
+        try Data().write(to: gate)
+        await fulfillment(of: [delivered], timeout: 5)
+        XCTAssertEqual(starts, 1, "the delayed reply did not restart the helper")
+    }
+
+    func testPromptSnapshots() async throws {
+        for dark in [false, true] {
+            let pane = try await rawPane(dark: dark)
+            try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+            let probe = PromptProbe()
+            probe.candidates = [PromptCandidate(pane: PaneID(number: 12), session: SessionID(number: 0), window: WindowID(number: 0), title: "near"),
+                                PromptCandidate(pane: PaneID(number: 14), session: SessionID(number: 0), window: WindowID(number: 1), title: "far")]
+            installPrompt(probe)
+            let prompt = try await openPrompt(pane)
+            prompt.textView.insertText("Explain this change", replacementRange: NSRange(location: NSNotFound, length: 0))
+            try await snapshot(dark ? "prompt-dark" : "prompt-light")
+            pane.closePrompt()
+            keys(pane, "q")
+        }
+    }
 }
