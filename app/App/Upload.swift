@@ -64,6 +64,7 @@ struct Upload: Sendable {
     @MainActor private static var promiseLock: FileHandle?
     #if KIDO_VISUAL
     @MainActor static var promiseTimeout: TimeInterval = 30
+    @MainActor static var visualImagePreparation: (@MainActor @Sendable () async -> Void)?
     #else
     static let promiseTimeout: TimeInterval = 30
     #endif
@@ -154,6 +155,9 @@ struct Upload: Sendable {
     }
 
     init(image raw: Data?) async throws(Failure) {
+        #if KIDO_VISUAL
+        await Upload.visualImagePreparation?()
+        #endif
         guard let raw, raw.count <= Self.fileLimit, let image = CGImageSourceCreateWithData(raw as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int,
