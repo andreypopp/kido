@@ -6,6 +6,6 @@
    Containers
    -open
    Ppx_yojson_conv_lib.Yojson_conv.Primitives))
- (libraries kido_fs containers ppx_yojson_conv_lib unix yojson)
+ (libraries fake_common kido_fs containers ppx_yojson_conv_lib unix yojson)
  (preprocess
   (pps ppx_yojson_conv)))

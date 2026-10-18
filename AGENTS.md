@@ -290,14 +290,16 @@ Conventions:
                        program_status.ml (OSC 7501 parsing, re-exported through
                        tmux.mli; no separate .mli)
     share/             the source of share/kido, installed by share/dune:
-      bin/             the bin directory's sh shims (kido, tmux, ssh, pi)
+      bin/             the bin directory's sh shims (kido, tmux, ssh, pi, kido-pi)
       shim.sh          their shared helper
       bash/, zsh/      the OSC 133 integrations every primed shell sources
       tmux/            kido-tmux.conf, the defaults the launcher writes into
                        server.conf (embedded, not installed)
-      pi/              the two pi extensions, which the pi shim loads with --extension
-      pi/testdata/fake_kido/  the TypeScript suite's fake kido, built by
-                       scripts/test-ts.sh
+      pi/              the two old pi extensions, which the pi shim loads with
+                       --extension, and kido-pi.ts, which the kido-pi shim loads
+      pi/testdata/fake_kido/, pi/testdata/fake_tmux/, pi/testdata/fake_common/
+                       the TypeScript suite's fake kido and fake tmux, and
+                       their shared helpers, built by scripts/test-ts.sh
     .pi/prompts/       gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed
     .pi/extensions/    no-git-writes, the spawned agent's bash-tool guard
     scripts/           install-tmux-fork.sh, the fork build;

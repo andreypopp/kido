@@ -136,12 +136,7 @@ let run () =
         else ("message", to_)
       in
       let text = In_channel.input_all stdin in
-      let gate = Fs.getenv "KIDO_FAKE_MESSAGE_GATE" in
-      (if not (String.is_empty gate) then
-         let deadline = Unix.gettimeofday () +. 10. in
-         while (not (Sys.file_exists gate)) && Float.(Unix.gettimeofday () < deadline) do
-           Unix.sleepf 0.005
-         done);
+      Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_MESSAGE_GATE");
       delay "KIDO_FAKE_MESSAGE_DELAY_MS";
       let fail_to = Fs.getenv "KIDO_FAKE_MESSAGE_FAIL_TO" in
       let failed =
@@ -172,6 +167,85 @@ let run () =
         ((if String.equal command "interrupt_subagent" then "interrupted " else "stopped ")
         ^ Option.value ~default:"" (last_arg args)
         ^ "\n");
+      exit 0
+  | "run" | "run-child" ->
+      log "KIDO_FAKE_RUN_LOG" (json_of_strings argv);
+      Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_GATE");
+      let run_id = Option.value ~default:"fake-run-id" (Sys.getenv_opt "KIDO_FAKE_RUN_ID") in
+      let arg_after flag =
+        let rec find = function
+          | key :: value :: _ when String.equal key flag -> value
+          | _ :: rest -> find rest
+          | [] -> ""
+        in
+        find args
+      in
+      let output = Fs.getenv "KIDO_FAKE_STATE_DIR" ^ "/runs/" ^ run_id ^ "/output" in
+      let rows_path = Fs.getenv "KIDO_FAKE_RUNS_FILE" in
+      if not (String.is_empty rows_path) then begin
+        let rows = Fake_common.read_rows "KIDO_FAKE_RUNS_FILE" in
+        let parent = match args with "run-child" :: p :: _ -> p | _ -> "" in
+        let row =
+          `Assoc
+            [
+              ("id", `String run_id);
+              ("name", `String (arg_after "--name"));
+              ("kind", `String "bash");
+              ("parent", `String parent);
+              ("pane", `String "@9.%9");
+              ("output", `String output);
+              ("session", `String (arg_after "--session-id"));
+              ("startedAt", `String "2023-11-14T22:00:00Z");
+            ]
+        in
+        Fs.write ~perm:0o644 rows_path (Yojson.Safe.to_string (`List (rows @ [ row ])))
+      end;
+      Printf.printf "{\"id\":%S,\"pane\":%S,\"output\":%S}\n" run_id "@9.%9" output;
+      exit 0
+  | "runs" ->
+      log "KIDO_FAKE_RUNS_LOG" (json_of_strings argv);
+      let rows = Fake_common.read_rows "KIDO_FAKE_RUNS_FILE" in
+      let member key row =
+        match Yojson.Safe.Util.member key row with `String s -> s | `Null -> "" | _ -> ""
+      in
+      let parent = ref None and id = ref None in
+      let rec parse = function
+        | [] -> ()
+        | "--parent" :: value :: rest ->
+            parent := Some value;
+            parse rest
+        | "--json" :: rest -> parse rest
+        | value :: rest ->
+            id := Some value;
+            parse rest
+      in
+      parse (List.tl args);
+      let rows =
+        match !parent with
+        | None -> rows
+        | Some parent -> List.filter (fun row -> String.equal (member "parent" row) parent) rows
+      in
+      let rows =
+        match !id with
+        | None -> rows
+        | Some id -> List.filter (fun row -> String.equal (member "id" row) id) rows
+      in
+      print_endline (Yojson.Safe.to_string (`List rows));
+      exit 0
+  | "run-wait" ->
+      log "KIDO_FAKE_RUN_WAIT_LOG" (json_of_strings argv);
+      Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_WAIT_GATE");
+      if List.mem ~eq:String.equal "--json" args then
+        print_endline
+          (Option.value ~default:"{\"result\":\"completed\"}"
+             (Sys.getenv_opt "KIDO_FAKE_RUN_WAIT_OUTCOME"))
+      else
+        print_endline
+          (Option.value ~default:"completed" (Sys.getenv_opt "KIDO_FAKE_RUN_WAIT_RESULT"));
+      exit 0
+  | "run-stop" ->
+      log "KIDO_FAKE_RUN_STOP_LOG" (json_of_strings argv);
+      print_endline ("stopped run " ^ Option.value ~default:"" (last_arg args) ^ "; killed its pane");
       exit 0
   | "async_bash" ->
       log "KIDO_FAKE_ASYNC_BASH_LOG" (json_of_strings argv);

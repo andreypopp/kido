@@ -1,0 +1,8 @@
+#!/bin/sh
+# kido-pi: the real pi with kido's harness extension in front of every
+# argument. The shim exists so that nothing is written into
+# ~/.pi/agent/extensions, and so a restart or a spawn names one command.
+. "${0%/*}/../shim.sh"
+set -- --extension "$kido_share/pi/kido-pi.ts" "$@"
+kido_real pi
+exec "$kido_found" "$@"

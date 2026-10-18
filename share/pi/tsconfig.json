@@ -13,7 +13,10 @@
   "include": [
     "kido-status.ts",
     "kido-agents.ts",
+    "kido-pi.ts",
+    "kido-pi-fixture.ts",
     "kido-fixture.ts",
-    "kido-status-*.test.ts"
+    "kido-status-*.test.ts",
+    "kido-pi-*.test.ts"
   ]
 }

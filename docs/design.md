@@ -908,7 +908,7 @@ window. A window that nothing can find again is worse than no window.
 |---|---|
 | `kido run --name N [--cwd D] [--session S] [--env K=V]... -- CMD...` | starts a parentless run; prints `{"id":ID,"pane":"@WIN.%PANE","output":PATH}` |
 | `kido run-child PARENT ...` | the same, under PARENT: a live run id, or the pane `%N` of a live pi root |
-| `kido runs [--json] [--parent P] [ID]` | lists runs newest first, with a SESSION column, or one run |
+| `kido runs [--json] [--parent P] [ID]` | lists runs newest first, with a SESSION column, or one run; each JSON row has the run's `output` path |
 | `kido run-outcome ID --result completed\|failed [--text T]` | the run's own report of its ending |
 | `kido run-wait ID [--json]` | blocks until the run has ended; prints the result, or the outcome object |
 | `kido run-stop ID [--wait SECS] [--result stopped\|completed]` | records the result, then ends the process |
@@ -1497,6 +1497,87 @@ kido does not prune run records. A run without a written outcome remains,
 and `kido runs` can still report it. The captured screen contains copied
 bytes, not a reference to another store. See "The screen capture"
 above. Its cap is 64KB.
+
+## kido-pi, the harness in one extension
+
+`share/bin/kido-pi` starts pi with `--extension <share>/pi/kido-pi.ts`
+in front of every argument. It has no case for pi's package
+subcommands; use plain `pi` for those. `kido-pi.ts` is the harness of
+plans/harness-split.md. It is beside the old pair: `share/bin/pi`
+still loads `kido-status.ts` and `kido-agents.ts`, and the rest of this
+document describes that pair. [design-subagents.md](design-subagents.md),
+"The kido-pi extension", describes the tools.
+
+The extension uses only these interfaces of kido:
+
+- The run commands `run-child`, `runs --json [--parent P]`,
+  `run-wait ID --json`, `run-stop` and `run-outcome`.
+- `tmux set-option -p -t %PANE` and `set-option -pu`, for the four
+  pane options.
+- One `tmux list-panes -a` read, for discovery and liveness.
+
+It never calls `kido tool`, `agent-status`, `get-inbox` or
+`get-agent`. It never reads kido's `runs/` files or `pi.json`. It
+sends envelopes in the v1 inbox format directly to the target's
+`@kido_inbox` socket. Thus, `kido prompt` and peers of the old pair
+still interoperate with it.
+
+**Inside kido** is `KIDO_RUN_ID` set, or `$TMUX` set and `kido` on
+PATH. A pi outside kido, a pi without a UI or a pi without a session
+id writes no option and binds no inbox.
+
+**The state directory** is per user and shared by every kido server:
+`$KIDO_PI_STATE_DIR`, else `$XDG_STATE_HOME/kido-pi`, else
+`~/.local/state/kido-pi`. It is not under a server directory, because
+the agent map outlives a server. It is not under `$TMPDIR`, because the
+map outlives a reboot. It holds:
+
+- `inbox/<session-id>.sock`, in a 0700 directory. The path derives from
+  the session id, so `notify_parent` needs no lookup. The 103-byte
+  socket limit applies.
+- `agents/<parent-session>/<name>/`, the agent map:
+  `agent.json` (`session`, `run`, `model`, `tools`, `fork`), `task`,
+  `delivered`, `report` and `session-file`. The parent writes
+  `agent.json` and `task`. The child writes `session-file` (its pi
+  session file path) at `session_start`, `delivered` when it delivers
+  the task, and `report` in `notify_parent`. A restart without a
+  session file removes `delivered`, so the task is delivered again. For a top-level parent, `<parent-session>` is its own pi
+  session id, although `run-child` receives its pane.
+
+**The run id is not the session id.** kido mints the run id.
+The parent mints the child's pi session id and passes it with
+`--session-id`. `agent.json` records both. A restart is a new run
+under the same session.
+
+**The options.** The extension writes `@kido_session` and `@kido_name`
+at `session_start`, `@kido_inbox` after the bind, `@kido_name` again on
+`session_info_changed`, and `@kido_activity` on `set_status`. Writes
+are coalesced, and one `tmux` call carries each batch, with `;`
+between the commands. Without `$TMUX_PANE`, nothing is written. At shutdown,
+and before a reload writes them again, it unsets the four. A crash
+leaves them; the trust rule below makes them harmless.
+
+**The trust rule.** The extension's own discovery uses kido's rule: a
+pane is a local pi agent only with an OSC 7501 root with `app=pi`
+(`#{pane_program_status}`) and `@kido_session`. Discovery, addressing,
+the parent watch and the human-sender label all apply it. A stale
+option on a shell pane is no agent.
+
+**The bind.** The extension unlinks a stale socket file only after a
+200 ms connect probe fails. Thus, it never displaces a live listener.
+A second pi on the same session binds nothing and publishes no
+`@kido_inbox`. This replaces the claim and exit 6 of the old pair.
+
+**The parent edge.** `KIDO_AGENT_DIR` names the child's agent
+directory. The child trusts it only when that directory's `agent.json`
+names the child's own pi session id. Thus, a pi that a child's bash
+starts inherits nothing. The parent is the session in the directory
+name above it. `KIDO_AGENT_PARENT_SESSION` is also set, for the
+`no-git-writes` guard.
+
+**The relationship comes from the map, not from kido.** A sender is
+the parent if its session is the parent session, a child if it is in
+`agents/<own session>/`, else a peer.
 
 ## pi extensions, and the seam between them
 
@@ -2096,6 +2177,7 @@ variables are:
 - `KIDO_SPAWN_TIMEOUT_MS`;
 - `KIDO_STOP_TIMEOUT_MS`;
 - `KIDO_AGENT_LIST_TTL_MS`;
+- `KIDO_STREAM_POLL_MS`, kido-pi's output tail;
 - the notifier's streaming variables `KIDO_STREAM_BATCH_MS`,
   `KIDO_STREAM_BACKOFF_MS` and `KIDO_STREAM_BACKOFF_CAP_MS`, which
   `kido tool async_bash` reads from the server's global environment and

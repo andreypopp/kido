@@ -337,7 +337,13 @@ let runs =
                let infos = Run_history.list ?parent ~dir ~state () in
                if json then
                  print_endline
-                   (Yojson.Safe.to_string (`List (List.map Run_history.yojson_of_info infos)))
+                   (Yojson.Safe.to_string
+                      (`List
+                         (List.map
+                            (fun (i : Run_history.info) ->
+                              Yojson.Safe.Util.combine (Run_history.yojson_of_info i)
+                                (`Assoc [ ("output", `String (Run.output_path ~dir i.meta.id)) ]))
+                            infos)))
                else begin
                  let now = Timestamp.now () in
                  table

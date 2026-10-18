@@ -989,6 +989,120 @@ subagent windows through the sidebar. Skipping a dead window without a
 liveness test is deliberate. Otherwise, the key's behavior would change
 during use as a window disappears after its linger.
 
+## The kido-pi extension
+
+`share/pi/kido-pi.ts` is the new harness, beside the old pair
+(design.md, "kido-pi, the harness in one extension"). The sections
+above describe the old pair. This section gives only what kido-pi does
+differently. Its tools keep the old names and schemas, except as
+described here. Each tool runs in TypeScript and no tool calls
+`kido tool`.
+
+**Names.** `spawn_subagent` and `async_bash` require `name`. The
+extension refuses a name with `'`, `"`, `$`, `#`, `\`, a backtick, a
+newline or a carriage return, and a name over 64 bytes. A name is
+unique within its parent, for live and ended children: the directory
+`agents/<parent>/<name>/` or a run of the same name exists, or it does
+not. A reused name is refused with "message it instead" (spawn) or
+"choose another name" (async_bash). The `resume` parameter does not
+exist.
+
+**Spawning.** `spawn_subagent` checks the model with
+`pi --list-models` and the depth (maximum 2). Then it writes the
+agent directory, `task` and `agent.json` with an empty `run`, before
+the child starts (design.md, "kido-pi, the harness in one extension",
+the parent edge). Then it runs:
+
+    kido run-child PARENT --name N --env KIDO_AGENT_PARENT_SESSION=S \
+      --env KIDO_AGENT_DIR=D -- kido-pi --session-id <minted id> \
+      --name N [--model M] [--fork S] [--tools a,b,notify_parent]
+
+PARENT is the caller's `KIDO_RUN_ID`, else its `$TMUX_PANE`. The
+extension then writes the run id into `agent.json`. A failed spawn
+removes the directory. `async_bash` runs
+`kido run-child PARENT --name N -- bash -o pipefail -c '<cmd> 2>&1 | tee "$KIDO_RUN_OUTPUT"'`.
+
+**Addressing.** The tools show names. A target resolves by caseless
+exact name, then exact session id, then a unique id prefix. A match
+in the caller's tmux session wins over a match elsewhere. Another
+parent's child has no name for the caller, but its session id still
+resolves. Messages go only through the target's inbox. A target
+without `@kido_inbox` is "not accepting messages"; the tools never
+paste.
+
+**list_runs** joins three reads: `kido runs --json --parent PARENT`,
+`agents/<me>/*` (task and report on a subagent row) and one
+`list-panes -a`. A live child merges into its pane's row. The row id is
+the child's session id, and `run` is its current run id. Children
+that `run-child %N` started for a top-level pi are listed too.
+
+**Endings.** For each run that it starts, the parent runs
+`kido run-wait ID --json` in the background. When it exits, the parent
+formats the notice in TypeScript, from the text of `Run_ending.body`.
+A subagent without a `report` file "never called notify_parent", and
+the notice says "message it to continue it, or stop_run to end it". No
+notice has a resume line. A bash notice has the output path and the
+last 4000 bytes of output. A parent that restarts under its own
+session starts one `run-wait` per live child, once, at its first turn
+event. Its ended children are not watched. kido stores no stream flag, so a
+re-watched bash run sends only its ending notice, not batches.
+
+The child records its own ending with `kido run-outcome` at shutdown,
+as the old pair does. The idle and error status notices go to the
+parent once per turn. They write no `report`.
+
+**Streaming.** With `stream: true`, the parent tails the run's
+`output` file every `KIDO_STREAM_POLL_MS` (default 1000) and sends
+batches of at most 200 lines or 16 KiB as `streamBatch` does. It keeps
+a buffer of 5000 lines. The `stream` envelope is not used.
+
+**Stopping.** `stop_run` on a bash run is `kido run-stop ID`. On a
+subagent, it first sends the stop request over the inbox, then runs
+`kido run-stop ID --wait 5`, with `--result completed` if a `report`
+exists. `force` skips the request. Without an inbox and without
+`force`, the stop is refused.
+
+**The parent watch.** Every `KIDO_PARENT_POLL_MS`, a child reads
+`@kido_session` and `#{pane_program_status}` of the parent's pane with
+`display-message`. It finds that pane with one `list-panes -a`, and
+reads the list again only when the pane no longer matches. A pane that
+passes the trust rule and has the parent's `@kido_session` means that
+the parent is alive. The ask's liveness poll reads the target's pane in
+the same way. A failed read
+is no evidence. When the parent is gone, the child shuts down.
+
+### Restarting through a message
+
+`message_agent` or `ask_agent` to an ended subagent restarts it as a
+new run under the same session. The rules:
+
+- Only the parent restarts its child. The lookup is
+  `agents/<sender>/<name>/`, so another parent's ended child is not
+  found. An `async_bash` run is refused: "a background command, not an
+  agent".
+- A name resolves to a live agent first, then to an ended child of the
+  sender.
+- PARENT is the sender's current run id or pane, not the one at the
+  spawn. A stale parent would make the sweep's orphan rule close the
+  child at once.
+- With `session-file`, the restart is
+  `kido run-child PARENT ... -- kido-pi --session <session-file> --name N [--model M] [--tools ...] <message>`.
+  The message is pi's first prompt, in argv, so there is no inbox race.
+- Without `session-file`, the restart uses `--session-id <id>` and no
+  prompt. The extension removes `delivered`, so the stored task is
+  delivered again. The message follows over the inbox, which the
+  sender waits for up to 5000 ms.
+- An ask never becomes pi's first prompt, because the ask id would be
+  lost. The child starts, then receives the ask envelope over its
+  inbox. The ask's deadline starts before the restart, so it includes
+  pi's start and the wait for the inbox.
+- The extension rewrites `agent.json` with the new run before it
+  delivers the message, removes the old `report` and starts a new
+  `run-wait`. A second message while the new run's inbox is not bound
+  waits for the inbox. It never starts a second run, because the run
+  in `agent.json` is live.
+- A stopped child restarts on a message. Stopped is not finished.
+
 ## Limits
 
 - If the sweep collects a child without a recorded outcome, it tells the

@@ -1,0 +1,11 @@
+(executable
+ (name fake_tmux)
+ (flags
+  (:standard
+   -open
+   Containers
+   -open
+   Ppx_yojson_conv_lib.Yojson_conv.Primitives))
+ (libraries fake_common kido_fs containers ppx_yojson_conv_lib yojson)
+ (preprocess
+  (pps ppx_yojson_conv)))
