@@ -4,11 +4,13 @@ DERIVED := build/xcode.noindex/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: visual all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
+.PHONY: visual project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
 
-all:
+project:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
 	xcodegen --quiet --spec project.yml
+
+all: project
 	xcodebuild -quiet -project Kido.xcodeproj -scheme Kido -configuration $(CONFIG) \
 		-destination platform=macOS -derivedDataPath $(DERIVED) $(SANITIZE) $(XCODE_SETTINGS) build
 
@@ -37,10 +39,9 @@ stress tsan-stress asan-stress:
 
 RECORD ?= 0
 visual: DERIVED = build/xcode.noindex/derived-visual
-visual:
+visual: project
 	mkdir -p build/bundle/visual/{home,state,tmp,config}
 	clang -dynamiclib -Werror -Wno-deprecated-declarations scripts/vsync-cv-count.c -framework CoreVideo -o build/bundle/visual/vsync-cv-count.dylib
-	$(MAKE) all DERIVED=$(DERIVED) SANITIZE="KIDO_VISUAL_CONDITION=KIDO_VISUAL"
 	server=$$(mktemp -d /tmp/ka-visual-XXXXXX) || exit 1; \
 	trap '$(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) -S "$$server/socket" kill-server 2>/dev/null || true; rm -rf "$$server"' EXIT; \
 	xcodebuild -quiet -project Kido.xcodeproj -scheme Visual -configuration Debug KIDO_VISUAL_SERVER="$$server" \

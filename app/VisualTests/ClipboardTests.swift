@@ -88,8 +88,12 @@ import XCTest
             owner.clipboardPermission = [:]
         }
         try await superseded(try await paste())
+        let old = PaneView.pasteEventTimeout
+        PaneView.pasteEventTimeout = 0.3
+        defer { PaneView.pasteEventTimeout = old }
         let expired = try await paste()
-        try await Task.sleep(for: .seconds(30.1))
+        try await wait("paste event expired") { pane.visualPasteEventExpired }
+        PaneView.pasteEventTimeout = old
         try await superseded(expired)
     }
 
@@ -293,27 +297,28 @@ import XCTest
             XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         }
         defer { pa.dispose(); pb.dispose(); a.close(); b.close(); board.releaseGlobally() }
-        func query(_ pane: PaneView) async throws {
+        func query(_ pane: PaneView, _ owner: WindowOwner) async throws {
+            let count = replies.count
             XCTAssertTrue(pane.feed(Data("\u{1b}]52;c;?\u{7}".utf8)))
-            for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+            try await wait("clipboard read handled") { owner.preparedAlert != nil || replies.count > count }
         }
         board.clearContents()
         board.setString("secret", forType: .string)
-        try await query(pa)
+        try await query(pa, a)
         XCTAssertNotNil(a.preparedAlert)
         a.respondToAlert(.alertThirdButtonReturn)
-        try await query(pb)
+        try await query(pb, b)
         XCTAssertNotNil(b.preparedAlert)
         b.respondToAlert(.alertSecondButtonReturn)
         XCTAssertTrue(WindowOwner.clipboardConsent.allows(host))
-        try await query(pa)
+        try await query(pa, a)
         XCTAssertNil(a.preparedAlert)
         XCTAssertEqual(replies.last, Data("\u{1b}]52;c;\u{1b}\\".utf8))
         WindowOwner.resetClipboardPermissions([a, b])
         XCTAssertFalse(WindowOwner.clipboardConsent.allows(host))
         XCTAssertEqual(a.clipboardPermission, [:])
         XCTAssertEqual(b.clipboardPermission, [:])
-        try await query(pa)
+        try await query(pa, a)
         XCTAssertNotNil(a.preparedAlert)
         a.respondToAlert(.alertThirdButtonReturn)
     }
@@ -343,6 +348,9 @@ import XCTest
     }
 
     func testHiddenUnapprovedReadAndEightSecondDeadline() async throws {
+        let old = PaneView.clipboardTimeout
+        PaneView.clipboardTimeout = 0.5
+        defer { PaneView.clipboardTimeout = old }
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .remote("deadline-host"), runtime: runtime, start: false)
@@ -353,23 +361,27 @@ import XCTest
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         defer { pane.dispose(); owner.close(); board.releaseGlobally() }
         pane.feed(Data("\u{1b}]52;c;?\u{7}".utf8))
-        for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+        try await wait("refused read replies empty") { replies == [Data("\u{1b}]52;c;\u{1b}\\".utf8)] }
+        try await drain(runtime)
         XCTAssertNil(owner.preparedAlert)
         XCTAssertEqual(replies, [Data("\u{1b}]52;c;\u{1b}\\".utf8)])
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         XCTAssertTrue(pane.feed(Data("\u{1b}]52;c;?\u{7}".utf8)))
-        for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+        try await drain(runtime)
         let respond = try XCTUnwrap(owner.preparedAlert?.respond)
-        try await Task.sleep(for: .seconds(8.1))
+        try await wait("clipboard deadline replies empty") {
+            replies == Array(repeating: Data("\u{1b}]52;c;\u{1b}\\".utf8), count: 2)
+        }
+        PaneView.clipboardTimeout = old
         XCTAssertNil(owner.preparedAlert)
         respond(.alertSecondButtonReturn)
         XCTAssertFalse(WindowOwner.clipboardConsent.allows(owner.host))
-        for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+        try await drain(runtime)
         XCTAssertEqual(replies, Array(repeating: Data("\u{1b}]52;c;\u{1b}\\".utf8), count: 2), "expiry replies empty; late grant adds no reply")
         pane.feed(Data("\u{1b}]52;c;?\u{7}".utf8))
-        for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+        try await drain(runtime)
         let retiredResponse = try XCTUnwrap(owner.preparedAlert?.respond)
         pane.dispose()
         retiredResponse(.alertSecondButtonReturn)
@@ -381,10 +393,10 @@ import XCTest
         XCTAssertTrue(reused.commitSnapshot(epoch: reused.historyEpoch))
         defer { reused.dispose() }
         reused.feed(Data("\u{1b}]52;p;?\u{7}".utf8))
-        for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+        try await drain(runtime)
         XCTAssertNotNil(owner.preparedAlert)
         owner.respondToAlert(.alertThirdButtonReturn)
-        for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+        try await drain(runtime)
         XCTAssertEqual(replies.count, 3)
         XCTAssertEqual(replies.last, Data("\u{1b}]52;p;\u{1b}\\".utf8))
     }
