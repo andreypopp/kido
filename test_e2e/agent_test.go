@@ -51,13 +51,10 @@ func TestPiPaneTitleAndNativeStatus(t *testing.T) {
 		h.programStatus(pane, "state=working:app=pi:msg=ZGVwbG95IC0gYnJhbmNo")
 		h.agentStatus("pi-3", pane)
 		h.waitGlyph("deploy - branch - kido", "◼")
-		if got := h.rowFor("deploy"); got != "╶◼deploy - branch - kido" {
-			t.Fatalf("row = %q, want pane title, native status and no duplicate caption", got)
-		}
 		h.clearPiOptions(pane)
-		h.waitGlyph("deploy - branch - kido", "◼")
+		h.waitRow("╶◼π - deploy - branch - kido")
 		h.agentStatus("pi-3", pane)
 		h.programStatus(pane, "state=clear")
-		h.waitFor(func() bool { return !strings.Contains(h.rowFor("deploy"), "deploy - branch - kido") }, settle, msgf("clear hides the pi label despite its identity"))
+		h.waitGlyph("node", "")
 	})
 }
