@@ -886,6 +886,8 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  const reported = (entry: AgentEntry): boolean => exists(join(entry.dir, "report"));
+
   const agentRun = (run: RunRow, byRun: Map<string, AgentEntry>, bySession: Map<string, AgentEntry>): AgentEntry | undefined =>
     byRun.get(run.id) ?? (run.session ? bySession.get(run.session) : undefined);
 
@@ -1395,13 +1397,12 @@ export default function (pi: ExtensionAPI) {
       } else body += `--- output ---\n${tail.tail}`;
       return body;
     }
-    const report = join(watch.target.entry.dir, "report");
-    body += exists(report)
+    body += reported(watch.target.entry)
       ? `subagent ${quote(watch.name)} ${outcome.result}\n`
       : `subagent ${quote(watch.name)} ${outcome.result} without reporting: it never called notify_parent, so this is the whole account of it\n`;
     if (outcome.text) body += `detail: ${outcome.text}\n`;
     body += `run: ${watch.run}\n`;
-    if (!exists(report)) body += "message it to continue it, or stop_run to end it\n";
+    if (!reported(watch.target.entry)) body += "message it to continue it, or stop_run to end it\n";
     return body;
   };
 
@@ -1701,20 +1702,19 @@ export default function (pi: ExtensionAPI) {
     nameClaims.delete(name.toLowerCase());
   };
 
-  let liveWatchStarted = false;
+  let liveWatch: Promise<void> | undefined;
 
-  const watchLiveChildren = async (): Promise<void> => {
-    if (liveWatchStarted) return;
-    liveWatchStarted = true;
-    const entries = own(dir ? agentEntries(dir) : []);
-    const bySession = bySessionOf(entries);
-    const byRun = byRunOf(entries);
-    for (const run of await myRuns()) {
-      if (run.outcome || watches.has(run.id) || !run.output) continue;
-      const entry = agentRun(run, byRun, bySession);
-      watch(watchData(run.id, entry?.name || run.name || run.id, run.output, entry ?? null, false));
-    }
-  };
+  const watchLiveChildren = (): Promise<void> =>
+    (liveWatch ??= (async () => {
+      const entries = own(dir ? agentEntries(dir) : []);
+      const bySession = bySessionOf(entries);
+      const byRun = byRunOf(entries);
+      for (const run of await myRuns()) {
+        if (run.outcome || watches.has(run.id) || !run.output) continue;
+        const entry = agentRun(run, byRun, bySession);
+        watch(watchData(run.id, entry?.name || run.name || run.id, run.output, entry ?? null, false));
+      }
+    })());
 
   const handleInbound = async (prompt: string): Promise<"ok" | "refused"> => {
     const env = parseEnvelope(prompt);
@@ -1913,8 +1913,7 @@ export default function (pi: ExtensionAPI) {
         const entry = ownEntries.find((e) => e.session === row.id) ?? ownEntries.find((e) => row.run !== "" && e.run === row.run);
         if (!entry) return toolRow(row);
         const task = readTextFile(join(entry.dir, "task"));
-        const reportPath = join(entry.dir, "report");
-        return toolRow({ ...row, task, report: exists(reportPath) ? reportPath : undefined });
+        return toolRow({ ...row, task, report: reported(entry) ? join(entry.dir, "report") : undefined });
       });
       return reply(JSON.stringify(listed), listed);
     },
@@ -2374,7 +2373,7 @@ export default function (pi: ExtensionAPI) {
       const name = target.name || target.id;
       const entry = entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
       if (!force && !target.inbox) return reply(`subagent ${name} has no inbox to ask nicely over; pass --force to kill its window instead`);
-      const recordArgs = ["run-outcome", run, "--result", entry && exists(join(entry.dir, "report")) ? "completed" : "stopped"];
+      const recordArgs = ["run-outcome", run, "--result", entry && reported(entry) ? "completed" : "stopped"];
       const recorded = await runCommand(command, recordArgs, { timeoutMs: stopDeadline(stopWait) });
       if (!recorded.ok && recorded.code !== 5) return reply(recorded.error);
       let requestFailure = "";
@@ -2409,7 +2408,7 @@ export default function (pi: ExtensionAPI) {
     settled = true;
     parentToldThisTurn = false;
     turnEndedByControl = false;
-    liveWatchStarted = false;
+    liveWatch = undefined;
 
     // A headless session has no ui, and an older pi has one without this method:
     // both simply get no `@name` completion.
@@ -2551,6 +2550,12 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (parentToldThisTurn) return;
+    const generation = workGeneration;
+    await watchLiveChildren();
+    if (turnEndedByControl || generation !== workGeneration) return;
+    for (const watch of watches.values()) {
+      if (watch.target.kind === "bash" || !reported(watch.target.entry)) return;
+    }
     parentToldThisTurn = true;
     await notifyParent(
       `subagent ${edge.run} is idle without reporting: its last turn ended and it did not call notify_parent. Continue it with message_agent, or end it with stop_run.`,

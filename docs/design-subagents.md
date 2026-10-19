@@ -290,7 +290,15 @@ kido never sends that turn's text to the parent.
 **A settled turn with no report sends the parent one notice.** On
 `agent_settled` with `ctx.isIdle()`, a child that did not call
 `notify_parent` since its last new work tells the parent that it is
-idle without a report, and how to continue or end it. A turn that stops
+idle without a report, and how to continue or end it. It does so only
+if it waits on nothing. A child waits while at least one run of its own
+is live: a subagent that has not reported, or an async bash run. A
+subagent of its own that reported but stays alive does not count, so a
+manager that forgot to report is still noticed. A restarted child first
+finishes its read of its live runs, so an early settle cannot miss
+them. When the last such run
+reports or ends, its notice wakes the child for a turn. That turn
+settles with nothing to wait for, and the notice goes then. A turn that stops
 on a provider error sends the error instead, once per failed attempt,
 with how to retry. An aborted turn sends nothing: someone stopped it
 deliberately. This also holds for a turn that an accepted interrupt or
@@ -593,6 +601,9 @@ These nested windows no longer follow tmux's own order. design.md,
   and last screen. Only the run record remains, and the parent's notice
   reads `died`.
 - A re-watched bash run after a parent restart sends no batches.
+- A child idle behind an async bash run that never ends, such as a
+  watcher, never sends the idle-without-reporting notice while that run
+  lives ("A child's life").
 - A subagent's window moved to another tmux session is outside its
   parent's scope. The parent cannot reach it.
 - Everything assumes one machine: a shared filesystem and a kido binary
