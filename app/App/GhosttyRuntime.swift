@@ -251,7 +251,7 @@ import GhosttyKit
         default: break
         }
         if action.tag == GHOSTTY_ACTION_SCROLLBAR {
-            PaneView.onMain(userdata) { $0.refreshScroller() }
+            PaneView.onMain(userdata) { if $0.scrollTarget == nil { $0.refreshScroller() } }
             return true
         }
         if action.tag == GHOSTTY_ACTION_CELL_SIZE {

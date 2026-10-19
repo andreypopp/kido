@@ -69,6 +69,15 @@ The possible cost is excess rendering for unfocused visible panes, not lost
 content. Measure on screen first (small investigation), then tune scheduling
 if needed (medium). Status: unverified.
 
+## Scroll and idle wakeups on screen
+
+The scroller layer, fade deadline, compression timer and blink timer changes
+were measured off screen only. Off screen, no CADisplayLink ticks and Ghostty
+sends no SCROLLBAR action, so the paused display link and the skipped
+scroller refresh have tests but no measured effect. The 120 Hz effect is
+unmeasured. Measure with the profile recipe on a 120 Hz display (small
+investigation). Status: unverified.
+
 ## Stale tiled-content clip on screen
 
 A stale-root shrink could expose terminal pixels above the titlebar separator.
