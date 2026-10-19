@@ -480,8 +480,25 @@ selects a word and a triple-click selects the wrapped line (`V`). A drag after
 a double or triple click extends by word or line. A Shift-click extends the
 selection in its mode. A drag past the top or bottom edge scrolls every 50 ms
 through the same scroll path as the keys, only within loaded rows. It never
-loads history. Outside copy mode, Ghostty keeps its own mouse selection, and
-the mouse never enters copy mode.
+loads history.
+
+Outside copy mode, a left press with Shift as its only modifier enters copy
+mode and starts a selection at the pressed cell. As a plain click does, the
+press makes its pane the active pane and raises a floating pane. The app sends
+that press, its drags and its release to neither Ghostty nor the program, so
+the gesture works under every mouse-reporting mode and also when the program
+requests shift capture (XTSHIFTESCAPE, `CSI > 1 s`). With shift capture, Ghostty reports a
+Shift-click to the program and makes no selection (`Surface.zig`,
+`mouseShiftCapture`). The drag then selects as in copy mode, and after the
+release the selection and copy mode stay. A Ghostty selection that exists
+before the press is extended from its start. Without one, a Shift double-click
+or triple-click selects a word or a line. Entry is asynchronous. The app holds
+the gesture and applies it when entry completes. If entry is refused or
+cancelled, the app drops the gesture and does not send its drags and release
+to Ghostty. A press with Shift and Command, Option or Control does not enter
+copy mode and keeps its usual behaviour. Thus, Ghostty keeps Shift-Command-click
+on links under mouse reporting. Other clicks and drags outside copy mode go to
+Ghostty, which keeps its own mouse selection.
 
 A right-click on a selection, in copy mode or not, opens a context menu with
 two items: Copy (⌘C) and Prompt with Selection… (⌘O). The menu is built for each
@@ -501,8 +518,9 @@ app maps the cursor row through the scrollbar and clamps it to the visible rows.
 ⌘O never beeps, and it does nothing while copy mode is still entering. The
 title follows the focused pane when the Edit menu opens. With no focused pane,
 the item reads "Prompt…" and is disabled. In copy mode, `p` opens a box only
-with a selection, and beeps without one. Mouse input is ignored while copy mode
-is still entering.
+with a selection, and beeps without one. While copy mode is still entering, mouse
+clicks are ignored, except that a held Shift-press gesture continues. The wheel
+still scrolls.
 
 A prompt box (`PromptBox`) floats over the terminal area. It is a view, not a
 window. `SessionView` owns one `PromptBoxes` layer above every `WindowView`,
