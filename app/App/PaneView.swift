@@ -65,7 +65,23 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             }
         }
     }
+    private struct CopyPress {
+        var cell: (x: Int, y: Int)
+        var clickCount: Int
+        var latest: (x: Int, y: Int)
+        var point: NSPoint
+        var selection: ((x: Int, y: Int), (x: Int, y: Int))?
+
+        mutating func move(to point: NSPoint, cell: (x: Int, y: Int)) {
+            latest = cell
+            self.point = point
+        }
+    }
+    private enum LeftGesture {
+        case pending(CopyPress), released(CopyPress), swallowed
+    }
     private var mouseDrag: MouseDrag?
+    private var leftGesture: LeftGesture?
     private var dragPoint: NSPoint?
     private var autoscroll: Timer?
     var copyFind: (query: String?, older: Bool) = (nil, true)
@@ -532,6 +548,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     #if KIDO_VISUAL
     nonisolated let postProbe = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
+    private(set) var visualSwallowedDrags = 0
     #endif
 
     #if KIDO_STRESS || KIDO_VISUAL
@@ -1142,6 +1159,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     @objc func toggleCopyMode(_ sender: Any?) {
         guard copyMode == nil else { return endCopy() }
+        startCopy()
+    }
+
+    private func startCopy() {
         guard !disposed, acceptingInput, superview != nil, !isHiddenOrHasHiddenAncestor, window?.attachedSheet == nil,
               paste == nil, clipboard == nil, pressed.isEmpty, !resizeDirty,
               (window?.delegate as? WindowOwner)?.uploading(self) != true else { return refuseCopy() }
@@ -1198,6 +1219,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         presentCopy()
         window?.makeFirstResponder(self)
         find?.search(navigate: false)
+        replayCopyPress()
     }
 
     func endCopy(restore: Bool = true) {
@@ -1208,6 +1230,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         let dirty = grid.withLock { $0.freeze = .off; return $0.dirty }
         copyMode = nil
+        if case .pending = leftGesture { leftGesture = .swallowed }
+        else if case .released = leftGesture { leftGesture = nil }
         copyFind = (nil, true)
         stopAutoscroll()
         presentCopy()
@@ -1763,15 +1787,91 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard copyMode != nil else { return _ = button(event, GHOSTTY_MOUSE_PRESS) }
+        if copyMode == nil, Self.copyPress(event) {
+            beginCopyPress(event)
+            return
+        }
+        if copyMode == nil {
+            if leftGesture != nil { return }
+            return _ = button(event, GHOSTTY_MOUSE_PRESS)
+        }
         guard !disposed else { return }
-        if case .entering = copyMode { return }
+        if entering {
+            if Self.copyPress(event) {
+                let point = convert(event.locationInWindow, from: nil)
+                let cell = gridCell(point)
+                if case .pending(var press) = leftGesture {
+                    press.cell = cell
+                    press.clickCount = max(press.clickCount, event.clickCount)
+                    press.move(to: point, cell: cell)
+                    leftGesture = .pending(press)
+                } else {
+                    leftGesture = .pending(CopyPress(cell: cell, clickCount: event.clickCount, latest: cell,
+                                                     point: point, selection: nil))
+                }
+            }
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        copyMouseDown(cell: gridCell(point), clickCount: event.clickCount,
+                      shift: event.modifierFlags.contains(.shift), point: point)
+    }
+
+    private static func copyPress(_ event: NSEvent) -> Bool {
+        event.buttonNumber == 0
+            && event.modifierFlags.intersection([.shift, .control, .option, .command]) == [.shift]
+    }
+
+    private var entering: Bool {
+        if case .entering = copyMode { return true }
+        return false
+    }
+
+    private func beginCopyPress(_ event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let cell = gridCell(point)
+        let press = CopyPress(cell: cell, clickCount: event.clickCount, latest: cell,
+                              point: point, selection: selectionBounds())
+        resizeAnchor = nil
+        window?.makeFirstResponder(self)
+        onSelect()
+        startCopy()
+        if copyMode == nil {
+            leftGesture = .swallowed
+        } else {
+            leftGesture = .pending(press)
+            if !entering { replayCopyPress() }
+        }
+    }
+
+    private func replayCopyPress() {
+        let press: CopyPress
+        let released: Bool
+        switch leftGesture {
+        case .pending(let value):
+            press = value
+            released = false
+        case .released(let value):
+            press = value
+            released = true
+        default: return
+        }
+        leftGesture = nil
+        if let selection = press.selection {
+            copyMode = .selecting
+            guard select(selection.0, selection.1) else { return endCopy() }
+        }
+        copyMouseDown(cell: press.cell, clickCount: press.clickCount, shift: press.selection != nil, point: press.point)
+        if press.latest != press.cell { advanceDrag(to: press.latest, point: press.point) }
+        if released { endMouseDrag() } else { updateAutoscroll() }
+    }
+
+    private func copyMouseDown(cell: (x: Int, y: Int), clickCount: Int, shift: Bool, point: NSPoint) {
         window?.makeFirstResponder(self)
         snapScroll()
         stopAutoscroll()
-        let cell = gridCell(event)
-        dragPoint = convert(event.locationInWindow, from: nil)
-        if event.modifierFlags.contains(.shift), let selection = selectionBounds() {
+        dragPoint = point
+        if shift, let selection = selectionBounds() {
             switch copyMode {
             case .lines(let anchor, _):
                 mouseDrag = .line(row: anchor.y, last: cell)
@@ -1784,12 +1884,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             copyMove("", to: cell)
             return
         }
-        if event.clickCount >= 3 {
+        if clickCount >= 3 {
             let columns = Int(ghostty_surface_size(surface).columns)
             copyMode = .lines(anchor: (0, cell.y), cursor: (columns - 1, cell.y))
             mouseDrag = .line(row: cell.y, last: cell)
             if !selectLines(cell.y, cell.y) { endCopy() }
-        } else if event.clickCount == 2, let word = wordRange(at: cell) {
+        } else if clickCount == 2, let word = wordRange(at: cell) {
             mouseDrag = .word(start: word.start, end: word.end, anchor: cell, last: cell)
             selectWord(word)
         } else {
@@ -1799,15 +1899,44 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
+    private func advanceDrag(to cell: (x: Int, y: Int), point: NSPoint) {
+        mouseDrag = mouseDrag?.moved(to: cell)
+        dragPoint = point
+        updateAutoscroll()
+        applyDrag(cell)
+    }
+
+    private func endMouseDrag() {
+        stopAutoscroll()
+        mouseDrag = nil
+        dragPoint = nil
+    }
+
     override func mouseUp(with event: NSEvent) {
         guard copyMode != nil else {
+            if leftGesture != nil, event.buttonNumber == 0 {
+                leftGesture = nil
+                return
+            }
             _ = button(event, GHOSTTY_MOUSE_RELEASE)
             ghostty_surface_mouse_pressure(surface, 0, 0)
             return
         }
-        stopAutoscroll()
-        mouseDrag = nil
-        dragPoint = nil
+        if entering {
+            switch leftGesture {
+            case .pending(var press):
+                let point = convert(event.locationInWindow, from: nil)
+                press.move(to: point, cell: gridCell(point))
+                leftGesture = .released(press)
+            case .swallowed, .none:
+                leftGesture = nil
+            case .released:
+                break
+            }
+            return
+        }
+        if event.buttonNumber == 0 { leftGesture = nil }
+        endMouseDrag()
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -1850,15 +1979,28 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     override func mouseEntered(with event: NSEvent) { position(event) }
     override func mouseMoved(with event: NSEvent) { position(event) }
     override func mouseDragged(with event: NSEvent) {
-        guard copyMode != nil else { return position(event) }
+        if entering {
+            if case .pending(var press) = leftGesture {
+                let point = convert(event.locationInWindow, from: nil)
+                press.move(to: point, cell: gridCell(point))
+                leftGesture = .pending(press)
+            }
+            return
+        }
+        if copyMode == nil {
+            if leftGesture != nil {
+                #if KIDO_VISUAL
+                visualSwallowedDrags += 1
+                #endif
+                return
+            }
+            return position(event)
+        }
         guard let drag = mouseDrag else { return }
         let point = convert(event.locationInWindow, from: nil)
         let cell = gridCell(point)
         guard cell != drag.last else { return }
-        mouseDrag = drag.moved(to: cell)
-        dragPoint = point
-        updateAutoscroll()
-        applyDrag(cell)
+        advanceDrag(to: cell, point: point)
     }
     override func rightMouseDragged(with event: NSEvent) { position(event) }
     override func otherMouseDragged(with event: NSEvent) { position(event) }
