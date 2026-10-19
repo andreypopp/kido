@@ -127,6 +127,15 @@ func (s feedSnapshot) drawn() []string {
 	return out
 }
 
+// firstItems is the first session's items. A feed line can carry no
+// session, for example an error snapshot on a loaded runner.
+func (s feedSnapshot) firstItems() []feedRow {
+	if len(s.Sessions) == 0 {
+		return nil
+	}
+	return feedItems(s.Sessions[0].Nodes)
+}
+
 func feedItems(nodes []feedRow) []feedRow {
 	var out []feedRow
 	for _, node := range nodes {

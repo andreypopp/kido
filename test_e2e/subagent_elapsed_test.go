@@ -29,10 +29,7 @@ func TestSubagentRowShowsElapsedUnlessActivity(t *testing.T) {
 			return fmt.Sprintf("subagent time beyond %ds, row %q", first, h.rowFor("elapsed-agent"))
 		})
 	started := f.waitLast(func(s feedSnapshot) bool {
-		if len(s.Sessions) == 0 {
-			return false
-		}
-		for _, r := range feedItems(s.Sessions[0].Nodes) {
+		for _, r := range s.firstItems() {
 			if r.Pane != nil && *r.Pane == pane {
 				return r.Started != nil && r.caption() == ""
 			}
@@ -58,7 +55,7 @@ func TestSubagentRowShowsElapsedUnlessActivity(t *testing.T) {
 			return h.rowFor("elapsed-agent") == "└ elapsed-agent "+activity
 		}, settle, func() string { return fmt.Sprintf("activity %q, row %q", activity, h.rowFor("elapsed-agent")) })
 		f.waitLast(func(s feedSnapshot) bool {
-			for _, r := range feedItems(s.Sessions[0].Nodes) {
+			for _, r := range s.firstItems() {
 				if r.Pane != nil && *r.Pane == pane {
 					if activity == "" {
 						return r.Started != nil && *r.Started == start && r.caption() == ""

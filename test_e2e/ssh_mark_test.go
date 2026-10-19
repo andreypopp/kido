@@ -81,7 +81,7 @@ func main() {
 	}
 	stale := h.startFeed("alpha")
 	stale.waitLast(func(s feedSnapshot) bool {
-		for _, item := range feedItems(s.Sessions[0].Nodes) {
+		for _, item := range s.firstItems() {
 			if item.ID == pane {
 				return item.isShell()
 			}
@@ -98,7 +98,7 @@ func main() {
 	}
 	h.waitShellRow("╶◼ssh deploy@realm@next.test", "")
 	stale.waitLast(func(s feedSnapshot) bool {
-		for _, item := range feedItems(s.Sessions[0].Nodes) {
+		for _, item := range s.firstItems() {
 			if item.ID == pane {
 				l := item.Lifecycle
 				return l.Kind == "Ssh" && feedValue(l.User) == "deploy@realm" && feedValue(l.Host) == "next.test" &&
@@ -150,7 +150,7 @@ func main() {
 	h.waitPaneCommand(plain, "ssh")
 	feed := h.startFeed("alpha")
 	feed.waitLast(func(s feedSnapshot) bool {
-		for _, item := range feedItems(s.Sessions[0].Nodes) {
+		for _, item := range s.firstItems() {
 			if item.ID == plain {
 				return item.isShell()
 			}

@@ -48,7 +48,7 @@ func TestChildProgramStatus(t *testing.T) {
 			waitRows()
 			f := h.startFeed("alpha")
 			f.waitLast(func(s feedSnapshot) bool {
-				items := feedItems(s.Sessions[0].Nodes)
+				items := s.firstItems()
 				if len(items) != 3 {
 					return false
 				}
