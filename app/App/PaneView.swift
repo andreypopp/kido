@@ -42,8 +42,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onFindChange: () -> Void = {}
     let scroller = PaneScroller()
     var find: PaneFind? { didSet { needsLayout = true; onFindChange() } }
-    var prompt: PanePrompt? { didSet { needsLayout = true; onFindChange() } }
-    var chromeViews: [NSView] { [historyLimit, copyLabel] + [find].compactMap { $0 } + [prompt].compactMap { $0 } }
+    var onPrompt: (PaneView, PromptAnchor) -> Void = { _, _ in }
+    var chromeViews: [NSView] { [historyLimit, copyLabel] + [find].compactMap { $0 } }
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
     private enum MouseDrag {
@@ -184,10 +184,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     static func owner(_ responder: NSResponder?) -> PaneView? {
         var view = responder as? NSView
-        while let current = view, !(current is PaneView) {
-            view = (current as? PaneFind)?.pane ?? (current as? PanePrompt)?.pane ?? current.superview
+        while let current = view {
+            if let pane = current as? PaneView { return pane }
+            if let box = current as? PromptBox { return box.host?.session?.pane(box.paneID) }
+            view = (current as? PaneFind)?.pane ?? current.superview
         }
-        return view as? PaneView
+        return nil
     }
 
     @objc func findNext(_ sender: Any? = nil) { resizeAnchor = nil; snapScroll(); find?.next() }
@@ -728,14 +730,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         historyLimit.separatorX = [label.frame.maxX + 6]
         loadMore.frame = NSRect(x: label.frame.maxX + 10.5, y: 2, width: ceil((loadMore as? NSButton)?.attributedTitle.size().width ?? 0) + 14, height: 18)
         historyLimit.frame = NSRect(x: (chrome.width - loadMore.frame.maxX - 2) / 2, y: y, width: loadMore.frame.maxX + 2, height: 22)
-        if let prompt {
-            let width = min(560, chrome.width - 16)
-            let height = prompt.preferredHeight
-            prompt.frame = NSRect(x: 8, y: chrome.height - 8 - height, width: width, height: height)
-        }
     }
-
-    func promptNeedsLayout() { needsLayout = true; onFindChange() }
 
     // Freed in deinit, so the last reference must be dropped on the main
     // thread, and never while the reader may feed it (Connection).
@@ -825,7 +820,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         invalidateClipboard()
         grid.withLock { $0.ready = false; $0.epoch += 1 }
         find?.close()
-        closePrompt()
         stopAutoscroll()
         if let paste {
             self.paste = nil
@@ -1170,13 +1164,17 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func refuseCopy() {
-        endCopy()
+    private func beep() {
         #if KIDO_VISUAL
         visualBeeps += 1
         #else
         NSSound.beep()
         #endif
+    }
+
+    private func refuseCopy() {
+        endCopy()
+        beep()
     }
 
     private func completeEntry() {
@@ -1212,7 +1210,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         copyMode = nil
         copyFind = (nil, true)
         stopAutoscroll()
-        closePrompt()
         presentCopy()
         if case .entering = mode { find?.search(navigate: false) }
         guard restore, superview != nil, acceptingInput else { return }
@@ -1270,7 +1267,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             guard let find else { return copyFind.query == nil ? () : openFind(navigate: true) }
             if copyFind.older == (name == "n") { find.next() } else { find.previous() }
         case "y", "v", "V", "h", "l", "w", "b", "e", "^", "j", "k", "0", "$", "^u", "^d", "g", "G": copyMove(name)
-        case "p": openPrompt()
+        case "p":
+            guard hasSelection else { beep(); return }
+            openPrompt()
         default: break
         }
     }
@@ -1693,7 +1692,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         return ((Int(value.top_left.x), Int(value.top_left.y)), (Int(value.bottom_right.x), Int(value.bottom_right.y)))
     }
 
-    private var hasSelection: Bool {
+    var hasSelection: Bool {
         guard ghostty_surface_has_selection(surface) else { return false }
         if case .cursor = copyMode { return false }
         if case .entering = copyMode { return false }
@@ -1876,7 +1875,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         copy.keyEquivalentModifierMask = .command
         copy.target = self
         menu.addItem(copy)
-        let prompt = NSMenuItem(title: "Prompt with Selection…", action: #selector(promptSelectionItem(_:)), keyEquivalent: "")
+        let prompt = NSMenuItem(title: "Prompt with Selection…", action: #selector(promptSelectionItem(_:)), keyEquivalent: "o")
+        prompt.keyEquivalentModifierMask = .command
         prompt.target = self
         menu.addItem(prompt)
         return menu
@@ -1890,29 +1890,51 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     @objc func promptSelectionItem(_ sender: Any?) { openPrompt() }
 
     func openPrompt() {
-        if let prompt { window?.makeFirstResponder(prompt.textView); return }
         if case .entering = copyMode { return }
-        guard hasSelection else { return }
-        let selection = readSelection()
-        guard !selection.isEmpty else { return }
-        let prompt = PanePrompt(self, runtime: runtime, selection: selection)
-        self.prompt = prompt
-        window?.makeFirstResponder(prompt.textView)
-        prompt.resolve()
-    }
-
-    func closePrompt() {
-        guard let prompt else { return }
-        self.prompt = nil
-        prompt.removeFromSuperview()
-        if (window?.firstResponder as? NSView)?.isDescendant(of: prompt) == true { window?.makeFirstResponder(self) }
+        var bar = ghostty_surface_scrollbar_s()
+        guard ghostty_surface_scrollbar(surface, &bar) else { return }
+        let height = self.bounds.height - renderInsets.top
+        if hasSelection {
+            let selection = readSelection()
+            guard let bounds = selectionBounds(), !selection.isEmpty else { return }
+            let rows = CGFloat(bounds.1.y - bounds.0.y + 1)
+            onPrompt(self, PromptAnchor(selection: selection, rect: NSRect(
+                x: CGFloat(bounds.0.x) * cell.width,
+                y: height - CGFloat(bounds.1.y - Int(bar.offset) + 1) * cell.height,
+                width: cell.width,
+                height: rows * cell.height)))
+            return
+        }
+        let rect: NSRect
+        if copyMode != nil {
+            guard let cursor = selectionBounds()?.0 else { return }
+            rect = NSRect(x: CGFloat(cursor.x) * cell.width,
+                          y: height - CGFloat(cursor.y - Int(bar.offset) + 1) * cell.height,
+                          width: cell.width, height: cell.height)
+        } else {
+            var x = 0.0, y = 0.0, width = 0.0, cellHeight = 0.0
+            ghostty_surface_ime_point(surface, &x, &y, &width, &cellHeight)
+            var metrics = ghostty_surface_grid_metrics_s()
+            let padding = ghostty_surface_grid_metrics(surface, &metrics) ? metrics.padding_top : 0
+            let cursorRow = Int(((y - padding) / cell.height).rounded()) - 1
+            let retainedHistoryRows = max(0, Int(bar.total) - Int(bar.len))
+            let viewportRow = min(max(0, retainedHistoryRows + cursorRow - Int(bar.offset)), max(0, Int(bar.len) - 1))
+            rect = NSRect(x: x - cell.width / 2,
+                          y: self.bounds.height - renderInsets.top - padding - CGFloat(viewportRow + 1) * cell.height,
+                          width: cell.width, height: cell.height)
+        }
+        onPrompt(self, PromptAnchor(selection: nil, rect: rect))
     }
 
     func promptDelivered() {
-        closePrompt()
         if copyMode != nil { endCopy() } else { _ = ghostty_surface_set_selection(surface, nil) }
-        window?.makeFirstResponder(self)
     }
+
+    var windowID: WindowID? { (superview as? WindowView)?.windowID }
+
+    #if KIDO_VISUAL
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    #endif
 
     override func pressureChange(with event: NSEvent) {
         guard !pressed.isEmpty else { return }
@@ -2154,7 +2176,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     // as in Ghostty's own app.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown, window?.firstResponder === self else { return false }
-        if prompt != nil, let responder = window?.firstResponder as? NSView, responder.isDescendant(of: self) { return false }
         let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
         let chord = event.charactersIgnoringModifiers?.lowercased()
         if mods == [.command, .shift] && chord == "c" { toggleCopyMode(nil); return true }

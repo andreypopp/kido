@@ -26,6 +26,7 @@ final class WindowView: NSView {
     private weak var connection: Connection?
     private let runtime: GhosttyRuntime
     var windowID: WindowID?
+    var name = ""
     private var shown: (layout: Layout, visible: Layout)?
     private(set) var active: PaneID? {
         didSet {
@@ -186,7 +187,6 @@ final class WindowView: NSView {
     func focus(_ pane: PaneID) {
         active = pane
         for chrome in subviews.compactMap({ $0 as? PaneChrome }) { chrome.dimmed = chrome.pane != active }
-        for view in panes where view.pane != pane { view.closePrompt() }
         focusActive(force: false)
     }
 
@@ -398,6 +398,7 @@ final class WindowView: NSView {
             onInput: { [weak connection] in connection?.sendKeys(id, $0) })
         else { return nil }
         view.onURL = { [weak connection] in connection?.openURL($0) }
+        view.onPrompt = { [weak self] pane, anchor in self?.session?.boxes.open(pane, anchor) }
         view.onSelect = { [weak self] in
             guard let self else { return }
             connection?.userFocus()
