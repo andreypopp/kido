@@ -9,6 +9,9 @@ func outcome(_ serial: Int, _ result: String) -> [String: Any] { ["serial": seri
 func agent(_ state: [Any] = idle(), msg: Any = null, name: String = "claude-code") -> [Any] {
     ["Live", ["Some_agent", ["name": name, "status": report(state, msg: msg)]]]
 }
+func piAgent(_ state: [Any] = idle(), msg: Any = null) -> [Any] {
+    ["Live", ["Pi_agent", ["session": "pi-session", "status": report(state, msg: msg)]]]
+}
 
 func shell(_ phase: [Any] = ["Idle", ["last": null]], report: Any = null) -> [String: Any] { ["phase": phase, "report": report] }
 func terminal(_ phase: [Any] = ["Idle", ["last": null]], report: Any = null) -> [Any] { ["Live", ["Terminal", shell(phase, report: report)]] }
