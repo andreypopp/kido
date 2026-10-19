@@ -2,10 +2,11 @@ import AppKit
 import TmuxControl
 import SidebarFeed
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var runtime: GhosttyRuntime?
     private(set) var owners: [WindowOwner] = []
     private let menus = SessionMenus()
+    private var editMenu: NSMenu?
     private var signals: [DispatchSourceSignal] = []
     private var trigger: String?
     let routes = WindowRoutes()
@@ -189,7 +190,10 @@ import SidebarFeed
             item("Find Previous", #selector(PaneView.findPrevious(_:)), "g", [.command, .shift]),
         ]
         let edit = NSMenu(title: "Edit")
+        edit.delegate = self
+        editMenu = edit
         edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
+        edit.addItem(item("Prompt with Selection…", #selector(PaneView.promptSelectionItem(_:)), "o", .command))
         edit.addItem(item("Copy Mode", #selector(PaneView.toggleCopyMode(_:)), "c", [.command, .shift]))
         edit.addItem(item("Reset Clipboard and Upload Permissions", #selector(resetClipboardPermissions), "", []))
         let bar = NSMenu()
@@ -200,6 +204,25 @@ import SidebarFeed
         return bar
     }
 
+
+    func updatePromptMenu(_ menu: NSMenu, responder: NSResponder?) {
+        guard menu === editMenu,
+              let item = menu.items.first(where: { $0.action == #selector(PaneView.promptSelectionItem(_:)) })
+        else { return }
+        let pane = PaneView.owner(responder)
+        item.target = pane
+        item.title = pane?.hasSelection == true ? "Prompt with Selection…" : "Prompt…"
+        item.isEnabled = pane != nil
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        updatePromptMenu(menu, responder: (current?.window ?? NSApp.keyWindow)?.firstResponder)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu === editMenu else { return }
+        menu.items.first { $0.action == #selector(PaneView.promptSelectionItem(_:)) }?.target = nil
+    }
 
     @objc private func resetClipboardPermissions() {
         WindowOwner.resetClipboardPermissions(owners)
