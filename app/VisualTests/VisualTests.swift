@@ -154,12 +154,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             report += stats("IOSurface contents intervals (NOT physical presentation)", zip(installations.dropFirst(), installations).map { $0.0 - $0.1 }, period: max(period, 0.001))
         }
         try await Task.sleep(for: .seconds(1))
-        XCTAssertFalse(driver.hasLink)
+        XCTAssertTrue(driver.hasLink, "an idle link pauses instead of being recreated")
         let ticks = driver.ticks
+        let creates = driver.creates
         try await Task.sleep(for: .seconds(3))
-        XCTAssertFalse(driver.hasLink)
+        XCTAssertTrue(driver.hasLink)
         XCTAssertEqual(driver.ticks, ticks)
-        report += "active→idle: total ticks=\(ticks), settled link=\(driver.hasLink), ticks delta=\(driver.ticks - ticks) over 3s\n"
+        XCTAssertEqual(driver.creates, creates, "the idle link is not recreated")
+        report += "active→idle: total ticks=\(ticks), settled link=\(driver.hasLink), creates=\(driver.creates), ticks delta=\(driver.ticks - ticks) over 3s\n"
         try report.write(toFile: "/tmp/kido-vsync-measure-\(getpid()).txt", atomically: true, encoding: .utf8)
         print(report)
     }
