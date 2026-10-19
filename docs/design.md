@@ -192,16 +192,22 @@ at `session_start`, `@kido_inbox` after the bind, `@kido_name` again on
 `session_info_changed`, and `@kido_activity` on `set_status`. Writes
 are coalesced, and one `tmux` call carries each batch, with `;`
 between the commands. Without `$TMUX_PANE`, nothing is written. At
-shutdown it unsets the four. A crash leaves them; the trust rule makes
-them harmless. `set_status` replaces control characters with spaces and
+shutdown it unsets the four. An uncaught crash exits through
+`process.exit`, so a synchronous `exit` handler unsets them too, if
+`@kido_session` still names its session: another pi can own the pane
+while this one is suspended. The handler stays across `/reload` until
+the next `session_start` replaces it. Only a
+process that ends without cleanup, such as with SIGKILL, leaves them; the trust rule makes
+them harmless for identity. `set_status` replaces control characters with spaces and
 cuts the text at 256 bytes on a character boundary, because the sidebar
 allows one terminal line per row.
 
 **The trust rule.** The extension's own discovery uses kido's rule: a
 pane is a local pi agent only with an OSC 7501 root with `app=pi`
-(`#{pane_program_status}`) and `@kido_session`. Discovery, addressing,
-the parent watch and the ask's liveness poll all apply it. A stale
-option on a shell pane is no agent.
+(`#{pane_program_status}`) and `@kido_session`. Discovery, addressing
+and the ask's liveness poll apply it. A stale option on a shell pane is
+no agent. Parent liveness is the one exception ("Window lifecycle",
+rule 2): pi clears its root while it runs.
 
 **One copy.** On its first factory call, the extension claims
 `globalThis.__kidoPiExtensionCopy` with its path. A copy at another
@@ -636,7 +642,7 @@ window.
 | command | does |
 |---|---|
 | `kido run --name N [--cwd D] [--session S] [--env K=V]... -- CMD...` | starts a parentless run; prints `{"id":ID,"window":"@WIN","pane":"%PANE","output":PATH}` |
-| `kido run-child PARENT ...` | the same, under PARENT: a live run id, or the pane `%N` of a live pi root |
+| `kido run-child PARENT ...` | the same, under PARENT: a live run id, or the pane `%N` of a pi that has not ended (rule 2 of "Window lifecycle") |
 | `kido runs [--json] [--parent P] [ID]` | lists runs newest first, with a SESSION column, or one run; each JSON row has the run's `output` path |
 | `kido run-outcome ID --result completed\|failed\|stopped [--text T]` | records an ending, first write wins; a lost write exits 5 |
 | `kido run-wait ID [--json]` | blocks until the run has ended; prints the result, or the outcome object |
@@ -656,7 +662,7 @@ the pane has a pi root, else empty; kido stores nothing for it.
 Exit codes: 0 success; 1 usage or any other error (a tmux failure, the
 last-window refusal); 2 a bad or unknown
 PARENT or `--parent` (an unknown or ended run, a gone or dead pane, a
-pane without a pi root); 3 a bad or unknown run id; 4 a refused window
+pane with neither a pi root nor `@kido_session`); 3 a bad or unknown run id; 4 a refused window
 name; 5 `run-stop` of a run with no live pane (dead or gone), or a
 `run-outcome` write that loses to an earlier outcome.
 
@@ -726,9 +732,21 @@ Two rules apply:
    for what": `completed`, `exit N`, `signal NAME` or `died`).
 2. The run's parent has ended. A run parent has ended by the same
    status rule. A pane parent (`%N`) has ended when its pane is gone,
-   dead, or shows no OSC 7501 root with `app=pi`. The sweep kills the
-   run's pane while its command runs and records `failed` with the
-   text "its parent ended".
+   dead, or shows neither an OSC 7501 root with `app=pi` nor
+   `@kido_session`. The sweep kills the run's pane while its command
+   runs and records `failed` with the text "its parent ended".
+
+   Either fact alone keeps the parent alive, because pi removes each one
+   while it runs. pi-tui's `stop()` writes a `clear` record while pi
+   opens the external editor and while Ctrl+Z suspends it. The root
+   returns only after `start()` and a new answer to its feature query.
+   `/new`, `/resume` and `/fork` unset the options between
+   `session_shutdown` and `session_start` while the root stays. A real
+   exit removes both: `stop()` clears the root and `session_shutdown`
+   (or the extension's `exit` handler after a crash) unsets the options.
+   A shell prompt is no evidence: Ctrl+Z also gives the shell its
+   prompt, and the user runs commands there before `fg`. The rule reads
+   no process, by design.
 
 An earlier outcome, from `run-outcome` or `run-stop`, stands in both
 cases: `Run.record_outcome`'s link refuses the second write. Rule 2
@@ -736,9 +754,10 @@ forces a stop instead of requesting graceful shutdown like the child's
 poll. It is the only available action outside pi, and it ends a `tail
 -f` that an exited parent started. This rule needs run meta, because
 tmux does not know parentage. A run without a parent is a root that the
-sweep must not cancel. A stale final root keeps a child of a crashed
-top-level pi alive until RIS, respawn or the pane's death; `run-stop`
-reaches it. Neither rule acts on a client's current window or closes a
+sweep must not cancel. A stale final root or stale options keep a
+child of a killed top-level pi alive. RIS clears only the root, so
+only a respawn or the pane's death ends the child ("Known limits");
+`run-stop` reaches it. Neither rule acts on a client's current window or closes a
 session's last window. Waiting loses nothing, because the sweep runs
 next tick.
 
@@ -1532,6 +1551,12 @@ in the environment of the process under test.
 
 ## Known limits
 
+- A top-level pi that ends without cleanup, such as with SIGKILL,
+  leaves its pane options. The sweep then keeps its runs until the pane
+  respawns or closes, or the user stops them. A new pi in that pane
+  keeps them for the sweep. A pi child also ends through its own
+  parent watch when the parent's session id goes (design-subagents.md,
+  "Watching the parent").
 - A `kido run` without a parent has nobody to collect it while it
   lives. The user must close its window. The sweep still collects its
   dead pane.

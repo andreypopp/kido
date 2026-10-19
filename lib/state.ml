@@ -245,8 +245,8 @@ let parent_ended ~dir state = function
       | None -> Some (Printf.sprintf "pane %s is gone" (Tmux.string_of_pane_id pane))
       | Some p when Option.is_some p.dead_at ->
           Some (Printf.sprintf "pane %s is dead" (Tmux.string_of_pane_id pane))
-      | Some p when not (pi_root p) ->
-          Some (Printf.sprintf "pane %s shows no pi root" (Tmux.string_of_pane_id pane))
+      | Some p when (not (pi_root p)) && Option.is_none p.session ->
+          Some (Printf.sprintf "pane %s shows no pi" (Tmux.string_of_pane_id pane))
       | Some _ -> None)
 
 let caller_pane t self =

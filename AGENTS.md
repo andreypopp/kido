@@ -587,7 +587,9 @@ and the first write wins. Each write replaces the whole file. There is
   Only the sweep, `run-outcome` and `run-stop` write an outcome.
 - **The orphan rule reads the parent's status.** A `Run` parent has
   ended by the status rule above; a `Pane` parent (`%N`) when its pane
-  is gone, dead or shows no pi root. Then `Reap.sweep` collects the
+  is gone, dead or shows neither a pi root nor `@kido_session`. pi
+  clears its root while it runs (external editor, Ctrl+Z), so the
+  root alone is no evidence. Then `Reap.sweep` collects the
   unfocused run even while its command runs and records `failed` "its
   parent ended". A parentless run is exempt.
 

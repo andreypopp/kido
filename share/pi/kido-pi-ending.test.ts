@@ -11,6 +11,7 @@ import kidoPi from "./kido-pi.ts";
 import {
   makeFixture,
   selfPane,
+  paneRow,
   agentPane,
   startNamedSession,
   startWithSpies,
@@ -262,6 +263,35 @@ test("a parent poll with a pane hint reads only that pane", async () => {
             `every poll after the first targets the parent pane: ${JSON.stringify(calls)}`,
           );
           assert.equal(s.shutdowns(), 0, "the parent is still there");
+        });
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("the parent watch finds its parent by the session option alone, without a pi root", async () => {
+  const fx = makeFixture();
+  try {
+    parentSetup(fx, "/tmp/none.sock");
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        await withEnv({ KIDO_PARENT_POLL_MS: "20" }, async () => {
+          const s = await startWithSpies(fx, kidoPi, SELF);
+          const editing = paneRow({ pane_id: "%2", kido_session: "boss-session", kido_name: "boss", kido_inbox: "/tmp/none.sock", pane_program_status: "" });
+          fx.setPanes([agentPane({ pane: "%1", session: SELF, name: "worker" }), editing]);
+          await pollUntil(
+            () => fx.tmuxCalls().filter((argv) => argv[0] === "list-panes" || argv[0] === "display-message").length >= 3,
+            2000,
+            "several parent readings",
+          );
+          assert.equal(s.shutdowns(), 0, "a parent in the editor, with no root, never ends the child");
+          fx.setPanes([agentPane({ pane: "%1", session: SELF, name: "worker" })]);
+          await pollUntil(() => s.shutdowns() > 0, 2000, "the child to shut down once the parent pane is gone");
         });
       },
       { parent: "boss-session", name: "worker" },

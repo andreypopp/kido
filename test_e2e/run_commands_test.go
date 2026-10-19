@@ -252,6 +252,7 @@ func TestRunChildUnderARunAndAPaneParent(t *testing.T) {
 		t.Fatalf("ending the parent run: %d %q", rc, out)
 	}
 	h.programStatus(caller, "state=idle")
+	h.clearPiOptions(caller)
 	h.reap("reap-child.out")
 	for _, id := range []string{byRun.ID, byPane.ID} {
 		info := h.runInfo(id)

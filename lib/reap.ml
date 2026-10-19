@@ -118,6 +118,7 @@ let%test_module "Tests" =
       in
       let dead_parent = { live_parent with dead_at = Some now } in
       let no_root = { live_parent with program_status = Tmux.Program_status.empty } in
+      let no_root_with_session = { no_root with session = Some "parent-session" } in
       let ended_parent = meta ~dir ~pane:"%9" "parent" in
       let run_outcome () =
         ignore
@@ -136,8 +137,11 @@ let%test_module "Tests" =
       child "run alive" (Some (Run (run_id "parent"))) [ live_parent ] [ ended_parent ];
       child "run ended" (Some (Run (run_id "parent"))) [] [];
       child "pane parent alive" (Some (Pane (Tmux.pane_id_of_string "%9"))) [ live_parent ] [];
+      child "pane parent no pi with session"
+        (Some (Pane (Tmux.pane_id_of_string "%9")))
+        [ no_root_with_session ] [];
       child "pane parent dead" (Some (Pane (Tmux.pane_id_of_string "%9"))) [ dead_parent ] [];
-      child "pane parent no pi root" (Some (Pane (Tmux.pane_id_of_string "%9"))) [ no_root ] [];
+      child "pane parent no pi" (Some (Pane (Tmux.pane_id_of_string "%9"))) [ no_root ] [];
       child "pane parent gone" (Some (Pane (Tmux.pane_id_of_string "%8"))) [] [];
       run_outcome ();
       child "run parent completed" (Some (Run (run_id "parent"))) [ live_parent ] [ ended_parent ];
@@ -148,10 +152,11 @@ let%test_module "Tests" =
         run ended closes=1
           child-run ended failed "its parent ended"
         pane parent alive closes=0
+        pane parent no pi with session closes=0
         pane parent dead closes=1
           child-pane parent dead failed "its parent ended"
-        pane parent no pi root closes=1
-          child-pane parent no pi root failed "its parent ended"
+        pane parent no pi closes=1
+          child-pane parent no pi failed "its parent ended"
         pane parent gone closes=1
           child-pane parent gone failed "its parent ended"
         run parent completed closes=1

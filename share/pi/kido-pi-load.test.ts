@@ -136,6 +136,50 @@ test("a /reload keeps this session's pane options, and a real shutdown unsets th
   }
 });
 
+test("an uncaught exit unsets the options in one conditional tmux command, for this session only", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    await startSession(fx, { factory: await freshExtension() });
+    const before = fx.tmuxCalls().length;
+    process.emit("exit", 0);
+    const calls = fx.tmuxCalls().slice(before).filter((argv) => argv[0] === "if-shell");
+    assert.equal(calls.length, 1, "the exit handler runs one tmux command");
+    assert.deepEqual(calls[0]!.slice(0, 5), ["if-shell", "-F", "-t", "%1", "#{==:#{@kido_session},self-session}"], "the unset is conditional on the pane still naming this session");
+    assert.equal(
+      calls[0]![5],
+      "set-option -pu -t %1 @kido_session ; set-option -pu -t %1 @kido_name ; set-option -pu -t %1 @kido_inbox ; set-option -pu -t %1 @kido_activity",
+      "the command unsets the same four options a clean shutdown does",
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a /reload keeps the exit handler until the next session replaces it, and a real shutdown removes it", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s1 = await startSession(fx, { factory: await freshExtension() });
+    await s1.emit("session_shutdown", { reason: "reload" });
+    const afterReload = fx.tmuxCalls().length;
+    process.emit("exit", 0);
+    assert.equal(fx.tmuxCalls().slice(afterReload).filter((argv) => argv[0] === "if-shell").length, 1, "a reload with no new session keeps a handler for the session that still owns the options");
+
+    const s2 = await startSession(fx, { factory: await freshExtension() });
+    const afterStart = fx.tmuxCalls().length;
+    process.emit("exit", 0);
+    assert.equal(fx.tmuxCalls().slice(afterStart).filter((argv) => argv[0] === "if-shell").length, 1, "the new session replaced the old handler instead of stacking another");
+
+    await s2.emit("session_shutdown", { reason: "quit" });
+    const afterQuit = fx.tmuxCalls().length;
+    process.emit("exit", 0);
+    assert.equal(fx.tmuxCalls().slice(afterQuit).filter((argv) => argv[0] === "if-shell").length, 0, "a real shutdown removes the handler");
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("a reload detaches the old run-wait waiter, so only the restored watch reports", async () => {
   const fx = makeFixture();
   try {

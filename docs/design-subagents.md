@@ -255,8 +255,10 @@ Thus, no signal tells it that its parent has ended. Every
 `KIDO_PARENT_POLL_MS` (five seconds), it reads `@kido_session` and
 `#{pane_program_status}` of the parent's pane with `display-message`.
 It finds that pane with one `list-panes -a`, and reads the list again
-only when the pane no longer matches. A pane that passes the trust rule
-and has the parent's `@kido_session` means that the parent is alive. A
+only when the pane no longer matches. A pane that has the parent's
+`@kido_session` means that the parent is alive, with or without a pi
+root, because pi clears its root while it is in the external editor or
+suspended. A
 failed read is no evidence. When the parent is gone, the child shuts
 down through the normal exit path. A slow read holds later ticks back.
 
@@ -390,10 +392,12 @@ Before it closes the run's pane, it records `failed` with "its parent
 ended". A one-shot `kido reap` also applies this rule.
 
 A top-level parent is its pane (`%N`): it has ended when its pane is
-gone, dead or shows no pi root. A subagent parent is its run. When pi
-exits, its root goes, so the next sweep collects its runs. `/new`,
-`/resume` and `/fork` change the parent's session id but keep a pi root
-on the pane. The sweep then keeps the children. A subagent's own parent
+gone, dead or shows neither a pi root nor `@kido_session`. A subagent
+parent is its run. When pi exits, both go, so the next sweep collects
+its runs. While pi is in the external editor or suspended, only its
+root goes; `/new`, `/resume` and `/fork` change the parent's session id
+but keep a pi root on the pane. The sweep keeps the children in these
+cases (design.md, "Window lifecycle", rule 2). A subagent's own parent
 watch, which reads `@kido_session`, ends it.
 
 ## Restarting through a message

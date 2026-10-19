@@ -158,7 +158,10 @@ let run_options =
 
 let run_command =
   cmd "run" "Start a run in its own tmux window."
-  @@ let+ name, cwd, session, env = run_options and+ command = rest in
+  @@ let+ name, cwd, session, env = run_options
+     and+ command =
+       Arg.(value & pos_all string [] & info [] ~docv:"CMD" ~doc:"The command, as an argv.")
+     in
      fun () ->
        if List.is_empty command then begin
          error ~name:"run"
@@ -170,22 +173,30 @@ let run_command =
 
 let run_child =
   cmd "run-child" "Start a run under a parent run or pi pane."
-  @@ let+ name, cwd, session, env = run_options and+ args = rest in
+  @@ let+ name, cwd, session, env = run_options
+     and+ parent =
+       Arg.(
+         value
+         & pos 0 (some string) None
+         & info [] ~docv:"PARENT" ~doc:"The parent: a run id, or the pane id %N of a top-level pi.")
+     and+ command =
+       Arg.(value & pos_right 0 string [] & info [] ~docv:"CMD" ~doc:"The command, as an argv.")
+     in
      fun () ->
-       match args with
-       | [] ->
+       match (parent, command) with
+       | None, _ ->
            error ~name:"run-child"
              "no parent given\n\
               usage: kido run-child PARENT --name N [--cwd D] [--session S] [--env K=V]... -- \
               CMD...";
            1
-       | [ _ ] ->
+       | Some _, [] ->
            error ~name:"run-child"
              "no command given\n\
               usage: kido run-child PARENT --name N [--cwd D] [--session S] [--env K=V]... -- \
               CMD...";
            1
-       | parent :: command -> (
+       | Some parent, command -> (
            let dir = state_dir () in
            let tmux = ok (Server_dir.tmux ~dir) in
            let state = ok (State.read ~dir tmux) in

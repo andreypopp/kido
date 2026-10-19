@@ -1,6 +1,6 @@
 import { AgentSession, type ExtensionAPI, type ExtensionContext, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
@@ -440,6 +440,7 @@ declare global {
   var __kidoPiExtensionWatches: WatchData[] | undefined;
   var __kidoPiExtensionCopy: string | undefined;
   var __kidoPiExtensionClearQueue: AgentSession["clearQueue"] | undefined;
+  var __kidoPiExtensionExit: (() => void) | undefined;
 }
 
 // A live listener answers; a stale file from a killed process does not, and only
@@ -672,15 +673,22 @@ export default function (pi: ExtensionAPI) {
     await runCommand("tmux", args, { timeoutMs: 2000 });
   };
 
+  const unsetArgs = (target: string): string[] =>
+    OPTION_KEYS.flatMap((key, i) => [...(i ? [";"] : []), "set-option", "-pu", "-t", target, key]);
+
   const unsetOptions = async (): Promise<void> => {
     if (!pane) return;
     for (const key of OPTION_KEYS) written.delete(key);
-    const args: string[] = [];
-    for (const key of OPTION_KEYS) {
-      if (args.length) args.push(";");
-      args.push("set-option", "-pu", "-t", pane, key);
-    }
-    await runCommand("tmux", args, { timeoutMs: 2000 });
+    await runCommand("tmux", unsetArgs(pane), { timeoutMs: 2000 });
+  };
+
+  // An uncaught crash exits without session_shutdown, so this runs at exit and
+  // leaves a killed process (SIGKILL, SIGTERM) with the options still set.
+  // Another pi may own the pane by then, so it unsets only this session's.
+  const unsetOptionsSync = (): void => {
+    if (!pane || !ownSessionId) return;
+    const owns = `#{==:#{${OPTION_SESSION}},${ownSessionId}}`;
+    spawnSync("tmux", ["if-shell", "-F", "-t", pane, owns, unsetArgs(pane).join(" ")], { timeout: 1000, stdio: "ignore" });
   };
 
   // pi drains followUp only once the agent has decided to stop; "steer" is drained
@@ -1460,18 +1468,23 @@ export default function (pi: ExtensionAPI) {
   const sessionPane = async (session: string, paneHint: string | null): Promise<PaneInfo | null | "unknown"> => {
     if (paneHint) {
       const reading = await paneReading(paneHint);
-      if (reading.ok && reading.pane.agentSession === session && reading.pane.root?.app === "pi") return reading.pane;
+      if (reading.ok && reading.pane.agentSession === session) return reading.pane;
     }
     const { ok, panes } = await listPanesResult();
     if (!ok) return "unknown";
-    return panes.find((p) => isAgentPane(p) && p.agentSession === session) ?? null;
+    return panes.find((p) => p.agentSession === session) ?? null;
   };
 
-  const sessionGone = async (session: string, paneHint: string | null): Promise<boolean> =>
-    (await sessionPane(session, paneHint)) === null;
+  // A target that answers must be a running pi; a parent in its editor shows no
+  // pi root but is still the parent.
+  const askTargetGone = async (session: string, paneHint: string | null): Promise<boolean> => {
+    const found = await sessionPane(session, paneHint);
+    return found !== "unknown" && (found === null || !isAgentPane(found));
+  };
 
-  // The parent is a pi pane; kido writes nothing for it. A failed tmux read is
-  // not evidence, so it never ends the child.
+  // The parent is a pane holding @kido_session; pi's root comes and goes with
+  // its ui (the external editor, Ctrl+Z). A failed tmux read is not evidence,
+  // so it never ends the child.
   const startParentWatch = (): void => {
     if (!edge) return;
     const parentSession = edge.parent;
@@ -2047,7 +2060,7 @@ export default function (pi: ExtensionAPI) {
         watch = setInterval(() => {
           if (reading) return;
           reading = true;
-          const gone = sessionGone(t.id, t.pane || null);
+          const gone = askTargetGone(t.id, t.pane || null);
           void gone.then((absent) => {
             reading = false;
             if (absent) settle({ gaveUp: "gone" });
@@ -2386,6 +2399,10 @@ export default function (pi: ExtensionAPI) {
     dir = stateDir();
     pane = process.env.TMUX_PANE || null;
     edge = ownSessionId ? readEdge(ownSessionId) : null;
+    const previousExit = globalThis.__kidoPiExtensionExit;
+    if (previousExit) process.removeListener("exit", previousExit);
+    globalThis.__kidoPiExtensionExit = unsetOptionsSync;
+    process.on("exit", unsetOptionsSync);
     pendingNotices.clear();
     written.clear();
     ending = { kind: "other" };
@@ -2568,6 +2585,10 @@ export default function (pi: ExtensionAPI) {
     watches.clear();
     await endOwnRun(event?.reason);
     if (active && !reload) await unsetOptions();
+    if (!reload && globalThis.__kidoPiExtensionExit === unsetOptionsSync) {
+      process.removeListener("exit", unsetOptionsSync);
+      globalThis.__kidoPiExtensionExit = undefined;
+    }
     active = false;
     session = null;
   });

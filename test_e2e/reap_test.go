@@ -354,24 +354,43 @@ func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 }
 
 // The second rule, the one that still needs a run record: nothing in
-// tmux knows who spawned whom. The subagent here is perfectly healthy -
-// running, not dead - and is closed only because its parent is gone.
+// tmux knows who spawned whom. The subagents here are perfectly healthy -
+// running, not dead - and are closed only because their parents are gone.
+// A pane parent ends when it is gone, dead, or shows neither a pi root nor
+// @kido_session: pi clears its own root for the external editor and on
+// Ctrl+Z, and the options then still make it the parent.
 func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	parentPane := h.newWindow("alpha", "parent-e2e", "sh", "-c", "exec sleep 300")
-	h.agentRunMeta("parent-e2e", parentPane, "parent-e2e", "")
-	h.waitPaneCommand(parentPane, "sleep")
-	h.piRoot(parentPane)
+	editorParent := h.newWindow("alpha", "editor-parent-e2e", "sh", "-c", "exec sleep 300")
+	h.waitPaneCommand(editorParent, "sleep")
+	h.piRoot(editorParent)
+	h.agentStatus("editor-parent-e2e", editorParent)
 
-	_, windowID := h.subagentWindow("alpha", "kid-e2e", "cancel-child-e2e", "parent-e2e")
-	h.stays(quiet, func() bool { return h.windowExists(windowID) },
-		"a subagent's window was closed while its parent was still alive")
+	aliveParent := h.newWindow("alpha", "alive-parent-e2e", "sh", "-c", "exec sleep 300")
+	h.waitPaneCommand(aliveParent, "sleep")
+	h.piRoot(aliveParent)
+	h.agentStatus("alive-parent-e2e", aliveParent)
 
-	h.killPane(parentPane)
-	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
-		msgf("the sidebar's poll to cancel subagent window %s, whose parent is gone", windowID))
+	_, editorKid := h.subagentWindow("alpha", "editor-kid-e2e", "editor-child-e2e", "editor-parent-e2e")
+	_, aliveKid := h.subagentWindow("alpha", "alive-kid-e2e", "alive-child-e2e", "alive-parent-e2e")
+
+	h.programStatus(editorParent, "state=clear")
+	if out, rc := h.kidoAs(h.firstPane("alpha"), "", nil, "run-child", editorParent, "--name", "editor-run-e2e", "--", "sleep", "300"); rc != 0 {
+		t.Errorf("run-child under a parent in the editor = %d %q, want exit 0", rc, out)
+	}
+
+	h.stays(quiet, func() bool { return h.windowExists(editorKid) && h.windowExists(aliveKid) },
+		"a subagent's window was closed while its parent was in the editor or still alive")
+
+	h.clearPiOptions(editorParent)
+	h.killPane(aliveParent)
+	h.waitFor(func() bool { return !h.windowExists(editorKid) && !h.windowExists(aliveKid) }, settle,
+		msgf("the sidebar's poll to cancel subagent windows %s and %s, whose parents are gone", editorKid, aliveKid))
+	if info := h.waitOutcome("editor-child-e2e"); info.Outcome != "failed" || info.OutcomeText != "its parent ended" {
+		t.Errorf("orphan outcome = %q/%q, want failed/its parent ended", info.Outcome, info.OutcomeText)
+	}
 }
 
 // The orphan rule from a one-shot `kido reap`: one reading of the
