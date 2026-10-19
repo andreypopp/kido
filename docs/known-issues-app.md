@@ -289,6 +289,16 @@ text. A box is meant to close only on ×, Escape, delivery or the end of its
 session. Carrying the boxes over to the new view is possible but not done.
 Status: accepted.
 
+## A moved source pane shows "pane closed" for a moment
+
+A box recomputes its source pane from every window's layout on each
+`%layout-change`. tmux reports a same-session `move-pane` as the source
+window's layout change first and the destination's second
+(`cmd-join-pane.c`), so between the two the source pane is in no layout and
+the box shows "(pane closed)" until the second notification clears it. A
+send in that moment names the target as its own pane, which kido accepts.
+Status: accepted.
+
 ## Feed restart can lose or re-arm outcomes
 
 The app's seen record survives a feed restart, but kido's outcome tracking
