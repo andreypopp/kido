@@ -126,11 +126,34 @@ func notificationWithdraws(cause: String) throws {
     #expect(sidebarRows(restarted, seen: seen).contains { $0.status == .error })
 }
 
-@Test(arguments: ["agent", "bash", "stream"])
-func notificationRunsNeverPost(run: String) throws {
+@Test func notificationTopLevelRunPosts() throws {
     var state = try notifier()
-    #expect(try step(&state, [pane(1, lifecycle: agent(waiting()), run: run),
-                             pane(2, lifecycle: ["Ended", ["result": "failed"]], run: run)]).post.isEmpty)
+    let effects = try step(&state, [pane(1, lifecycle: piAgent(waiting()), run: "r-top")])
+    #expect(effects.post.count == 1 && effects.post.first?.kind == .waiting)
+}
+
+@Test func notificationNestedRunIsSilent() throws {
+    var state = try notifier()
+    let parent = pane(0, lifecycle: piAgent(working()), children: [pane(1, lifecycle: piAgent(waiting()), run: "r-child")])
+    #expect(try step(&state, [parent]).post.isEmpty)
+}
+
+private func runGroup() -> [String: Any] {
+    ["kind": "window", "id": "@5", "window": "@5", "name": "group",
+     "children": [pane(1, window: 5, lifecycle: piAgent(waiting()), run: "r-1"),
+                  pane(2, window: 5, lifecycle: terminal())]]
+}
+
+@Test func notificationTopLevelGroupRunPosts() throws {
+    var state = try notifier()
+    let effects = try step(&state, [runGroup()])
+    #expect(effects.post.count == 1 && effects.post.first?.key.pane == PaneID(number: 1))
+}
+
+@Test func notificationNestedGroupRunIsSilent() throws {
+    var state = try notifier()
+    let parent = pane(0, lifecycle: piAgent(working()), children: [runGroup()])
+    #expect(try step(&state, [parent]).post.isEmpty)
 }
 
 @Test func notificationNonFailuresNeverPost() throws {
@@ -216,7 +239,7 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
 
 @Test func notificationContentAndTargetCoding() throws {
     var state = try notifier()
-    let pi: [Any] = ["Live", ["Pi_agent", ["id": "pi", "status": report(waiting(), msg: "Allow access")]]]
+    let pi = piAgent(waiting(), msg: "Allow access")
     let nodes = [pane(1, title: "worker", lifecycle: pi), pane(2, title: "@named", lifecycle: pi),
                  pane(3, title: "raw", lifecycle: terminal(exited(2))),
                  pane(4, title: "remote worker", lifecycle: remote(["Remote_agent", ["name": "pi", "status": report(waiting())]])),

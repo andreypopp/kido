@@ -45,10 +45,10 @@ private func windowsFixture(_ state: [Any] = waiting(), group: Bool = false) thr
 }
 
 @Test func tabLabelsShareSidebarAgentRule() throws {
-    let cases: [([Any], String?, Bool, Bool)] = [(["Live", ["Pi_agent", ["id": "pi-session", "status": report(idle())]]], nil, true, true),
+    let cases: [([Any], String?, Bool, Bool)] = [(piAgent(idle()), nil, true, true),
         (["Live", ["Some_agent", ["name": "claude-code", "status": ["since": 1, "msg": null, "state": idle()]]]], nil, true, false),
         (remote(["Remote_agent", ["name": "pi", "status": report(idle())]]), nil, true, false),
-        (terminal(), "agent", true, true), (terminal(), nil, false, false), (terminal(), "bash", false, false)]
+        (terminal(), "r-1", false, false), (terminal(), nil, false, false)]
     for (lifecycle, run, isAgent, messageable) in cases {
         for title in ["name", "@name"] {
             let snapshot: Snapshot = try decode(snapshotObject([pane(0, title: title, lifecycle: lifecycle, run: run)]))

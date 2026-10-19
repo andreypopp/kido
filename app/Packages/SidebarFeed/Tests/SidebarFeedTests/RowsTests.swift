@@ -4,15 +4,15 @@ import TmuxControl
 @testable import SidebarFeed
 
 private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false, records: [[String: Any]] = [], serial: Int = 7) throws -> Snapshot {
-    func item(_ id: Int, _ window: Int, run: String? = nil, started: Double? = nil, tail: String = "", children: [[String: Any]] = []) -> [String: Any] {
-        let lifecycle = run == "bash" || run == "stream"
-            ? terminal(running(), report: id == 2 ? report(waiting()) : null)
-            : agent(id == 2 ? waiting() : working(), msg: tail.isEmpty ? null : tail)
+    func item(_ id: Int, _ window: Int, run: String? = nil, started: Double? = nil, tail: String = "", lifecycle: [Any]? = nil, children: [[String: Any]] = []) -> [String: Any] {
+        let lifecycle = lifecycle ?? agent(id == 2 ? waiting() : working(), msg: tail.isEmpty ? null : tail)
         return pane(id, window: window, title: "pane-\(id)", lifecycle: lifecycle, run: run, started: started,
                     records: id == 0 ? records : [], serial: serial, children: children)
     }
-    let children = [item(1, 1, run: "agent", started: 100, tail: "working", children: [item(2, 2, run: "stream", started: 100)]),
-                    item(3, 3, run: "bash", started: 100), item(4, 4, run: "bash")]
+    let children = [item(1, 1, run: "r-1", started: 100, tail: "working", lifecycle: piAgent(working(), msg: "working"),
+                         children: [item(2, 2, run: "r-2", started: 100, lifecycle: terminal(running(), report: report(waiting())))]),
+                    item(3, 3, run: "r-3", started: 100, lifecycle: terminal(running())),
+                    item(4, 4, run: "r-4", lifecycle: terminal(running()))]
     let nodes: [[String: Any]] = grouped
         ? [["kind": "window", "id": "@0", "window": "@0", "name": "group", "children": descendants
             ? [item(0, 0, children: [item(1, 1, tail: "child", children: [item(2, 2)])]),
@@ -115,16 +115,16 @@ func elapsed(_ seconds: Int, _ expected: String) {
 
 @Test func agentWeightAndDisplayOnlyPrefix() throws {
     let cases: [([Any], String?, String, String, String, Bool)] = [
-        (["Live", ["Pi_agent", ["id": "pi-session", "status": report(idle())]]], nil, "Ada", "@Ada", "Ada", true),
+        (piAgent(idle()), nil, "Ada", "@Ada", "Ada", true),
         (["Live", ["Some_agent", ["name": "claude-code", "status": ["since": 1, "msg": null, "state": idle()]]]], nil, "Ada", "Ada", "Ada", true),
         (agent(), nil, "@Ada", "@Ada", "@Ada", true),
         (remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]]), nil, "Ada", "Ada", "Ada", true),
-        (terminal(running()), "agent", "Ada", "@Ada", "Ada", true),
-        (["Ended", ["result": "completed"]], "agent", "Ada", "@Ada", "Ada", true),
+        (terminal(running()), "r-5", "Ada", "Ada", "Ada", false),
+        (["Ended", ["result": "completed"]], "r-6", "Ada", "Ada", "Ada", false),
         (terminal(["Unknown"]), nil, "zsh", "zsh", "zsh", false),
         (remote(["Remote_terminal", ["interactive": true, "status": shell()]]), nil, "ssh", "ssh alice@devbox", "ssh alice@devbox", false),
-        (terminal(running()), "bash", "job", "job", "job", false),
-        (["Ended", ["result": "failed"]], "stream", "monitor", "monitor", "monitor", false)
+        (terminal(running()), "r-12", "job", "job", "job", false),
+        (["Ended", ["result": "failed"]], "r-13", "monitor", "monitor", "monitor", false)
     ]
     for (lifecycle, run, title, expected, tab, agent) in cases {
         let snapshot = try decode(snapshotObject([pane(0, title: title, lifecycle: lifecycle, run: run)]))
@@ -162,11 +162,11 @@ func elapsed(_ seconds: Int, _ expected: String) {
         (agent(waiting("permission"), msg: "Approve deployment"), nil, "zsh", false, .waiting, "waiting", "Approve deployment"),
         (agent(idle(outcome(17, "success")), msg: "Finished"), nil, "zsh", false, .done, "done", "Finished"),
         (agent(idle(outcome(18, "failure")), msg: "Failed"), nil, "zsh", false, .error, "failed", "Failed"),
-        (["Ended", ["result": "unknown"]], "bash", "zsh", false, .quiet, "gone", ""),
-        (["Ended", ["result": "completed"]], "bash", "zsh", false, .done, "gone, completed", ""),
-        (["Ended", ["result": "failed"]], "bash", "zsh", false, .error, "gone, failed", "failed"),
-        (["Ended", ["result": "died"]], "agent", "@zsh", false, .error, "gone, died", "died"),
-        (["Ended", ["result": "stopped"]], "agent", "@zsh", false, .quiet, "gone, stopped", "stopped")
+        (["Ended", ["result": "unknown"]], "r-9", "zsh", false, .quiet, "gone", ""),
+        (["Ended", ["result": "completed"]], "r-10", "zsh", false, .done, "gone, completed", ""),
+        (["Ended", ["result": "failed"]], "r-11", "zsh", false, .error, "gone, failed", "failed"),
+        (["Ended", ["result": "died"]], "r-7", "zsh", false, .error, "gone, died", "died"),
+        (["Ended", ["result": "stopped"]], "r-8", "zsh", false, .quiet, "gone, stopped", "stopped")
     ]
     for (lifecycle, run, title, quiet, status, description, tail) in cases {
         let snapshot = try decode(snapshotObject([pane(0, title: "zsh", lifecycle: lifecycle, run: run)]))

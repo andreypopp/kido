@@ -240,7 +240,7 @@ try:
         elif a == 24 and target:
             kido = os.path.join(os.path.dirname(args.tmux), 'kido')
             t('send-keys', '-t', target, 'C-c')
-            t('send-keys', '-t', target, f'{kido} tool async_bash --name stress-child-{i} -- sleep 8', 'Enter')
+            t('send-keys', '-t', target, f'{kido} run --name stress-child-{i} -- sleep 8', 'Enter')
             counts['child-window-attempted'] += 1
         due = start + (i + 1) * 0.4
         time.sleep(max(0, due - time.time()))
