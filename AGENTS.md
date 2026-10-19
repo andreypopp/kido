@@ -288,7 +288,8 @@ Conventions:
       pi/testdata/fake_kido/, pi/testdata/fake_tmux/, pi/testdata/fake_common/
                        the TypeScript suite's fake kido and fake tmux, and
                        their shared helpers, built by scripts/test-ts.sh
-    .pi/prompts/       gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed
+    .pi/prompts/       gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
+                       release.md, /release: Kido.app first, then kido
     .pi/extensions/    no-git-writes, the spawned agent's bash-tool guard
     scripts/           install-tmux-fork.sh, the fork build;
                        verify.sh, scrubbed verification and flake runs;
@@ -1024,6 +1025,9 @@ a git `revision:` with a manually increased `version`.
 The formula pins only the kido git revision.
 `make install` builds the fork from that revision's pinned
 `third_party/tmux` submodule through `scripts/install-tmux-fork.sh`.
+
+`/release` (`.pi/prompts/release.md`) is the whole sequence for an agent:
+Kido.app first through @kido-app, then kido.
 
 After the change is on `main`, run `scripts/release.sh VERSION`
 (or `make release VERSION=x.y.z`).
