@@ -258,14 +258,11 @@ let snapshot (m : model) =
             (match State.find m.snap.visible r.pane with
             | Some (p : State.pane) -> p.program_status
             | None -> Tmux.Program_status.empty) );
-        ( "run",
-          match State.find m.snap.visible r.pane with
-          | Some (p : State.pane) -> ( match p.run with Some id -> `String id | None -> `Null)
-          | None -> `Null );
+        ("run", match r.run with Some id -> `String id | None -> `Null);
         ( "started",
           match r.lifecycle with
-          | Live { run = Some { started; _ }; _ } -> `Float started
-          | Live { run = None; _ } | Ended _ -> `Null );
+          | Live { started = Some started; _ } -> `Float started
+          | Live { started = None; _ } | Ended _ -> `Null );
         ("children", `List (List.map node i.children));
       ]
   in
@@ -872,7 +869,7 @@ let%test_module "Tests" =
            ]
             : (agent_state * string option) list)
       in
-      let live status = Sidebar.Live { status; run = None } in
+      let live status = Sidebar.Live { status; started = None } in
       let lifecycles =
         List.map (fun s -> live (Terminal s)) shells
         @ List.map (fun status -> live (Some_agent { name = "claude-code"; status })) agents
@@ -909,7 +906,7 @@ let%test_module "Tests" =
                   run = (if i < 2 then Some (Printf.sprintf "run-%d" i) else None);
                   lifecycle =
                     (match lifecycle with
-                    | Sidebar.Live l when i < 2 -> Live { l with run = Some { started = 100. } }
+                    | Sidebar.Live l when i < 2 -> Live { l with started = Some 100. }
                     | l -> l);
                 };
               children = [];
@@ -964,7 +961,7 @@ let%test_module "Tests" =
         {"reply":{"id":71,"prompt":{"delivered":{"pane":"%12","via":"inbox"}}}}
         {"reply":{"id":72,"error":"alpha is not accepting messages","kind":"refused"}}
         {"reply":{"id":73,"error":"paste failed","kind":"unknown"}}
-        {"v":2,"server_instance":{"started_at":1780000000,"pid":12345},"client":{"session":"$0","window":"@1","pane":"%0"},"error":null,"sessions":[{"id":"$0","name":"session","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"window","children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":100.0,"children":[]},{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"","lifecycle":["Live",["Terminal",{"phase":["Idle",{"last":null}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":100.0,"children":[]}]},{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":100.0,"children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":100.0,"children":[]}]}]}]}
+        {"v":2,"server_instance":{"started_at":1780000000,"pid":12345},"client":{"session":"$0","window":"@1","pane":"%0"},"error":null,"sessions":[{"id":"$0","name":"session","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"window","children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"run-0","started":100.0,"children":[]},{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"","lifecycle":["Live",["Terminal",{"phase":["Idle",{"last":null}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"run-1","started":100.0,"children":[]}]},{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"run-0","started":100.0,"children":[{"kind":"pane","id":"%0","pane":"%0","window":"@1","title":"title","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"run-0","started":100.0,"children":[]}]}]}]}
         ["Live",["Terminal",{"phase":["Idle",{"last":{"code":1,"command":"false","started_at":100.0,"ended_at":101.0}}],"report":null}]]
         ["Live",["Terminal",{"phase":["Running",{"origin":["Command",{"command":"make","started_at":100.0}],"fullscreen":false}],"report":null}]]
         ["Live",["Terminal",{"phase":["Running",{"origin":["Command",{"command":"vim","started_at":100.0}],"fullscreen":true}],"report":null}]]

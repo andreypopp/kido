@@ -162,27 +162,27 @@ childProcess.spawn = ((command: string, args: string[] = [], options: childProce
 
 syncBuiltinESMExports();
 
-const fakeKidoEnv = process.env.KIDO_FAKE_KIDO;
-if (!fakeKidoEnv || !existsSync(fakeKidoEnv)) {
-  throw new Error("KIDO_FAKE_KIDO is not set or not built; run scripts/test-ts.sh");
-}
-const fakeKido: string = fakeKidoEnv;
 
-const fakeTmuxEnv = process.env.KIDO_FAKE_TMUX;
-if (!fakeTmuxEnv || !existsSync(fakeTmuxEnv)) {
-  throw new Error("KIDO_FAKE_TMUX is not set or not built; run scripts/test-ts.sh");
-}
-const fakeTmux: string = fakeTmuxEnv;
+let cachedFakeKido: string | null = null;
+let cachedFakeTmux: string | null = null;
 
 export function makeFixture(): Fixture {
+  cachedFakeKido ??= process.env.KIDO_FAKE_KIDO ?? null;
+  cachedFakeTmux ??= process.env.KIDO_FAKE_TMUX ?? null;
+  if (!cachedFakeKido || !existsSync(cachedFakeKido)) {
+    throw new Error("KIDO_FAKE_KIDO is not set or not built; run scripts/test-ts.sh");
+  }
+  if (!cachedFakeTmux || !existsSync(cachedFakeTmux)) {
+    throw new Error("KIDO_FAKE_TMUX is not set or not built; run scripts/test-ts.sh");
+  }
   // A short root: the extension refuses an inbox path over 103 bytes, and a
   // spawned child's socket is named after its 32-hex session id.
   const dir = mkdtempSync(join("/tmp", "kido-pi-test-"));
   const binDir = join(dir, "bin");
   mkdirSync(binDir);
   const command = join(binDir, "kido");
-  symlinkSync(fakeKido, command);
-  symlinkSync(fakeTmux, join(binDir, "tmux"));
+  symlinkSync(cachedFakeKido, command);
+  symlinkSync(cachedFakeTmux, join(binDir, "tmux"));
   const work = new Set<childProcess.ChildProcess>();
   commandWork.set(command, work);
   const sessions: Array<() => Promise<unknown>> = [];
@@ -220,7 +220,7 @@ export function makeFixture(): Fixture {
   process.env.TMUX_PANE = "%1";
   process.env.KIDO_PI_STATE_DIR = stateDir;
   delete process.env.XDG_STATE_HOME;
-  process.env.KIDO_FAKE_KIDO = fakeKido;
+  process.env.KIDO_FAKE_KIDO = cachedFakeKido;
   process.env.KIDO_FAKE_TMUX_LOG = tmuxLogFile;
   process.env.KIDO_FAKE_TMUX_PANES = panesFile;
   process.env.KIDO_FAKE_STATE_DIR = stateDir;
@@ -575,6 +575,10 @@ export function customMessages(s: Pick<ReturnType<typeof createFakePi>, "message
 
 export function askSent(s: Pick<ReturnType<typeof createFakePi>, "messages">, includes: string) {
   return customMessages(s, "kido-ask").find((m) => m.message.content.includes(includes));
+}
+
+export function agentJson(fx: Fixture, parent: string, name: string): { session: string; run: string; model: string; tools: string[]; fork: boolean } {
+  return JSON.parse(readFileSync(join(fx.agentDir(parent, name), "agent.json"), "utf8"));
 }
 
 export function argAfter(args: string[] | undefined, flag: string): string | undefined {

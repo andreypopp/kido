@@ -25,7 +25,7 @@ func TestRunOutcomeCapturesScreenBeforeWindowCloses(t *testing.T) {
 	h.waitFor(func() bool { return h.runOutcome(r.ID) == "failed" }, settle,
 		msgf("run %s to record its own no-turn-ever-ran outcome", r.ID))
 
-	windowID, _, _ := strings.Cut(r.Pane, ".")
+	windowID := r.Window
 	if !h.windowExists(windowID) {
 		t.Fatalf("window %s is already gone; the screen capture race this test checks needs it still up", windowID)
 	}

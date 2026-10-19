@@ -138,8 +138,11 @@ test("a settled turn without a report tells the parent once that the child is id
         assert.equal(inbox.received().length, 1, "a redundant settle does not resend");
 
         await s.tools.get("notify_parent").execute("c", { summary: "done" });
+        await s.emit("turn_end", { toolResults: [{}] });
+        await s.emit("turn_start");
+        await s.emit("agent_end", { messages: [assistant("stop")] });
         await s.emit("agent_settled", {}, { isIdle: () => true });
-        assert.equal(inbox.received().length, 2, "a child that reported gets no idle notice");
+        assert.equal(inbox.received().length, 2, "a child that reported gets no idle notice, even when pi starts another turn for the tool result");
       },
       { parent: "boss-session", name: "worker" },
     );
@@ -241,6 +244,33 @@ test("a tmux read that fails is not evidence that the parent is gone", async () 
   }
 });
 
+test("a parent poll with a pane hint reads only that pane", async () => {
+  const fx = makeFixture();
+  try {
+    parentSetup(fx, "/tmp/none.sock");
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        await withEnv({ KIDO_PARENT_POLL_MS: "10" }, async () => {
+          const s = await startWithSpies(fx, kidoPi, SELF);
+          await pollUntil(() => fx.tmuxCalls().filter((argv) => argv[0] === "list-panes").length >= 6, 2000, "parent polls");
+          const calls = fx.tmuxCalls().filter((argv) => argv[0] === "list-panes");
+          const later = calls.slice(1);
+          assert.ok(
+            later.every((argv) => argv.includes("-t") && argv.includes("%2")),
+            `every poll after the first targets the parent pane: ${JSON.stringify(calls)}`,
+          );
+          assert.equal(s.shutdowns(), 0, "the parent is still there");
+        });
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("a slow parent read does not let ticks pile up concurrent readings", async () => {
   const fx = makeFixture();
   try {
@@ -257,7 +287,7 @@ test("a slow parent read does not let ticks pile up concurrent readings", async 
           const stuck = fx.tmuxCalls().filter((argv) => argv[0] === "list-panes").length;
           assert.equal(stuck, 1, "one reading in flight holds every later tick back");
           writeFileSync(gate, "");
-          await pollUntil(() => fx.tmuxCalls().filter((argv) => argv[0] === "display-message").length >= 3, 2000, "later readings on the parent's own pane");
+          await pollUntil(() => fx.tmuxCalls().filter((argv) => argv[0] === "list-panes").length >= 3, 2000, "later readings on the parent's own pane");
           assert.equal(s.shutdowns(), 0, "the parent is still there");
         });
       },

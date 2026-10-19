@@ -30,6 +30,7 @@ let with_row id f =
   write_rows rows;
   !found
 
+let find_row id = List.find_opt (fun row -> String.equal (member "id" row) id) (rows ())
 let positional argv = match argv with _command :: id :: _ -> id | _ -> ""
 
 let after_double_dash argv =
@@ -57,7 +58,7 @@ let run () =
   let command = match argv with command :: _ -> command | [] -> "" in
   match command with
   | "run-child" ->
-      Fake_common.log "KIDO_FAKE_RUN_LOG" (`List (List.map (fun string -> `String string) argv));
+      Fake_common.log "KIDO_FAKE_RUN_LOG" argv;
       let run_id = Option.value ~default:"fake-run-id" (Sys.getenv_opt "KIDO_FAKE_RUN_ID") in
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_GATE");
       let output = Fs.getenv "KIDO_FAKE_STATE_DIR" ^ "/runs/" ^ run_id ^ "/output" in
@@ -90,10 +91,19 @@ let run () =
               | Some (result, text) -> with_outcome row result text);
             ])
       end;
-      Printf.printf "{\"id\":%S,\"pane\":%S,\"output\":%S}\n" run_id "@9.%9" output;
+      print_endline
+        (Yojson.Safe.to_string
+           (`Assoc
+              [
+                ("id", `String run_id);
+                ("window", `String "@9");
+                ("pane", `String "%9");
+                ("output", `String output);
+              ]));
       exit 0
   | "runs" ->
-      Fake_common.log "KIDO_FAKE_RUNS_LOG" (`List (List.map (fun string -> `String string) argv));
+      Fake_common.log "KIDO_FAKE_RUNS_LOG" argv;
+      Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUNS_GATE");
       let parent = ref None in
       let rec parse = function
         | [] -> ()
@@ -113,8 +123,7 @@ let run () =
       print_endline (Yojson.Safe.to_string (`List rows));
       exit 0
   | "run-wait" ->
-      Fake_common.log "KIDO_FAKE_RUN_WAIT_LOG"
-        (`List (List.map (fun string -> `String string) argv));
+      Fake_common.log "KIDO_FAKE_RUN_WAIT_LOG" argv;
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_WAIT_GATE");
       let id = positional argv in
       let stored =
@@ -137,11 +146,8 @@ let run () =
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_WAIT_EXIT_GATE");
       exit 0
   | "run-stop" ->
-      Fake_common.log "KIDO_FAKE_RUN_STOP_LOG"
-        (`List (List.map (fun string -> `String string) argv));
+      Fake_common.log "KIDO_FAKE_RUN_STOP_LOG" argv;
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_STOP_GATE");
-      let cleanup = List.mem ~eq:String.equal "--cleanup" argv in
-      let record_only = List.mem ~eq:String.equal "--record-only" argv in
       let result =
         if
           String.equal
@@ -151,38 +157,42 @@ let run () =
         else "stopped"
       in
       let id = positional argv in
-      let found = List.find_opt (fun row -> String.equal (member "id" row) id) (rows ()) in
+      let found = find_row id in
       (match found with
       | None ->
           Printf.eprintf "run %s: no such run\n" id;
           exit 3
       | Some row ->
-          if (not cleanup) && Option.is_some (outcome row) then begin
-            Printf.eprintf "run %s has already ended\n" id;
-            exit 5
-          end;
-          if not cleanup then ignore (with_row id (fun row -> with_outcome row result ""));
-          if record_only then Printf.printf "recorded run %s\n" id
-          else Printf.printf "stopped run %s; killed its pane\n" id);
+          if Option.is_none (outcome row) then
+            ignore (with_row id (fun row -> with_outcome row result ""));
+          Printf.printf "stopped run %s; killed its pane\n" id);
       exit 0
   | "run-outcome" ->
-      Fake_common.log "KIDO_FAKE_RUN_OUTCOME_LOG"
-        (`List (List.map (fun string -> `String string) argv));
+      Fake_common.log "KIDO_FAKE_RUN_OUTCOME_LOG" argv;
       let requested = Option.value ~default:"" (Fake_common.arg_after "--result" argv) in
-      if not (List.mem ~eq:String.equal requested [ "completed"; "failed" ]) then begin
-        Printf.eprintf "run-outcome: result must be completed or failed\n";
+      if not (List.mem ~eq:String.equal requested [ "stopped"; "completed"; "failed" ]) then begin
+        Printf.eprintf "run-outcome: result must be stopped, completed or failed\n";
         exit 1
       end;
       let text = Option.value ~default:"" (Fake_common.arg_after "--text" argv) in
-      let id = match List.rev (after_double_dash argv) with id :: _ -> id | [] -> "" in
-      (match List.find_opt (fun row -> String.equal (member "id" row) id) (rows ()) with
+      let id =
+        let rec go = function
+          | [] -> ""
+          | "--" :: id :: _ -> id
+          | ("--result" | "--text") :: _ :: rest -> go rest
+          | arg :: _ when not (String.prefix ~pre:"-" arg) -> arg
+          | _ :: rest -> go rest
+        in
+        go (List.tl argv)
+      in
+      (match find_row id with
       | None ->
           Printf.eprintf "run %s: no such run\n" id;
-          exit 1
+          exit 3
       | Some row ->
           if Option.is_some (outcome row) then begin
-            Printf.eprintf "run %s already has an outcome\n" id;
-            exit 1
+            Printf.eprintf "run %s already has an outcome, or is gone\n" id;
+            exit 5
           end;
           ignore (with_row id (fun row -> with_outcome row requested text)));
       exit 0

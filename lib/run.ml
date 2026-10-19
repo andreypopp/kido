@@ -91,13 +91,10 @@ type outcome = {
 }
 [@@deriving yojson] [@@yojson.allow_extra_fields]
 
-type command = string list [@@deriving yojson]
+type command = string list [@@deriving yojson_of]
 
 let write_command ~dir id argv =
   Fs.write ~perm:0o600 (command_path ~dir id) (Yojson.Safe.to_string (yojson_of_command argv))
-
-let read_command ~dir id =
-  match Fs.read_json (command_path ~dir id) command_of_yojson with Some [] | None -> None | c -> c
 
 let write_meta ~dir m =
   Fs.mkdir_p ~perm:0o700 (dir_for ~dir m.id);
@@ -158,14 +155,17 @@ let save_screen tmux ~dir id pane =
      try Fs.write_atomic (screen_path ~dir id) data with Unix.Unix_error _ | Sys_error _ -> ());
   data
 
+type run_outcome_error = No_run of string | Lost of string
+
 let run_outcome ~dir ~result ~text id =
-  let meta = read_meta ~dir id in
-  (match (meta, result) with
-  | Some m, Failed -> ignore (save_screen (Tmux.create ()) ~dir id m.pane)
-  | _ -> ());
-  let outcome : outcome = { result; text; at = Some (Timestamp.now ()) } in
-  if record_outcome ~dir id outcome then Ok ()
-  else Error (Printf.sprintf "run %s already has an outcome, or is gone" (string_of_id id))
+  match read_meta ~dir id with
+  | None -> Error (No_run (Printf.sprintf "run %s: no such run" (string_of_id id)))
+  | Some m ->
+      (match result with Failed -> ignore (save_screen (Tmux.create ()) ~dir id m.pane) | _ -> ());
+      let outcome : outcome = { result; text; at = Some (Timestamp.now ()) } in
+      if record_outcome ~dir id outcome then Ok ()
+      else
+        Error (Lost (Printf.sprintf "run %s already has an outcome, or is gone" (string_of_id id)))
 
 let%test_module "Tests" =
   (module struct
@@ -250,21 +250,17 @@ let%test_module "Tests" =
       Fs.mkdir_p ~perm:0o700 (Filename.dirname (meta_path ~dir i));
       (dir, i)
 
-    let%expect_test "Command round-trips exactly, and an empty command is refused" =
+    let%expect_test "WriteCommand writes the argv as JSON" =
       let dir, i = fresh_run "run-cmd" in
-      Printf.printf "no command written: %b\n" (Option.is_none (read_command ~dir i));
       let argv = [ "bash"; "-c"; "echo 'it\"s' $HOME `date`\nexit 3" ] in
       write_command ~dir i argv;
-      let got = Option.get_exn_or "ReadCommand" (read_command ~dir i) in
-      Printf.printf "round-trips: %b\n" (List.equal String.equal got argv);
-      write_command ~dir i [];
-      Printf.printf "empty command refused: %b\n" (Option.is_none (read_command ~dir i));
-      [%expect
-        {|
-    no command written: true
-    round-trips: true
-    empty command refused: true
-    |}]
+      Fs.read (command_path ~dir i)
+      |> Option.iter (fun json ->
+          Printf.printf "round-trips: %b\n"
+            (List.equal String.equal
+               (Yojson.Safe.from_string json |> [%of_yojson: string list])
+               argv));
+      [%expect {| round-trips: true |}]
 
     let%expect_test "RecordOutcome writes once; a later write is refused and the first stands" =
       let dir, i = fresh_run "run-3" in
@@ -364,9 +360,14 @@ let%test_module "Tests" =
       | Some o -> Printf.printf "outcome %s %S\n" (string_of_result o.result) o.text
 
     let record_outcome ~dir result r =
-      match Result.flat_map (run_outcome ~dir ~result ~text:"") (parse_id r) with
+      match
+        Result.flat_map
+          (run_outcome ~dir ~result ~text:"")
+          (Result.map_err (fun m -> Lost m) (parse_id r))
+      with
       | Ok () -> ()
-      | Error m -> Printf.printf "refused: %s\n" m
+      | Error (No_run m) -> Printf.printf "missing: %s\n" m
+      | Error (Lost m) -> Printf.printf "refused: %s\n" m
 
     let%expect_test "run-outcome records one outcome, and only for a valid run id" =
       let dir = temp () in

@@ -1,4 +1,4 @@
-type created = { meta : Run.meta; window : Tmux.window_id; pane : Tmux.pane_id; output : string }
+type created = { meta : Run.meta; window : Tmux.window_id; pane : Tmux.pane_id }
 type error = Refused_name of string | Failed of string
 
 let start ?parent ~dir ~name ~cwd ~session ~env command =
@@ -36,7 +36,7 @@ let start ?parent ~dir ~name ~cwd ~session ~env command =
   in
   let meta = { meta with pane = Some w.pane_id; pid = w.pane_pid } in
   Run.write_meta ~dir meta;
-  Ok { meta; window = w.window_id; pane = w.pane_id; output = Run.output_path ~dir id }
+  Ok { meta; window = w.window_id; pane = w.pane_id }
 
 let resolve_parent ~dir ~state = function
   | "" -> Ok None

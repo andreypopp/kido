@@ -258,9 +258,10 @@ Conventions:
       msg.ml           the inbox client: one payload over the unix socket
       tree.ml          the parent-first walk behind the sidebar
       reap.ml          which run panes are finished with, and when
-      run_ending.ml    a run's ending: the first-write-wins outcome write
-      run.ml           run records in runs/<id>/ and the ending derived
-                       from a run's pane
+      run.ml           run records in runs/<id>/ and the first-write-wins
+                       outcome write
+      pane_status.ml   a pane's status from its shell marks and OSC 7501 records
+      protocol.ml      the RPC protocol: version, requests and the snapshot
       run_window.ml    the tracked run window that both launchers create,
                        and its name checks
       prompt.ml, run_wait.ml (run-wait), run_stop.ml (run-stop),

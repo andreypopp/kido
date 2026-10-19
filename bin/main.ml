@@ -2,12 +2,12 @@ open Cmdliner
 open Cmdliner.Term.Syntax
 open Kido
 
-let error name msg =
-  Printf.eprintf "%s: %s\n%!" (if String.is_empty name then "kido" else "kido " ^ name) msg
+let error ?name msg =
+  Printf.eprintf "%s: %s\n%!" (match name with None -> "kido" | Some name -> "kido " ^ name) msg
 
-let run name body =
+let run ?name body =
   let fail msg =
-    error name msg;
+    error ?name msg;
     1
   in
   match
@@ -75,7 +75,7 @@ let stdin () =
   let s = In_channel.input_all stdin in
   Option.get_or ~default:s (String.chop_suffix ~suf:"\n" s)
 
-let cmd name doc term = Cmd.v (Cmd.info name ~doc) Term.(const (fun f -> run name f) $ term)
+let cmd name doc term = Cmd.v (Cmd.info name ~doc) Term.(const (fun f -> run ~name f) $ term)
 let ok = Result.get_or_failwith
 
 let server_dir =
@@ -102,16 +102,11 @@ let linger () =
 let resolved_dir server = Fs.abs (Option.get_lazy Server_dir.dir server)
 
 let session_for ~state s =
-  let of_pane () =
+  if String.is_empty s then
     match self_pane () with
     | None -> Error "no caller pane; pass --session"
-    | Some pane -> (
-        match State.find state pane with
-        | None ->
-            Error (Printf.sprintf "pane %s is not on this server" (Tmux.string_of_pane_id pane))
-        | Some p -> Ok p.session_id)
-  in
-  if String.is_empty s then of_pane ()
+    | Some pane ->
+        Result.map (fun (p : State.pane) -> p.session_id) (State.caller_pane state (Some pane))
   else if String.prefix ~pre:"$" s then Ok (Tmux.session_id_of_string s)
   else
     match List.find_opt (fun (p : State.pane) -> String.equal p.session_name s) state.panes with
@@ -120,32 +115,30 @@ let session_for ~state s =
 
 let start_run name parent name_arg cwd session envs command =
   let dir = state_dir () in
-  match State.read ~dir (Tmux.create ()) with
-  | Error e ->
-      error name e;
+  let state = ok (State.read ~dir (Tmux.create ())) in
+  let session = ok (session_for ~state session) in
+  match
+    Run_window.start ?parent ~dir ~name:name_arg
+      ~cwd:(if String.is_empty cwd then Sys.getcwd () else cwd)
+      ~session ~env:envs command
+  with
+  | Ok c ->
+      print_endline
+        (Yojson.Safe.to_string
+           (`Assoc
+              [
+                ("id", `String (Run.string_of_id c.meta.id));
+                ("window", Tmux.yojson_of_window_id c.window);
+                ("pane", Tmux.yojson_of_pane_id c.pane);
+                ("output", `String (Run.output_path ~dir c.meta.id));
+              ]));
+      0
+  | Error (Run_window.Refused_name m) ->
+      error ~name m;
+      4
+  | Error (Run_window.Failed m) ->
+      error ~name m;
       1
-  | Ok state -> (
-      match session_for ~state session with
-      | Error e ->
-          error name e;
-          1
-      | Ok session -> (
-          match
-            Run_window.start ?parent ~dir ~name:name_arg
-              ~cwd:(if String.is_empty cwd then Sys.getcwd () else cwd)
-              ~session ~env:envs command
-          with
-          | Ok c ->
-              Printf.printf "{\"id\":%S,\"pane\":%S,\"output\":%S}\n" (Run.string_of_id c.meta.id)
-                (Tmux.string_of_window_id c.window ^ "." ^ Tmux.string_of_pane_id c.pane)
-                c.output;
-              0
-          | Error (Run_window.Refused_name m) ->
-              error name m;
-              4
-          | Error (Run_window.Failed m) ->
-              error name m;
-              1))
 
 let run_options =
   let+ name =
@@ -167,7 +160,7 @@ let run_command =
   @@ let+ name, cwd, session, env = run_options and+ command = rest in
      fun () ->
        if List.is_empty command then begin
-         error "run"
+         error ~name:"run"
            "no command given\n\
             usage: kido run --name N [--cwd D] [--session S] [--env K=V]... -- CMD...";
          1
@@ -180,29 +173,25 @@ let run_child =
      fun () ->
        match args with
        | [] ->
-           error "run-child"
+           error ~name:"run-child"
              "no parent given\n\
               usage: kido run-child PARENT --name N [--cwd D] [--session S] [--env K=V]... -- \
               CMD...";
            1
        | [ _ ] ->
-           error "run-child"
+           error ~name:"run-child"
              "no command given\n\
               usage: kido run-child PARENT --name N [--cwd D] [--session S] [--env K=V]... -- \
               CMD...";
            1
        | parent :: command -> (
            let dir = state_dir () in
-           match State.read ~dir (Tmux.create ()) with
-           | Error e ->
-               error "run-child" e;
-               1
-           | Ok state -> (
-               match Run_window.resolve_parent ~dir ~state parent with
-               | Error m ->
-                   error "run-child" m;
-                   2
-               | Ok parent -> start_run "run-child" parent name cwd session env command))
+           let state = ok (State.read ~dir (Tmux.create ())) in
+           match Run_window.resolve_parent ~dir ~state parent with
+           | Error m ->
+               error ~name:"run-child" m;
+               2
+           | Ok parent -> start_run "run-child" parent name cwd session env command)
 
 let runs =
   cmd "runs" "List runs, or show one."
@@ -222,7 +211,7 @@ let runs =
        in
        match parent with
        | Error m ->
-           error "runs" m;
+           error ~name:"runs" m;
            2
        | Ok parent -> (
            match args with
@@ -251,8 +240,7 @@ let runs =
                             m.name;
                             Option.value ~default:"" session;
                             (match m.parent with
-                            | Some (Run.Run x) -> Run.string_of_id x
-                            | Some (Run.Pane p) -> Tmux.string_of_pane_id p
+                            | Some parent -> Run.string_of_parent parent
                             | None -> "");
                             local_time m.started_at;
                             (match ended with
@@ -267,12 +255,12 @@ let runs =
            | [ id ] -> (
                match Run.parse_id id with
                | Error m ->
-                   error "runs" m;
+                   error ~name:"runs" m;
                    3
                | Ok id -> (
                    match Run_history.detail ~dir ~state id with
                    | Error m ->
-                       error "runs" m;
+                       error ~name:"runs" m;
                        3
                    | Ok d ->
                        let m = d.info.meta in
@@ -307,7 +295,7 @@ let runs =
                        end;
                        0))
            | _ :: extra :: _ ->
-               error "runs"
+               error ~name:"runs"
                  (Printf.sprintf
                     "unknown argument %S\nusage: kido runs [--json] [--parent P] [<run-id>]" extra);
                1)
@@ -317,13 +305,28 @@ let run_outcome =
   @@ let+ result =
        Arg.(
          required
-         & opt (some (enum [ ("completed", Run.Completed); ("failed", Failed) ])) None
-         & info [ "result" ] ~docv:"RESULT" ~doc:"completed or failed.")
+         & opt
+             (some
+                (enum
+                   [ ("stopped", Run.Stopped); ("completed", Run.Completed); ("failed", Failed) ]))
+             None
+         & info [ "result" ] ~docv:"RESULT" ~doc:"stopped, completed or failed.")
      and+ text = str "text" "TEXT" "Optional detail."
      and+ id = arg "RUN_ID" in
      fun () ->
-       ok (Run.run_outcome ~dir:(state_dir ()) ~result ~text (ok (Run.parse_id id)));
-       0
+       match Run.parse_id id with
+       | Error m ->
+           error ~name:"run-outcome" m;
+           3
+       | Ok id -> (
+           match Run.run_outcome ~dir:(state_dir ()) ~result ~text id with
+           | Ok () -> 0
+           | Error (Run.No_run m) ->
+               error ~name:"run-outcome" m;
+               3
+           | Error (Run.Lost m) ->
+               error ~name:"run-outcome" m;
+               5)
 
 let run_wait =
   cmd "run-wait" "Wait for a run to end and print its outcome."
@@ -332,12 +335,12 @@ let run_wait =
      fun () ->
        match Run.parse_id id with
        | Error m ->
-           error "run-wait" m;
+           error ~name:"run-wait" m;
            3
        | Ok id -> (
            match Run_wait.wait ~dir:(state_dir ()) id with
            | Error m ->
-               error "run-wait" m;
+               error ~name:"run-wait" m;
                3
            | Ok outcome ->
                print_endline
@@ -352,67 +355,40 @@ let run_stop =
          value & opt float 0.
          & info [ "wait" ] ~docv:"SECS"
              ~doc:"Seconds to wait for the run to end before signalling its process group.")
-     and+ given_result =
+     and+ result =
        Arg.(
          value
-         & opt (some (enum [ ("stopped", Run.Stopped); ("completed", Run.Completed) ])) None
+         & opt (enum [ ("stopped", Run.Stopped); ("completed", Run.Completed) ]) Run.Stopped
          & info [ "result" ] ~docv:"RESULT" ~doc:"stopped or completed; default stopped.")
-     and+ record_only =
-       flag "record-only" "Record the result only; leave the process and its pane running."
-     and+ cleanup =
-       flag "cleanup"
-         "Stop the process and close the pane of a run that already has an outcome; record nothing."
      and+ id = arg "RUN_ID" in
      fun () ->
        match Run.parse_id id with
        | Error m ->
-           error "run-stop" m;
+           error ~name:"run-stop" m;
            3
        | Ok id -> (
-           let result = Option.value ~default:Run.Stopped given_result in
-           let mode =
-             if record_only && cleanup then
-               Error "choose one of --record-only and --cleanup, not both"
-             else if cleanup && Option.is_some given_result then
-               Error "--cleanup records nothing, so it cannot take --result"
-             else if record_only then Ok Run_stop.Record_only
-             else if cleanup then Ok Run_stop.Cleanup
-             else Ok Run_stop.Record_and_stop
-           in
-           match mode with
-           | Error m ->
-               error "run-stop" m;
-               1
-           | Ok mode -> (
-               match
-                 Run_stop.stop ~dir:(state_dir ()) ~wait
-                   ~escalation:(Timestamp.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.)
-                   ~result ~mode id
-               with
-               | Error (Run_stop.No_run m) ->
-                   error "run-stop" m;
-                   3
-               | Error (Run_stop.Ended m) ->
-                   error "run-stop" m;
-                   5
-               | Ok pane -> (
-                   match (mode, pane) with
-                   | Run_stop.Record_only, _ ->
-                       Printf.printf "recorded run %s\n" (Run.string_of_id id);
-                       0
-                   | _, Run_stop.Killed ->
-                       Printf.printf "stopped run %s; killed its pane\n" (Run.string_of_id id);
-                       0
-                   | _, (Run_stop.No_pane | Run_stop.Already_gone) ->
-                       Printf.printf "stopped run %s; its pane was already gone\n"
-                         (Run.string_of_id id);
-                       0
-                   | _, Run_stop.Refused m ->
-                       error "run-stop"
-                         (Printf.sprintf
-                            "run %s was recorded stopped, but its pane could not be killed: %s"
-                            (Run.string_of_id id) m);
-                       1)))
+           match
+             Run_stop.stop ~dir:(state_dir ()) ~wait
+               ~escalation:(Timestamp.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.)
+               ~result id
+           with
+           | Error (Run_stop.No_run m) ->
+               error ~name:"run-stop" m;
+               3
+           | Error (Run_stop.Ended m) ->
+               error ~name:"run-stop" m;
+               5
+           | Ok Run_stop.Killed ->
+               Printf.printf "stopped run %s; killed its pane\n" (Run.string_of_id id);
+               0
+           | Ok (Run_stop.No_pane | Run_stop.Already_gone) ->
+               Printf.printf "stopped run %s; its pane was already gone\n" (Run.string_of_id id);
+               0
+           | Ok (Run_stop.Refused m) ->
+               error ~name:"run-stop"
+                 (Printf.sprintf "run %s was recorded stopped, but its pane could not be killed: %s"
+                    (Run.string_of_id id) m);
+               1)
 
 let prompt =
   cmd "prompt" "Send a prompt, read from stdin, to the agent in the caller's window or session."
@@ -477,14 +453,14 @@ let server =
 let shell =
   Cmd.v (Cmd.info "shell" ~doc:"Exec the pane's login shell, primed with kido's shell integration.")
   @@ let+ () = Term.const () in
-     run "shell" (fun () ->
+     run ~name:"shell" (fun () ->
          ignore (state_dir ());
          Shell.run ())
 
 let ssh =
   Cmd.v (Cmd.info "ssh" ~doc:"Run ssh, priming the remote login shell when it can.")
   @@ let+ args = rest in
-     run "ssh" (fun () ->
+     run ~name:"ssh" (fun () ->
          let path = Fs.getenv "PATH" in
          let ssh =
            match Bin_dir.own () with
@@ -534,7 +510,7 @@ let duration =
 let reap =
   Cmd.v (Cmd.info "reap" ~doc:"Close the finished subagent windows a sweep names.")
   @@ let+ args = rest in
-     run "reap" (fun () ->
+     run ~name:"reap" (fun () ->
          if not (List.is_empty args) then failwith "usage: kido reap";
          let dir = state_dir () in
          let tmux = Tmux.create () in
@@ -566,15 +542,15 @@ let sidebar =
   let inside = Option.flat_map Tmux.env_of_string env in
   match (Sys.argv, side, env) with
   | _, "", _ when Array.length Sys.argv = 1 || Option.is_some server ->
-      run "" (fun () ->
+      run (fun () ->
           match Launch.run ~dir:(resolved_dir server) ~env:(Unix.environment ()) ~inside with
           | Ok _ -> 0
           | Error m -> failwith m)
   | _, _, None ->
-      error "" "must run inside tmux";
+      error "must run inside tmux";
       1
   | _, _, Some _ ->
-      run "" (fun () ->
+      run (fun () ->
           let dir = state_dir () in
           let tmux = Tmux.create () in
           let client =
@@ -587,7 +563,7 @@ let sidebar =
           in
           match client with
           | None ->
-              error "" "no tmux client; pass --client '#{client_name}'";
+              error "no tmux client; pass --client '#{client_name}'";
               1
           | Some client ->
               Kido_sidebar.run ~standalone:(String.is_empty side)

@@ -5,11 +5,7 @@ let wait ~dir id =
       (Printf.sprintf "run %s has no meta" (Run.string_of_id id))
       (Run.read_meta ~dir id)
   in
-  let read_pane () =
-    match meta.pane with
-    | None -> Ok State.empty
-    | Some pane -> State.read_pane (Tmux.create ()) pane
-  in
+  let read_pane () = State.read_run (Tmux.create ()) meta in
   let rec poll () =
     match Run.read_outcome ~dir id with
     | Some outcome -> Ok outcome

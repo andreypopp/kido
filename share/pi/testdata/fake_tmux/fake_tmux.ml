@@ -55,7 +55,7 @@ let rows_for_target rows target =
 let run () =
   let argv = Array.to_list Sys.argv |> List.tl in
   let argv = match argv with "-u" :: rest -> rest | argv -> argv in
-  Fake_common.log "KIDO_FAKE_TMUX_LOG" (`List (List.map (fun s -> `String s) argv));
+  Fake_common.log "KIDO_FAKE_TMUX_LOG" argv;
   let rows = read_table () in
   match argv with
   | "set-option" :: _ -> ()
@@ -63,7 +63,9 @@ let run () =
       if String.equal (Fs.getenv "KIDO_FAKE_TMUX_FAIL") "1" then exit 1;
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_TMUX_GATE");
       let format = Option.value ~default:"" (Fake_common.arg_after "-F" argv) in
-      List.iter (fun row -> print_endline (render row format)) rows
+      List.iter
+        (fun row -> print_endline (render row format))
+        (rows_for_target rows (Fake_common.arg_after "-t" argv))
   | "display-message" :: _ -> (
       if String.equal (Fs.getenv "KIDO_FAKE_TMUX_FAIL") "1" then exit 1;
       match Fake_common.arg_after "-F" argv with

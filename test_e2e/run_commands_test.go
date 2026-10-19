@@ -12,13 +12,13 @@ import (
 
 type startedRun struct {
 	ID     string `json:"id"`
+	Window string `json:"window"`
 	Pane   string `json:"pane"`
 	Output string `json:"output"`
 }
 
 func (r startedRun) paneID() string {
-	_, pane, _ := strings.Cut(r.Pane, ".")
-	return pane
+	return r.Pane
 }
 
 func (h *harness) startRun(pane string, args ...string) startedRun {
@@ -31,8 +31,8 @@ func (h *harness) startRun(pane string, args ...string) startedRun {
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		h.t.Fatalf("kido %v: %v (%q)", args, err, out)
 	}
-	if r.ID == "" || !strings.HasPrefix(r.Pane, "@") || !strings.Contains(r.Pane, ".") || r.Output == "" {
-		h.t.Fatalf("kido %v printed %+v, want id, @WINDOW.PANE and output", args, r)
+	if r.ID == "" || !strings.HasPrefix(r.Window, "@") || !strings.HasPrefix(r.Pane, "%") || r.Output == "" {
+		h.t.Fatalf("kido %v printed %+v, want id, @WINDOW, PANE and output", args, r)
 	}
 	return r
 }
@@ -77,8 +77,16 @@ func TestRunEndingsAndRefusals(t *testing.T) {
 		t.Errorf("session before the option = %q, want empty", got)
 	}
 	h.in("set-option", "-p", "-t", sessionRun.paneID(), "@kido_session", "sess-abc")
-	if got := fmt.Sprint(h.runMeta("session-during", sessionRun.ID)["session"]); got != "sess-abc" {
-		t.Errorf("session with the option = %q, want sess-abc", got)
+	if got := fmt.Sprint(h.runMeta("session-stale", sessionRun.ID)["session"]); got != "" {
+		t.Errorf("session on a pane with no pi root = %q, want empty", got)
+	}
+	h.programStatus(sessionRun.paneID(), "state=idle:app=pi")
+	if got := fmt.Sprint(h.runMeta("session-root", sessionRun.ID)["session"]); got != "sess-abc" {
+		t.Errorf("session on a pane with a pi root = %q, want sess-abc", got)
+	}
+	h.programStatus(sessionRun.paneID(), "state=clear")
+	if got := fmt.Sprint(h.runMeta("session-cleared", sessionRun.ID)["session"]); got != "" {
+		t.Errorf("session after the pi root cleared = %q, want empty", got)
 	}
 	h.in("kill-pane", "-t", sessionRun.paneID())
 	h.reap("reap-session.out")
@@ -132,6 +140,8 @@ func TestRunEndingsAndRefusals(t *testing.T) {
 		{[]string{"runs", "no-such-run"}, 3, `run "no-such-run": no such run`},
 		{[]string{"run-wait", "no-such-run"}, 3, "run no-such-run has no meta"},
 		{[]string{"run-stop", "no-such-run"}, 3, "run no-such-run: no such run"},
+		{[]string{"run-outcome", "--result", "completed", "no-such-run"}, 3, "no such run"},
+		{[]string{"run-outcome", "--result", "completed", "../bad"}, 3, "invalid run id"},
 	} {
 		if out, rc := h.kidoAs(caller, "", nil, c.args...); rc != c.code || !strings.Contains(out, c.want) {
 			t.Errorf("kido %v = %d %q, want exit %d and %q", c.args, rc, out, c.code, c.want)
@@ -168,29 +178,27 @@ func TestRunStopRecordsThenCloses(t *testing.T) {
 	}
 
 	phased := h.startRun(caller, "run", "--name", "run-phased", "--", "sleep", "300")
-	if out, rc := h.kidoAs(caller, "", nil, "run-stop", phased.ID, "--record-only", "--result", "completed"); rc != 0 || !strings.Contains(out, "recorded run "+phased.ID) {
-		t.Fatalf("run-stop --record-only = %d %q, want a record", rc, out)
+	if out, rc := h.kidoAs(caller, "", nil, "run-outcome", "--result", "stopped", "--", phased.ID); rc != 0 {
+		t.Fatalf("run-outcome --result stopped = %d %q", rc, out)
 	}
-	if info := h.runInfo(phased.ID); info.Outcome != "completed" {
-		t.Errorf("record-only outcome = %+v, want completed", info)
+	if out, rc := h.kidoAs(caller, "", nil, "run-outcome", "--result", "completed", "--", phased.ID); rc != 5 || !strings.Contains(out, "already has an outcome, or is gone") {
+		t.Fatalf("second run-outcome = %d %q, want exit 5 and a lost write", rc, out)
 	}
-	if !h.paneExists(phased.paneID()) {
-		t.Error("run-stop --record-only closed the pane")
+	if out, rc := h.kidoAs(caller, "", nil, "run-stop", phased.ID); rc != 0 || !strings.Contains(out, "stopped run "+phased.ID) {
+		t.Fatalf("run-stop after an outcome = %d %q, want a stop", rc, out)
 	}
+	h.waitFor(func() bool { return !h.paneExists(phased.paneID()) }, settle, msgf("run-stop to close the recorded run's pane"))
 	if out, rc := h.kidoAs(caller, "", nil, "run-stop", phased.ID); rc != 5 || !strings.Contains(out, "already ended") {
-		t.Errorf("run-stop of a record-only run = %d %q, want exit 5 at once", rc, out)
+		t.Errorf("run-stop of a recorded run = %d %q, want exit 5", rc, out)
 	}
-	if out, rc := h.kidoAs(caller, "", nil, "run-stop", phased.ID, "--cleanup"); rc != 0 {
-		t.Fatalf("run-stop --cleanup = %d %q", rc, out)
+
+	ended := h.startRun(caller, "run", "--name", "run-ended", "--", "sh", "-c", "exit 0")
+	h.waitFor(func() bool { return h.paneDead(ended.paneID()) }, settle, msgf("the exited run's pane to die"))
+	if out, rc := h.kidoAs(caller, "", nil, "run-stop", "--result", "completed", ended.ID); rc != 5 || !strings.Contains(out, "already ended") {
+		t.Errorf("run-stop of a dead pane = %d %q, want exit 5 and already ended", rc, out)
 	}
-	h.waitFor(func() bool { return !h.paneExists(phased.paneID()) }, settle, msgf("--cleanup to close the pane"))
-	for _, args := range [][]string{
-		{"run-stop", phased.ID, "--cleanup", "--result", "completed"},
-		{"run-stop", phased.ID, "--cleanup", "--record-only"},
-	} {
-		if out, rc := h.kidoAs(caller, "", nil, args...); rc != 1 {
-			t.Errorf("kido %v = %d %q, want exit 1", args, rc, out)
-		}
+	if info := h.runInfo(ended.ID); info.Outcome != "completed" {
+		t.Errorf("dead pane's run = %+v, want recorded completed", info)
 	}
 
 	lonely := h.startRun(caller, "run", "--name", "run-lonely", "--", "sleep", "300")

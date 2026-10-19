@@ -10,8 +10,9 @@ let option = Option.value ~default:""
 
 let classify (p : State.pane) =
   let app =
-    Tmux.Program_status.root p.program_status
-    |> Option.flat_map (fun (r : Tmux.Program_status.record) -> r.app)
+    match Tmux.Program_status.root p.program_status with
+    | Some r -> Tmux.Program_status.app p.program_status r
+    | None -> None
   in
   match (p.ssh, p.current_command, app) with
   | Some (user, host), "ssh", app ->

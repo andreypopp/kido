@@ -15,6 +15,8 @@ import {
   withEnv,
   pollUntil,
   customMessages,
+  agentJson,
+  argAfter,
   sendToInbox,
   envelope,
   type Fixture,
@@ -24,30 +26,21 @@ const SELF = "self-session";
 
 type Started = Awaited<ReturnType<typeof startNamedSession>>;
 
-function agentJson(fx: Fixture, name: string): { session: string; run: string } {
-  return JSON.parse(readFileSync(join(fx.agentDir(SELF, name), "agent.json"), "utf8"));
-}
-
 // A spawned child whose first run has ended: the pane is gone and the run has an
 // outcome, exactly what a restart resolves.
 async function endedChild(fx: Fixture, options: { sessionFile?: boolean; outcome?: string } = {}): Promise<{ s: Started; child: { session: string; run: string } }> {
   fx.setPanes([selfPane()]);
   const s = await startNamedSession(fx, "Self");
   await s.tools.get("spawn_subagent").execute("c", { task: "do the thing", name: "kid" });
-  const child = agentJson(fx, "kid");
+  const child = agentJson(fx, SELF, "kid");
   fx.setRuns([
     {
-      id: "fake-run-id", name: "kid", kind: "agent", parent: "%1", pane: "@9.%9", session: child.session,
+      id: "fake-run-id", name: "kid", parent: "%1", pane: "%9", session: child.session,
       startedAt: "2023-11-14T22:00:00Z", outcome: { result: options.outcome ?? "completed", text: "" },
     },
   ]);
   if (options.sessionFile) writeFileSync(join(fx.agentDir(SELF, "kid"), "session-file"), "/tmp/kid.json");
   return { s, child };
-}
-
-function argAfter(args: string[], flag: string): string | undefined {
-  const at = args.indexOf(flag);
-  return at >= 0 ? args[at + 1] : undefined;
 }
 
 test("a message to an ended child restarts it with the message as pi's first prompt when a session file exists", async () => {
@@ -64,8 +57,8 @@ test("a message to an ended child restarts it with the message as pi's first pro
       "--env", `KIDO_AGENT_DIR=${join(fx.stateDir, "agents", SELF, "kid")}`,
       "--", "kido-pi", "--session", "/tmp/kid.json", "--name", "kid", "carry on",
     ]);
-    assert.equal(agentJson(fx, "kid").run, "restarted-run", "agent.json names the new run");
-    assert.equal(agentJson(fx, "kid").session, child.session, "the pi session is the same");
+    assert.equal(agentJson(fx, SELF, "kid").run, "restarted-run", "agent.json names the new run");
+    assert.equal(agentJson(fx, SELF, "kid").session, child.session, "the pi session is the same");
     await pollUntil(() => fx.runWaitCalls().some((call) => call.includes("restarted-run")), 2000, "a run-wait for the new run");
   } finally {
     await fx.restore();
@@ -130,7 +123,7 @@ test("an async_bash run cannot be messaged", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
-    fx.setRuns([{ id: "job-id", name: "job", kind: "bash", parent: "%1" }]);
+    fx.setRuns([{ id: "job-id", name: "job", parent: "%1" }]);
     const s = await startNamedSession(fx, "Self");
     assert.equal(
       (await s.tools.get("message_agent").execute("c", { to: "job", message: "x" })).content[0].text,
@@ -180,7 +173,7 @@ test("a restarted parent starts one run-wait per live child on its first turn", 
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: "child-session", name: "child" })]);
     // kido records every run-child as kind bash; the agent map is the only source
     // that says this run is an agent.
-    fx.setRuns([{ id: "live-child", name: "child", kind: "bash", parent: "%1", pane: "%2", session: "child-session", startedAt: "2023-11-14T22:00:00Z", output: join(fx.stateDir, "runs", "live-child", "output") }]);
+    fx.setRuns([{ id: "live-child", name: "child", parent: "%1", pane: "%2", session: "child-session", startedAt: "2023-11-14T22:00:00Z", output: join(fx.stateDir, "runs", "live-child", "output") }]);
     mkdirSync(join(fx.stateDir, "runs", "live-child"), { recursive: true });
     writeFileSync(join(fx.stateDir, "runs", "live-child", "output"), "line\n");
     await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "completed", text: "" }) }, async () => {
@@ -206,7 +199,7 @@ test("a restarted parent watches a live bash run as a bash ending, with the outp
     mkdirSync(join(fx.stateDir, "runs", "live-bash"), { recursive: true });
     writeFileSync(output, "boom\n");
     fx.setPanes([selfPane()]);
-    fx.setRuns([{ id: "live-bash", name: "build", kind: "bash", parent: "%1", startedAt: "2023-11-14T22:00:00Z", output }]);
+    fx.setRuns([{ id: "live-bash", name: "build", parent: "%1", startedAt: "2023-11-14T22:00:00Z", output }]);
     await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "failed", text: "exit status 3" }) }, async () => {
       const s = await startNamedSession(fx, "Self");
       await s.emit("agent_start");

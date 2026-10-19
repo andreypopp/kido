@@ -76,8 +76,8 @@ func TestRunRecordSurvivesReapAsSignal(t *testing.T) {
 	r := h.startRun(caller, "run", "--name", "died-e2e", "--", "sh", "-c", "exec sleep 300")
 	h.killPane(r.paneID())
 
-	h.waitFor(func() bool { return !h.windowExists(r.Pane[:strings.Index(r.Pane, ".")]) }, settle,
-		msgf("the sidebar's sweep to close window %s", r.Pane))
+	h.waitFor(func() bool { return !h.windowExists(r.Window) }, settle,
+		msgf("the sidebar's sweep to close window %s", r.Window))
 
 	if got := h.runOutcome(r.ID); got != "failed" {
 		t.Errorf("run %s outcome = %q, want %q", r.ID, got, "failed")
@@ -95,8 +95,8 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	script := fmt.Sprintf(`echo %s; sleep 0.3; %s run-outcome --result completed -- "$KIDO_RUN_ID"`, marker, kidoBin)
 	r := h.startRun(caller, "run", "--name", "done-e2e", "--", "bash", "-c", script)
 
-	h.waitFor(func() bool { return !h.windowExists(r.Pane[:strings.Index(r.Pane, ".")]) }, settle,
-		msgf("the sidebar's sweep to close window %s once the run has exited", r.Pane))
+	h.waitFor(func() bool { return !h.windowExists(r.Window) }, settle,
+		msgf("the sidebar's sweep to close window %s once the run has exited", r.Window))
 
 	if got := h.runOutcome(r.ID); got != "completed" {
 		t.Errorf("run %s outcome = %q, want %q (the sweep's own Died guess must not win the race)", r.ID, got, "completed")

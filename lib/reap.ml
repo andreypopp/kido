@@ -55,16 +55,9 @@ let%test_module "Tests" =
         dead_at = Option.map (fun secs -> now -. Float.of_int secs) dead;
       }
 
-    let meta ?parent ?pane id : Run.meta =
-      {
-        id = run_id id;
-        name = "";
-        parent;
-        pane = Option.map Tmux.pane_id_of_string pane;
-        pid = 0;
-        cwd = "";
-        started_at = 0.;
-      }
+    let meta ~dir ?parent ?pane id : Run.meta =
+      let m = Test_fixture.run ~dir ?pane id in
+      { m with parent }
 
     let state ~dir ~bystander panes metas =
       List.iter (Run.write_meta ~dir) metas;
@@ -97,7 +90,7 @@ let%test_module "Tests" =
       let show label dead_at (p : State.pane) =
         let id = "run-" ^ label in
         let p = { p with dead_at = Some dead_at; run = Some id } in
-        let closing = sweep_panes ~metas:[ meta ~pane:"%1" id ] ~dir [ p ] in
+        let closing = sweep_panes ~metas:[ meta ~dir ~pane:"%1" id ] ~dir [ p ] in
         show label ~dir [ id ] closing
       in
       show "young" (now -. 0.5) (pane ~dead_status:3 "%1" "@1");
@@ -125,7 +118,7 @@ let%test_module "Tests" =
       in
       let dead_parent = { live_parent with dead_at = Some now } in
       let no_root = { live_parent with program_status = Tmux.Program_status.empty } in
-      let ended_parent = meta ~pane:"%9" "parent" in
+      let ended_parent = meta ~dir ~pane:"%9" "parent" in
       let run_outcome () =
         ignore
           (Run.record_outcome ~dir (run_id "parent") { result = Completed; text = ""; at = None })
@@ -134,7 +127,7 @@ let%test_module "Tests" =
         let id = "child-" ^ label in
         let closing =
           sweep_panes ~dir
-            ~metas:(meta ?parent ~pane:"%1" id :: metas)
+            ~metas:(meta ~dir ?parent ~pane:"%1" id :: metas)
             (pane ~run:id "%1" "@1" :: panes)
         in
         show label ~dir [ id ] closing
@@ -167,7 +160,7 @@ let%test_module "Tests" =
 
     let%expect_test "the sweep never closes the client's window or a session's last window" =
       let dir = Filename.temp_dir "kido-reap" "" in
-      let metas = [ meta ~pane:"%1" "run-a" ] in
+      let metas = [ meta ~dir ~pane:"%1" "run-a" ] in
       show "focused" ~dir [ "run-a" ]
         (sweep_panes ~dir ~metas [ pane ~run:"run-a" ~dead:2 ~watched:true "%1" "@1" ]);
       show "last" ~dir [ "run-a" ]

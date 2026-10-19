@@ -1,4 +1,4 @@
-type created = { meta : Run.meta; window : Tmux.window_id; pane : Tmux.pane_id; output : string }
+type created = { meta : Run.meta; window : Tmux.window_id; pane : Tmux.pane_id }
 type error = Refused_name of string | Failed of string
 
 val start :

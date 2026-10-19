@@ -50,7 +50,9 @@ val parent_ended : dir:string -> t -> Run.parent -> string option
 val read : dir:string -> Tmux.t -> (t, string) result
 val shell : pane -> shell
 val find : t -> Tmux.pane_id -> pane option
+val pi_root : pane -> bool
 val read_pane : Tmux.t -> Tmux.pane_id -> (t, string) result
+val read_run : Tmux.t -> Run.meta -> (t, string) result
 val caller_pane : t -> Tmux.pane_id option -> (pane, string) result
 
 val find_window_run : t -> Tmux.window_id -> pane option

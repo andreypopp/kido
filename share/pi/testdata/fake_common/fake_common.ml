@@ -23,7 +23,8 @@ let append path text =
     Out_channel.with_open_gen [ Open_append; Open_creat ] 0o644 path (fun channel ->
         Out_channel.output_string channel text)
 
-let log path json = append (Fs.getenv path) (Yojson.Safe.to_string json ^ "\n")
+let log path args =
+  append (Fs.getenv path) (Yojson.Safe.to_string (`List (List.map (fun s -> `String s) args)) ^ "\n")
 
 let arg_after flag args =
   let rec find = function

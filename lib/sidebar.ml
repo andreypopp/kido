@@ -41,7 +41,7 @@ let active snap =
   else
     Option.flat_map (fun (c : Tmux.client) -> State.active_pane snap.visible c.session) snap.client
 
-let lingering_subagents ~dir ~state runs =
+let lingering ~dir ~state runs =
   Tmux.Pane_map.fold
     (fun _ (m : Run.meta) ->
       String_map.add (Run.string_of_id m.id)
@@ -79,7 +79,7 @@ let take ~opts conn prev client =
         state;
         visible;
         err = None;
-        lingering = lingering_subagents ~dir:opts.dir ~state state.runs;
+        lingering = lingering ~dir:opts.dir ~state state.runs;
       }
 
 let same a b =
@@ -101,10 +101,9 @@ let same a b =
   && String_map.equal Stdlib.( = ) a.lingering b.lingering
 
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
-type run = { started : Timestamp.t }
 
 type lifecycle =
-  | Live of { status : Pane_status.kind; run : run option }
+  | Live of { status : Pane_status.kind; started : Timestamp.t option }
   | Ended of { result : Run.result option }
 
 type row = {
@@ -177,10 +176,8 @@ let pane_label m (d : pane) =
                l.name
            | (Terminal | Ssh { pane = Remote_terminal; _ }), _ -> Pane_status.label d.track p),
           Live
-            {
-              status = d.status;
-              run = Option.map (fun (l : lingering) -> { started = l.started }) lingering;
-            } )
+            { status = d.status; started = Option.map (fun (l : lingering) -> l.started) lingering }
+        )
   in
   { pane = p.pane_id; window = p.window_id; title; run = p.run; lifecycle }
 
@@ -544,7 +541,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
             (State.order_sessions state)
         with
         | Some (s : State.session) ->
-            order_windows_by_tree s.windows state.runs (lingering_subagents ~dir ~state state.runs)
+            order_windows_by_tree s.windows state.runs (lingering ~dir ~state state.runs)
             |> List.filter_map (fun (w : placement) ->
                 match w.anchor with None -> Some (List.hd w.panes).window_id | Some _ -> None)
         | None -> []
@@ -587,7 +584,7 @@ let handle : type a. tmux:Tmux.t -> dir:string -> client:string -> a request -> 
         (Result.flat_map
            (fun (state : State.t) ->
              let next = match direction with Next -> true | Prev -> false in
-             let lingering = lingering_subagents ~dir ~state state.runs in
+             let lingering = lingering ~dir ~state state.runs in
              let windows = windows_in_order state lingering in
              match
                let open Option.Infix in
@@ -717,9 +714,9 @@ let%test_module "Tests" =
       let row = pane_label m (Tmux.Pane_map.find p.pane_id m.pane_data) in
       Printf.sprintf "%S %s" row.title
         (match row.lifecycle with
-        | Live { status; run } -> (
+        | Live { status; started } -> (
             Yojson.Safe.to_string (Pane_status.yojson_of_kind status)
-            ^ match run with Some (_ : run) -> " run started" | None -> "")
+            ^ match started with Some _ -> " run started" | None -> "")
         | Ended { result } ->
             Printf.sprintf "ended %s"
               (match result with Some x -> Run.string_of_result x | None -> "unknown"))
@@ -728,8 +725,8 @@ let%test_module "Tests" =
       let state = state l panes in
       { empty with state; visible = state }
 
-    let lingering ~dir ~state pane id =
-      lingering_subagents ~dir ~state
+    let lingering_of ~dir ~state pane id =
+      lingering ~dir ~state
         (Tmux.Pane_map.singleton (Tmux.pane_id_of_string pane)
            (Option.get_exn_or "run" (Run.read_meta ~dir (Test_fixture.run_id id))))
 
@@ -766,7 +763,7 @@ let%test_module "Tests" =
       let snap = snap_of ~l:st [ p ] in
       let run = Option.get_exn_or "run" (Run.read_meta ~dir (Test_fixture.run_id id)) in
       let state = { snap.state with runs = Tmux.Pane_map.add p.pane_id run snap.state.runs } in
-      let m = tick ~m:(model ~dir ()) { snap with lingering = lingering ~dir ~state "%30" id } in
+      let m = tick ~m:(model ~dir ()) { snap with lingering = lingering_of ~dir ~state "%30" id } in
       print_endline (label m p);
       [%expect {| "Named" ended died |}]
 
@@ -1129,7 +1126,7 @@ let%test_module "Tests" =
         let p = pane ~run:"dead-run" ~dead_at:1. ~dead_status:status "%1" in
         let m = { (meta (Test_fixture.run_id "dead-run") "") with pane = Some p.pane_id } in
         let state = State_fixture.state ~dir [ p ] [ m ] in
-        let l = String_map.find "dead-run" (lingering ~dir ~state "%1" "dead-run") in
+        let l = String_map.find "dead-run" (lingering_of ~dir ~state "%1" "dead-run") in
         print_endline (match l.outcome with Some r -> Run.string_of_result r | None -> "none")
       in
       show 0;

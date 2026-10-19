@@ -86,8 +86,8 @@ Every run has one directory `<state>/runs/<run-id>/`. Each write
 replaces a whole file:
 
 - `meta.json`: written by `kido run` or `kido run-child` at the start.
-  It contains the id, name, parent, pane, the pane's pid, cwd, the
-  command and the start time. The parent is optional: absent for a
+  It contains the id, name, parent, pane, the pane's pid, cwd and the
+  start time. The parent is optional: absent for a
   top-level run, a run id for a run that owns it, or the pane id `%N`
   of a top-level pi (`kido run-child %N`). The JSON is the bare string
   in both cases; a run id never starts with `%`.
@@ -634,12 +634,12 @@ window.
 
 | command | does |
 |---|---|
-| `kido run --name N [--cwd D] [--session S] [--env K=V]... -- CMD...` | starts a parentless run; prints `{"id":ID,"pane":"@WIN.%PANE","output":PATH}` |
+| `kido run --name N [--cwd D] [--session S] [--env K=V]... -- CMD...` | starts a parentless run; prints `{"id":ID,"window":"@WIN","pane":"%PANE","output":PATH}` |
 | `kido run-child PARENT ...` | the same, under PARENT: a live run id, or the pane `%N` of a live pi root |
 | `kido runs [--json] [--parent P] [ID]` | lists runs newest first, with a SESSION column, or one run; each JSON row has the run's `output` path |
-| `kido run-outcome ID --result completed\|failed [--text T]` | the run's own report of its ending |
+| `kido run-outcome ID --result completed\|failed\|stopped [--text T]` | records an ending, first write wins; a lost write exits 5 |
 | `kido run-wait ID [--json]` | blocks until the run has ended; prints the result, or the outcome object |
-| `kido run-stop ID [--wait SECS] [--result stopped\|completed] [--record-only\|--cleanup]` | records the result, then ends the process and closes its pane |
+| `kido run-stop ID [--wait SECS] [--result stopped\|completed]` | records the result, then ends the process and closes its pane |
 
 `run` and `run-child` mint an opaque id, write `meta.json` and
 `command`, and create the window through `Run_window.start`. `--name` is required, because a
@@ -649,37 +649,33 @@ defaults to the caller's session; `--cwd` defaults to the caller's cwd.
 The argv is the pane's command, `execvp`'d by tmux; no wrapper runs
 around it. The window's environment has `KIDO_RUN_ID` and
 `KIDO_RUN_OUTPUT=<dir>/runs/<id>/output`, plus each `--env`. The
-SESSION column of `kido runs` is the live pane's `@kido_session`, empty
-when the pane is dead or gone; kido stores nothing for it.
+SESSION column of `kido runs` is the live pane's `@kido_session` while
+the pane has a pi root, else empty; kido stores nothing for it.
 
 Exit codes: 0 success; 1 usage or any other error (a tmux failure, the
 last-window refusal); 2 a bad or unknown
 PARENT or `--parent` (an unknown or ended run, a gone or dead pane, a
 pane without a pi root); 3 a bad or unknown run id; 4 a refused window
-name; 5 `run-stop` of a run that has already ended (an outcome, or a dead or
-gone pane).
+name; 5 `run-stop` of a run with no live pane (dead or gone), or a
+`run-outcome` write that loses to an earlier outcome.
 
 `run-wait` polls at the sidebar's tick. Each poll reads the outcome
-file, then the panes of the run's own window (`State.read_pane`), not
+file, then the panes of the run's own window (`State.read_run`), not
 the whole server. tmux gives the same error for a gone pane and for a
 failed server, so after an error one `list-panes -a` tells them apart.
 `run-stop` waits with the same read. A pid is never evidence: a killed pane whose process survives
 its HUP has ended, and `run-wait` reports `died`.
 
 **run-stop** records its result first, so that an ending that the pane
-produces later cannot replace it. Then it waits `--wait` seconds
-(default 0) for the pane to die, sends TERM to the pane's process
+produces later cannot replace it. If an outcome already exists, the
+earlier outcome stays and the stop continues. Then it waits `--wait`
+seconds (default 0) for the pane to die, sends TERM to the pane's process
 group, KILL after `KIDO_STOP_ESCALATION_MS`, and kills the pane under
 the last-window refusal (`Reap.close_of`). A refusal exits 1 with the
-outcome recorded. A run that has already ended (an outcome, or a dead
-or gone pane) exits 5 at once.
+outcome recorded. A run with no live pane (dead or gone) exits 5 at once.
 
-The two phases can also run separately, for a caller that must act
-between them. `--record-only` records the result and exits; it exits 5
-for a run that has already ended. `--cleanup` does only the second
-phase: it waits, signals and closes the pane of a run that has an
-outcome, and records nothing. Thus, it refuses `--result`.
-`Run_stop.mode` holds the three cases. `--result completed` is for a subagent that reported
+A caller that must act between the record and the stop records first
+with `run-outcome`, then runs `run-stop`. `--result completed` is for a subagent that reported
 before it was stopped. `kido run-stop` sends no notice; the caller's
 `run-wait` reports the ending.
 
@@ -754,7 +750,10 @@ window, the caller uses `kill-window`.
 
 These operations differ. Killing a window's last pane also closes the
 window. However, only the window case can destroy a session. Only that
-case must obey the last-window refusal.
+case must obey the last-window refusal. A window linked into several
+sessions lists its one pane once for each session. Thus, the whole-window
+case counts distinct pane ids, and it refuses when the window is the last
+window of any session that it is linked into.
 
 The pane-scoped `@kido_run` returns the window to ordinary use without a
 separate unmark step. Killing the run's pane removes the option, which
@@ -875,11 +874,11 @@ stops at a repeated session, so a corrupt map entry that names itself
 as parent cannot let a session stop itself.
 
 **Escalation.** An unresponsive child does not answer. `stop_run` first
-records the outcome with `kido run-stop ID --record-only`. The child's
+records the outcome with `kido run-outcome ID --result stopped`. The child's
 own shutdown writes `completed` or `failed`, so a request sent before
-the record would let that write win. A failed record other than exit 5
-ends the stop before the request. Then it sends its request, and runs
-`kido run-stop ID --cleanup --wait 5` whatever the request returned: a
+the record would let that write win. A record that loses to an earlier
+outcome is ignored. Then it sends its request, and runs
+`kido run-stop ID --wait 5` whatever the request returned: a
 recorded stop must also end the process. A request that fails is
 reported beside the cleanup's result. The extension's deadline for
 `run-stop` is its `--wait` plus `KIDO_STOP_ESCALATION_MS` plus 1.5 s,
@@ -986,8 +985,9 @@ outcomes are `completed` and `failed`. Its shutdown reports them through
 its first turn, `failed` otherwise (design-subagents.md, "A child's
 life"). kido cannot distinguish more cases from outside the process.
 
-`run-outcome` accepts no other values. `died` and `stopped` are kido's
-external judgments. A process cannot claim these about itself. This is a
+`run-outcome` also accepts `stopped`, which a parent's `stop_run`
+records before it stops the child. `died` is kido's external judgment
+only. This is a
 separate command, so any run can end, including one that never reports
 status.
 

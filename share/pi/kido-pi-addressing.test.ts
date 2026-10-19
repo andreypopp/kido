@@ -108,7 +108,7 @@ test("a message to a running agent says it is queued, and only a descendant gets
       agentPane({ pane: "%3", session: "kid-session", name: "kid", inbox: inbox.path, state: "working" }),
     ]);
     fx.writeAgent(SELF, "kid", { session: "kid-session", run: "kid-run" });
-    fx.setRuns([{ id: "kid-run", name: "kid", kind: "agent", parent: "%1", pane: "%3", session: "kid-session" }]);
+    fx.setRuns([{ id: "kid-run", name: "kid", parent: "%1", pane: "%3", session: "kid-session" }]);
     const s = await startNamedSession(fx, "caller");
 
     assert.equal(

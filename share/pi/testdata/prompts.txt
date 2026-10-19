@@ -222,7 +222,7 @@ parameters:
 
 Built inside share/pi/kido-pi.ts's closures. `<from>` is the sender's name, else its session id, else its pane, else "another agent".
 
-### a spawned task (deliverTask)
+### a spawned task (deliver)
 
 ```
 the task text verbatim, as a user message, once

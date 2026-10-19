@@ -131,7 +131,7 @@ func (h *harness) runScript(session, outName, script string) string {
 func (h *harness) typeScript(pane, outName, script string) string {
 	h.t.Helper()
 	outFile := filepath.Join(h.dir, outName)
-	h.in("send-keys", "-t", pane, "-l", fmt.Sprintf("%s %s > %s 2>&1; echo rc=$? >> %s", h.callerShell(pane), script, outFile, outFile))
+	h.in("send-keys", "-t", pane, "-l", fmt.Sprintf("%s > %s 2>&1; echo rc=$? >> %s", script, outFile, outFile))
 	h.in("send-keys", "-t", pane, "Enter")
 	return h.waitFileContains(outFile, "rc=")
 }
@@ -250,7 +250,7 @@ func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 		kidoBin)
 	r := h.startRun(caller, "run", "--name", "completed-sweep-e2e", "--", "bash", "-c", script)
 	runID := r.ID
-	windowID, _, _ := strings.Cut(r.Pane, ".")
+	windowID := r.Window
 	h.waitFor(func() bool { return h.runOutcome(runID) == "completed" }, settle,
 		msgf("run %s to record its own completed outcome", runID))
 
@@ -307,7 +307,7 @@ func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 	caller := h.firstPane("alpha")
 	r := h.startRun(caller, "run", "--name", "splitrun", "--", "sh", "-c",
 		fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done", finish))
-	runWindowID, runPaneID, _ := strings.Cut(r.Pane, ".")
+	runWindowID, runPaneID := r.Window, r.Pane
 	runID := r.ID
 	splitPaneID := h.in("split-window", "-P", "-F", "#{pane_id}", "-t", runWindowID,
 		"-c", h.dir, "sh", "-c", fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done", stop))
@@ -414,7 +414,7 @@ func TestReapLeavesARunAloneWithinItsLinger(t *testing.T) {
 	caller := h.firstPane("alpha")
 	r := h.startRun(caller, "run", "--name", "young-e2e", "--", "sh", "-c", "echo young-screen-e2e; exec sleep 300")
 	runID := r.ID
-	windowID, _, _ := strings.Cut(r.Pane, ".")
+	windowID := r.Window
 	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
 
 	h.runScript("alpha", "reap-young.out", "KIDO_LINGER_SECONDS=600 "+kidoBin+" reap")

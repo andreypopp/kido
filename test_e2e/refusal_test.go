@@ -53,7 +53,7 @@ func TestCmdlinerRefusals(t *testing.T) {
 		args   []string
 		stderr string
 	}{
-		{[]string{"run-outcome", "--result", "died", "run-a"}, "kido: option '--result': invalid value 'died', expected either 'completed' or"},
+		{[]string{"run-outcome", "--result", "died", "run-a"}, "kido: option '--result': invalid value 'died', expected one of 'stopped',"},
 	} {
 		cmd := exec.Command(kidoBin, c.args...)
 		cmd.Env = cleanEnv("KIDO_STATE_DIR="+state, "TERM=dumb")

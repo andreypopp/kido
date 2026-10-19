@@ -276,7 +276,9 @@ let indicator m (r : S.row) =
         | _, _ when Option.is_some exit -> exit
         | _, Some (Held t) when Float.(m.side.at - t < hold) -> Some Running
         | Unknown, _
-          when match r.lifecycle with Live { run; _ } -> Option.is_some run | Ended _ -> false ->
+          when match r.lifecycle with
+               | Live { started; _ } -> Option.is_some started
+               | Ended _ -> false ->
             Some Running
         | _ -> None)
   in
@@ -323,10 +325,10 @@ let title theme (r : S.row) =
       match if interactive then command status else None with
       | Some c -> [ span `Proc ": "; plain c ]
       | None -> [])
-  | Live { status = Terminal status; run } -> (
+  | Live { status = Terminal status; started } -> (
       match command status with
       | Some c -> [ span `Proc c ]
-      | None when Option.is_none status.report && Option.is_none run -> [ span `Proc r.title ]
+      | None when Option.is_none status.report && Option.is_none started -> [ span `Proc r.title ]
       | None -> [ plain r.title ])
   | Live { status = Some_agent _ | Pi_agent _ | Ssh { pane = Remote_agent _; _ }; _ } ->
       [ plain r.title ]
@@ -382,8 +384,8 @@ let parts m : line -> span list * span list * span list =
         | None -> (
             match
               match r.lifecycle with
-              | Live { run = Some run; _ } -> Some run.started
-              | Live { run = None; _ } | Ended _ -> None
+              | Live { started = Some started; _ } -> Some started
+              | Live { started = None; _ } | Ended _ -> None
             with
             | Some s -> [ plain " "; span `Dim (elapsed (m.side.at -. s)) ]
             | None -> []) ))
@@ -548,7 +550,7 @@ let next_wait m =
   List.fold_left
     (fun wait i ->
       match m.lines.(i) with
-      | Row (_, _, ({ lifecycle = Live { run = Some { started = s; _ }; _ }; _ } as r))
+      | Row (_, _, ({ lifecycle = Live { started = Some s; _ }; _ } as r))
         when Option.is_none (caption r) ->
           Float.min wait (1. -. Float.rem (now -. s) 1.)
       | Row _ | Program _ | Header _ | Message _ -> wait)

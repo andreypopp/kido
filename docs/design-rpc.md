@@ -161,8 +161,9 @@ Each pane item contains:
 
 Child windows stay within a session.
 
-Run classification distinguishes subagents, plain bash and streamed bash,
-including ended or lingering panes. A live run contains its metadata start
+A pane item's `run` is the opaque run id that the pane's `@kido_run`
+option names, or null. kido does not classify runs. An ended or lingering
+pane keeps its `run`. A live run contains its metadata start
 time while its pane is alive and no outcome is recorded. This is independent
 of activity text or agent status. Ended runs, top-level agents, shells
 and ssh have no run start time.

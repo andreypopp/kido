@@ -4,7 +4,6 @@ val parse_id : string -> (id, string) result
 val new_id : unit -> id
 val string_of_id : id -> string
 val output_path : dir:string -> id -> string
-val meta_path : dir:string -> id -> string
 
 type optional_id = Tmux.pane_id option [@@deriving yojson]
 type parent = Run of id | Pane of Tmux.pane_id [@@deriving equal]
@@ -39,7 +38,10 @@ val record_outcome : dir:string -> id -> outcome -> bool
 
 val read_screen : dir:string -> id -> string option
 
-val run_outcome : dir:string -> result:result -> text:string -> id -> (unit, string) Stdlib.result
+type run_outcome_error = No_run of string | Lost of string
+
+val run_outcome :
+  dir:string -> result:result -> text:string -> id -> (unit, run_outcome_error) Stdlib.result
 (** Records a run's own ending, saving the pane's screen first for a failure. *)
 
 type pane_state = Live | Dead of { status : int option; signal : string option }

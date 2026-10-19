@@ -21,24 +21,6 @@ type send = { pane : pane_id; target : pane_id; text : string }
 type error_kind = Refused | Unknown | Invalid
 type error = { kind : error_kind; message : string }
 
-let deliver ~tmux ~inbox ~payload ~pane ~name text =
-  if String.is_empty inbox then
-    match pane with
-    | None -> Error { kind = Invalid; message = "pane \"\" not found" }
-    | Some pane ->
-        Result.map
-          (fun () -> Paste)
-          (Result.map_err
-             (fun message -> { kind = Unknown; message })
-             (send_prompt ~tmux pane text))
-  else
-    match Msg.deliver ~path:inbox payload with
-    | Ok () -> Ok Inbox
-    | Error (Unavailable _) ->
-        Error { kind = Refused; message = name ^ " is not accepting messages" }
-    | Error (Refused message) -> Error { kind = Refused; message }
-    | Error (Failed message) -> Error { kind = Unknown; message }
-
 type candidate = { pane : pane_id; session : session_id; window : window_id; title : string }
 [@@deriving yojson_of]
 
@@ -72,6 +54,21 @@ let reachable (state : State.t) (self : State.pane) =
          state.panes)
   in
   own @ rest
+
+let deliver ~tmux (r : reachable) text =
+  if String.is_empty r.inbox then
+    Result.map
+      (fun () -> Paste)
+      (Result.map_err
+         (fun message -> { kind = Unknown; message })
+         (send_prompt ~tmux r.candidate.pane text))
+  else
+    match Msg.deliver ~path:r.inbox text with
+    | Ok () -> Ok Inbox
+    | Error (Unavailable _) ->
+        Error { kind = Refused; message = r.name ^ " is not accepting messages" }
+    | Error (Refused message) -> Error { kind = Refused; message }
+    | Error (Failed message) -> Error { kind = Unknown; message }
 
 let resolve ~tmux ~dir pane =
   let open Result.Infix in
@@ -108,8 +105,7 @@ let send ~tmux ~dir { pane; target; text } =
               Printf.sprintf "pane %S is not a candidate of pane %S" (string_of_pane_id target)
                 (string_of_pane_id pane);
           }
-    | Some r ->
-        deliver ~tmux ~inbox:r.inbox ~payload:text ~pane:(Some r.candidate.pane) ~name:r.name text
+    | Some r -> deliver ~tmux r text
 
 type failure = No_prompt | Not_found | Several | Failed of string
 
@@ -129,7 +125,5 @@ let prompt ~dir ~self ~window text =
     | [ r ] ->
         Result.map_err
           (fun (e : error) -> Failed e.message)
-          (Result.map ignore
-             (deliver ~tmux ~inbox:r.inbox ~payload:text ~pane:(Some r.candidate.pane) ~name:r.name
-                text))
+          (Result.map ignore (deliver ~tmux r text))
     | _ -> Error Several

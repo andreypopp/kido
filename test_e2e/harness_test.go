@@ -359,10 +359,6 @@ type harness struct {
 	proxy    string // ssh ProxyCommand script, written on demand
 }
 
-// callerShell is the environment prefix a command typed into a pane gets.
-// kido reads nothing from it after the cut.
-func (h *harness) callerShell(string) string { return "" }
-
 var sanitize = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 // start brings up both servers with one inner session and waits until the
@@ -1196,7 +1192,7 @@ func (h *harness) recordedRun(name string, flags ...string) (runID, windowID str
 	r := h.startRun(caller, "run-child", caller, "--name", name, "--", "sh", "-c", "exec sleep 300")
 	h.programStatus(r.paneID(), "state=idle:app=pi", title)
 	h.setPiOptions(r.paneID(), r.ID, title, "", "")
-	windowID, _, _ = strings.Cut(r.Pane, ".")
+	windowID = r.Window
 	return r.ID, windowID
 }
 

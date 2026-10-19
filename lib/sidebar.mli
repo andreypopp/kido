@@ -26,10 +26,9 @@ type snapshot = {
 val active : snapshot -> Tmux.pane_id option
 
 type client = { session : Tmux.session_id; window : Tmux.window_id; pane : Tmux.pane_id }
-type run = { started : Timestamp.t }
 
 type lifecycle =
-  | Live of { status : Pane_status.kind; run : run option }
+  | Live of { status : Pane_status.kind; started : Timestamp.t option }
   | Ended of { result : Run.result option }
 
 type row = {

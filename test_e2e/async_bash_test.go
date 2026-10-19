@@ -94,7 +94,7 @@ func TestRunRecordsItsRunAndItsCommand(t *testing.T) {
 	if len(command) != 5 || command[0] != "bash" || command[4] != "echo run-output; exit 3 | tee \"$KIDO_RUN_OUTPUT\"" {
 		t.Errorf("run command = %q, want the argv as given", command)
 	}
-	windowID, _, _ := strings.Cut(r.Pane, ".")
+	windowID := r.Window
 	started := h.startCommand(windowID)
 	if !strings.Contains(started, "bash -o pipefail -c") || !strings.Contains(started, "tee") {
 		t.Errorf("run window's command = %q, want the run's own bash pipeline", started)
@@ -115,7 +115,7 @@ func TestRunRowShowsElapsedThenOutcome(t *testing.T) {
 	finish := filepath.Join(h.dir, "tick-finish")
 	r := h.startRun(caller, "run", "--name", "tick-e2e", "--", "sh", "-c",
 		fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done", finish))
-	windowID, _, _ := strings.Cut(r.Pane, ".")
+	windowID := r.Window
 	h.in("select-window", "-t", windowID)
 
 	elapsed := regexp.MustCompile(`◼tick-e2e (\d+)s$`)

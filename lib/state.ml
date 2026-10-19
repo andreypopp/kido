@@ -199,6 +199,9 @@ let read_pane tmux id =
   | Error e -> (
       match Tmux.list_panes tmux ~format with Ok lines -> Ok (state lines) | Error _ -> Error e)
 
+let read_run tmux (m : Run.meta) =
+  match m.pane with None -> Ok empty | Some pane -> read_pane tmux pane
+
 let run_pane state (m : Run.meta) =
   let id = Some (Run.string_of_id m.id) in
   Option.bind
@@ -276,14 +279,16 @@ let window_focused t window_id =
   List.exists (fun p -> in_window window_id p && p.active && p.session_attached) t.panes
 
 let last_window t window_id =
-  match List.find_opt (in_window window_id) t.panes with
-  | None -> false
-  | Some { session_id; _ } ->
+  List.filter (in_window window_id) t.panes
+  |> List.exists (fun { session_id; _ } ->
       List.filter (fun p -> equal_session_id p.session_id session_id) t.panes
       |> List.map (fun p -> p.window_id)
-      |> List.uniq ~eq:equal_window_id |> List.length <= 1
+      |> List.uniq ~eq:equal_window_id |> List.length <= 1)
 
-let last_pane t window_id = List.count (in_window window_id) t.panes <= 1
+let last_pane t window_id =
+  List.filter (in_window window_id) t.panes
+  |> List.map (fun p -> p.pane_id)
+  |> List.uniq ~eq:equal_pane_id |> List.length <= 1
 
 let active_pane t session =
   List.find_map

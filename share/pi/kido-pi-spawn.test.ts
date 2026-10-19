@@ -16,19 +16,12 @@ import {
   withEnv,
   pollUntil,
   customMessages,
+  agentJson,
+  argAfter,
   type Fixture,
 } from "./kido-pi-fixture.ts";
 
 const SELF = "self-session";
-
-function agentJson(fx: Fixture, parent: string, name: string): { session: string; run: string; model: string; tools: string[]; fork: boolean } {
-  return JSON.parse(readFileSync(join(fx.agentDir(parent, name), "agent.json"), "utf8"));
-}
-
-function argAfter(args: string[], flag: string): string | undefined {
-  const at = args.indexOf(flag);
-  return at >= 0 ? args[at + 1] : undefined;
-}
 
 function writeOutput(fx: Fixture, text: string): string {
   const path = join(fx.stateDir, "runs", "fake-run-id", "output");
@@ -37,12 +30,11 @@ function writeOutput(fx: Fixture, text: string): string {
   return path;
 }
 
-function lastNotice(s: { messages: Array<{ message: { customType?: string; content: unknown } }> }): string {
-  const notices = s.messages.filter((m) => m.message.customType === "kido-notice");
-  return String(notices[notices.length - 1]?.message.content ?? "");
+function lastNotice(s: { messages: Array<{ message: { customType?: string; content: unknown }; opts: unknown }> }): string {
+  return String(customMessages(s, "kido-notice").at(-1)?.message.content ?? "");
 }
 
-function waitNotice(s: { messages: Array<{ message: { customType?: string; content: unknown } }> }, includes: string): Promise<void> {
+function waitNotice(s: { messages: Array<{ message: { customType?: string; content: unknown }; opts: unknown }> }, includes: string): Promise<void> {
   return pollUntil(() => lastNotice(s).includes(includes), 3000, `a notice naming ${JSON.stringify(includes)}`);
 }
 
@@ -53,7 +45,7 @@ test("spawn_subagent starts kido-pi as a run-child, writes the child's directory
     const s = await startNamedSession(fx, "Self");
     const result = await s.tools.get("spawn_subagent").execute("c", { task: "do the thing", name: "kid" });
 
-    assert.match(result.content[0].text, /^spawned kid \(window @9, pane @9\.%9, run fake-run-id\); its result arrives as a notice/);
+    assert.match(result.content[0].text, /^spawned kid \(window @9, pane %9, run fake-run-id\); its result arrives as a notice/);
     const argv = fx.runCalls()[0]!;
     const childSession = argAfter(argv, "--session-id")!;
     assert.match(childSession, /^[0-9a-f]{32}$/, "the parent mints the child's pi session id");
@@ -382,6 +374,114 @@ test("a working agent holds stream lines past the idle deadline, and agent_end s
   }
 });
 
+test("concurrent spawn_subagent calls with one name launch one child and refuse the other", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const gate = join(fx.stateDir, "runs-gate");
+    await withEnv({ KIDO_FAKE_RUNS_GATE: gate, KIDO_FAKE_RUN_ID: "fake-run-id" }, async () => {
+      const s = await startNamedSession(fx, "Self");
+      const spawn = s.tools.get("spawn_subagent");
+      const first = spawn.execute("a", { task: "first task", name: "kid" });
+      const second = spawn.execute("b", { task: "second task", name: "kid" });
+      await pollUntil(() => fx.runsCalls().length >= 1, 3000, "the first name check");
+      await new Promise((resolve) => setImmediate(resolve));
+      writeFileSync(gate, "");
+      const results = await Promise.all([first, second]);
+      const texts = results.map((r) => r.content[0].text);
+      assert.equal(texts.filter((t) => t.startsWith("spawned")).length, 1, "one spawn wins");
+      assert.equal(texts.filter((t) => t.includes("already taken")).length, 1, "the other is refused by name");
+      assert.equal(fx.runCalls().filter((argv) => argv[0] === "run-child").length, 1, "one run-child");
+      const task = readFileSync(join(fx.agentDir(SELF, "kid"), "task"), "utf8");
+      const winner = texts[0]!.startsWith("spawned") ? "first task" : "second task";
+      assert.equal(task, winner, "the surviving task is the winner's task");
+      assert.equal(agentJson(fx, SELF, "kid").run, "fake-run-id", "the surviving agent.json names the live run");
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("stop_run refuses this session's own name, session id and run id", async () => {
+  const fx = makeFixture();
+  try {
+    await asSubagent(
+      fx,
+      "worker-session",
+      async () => {
+        const inbox = await fx.startInbox();
+        fx.setPanes([agentPane({ pane: "%1", session: "worker-session", name: "worker", inbox: inbox.path })]);
+        const s = await startNamedSession(fx, "worker", "worker-session");
+        for (const to of ["worker", "worker-session", "worker-run"]) {
+          assert.match((await s.tools.get("stop_run").execute("c", { to })).content[0].text, /^no run matches/, to);
+        }
+        assert.equal(fx.runOutcomeCalls().length, 0, "self is not recorded");
+        assert.equal(fx.runStopCalls().length, 0, "self is not stopped");
+      },
+      { parent: "boss-session", name: "worker", run: "worker-run" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("idle stream backoff grows across idle turns and resets at a tool boundary", async (t) => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const gate = join(fx.stateDir, "gate");
+    const output = join(fx.stateDir, "runs", "fake-run-id", "output");
+    await withEnv(
+      { KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_STREAM_POLL_MS: "10", KIDO_STREAM_FLUSH_MS: "100", KIDO_STREAM_MAX_WAIT_MS: "1000" },
+      async () => {
+        const s = await startNamedSession(fx, "Self");
+        await s.tools.get("async_bash").execute("c", { command: "make", name: "build", stream: true });
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        const io = async (ms = 40): Promise<void> => {
+          const end = performance.now() + ms;
+          while (performance.now() < end) await new Promise((resolve) => setImmediate(resolve));
+        };
+        const batches = (): number => customMessages(s, "kido-stream").length;
+        const idleTurn = async (): Promise<void> => {
+          await s.emit("agent_start");
+          await s.emit("turn_end", { toolResults: [] });
+          await s.emit("agent_end", { messages: [] });
+          await s.emit("agent_settled", {}, { isIdle: () => true });
+        };
+
+        appendFileSync(output, "one\n");
+        await io();
+        t.mock.timers.tick(100);
+        assert.equal(batches(), 1, "the base delay sends the first batch");
+
+        await idleTurn();
+        appendFileSync(output, "two\n");
+        await io();
+        t.mock.timers.tick(199);
+        assert.equal(batches(), 1, "the second idle wait has doubled");
+        t.mock.timers.tick(1);
+        assert.equal(batches(), 2, "the doubled delay sends the second batch");
+
+        await idleTurn();
+        appendFileSync(output, "three\n");
+        await io();
+        t.mock.timers.tick(399);
+        assert.equal(batches(), 2, "the third idle wait doubled again");
+        t.mock.timers.tick(1);
+        assert.equal(batches(), 3, "the quadrupled delay sends the third batch");
+
+        await s.emit("turn_end", { toolResults: [{}] });
+        appendFileSync(output, "four\n");
+        await io();
+        t.mock.timers.tick(100);
+        assert.equal(batches(), 4, "a tool boundary resets the delay to the base");
+      },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("stop_run stops a bash run with run-stop, and a subagent with a stop request then run-stop --wait 5", async () => {
   const fx = makeFixture();
   try {
@@ -404,15 +504,14 @@ test("stop_run asks a subagent to stop first, then records completed when it had
     await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
     const child = agentJson(fx, SELF, "kid");
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid", inbox: inbox.path })]);
-    fx.setRuns([{ id: "fake-run-id", name: "kid", kind: "agent", parent: "%1", pane: "%2", session: child.session }]);
+    fx.setRuns([{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session }]);
     writeFileSync(join(fx.agentDir(SELF, "kid"), "report"), "done");
 
     const result = await s.tools.get("stop_run").execute("c", { to: "kid" });
     assert.match(result.content[0].text, /^stopped kid; /);
-    assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--record-only", "--result", "completed"], "the ending is recorded before the child is asked to shut down");
+    assert.deepEqual(fx.runOutcomeCalls()[0], ["run-outcome", "fake-run-id", "--result", "completed"], "the ending is recorded before the child is asked to shut down");
     assert.equal(JSON.parse(inbox.received()[0]!).kind, "stop", "the child is asked to shut down over its inbox");
-    assert.deepEqual(fx.runStopCalls()[1], ["run-stop", "fake-run-id", "--cleanup", "--wait", "5"]);
-    assert.equal(fx.runOutcomeCalls().length, 0, "run-outcome is for the run's own report, not the caller's judgment");
+    assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--wait", "5"]);
   } finally {
     await fx.restore();
   }
@@ -427,22 +526,22 @@ test("stop_run with force skips the request, and a subagent with no inbox needs 
     await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
     const child = agentJson(fx, SELF, "kid");
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid", inbox: inbox.path })]);
-    fx.setRuns([{ id: "fake-run-id", name: "kid", kind: "agent", parent: "%1", pane: "%2", session: child.session }]);
+    fx.setRuns([{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session }]);
 
     await s.tools.get("stop_run").execute("c", { to: "kid", force: true });
     assert.equal(inbox.received().length, 0, "force skips the stop request");
-    assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--record-only"]);
-    assert.deepEqual(fx.runStopCalls()[1], ["run-stop", "fake-run-id", "--cleanup", "--wait", "5"]);
+    assert.deepEqual(fx.runOutcomeCalls()[0], ["run-outcome", "fake-run-id", "--result", "stopped"]);
+    assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--wait", "5"]);
 
-    fx.setRuns([{ id: "fake-run-id", name: "kid", kind: "agent", parent: "%1", pane: "%2", session: child.session }]);
+    fx.setRuns([{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session }]);
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid" })]);
     assert.equal(
       (await s.tools.get("stop_run").execute("c", { to: "kid" })).content[0].text,
       "subagent kid has no inbox to ask nicely over; pass --force to kill its window instead",
     );
-    assert.equal(fx.runStopCalls().length, 2, "a refused stop records nothing");
+    assert.equal(fx.runStopCalls().length, 1, "a refused stop records nothing");
     await s.tools.get("stop_run").execute("c", { to: "kid", force: true });
-    assert.equal(fx.runStopCalls().length, 4);
+    assert.equal(fx.runStopCalls().length, 2);
   } finally {
     await fx.restore();
   }
@@ -470,7 +569,7 @@ test("stop_run refuses an unrelated run and resolves a unique prefix of at least
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
-    fx.setRuns([{ id: "abcdef0123456789", name: "job", kind: "bash", parent: "%1" }]);
+    fx.setRuns([{ id: "abcdef0123456789", name: "job", parent: "%1" }]);
     const s = await startNamedSession(fx, "Self");
     assert.equal((await s.tools.get("stop_run").execute("c", { to: "nope" })).content[0].text, 'no run matches "nope"');
     assert.equal((await s.tools.get("stop_run").execute("c", { to: "a" })).content[0].text, 'no run matches "a"', "a prefix shorter than the minimum is not a prefix");

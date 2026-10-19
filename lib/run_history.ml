@@ -26,7 +26,7 @@ let load ?parent ~dir ~state id =
         outcome = State.run_ending ~dir state meta;
         session =
           Option.bind (State.run_pane state meta) (fun p ->
-              if Option.is_none p.dead_at then p.session else None);
+              if Option.is_none p.dead_at && State.pi_root p then p.session else None);
         output = Run.output_path ~dir meta.id;
       })
 

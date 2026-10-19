@@ -1,5 +1,5 @@
-import { AgentSession, type ExtensionAPI, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
-import { type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { AgentSession, type ExtensionAPI, type ExtensionContext, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
+import { type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -21,20 +21,17 @@ const OPTION_INBOX = "@kido_inbox";
 const OPTION_ACTIVITY = "@kido_activity";
 const OPTION_KEYS = [OPTION_SESSION, OPTION_NAME, OPTION_INBOX, OPTION_ACTIVITY];
 
-const PANE_FORMAT = [
+const PANE_SEPARATOR = "\x1f";
+const PANE_FIELDS = [
   "#{pane_id}",
   "#{session_id}",
   "#{window_id}",
-  "#{@kido_session}",
-  "#{@kido_name}",
-  "#{@kido_inbox}",
-  "#{@kido_activity}",
+  ...OPTION_KEYS.map((key) => `#{${key}}`),
   "#{pane_current_path}",
   "#{pane_program_status}",
   "#{pane_title}",
-].join("\x1f");
-
-const PANE_SEPARATOR = "\x1f";
+];
+const PANE_FORMAT = PANE_FIELDS.join(PANE_SEPARATOR);
 
 export type DeliverAs = "followUp" | "steer";
 
@@ -52,6 +49,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+const parseOutcome = (value: unknown): { result: string; text: string } | undefined => {
+  if (!isRecord(value) || typeof value.result !== "string") return undefined;
+  return { result: value.result, text: str(value.text) };
+};
+
 export function parseEnvelope(text: string): Envelope | null {
   let parsed: unknown;
   try {
@@ -62,7 +66,6 @@ export function parseEnvelope(text: string): Envelope | null {
   if (!isRecord(parsed) || Array.isArray(parsed)) return null;
   const obj = parsed;
   if (!("v" in obj) || !("kind" in obj)) return null;
-  const str = (v: unknown): string => (typeof v === "string" ? v : "");
   const from = isRecord(obj.from) ? obj.from : {};
   const [session, name, pane] = [str(from.session), str(from.name), str(from.pane)];
   const sender: Sender = { session, name: name || undefined, pane: pane || undefined };
@@ -158,10 +161,6 @@ function agentEntries(dir: string): AgentEntry[] {
   return parents.flatMap((parent) => childEntries(root, parent));
 }
 
-function ownEntries(dir: string, parent: string): AgentEntry[] {
-  return childEntries(join(dir, "agents"), parent);
-}
-
 function canReply(entry: AgentEntry | undefined, inbox: string): boolean {
   return inbox !== "" && (entry === undefined || entry.tools.length === 0 || entry.tools.includes("message_agent"));
 }
@@ -214,7 +213,7 @@ export type PaneInfo = {
   inbox: string;
   activity: string;
   cwd: string;
-  programStatus: string;
+  root: { app: string; state: string } | null;
   title: string;
 };
 
@@ -236,14 +235,14 @@ function rootRecord(programStatus: string): { app: string; state: string } | nul
 }
 
 function isAgentPane(pane: PaneInfo): boolean {
-  return pane.agentSession !== "" && rootRecord(pane.programStatus)?.app === "pi";
+  return pane.agentSession !== "" && pane.root?.app === "pi";
 }
 
 function parsePanes(out: string): PaneInfo[] {
   const panes: PaneInfo[] = [];
   for (const line of out.split("\n")) {
     const fields = line ? line.split(PANE_SEPARATOR) : [];
-    if (fields.length !== 10) continue;
+    if (fields.length !== PANE_FIELDS.length) continue;
     panes.push({
       pane: fields[0],
       session: fields[1],
@@ -253,7 +252,7 @@ function parsePanes(out: string): PaneInfo[] {
       inbox: fields[5],
       activity: fields[6],
       cwd: fields[7],
-      programStatus: fields[8],
+      root: rootRecord(fields[8]),
       title: fields[9],
     });
   }
@@ -271,27 +270,27 @@ async function listPanes(timeoutMs = KIDO_TIMEOUT_MS): Promise<PaneInfo[]> {
 
 const NOTICE_CUSTOM_TYPE = "kido-notice";
 
-const noticeHeader = (from: string): string => `notice from ${from} (a subagent or background run's report, not the user):`;
+export const noticeHeader = (from: string): string => `notice from ${from} (a subagent or background run's report, not the user):`;
 
 const MESSAGE_CUSTOM_TYPE = "kido-message";
 
 const RELATIONS = ["parent", "child", "peer"] as const;
 type SenderRelation = (typeof RELATIONS)[number];
 
-const MESSAGE_RELATION: Record<SenderRelation, string> = {
+export const MESSAGE_RELATION: Record<SenderRelation, string> = {
   parent: "your parent, who spawned you",
   child: "your subagent",
   peer: "another agent in this session, not the user",
 };
 
-const senderHeader = (kind: "message" | "ask", from: string, relation: SenderRelation): string =>
+export const senderHeader = (kind: "message" | "ask", from: string, relation: SenderRelation): string =>
   `${kind} from @${from} (${MESSAGE_RELATION[relation]}):`;
 
 const ASK_CUSTOM_TYPE = "kido-ask";
 
 const REPLY_CUSTOM_TYPE = "kido-reply";
 
-const replyHeader = (from: string, replyTo: string): string => `${from} replied (to ask ${replyTo}): `;
+export const replyHeader = (from: string, replyTo: string): string => `${from} replied (to ask ${replyTo}): `;
 
 const inboundHeader = (sender: string | undefined, verb: string | undefined): string =>
   `${sender && sender !== "another agent" ? `@${sender}` : "another agent"}${verb ? ` ${verb}` : ""}:`;
@@ -310,8 +309,6 @@ const MAX_TASK_BYTES = 1024 * 1024;
 
 const MAX_DEPTH = 2;
 
-const MAX_NAME_BYTES = 64;
-
 const STREAM_CUSTOM_TYPE = "kido-stream";
 
 const STREAM_BATCH_LINES = 200;
@@ -320,7 +317,7 @@ const STREAM_BATCH_BYTES = 16 * 1024;
 
 const STREAM_BUFFER_LINES = 5000;
 
-const PARENT_GUIDANCE =
+export const PARENT_GUIDANCE =
   "\n\nThe child stays alive after it reports. End it with stop_run when you need nothing more from it. To continue it, use message_agent.";
 
 const envMs = (key: string, fallback: number): number => Number(process.env[key]) || fallback;
@@ -409,49 +406,13 @@ const NEVER_SLEEP_RULE =
 const NOT_THE_USER_RULE =
   "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
 
-const SPAWN_RESULT_RULE =
+export const SPAWN_RESULT_RULE =
   "its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id";
 
 const NOTIFY_PARENT_INSTRUCTION =
   "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise. " +
   "Reporting does not end this session: it stays alive until your parent ends it with stop_run, and the parent can continue it with message_agent. " +
   "When you reply to another agent's question with message_agent, that call is the entire response - end the turn there, with no summary or sign-off after it.";
-
-export interface SessionContext {
-  abort(): void;
-  shutdown(): void;
-  ui?: SessionUI;
-}
-
-export interface CompletionItem {
-  value: string;
-  label: string;
-  description?: string;
-}
-
-export interface CompletionProvider {
-  triggerCharacters?: string[];
-  getSuggestions(
-    lines: string[],
-    cursorLine: number,
-    cursorCol: number,
-    options: { signal: AbortSignal; force?: boolean },
-  ): Promise<{ items: CompletionItem[]; prefix: string } | null>;
-  applyCompletion(
-    lines: string[],
-    cursorLine: number,
-    cursorCol: number,
-    item: CompletionItem,
-    prefix: string,
-  ): { lines: string[]; cursorLine: number; cursorCol: number };
-  shouldTriggerFileCompletion?(lines: string[], cursorLine: number, cursorCol: number): boolean;
-}
-
-interface SessionUI {
-  setWidget(key: string, content: ((tui: unknown, theme: Theme) => { render(width: number): string[]; invalidate(): void }) | undefined, options?: { placement: "aboveEditor" | "belowEditor" }): void;
-  notify?(message: string, type?: string): void;
-  addAutocompleteProvider?(factory: (current: CompletionProvider) => CompletionProvider): void;
-}
 
 export type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
@@ -562,7 +523,7 @@ function completionValue(agents: AgentRow[], agent: AgentRow): string {
   return `@${agent.id}`;
 }
 
-function agentCompletionItems(agents: AgentRow[], token: string): CompletionItem[] {
+function agentCompletionItems(agents: AgentRow[], token: string): AutocompleteItem[] {
   const nameByID = new Map<string, string>();
   for (const a of agents) {
     nameByID.set(a.id, a.name);
@@ -639,11 +600,6 @@ function checkName(name: string): string | null {
   if (name === "" || name === "." || name === ".." || name.includes("/")) {
     return `refusing window name ${quote(name)}: it must be one path-safe name, not an empty, dot or slashed path`;
   }
-  const bad = ["'", '"', "$", "#", "\\", "`", "\n", "\r"].find((c) => name.includes(c));
-  if (bad) return `refusing window name ${quote(name)}: it contains ${quote(bad)}, which cannot survive tmux's own command-line parsing`;
-  if (Buffer.byteLength(name, "utf8") > MAX_NAME_BYTES) {
-    return `refusing window name ${quote(name)}: ${Buffer.byteLength(name, "utf8")} bytes is over the ${MAX_NAME_BYTES} byte limit`;
-  }
   return null;
 }
 
@@ -684,7 +640,7 @@ type ParentEdge = { parent: string; run: string; dir: string };
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
   let kido: string | null = null;
-  let session: SessionContext | null = null;
+  let session: ExtensionContext | null = null;
   let ownSessionId: string | null = null;
   let edge: ParentEdge | null = null;
   let pane: string | null = null;
@@ -692,6 +648,11 @@ export default function (pi: ExtensionAPI) {
   let active = false;
 
   const written = new Map<string, string>();
+
+  const own = (entries: AgentEntry[]): AgentEntry[] =>
+    ownSessionId ? entries.filter((e) => e.parent === ownSessionId) : [];
+
+  const parentKey = (): string | null => (edge ? edge.run : pane);
 
   let completion: { rows: AgentRow[]; at: number; refreshing: Promise<void> | null } | null = null;
 
@@ -840,17 +801,20 @@ export default function (pi: ExtensionAPI) {
   };
 
   const bySessionOf = (entries: AgentEntry[]): Map<string, AgentEntry> => new Map(entries.map((e) => [e.session, e]));
+  const byRunOf = (entries: AgentEntry[]): Map<string, AgentEntry> => new Map(entries.map((e) => [e.run, e]));
+
+  const isAncestorOf = (entries: AgentEntry[], ancestor: string, descendant: string): boolean =>
+    chain(bySessionOf(entries), descendant).includes(ancestor);
 
   const isAncestor = (entries: AgentEntry[], selfSession: string, target: AgentEntry): boolean =>
-    selfSession !== target.session && chain(bySessionOf(entries), target.session).includes(selfSession);
+    selfSession !== target.session && isAncestorOf(entries, selfSession, target.session);
 
   const senderIsAncestor = (env: Envelope): boolean => {
     const sender = env.from;
     if (!sender.session || sender.session === ownSessionId) return false;
     if (edge && sender.session === edge.parent) return true;
     if (!dir || !ownSessionId) return false;
-    const entries = agentEntries(dir);
-    return chain(bySessionOf(entries), ownSessionId).includes(sender.session);
+    return isAncestorOf(agentEntries(dir), sender.session, ownSessionId);
   };
 
   const handleInboundControl = async (env: Envelope, kind: "interrupt" | "stop"): Promise<"ok" | "refused"> => {
@@ -920,8 +884,7 @@ export default function (pi: ExtensionAPI) {
 
   const runRow = (value: unknown): RunRow | null => {
     if (!isRecord(value) || typeof value.id !== "string") return null;
-    const str = (v: unknown): string => (typeof v === "string" ? v : "");
-    const outcome = isRecord(value.outcome) && typeof value.outcome.result === "string" ? { result: value.outcome.result, text: str(value.outcome.text) } : undefined;
+    const outcome = parseOutcome(value.outcome);
     return {
       id: value.id,
       name: str(value.name),
@@ -936,7 +899,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const myRuns = async (): Promise<RunRow[]> => {
-    const key = edge ? edge.run : pane;
+    const key = parentKey();
     const command = kido;
     if (!key || !command) return [];
     const res = await runCommand(command, ["runs", "--json", "--parent", key], { timeoutMs: 2000 });
@@ -961,10 +924,10 @@ export default function (pi: ExtensionAPI) {
   const discovery = async (): Promise<Snapshot> => {
     const [panes, runs] = await Promise.all([listPanes(), myRuns()]);
     const entries = dir ? agentEntries(dir) : [];
-    const own = dir && ownSessionId ? ownEntries(dir, ownSessionId) : [];
+    const ownEntries = own(entries);
     const bySession = bySessionOf(entries);
-    const ownBySession = bySessionOf(own);
-    const ownByRun = new Map(own.map((e) => [e.run, e]));
+    const ownBySession = bySessionOf(ownEntries);
+    const ownByRun = byRunOf(ownEntries);
     const mySession = panes.find((p) => p.pane === pane)?.session ?? "";
     const all: AgentRow[] = [];
 
@@ -980,7 +943,7 @@ export default function (pi: ExtensionAPI) {
         named: p.name !== "",
         pane: p.pane,
         window: p.window,
-        status: rootRecord(p.programStatus)?.state ?? "unknown",
+        status: p.root?.state ?? "unknown",
         activity: p.activity,
         parent: entry?.parent ?? "",
         depth: depthOfSession(p.agentSession, bySession),
@@ -1011,8 +974,6 @@ export default function (pi: ExtensionAPI) {
       const live = current && !!paneInfo && isAgentPane(paneInfo) && (!entry || paneInfo.agentSession === entry.session);
       const livePane = live ? paneInfo : undefined;
       const name = entry?.name || r.name || "";
-      const task = entry ? readTextFile(join(entry.dir, "task")) : undefined;
-      const reportPath = entry ? join(entry.dir, "report") : "";
       const liveRow = entry && livePane ? all.find((a) => a.id === livePane.agentSession) : undefined;
       if (liveRow) {
         liveRow.relationship = "own";
@@ -1020,8 +981,6 @@ export default function (pi: ExtensionAPI) {
         liveRow.state = r.outcome ? "ended" : "running";
         liveRow.startedAt = r.startedAt;
         liveRow.outcome = r.outcome;
-        liveRow.task = task;
-        liveRow.report = reportPath && exists(reportPath) ? reportPath : undefined;
         continue;
       }
       all.push({
@@ -1030,7 +989,7 @@ export default function (pi: ExtensionAPI) {
         named: current && name !== "",
         pane: r.pane ?? "",
         window: livePane?.window ?? "",
-        status: livePane ? (rootRecord(livePane.programStatus)?.state ?? "unknown") : "unknown",
+        status: livePane ? (livePane.root?.state ?? "unknown") : "unknown",
         activity: livePane?.activity ?? "",
         parent: r.parent ?? "",
         depth: myDepth + 1,
@@ -1047,8 +1006,6 @@ export default function (pi: ExtensionAPI) {
         inbox: livePane?.inbox ?? "",
         outcome: r.outcome,
         startedAt: r.startedAt,
-        task,
-        report: reportPath && exists(reportPath) ? reportPath : undefined,
       });
     }
     const rows = all.filter((a) => !a.self && a.relationship !== "other");
@@ -1110,37 +1067,26 @@ export default function (pi: ExtensionAPI) {
 
   const isMyself = (target: AgentRow): boolean => target.self || target.id === ownSessionId || (!!edge && target.id === edge.run);
 
-  const parentKey = (): string | null => (edge ? edge.run : pane);
-
-  const windowOf = (paneId: string): string => {
-    const cut = paneId.lastIndexOf(".");
-    return cut >= 0 ? paneId.slice(0, cut) : "";
-  };
-
-  const createdRun = (out: string): { id: string; pane: string; output: string } | null => {
-    try {
-      const parsed: unknown = JSON.parse(out);
-      if (!isRecord(parsed) || typeof parsed.id !== "string" || typeof parsed.pane !== "string" || typeof parsed.output !== "string") return null;
-      return { id: parsed.id, pane: parsed.pane, output: parsed.output };
-    } catch {
-      return null;
-    }
-  };
-
-  const runChildArgs = (parent: string, name: string, agentDir: string | null, command: string[]): string[] => [
-    "run-child", parent, "--name", name,
-    ...(agentDir === null ? [] : ["--env", `KIDO_AGENT_PARENT_SESSION=${ownSessionId}`, "--env", `KIDO_AGENT_DIR=${agentDir}`]),
-    "--", ...command,
-  ];
-
-  type Started = { created: { id: string; pane: string; output: string } } | { error: string };
+  type Created = { id: string; window: string; pane: string; output: string };
+  type Started = { created: Created } | { error: string };
 
   const startChild = async (parent: string, name: string, agentDir: string | null, command: string[]): Promise<Started> => {
     const executable = kido;
     if (!executable) return { error: "kido is not on PATH" };
-    const res = await runCommand(executable, runChildArgs(parent, name, agentDir, command), { timeoutMs: envMs("KIDO_SPAWN_TIMEOUT_MS", 5000) });
+    const args = [
+      "run-child", parent, "--name", name,
+      ...(agentDir === null ? [] : ["--env", `KIDO_AGENT_PARENT_SESSION=${ownSessionId}`, "--env", `KIDO_AGENT_DIR=${agentDir}`]),
+      "--", ...command,
+    ];
+    const res = await runCommand(executable, args, { timeoutMs: envMs("KIDO_SPAWN_TIMEOUT_MS", 5000) });
     if (!res.ok) return { error: res.error };
-    const created = createdRun(res.out);
+    let created: Created | null = null;
+    try {
+      const parsed: unknown = JSON.parse(res.out);
+      if (isRecord(parsed) && typeof parsed.id === "string" && typeof parsed.window === "string" && typeof parsed.pane === "string" && typeof parsed.output === "string") {
+        created = { id: parsed.id, window: parsed.window, pane: parsed.pane, output: parsed.output };
+      }
+    } catch {}
     return created ? { created } : { error: "kido run-child printed no run" };
   };
 
@@ -1148,11 +1094,28 @@ export default function (pi: ExtensionAPI) {
     writeFileSync(join(agentDir, "agent.json"), JSON.stringify(record));
   };
 
+  const piArgs = (entry: AgentEntry, policy: { sessionFile: string | null; fork: string | null }): string[] => {
+    const args = ["kido-pi"];
+    if (policy.sessionFile) args.push("--session", policy.sessionFile);
+    else args.push("--session-id", entry.session);
+    args.push("--name", entry.name);
+    if (entry.model) args.push("--model", entry.model);
+    if (policy.fork) args.push("--fork", policy.fork);
+    if (entry.tools.length) args.push("--tools", entry.tools.join(","));
+    return args;
+  };
+
+  const adopt = (created: Created, entry: AgentEntry): void => {
+    writeAgentJson(entry.dir, { session: entry.session, run: created.id, model: entry.model, tools: entry.tools, fork: entry.fork });
+    watch(watchData(created.id, entry.name, created.output, { ...entry, run: created.id }, false));
+  };
+
   type SendResult = { ok: true } | { ok: false; kind: "unavailable" | "refused" | "failed"; message: string };
+  type EnvelopeSpec = { kind: string; id?: string; replyTo?: string };
 
   const newId = (): string => randomUUID().replace(/-/g, "");
 
-  const sendEnvelope = (path: string, spec: { kind: string; id?: string; replyTo?: string }, text: string): Promise<SendResult> =>
+  const sendEnvelope = (path: string, spec: EnvelopeSpec, text: string): Promise<SendResult> =>
     new Promise((resolve) => {
       if (!path) {
         resolve({ ok: false, kind: "unavailable", message: "no inbox" });
@@ -1225,7 +1188,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const ancestorOfMe = (session: string, entries: AgentEntry[]): boolean =>
-    !!edge && chain(bySessionOf(entries), edge.parent).includes(session);
+    !!edge && isAncestorOf(entries, session, edge.parent);
 
   const reportNotice = (text: string, path: string): string => {
     const budget = MAX_NOTICE_BYTES - Buffer.byteLength(PARENT_GUIDANCE, "utf8");
@@ -1272,7 +1235,7 @@ export default function (pi: ExtensionAPI) {
     partial: "",
     budget: envMs("KIDO_STREAM_BUDGET_BYTES", 256 * 1024),
     budgetTold: false,
-    idleDelay: envMs("KIDO_STREAM_FLUSH_MS", 1000),
+    idleDelay: streamFlushMs(),
   });
 
   type TailRead = { data: Buffer; skipped: number; end: number } | { error: string };
@@ -1333,7 +1296,8 @@ export default function (pi: ExtensionAPI) {
     watch.flushTimer = null;
   };
 
-  const streamBase = (): number => envMs("KIDO_STREAM_FLUSH_MS", 1000);
+  const streamFlushMs = (): number => envMs("KIDO_STREAM_FLUSH_MS", 1000);
+  const streamBase = streamFlushMs;
   const streamCap = (): number => envMs("KIDO_STREAM_MAX_WAIT_MS", 30000);
 
   let agentWorking = false;
@@ -1351,9 +1315,13 @@ export default function (pi: ExtensionAPI) {
   const scheduleIdleStreams = (): void => {
     for (const watch of watches.values()) {
       if (watch.target.kind !== "bash" || !watch.target.stream) continue;
-      watch.idleDelay = streamBase();
       scheduleFlush(watch);
     }
+  };
+
+  const finishWorking = (): void => {
+    agentWorking = false;
+    scheduleIdleStreams();
   };
 
   const flushStreams = (): void => {
@@ -1445,12 +1413,9 @@ export default function (pi: ExtensionAPI) {
       if (entry.timer) clearInterval(entry.timer);
       clearFlush(entry);
       watches.delete(entry.run);
-      let outcome: { result: string; text: string } | null = null;
+      let outcome: { result: string; text: string } | undefined;
       try {
-        const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8").trim());
-        if (isRecord(parsed) && typeof parsed.result === "string") {
-          outcome = { result: parsed.result, text: typeof parsed.text === "string" ? parsed.text : "" };
-        }
+        outcome = parseOutcome(JSON.parse(Buffer.concat(chunks).toString("utf8").trim()));
       } catch {}
       if (!outcome) return;
       if (entry.target.kind === "bash" && entry.target.stream) tailWatch(entry, true);
@@ -1478,14 +1443,27 @@ export default function (pi: ExtensionAPI) {
     parentReading = false;
   };
 
-  type PaneReading = { ok: true; session: string; programStatus: string } | { ok: false };
+  type PaneReading = { ok: true; pane: PaneInfo } | { ok: false };
 
   const paneReading = async (target: string): Promise<PaneReading> => {
-    const res = await runCommand("tmux", ["display-message", "-p", "-t", target, "-F", "#{@kido_session}\x1f#{pane_program_status}"], { timeoutMs: 2000 });
-    if (!res.ok || !res.out) return { ok: false };
-    const [session = "", programStatus = ""] = res.out.split("\x1f");
-    return { ok: true, session, programStatus };
+    const res = await runCommand("tmux", ["list-panes", "-t", target, "-F", PANE_FORMAT], { timeoutMs: 2000 });
+    if (!res.ok) return { ok: false };
+    const pane = parsePanes(res.out).find((p) => p.pane === target);
+    return pane ? { ok: true, pane } : { ok: false };
   };
+
+  const sessionPane = async (session: string, paneHint: string | null): Promise<PaneInfo | null | "unknown"> => {
+    if (paneHint) {
+      const reading = await paneReading(paneHint);
+      if (reading.ok && reading.pane.agentSession === session && reading.pane.root?.app === "pi") return reading.pane;
+    }
+    const { ok, panes } = await listPanesResult();
+    if (!ok) return "unknown";
+    return panes.find((p) => isAgentPane(p) && p.agentSession === session) ?? null;
+  };
+
+  const sessionGone = async (session: string, paneHint: string | null): Promise<boolean> =>
+    (await sessionPane(session, paneHint)) === null;
 
   // The parent is a pi pane; kido writes nothing for it. A failed tmux read is
   // not evidence, so it never ends the child.
@@ -1498,13 +1476,8 @@ export default function (pi: ExtensionAPI) {
       parentReading = true;
       void (async () => {
         try {
-          if (parentPane) {
-            const reading = await paneReading(parentPane);
-            if (reading.ok && reading.session === parentSession && rootRecord(reading.programStatus)?.app === "pi") return;
-          }
-          const { ok, panes } = await listPanesResult();
-          if (!ok) return;
-          const found = panes.find((p) => isAgentPane(p) && p.agentSession === parentSession);
+          const found = await sessionPane(parentSession, parentPane);
+          if (found === "unknown") return;
           if (found) {
             parentPane = found.pane;
             return;
@@ -1532,10 +1505,14 @@ export default function (pi: ExtensionAPI) {
     | { kind: "other" };
   let ending: Ending = { kind: "other" };
 
-  const workStarted = (): void => {
+  const beginWork = (): void => {
     settled = false;
-    parentToldThisTurn = false;
     if (ending.kind === "awaiting-first-turn") ending = { kind: "other" };
+  };
+
+  const workStarted = (): void => {
+    parentToldThisTurn = false;
+    beginWork();
   };
 
   const trimErrorMessage = (msg: string): string => (msg.length > 400 ? `${msg.slice(0, 400)}…` : msg);
@@ -1600,14 +1577,14 @@ export default function (pi: ExtensionAPI) {
   };
 
   const endedTarget = (to: string, resolved: Resolution): { entry: AgentEntry; starting: boolean } | null => {
-    const own = dir && ownSessionId ? ownEntries(dir, ownSessionId) : [];
+    const ownEntries = own(resolved.snapshot.entries);
     const live = new Set(resolved.snapshot.all.filter((a) => a.state === "running").map((a) => a.id));
     const row = resolved.agent;
     let entry: AgentEntry | undefined;
     if (row && row.relationship === "own" && row.kind === "subagent" && !row.canMessage) {
-      entry = own.find((e) => e.session === row.id || (row.run !== "" && e.run === row.run));
+      entry = ownEntries.find((e) => e.session === row.id || (row.run !== "" && e.run === row.run));
     } else if (!row) {
-      entry = endedChild(to, own, live, resolved.snapshot.runs) ?? undefined;
+      entry = endedChild(to, ownEntries, live, resolved.snapshot.runs) ?? undefined;
     }
     return entry ? { entry, starting: childStarting(entry, resolved.snapshot.runs) } : null;
   };
@@ -1618,17 +1595,11 @@ export default function (pi: ExtensionAPI) {
     const sessionFile = sessionFileOf(entry);
     if (!sessionFile) rmSync(join(entry.dir, "delivered"), { force: true });
     rmSync(join(entry.dir, "report"), { force: true });
-    const command = ["kido-pi"];
-    if (sessionFile) command.push("--session", sessionFile);
-    else command.push("--session-id", entry.session);
-    command.push("--name", entry.name);
-    if (entry.model) command.push("--model", entry.model);
-    if (entry.tools.length) command.push("--tools", entry.tools.join(","));
+    const command = piArgs(entry, { sessionFile, fork: null });
     if (firstPrompt !== null) command.push(firstPrompt);
     const started = await startChild(parent, entry.name, entry.dir, command);
     if ("error" in started) return null;
-    writeAgentJson(entry.dir, { session: entry.session, run: started.created.id, model: entry.model, tools: entry.tools, fork: entry.fork });
-    watch(watchData(started.created.id, entry.name, started.created.output, { ...entry, run: started.created.id }, false));
+    adopt(started.created, entry);
     return started.created.id;
   };
 
@@ -1648,7 +1619,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   type RestartPrep =
-    | { error: string }
+    | { error: { kind: "refused" | "restart"; message: string } }
     | { snapshot: Snapshot; entry: AgentEntry | null; restartedRun: string | null; firstPrompt: string | null };
 
   const prepareRestart = async (
@@ -1664,16 +1635,16 @@ export default function (pi: ExtensionAPI) {
       const ended = endedTarget(address, resolveIn(snapshot, address));
       if (!ended) return { snapshot, entry: null, restartedRun: null, firstPrompt: null };
       const refusal = refuse(ended.entry);
-      if (refusal) return { error: refusal };
+      if (refusal) return { error: { kind: "refused", message: refusal } };
       if (ended.starting) return { snapshot, entry: ended.entry, restartedRun: null, firstPrompt: null };
       const firstPrompt = message !== null && sessionFileOf(ended.entry) ? message : null;
       const run = await restartChild(ended.entry, firstPrompt);
-      if (!run) return { error: "could not restart it" };
+      if (!run) return { error: { kind: "restart", message: "could not restart it" } };
       return { snapshot, entry: ended.entry, restartedRun: run, firstPrompt };
     });
   };
 
-  const sendWhenBound = async (path: string, spec: { kind: string; id?: string; replyTo?: string }, text: string, deadline: number): Promise<SendResult> => {
+  const sendWhenBound = async (path: string, spec: EnvelopeSpec, text: string, deadline: number): Promise<SendResult> => {
     for (;;) {
       const result = await sendEnvelope(path, spec, text);
       if (result.ok || result.kind !== "unavailable" || Date.now() > deadline) return result;
@@ -1691,10 +1662,21 @@ export default function (pi: ExtensionAPI) {
   };
 
   const nameTaken = async (name: string): Promise<boolean> => {
-    const own = dir && ownSessionId ? ownEntries(dir, ownSessionId) : [];
-    if (own.some((e) => e.name === name)) return true;
+    const ownEntries = own(dir ? agentEntries(dir) : []);
+    if (ownEntries.some((e) => e.name === name)) return true;
     const wanted = name.toLowerCase();
     return (await myRuns()).some((r) => (r.name ?? "").toLowerCase() === wanted);
+  };
+
+  const nameClaims = new Set<string>();
+  const claimName = (name: string): boolean => {
+    const key = name.toLowerCase();
+    if (nameClaims.has(key)) return false;
+    nameClaims.add(key);
+    return true;
+  };
+  const releaseName = (name: string): void => {
+    nameClaims.delete(name.toLowerCase());
   };
 
   let liveWatchStarted = false;
@@ -1702,9 +1684,9 @@ export default function (pi: ExtensionAPI) {
   const watchLiveChildren = async (): Promise<void> => {
     if (liveWatchStarted) return;
     liveWatchStarted = true;
-    const entries = dir && ownSessionId ? ownEntries(dir, ownSessionId) : [];
+    const entries = own(dir ? agentEntries(dir) : []);
     const bySession = bySessionOf(entries);
-    const byRun = new Map(entries.map((e) => [e.run, e]));
+    const byRun = byRunOf(entries);
     for (const run of await myRuns()) {
       if (run.outcome || watches.has(run.id) || !run.output) continue;
       const entry = agentRun(run, byRun, bySession);
@@ -1903,8 +1885,15 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "list_runs() - find same-parent peers and your parent to message, and your own subagents and jobs to stop with stop_run",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
-      const { rows } = await discovery();
-      const listed = rows.map(toolRow);
+      const { rows, entries } = await discovery();
+      const ownEntries = own(entries);
+      const listed = rows.map((row) => {
+        const entry = ownEntries.find((e) => e.session === row.id) ?? ownEntries.find((e) => row.run !== "" && e.run === row.run);
+        if (!entry) return toolRow(row);
+        const task = readTextFile(join(entry.dir, "task"));
+        const reportPath = join(entry.dir, "report");
+        return toolRow({ ...row, task, report: exists(reportPath) ? reportPath : undefined });
+      });
       return reply(JSON.stringify(listed), listed);
     },
   });
@@ -1937,7 +1926,7 @@ export default function (pi: ExtensionAPI) {
       const snapshot = await discovery();
       const address = askerPane ? snapshot.all.find((a) => a.pane === askerPane)?.id ?? params.to : params.to;
       const prep = await prepareRestart(address, params.message, snapshot, () => null);
-      if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error}`);
+      if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error.message}`);
       const bound = Date.now() + 5000;
       if (prep.entry) {
         if (prep.firstPrompt !== null) return reply(restartedReply(prep.entry.name, prep.restartedRun ?? ""));
@@ -1990,7 +1979,7 @@ export default function (pi: ExtensionAPI) {
         canReply(entry, childInbox(entry)) ? null : cannotReply(entry.name),
       );
       if ("error" in prepared) {
-        return reply(prepared.error.startsWith("could not restart") ? `could not ask ${params.to}: ${prepared.error}` : prepared.error);
+        return reply(prepared.error.kind === "restart" ? `could not ask ${params.to}: ${prepared.error.message}` : prepared.error.message);
       }
       const snapshot = prepared.snapshot;
       const resolved = resolveIn(snapshot, params.to);
@@ -2049,9 +2038,7 @@ export default function (pi: ExtensionAPI) {
         watch = setInterval(() => {
           if (reading) return;
           reading = true;
-          const gone = t.pane
-            ? paneReading(t.pane).then((r) => r.ok && !(r.session === t.id && rootRecord(r.programStatus)?.app === "pi"))
-            : listPanesResult().then((r) => r.ok && !r.panes.some((p) => isAgentPane(p) && p.agentSession === t.id));
+          const gone = sessionGone(t.id, t.pane || null);
           void gone.then((absent) => {
             reading = false;
             if (absent) settle({ gaveUp: "gone" });
@@ -2150,53 +2137,6 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-
-
-  const stopRun = async (to: string, force: boolean): Promise<string> => {
-    const command = kido;
-    if (!command) return "could not stop: kido is not on PATH";
-    const resolved = await resolveAgent(to);
-    const { all, entries } = resolved.snapshot;
-    const wanted = to.replace(/^@/, "");
-    const candidates = all.filter((a) => a.relationship === "own" || isDescendant(a, entries));
-    let matches = candidates.filter((a) => a.id === wanted || a.run === wanted);
-    if (!matches.length) {
-      matches = wanted.length >= MIN_ID_PREFIX
-        ? candidates.filter((a) => a.id.startsWith(wanted) || (a.run !== "" && a.run.startsWith(wanted)))
-        : [];
-    }
-    if (!matches.length) {
-      matches = candidates.filter((a) => a.named && a.name.toLowerCase() === wanted.toLowerCase() && a.state === "running");
-    }
-    if (!matches.length) return `no run matches ${quote(to)}`;
-    if (matches.length > 1) {
-      return `${quote(to)} matches several runs: ${matches.map((a) => a.run || a.id).sort().join(", ")}`;
-    }
-    const target = matches.at(0);
-    if (!target) return `no run matches ${quote(to)}`;
-    const run = target.run || target.id;
-    const stopWait = 5;
-    const stopDeadline = (wait: number): number => wait * 1000 + envMs("KIDO_STOP_ESCALATION_MS", 5000) + 1500;
-    if (target.kind === "bash") {
-      const res = await runCommand(command, ["run-stop", run], { timeoutMs: stopDeadline(0) });
-      return res.ok ? res.out : res.error;
-    }
-    const name = target.name || target.id;
-    const entry = entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
-    if (!force && !target.inbox) return `subagent ${name} has no inbox to ask nicely over; pass --force to kill its window instead`;
-    const recordArgs = ["run-stop", run, "--record-only", ...(entry && exists(join(entry.dir, "report")) ? ["--result", "completed"] : [])];
-    const recorded = await runCommand(command, recordArgs, { timeoutMs: stopDeadline(stopWait) });
-    if (!recorded.ok && recorded.code !== 5) return recorded.error;
-    let requestFailure = "";
-    if (!force && target.inbox) {
-      const request = await sendEnvelope(target.inbox, { kind: "stop" }, "");
-      if (!request.ok && request.kind !== "refused") requestFailure = request.message;
-    }
-    const res = await runCommand(command, ["run-stop", run, "--cleanup", "--wait", String(stopWait)], { timeoutMs: stopDeadline(stopWait) });
-    if (res.ok) return requestFailure ? `stopped ${name}; ${res.out}; the stop request failed: ${requestFailure}` : `stopped ${name}; ${res.out}`;
-    return requestFailure ? `${res.error}; the stop request failed: ${requestFailure}` : res.error;
-  };
-
   pi.registerTool({
     name: "spawn_subagent",
     label: "Spawn Subagent",
@@ -2250,11 +2190,15 @@ export default function (pi: ExtensionAPI) {
       if (Buffer.byteLength(params.task, "utf8") > MAX_TASK_BYTES) {
         return reply(`could not spawn subagent: the task is over the ${MAX_TASK_BYTES} byte task limit`);
       }
+      if (!claimName(name)) {
+        return reply(`could not spawn subagent: the name ${quote(name)} is already taken by one of this session's runs; message it instead`);
+      }
+      try {
       if (await nameTaken(name)) {
         return reply(`could not spawn subagent: the name ${quote(name)} is already taken by one of this session's runs; message it instead`);
       }
       const entries = dir ? agentEntries(dir) : [];
-      const depth = (ownSessionId ? depthOfSession(ownSessionId, new Map(entries.map((e) => [e.session, e]))) : 0) + 1;
+      const depth = (ownSessionId ? depthOfSession(ownSessionId, bySessionOf(entries)) : 0) + 1;
       if (depth > MAX_DEPTH) {
         return reply(`could not spawn subagent: refusing to spawn at depth ${depth}: maximum nesting is ${MAX_DEPTH} (root 0, subagent 1, subagent 2)`);
       }
@@ -2270,10 +2214,8 @@ export default function (pi: ExtensionAPI) {
       const record = { session: childSession, run: "", model: params.model ?? "", tools, fork: !!params.fork };
       writeAgentJson(childDir, record);
 
-      const piCommand = ["kido-pi", "--session-id", childSession, "--name", name];
-      if (params.model) piCommand.push("--model", params.model);
-      if (params.fork) piCommand.push("--fork", ownSessionId);
-      if (tools.length) piCommand.push("--tools", tools.join(","));
+      const entry: AgentEntry = { ...record, name, parent: ownSessionId, dir: childDir };
+      const piCommand = piArgs(entry, { sessionFile: null, fork: params.fork ? ownSessionId : null });
       const parent = parentKey();
       if (!parent) return reply("could not spawn subagent: this session has no run or pane to parent a subagent from");
       const started = await startChild(parent, name, childDir, piCommand);
@@ -2282,13 +2224,14 @@ export default function (pi: ExtensionAPI) {
         return reply(`could not spawn subagent: ${started.error}`);
       }
       const created = started.created;
-      writeAgentJson(childDir, { ...record, run: created.id });
-      watch(watchData(created.id, name, created.output, { ...record, run: created.id, name, parent: ownSessionId, dir: childDir }, false));
-      const window = windowOf(created.pane);
+      adopt(created, { ...entry, run: created.id });
       return reply(
-        `spawned ${name} (window ${window}, pane ${created.pane}, run ${created.id})${params.fork ? ", forked from this session's context" : ""}; ${SPAWN_RESULT_RULE}`,
-        { name, window, pane: created.pane, run: created.id, fork: !!params.fork },
+        `spawned ${name} (window ${created.window}, pane ${created.pane}, run ${created.id})${params.fork ? ", forked from this session's context" : ""}; ${SPAWN_RESULT_RULE}`,
+        { name, window: created.window, pane: created.pane, run: created.id, fork: !!params.fork },
       );
+      } finally {
+        releaseName(name);
+      }
     },
   });
 
@@ -2326,6 +2269,10 @@ export default function (pi: ExtensionAPI) {
       if (!params.name) return reply("could not start background command: --name is required");
       const nameError = checkName(params.name);
       if (nameError) return reply(`could not start background command: ${nameError}`);
+      if (!claimName(params.name)) {
+        return reply(`could not start background command: the name ${quote(params.name)} is already taken by one of this session's runs; choose another name`);
+      }
+      try {
       if (await nameTaken(params.name)) {
         return reply(`could not start background command: the name ${quote(params.name)} is already taken by one of this session's runs; choose another name`);
       }
@@ -2336,15 +2283,18 @@ export default function (pi: ExtensionAPI) {
       if ("error" in started) return reply(`could not start background command: ${started.error}`);
       const created = started.created;
       watch(watchData(created.id, params.name, created.output, null, !!params.stream));
-      const window = windowOf(created.pane);
+      
       return reply(
-        `started run ${created.id}${params.name ? ` (${params.name})` : ""} in window ${window}; list_runs lists it and stop_run("${created.id}") stops it; ` +
+        `started run ${created.id}${params.name ? ` (${params.name})` : ""} in window ${created.window}; list_runs lists it and stop_run("${created.id}") stops it; ` +
           `a notice with its exit status and a tail of its output arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ` +
           (params.stream
             ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${created.output}`
             : `read ${created.output} with the read tool to check on it meanwhile`),
-        { name: params.name, window, pane: created.pane, run: created.id, output: created.output, stream: !!params.stream },
+        { name: params.name, window: created.window, pane: created.pane, run: created.id, output: created.output, stream: !!params.stream },
       );
+      } finally {
+        releaseName(params.name);
+      }
     },
   });
 
@@ -2370,10 +2320,51 @@ export default function (pi: ExtensionAPI) {
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
-      return reply(await stopRun(params.to, !!params.force));
+      const command = kido;
+      if (!command) return reply("could not stop: kido is not on PATH");
+      const { all, entries } = await discovery();
+      const to = params.to;
+      const force = !!params.force;
+      const wanted = to.replace(/^@/, "");
+      const candidates = all.filter((a) => !a.self && (a.relationship === "own" || isDescendant(a, entries)));
+      let matches = candidates.filter((a) => a.id === wanted || a.run === wanted);
+      if (!matches.length) {
+        matches = wanted.length >= MIN_ID_PREFIX
+          ? candidates.filter((a) => a.id.startsWith(wanted) || (a.run !== "" && a.run.startsWith(wanted)))
+          : [];
+      }
+      if (!matches.length) {
+        matches = candidates.filter((a) => a.named && a.name.toLowerCase() === wanted.toLowerCase() && a.state === "running");
+      }
+      if (!matches.length) return reply(`no run matches ${quote(to)}`);
+      if (matches.length > 1) {
+        return reply(`${quote(to)} matches several runs: ${matches.map((a) => a.run || a.id).sort().join(", ")}`);
+      }
+      const target = matches.at(0);
+      if (!target) return reply(`no run matches ${quote(to)}`);
+      const run = target.run || target.id;
+      const stopWait = 5;
+      const stopDeadline = (wait: number): number => wait * 1000 + envMs("KIDO_STOP_ESCALATION_MS", 5000) + 1500;
+      if (target.kind === "bash") {
+        const res = await runCommand(command, ["run-stop", run], { timeoutMs: stopDeadline(0) });
+        return reply(res.ok ? res.out : res.error);
+      }
+      const name = target.name || target.id;
+      const entry = entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
+      if (!force && !target.inbox) return reply(`subagent ${name} has no inbox to ask nicely over; pass --force to kill its window instead`);
+      const recordArgs = ["run-outcome", run, "--result", entry && exists(join(entry.dir, "report")) ? "completed" : "stopped"];
+      const recorded = await runCommand(command, recordArgs, { timeoutMs: stopDeadline(stopWait) });
+      if (!recorded.ok && recorded.code !== 5) return reply(recorded.error);
+      let requestFailure = "";
+      if (!force && target.inbox) {
+        const request = await sendEnvelope(target.inbox, { kind: "stop" }, "");
+        if (!request.ok && request.kind !== "refused") requestFailure = request.message;
+      }
+      const res = await runCommand(command, ["run-stop", run, "--wait", String(stopWait)], { timeoutMs: stopDeadline(stopWait) });
+      if (res.ok) return reply(requestFailure ? `stopped ${name}; ${res.out}; the stop request failed: ${requestFailure}` : `stopped ${name}; ${res.out}`);
+      return reply(requestFailure ? `${res.error}; the stop request failed: ${requestFailure}` : res.error);
     },
   });
-
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.promptGuidelines.push(NEVER_SLEEP_RULE);
     if (edge) event.systemPromptOptions.promptGuidelines.push(NOTIFY_PARENT_INSTRUCTION);
@@ -2399,7 +2390,7 @@ export default function (pi: ExtensionAPI) {
     if (ui?.addAutocompleteProvider && !completion) {
       const cache: { rows: AgentRow[]; at: number; refreshing: Promise<void> | null } = { rows: [], at: 0, refreshing: null };
       completion = cache;
-      ui.addAutocompleteProvider((current: CompletionProvider): CompletionProvider => ({
+      ui.addAutocompleteProvider((current: AutocompleteProvider): AutocompleteProvider => ({
         triggerCharacters: current.triggerCharacters,
         async getSuggestions(lines, cursorLine, cursorCol, options) {
           const token = atToken((lines[cursorLine] ?? "").slice(0, cursorCol));
@@ -2484,10 +2475,13 @@ export default function (pi: ExtensionAPI) {
 
   const running = (): void => {
     agentWorking = true;
-    workStarted();
+    beginWork();
     void watchLiveChildren();
   };
-  pi.on("agent_start", running);
+  pi.on("agent_start", () => {
+    workStarted();
+    running();
+  });
   pi.on("turn_start", running);
   pi.on("tool_execution_start", running);
   pi.on("tool_call", running);
@@ -2496,8 +2490,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", (event: { messages?: { role?: string; stopReason?: string; errorMessage?: string }[] }) => {
-    agentWorking = false;
-    scheduleIdleStreams();
+    finishWorking();
     const assistants = (event?.messages ?? []).filter((m) => m?.role === "assistant");
     const last = assistants[assistants.length - 1];
     if (!last) return;
@@ -2511,8 +2504,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_settled", async (_event: unknown, ctx: { isIdle(): boolean }) => {
     if (!ctx.isIdle()) return;
-    agentWorking = false;
-    scheduleIdleStreams();
+    finishWorking();
     settled = true;
     if (!edge) return;
     if (ending.kind === "aborted") return;
@@ -2540,19 +2532,13 @@ export default function (pi: ExtensionAPI) {
     stopParentWatch();
     if (reload) {
       globalThis.__kidoPiExtensionWatches = [...watches.values()].map(
-        (entry): WatchData => ({
-          run: entry.run,
-          name: entry.name,
-          output: entry.output,
-          target: entry.target,
-          offset: entry.offset,
-          lines: entry.lines,
-          dropped: entry.dropped,
-          partial: entry.partial,
-          budget: entry.budget,
-          budgetTold: entry.budgetTold,
-          idleDelay: entry.idleDelay,
-        }),
+        ({ timer, flushTimer, waiter, detach, ...data }): WatchData => {
+          void timer;
+          void flushTimer;
+          void waiter;
+          void detach;
+          return data;
+        },
       );
     } else {
       globalThis.__kidoPiExtensionWatches = undefined;

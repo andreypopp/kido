@@ -293,7 +293,9 @@ on a provider error sends the error instead, once per failed attempt,
 with how to retry. An aborted turn sends nothing: someone stopped it
 deliberately. These status notices write no `report` and carry no
 guidance: a status is not the child's account of its work. New work
-clears the per-turn memory. A child that never starts a turn and never
+clears that memory: a prompt or an inbound message that starts an agent
+run. The model's further turns within one run, such as the turn that
+reads `notify_parent`'s result, are not new work. A child that never starts a turn and never
 exits sends no notice: only a settled turn is evidence.
 
 **Endings.** The parent learns of every ending, report or not. For each
@@ -367,9 +369,9 @@ of at least eight characters, an unambiguous running name. It removes
 one leading `@`.
 
 - A bash run: `kido run-stop ID`.
-- A subagent: `kido run-stop ID --record-only` records `completed` if
-  a `report` exists, else `stopped`. Then the stop request goes over its
-  inbox, and `kido run-stop ID --cleanup --wait 5` follows. A healthy
+- A subagent: `kido run-outcome ID` records `completed` if a `report`
+  exists, else `stopped`. Then the stop request goes over its inbox, and
+  `kido run-stop ID --wait 5` follows. A healthy
   child ends itself within the wait. kido escalates for one that does
   not (design.md, "Window lifecycle"). `force` skips the request.
   Without an inbox and without `force`, the stop is refused.

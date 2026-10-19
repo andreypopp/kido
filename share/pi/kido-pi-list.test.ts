@@ -57,8 +57,8 @@ test("list_runs joins my runs with my parent, same-parent peers, and a subagent'
   try {
     run(fx, { edge: true });
     fx.setRuns([
-      { id: "kid-run", name: "kid", kind: "agent", parent: "mid-run", pane: "%5", session: "kid-session", startedAt: "2023-11-14T22:00:02Z" },
-      { id: "job", name: "job", kind: "bash", parent: "mid-run", startedAt: "2023-11-14T22:00:01Z" },
+      { id: "kid-run", name: "kid", parent: "mid-run", pane: "%5", session: "kid-session", startedAt: "2023-11-14T22:00:02Z" },
+      { id: "job", name: "job", parent: "mid-run", startedAt: "2023-11-14T22:00:01Z" },
     ]);
     await asSubagent(
       fx,
@@ -98,14 +98,14 @@ test("list_runs keeps every running run and the newest twenty ended ones", async
     const ended = Array.from({ length: 24 }, (_, i) => ({
       id: `ended-${String(i).padStart(2, "0")}`,
       name: `ended-${i}`,
-      kind: "bash",
+      
       parent: "mid-run",
       startedAt: `2023-11-14T21:${String(i).padStart(2, "0")}:00Z`,
       outcome: { result: "completed", text: "done" },
     }));
     fx.setRuns([
-      { id: "live-a", name: "live-a", kind: "bash", parent: "mid-run" },
-      { id: "live-b", name: "live-b", kind: "bash", parent: "mid-run" },
+      { id: "live-a", name: "live-a", parent: "mid-run" },
+      { id: "live-b", name: "live-b", parent: "mid-run" },
       ...ended,
     ]);
     await asSubagent(
@@ -154,7 +154,7 @@ test("a top-level pi lists the run-child %N children it started", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
-    fx.setRuns([{ id: "child-run", name: "child", kind: "bash", parent: "%1", startedAt: "2023-11-14T22:00:00Z" }]);
+    fx.setRuns([{ id: "child-run", name: "child", parent: "%1", startedAt: "2023-11-14T22:00:00Z" }]);
     const s = await startNamedSession(fx, "Self");
     const listed = await rows(s);
     assert.deepEqual(
@@ -225,8 +225,8 @@ test("@ completion excludes unnamed agents and non-live runs, matches a word ins
       agentPane({ pane: "%4", session: "worker-session", name: "worker-two" }),
     ]);
     fx.setRuns([
-      { id: "bash-run", name: "build", kind: "bash", parent: "%1", state: "running" },
-      { id: "ended-run", name: "finished", kind: "agent", parent: "%1", outcome: { result: "completed" } },
+      { id: "bash-run", name: "build", parent: "%1", },
+      { id: "ended-run", name: "finished", parent: "%1", outcome: { result: "completed" } },
     ]);
     const s = await startNamedSession(fx, "Self");
     const current = {
