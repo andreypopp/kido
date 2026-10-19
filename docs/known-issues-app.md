@@ -274,9 +274,19 @@ drag selection is untested. Reserve space or narrow/condition hit testing
 
 Visual tests call the mouse handlers and `menu(for:)` directly. Real AppKit
 delivery of clicks, drags, autoscroll and the context menu, on screen, is
-untested. A user `right-click-action` other than `context-menu` consumes the
-right-click in Ghostty outside copy mode, and no menu opens. The `prompt`
+untested. This includes the ⌘O key equivalent, which the tests reach through
+the menu item's action, and a prompt box drag, click-to-raise and its open and
+closed hand cursors. The beep for ⌘O without a selection is not
+asserted. A user `right-click-action` other than `context-menu` consumes
+the right-click in Ghostty outside copy mode, and no menu opens. The `prompt`
 RPC is tested only against a fake `kido rpc`. Status: untested.
+
+## A reconnect closes every prompt box
+
+A redial makes a new `SessionView`, so every open prompt box closes, with its
+text. A box is meant to close only on ×, Escape, delivery or the end of its
+session. Carrying the boxes over to the new view is possible but not done.
+Status: accepted.
 
 ## Feed restart can lose or re-arm outcomes
 
