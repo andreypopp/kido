@@ -109,14 +109,13 @@ public indirect enum Node: Decodable, Equatable, Sendable {
 }
 
 public struct Item: Decodable, Equatable, Sendable {
-    public enum Run: String, UnknownString, Sendable { case agent, bash, stream, unknown }
     public let id: PaneID
     public var pane: PaneID { id }
     public let window: WindowID
     public let title: String
     public let lifecycle: Lifecycle
     public let program_status: ProgramStatus
-    public let run: Run?
+    public let run: String?
     public let started: Date?
     public let children: [Node]
     private enum CodingKeys: String, CodingKey { case id, pane, window, title, lifecycle, program_status, run, started, children }
@@ -129,7 +128,7 @@ public struct Item: Decodable, Equatable, Sendable {
         title = try c.decode(String.self, forKey: .title)
         lifecycle = try c.decode(Lifecycle.self, forKey: .lifecycle)
         program_status = try c.decode(ProgramStatus.self, forKey: .program_status)
-        run = try c.decode(Run?.self, forKey: .run)
+        run = try c.decode(String?.self, forKey: .run)
         started = try c.decode(Double?.self, forKey: .started).map(Date.init(timeIntervalSince1970:))
         children = try c.decode([Node].self, forKey: .children)
         let live = if case .live = lifecycle { true } else { false }
@@ -141,7 +140,7 @@ public struct Item: Decodable, Equatable, Sendable {
 }
 
 public enum Lifecycle: Decodable, Equatable, Sendable {
-    public enum Result: String, Decodable, Sendable { case unknown, completed, failed, died, stopped }
+    public enum Result: String, UnknownString, Sendable { case unknown, completed, failed, died, stopped }
     case live(PaneKind)
     case ended(Result)
     public init(from decoder: Decoder) throws {
@@ -166,14 +165,14 @@ public enum PaneKind: Decodable, Equatable, Sendable {
     }
     case terminal(ShellStatus)
     case someAgent(name: String, Report)
-    case piAgent(id: String, Report)
+    case piAgent(session: String, Report)
     case ssh(Destination, Remote)
     public init(from decoder: Decoder) throws {
         var v = try Variant(decoder)
         switch v.tag {
         case "Terminal": self = .terminal(try v.payload())
         case "Some_agent": self = try v.fields { .someAgent(name: try $0.decode(String.self, forKey: "name"), try $0.decode(Report.self, forKey: "status")) }
-        case "Pi_agent": self = try v.fields { .piAgent(id: try $0.decode(String.self, forKey: "id"), try $0.decode(Report.self, forKey: "status")) }
+        case "Pi_agent": self = try v.fields { .piAgent(session: try $0.decode(String.self, forKey: "session"), try $0.decode(Report.self, forKey: "status")) }
         case "Ssh":
             self = try v.fields { c in
                 let destination = Destination(user: try c.decode(String.self, forKey: "user"), host: try c.decode(String.self, forKey: "host"))
