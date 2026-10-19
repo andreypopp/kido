@@ -38,7 +38,6 @@ import GhosttyKit
             && view?.isHiddenOrHasHiddenAncestor == false
         if available != next {
             available = next
-            if !next { invalidate() }
             if let surface { ghostty_surface_set_vsync_state(surface, next ? GHOSTTY_VSYNC_AVAILABLE : GHOSTTY_VSYNC_UNAVAILABLE) }
         }
         drain()
@@ -50,7 +49,7 @@ import GhosttyKit
         jobs += 1
         #endif
         let wanted = ghostty_surface_take_vsync_demand(surface)
-        guard wanted && available, let view else { invalidate(); return }
+        guard wanted && available, let view else { link?.isPaused = true; return }
         let link = self.link ?? view.displayLink(target: self, selector: #selector(tick))
         if let screen = view.window?.screen {
             let maximum = Float(screen.maximumFramesPerSecond)
@@ -63,6 +62,7 @@ import GhosttyKit
             creates += 1
             #endif
         }
+        link.isPaused = false
     }
 
     @objc private func tick(_ link: CADisplayLink) {
