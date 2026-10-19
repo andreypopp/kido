@@ -234,18 +234,27 @@ func TestRunChildUnderARunAndAPaneParent(t *testing.T) {
 		}
 	}
 
-	out, rc := h.kidoAs(caller, "", nil, "runs", "--json", "--parent", callerPane)
-	if rc != 0 {
-		t.Fatalf("runs --parent %s: %d %q", callerPane, rc, out)
+	type row struct {
+		ID     string `json:"id"`
+		Parent string `json:"parent"`
 	}
-	var paneRows []struct {
-		ID string `json:"id"`
+	list := func(args ...string) []row {
+		t.Helper()
+		out, rc := h.kidoAs(caller, "", nil, append([]string{"runs", "--json"}, args...)...)
+		if rc != 0 {
+			t.Fatalf("runs %v: %d %q", args, rc, out)
+		}
+		var rows []row
+		if err := json.Unmarshal([]byte(out), &rows); err != nil {
+			t.Fatal(err)
+		}
+		return rows
 	}
-	if err := json.Unmarshal([]byte(out), &paneRows); err != nil {
-		t.Fatal(err)
+	if rows := list("--parent", callerPane); len(rows) != 1 || rows[0].ID != byPane.ID {
+		t.Errorf("runs --parent %s = %+v, want only the live %s", callerPane, rows, byPane.ID)
 	}
-	if len(paneRows) != 1 || paneRows[0].ID != byPane.ID {
-		t.Errorf("runs --parent %s = %+v, want only %s", callerPane, paneRows, byPane.ID)
+	if rows := list("--parent", "parent-run"); len(rows) != 1 || rows[0].ID != byRun.ID {
+		t.Errorf("runs --parent parent-run = %+v, want only the live %s", rows, byRun.ID)
 	}
 
 	if out, rc := h.kidoAs(caller, "", nil, "run-outcome", "--result", "completed", "--", "parent-run"); rc != 0 {
@@ -261,18 +270,10 @@ func TestRunChildUnderARunAndAPaneParent(t *testing.T) {
 		}
 	}
 
-	out, rc = h.kidoAs(caller, "", nil, "runs", "--json", "--parent", "parent-run")
-	if rc != 0 {
-		t.Fatalf("runs --parent: %d %q", rc, out)
+	if rows := list("--parent", "parent-run"); len(rows) != 0 {
+		t.Errorf("runs --parent parent-run after the parent ended = %+v, want only live runs (none)", rows)
 	}
-	var rows []struct {
-		ID     string `json:"id"`
-		Parent string `json:"parent"`
-	}
-	if err := json.Unmarshal([]byte(out), &rows); err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].ID != byRun.ID || rows[0].Parent != "parent-run" {
-		t.Errorf("runs --parent parent-run = %+v, want only %s", rows, byRun.ID)
+	if rows := list("--all", "--parent", "parent-run"); len(rows) != 1 || rows[0].ID != byRun.ID || rows[0].Parent != "parent-run" {
+		t.Errorf("runs --all --parent parent-run after the parent ended = %+v, want only %s", rows, byRun.ID)
 	}
 }

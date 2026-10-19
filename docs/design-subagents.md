@@ -27,7 +27,7 @@ state directory, and writes to inboxes.
 
 | tool | what it uses |
 |---|---|
-| `list_runs()` | `kido runs --json --parent P`, `agents/<me>/*`, one `tmux list-panes -a` |
+| `list_runs()` | `kido runs --json --all --parent P`, `agents/<me>/*`, one `tmux list-panes -a` |
 | `set_status(activity)` | `tmux set-option -p @kido_activity` |
 | `message_agent(to, message, replyTo?)` | the target's inbox; `kido run-child` to restart an ended child |
 | `ask_agent(to, question, timeoutMs?)` | the target's inbox; `kido run-child` to restart an ended child |

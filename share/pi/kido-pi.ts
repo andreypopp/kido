@@ -927,7 +927,7 @@ export default function (pi: ExtensionAPI) {
   const myRuns = async (): Promise<RunRow[]> => {
     const key = parentKey();
     if (!key) return [];
-    const parsed = await readRuns(["--parent", key]);
+    const parsed = await readRuns(["--all", "--parent", key]);
     if (!Array.isArray(parsed)) return [];
     const rows: RunRow[] = [];
     for (const value of parsed) {

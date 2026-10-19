@@ -30,8 +30,9 @@ let load ?parent ~dir ~state id =
         output = Run.output_path ~dir meta.id;
       })
 
-let list ?parent ~dir ~state () =
+let list ?parent ?(all = false) ~dir ~state () =
   List.filter_map (load ?parent ~dir ~state) (Run.list ~dir)
+  |> List.filter (fun (i : info) -> all || Option.is_none i.outcome)
   |> List.sort (fun a b -> Float.compare b.meta.started_at a.meta.started_at)
 
 type detail = { info : info; screen : string option }
@@ -59,7 +60,7 @@ let%test_module "Tests" =
       ignore (run ~dir ~parent:"root" ~pane:"%8" ~started_at:2. "new");
       outcome ~dir "old" Completed;
       let state = { State.empty with panes = [ pane ~run:"new" "%8" ] } in
-      list ~parent:(Run.Run (run_id "root")) ~dir ~state ()
+      list ~all:true ~parent:(Run.Run (run_id "root")) ~dir ~state ()
       |> List.iter (fun (r : info) ->
           Printf.printf "%s %s\n" (Run.string_of_id r.meta.id)
             (match r.outcome with Some o -> Run.string_of_result o.Run.result | None -> "running"));

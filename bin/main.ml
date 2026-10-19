@@ -207,8 +207,9 @@ let run_child =
            | Ok parent -> start_run "run-child" parent name cwd session env command)
 
 let runs =
-  cmd "runs" "List runs, or show one."
+  cmd "runs" "List live runs, or show one."
   @@ let+ json = flag "json" "Print JSON instead of a table."
+     and+ all = flag "all" "List ended runs too."
      and+ parent =
        str "parent" "P"
          "Only runs under this parent: a run id, or the pane id %N of a top-level pi."
@@ -230,7 +231,7 @@ let runs =
        | Ok parent -> (
            match args with
            | [] ->
-               let infos = Run_history.list ?parent ~dir ~state () in
+               let infos = Run_history.list ?parent ~all ~dir ~state () in
                if json then
                  print_endline
                    (Yojson.Safe.to_string
@@ -311,7 +312,7 @@ let runs =
            | _ :: extra :: _ ->
                error ~name:"runs"
                  (Printf.sprintf
-                    "unknown argument %S\nusage: kido runs [--json] [--parent P] [<run-id>]" extra);
+                    "unknown argument %S\nusage: kido runs [--json] [--all] [--parent P] [<run-id>]" extra);
                1)
 
 let run_outcome =

@@ -6,7 +6,7 @@ type info = {
 }
 [@@deriving yojson_of]
 
-val list : ?parent:Run.parent -> dir:string -> state:State.t -> unit -> info list
+val list : ?parent:Run.parent -> ?all:bool -> dir:string -> state:State.t -> unit -> info list
 (** Newest first. *)
 
 type detail = { info : info; screen : string option }

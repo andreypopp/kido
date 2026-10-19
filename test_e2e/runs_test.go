@@ -174,11 +174,14 @@ func TestRunsTableShowAndJSON(t *testing.T) {
 	row := func(cells ...string) string {
 		return fmt.Sprintf("%-7s%-7s%-9s%-8s%-27s%-10s%-11s%s\n", cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], cells[6], cells[7])
 	}
-	if got, want := kido("runs"),
+	if got, want := kido("runs"), "ID  NAME  SESSION  PARENT  STARTED  DURATION  OUTCOME  CWD\n"; got != want {
+		t.Errorf("kido runs:\n%s\nwant only the header, both runs ended:\n%s", got, want)
+	}
+	if got, want := kido("runs", "--all"),
 		row("ID", "NAME", "SESSION", "PARENT", "STARTED", "DURATION", "OUTCOME", "CWD")+
 			row("run-b", "later", "", "", "2023-11-15T04:43:20+05:30", "-", "died", "")+
 			row("run-a", "kid", "", "root", "2023-11-15T03:43:20+05:30", "1m30s", "completed", "/tmp/some project"); got != want {
-		t.Errorf("kido runs:\n%s\nwant:\n%s", got, want)
+		t.Errorf("kido runs --all:\n%s\nwant:\n%s", got, want)
 	}
 
 	if got, want := kido("runs", "run-a"), `id:       run-a
@@ -192,6 +195,9 @@ ended:    2023-11-15T03:44:50+05:30
 output:   `+state+`/runs/run-a/output
 `; got != want {
 		t.Errorf("kido runs run-a:\n%s\nwant:\n%s", got, want)
+	}
+	if got, want := kido("runs", "--all", "run-a"), kido("runs", "run-a"); got != want {
+		t.Errorf("kido runs --all run-a = %q, want the single run unchanged %q", got, want)
 	}
 
 	dec := json.NewDecoder(strings.NewReader(kido("runs", "--json", "run-a")))
@@ -218,12 +224,18 @@ output:   `+state+`/runs/run-a/output
 	if err := json.Unmarshal([]byte(kido("runs", "--json")), &listed); err != nil {
 		t.Fatal(err)
 	}
+	if len(listed) != 0 {
+		t.Errorf("kido runs --json = %+v, want only live runs (none)", listed)
+	}
+	if err := json.Unmarshal([]byte(kido("runs", "--all", "--json")), &listed); err != nil {
+		t.Fatal(err)
+	}
 	var got []string
 	for _, r := range listed {
 		got = append(got, r.ID+" "+r.Outcome)
 	}
 	if want := "run-b died, run-a completed"; strings.Join(got, ", ") != want {
-		t.Errorf("kido runs --json = %q, want %q", strings.Join(got, ", "), want)
+		t.Errorf("kido runs --all --json = %q, want %q", strings.Join(got, ", "), want)
 	}
 
 	// A negative half-hour zone, an instant whose local date is in another

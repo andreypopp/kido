@@ -104,13 +104,16 @@ let run () =
   | "runs" ->
       Fake_common.log "KIDO_FAKE_RUNS_LOG" argv;
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUNS_GATE");
-      let parent = ref None and id = ref None in
+      let parent = ref None and id = ref None and all = ref false in
       let rec parse = function
         | [] -> ()
         | "--parent" :: value :: rest ->
             parent := Some value;
             parse rest
         | "--json" :: rest -> parse rest
+        | "--all" :: rest ->
+            all := true;
+            parse rest
         | arg :: rest ->
             if Option.is_none !id then id := Some arg;
             parse rest
@@ -129,6 +132,9 @@ let run () =
             | None -> rows ()
             | Some parent ->
                 List.filter (fun row -> String.equal (member "parent" row) parent) (rows ())
+          in
+          let rows =
+            if !all then rows else List.filter (fun row -> Option.is_none (outcome row)) rows
           in
           print_endline (Yojson.Safe.to_string (`List rows)));
       exit 0

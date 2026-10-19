@@ -22,7 +22,7 @@ func TestCommandLineRefusals(t *testing.T) {
 		code   int
 	}{
 		{[]string{"prompt"}, "\n", "no prompt given", 1},
-		{[]string{"runs", "run-a", "extra"}, "", "kido runs: unknown argument \"extra\"\nusage: kido runs [--json] [--parent P] [<run-id>]", 1},
+		{[]string{"runs", "run-a", "extra"}, "", "kido runs: unknown argument \"extra\"\nusage: kido runs [--json] [--all] [--parent P] [<run-id>]", 1},
 		{[]string{"runs", "no-such-run"}, "", `kido runs: run "no-such-run": no such run`, 3},
 	} {
 		cmd := exec.Command(kidoBin, c.args...)

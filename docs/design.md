@@ -111,8 +111,8 @@ another status is `failed` with the text `exit N`, and
 per platform: a lower-case name on macOS, the number on Linux;
 `State.parse` turns both into the upper-case name). A dead pane with
 neither, or no pane, is `died`. `Run.effective_outcome` derives this;
-`kido runs`, `kido run-wait` and the RPC `Ended` result show a derived
-ending like a recorded one. Only the sweep stores it, through the
+`kido runs --all`, `kido runs ID`, `kido run-wait` and the RPC `Ended`
+result show a derived ending like a recorded one. Only the sweep stores it, through the
 first-write-wins link.
 
 Only OSC 7501 root records supply status. OSC 0/2 supplies the pane
@@ -157,7 +157,7 @@ duplicates its session name.
 
 The extension uses only these interfaces of kido:
 
-- The run commands `run-child`, `runs --json [--parent P]`,
+- The run commands `run-child`, `runs --json --all [--parent P]`,
   `run-wait ID --json`, `run-stop` and `run-outcome`.
 - `tmux set-option -p -t %PANE` and `set-option -pu`, for the four
   pane options.
@@ -659,7 +659,7 @@ window.
 |---|---|
 | `kido run --name N [--cwd D] [--session S] [--env K=V]... -- CMD...` | starts a parentless run; prints `{"id":ID,"window":"@WIN","pane":"%PANE","output":PATH}` |
 | `kido run-child PARENT ...` | the same, under PARENT: a live run id, or the pane `%N` of a pi that has not ended (rule 2 of "Window lifecycle") |
-| `kido runs [--json] [--parent P] [ID]` | lists runs newest first, with a SESSION column, or one run; each JSON row has the run's `output` path |
+| `kido runs [--json] [--all] [--parent P] [ID]` | lists live runs newest first, with a SESSION column, or one run in any state; `--all` also lists ended runs; each JSON row has the run's `output` path |
 | `kido run-outcome ID --result completed\|failed\|stopped [--text T]` | records an ending, first write wins; a lost write exits 5 |
 | `kido run-wait ID [--json]` | blocks until the run has ended; prints the result, or the outcome object |
 | `kido run-stop ID [--wait SECS] [--result stopped\|completed]` | records the result, then ends the process and closes its pane |
@@ -1054,10 +1054,15 @@ the other ordering:
   it. A read-only report must not write on every call. Only a sweep
   closing the run's window, `run-outcome` and `run-stop` write the
   outcome. Without a reachable tmux server, `kido runs` reads no panes,
-  so every run without an outcome reads `died`.
+  so every run without an outcome reads `died`, and a listing without
+  `--all` is empty.
 
 kido does not prune run records. A run without a written outcome remains,
-and `kido runs` can still report it. The captured screen contains copied
+and `kido runs --all` and `kido runs ID` can still report it. A listing
+without `--all` shows only live runs: runs without an outcome, recorded
+or derived from the pane. The filter applies to the table, `--json`
+and `--parent` the same way. The extension passes `--all`, because
+`list_runs`, name checks and restarts need ended children. The captured screen contains copied
 bytes, not a reference to another store. See "The screen capture"
 above. Its cap is 64KB.
 
