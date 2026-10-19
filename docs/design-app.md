@@ -174,7 +174,7 @@ Relative/control-containing paths or noisy/malformed stdout are errors. Explicit
 Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
-Discovery requires the binary's RPC protocol to be exactly 5.0, as does
+Discovery requires the binary's RPC protocol to be exactly 6.0, as does
 RPC hello; both major and minor must match. Server compatibility is separate:
 the opaque server stamp must equal the expected stamp from the same binary's
 discovery JSON. A null stamp is incompatible. The app has no stamp constant.
@@ -871,12 +871,13 @@ banner as discovery, without automatic retry. Window and session navigation
 use numbered RPC requests. Replies can interleave with
 snapshots and arrive out of order; pending callbacks live on the feed reader
 queue and complete once, including failure when the connection ends or restarts.
-The app decodes v2 snapshots of protocol 5.0 only. Pane items carry a plain
+The app decodes v2 snapshots of protocol 6.0 only. Pane items carry a plain
 `title`, a typed `lifecycle` (Live pane kind with its agent or shell status,
 or Ended with a run result) and the raw `program_status`; their variants,
 null rules and percentages are enforced, and a malformed snapshot restarts
-the feed. Only the raw-record and run string enums decode unknown values as
-unknown. Every snapshot carries the tmux `server_instance`;
+the feed. Only the raw-record enums and the Ended result decode unknown values
+as unknown; kido never sends an unknown result. An item's `run` is the opaque
+run id of the pane, or null; the app never reads a run's kind. Every snapshot carries the tmux `server_instance`;
 sessions are source-list sections,
 window groups contain panes, and pane items can contain arbitrarily deep
 hoisted child windows. A node's identity is scoped to its session; linked
@@ -919,7 +920,7 @@ window does not flash as a top-level tab before the snapshot nests it under
 its parent. With no snapshot, every window shows. Each title
 is the composed label of that window's active pane, falling back to the
 tmux window name until its feed label arrives. A tab whose active pane is an
-agent or agent run is drawn like its sidebar row: semibold, with the display-only
+agent is drawn like its sidebar row: semibold, with the display-only
 @ prefix when that row has one; other tabs are regular with no @. WindowView's active
 pane, read from tmux layouts and `%window-pane-changed`, is shared with terminal
 focus. Each tab combines its window and descendants into one status mark,
@@ -974,8 +975,10 @@ timer serves the next pending deadline; removed rows lose their state.
 
 All pane and program rows are 32pt single-line or 48pt with a caption, with
 7pt vertical padding. Titles are 13pt regular on an 18pt line; captions are
-11pt on a 15pt line, 1pt below the title. Agent and agent-run titles, records
-included, are semibold; shell and bash/stream-run titles are regular. Rows have
+11pt on a 15pt line, 1pt below the title. Titles of panes whose lifecycle is a
+live agent (Pi_agent, Some_agent or a remote agent) and all program-record
+rows are semibold; every other pane title, Ended and Terminal runs included,
+is regular. Rows have
 a 12pt leading inset, a 16pt leading slot holding the status indicator, and an
 8pt gap; there are no leading icons. The trailing inset is 12pt and the
 trailing column holds only the 10pt tabular clock. The activity line is one
@@ -996,7 +999,8 @@ Geometry is derived in the row model as per-row guide segments, not
 maintained in a separate view tree.
 The display-only @
 prefix, never doubled, marks an agent that can be messaged, which is exactly
-a Pi_agent pane or an agent run. A native agent pane (Some_agent, such as
+a live Pi_agent pane. A run pane gets no @ while it is a Terminal or Ended: its
+inbox is not up yet or is gone. A native agent pane (Some_agent, such as
 Claude Code) and an agent over SSH (an Ssh pane with a remote agent, out of
 reach of message_agent, which only reaches pi sessions on the same server)
 cannot be messaged, so they keep the semibold title without the @. Idle local shell panes
@@ -1103,7 +1107,9 @@ pure step; `App/Notifications.swift` holds the two posters and the
 app-wide `Notifier`; `main.swift` installs the delegate and routes clicks.
 
 **Eligibility.** A pane wants a notification when its lifecycle is Live,
-it is not a kido run, and `Item.indicator(seen)` shows waiting (an agent
+it is not a run nested under another item (the parent agent gets the notice;
+a run at the top level of the tree, even inside its window's group, has no
+parent and notifies), and `Item.indicator(seen)` shows waiting (an agent
 or a shell program report, in any phase) or an unseen error. The
 indicator keeps the sidebar's precedence, so a quiet report masks a
 command exit for the banner exactly as for the row. Waiting is one plain
