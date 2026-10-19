@@ -300,7 +300,9 @@ Pi and Claude Code report their status through OSC 7501.
 - A pane's kind determines only its row and `kido prompt` scope.
   The extension's messaging and control use `@kido_inbox` and session
   ids under the same trust rule, so a pane whose pi root clears is not
-  reachable as an agent.
+  reachable as an agent. A waiting ask, `notify_parent` and the parent
+  watch read only `@kido_session` and pane death (design.md, "The
+  trust rule").
 
 ## Frontends
 

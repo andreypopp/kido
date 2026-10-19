@@ -253,9 +253,9 @@ from the parent would not include the instructions.
 **Watching the parent.** The child's pi is a child of the tmux server.
 Thus, no signal tells it that its parent has ended. Every
 `KIDO_PARENT_POLL_MS` (five seconds), it reads `@kido_session` and
-`#{pane_program_status}` of the parent's pane with `display-message`.
+`#{pane_dead}` of the parent's pane with `list-panes`.
 It finds that pane with one `list-panes -a`, and reads the list again
-only when the pane no longer matches. A pane that has the parent's
+only when the pane no longer matches. A pane that is not dead and has the parent's
 `@kido_session` means that the parent is alive, with or without a pi
 root, because pi clears its root while it is in the external editor or
 suspended. A

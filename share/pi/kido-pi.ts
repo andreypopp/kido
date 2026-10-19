@@ -28,6 +28,7 @@ const PANE_FIELDS = [
   "#{window_id}",
   ...OPTION_KEYS.map((key) => `#{${key}}`),
   "#{pane_current_path}",
+  "#{pane_dead}",
   "#{pane_program_status}",
   "#{pane_title}",
 ];
@@ -213,6 +214,7 @@ export type PaneInfo = {
   inbox: string;
   activity: string;
   cwd: string;
+  dead: boolean;
   root: { app: string; state: string } | null;
   title: string;
 };
@@ -252,8 +254,9 @@ function parsePanes(out: string): PaneInfo[] {
       inbox: fields[5],
       activity: fields[6],
       cwd: fields[7],
-      root: rootRecord(fields[8]),
-      title: fields[9],
+      dead: fields[8] === "1",
+      root: rootRecord(fields[9]),
+      title: fields[10],
     });
   }
   return panes;
@@ -1216,10 +1219,10 @@ export default function (pi: ExtensionAPI) {
     if (!edge) return { ok: false, text: "this session has no parent (it was not spawned as a subagent); notify_parent has nobody to tell" };
     const parentSession = edge.parent;
     const agentDir = edge.dir;
-    const panes = await listPanes();
-    const parentPane = panes.find((p) => isAgentPane(p) && p.agentSession === parentSession);
-    if (!parentPane) return { ok: false, text: `no live process holds session "${parentSession}"; the parent is gone, nothing sent` };
-    if (!parentPane.inbox) return { ok: false, text: `session ${parentSession} has no inbox` };
+    const found = await sessionPane(parentSession, parentPane);
+    if (found === "unknown") return { ok: false, text: "could not read tmux; nothing sent" };
+    if (!found) return { ok: false, text: `no live process holds session "${parentSession}"; the parent is gone, nothing sent` };
+    if (!found.inbox) return { ok: false, text: `session ${parentSession} has no inbox` };
     const path = join(agentDir, "report");
     const body = status ? utf8Prefix(text, MAX_NOTICE_BYTES) : reportNotice(text, path);
     if (!status) {
@@ -1227,7 +1230,7 @@ export default function (pi: ExtensionAPI) {
         writeFileSync(path, text);
       } catch {}
     }
-    return deliveryText(parentPane.name || parentSession, "notice", await sendEnvelope(parentPane.inbox, { kind: "notice" }, body));
+    return deliveryText(found.name || parentSession, "notice", await sendEnvelope(found.inbox, { kind: "notice" }, body));
   };
 
   type Watch = WatchData & {
@@ -1466,26 +1469,19 @@ export default function (pi: ExtensionAPI) {
     return pane ? { ok: true, pane } : { ok: false };
   };
 
+  // A session is live while a pane holds @kido_session and is not dead; pi's
+  // root comes and goes with its ui (the external editor, Ctrl+Z). A failed
+  // tmux read is no evidence.
   const sessionPane = async (session: string, paneHint: string | null): Promise<PaneInfo | null | "unknown"> => {
     if (paneHint) {
       const reading = await paneReading(paneHint);
-      if (reading.ok && reading.pane.agentSession === session) return reading.pane;
+      if (reading.ok && reading.pane.agentSession === session && !reading.pane.dead) return reading.pane;
     }
     const { ok, panes } = await listPanesResult();
     if (!ok) return "unknown";
-    return panes.find((p) => p.agentSession === session) ?? null;
+    return panes.find((p) => p.agentSession === session && !p.dead) ?? null;
   };
 
-  // A target that answers must be a running pi; a parent in its editor shows no
-  // pi root but is still the parent.
-  const askTargetGone = async (session: string, paneHint: string | null): Promise<boolean> => {
-    const found = await sessionPane(session, paneHint);
-    return found !== "unknown" && (found === null || !isAgentPane(found));
-  };
-
-  // The parent is a pane holding @kido_session; pi's root comes and goes with
-  // its ui (the external editor, Ctrl+Z). A failed tmux read is not evidence,
-  // so it never ends the child.
   const startParentWatch = (): void => {
     if (!edge) return;
     const parentSession = edge.parent;
@@ -2059,10 +2055,10 @@ export default function (pi: ExtensionAPI) {
         watch = setInterval(() => {
           if (reading) return;
           reading = true;
-          const gone = askTargetGone(t.id, t.pane || null);
-          void gone.then((absent) => {
+          const found = sessionPane(t.id, t.pane || null);
+          void found.then((pane) => {
             reading = false;
-            if (absent) settle({ gaveUp: "gone" });
+            if (pane === null) settle({ gaveUp: "gone" });
           });
         }, envMs("KIDO_ASK_POLL_MS", 5000));
         watch.unref();

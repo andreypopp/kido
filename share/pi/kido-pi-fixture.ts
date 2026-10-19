@@ -88,7 +88,7 @@ export function paneRow(row: Partial<PaneRow> & { pane_id: string }): PaneRow {
     kido_name: "",
     kido_inbox: "",
     kido_activity: "",
-    pane_dead: "",
+    pane_dead: "0",
     pane_dead_status: "",
     pane_dead_signal: "",
     pane_current_path: "/tmp",

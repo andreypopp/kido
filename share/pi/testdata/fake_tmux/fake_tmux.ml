@@ -7,7 +7,8 @@ let read_table () = Fake_common.read_rows "KIDO_FAKE_TMUX_PANES"
 let key_of_token token =
   let fields =
     [
-      "pane_id"; "session_id"; "window_id"; "pane_current_path"; "pane_program_status"; "pane_title";
+      "pane_id"; "session_id"; "window_id"; "pane_current_path"; "pane_dead";
+      "pane_program_status"; "pane_title";
     ]
   in
   if List.mem ~eq:String.equal token fields then token

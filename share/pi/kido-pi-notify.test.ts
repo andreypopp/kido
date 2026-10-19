@@ -51,7 +51,33 @@ test("notify_parent refuses a session with no parent, and one whose parent is go
         (await s.tools.get("notify_parent").execute("c1", { summary: "anybody there?" })).content[0].text,
         'could not notify parent: no live process holds session "boss-session"; the parent is gone, nothing sent',
       );
+      const inbox = await fx.startInbox();
+      fx.setPanes([selfPane(), { ...agentPane({ pane: "%2", session: "boss-session", name: "boss", inbox: inbox.path }), pane_dead: "1" }]);
+      assert.equal(
+        (await s.tools.get("notify_parent").execute("c2", { summary: "anybody there?" })).content[0].text,
+        'could not notify parent: no live process holds session "boss-session"; the parent is gone, nothing sent',
+        "a dead pane with stale options is a gone parent",
+      );
     });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("notify_parent reaches a parent whose pi root is cleared but whose session option remains", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    fx.setPanes([
+      agentPane({ pane: "%1", session: "child-session", name: "worker", inbox: fx.inboxPath("child-session") }),
+      { ...agentPane({ pane: "%2", session: "boss-session", name: "boss", inbox: inbox.path }), pane_program_status: "" },
+    ]);
+    await asSubagent(fx, "child-session", async () => {
+      const s = await startNamedSession(fx, "worker", "child-session");
+      const result = await s.tools.get("notify_parent").execute("c1", { summary: "the merge is done" });
+      assert.equal(result.content[0].text, "delivered to boss by inbox", "the parent in its editor is still the parent");
+      assert.equal(inbox.received().length, 1);
+    }, { parent: "boss-session", name: "worker" });
   } finally {
     await fx.restore();
   }

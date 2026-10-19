@@ -161,7 +161,7 @@ The extension uses only these interfaces of kido:
   `run-wait ID --json`, `run-stop` and `run-outcome`.
 - `tmux set-option -p -t %PANE` and `set-option -pu`, for the four
   pane options.
-- `tmux list-panes -a` and `display-message`, for discovery and
+- `tmux list-panes -a` and `list-panes -t`, for discovery and
   liveness.
 
 It never finds or parses kido's state directory. The only kido file it
@@ -204,10 +204,18 @@ allows one terminal line per row.
 
 **The trust rule.** The extension's own discovery uses kido's rule: a
 pane is a local pi agent only with an OSC 7501 root with `app=pi`
-(`#{pane_program_status}`) and `@kido_session`. Discovery, addressing
-and the ask's liveness poll apply it. A stale option on a shell pane is
-no agent. Parent liveness is the one exception ("Window lifecycle",
-rule 2): pi clears its root while it runs.
+(`#{pane_program_status}`) and `@kido_session`. Discovery and
+addressing apply it. A stale option on a shell pane is no agent.
+Liveness of a known session is the exception, because pi clears its
+root while it runs ("Window lifecycle", rule 2). The ask's liveness
+poll, `notify_parent` and the parent watch find a session alive while a
+pane that is not dead holds its `@kido_session`, with or without a pi
+root. A dead pane counts as gone, because a run pane keeps
+`remain-on-exit` and thus the stale options of a killed child.
+Thus, an agent in its external editor or suspended is not listed and
+cannot be addressed, but an ask that already waits on it continues, and
+a child's report reaches a parent in its editor. A suspended pi reads
+its inbox only after `fg`.
 
 **One copy.** On its first factory call, the extension claims
 `globalThis.__kidoPiExtensionCopy` with its path. A copy at another
@@ -573,15 +581,23 @@ during a reload gap, even while the socket listens.
 ### When the target goes away
 
 Only the asked process can answer. If the target stops running, the
-ask ends, regardless of how the process stops. A target can be alive at
+ask ends, unless a SIGKILL leaves its options on a live shell pane
+(below). A target can be alive at
 the send and dead a second later. Without another check, the asker would
 wait for the whole `timeoutMs`.
 
 A waiting ask therefore reads the target's pane every
 `KIDO_ASK_POLL_MS` (five seconds), or every pane with `list-panes -a`
 when the target's pane is not known, as after a restart. A successful
-read that does not show the target's session under a pi root settles
-the waiter. A failed read supplies no evidence and settles nothing.
+read that shows no pane, or only a dead pane, with the target's
+`@kido_session` settles the waiter. The pi root does not count: pi
+clears it while the external editor is open, and its inbox and turns
+continue. Ctrl+Z also clears it and stops the process, and the reply
+can arrive after `fg`, within `timeoutMs` ("The trust rule"). A
+failed read supplies no evidence and settles nothing. The poll cannot
+tell a suspended pi from one that SIGKILL ended in a live shell, because
+both leave the options on a pane that is not dead. Such an ask waits for
+`timeoutMs`.
 The poll prevents overlapping reads, and its timer is unref'd, so the
 wait never keeps pi's event loop open.
 

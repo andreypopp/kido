@@ -8,7 +8,7 @@ the session in kido. These work without the extension.
 
 The extension uses only kido's run commands (`run-child`, `runs --json`,
 `run-wait --json`, `run-stop`, `run-outcome`) and tmux (`set-option -p`,
-`list-panes -a`, `display-message`). It never finds or parses kido's
+`list-panes -a`, `list-panes -t`). It never finds or parses kido's
 state directory; it reads a run's output at the path a run command
 prints. Its own state is per user, in `$KIDO_PI_STATE_DIR`, else
 `$XDG_STATE_HOME/kido-pi`, else `~/.local/state/kido-pi`:

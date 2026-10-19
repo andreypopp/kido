@@ -15,7 +15,7 @@ import {
   customMessages,
   pendingState,
   settlesWithin,
-  shellStatus,
+  paneRow,
   type Inbox,
   type Fixture,
 } from "./kido-pi-fixture.ts";
@@ -223,7 +223,56 @@ test("ask_agent releases its waiter when the target dies mid-wait, long before t
       await pollUntil(() => inbox.received().length === 1, 2000, "the ask to go out");
       assert.equal(await pendingState(p), "pending", "a live target is still being waited for");
 
-      fx.setPanes([selfPane(), { ...agentPane({ pane: "%2", session: "peer-a", name: "peer-a", inbox: inbox.path }), pane_dead: "1", pane_program_status: shellStatus() }]);
+      fx.setPanes([selfPane(), { ...agentPane({ pane: "%2", session: "peer-a", name: "peer-a", inbox: inbox.path }), pane_dead: "1" }]);
+      const result = await settlesWithin(p, 3000);
+      assert.match(result.content[0].text, /stopped running before answering/);
+      assert.ok(result.content[0].text.includes(sent(inbox).id), "the error names the ask id");
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+// pi clears its OSC 7501 root while the external editor is open or the
+// session is suspended; @kido_session stays, so the target is still alive.
+test("an ask survives its target's pi root disappearing for several polls", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    const open = agentPane({ pane: "%2", session: "peer-a", name: "peer-a", inbox: inbox.path });
+    fx.setPanes([selfPane(), open]);
+    const s = await startNamedSession(fx, "Self", SELF);
+    await withEnv({ KIDO_ASK_POLL_MS: "20" }, async () => {
+      const p = s.tools.get("ask_agent").execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 });
+      await pollUntil(() => inbox.received().length === 1, 2000, "the ask to go out");
+      const hinted = (argv: string[]): boolean => argv[0] === "list-panes" && argv[1] === "-t" && argv[2] === "%2";
+      const before = fx.tmuxCalls().filter(hinted).length;
+      fx.setPanes([selfPane(), { ...open, pane_program_status: "" }]);
+      await pollUntil(
+        () => fx.tmuxCalls().filter(hinted).length >= before + 3,
+        2000,
+        "three hinted liveness polls with no pi root",
+      );
+      assert.equal(await pendingState(p), "pending", "a target in its editor is still waited for");
+      const ask = sent(inbox);
+      assert.equal(await sendToInbox(fx.inboxPath(SELF), envelope("reply", "still here", { replyTo: ask.id, from: ask.from })), "ok");
+      assert.equal((await p).content[0].text, "still here");
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a target whose options and pi root are both gone stops the waiting ask", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    fx.setPanes([selfPane(), agentPane({ pane: "%2", session: "peer-a", name: "peer-a", inbox: inbox.path })]);
+    const s = await startNamedSession(fx, "Self", SELF);
+    await withEnv({ KIDO_ASK_POLL_MS: "20" }, async () => {
+      const p = s.tools.get("ask_agent").execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 });
+      await pollUntil(() => inbox.received().length === 1, 2000, "the ask to go out");
+      fx.setPanes([selfPane(), paneRow({ pane_id: "%2", pane_program_status: "" })]);
       const result = await settlesWithin(p, 3000);
       assert.match(result.content[0].text, /stopped running before answering/);
       assert.ok(result.content[0].text.includes(sent(inbox).id), "the error names the ask id");
