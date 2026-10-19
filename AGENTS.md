@@ -280,7 +280,8 @@ Conventions:
       bin/             the bin directory's sh shims (kido, tmux, ssh, kido-pi)
       shim.sh          their shared helper
       bash/, zsh/      the OSC 133 integrations every primed shell sources
-      tmux/            kido-tmux.conf, the defaults the launcher writes into
+      tmux/            kido-tmux.conf and kido-tmux-unstamped.conf, the
+                       defaults the launcher writes into
                        server.conf (embedded, not installed)
       pi/              kido-pi.ts, the harness, which the kido-pi shim loads
                        with --extension
@@ -309,7 +310,8 @@ sweep. `runs` is the CLI reader of run history.
 
 `dune build` builds the executable stanza `bin/main.exe`, installed as
 `kido`. `lib/` embeds the shell integrations,
-`share/tmux/kido-tmux.conf` and the fork pin.
+`share/tmux/kido-tmux.conf`, `share/tmux/kido-tmux-unstamped.conf`
+and the fork pin.
 Promotion substitutes the build id through dune-build-info.
 `make install` and e2e copy the stamped executable `build/main.exe`.
 `_build/default/bin/main.exe` reports `unknown`.
@@ -327,11 +329,14 @@ The stamp digests these inputs:
 
 - The pinned fork revision, read at build time through
   `install-tmux-fork.sh --print-revision`.
-- The `server.conf` template.
+- The `server.conf` template, without
+  `share/tmux/kido-tmux-unstamped.conf`.
 - The launcher's environment changes.
 
-Thus, a fork or tmux-config change restarts the server.
+Thus, a fork or `kido-tmux.conf` change restarts the server.
 An RPC protocol bump does not.
+A change to `kido-tmux-unstamped.conf` does not. Only new servers get it.
+docs/design.md, "The launcher", tells which file gets a setting.
 The launcher, `kido server`, `rpc` and `switch-session/window`
 accept `--server DIR`. `switch-window` prints nothing.
 A server is its state directory. Its socket is `<dir>/socket`.

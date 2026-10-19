@@ -26,7 +26,7 @@ let user_conf ~xdg_config_home ~home =
   else if String.is_empty home then Error "$HOME is not defined"
   else Ok (Filename.concat home ".config/kido/kido.conf")
 
-let server_conf ~exe ~user_conf =
+let server_conf ~exe ~user_conf ~unstamped =
   let open Result.Infix in
   let* kido = conf_command exe [] in
   let* kido_shell = conf_command exe [ "shell" ] in
@@ -41,6 +41,7 @@ let server_conf ~exe ~user_conf =
               # Your own configuration belongs in %s.\n\n"
              user_conf;
            Embedded.tmux_defaults;
+           unstamped;
            Printf.sprintf
              "\n\
               # The user's configuration, if there is one: -q, because there\n\
@@ -80,7 +81,7 @@ let digest ~revision ~conf ~env =
 let placeholder_env = [| "KIDO_STATE_DIR=/state"; "PATH=/bin" |]
 
 let stamp =
-  match server_conf ~exe:"/kido" ~user_conf:"/kido.conf" with
+  match server_conf ~exe:"/kido" ~user_conf:"/kido.conf" ~unstamped:"" with
   | Ok conf ->
       digest ~revision:Embedded.fork_revision ~conf
         ~env:(server_env ~bin_dir:(Some "/kido-bin") placeholder_env)
@@ -140,7 +141,9 @@ let new_session ~dir ~env ~detach =
     user_conf ~xdg_config_home:(lookup env "XDG_CONFIG_HOME") ~home:(lookup env "HOME")
   in
   let conf = Filename.concat dir "server.conf" in
-  let* conf_text = server_conf ~exe:(Lazy.force Fs.self) ~user_conf in
+  let* conf_text =
+    server_conf ~exe:(Lazy.force Fs.self) ~user_conf ~unstamped:Embedded.tmux_unstamped
+  in
   Fs.write conf conf_text;
   let env =
     Shell.with_env (server_env ~bin_dir:(Bin_dir.own ()) env) [ (Tmux_vars.server, stamp) ]
@@ -214,15 +217,22 @@ let%test_module "Tests" =
         {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"6.0","server":null,"expected":"0123456789ab"}
         |}]
 
-    let%expect_test "the stamp ignores install paths and follows the template, env and fork" =
-      let installed ?(revision = Embedded.fork_revision) ?(extra = "") exe user_conf bin_dir =
-        let conf = Result.get_exn (server_conf ~exe ~user_conf) in
+    let%expect_test
+        "the stamp excludes the unstamped defaults and follows the template, env and fork" =
+      let installed ?(revision = Embedded.fork_revision) ?(extra = "") ?(include_unstamped = false)
+          exe user_conf bin_dir =
+        let conf =
+          Result.get_exn (server_conf ~exe ~user_conf ~unstamped:Embedded.tmux_unstamped)
+        in
+        let conf =
+          String.replace ~sub:user_conf ~by:"/kido.conf" (String.replace ~sub:exe ~by:"/kido" conf)
+        in
+        let conf =
+          if include_unstamped then conf
+          else String.replace ~sub:Embedded.tmux_unstamped ~by:"" conf
+        in
         let env = server_env ~bin_dir:(Some bin_dir) placeholder_env in
-        digest ~revision
-          ~conf:
-            (String.replace ~sub:user_conf ~by:"/kido.conf"
-               (String.replace ~sub:exe ~by:"/kido" conf)
-            ^ extra)
+        digest ~revision ~conf:(conf ^ extra)
           ~env:(Array.map (String.replace ~sub:bin_dir ~by:"/kido-bin") env)
       in
       let homebrew = installed "/opt/homebrew/bin/kido" "/Users/a/.config/kido/kido.conf" in
@@ -235,14 +245,17 @@ let%test_module "Tests" =
             "/Users/a/.config/kido/kido.conf" "/opt/homebrew/share/kido/bin";
           installed ~revision:(String.make 40 '0') "/opt/homebrew/bin/kido"
             "/Users/a/.config/kido/kido.conf" "/opt/homebrew/share/kido/bin";
+          installed ~include_unstamped:true "/opt/homebrew/bin/kido"
+            "/Users/a/.config/kido/kido.conf" "/opt/homebrew/share/kido/bin";
           digest ~revision:Embedded.fork_revision
-            ~conf:(Result.get_exn (server_conf ~exe:"/kido" ~user_conf:"/kido.conf"))
+            ~conf:(Result.get_exn (server_conf ~exe:"/kido" ~user_conf:"/kido.conf" ~unstamped:""))
             ~env:placeholder_env;
         ];
       [%expect
         {|
         true 12
         true 12
+        false 12
         false 12
         false 12
         false 12

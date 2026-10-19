@@ -261,6 +261,12 @@ func TestLauncherDefaultEnvironment(t *testing.T) {
 	if got := r.mustKido("show", "-sv", "get-clipboard"); got != "request" {
 		t.Errorf("get-clipboard = %q, want request", got)
 	}
+	if got := r.mustKido("show-options", "-sv", "extended-keys"); got != "on" {
+		t.Errorf("extended-keys = %q, want on", got)
+	}
+	if got := r.mustKido("show-options", "-sv", "extended-keys-format"); got != "csi-u" {
+		t.Errorf("extended-keys-format = %q, want csi-u", got)
+	}
 	if got := r.mustKido("show-options", "-gv", "side-status-command"); !strings.Contains(got, kidoBin) {
 		t.Errorf("side-status-command = %q, want the kido under test (%s)", got, kidoBin)
 	}

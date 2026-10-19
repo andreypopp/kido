@@ -1340,11 +1340,21 @@ The launcher probes with `list-sessions` and handles three results:
 At creation, kido writes `<dir>/server.conf`. The new server reads it
 in this order:
 
-1. kido's defaults, exactly `share/tmux/kido-tmux.conf`.
+1. kido's defaults, exactly `share/tmux/kido-tmux.conf`, then
+   `share/tmux/kido-tmux-unstamped.conf`.
 2. `source-file -q` of `$XDG_CONFIG_HOME/kido/kido.conf` or
    `~/.config/kido/kido.conf`.
 3. kido-owned `side-status-command` and `default-command`, each using
    the kido binary's absolute path.
+
+The server stamp (docs/design-rpc.md) digests this text without
+`kido-tmux-unstamped.conf`. Thus, a change to that file does not ask a
+running server to restart, and only new servers get it. A setting goes
+there only if kido works on a server that does not have it:
+`extended-keys on` and `extended-keys-format csi-u`, which pi asks for
+its modified keys. A setting that kido depends on stays in
+`kido-tmux.conf`: the side column, a key binding that calls kido, or
+an option that kido reads.
 
 The user's file follows defaults, so user settings take precedence.
 kido-owned options come last to prevent accidental loss of the side
@@ -1515,8 +1525,9 @@ beside `bin/kido`:
 - the pi extension `pi/kido-pi.ts`, without tests, testdata or package
   files.
 
-This excludes `kido-tmux.conf`. The launcher writes its embedded copy
-into startup configuration. Nothing reads that file from disk.
+This excludes `kido-tmux.conf` and `kido-tmux-unstamped.conf`. The
+launcher writes their embedded copies into startup configuration.
+Nothing reads those files from disk.
 `make install` copies `bin` and `share` from `_build/install/default`
 into `PREFIX`, default `~/.local`. This tree contains `bin/kido`,
 `bin/kido-tmux` and `share/kido` together.

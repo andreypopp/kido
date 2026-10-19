@@ -54,7 +54,8 @@ The server uses a separate stamp, `Launch.stamp`. It contains the first
 12 hex digits of an MD5 over:
 
 - The fork revision pinned by the build.
-- The `server.conf` that `Launch.server_conf` writes.
+- The `server.conf` that `Launch.server_conf` writes, without
+  `kido-tmux-unstamped.conf`.
 - The environment that `Launch.server_env` gives the server.
 
 The latter two use fixed placeholder paths and a placeholder environment.
