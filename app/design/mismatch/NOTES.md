@@ -15,7 +15,7 @@ The previous banner can still be selected for comparison. Its optional version/f
 Two independent checks, one sheet.
 
 - **Server stamp.** A kido server records `KIDO_SERVER`, a 12-hex stamp derived from the tmux fork revision and the generated server config, so it changes only when the server itself would differ. `kido server` reports `server` (the running server's stamp, or null for an older or unstamped server) and `expected` (what this kido would create). Compatible means server == expected. A stamp says only *different*, never older or newer, so this cause never uses upgrade wording: the server must be restarted (locally by the destructive Restart, remotely by the user on the host, then Reconnect).
-- **RPC protocol.** Separate from the stamp, currently 5.0. The app requires exactly 5.0 from the kido it talks to: the bundled kido locally, the installed kido over SSH. A remote kido speaking an older version means upgrade kido on the host; a newer one means update Kido.app on this Mac. Locally the bundled kido should always match, so a mismatch means reinstall or update Kido.app.
+- **RPC protocol.** Separate from the stamp, currently 6.0. The app requires exactly 6.0 from the kido it talks to: the bundled kido locally, the installed kido over SSH. A remote kido speaking an older version means upgrade kido on the host; a newer one means update Kido.app on this Mac. Locally the bundled kido should always match, so a mismatch means reinstall or update Kido.app.
 
 ## Cases
 
@@ -27,7 +27,7 @@ Two independent checks, one sheet.
 6. Remote newer kido RPC: "Update Kido.app to connect". Update Kido.app on this Mac, not the host.
 7. Local restart confirmation: the preview's two-step simulation only; natively Restart acts immediately.
 
-Dark/light and unstamped/different-stamp fixtures are switchable. The fixtures use the stamps `a1b2c3d4e5f6` (server) and `f0e1d2c3b4a5` (expected), and RPC 3.0 for an older kido and 5.0 for a newer one; the app's copy in `App/WindowOwner.swift` (`mismatchAlert`) is the source of the wording.
+Dark/light and unstamped/different-stamp fixtures are switchable. The fixtures use the stamps `a1b2c3d4e5f6` (server) and `f0e1d2c3b4a5` (expected), and RPC 5.0 for an older kido and 7.0 for a newer one; the app's copy in `App/WindowOwner.swift` (`mismatchAlert`) is the source of the wording.
 
 ## Behavior and native implementation
 

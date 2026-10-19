@@ -6,22 +6,23 @@ import Testing
     #expect(RPCVersion(text) == nil)
 }
 
-@Test(arguments: [("2.1", false), ("3.0", false), ("5.0", true), ("3.2", false), ("0.9", false), ("4.0", false), ("5.1", false)]) func protocolCompatibility(_ text: String, _ compatible: Bool) throws {
+@Test(arguments: [("2.1", false), ("3.0", false), ("5.0", false), ("3.2", false), ("0.9", false), ("4.0", false), ("5.1", false), ("6.0", true), ("6.1", false)]) func protocolCompatibility(_ text: String, _ compatible: Bool) throws {
     #expect(try #require(RPCVersion(text)).compatible == compatible)
-    #expect(RPCVersion.required.description == "5.0")
+    #expect(RPCVersion.required.description == "6.0")
 }
 
 @Test func tolerantRawEnums() throws {
-    let item = pane(3, window: 2, lifecycle: terminal(), run: "future", records: [["id": "", "state": "future", "kind": "future"]])
+    let item = pane(3, window: 2, lifecycle: ["Ended", ["result": "future"]], run: "r-1",
+                    records: [["id": "", "state": "future", "kind": "future"]])
     let snapshot = try decode(snapshotObject([item], client: 3, window: 2))
     guard case .item(let decoded) = snapshot.sessions[0].nodes[0] else { Issue.record("not an item"); return }
-    #expect(decoded.run == .unknown)
+    #expect(decoded.lifecycle == .ended(.unknown))
     #expect(decoded.program_status.records[0].state == .unknown && decoded.program_status.records[0].kind == .unknown)
 }
 
 @Test func rpcEventsInterleave() throws {
     let lines = [
-        #"{"hello":{"protocol":"5.0"}}"#,
+        #"{"hello":{"protocol":"6.0"}}"#,
         #"{"reply":{"id":2,"switched":null}}"#,
         #"{"v":2,"client":{"session":"$1","window":"@2","pane":"%3"},"server_instance":{"started_at":1780000000,"pid":12345},"error":null,"sessions":[]}"#,
         #"{"reply":{"id":1,"switched":{"session":"$3","window":"@12"}}}"#,
@@ -37,7 +38,7 @@ import Testing
     #expect(error == "invalid or unknown request")
 }
 
-@Test(arguments: [(#"{"hello":{"protocol":"5.0","server":null,"expected":"0123456789ab"}}"#, nil), (#"{"hello":{"protocol":"5.0","server":"other","expected":"0123456789ab"}}"#, "other")]) func rejectedHello(_ line: String, _ stamp: String?) throws {
+@Test(arguments: [(#"{"hello":{"protocol":"6.0","server":null,"expected":"0123456789ab"}}"#, nil), (#"{"hello":{"protocol":"6.0","server":"other","expected":"0123456789ab"}}"#, "other")]) func rejectedHello(_ line: String, _ stamp: String?) throws {
     guard case .hello(.rejected(let binary, let server, let expected)) = try JSONDecoder().decode(RPCEvent.self, from: Data(line.utf8)) else { Issue.record("not rejected"); return }
     #expect(binary == .required)
     #expect(server?.description == stamp)

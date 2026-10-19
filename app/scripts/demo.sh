@@ -25,9 +25,6 @@ if ! t has-session -t main:kido 2>/dev/null; then
   "$K" server --server "$SERVER"
   t rename-window -t main: kido
   t split-window -d -h -t main:kido
-  t new-window -d -t main -n review
-  t new-window -d -t main -n tests
-  t split-window -d -v -t main:tests
   t new-window -d -t main -n web
   t split-window -d -h -t main:web
   t split-window -d -v -t main:web
@@ -55,13 +52,40 @@ AWK
     t new-window -d -t ops -n "log-$size"
     t send-keys -t "ops:log-$size" "awk -v lines=$lines -f '$D/log.awk'" Enter
   done
-  t send-keys -t main:kido.0 "'$K' async_bash --name build -- sleep 3600" Enter
+  KIDO_STATE_DIR=$SERVER "$K" run --session main --name build -- sleep 3600 >/dev/null
+  cat > "$D/pi-agent.sh" <<'SH'
+#!/bin/sh
+tmux set-option -p -t "$TMUX_PANE" @kido_session "$1"
+tmux set-option -p -t "$TMUX_PANE" @kido_name "$3"
+tmux set-option -p -t "$TMUX_PANE" @kido_activity "$2"
+printf '\033]2;%s\007' "$3"
+shift 3
+for record in "$@"; do printf '\033]7501;%s\007' "$record"; done
+sleep 86400
+SH
+  chmod +x "$D/pi-agent.sh"
+  t set-option -p -t main:kido.0 @kido_session demo-kido
+  t set-option -p -t main:kido.0 @kido_name 'π kido'
+  t set-option -p -t main:kido.0 @kido_activity 'fixing sidebar tests'
+  t send-keys -t main:kido.0 "printf '\\033]2;π kido\\007\\033]7501;state=working:app=pi\\007\\033]7501;id=agent-a:state=working:title=SW52ZXN0aWdhdGUgc2lkZWJhciBsYXlvdXQ=:msg=Q29tcGFyaW5nIG5hdGl2ZSByb3cgbWVhc3VyZW1lbnRz\\007\\033]7501;id=agent-a/permission:state=blocked:kind=permission:title=QXBwcm92ZSB0ZXN0IGNvbW1hbmQ=:msg=TWF5IEkgcnVuIHRoZSBpbnRlZ3JhdGlvbiB0ZXN0cz8=\\007\\033]7501;id=agent-b:state=working:title=Q2hlY2sgdG9vbGJhciBnZW9tZXRyeQ==\\007\\033]7501;id=agent-c:state=working:title=UmV2aWV3IGFjY2Vzc2liaWxpdHk=\\007'; sleep 86400" Enter
+  kido_pane=$(t display-message -p -t main:kido.0 '#{pane_id}')
+  deadline=$((SECONDS + 10))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    case $(t display-message -p -t main:kido.0 '#{pane_program_status}') in
+    *'"app":"pi"'*) break ;;
+    esac
+    sleep 0.1
+  done
+  KIDO_STATE_DIR=$SERVER "$K" run-child "$kido_pane" --session main --name review -- \
+    "$D/pi-agent.sh" demo-review 'needs your answer' 'π review' 'state=blocked:app=pi:kind=question'
+  KIDO_STATE_DIR=$SERVER "$K" run-child "$kido_pane" --session main --name tests -- \
+    "$D/pi-agent.sh" demo-tests 'running e2e' 'π tests' 'state=working:app=pi'
+  t send-keys -t research:notes "printf '\\033]2;✳ notes\\007\\033]7501;state=idle:app=claude-code\\007'; sleep 86400" Enter
+  t set-option -p -t research:deep @kido_session demo-deep
+  t set-option -p -t research:deep @kido_name 'π deep-dive'
+  t set-option -p -t research:deep @kido_activity compacting
+  t send-keys -t research:deep "printf '\\033]2;π deep-dive\\007\\033]7501;state=working:app=pi\\007'; sleep 86400" Enter
 fi
-t send-keys -t main:kido.0 "'$K' agent-status --agent pi --session demo-kido --activity 'fixing sidebar tests'; printf '\\033]2;π kido\\007\\033]7501;state=working:app=pi\\007\\033]7501;id=agent-a:state=working:title=SW52ZXN0aWdhdGUgc2lkZWJhciBsYXlvdXQ=:msg=Q29tcGFyaW5nIG5hdGl2ZSByb3cgbWVhc3VyZW1lbnRz\\007\\033]7501;id=agent-a/permission:state=blocked:kind=permission:title=QXBwcm92ZSB0ZXN0IGNvbW1hbmQ=:msg=TWF5IEkgcnVuIHRoZSBpbnRlZ3JhdGlvbiB0ZXN0cz8=\\007\\033]7501;id=agent-b:state=working:title=Q2hlY2sgdG9vbGJhciBnZW9tZXRyeQ==\\007\\033]7501;id=agent-c:state=working:title=UmV2aWV3IGFjY2Vzc2liaWxpdHk=\\007'; sleep 86400" Enter
-t send-keys -t main:review "'$K' agent-status --agent pi --session demo-review --parent-session demo-kido --depth 1 --activity 'needs your answer'; printf '\\033]2;π review\\007\\033]7501;state=blocked:app=pi:kind=question\\007'; sleep 86400" Enter
-t send-keys -t main:tests.0 "'$K' agent-status --agent pi --session demo-tests --parent-session demo-kido --depth 1 --activity 'running e2e'; printf '\\033]2;π tests\\007\\033]7501;state=working:app=pi\\007'; sleep 86400" Enter
-t send-keys -t research:notes "'$K' agent-status --agent claude --session demo-notes --activity 'wrote summary'; sleep 86400" Enter
-t send-keys -t research:deep "'$K' agent-status --agent pi --session demo-deep --activity compacting; printf '\\033]2;π deep-dive\\007\\033]7501;state=working:app=pi\\007'; sleep 86400" Enter
 t select-window -t main:kido
 export KIDO_APP_DEBUG=1
 printf '\n=== %s launch %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$APP" >>"$D/app.log"
