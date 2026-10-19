@@ -484,45 +484,114 @@ loads history. Outside copy mode, Ghostty keeps its own mouse selection, and
 the mouse never enters copy mode.
 
 A right-click on a selection, in copy mode or not, opens a context menu with
-two items: Copy (⌘C) and Prompt with Selection…. The menu is built for each
+two items: Copy (⌘C) and Prompt with Selection… (⌘O). The menu is built for each
 click. Outside copy mode, Ghostty's `right-click-action` selects the word
 before the menu opens. In copy mode, a right-click inside the selection or on
 an empty cell keeps the selection, and a right-click on another word selects
 that word. The copy cursor alone is not a selection. With no text and no
 selection, no menu opens. Copy acts like `y` in copy mode and like Ghostty's
-copy outside it. In copy mode, `p` opens the prompt box when a selection
-exists. Mouse input is ignored while copy mode is still entering.
+copy outside it. ⌘O is the key equivalent of an Edit menu item. It reads
+"Prompt with Selection…" when the focused pane has a selection, in copy mode or
+a Ghostty selection, and "Prompt…" otherwise. With a selection it opens a prompt
+box with a quote. Without one it opens a box with no quote at the cursor: the
+copy cursor in copy mode, else the terminal cursor that Ghostty reports through
+`ghostty_surface_ime_point`. Ghostty reports that cursor relative to the
+active screen, not the viewport. Thus, when the viewport is scrolled back, the
+app maps the cursor row through the scrollbar and clamps it to the visible rows.
+⌘O never beeps, and it does nothing while copy mode is still entering. The
+title follows the focused pane when the Edit menu opens. With no focused pane,
+the item reads "Prompt…" and is disabled. In copy mode, `p` opens a box only
+with a selection, and beeps without one. Mouse input is ignored while copy mode
+is still entering.
 
-The prompt box (`PanePrompt`) is a pane capsule at the bottom left: x 8,
-bottom 8, width min(pane width − 16, 560). The find bar and the COPY pill do
-not move. It captures the selection text when it opens. Then it sends a
-`prompt` resolve request for the pane. The head is a target popup that shows
-"Resolving…" until the reply arrives. It lists the agents in the pane's window
-first, in kido's order, and preselects the first. A candidate is in the same
-window when its `window` equals the pane's window. With no candidate, the head
-reads "No agent in this window or session", and the field and Send are
-disabled. Below the text field, a fixed quote shows the first two lines and
-"+N lines". Its tooltip shows the full text. Return sends, Shift-Return adds a
-newline, and Escape closes the box and keeps copy mode and the selection.
-While the text view has focus, ⌘ chords go to it, not to the pane. The sent
-text is the prompt with ":" added unless it ends with one. Then follows each
-selection line with "> ", without the selection's trailing newline. A send
-always names the picked target. States:
+A prompt box (`PromptBox`) floats over the terminal area. It is a view, not a
+window. `SessionView` owns one `PromptBoxes` layer above every `WindowView`,
+divider, floating pane and pane chrome. Each open makes a new box with its own
+quote, picker, text and state, and opening one never closes another. There is
+no limit. The width is min(560, area width − 16), and the height follows the
+content. The box opens 6 pt below the last selected row, with its left edge at
+the first selected cell. If it does not fit, it opens 6 pt above the first
+selected row. If it fits neither way, it sits at the bottom of the area. When a
+visible box has its top-left corner within 4 pt of the new one, the new one
+moves +16, +16 until it is free. The frame is then clamped 8 pt inside the area,
+so a box can cross pane borders. A drag on the header or foot background, or
+around the quote, moves the box with the same clamp. The field, the quote and
+the controls do not drag. The cursor is the open hand where a press drags, the
+arrow over the buttons and the popup, and the I-beam over the field. A resize clamps every box
+again. The position is not saved.
+
+The newest box takes focus and is on top. A click on a box raises it and
+focuses its field. A click on the terminal leaves every box open. For the copy mode
+focus rule, a focused box counts as its source pane: focus that moves into a box
+keeps copy mode in its source pane, and focus that then moves to another pane
+ends it. There is no key to cycle between
+boxes.
+
+A box belongs to the tmux session it was opened in. A window switch in that
+session does not change it. Another session hides it, and a return shows it at
+the same place. A session that tmux no longer lists closes its boxes. A disconnect
+or reconnect makes a new `SessionView` and closes every box. The box keeps the
+source pane id, window id and window name, and the request handler. It keeps
+no reference to the pane view. The source window's name stays as captured at
+open, so "(pane closed)" can name a killed window. Other candidates' window
+names are read when the popup is built.
+
+A box without a selection anchors to the cursor cell in the same way, below
+or above that cell. It has no quote block, its placeholder reads "Ask the
+agent", and it is 90 pt tall with a one-line field. It sends exactly the typed
+text.
+
+The quote is the selection text captured at open. Later selection changes,
+copy mode exit, scrolling, output, layout and zoom do not change or move a box.
+A box closes only on ×, Escape while it has focus, or delivery. Up to three
+lines show whole. A longer quote shows the first line, an italic "⋯ N lines"
+for the hidden middle lines, and the last line. Each line is truncated with an
+ellipsis, and the tooltip shows the full text.
+
+When the box opens, it sends a `prompt` resolve request for the source pane. The
+head is a target popup, as wide as the selected title up to the box's width. It
+shows "Resolving…" until the reply arrives. It lists
+the agents in the pane's window first, in kido's order, and preselects the
+first. A candidate is in the same window when its `window` equals the pane's
+window. With no candidate, the head reads "No agent in this window or session",
+and the field and Send are disabled. Return sends when Send is enabled, and
+Shift-Return adds a newline. Tab and Shift-Tab move through the field, popup,
+Cancel and Send, and skip disabled controls. A mouse press anywhere in a box,
+also on a control, raises the box and gives its field focus. The control
+still acts on the press. Escape closes the box. If the box had focus, the source pane becomes the
+active tmux pane and gets focus, and copy mode and its selection stay. When the
+source pane is not shown or is gone, the session's active pane gets focus. A box
+that closes without focus moves no focus. While the text view has focus, ⌘ chords go to it, not to the
+pane. With a quote, the sent text is the prompt with ":" added unless it ends
+with one. Then follows each selection line with "> ", without the selection's
+trailing newline. A send always names the picked target. States:
 
 - Sending: a spinner, and the inputs are disabled.
-- Delivered: the box closes, the selection clears and copy mode exits.
+- Delivered: the box closes. If the box had focus and the source pane still
+  exists, the source pane's selection clears and copy mode exits. The source
+  pane gets focus when it is shown, and otherwise the shown window's active
+  pane gets focus. A box without focus changes nothing else, because the
+  pane's selection can belong to a newer box.
 - `refused`: kido's message and Retry. Send stays disabled until Retry or an
   edit.
 - `unknown`: kido's message with "It may have arrived; not resent." and Copy
   Prompt. Send is hidden, and the box never sends again by itself.
 - `invalid`, or an error with no `kind`: the message only. Send stays
-  disabled until an edit.
+  disabled until an edit or another pick in the popup.
 - A failure of the feed after the send request was written (the helper ended
   or the connection closed) is `unknown`, because the text may have arrived.
 
-A failed resolve shows its message, and Retry resolves again. The box closes on
-a pane switch, pane removal, feed disconnect and copy mode exit. A late reply
-to a closed box does nothing.
+When the source pane leaves every window layout of the session, the box stays
+and keeps the candidates it resolved. A cold window whose pane views were
+evicted does not count as gone. The popup detail reads "in window <name> (pane closed)", and the
+status reads "Source pane closed; agents resolved earlier stay available." The
+box does not resolve again. kido's `prompt` send looks up its candidates from
+the request's pane, so a box whose source is gone names the target as that
+pane too. The target is always its own candidate. A send to a target that is
+gone fails as `invalid`, and the text stays.
+
+A failed resolve shows its message, and Retry resolves again. A late reply to a
+closed box does nothing.
 
 The `Feed` has no timeout for a request. Thus, a `prompt` send that blocks
 kido's RPC loop until the inbox times out does not restart the helper.

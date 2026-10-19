@@ -20,7 +20,7 @@ extension CGRect {
 
 final class PaneChrome: NSView {
     let pane: PaneID
-    private let runtime: GhosttyRuntime
+    let runtime: GhosttyRuntime
     var select: () -> Void = {}
     var drag: ((NSEvent) -> Void)?
     var overlays: [CGRect] {
@@ -97,7 +97,7 @@ final class PaneDropPreview: NSView {
 class PaneCapsule: NSView {
     weak var pane: PaneView?
     let spinner = CAShapeLayer()
-    private let runtime: GhosttyRuntime
+    let runtime: GhosttyRuntime
     private let radius: CGFloat
     private let edge = CALayer()
     private let highlight = CAShapeLayer()
@@ -127,7 +127,7 @@ class PaneCapsule: NSView {
         highlight.masksToBounds = true
         spinner.lineWidth = 1.5
         spinner.fillColor = nil
-        spinner.path = CGPath(ellipseIn: CGRect(x: 0.75, y: 0.75, width: 7.5, height: 7.5), transform: nil)
+        spinner.path = CGPath(ellipseIn: CGRect(x: 1, y: 1, width: 9, height: 9), transform: nil)
         spinner.strokeEnd = 0.75
         spinner.isHidden = true
         let spin = CABasicAnimation(keyPath: "transform.rotation.z")
