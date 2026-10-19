@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
 
@@ -256,7 +256,7 @@ test("a subagent's ending notice says it never reported when there is no report,
   }
 });
 
-test("a subagent that reported gets a plain ending notice, not a claim that it never reported", async () => {
+test("a subagent's ending notice says it reported plainly, and names the earlier report when its last work went unreported", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
@@ -264,12 +264,27 @@ test("a subagent that reported gets a plain ending notice, not a claim that it n
     await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "completed", text: "" }) }, async () => {
       const s = await startNamedSession(fx, "Self");
       await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
-      await pollUntil(() => fx.runWaitCalls().length === 1, 3000, "run-wait to start");
+      await pollUntil(() => fx.runWaitCalls().length === 1, 3000, "the first run-wait to start");
+      await withEnv({ KIDO_FAKE_RUN_ID: "fake-run-id-2" }, () => s.tools.get("spawn_subagent").execute("c", { task: "y", name: "kid2" }));
+      await pollUntil(() => fx.runWaitCalls().length === 2, 3000, "the second run-wait to start");
       writeFileSync(join(fx.agentDir(SELF, "kid"), "report"), "done");
+      const report = join(fx.agentDir(SELF, "kid2"), "report");
+      writeFileSync(report, "first account");
+      const past = new Date(Date.now() - 2000);
+      utimesSync(report, past, past);
+      writeFileSync(join(fx.agentDir(SELF, "kid2"), "work"), "");
       writeFileSync(gate, "");
-      await waitNotice(s, `subagent "kid" completed`);
-      assert.ok(!lastNotice(s).includes("without reporting"));
-      assert.ok(!lastNotice(s).includes("message it"));
+      await pollUntil(() => customMessages(s, "kido-notice").length === 2, 3000, "both ending notices");
+      const notices = customMessages(s, "kido-notice").map((m) => String(m.message.content));
+      const plain = notices.find((n) => n.includes(`subagent "kid"`))!;
+      assert.ok(!plain.includes("without reporting"), "a report on the last work is a plain ending");
+      assert.ok(!plain.includes("message it"), "a reported child gets no continue hint");
+      const earlier = notices.find((n) => n.includes(`subagent "kid2"`))!;
+      assert.equal(
+        earlier,
+        `notice from kid2 (a subagent or background run's report, not the user):\nsubagent "kid2" completed without reporting on its last work: its earlier report is ${report}\nrun: fake-run-id-2\nmessage it to continue it, or stop_run to end it\n`,
+      );
+      assert.ok(!earlier.includes("it never called notify_parent"));
     });
   } finally {
     await fx.restore();
@@ -495,7 +510,7 @@ test("stop_run stops a bash run with run-stop, and a subagent with a stop reques
   }
 });
 
-test("stop_run asks a subagent to stop first, then records completed when it had reported", async () => {
+test("stop_run asks a subagent to stop first, then records completed only when it reported since its last work", async () => {
   const fx = makeFixture();
   try {
     const inbox = await fx.startInbox();
@@ -504,14 +519,31 @@ test("stop_run asks a subagent to stop first, then records completed when it had
     await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
     const child = agentJson(fx, SELF, "kid");
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid", inbox: inbox.path })]);
-    fx.setRuns([{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session }]);
-    writeFileSync(join(fx.agentDir(SELF, "kid"), "report"), "done");
+    const rows = [{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session }];
+    fx.setRuns(rows);
+    const report = join(fx.agentDir(SELF, "kid"), "report");
+    const work = join(fx.agentDir(SELF, "kid"), "work");
+    writeFileSync(report, "done");
 
     const result = await s.tools.get("stop_run").execute("c", { to: "kid" });
     assert.match(result.content[0].text, /^stopped kid; /);
     assert.deepEqual(fx.runOutcomeCalls()[0], ["run-outcome", "fake-run-id", "--result", "completed"], "the ending is recorded before the child is asked to shut down");
     assert.equal(JSON.parse(inbox.received()[0]!).kind, "stop", "the child is asked to shut down over its inbox");
     assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--wait", "5"]);
+
+    writeFileSync(work, "");
+    const past = new Date(Date.now() - 2000);
+    utimesSync(report, past, past);
+    fx.setRuns(rows);
+    await s.tools.get("stop_run").execute("c", { to: "kid" });
+    assert.deepEqual(fx.runOutcomeCalls()[1], ["run-outcome", "fake-run-id", "--result", "stopped"], "a child at work on unreported work is stopped");
+
+    const tied = new Date();
+    utimesSync(report, tied, tied);
+    utimesSync(work, tied, tied);
+    fx.setRuns(rows);
+    await s.tools.get("stop_run").execute("c", { to: "kid" });
+    assert.deepEqual(fx.runOutcomeCalls()[2], ["run-outcome", "fake-run-id", "--result", "stopped"], "a report tied with the work is not newer, so it is stopped");
   } finally {
     await fx.restore();
   }

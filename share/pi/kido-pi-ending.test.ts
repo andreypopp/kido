@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
 
@@ -19,6 +19,7 @@ import {
   withEnv,
   pollUntil,
   pendingState,
+  agentJson,
   customMessages,
   sendToInbox,
   envelope,
@@ -225,6 +226,68 @@ test("a child whose only live subagent already reported sends the idle notice", 
           await s.emit("agent_settled", {}, { isIdle: () => true });
           await pollUntil(() => inbox.received().length === 1, 2000, "the idle notice");
           assert.match(JSON.parse(inbox.received()[0]!).text, IDLE_NOTICE);
+        });
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("new work delivered to a child that already reported holds back the parent's idle notice until the child reports again", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    const childInbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    const gate = join(fx.stateDir, "gate");
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate }, async () => {
+          const s = await startNamedSession(fx, "worker", SELF);
+          await s.emit("agent_start");
+          await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
+          await pollUntil(() => fx.runWaitCalls().length === 1, 2000, "the child's run-wait");
+          const child = agentJson(fx, SELF, "kid");
+          fx.setPanes([
+            agentPane({ pane: "%1", session: SELF, name: "worker" }),
+            agentPane({ pane: "%2", session: "boss-session", name: "boss", inbox: inbox.path }),
+            agentPane({ pane: "%9", session: child.session, name: "kid", inbox: childInbox.path }),
+          ]);
+          const report = join(fx.agentDir(SELF, "kid"), "report");
+          const work = join(fx.agentDir(SELF, "kid"), "work");
+          writeFileSync(report, "first account");
+          const past = new Date(Date.now() - 2000);
+          utimesSync(report, past, past);
+
+          const sent = await s.tools.get("message_agent").execute("c", { to: "kid", message: "fix the review findings" });
+          assert.equal(sent.content[0].text, "delivered to kid by inbox");
+          await s.emit("agent_end", { messages: [assistant("stop")] });
+          await s.emit("agent_settled", {}, { isIdle: () => true });
+          assert.equal(inbox.received().length, 0, "a child at work on new work is not idle without news, though its earlier report is still there");
+          assert.ok(existsSync(work), "delivering new work marks it before the message goes");
+          assert.equal(readFileSync(report, "utf8"), "first account", "the earlier report stays readable");
+
+          writeFileSync(report, "second account");
+          const future = new Date(Date.now() + 2000);
+          utimesSync(report, future, future);
+          await s.emit("agent_start");
+          await s.emit("agent_end", { messages: [assistant("stop")] });
+          await s.emit("agent_settled", {}, { isIdle: () => true });
+          await pollUntil(() => inbox.received().length === 1, 2000, "the idle notice after the child reported on its new work");
+          assert.match(JSON.parse(inbox.received()[0]!).text, IDLE_NOTICE);
+
+          await s.emit("agent_start");
+          writeFileSync(report, "third account");
+          utimesSync(report, past, past);
+          const steered = await s.tools.get("steer_subagent").execute("c", { to: "kid", message: "also check the docs" });
+          assert.equal(steered.content[0].text, "delivered to kid by inbox");
+          await s.emit("agent_end", { messages: [assistant("stop")] });
+          await s.emit("agent_settled", {}, { isIdle: () => true });
+          assert.equal(inbox.received().length, 1, "a steer is new work too, so its report must be newer than it");
         });
       },
       { parent: "boss-session", name: "worker" },

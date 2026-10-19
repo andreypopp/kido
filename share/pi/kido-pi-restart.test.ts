@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
 
@@ -91,12 +91,20 @@ test("a second message while the restart's inbox is not yet bound waits for it a
     const { s, child } = await endedChild(fx, { sessionFile: true });
     await withEnv({ KIDO_FAKE_RUN_ID: "restarted-run" }, async () => {
       await s.tools.get("message_agent").execute("c", { to: "kid", message: "first" });
+      const report = join(fx.agentDir(SELF, "kid"), "report");
+      writeFileSync(report, "earlier");
+      const past = new Date(Date.now() - 2000);
+      utimesSync(report, past, past);
       const second = s.tools.get("message_agent").execute("c", { to: "kid", message: "second" });
       await pollUntil(() => fx.runsCalls().length >= 2, 2000, "the second message's run lookup");
       const inbox = await fx.startInboxAt(fx.inboxPath(child.session));
       assert.equal((await second).content[0].text, "delivered to kid by inbox");
       assert.equal(fx.runCalls().length, 2, "the spawn and one restart, no second run");
       assert.equal(JSON.parse(inbox.received()[0]!).text, "second");
+      const work = join(fx.agentDir(SELF, "kid"), "work");
+      assert.ok(existsSync(work), "a delivery on the restart path marks new work");
+      assert.ok(statSync(work).mtimeMs > statSync(report).mtimeMs, "the marker is newer than the earlier report");
+      assert.equal(readFileSync(report, "utf8"), "earlier");
     });
   } finally {
     await fx.restore();

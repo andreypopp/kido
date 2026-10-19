@@ -15,7 +15,7 @@ prints. Its own state is per user, in `$KIDO_PI_STATE_DIR`, else
 
 - `inbox/<session-id>.sock`, the session's inbox;
 - `agents/<parent-session>/<name>/`, one directory for each child:
-  `agent.json`, `task`, `delivered`, `session-file` and `report`.
+  `agent.json`, `task`, `delivered`, `session-file`, `report` and `work`.
 
 docs/design.md, "The pi extension, kido-pi", and docs/design-subagents.md
 give the design.
@@ -112,6 +112,6 @@ the reloaded module.
   descendant's inbox.
 - `stop_run(to, force?)`: a bash run through `kido run-stop`; a subagent
   by a stop request, then `kido run-stop --wait 5`. A child that reported
-  ends as completed, else stopped.
+  since its last new work ends as completed, else stopped.
 - `notify_parent(summary)`: a notice to the parent. The whole report is
   kept in the agent directory's `report`.

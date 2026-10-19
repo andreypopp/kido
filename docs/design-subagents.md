@@ -228,6 +228,16 @@ harness knows:
 - `session-file`: the child writes its pi session file at
   `session_start`. A restart needs it.
 - `report`: `notify_parent` writes the whole report.
+- `work`: the parent writes it, empty, before it sends its own child new
+  work by `message_agent` (not a reply) or `steer_subagent`. It stays
+  after a failed send, because the message can have arrived. An ask
+  and an interrupt are not new work.
+
+A child **has reported** when `report` exists and is newer than
+`work`. A tie counts as not reported: the parent then waits for the
+child's next report or idle notice, which is the safe direction. Thus, an earlier report does not count for later work, and the
+earlier report stays readable at its path until the child reports again.
+`list_runs` shows the `report` path whenever the file exists.
 
 For a top-level parent, `<parent-session>` is its own pi session id,
 although `run-child` receives its pane. A parent that restarts under its
@@ -292,7 +302,8 @@ kido never sends that turn's text to the parent.
 `notify_parent` since its last new work tells the parent that it is
 idle without a report, and how to continue or end it. It does so only
 if it waits on nothing. A child waits while at least one run of its own
-is live: a subagent that has not reported, or an async bash run. A
+is live: a subagent that has not reported on its last work, or an async
+bash run. A
 subagent of its own that reported but stays alive does not count, so a
 manager that forgot to report is still noticed. A restarted child first
 finishes its read of its live runs, so an early settle cannot miss
@@ -321,8 +332,10 @@ background. When it exits, the parent formats the notice:
     run: 6f1c...
     message it to continue it, or stop_run to end it
 
-A child with a `report` file reads `subagent "worker" completed`, with
-no "message it" line. No notice has a resume line. A parent that
+A child that has reported reads `subagent "worker" completed`, with
+no "message it" line. A child with a report older than its last work
+reads `subagent "worker" completed without reporting on its last work:
+its earlier report is <path>`, with the "message it" line. No notice has a resume line. A parent that
 restarts under its own session starts one `run-wait` per live child,
 once, at its first turn event. Its ended children are not watched.
 
@@ -340,8 +353,8 @@ parent in a turn sees it between tool calls.
 **The parent ends a child.** A child has no idle timer. After it
 reports, or after a turn settles with nothing to do, it stays alive.
 Only its parent (`stop_run`), the user, or the orphan rule ends it.
-`stop_run` records `completed` for a child that reported, and `stopped`
-for one that did not.
+`stop_run` records `completed` for a child that has reported, and
+`stopped` for one that has not.
 
 **Shutdown.** The child uses one teardown, whether it quits, is stopped
 or loses its parent:
@@ -383,8 +396,8 @@ of at least eight characters, an unambiguous running name. It removes
 one leading `@`.
 
 - A bash run: `kido run-stop ID`.
-- A subagent: `kido run-outcome ID` records `completed` if a `report`
-  exists, else `stopped`. Then the stop request goes over its inbox, and
+- A subagent: `kido run-outcome ID` records `completed` if the child has
+  reported, else `stopped`. Then the stop request goes over its inbox, and
   `kido run-stop ID --wait 5` follows. A healthy
   child ends itself within the wait. kido escalates for one that does
   not (design.md, "Window lifecycle"). `force` skips the request.
@@ -569,7 +582,7 @@ another session.
 
 A lingering window shows its run's outcome in the field column.
 A completed run has a dimmed `✓`. Every other outcome has a dimmed `×`,
-including `failed`, `died` and `stopped`. A stop after a report is
+including `failed`, `died` and `stopped`. A stop after the child has reported is
 `completed`: the work finished. A stop before it is not a failure, but
 it did not finish the work. A window without an outcome yet keeps the
 `×`.

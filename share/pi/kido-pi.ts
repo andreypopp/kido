@@ -656,6 +656,11 @@ export default function (pi: ExtensionAPI) {
   const own = (entries: AgentEntry[]): AgentEntry[] =>
     ownSessionId ? entries.filter((e) => e.parent === ownSessionId) : [];
 
+  const ownEntry = (row: AgentRow, entries: AgentEntry[]): AgentEntry | undefined => {
+    const ownEntries = own(entries);
+    return ownEntries.find((e) => e.session === row.id) ?? ownEntries.find((e) => e.run !== "" && e.run === row.run);
+  };
+
   const parentKey = (): string | null => (edge ? edge.run : pane);
 
   let completion: { rows: AgentRow[]; at: number; refreshing: Promise<void> | null } | null = null;
@@ -880,16 +885,31 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const exists = (path: string): boolean => {
+  const fileTime = (path: string): number | undefined => {
     try {
-      accessSync(path, constants.F_OK);
-      return true;
+      return statSync(path).mtimeMs;
     } catch {
-      return false;
+      return undefined;
     }
   };
 
-  const reported = (entry: AgentEntry): boolean => exists(join(entry.dir, "report"));
+  const exists = (path: string): boolean => fileTime(path) !== undefined;
+
+  const reportState = (entry: AgentEntry): { report: number | undefined; reported: boolean } => {
+    const report = fileTime(join(entry.dir, "report"));
+    const work = fileTime(join(entry.dir, "work"));
+    return { report, reported: report !== undefined && (work === undefined || report > work) };
+  };
+
+  const reported = (entry: AgentEntry): boolean => reportState(entry).reported;
+
+  const markWork = (target: AgentRow, entries: AgentEntry[]): void => {
+    const entry = ownEntry(target, entries);
+    if (!entry) return;
+    try {
+      writeFileSync(join(entry.dir, "work"), "");
+    } catch {}
+  };
 
   const agentRun = (run: RunRow, byRun: Map<string, AgentEntry>, bySession: Map<string, AgentEntry>): AgentEntry | undefined =>
     byRun.get(run.id) ?? (run.session ? bySession.get(run.session) : undefined);
@@ -1400,12 +1420,17 @@ export default function (pi: ExtensionAPI) {
       } else body += `--- output ---\n${tail.tail}`;
       return body;
     }
-    body += reported(watch.target.entry)
-      ? `subagent ${quote(watch.name)} ${outcome.result}\n`
-      : `subagent ${quote(watch.name)} ${outcome.result} without reporting: it never called notify_parent, so this is the whole account of it\n`;
+    const state = reportState(watch.target.entry);
+    const reportPath = join(watch.target.entry.dir, "report");
+    const head = `subagent ${quote(watch.name)} ${outcome.result}`;
+    body += state.reported
+      ? `${head}\n`
+      : state.report !== undefined
+        ? `${head} without reporting on its last work: its earlier report is ${reportPath}\n`
+        : `${head} without reporting: it never called notify_parent, so this is the whole account of it\n`;
     if (outcome.text) body += `detail: ${outcome.text}\n`;
     body += `run: ${watch.run}\n`;
-    if (!reported(watch.target.entry)) body += "message it to continue it, or stop_run to end it\n";
+    if (!state.reported) body += "message it to continue it, or stop_run to end it\n";
     return body;
   };
 
@@ -1601,7 +1626,7 @@ export default function (pi: ExtensionAPI) {
     const row = resolved.agent;
     let entry: AgentEntry | undefined;
     if (row && row.relationship === "own" && row.kind === "subagent" && !row.canMessage) {
-      entry = ownEntries.find((e) => e.session === row.id || (row.run !== "" && e.run === row.run));
+      entry = ownEntry(row, resolved.snapshot.entries);
     } else if (!row) {
       entry = endedChild(to, ownEntries, live, resolved.snapshot.runs) ?? undefined;
     }
@@ -1904,12 +1929,12 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
       const { rows, entries } = await discovery();
-      const ownEntries = own(entries);
       const listed = rows.map((row) => {
-        const entry = ownEntries.find((e) => e.session === row.id) ?? ownEntries.find((e) => row.run !== "" && e.run === row.run);
+        const entry = ownEntry(row, entries);
         if (!entry) return toolRow(row);
         const task = readTextFile(join(entry.dir, "task"));
-        return toolRow({ ...row, task, report: reported(entry) ? join(entry.dir, "report") : undefined });
+        const report = join(entry.dir, "report");
+        return toolRow({ ...row, task, report: exists(report) ? report : undefined });
       });
       return reply(JSON.stringify(listed), listed);
     },
@@ -1946,6 +1971,7 @@ export default function (pi: ExtensionAPI) {
       if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error.message}`);
       const bound = Date.now() + 5000;
       if (prep.entry) {
+        if (kind === "message") markWork(entryRow(prep.entry), prep.snapshot.entries);
         if (prep.firstPrompt !== null) return reply(restartedReply(prep.entry.name, prep.restartedRun ?? ""));
         const row = entryRow(prep.entry);
         const sent = sendText(row, kind, await sendWhenBound(row.inbox, spec, params.message, bound), prep.snapshot.entries);
@@ -1958,6 +1984,7 @@ export default function (pi: ExtensionAPI) {
       if (isMyself(target)) return reply(`${agentName(target)} is this agent`);
       if (target.kind === "bash") return reply(`could not message ${params.to}: ${agentName(target)} is a background command, not an agent; it cannot be messaged`);
       if (!target.canMessage) return reply(`could not message ${params.to}: ${agentName(target)} has no inbox to reach it on`);
+      if (kind === "message") markWork(target, prep.snapshot.entries);
       const sent = sendText(target, kind, await sendEnvelope(target.inbox, spec, params.message), prep.snapshot.entries);
       if (!sent.ok) return reply(`could not message ${params.to}: ${sent.text}`);
       return reply(askerPane ? `${sent.text} ${STOP_AFTER_ASK_REPLY}` : sent.text);
@@ -2109,6 +2136,7 @@ export default function (pi: ExtensionAPI) {
     const name = agentName(target);
     if (isMyself(target)) return `${name} is this agent`;
     if (!isDescendant(target, resolved.snapshot.entries)) return `${name} is not this agent's descendant`;
+    if (kind === "steer") markWork(target, resolved.snapshot.entries);
     const result = await sendEnvelope(target.inbox, { kind }, text);
     if (!result.ok) return `could not ${kind} ${to}: ${deliveryText(name, kind, result).text}`;
     return kind === "steer" ? `delivered to ${name} by inbox` : `interrupted ${name}`;

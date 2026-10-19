@@ -699,7 +699,7 @@ outcome recorded. A run with no live pane (dead or gone) exits 5 at once.
 
 A caller that must act between the record and the stop records first
 with `run-outcome`, then runs `run-stop`. `--result completed` is for a subagent that reported
-before it was stopped. `kido run-stop` sends no notice; the caller's
+since its last new work before it was stopped. `kido run-stop` sends no notice; the caller's
 `run-wait` reports the ending.
 
 A `pane-died` hook in place of `run-wait` is rejected: it costs a
