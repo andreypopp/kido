@@ -2379,7 +2379,7 @@ extension VisualTests {
         let received = scratch.appendingPathComponent("received")
         let script = try fakeFeedScript(scratch, """
         import json, os, sys, time
-        print(json.dumps(dict(hello=dict(protocol="5.0"))))
+        print(json.dumps(dict(hello=dict(protocol="6.0"))))
         snapshot = {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},
                     "server_instance":{"started_at":1,"pid":2},"error":None,"sessions":[]}
         print(json.dumps(snapshot))
