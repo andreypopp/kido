@@ -5,6 +5,19 @@ import SidebarFeed
 class OwnerWindow: NSWindow {
     var focusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
     private var nested = 0
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, let content = contentView, let frame = content.superview {
+            var view = content.hitTest(frame.convert(event.locationInWindow, from: nil))
+            while let current = view {
+                if let box = current as? PromptBox {
+                    box.raiseAndFocus()
+                    break
+                }
+                view = current.superview
+            }
+        }
+        super.sendEvent(event)
+    }
     // Ending a field editor's session first makes the window itself first
     // responder, through this method.
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
@@ -249,6 +262,10 @@ private class AlertEscape: NSView {
         sidebar.focusTerminal = { [weak self] in self?.focusSelected() }
         (window as? OwnerWindow)?.focusChanged = { [weak self] old, next in
             guard let self else { return }
+            if let view = next as? NSView,
+               let box = session?.boxes.boxes.first(where: { $0 === view || view.isDescendant(of: $0) }) {
+                session?.boxes.raise(box)
+            }
             if let pane = next as? PaneView, model.window.flatMap({ session?.windows[$0]?.active }) == pane.pane,
                old == nil || old is PaneView || old === window { return }
             supersedeIntent()
@@ -705,6 +722,7 @@ private class AlertEscape: NSView {
         note("dialing \(server.socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
         let view = SessionView(runtime: runtime)
         view.reorder = reorder
+        view.boxes.request = request
         view.onPaneChange = { [weak self] in
             guard let self, accepts(generation) else { return }
             updateTabs()
