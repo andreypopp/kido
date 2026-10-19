@@ -12,6 +12,7 @@ let start ?parent ~dir ~name ~cwd ~session ~env command =
     else Ok ()
   in
   let* () = check () |> Result.map_err (fun e -> Refused_name e) in
+  let* tmux = Result.map_err (fun e -> Failed e) (Server_dir.tmux ~dir) in
   let id = Run.new_id () in
   let meta : Run.meta =
     { id; name; parent; pane = None; pid = 0; cwd; started_at = Timestamp.now () }
@@ -20,7 +21,6 @@ let start ?parent ~dir ~name ~cwd ~session ~env command =
   Run.write_command ~dir id command;
   let id_text = Run.string_of_id id in
   let env = [ "KIDO_RUN_ID=" ^ id_text; "KIDO_RUN_OUTPUT=" ^ Run.output_path ~dir id ] @ env in
-  let tmux = Tmux.create () in
   let fail e =
     ignore (Run.record_outcome ~dir id { result = Failed; text = e; at = Some (Timestamp.now ()) });
     Error (Failed e)

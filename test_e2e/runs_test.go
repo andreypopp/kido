@@ -74,6 +74,24 @@ func TestRunRecordSurvivesReapAsSignal(t *testing.T) {
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
 	r := h.startRun(caller, "run", "--name", "died-e2e", "--", "sh", "-c", "exec sleep 300")
+
+	// Outside a pane there is no $TMUX. The command must reach the server of
+	// the state directory it was given, never tmux's default socket: that
+	// server has no panes, and this live run would report "died".
+	cmd := exec.Command(kidoBin, "runs", "--json", r.ID)
+	cmd.Env = cleanEnv("KIDO_STATE_DIR=" + h.stateDir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("kido runs --json %s outside a pane: %v %q", r.ID, err, out)
+	}
+	var outside runInfo
+	if err := json.Unmarshal([]byte(strings.SplitN(string(out), "\n", 2)[0]), &outside); err != nil {
+		t.Fatal(err)
+	}
+	if outside.Outcome != "running" {
+		t.Errorf("kido runs --json %s outside a pane: outcome = %q, want %q", r.ID, outside.Outcome, "running")
+	}
+
 	h.killPane(r.paneID())
 
 	h.waitFor(func() bool { return !h.windowExists(r.Window) }, settle,

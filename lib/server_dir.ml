@@ -41,3 +41,5 @@ let server_socket ~create ~dir =
     if create then Fs.mkdir_p ~perm:0o700 dir;
     Result.map (fun () -> socket) (check_dir ~dir)
   end
+
+let tmux ~dir = Result.map (fun socket -> Tmux.create ~socket ()) (server_socket ~create:false ~dir)

@@ -1279,6 +1279,12 @@ explicitly select the directory. Without this option, they use
 `Server_dir.dir`. Inside a pane, it uses the socket's dirname from `$TMUX`
 if the basename is `socket` and `server.conf` exists beside it. The
 config marker distinguishes kido from a plain tmux socket named `socket`.
+This rule lives only in `Server_dir.dir`. A command that reads state for
+a directory talks to that directory's server through `Server_dir.tmux`,
+never through `$TMUX` or tmux's default socket: outside a pane, or in a
+plain tmux pane, the two name different servers, and a live run would
+read as `died`. `kido shell` and `kido ssh` are the exception: they act
+on the pane's own server.
 
 This takes precedence over the default environment order. Hooks, tools,
 extensions and the sidebar therefore read the same records, even if

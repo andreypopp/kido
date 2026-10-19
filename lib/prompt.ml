@@ -114,7 +114,7 @@ let prompt ~dir ~self ~window text =
   let failed r = Result.map_err (fun m -> Failed m) r in
   if String.is_empty text then Error No_prompt
   else
-    let tmux = Tmux.create () in
+    let* tmux = failed (Server_dir.tmux ~dir) in
     let* state = failed (State.read ~dir tmux) in
     let* self = failed (State.caller_pane state self) in
     let all = reachable state self in

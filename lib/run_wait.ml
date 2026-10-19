@@ -5,7 +5,12 @@ let wait ~dir id =
       (Printf.sprintf "run %s has no meta" (Run.string_of_id id))
       (Run.read_meta ~dir id)
   in
-  let read_pane () = State.read_run (Tmux.create ()) meta in
+  let* tmux =
+    Result.map_err
+      (fun e -> Printf.sprintf "cannot read the tmux state: %s" e)
+      (Server_dir.tmux ~dir)
+  in
+  let read_pane () = State.read_run tmux meta in
   let rec poll () =
     match Run.read_outcome ~dir id with
     | Some outcome -> Ok outcome

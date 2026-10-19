@@ -291,7 +291,11 @@ kido never sends that turn's text to the parent.
 idle without a report, and how to continue or end it. A turn that stops
 on a provider error sends the error instead, once per failed attempt,
 with how to retry. An aborted turn sends nothing: someone stopped it
-deliberately. These status notices write no `report` and carry no
+deliberately. This also holds for a turn that an accepted interrupt or
+stop request ended, and for an error ending when the child's run
+already has an outcome (`stop_run --force` writes one and sends no
+request). A terminated provider can end the turn with an error, not an
+abort, so the rule does not rely on the stop reason alone. These status notices write no `report` and carry no
 guidance: a status is not the child's account of its work. New work
 clears that memory: a prompt or an inbound message that starts an agent
 run. The model's further turns within one run, such as the turn that

@@ -13,10 +13,10 @@ let wait_until ~within cond =
   in
   go ()
 
-let close_pane ~dir = function
+let close_pane ~tmux ~dir = function
   | None -> No_pane
   | Some pane_id -> (
-      match State.read ~dir (Tmux.create ()) with
+      match State.read ~dir tmux with
       | Error _ -> No_pane
       | Ok state -> (
           match State.find state pane_id with
@@ -26,9 +26,7 @@ let close_pane ~dir = function
               | None ->
                   Refused "it is its session's only pane; killing it would destroy the session"
               | Some close -> (
-                  match Reap.release (Tmux.create ()) close with
-                  | Ok () -> Killed
-                  | Error e -> Refused e))))
+                  match Reap.release tmux close with Ok () -> Killed | Error e -> Refused e))))
 
 let signal pid s =
   match Unix.kill (-pid) s with
@@ -36,38 +34,37 @@ let signal pid s =
   | exception Unix.Unix_error _ -> ( try Unix.kill pid s with Unix.Unix_error _ -> ())
 
 let stop ~dir ~wait ~escalation ~result id =
-  match Run.read_meta ~dir id with
-  | None -> Error (No_run (Printf.sprintf "run %s: no such run" (Run.string_of_id id)))
-  | Some meta -> (
-      match State.read_run (Tmux.create ()) meta with
-      | Error e -> Error (No_run e)
-      | Ok state ->
-          let live =
-            match State.run_pane state meta with
-            | Some p -> Option.is_none p.dead_at
-            | None -> false
-          in
-          ignore
-            (Run.record_outcome ~dir meta.id { result; text = ""; at = Some (Timestamp.now ()) });
-          let ended () =
-            match State.read_run (Tmux.create ()) meta with
-            | Error _ -> false
-            | Ok s -> (
-                match State.run_pane s meta with None -> true | Some p -> Option.is_some p.dead_at)
-          in
-          let finish () =
-            let pid = if live then meta.pid else 0 in
-            if (not (wait_until ~within:wait ended)) && pid > 0 then signal pid Sys.sigterm;
-            if not (wait_until ~within:escalation ended) then begin
-              if pid > 0 then signal pid Sys.sigkill;
-              ignore (wait_until ~within:0.5 ended)
-            end;
-            let pane =
-              match State.read_run (Tmux.create ()) meta with
-              | Ok s -> Option.map (fun (p : State.pane) -> p.pane_id) (State.run_pane s meta)
-              | Error _ -> meta.pane
-            in
-            close_pane ~dir pane
-          in
-          if live then Ok (finish ())
-          else Error (Ended (Printf.sprintf "run %s has already ended" (Run.string_of_id id))))
+  let open Result.Infix in
+  let* meta =
+    Option.to_result
+      (No_run (Printf.sprintf "run %s: no such run" (Run.string_of_id id)))
+      (Run.read_meta ~dir id)
+  in
+  let* tmux = Result.map_err (fun m -> No_run m) (Server_dir.tmux ~dir) in
+  let* state = Result.map_err (fun e -> No_run e) (State.read_run tmux meta) in
+  let live =
+    match State.run_pane state meta with Some p -> Option.is_none p.dead_at | None -> false
+  in
+  ignore (Run.record_outcome ~dir meta.id { result; text = ""; at = Some (Timestamp.now ()) });
+  let ended () =
+    match State.read_run tmux meta with
+    | Error _ -> false
+    | Ok s -> (
+        match State.run_pane s meta with None -> true | Some p -> Option.is_some p.dead_at)
+  in
+  let finish () =
+    let pid = if live then meta.pid else 0 in
+    if (not (wait_until ~within:wait ended)) && pid > 0 then signal pid Sys.sigterm;
+    if not (wait_until ~within:escalation ended) then begin
+      if pid > 0 then signal pid Sys.sigkill;
+      ignore (wait_until ~within:0.5 ended)
+    end;
+    let pane =
+      match State.read_run tmux meta with
+      | Ok s -> Option.map (fun (p : State.pane) -> p.pane_id) (State.run_pane s meta)
+      | Error _ -> meta.pane
+    in
+    close_pane ~tmux ~dir pane
+  in
+  if live then Ok (finish ())
+  else Error (Ended (Printf.sprintf "run %s has already ended" (Run.string_of_id id)))

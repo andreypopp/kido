@@ -161,7 +161,10 @@ let run_outcome ~dir ~result ~text id =
   match read_meta ~dir id with
   | None -> Error (No_run (Printf.sprintf "run %s: no such run" (string_of_id id)))
   | Some m ->
-      (match result with Failed -> ignore (save_screen (Tmux.create ()) ~dir id m.pane) | _ -> ());
+      (match result with
+      | Failed ->
+          Result.iter (fun tmux -> ignore (save_screen tmux ~dir id m.pane)) (Server_dir.tmux ~dir)
+      | _ -> ());
       let outcome : outcome = { result; text; at = Some (Timestamp.now ()) } in
       if record_outcome ~dir id outcome then Ok ()
       else

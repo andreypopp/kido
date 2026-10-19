@@ -819,6 +819,7 @@ export default function (pi: ExtensionAPI) {
 
   const handleInboundControl = async (env: Envelope, kind: "interrupt" | "stop"): Promise<"ok" | "refused"> => {
     if (!senderIsAncestor(env)) return "refused";
+    turnEndedByControl = true;
     if (kind === "interrupt") {
       await session?.abort();
     } else {
@@ -898,18 +899,22 @@ export default function (pi: ExtensionAPI) {
     };
   };
 
+  const readRuns = async (args: string[]): Promise<unknown> => {
+    const command = kido;
+    if (!command) return undefined;
+    const res = await runCommand(command, ["runs", "--json", ...args], { timeoutMs: 2000 });
+    if (!res.ok) return undefined;
+    try {
+      return JSON.parse(res.out);
+    } catch {
+      return undefined;
+    }
+  };
+
   const myRuns = async (): Promise<RunRow[]> => {
     const key = parentKey();
-    const command = kido;
-    if (!key || !command) return [];
-    const res = await runCommand(command, ["runs", "--json", "--parent", key], { timeoutMs: 2000 });
-    if (!res.ok) return [];
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(res.out);
-    } catch {
-      return [];
-    }
+    if (!key) return [];
+    const parsed = await readRuns(["--parent", key]);
     if (!Array.isArray(parsed)) return [];
     const rows: RunRow[] = [];
     for (const value of parsed) {
@@ -1494,6 +1499,8 @@ export default function (pi: ExtensionAPI) {
 
   let parentToldThisTurn = false;
   let settled = true;
+  let turnEndedByControl = false;
+  let workGeneration = 0;
 
   const NO_FIRST_TURN_TEXT =
     "no turn ever ran: the task was delivered and the session never started work on it (the pane's own screen, kept with the run, is the only account of why)";
@@ -1512,6 +1519,8 @@ export default function (pi: ExtensionAPI) {
 
   const workStarted = (): void => {
     parentToldThisTurn = false;
+    turnEndedByControl = false;
+    workGeneration++;
     beginWork();
   };
 
@@ -2382,6 +2391,7 @@ export default function (pi: ExtensionAPI) {
     ending = { kind: "other" };
     settled = true;
     parentToldThisTurn = false;
+    turnEndedByControl = false;
     liveWatchStarted = false;
 
     // A headless session has no ui, and an older pi has one without this method:
@@ -2507,8 +2517,14 @@ export default function (pi: ExtensionAPI) {
     finishWorking();
     settled = true;
     if (!edge) return;
+    if (turnEndedByControl) return;
     if (ending.kind === "aborted") return;
-    if (ending.kind === "error" && !ending.notified) {
+    if (ending.kind === "error") {
+      if (ending.notified) return;
+      const generation = workGeneration;
+      const run = await readRuns([edge.run]);
+      if (turnEndedByControl || generation !== workGeneration) return;
+      if (isRecord(run) && runRow(run)?.outcome !== undefined) return;
       ending.notified = true;
       parentToldThisTurn = true;
       await notifyParent(

@@ -115,7 +115,8 @@ let session_for ~state s =
 
 let start_run name parent name_arg cwd session envs command =
   let dir = state_dir () in
-  let state = ok (State.read ~dir (Tmux.create ())) in
+  let tmux = ok (Server_dir.tmux ~dir) in
+  let state = ok (State.read ~dir tmux) in
   let session = ok (session_for ~state session) in
   match
     Run_window.start ?parent ~dir ~name:name_arg
@@ -186,7 +187,8 @@ let run_child =
            1
        | parent :: command -> (
            let dir = state_dir () in
-           let state = ok (State.read ~dir (Tmux.create ())) in
+           let tmux = ok (Server_dir.tmux ~dir) in
+           let state = ok (State.read ~dir tmux) in
            match Run_window.resolve_parent ~dir ~state parent with
            | Error m ->
                error ~name:"run-child" m;
@@ -203,7 +205,8 @@ let runs =
      fun () ->
        let dir = state_dir () in
        let state =
-         Option.get_or ~default:State.empty (Result.to_opt (State.read ~dir (Tmux.create ())))
+         Option.get_or ~default:State.empty
+           (Result.to_opt (Result.flat_map (State.read ~dir) (Server_dir.tmux ~dir)))
        in
        let parent =
          if String.is_empty parent then Ok None
@@ -418,7 +421,7 @@ let switch name doc kind =
      and+ server = server_dir in
      fun () ->
        let dir = resolved_dir server in
-       let tmux = Tmux.create ~socket:(ok (Server_dir.server_socket ~create:false ~dir)) () in
+       let tmux = ok (Server_dir.tmux ~dir) in
        let client =
          List.find_opt (fun c -> not (String.is_empty c)) [ client; Fs.getenv "TMUX_SIDE_CLIENT" ]
          |> Option.get_lazy (fun () ->
@@ -513,7 +516,7 @@ let reap =
      run ~name:"reap" (fun () ->
          if not (List.is_empty args) then failwith "usage: kido reap";
          let dir = state_dir () in
-         let tmux = Tmux.create () in
+         let tmux = ok (Server_dir.tmux ~dir) in
          Reap.collect tmux ~dir ~grace:(linger ())
            (ok (State.read ~dir tmux))
            ~now:(Unix.gettimeofday ());
@@ -552,7 +555,7 @@ let sidebar =
   | _, _, Some _ ->
       run (fun () ->
           let dir = state_dir () in
-          let tmux = Tmux.create () in
+          let tmux = ok (Server_dir.tmux ~dir) in
           let client =
             match client with
             | Some c when not (String.is_empty c) -> Some c

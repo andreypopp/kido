@@ -317,3 +317,103 @@ test("an inbound message from the parent is labelled as the parent, from the age
     await fx.restore();
   }
 });
+
+test("a stop request silences the error ending it causes", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startWithSpies(fx, kidoPi, SELF);
+        await s.emit("agent_start");
+        assert.equal(await sendToInbox(s.inboxPath, envelope("stop", "", { from: { session: "boss-session", name: "boss", pane: "%2" } })), "ok");
+        assert.equal(s.shutdowns(), 1);
+        await s.emit("agent_end", { messages: [assistant("error", "Claude Code process exited with code 143")] });
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        assert.equal(inbox.received().length, 0, "a stopped child's dying turn sends no error notice");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("an interrupted turn's error ending sends no notice either", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startWithSpies(fx, kidoPi, SELF);
+        await s.emit("agent_start");
+        assert.equal(await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "boss-session", name: "boss", pane: "%2" } })), "ok");
+        assert.equal(s.aborts(), 1);
+        await s.emit("agent_end", { messages: [assistant("error", "Claude Code process exited with code 143")] });
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        assert.equal(inbox.received().length, 0, "an interrupted turn's error ending is not news");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a child whose run already has an outcome sends no notice for its error ending", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    fx.setRuns([{ id: SELF, name: "worker", parent: "boss-session", pane: "%1", output: "", startedAt: "", outcome: { result: "stopped" } }]);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startNamedSession(fx, "worker", SELF);
+        await s.emit("agent_start");
+        await s.emit("agent_end", { messages: [assistant("error", "Claude Code process exited with code 143")] });
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        assert.equal(inbox.received().length, 0, "a run that already ended by another account is not an error to report");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a stop accepted while an ending's outcome query runs still silences it", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    const gate = join(fx.stateDir, "runs-gate");
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        await withEnv({ KIDO_FAKE_RUNS_GATE: gate }, async () => {
+          const s = await startWithSpies(fx, kidoPi, SELF);
+          await s.emit("agent_end", { messages: [assistant("error", "Claude Code process exited with code 143")] });
+          const settling = s.emit("agent_settled", {}, { isIdle: () => true });
+          await pollUntil(() => fx.runsCalls().length >= 1, 2000, "the ending's outcome query");
+          assert.equal(await sendToInbox(s.inboxPath, envelope("stop", "", { from: { session: "boss-session", name: "boss", pane: "%2" } })), "ok");
+          assert.equal(s.shutdowns(), 1);
+          writeFileSync(gate, "");
+          await settling;
+          assert.equal(inbox.received().length, 0, "a stop during the outcome query still silences the ending");
+        });
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
