@@ -88,11 +88,8 @@ public func sidebarTitle(_ title: String, messageable: Bool) -> String {
 }
 
 extension Item {
-    var isAgent: Bool { run == .agent || agent != nil }
-    var isMessageable: Bool {
-        if case .live(.piAgent) = lifecycle { return true }
-        return run == .agent
-    }
+    var isAgent: Bool { agent != nil }
+    var isMessageable: Bool { if case .live(.piAgent) = lifecycle { true } else { false } }
     var agent: Report? {
         switch lifecycle {
         case .live(.someAgent(_, let status)), .live(.piAgent(_, let status)), .live(.ssh(_, .agent(_, let status))): status
