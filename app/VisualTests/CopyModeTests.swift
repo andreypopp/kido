@@ -2484,76 +2484,76 @@ extension VisualTests {
     private func runStates(_ theme: String, pane: PaneView, probe: PromptProbe) async throws {
         let sourceWindow = try XCTUnwrap(pane.windowID)
         probe.candidates = [candidate(window: sourceWindow, title: "kido-app")]
-        var box = try await openState(pane)
-        window.makeFirstResponder(box.textView)
-        try await stateSnapshot("\(theme)-empty", box: box)
+        let empty = try await openState(pane)
+        window.makeFirstResponder(empty.textView)
+        try await stateSnapshot("\(theme)-empty", box: empty)
         try await closeState()
 
-        box = try await openState(pane, text: typingQuote)
-        window.makeFirstResponder(box.textView)
-        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
-        try await stateSnapshot("\(theme)-typing", box: box)
+        let typing = try await openState(pane, text: typingQuote)
+        window.makeFirstResponder(typing.textView)
+        typing.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await stateSnapshot("\(theme)-typing", box: typing)
         try await closeState()
 
-        box = try await openState(pane, noQuote: true)
-        window.makeFirstResponder(box.textView)
-        try await stateSnapshot("\(theme)-noquote-empty", box: box)
+        let noQuoteEmpty = try await openState(pane, noQuote: true)
+        window.makeFirstResponder(noQuoteEmpty.textView)
+        try await stateSnapshot("\(theme)-noquote-empty", box: noQuoteEmpty)
         try await closeState()
 
-        box = try await openState(pane, noQuote: true)
-        window.makeFirstResponder(box.textView)
-        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
-        try await stateSnapshot("\(theme)-noquote-typing", box: box)
+        let noQuoteTyping = try await openState(pane, noQuote: true)
+        window.makeFirstResponder(noQuoteTyping.textView)
+        noQuoteTyping.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await stateSnapshot("\(theme)-noquote-typing", box: noQuoteTyping)
         try await closeState()
 
         probe.holdResolve = true
-        box = try await openState(pane, waitResolved: false)
+        let resolving = try await openState(pane, waitResolved: false)
         window.makeFirstResponder(nil)
-        try await stateSnapshot("\(theme)-resolving", box: box)
+        try await stateSnapshot("\(theme)-resolving", box: resolving)
         probe.holdResolve = false
         try await closeState()
 
         probe.candidates = []
-        box = try await openState(pane)
+        let noAgent = try await openState(pane)
         window.makeFirstResponder(nil)
-        try await stateSnapshot("\(theme)-no-agent", box: box)
+        try await stateSnapshot("\(theme)-no-agent", box: noAgent)
         try await closeState()
         probe.candidates = [candidate(window: sourceWindow, title: "kido-app")]
 
-        box = try await openState(pane)
-        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        let sending = try await openState(pane)
+        sending.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
         probe.reply = nil
-        box.newline(shift: false)
-        try await wait("sending state", within: 2) { box.status.stringValue.hasPrefix("Sending to @kido-app") }
+        sending.newline(shift: false)
+        try await wait("sending state", within: 2) { sending.status.stringValue.hasPrefix("Sending to @kido-app") }
         window.makeFirstResponder(nil)
-        try await stateSnapshot("\(theme)-sending", box: box)
+        try await stateSnapshot("\(theme)-sending", box: sending)
         try await closeState()
 
-        box = try await openState(pane)
-        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        let refused = try await openState(pane)
+        refused.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
         probe.reply = .success(.promptError("@kido-app is not accepting messages", .refused))
-        box.newline(shift: false)
-        try await wait("refused state", within: 2) { box.status.stringValue == "@kido-app is not accepting messages" }
+        refused.newline(shift: false)
+        try await wait("refused state", within: 2) { refused.status.stringValue == "@kido-app is not accepting messages" }
         window.makeFirstResponder(nil)
-        try await stateSnapshot("\(theme)-refused", box: box)
+        try await stateSnapshot("\(theme)-refused", box: refused)
         try await closeState()
 
-        box = try await openState(pane)
-        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        let unknown = try await openState(pane)
+        unknown.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
         probe.reply = .success(.promptError("Could not send: connection reset.", .unknown))
-        box.newline(shift: false)
-        try await wait("unknown state", within: 2) { box.status.stringValue.contains("may have arrived; not resent") }
+        unknown.newline(shift: false)
+        try await wait("unknown state", within: 2) { unknown.status.stringValue.contains("may have arrived; not resent") }
         window.makeFirstResponder(nil)
-        try await stateSnapshot("\(theme)-unknown", box: box)
+        try await stateSnapshot("\(theme)-unknown", box: unknown)
         try await closeState()
 
-        box = try await openState(pane)
-        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        let invalid = try await openState(pane)
+        invalid.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
         probe.reply = .success(.promptError("no such pane", .invalid))
-        box.newline(shift: false)
-        try await wait("invalid state", within: 2) { box.status.stringValue == "no such pane" }
+        invalid.newline(shift: false)
+        try await wait("invalid state", within: 2) { invalid.status.stringValue == "no such pane" }
         window.makeFirstResponder(nil)
-        try await stateSnapshot("\(theme)-invalid", box: box)
+        try await stateSnapshot("\(theme)-invalid", box: invalid)
         try await closeState()
 
         let overlapQuote = typingQuote.split(separator: "\n").prefix(2).joined(separator: "\n")
