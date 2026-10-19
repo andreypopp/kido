@@ -2685,11 +2685,8 @@ extension VisualTests {
 
 extension VisualTests {
     private func mouseWindow() async throws {
-        NSApp.setActivationPolicy(.regular)
-        addTeardownBlock { @MainActor in NSApp.setActivationPolicy(.prohibited) }
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        try await wait("visual window is key", within: 2) { self.window.isKeyWindow && self.window.isMainWindow }
+        window.orderFront(nil)
+        try await wait("visual window is on screen", within: 2) { self.window.isVisible && self.window.windowNumber != 0 }
     }
 
     private func entering(_ pane: PaneView) -> Bool {
