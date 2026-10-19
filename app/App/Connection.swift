@@ -310,7 +310,7 @@ final class Connection: @unchecked Sendable {
             if panes?[p] == nil { send([resume]) } else { sync(p, first: [resume]) }
         case .layoutChange(let window, let layout, let visible, _):
             debug("resize t=\(ProcessInfo.processInfo.systemUptime) layout-received window=\(window)")
-            DispatchQueue.main.sync { self.view?.windows[window]?.update(layout, visible) }
+            DispatchQueue.main.sync { self.view?.layoutChanged(window, layout, visible) }
         case .windowPaneChanged(let window, let pane):
             DispatchQueue.main.async { self.view?.windows[window]?.focus(pane) }
         case .sessionWindowChanged(let s, let window):
