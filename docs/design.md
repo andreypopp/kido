@@ -107,8 +107,9 @@ its meta names. A run has **ended** when it has an outcome, or when
 that pane is dead or gone. Without an outcome, tmux supplies the ending
 while the dead pane exists: `#{pane_dead_status}` 0 is `completed`,
 another status is `failed` with the text `exit N`, and
-`#{pane_dead_signal}` is `failed` with `signal NAME` (`State.parse`
-upper-cases the name, which tmux spells per platform). A dead pane with
+`#{pane_dead_signal}` is `failed` with `signal NAME` (tmux spells it
+per platform: a lower-case name on macOS, the number on Linux;
+`State.parse` turns both into the upper-case name). A dead pane with
 neither, or no pane, is `died`. `Run.effective_outcome` derives this;
 `kido runs`, `kido run-wait` and the RPC `Ended` result show a derived
 ending like a recorded one. Only the sweep stores it, through the

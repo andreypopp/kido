@@ -94,6 +94,20 @@ let fields = 35
 let int s = Option.get_or ~default:0 (int_of_string_opt s)
 let time s = match int s with 0 -> None | n -> Some (Float.of_int n)
 
+(* tmux's sig2name prints sys_signame, lower case on macOS, and the bare
+   number where libc has no sys_signame (Linux); the numbers are Linux's. *)
+let signal_name s =
+  match s with
+  | "1" -> "HUP"
+  | "2" -> "INT"
+  | "3" -> "QUIT"
+  | "6" -> "ABRT"
+  | "9" -> "KILL"
+  | "13" -> "PIPE"
+  | "14" -> "ALRM"
+  | "15" -> "TERM"
+  | s -> String.uppercase_ascii s
+
 let parse_line line =
   let rec split n from =
     match String.index_from_opt line from sep.[0] with
@@ -147,7 +161,7 @@ let parse_line line =
           program_status;
           modal = String.equal f.(26) "1";
           dead_status = int_of_string_opt f.(28);
-          dead_signal = Option.map String.uppercase_ascii (nonempty f.(29));
+          dead_signal = Option.map signal_name (nonempty f.(29));
           session = nonempty f.(30);
           name = nonempty f.(31);
           inbox = nonempty f.(32);
