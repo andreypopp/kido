@@ -751,6 +751,10 @@ a stage slower needs a reason.
   70 ms. A fake delay is a `KIDO_FAKE_*` gate that the test releases,
   not a delay that the test waits out. A test that reads only the
   registered tools needs no fixture.
+- An ask's `timeoutMs` starts before discovery and the send. On
+  macOS, the first execution of a freshly built fake costs about
+  140 ms. Thus, an ask that expects a reply gets a timeout of
+  seconds. Only a test of the timeout path uses a short one.
 - A test earns its time. Do not keep a test that repeats another test,
   the prompt snapshot or the compiler.
 

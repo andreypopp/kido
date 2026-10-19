@@ -142,16 +142,16 @@ test("ask_agent allows a parent asking its child and a peer, and refuses a child
     await asSubagent(fx, "mid", async () => {
       const s = await startNamedSession(fx, "mid", "mid");
       const ask = s.tools.get("ask_agent");
-      const toChild = ask.execute("c1", { to: "child", question: "status?", timeoutMs: 50 });
+      const toChild = ask.execute("c1", { to: "child", question: "status?", timeoutMs: 5000 });
       await pollUntil(() => inbox.received().length === 1, 2000, "the ask to the child");
       assert.equal(sent(inbox).kind, "ask");
       await reply(fx, inbox, "fine", "mid");
       assert.equal((await toChild).content[0].text, "fine", "a parent asking its own child is allowed");
 
-      const toPeer = ask.execute("c2", { to: "peer", question: "status?", timeoutMs: 50 });
+      const toPeer = ask.execute("c2", { to: "peer", question: "status?", timeoutMs: 5000 });
       await pollUntil(() => inbox.received().length === 2, 2000, "the ask to the peer");
       await reply(fx, inbox, "ok", "mid");
-      await toPeer;
+      assert.equal((await toPeer).content[0].text, "ok", "a parent asking a peer is allowed");
 
       assert.match((await ask.execute("c3", { to: "root", question: "q", timeoutMs: 50 })).content[0].text, /root is an ancestor/);
       assert.match((await ask.execute("c4", { to: "mid", question: "q", timeoutMs: 50 })).content[0].text, /cannot ask yourself/);
