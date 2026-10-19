@@ -406,7 +406,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 case "failed", "done": ["Idle", ["outcome": ["serial": 1, "result": status == "done" ? "success" : "failure"]]]
                 default: ["Idle", ["outcome": NSNull()]]
                 }
-                return ["kind": "pane", "run": pane[0] == child ? "agent" as Any : NSNull(), "started": NSNull(), "id": pane[1], "pane": pane[1], "window": pane[0],
+                return ["kind": "pane", "run": pane[0] == child ? "r-child" as Any : NSNull(), "started": NSNull(), "id": pane[1], "pane": pane[1], "window": pane[0],
                         "program_status": ["serial": 0, "records": []], "title": pane[0] == middle ? (pane[1] == secondPane ? review : "Agent caption") : pane[0] == last ? "Build output" : "Shell prompt",
                         "lifecycle": pane[0] == child ? agentLifecycle(state) : shellLifecycle(), "children": children]
             }
@@ -991,7 +991,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     private func agentLifecycle(_ state: [Any], msg: Any = NSNull()) -> [Any] {
-        ["Live", ["Pi_agent", ["id": "session", "status": ["since": 1791131000, "msg": msg, "state": state]]]]
+        ["Live", ["Pi_agent", ["session": "session", "status": ["since": 1791131000, "msg": msg, "state": state]]]]
     }
 
     private func shellLifecycle(_ last: Any = NSNull()) -> [Any] { ["Live", ["Terminal", ["phase": ["Idle", ["last": last]], "report": NSNull()]]] }
@@ -1217,7 +1217,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             var children = panes[0]["children"] as! [[String: Any]]
             children[0]["children"] = [["kind": "pane", "id": "%1990", "pane": "%1990", "window": "@1990", "program_status": ["serial": 0, "records": []],
                                         "title": "review-notes", "lifecycle": agentLifecycle(["Running", ["progress": NSNull()]], msg: "Checking nested activity"),
-                                        "run": "agent", "started": 1791131100,
+                                        "run": "r-subtree", "started": 1791131100,
                                         "children": [["kind": "pane", "id": "%1991", "pane": "%1991", "window": "@1991", "program_status": ["serial": 0, "records": []],
                                                       "title": "zsh", "run": NSNull(), "started": NSNull(),
                                                       "lifecycle": shellLifecycle(["code": 0, "command": "true", "started_at": 1791131000, "ended_at": 1791131001]),
@@ -1346,7 +1346,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             try JSONSerialization.data(withJSONObject: object).write(to: fixture)
             let script = try fakeFeedScript(scratch, """
             import json, sys
-            print(json.dumps(dict(hello=dict(protocol="5.0"))))
+            print(json.dumps(dict(hello=dict(protocol="6.0"))))
             snapshot = json.load(open("\(fixture.path)"))
             print(json.dumps(snapshot))
             held = None
@@ -1481,8 +1481,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func testServerCompatibilityFields() throws {
         for (stamp, version, compatible) in [
-            ("null", "5.0", false), ("\"other\"", "5.0", false),
-            ("\"0123456789ab\"", "5.0", true), ("\"0123456789ab\"", "4.0", false)
+            ("null", "6.0", false), ("\"other\"", "6.0", false),
+            ("\"0123456789ab\"", "6.0", true), ("\"0123456789ab\"", "5.0", false)
         ] {
             let json = "{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"\(version)\",\"server\":\(stamp),\"expected\":\"0123456789ab\"}"
             let server = try JSONDecoder().decode(Server.self, from: Data(json.utf8))
@@ -1770,12 +1770,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 XCTAssertEqual(alert.buttons[0].hasDestructiveAction, host == .local)
                 if host == .local { XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[1].cell) }
             }
-            for version in ["3.1", "5.1"] {
+            for version in ["3.1", "6.1"] {
                 let alert = WindowOwner.mismatchAlert(host: host, server: ServerStamp("same"), binary: try XCTUnwrap(RPCVersion(version)))
-                XCTAssertTrue(alert.informativeText.contains("needs kido RPC 5.0"))
+                XCTAssertTrue(alert.informativeText.contains("needs kido RPC 6.0"))
                 XCTAssertTrue(alert.informativeText.contains("speaks \(version)"))
                 if host != .local && version == "3.1" { XCTAssertTrue(alert.informativeText.contains("Upgrade kido there")) }
-                if version == "5.1" { XCTAssertTrue(alert.informativeText.contains("Update Kido.app, then reconnect.")) }
+                if version == "6.1" { XCTAssertTrue(alert.informativeText.contains("Update Kido.app, then reconnect.")) }
             }
         }
     }
@@ -1871,7 +1871,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertNil(owner.testConnection)
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
-        print("RPC E2E hello 5.0; unstamped server refused; local mismatch alert prepared off-screen")
+        print("RPC E2E hello 6.0; unstamped server refused; local mismatch alert prepared off-screen")
     }
 
     func testSidebarHeadersKeysAndAccessibility() throws {

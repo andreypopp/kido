@@ -669,7 +669,7 @@ typealias AppWindow = StressWindow
             var nodes = app.stressState.4?.sessions.flatMap(\.nodes) ?? []
             while let node = nodes.popLast() {
                 nodes += node.children
-                if case .item(let item) = node, item.run == .bash {
+                if case .item(let item) = node, item.run != nil, case .live(.terminal) = item.lifecycle {
                     let identity = "\(item.window):\(item.started?.timeIntervalSince1970 ?? 0)"
                     if childWindows.insert(identity).inserted {
                         counts["child-window-seen", default: 0] += 1

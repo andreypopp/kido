@@ -88,13 +88,16 @@ public struct NotifierState: Equatable, Sendable {
         // Visit the client's session first so linked panes get its click target and subtitle.
         let sessions = snapshot.sessions.filter { $0.id == snapshot.client.session }
             + snapshot.sessions.filter { $0.id != snapshot.client.session }
-        func visit(_ node: Node, session: SessionNodes) {
-            defer { node.children.forEach { visit($0, session: session) } }
+        func visit(_ node: Node, session: SessionNodes, nested: Bool) {
+            defer {
+                let childNested = if case .item = node { true } else { nested }
+                node.children.forEach { visit($0, session: session, nested: childNested) }
+            }
             guard case .item(let item) = node, present.insert(item.pane).inserted else { return }
             let key = NoticeKey(owner: owner, pane: item.pane)
             let status = item.indicator(seen).status
             let reason: Reason?
-            if item.run != nil { reason = nil }
+            if item.run != nil, nested { reason = nil }
             else if case .live = item.lifecycle {
                 if status == .waiting { reason = .waiting }
                 else if status == .error, let outcome = item.indicatedOutcome {
@@ -132,7 +135,7 @@ public struct NotifierState: Equatable, Sendable {
                 title: item.rowTitle(status: status).title, subtitle: subtitle, body: body))
             state.entries[item.pane] = .posted(reason)
         }
-        for session in sessions { session.nodes.forEach { visit($0, session: session) } }
+        for session in sessions { session.nodes.forEach { visit($0, session: session, nested: false) } }
         for pane in state.entries.keys.sorted(by: { $0.number < $1.number }) where !present.contains(pane) {
             if case .posted = state.entries[pane] { effects.withdraw.append(NoticeKey(owner: owner, pane: pane)) }
             state.entries[pane] = nil
