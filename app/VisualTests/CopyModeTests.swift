@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import SidebarFeed
+import SnapshotTesting
 import TmuxControl
 import UniformTypeIdentifiers
 import XCTest
@@ -280,6 +281,10 @@ extension VisualTests {
         XCTAssertTrue({ if case .entering = pane.copyMode { true } else { false } }(), "entry waits for the admitted parse")
         XCTAssertEqual(label(pane), "COPY…")
         XCTAssertNil(cursor(pane))
+        let promptBeeps = pane.visualBeeps
+        sendCommandO()
+        XCTAssertTrue(promptBoxes.boxes.isEmpty, "⌘O while copy mode enters opens no box")
+        XCTAssertEqual(pane.visualBeeps, promptBeeps, "⌘O while copy mode enters does not beep")
         release.signal()
         try await wait("entry completes after the parse", within: 2) { if case .cursor = pane.copyMode { true } else { false } }
         XCTAssertEqual(label(pane), "COPY")
@@ -1160,9 +1165,9 @@ extension VisualTests {
     func testCopyLabelSnapshots() async throws { try await copySnapshots(dark: false) }
     func testCopyLabelSnapshotsDark() async throws { try await copySnapshots(dark: true) }
 
-    private func mouse(_ pane: PaneView, _ type: NSEvent.EventType, at point: NSPoint, clickCount: Int = 1, shift: Bool = false) -> NSEvent {
-        NSEvent.mouseEvent(with: type, location: pane.convert(point, to: nil), modifierFlags: shift ? [.shift] : [], timestamp: 0,
-                           windowNumber: pane.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: clickCount,
+    private func mouse(_ view: NSView, _ type: NSEvent.EventType, at point: NSPoint, clickCount: Int = 1, shift: Bool = false) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: shift ? [.shift] : [], timestamp: 0,
+                           windowNumber: view.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: clickCount,
                            pressure: type == .leftMouseUp ? 0 : 1)!
     }
 
@@ -1300,13 +1305,14 @@ extension VisualTests {
         pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 0, y: alpha))
         pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 0, y: alpha))
         keys(pane, "p")
-        XCTAssertNil(pane.prompt, "a cursor-only cell opens no box")
+        XCTAssertTrue(promptBoxes.boxes.isEmpty, "a cursor-only cell opens no box")
         pane.promptSelectionItem(nil)
-        XCTAssertNil(pane.prompt, "the menu item opens no box for a cursor-only cell")
-        drag(pane, from: (0, alpha), to: (4, alpha))
+        try await wait("the menu item opens a box for a cursor-only cell", within: 2) { self.promptBoxes.boxes.count == 1 }
+        promptBoxes.closeAll()
+        drag(pane, from: (0, alpha), to: (9, alpha))
         keys(pane, "p")
-        XCTAssertNotNil(pane.prompt, "p opens the prompt for a selection")
-        pane.closePrompt()
+        XCTAssertEqual(promptBoxes.boxes.count, 1, "p opens the prompt for a selection")
+        promptBoxes.closeAll()
         keys(pane, "q")
     }
 
@@ -1315,6 +1321,7 @@ extension VisualTests {
         private var recorded: [RPCRequest] = []
         var candidates: [PromptCandidate] = []
         var resolveFailure: Failure?
+        var holdResolve = false
         var reply: Result<RPCEvent.Reply.Value, Failure>?
 
         func reset() {
@@ -1332,10 +1339,11 @@ extension VisualTests {
     }
 
     private func installPrompt(_ probe: PromptProbe) {
-        PanePrompt.visualRequest = { [probe] request, done in
+        promptBoxes.request = { [probe] request, done in
             probe.record(request)
             switch request {
             case .prompt(_, nil, _):
+                if probe.holdResolve { return }
                 if let failure = probe.resolveFailure { done(.failure(failure)) }
                 else { done(.success(.prompt(.candidates(probe.candidates)))) }
             case .prompt(_, .some, _):
@@ -1343,31 +1351,122 @@ extension VisualTests {
             default: break
             }
         }
-        PanePrompt.linger = 0
+        PromptBox.linger = 0
     }
 
-    private func openPrompt(_ pane: PaneView, select: String = "alpha beta", waitResolved: Bool = true) async throws -> PanePrompt {
+    private func candidate(pane: PaneID = PaneID(number: 13), window: WindowID = WindowID(number: 0), title: String = "near") -> PromptCandidate {
+        PromptCandidate(pane: pane, session: SessionID(number: 0), window: window, title: title)
+    }
+
+    private func scrollOffset(_ pane: PaneView) -> Int {
+        var bar = ghostty_surface_scrollbar_s()
+        _ = ghostty_surface_scrollbar(pane.surface, &bar)
+        return Int(bar.offset)
+    }
+
+    private func row(_ pane: PaneView, containing text: String) throws -> Int {
+        try XCTUnwrap(screen(pane).firstIndex { $0.contains(text) }, "row containing \(text)") + scrollOffset(pane)
+    }
+
+    private func visibleRows(_ pane: PaneView) -> Int {
+        max(1, Int((pane.bounds.height - pane.renderInsets.top - pane.renderInsets.bottom) / pane.cell.height))
+    }
+
+    private func rowCenter(_ pane: PaneView, _ index: Int) -> NSPoint {
+        NSPoint(x: 2, y: pane.bounds.height - pane.renderInsets.top - (CGFloat(index) + 0.5) * pane.cell.height)
+    }
+
+    private func selectAt(_ pane: PaneView, _ point: NSPoint, cells: Int = 4) {
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, at: point))
+        let end = NSPoint(x: point.x + CGFloat(cells) * pane.cell.width, y: point.y)
+        pane.mouseDragged(with: mouse(pane, .leftMouseDragged, at: end))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, at: end))
+    }
+
+    private func openBox(_ pane: PaneView, waitResolved: Bool = true) async throws -> PromptBox {
+        let before = promptBoxes.boxes.count
+        pane.openPrompt()
+        try await wait("prompt opened", within: 2) { self.promptBoxes.boxes.count == before + 1 }
+        let box = try XCTUnwrap(promptBoxes.boxes.last)
+        if waitResolved {
+            try await wait("prompt resolved", within: 2) {
+                let title = box.targetButton.titleOfSelectedItem ?? ""
+                return !title.isEmpty && title != "Resolving…"
+            }
+        }
+        return box
+    }
+
+    private func openPrompt(_ pane: PaneView, select: String = "alpha beta", waitResolved: Bool = true) async throws -> PromptBox {
         if pane.copyMode == nil { try await enter(pane) }
-        let last = try XCTUnwrap(cursor(pane)).y
-        let row = last - 3
+        let row = try row(pane, containing: select)
         drag(pane, from: (0, row), to: (select.count - 1, row))
         XCTAssertEqual(pane.readSelection(), select, "prompt fixture selection")
-        pane.openPrompt()
-        let prompt = try XCTUnwrap(pane.prompt)
-        if waitResolved {
-            try await wait("prompt resolved", within: 2) { (prompt.targetButton.titleOfSelectedItem ?? "").isEmpty == false && prompt.targetButton.titleOfSelectedItem != "Resolving…" }
-        }
-        return prompt
+        return try await openBox(pane, waitResolved: waitResolved)
     }
 
-    private func sendEnabled(_ prompt: PanePrompt) -> Bool { !prompt.send.isHidden && prompt.send.isEnabled }
+    private func sendEnabled(_ prompt: PromptBox) -> Bool { !prompt.send.isHidden && prompt.send.isEnabled }
+
+    private func ordinarySelection(_ pane: PaneView, containing text: String) throws {
+        let row = try row(pane, containing: text)
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 0, y: row))
+        pane.mouseDragged(with: mouse(pane, .leftMouseDragged, x: text.count, y: row))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, x: text.count - 1, y: row))
+    }
+
+    private func sendClick(_ view: NSView, at point: NSPoint) {
+        window.sendEvent(mouse(view, .leftMouseDown, at: point))
+        window.sendEvent(mouse(view, .leftMouseUp, at: point))
+    }
+
+    private func click(_ box: PromptBox) {
+        let point = NSPoint(x: box.bounds.width - 34, y: box.bounds.height - 4)
+        box.mouseDown(with: mouse(box, .leftMouseDown, at: point))
+        box.mouseUp(with: mouse(box, .leftMouseUp, at: point))
+    }
+
+    private func updatePromptMenu() {
+        guard let edit = NSApp.mainMenu?.items.first(where: { $0.title == "Edit" })?.submenu,
+              let app = NSApp.delegate as? AppDelegate
+        else { return XCTFail("missing Edit menu or AppDelegate") }
+        app.updatePromptMenu(edit, responder: window.firstResponder)
+    }
+
+    private func sendCommandO() {
+        guard let edit = NSApp.mainMenu?.items.first(where: { $0.title == "Edit" })?.submenu,
+              let item = edit.items.first(where: { $0.action == #selector(PaneView.promptSelectionItem(_:)) })
+        else { return XCTFail("missing Prompt with Selection…") }
+        let responder = window.firstResponder
+        item.target = responder is PaneView || responder is PaneFind ? PaneView.owner(responder) : nil
+        defer { item.target = nil }
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                                     windowNumber: window.windowNumber, context: nil, characters: "o",
+                                     charactersIgnoringModifiers: "o", isARepeat: false, keyCode: 31)!
+        _ = NSApp.mainMenu?.performKeyEquivalent(with: event)
+    }
+
+    private func drag(_ box: PromptBox, from point: NSPoint? = nil, by delta: NSPoint) {
+        let start = point ?? NSPoint(x: box.bounds.midX, y: box.bounds.height - 4)
+        box.mouseDown(with: mouse(box, .leftMouseDown, at: start))
+        let end = NSPoint(x: start.x + delta.x, y: start.y + delta.y)
+        box.mouseDragged(with: mouse(box, .leftMouseDragged, at: end))
+        box.mouseUp(with: mouse(box, .leftMouseUp, at: end))
+    }
+
+    private func assertInside(_ box: PromptBox) {
+        XCTAssertGreaterThanOrEqual(box.frame.minX, 8, "left clamp")
+        XCTAssertGreaterThanOrEqual(box.frame.minY, 8, "top clamp")
+        XCTAssertLessThanOrEqual(box.frame.maxX, promptBoxes.bounds.width - 8, "right clamp")
+        XCTAssertLessThanOrEqual(box.frame.maxY, promptBoxes.bounds.height - 8, "bottom clamp")
+    }
 
     func testPromptBox() async throws {
         let pane = try await rawPane()
         try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
         let probe = PromptProbe()
-        let near = PromptCandidate(pane: PaneID(number: 13), session: SessionID(number: 0), window: WindowID(number: 0), title: "near")
-        let far = PromptCandidate(pane: PaneID(number: 12), session: SessionID(number: 0), window: WindowID(number: 1), title: "far")
+        let sourceWindow = try XCTUnwrap(pane.windowID)
+        let near = candidate(window: sourceWindow)
+        let far = candidate(pane: PaneID(number: 12), window: WindowID(number: sourceWindow.number + 1), title: "far")
         installPrompt(probe)
 
         probe.candidates = [near, far]
@@ -1376,8 +1475,15 @@ extension VisualTests {
         XCTAssertEqual(prompt.targetButton.titleOfSelectedItem, "Prompt @near in this window", "the closest same-window agent is preselected")
         XCTAssertEqual(prompt.targetButton.numberOfItems, 2)
         XCTAssertFalse(sendEnabled(prompt), "Send is disabled while the text is empty")
+        prompt.newline(shift: false)
+        XCTAssertEqual(probe.sends.count, 0, "Return with an empty field sends nothing")
+        prompt.textView.insertText("   ", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertFalse(sendEnabled(prompt), "whitespace does not enable Send")
+        prompt.newline(shift: false)
+        XCTAssertEqual(probe.sends.count, 0, "Return with a whitespace field sends nothing")
+        prompt.textView.selectAll(nil)
+        prompt.textView.insertText("Explain", replacementRange: prompt.textView.selectedRange())
         XCTAssertEqual(prompt.quote.stringValue, "alpha beta")
-        prompt.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
         XCTAssertTrue(sendEnabled(prompt))
         let quote = prompt.quote.stringValue
         _ = ghostty_surface_set_selection(pane.surface, nil)
@@ -1386,13 +1492,13 @@ extension VisualTests {
         prompt.chooseTarget()
         prompt.newline(shift: false)
         try await wait("delivered status", within: 2) { prompt.status.stringValue == "Sent to far" }
-        try await wait("box closes after delivery", within: 3) { pane.prompt == nil }
+        try await wait("box closes after delivery", within: 3) { self.promptBoxes.boxes.isEmpty }
         XCTAssertNil(pane.copyMode, "delivery exits copy mode")
         XCTAssertEqual(probe.sends.count, 1)
         guard case .prompt(let sentPane, let text, let target) = probe.sends[0] else { return XCTFail("not a prompt") }
-        XCTAssertEqual(sentPane, pane.pane)
+        XCTAssertEqual(sentPane, pane.pane, "a live source pane is the request pane")
         XCTAssertEqual(target, far.pane, "the second picked candidate receives the send")
-        XCTAssertEqual(text, RPCRequest.composePrompt(prompt: "Explain", selection: "alpha beta"))
+        XCTAssertEqual(text, "Explain:\n> alpha beta")
 
         probe.reset()
         probe.reply = nil
@@ -1402,9 +1508,10 @@ extension VisualTests {
         XCTAssertEqual(prompt.textView.string, "one\n", "Shift-Enter adds a newline")
         XCTAssertEqual(probe.sends.count, 0)
         prompt.textView.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
-        XCTAssertNil(pane.prompt, "Escape cancels")
+        try await wait("Escape closes the box", within: 2) { self.promptBoxes.boxes.isEmpty }
         XCTAssertNotNil(pane.copyMode, "Escape keeps copy mode")
         XCTAssertEqual(pane.readSelection(), "alpha beta", "Escape keeps the selection")
+        XCTAssertTrue(window.firstResponder === pane, "Escape returns focus to the source pane")
 
         probe.candidates = []
         probe.reply = nil
@@ -1412,7 +1519,10 @@ extension VisualTests {
         XCTAssertEqual(prompt.targetButton.titleOfSelectedItem, "No agent in this window or session")
         XCTAssertFalse(sendEnabled(prompt))
         XCTAssertFalse(prompt.textView.isEditable)
+        prompt.textView.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        XCTAssertTrue(window.firstResponder === prompt.cancelButton, "Tab skips disabled controls")
         prompt.cancel()
+        try await wait("box cancelled", within: 2) { self.promptBoxes.boxes.isEmpty }
 
         probe.candidates = [near]
         probe.reply = .success(.promptError("near did not accept the prompt", .refused))
@@ -1427,16 +1537,23 @@ extension VisualTests {
         XCTAssertTrue(sendEnabled(prompt), "editing re-enables Send")
         XCTAssertTrue(prompt.retry.isHidden)
         prompt.cancel()
+        try await wait("box cancelled", within: 2) { self.promptBoxes.boxes.isEmpty }
 
+        probe.candidates = [near, far]
         probe.reply = .success(.promptError("no such pane", .invalid))
         prompt = try await openPrompt(pane)
         prompt.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
         prompt.newline(shift: false)
         try await wait("invalid message", within: 2) { prompt.status.stringValue == "no such pane" }
         XCTAssertFalse(sendEnabled(prompt), "invalid leaves Send disabled")
+        prompt.targetButton.selectItem(at: 1)
+        prompt.chooseTarget()
+        XCTAssertEqual(prompt.status.stringValue, "")
+        XCTAssertTrue(sendEnabled(prompt), "a new pick re-enables Send after invalid")
         prompt.textView.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
         XCTAssertTrue(sendEnabled(prompt), "editing re-enables Send after invalid")
         prompt.cancel()
+        try await wait("box cancelled", within: 2) { self.promptBoxes.boxes.isEmpty }
 
         probe.reply = .success(.promptError("Could not send", .unknown))
         probe.reset()
@@ -1449,6 +1566,7 @@ extension VisualTests {
         await mainQueueFence()
         XCTAssertEqual(probe.sends.count, 1, "an unknown outcome never resends")
         prompt.cancel()
+        try await wait("box cancelled", within: 2) { self.promptBoxes.boxes.isEmpty }
 
         probe.reply = .failure(.terminal("RPC connection ended before the request completed"))
         probe.reset()
@@ -1459,6 +1577,7 @@ extension VisualTests {
         XCTAssertFalse(prompt.copyPrompt.isHidden)
         XCTAssertFalse(sendEnabled(prompt))
         prompt.cancel()
+        try await wait("box cancelled", within: 2) { self.promptBoxes.boxes.isEmpty }
 
         probe.reply = .failure(.terminal("the RPC feed is not ready"))
         prompt = try await openPrompt(pane)
@@ -1467,6 +1586,7 @@ extension VisualTests {
         try await wait("not-ready message", within: 2) { prompt.status.stringValue == "the RPC feed is not ready" }
         XCTAssertFalse(sendEnabled(prompt))
         prompt.cancel()
+        try await wait("box cancelled", within: 2) { self.promptBoxes.boxes.isEmpty }
 
         probe.resolveFailure = .terminal("no such pane")
         probe.candidates = []
@@ -1481,7 +1601,775 @@ extension VisualTests {
         prompt.retry.invoke()
         try await wait("resolve retry ready", within: 2) { prompt.targetButton.titleOfSelectedItem == "Prompt @near in this window" && prompt.textView.isEditable }
         prompt.cancel()
+        try await wait("box cancelled", within: 2) { self.promptBoxes.boxes.isEmpty }
         keys(pane, "q")
+    }
+
+    func testPromptPlacement() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, (0..<40).map { _ in String(repeating: "x", count: 60) }.joined(separator: "\r\n") + "\r\n", until: "xxxx")
+        let probe = PromptProbe()
+        probe.candidates = [candidate()]
+        installPrompt(probe)
+        try await enter(pane)
+
+        var point = rowCenter(pane, 5)
+        selectAt(pane, point)
+        var box = try await openBox(pane)
+        var press = promptBoxes.convert(point, from: pane)
+        XCTAssertEqual(box.frame.minY, press.y + pane.cell.height / 2 + 6, accuracy: 0.5, "the box opens below the selected row")
+        XCTAssertEqual(box.frame.minX, promptBoxes.convert(.zero, from: pane).x, accuracy: 0.5, "the box starts at the first selected cell")
+        XCTAssertEqual(box.frame.width, min(560, promptBoxes.bounds.width - 16))
+        assertInside(box)
+        box.cancel()
+        try await wait("box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        point = rowCenter(pane, visibleRows(pane) - 3)
+        selectAt(pane, point)
+        box = try await openBox(pane)
+        press = promptBoxes.convert(point, from: pane)
+        XCTAssertEqual(box.frame.maxY, press.y - pane.cell.height / 2 - 6, accuracy: 0.5, "the box opens above when it does not fit below")
+        assertInside(box)
+        box.cancel()
+        try await wait("box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        let top = rowCenter(pane, 0), bottom = rowCenter(pane, visibleRows(pane) - 1)
+        pane.mouseDown(with: mouse(pane, .leftMouseDown, at: top))
+        pane.mouseDragged(with: mouse(pane, .leftMouseDragged, at: bottom))
+        pane.mouseUp(with: mouse(pane, .leftMouseUp, at: bottom))
+        box = try await openBox(pane, waitResolved: false)
+        XCTAssertEqual(box.frame.maxY, promptBoxes.bounds.height - 8, accuracy: 0.5, "a tall selection falls back to the bottom edge")
+        assertInside(box)
+        box.cancel()
+        try await wait("box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        window.setContentSize(NSSize(width: 600, height: 560))
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await settle()
+        window.makeFirstResponder(pane)
+        try await enter(pane)
+
+        let middle = rowCenter(pane, visibleRows(pane) / 2)
+        XCTAssertLessThan(promptBoxes.convert(.zero, from: pane).x, 8, "the fixture starts left of the margin")
+        selectAt(pane, NSPoint(x: 0, y: middle.y))
+        box = try await openBox(pane)
+        XCTAssertEqual(box.frame.minX, 8, accuracy: 0.5, "a selection at the left edge clamps to 8pt")
+        box.cancel()
+        try await wait("box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        let right = NSPoint(x: 40 * pane.cell.width, y: middle.y)
+        selectAt(pane, right)
+        box = try await openBox(pane)
+        XCTAssertEqual(box.frame.minX, promptBoxes.bounds.width - 8 - box.frame.width, accuracy: 0.5, "a selection at the right edge clamps to 8pt")
+        XCTAssertGreaterThan(promptBoxes.convert(.zero, from: pane).x + right.x, box.frame.minX, "the fixture needs the right clamp")
+        box.cancel()
+        try await wait("box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        _ = try await command(["split-window", "-h", "-l", "12", "-t", pane.pane.description, "exec /bin/cat"])
+        try await wait("split pane", within: 2) { self.terminal?.panes.count == 2 }
+        try await settle()
+        window.makeFirstResponder(pane)
+        try await enter(pane)
+        selectAt(pane, rowCenter(pane, visibleRows(pane) / 2))
+        box = try await openBox(pane)
+        let paneMaxX = promptBoxes.convert(pane.bounds, from: pane).maxX
+        XCTAssertGreaterThan(box.frame.maxX, paneMaxX, "the box crosses the pane border")
+        assertInside(box)
+        box.cancel()
+        keys(pane, "q")
+    }
+
+    func testSeveralPromptBoxes() async throws {
+        let pane = try await rawPane()
+        let long = String(repeating: "x", count: 60)
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n" + long + "\r\n", until: "xxxx")
+        let probe = PromptProbe()
+        probe.candidates = [candidate()]
+        installPrompt(probe)
+        let first = try await openPrompt(pane)
+        XCTAssertEqual(first.toolTip, "alpha beta", "the box carries the full quote tooltip")
+        let firstFrame = first.frame
+        let second = try await openPrompt(pane)
+        XCTAssertEqual(promptBoxes.boxes.count, 2, "opening a box never closes another")
+        XCTAssertEqual(second.frame.minX, firstFrame.minX + 16, accuracy: 0.5, "a taken anchor offsets by 16")
+        XCTAssertEqual(second.frame.minY, firstFrame.minY + 16, accuracy: 0.5, "a taken anchor offsets by 16")
+        XCTAssertTrue(window.firstResponder === second.textView, "the newest box is key")
+        XCTAssertTrue(promptBoxes.subviews.last === second, "the newest box is on top")
+
+        first.textView.insertText("one", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(first.textView.string, "one")
+        XCTAssertEqual(second.textView.string, "", "each box keeps its own text")
+
+        click(first)
+        XCTAssertTrue(window.firstResponder === first.textView, "a click moves focus to the box field")
+        XCTAssertTrue(promptBoxes.subviews.last === first, "a click raises the box")
+
+        window.orderFrontRegardless()
+        sendClick(pane, at: NSPoint(x: 20, y: 20))
+        XCTAssertTrue(window.firstResponder === pane)
+        XCTAssertEqual(promptBoxes.boxes.count, 2, "clicking the terminal leaves the boxes open")
+
+        let quoteStart = NSPoint(x: first.quote.frame.midX, y: first.quote.frame.midY)
+        XCTAssertTrue(first.hitTest(first.convert(quoteStart, to: promptBoxes)) === first, "the box handles a quote hit")
+        let beforeQuoteDrag = first.frame
+        drag(first, from: quoteStart, by: NSPoint(x: 20, y: 20))
+        XCTAssertEqual(first.frame, beforeQuoteDrag, "the quote area is not a drag region")
+
+        drag(first, by: NSPoint(x: -2000, y: -2000))
+        assertInside(first)
+        drag(first, by: NSPoint(x: 4000, y: 4000))
+        assertInside(first)
+
+        let edgeRow = try row(pane, containing: "xxxx")
+        drag(pane, from: (30, edgeRow), to: (40, edgeRow))
+        let edge = try await openBox(pane)
+        let edgeFrame = edge.frame
+        XCTAssertEqual(edge.frame.minX, promptBoxes.bounds.width - 8 - edge.frame.width, accuracy: 0.5, "the edge fixture clamps first")
+        let edge2 = try await openBox(pane)
+        XCTAssertEqual(edge2.frame.minX, edgeFrame.minX, accuracy: 0.5, "the right clamp keeps the x edge")
+        XCTAssertEqual(edge2.frame.minY, edgeFrame.minY + 16, accuracy: 0.5, "an edge anchor still offsets")
+
+        window.setContentSize(NSSize(width: 420, height: 360))
+        window.contentView?.layoutSubtreeIfNeeded()
+        for box in promptBoxes.boxes { assertInside(box) }
+        promptBoxes.closeAll()
+        keys(pane, "q")
+    }
+
+    func testPromptBoxDragFollowsThePointer() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        let probe = PromptProbe()
+        probe.candidates = [candidate()]
+        installPrompt(probe)
+        let box = try await openPrompt(pane)
+        box.textView.insertText("one", replacementRange: NSRange(location: NSNotFound, length: 0))
+        box.textView.setSelectedRange(NSRange(location: 3, length: 0))
+
+        let layer = promptBoxes
+        var point = NSPoint(x: box.frame.minX + 8, y: box.frame.minY + 4)
+        let down = mouse(layer, .leftMouseDown, at: point)
+        box.mouseDown(with: down)
+        XCTAssertTrue(window.firstResponder === box.textView, "a header press focuses the field")
+        XCTAssertEqual(box.textView.selectedRange(), NSRange(location: 3, length: 0), "a header press moves no caret")
+        var previous = down.locationInWindow
+        var previousTop = box.convert(NSPoint(x: 0, y: box.bounds.height), to: nil)
+
+        func step(_ delta: NSPoint) {
+            point.x += delta.x
+            point.y += delta.y
+            let event = mouse(layer, .leftMouseDragged, at: point)
+            let pointer = NSPoint(x: event.locationInWindow.x - previous.x, y: event.locationInWindow.y - previous.y)
+            box.mouseDragged(with: event)
+            let top = box.convert(NSPoint(x: 0, y: box.bounds.height), to: nil)
+            XCTAssertEqual(top.x - previousTop.x, pointer.x, accuracy: 0.5, "the box follows the pointer in x")
+            XCTAssertEqual(top.y - previousTop.y, pointer.y, accuracy: 0.5, "the box follows the pointer in y")
+            previous = event.locationInWindow
+            previousTop = top
+        }
+
+        step(NSPoint(x: 40, y: 30))
+        step(NSPoint(x: 20, y: 10))
+        step(NSPoint(x: -45, y: -25))
+
+        point = NSPoint(x: -2000, y: -2000)
+        box.mouseDragged(with: mouse(layer, .leftMouseDragged, at: point))
+        XCTAssertEqual(box.frame.minX, 8, accuracy: 0.5, "the drag clamps on the left")
+        XCTAssertEqual(box.frame.minY, 8, accuracy: 0.5, "the drag clamps on the top")
+        box.mouseUp(with: mouse(layer, .leftMouseUp, at: point))
+    }
+
+    func testPromptBoxControlsRaiseAndFocus() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        let probe = PromptProbe()
+        probe.candidates = [candidate()]
+        installPrompt(probe)
+        let first = try await openPrompt(pane)
+        first.textView.insertText("one", replacementRange: NSRange(location: NSNotFound, length: 0))
+        drag(first, by: NSPoint(x: 0, y: -180))
+        let second = try await openPrompt(pane)
+        XCTAssertTrue(promptBoxes.subviews.last === second)
+
+        window.orderFrontRegardless()
+        sendClick(pane, at: NSPoint(x: 20, y: 20))
+        XCTAssertTrue(window.firstResponder === pane)
+        XCTAssertFalse(first.focused)
+        XCTAssertFalse(second.focused)
+
+        probe.reply = nil
+        let sends = probe.sends.count
+        sendClick(first.send, at: NSPoint(x: first.send.bounds.midX, y: first.send.bounds.midY))
+        XCTAssertTrue(promptBoxes.subviews.last === first, "a control press raises its box")
+        XCTAssertTrue(window.firstResponder === first.textView, "a control press focuses its field")
+        XCTAssertEqual(probe.sends.count, sends + 1, "the control still acts on the press")
+        first.cancel()
+        second.cancel()
+        keys(pane, "q")
+    }
+
+    private func controlCenter(_ box: PromptBox, _ control: NSView) -> NSPoint {
+        box.layoutSubtreeIfNeeded()
+        return promptBoxes.convert(control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil), from: nil)
+    }
+
+    private func pressDragDirect(_ control: NSView, in box: PromptBox, by delta: NSPoint) {
+        let start = controlCenter(box, control)
+        let mid = NSPoint(x: start.x + delta.x, y: start.y + delta.y)
+        window.sendEvent(mouse(promptBoxes, .leftMouseDown, at: start))
+        window.sendEvent(mouse(promptBoxes, .leftMouseDragged, at: mid))
+        window.sendEvent(mouse(promptBoxes, .leftMouseUp, at: mid))
+    }
+
+    private func drain(_ mask: NSEvent.EventTypeMask) {
+        while let event = NSApp.nextEvent(matching: mask, until: Date(), inMode: .default, dequeue: true) {
+            window.sendEvent(event)
+        }
+    }
+
+    private func press(_ control: NSView, in box: PromptBox) {
+        let point = controlCenter(box, control)
+        NSApp.postEvent(mouse(promptBoxes, .leftMouseUp, at: point), atStart: false)
+        window.sendEvent(mouse(promptBoxes, .leftMouseDown, at: point))
+        drain(.leftMouseUp)
+    }
+
+    private func pressDrag(_ control: NSView, in box: PromptBox, by delta: NSPoint) {
+        let start = controlCenter(box, control)
+        let mid = NSPoint(x: start.x + delta.x, y: start.y + delta.y)
+        NSApp.postEvent(mouse(promptBoxes, .leftMouseDragged, at: mid), atStart: false)
+        NSApp.postEvent(mouse(promptBoxes, .leftMouseUp, at: mid), atStart: false)
+        window.sendEvent(mouse(promptBoxes, .leftMouseDown, at: start))
+        drain([.leftMouseDragged, .leftMouseUp])
+    }
+
+    private func controlUnder(_ control: NSView, in box: PromptBox) -> Bool {
+        let point = controlCenter(box, control)
+        guard let superview = promptBoxes.superview,
+              let hit = superview.hitTest(promptBoxes.convert(point, to: superview))
+        else { return false }
+        return hit === control || hit.isDescendant(of: control)
+    }
+
+    func testPromptBoxControlsDoNotDrag() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        let probe = PromptProbe()
+        let near = candidate()
+        let long = candidate(pane: PaneID(number: 14), window: WindowID(number: 2), title: String(repeating: "a long agent title ", count: 12))
+        probe.candidates = [near, long]
+        installPrompt(probe)
+        let first = try await openPrompt(pane)
+        first.layoutSubtreeIfNeeded()
+        let targetMax = first.bounds.width - 35
+        let nearWidth = first.targetButton.frame.width
+        XCTAssertLessThan(nearWidth, targetMax, "the picker fits a short title")
+        XCTAssertEqual(nearWidth, min(targetMax, first.targetButton.fittingSize.width), accuracy: 0.5)
+        XCTAssertEqual(first.targetButton.cell?.lineBreakMode, .byTruncatingTail)
+        first.targetButton.selectItem(at: 1)
+        first.chooseTarget()
+        first.layoutSubtreeIfNeeded()
+        XCTAssertEqual(first.targetButton.frame.width, targetMax, accuracy: 0.5, "a long title caps at the available width")
+        XCTAssertGreaterThan(first.targetButton.fittingSize.width, targetMax)
+        first.targetButton.selectItem(at: 0)
+        first.chooseTarget()
+        first.layoutSubtreeIfNeeded()
+        XCTAssertEqual(first.targetButton.frame.width, nearWidth, accuracy: 0.5, "a new selection refits the picker")
+        first.textView.insertText("one", replacementRange: NSRange(location: NSNotFound, length: 0))
+        drag(first, by: NSPoint(x: 0, y: -180))
+        probe.candidates = []
+        let second = try await openBox(pane)
+        window.orderFrontRegardless()
+        sendClick(pane, at: NSPoint(x: 20, y: 20))
+        XCTAssertTrue(promptBoxes.subviews.last === second)
+        XCTAssertFalse(second.send.isEnabled)
+        XCTAssertFalse(second.targetButton.isEnabled)
+        let secondFrame = second.frame
+        let sends = probe.sends.count
+        XCTAssertTrue(controlUnder(second.targetButton, in: second), "a disabled picker is the hit view")
+        pressDragDirect(second.targetButton, in: second, by: NSPoint(x: 3, y: 2))
+        XCTAssertEqual(second.frame, secondFrame, "a disabled picker does not drag its box")
+        pressDragDirect(second.send, in: second, by: NSPoint(x: 5, y: 3))
+        XCTAssertEqual(second.frame, secondFrame, "a disabled Send does not drag its box")
+        XCTAssertEqual(probe.sends.count, sends, "a disabled Send sends nothing")
+
+        press(second.cancelButton, in: second)
+        try await wait("cancel closes its box", within: 2) { self.promptBoxes.boxes.count == 1 }
+        XCTAssertTrue(promptBoxes.boxes.first === first)
+
+        XCTAssertTrue(controlUnder(first.targetButton, in: first), "the picker is the hit view")
+        let pickerEvent = mouse(promptBoxes, .leftMouseDown, at: controlCenter(first, first.targetButton))
+        let tracked = first.targetButton.cell?.hitTest(for: pickerEvent, in: first.targetButton.bounds, of: first.targetButton) ?? []
+        XCTAssertFalse(tracked.isEmpty, "the picker tracks its press")
+
+        probe.reply = .success(.prompt(.delivered(PromptDelivered(pane: near.pane, via: .inbox))))
+        let firstFrame = first.frame
+        let firstSends = probe.sends.count
+        pressDragDirect(first.send, in: first, by: NSPoint(x: 4, y: 2))
+        XCTAssertEqual(first.frame, firstFrame, "Send does not drag its box")
+        XCTAssertEqual(probe.sends.count, firstSends + 1, "Send sends on mouseUp")
+        try await wait("send closes its box", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        probe.candidates = [near]
+        probe.reply = .success(.promptError("near did not accept the prompt", .refused))
+        let retryBox = try await openPrompt(pane)
+        retryBox.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        retryBox.newline(shift: false)
+        try await wait("retry shown", within: 2) { !retryBox.retry.isHidden }
+        probe.reply = .success(.prompt(.delivered(PromptDelivered(pane: near.pane, via: .inbox))))
+        probe.reset()
+        let retryFrame = retryBox.frame
+        XCTAssertTrue(controlUnder(retryBox.retry, in: retryBox), "Retry is the hit view")
+        pressDrag(retryBox.retry, in: retryBox, by: NSPoint(x: 3, y: 2))
+        XCTAssertEqual(retryBox.frame, retryFrame, "Retry does not drag its box")
+        XCTAssertEqual(probe.sends.count, 1, "Retry resends")
+        try await wait("retry closes its box", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        probe.reply = .success(.promptError("Could not send", .unknown))
+        let copyBox = try await openPrompt(pane)
+        copyBox.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        copyBox.newline(shift: false)
+        try await wait("copy shown", within: 2) { !copyBox.copyPrompt.isHidden }
+        board.clearContents()
+        let copyFrame = copyBox.frame
+        XCTAssertTrue(controlUnder(copyBox.copyPrompt, in: copyBox), "Copy Prompt is the hit view")
+        pressDrag(copyBox.copyPrompt, in: copyBox, by: NSPoint(x: 3, y: 2))
+        XCTAssertEqual(copyBox.frame, copyFrame, "Copy Prompt does not drag its box")
+        XCTAssertEqual(board.string(forType: .string), "Explain:\n> alpha beta")
+        copyBox.cancel()
+        try await wait("copy box cancelled", within: 2) { self.promptBoxes.boxes.isEmpty }
+        keys(pane, "q")
+    }
+
+    private func cursorName(_ cursor: NSCursor) -> String {
+        if cursor === NSCursor.arrow { return "arrow" }
+        if cursor === NSCursor.openHand { return "open hand" }
+        if cursor === NSCursor.iBeam { return "I-beam" }
+        if cursor === NSCursor.pointingHand { return "pointing hand" }
+        return "other"
+    }
+
+    private func assertCursor(_ box: PromptBox, at point: NSPoint, is expected: NSCursor, _ name: String) {
+        let actual = cursor(box, at: point)
+        XCTAssertTrue(actual === expected, "\(name): expected \(cursorName(expected)), got \(cursorName(actual))")
+    }
+
+    private func cursor(_ box: PromptBox, at point: NSPoint) -> NSCursor {
+        if let hit = box.promptCursorRects.reversed().first(where: { $0.0.contains(point) }) { return hit.1 }
+        guard let terminal else { return .arrow }
+        let terminalPoint = terminal.convert(box.convert(point, to: nil), from: nil)
+        if let hit = terminal.paneCursorRects.reversed().first(where: { $0.0.contains(terminalPoint) }) { return hit.1 }
+        return .arrow
+    }
+
+    func testPromptCursorRects() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        let probe = PromptProbe()
+        probe.candidates = [candidate()]
+        installPrompt(probe)
+        let box = try await openPrompt(pane)
+        pane.setMouseShape(GHOSTTY_MOUSE_SHAPE_GRAB)
+        box.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        box.layoutSubtreeIfNeeded()
+        let controls: [(String, NSView, NSCursor)] = [
+            ("Send", box.send, NSCursor.arrow),
+            ("Cancel", box.cancelButton, NSCursor.arrow),
+            ("picker", box.targetButton, NSCursor.arrow),
+        ]
+        for (name, control, expected) in controls {
+            assertCursor(box, at: NSPoint(x: control.frame.midX, y: control.frame.midY), is: expected, name)
+        }
+        let field = box.textView
+        let fieldPoint = box.convert(field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil), from: nil)
+        assertCursor(box, at: fieldPoint, is: NSCursor.iBeam, "field")
+        assertCursor(box, at: NSPoint(x: 5, y: 20), is: NSCursor.openHand, "drag area")
+
+        probe.reply = .success(.promptError("near did not accept the prompt", .refused))
+        box.newline(shift: false)
+        try await wait("retry visible", within: 2) { !box.retry.isHidden }
+        box.layoutSubtreeIfNeeded()
+        assertCursor(box, at: NSPoint(x: box.retry.frame.midX, y: box.retry.frame.midY), is: NSCursor.arrow, "Retry")
+
+        probe.reply = .success(.promptError("Could not send", .unknown))
+        box.textView.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
+        box.newline(shift: false)
+        try await wait("copy visible", within: 2) { !box.copyPrompt.isHidden }
+        box.layoutSubtreeIfNeeded()
+        assertCursor(box, at: NSPoint(x: box.copyPrompt.frame.midX, y: box.copyPrompt.frame.midY), is: NSCursor.arrow, "Copy Prompt")
+        box.cancel()
+        keys(pane, "q")
+    }
+
+    func testPromptBoxesFollowTheSession() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        let probe = PromptProbe()
+        probe.candidates = [candidate()]
+        installPrompt(probe)
+        let box = try await openPrompt(pane)
+        let frame = box.frame
+        let originalWindow = try XCTUnwrap(currentModel.window)
+        let originalSession = try XCTUnwrap(currentModel.session)
+
+        _ = try await command(["new-window", "-t", "visual", "exec /bin/cat"])
+        try await wait("window switched", within: 3) { self.currentModel.window != originalWindow }
+        XCTAssertFalse(box.isHidden, "a window switch keeps the boxes visible")
+        XCTAssertEqual(box.frame, frame, "a window switch keeps the boxes in place")
+
+        _ = try await command(["select-window", "-t", originalWindow.description])
+        try await wait("window back", within: 3) { self.currentModel.window == originalWindow }
+        XCTAssertEqual(box.frame, frame)
+
+        try await rpcRequest(.newSession)
+        try await wait("session created", within: 5) { self.currentModel.sessions.count == 2 }
+        let other = try XCTUnwrap(currentModel.sessions.first { $0.id != originalSession }?.id)
+        try await rpcRequest(.selectSession(other))
+        try await wait("other session shown", within: 5) { self.currentModel.session == other }
+        try await wait("boxes hidden", within: 2) { box.isHidden }
+        XCTAssertFalse(box.focused, "a hidden box does not keep focus")
+        XCTAssertTrue(window.firstResponder is PaneView, "the shown session's pane gets focus")
+
+        try await rpcRequest(.selectSession(originalSession))
+        try await wait("session back", within: 5) { self.currentModel.session == originalSession }
+        try await wait("boxes shown", within: 2) { !box.isHidden }
+        XCTAssertEqual(box.frame, frame, "a returning session shows the box in place")
+
+        try await rpcRequest(.selectSession(other))
+        try await wait("other session shown", within: 5) { self.currentModel.session == other }
+        _ = try await command(["kill-session", "-t", "visual"])
+        try await wait("killing the session closes its boxes", within: 5) { self.promptBoxes.boxes.isEmpty }
+    }
+
+    func testPromptBoxSourcePaneAndFocus() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        let alpha = try row(pane, containing: "alpha beta")
+        _ = try await command(["split-window", "-h", "-l", "12", "-t", pane.pane.description, "exec /bin/cat"])
+        try await wait("split pane", within: 2) { self.terminal?.panes.count == 2 }
+        try await settle()
+        let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
+        try await emit(other, "other line\r\n", until: "other line")
+        let sourceWindow = try XCTUnwrap(pane.windowID)
+        let probe = PromptProbe()
+        probe.candidates = [candidate(pane: other.pane, window: sourceWindow)]
+        installPrompt(probe)
+
+        window.makeFirstResponder(pane)
+        try await enter(pane)
+        drag(pane, from: (0, alpha), to: (9, alpha))
+        XCTAssertEqual(pane.readSelection(), "alpha beta")
+        let boxA = try await openBox(pane)
+        let frame = boxA.frame
+        let quote = boxA.quote.stringValue
+        _ = ghostty_surface_set_selection(pane.surface, nil)
+        XCTAssertEqual(boxA.quote.stringValue, quote)
+        XCTAssertEqual(boxA.frame, frame)
+        window.makeFirstResponder(pane)
+        keys(pane, "q")
+        XCTAssertNil(pane.copyMode)
+        XCTAssertEqual(boxA.quote.stringValue, quote, "leaving copy mode keeps the captured quote")
+        XCTAssertEqual(boxA.frame, frame, "leaving copy mode keeps the box")
+
+        window.makeFirstResponder(other)
+        let boxB = try await openPrompt(other, select: "other line")
+        window.makeFirstResponder(pane)
+        try await enter(pane)
+        XCTAssertNotNil(pane.copyMode)
+        click(boxB)
+        XCTAssertNil(pane.copyMode, "focus moving to another pane's box ends this pane's copy mode")
+
+        window.makeFirstResponder(pane)
+        try await enter(pane)
+        click(boxA)
+        XCTAssertNotNil(pane.copyMode, "focus moving to its own box keeps copy mode")
+
+        _ = try await command(["kill-pane", "-t", pane.pane.description])
+        try await wait("source pane closed", within: 3) { pane.disposed }
+        try await wait("source closed status", within: 3) {
+            boxA.status.stringValue == "Source pane closed; agents resolved earlier stay available."
+        }
+        XCTAssertEqual(boxA.targetButton.titleOfSelectedItem, "Prompt @near in window zsh (pane closed)")
+
+        probe.reply = .success(.promptError("no such pane", .invalid))
+        probe.reset()
+        boxA.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        boxA.newline(shift: false)
+        try await wait("gone target is invalid", within: 2) { boxA.status.stringValue == "no such pane" }
+        XCTAssertEqual(boxA.textView.string, "Explain", "an invalid send keeps the text")
+        XCTAssertEqual(promptBoxes.boxes.count, 2, "an invalid send keeps the box")
+        guard case .prompt(let sentPane, _, let target) = probe.sends.last else { return XCTFail("not a prompt") }
+        XCTAssertEqual(sentPane, other.pane, "a gone source sends through the target pane")
+        XCTAssertEqual(target, other.pane)
+
+        probe.reply = .success(.prompt(.delivered(PromptDelivered(pane: other.pane, via: .inbox))))
+        boxA.textView.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
+        boxA.newline(shift: false)
+        try await wait("source-gone send closes the box", within: 3) { self.promptBoxes.boxes.count == 1 }
+        boxB.cancel()
+        try await wait("last box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+    }
+
+    func testPromptBoxDeliveryFocus() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        let sourceWindow = try XCTUnwrap(currentModel.window)
+        let probe = PromptProbe()
+        probe.candidates = [candidate(pane: PaneID(number: 99), window: try XCTUnwrap(pane.windowID))]
+        probe.reply = .success(.prompt(.delivered(PromptDelivered(pane: PaneID(number: 99), via: .inbox))))
+        installPrompt(probe)
+
+        let hidden = try await openPrompt(pane)
+        _ = try await command(["new-window", "-t", "visual", "exec /bin/cat"])
+        try await wait("second window", within: 3) { self.currentModel.window != sourceWindow }
+        let secondWindow = try XCTUnwrap(currentModel.window)
+        let header = NSPoint(x: hidden.bounds.width - 34, y: hidden.bounds.height - 4)
+        sendClick(hidden, at: header)
+        hidden.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        hidden.newline(shift: false)
+        try await wait("hidden-source box delivered", within: 3) { self.promptBoxes.boxes.isEmpty }
+        let active = try XCTUnwrap(window.firstResponder as? PaneView)
+        XCTAssertFalse(active === pane, "a hidden source is not focused")
+        XCTAssertFalse(active.isHiddenOrHasHiddenAncestor, "the shown window's pane is focused")
+
+        _ = try await command(["select-window", "-t", sourceWindow.description])
+        try await wait("source window back", within: 3) { self.currentModel.window == sourceWindow }
+        window.makeFirstResponder(pane)
+        let removed = try await openPrompt(pane)
+        _ = try await command(["select-window", "-t", secondWindow.description])
+        try await wait("second window back", within: 3) { self.currentModel.window == secondWindow }
+        _ = try await command(["kill-window", "-t", sourceWindow.description])
+        try await wait("source pane disposed", within: 3) { pane.disposed }
+        sendClick(removed, at: NSPoint(x: removed.bounds.width - 34, y: removed.bounds.height - 4))
+        removed.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        removed.newline(shift: false)
+        try await wait("removed-source box delivered", within: 3) { self.promptBoxes.boxes.isEmpty }
+        let shown = try XCTUnwrap(window.firstResponder as? PaneView)
+        XCTAssertFalse(shown.isHiddenOrHasHiddenAncestor, "a removed source focuses the shown window's active pane")
+    }
+
+    func testPromptShortcutMenuAndQuote() async throws {
+        let edit = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu)
+        let item = try XCTUnwrap(edit.items.first { $0.action == #selector(PaneView.promptSelectionItem(_:)) })
+        XCTAssertEqual(item.keyEquivalent, "o")
+        XCTAssertEqual(item.keyEquivalentModifierMask, .command)
+
+        let pane = try await rawPane()
+        try await emit(pane, (1...6).map { "line-\($0)" }.joined(separator: "\r\n") + "\r\n", until: "line-6")
+        let probe = PromptProbe()
+        probe.candidates = [candidate()]
+        installPrompt(probe)
+
+        _ = ghostty_surface_set_selection(pane.surface, nil)
+        pane.promptSelectionItem(nil)
+        try await wait("no selection opens at the cursor", within: 2) { self.promptBoxes.boxes.count == 1 }
+        let cursorBox = try XCTUnwrap(promptBoxes.boxes.last)
+        XCTAssertTrue(cursorBox.quote.isHidden, "the no-selection box has no quote")
+        cursorBox.cancel()
+        try await wait("cursor box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        try await enter(pane)
+        let first = try row(pane, containing: "line-1")
+        drag(pane, from: (0, first), to: (5, first))
+        sendCommandO()
+        try await wait("copy-mode shortcut opens the box", within: 2) { self.promptBoxes.boxes.count == 1 }
+        var box = try XCTUnwrap(promptBoxes.boxes.last)
+        try await wait("prompt resolved", within: 2) { box.targetButton.titleOfSelectedItem != "Resolving…" }
+        XCTAssertEqual(box.quote.stringValue, "line-1", "one line is shown whole")
+        XCTAssertEqual(box.quote.toolTip, pane.readSelection())
+        XCTAssertEqual(box.quote.accessibilityLabel(), "Selected text, 1 lines")
+        sendCommandO()
+        XCTAssertEqual(promptBoxes.boxes.count, 1, "⌘O in a box field opens no new box")
+        box.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        box.textView.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        XCTAssertTrue(window.firstResponder === box.targetButton, "Tab moves to the popup")
+        box.textView.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        XCTAssertTrue(window.firstResponder === box.cancelButton, "Tab moves to Cancel")
+        box.textView.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        XCTAssertTrue(window.firstResponder === box.send, "Tab moves to Send")
+        box.textView.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        XCTAssertTrue(window.firstResponder === box.textView, "Tab wraps to the field")
+        box.textView.doCommand(by: #selector(NSResponder.insertBacktab(_:)))
+        XCTAssertTrue(window.firstResponder === box.send, "Shift-Tab moves backward")
+        box.textView.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        XCTAssertTrue(window.firstResponder === box.textView)
+        box.cancel()
+        try await wait("box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        drag(pane, from: (0, first), to: (5, first + 2))
+        box = try await openBox(pane)
+        XCTAssertEqual(box.quote.stringValue, "line-1\nline-2\nline-3", "three lines are shown whole")
+        XCTAssertEqual(box.quote.accessibilityLabel(), "Selected text, 3 lines")
+        box.cancel()
+        try await wait("box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        drag(pane, from: (0, first), to: (5, first + 4))
+        box = try await openBox(pane)
+        XCTAssertEqual(box.quote.stringValue, "line-1\n⋯ 3 lines\nline-5", "five lines show their first, a middle count and their last")
+        XCTAssertEqual(box.quote.toolTip, pane.readSelection(), "the tooltip keeps the full selection")
+        XCTAssertEqual(box.quote.accessibilityLabel(), "Selected text, 5 lines")
+        box.cancel()
+        try await wait("box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        keys(pane, "q")
+        XCTAssertNil(pane.copyMode)
+        try ordinarySelection(pane, containing: "line-2")
+        XCTAssertEqual(pane.readSelection(), "line-2", "an ordinary Ghostty selection")
+        pane.promptSelectionItem(nil)
+        try await wait("ordinary-selection shortcut opens the box", within: 2) { self.promptBoxes.boxes.count == 1 }
+        promptBoxes.closeAll()
+    }
+
+    func testPromptMenuTitles() async throws {
+        let pane = try await rawPane()
+        try await emit(pane, "alpha beta\r\n", until: "alpha beta")
+        let edit = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu)
+        let item = try XCTUnwrap(edit.items.first { $0.action == #selector(PaneView.promptSelectionItem(_:)) })
+
+        window.makeFirstResponder(pane)
+        updatePromptMenu()
+        XCTAssertEqual(item.title, "Prompt…")
+        XCTAssertTrue(item.isEnabled)
+
+        try ordinarySelection(pane, containing: "alpha beta")
+        XCTAssertEqual(pane.readSelection(), "alpha beta")
+        window.makeFirstResponder(pane)
+        updatePromptMenu()
+        XCTAssertEqual(item.title, "Prompt with Selection…")
+        XCTAssertTrue(item.isEnabled)
+
+        let probe = PromptProbe()
+        probe.candidates = [candidate()]
+        installPrompt(probe)
+        let box = try await openPrompt(pane, select: "alpha beta")
+        window.makeFirstResponder(box.textView)
+        updatePromptMenu()
+        XCTAssertEqual(item.title, "Prompt with Selection…", "a box field shows its source pane's state")
+        XCTAssertTrue(item.target === pane, "the box field's menu item targets its source pane")
+        box.cancel()
+        try await wait("menu title box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+        keys(pane, "q")
+
+        window.makeFirstResponder(nil)
+        updatePromptMenu()
+        XCTAssertEqual(item.title, "Prompt…")
+        XCTAssertFalse(item.isEnabled, "no focused pane disables the item")
+        XCTAssertNil(item.target)
+    }
+
+    func testPromptAtCursor() async throws {
+        let pane = try await rawPane()
+        let probe = PromptProbe()
+        probe.candidates = [candidate()]
+        probe.reply = .success(.prompt(.delivered(PromptDelivered(pane: candidate().pane, via: .inbox))))
+        installPrompt(probe)
+        let edit = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "Edit" }?.submenu)
+        let item = try XCTUnwrap(edit.items.first { $0.action == #selector(PaneView.promptSelectionItem(_:)) })
+        let column = 4
+
+        func place(cursorRow row: Int, indent: Int = 0) async throws {
+            let prefix = String(repeating: "\r\n", count: row) + String(repeating: " ", count: indent) + "mark"
+            try await emit(pane, "\u{1b}[H\u{1b}[2J" + prefix, until: "mark")
+        }
+        func cellBottom(_ row: Int) -> CGFloat {
+            pane.bounds.height - pane.renderInsets.top - CGFloat(row + 1) * pane.cell.height
+        }
+        func point(_ row: Int, _ column: Int) -> NSPoint {
+            promptBoxes.convert(NSPoint(x: CGFloat(column) * pane.cell.width, y: cellBottom(row)), from: pane)
+        }
+        func cellX(_ column: Int) -> CGFloat {
+            promptBoxes.convert(NSPoint(x: CGFloat(column) * pane.cell.width, y: 0), from: pane).x
+        }
+
+        try await place(cursorRow: 6)
+        window.makeFirstResponder(pane)
+        updatePromptMenu()
+        XCTAssertEqual(item.title, "Prompt…", "the menu item names no selection")
+        XCTAssertTrue(item.isEnabled, "a focused pane with no selection has an enabled item")
+
+        sendCommandO()
+        try await wait("cursor shortcut opens the box", within: 2) { self.promptBoxes.boxes.count == 1 }
+        var box = try XCTUnwrap(promptBoxes.boxes.last)
+        try await wait("cursor box resolved", within: 2) { box.targetButton.titleOfSelectedItem != "Resolving…" }
+        XCTAssertEqual(box.frame.minY, point(6, column).y + 6, accuracy: 0.5, "the box opens below the live cursor cell")
+        XCTAssertEqual(box.frame.minX, cellX(column), accuracy: 0.5, "the box starts at the cursor cell")
+        XCTAssertEqual(box.frame.height, 90, accuracy: 0.5, "the one-line no-quote box is 90pt tall")
+        XCTAssertTrue(box.quote.isHidden, "the no-selection box has no quote")
+
+        box.textView.insertText("Explain", replacementRange: NSRange(location: NSNotFound, length: 0))
+        box.newline(shift: true)
+        box.textView.insertText("two lines", replacementRange: NSRange(location: NSNotFound, length: 0))
+        box.newline(shift: false)
+        try await wait("cursor prompt delivered", within: 2) { self.promptBoxes.boxes.isEmpty }
+        guard case .prompt(_, let text, _) = probe.sends.last else { return XCTFail("not a prompt") }
+        XCTAssertEqual(text, "Explain\ntwo lines", "no selection sends exactly the typed text")
+
+        try await enter(pane)
+        keys(pane, "k")
+        sendCommandO()
+        try await wait("copy-mode cursor shortcut opens the box", within: 2) { self.promptBoxes.boxes.count == 1 }
+        box = try XCTUnwrap(promptBoxes.boxes.last)
+        try await wait("copy-mode cursor box resolved", within: 2) { box.targetButton.titleOfSelectedItem != "Resolving…" }
+        XCTAssertEqual(box.frame.minY, point(5, column).y + 6, accuracy: 0.5, "the box follows the copy cursor, not the live cursor")
+        XCTAssertTrue(box.quote.isHidden, "a copy cursor alone has no quote")
+        box.cancel()
+        try await wait("copy cursor box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+        keys(pane, "q")
+
+        let nearBottom = visibleRows(pane) - 5
+        try await place(cursorRow: nearBottom)
+        sendCommandO()
+        try await wait("near-bottom cursor opens the box", within: 2) { self.promptBoxes.boxes.count == 1 }
+        box = try XCTUnwrap(promptBoxes.boxes.last)
+        let cellTop = promptBoxes.convert(NSPoint(x: 0, y: cellBottom(nearBottom) + pane.cell.height), from: pane).y
+        XCTAssertEqual(box.frame.maxY, cellTop - 6, accuracy: 0.5, "a box with no room below opens above the cursor cell")
+        XCTAssertGreaterThan(box.frame.minY, 8, "the box is not the bottom fallback")
+        box.cancel()
+        try await wait("near-bottom box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        let columns = Int(ghostty_surface_size(pane.surface).columns)
+        let indent = max(0, columns - 12)
+        try await place(cursorRow: 6, indent: indent)
+        sendCommandO()
+        try await wait("right-edge cursor opens the box", within: 2) { self.promptBoxes.boxes.count == 1 }
+        box = try XCTUnwrap(promptBoxes.boxes.last)
+        let cursorX = promptBoxes.convert(NSPoint(x: CGFloat(indent + 4) * pane.cell.width, y: 0), from: pane).x
+        XCTAssertGreaterThan(cursorX, promptBoxes.bounds.width - 8 - box.frame.width, "the fixture needs the right clamp")
+        XCTAssertEqual(box.frame.minX, promptBoxes.bounds.width - 8 - box.frame.width, accuracy: 0.5,
+                       "a cursor at the right edge clamps the box 8pt inside")
+        box.cancel()
+        try await wait("right-edge box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        try await emit(pane, (0..<60).map { "history-\($0)\r\n" }.joined(), until: "history-59")
+        try await settle()
+        pane.requestScroll(10)
+        try await wait("viewport scrolled back", within: 2) {
+            pane.scrollPosition().offset < pane.scrollPosition().retainedHistoryRows
+        }
+        var scrolled = ghostty_surface_scrollbar_s()
+        XCTAssertTrue(ghostty_surface_scrollbar(pane.surface, &scrolled))
+        window.makeFirstResponder(pane)
+        sendCommandO()
+        try await wait("scrolled cursor opens the box", within: 2) { self.promptBoxes.boxes.count == 1 }
+        box = try XCTUnwrap(promptBoxes.boxes.last)
+        let lastRowTop = pane.bounds.height - pane.renderInsets.top - CGFloat(scrolled.len) * pane.cell.height + pane.cell.height
+        let expectedMaxY = promptBoxes.convert(NSPoint(x: 0, y: lastRowTop), from: pane).y - 6
+        XCTAssertEqual(box.frame.maxY, expectedMaxY, accuracy: 0.5,
+                       "a cursor below the viewport clamps to the last visible row")
+        box.cancel()
+        try await wait("scrolled box closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+
+        pane.requestScroll(0)
+        try await wait("viewport at the bottom", within: 2) {
+            pane.scrollPosition().offset == pane.scrollPosition().retainedHistoryRows
+        }
+        try await settle()
+        try ordinarySelection(pane, containing: "history-59")
+        XCTAssertEqual(pane.readSelection(), "history-59")
+        window.makeFirstResponder(pane)
+        updatePromptMenu()
+        XCTAssertEqual(item.title, "Prompt with Selection…", "the menu item names the selection")
+        _ = ghostty_surface_set_selection(pane.surface, nil)
     }
 
     func testPromptFeedWaitsForADelayedReply() async throws {
@@ -1528,24 +2416,257 @@ extension VisualTests {
         XCTAssertEqual(starts, 1, "the delayed reply did not restart the helper")
     }
 
+    private var stateQuote: String { """
+        File "lib/prompt.ml", line 41, characters 12-19:
+        Error: This expression has type string but an expression was expected of type
+                Tmux.pane_id option
+        """ }
+    private var stateText: String { "Why does make verify fail here? Fix the type error in lib/prompt.ml and rerun it." }
+    private var typingQuote: String { """
+        dune build ......................... ok
+        dune test --force .................. ok
+        git status ......................... clean
+        make fmt ........................... ok
+        make lint .......................... ok
+        make: *** [verify] Error 1
+        """ }
+
+    private func openState(_ pane: PaneView, text: String? = nil, noQuote: Bool = false, waitResolved: Bool = true) async throws -> PromptBox {
+        let before = promptBoxes.boxes.count
+        let anchor = PromptAnchor(selection: noQuote ? nil : text ?? stateQuote,
+                                  rect: NSRect(x: 30, y: pane.bounds.height - 100, width: 30, height: 18))
+        promptBoxes.open(pane, anchor)
+        try await wait("state box opened", within: 2) { self.promptBoxes.boxes.count == before + 1 }
+        let box = try XCTUnwrap(promptBoxes.boxes.last)
+        if waitResolved {
+            try await wait("state box resolved", within: 2) { box.targetButton.titleOfSelectedItem != "Resolving…" }
+        }
+        return box
+    }
+
+    private func stateSnapshot(_ name: String, box: PromptBox, inset: NSSize = NSSize(width: 24, height: 24)) async throws {
+        try await settle()
+        window.contentView?.layoutSubtreeIfNeeded()
+        CATransaction.flush()
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        try await snapshot(name, testName: "testPromptStates", view: window.contentView)
+        guard record else { return }
+        let directory = "/tmp/kido-promptbox-compare"
+        let view = window.contentView!
+        let representation = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: representation)
+        let scale = CGFloat(representation.pixelsWide) / view.bounds.width
+        let rect = promptBoxes.convert(box.frame, to: view).insetBy(dx: -inset.width, dy: -inset.height)
+        let pixels = CGRect(x: rect.minX * scale, y: (view.bounds.height - rect.maxY) * scale,
+                            width: rect.width * scale, height: rect.height * scale).integral
+        let image = try XCTUnwrap(representation.cgImage?.cropping(to: pixels))
+        let output = NSBitmapImageRep(cgImage: image)
+        let data = try XCTUnwrap(output.representation(using: .png, properties: [:]))
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name)-app.png"))
+    }
+
+    private func closeState() async throws {
+        promptBoxes.closeAll()
+        try await wait("state boxes closed", within: 2) { self.promptBoxes.boxes.isEmpty }
+    }
+
+    private func runStates(_ theme: String, pane: PaneView, probe: PromptProbe) async throws {
+        let sourceWindow = try XCTUnwrap(pane.windowID)
+        probe.candidates = [candidate(window: sourceWindow, title: "kido-app")]
+        var box = try await openState(pane)
+        window.makeFirstResponder(box.textView)
+        try await stateSnapshot("\(theme)-empty", box: box)
+        try await closeState()
+
+        box = try await openState(pane, text: typingQuote)
+        window.makeFirstResponder(box.textView)
+        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await stateSnapshot("\(theme)-typing", box: box)
+        try await closeState()
+
+        box = try await openState(pane, noQuote: true)
+        window.makeFirstResponder(box.textView)
+        try await stateSnapshot("\(theme)-noquote-empty", box: box)
+        try await closeState()
+
+        box = try await openState(pane, noQuote: true)
+        window.makeFirstResponder(box.textView)
+        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await stateSnapshot("\(theme)-noquote-typing", box: box)
+        try await closeState()
+
+        probe.holdResolve = true
+        box = try await openState(pane, waitResolved: false)
+        window.makeFirstResponder(nil)
+        try await stateSnapshot("\(theme)-resolving", box: box)
+        probe.holdResolve = false
+        try await closeState()
+
+        probe.candidates = []
+        box = try await openState(pane)
+        window.makeFirstResponder(nil)
+        try await stateSnapshot("\(theme)-no-agent", box: box)
+        try await closeState()
+        probe.candidates = [candidate(window: sourceWindow, title: "kido-app")]
+
+        box = try await openState(pane)
+        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        probe.reply = nil
+        box.newline(shift: false)
+        try await wait("sending state", within: 2) { box.status.stringValue.hasPrefix("Sending to @kido-app") }
+        window.makeFirstResponder(nil)
+        try await stateSnapshot("\(theme)-sending", box: box)
+        try await closeState()
+
+        box = try await openState(pane)
+        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        probe.reply = .success(.promptError("@kido-app is not accepting messages", .refused))
+        box.newline(shift: false)
+        try await wait("refused state", within: 2) { box.status.stringValue == "@kido-app is not accepting messages" }
+        window.makeFirstResponder(nil)
+        try await stateSnapshot("\(theme)-refused", box: box)
+        try await closeState()
+
+        box = try await openState(pane)
+        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        probe.reply = .success(.promptError("Could not send: connection reset.", .unknown))
+        box.newline(shift: false)
+        try await wait("unknown state", within: 2) { box.status.stringValue.contains("may have arrived; not resent") }
+        window.makeFirstResponder(nil)
+        try await stateSnapshot("\(theme)-unknown", box: box)
+        try await closeState()
+
+        box = try await openState(pane)
+        box.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        probe.reply = .success(.promptError("no such pane", .invalid))
+        box.newline(shift: false)
+        try await wait("invalid state", within: 2) { box.status.stringValue == "no such pane" }
+        window.makeFirstResponder(nil)
+        try await stateSnapshot("\(theme)-invalid", box: box)
+        try await closeState()
+
+        let overlapQuote = typingQuote.split(separator: "\n").prefix(2).joined(separator: "\n")
+        let first = try await openState(pane, text: overlapQuote)
+        first.textView.insertText("Is the build step still green after the fix?", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let second = try await openState(pane, text: overlapQuote)
+        second.textView.insertText("Is the build step still green after the fix?", replacementRange: NSRange(location: NSNotFound, length: 0))
+        window.makeFirstResponder(second.textView)
+        try await stateSnapshot("\(theme)-overlap", box: second)
+        try await closeState()
+    }
+
+    private func cursorSnapshot(_ theme: String, pane: PaneView, probe: PromptProbe) async throws {
+        probe.candidates = [candidate(window: try XCTUnwrap(pane.windowID), title: "kido-app")]
+        _ = try await command(["split-window", "-h", "-l", "12", "-t", pane.pane.description, "exec /bin/cat"])
+        try await wait("pane for at-cursor state", within: 2) { self.terminal?.panes.count == 2 }
+        try await settle()
+        window.makeFirstResponder(pane)
+        try await emit(pane, "        mark", until: "mark")
+        pane.openPrompt()
+        try await wait("at-cursor box", within: 2) { self.promptBoxes.boxes.count == 1 }
+        let box = try XCTUnwrap(promptBoxes.boxes.last)
+        try await wait("at-cursor resolved", within: 2) { box.targetButton.titleOfSelectedItem != "Resolving…" }
+        window.makeFirstResponder(box.textView)
+        try await stateSnapshot("\(theme)-at-cursor", box: box, inset: NSSize(width: 37, height: 55))
+        try await closeState()
+        let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
+        _ = try await command(["kill-pane", "-t", other.pane.description])
+        try await wait("at-cursor split closed", within: 2) { self.terminal?.panes.count == 1 }
+    }
+
+    func testPromptStates() async throws {
+        let pane = try await rawPane()
+        let probe = PromptProbe()
+        installPrompt(probe)
+        try await runStates("light", pane: pane, probe: probe)
+
+        let lightWindow = try XCTUnwrap(currentModel.window)
+        _ = try await command(["new-window", "-t", "visual", "exec /bin/cat"])
+        try await wait("light closed window", within: 3) { self.currentModel.window != lightWindow }
+        try await settle()
+        let lightClosedPane = try XCTUnwrap(terminal?.panes.first)
+        _ = try await command(["rename-window", "-t", try XCTUnwrap(lightClosedPane.windowID).description, "app"])
+        _ = try await command(["split-window", "-h", "-t", lightClosedPane.pane.description, "exec /bin/cat"])
+        try await wait("pane for light closed state", within: 2) { self.terminal?.panes.count == 2 }
+        probe.candidates = [candidate(window: try XCTUnwrap(lightClosedPane.windowID), title: "kido-app")]
+        let closed = try await openState(lightClosedPane)
+        closed.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        _ = try await command(["kill-pane", "-t", lightClosedPane.pane.description])
+        try await wait("source pane closed state", within: 3) {
+            closed.status.stringValue == "Source pane closed; agents resolved earlier stay available."
+        }
+        window.makeFirstResponder(nil)
+        try await stateSnapshot("light-pane-closed", box: closed)
+        try await closeState()
+        _ = try await command(["select-window", "-t", lightWindow.description])
+        try await wait("light cursor window", within: 3) { self.currentModel.window == lightWindow }
+        try await settle()
+        try await cursorSnapshot("light", pane: pane, probe: probe)
+
+        let beforeDark = try XCTUnwrap(currentModel.window)
+        _ = try await command(["new-window", "-t", "visual", "exec /bin/cat"])
+        try await wait("dark window", within: 3) { self.currentModel.window != beforeDark }
+        try await settle()
+        let darkPane = try XCTUnwrap(terminal?.panes.first)
+        try await darken()
+        try await runStates("dark", pane: darkPane, probe: probe)
+
+        let darkWindow = try XCTUnwrap(currentModel.window)
+        _ = try await command(["new-window", "-t", "visual", "exec /bin/cat"])
+        try await wait("dark closed window", within: 3) { self.currentModel.window != darkWindow }
+        try await settle()
+        let darkClosedPane = try XCTUnwrap(terminal?.panes.first)
+        _ = try await command(["rename-window", "-t", try XCTUnwrap(darkClosedPane.windowID).description, "app"])
+        _ = try await command(["split-window", "-h", "-t", darkClosedPane.pane.description, "exec /bin/cat"])
+        try await wait("pane for dark closed state", within: 2) { self.terminal?.panes.count == 2 }
+        probe.candidates = [candidate(window: try XCTUnwrap(darkClosedPane.windowID), title: "kido-app")]
+        let darkClosed = try await openState(darkClosedPane)
+        darkClosed.textView.insertText(stateText, replacementRange: NSRange(location: NSNotFound, length: 0))
+        _ = try await command(["kill-pane", "-t", darkClosedPane.pane.description])
+        try await wait("dark source pane closed state", within: 3) {
+            darkClosed.status.stringValue == "Source pane closed; agents resolved earlier stay available."
+        }
+        window.makeFirstResponder(nil)
+        try await stateSnapshot("dark-pane-closed", box: darkClosed)
+        try await closeState()
+        _ = try await command(["select-window", "-t", darkWindow.description])
+        try await wait("dark cursor window", within: 3) { self.currentModel.window == darkWindow }
+        try await settle()
+        try await cursorSnapshot("dark", pane: darkPane, probe: probe)
+    }
+
     func testPromptSnapshots() async throws {
         let pane = try await rawPane()
         try await emit(pane, "alpha beta\r\ngamma delta\r\nthird line\r\n", until: "third line")
+        _ = try await command(["split-window", "-h", "-t", "visual", "exec /bin/cat"])
+        try await wait("split pane", within: 2) { self.terminal?.panes.count == 2 }
+        try await settle()
+        let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
+        try await emit(other, (0..<40).map { "row-\($0)" }.joined(separator: "\r\n") + "\r\n", until: "row-39")
+        let windowID = try XCTUnwrap(pane.windowID)
+        let probe = PromptProbe()
+        probe.candidates = [candidate(pane: PaneID(number: 12), window: windowID),
+                            candidate(pane: PaneID(number: 14), window: WindowID(number: 1), title: "far")]
+        installPrompt(probe)
+        try await settle()
+        window.makeFirstResponder(pane)
         for dark in [false, true] {
             if dark {
                 try await darken()
                 window.makeFirstResponder(pane)
             }
-            let probe = PromptProbe()
-            probe.candidates = [PromptCandidate(pane: PaneID(number: 12), session: SessionID(number: 0), window: WindowID(number: 0), title: "near"),
-                                PromptCandidate(pane: PaneID(number: 14), session: SessionID(number: 0), window: WindowID(number: 1), title: "far")]
-            installPrompt(probe)
-            let prompt = try await openPrompt(pane)
-            prompt.textView.insertText("Explain this change", replacementRange: NSRange(location: NSNotFound, length: 0))
-            try await snapshot(dark ? "prompt-dark" : "prompt-light")
-            pane.closePrompt()
-            keys(pane, "q")
-            try await wait("copy exit restored") { !pane.resizeDirty }
+            let first = try await openPrompt(pane)
+            first.textView.insertText("Explain this change", replacementRange: NSRange(location: NSNotFound, length: 0))
+            window.makeFirstResponder(other)
+            let second = try await openPrompt(other, select: "row-30")
+            second.textView.insertText("And this one", replacementRange: NSRange(location: NSNotFound, length: 0))
+            click(first)
+            try await snapshot(dark ? "prompt-dark" : "prompt-light", view: window.contentView)
+            promptBoxes.closeAll()
+            pane.endCopy()
+            other.endCopy()
+            try await wait("copy exit restored") { !pane.resizeDirty && !other.resizeDirty }
         }
     }
 }
