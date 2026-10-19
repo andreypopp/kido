@@ -80,6 +80,12 @@ final class SessionView: NSView {
         boxes.update(session: session, live: Set(sessions.map(\.id)), panes: panes)
     }
 
+    func layoutChanged(_ window: WindowID, _ layout: Layout, _ visible: Layout) {
+        windows[window]?.update(layout, visible)
+        guard let sessionID else { return }
+        boxes.layoutChanged(session: sessionID, panes: Set(windows.values.flatMap(\.paneIDs)))
+    }
+
     private var shown: WindowView? { windows.values.first { !$0.isHidden } }
 
     func show(_ window: WindowID?) {
