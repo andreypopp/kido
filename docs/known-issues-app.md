@@ -272,9 +272,10 @@ drag selection is untested. Reserve space or narrow/condition hit testing
 
 ## Copy-mode mouse and context menu are verified off screen
 
-Visual tests call the mouse handlers and `menu(for:)` directly. Real AppKit
-delivery of clicks, drags, autoscroll and the context menu, on screen, is
-untested. This includes the ⌘O key equivalent, which the tests reach through
+Visual tests call the mouse handlers and `menu(for:)` directly. The
+Shift-press tests send synthesized events through `NSWindow.sendEvent`, not
+through the window server. Real AppKit delivery of clicks, drags, autoscroll
+and the context menu, on screen, is untested. This includes the ⌘O key equivalent, which the tests reach through
 the menu item's action, and a prompt box drag, click-to-raise and its open and
 closed hand cursors. The beep for ⌘O without a selection is not
 asserted. A user `right-click-action` other than `context-menu` consumes
