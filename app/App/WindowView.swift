@@ -28,6 +28,10 @@ final class WindowView: NSView {
     var windowID: WindowID?
     var name = ""
     private var shown: (layout: Layout, visible: Layout)?
+    var paneIDs: [PaneID] {
+        guard let shown else { return [] }
+        return shown.layout.root.panes.map(\.id) + shown.visible.root.panes.map(\.id)
+    }
     private(set) var active: PaneID? {
         didSet {
             if active != oldValue, let session, !session.updating { session.onPaneChange() }
