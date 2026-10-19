@@ -45,6 +45,7 @@ VisualTests/testSplitZoomFloat  # fix: three snapshot compares after three paint
 VisualTests/testSwitchWindowAndSessionOutputAndReconnect  # fix: two fake-feed scripts and seven event waits
 VisualTests/testWindowTabs  # fix: three new-window, one split and one rename round trip plus tab-layout waits
 VsyncTests/testAnimatedShaderManualHostTicksAndFallback  # inherent: two fixed 3 s shader fallback windows
+VsyncTests/testIdleFocusedPaneWithoutCursorBlinkDoesNotBlink  # inherent: a fixed 1.3 s window checks two blink intervals
 VsyncTests/testSparseKittyUpdatesWithoutHostTicks  # inherent: a fixed 2 s window checks the 0.4 s sparse update cadence
 VsyncTests/testThirtyTwoOffscreenSurfacesAndChurnNeverAllocateCV  # inherent: builds 32 surfaces and samples idle CPU over fixed windows
 VsyncTests/testUnavailableOutputHiddenDiscardRecovery  # inherent: fixed drain and frame windows around hidden-output recovery

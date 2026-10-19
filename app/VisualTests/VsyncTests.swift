@@ -345,6 +345,111 @@ private final class VsyncGate: @unchecked Sendable {
         XCTAssertEqual(frames, hidden, "hidden unavailable shader has no frames")
     }
 
+    func testIdleFocusedPaneWithoutCursorBlinkDoesNotBlink() async throws {
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
+        defer { pane.dispose() }
+        pane.resize(cols: 80, rows: 24)
+        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+        ghostty_surface_set_focus(pane.surface, true)
+        XCTAssertTrue(pane.feed(Data("\u{1b}[?25hhonk\r\n".utf8)))
+        try await drainAnimation(runtime)
+        var frames = 0
+        let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { frames += 1 }
+        defer { observation.invalidate() }
+        try await Task.sleep(for: .milliseconds(1300))
+        XCTAssertEqual(frames, 0, "blink off installs no frame over two blink intervals")
+    }
+
+    func testScrollerBurstUsesOneFadeDeadlineAndFlipsTheKnob() async throws {
+        let delay = PaneScroller.fadeDelay
+        PaneScroller.fadeDelay = 0.05
+        defer { PaneScroller.fadeDelay = delay }
+        let scroller = PaneScroller()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 12, height: 400), styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = scroller
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        scroller.update(history: 1000, rows: 40, offset: 1000, alternate: false)
+        let bottom = try knobRows(scroller)
+        XCTAssertNil(scroller.layer?.contents, "the knob layer needs no backing store")
+        XCTAssertFalse(bottom.isEmpty, "the flipped scroller renders its knob")
+        XCTAssertGreaterThan(bottom.min() ?? 0, 360, "the live bottom is at the bottom of the flipped view")
+        scroller.update(history: 1000, rows: 40, offset: 0, alternate: false)
+        let top = try knobRows(scroller)
+        XCTAssertFalse(top.isEmpty)
+        XCTAssertLessThan(top.max() ?? 400, 40, "the oldest history is at the top of the flipped view")
+        for step in 0..<200 {
+            scroller.update(history: 1000, rows: 40, offset: 100 + Double(step) / 10, alternate: false)
+            scroller.reveal()
+        }
+        XCTAssertEqual(scroller.visualFadeArmings, 1, "a scroll burst arms one fade deadline, not one timer per event")
+        let knob = try XCTUnwrap(scroller.layer?.sublayers?.first)
+        XCTAssertEqual(knob.frame.origin.y, 47.0824, accuracy: 0.001, "the burst leaves the knob at the latest geometry")
+        XCTAssertEqual(scroller.alphaValue, 1)
+        try await wait("the fade starts after the burst") { scroller.alphaValue == 0 }
+        scroller.reveal()
+        XCTAssertEqual(scroller.alphaValue, 1, "a reveal during the fade restores the scroller")
+        scroller.update(history: 1000, rows: 40, offset: 500, alternate: true)
+        XCTAssertEqual(knob.frame.origin.y, 47.0824, accuracy: 0.001, "a hidden scroller does not commit its knob")
+        scroller.update(history: 1000, rows: 40, offset: 500, alternate: false)
+        XCTAssertEqual(knob.frame.origin.y, 190, accuracy: 0.001, "the shown scroller commits the current knob")
+    }
+
+    private func knobRows(_ scroller: PaneScroller) throws -> [Int] {
+        let width = Int(scroller.bounds.width), height = Int(scroller.bounds.height)
+        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                              bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(NSColor.clear.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        if scroller.isFlipped {
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
+        }
+        scroller.layer!.render(in: context)
+        let image = NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
+        return (0..<height).filter { y in
+            (0..<width).contains { x in (image.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.05 }
+        }
+    }
+
+    func testScrollbarActionSkipsRefreshWhileAppOwnsTarget() async throws {
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
+        defer { pane.dispose() }
+        pane.resize(cols: 80, rows: 24)
+        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+        let output = (0..<300).map { "line \($0)\r\n" }.joined()
+        XCTAssertTrue(pane.feed(Data(output.utf8)))
+        try await drain(runtime)
+        pane.requestScroll(10)
+        try await wait("the app owns the scroll target") { pane.scrollTarget != nil }
+        try await drain(runtime)
+        let owned = pane.visualScrollerRefreshes
+        try await scrollbar(pane)
+        XCTAssertEqual(pane.visualScrollerRefreshes, owned,
+                       "the app tick does not refresh a scroller whose target the app owns")
+        pane.clearScrollTarget()
+        XCTAssertNil(pane.scrollTarget)
+        try await drain(runtime)
+        let released = pane.visualScrollerRefreshes
+        try await scrollbar(pane)
+        XCTAssertGreaterThan(pane.visualScrollerRefreshes, released,
+                             "the app tick still refreshes the scroller when the app owns no target")
+    }
+
+    private func scrollbar(_ pane: PaneView) async throws {
+        var target = ghostty_target_s()
+        target.tag = GHOSTTY_TARGET_SURFACE
+        target.target.surface = pane.surface
+        var action = ghostty_action_s()
+        action.tag = GHOSTTY_ACTION_SCROLLBAR
+        XCTAssertTrue(GhosttyRuntime.action(ghostty_surface_app(pane.surface)!, target, action))
+        await mainQueueFence()
+        await mainQueueFence()
+    }
+
     func testSparseKittyUpdatesWithoutHostTicks() async throws {
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
         defer { pane.dispose() }
