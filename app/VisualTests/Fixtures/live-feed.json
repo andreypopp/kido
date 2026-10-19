@@ -27,7 +27,6 @@
             [
               "Pi_agent",
               {
-                "id": "session-0",
                 "status": {
                   "since": 1791131000,
                   "msg": null,
@@ -37,7 +36,8 @@
                       "outcome": null
                     }
                   ]
-                }
+                },
+                "session": "session-0"
               }
             ]
           ],
@@ -80,7 +80,7 @@
                 "serial": 0,
                 "records": []
               },
-              "run": "bash",
+              "run": "r-892",
               "started": 1791098646.964646,
               "children": []
             }
@@ -103,7 +103,6 @@
                 [
                   "Pi_agent",
                   {
-                    "id": "session-502",
                     "status": {
                       "since": 1791131000,
                       "msg": null,
@@ -113,7 +112,8 @@
                           "outcome": null
                         }
                       ]
-                    }
+                    },
+                    "session": "session-502"
                   }
                 ]
               ],
@@ -135,7 +135,6 @@
                     [
                       "Pi_agent",
                       {
-                        "id": "session-936",
                         "status": {
                           "since": 1791131000,
                           "msg": null,
@@ -145,7 +144,8 @@
                               "progress": null
                             }
                           ]
-                        }
+                        },
+                        "session": "session-936"
                       }
                     ]
                   ],
@@ -153,7 +153,7 @@
                     "serial": 0,
                     "records": []
                   },
-                  "run": "agent",
+                  "run": "r-936",
                   "started": 1791131078.818641,
                   "children": []
                 }
@@ -201,7 +201,6 @@
             [
               "Pi_agent",
               {
-                "id": "session-905",
                 "status": {
                   "since": 1791131000,
                   "msg": null,
@@ -211,7 +210,8 @@
                       "outcome": null
                     }
                   ]
-                }
+                },
+                "session": "session-905"
               }
             ]
           ],
@@ -233,7 +233,6 @@
                 [
                   "Pi_agent",
                   {
-                    "id": "session-934",
                     "status": {
                       "since": 1791131000,
                       "msg": null,
@@ -243,7 +242,8 @@
                           "progress": null
                         }
                       ]
-                    }
+                    },
+                    "session": "session-934"
                   }
                 ]
               ],
@@ -251,7 +251,7 @@
                 "serial": 0,
                 "records": []
               },
-              "run": "agent",
+              "run": "r-934",
               "started": 1791125890.55034,
               "children": []
             }
@@ -275,7 +275,6 @@
             [
               "Pi_agent",
               {
-                "id": "session-11",
                 "status": {
                   "since": 1791131000,
                   "msg": null,
@@ -285,7 +284,8 @@
                       "outcome": null
                     }
                   ]
-                }
+                },
+                "session": "session-11"
               }
             ]
           ],
@@ -315,7 +315,6 @@
             [
               "Pi_agent",
               {
-                "id": "session-23",
                 "status": {
                   "since": 1791131000,
                   "msg": null,
@@ -325,7 +324,8 @@
                       "outcome": null
                     }
                   ]
-                }
+                },
+                "session": "session-23"
               }
             ]
           ],
@@ -361,7 +361,6 @@
                 [
                   "Pi_agent",
                   {
-                    "id": "session-86",
                     "status": {
                       "since": 1791131000,
                       "msg": null,
@@ -371,7 +370,8 @@
                           "outcome": null
                         }
                       ]
-                    }
+                    },
+                    "session": "session-86"
                   }
                 ]
               ],
@@ -432,7 +432,6 @@
             [
               "Pi_agent",
               {
-                "id": "session-193",
                 "status": {
                   "since": 1791131000,
                   "msg": null,
@@ -442,7 +441,8 @@
                       "outcome": null
                     }
                   ]
-                }
+                },
+                "session": "session-193"
               }
             ]
           ],
