@@ -213,6 +213,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
+    var promptBoxes: PromptBoxes { session.boxes }
+    var currentModel: SessionModel { model }
+
+    func rpcRequest(_ request: RPCRequest) async throws {
+        let done = expectation(description: "rpc request")
+        rpc?.request(request) { _ in done.fulfill() }
+        await fulfillment(of: [done], timeout: 5)
+    }
 
     private func loadRuntime() throws {
         if Self.processRuntime == nil {
@@ -325,7 +333,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await settle()
     }
 
-    func snapshot(_ name: String, pill: Bool = false, testName: String = #function) async throws {
+    func snapshot(_ name: String, pill: Bool = false, testName: String = #function, view: NSView? = nil) async throws {
         try await settle()
         let terminal = try XCTUnwrap(terminal)
         XCTAssertEqual(terminal.panes.contains { $0.visualPill }, pill)
@@ -348,7 +356,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         CATransaction.flush()
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         for failure in [
-            verifySnapshot(of: terminal, as: .image, named: name, record: record, testName: testName),
+            verifySnapshot(of: view ?? terminal, as: .image, named: name, record: record, testName: testName),
             verifySnapshot(of: terminal.visualLayout, as: .lines, named: name, record: record, testName: testName),
         ].compactMap({ $0 }) {
             if !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
