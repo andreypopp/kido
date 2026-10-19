@@ -415,7 +415,9 @@ func TestReapLeavesARunAloneWithinItsLinger(t *testing.T) {
 	r := h.startRun(caller, "run", "--name", "young-e2e", "--", "sh", "-c", "echo young-screen-e2e; exec sleep 300")
 	runID := r.ID
 	windowID := r.Window
-	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
+	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
+	h.waitPaneText(paneID, "young-screen-e2e")
+	h.killPane(paneID)
 
 	h.runScript("alpha", "reap-young.out", "KIDO_LINGER_SECONDS=600 "+kidoBin+" reap")
 	h.stays(linger, func() bool { return h.windowExists(windowID) },

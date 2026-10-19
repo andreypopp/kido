@@ -40,6 +40,8 @@ func (h *harness) startRun(pane string, args ...string) startedRun {
 func TestRunEndingsAndRefusals(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
+	// The run exits at once, so the sweep can close its window before startCommand reads it.
+	h.hideSidebar()
 	caller := h.firstPane("alpha")
 
 	r := h.startRun(caller, "run", "--name", "run-exit", "--", "sh", "-c", "exit 3")

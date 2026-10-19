@@ -69,6 +69,9 @@ func TestRunChildEndsWhenItsParentPaneQuits(t *testing.T) {
 func TestRunRecordsItsRunAndItsCommand(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
+	// The run exits at once, and tmux's whole-second dead time lets the
+	// sweep close its window before startCommand reads it.
+	h.hideSidebar()
 	caller := h.firstPane("alpha")
 	r := h.startRun(caller, "run", "--name", "env", "--", "bash", "-o", "pipefail", "-c",
 		"echo run-output; exit 3 | tee \"$KIDO_RUN_OUTPUT\"")
