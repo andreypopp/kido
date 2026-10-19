@@ -296,6 +296,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func refreshScroller() {
+        #if KIDO_VISUAL
+        visualScrollerRefreshes += 1
+        #endif
         let position = scrollPosition()
         updateScroller(sampledTmuxHistoryRows: scrollGeometry.sampledTmuxHistoryRows, position: position,
                        alternate: ghostty_surface_is_alternate_screen(surface), clampTarget: false)
@@ -800,6 +803,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     #if KIDO_VISUAL
     var visualBeeps = 0
+    var visualScrollerRefreshes = 0
     var visualCaptured: Bool { scrollGeometry.captured }
     var visualPasteEventExpired: Bool { pasteEvent.map { DispatchTime.now() >= $0.deadline } ?? true }
     func visualRefuseInput() { acceptingInput = false }

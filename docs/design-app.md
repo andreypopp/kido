@@ -377,13 +377,24 @@ invalidation and confirmed-grid path; color-only changes remain local.
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. The scroller track spans the expanded content while its thumb and targets count whole grid rows. Ghostty's own scrollbar is disabled. The
 thumb uses the loaded history rows plus the screen, with a native-style
-minimum knob size. Every precise wheel event adds its delta 1:1 to the
+minimum knob size. The knob is one CALayer: a step moves it, and the scroller
+never redraws a backing store. A hidden or faded scroller, or one in an
+invisible window, does not move the knob, because each move commits a CA
+transaction; a reveal or unhide moves it to the current geometry. Its colour resolves from the effective
+appearance when the appearance changes, when it is shown and on hover or drag.
+A reveal moves one fade deadline 1 s ahead. A burst arms one main-queue timer,
+which re-arms only if the deadline moved, and then fades over 0.3 s.
+Ghostty's SCROLLBAR action refreshes the scroller only while the app owns no
+scroll target; while it owns one, the worker's applies publish the geometry.
+Every precise wheel event adds its delta 1:1 to the
 fractional target, including nonzero ended packets. At most one apply is
 pending on the pane's serial scroll worker; it starts immediately and reads
 the latest output-adjusted target when it runs. Its main callback coalesces
 presentation, then applies a changed target.
-Ghostty schedules rendering; a per-pane NSView CADisplayLink exists only while
-its renderer requests pacing and the view can receive ticks. Each main-thread
+Ghostty schedules rendering; a per-pane NSView CADisplayLink is created on the
+first pacing demand while the view can receive ticks. When demand ends or the
+view becomes unavailable, the link is paused, not invalidated, and the next
+demand resumes it. Disposal invalidates it. Each main-thread
 tick only notifies the renderer's draw async; token presentation remains immediate.
 The app adds no deferred packet, easing or momentum filter.
 Ghostty's mouse-scroll-multiplier precision setting remains the user's speed
@@ -847,7 +858,13 @@ allocate a CVDisplayLink, including with vsync disabled. Renderer demand and its
 scheduled notification share one mutex; notifications enqueue strongly retained
 driver jobs on main without reentry. Main drains latest demand and publishes tick
 availability without a mailbox push. Unavailable views render event-driven, without
-a fallback timer. Disposal terminally closes pacing and invalidates its link before
+a fallback timer. The fork's renderer starts the cursor blink timer only while
+the surface is focused and the terminal's cursor-blinking mode is set, and the
+timer stops at its next tick when either ends. Thus, the default non-blinking
+cursor costs no idle frames. Viewport moves and output do
+not reset an active scrollback compression timer. Its callback samples the
+PageList activity token every 250 ms, so compression normally starts
+250–500 ms after the last activity, once it gets the terminal lock. Disposal terminally closes pacing and invalidates its link before
 parser-quiescent retirement; the driver context survives surface free and renderer
 join. Queued jobs retain only the closed driver, never a pane or live surface.
 Ghostty requests IO/process termination, marks search stopping and joins it,
@@ -1297,8 +1314,8 @@ result bundle:
 
 - A product deadline is not waited out. Under `KIDO_VISUAL`,
   `PaneView.pasteEventTimeout` (30 s), `PaneView.clipboardTimeout` (8 s),
-  `PaneView.copyEntryTimeout` (2 s), `WindowOwner.reorderTimeout` (2 s, local
-  host), `Upload.promiseTimeout` and `WindowView.toolbarFadeDuration` (0.15 s)
+  `PaneView.copyEntryTimeout` (2 s), `PaneScroller.fadeDelay` (1 s),
+  `WindowOwner.reorderTimeout` (2 s, local host), `Upload.promiseTimeout` and `WindowView.toolbarFadeDuration` (0.15 s)
   are settable. Production builds keep them constant.
   A test sets a short value only around the step that tests expiry, and waits
   for the expiry event.
