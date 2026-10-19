@@ -779,6 +779,10 @@ final class PromptBoxes: NSView {
             box.removeFromSuperview()
             return true
         }
+        layoutChanged(session: session, panes: panes)
+    }
+
+    func layoutChanged(session: SessionID, panes: Set<PaneID>) {
         for box in boxes where box.session == session {
             box.sourceChanged(gone: !panes.contains(box.paneID))
         }
