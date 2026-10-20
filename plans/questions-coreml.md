@@ -2,12 +2,13 @@
 
 Status: not started. Date: 2026-10-20. Branch `kido-app-questions`, from
 `kido-app` 0.29.1. This plan replaces `plans/paragraph-coreml.md` on
-`kido-app-paragraphs` (last commit 85ed85e5).
+`kido-app-paragraphs` (last commit 85ed85e5). The advisor owns this file.
 
 ## Contract
 
-The input is plain text. The output is every question in the text, in
-text order:
+The input is plain text. Each input line is one logical line: the app
+joins wrapped rows before it calls the model, as `Paragraphs.partition`
+does today. The output is every question in the text, in text order:
 
     {"questions": [{"question": "…", "options": ["…", "…"]}]}
 
@@ -30,11 +31,30 @@ From the user and from the first attempt:
   the data; no hand labelling. Data comes from local pi and Claude Code
   transcripts only. No pi extension change. No FoundationModels.
 - No bold markers in the input: they made options worse (0.52 against
-  0.68 option F1 in the first attempt).
+  0.68 option exact F1 on the real eval part in the first attempt).
 - Model storage for production is decided later. Until then the model is
   a local build output.
-- Cumulative DeepSeek spend cap: $50. The first attempt spent $26.21, so
-  this plan has $23.79. Ask the user before more.
+- Cumulative DeepSeek spend cap: $50. The first attempt spent $26.21 (the
+  ledger `usage.jsonl` agrees), so this plan has $23.79. Ask the user
+  before more.
+- A smoke run may make a small number of paid DeepSeek calls (a few
+  texts) to check the prompt, the schema and the validator end to end.
+  Full runs (the relabel, the eval labelling with several samples,
+  training) wait for the code review and its fixes. Each smoke run
+  records its spend in the same ledger and counts against the cap.
+- Decided by the top-level session on 2026-10-20, to confirm with the
+  user: open questions with no finite answer are questions with
+  `options: []` (contract unchanged); the labeller records a per-question
+  `kind` (`choice`, `yes_no` or `open`) in the label data only, never in
+  the CLI output, and the eval reports its metrics with and without
+  `open` questions. The eval uses 3 samples on 500 real texts; the $50
+  cap stays; if a full run would exceed the remainder, the manager cuts
+  the run size, not the cap.
+- Role models. Implementers: `claude-bridge/claude-sonnet-5-5`. Managers:
+  `claude-bridge/claude-opus-5-5`. Simplify reviewers: a mix of
+  `claude-bridge/claude-opus-5-5` and `openai-codex/gpt-6-astra`.
+  Correctness and results reviewers: `openai-codex/gpt-6-astra`. Advisor:
+  `claude-bridge/claude-fable-5-1`. DeepSeek is only the labeller API.
 
 ## What the first attempt taught
 
@@ -50,96 +70,212 @@ From the user and from the first attempt:
   merge.
 - Train and eval labels from different labellers gave different option
   conventions. One labeller for all splits fixed it.
+- The tool-call eval part shared sessions with train (19 of 21 examples).
+  Freeze the eval sessions before any labelling, for every part.
+- Most inline option errors were at the start of the option (14 of 20
+  boundary errors were 6 or more characters off). The prompt needs a
+  start rule for inline options.
+- Multi-question texts are rare in real data: 1.7% of the old contexts
+  had two or more logical lines that end with `?`. Without oversampling,
+  an eval cannot measure merges.
 - A per-phase manager process with reviewers found real defects each time
   (leakage, redaction gaps, spend overshoot). Keep it.
+
+Measured facts that still hold (first attempt, M5 Max): Ettin-32m trains at
+about 32,000 tokens/s on MPS (753 s for 10 epochs over 11,668 examples);
+the best sweep point was lr 5e-5 at 10 epochs, still rising; fused AdamW
+and batch 32 were the untried speedups. Core ML: one fixed-shape function
+per length in one multifunction package (`EnumeratedShapes` puts every op
+on the CPU); fp16 keeps the logits (argmax agreement 0.999998); default
+`.cpuAndGPU` (2.4 ms at 1,024 tokens, about 250 ms load); the Neural
+Engine is slower and loads in 1.5 to 3.6 s; conversion is not
+byte-deterministic. The Swift tokenizer (swift-transformers 1.3.5) matches
+Hugging Face offsets only with the NFC position mapping.
 
 ## Design
 
 1. **Segments.** One splitter cuts the text into segments: sentences, and
-   each list item as one segment. It keeps paths, versions (`v1.2`),
-   `e.g.`, code spans and list items without a full stop in one segment.
-   Python and Swift implement the same rules, with shared test cases.
+   each list item as one segment. A blank line is its own segment. The
+   splitter keeps paths, versions (`v1.2`), `e.g.`, code spans, URLs and
+   list items without a full stop in one segment. A code block is one
+   segment per line. This plan implements the splitter in Python with a
+   JSON file of test cases; the app plan ports it to Swift against the
+   same file.
 2. **Questions.** An encoder (Ettin-32m, as before) reads the whole text.
-   A head tags each segment `B-Q`, `I-Q` or `O`, from the first token of
-   the segment. A question is a `B-Q` segment and the `I-Q` segments after
-   it, its list items included.
+   A head tags the first token of each segment `B-Q`, `I-Q` or `O`; the
+   loss ignores every other token. A question is a `B-Q` segment and the
+   `I-Q` segments after it, its list items and blank lines inside it
+   included. The question's substring runs from the start of its first
+   segment to the end of its last segment. A question whose text comes
+   after its options ("Two ways: 1. A 2. B. Which one?") starts at the
+   first segment that belongs to it.
+
+   Fallback if the spike rejects segments: tag every token (`B-Q` on the
+   first token of a question, `I-Q` on the rest), and keep the splitter
+   only for the labeller's view. The spike's measure decides (phase 1).
 3. **Options.** A second pass reads the text of one question only and tags
-   option spans in it (`B-OPT`, `I-OPT`, `O`). The input is tens of tokens.
-   The spike decides between one encoder with two heads and two models.
-4. **Length.** The model reads the whole text up to 1,024 tokens (2,048 as
-   a fallback shape). Longer text is cut into large overlapping chunks at
-   paragraph boundaries; each question is kept from the chunk where it is
-   farthest from an edge. Training uses chunks cut the same way, with
-   random start points. No small sliding window: a question with its list
-   or a question after its options does not fit in a few segments.
+   option spans in it (`B-OPT`, `I-OPT`, `O`). The input is tens of
+   tokens. The spike decides between one encoder with two heads and two
+   models. Training inputs are the gold questions, plus a share (about
+   20%) of gold questions with one segment added or removed at either
+   end, so the pass is robust to a boundary error of the first pass.
+4. **Length and chunks.** The model reads up to 1,024 tokens in one call.
+   Whole messages rarely exceed it: 0.3% of 5,429 sampled pi assistant
+   messages exceed 4,000 characters, and the longest is about 8,000.
+   Phase 1 confirms this with the tokenizer. Longer text is cut into
+   chunks of 1,024 tokens that overlap by 512, cut at paragraph
+   boundaries. A question that touches a chunk edge is dropped in that
+   chunk; each question is kept from the chunk where it is farthest from
+   an edge, and duplicates by character range are removed. Training
+   examples are chunks cut the same way, with random start points at
+   paragraph boundaries; about 10% of the starts are inside a gold
+   question, and the cut question's remaining segments are then `O`. No
+   small sliding window: a question with its list, or a question after
+   its options, does not fit in a few segments.
 
 ## Data
 
 - **Unit:** one rendered assistant message, or one chunk of a long one.
-  One text is one example, with one label.
+  One text is one example, with one label. No hover variants.
 - **Sources:** pi sessions (`~/.pi/agent/sessions`) and Claude Code
-  transcripts (`~/.claude/projects`), including `AskUserQuestion` calls,
-  which give exact labels.
-- **Renderer check first:** compare the rows of one real pi question and
-  one real Claude Code question in the app with the renderer's rows. Fix
-  the renderer if they differ. This is a check, not a data source.
-- **Labels:** a list of questions, each with its first and last segment
-  and its options as exact substrings. The prompt defines a list of
-  questions against a question with numbered options, and a question of
-  more than one sentence, with examples. The validator checks: no overlap,
-  segment indexes in range, each option inside its question and once in
-  it.
-- **Synthetic:** contexts with 0 to 4 questions: in one paragraph, in
+  transcripts (`~/.claude/projects`). The `AskUserQuestion` calls give
+  exact labels, but there are only about 16 calls (26 questions, 21 texts
+  in the first attempt). They are an eval part, not a data source of any
+  size.
+- **Selection:** a text is a positive candidate when a paragraph outside
+  a code block contains `?`; the rest are negative candidates. Target
+  about the first attempt's counts: about 2,100 real texts for train and
+  dev, about half positive candidates, and every text with two or more
+  `?` paragraphs that the scan finds, up to the budget below.
+- **Renderer check first:** compare the logical lines of one real pi
+  question and one real Claude Code question, read from the app, with
+  the renderer's lines for the same transcript turn. The pass rule: the
+  same text after the turn marker (`⏺` and the like) is removed, the
+  same list markers, the same blank lines. Fix the renderer if they
+  differ. Then the synthetic templates use the TUIs' real markers and
+  turn markers. This is a check, not a data source.
+- **Labeller view:** the labeller sees the text as numbered segments, one
+  per line, blank lines kept as numbered empty lines. The index is the
+  only reliable way to get a boundary from the model; a copied substring
+  of a long question fails too often.
+- **Labels:** a list of questions, each with `first` and `last` segment
+  indexes, the first three words of its first segment (an off-by-one
+  check), and its options as exact substrings. The prompt defines, with
+  one example each:
+  - A numbered list of questions against one question with numbered
+    options.
+  - A question of more than one sentence ("I see two ways. Which one?").
+  - A question after its options.
+  - Inline options and their start rule: the option is the noun phrase
+    after "or"/the list word, without the verb that the options share
+    ("update the docs or keep the change?" gives "update the docs" and
+    "keep the change").
+  - A yes/no question gets `[]`. "y/n", "yes or no" and the like are not
+    options.
+  - Not a question: a rhetorical question, a question the agent answers
+    itself, a question quoted from the user, a question in code or a
+    log.
+  - An open question with no finite answer ("What should the name be?")
+    is a question with `[]` and `kind: open`. Every question carries a
+    `kind`: `choice` (it has options), `yes_no` or `open`. The validator
+    checks that `choice` has options and the other kinds have none.
+  - Option text: no list marker, no trailing full stop, inner punctuation
+    kept, at least 3 characters, no duplicates.
+
+  The validator checks: indexes in range, `first <= last`, the first
+  segment is not blank and its first words match, no overlap, each option
+  inside its question exactly once. A rejected label goes back once with
+  the reason, as before, then is dropped and counted.
+- **Synthetic:** texts with 0 to 4 questions: in one paragraph, in
   adjacent paragraphs, as a numbered list of questions, a question after
-  its options, inline options and list options; negatives (prose, code,
-  logs, tables, lists without a question).
-- **Eval:** frozen before labelling, session-held-out for every part,
-  the tool-call part included (the first attempt's defect). Parts:
-  `AskUserQuestion` (exact labels), real (v4-pro, 5 samples, kept where
-  they agree), held-out synthetic templates.
+  its options, inline options and list options, with the TUIs' markers;
+  negatives (prose, code, logs, tables, numbered steps, a user's question
+  above the answer). Fillers come from train sessions only. The old
+  generator's first generation was half near duplicates; measure the
+  near-duplicate rate after generation and keep it under 10%.
+- **Split and eval, frozen before labelling.** Start from the first
+  attempt's `session-plan.json` (in `app/ml/data-paragraphs/`): keep its
+  eval sessions as eval, and move every session with an `AskUserQuestion`
+  call to eval. Then the baseline's training sessions are not in the
+  eval, and the eval is session-held-out for every part. Parts:
+  - `AskUserQuestion`: exact labels from the call. About 21 texts; report
+    it, never decide on it alone.
+  - Real: v4-pro, 3 samples at temperature 1 in thinking mode; a text is
+    kept when at least 2 samples agree after validation and gets that
+    label. Report the drop rate and the unanimous subset separately.
+    At least 100 of the real eval texts have two or more `?` paragraphs,
+    so the merge metric has power. Report the drop rate on that subset:
+    if it is much higher than on the rest, the filter hides the hard
+    cases and the report must say so.
+  - Held-out synthetic templates.
+- **Dev:** from train sessions, with at least 100 option spans and at
+  least 50 multi-question texts, real or synthetic in separate counts.
 - **Check by eye:** before training, the top-level session reads about 50
   labelled texts with more than one question.
+- **Spend.** Whole messages are about twice as long as the old contexts
+  (p50 1,513 against 797 characters for texts with a `?`). The old recipe
+  (600 eval texts × 5 samples, 2,100 train texts × 1 sample) cost $21.78
+  and would cost about $30 to $40 now; it does not fit in $23.79. The
+  defaults are 3 eval samples and 500 eval texts. The smoke run measures
+  the cost per text; the phase 2 manager computes the full-run cost from
+  it and cuts the run size if it exceeds the remainder.
 
 ## Metrics
 
-- Question span F1, exact segment boundaries.
-- Questions per text, exact. Merges and splits counted separately.
+All per eval part, mean ± SD over 3 seeds, on the multi-question subset
+of the real part separately, and with and without `open` questions:
+
+- Question span F1, exact segment boundaries. Also a lenient F1 (one
+  segment off at either end), reported only to explain errors.
+- Questions per text, exact. Merges (one predicted span covers two gold
+  questions) and splits (two predicted spans inside one gold question)
+  counted separately.
 - Option exact F1 inside the gold question (the option pass alone) and
   end to end (inside a found question).
+- Whole-output exact match per text: the predicted list equals the gold
+  list. This is the contract.
 - Question false-positive rate on texts without a question: under 2%.
-- All per eval part, mean ± SD over 3 seeds.
-- A baseline: the first attempt's model, split at segment ends, with a new
-  question at each segment that ends with `?`. The new model must beat
-  it.
+
+A baseline: the first attempt's checkpoint
+(`app/ml/data-paragraphs/output/phase2-nobold-s0`), run on the text in
+its numbered-line format without a `>` marker, its units made by the old
+run rule, each unit split at every segment that ends with `?` and is in a
+`question` line. A new script `baseline.py` holds the minimum needed to
+run it; it is deleted after phase 3. The new model must beat it on every
+metric above.
+
+The eval runs through the same code path as the CLI: gold labels become
+the contract's JSON, and the comparison is on character ranges.
 
 ## CLI
 
 `uv run extract [FILE]` reads plain text from FILE or stdin and prints the
 contract's JSON. `--ranges` adds character ranges in the input.
 `--backend torch|coreml`, `--compute cpu|gpu|ane|all`, `--bench N` as in
-the first attempt. The eval runs through the same code path as the CLI.
+the first attempt.
 
 ## What moves from `kido-app-paragraphs`
 
-Taken from `app/ml/` at 85ed85e5, with their tests, and changed only
-where the new contract needs it:
+Taken from `app/ml/` at 85ed85e5 with their tests, in the phase that first
+uses them, and changed only where the new contract needs it:
 
 - Transcript reading for pi and Claude Code, and the markdown renderer
   with wrap and cell widths (`render.py`, without context cutting, hover
-  and variants).
-- Redaction (`redact.py`) and its tests, unchanged.
-- The session split with union-find over sessions and families, and
-  MinHash dedup (`split.py`).
+  and variants). Phase 1.
+- Redaction (`redact.py`) and its tests, unchanged. Phase 1.
 - The DeepSeek client from `label.py`: the spend ledger and cap with
   reserve and settle, the response cache keyed on the request body,
   resampling on length, cancel on interrupt. The prompt and schema are
-  new.
+  new. Phase 1 (the spike labels 100 texts).
+- The session split with union-find over sessions and families, and
+  MinHash dedup (`split.py`). Phase 2.
 - The training loop on MPS (`train.py`), seeds and runner (`runner.py`,
-  `train_seeds.py`, `aggregate.py`), the Core ML conversion with fixed
-  shapes and `MLComputePlan` (`convert.py`), parity and benchmark
-  (`parity.py`, `bench.py`), and the Swift tokenizer offset check
-  (`swift_offsets.py`, `swift-offsets/`).
-- `pyproject.toml`, `uv.lock` and the `.gitignore` entries.
+  `train_seeds.py`, `aggregate.py`). Phase 3.
+- The Core ML conversion with fixed shapes and `MLComputePlan`
+  (`convert.py`), parity and benchmark (`parity.py`, `bench.py`), and the
+  Swift tokenizer offset check (`swift_offsets.py`, `swift-offsets/`).
+  Phase 4.
+- `pyproject.toml`, `uv.lock` and the `.gitignore` entries. Phase 1.
 
 Not moved: the line classes and the run rule (`validate.py`), the context
 cut around a hover, the hover variants, the old synthetic templates, the
@@ -148,51 +284,84 @@ The app changes and `app/Packages/ParagraphTagger` stay parked on
 `kido-app-paragraphs` until this plan's model passes.
 
 The old data is in `app/ml/data-paragraphs/` (gitignored): the spend
-ledger `usage.jsonl` and the downloaded Ettin weights. The new pipeline
-reads the ledger for the cap and the weights to skip a download; it uses
-no old label, context or cache.
+ledger `usage.jsonl`, `session-plan.json`, the old checkpoint for the
+baseline, and the downloaded Ettin weights. The new pipeline reads the
+ledger for the cap, the session plan for the split and the weights to skip
+a download; it uses no old label, context or cache. New data goes to
+`app/ml/data/`, gitignored; git holds only the manifest (counts, hashes,
+settings, spend).
 
 ## Workflow
 
-Each phase has one manager. Code review comes before any expensive run
-(training, a paid DeepSeek labelling run, a sweep):
+Each phase has one manager (see "Role models" under "Decisions"). Code
+review comes before any expensive run (training, a full DeepSeek run, a
+sweep):
 
-1. The implementer writes the code and its tests. It runs only the tests
-   and a small smoke run (a few examples, no paid calls beyond a dry run).
+1. The implementer writes the code and its tests. It runs the tests and a
+   smoke run. A smoke run may make a small number of paid DeepSeek calls
+   (a few texts) to check the prompt, the schema and the validator end to
+   end. It records its spend in the ledger.
 2. The reviewers (four simplify angles and one correctness reviewer)
    review the code before any expensive run.
 3. The same implementer applies the findings that the manager accepts.
 4. The implementer runs the expensive step: labelling, training, eval.
-5. A review of the results: a reviewer reads the numbers, the error
-   counts and the run logs, and checks them against the plan's metrics
-   and the code (for example leakage, a metric that cannot see an error,
-   a wrong checkpoint). The manager writes the results into the plan and
-   reports.
+5. A results reviewer reads the numbers, the error counts and the run
+   logs, and checks them against the plan's metrics and the code (for
+   example leakage, a metric that cannot see an error, a wrong
+   checkpoint, a spend over the estimate). The manager writes the results
+   into this plan and reports.
 
 A fix after step 5 that changes the trained model or the labels repeats
-steps 2 to 5 for that change only.
+steps 2 to 5 for that change only. Every implementer and reviewer may send
+advice or a question to `advisor`.
 
 ## Phases
 
-1. **Move and spike.** Move the parts above. The splitter with its tests,
-   and the measure of how often a v4-pro question boundary on 100 sampled
-   texts is not a segment boundary. The renderer check. The baseline
-   scored on those 100 texts. Deliverable: numbers and a go/no-go on the
-   segment design.
+1. **Spike.** Move the phase 1 parts. The renderer check. The splitter
+   with its test file. The 100-text spike: sample 100 train-session texts
+   with a `?`, all multi-`?` texts the sample has included; label them
+   with v4-pro (1 sample, about $0.50), with the labels as exact question
+   substrings, not segment indexes; measure how many question starts and
+   ends fall on a segment boundary. Go if at least 97% do after splitter
+   fixes; otherwise the token-level fallback in "Design". Token counts of
+   whole messages. The baseline scored on those 100 texts with the new
+   metrics. The two-heads-or-two-models choice: train the option head for
+   one epoch on the spike's options and report whether a shared encoder
+   hurts the question head. Deliverable: the numbers, the go/no-go and
+   the choices.
 2. **Data.** Schema, prompt, validator, synthetic generator, the frozen
-   eval set, the relabel of all texts with v4-pro, split. The check by eye.
-   Deliverable: the labelled set, eval set and manifest, and the spend.
+   session plan and eval set, the labelling of all texts with v4-pro, the
+   split, the manifest. The check by eye. Deliverable: the labelled set,
+   the eval set, the manifest and the spend.
 3. **Training and eval.** Both passes, a small sweep on dev only, 3 seeds,
    error counts per kind (merge, split, boundary, missed option, spurious
-   option, false question). Deliverable: a checkpoint and the report.
-4. **Core ML and CLI.** Fixed-shape functions for both passes, parity
-   against PyTorch, latency, `uv run extract`. Deliverable: the package and
-   three example commands for the user.
+   option, false question, missed question). Deliverable: a checkpoint
+   and the report, against the baseline.
+4. **Core ML and CLI.** One fixed-shape function per pass (1,024 tokens
+   for questions; the option pass's shape from the question token lengths
+   measured in phase 3), parity against PyTorch, latency, `uv run
+   extract`. Deliverable: the package and three example commands for the
+   user.
 
-App integration follows as a separate plan after phase 4.
+App integration follows as a separate plan after phase 4. It ports the
+splitter and the chunking to Swift against the shared test file.
+
+## To confirm with the user
+
+The open-question rule with `kind`, and 3 samples on 500 real eval texts
+under the unchanged $50 cap (under "Decisions").
 
 ## Open items
 
 - One encoder with two heads, or two models (phase 1 spike).
-- Whether the 2,048 shape is needed, from the token counts of whole
-  messages.
+- The option pass's input shape (phase 3 measures question lengths).
+
+## Changes from advice
+
+- 2026-10-20, user (via the top-level session): smoke runs may make a few
+  paid calls; role models named. Both are under "Decisions".
+- 2026-10-20, top-level session: open questions are questions with `[]`
+  and a label-only `kind`; eval with and without `open`; 3 samples on
+  500 real eval texts; the cap stays and the manager cuts a run that
+  would exceed the remainder. Under "Decisions", to confirm with the
+  user.
