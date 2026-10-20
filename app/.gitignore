@@ -1,2 +1,4 @@
 build/
 Kido.xcodeproj/
+Packages/*/.build/
+Packages/*/Package.resolved

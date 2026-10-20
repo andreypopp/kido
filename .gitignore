@@ -3,3 +3,13 @@ share/pi/.copy-*/
 /build/
 _build/
 _build-ci-like/
+
+app/ml/data/
+app/ml/data-paragraphs/
+
+app/ml/swift-offsets/.build/
+app/ml/.venv/
+app/ml/.pytest_cache/
+app/ml/.ruff_cache/
+app/ml/**/__pycache__/
+app/ml/**/*.pyc
