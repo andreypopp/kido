@@ -22,16 +22,20 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 only-include = [
   "baseline.py",
+  "build.py",
+  "corpus.py",
   "deepseek.py",
-  "headtest.py",
   "jsonl.py",
-  "measure.py",
+  "label.py",
   "metrics.py",
+  "paths.py",
   "questions.py",
   "redact.py",
   "render.py",
   "segments.py",
-  "spike.py",
+  "select_texts.py",
+  "split.py",
+  "synthetic.py",
 ]
 
 [dependency-groups]

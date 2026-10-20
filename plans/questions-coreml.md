@@ -170,12 +170,18 @@ Hugging Face offsets only with the NFC position mapping.
   in the first attempt). They are an eval part, not a data source of any
   size.
 - **Selection:** a text is a positive candidate when a segment outside
-  code contains `?`; the rest are negative candidates. DeepSeek labels
-  only positive candidates. A negative candidate gets an empty label
-  without a call, except a random sample of 150 of them, labelled to
-  measure the share of questions without a `?`: above 2%, report it and
-  decide then. Every positive candidate with two or more `?` segments
-  that the scan finds is taken, then the rest, up to the budget below.
+  code contains `?`; the rest are negative candidates. A uniform sample
+  of 150 negative candidates measured the share with a question: 7.4%,
+  above the 2% gate, so there are no automatic empty labels. Train and
+  eval use only DeepSeek-labelled texts plus synthetic. Every eval
+  negative candidate gets 3 samples; those that get a question form the
+  eval part `real-noq`, the rest are the FPR negatives. Train negatives
+  get 1 sample, from a hard pool of non-`?` texts with decision words
+  first, then uniform, up to 3,000 or the $48 limit.
+  "Multi-question" for every quota means two or more `?` segments
+  (sentences or list items), not paragraphs: two questions in one
+  paragraph is the main hard case. Report both counts. Multi-question
+  positives are labelled first, then the rest, up to the budget below.
 - **Renderer check first:** compare the lines of one real pi question
   and one real Claude Code question, read from the app, with the
   renderer's lines for the same transcript turn at the same width. The
@@ -225,22 +231,49 @@ Hugging Face offsets only with the NFC position mapping.
   generator's first generation was half near duplicates; measure the
   near-duplicate rate after generation and keep it under 10%.
 - **Split and eval, frozen before labelling.** Start from the first
-  attempt's `session-plan.json` (in `app/ml/data-paragraphs/`): keep its
-  eval sessions as eval, and move every session with an `AskUserQuestion`
-  call to eval. Then the baseline's training sessions are not in the
-  eval, and the eval is session-held-out for every part. Parts:
+  attempt's `session-plan.json` (in `app/ml/data-paragraphs/`). The eval
+  is a random subset of its eval sessions, drawn by session, just large
+  enough for 400 real eval texts (at least 160 multi-question), 300 eval
+  negatives and their half of the negative sample, plus every session
+  with an `AskUserQuestion` call. The other old eval sessions move to
+  train. The baseline stays fair because the eval is still a subset of
+  sessions the old model never trained on; the only paid labels before
+  this re-freeze are 6 smoke samples, which stay in eval; the re-freeze
+  happens before the paid runs. The eval is session-held-out for every
+  part. Dedup is on
+  width-independent text: the turn marker removed and all whitespace
+  collapsed, so a text rendered at another width is the same text. Exact
+  dedup across splits removes the train copy; MinHash runs on word
+  shingles of that normalised text, never on rendered rows. The train
+  set is sized from the budget: after the eval and the negative sample,
+  label as many real train positives as the remainder minus a $2
+  reserve allows, multi-question texts first. The reserve is a
+  cumulative $48 limit in code for the train run. Parts:
   - `AskUserQuestion`: exact labels from the call. About 21 texts; report
     it, never decide on it alone.
   - Real: v4-pro, 3 samples at temperature 1 in thinking mode; a text is
     kept when at least 2 samples agree after validation and gets that
     label. Report the drop rate and the unanimous subset separately.
-    At least 100 of the real eval texts have two or more `?` paragraphs,
+    The samples run in waves: every text's sample 1, then 2, then 3.
+    Sample 3 is skipped when samples 1 and 2 are both invalid or
+    stopped on length (2 of 3 is then impossible). A length stop does
+    not skip the text's other samples: length drops hit multi-question
+    texts most, and a skip would raise that bias. The eval's
+    `max_tokens` is 16,000 for the same reason.
+    At least 160 of the real eval texts are multi-question,
     so the merge metric has power. Report the drop rate on that subset:
     if it is much higher than on the rest, the filter hides the hard
     cases and the report must say so.
-  - Held-out synthetic templates.
-- **Dev:** from train sessions, with at least 100 option spans and at
-  least 50 multi-question texts, real or synthetic in separate counts.
+  - `real-noq`: eval negative candidates (no `?` outside code) that the
+    labeller gave a question. Reported as its own part.
+  - Held-out synthetic templates. In the built set, the synthetic eval
+    is vocabulary-held-out, not fully template-held-out: one inline
+    template is shared and supplies 72 of its questions in 58 texts.
+    Report the synthetic part with and without those 58 texts.
+- **Dev:** from train sessions, at most 20% of the real train texts.
+  Its targets, at least 100 option spans and at least 50 multi-question
+  texts, count real and synthetic together; synthetic fills what the
+  real share lacks. Report the real and synthetic counts separately.
 - **Check by eye:** before training, the top-level session reads about 50
   labelled texts with more than one question.
 - **Spend.** Whole messages are about twice as long as the old contexts
@@ -252,8 +285,8 @@ Hugging Face offsets only with the NFC position mapping.
   (finish `length` 3 times, 16,384 reasoning tokens each, $0.098) was
   61% of the smoke spend; the good texts cost $0.0078 each with at most
   5,493 completion tokens. Thus a stop on `length` is dropped and
-  counted, never resampled, and `max_tokens` is 10,000 to 12,000. The
-  ledger is at $26.37, remainder $23.63. At $0.02 per
+  counted, never resampled, and `max_tokens` is 10,000 for train and
+  16,000 for the eval. The ledger is at $26.37, remainder $23.63. At $0.02 per
   text, 2,100 train texts × 1 sample is about $42 and 500 eval texts × 3
   samples about $30: thinking mode does not fit. Phase 1 compares cheaper
   labeller settings on the spike's 100 texts (see "Phases"). Phase 2
@@ -264,7 +297,12 @@ Hugging Face offsets only with the NFC position mapping.
   and agreed only 62%). The ledger is at $27.13, remainder $22.87. Order
   of the phase 2 runs: the eval first, 400 real texts × 3 samples (about
   $8.2), then the 150 negative sample, then train with what is left
-  minus a $2 reserve.
+  minus a $2 reserve (a $48 cumulative limit in code).
+  `reasoning_effort: low` was not tested: rejected, because the
+  thinking-high labels are proven, the budget fits, and the off-peak
+  time is better spent on the eval run. Off-peak is every
+  hour except 01:00 to 04:00 and 06:00 to 10:00 UTC on Monday to Friday
+  (DeepSeek pricing page); the code uses that rule, not a daily window.
 
 ## Metrics
 
@@ -410,7 +448,10 @@ rescored. The splitter is frozen.
   everywhere. 255 of 258 question boundaries (98.84%) fall on a segment
   boundary, on 96 labelled texts with 129 questions (74.4% before
   tuning). This is an upper bound: the splitter was tuned on the same
-  texts; phase 2 re-measures on fresh labels. The fixes: the range rule;
+  texts. The phase 2 labels are segment indexes, so they cannot
+  re-measure it: an index label snaps to a segment by construction. A
+  fresh measure needs substring labels or an independent review, and
+  none is planned while the budget is spent. The fixes: the range rule;
   inside a list item, cut only after `?`. The sentence rule is 2 or more
   letters or digits before the mark, with an exception for dotted
   initials. Known limit: Claude Code code rows without indent and
@@ -423,8 +464,8 @@ rescored. The splitter is frozen.
   multi-question texts, thinking dropped 4 of 25 and no-thinking 8 of
   25; on the other texts 0 of 75 and 11 of 75. Thus length drops and the
   eval's agreement filter both hide multi-question cases: phase 2 reports
-  the drops on the multi-question subset as a known bias, and may use
-  `max_tokens` 16,000 for the eval only if the spend allows.
+  the drops on the multi-question subset as a known bias; the eval uses
+  `max_tokens` 16,000.
 - **Tokens** (special tokens included; `data/tokens-manifest.jsonl`).
   Population: raw assistant text blocks. All 49,101 blocks: p99 1,102,
   1.2% over 1,024. The 3,618 blocks with a `?` outside code: p50 410,
@@ -445,6 +486,69 @@ rescored. The splitter is frozen.
   compares two models against one encoder trained jointly on the full
   data, 3 seeds each on dev, and picks by dev.
 - **Spend.** Ledger $27.13, remainder $22.87.
+
+## Phase 2 results
+
+Labelling done on 2026-10-21; a results review is running. Full
+numbers in p1-impl's report and `app/ml/manifest.json`.
+
+- **Pool after layout-independent dedup.** The old eval sessions hold
+  1,101 unique positives (217 multi-question).
+- **Split.** The eval uses 174 sessions, at most 50 texts per session;
+  45 old eval sessions moved to train. Train lost 251 texts as eval
+  copies and 398 as train copies.
+- **Selection.** Eval real 400 (160 with 2+ `?` segments, 95 with 2+
+  `?` paragraphs; the pool has no more, so the 160-segment quota replaces
+  the 100-paragraph goal), eval negatives 300, negative sample 150,
+  train real 650 (95 multi-question).
+- **Eval real, 400 × 3.** 378 kept (94.5%), 272 unanimous, 22 dropped
+  (11 disagree, 10 length, 1 invalid), $7.69. Multi-question (2+ `?`
+  segments): 145 kept, 15 dropped (9.4%), against 7 of 240 (2.9%) for
+  the rest; 84 kept texts have 2+ `?` paragraphs. Labels: 273 of 378
+  have a question (`yes_no` 241, `choice` 118, `open` 19); 63 texts have
+  2 or more questions; 259 options. Tokens: p50 432, p90 1,078, 10.9%
+  over 1,024.
+- **Eval negatives, 307 × 3.** 299 kept (285 unanimous), 8 dropped,
+  $1.21. 285 are the FPR negatives; 14 got a question and form
+  `eval-real-noq` (15 questions: 7 `choice`, 7 `yes_no`, 1 `open`).
+- **Train real, 650 × 1.** 608 kept, 42 dropped (38 length, 4 invalid;
+  16 of the 95 multi-question texts), $3.94. 476 have a question, 60
+  have 2 or more, 374 options.
+- **Train negatives, 3,000 × 1.** Hard pool (decision words) 2,337
+  kept, 185 with a question (7.9%); uniform pool 640 kept, 3 with a
+  question (0.5%); 23 dropped; $4.03. Estimated share of questions
+  among all non-`?` texts: about 2.3%.
+- **Negative sample, 150.** 149 labelled, 11 with a question (7.4%):
+  real decision prompts without a `?` (open questions as statements,
+  "tell me when", numbered decisions). About $0.0012 per text. Thus no
+  automatic empty labels (see "Selection").
+- **Published sets** (0 leaks: no train session in eval, no train/dev
+  or family overlap). Train 3,738: real 2,868 (535 with a question, 59
+  multi-question, 636 questions, 384 options) and synthetic 870 (478
+  multi-question, 1,345 options). Dev 860: real 717 (129 with a
+  question, 16 multi-question, 83 options) and synthetic 143 (89
+  multi-question, 223 options); the real dev misses the 100-option and
+  50-multi targets because of the 20% cap, the synthetic dev meets them.
+  Eval 986: real 378, negatives 285, `real-noq` 14, ask 19 (55 options),
+  synthetic 290 (165 multi-question, 441 options).
+- **Results review** (p2-results). Exact 4-word Jaccard at 0.8 or more
+  on layout-independent text finds 3 train/eval-real pairs (0.814 to
+  0.834) and 1 train/dev pair (0.820) that MinHash's estimate missed;
+  phase 3 removes those 4 train texts before training. The synthetic
+  eval shares one inline template with train (see the eval parts). One
+  synthetic text in each split holds the same question span twice. The
+  baseline must run on every part, `real-noq` included.
+- **Check by eye** (top level, 30 real multi-question texts): labels
+  separate adjacent and numbered questions correctly; options are exact
+  and inside their question. Minor: some labels include one context
+  sentence before the question; a few statement-like items are
+  `yes_no`. Synthetic texts are templated and repetitive; one had the
+  same question twice.
+- **Spend.** Smoke $0.036; by stage: eval real $7.78, eval negatives
+  $1.21, train real $3.94, train negatives $4.03, negative sample $0.18,
+  spike $0.92. Ledger $44.28 of the $48 limit, $3.72 left; one
+  unsettled timeout is counted at its maximum ($0.0465). No further paid
+  calls without the user.
 
 ## To confirm with the user
 
@@ -505,3 +609,35 @@ under the unchanged $50 cap, and labelling only texts with a `?` (under
   baseline, token and labeller numbers are replaced; length drops and
   the agreement filter hide multi-question texts, recorded as a known
   bias with a 16,000 `max_tokens` option for the eval.
+- 2026-10-20, p2-rev-correct: row shingles let a random render width
+  defeat dedup (121 positive and 175 negative train texts matched eval
+  texts). Dedup is now on whitespace-collapsed, marker-free text with
+  word shingles; eval sessions stay frozen even though they hold more
+  positives; dev takes at most 20% of real train and fills its targets
+  with synthetic.
+- 2026-10-20, phase 2 manager: the eval is a random by-session subset
+  of the old eval sessions sized for 400 real texts (160
+  multi-question), 300 negatives and the ask sessions; the other old
+  eval sessions move to train before any paid run; multi-question means
+  2+ `?` segments; the negative sample is uniform per split with the 2%
+  gate; the $2 reserve is a $48 limit in code. Replaces the advisor's
+  allocation line.
+- 2026-10-20, p2-rev-efficiency, decided by the phase 2 manager: the
+  peak rule is the documented weekday one, not a daily window; the
+  `reasoning_effort: low` comparison is rejected (thinking-high labels
+  are proven, the budget fits, off-peak time goes to the eval); eval
+  `max_tokens` 16,000, train 10,000; eval samples run in waves and
+  sample 3 is skipped when 2 of 3 is impossible. A length stop does not
+  skip the other samples: that would raise the multi-question bias.
+- 2026-10-20, phase 2 manager: the pool has only 95 eval texts with 2+
+  `?` paragraphs, so the 160-segment quota replaces the 100-paragraph
+  goal; the split and selection counts are under "Phase 2 results".
+- 2026-10-20, phase 2 manager: 7.4% of sampled negatives hold a
+  question, so the 2% gate is replaced: no automatic empty labels, all
+  300 eval negatives get 3 samples, a new eval part `real-noq`, train
+  negatives from a hard pool then uniform up to 3,000 or the $48 limit.
+- 2026-10-21, p2-results: 4 near-duplicate train texts are removed in
+  phase 3; the synthetic eval part is reported with and without the
+  shared-template texts; the baseline covers `real-noq`; the boundary
+  coverage cannot be re-measured from index labels, so the 98.84% stays
+  a tune-set figure.

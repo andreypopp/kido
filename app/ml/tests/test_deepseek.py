@@ -1,17 +1,21 @@
 import json
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx2 as httpx
 import pytest
-from conftest import USER, FakeClient, response
+from conftest import OFF_PEAK, USER, FakeClient, response
 from openai import APIStatusError, APITimeoutError
 
 from deepseek import (
     BudgetExceeded,
     LedgerBusy,
+    PeakHours,
     Spend,
     complete,
+    is_peak,
+    near_peak,
     request_body,
     run_parallel,
     usage_of,
@@ -36,6 +40,7 @@ def ask(client, tmp_path: Path, spend: Spend, messages=MESSAGES, nonce: str = "1
         nonce=nonce,
         user=USER,
         sleep=lambda _: None,
+        clock=OFF_PEAK,
     )
 
 
@@ -44,13 +49,11 @@ def status_error(code: int) -> APIStatusError:
     return APIStatusError("x", response=httpx.Response(code, request=request), body=None)
 
 
-def test_bodies() -> None:
-    thinking, plain = request_body(MESSAGES), request_body(MESSAGES, thinking=False)
-    assert "temperature" not in thinking
-    assert thinking["max_tokens"] == 12000
-    assert thinking["extra_body"] == {"thinking": {"type": "enabled"}}
-    assert plain["temperature"] == 0
-    assert plain["extra_body"] == {"thinking": {"type": "disabled"}}
+def test_body() -> None:
+    body = request_body(MESSAGES, max_tokens=16000)
+    assert "temperature" not in body
+    assert body["max_tokens"] == 16000
+    assert body["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
 def test_ledger_counts_the_old_spend_and_writes_the_new_one(tmp_path: Path) -> None:
@@ -203,3 +206,39 @@ def test_stop_cancels_the_waiting_items() -> None:
         gate.set()
     assert [item for item, _ in results] == [0]
     assert len(started) < 20
+
+
+def at(day: int, hour: int, minute: int = 0) -> datetime:
+    return datetime(2026, 10, day, hour, minute, tzinfo=UTC)
+
+
+def test_peak_is_01_to_04_and_06_to_10_utc_on_weekdays() -> None:
+    wednesday = [is_peak(at(21, h)) for h in (0, 1, 3, 4, 5, 6, 9, 10, 20)]
+    assert wednesday == [False, True, True, False, False, True, True, False, False]
+    assert not is_peak(at(24, 2)) and not is_peak(at(25, 7))  # Saturday, Sunday
+
+
+def test_a_request_within_15_minutes_of_peak_is_not_started() -> None:
+    assert not near_peak(at(21, 0, 44)) and near_peak(at(21, 0, 45)) and near_peak(at(21, 3, 59))
+    assert not near_peak(at(21, 4, 0)) and near_peak(at(21, 5, 50))
+    assert not near_peak(at(24, 0, 50))
+
+
+def test_peak_hours_stop_before_the_send_and_before_a_retry(tmp_path: Path) -> None:
+    clock_times = iter([at(21, 12), at(21, 12), at(21, 0, 50)])
+    client = FakeClient([status_error(429)])
+    spend = spend_in(tmp_path)
+    with pytest.raises(PeakHours):
+        complete(
+            client,
+            MESSAGES,
+            spend=spend,
+            cache_dir=tmp_path / "cache",
+            stage="t",
+            nonce="n",
+            user=USER,
+            sleep=lambda _: None,
+            clock=lambda: next(clock_times),
+        )
+    assert len(client.calls) == 1
+    assert spend.total < 0.01

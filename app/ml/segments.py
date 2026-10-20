@@ -12,10 +12,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+BLANK, CODE, TABLE, ITEM, SENTENCE = "blank", "code", "table", "item", "sentence"
 CLAUDE_MARKER = "⏺ "
 LIST_ITEM = re.compile(r"(?:[-*•+]|\d+[.)]|[A-Za-z][.)])[ \t]+(?=\S)")
 FENCE = re.compile(r"(?:```|~~~)")
-TABLE = ("│", "┌", "├", "└")
+BOX = ("│", "┌", "├", "└")
 TERMINATOR = re.compile(r"[.!?]+[\"')\]”’]*(?=\s|$)")
 DOTTED_INITIALS = re.compile(r"(?:[A-Za-z]\.)+[A-Za-z]")
 
@@ -24,7 +25,7 @@ DOTTED_INITIALS = re.compile(r"(?:[A-Za-z]\.)+[A-Za-z]")
 class Segment:
     start: int
     end: int
-    kind: str  # blank, code, table, item or sentence
+    kind: str  # BLANK, CODE, TABLE, ITEM or SENTENCE
 
 
 def body_of(row: str) -> str:
@@ -46,18 +47,7 @@ def is_fence(row: str) -> bool:
 
 
 def is_table(row: str) -> bool:
-    return body_of(row).strip().startswith(TABLE)
-
-
-def trimmed(text: str, start: int, end: int) -> tuple[int, int]:
-    """The range of a question: after the indent and the turn marker, up to the last non-space."""
-    while start < end and text[start].isspace():
-        start += 1
-    if text.startswith(CLAUDE_MARKER, start):
-        start += len(CLAUDE_MARKER)
-    while end > start and text[end - 1].isspace():
-        end -= 1
-    return start, end
+    return body_of(row).strip().startswith(BOX)
 
 
 def sentence_ends(span: str, marks: str = ".?!") -> list[int]:
@@ -97,7 +87,7 @@ def segments(text: str) -> list[Segment]:
         start, row = rows[index]
         first, end = span(index)
         if not row.strip():
-            out.append(Segment(start, start, "blank"))
+            out.append(Segment(start, start, BLANK))
             after_blank = True
             index += 1
             continue
@@ -106,7 +96,7 @@ def segments(text: str) -> list[Segment]:
         if fence or in_fence or code_block or is_table(row):
             if fence:
                 in_fence = not in_fence
-            kind = "table" if is_table(row) and not in_fence and not fence else "code"
+            kind = TABLE if is_table(row) and not in_fence and not fence else CODE
             out.append(Segment(first, end, kind))
             after_blank = False
             index += 1
@@ -114,7 +104,7 @@ def segments(text: str) -> list[Segment]:
                 if indent_of(rows[index][1]) <= base:
                     break
                 first, end = span(index)
-                out.append(Segment(first, end, "code"))
+                out.append(Segment(first, end, CODE))
                 index += 1
             continue
         after_blank = False
@@ -133,10 +123,10 @@ def segments(text: str) -> list[Segment]:
                 break
             last += 1
         end = rows[last][0] + len(rows[last][1].rstrip())
-        begin, kind = first, "item" if marker else "sentence"
+        begin, kind = first, ITEM if marker else SENTENCE
         for cut in sentence_ends(text[first:end], "?" if marker else ".?!"):
             out.append(Segment(begin, first + cut, kind))
-            begin, kind = first + cut, "sentence"
+            begin, kind = first + cut, SENTENCE
             while text[begin].isspace():
                 begin += 1
         out.append(Segment(begin, end, kind))

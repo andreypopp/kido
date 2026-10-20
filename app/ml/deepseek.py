@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
@@ -26,28 +26,38 @@ CACHE_MISS = (0.66, 1.32)
 OUTPUT = (1.98, 3.96)
 MAX_TOKENS = 12000
 PEAK_HOURS = ((1, 4), (6, 10))
-BUDGET = 50.0
+PEAK_MARGIN = timedelta(minutes=15)
+BUDGET = 48.0
 MAX_ATTEMPTS = 5
 NOT_BILLED = {429, 503}
-DATA = Path("data")
-OLD_LEDGER = Path("data-paragraphs/usage.jsonl")
 
 
-def is_peak(now: datetime) -> bool:
-    return now.weekday() < 5 and any(start <= now.hour < end for start, end in PEAK_HOURS)
+def now() -> datetime:
+    return datetime.now(UTC)
 
 
-def request_body(messages: list[dict[str, str]], thinking: bool = True) -> dict[str, object]:
-    body: dict[str, object] = {
+def is_peak(moment: datetime) -> bool:
+    """DeepSeek's peak: 01:00 to 04:00 and 06:00 to 10:00 UTC, Monday to Friday."""
+    return moment.weekday() < 5 and any(a <= moment.hour < b for a, b in PEAK_HOURS)
+
+
+def near_peak(moment: datetime) -> bool:
+    """Peak now, or within the margin: a request that starts now may end in peak."""
+    return is_peak(moment) or is_peak(moment + PEAK_MARGIN)
+
+
+class PeakHours(Exception):
+    pass
+
+
+def request_body(messages: list[dict[str, str]], max_tokens: int = MAX_TOKENS) -> dict[str, object]:
+    return {
         "model": MODEL,
         "messages": messages,
         "response_format": {"type": "json_object"},
-        "max_tokens": MAX_TOKENS,
-        "extra_body": {"thinking": {"type": "enabled" if thinking else "disabled"}},
+        "max_tokens": max_tokens,
+        "extra_body": {"thinking": {"type": "enabled"}},
     }
-    if not thinking:
-        body["temperature"] = 0
-    return body
 
 
 def parse_response(content: str) -> object:
@@ -91,6 +101,29 @@ class LedgerBusy(Exception):
     pass
 
 
+def read_ledger(paths: Iterable[Path]) -> tuple[float, dict[str, float], dict[str, float]]:
+    """(total, cost per stage, unsettled reservations). A reservation without a settle entry
+    counts at its reserved maximum."""
+    total, stages = 0.0, {}
+    unsettled: dict[str, tuple[float, str]] = {}
+    for path in paths:
+        for item in read_jsonl(path):
+            stage = str(item.get("stage"))
+            if "reserve" in item:
+                unsettled[str(item["id"])] = (float(item["reserve"]), stage)  # type: ignore[arg-type]
+                continue
+            unsettled.pop(str(item.get("id")), None)
+            cost = float(item.get("cost", 0.0))  # type: ignore[arg-type]
+            total += cost
+            stages[stage] = stages.get(stage, 0.0) + cost
+    held: dict[str, float] = {}
+    for worst, stage in unsettled.values():
+        total += worst
+        stages[stage] = stages.get(stage, 0.0) + worst
+        held[stage] = held.get(stage, 0.0) + worst
+    return total, stages, held
+
+
 class Spend:
     """Cumulative cost over the old and the new ledger; new entries go to the new one.
 
@@ -103,32 +136,17 @@ class Spend:
         self.path = path
         self.limit = limit
         self.lock = threading.Lock()
-        self.total = 0.0
-        self.stages: dict[str, float] = {}
-        self.open: dict[str, tuple[float, str]] = {}
         path.parent.mkdir(parents=True, exist_ok=True)
         self.guard = open(path.with_name(path.name + ".lock"), "w")  # noqa: SIM115
         try:
             fcntl.flock(self.guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise LedgerBusy(f"another process holds {path}") from None
-        for ledger in (*earlier, path):
-            for item in read_jsonl(ledger) if ledger.exists() else []:
-                self._add(item)
-        for worst, stage in self.open.values():
-            self._charge(stage, worst)
+        self.total, self.stages, _ = read_ledger([*earlier, path])
 
     def _charge(self, stage: str, cost: float) -> None:
         self.total += cost
         self.stages[stage] = self.stages.get(stage, 0.0) + cost
-
-    def _add(self, item: dict[str, object]) -> None:
-        stage = str(item.get("stage"))
-        if "reserve" in item:
-            self.open[str(item["id"])] = (float(item["reserve"]), stage)  # type: ignore[arg-type]
-        else:
-            self.open.pop(str(item.get("id")), None)
-            self._charge(stage, float(item.get("cost", 0.0)))  # type: ignore[arg-type]
 
     def reserve(self, worst: float, stage: str) -> str:
         with self.lock:
@@ -151,10 +169,10 @@ class Spend:
         self.guard.close()
 
 
-def worst_cost(messages: list[dict[str, str]]) -> float:
+def worst_cost(messages: list[dict[str, str]], max_tokens: int = MAX_TOKENS) -> float:
     """Every UTF-8 byte is at most one token."""
     tokens = sum(len(message["content"].encode()) + 20 for message in messages) + 500
-    return (tokens * CACHE_MISS[1] + MAX_TOKENS * OUTPUT[1]) / 1e6
+    return (tokens * CACHE_MISS[1] + max_tokens * OUTPUT[1]) / 1e6
 
 
 def cache_key(body: dict[str, object], nonce: str) -> str:
@@ -184,9 +202,13 @@ def _send(
     spend: Spend,
     stage: str,
     sleep: Callable[[float], None],
+    clock: Callable[[], datetime],
 ) -> tuple[str, str]:
-    worst = worst_cost(body["messages"])  # type: ignore[arg-type]
+    worst = worst_cost(body["messages"], int(body["max_tokens"]))  # type: ignore[arg-type]
     for attempt in range(MAX_ATTEMPTS):
+        if near_peak(clock()):
+            raise PeakHours
+        sent = is_peak(clock())
         reservation = spend.reserve(worst, stage)
         try:
             response = client.chat.completions.create(**body)
@@ -204,7 +226,7 @@ def _send(
         if usage is None:
             cost, fields = worst, {}
         else:
-            counted = usage_of(usage, is_peak(datetime.now(UTC)))
+            counted = usage_of(usage, sent)
             cost, fields = counted.cost, {k: v for k, v in vars(counted).items() if k != "cost"}
         spend.settle(reservation, worst, stage, cost, fields)
         choice = response.choices[0]
@@ -221,23 +243,25 @@ def complete(
     stage: str,
     nonce: str,
     user: str,
-    thinking: bool = True,
+    max_tokens: int = MAX_TOKENS,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], datetime] = now,
 ) -> tuple[str, str]:
     """(content, finish_reason). A message that redaction would change is refused. A cached
-    answer costs nothing. A stop on length is returned as it is."""
+    answer costs nothing. A stop on length is returned as it is. A request that would start
+    within the margin before peak hours raises PeakHours, before it is sent."""
     for message in messages:
         if (
             message["role"] != "system"
             and redact(message["content"], user=user) != message["content"]
         ):
             raise ValueError("a message is not redacted")
-    body = request_body(messages, thinking)
+    body = request_body(messages, max_tokens)
     key = cache_key(body, nonce)
     hit = read_cache(cache_dir, key)
     if hit is not None:
         return hit
-    content, finish = _send(client, body, spend=spend, stage=stage, sleep=sleep)
+    content, finish = _send(client, body, spend=spend, stage=stage, sleep=sleep, clock=clock)
     write_cache(cache_dir, key, content, finish)
     return content, finish
 

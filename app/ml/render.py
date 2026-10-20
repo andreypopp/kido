@@ -439,13 +439,33 @@ def transcript_messages(root: Path, source: str) -> Iterator[Message]:
                         yield Message(session, text.strip())
 
 
-def ask_sessions(root: Path) -> set[str]:
-    """Sessions with an AskUserQuestion call, whatever the payload."""
-    found: set[str] = set()
+def ask_blocks(root: Path) -> Iterator[tuple[str, object]]:
+    """(session, input) of every AskUserQuestion call, whatever the input."""
     for _, _, session, item in _records(root, "AskUserQuestion"):
         message = item.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         for block in content if isinstance(content, list) else []:
             if isinstance(block, dict) and block.get("name") == "AskUserQuestion":
-                found.add(session)
-    return found
+                yield session, block.get("input")
+
+
+def ask_sessions(root: Path) -> set[str]:
+    return {session for session, _ in ask_blocks(root)}
+
+
+def ask_questions(root: Path) -> Iterator[tuple[str, str, list[str]]]:
+    """(session, question, option labels) of every AskUserQuestion question that has options."""
+    for session, payload in ask_blocks(root):
+        for entry in payload.get("questions", []) if isinstance(payload, dict) else []:
+            options = entry.get("options") if isinstance(entry, dict) else None
+            labels = (
+                [
+                    option["label"]
+                    for option in options
+                    if isinstance(option, dict) and isinstance(option.get("label"), str)
+                ]
+                if isinstance(options, list)
+                else []
+            )
+            if isinstance(entry, dict) and isinstance(entry.get("question"), str) and labels:
+                yield session, entry["question"], labels

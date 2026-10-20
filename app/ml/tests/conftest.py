@@ -1,6 +1,11 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 USER = "alice"
+
+
+def OFF_PEAK() -> datetime:  # noqa: N802
+    return datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
 
 
 def response(content: str, finish: str = "stop", prompt: int = 100, usage: bool = True):

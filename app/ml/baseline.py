@@ -11,9 +11,10 @@ from transformers import AutoModelForTokenClassification, AutoTokenizer
 
 from jsonl import read_jsonl
 from metrics import Counts, Found, add_text, summary
+from paths import output_path
 from questions import questions_of
 from segments import segments
-from spike import TEXTS, labels_path
+from split import is_synthetic
 
 CHECKPOINT = Path("data-paragraphs/output/phase2-nobold-s0")
 TAGS = ["O", "B-QUESTION", "I-QUESTION", "B-OPTION", "I-OPTION"]
@@ -123,13 +124,20 @@ def main() -> int:
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     tokenizer = AutoTokenizer.from_pretrained(CHECKPOINT)
     model = AutoModelForTokenClassification.from_pretrained(CHECKPOINT).to(device).eval()
-    texts = {str(r["id"]): str(r["text"]) for r in read_jsonl(TEXTS)}
-    labels = {str(i["id"]): i["label"] for i in read_jsonl(labels_path("think"))}
-    counts = Counts()
-    for key, label in labels.items():
-        gold = [(q.start, q.end, q.options) for q in questions_of(texts[key], label)]
-        add_text(counts, gold, predict(model, tokenizer, texts[key], device))
-    print(json.dumps(summary(counts), indent=1))
+    report = {}
+    for part in ("eval-real", "eval-negative", "eval-ask", "synthetic"):
+        records = [
+            r
+            for r in read_jsonl(output_path("eval"))
+            if (part == "synthetic" and is_synthetic(r)) or r["part"] == part
+        ]
+        counts = Counts()
+        for record in records:
+            text = str(record["text"])
+            gold = [(q.start, q.end, q.options) for q in questions_of(text, record["label"])]  # type: ignore[arg-type]
+            add_text(counts, gold, predict(model, tokenizer, text, device))
+        report[part] = summary(counts)
+    print(json.dumps(report, indent=1))
     return 0
 
 
