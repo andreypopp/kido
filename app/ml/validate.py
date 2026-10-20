@@ -181,6 +181,24 @@ def unit_from_classes(
     return (ranges[low][0], ranges[high][1])
 
 
+def unit_indexes(ranges: list[list[int]], unit: tuple[int, int]) -> tuple[int, int]:
+    low = next(index for index, pair in enumerate(ranges) if pair[0] <= unit[0] <= pair[1])
+    high = next(index for index, pair in enumerate(ranges) if pair[0] <= unit[1] <= pair[1])
+    return low, high
+
+
+def option_kind(prompt: str, start: int) -> str:
+    lines = prompt_lines(prompt)
+    row = next(
+        (row for row in lines if int(row["start"]) <= start < int(row["end"])),
+        None,
+    )
+    if row is None:
+        return "inline"
+    index = int(row["index"]) - 1
+    return "list" if MARKER.match(str(lines[index]["text"])) else "inline"
+
+
 def option_kinds(record: dict[str, object]) -> dict[str, int]:
     lines = prompt_lines(str(record["prompt"]))
     kinds = {"list": 0, "inline": 0}

@@ -21,6 +21,7 @@ MARKER = re.compile(
 )
 PROMPT_LINE = re.compile(r"^([ >]) (\d+): (.*)$")
 SEED = 0
+REAL_PARTS = ("real", "claude", "pi")
 REDACTION_VERSION = 2
 CONTEXT_BEFORE = 2
 CONTEXT_AFTER = 2

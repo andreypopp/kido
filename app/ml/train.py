@@ -87,14 +87,13 @@ def train_ettin(args: argparse.Namespace) -> dict[str, object]:
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL)
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
     model = AutoModelForTokenClassification.from_pretrained(
-        MODEL, num_labels=len(TAGS), attn_implementation="sdpa"
+        args.base_model, num_labels=len(TAGS), attn_implementation="sdpa"
     )
     hardware = device()
     model.to(hardware)
     train_records = read_jsonl(args.train)
-    eval_records = read_jsonl(args.eval)
     started = time.monotonic()
     data = encode(train_records, tokenizer, args.bold, args.max_length)
     prep_seconds = time.monotonic() - started
@@ -162,7 +161,7 @@ def train_ettin(args: argparse.Namespace) -> dict[str, object]:
     tokens = int(real_tokens.item())
     metrics: dict[str, object] = {
         "backend": "ettin",
-        "model": MODEL,
+        "model": args.base_model,
         "bold": args.bold,
         "seed": args.seed,
         "epochs": args.epochs,
@@ -172,10 +171,10 @@ def train_ettin(args: argparse.Namespace) -> dict[str, object]:
         "warmup_fraction": args.warmup_fraction,
         "total_steps": total_steps,
         "train": len(data),
-        "eval": len(eval_records),
         "prep_seconds": round(prep_seconds, 3),
         "train_seconds": round(seconds, 3),
-        "warmup_steps": WARMUP,
+        "warmup_steps": warmup_steps,
+        "throughput_warmup_steps": WARMUP,
         "real_tokens_per_second": round(tokens / seconds, 1),
         "padded_tokens_per_second": round(padded_tokens / seconds, 1),
         "examples_per_second": round(examples_seen / seconds, 2),
@@ -275,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--train", type=Path, default=Path("data/train.jsonl"))
     parser.add_argument("--eval", type=Path, default=Path("data/eval.jsonl"))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--base-model", default=MODEL)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--max-length", type=int, default=1024)

@@ -4,19 +4,11 @@ from __future__ import annotations
 
 import json
 import random
-import subprocess
 import sys
 from pathlib import Path
 
 from render import SEED, read_jsonl, write_jsonl
-
-
-def run(command: list[str]) -> None:
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        print(result.stdout)
-        print(result.stderr)
-        raise SystemExit(result.returncode)
+from runner import run
 
 
 def subset(records: list[dict[str, object]], fraction: float) -> list[dict[str, object]]:
@@ -56,7 +48,7 @@ def main() -> int:
                 if not evaluation_path.exists():
                     command = [
                         sys.executable, "train.py", "--backend", "ettin",
-                        "--train", f"data/train-{name}.jsonl", "--eval", "data/eval.jsonl",
+                        "--train", f"data/train-{name}.jsonl",
                         "--epochs", str(epochs), "--learning-rate", str(learning_rate),
                         "--batch-size", "8", "--seed", str(seed), "--output", str(directory),
                     ]

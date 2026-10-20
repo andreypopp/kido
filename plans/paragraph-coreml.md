@@ -1,6 +1,7 @@
 # Plan: a Core ML tagger for Shift paragraphs
 
-Status: phases 0 and 1 done (see "Phase 0 results" and "Phase 1 data");
+Status: phases 0, 1 and 2 done (see "Phase 0 results", "Phase 1 data" and
+"Phase 2 results");
 code in `app/ml/`. Date: 2026-10-20. Updated with the user's
 decisions: Core ML detection only, English only, DeepSeek as the labeller, no hand labelling, no pi
 extension change, FoundationModels is deleted when the tagger passes.
@@ -747,6 +748,110 @@ inline spans.
   applies more strongly; phase 5's misses stay the only correction.
 - Real option spans in dev are 60; rank configurations on the real dev part
   separately from the synthetic part.
+
+## Phase 2 results
+
+Run on 2026-10-20. Tables in `app/ml/data/phase2-report.md` (gitignored,
+counts only); `app/ml/manifest.json` records the sweep, the seed runs, the
+eval summary, the error counts and the checkpoint hash.
+
+**Relabel.** All 2,101 train families were labelled again with
+`deepseek-v4-pro` (thinking, 1 sample), so train, dev and eval use one
+labeller and one option convention: 2,050 accepted, 51 rejected, $3.69
+(cumulative project spend $26.21). The flash labels are kept only as a
+comparison. On 2,030 families with both labels, the option set agrees in 95%;
+v4-pro has more inline options in 66 families, flash in none. Real train
+option spans (hover variants included) are now 492 list / 507 inline; before
+the relabel they were 295 / 43.
+
+**Training.** Ettin-32m, no bold, batch 16, max length 1024, bf16 on MPS,
+10% linear warmup and linear decay. 11,668 train examples (6,727 real,
+4,941 synthetic), about 2.4 M tokens per epoch, 32,000 tokens/s, 753 s per
+10-epoch run on the M5 Max.
+
+**Sweep, dev only** (one seed, real-dev option exact F1; 142 real option
+spans in dev):
+
+| Epochs | lr 5e-5 | lr 1e-4 | lr 2e-4 |
+|---:|---:|---:|---:|
+| 3 | 0.401 | 0.372 | 0.407 |
+| 6 | 0.548 | 0.467 | 0.395 |
+| 10 | **0.596** | 0.420 | 0.385 |
+
+The lowest rate still rises with the epochs; the sweep did not test longer
+runs or lower rates. Dev question FPR is 0.4–0.6% in every run.
+
+**Eval, no bold, mean ± SD over 3 seeds.** "App-visible" counts only what
+the app would show: options inside the predicted unit, when it contains the
+hovered paragraph.
+
+| Part | Examples | Question F1 | Option exact F1 | App-visible option F1 | Unit accuracy | Question FPR |
+|---|---:|---:|---:|---:|---:|---:|
+| real (`deepseek-v4-pro`) | 1,567 | 0.968 ± 0.001 | **0.681 ± 0.014** | **0.704 ± 0.016** | 0.998 | 0.17% |
+| tool call | 21 | 0.994 | 0.526 ± 0.232 | 0.513 ± 0.261 | 0.635 ± 0.351 | 0 |
+| held-out synthetic | 287 | 0.942 | 0.962 ± 0.024 | 0.926 ± 0.020 | 0.942 | 0 |
+| union | 1,875 | 0.967 | 0.833 ± 0.029 | 0.846 ± 0.030 | 0.985 | 0.2% |
+
+The real part's option exact F1 went from 0.029 (phase 1 sanity check,
+flash labels) to 0.681. Real option precision is 0.62, recall 0.77.
+
+**Bold A/B.** One bold seed against the three no-bold seeds: real option
+exact F1 0.516 against 0.681 ± 0.014. The user stopped the other bold seeds
+because the gap is about 12 times the seed spread. Decision: no bold;
+phase 4 does no Ghostty fork change.
+
+**Ettin-150m** was not trained: user decision, try 32m in the app first.
+32m meets the plan's FPR target (0.17% < 2%) on the real part.
+
+**Errors, real part, seed 0** (139 gold options, 177 predicted): 110 exact;
+20 boundary errors, mostly the start of an inline option (14 starts off by
+6 or more characters; 4 include punctuation, none the list marker); 9 missed,
+all inline; 47 spurious, of which 34 the app would hide (outside any
+predicted question) and 13 it would show (12 inside a real question unit).
+Questions: 4 false (3 with a question mark), 1 missed; unit range errors 5,
+none too long or too short.
+
+**Limits of these numbers.**
+
+- The real eval part keeps only contexts where five v4-pro samples agree,
+  and the training labels now come from the same model. The eval rewards
+  agreement with v4-pro; phase 5's misses are the only check against the
+  user. Real-dev question F1 (0.855, single-sample labels) is much lower
+  than real-eval (0.968). The agreement filter (498 of 600 families kept)
+  may keep the easier contexts; the data does not prove that it alone
+  causes the gap.
+- The real dev part has fewer positives (4.1% of examples) than the real
+  eval part (13.1%), so its question F1 is not directly comparable either.
+- Unit accuracy is high on positives too: each no-bold seed misses 1 of 206
+  positive units on the real part.
+- The tool-call part is 21 examples, and 19 of them share 6 sessions with
+  train, so it is not session-held-out (real and synthetic eval are). Train
+  has no `AskUserQuestion` records other than synthetic ones. Its spread
+  comes from one seed: seed 1 missed 46 of the 60 list options, seeds 0 and
+  2 missed 6 and 13. Before the next training run, put the ask sessions in
+  the held-out session set.
+- Bold rests on one seed.
+
+**Changes for later phases.**
+
+- Phase 3 converts `data/output/phase2-nobold-s0` (seed 0 by rule, not by
+  eval score).
+- Learning curve on the real train data (25/50/100%, no API cost) before
+  any new labelling; if it still rises, render more real contexts and label
+  them with v4-pro (about $1.80 per 1,000 contexts).
+- Options: clearer start rules for inline options in the labeller prompt;
+  the `AskUserQuestion` box (the tool-call part) as a rule in front of the
+  tagger ("Later"), or real examples of it in train.
+- Ettin-150m only if phase 5 shows 32m is not good enough. On the M5 Max it
+  needs about 5 times the training time; a cloud GPU is cheap (about $1–2
+  per run) but stores the redacted transcripts outside the machine.
+- Training speed is limited by the fixed cost of each step, not by compute
+  or memory (batch 8 and 16 take the same time per step). At the next
+  retrain, try fused AdamW first (no change to the method), then batch 32
+  with a new learning-rate check (about 1.8 times faster). A sweep can run
+  one 10-epoch run per learning rate and evaluate dev after each epoch
+  (about 45% less time), at the cost of a different decay schedule for the
+  shorter points.
 
 ## Later
 

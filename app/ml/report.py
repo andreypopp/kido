@@ -14,6 +14,30 @@ def table(rows: list[list[object]], header: list[str]) -> list[str]:
     return lines
 
 
+def part_rows(split: dict[str, object]) -> list[list[object]]:
+    rows = []
+    for split_name in ("train", "eval"):
+        for part, values in sorted((split.get(f"{split_name}_parts") or {}).items()):
+            rows.append(
+                [
+                    split_name,
+                    part,
+                    values.get("examples"),
+                    values.get("positive"),
+                    values.get("negative"),
+                    values.get("option_spans"),
+                    values.get("option_kinds"),
+                    values.get("families"),
+                    values.get("sessions"),
+                ]
+            )
+    return rows
+
+
+def agreement_rows(agreement: dict[str, object]) -> list[list[object]]:
+    return [[key, value] for key, value in agreement.items()]
+
+
 def main() -> int:
     manifest = json.loads(Path("manifest.json").read_text())
     render = manifest.get("render") or {}
@@ -177,10 +201,7 @@ def main() -> int:
         lines += [""]
 
     lines += ["## v4-pro agreement", ""]
-    lines += table(
-        [[key, value] for key, value in agreement.items()],
-        ["measure", "value"],
-    )
+    lines += table(agreement_rows(agreement), ["measure", "value"])
     lines += [""]
 
     lines += ["## Synthetic data", ""]
@@ -217,24 +238,8 @@ def main() -> int:
         ["measure", "value"],
     )
     lines += ["", "Per split and part:", ""]
-    rows = []
-    for split_name in ("train", "eval"):
-        for part, values in sorted((split.get(f"{split_name}_parts") or {}).items()):
-            rows.append(
-                [
-                    split_name,
-                    part,
-                    values.get("examples"),
-                    values.get("positive"),
-                    values.get("negative"),
-                    values.get("option_spans"),
-                    values.get("option_kinds"),
-                    values.get("families"),
-                    values.get("sessions"),
-                ]
-            )
     lines += table(
-        rows,
+        part_rows(split),
         [
             "split",
             "part",

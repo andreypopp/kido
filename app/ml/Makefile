@@ -1,8 +1,10 @@
 UV = uv run
 SEEDS = 0 1 2
 MODEL ?= data/output/mixed-nobold-s0
+NOBOLD_SEEDS ?= 0,1,2
+BOLD_SEEDS ?= 0
 
-.PHONY: test data plan synthetic redact label eval-label eval-set split pipeline manifest report sanity diagnostic train train-ettin train-mixed train-createml eval eval-ettin eval-mixed eval-createml convert bench tokens swift-offsets
+.PHONY: test data plan synthetic redact label smoke agreement eval-label eval-set split pipeline manifest report sanity diagnostic sweep train-seeds eval report2 phase2 train train-ettin train-mixed train-createml eval-all eval-ettin eval-mixed eval-createml convert bench tokens swift-offsets
 
 test:
 	$(UV) pytest -q
@@ -35,7 +37,17 @@ redact:
 label: data/labels-train.jsonl
 
 data/labels-train.jsonl: data/contexts-train.jsonl label.py redact.py validate.py render.py
-	$(UV) python label.py --stage train --input data/contexts-train.jsonl --output data/labels-train.jsonl --resume
+	$(UV) python label.py --stage train --input data/contexts-train.jsonl --output data/labels-train.jsonl --model pro --samples 1 --budget 50 --resume
+
+smoke: data/labels-train-smoke.jsonl
+
+data/labels-train-smoke.jsonl: data/contexts-train.jsonl label.py redact.py validate.py render.py
+	$(UV) python label.py --stage train-smoke --input data/contexts-train.jsonl --output data/labels-train-smoke.jsonl --model pro --samples 1 --budget 50 --limit 20
+
+agreement: data/train-agreement.json
+
+data/train-agreement.json: data/labels-train.jsonl data/labels-train-flash.jsonl data/contexts-train.jsonl diagnostic.py
+	$(UV) python diagnostic.py --compare --bases data/contexts-train.jsonl --contexts data/contexts-train.jsonl --flash data/labels-train-flash.jsonl --pro data/labels-train.jsonl --output data/train-agreement.json
 
 eval-label: data/labels-eval-real.jsonl
 
@@ -78,7 +90,7 @@ data/eval-meta.json: data/eval-parts.jsonl
 
 manifest: manifest.json
 
-manifest.json: data/split.stamp data/label-train-meta.json data/label-eval-real-meta.json data/eval-meta.json data/synthetic-meta.json data/session-plan.json data/render-meta.json manifest.py label.py render.py
+manifest.json: data/split.stamp data/label-train-meta.json data/label-train-flash-meta.json data/label-eval-real-meta.json data/eval-meta.json data/synthetic-meta.json data/session-plan.json data/render-meta.json data/train-agreement.json data/sweep.json data/experiment.json data/train-seeds.json data/eval-summary.json manifest.py label.py render.py
 	$(UV) python manifest.py
 
 report: data/phase1-report.md
@@ -102,12 +114,47 @@ data/diagnostic-meta.json: data/labels-diagnostic.jsonl data/labels-train.jsonl 
 sanity: data/sanity.json
 
 data/sanity.json: data/split.stamp train.py eval.py
-	$(UV) python train.py --backend ettin --train data/train.jsonl --eval data/eval.jsonl --epochs 1 --batch-size 8 --learning-rate 1e-4 --seed 0 --output data/output/sanity-phase1-s0 --no-bold
+	$(UV) python train.py --backend ettin --train data/train.jsonl --epochs 1 --batch-size 8 --learning-rate 1e-4 --seed 0 --output data/output/sanity-phase1-s0 --no-bold
 	$(UV) python eval.py --model data/output/sanity-phase1-s0 --output data/output/sanity-phase1-s0/eval.json
 	$(UV) python -c "import json; from pathlib import Path; t=json.loads(Path('data/output/sanity-phase1-s0/training.json').read_text()); e=json.loads(Path('data/output/sanity-phase1-s0/eval.json').read_text()); Path('data/sanity.json').write_text(json.dumps({'train':t['train'],'epochs':t['epochs'],'train_seconds':t['train_seconds'],'question_f1':e['token_f1']['question']['f1'],'option_f1':e['option']['f1'],'unit_accuracy':e['unit_accuracy'],'false_positive_rate':e['question_false_positive_rate'],'real_option_f1':e['parts']['real']['option']['f1']},indent=2)+'\n')"
 
-sweep: data/dev.jsonl data/dev-train.jsonl
-	$(UV) python sweep.py
+sweep: data/sweep.json
+
+data/sweep-train.stamp: data/dev-train.jsonl data/dev.jsonl train.py sweep.py runner.py
+	$(UV) python sweep.py --train
+	touch $@
+
+data/sweep-eval.stamp: data/sweep-train.stamp eval.py sweep.py runner.py
+	$(UV) python sweep.py --eval
+	touch $@
+
+data/sweep.json: data/sweep-eval.stamp sweep.py aggregate.py
+	$(UV) python sweep.py --collect
+
+train-seeds: data/train-seeds-train.stamp data/train-seeds.json
+
+data/train-seeds-train.stamp: data/experiment.json data/train.jsonl train.py train_seeds.py runner.py
+	$(UV) python train_seeds.py --stage train --nobold-seeds $(NOBOLD_SEEDS) --bold-seeds $(BOLD_SEEDS)
+	touch $@
+
+data/train-seeds-eval.stamp: data/train-seeds-train.stamp data/eval.jsonl eval.py train_seeds.py runner.py
+	$(UV) python train_seeds.py --stage eval --nobold-seeds $(NOBOLD_SEEDS) --bold-seeds $(BOLD_SEEDS)
+	touch $@
+
+data/train-seeds.json: data/train-seeds-train.stamp data/experiment.json train_seeds.py
+	$(UV) python train_seeds.py --stage collect --nobold-seeds $(NOBOLD_SEEDS) --bold-seeds $(BOLD_SEEDS)
+
+eval: data/eval-summary.json
+
+data/eval-summary.json: data/train-seeds.json data/train-seeds-eval.stamp aggregate.py
+	$(UV) python aggregate.py
+
+report2: data/phase2-report.md
+
+data/phase2-report.md: manifest.json report2.py report.py
+	$(UV) python report2.py
+
+phase2: sweep train-seeds eval manifest report2
 
 train-ettin:
 	for seed in $(SEEDS); do \
@@ -120,8 +167,8 @@ mixed:
 
 train-mixed: mixed
 	for seed in $(SEEDS); do \
-		$(UV) python train.py --backend ettin --train data/mixed-train.jsonl --eval data/eval.jsonl --epochs 20 --batch-size 8 --learning-rate 1e-4 --seed $$seed --output data/output/mixed-bold-s$$seed; \
-		$(UV) python train.py --backend ettin --train data/mixed-train.jsonl --eval data/eval.jsonl --epochs 20 --batch-size 8 --learning-rate 1e-4 --seed $$seed --output data/output/mixed-nobold-s$$seed --no-bold; \
+		$(UV) python train.py --backend ettin --train data/mixed-train.jsonl --epochs 20 --batch-size 8 --learning-rate 1e-4 --seed $$seed --output data/output/mixed-bold-s$$seed; \
+		$(UV) python train.py --backend ettin --train data/mixed-train.jsonl --epochs 20 --batch-size 8 --learning-rate 1e-4 --seed $$seed --output data/output/mixed-nobold-s$$seed --no-bold; \
 	done
 
 eval-mixed:
@@ -146,7 +193,7 @@ eval-createml:
 	$(UV) python eval.py --backend createml --model data/output/createml-bold
 	$(UV) python eval.py --backend createml --model data/output/createml-nobold
 
-eval: eval-ettin eval-createml
+eval-all: eval-ettin eval-createml
 
 convert:
 	$(UV) python convert.py --model $(MODEL) --palettize
