@@ -1,0 +1,683 @@
+{
+ "unit": "Unicode code points (Swift: unicodeScalars)",
+ "cases": [
+  {
+   "name": "sentences",
+   "text": "First one. Second one? Third!",
+   "segments": [
+    {
+     "start": 0,
+     "end": 10,
+     "kind": "sentence",
+     "text": "First one."
+    },
+    {
+     "start": 11,
+     "end": 22,
+     "kind": "sentence",
+     "text": "Second one?"
+    },
+    {
+     "start": 23,
+     "end": 29,
+     "kind": "sentence",
+     "text": "Third!"
+    }
+   ]
+  },
+  {
+   "name": "paths versions and dotted abbreviations",
+   "text": "Edit src/main.ml. Version v1.2 is out. Use e.g. the cache, i.e. the local one. Done.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 17,
+     "kind": "sentence",
+     "text": "Edit src/main.ml."
+    },
+    {
+     "start": 18,
+     "end": 38,
+     "kind": "sentence",
+     "text": "Version v1.2 is out."
+    },
+    {
+     "start": 39,
+     "end": 78,
+     "kind": "sentence",
+     "text": "Use e.g. the cache, i.e. the local one."
+    },
+    {
+     "start": 79,
+     "end": 84,
+     "kind": "sentence",
+     "text": "Done."
+    }
+   ]
+  },
+  {
+   "name": "url",
+   "text": "See https://example.com/a.b. Then continue.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 28,
+     "kind": "sentence",
+     "text": "See https://example.com/a.b."
+    },
+    {
+     "start": 29,
+     "end": 43,
+     "kind": "sentence",
+     "text": "Then continue."
+    }
+   ]
+  },
+  {
+   "name": "version at the end of a sentence",
+   "text": "It is 1.3.14. Next one is 2.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 13,
+     "kind": "sentence",
+     "text": "It is 1.3.14."
+    },
+    {
+     "start": 14,
+     "end": 28,
+     "kind": "sentence",
+     "text": "Next one is 2."
+    }
+   ]
+  },
+  {
+   "name": "one letter word does not end a sentence",
+   "text": "Pick plan A. Then go. Or B. Then stop.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 21,
+     "kind": "sentence",
+     "text": "Pick plan A. Then go."
+    },
+    {
+     "start": 22,
+     "end": 38,
+     "kind": "sentence",
+     "text": "Or B. Then stop."
+    }
+   ]
+  },
+  {
+   "name": "inline code that looks like a sentence end splits (known limit)",
+   "text": "Run a. B now. Next.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 13,
+     "kind": "sentence",
+     "text": "Run a. B now."
+    },
+    {
+     "start": 14,
+     "end": 19,
+     "kind": "sentence",
+     "text": "Next."
+    }
+   ]
+  },
+  {
+   "name": "list items without a full stop",
+   "text": "Pick one:\n- alpha\n- beta gamma\n\nWhich one?",
+   "segments": [
+    {
+     "start": 0,
+     "end": 9,
+     "kind": "sentence",
+     "text": "Pick one:"
+    },
+    {
+     "start": 10,
+     "end": 17,
+     "kind": "item",
+     "text": "- alpha"
+    },
+    {
+     "start": 18,
+     "end": 30,
+     "kind": "item",
+     "text": "- beta gamma"
+    },
+    {
+     "start": 31,
+     "end": 31,
+     "kind": "blank",
+     "text": ""
+    },
+    {
+     "start": 32,
+     "end": 42,
+     "kind": "sentence",
+     "text": "Which one?"
+    }
+   ]
+  },
+  {
+   "name": "wrapped list item",
+   "text": "1. First item that wraps\n   onto a second row.\n2. Second item",
+   "segments": [
+    {
+     "start": 0,
+     "end": 46,
+     "kind": "item",
+     "text": "1. First item that wraps\n   onto a second row."
+    },
+    {
+     "start": 47,
+     "end": 61,
+     "kind": "item",
+     "text": "2. Second item"
+    }
+   ]
+  },
+  {
+   "name": "paragraph after a list item",
+   "text": "- item one\n  continues\nNext paragraph. Done.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 22,
+     "kind": "item",
+     "text": "- item one\n  continues"
+    },
+    {
+     "start": 23,
+     "end": 38,
+     "kind": "sentence",
+     "text": "Next paragraph."
+    },
+    {
+     "start": 39,
+     "end": 44,
+     "kind": "sentence",
+     "text": "Done."
+    }
+   ]
+  },
+  {
+   "name": "question after options",
+   "text": "Two ways:\n1. A\n2. B\nWhich one do you want?",
+   "segments": [
+    {
+     "start": 0,
+     "end": 9,
+     "kind": "sentence",
+     "text": "Two ways:"
+    },
+    {
+     "start": 10,
+     "end": 14,
+     "kind": "item",
+     "text": "1. A"
+    },
+    {
+     "start": 15,
+     "end": 19,
+     "kind": "item",
+     "text": "2. B"
+    },
+    {
+     "start": 20,
+     "end": 42,
+     "kind": "sentence",
+     "text": "Which one do you want?"
+    }
+   ]
+  },
+  {
+   "name": "sentences across rows",
+   "text": "I looked at the config and found that the\nsetting is off. Should I turn it on?",
+   "segments": [
+    {
+     "start": 0,
+     "end": 57,
+     "kind": "sentence",
+     "text": "I looked at the config and found that the\nsetting is off."
+    },
+    {
+     "start": 58,
+     "end": 78,
+     "kind": "sentence",
+     "text": "Should I turn it on?"
+    }
+   ]
+  },
+  {
+   "name": "pi fenced code",
+   "text": "Run:\n```sh\nmake test. Now\n  make lint\n```\nThen done.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 4,
+     "kind": "sentence",
+     "text": "Run:"
+    },
+    {
+     "start": 5,
+     "end": 10,
+     "kind": "code",
+     "text": "```sh"
+    },
+    {
+     "start": 11,
+     "end": 25,
+     "kind": "code",
+     "text": "make test. Now"
+    },
+    {
+     "start": 28,
+     "end": 37,
+     "kind": "code",
+     "text": "make lint"
+    },
+    {
+     "start": 38,
+     "end": 41,
+     "kind": "code",
+     "text": "```"
+    },
+    {
+     "start": 42,
+     "end": 52,
+     "kind": "sentence",
+     "text": "Then done."
+    }
+   ]
+  },
+  {
+   "name": "pi code never joins the question after it",
+   "text": "```\nx = 1\n```\nShould I keep it?",
+   "segments": [
+    {
+     "start": 0,
+     "end": 3,
+     "kind": "code",
+     "text": "```"
+    },
+    {
+     "start": 4,
+     "end": 9,
+     "kind": "code",
+     "text": "x = 1"
+    },
+    {
+     "start": 10,
+     "end": 13,
+     "kind": "code",
+     "text": "```"
+    },
+    {
+     "start": 14,
+     "end": 31,
+     "kind": "sentence",
+     "text": "Should I keep it?"
+    }
+   ]
+  },
+  {
+   "name": "consecutive blank lines",
+   "text": "A one.\n\n\nB two.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 6,
+     "kind": "sentence",
+     "text": "A one."
+    },
+    {
+     "start": 7,
+     "end": 7,
+     "kind": "blank",
+     "text": ""
+    },
+    {
+     "start": 8,
+     "end": 8,
+     "kind": "blank",
+     "text": ""
+    },
+    {
+     "start": 9,
+     "end": 15,
+     "kind": "sentence",
+     "text": "B two."
+    }
+   ]
+  },
+  {
+   "name": "inline options",
+   "text": "Should I update the docs or keep the change? Reply with a or b.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 44,
+     "kind": "sentence",
+     "text": "Should I update the docs or keep the change?"
+    },
+    {
+     "start": 45,
+     "end": 63,
+     "kind": "sentence",
+     "text": "Reply with a or b."
+    }
+   ]
+  },
+  {
+   "name": "claude rows",
+   "text": "⏺ I see two ways. Which one?\n  - first\n  - second\n    wrapped",
+   "segments": [
+    {
+     "start": 2,
+     "end": 17,
+     "kind": "sentence",
+     "text": "I see two ways."
+    },
+    {
+     "start": 18,
+     "end": 28,
+     "kind": "sentence",
+     "text": "Which one?"
+    },
+    {
+     "start": 31,
+     "end": 38,
+     "kind": "item",
+     "text": "- first"
+    },
+    {
+     "start": 41,
+     "end": 61,
+     "kind": "item",
+     "text": "- second\n    wrapped"
+    }
+   ]
+  },
+  {
+   "name": "claude paragraph rows",
+   "text": "⏺ Row one of the paragraph\n  continues here. Next sentence\n  also wraps?",
+   "segments": [
+    {
+     "start": 2,
+     "end": 44,
+     "kind": "sentence",
+     "text": "Row one of the paragraph\n  continues here."
+    },
+    {
+     "start": 45,
+     "end": 72,
+     "kind": "sentence",
+     "text": "Next sentence\n  also wraps?"
+    }
+   ]
+  },
+  {
+   "name": "claude indented code after a blank row",
+   "text": "⏺ Run this:\n\n    make test\n    make lint\n  Should I go on?",
+   "segments": [
+    {
+     "start": 2,
+     "end": 11,
+     "kind": "sentence",
+     "text": "Run this:"
+    },
+    {
+     "start": 12,
+     "end": 12,
+     "kind": "blank",
+     "text": ""
+    },
+    {
+     "start": 17,
+     "end": 26,
+     "kind": "code",
+     "text": "make test"
+    },
+    {
+     "start": 31,
+     "end": 40,
+     "kind": "code",
+     "text": "make lint"
+    },
+    {
+     "start": 43,
+     "end": 58,
+     "kind": "sentence",
+     "text": "Should I go on?"
+    }
+   ]
+  },
+  {
+   "name": "table rows",
+   "text": "┌──┬──┐\n│ a │ b │\n└──┴──┘",
+   "segments": [
+    {
+     "start": 0,
+     "end": 7,
+     "kind": "table",
+     "text": "┌──┬──┐"
+    },
+    {
+     "start": 8,
+     "end": 17,
+     "kind": "table",
+     "text": "│ a │ b │"
+    },
+    {
+     "start": 18,
+     "end": 25,
+     "kind": "table",
+     "text": "└──┴──┘"
+    }
+   ]
+  },
+  {
+   "name": "lowercase after a question mark",
+   "text": "Is it ab? or cd? Done.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 16,
+     "kind": "sentence",
+     "text": "Is it ab? or cd?"
+    },
+    {
+     "start": 17,
+     "end": 22,
+     "kind": "sentence",
+     "text": "Done."
+    }
+   ]
+  },
+  {
+   "name": "closing quote",
+   "text": "He said \"ok.\" Then left.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 13,
+     "kind": "sentence",
+     "text": "He said \"ok.\""
+    },
+    {
+     "start": 14,
+     "end": 24,
+     "kind": "sentence",
+     "text": "Then left."
+    }
+   ]
+  },
+  {
+   "name": "decimal",
+   "text": "Costs 3.5 dollars. Fine.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 18,
+     "kind": "sentence",
+     "text": "Costs 3.5 dollars."
+    },
+    {
+     "start": 19,
+     "end": 24,
+     "kind": "sentence",
+     "text": "Fine."
+    }
+   ]
+  },
+  {
+   "name": "heading",
+   "text": "### Plan\n\nText here.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 8,
+     "kind": "sentence",
+     "text": "### Plan"
+    },
+    {
+     "start": 9,
+     "end": 9,
+     "kind": "blank",
+     "text": ""
+    },
+    {
+     "start": 10,
+     "end": 20,
+     "kind": "sentence",
+     "text": "Text here."
+    }
+   ]
+  },
+  {
+   "name": "nested list",
+   "text": "- a\n    - b\n- c",
+   "segments": [
+    {
+     "start": 0,
+     "end": 3,
+     "kind": "item",
+     "text": "- a"
+    },
+    {
+     "start": 8,
+     "end": 11,
+     "kind": "item",
+     "text": "- b"
+    },
+    {
+     "start": 12,
+     "end": 15,
+     "kind": "item",
+     "text": "- c"
+    }
+   ]
+  },
+  {
+   "name": "repeated text",
+   "text": "Same.\nSame.\n\nSame.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 5,
+     "kind": "sentence",
+     "text": "Same."
+    },
+    {
+     "start": 6,
+     "end": 11,
+     "kind": "sentence",
+     "text": "Same."
+    },
+    {
+     "start": 12,
+     "end": 12,
+     "kind": "blank",
+     "text": ""
+    },
+    {
+     "start": 13,
+     "end": 18,
+     "kind": "sentence",
+     "text": "Same."
+    }
+   ]
+  },
+  {
+   "name": "non-BMP character and combining sequence",
+   "text": "Look 😀 here. Café is open. Go?",
+   "segments": [
+    {
+     "start": 0,
+     "end": 12,
+     "kind": "sentence",
+     "text": "Look 😀 here."
+    },
+    {
+     "start": 13,
+     "end": 27,
+     "kind": "sentence",
+     "text": "Café is open."
+    },
+    {
+     "start": 28,
+     "end": 31,
+     "kind": "sentence",
+     "text": "Go?"
+    }
+   ]
+  },
+  {
+   "name": "question marks cut a list item, full stops do not",
+   "text": "1. Do it now. Then wait? Should it go on? Yes.\n2. Next. Step.",
+   "segments": [
+    {
+     "start": 0,
+     "end": 24,
+     "kind": "item",
+     "text": "1. Do it now. Then wait?"
+    },
+    {
+     "start": 25,
+     "end": 41,
+     "kind": "sentence",
+     "text": "Should it go on?"
+    },
+    {
+     "start": 42,
+     "end": 46,
+     "kind": "sentence",
+     "text": "Yes."
+    },
+    {
+     "start": 47,
+     "end": 61,
+     "kind": "item",
+     "text": "2. Next. Step."
+    }
+   ]
+  },
+  {
+   "name": "single row",
+   "text": "Plain row",
+   "segments": [
+    {
+     "start": 0,
+     "end": 9,
+     "kind": "sentence",
+     "text": "Plain row"
+    }
+   ]
+  }
+ ]
+}

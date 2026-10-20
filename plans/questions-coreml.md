@@ -51,9 +51,10 @@ From the user and from the first attempt:
   `options: []` (contract unchanged); the labeller records a per-question
   `kind` (`choice`, `yes_no` or `open`) in the label data only, never in
   the CLI output, and the eval reports its metrics with and without
-  `open` questions. The eval uses 3 samples on 500 real texts; the $50
-  cap stays; if a full run would exceed the remainder, the manager cuts
-  the run size, not the cap.
+  `open` questions. The eval uses 3 samples on real texts (500, cut to
+  400 after the phase 1 cost measure); the $50 cap stays; if a full run
+  would exceed the remainder, the manager cuts the run size, not the
+  cap.
 - Role models. Implementers: `claude-bridge/claude-sonnet-5-5`. Managers:
   `claude-bridge/claude-opus-5-5`. Simplify reviewers: a mix of
   `claude-bridge/claude-opus-5-5` and `openai-codex/gpt-6-astra`.
@@ -126,8 +127,11 @@ Hugging Face offsets only with the NFC position mapping.
    A head tags the first token of each segment `B-Q`, `I-Q` or `O`; the
    loss ignores every other token. A question is a `B-Q` segment and the
    `I-Q` segments after it, its list items and blank lines inside it
-   included. The question's substring runs from the start of its first
-   segment to the end of its last segment. A question whose text comes
+   included. The question's substring runs from the first character of
+   its first segment after that segment's indent and turn marker (`⏺ `)
+   to the last non-space character of its last segment. List markers of
+   option rows inside it stay. Gold labels, predictions and every metric
+   use this one range rule. A question whose text comes
    after its options ("Two ways: 1. A 2. B. Which one?") starts at the
    first segment that belongs to it.
 
@@ -136,14 +140,16 @@ Hugging Face offsets only with the NFC position mapping.
    only for the labeller's view. The spike's measure decides (phase 1).
 3. **Options.** A second pass reads the text of one question only and tags
    option spans in it (`B-OPT`, `I-OPT`, `O`). The input is tens of
-   tokens. The spike decides between one encoder with two heads and two
-   models. Training inputs are the gold questions, plus a share (about
-   20%) of gold questions with one segment added or removed at either
-   end, so the pass is robust to a boundary error of the first pass.
+   tokens. Phase 3 compares two models against one encoder trained
+   jointly on both tasks, 3 seeds each, and picks by dev (phase 1 showed
+   no gap outside seed noise). Training inputs are the gold questions,
+   plus a share (about 20%) of gold questions with one segment added or
+   removed at either end, so the pass is robust to a boundary error of
+   the first pass.
 4. **Length and chunks.** The model reads up to 1,024 tokens in one call.
-   Whole messages rarely exceed it: 0.3% of 5,429 sampled pi assistant
-   messages exceed 4,000 characters, and the longest is about 8,000.
-   Phase 1 confirms this with the tokenizer. Longer text is cut into
+   Chunking is a common case: phase 1 measured that 7.2% of the texts
+   with a `?` exceed 1,024 tokens (p90 867, p99 2,390). Phase 4 measures
+   a 2,048 shape against chunking at 1,024. Longer text is cut into
    chunks of 1,024 tokens that overlap by 512, cut at paragraph
    boundaries. A question that touches a chunk edge is dropped in that
    chunk; each question is kept from the chunk where it is farthest from
@@ -163,11 +169,13 @@ Hugging Face offsets only with the NFC position mapping.
   exact labels, but there are only about 16 calls (26 questions, 21 texts
   in the first attempt). They are an eval part, not a data source of any
   size.
-- **Selection:** a text is a positive candidate when a paragraph outside
-  a code block contains `?`; the rest are negative candidates. Target
-  about the first attempt's counts: about 2,100 real texts for train and
-  dev, about half positive candidates, and every text with two or more
-  `?` paragraphs that the scan finds, up to the budget below.
+- **Selection:** a text is a positive candidate when a segment outside
+  code contains `?`; the rest are negative candidates. DeepSeek labels
+  only positive candidates. A negative candidate gets an empty label
+  without a call, except a random sample of 150 of them, labelled to
+  measure the share of questions without a `?`: above 2%, report it and
+  decide then. Every positive candidate with two or more `?` segments
+  that the scan finds is taken, then the rest, up to the budget below.
 - **Renderer check first:** compare the lines of one real pi question
   and one real Claude Code question, read from the app, with the
   renderer's lines for the same transcript turn at the same width. The
@@ -251,7 +259,12 @@ Hugging Face offsets only with the NFC position mapping.
   labeller settings on the spike's 100 texts (see "Phases"). Phase 2
   picks the labeller setting and the run sizes from that comparison so
   the whole phase fits the remainder, and the manager cuts the run size
-  if a computed full-run cost exceeds it.
+  if a computed full-run cost exceeds it. Phase 1 decided: thinking mode
+  stays at $0.0068 per text (thinking off was $0.0008 but dropped 19%
+  and agreed only 62%). The ledger is at $27.13, remainder $22.87. Order
+  of the phase 2 runs: the eval first, 400 real texts × 3 samples (about
+  $8.2), then the 150 negative sample, then train with what is left
+  minus a $2 reserve.
 
 ## Metrics
 
@@ -373,28 +386,76 @@ advice or a question to `advisor`.
    session plan and eval set, the labelling of all texts with v4-pro, the
    split, the manifest. The check by eye. Deliverable: the labelled set,
    the eval set, the manifest and the spend.
-3. **Training and eval.** Both passes, a small sweep on dev only, 3 seeds,
-   error counts per kind (merge, split, boundary, missed option, spurious
+3. **Training and eval.** Both passes; two models against one jointly
+   trained encoder, 3 seeds each, picked by dev; a small sweep on dev
+   only; 3 seeds; error counts per kind (merge, split, boundary, missed option, spurious
    option, false question, missed question). Deliverable: a checkpoint
    and the report, against the baseline.
 4. **Core ML and CLI.** One fixed-shape function per pass (1,024 tokens
-   for questions; the option pass's shape from the question token lengths
-   measured in phase 3), parity against PyTorch, latency, `uv run
-   extract`. Deliverable: the package and three example commands for the
+   for questions, and a 2,048 function measured against chunking at
+   1,024 on the eval texts over 1,024 tokens; the option pass's shape
+   from the question token lengths measured in phase 3), parity against
+   PyTorch, latency, `uv run extract`. Deliverable: the package and three example commands for the
    user.
 
 App integration follows as a separate plan after phase 4. It ports the
 splitter and the chunking to Swift against the shared test file.
 
+## Phase 1 results
+
+Measured on 2026-10-20 by p1-impl, corrected by the results review and
+rescored. The splitter is frozen.
+
+- **Segments: go.** The range rule (`segments.trimmed()`) is used
+  everywhere. 255 of 258 question boundaries (98.84%) fall on a segment
+  boundary, on 96 labelled texts with 129 questions (74.4% before
+  tuning). This is an upper bound: the splitter was tuned on the same
+  texts; phase 2 re-measures on fresh labels. The fixes: the range rule;
+  inside a list item, cut only after `?`. The sentence rule is 2 or more
+  letters or digits before the mark, with an exception for dotted
+  initials. Known limit: Claude Code code rows without indent and
+  without a blank row merge with the next paragraph.
+- **Labels.** Thinking mode: 96 of 100 labelled, 4 dropped on length at
+  12,000 tokens; kinds `yes_no` 67, `choice` 51, `open` 11; 117 options;
+  $0.0068 per text. Thinking off: $0.0008 per text. Of 93 thinking-mode
+  questions, 62 (67%) have the same range without thinking, and 87% of
+  those the same option set. Thinking mode stays. Drop bias: on
+  multi-question texts, thinking dropped 4 of 25 and no-thinking 8 of
+  25; on the other texts 0 of 75 and 11 of 75. Thus length drops and the
+  eval's agreement filter both hide multi-question cases: phase 2 reports
+  the drops on the multi-question subset as a known bias, and may use
+  `max_tokens` 16,000 for the eval only if the spend allows.
+- **Tokens** (special tokens included; `data/tokens-manifest.jsonl`).
+  Population: raw assistant text blocks. All 49,101 blocks: p99 1,102,
+  1.2% over 1,024. The 3,618 blocks with a `?` outside code: p50 410,
+  p90 856, p99 2,226, 7.05% over 1,024. The 76 spike positives: 5.3%
+  over. Phase 2 measures the share again on the labelled texts.
+- **Baseline** (the old checkpoint, new metrics, 96 texts, one range
+  rule for gold and predictions): question F1 0.372, count exact 75%,
+  whole-output exact 37.5%, merges 4, splits 1, option F1 end to end
+  0.008, FPR 30% (6 of 20). The first report (F1 0.14, exact 21.9%)
+  compared untrimmed gold with trimmed predictions.
+- **Two heads against two models.** Rescored on the original gold with
+  the plan's windows (coverage 104 of 106 train and 22 of 23 test
+  questions, 16 test texts), head lr 1e-3, 3 seeds, question F1 / option
+  F1: question only 0.692 / 0.003; control 0.661 / 0.002; sequential
+  0.608 / 0.016; joint 0.651 / 0.165; option model alone, 8 epochs,
+  0.137. Every gap is within seed noise (SD 0.03 to 0.05). A shared
+  encoder with joint training is not shown to hurt. Decision: phase 3
+  compares two models against one encoder trained jointly on the full
+  data, 3 seeds each on dev, and picks by dev.
+- **Spend.** Ledger $27.13, remainder $22.87.
+
 ## To confirm with the user
 
-The open-question rule with `kind`, and 3 samples on 500 real eval texts
-under the unchanged $50 cap (under "Decisions").
+The open-question rule with `kind`, 3 samples on 400 real eval texts
+under the unchanged $50 cap, and labelling only texts with a `?` (under
+"Decisions" and "Spend").
 
 ## Open items
 
-- One encoder with two heads, or two models (phase 1 spike).
 - The option pass's input shape (phase 3 measures question lengths).
+- A 2,048 shape against chunking at 1,024 (phase 4 measures).
 
 ## Changes from advice
 
@@ -426,3 +487,21 @@ under the unchanged $50 cap (under "Decisions").
   `length` was 61% of the smoke spend. A stop on `length` is now dropped
   and counted, not resampled, and `max_tokens` is 10,000 to 12,000
   ("Spend", "What moves").
+- 2026-10-20, phase 1 results, decided by the top-level session: two
+  models; chunking is common (7.2% of `?` texts over 1,024 tokens), so
+  phase 4 measures 2,048; thinking mode stays; DeepSeek labels only `?`
+  texts plus 150 sampled negatives; eval 400 × 3 first, then train from
+  the remainder minus $2 ("Phase 1 results", "Design", "Data",
+  "Spend").
+- 2026-10-20, p1-results: gold kept the indent and turn marker while
+  predictions were trimmed. "Design" item 2 now has one range rule for
+  gold, predictions and metrics; the baseline numbers are corrected
+  (F1 0.37, exact 37.5%, merges 4); the head test is marked provisional
+  and phase 3 may try joint training cheaply; the token share names its
+  population.
+- 2026-10-20, step C rescoring, decided by the top-level session: the
+  head test shows no gap outside seed noise, so phase 3 compares two
+  models against one jointly trained encoder and picks by dev; the
+  baseline, token and labeller numbers are replaced; length drops and
+  the agreement filter hide multi-question texts, recorded as a known
+  bias with a 16,000 `max_tokens` option for the eval.
