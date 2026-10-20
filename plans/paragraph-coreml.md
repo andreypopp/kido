@@ -1,6 +1,7 @@
 # Plan: a Core ML tagger for Shift paragraphs
 
-Status: phase 0 done (see "Phase 0 results"); code in `app/ml/`. Date: 2026-10-20. Updated with the user's
+Status: phases 0 and 1 done (see "Phase 0 results" and "Phase 1 data");
+code in `app/ml/`. Date: 2026-10-20. Updated with the user's
 decisions: Core ML detection only, English only, DeepSeek as the labeller, no hand labelling, no pi
 extension change, FoundationModels is deleted when the tagger passes.
 
@@ -663,6 +664,89 @@ lines and 20 Swift lines.
 - Hardware: the MPS driver peak is 7 to 8 GB, not under 10 GB of
   allocations; the M5 Max is enough. Phase 2 sweeps over the 32m model
   take minutes, not hours.
+
+## Phase 1 data
+
+Built on 2026-10-20. The full tables are in `app/ml/data/phase1-report.md`
+(gitignored, counts only). `app/ml/manifest.json` holds only what the stages
+record: counts, hashes, settings, prompt hash, redaction version, seed,
+DeepSeek model versions and spend. `make pipeline` runs the stages as file
+targets: render, session plan (frozen), label, eval-label, eval set, split,
+manifest, report; synthetic runs on its own.
+
+**Rendering and selection.** 4,106 rendered contexts (3,557 distinct) from
+1,106 pi and Claude Code sessions; 11,480 examples after hover variants.
+Labels do not depend on the hover: the labeller gets the context without the
+`>` marker, labels each context family once, and the label is attached to
+every hover variant. (With the old per-hover prompt, 323 of 2,949 families
+got different labels for different hovers.) The session plan assigns 212
+sessions to eval before any labelling: 600 distinct eval families, 300 with a
+question mark and 300 without. Eval sessions and context families never
+appear in train or dev (union over session and family).
+
+**Splits** (examples; positive = the hovered paragraph is in a question
+unit; option spans split into list lines and inline options):
+
+| Split | Part | Examples | Positive | Negative | Option spans (list / inline) | Families | Sessions |
+|---|---|---:|---:|---:|---:|---:|---:|
+| train | Claude Code | 2,797 | 241 | 2,556 | 141 / 18 | 822 | 274 |
+| train | pi | 4,004 | 165 | 3,839 | 154 / 25 | 1,231 | 593 |
+| train | synthetic | 4,941 | 2,670 | 2,271 | 4,756 / 966 | 4,941 | 1,526 |
+| eval | tool call | 21 | 21 | 0 | 60 / 0 | 21 | 8 |
+| eval | real (`deepseek-v4-pro`) | 1,567 | 206 | 1,361 | 0 / 139 | 496 | 150 |
+| eval | held-out synthetic | 287 | 154 | 133 | 248 / 50 | 287 | 76 |
+
+Train: 11,742 examples (6,801 real, 4,941 synthetic), 74% negative; 112
+variants of 34 rejected families have no label. Dev (from train sessions):
+1,764 examples, 365 sessions, 932 option spans, of which 60 are real. Dedup
+removed 1,073 near duplicates from train, and 5 exact and 15 near duplicates
+from eval. The synthetic generator has 22 train and 12 eval template families.
+Real data is option-poor: about 2,050 labelled real train families hold 338
+option spans in their hover variants.
+
+**Labellers.** One option convention, applied in `validate.py` to every
+label: an option on a list-marker line has the line class `option`; an
+option inside a question sentence is inline and its line stays `question`.
+
+| Labeller | Families | Accepted | Rejected or dropped | Cost |
+|---|---:|---:|---:|---:|
+| `deepseek-flash` (V4.1-Flash-1017), non-thinking, 1 sample | 2,101 | 2,067 | 34 (1.6%) | $2.51 |
+| `deepseek-v4-pro` (V4-Pro-0813), thinking, 5 samples | 600 | 498 | 75 disagree, 27 invalid | $18.37 |
+| `deepseek-v4-pro` diagnostic on train families, 1 sample | 300 | 265 | 35 | $1.66 |
+
+Total spend for phase 1: $22.53 (cache hits at the hit price), off-peak.
+The first flash run paid for every context twice (about $1.1 lost) because
+resume keyed on record ids; the response cache now keys on the request body. Flash
+rejections by class: missing option text 59, option markup 21, no question
+11, duplicate option 6, other 2. DeepSeek ignores `temperature` in thinking
+mode, so the 5 samples differ only by the model's own sampling; the filter
+still rejected 17% of the contexts.
+
+**Labeller disagreement** (300 train families with a question, flash
+against one v4-pro sample, after the option convention): line classes agree
+in 86%, the question unit in 93%, the option set in 74%. Where the option
+sets differ, v4-pro has more inline options in 47 families, more list
+options in 15, flash has more in 2. Flash under-labels inline options.
+
+**Sanity check, not a phase 2 result.** Ettin-32m, one epoch, one seed, no
+bold: question F1 0.939, option exact F1 0.743, unit accuracy 0.990,
+question FPR 0.27%. On the real eval part alone option exact F1 is 0.029:
+its 139 option spans are all inline, and the real train labels hold only 43
+inline spans.
+
+**Changes for phase 2.**
+
+- Inline options are the gap. The real eval's options are inline, and flash
+  under-labels them. Before training, relabel the train families that have a
+  question with `deepseek-v4-pro` (one sample, thinking; about $2 for the
+  370 families with a question, about $11 for all 2,067), or add inline options to the flash prompt and measure
+  it again with the diagnostic. Add more inline forms to the synthetic train
+  families.
+- The real eval part and the training labels then come from the same model.
+  The plan's limit "agreement with a stronger model, not with the user"
+  applies more strongly; phase 5's misses stay the only correction.
+- Real option spans in dev are 60; rank configurations on the real dev part
+  separately from the synthetic part.
 
 ## Later
 

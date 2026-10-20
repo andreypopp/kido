@@ -132,3 +132,71 @@ def test_render_ask_is_question_and_numbered_bold_labels() -> None:
     rows = render_markdown(render_ask("Which one?", ["Red", "Blue"]), 80)
     lines = [line.text for line in logical_lines(rows)]
     assert lines == ["Which one?", "", "1. **Red**", "2. **Blue**"]
+
+
+def test_hover_variants_keep_labels_and_context() -> None:
+    from render import context_record, derive_variants
+
+    rows = [
+        Row("First paragraph.", False),
+        Row("", False),
+        Row("Which option should I use?", False),
+        Row("", False),
+        Row("1. alpha", False),
+        Row("2. beta", False),
+        Row("", False),
+        Row("Last paragraph.", False),
+    ]
+    context = cut_context(rows, 2)
+    assert context is not None
+    record = context_record(
+        session="s",
+        source="pi",
+        context=context,
+        width=80,
+        user="a-user",
+        label={"lines": ["other", "other", "question", "other", "option", "option"], "options": []},
+    )
+    assert record is not None
+    import random
+
+    variants = derive_variants(record, random.Random(0), maximum=3)
+    assert len(variants) == 3
+    assert len({variant["context_id"] for variant in variants}) == 1
+    assert len({variant["id"] for variant in variants}) == 3
+    assert variants[0]["hovered"] == record["hovered"]
+    for variant in variants:
+        start, end = variant["ranges"][variant["hovered"]]
+        assert all(
+            line.startswith(">") or line.startswith(" ")
+            for line in variant["prompt"].splitlines()
+        )
+        marked = [
+            index
+            for index, line in enumerate(variant["prompt"].splitlines())
+            if line.startswith(">")
+        ]
+        assert marked == list(range(start, end + 1))
+
+
+def test_detached_removes_the_hover_marker_only() -> None:
+    from render import detached
+
+    assert detached("> 1: alpha\n  2: beta") == "  1: alpha\n  2: beta"
+    assert detached("no marker") == "no marker"
+
+
+def test_normalized_ignores_hover_unless_asked() -> None:
+    from render import normalized
+
+    prompt = "> 1: alpha   beta\n  2: gamma"
+    assert normalized(prompt) == "alpha beta\ngamma"
+    assert normalized(prompt, hover=True) == "> alpha beta\n  gamma"
+
+
+def test_hash_records_is_order_independent() -> None:
+    from render import hash_records
+
+    first = [{"id": "a", "prompt": "x"}, {"id": "b", "prompt": "y"}]
+    second = list(reversed(first))
+    assert hash_records(first) == hash_records(second)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import hashlib
 import json
 import random
 import re
@@ -14,10 +16,12 @@ import regex
 from markdown_it import MarkdownIt
 
 GRAPHEME = regex.compile(r"\X")
-MARKER = re.compile(r"^\s*(?:[-*•]\s+|\d+[.)]\s+|[A-Za-z]\)\s+)")
+MARKER = re.compile(
+    r"^\s*(?:\[[ xX]\]\s*|[-*•❯]\s+|\d+[.)]\s+|[A-Za-z][.)]\s+)"
+)
 PROMPT_LINE = re.compile(r"^([ >]) (\d+): (.*)$")
 SEED = 0
-TARGET_CONTEXTS = 460
+REDACTION_VERSION = 2
 CONTEXT_BEFORE = 2
 CONTEXT_AFTER = 2
 LINE_LIMIT = 60
@@ -369,7 +373,7 @@ def format_prompt(
 
 def read_jsonl(path: Path) -> list[dict[str, object]]:
     if not path.exists():
-        return []
+        raise FileNotFoundError(f"missing input: {path}")
     return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
@@ -378,6 +382,87 @@ def write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record) + "\n")
+
+
+def read_json(path: Path) -> object | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def file_hash(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def hash_records(records: list[dict[str, object]], field: str = "prompt") -> str:
+    digest = hashlib.sha256()
+    for record in sorted(records, key=lambda item: str(item["id"])):
+        digest.update(str(record["id"]).encode())
+        digest.update(json.dumps(record.get(field), sort_keys=True).encode())
+    return digest.hexdigest()
+
+
+def normalized(prompt: str, hover: bool = False) -> str:
+    values = []
+    for line in prompt.splitlines():
+        match = PROMPT_LINE.match(line)
+        marker = match.group(1) if match else ""
+        text = match.group(3) if match else line
+        prefix = marker + " " if hover and match else ""
+        values.append(prefix + " ".join(text.split()))
+    return "\n".join(values)
+
+
+def detached(prompt: str) -> str:
+    values = []
+    for line in prompt.splitlines():
+        match = PROMPT_LINE.match(line)
+        if match:
+            values.append(" " + " " + match.group(2) + ": " + match.group(3))
+        else:
+            values.append(line)
+    return "\n".join(values)
+
+
+def family_digest(prompt: str) -> str:
+    return hashlib.sha256(normalized(prompt).encode()).hexdigest()
+
+
+def exact_digest(prompt: str) -> str:
+    return hashlib.sha256(normalized(prompt, hover=True).encode()).hexdigest()
+
+
+def block_text(record: dict[str, object], index: int) -> str:
+    start, end = record["ranges"][index]
+    return " ".join(
+        str(record["lines"][line]["text"]) for line in range(start, end + 1)
+    )
+
+
+def hovered_text(record: dict[str, object]) -> str:
+    return block_text(record, int(record["hovered"]))
+
+
+def hover_question(record: dict[str, object]) -> bool:
+    return "?" in hovered_text(record)
+
+
+def part_of(record: dict[str, object]) -> str:
+    return str(record.get("part") or record.get("source") or "real")
+
+
+def variant(record: dict[str, object], index: int) -> dict[str, object]:
+    lines = tuple(Line((0, 0), str(item["text"])) for item in record["lines"])
+    ranges = [tuple(pair) for pair in record["ranges"]]
+    prompt = format_prompt(lines, ranges, index)
+    return {
+        **record,
+        "id": record_id(str(record["session"]), str(record["source"]), prompt),
+        "prompt": prompt,
+        "hovered": index,
+    }
 
 
 def render_ask(question: str, labels: list[str]) -> str:
@@ -469,6 +554,26 @@ def ask_label(record: dict[str, object]) -> dict[str, object] | None:
     return {"lines": classes, "options": options}
 
 
+
+PI_POSITIVES = 1000
+PI_NEGATIVES = 2000
+CLAUDE_POSITIVES = 700
+CLAUDE_NEGATIVES = 1200
+SCAN_LIMIT = 20000
+PER_SESSION = 10000
+POSITIVE_PER_SESSION = 200
+NEGATIVE_PER_SESSION = 15
+MAX_VARIANTS = 3
+
+
+def record_id(session: str, source: str, prompt: str) -> str:
+    return hashlib.sha256(f"{session}\0{source}\0{prompt}".encode()).hexdigest()[:20]
+
+
+def _context_id(prompt: str) -> str:
+    return family_digest(prompt)
+
+
 def context_record(
     *,
     session: str,
@@ -480,13 +585,12 @@ def context_record(
     label: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
     redacted = redact_context(context, user)
-    identifier = __import__("hashlib").sha256(
-        f"{session}\0{source}\0{redacted.prompt}".encode()
-    ).hexdigest()[:20]
+    identifier = record_id(session, source, redacted.prompt)
     record: dict[str, object] = {
         "id": identifier,
         "session": session,
         "source": source,
+        "context_id": _context_id(redacted.prompt),
         "prompt": redacted.prompt,
         "lines": prompt_lines(redacted.prompt),
         "hovered": redacted.hovered,
@@ -495,7 +599,6 @@ def context_record(
     }
     if ask is not None:
         record["ask"] = ask
-    if ask is not None:
         gold = ask_label(record)
         if gold is None:
             return None
@@ -535,10 +638,60 @@ def _candidate_context(
     )
 
 
-def _pi_texts(root: Path, rng: random.Random, limit: int):
+def option_like(record: dict[str, object]) -> bool:
+    ranges = record["ranges"]
+    hovered = int(record["hovered"])
+    text = block_text(record, hovered)
+    if "?" in text or " or " in text or text.rstrip().endswith(":"):
+        return True
+    if hovered + 1 < len(ranges):
+        following = str(record["lines"][ranges[hovered + 1][0]]["text"])
+        return bool(MARKER.match(following)) or bool(re.match(r"^\s*\[[ xX]\]", following))
+    return False
+
+
+def hard_negative(record: dict[str, object]) -> bool:
+    for line in record["lines"]:
+        text = str(line["text"])
+        if MARKER.match(text) or text.startswith("| ") or text.startswith("  "):
+            return True
+    return False
+
+
+def derive_variants(
+    record: dict[str, object], rng: random.Random, maximum: int = MAX_VARIANTS
+) -> list[dict[str, object]]:
+    ranges = [tuple(pair) for pair in record["ranges"]]
+    hovered = int(record["hovered"])
+    preferred: list[int] = []
+    others: list[int] = []
+    for index in range(len(ranges)):
+        text = block_text(record, index)
+        following = ""
+        if index + 1 < len(ranges):
+            following = str(record["lines"][ranges[index + 1][0]]["text"])
+        if "?" in text or " or " in text or MARKER.match(following):
+            preferred.append(index)
+        else:
+            others.append(index)
+    rng.shuffle(preferred)
+    rng.shuffle(others)
+    order = [hovered]
+    order += [index for index in preferred if index != hovered]
+    order += [index for index in others if index != hovered]
+    order = order[:maximum]
+    return [
+        {**variant(record, index), "variant": position}
+        for position, index in enumerate(order)
+    ]
+
+
+def _pi_texts(
+    root: Path, rng: random.Random, *, per_session: int = PER_SESSION, limit: int = SCAN_LIMIT
+):
     files = sorted(root.rglob("*.jsonl"))
     rng.shuffle(files)
-    per_session: dict[str, int] = {}
+    counts: dict[str, int] = {}
     count = 0
     for path in files:
         session = path.stem
@@ -555,8 +708,8 @@ def _pi_texts(root: Path, rng: random.Random, limit: int):
                         continue
                     if item.get("type") == "session" and isinstance(item.get("id"), str):
                         session = item["id"]
-                    if per_session.get(session, 0) >= 2:
-                        break
+                    if counts.get(session, 0) >= per_session:
+                        continue
                     message = item.get("message")
                     if item.get("type") != "message" or not isinstance(message, dict):
                         continue
@@ -571,19 +724,21 @@ def _pi_texts(root: Path, rng: random.Random, limit: int):
                         text = block.get("text")
                         if not isinstance(text, str) or len(text) < 300:
                             continue
-                        if per_session.get(session, 0) >= 2:
-                            continue
-                        per_session[session] = per_session.get(session, 0) + 1
+                        if counts.get(session, 0) >= per_session:
+                            break
+                        counts[session] = counts.get(session, 0) + 1
                         count += 1
                         yield session, "pi", text
         except OSError:
             continue
 
 
-def _claude_texts(root: Path, rng: random.Random, limit: int):
+def _claude_texts(
+    root: Path, rng: random.Random, *, per_session: int = PER_SESSION, limit: int = SCAN_LIMIT
+):
     files = sorted(root.rglob("*.jsonl"))
     rng.shuffle(files)
-    per_session: dict[str, int] = {}
+    counts: dict[str, int] = {}
     count = 0
     for path in files:
         session = path.stem
@@ -600,8 +755,8 @@ def _claude_texts(root: Path, rng: random.Random, limit: int):
                         continue
                     if isinstance(item.get("sessionId"), str):
                         session = item["sessionId"]
-                    if per_session.get(session, 0) >= 2:
-                        break
+                    if counts.get(session, 0) >= per_session:
+                        continue
                     message = item.get("message")
                     if item.get("type") != "assistant" or not isinstance(message, dict):
                         continue
@@ -609,17 +764,16 @@ def _claude_texts(root: Path, rng: random.Random, limit: int):
                     if not isinstance(content, list):
                         continue
                     for block in content:
-                        if not isinstance(block, dict):
+                        if not isinstance(block, dict) or block.get("type") != "text":
                             continue
-                        if block.get("type") == "text":
-                            text = block.get("text")
-                            if not isinstance(text, str) or len(text) < 300:
-                                continue
-                            if per_session.get(session, 0) >= 2:
-                                continue
-                            per_session[session] = per_session.get(session, 0) + 1
-                            count += 1
-                            yield session, "claude", text
+                        text = block.get("text")
+                        if not isinstance(text, str) or len(text) < 300:
+                            continue
+                        if counts.get(session, 0) >= per_session:
+                            break
+                        counts[session] = counts.get(session, 0) + 1
+                        count += 1
+                        yield session, "claude", text
         except OSError:
             continue
 
@@ -667,7 +821,8 @@ def _claude_asks(root: Path):
                             labels = [
                                 option["label"]
                                 for option in options
-                                if isinstance(option, dict) and isinstance(option.get("label"), str)
+                                if isinstance(option, dict)
+                                and isinstance(option.get("label"), str)
                             ]
                             if labels:
                                 yield session, text, labels
@@ -675,87 +830,150 @@ def _claude_asks(root: Path):
             continue
 
 
+def _take(
+    pool: list[tuple[str, str, str]],
+    quota: int,
+    positive: bool,
+    rng: random.Random,
+    user: str,
+    prefer,
+    prefer_quota: int,
+    per_session: int,
+) -> list[dict[str, object]]:
+    used: set[int] = set()
+    taken: list[dict[str, object]] = []
+    counts: dict[str, int] = {}
+    if prefer_quota > 0:
+        for index, (session, source, text) in enumerate(pool):
+            if len(taken) >= prefer_quota:
+                break
+            if counts.get(session, 0) >= per_session:
+                continue
+            record = _candidate_context(
+                text, session, source, positive, sample_width(rng), rng, user
+            )
+            if record is not None and prefer(record):
+                taken.append(record)
+                used.add(index)
+                counts[session] = counts.get(session, 0) + 1
+    for index, (session, source, text) in enumerate(pool):
+        if len(taken) >= quota:
+            break
+        if index in used:
+            continue
+        if counts.get(session, 0) >= per_session:
+            continue
+        record = _candidate_context(
+            text, session, source, positive, sample_width(rng), rng, user
+        )
+        if record is not None:
+            taken.append(record)
+            counts[session] = counts.get(session, 0) + 1
+    return taken
+
+
+def _pool(pool: list[tuple[str, str, str]], positive: bool, rng: random.Random):
+    values = [
+        entry
+        for entry in pool
+        if ("?" in entry[2][-300:]) is positive
+    ]
+    rng.shuffle(values)
+    return values
+
+
 def build_dataset(
-    root: Path, output: Path, user: str, *, total: int = TARGET_CONTEXTS
+    root: Path,
+    output: Path,
+    user: str,
+    *,
+    quota_scale: float = 1.0,
+    scan_limit: int = SCAN_LIMIT,
+    per_session: int = PER_SESSION,
 ) -> dict[str, int]:
     rng = random.Random(SEED)
-    asks = list(_claude_asks(root / ".claude" / "projects"))
+    claude_root = root / ".claude" / "projects"
+
     ask_records: list[dict[str, object]] = []
-    for ask_index, (session, question, labels) in enumerate(asks):
+    for session, question, labels in _claude_asks(claude_root):
         width = sample_width(rng)
-        record = _candidate_context(
-            render_ask(question, labels),
-            session,
-            "ask",
-            True,
-            width,
-            rng,
-            user,
+        rows = render_markdown(render_ask(question, labels), width)
+        blocks = partition_blocks(logical_lines(rows))
+        if not blocks:
+            continue
+        context = cut_context(rows, blocks[0].lines[0].rows[0])
+        if context is None:
+            continue
+        record = context_record(
+            session=session,
+            source="ask",
+            context=context,
+            width=width,
+            user=user,
             ask={"question": question, "labels": labels},
         )
         if record is not None:
             ask_records.append(record)
-        if ask_index >= 99:
-            break
 
-    target = max(total, len(ask_records) + 20)
-    positive_text = max(0, target // 2 - len(ask_records))
-    negative_text = target - len(ask_records) - positive_text
+    pi_pool = list(
+        _pi_texts(
+            root / ".pi" / "agent" / "sessions",
+            rng,
+            per_session=per_session,
+            limit=scan_limit,
+        )
+    )
+    claude_pool = list(_claude_texts(claude_root, rng, per_session=per_session, limit=scan_limit))
 
-    candidates: dict[str, list[tuple[str, str, str]]] = {"positive": [], "negative": []}
-    pi_root = root / ".pi" / "agent" / "sessions"
-    for session, source, text in _pi_texts(pi_root, rng, 8000):
-        kind = "positive" if "?" in text[-300:] else "negative"
-        candidates[kind].append((session, source, text))
-    claude_root = root / ".claude" / "projects"
-    for session, source, text in _claude_texts(claude_root, rng, 2500):
-        kind = "positive" if "?" in text[-300:] else "negative"
-        candidates[kind].append((session, source, text))
+    contexts: list[dict[str, object]] = []
+    for pool, positives, negatives in (
+        (pi_pool, PI_POSITIVES, PI_NEGATIVES),
+        (claude_pool, CLAUDE_POSITIVES, CLAUDE_NEGATIVES),
+    ):
+        positives = int(positives * quota_scale)
+        negatives = int(negatives * quota_scale)
+        contexts += _take(
+            _pool(pool, True, rng),
+            positives,
+            True,
+            rng,
+            user,
+            option_like,
+            positives // 2,
+            POSITIVE_PER_SESSION,
+        )
+        contexts += _take(
+            _pool(pool, False, rng),
+            negatives,
+            False,
+            rng,
+            user,
+            hard_negative,
+            negatives // 2,
+            NEGATIVE_PER_SESSION,
+        )
 
-    records: list[dict[str, object]] = []
-    for kind, wanted in (("positive", positive_text), ("negative", negative_text)):
-        pool = candidates[kind]
-        rng.shuffle(pool)
-        taken = 0
-        for session, source, text in pool:
-            if taken >= wanted:
-                break
-            record = _candidate_context(
-                text, session, source, kind == "positive", sample_width(rng), rng, user
-            )
-            if record is None:
-                continue
-            records.append(record)
-            taken += 1
-
-    records.extend(ask_records)
+    records: list[dict[str, object]] = list(ask_records)
+    for record in contexts:
+        records.extend(derive_variants(record, rng))
     records.sort(key=lambda item: str(item["id"]))
     write_jsonl(output, records)
 
     def count(kind: str) -> int:
         return sum(1 for record in records if record["source"] == kind)
 
-    positive = sum(
-        1
-        for record in records
-        if record["source"] == "ask"
-        or any(
-            "?" in str(record["lines"][index]["text"])
-            for index in range(
-                int(record["ranges"][int(record["hovered"])][0]),
-                int(record["ranges"][int(record["hovered"])][1]) + 1,
-            )
-        )
-    )
     return {
-        "contexts": len(records),
+        "examples": len(records),
+        "contexts": len({str(record["context_id"]) for record in records}),
+        "labelled_contexts": len(contexts) + len(ask_records),
         "pi": count("pi"),
         "claude": count("claude"),
         "ask": count("ask"),
-        "ask_calls": len(asks),
-        "positive": positive,
-        "negative": len(records) - positive,
+        "ask_calls": len(ask_records),
+        "hover_question": sum(1 for record in records if hover_question(record)),
+        "hover_other": sum(1 for record in records if not hover_question(record)),
         "sessions": len({str(record["session"]) for record in records}),
+        "hash": hash_records(records),
     }
 
 
@@ -763,10 +981,41 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.home())
     parser.add_argument("--output", type=Path, default=Path("data/contexts.jsonl"))
-    parser.add_argument("--user", default=__import__("getpass").getuser())
-    parser.add_argument("--total", type=int, default=TARGET_CONTEXTS)
+    parser.add_argument("--user", default=getpass.getuser())
+    parser.add_argument("--quota-scale", type=float, default=1.0)
+    parser.add_argument("--scan-limit", type=int, default=SCAN_LIMIT)
+    parser.add_argument("--per-session", type=int, default=PER_SESSION)
     args = parser.parse_args(argv)
-    counts = build_dataset(args.root, args.output, args.user, total=args.total)
+    counts = build_dataset(
+        args.root,
+        args.output,
+        args.user,
+        quota_scale=args.quota_scale,
+        scan_limit=args.scan_limit,
+        per_session=args.per_session,
+    )
+    meta = {
+        "config": {
+            "seed": SEED,
+            "width_min": WIDTH_MIN,
+            "width_max": WIDTH_MAX,
+            "context_before": CONTEXT_BEFORE,
+            "context_after": CONTEXT_AFTER,
+            "line_limit": LINE_LIMIT,
+            "character_limit": CHARACTER_LIMIT,
+            "scan_limit": args.scan_limit,
+            "per_session": args.per_session,
+            "max_variants": MAX_VARIANTS,
+            "pi_positives": PI_POSITIVES,
+            "pi_negatives": PI_NEGATIVES,
+            "claude_positives": CLAUDE_POSITIVES,
+            "claude_negatives": CLAUDE_NEGATIVES,
+            "quota_scale": args.quota_scale,
+            "redaction": {"version": REDACTION_VERSION, "home": True, "user": True},
+        },
+        "counts": counts,
+    }
+    Path("data/render-meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     print(json.dumps(counts, sort_keys=True))
     return 0
 

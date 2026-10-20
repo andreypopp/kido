@@ -21,6 +21,11 @@ _SK = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
 _GITHUB = re.compile(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}")
 _SLACK = re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{8,}")
 _AWS = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+_GITLAB = re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}")
+_NPM = re.compile(r"\bnpm_[A-Za-z0-9]{36}")
+_PYPI = re.compile(r"\bpypi-[A-Za-z0-9_-]{16,}")
+_GOOGLE = re.compile(r"\bAIza[0-9A-Za-z_-]{35}")
+_STRIPE = re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}")
 _EMAIL = re.compile(r"(?<![:/\w])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _HOME = re.compile(r"(?<![A-Za-z0-9_.-])/Users/[A-Za-z0-9._-]+")
 _LONG = re.compile(
@@ -69,6 +74,14 @@ def redact(text: str, *, user: str, home: str = "/Users") -> str:
         lambda match: _mask(match, match.group(0)[: match.group(0).index("-") + 1], "x"), text
     )
     text = _AWS.sub(lambda match: _mask(match, "AKIA", "X"), text)
+    text = _GITLAB.sub(lambda match: _mask(match, "glpat-", "x"), text)
+    text = _NPM.sub(lambda match: _mask(match, "npm_", "x"), text)
+    text = _PYPI.sub(lambda match: _mask(match, "pypi-", "x"), text)
+    text = _GOOGLE.sub(lambda match: _mask(match, "AIza", "x"), text)
+    text = _STRIPE.sub(
+        lambda match: _mask(match, match.group(0)[: match.group(0).rindex("_") + 1], "x"),
+        text,
+    )
 
     def assignment(match: re.Match[str]) -> str:
         key, separator, quote, value = match.groups()

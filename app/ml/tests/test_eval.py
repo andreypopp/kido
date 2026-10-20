@@ -7,12 +7,12 @@ RANGES = [[0, 0], [2, 2], [4, 4]]
 
 def test_unit_snaps_to_paragraphs() -> None:
     classes = ["other", "other", "question", "other", "other"]
-    assert unit_from_classes(classes, RANGES) == (2, 2)
+    assert unit_from_classes(PROMPT, classes, RANGES, 1) == (2, 2)
 
 
 def test_non_question_hover_beside_question_is_not_a_false_positive() -> None:
     classes = ["question", "other", "other", "other", "other"]
-    assert unit_from_classes(classes, RANGES) == (0, 0)
+    assert unit_from_classes(PROMPT, classes, RANGES, 0) == (0, 0)
     record = {
         "ranges": RANGES,
         "hovered": 0,
@@ -77,4 +77,4 @@ def test_line_classes_majority() -> None:
 def test_unit_snaps_partial_tag_to_whole_paragraph() -> None:
     classes = ["other", "other", "other", "question", "other"]
     ranges = [[0, 0], [2, 4]]
-    assert unit_from_classes(classes, ranges) == (2, 4)
+    assert unit_from_classes(PROMPT, classes, ranges, 1) == (2, 4)

@@ -115,3 +115,151 @@ def test_example_strips_bold_and_remaps() -> None:
 
 def test_option_rules_use_graphemes() -> None:
     assert character_count("👨‍👩‍👧") == 1
+
+
+def test_canonical_label_ignores_option_order() -> None:
+    from validate import canonical_label
+
+    first = {
+        "lines": ["question", "option", "option"],
+        "options": [{"line": 2, "text": "Red"}, {"line": 3, "text": "Blue"}],
+    }
+    second = {
+        "lines": ["question", "option", "option"],
+        "options": [{"line": 3, "text": "Blue"}, {"line": 2, "text": "Red"}],
+    }
+    assert canonical_label(first) == canonical_label(second)
+
+
+def test_rejection_classes() -> None:
+    from validate import rejection_class
+
+    assert rejection_class([]) == "valid"
+    assert rejection_class(["not JSON: bad"]) == "invalid_json"
+    assert rejection_class(["samples disagree: 2 labels"]) == "disagreement"
+    assert rejection_class(["sample invalid: no question"]) == "sample_invalid"
+    assert rejection_class(["option 1: shorter than 3 characters"]) == "option_too_short"
+    assert rejection_class(["option 1: contains a marker or bold markup"]) == "option_markup"
+    assert rejection_class(["option 1: duplicate"]) == "duplicate_option"
+    assert rejection_class(["option line 2: no exact option"]) == "missing_option"
+    assert rejection_class(["line 3: unit is not contiguous"]) == "non_contiguous"
+
+
+def test_two_units_are_allowed() -> None:
+    prompt = (
+        "  1: First question?\n"
+        "  2: 1. **Red**\n"
+        "  3: 2. **Blue**\n"
+        "  4: Plain prose between units.\n"
+        "  5: Second question?\n"
+        "  6: - alpha\n"
+        "  7: - beta"
+    )
+    label = {
+        "lines": ["question", "option", "option", "other", "question", "option", "option"],
+        "options": [
+            {"line": 2, "text": "Red"},
+            {"line": 3, "text": "Blue"},
+            {"line": 6, "text": "alpha"},
+            {"line": 7, "text": "beta"},
+        ],
+    }
+    assert label_errors(prompt, label) == []
+
+
+def test_option_must_belong_to_a_unit() -> None:
+    prompt = "  1: Plain prose.\n  2: \n  3: Not tagged?"
+    label = {
+        "lines": ["other", "other", "other"],
+        "options": [{"line": 1, "text": "Plain prose"}],
+    }
+    assert any("not adjacent" in error for error in label_errors(prompt, label))
+
+
+def test_unit_containing_hovered_paragraph_not_the_whole_context() -> None:
+    from validate import unit_from_classes
+
+    prompt = "  1: First?\n  2: \n  3: Plain prose.\n  4: \n  5: Second?"
+    classes = ["question", "other", "other", "other", "question"]
+    assert unit_from_classes(prompt, classes, [[0, 0], [2, 2], [4, 4]], 0) == (0, 0)
+    assert unit_from_classes(prompt, classes, [[0, 0], [2, 2], [4, 4]], 1) is None
+    assert unit_from_classes(prompt, classes, [[0, 0], [2, 2], [4, 4]], 2) == (4, 4)
+
+
+def test_is_positive_uses_the_hovered_paragraph() -> None:
+    from validate import is_positive
+
+    record = {
+        "ranges": [[0, 0], [2, 2]],
+        "hovered": 0,
+        "label": {"lines": ["question", "other", "other"], "options": []},
+    }
+    assert is_positive(record)
+    record["hovered"] = 1
+    assert not is_positive(record)
+
+
+def test_option_kinds_split_list_and_inline() -> None:
+    from validate import option_kinds
+
+    record = {
+        "prompt": "  1: alpha or beta\n  2: 1. Red",
+        "label": {
+            "lines": ["question", "option"],
+            "options": [{"line": 1, "text": "alpha"}, {"line": 2, "text": "Red"}],
+        },
+    }
+    assert option_kinds(record) == {"list": 1, "inline": 1}
+
+
+def test_attach_rejects_a_bad_label() -> None:
+    from validate import attach
+
+    record = {"prompt": PROMPT}
+    assert attach(record, {"lines": ["other"]})[0] is None
+    assert attach(record, LABEL)[0]["label"] == LABEL
+
+
+def test_normalisation_moves_list_options_to_option() -> None:
+    from validate import normalize_label
+
+    prompt = "  1: Pick one?\n  2: 1. **Red**\n  3: 2. **Blue**"
+    raw = {
+        "lines": ["question", "question", "question"],
+        "options": [{"line": 2, "text": "Red"}, {"line": 3, "text": "Blue"}],
+    }
+    label, changed = normalize_label(prompt, raw)
+    assert label["lines"] == ["question", "option", "option"]
+    assert changed == 2
+
+
+def test_normalisation_moves_inline_options_to_question() -> None:
+    from validate import normalize_label
+
+    prompt = "  1: Pick one? alpha or beta\n  2: Plain prose"
+    raw = {
+        "lines": ["option", "other"],
+        "options": [
+            {"line": 1, "text": "alpha"},
+            {"line": 1, "text": "beta"},
+        ],
+    }
+    label, changed = normalize_label(prompt, raw)
+    assert label["lines"] == ["question", "other"]
+    assert changed == 1
+
+
+def test_option_kinds_use_the_list_marker_not_the_line_class() -> None:
+    from validate import option_kinds
+
+    record = {
+        "prompt": "  1: Pick one?\n  2: 1. Red\n  3: alpha or beta",
+        "label": {
+            "lines": ["question", "question", "question"],
+            "options": [
+                {"line": 2, "text": "Red"},
+                {"line": 3, "text": "alpha"},
+            ],
+        },
+    }
+    assert option_kinds(record) == {"list": 1, "inline": 1}

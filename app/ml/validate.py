@@ -46,6 +46,26 @@ def schema_errors(raw: object) -> list[str]:
     return errors
 
 
+def units(classes: list[str], prompt: str) -> list[tuple[int, int]]:
+    """Contiguous tagged runs. Blank lines may separate a question from its options."""
+    lines = prompt_lines(prompt)
+    runs: list[tuple[int, int]] = []
+    first: int | None = None
+    last: int | None = None
+    for index, value in enumerate(classes):
+        if value != "other":
+            if first is None:
+                first = index
+            last = index
+        elif first is not None and lines[index]["text"].strip():
+            runs.append((first, last))
+            first = None
+            last = None
+    if first is not None:
+        runs.append((first, last))
+    return runs
+
+
 def label_errors(prompt: str, raw: object) -> list[str]:
     errors = schema_errors(raw)
     if errors:
@@ -55,6 +75,7 @@ def label_errors(prompt: str, raw: object) -> list[str]:
     classes = raw["lines"]
     if len(classes) != len(lines):
         return [f"expected {len(lines)} line classes, got {len(classes)}"]
+    runs = units(classes, prompt)
     options = raw.get("options", [])
     seen: set[str] = set()
     for option in options:
@@ -62,34 +83,111 @@ def label_errors(prompt: str, raw: object) -> list[str]:
         if normalised in seen:
             errors.append(f"option {option['text']!r}: duplicate")
         seen.add(normalised)
-    unit = [index for index, value in enumerate(classes) if value != "other"]
-    if unit:
-        first, last = unit[0], unit[-1]
-        for index in range(first, last + 1):
-            if classes[index] == "other" and lines[index]["text"].strip():
-                errors.append(f"line {index + 1}: unit is not contiguous")
-        if "question" not in [classes[index] for index in unit]:
-            errors.append("unit has no question line")
-        option_lines = {index for index in unit if classes[index] == "option"}
-        covered = {int(option["line"]) - 1 for option in options}
-        if option_lines - covered:
-            errors.append(f"option line {sorted(option_lines - covered)[0] + 1}: no exact option")
-        for option in options:
-            line = int(option["line"])
-            if not 1 <= line <= len(lines):
-                errors.append(f"option line {line}: out of range")
-                continue
-            if not first + 1 <= line <= last + 1:
-                errors.append(f"option line {line}: not adjacent to the unit")
-            text = lines[line - 1]["text"]
-            if text.count(str(option["text"])) != 1:
-                errors.append(
-                    f"option line {line}: {option['text']!r} appears "
-                    f"{text.count(str(option['text']))} times"
-                )
-    elif options:
+    covered: set[int] = set()
+    for option in options:
+        line = int(option["line"])
+        if not 1 <= line <= len(lines):
+            errors.append(f"option line {line}: out of range")
+            continue
+        index = line - 1
+        owner = next((run for run in runs if run[0] <= index <= run[1]), None)
+        if owner is None:
+            errors.append(f"option line {line}: not adjacent to a question unit")
+            continue
+        if classes[index] not in ("option", "question"):
+            errors.append(f"option line {line}: class is not option or question")
+        covered.add(index)
+        text = lines[index]["text"]
+        if text.count(str(option["text"])) != 1:
+            errors.append(
+                f"option line {line}: {option['text']!r} appears "
+                f"{text.count(str(option['text']))} times"
+            )
+    for run in runs:
+        if "question" not in [classes[index] for index in range(run[0], run[1] + 1)]:
+            errors.append(f"line {run[0] + 1}: unit has no question line")
+        option_lines = {
+            index
+            for index in range(run[0], run[1] + 1)
+            if classes[index] == "option"
+        }
+        missing = option_lines - covered
+        if missing:
+            errors.append(f"option line {sorted(missing)[0] + 1}: no exact option")
+    if options and not runs:
         errors.append("options given without a question unit")
     return errors
+
+
+def normalize_label(prompt: str, raw: object) -> tuple[object, int]:
+    """Apply the option convention: list-marker lines are option, inline stays question."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("lines"), list):
+        return raw, 0
+    lines = prompt_lines(prompt)
+    classes = list(raw["lines"])
+    changed = 0
+    for option in raw.get("options", []):
+        if not isinstance(option, dict) or not isinstance(option.get("line"), int):
+            continue
+        index = int(option["line"]) - 1
+        if not 0 <= index < len(classes) or index >= len(lines):
+            continue
+        wanted = "option" if MARKER.match(str(lines[index]["text"])) else "question"
+        if classes[index] != wanted:
+            classes[index] = wanted
+            changed += 1
+    return {"lines": classes, "options": raw.get("options", [])}, changed
+
+
+def attach(
+    record: dict[str, object], label: object
+) -> tuple[dict[str, object] | None, int]:
+    normalized, changed = normalize_label(str(record["prompt"]), label)
+    if not isinstance(normalized, dict) or label_errors(
+        str(record["prompt"]), normalized
+    ):
+        return None, changed
+    return {**record, "label": normalized}, changed
+
+
+def is_positive(record: dict[str, object]) -> bool:
+    classes = record["label"]["lines"]
+    start, end = record["ranges"][int(record["hovered"])]
+    return any(classes[index] != "other" for index in range(start, end + 1))
+
+
+def unit_from_classes(
+    prompt: str,
+    classes: list[str],
+    ranges: list[list[int]],
+    hovered: int,
+) -> tuple[int, int] | None:
+    start, end = ranges[hovered]
+    tagged = [index for index in range(start, end + 1) if classes[index] != "other"]
+    if not tagged:
+        return None
+    owner = next(run for run in units(classes, prompt) if run[0] <= tagged[0] <= run[1])
+    in_ranges = [
+        index
+        for index in range(owner[0], owner[1] + 1)
+        if classes[index] != "other"
+        and any(pair[0] <= index <= pair[1] for pair in ranges)
+    ]
+    if not in_ranges:
+        return None
+    first, last = in_ranges[0], in_ranges[-1]
+    low = next(index for index, pair in enumerate(ranges) if pair[0] <= first <= pair[1])
+    high = next(index for index, pair in enumerate(ranges) if pair[0] <= last <= pair[1])
+    return (ranges[low][0], ranges[high][1])
+
+
+def option_kinds(record: dict[str, object]) -> dict[str, int]:
+    lines = prompt_lines(str(record["prompt"]))
+    kinds = {"list": 0, "inline": 0}
+    for option in record["label"]["options"]:
+        text = str(lines[int(option["line"]) - 1]["text"])
+        kinds["list" if MARKER.match(text) else "inline"] += 1
+    return kinds
 
 
 def spans_from_label(prompt: str, raw: dict[str, object]) -> list[tuple[int, int, str]]:
@@ -177,3 +275,50 @@ def tags_to_spans(tags: list[str], offsets: list[list[int]]) -> list[tuple[int, 
     if current is not None:
         spans.append(current)
     return spans
+
+
+def canonical_label(raw: object, prompt: str | None = None) -> object:
+    if prompt is not None:
+        raw, _ = normalize_label(prompt, raw)
+    if not isinstance(raw, dict) or not isinstance(raw.get("lines"), list):
+        return raw
+    options = raw.get("options", [])
+    if not isinstance(options, list):
+        return raw
+    values = sorted(
+        (int(option["line"]), str(option["text"]))
+        for option in options
+        if isinstance(option, dict) and isinstance(option.get("line"), int)
+    )
+    return {"lines": list(raw["lines"]), "options": [list(value) for value in values]}
+
+
+def rejection_class(errors: list[str]) -> str:
+    if not errors:
+        return "valid"
+    text = errors[0]
+    if text.startswith("samples disagree"):
+        return "disagreement"
+    if text.startswith("sample invalid"):
+        return "sample_invalid"
+    if text.startswith("not JSON") or text.startswith("label is not an object"):
+        return "invalid_json"
+    if "bad class" in text or "line classes" in text or "is not a list" in text:
+        return "schema"
+    if "shorter than" in text:
+        return "option_too_short"
+    if "marker or bold" in text:
+        return "option_markup"
+    if "duplicate" in text:
+        return "duplicate_option"
+    if "no exact option" in text or "appears" in text:
+        return "missing_option"
+    if "not adjacent" in text or "out of range" in text:
+        return "option_placement"
+    if "not contiguous" in text:
+        return "non_contiguous"
+    if "no question line" in text:
+        return "no_question"
+    if "without a question unit" in text:
+        return "orphan_options"
+    return "other"

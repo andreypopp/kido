@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import torch
 
-from render import prompt_lines, read_jsonl
+from render import MARKER, part_of, prompt_lines, read_jsonl
 from runtime import device
-from validate import TAGS, bio, example, tags_to_spans
+from validate import TAGS, bio, example, tags_to_spans, unit_from_classes
 
 IGNORE = "IGNORE"
 
@@ -66,35 +65,14 @@ def line_classes(
     ]
 
 
-def unit_from_classes(
-    classes: list[str], ranges: list[list[int]]
-) -> tuple[int, int] | None:
-    tagged = [
-        index
-        for index, value in enumerate(classes)
-        if value != "other" and any(pair[0] <= index <= pair[1] for pair in ranges)
-    ]
-    if not tagged:
-        return None
-    first, last = tagged[0], tagged[-1]
-    low = next(index for index, pair in enumerate(ranges) if pair[0] <= first <= pair[1])
-    high = next(index for index, pair in enumerate(ranges) if pair[0] <= last <= pair[1])
-    return (ranges[low][0], ranges[high][1])
-
-
 def contains(unit: tuple[int, int] | None, range_: list[int]) -> bool:
     return unit is not None and unit[0] <= range_[0] and unit[1] >= range_[1]
-
-
-OPTION_MARKER = re.compile(
-    r"^\s*(?:[-*•]\s+|\d+[.)]\s+|[A-Za-z]\)\s+)?"
-)
 
 
 def normalise_option(prompt: str, start: int, end: int) -> str:
     value = prompt[start:end].strip()
     for _ in range(2):
-        match = OPTION_MARKER.match(value)
+        match = MARKER.match(value)
         if match is None or match.end() == 0:
             break
         value = value[match.end() :].strip()
@@ -262,12 +240,12 @@ def make_case(
     ranges = [list(pair) for pair in record["ranges"]]
     hovered = int(record["hovered"])
     predicted_spans = tags_to_spans(predicted_tags, offsets)
-    gold_unit = unit_from_classes(record["label"]["lines"], ranges)
+    gold_unit = unit_from_classes(prompt, record["label"]["lines"], ranges, hovered)
     predicted_unit = unit_from_classes(
-        line_classes(prompt, offsets, predicted_tags), ranges
+        prompt, line_classes(prompt, offsets, predicted_tags), ranges, hovered
     )
     return {
-        "part": "ask" if record.get("source") == "ask" else str(record.get("source", "real")),
+        "part": part_of(record),
         "gold_tags": gold_tags(offsets, gold_spans),
         "predicted_tags": predicted_tags,
         "gold_options": Counter(

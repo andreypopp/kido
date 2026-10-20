@@ -114,3 +114,22 @@ def test_redaction_is_idempotent() -> None:
     )
     once = run(text)
     assert run(once) == once
+
+
+def test_gitlab_npm_pypi_google_and_stripe_keys() -> None:
+    values = [
+        "glpat-" + "a" * 20,
+        "npm_" + "b" * 36,
+        "pypi-" + "c" * 20,
+        "AIza" + "d" * 35,
+        "sk_live_" + "e" * 20,
+    ]
+    out = run(" ".join(values))
+    assert out == (
+        "glpat-" + "x" * 20
+        + " npm_" + "x" * 36
+        + " pypi-" + "x" * 20
+        + " AIza" + "x" * 35
+        + " sk_live_" + "x" * 20
+    )
+    assert out == run(out)
