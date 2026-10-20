@@ -975,7 +975,8 @@ wait forever for a child that no longer exists. A child idle while it
 has a live async bash run or an unreported subagent waits on it and
 sends no idle notice; the notice
 comes when it settles with nothing left to wait for
-(design-subagents.md, "A child's life").
+(design-subagents.md, "A child's life"). Only the parent's work makes
+a child owe a report.
 
 **Telling a child this is its job.** `before_agent_start` appends a
 standing instruction to the subagent's system prompt on every turn. It

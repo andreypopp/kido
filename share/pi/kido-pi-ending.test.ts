@@ -40,6 +40,12 @@ function assistant(stopReason: string, errorMessage?: string) {
   return { role: "assistant", stopReason, errorMessage };
 }
 
+async function idleTurn(s: { emit: (event: string, ...args: unknown[]) => Promise<unknown[]> }): Promise<void> {
+  await s.emit("agent_start");
+  await s.emit("agent_end", { messages: [assistant("stop")] });
+  await s.emit("agent_settled", {}, { isIdle: () => true });
+}
+
 test("session_shutdown records this run's own outcome: completed when it settled, failed while a turn is running", async () => {
   const fx = makeFixture();
   try {
@@ -130,9 +136,7 @@ test("a settled turn without a report tells the parent once that the child is id
       SELF,
       async () => {
         const s = await startNamedSession(fx, "worker", SELF);
-        await s.emit("agent_start");
-        await s.emit("agent_end", { messages: [assistant("stop")] });
-        await s.emit("agent_settled", {}, { isIdle: () => true });
+        await idleTurn(s);
         await pollUntil(() => inbox.received().length === 1, 2000, "the idle notice");
         const notice = JSON.parse(inbox.received()[0]!);
         assert.equal(notice.kind, "notice");
@@ -157,13 +161,114 @@ test("a settled turn without a report tells the parent once that the child is id
   }
 });
 
+test("a child woken by its own async_bash ending notice after it reported sends no idle notice", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    const gate = join(fx.stateDir, "gate");
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate }, async () => {
+          const s = await startNamedSession(fx, "worker", SELF);
+          await s.emit("agent_start");
+          await s.tools.get("notify_parent").execute("c", { summary: "done" });
+          await s.emit("agent_end", { messages: [assistant("stop")] });
+          await s.emit("agent_settled", {}, { isIdle: () => true });
+          await pollUntil(() => inbox.received().length === 1, 2000, "the report");
+
+          await s.emit("agent_start");
+          await s.tools.get("async_bash").execute("c", { command: "make", name: "build" });
+          await pollUntil(() => fx.runWaitCalls().length === 1, 2000, "the run-wait");
+          writeFileSync(gate, "");
+          await pollUntil(() => customMessages(s, "kido-notice").length === 1, 3000, "the run's ending notice");
+
+          await idleTurn(s);
+          assert.equal(inbox.received().length, 1, "a notice that wakes a child after its report is not unreported work");
+        });
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a child woken by a user prompt after it reported sends no idle notice", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startNamedSession(fx, "worker", SELF);
+        await s.emit("agent_start");
+        await s.tools.get("notify_parent").execute("c", { summary: "done" });
+        await s.emit("agent_end", { messages: [assistant("stop")] });
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        await pollUntil(() => inbox.received().length === 1, 2000, "the report");
+
+        await idleTurn(s);
+        assert.equal(inbox.received().length, 1, "a typed prompt is not the parent's new work");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("the idle notice for one piece of work does not repeat, and new parent work re-arms it", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startNamedSession(fx, "worker", SELF);
+        await idleTurn(s);
+        await pollUntil(() => inbox.received().length === 1, 2000, "the first idle notice");
+        assert.match(JSON.parse(inbox.received()[0]!).text, IDLE_NOTICE);
+
+        await idleTurn(s);
+        assert.equal(inbox.received().length, 1, "the same unreported work is not announced twice");
+
+        await s.emit("agent_start");
+        await s.tools.get("notify_parent").execute("c", { summary: "done" });
+        await s.emit("agent_end", { messages: [assistant("stop")] });
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        assert.equal(inbox.received().length, 2, "the report is the only new notice");
+
+        const report = join(fx.agentDir("boss-session", "worker"), "report");
+        const past = new Date(Date.now() - 2000);
+        utimesSync(report, past, past);
+        writeFileSync(join(fx.agentDir("boss-session", "worker"), "work"), "");
+        await idleTurn(s);
+        await pollUntil(() => inbox.received().length === 3, 2000, "the idle notice on the new work");
+        assert.match(JSON.parse(inbox.received()[0]!).text, IDLE_NOTICE);
+        assert.match(JSON.parse(inbox.received()[1]!).text, /^done/);
+        assert.match(JSON.parse(inbox.received()[2]!).text, IDLE_NOTICE);
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
 const LIVE_RUN_TOOLS: Array<[string, Record<string, unknown>]> = [
   ["spawn_subagent", { task: "x", name: "kid" }],
   ["async_bash", { command: "make", name: "build" }],
 ];
 
 for (const [tool, params] of LIVE_RUN_TOOLS) {
-  test(`a child waiting on its own live ${tool} run sends no idle notice, and one once it ends`, async () => {
+  test(`a child waiting on its own live ${tool} run sends no idle notice, then sends one once that run ends`, async () => {
     const fx = makeFixture();
     try {
       const inbox = await fx.startInbox();
@@ -176,26 +281,19 @@ for (const [tool, params] of LIVE_RUN_TOOLS) {
           await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate }, async () => {
             const s = await startNamedSession(fx, "worker", SELF);
             await s.emit("agent_start");
-            await s.emit("agent_end", { messages: [assistant("stop")] });
-            await s.emit("agent_settled", {}, { isIdle: () => true });
-            await pollUntil(() => inbox.received().length === 1, 2000, "the idle notice when nothing is running");
-            assert.match(JSON.parse(inbox.received()[0]!).text, IDLE_NOTICE);
-
-            await s.emit("agent_start");
             await s.tools.get(tool).execute("c", params);
             await pollUntil(() => fx.runWaitCalls().length === 1, 2000, "the run-wait");
             await s.emit("agent_end", { messages: [assistant("stop")] });
             await s.emit("agent_settled", {}, { isIdle: () => true });
-            assert.equal(inbox.received().length, 1, "no idle notice while its run is live");
+            assert.equal(inbox.received().length, 0, "no idle notice while its run is live");
 
             writeFileSync(gate, "");
             await pollUntil(() => customMessages(s, "kido-notice").length === 1, 3000, "the run's ending notice");
-            assert.equal(inbox.received().length, 1, "the ending notice goes to the child, not the parent");
-            await s.emit("agent_start");
-            await s.emit("agent_end", { messages: [assistant("stop")] });
-            await s.emit("agent_settled", {}, { isIdle: () => true });
-            await pollUntil(() => inbox.received().length === 2, 2000, "the idle notice once its last run ended");
-            assert.match(JSON.parse(inbox.received()[1]!).text, IDLE_NOTICE);
+            assert.equal(inbox.received().length, 0, "the ending notice goes to the child, not the parent");
+
+            await idleTurn(s);
+            await pollUntil(() => inbox.received().length === 1, 2000, "the idle notice once its last run ended");
+            assert.match(JSON.parse(inbox.received()[0]!).text, IDLE_NOTICE);
           });
         },
         { parent: "boss-session", name: "worker" },
@@ -274,9 +372,7 @@ test("new work delivered to a child that already reported holds back the parent'
           writeFileSync(report, "second account");
           const future = new Date(Date.now() + 2000);
           utimesSync(report, future, future);
-          await s.emit("agent_start");
-          await s.emit("agent_end", { messages: [assistant("stop")] });
-          await s.emit("agent_settled", {}, { isIdle: () => true });
+          await idleTurn(s);
           await pollUntil(() => inbox.received().length === 1, 2000, "the idle notice after the child reported on its new work");
           assert.match(JSON.parse(inbox.received()[0]!).text, IDLE_NOTICE);
 
@@ -333,9 +429,7 @@ test("a restart's first idle settle waits for discovery and finds the live run",
             await pollUntil(() => fx.runWaitCalls().some((call) => call.includes("live-kid")), 2000, "the live child's run-wait");
             writeFileSync(waitGate, "");
             await pollUntil(() => customMessages(s, "kido-notice").length === 1, 3000, "the live child's ending notice");
-            await s.emit("agent_start");
-            await s.emit("agent_end", { messages: [assistant("stop")] });
-            await s.emit("agent_settled", {}, { isIdle: () => true });
+            await idleTurn(s);
             await pollUntil(() => inbox.received().length === 1, 2000, "the idle notice once its live child ended");
             assert.match(JSON.parse(inbox.received()[0]!).text, IDLE_NOTICE);
           },
@@ -365,6 +459,8 @@ test("a subagent's errored turn notifies the parent at once; an aborted one and 
         const notice = JSON.parse(inbox.received()[0]!);
         assert.equal(notice.text, `subagent stopped on an error: boom\nrun: ${SELF}\nmessage it to retry, or stop_run to end it`);
         assert.ok(!notice.text.includes("resume"));
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        assert.equal(inbox.received().length, 1, "a redundant settle does not repeat the error notice");
       },
       { parent: "boss-session", name: "worker" },
     );

@@ -65,6 +65,33 @@ test("a message to an ended child restarts it with the message as pi's first pro
   }
 });
 
+test("a report the restarted child writes before its launch returns is not made stale by the restart", async () => {
+  const fx = makeFixture();
+  try {
+    const { s } = await endedChild(fx, { sessionFile: true });
+    const dir = fx.agentDir(SELF, "kid");
+    const report = join(dir, "report");
+    const work = join(dir, "work");
+    const gate = join(fx.stateDir, "restart-gate");
+    await withEnv({ KIDO_FAKE_RUN_ID: "restarted-run", KIDO_FAKE_RUN_GATE: gate }, async () => {
+      const sent = s.tools.get("message_agent").execute("c", { to: "kid", message: "carry on" });
+      await pollUntil(() => fx.runCalls().length === 2, 3000, "the restart to reach run-child");
+      writeFileSync(report, "carried on");
+      const past = new Date(Date.now() - 2000);
+      utimesSync(report, past, past);
+      writeFileSync(gate, "");
+      await sent;
+      assert.equal(readFileSync(report, "utf8"), "carried on", "the early report stays readable");
+      assert.ok(
+        !existsSync(work) || statSync(report).mtimeMs > statSync(work).mtimeMs,
+        "the report written before the launch returned is newer than its work, so the child has reported",
+      );
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("without a session file the restart mints a new session under the stored id, delivers the stored task, and messages over the inbox", async () => {
   const fx = makeFixture();
   try {

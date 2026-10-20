@@ -895,13 +895,13 @@ export default function (pi: ExtensionAPI) {
 
   const exists = (path: string): boolean => fileTime(path) !== undefined;
 
-  const reportState = (entry: AgentEntry): { report: number | undefined; reported: boolean } => {
-    const report = fileTime(join(entry.dir, "report"));
-    const work = fileTime(join(entry.dir, "work"));
-    return { report, reported: report !== undefined && (work === undefined || report > work) };
+  const reportState = (dir: string): { report: number | undefined; work: number | undefined; reported: boolean } => {
+    const report = fileTime(join(dir, "report"));
+    const work = fileTime(join(dir, "work"));
+    return { report, work, reported: report !== undefined && (work === undefined || report > work) };
   };
 
-  const reported = (entry: AgentEntry): boolean => reportState(entry).reported;
+  const reported = (entry: AgentEntry): boolean => reportState(entry.dir).reported;
 
   const markWork = (target: AgentRow, entries: AgentEntry[]): void => {
     const entry = ownEntry(target, entries);
@@ -1420,7 +1420,7 @@ export default function (pi: ExtensionAPI) {
       } else body += `--- output ---\n${tail.tail}`;
       return body;
     }
-    const state = reportState(watch.target.entry);
+    const state = reportState(watch.target.entry.dir);
     const reportPath = join(watch.target.entry.dir, "report");
     const head = `subagent ${quote(watch.name)} ${outcome.result}`;
     body += state.reported
@@ -1532,7 +1532,7 @@ export default function (pi: ExtensionAPI) {
     parentTimer.unref();
   };
 
-  let parentToldThisTurn = false;
+  let idleNotice: { work: number | undefined } | undefined;
   let settled = true;
   let turnEndedByControl = false;
   let workGeneration = 0;
@@ -1553,7 +1553,6 @@ export default function (pi: ExtensionAPI) {
   };
 
   const workStarted = (): void => {
-    parentToldThisTurn = false;
     turnEndedByControl = false;
     workGeneration++;
     beginWork();
@@ -1971,8 +1970,8 @@ export default function (pi: ExtensionAPI) {
       if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error.message}`);
       const bound = Date.now() + 5000;
       if (prep.entry) {
-        if (kind === "message") markWork(entryRow(prep.entry), prep.snapshot.entries);
         if (prep.firstPrompt !== null) return reply(restartedReply(prep.entry.name, prep.restartedRun ?? ""));
+        if (kind === "message") markWork(entryRow(prep.entry), prep.snapshot.entries);
         const row = entryRow(prep.entry);
         const sent = sendText(row, kind, await sendWhenBound(row.inbox, spec, params.message, bound), prep.snapshot.entries);
         if (!sent.ok) return reply(`could not message ${params.to}: ${sent.text}`);
@@ -2124,7 +2123,6 @@ export default function (pi: ExtensionAPI) {
       if (!params.summary.isWellFormed()) return reply("could not notify parent: the summary is not valid UTF-8");
       const sent = await notifyParent(params.summary, false);
       if (!sent.ok) return reply(`could not notify parent: ${sent.text}`);
-      parentToldThisTurn = true;
       return reply(sent.text);
     },
   });
@@ -2430,7 +2428,7 @@ export default function (pi: ExtensionAPI) {
     written.clear();
     ending = { kind: "other" };
     settled = true;
-    parentToldThisTurn = false;
+    idleNotice = undefined;
     turnEndedByControl = false;
     liveWatch = undefined;
 
@@ -2566,21 +2564,21 @@ export default function (pi: ExtensionAPI) {
       if (turnEndedByControl || generation !== workGeneration) return;
       if (isRecord(run) && runRow(run)?.outcome !== undefined) return;
       ending.notified = true;
-      parentToldThisTurn = true;
       await notifyParent(
         `subagent stopped on an error: ${trimErrorMessage(ending.text)}\nrun: ${edge.run}\nmessage it to retry, or stop_run to end it`,
         true,
       );
       return;
     }
-    if (parentToldThisTurn) return;
     const generation = workGeneration;
+    const state = reportState(edge.dir);
+    if (state.reported || (idleNotice && idleNotice.work === state.work)) return;
     await watchLiveChildren();
     if (turnEndedByControl || generation !== workGeneration) return;
     for (const watch of watches.values()) {
       if (watch.target.kind === "bash" || !reported(watch.target.entry)) return;
     }
-    parentToldThisTurn = true;
+    idleNotice = { work: state.work };
     await notifyParent(
       `subagent ${edge.run} is idle without reporting: its last turn ended and it did not call notify_parent. Continue it with message_agent, or end it with stop_run.`,
       true,

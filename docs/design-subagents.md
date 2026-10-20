@@ -231,10 +231,14 @@ harness knows:
 - `work`: the parent writes it, empty, before it sends its own child new
   work by `message_agent` (not a reply) or `steer_subagent`. It stays
   after a failed send, because the message can have arrived. An ask
-  and an interrupt are not new work.
+  and an interrupt are not new work. A restart that delivers the
+  message as the child's first prompt writes no `work`: the restart
+  removes `report` before the child starts, and a later `work` could
+  hide a report that the child wrote before the restart returned.
 
-A child **has reported** when `report` exists and is newer than
-`work`. A tie counts as not reported: the parent then waits for the
+A child **has reported** when `report` exists and `work` is absent or
+older than `report`. Both sides read this rule: the parent for its
+children, and the child for its own idle notice. A tie counts as not reported: the parent then waits for the
 child's next report or idle notice, which is the safe direction. Thus, an earlier report does not count for later work, and the
 earlier report stays readable at its path until the child reports again.
 `list_runs` shows the `report` path whenever the file exists.
@@ -298,10 +302,15 @@ unrelated to the task, such as answering a sibling's `ask_agent`;
 kido never sends that turn's text to the parent.
 
 **A settled turn with no report sends the parent one notice.** On
-`agent_settled` with `ctx.isIdle()`, a child that did not call
-`notify_parent` since its last new work tells the parent that it is
-idle without a report, and how to continue or end it. It does so only
-if it waits on nothing. A child waits while at least one run of its own
+`agent_settled` with `ctx.isIdle()`, a child that has not reported
+tells the parent that it is idle without a report, and how to continue
+or end it. The child sends it only if it waits on nothing (below).
+The child reads "has reported" from its own agent directory, by the
+rule above. Thus, only the parent's work creates the obligation: the
+first task, or work that the parent marked with `work`. A turn that
+something else started does not: a prompt typed into the child's pane,
+a notice or stream batch from a run of its own, or a sibling's ask. A
+child that reported and then wakes for such a turn sends nothing. A child waits while at least one run of its own
 is live: a subagent that has not reported on its last work, or an async
 bash run. A
 subagent of its own that reported but stays alive does not count, so a
@@ -317,10 +326,14 @@ stop request ended, and for an error ending when the child's run
 already has an outcome (`stop_run --force` writes one and sends no
 request). A terminated provider can end the turn with an error, not an
 abort, so the rule does not rely on the stop reason alone. These status notices write no `report` and carry no
-guidance: a status is not the child's account of its work. New work
-clears that memory: a prompt or an inbound message that starts an agent
-run. The model's further turns within one run, such as the turn that
-reads `notify_parent`'s result, are not new work. A child that never starts a turn and never
+guidance: a status is not the child's account of its work. The idle
+notice goes once for each piece of unreported work: the child keeps in
+memory the `work` time that it last sent the notice for, and a later
+settle on the same work sends nothing. New `work` from the parent
+re-arms it. A restart or `/reload` clears that memory, so a restarted child that
+settles without a report notifies again. The error notice goes once for
+each failed turn: a prompt or an inbound message that starts an agent
+run begins a new attempt. A child that never starts a turn and never
 exits sends no notice: only a settled turn is evidence.
 
 **Endings.** The parent learns of every ending, report or not. For each
