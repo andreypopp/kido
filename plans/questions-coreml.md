@@ -152,6 +152,26 @@ ledger `usage.jsonl` and the downloaded Ettin weights. The new pipeline
 reads the ledger for the cap and the weights to skip a download; it uses
 no old label, context or cache.
 
+## Workflow
+
+Each phase has one manager. Code review comes before any expensive run
+(training, a paid DeepSeek labelling run, a sweep):
+
+1. The implementer writes the code and its tests. It runs only the tests
+   and a small smoke run (a few examples, no paid calls beyond a dry run).
+2. The reviewers (four simplify angles and one correctness reviewer)
+   review the code before any expensive run.
+3. The same implementer applies the findings that the manager accepts.
+4. The implementer runs the expensive step: labelling, training, eval.
+5. A review of the results: a reviewer reads the numbers, the error
+   counts and the run logs, and checks them against the plan's metrics
+   and the code (for example leakage, a metric that cannot see an error,
+   a wrong checkpoint). The manager writes the results into the plan and
+   reports.
+
+A fix after step 5 that changes the trained model or the labels repeats
+steps 2 to 5 for that change only.
+
 ## Phases
 
 1. **Move and spike.** Move the parts above. The splitter with its tests,
