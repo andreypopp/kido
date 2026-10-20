@@ -1,10 +1,10 @@
 UV = uv run
 SEEDS = 0 1 2
-MODEL ?= data/output/mixed-nobold-s0
+CHECKPOINT ?= data/output/phase2-nobold-s0
 NOBOLD_SEEDS ?= 0,1,2
 BOLD_SEEDS ?= 0
 
-.PHONY: test data plan synthetic redact label smoke agreement eval-label eval-set split pipeline manifest report sanity diagnostic sweep train-seeds eval report2 phase2 train train-ettin train-mixed train-createml eval-all eval-ettin eval-mixed eval-createml convert bench tokens swift-offsets
+.PHONY: test data plan synthetic redact label smoke agreement eval-label eval-set split pipeline manifest report sanity diagnostic sweep train-seeds eval report2 phase2 train train-ettin train-mixed train-createml eval-all eval-ettin eval-mixed eval-createml tokens swift-offsets
 
 test:
 	$(UV) pytest -q
@@ -90,7 +90,7 @@ data/eval-meta.json: data/eval-parts.jsonl
 
 manifest: manifest.json
 
-manifest.json: data/split.stamp data/label-train-meta.json data/label-train-flash-meta.json data/label-eval-real-meta.json data/eval-meta.json data/synthetic-meta.json data/session-plan.json data/render-meta.json data/train-agreement.json data/sweep.json data/experiment.json data/train-seeds.json data/eval-summary.json manifest.py label.py render.py
+manifest.json: data/convert.json data/parity.json data/bench.json data/palettize.json data/token-counts.json data/split.stamp data/label-train-meta.json data/label-train-flash-meta.json data/label-eval-real-meta.json data/eval-meta.json data/synthetic-meta.json data/session-plan.json data/render-meta.json data/train-agreement.json data/sweep.json data/experiment.json data/train-seeds.json data/eval-summary.json manifest.py label.py render.py
 	$(UV) python manifest.py
 
 report: data/phase1-report.md
@@ -195,14 +195,46 @@ eval-createml:
 
 eval-all: eval-ettin eval-createml
 
-convert:
-	$(UV) python convert.py --model $(MODEL) --palettize
+convert: data/output/ParagraphTagger.mlpackage
 
-bench:
+data/output/ParagraphTagger-functions/shape_512.mlpackage data/output/ParagraphTagger-functions/shape_1024.mlpackage data/output/ParagraphTagger-functions/shape_2048.mlpackage data/output/ParagraphTagger.mlpackage data/convert.json: convert.py eval.py runtime.py data/experiment.json $(CHECKPOINT)/model.safetensors $(CHECKPOINT)/training.json
+	$(UV) python convert.py
+
+data/token-counts.json: token_counts.py eval.py $(CHECKPOINT)/model.safetensors $(CHECKPOINT)/training.json data/train.jsonl data/dev.jsonl data/eval.jsonl
+	$(UV) python token_counts.py
+
+data/eval-coreml.json: data/convert.json eval.py data/eval.jsonl $(CHECKPOINT)/training.json
+	$(UV) python eval.py --backend coreml --model data/output/ParagraphTagger.mlpackage --compute gpu --output $@
+
+parity: data/parity.json
+
+data/parity.json: data/eval-coreml.json parity.py runtime.py eval.py data/experiment.json $(CHECKPOINT)/eval.json
+	$(UV) python parity.py
+
+bench: data/bench.json
+
+data/bench.json: data/convert.json bench.py eval.py data/eval.jsonl $(CHECKPOINT)/training.json
 	$(UV) python bench.py
 
-tokens:
-	$(UV) python token_counts.py
+palettize: data/palettize.json
+
+data/palettize.json: data/convert.json palettize.py convert.py eval.py parity.py $(CHECKPOINT)/eval.json $(CHECKPOINT)/training.json
+	$(UV) python palettize.py
+
+cli:
+	$(UV) tagger $(if $(FILE),$(FILE),fixtures/list_question.txt)
+
+cli-coreml: data/output/ParagraphTagger.mlpackage
+	$(UV) tagger $(if $(FILE),$(FILE),fixtures/list_question.txt) --backend coreml
+
+report3: data/phase3-report.md
+
+data/phase3-report.md: manifest.json report3.py report.py
+	$(UV) python report3.py
+
+phase3: manifest report3
+
+tokens: data/token-counts.json
 
 swift-offsets:
 	cd swift-offsets && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build

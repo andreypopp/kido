@@ -54,7 +54,7 @@ def main() -> int:
         "shared_sessions": len({str(record["session"]) for record in shared}),
     }
     manifest = {
-        "phase": 2,
+        "phase": 3,
         "seed": 0,
         "python": platform.python_version(),
         "packages": {
@@ -118,6 +118,10 @@ def main() -> int:
         "files": {
             name: file_hash(data / name)
             for name in EXTRA_FILES
+        },
+        "phase3": {
+            name: read_json(data / f"{name}.json")
+            for name in ("convert", "parity", "bench", "palettize", "token-counts")
         },
     }
     Path("manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

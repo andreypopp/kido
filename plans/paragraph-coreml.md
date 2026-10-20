@@ -1,7 +1,7 @@
 # Plan: a Core ML tagger for Shift paragraphs
 
-Status: phases 0, 1 and 2 done (see "Phase 0 results", "Phase 1 data" and
-"Phase 2 results");
+Status: phases 0 to 3b done (see "Phase 0 results", "Phase 1 data",
+"Phase 2 results" and "Phase 3 results");
 code in `app/ml/`. Date: 2026-10-20. Updated with the user's
 decisions: Core ML detection only, English only, DeepSeek as the labeller, no hand labelling, no pi
 extension change, FoundationModels is deleted when the tagger passes.
@@ -852,6 +852,85 @@ none too long or too short.
   one 10-epoch run per learning rate and evaluate dev after each epoch
   (about 45% less time), at the cost of a different decay schedule for the
   shorter points.
+
+## Phase 3 results
+
+Run on 2026-10-20. Tables in `app/ml/data/phase3-report.md` (gitignored,
+counts only); `manifest.json` has a phase 3 section.
+
+**Package.** `data/output/ParagraphTagger.mlpackage` from the phase 2
+checkpoint (`runtime.chosen_checkpoint` reads `data/experiment.json`):
+fp16, one multifunction package with fixed-shape functions `shape_512`,
+`shape_1024` (default) and `shape_2048`, 76.4 MB, coremltools 9.0. Default
+compute units `.cpuAndGPU`. Op placement (MLComputePlan, 897 ops per
+function, 477 of them constants with no device): `.cpuAndGPU` and `.all`
+put all 420 compute ops on the GPU; `.cpuAndNeuralEngine` puts 415 on the
+Neural Engine and 5 on the CPU.
+
+**Token lengths.** Eval: 1,811 examples fit 512, 64 need 1,024, none need
+2,048. Train: 10,939 / 725 / 4 (1 longer than 2,048). Dev: 1,632 / 133 / 1.
+
+**Logits** (`.cpuAndGPU` against PyTorch, every eval example): argmax
+agreement 0.999998 overall (0.999997 at 512, 1.0 at 1,024), KL 6e-8.
+2,048 has no real example; synthetic inputs of 1,600 and 2,000 tokens give
+argmax 1.0. fp16 is enough; fp32 was not needed.
+
+**Metric parity**, PyTorch against Core ML, same checkpoint, every eval
+part: question F1, option exact F1 and app-visible option F1 differ by at
+most 0.00002 (target 0.005). Real part: option exact F1 0.696, app-visible
+0.712 (seed 0, as in phase 2).
+
+**Latency**, p50 / p95 ms, fresh process per row, 30 runs after 5
+warmup runs, median real length per bucket (1,600 synthetic tokens for
+2,048); load = compiled model construction plus the first prediction, in ms:
+
+| Compute units | 512 | 1,024 | 2,048 | Load |
+|---|---:|---:|---:|---:|
+| CPU only | 10.12 / 10.57 | 24.44 / 25.06 | 72.11 / 73.67 | 167–223 |
+| CPU and GPU (default) | 2.01 / 2.29 | 2.42 / 2.94 | 5.53 / 5.68 | 246–251 |
+| CPU and Neural Engine | 5.52 / 5.61 | 17.47 / 17.57 | 56.51 / 56.75 | 1,575–3,622 |
+| All | 1.77 / 2.25 | 2.35 / 2.43 | 5.51 / 5.64 | 383–408 |
+
+Compiling the `.mlpackage` adds about 100 to 130 ms; Xcode compiles it at
+build time, so the app pays only the load. Conversion is not
+byte-deterministic: two identical builds give different package hashes
+with the same size and logits; the manifest records the current hash.
+
+**8-bit palettisation**, measured per function and merged: 38.5 MB against
+76.4 MB; argmax 0.99992 at 512, 1.0 at 1,024; real option exact and
+app-visible F1 unchanged. It is recorded, not the default: there is no size
+pressure. Phase 4 can switch if the bundle size matters.
+
+**Test CLI (phase 3b).** `uv run tagger [FILE]` (stdin without FILE) with
+`--backend torch|coreml`, `--compute cpu|gpu|ane|all`, `--hover N`,
+`--json`, `--bench N`; `make cli FILE=...`. Its JSON starts with
+`question` (the question unit's text without list-marker option lines, or
+`null`) and `options` (exact substrings), then the `ParagraphAnswer`
+fields, the option ranges as offsets in the input text, and the per-token
+tags. It uses the smallest shape that fits; above 2,048 tokens it drops the
+outermost context paragraphs, keeps the hovered one, and says so in its
+output; a hovered paragraph that alone does not fit is an error. A unit of
+list option lines only has `question: null`. It shares tokenisation,
+bucketing and tags-to-spans with `eval.py`; `eval.py` keeps its own line
+classes. About 2 s per run, mostly imports. Invented
+fixtures: `fixtures/list_question.txt`, `inline_question.txt`, `plain.txt`.
+
+**Changes for later phases.**
+
+- FoundationModels, measured with the app's own `ParagraphModel.swift` on
+  the first 89 eval contexts (then cancelled by the user): about 1.2 s
+  median per call, and one call took 176 s. That is about 500 times slower
+  than the tagger. It is not a usable fallback; phase 5 deletes it as
+  planned.
+- Phase 4 ships the fp16 package with `.cpuAndGPU`: about 2 ms per call at
+  real lengths and about 250 ms load. The Neural Engine stays out (slower,
+  1.5 to 3.6 s load).
+- The 2,048 function is a fallback that no eval context needs. Phase 4
+  decides whether to keep it (measure the size without it: a multifunction
+  package can share weights between functions) or to truncate above 1,024
+  by dropping outer context paragraphs.
+- The phase 1 split defect (the tool-call part shares sessions with train)
+  is unchanged; fix it before the next training run.
 
 ## Later
 

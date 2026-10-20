@@ -7,10 +7,10 @@ import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
-import torch
+import numpy as np
 
 from render import MARKER, REAL_PARTS, part_of, prompt_lines, read_jsonl
-from runtime import device
+from runtime import chosen_checkpoint, device
 from validate import (
     TAGS,
     bio,
@@ -22,29 +22,166 @@ from validate import (
 )
 
 IGNORE = "IGNORE"
+SHAPES = [512, 1024, 2048]
+COMPUTE_UNITS = {
+    "cpu": "CPU_ONLY",
+    "gpu": "CPU_AND_GPU",
+    "ane": "CPU_AND_NE",
+    "all": "ALL",
+}
+DEFAULT_COMPUTE_UNITS = "gpu"
+
+
+def compute_unit(name: str):
+    import coremltools as ct
+
+    return getattr(ct.ComputeUnit, COMPUTE_UNITS[name])
 
 
 def gold_tags(offsets: list[list[int]], spans: list[tuple[int, int, str]]) -> list[str]:
     return [IGNORE if value == -100 else TAGS[value] for value in bio(offsets, spans)]
 
 
-def predict(
-    model, tokenizer, prompt: str, max_length: int
-) -> tuple[list[list[int]], list[str]]:
-    encoded = tokenizer(
-        prompt,
-        return_offsets_mapping=True,
-        add_special_tokens=True,
-        truncation=True,
-        max_length=max_length,
+def token_length(tokenizer, text: str) -> int:
+    return len(tokenizer(text, add_special_tokens=True)["input_ids"])
+
+
+def shape_for(length: int) -> int:
+    return next((shape for shape in SHAPES if length <= shape), SHAPES[-1])
+
+
+def tokenize(tokenizer, prompt: str, max_length: int | None):
+    options = {"return_offsets_mapping": True, "add_special_tokens": True}
+    if max_length is not None:
+        options.update(truncation=True, max_length=max_length)
+    encoded = tokenizer(prompt, **options)
+    return (
+        encoded["input_ids"],
+        encoded["attention_mask"],
+        [list(pair) for pair in encoded["offset_mapping"]],
     )
-    with torch.no_grad():
-        outputs = model(
-            input_ids=torch.tensor([encoded["input_ids"]], device=model.device),
-            attention_mask=torch.tensor([encoded["attention_mask"]], device=model.device),
+
+
+def synthetic_prompt(tokenizer, target: int) -> str:
+    sentence = "The build writes one line to the log. "
+    text = ""
+    while token_length(tokenizer, text) < target:
+        text += sentence
+    while token_length(tokenizer, text) > target:
+        text = text.rsplit(" ", 1)[0]
+    return text
+
+
+def padded(ids: list[int], mask: list[int], shape: int, pad_id: int):
+    pad = shape - len(ids)
+    return (
+        np.array([ids + [pad_id] * pad], dtype=np.int32),
+        np.array([mask + [0] * pad], dtype=np.int32),
+    )
+
+
+class Torch:
+    def __init__(self, path: Path):
+        self.path = path
+        self.model = None
+
+    def load(self) -> None:
+        from transformers import AutoModelForTokenClassification
+
+        self.model = AutoModelForTokenClassification.from_pretrained(
+            self.path, attn_implementation="sdpa"
         )
-    tags = [TAGS[index] for index in outputs.logits[0].argmax(dim=-1).tolist()]
-    return [list(pair) for pair in encoded["offset_mapping"]], tags
+        self.model.to(device())
+        self.model.eval()
+
+    def logits(self, ids, mask) -> np.ndarray:
+        import torch
+
+        with torch.no_grad():
+            outputs = self.model(
+                input_ids=torch.tensor([ids], device=self.model.device),
+                attention_mask=torch.tensor([mask], device=self.model.device),
+            )
+        return outputs.logits[0].cpu().numpy()
+
+
+class CoreML:
+    def __init__(
+        self,
+        path: Path,
+        compute_units: str = DEFAULT_COMPUTE_UNITS,
+        pad_id: int | None = None,
+        compiled: bool = False,
+    ):
+        self.path = path
+        self.compute_units = compute_units
+        self.pad_id = pad_id
+        self.compiled = compiled
+        self.models = {}
+        import coremltools
+        from coremltools.models import CompiledMLModel
+
+        self._coremltools = coremltools
+        self._compiled_model = CompiledMLModel
+
+    def load(self, shapes: list[int]) -> None:
+        for shape in shapes:
+            if shape in self.models:
+                continue
+            unit = compute_unit(self.compute_units)
+            if self.compiled:
+                self.models[shape] = self._compiled_model(
+                    str(self.path), compute_units=unit, function_name=f"shape_{shape}"
+                )
+            else:
+                self.models[shape] = self._coremltools.models.MLModel(
+                    str(self.path), compute_units=unit, function_name=f"shape_{shape}"
+                )
+
+    def predict(self, shape: int, ids, mask) -> np.ndarray:
+        self.load([shape])
+        prediction = self.models[shape].predict(
+            {"input_ids": ids.astype(np.int32), "attention_mask": mask.astype(np.int32)}
+        )
+        return np.asarray(prediction["logits"])[0]
+
+    def logits(self, ids, mask) -> np.ndarray:
+        shape = shape_for(len(ids))
+        arrays = padded(ids[:shape], mask[:shape], shape, self.pad_id)
+        return self.predict(shape, arrays[0], arrays[1])[: len(ids)]
+
+
+def tags_from_logits(values) -> list[str]:
+    return [TAGS[index] for index in values.argmax(axis=-1).tolist()]
+
+
+def predict(
+    logits, tokenizer, prompt: str, max_length: int
+) -> tuple[list[list[int]], list[str]]:
+    ids, mask, offsets = tokenize(tokenizer, prompt, max_length)
+    return offsets, tags_from_logits(logits(ids, mask))
+
+
+def load_checkpoint(path: Path):
+    from transformers import AutoTokenizer
+
+    meta = json.loads((path / "training.json").read_text())
+    return (
+        bool(meta["bold"]),
+        int(meta["max_length"]),
+        AutoTokenizer.from_pretrained(path),
+    )
+
+
+def evaluate(
+    eval_path: Path, logits, bold: bool, max_length: int, tokenizer
+) -> dict[str, object]:
+    cases = []
+    for record in read_jsonl(eval_path):
+        prompt, gold_spans = example(record, bold)
+        offsets, predicted_tags = predict(logits, tokenizer, prompt, max_length)
+        cases.append(make_case(record, prompt, gold_spans, offsets, predicted_tags))
+    return metrics(cases)
 
 
 def line_classes(
@@ -401,21 +538,17 @@ def make_case(
 
 
 def eval_ettin(args: argparse.Namespace) -> dict[str, object]:
-    from transformers import AutoModelForTokenClassification, AutoTokenizer
+    bold, max_length, tokenizer = load_checkpoint(args.model)
+    backend = Torch(args.model)
+    backend.load()
+    return evaluate(args.eval, backend.logits, bold, max_length, tokenizer)
 
-    meta = json.loads((args.model / "training.json").read_text())
-    bold = bool(meta["bold"])
-    max_length = int(meta["max_length"])
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForTokenClassification.from_pretrained(args.model, attn_implementation="sdpa")
-    model.to(device())
-    model.eval()
-    cases = []
-    for record in read_jsonl(args.eval):
-        prompt, gold_spans = example(record, bold)
-        offsets, predicted_tags = predict(model, tokenizer, prompt, max_length)
-        cases.append(make_case(record, prompt, gold_spans, offsets, predicted_tags))
-    return metrics(cases)
+
+def eval_coreml(args: argparse.Namespace) -> dict[str, object]:
+    checkpoint = args.checkpoint or chosen_checkpoint()
+    bold, max_length, tokenizer = load_checkpoint(checkpoint)
+    backend = CoreML(args.model, args.compute, tokenizer.pad_token_id)
+    return evaluate(args.eval, backend.logits, bold, max_length, tokenizer)
 
 
 def eval_createml(args: argparse.Namespace) -> dict[str, object]:
@@ -437,11 +570,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--eval", type=Path, default=Path("data/eval.jsonl"))
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--backend", choices=["ettin", "createml"], default="ettin")
+    parser.add_argument(
+        "--backend", choices=["ettin", "createml", "coreml"], default="ettin"
+    )
+    parser.add_argument("--compute", choices=list(COMPUTE_UNITS), default="gpu")
+    parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    result = eval_ettin(args) if args.backend == "ettin" else eval_createml(args)
-    output = args.output or (args.model / "eval.json")
+    if args.backend == "ettin":
+        result = eval_ettin(args)
+    elif args.backend == "createml":
+        result = eval_createml(args)
+    else:
+        result = eval_coreml(args)
+    if args.output:
+        output = args.output
+    elif args.backend == "coreml":
+        output = Path("data/eval-coreml.json")
+    else:
+        output = args.model / "eval.json"
     output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, sort_keys=True))
     return 0

@@ -1,4 +1,4 @@
-"""Measure the Ettin token count distribution of the rendered contexts."""
+"""Measure the Ettin token count distribution of the train, dev and eval examples."""
 
 from __future__ import annotations
 
@@ -6,36 +6,45 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
-from transformers import AutoTokenizer
-
+from eval import SHAPES, load_checkpoint, shape_for, token_length
 from render import read_jsonl
-from runtime import MODEL
+from runtime import chosen_checkpoint
+from validate import example
+
+
+def distribution(tokenizer, path: Path, max_length: int, bold: bool) -> dict[str, object]:
+    lengths = [token_length(tokenizer, example(record, bold)[0]) for record in read_jsonl(path)]
+    counts = {str(shape): 0 for shape in SHAPES}
+    for length in lengths:
+        counts[str(shape_for(length))] += 1
+    ordered = sorted(lengths)
+    return {
+        "examples": len(lengths),
+        "buckets": counts,
+        "truncated": sum(length > max_length for length in lengths),
+        "min": ordered[0],
+        "median": ordered[len(ordered) // 2],
+        "max": ordered[-1],
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=Path("data/contexts.jsonl"))
+    parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--output", type=Path, default=Path("data/token-counts.json"))
     args = parser.parse_args(argv)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL)
-    counts = []
-    for record in read_jsonl(args.input):
-        counts.append(len(tokenizer(str(record["prompt"]), add_special_tokens=True)["input_ids"]))
-    values = np.array(counts)
+    checkpoint = args.checkpoint or chosen_checkpoint()
+    bold, max_length, tokenizer = load_checkpoint(checkpoint)
     result = {
-        "contexts": len(counts),
-        "min": int(values.min()),
-        "p50": float(np.percentile(values, 50)),
-        "p90": float(np.percentile(values, 90)),
-        "p99": float(np.percentile(values, 99)),
-        "max": int(values.max()),
-        "over_512": int((values > 512).sum()),
-        "over_1024": int((values > 1024).sum()),
-        "over_2048": int((values > 2048).sum()),
-        "over_512_share": float((values > 512).mean()),
-        "over_1024_share": float((values > 1024).mean()),
-        "over_2048_share": float((values > 2048).mean()),
+        "checkpoint": str(checkpoint),
+        "bold": bold,
+        "max_length": max_length,
+        "splits": {
+            split: distribution(
+                tokenizer, Path(f"data/{split}.jsonl"), max_length, bold
+            )
+            for split in ("train", "dev", "eval")
+        },
     }
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, sort_keys=True))

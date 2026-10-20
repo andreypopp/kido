@@ -1,0 +1,9 @@
+The deploy script copies the files to the server.
+
+> Which colour should the banner use?
+
+1. **Teal**
+2. **Amber**
+3. **Slate**
+
+The footer keeps the colour until the next deploy.

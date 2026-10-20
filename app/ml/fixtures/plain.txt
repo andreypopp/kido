@@ -1,0 +1,5 @@
+The deploy script copies the files to the server.
+
+> It then restarts the worker.
+
+The log keeps the last run.

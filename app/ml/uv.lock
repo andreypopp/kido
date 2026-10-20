@@ -337,7 +337,7 @@ wheels = [
 [[package]]
 name = "kido-paragraph-ml"
 version = "0.0.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "coremltools" },
     { name = "datasketch" },

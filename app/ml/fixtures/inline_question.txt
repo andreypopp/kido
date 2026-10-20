@@ -1,0 +1,5 @@
+The report build takes one minute.
+
+> Should I also update the docs, or keep the change small?
+
+The footer stays as it is.

@@ -1,0 +1,6 @@
+Intro line.
+
+> Should the panel use	alpha or beta?
+
+	1. **Alpha**
+	2. **Beta**
