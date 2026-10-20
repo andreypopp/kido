@@ -1,6 +1,6 @@
 # Plan: a Core ML tagger for Shift paragraphs
 
-Status: research done, no code. Date: 2026-10-20. Updated with the user's
+Status: phase 0 done (see "Phase 0 results"); code in `app/ml/`. Date: 2026-10-20. Updated with the user's
 decisions: Core ML detection only, English only, DeepSeek as the labeller, no hand labelling, no pi
 extension change, FoundationModels is deleted when the tagger passes.
 
@@ -506,6 +506,163 @@ retrain. When the tagger meets the targets on the grown eval set, delete the
 is `failed` as today. Deliverable: one analyzer, a shorter
 `ParagraphMode`, the design section and `NOTES.md` without the on-device
 model, and the eval report.
+
+## Phase 0 results
+
+Measured on 2026-10-20 on the M5 Max (64 GB). Code: `app/ml/`. The full
+report is `app/ml/data/phase0-report.md` (gitignored, counts only).
+No transcript text is in git.
+
+### Data
+
+- 419 rendered contexts from 366 sessions: 130 pi, 264 Claude Code,
+  25 `AskUserQuestion`. There are 16 `AskUserQuestion` calls with
+  26 questions, not 60 calls.
+- `deepseek-flash` (non-thinking, JSON mode) labelled the redacted
+  contexts; the 25 `AskUserQuestion` contexts take their labels from the
+  call, with no API call. 392 labels are valid, 24 are dropped.
+- Dedup removed 35 exact and 13 near duplicates. The session-level split:
+  train 264 examples (247 sessions), eval 83 (62 sessions; 20 ask,
+  41 Claude, 22 pi; 43 negatives). The dev split for hyperparameters
+  comes from train sessions only (210 / 54).
+- Option spans: real train 34, dev 2, real eval 67 (ask 58, pi 9).
+  Synthetic train adds 163 option spans in 208 examples; the synthetic
+  eval uses held-out templates.
+
+### Token counts (Ettin tokenizer, real contexts)
+
+Min 36, p50 240, p90 457, p99 837, max 929. 27 contexts (6.4%) exceed
+512 tokens; none exceed 1,024. A first render had one context of 2,120
+tokens, so 2,048 stays as the rare fallback shape.
+
+### Quality (real eval, 83 contexts)
+
+Ettin-32m: 20 epochs, lr 1e-4 with warmup and linear decay, batch 8,
+max length 1,024, bf16. Chosen on the dev split. Mean ± SD over 3 seeds;
+Create ML has one run.
+
+| Model | Train data | Bold | Question F1 | Option exact F1 | Unit accuracy | Question FPR |
+|---|---|---|---:|---:|---:|---:|
+| Create ML `MLWordTagger` | real | yes | 0.648 | 0.000 | 0.699 | 2.3% |
+| Create ML `MLWordTagger` | real | no | 0.623 | 0.110 | 0.723 | 2.3% |
+| Ettin-32m | real | yes | 0.855 ± 0.022 | 0.008 ± 0.014 | 0.835 ± 0.030 | 1.6% |
+| Ettin-32m | real | no | 0.858 ± 0.029 | 0.000 | 0.811 ± 0.018 | 1.6% |
+| Ettin-32m | real + synthetic | yes | 0.832 ± 0.044 | 0.069 ± 0.043 | 0.767 ± 0.039 | 2.3% |
+| Ettin-32m | real + synthetic | no | 0.844 ± 0.035 | 0.243 ± 0.181 | 0.815 ± 0.069 | 3.1% |
+
+Best single model (real + synthetic, no bold, seed 0): question F1
+0.877, option exact F1 0.440 (ask part 0.490), unit accuracy 0.892,
+FPR 2.3%. Of 67 gold options: 24 exact, 12 partial, 31 missed,
+6 spurious inside a gold unit, 0 spurious in a negative context.
+
+Learning curve (Ettin, real train only, question F1 at 25 / 50 / 100% of
+the train sessions): bold 0.661 / 0.681 / 0.855, no bold 0.587 / 0.538 /
+0.858. Create ML: 0.41 to 0.65. Question detection gains from more
+data. Option detection is zero without option training data and rises
+at once with 163 synthetic option spans.
+
+With 83 eval contexts, one error moves the FPR by about 2 points, and the
+seed spread of option exact F1 is 0.09 to 0.44. These numbers show a
+trend, not the phase 2 targets.
+
+### Training
+
+Ettin-32m on 264 examples × 20 epochs: 62 s. Throughput 23,600 to 24,000
+real tokens/s (24,500 to 25,000 padded) after warmup. Peak memory: 0.39 GB
+allocated, 7 to 8 GB in the MPS driver with a length-bucketed sampler. At
+this rate, 30,000 contexts × 3 epochs (about 23M tokens) takes about
+16 minutes. Create ML trains in 5 s; its model is about 0.8 MB.
+
+### Core ML
+
+- `EnumeratedShapes` puts every op on the CPU for `CPU_AND_NE`
+  (checked with `MLComputePlan`). The working form is one fixed-shape
+  function for each length in one multifunction package. Then 415 ops run
+  on the Neural Engine and 5 on the CPU.
+- Size: fp16 multifunction package (512, 1,024, 2,048) 76.4 MB. 8-bit
+  palettisation gives 32.6 MB for one function; coremltools cannot
+  palettise a multifunction package.
+- The converted checkpoint is the real-only no-bold model (seed 2); the
+  conversion numbers depend on the architecture, not on the weights. The
+  PyTorch wrapper equals the Hugging Face model (max difference 0).
+  Core ML against PyTorch: argmax agreement 0.9998 at 512 and 1.0 at
+  1,024; KL 3e-7 (GPU) and 1.5e-6 (ANE) at 512. No real context reaches
+  2,048, so that shape has no logits check.
+
+Latency, p50 / p95 ms, compiled model, fresh process per row (load ms):
+
+| Compute unit | 512 | 1,024 | 2,048 | Load |
+|---|---:|---:|---:|---:|
+| CPU only | 9.99 / 10.47 | 24.67 / 25.17 | 71.52 / 72.31 | 105 to 161 |
+| CPU and GPU | 2.36 / 2.90 | 2.35 / 3.64 | 5.55 / 5.72 | 143 to 167 |
+| CPU and ANE | 5.51 / 5.57 | 17.71 / 17.86 | 56.81 / 57.00 | 1,528 to 3,544 |
+| All | 2.10 / 2.46 | 2.60 / 2.74 | 5.53 / 5.69 | 296 to 317 |
+
+The 2,048 row uses a synthetic prompt of 1,600 tokens.
+
+### Swift tokenizer offsets
+
+swift-transformers 1.3.5 with Ettin's `tokenizer.json`, 10 hard cases
+(box drawing, ZWJ emoji, CJK, combining marks, tabs, CRLF, `**`, code):
+all token ids match Hugging Face, and 140 of 140 offsets match. The
+method needs one step beyond cumulative byte lengths: the tokenizer
+normalises to NFC, and the library does not expose the normaliser, so
+the code maps NFC positions back to the original text. Without that
+mapping, 4 of 134 offsets in combining text fail. No custom BPE encoder
+is needed.
+
+### Ghostty bold attribute
+
+`ghostty_surface_read_text` and `ghostty_surface_read_selection` (read in
+`app/App/PaneView.swift`) return text only; `ghostty_text_s` has no
+style field. The core has the data (`page.Cell.style_id`,
+`Style.flags.bold`, and `selectionStringMap` maps text bytes to cells).
+A fork change adds a per-byte style array to `ghostty_text_s`, fills it
+in `Surface.dumpTextLocked`, frees it in `ghostty_surface_free_text`, and
+reads it in the app's text decoding: about 80 to 120 Zig lines, 10 header
+lines and 20 Swift lines.
+
+### Go / no-go
+
+- **Model: go for Ettin-32m.** It beats the Create ML baseline on every
+  real metric, question detection is at 0.86 F1 with 264 training
+  contexts and still rising, and option detection responds to option
+  data. Option quality is not proven; phase 1 must supply option data
+  (see below), and phase 2 decides against the targets. Create ML is
+  dropped.
+- **ANE: no-go as the default.** It works with fixed shapes and keeps the
+  logits, but it is 2 to 10 times slower than the GPU and loads in 1.5 to
+  3.5 s. Use `.cpuAndGPU`: about 2.4 ms at 1,024 tokens, about 150 ms
+  load. The 100 ms debounce can shrink.
+- **Bold markers: no-go for now.** They give no question gain (0.855
+  against 0.858) and worse options (0.069 against 0.243 exact F1). Phase 4
+  does not do the Ghostty fork change. Phase 2 repeats the A/B once on the
+  large set; only a clear gain brings the change back.
+
+### Changes for later phases
+
+- Phase 1: real labels yield few options (34 in 264 contexts), and every
+  `AskUserQuestion` context is eval data. Label more contexts with a
+  question at the end (about 1,200 pi turns), oversample option-bearing
+  ones, and keep synthetic option data in training. Make the synthetic
+  templates more varied: half of the first generation were near
+  duplicates, and held-out templates scored much lower than training
+  templates.
+- Phase 1: the eval's exact tool-call part is 26 questions, not 60. The
+  agreed real part (`deepseek-v4-pro`) carries more of the eval.
+- Phase 2: report the mean over 3 seeds; one seed is not enough. Select
+  hyperparameters on the dev split, never on eval. The dev split needs
+  enough option spans to rank configurations (it had 2).
+- Phase 3: convert to one fixed-shape function per length, not
+  `EnumeratedShapes`. Check the op placement with `MLComputePlan` in
+  `convert.py`. Use 512 and 1,024; keep 2,048 only as a fallback. Choose
+  8-bit palettisation per function only if the bundle size matters.
+- Phase 4: the Swift tokenizer needs the NFC position mapping.
+  `computeUnits = .cpuAndGPU`. No bold markers and no Ghostty change
+  unless phase 2 reverses the bold result.
+- Hardware: the MPS driver peak is 7 to 8 GB, not under 10 GB of
+  allocations; the M5 Max is enough. Phase 2 sweeps over the 32m model
+  take minutes, not hours.
 
 ## Later
 

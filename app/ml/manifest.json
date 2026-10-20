@@ -1,0 +1,1968 @@
+{
+  "seed": 0,
+  "python": "3.12",
+  "transformers": "5.20.2",
+  "torch": "2.14.1",
+  "coremltools": "9.0",
+  "base_model": {
+    "id": "jhu-clsp/ettin-encoder-32m",
+    "revision": "1b8ba06455dd44f80fc9c1ca9e22806157a57379"
+  },
+  "tokenizer": "jhu-clsp/ettin-encoder-32m",
+  "render": {
+    "width_min": 60,
+    "width_max": 220,
+    "target_contexts": 460,
+    "context_before": 2,
+    "context_after": 2,
+    "line_limit": 60,
+    "character_limit": 6000
+  },
+  "counts": {
+    "contexts": 419,
+    "labelled": 392,
+    "sessions": 366,
+    "positive": 189,
+    "ask": 25
+  },
+  "hashes": {
+    "contexts": "046fdbf517ef49e1b63dc44303269e4f7e248c5f9ec93d5357e17e33d555f915",
+    "labels": "7375c60493d5d8eb8e0e21d7dec9a271c5aafaff3bd665b759aaff91bff4bfeb"
+  },
+  "split": {
+    "train": {
+      "examples": 264,
+      "sessions": 247,
+      "hash": "9110b313fdad0c87acf1e7a015d0732590ece7400da7039c7a15cdd8a1590cab"
+    },
+    "eval": {
+      "examples": 83,
+      "sessions": 62,
+      "hash": "4b84528248a753e6c3bcb2dc9cb064cca8759f65b54b0dd2525a4b763b4a3676"
+    },
+    "dev-train": {
+      "examples": 210,
+      "sessions": 198,
+      "hash": "32dd49945277dac32db52742dc80af72bf3ce2778a75443c0fe4c50852bda4cd"
+    },
+    "dev": {
+      "examples": 54,
+      "sessions": 49,
+      "hash": "68ddc981138288aee5b1a358f10be2dba48d4f38b65e6bbf8f49e143c3c84d46"
+    }
+  },
+  "synthetic": {
+    "train": {
+      "examples": 208,
+      "hash": "2445937510cb85f097540de802a8de9a922dd4028e631e18461f0a5e5c4558aa"
+    },
+    "eval": {
+      "examples": 74,
+      "hash": "eaa22ee44ff4874f10f0c06d682c57592aaa001d1505983d75d0390fd7c02a6e"
+    }
+  },
+  "sweep": {
+    "rows": [
+      {
+        "bold": true,
+        "epochs": 10,
+        "learning_rate": 0.0001,
+        "question_f1": 0.8558225508317929,
+        "option_exact_f1": 0.0,
+        "option_token_f1": 0.6666666666666666,
+        "unit_accuracy": 0.9444444444444444
+      },
+      {
+        "bold": true,
+        "epochs": 10,
+        "learning_rate": 0.0002,
+        "question_f1": 0.8846520495710201,
+        "option_exact_f1": 1.0,
+        "option_token_f1": 1.0,
+        "unit_accuracy": 0.9259259259259259
+      },
+      {
+        "bold": true,
+        "epochs": 20,
+        "learning_rate": 0.0001,
+        "question_f1": 0.8656716417910447,
+        "option_exact_f1": 0.5,
+        "option_token_f1": 0.9090909090909091,
+        "unit_accuracy": 0.9444444444444444
+      },
+      {
+        "bold": true,
+        "epochs": 20,
+        "learning_rate": 0.0002,
+        "question_f1": 0.8069565217391305,
+        "option_exact_f1": 1.0,
+        "option_token_f1": 1.0,
+        "unit_accuracy": 0.9444444444444444
+      },
+      {
+        "bold": false,
+        "epochs": 10,
+        "learning_rate": 0.0001,
+        "question_f1": 0.8667917448405253,
+        "option_exact_f1": 0.0,
+        "option_token_f1": 0.5,
+        "unit_accuracy": 0.9444444444444444
+      },
+      {
+        "bold": false,
+        "epochs": 10,
+        "learning_rate": 0.0002,
+        "question_f1": 0.8666666666666667,
+        "option_exact_f1": 0.0,
+        "option_token_f1": 0.0,
+        "unit_accuracy": 0.9444444444444444
+      },
+      {
+        "bold": false,
+        "epochs": 20,
+        "learning_rate": 0.0001,
+        "question_f1": 0.8850574712643678,
+        "option_exact_f1": 1.0,
+        "option_token_f1": 1.0,
+        "unit_accuracy": 0.9444444444444444
+      },
+      {
+        "bold": false,
+        "epochs": 20,
+        "learning_rate": 0.0002,
+        "question_f1": 0.7899305555555556,
+        "option_exact_f1": 0.8,
+        "option_token_f1": 0.9230769230769231,
+        "unit_accuracy": 0.9444444444444444
+      }
+    ],
+    "best": {
+      "bold": false,
+      "epochs": 20,
+      "learning_rate": 0.0001,
+      "question_f1": 0.8850574712643678,
+      "option_exact_f1": 1.0,
+      "option_token_f1": 1.0,
+      "unit_accuracy": 0.9444444444444444
+    }
+  },
+  "learning_curve": {
+    "config": {
+      "epochs": 20,
+      "learning_rate": 0.0001,
+      "batch_size": 8
+    },
+    "sessions": {
+      "25": 62,
+      "50": 124,
+      "100": 247
+    },
+    "rows": [
+      {
+        "fraction": 25,
+        "bold": true,
+        "seed": 0,
+        "question_f1": 0.6411221347930208,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.8072289156626506
+      },
+      {
+        "fraction": 25,
+        "bold": true,
+        "seed": 1,
+        "question_f1": 0.6924616410940627,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.7349397590361446
+      },
+      {
+        "fraction": 25,
+        "bold": true,
+        "seed": 2,
+        "question_f1": 0.6509831460674157,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.7951807228915663
+      },
+      {
+        "fraction": 25,
+        "bold": false,
+        "seed": 0,
+        "question_f1": 0.6080055210489993,
+        "option_exact_f1": 0.05263157894736841,
+        "unit_accuracy": 0.8554216867469879
+      },
+      {
+        "fraction": 25,
+        "bold": false,
+        "seed": 1,
+        "question_f1": 0.615606936416185,
+        "option_exact_f1": 0.022988505747126436,
+        "unit_accuracy": 0.8313253012048193
+      },
+      {
+        "fraction": 25,
+        "bold": false,
+        "seed": 2,
+        "question_f1": 0.5382308845577212,
+        "option_exact_f1": 0.13559322033898305,
+        "unit_accuracy": 0.8795180722891566
+      },
+      {
+        "fraction": 50,
+        "bold": true,
+        "seed": 0,
+        "question_f1": 0.5785536159600998,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.8554216867469879
+      },
+      {
+        "fraction": 50,
+        "bold": true,
+        "seed": 1,
+        "question_f1": 0.760705289672544,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.7710843373493976
+      },
+      {
+        "fraction": 50,
+        "bold": true,
+        "seed": 2,
+        "question_f1": 0.7026483405967148,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.7951807228915663
+      },
+      {
+        "fraction": 50,
+        "bold": false,
+        "seed": 0,
+        "question_f1": 0.536834427425237,
+        "option_exact_f1": 0.11538461538461539,
+        "unit_accuracy": 0.891566265060241
+      },
+      {
+        "fraction": 50,
+        "bold": false,
+        "seed": 1,
+        "question_f1": 0.504746835443038,
+        "option_exact_f1": 0.09999999999999999,
+        "unit_accuracy": 0.8433734939759037
+      },
+      {
+        "fraction": 50,
+        "bold": false,
+        "seed": 2,
+        "question_f1": 0.5710080941869021,
+        "option_exact_f1": 0.14141414141414144,
+        "unit_accuracy": 0.891566265060241
+      },
+      {
+        "fraction": 100,
+        "bold": true,
+        "seed": 0,
+        "question_f1": 0.8344295110094366,
+        "option_exact_f1": 0.024691358024691357,
+        "unit_accuracy": 0.8313253012048193
+      },
+      {
+        "fraction": 100,
+        "bold": true,
+        "seed": 1,
+        "question_f1": 0.8519116855142703,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.8674698795180723
+      },
+      {
+        "fraction": 100,
+        "bold": true,
+        "seed": 2,
+        "question_f1": 0.8782467532467533,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.8072289156626506
+      },
+      {
+        "fraction": 100,
+        "bold": false,
+        "seed": 0,
+        "question_f1": 0.8355300859598854,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.8313253012048193
+      },
+      {
+        "fraction": 100,
+        "bold": false,
+        "seed": 1,
+        "question_f1": 0.847771236333053,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.8072289156626506
+      },
+      {
+        "fraction": 100,
+        "bold": false,
+        "seed": 2,
+        "question_f1": 0.8906034720308625,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.7951807228915663
+      },
+      {
+        "fraction": 25,
+        "bold": true,
+        "seed": 0,
+        "question_f1": 0.4135384615384615,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.6144578313253012
+      },
+      {
+        "fraction": 25,
+        "bold": false,
+        "seed": 0,
+        "question_f1": 0.4507552870090634,
+        "option_exact_f1": 0.08571428571428572,
+        "unit_accuracy": 0.6506024096385542
+      },
+      {
+        "fraction": 50,
+        "bold": true,
+        "seed": 0,
+        "question_f1": 0.40196681007990165,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.6265060240963856
+      },
+      {
+        "fraction": 50,
+        "bold": false,
+        "seed": 0,
+        "question_f1": 0.4776811594202899,
+        "option_exact_f1": 0.08450704225352113,
+        "unit_accuracy": 0.6265060240963856
+      },
+      {
+        "fraction": 100,
+        "bold": true,
+        "seed": 0,
+        "question_f1": 0.6476388168137001,
+        "option_exact_f1": 0.0,
+        "unit_accuracy": 0.6987951807228916
+      },
+      {
+        "fraction": 100,
+        "bold": false,
+        "seed": 0,
+        "question_f1": 0.6232508073196986,
+        "option_exact_f1": 0.10958904109589042,
+        "unit_accuracy": 0.7228915662650602
+      }
+    ]
+  },
+  "labels": {
+    "model": "deepseek-flash",
+    "samples": 1,
+    "contexts": 419,
+    "labelled": 392,
+    "ask_gold": 25,
+    "dropped": 24
+  },
+  "tokens": {
+    "contexts": 419,
+    "min": 36,
+    "p50": 240.0,
+    "p90": 457.4,
+    "p99": 836.8799999999998,
+    "max": 929,
+    "over_512": 27,
+    "over_1024": 0,
+    "over_2048": 0,
+    "over_512_share": 0.06443914081145585,
+    "over_1024_share": 0.0,
+    "over_2048_share": 0.0
+  },
+  "converted_hash": "8e1fbb80af0c7cbf863a29be4a8caf6b86553c1f91434dbeb6f112896ac4a570",
+  "convert": {
+    "path": "data/output/ParagraphTagger.mlpackage",
+    "hash": "8e1fbb80af0c7cbf863a29be4a8caf6b86553c1f91434dbeb6f112896ac4a570",
+    "fp16_bytes": 76425509,
+    "shapes": [
+      512,
+      1024,
+      2048
+    ],
+    "compute_units": {
+      "CPU_AND_GPU": {
+        "512": {
+          "records": 80,
+          "kl": 3.0395900020990795e-07,
+          "max_abs_diff": 0.031667164899408816,
+          "argmax_agreement": 0.9998046875
+        },
+        "1024": {
+          "records": 3,
+          "kl": 4.32409637725802e-09,
+          "max_abs_diff": 0.03732109069824219,
+          "argmax_agreement": 1.0
+        },
+        "2048": null
+      },
+      "CPU_AND_NE": {
+        "512": {
+          "records": 80,
+          "kl": 1.4841536720155979e-06,
+          "max_abs_diff": 0.11732594072818756,
+          "argmax_agreement": 0.9998046875
+        },
+        "1024": {
+          "records": 3,
+          "kl": 3.505945223025719e-08,
+          "max_abs_diff": 0.11578281720479329,
+          "argmax_agreement": 1.0
+        },
+        "2048": null
+      },
+      "ALL": {
+        "512": {
+          "records": 80,
+          "kl": 3.0395900020990795e-07,
+          "max_abs_diff": 0.031667164899408816,
+          "argmax_agreement": 0.9998046875
+        },
+        "1024": {
+          "records": 3,
+          "kl": 4.32409637725802e-09,
+          "max_abs_diff": 0.03732109069824219,
+          "argmax_agreement": 1.0
+        },
+        "2048": null
+      }
+    },
+    "wrapper_vs_hf": {
+      "512": {
+        "kl": -1.736532453414876e-10,
+        "max_abs_diff": 0.0,
+        "argmax_agreement": 1.0
+      },
+      "1024": {
+        "kl": 3.215577215170398e-12,
+        "max_abs_diff": 0.0,
+        "argmax_agreement": 1.0
+      },
+      "2048": null
+    },
+    "ops": {
+      "512": {
+        "CPU_AND_GPU": {
+          "main": {
+            "unknown": 477,
+            "GPU": 420
+          }
+        },
+        "CPU_AND_NE": {
+          "main": {
+            "unknown": 477,
+            "CPU": 5,
+            "NeuralEngine": 415
+          }
+        },
+        "ALL": {
+          "main": {
+            "unknown": 477,
+            "GPU": 420
+          }
+        }
+      },
+      "1024": {
+        "CPU_AND_GPU": {
+          "main": {
+            "unknown": 477,
+            "GPU": 420
+          }
+        },
+        "CPU_AND_NE": {
+          "main": {
+            "unknown": 477,
+            "CPU": 5,
+            "NeuralEngine": 415
+          }
+        },
+        "ALL": {
+          "main": {
+            "unknown": 477,
+            "GPU": 420
+          }
+        }
+      },
+      "2048": {
+        "CPU_AND_GPU": {
+          "main": {
+            "unknown": 477,
+            "GPU": 420
+          }
+        },
+        "CPU_AND_NE": {
+          "main": {
+            "unknown": 477,
+            "CPU": 5,
+            "NeuralEngine": 415
+          }
+        },
+        "ALL": {
+          "main": {
+            "unknown": 477,
+            "GPU": 420
+          }
+        }
+      }
+    },
+    "palettized_bytes": 32554237,
+    "palettized_scope": "shape_512"
+  },
+  "bench": {
+    "runs": 30,
+    "compiled": "/tmp/paragraph-bench-wee6s7lk/model.mlmodelc",
+    "compute_units": {
+      "CPU_ONLY": {
+        "shapes": {
+          "1024": {
+            "load_ms": 105.47004197724164,
+            "min_ms": 24.150416953489184,
+            "p50_ms": 24.666374956723303,
+            "p95_ms": 25.17311220872216
+          },
+          "2048": {
+            "load_ms": 112.39770893007517,
+            "min_ms": 70.66887500695884,
+            "p50_ms": 71.52135402429849,
+            "p95_ms": 72.30925832991488
+          },
+          "512": {
+            "load_ms": 161.0642080195248,
+            "min_ms": 9.697000030428171,
+            "p50_ms": 9.98977100243792,
+            "p95_ms": 10.473831347189844
+          }
+        },
+        "unit": "CPU_ONLY"
+      },
+      "CPU_AND_GPU": {
+        "shapes": {
+          "1024": {
+            "load_ms": 143.56629201211035,
+            "min_ms": 2.300749998539686,
+            "p50_ms": 2.352770941797644,
+            "p95_ms": 3.6370335787069026
+          },
+          "2048": {
+            "load_ms": 142.6725829951465,
+            "min_ms": 5.441333050839603,
+            "p50_ms": 5.5533539853058755,
+            "p95_ms": 5.723522952757776
+          },
+          "512": {
+            "load_ms": 166.8948750011623,
+            "min_ms": 2.213417086750269,
+            "p50_ms": 2.356437500566244,
+            "p95_ms": 2.8961895499378443
+          }
+        },
+        "unit": "CPU_AND_GPU"
+      },
+      "CPU_AND_NE": {
+        "shapes": {
+          "1024": {
+            "load_ms": 1979.080207995139,
+            "min_ms": 17.447874997742474,
+            "p50_ms": 17.707437509670854,
+            "p95_ms": 17.855685472022742
+          },
+          "2048": {
+            "load_ms": 3543.522792053409,
+            "min_ms": 56.428999989293516,
+            "p50_ms": 56.8054995383136,
+            "p95_ms": 56.99819829897024
+          },
+          "512": {
+            "load_ms": 1527.4779580067843,
+            "min_ms": 5.480749998241663,
+            "p50_ms": 5.511166469659656,
+            "p95_ms": 5.56840188219212
+          }
+        },
+        "unit": "CPU_AND_NE"
+      },
+      "ALL": {
+        "shapes": {
+          "1024": {
+            "load_ms": 295.8583750296384,
+            "min_ms": 2.369708032347262,
+            "p50_ms": 2.6033954927697778,
+            "p95_ms": 2.7358247141819447
+          },
+          "2048": {
+            "load_ms": 301.44266597926617,
+            "min_ms": 5.432291072793305,
+            "p50_ms": 5.529103975277394,
+            "p95_ms": 5.692430934868753
+          },
+          "512": {
+            "load_ms": 316.76654098555446,
+            "min_ms": 1.82095798663795,
+            "p50_ms": 2.102603961247951,
+            "p95_ms": 2.460187161341309
+          }
+        },
+        "unit": "ALL"
+      }
+    }
+  },
+  "swift_offsets": {
+    "matching": 140,
+    "mismatches": [],
+    "cases": 10,
+    "tokens": 140,
+    "ids_matching": 10
+  },
+  "models": {
+    "curve-100-bold-s0": {
+      "training": {
+        "backend": "ettin",
+        "model": "jhu-clsp/ettin-encoder-32m",
+        "bold": true,
+        "seed": 0,
+        "epochs": 20,
+        "batch_size": 8,
+        "max_length": 1024,
+        "learning_rate": 0.0001,
+        "warmup_fraction": 0.1,
+        "total_steps": 660,
+        "train": 264,
+        "eval": 83,
+        "prep_seconds": 0.102,
+        "train_seconds": 62.67,
+        "warmup_steps": 5,
+        "real_tokens_per_second": 23875.9,
+        "padded_tokens_per_second": 24801.8,
+        "examples_per_second": 83.61,
+        "peak_current_bytes": 385292544,
+        "peak_driver_bytes": 7075086336,
+        "device": "mps",
+        "bf16_autocast": true
+      },
+      "eval": {
+        "examples": 83,
+        "token_f1": {
+          "question": {
+            "f1": 0.8344295110094366,
+            "tp": 1459,
+            "fp": 191,
+            "fn": 388
+          },
+          "option": {
+            "f1": 0.10980392156862745,
+            "tp": 28,
+            "fp": 0,
+            "fn": 454
+          }
+        },
+        "option": {
+          "precision": 0.07142857142857142,
+          "recall": 0.014925373134328358,
+          "f1": 0.024691358024691357
+        },
+        "unit_accuracy": 0.8313253012048193,
+        "question_false_positive_rate": 0.0,
+        "negatives": 43,
+        "parts": {
+          "ask": {
+            "examples": 20,
+            "token_f1": {
+              "question": {
+                "f1": 0.6973293768545994,
+                "tp": 235,
+                "fp": 118,
+                "fn": 86
+              },
+              "option": {
+                "f1": 0.048484848484848485,
+                "tp": 8,
+                "fp": 0,
+                "fn": 314
+              }
+            },
+            "option": {
+              "precision": 0.16666666666666666,
+              "recall": 0.017241379310344827,
+              "f1": 0.03125
+            },
+            "unit_accuracy": 0.5,
+            "question_false_positive_rate": 0.0,
+            "negatives": 0
+          },
+          "claude": {
+            "examples": 41,
+            "token_f1": {
+              "question": {
+                "f1": 0.8397163120567376,
+                "tp": 296,
+                "fp": 48,
+                "fn": 65
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.9512195121951219,
+            "question_false_positive_rate": 0.0,
+            "negatives": 29
+          },
+          "pi": {
+            "examples": 22,
+            "token_f1": {
+              "question": {
+                "f1": 0.8762983947119924,
+                "tp": 928,
+                "fp": 25,
+                "fn": 237
+              },
+              "option": {
+                "f1": 0.2222222222222222,
+                "tp": 20,
+                "fp": 0,
+                "fn": 140
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.9090909090909091,
+            "question_false_positive_rate": 0.0,
+            "negatives": 14
+          }
+        },
+        "errors": {
+          "gold_options": 67,
+          "exact_range": 1,
+          "off_by_whitespace_marker": 0,
+          "partly_overlapping": 7,
+          "missed": 59,
+          "spurious_inside_gold_unit": 6,
+          "spurious_negative_context": 0
+        }
+      }
+    },
+    "curve-100-bold-s1": {
+      "training": {
+        "backend": "ettin",
+        "model": "jhu-clsp/ettin-encoder-32m",
+        "bold": true,
+        "seed": 1,
+        "epochs": 20,
+        "batch_size": 8,
+        "max_length": 1024,
+        "learning_rate": 0.0001,
+        "warmup_fraction": 0.1,
+        "total_steps": 660,
+        "train": 264,
+        "eval": 83,
+        "prep_seconds": 0.123,
+        "train_seconds": 62.627,
+        "warmup_steps": 5,
+        "real_tokens_per_second": 23892.3,
+        "padded_tokens_per_second": 24818.8,
+        "examples_per_second": 83.67,
+        "peak_current_bytes": 385292544,
+        "peak_driver_bytes": 8140439552,
+        "device": "mps",
+        "bf16_autocast": true
+      },
+      "eval": {
+        "examples": 83,
+        "token_f1": {
+          "question": {
+            "f1": 0.8519116855142703,
+            "tp": 1582,
+            "fp": 285,
+            "fn": 265
+          },
+          "option": {
+            "f1": 0.008264462809917356,
+            "tp": 2,
+            "fp": 0,
+            "fn": 480
+          }
+        },
+        "option": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "unit_accuracy": 0.8674698795180723,
+        "question_false_positive_rate": 0.023255813953488372,
+        "negatives": 43,
+        "parts": {
+          "ask": {
+            "examples": 20,
+            "token_f1": {
+              "question": {
+                "f1": 0.6858638743455497,
+                "tp": 262,
+                "fp": 181,
+                "fn": 59
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 322
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.65,
+            "question_false_positive_rate": 0.0,
+            "negatives": 0
+          },
+          "claude": {
+            "examples": 41,
+            "token_f1": {
+              "question": {
+                "f1": 0.9165562913907285,
+                "tp": 346,
+                "fp": 48,
+                "fn": 15
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.975609756097561,
+            "question_false_positive_rate": 0.0,
+            "negatives": 29
+          },
+          "pi": {
+            "examples": 22,
+            "token_f1": {
+              "question": {
+                "f1": 0.8874715261958998,
+                "tp": 974,
+                "fp": 56,
+                "fn": 191
+              },
+              "option": {
+                "f1": 0.024691358024691357,
+                "tp": 2,
+                "fp": 0,
+                "fn": 158
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.8636363636363636,
+            "question_false_positive_rate": 0.07142857142857142,
+            "negatives": 14
+          }
+        },
+        "errors": {
+          "gold_options": 67,
+          "exact_range": 0,
+          "off_by_whitespace_marker": 0,
+          "partly_overlapping": 2,
+          "missed": 65,
+          "spurious_inside_gold_unit": 0,
+          "spurious_negative_context": 0
+        }
+      }
+    },
+    "curve-100-bold-s2": {
+      "training": {
+        "backend": "ettin",
+        "model": "jhu-clsp/ettin-encoder-32m",
+        "bold": true,
+        "seed": 2,
+        "epochs": 20,
+        "batch_size": 8,
+        "max_length": 1024,
+        "learning_rate": 0.0001,
+        "warmup_fraction": 0.1,
+        "total_steps": 660,
+        "train": 264,
+        "eval": 83,
+        "prep_seconds": 0.061,
+        "train_seconds": 62.291,
+        "warmup_steps": 5,
+        "real_tokens_per_second": 24020.9,
+        "padded_tokens_per_second": 24952.5,
+        "examples_per_second": 84.12,
+        "peak_current_bytes": 385292544,
+        "peak_driver_bytes": 8140439552,
+        "device": "mps",
+        "bf16_autocast": true
+      },
+      "eval": {
+        "examples": 83,
+        "token_f1": {
+          "question": {
+            "f1": 0.8782467532467533,
+            "tp": 1623,
+            "fp": 226,
+            "fn": 224
+          },
+          "option": {
+            "f1": 0.06813627254509018,
+            "tp": 17,
+            "fp": 0,
+            "fn": 465
+          }
+        },
+        "option": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "unit_accuracy": 0.8072289156626506,
+        "question_false_positive_rate": 0.023255813953488372,
+        "negatives": 43,
+        "parts": {
+          "ask": {
+            "examples": 20,
+            "token_f1": {
+              "question": {
+                "f1": 0.9278350515463918,
+                "tp": 315,
+                "fp": 43,
+                "fn": 6
+              },
+              "option": {
+                "f1": 0.08333333333333333,
+                "tp": 14,
+                "fp": 0,
+                "fn": 308
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.4,
+            "question_false_positive_rate": 0.0,
+            "negatives": 0
+          },
+          "claude": {
+            "examples": 41,
+            "token_f1": {
+              "question": {
+                "f1": 0.927916120576671,
+                "tp": 354,
+                "fp": 48,
+                "fn": 7
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.975609756097561,
+            "question_false_positive_rate": 0.0,
+            "negatives": 29
+          },
+          "pi": {
+            "examples": 22,
+            "token_f1": {
+              "question": {
+                "f1": 0.8464951197870453,
+                "tp": 954,
+                "fp": 135,
+                "fn": 211
+              },
+              "option": {
+                "f1": 0.03680981595092025,
+                "tp": 3,
+                "fp": 0,
+                "fn": 157
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.8636363636363636,
+            "question_false_positive_rate": 0.07142857142857142,
+            "negatives": 14
+          }
+        },
+        "errors": {
+          "gold_options": 67,
+          "exact_range": 0,
+          "off_by_whitespace_marker": 0,
+          "partly_overlapping": 12,
+          "missed": 55,
+          "spurious_inside_gold_unit": 2,
+          "spurious_negative_context": 1
+        }
+      }
+    },
+    "curve-100-nobold-s0": {
+      "training": {
+        "backend": "ettin",
+        "model": "jhu-clsp/ettin-encoder-32m",
+        "bold": false,
+        "seed": 0,
+        "epochs": 20,
+        "batch_size": 8,
+        "max_length": 1024,
+        "learning_rate": 0.0001,
+        "warmup_fraction": 0.1,
+        "total_steps": 660,
+        "train": 264,
+        "eval": 83,
+        "prep_seconds": 0.123,
+        "train_seconds": 62.589,
+        "warmup_steps": 5,
+        "real_tokens_per_second": 23597.9,
+        "padded_tokens_per_second": 24524.4,
+        "examples_per_second": 83.72,
+        "peak_current_bytes": 385290240,
+        "peak_driver_bytes": 7070564352,
+        "device": "mps",
+        "bf16_autocast": true
+      },
+      "eval": {
+        "examples": 83,
+        "token_f1": {
+          "question": {
+            "f1": 0.8355300859598854,
+            "tp": 1458,
+            "fp": 207,
+            "fn": 367
+          },
+          "option": {
+            "f1": 0.056338028169014086,
+            "tp": 14,
+            "fp": 0,
+            "fn": 469
+          }
+        },
+        "option": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "unit_accuracy": 0.8313253012048193,
+        "question_false_positive_rate": 0.0,
+        "negatives": 43,
+        "parts": {
+          "ask": {
+            "examples": 20,
+            "token_f1": {
+              "question": {
+                "f1": 0.6845827439886846,
+                "tp": 242,
+                "fp": 144,
+                "fn": 79
+              },
+              "option": {
+                "f1": 0.07738095238095238,
+                "tp": 13,
+                "fp": 0,
+                "fn": 310
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.5,
+            "question_false_positive_rate": 0.0,
+            "negatives": 0
+          },
+          "claude": {
+            "examples": 41,
+            "token_f1": {
+              "question": {
+                "f1": 0.8397163120567376,
+                "tp": 296,
+                "fp": 48,
+                "fn": 65
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.9512195121951219,
+            "question_false_positive_rate": 0.0,
+            "negatives": 29
+          },
+          "pi": {
+            "examples": 22,
+            "token_f1": {
+              "question": {
+                "f1": 0.8854667949951877,
+                "tp": 920,
+                "fp": 15,
+                "fn": 223
+              },
+              "option": {
+                "f1": 0.012422360248447204,
+                "tp": 1,
+                "fp": 0,
+                "fn": 159
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.9090909090909091,
+            "question_false_positive_rate": 0.0,
+            "negatives": 14
+          }
+        },
+        "errors": {
+          "gold_options": 67,
+          "exact_range": 0,
+          "off_by_whitespace_marker": 0,
+          "partly_overlapping": 7,
+          "missed": 60,
+          "spurious_inside_gold_unit": 2,
+          "spurious_negative_context": 0
+        }
+      }
+    },
+    "curve-100-nobold-s1": {
+      "training": {
+        "backend": "ettin",
+        "model": "jhu-clsp/ettin-encoder-32m",
+        "bold": false,
+        "seed": 1,
+        "epochs": 20,
+        "batch_size": 8,
+        "max_length": 1024,
+        "learning_rate": 0.0001,
+        "warmup_fraction": 0.1,
+        "total_steps": 660,
+        "train": 264,
+        "eval": 83,
+        "prep_seconds": 0.122,
+        "train_seconds": 62.378,
+        "warmup_steps": 5,
+        "real_tokens_per_second": 23677.9,
+        "padded_tokens_per_second": 24607.5,
+        "examples_per_second": 84.0,
+        "peak_current_bytes": 385290240,
+        "peak_driver_bytes": 8135917568,
+        "device": "mps",
+        "bf16_autocast": true
+      },
+      "eval": {
+        "examples": 83,
+        "token_f1": {
+          "question": {
+            "f1": 0.847771236333053,
+            "tp": 1512,
+            "fp": 230,
+            "fn": 313
+          },
+          "option": {
+            "f1": 0.036585365853658534,
+            "tp": 9,
+            "fp": 0,
+            "fn": 474
+          }
+        },
+        "option": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "unit_accuracy": 0.8072289156626506,
+        "question_false_positive_rate": 0.023255813953488372,
+        "negatives": 43,
+        "parts": {
+          "ask": {
+            "examples": 20,
+            "token_f1": {
+              "question": {
+                "f1": 0.7899408284023669,
+                "tp": 267,
+                "fp": 88,
+                "fn": 54
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 323
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.45,
+            "question_false_positive_rate": 0.0,
+            "negatives": 0
+          },
+          "claude": {
+            "examples": 41,
+            "token_f1": {
+              "question": {
+                "f1": 0.855944055944056,
+                "tp": 306,
+                "fp": 48,
+                "fn": 55
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.975609756097561,
+            "question_false_positive_rate": 0.0,
+            "negatives": 29
+          },
+          "pi": {
+            "examples": 22,
+            "token_f1": {
+              "question": {
+                "f1": 0.8630514705882353,
+                "tp": 939,
+                "fp": 94,
+                "fn": 204
+              },
+              "option": {
+                "f1": 0.10650887573964497,
+                "tp": 9,
+                "fp": 0,
+                "fn": 151
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.8181818181818182,
+            "question_false_positive_rate": 0.07142857142857142,
+            "negatives": 14
+          }
+        },
+        "errors": {
+          "gold_options": 67,
+          "exact_range": 0,
+          "off_by_whitespace_marker": 0,
+          "partly_overlapping": 3,
+          "missed": 64,
+          "spurious_inside_gold_unit": 4,
+          "spurious_negative_context": 1
+        }
+      }
+    },
+    "curve-100-nobold-s2": {
+      "training": {
+        "backend": "ettin",
+        "model": "jhu-clsp/ettin-encoder-32m",
+        "bold": false,
+        "seed": 2,
+        "epochs": 20,
+        "batch_size": 8,
+        "max_length": 1024,
+        "learning_rate": 0.0001,
+        "warmup_fraction": 0.1,
+        "total_steps": 660,
+        "train": 264,
+        "eval": 83,
+        "prep_seconds": 0.123,
+        "train_seconds": 62.146,
+        "warmup_steps": 5,
+        "real_tokens_per_second": 23766.4,
+        "padded_tokens_per_second": 24699.5,
+        "examples_per_second": 84.32,
+        "peak_current_bytes": 385290240,
+        "peak_driver_bytes": 8135917568,
+        "device": "mps",
+        "bf16_autocast": true
+      },
+      "eval": {
+        "examples": 83,
+        "token_f1": {
+          "question": {
+            "f1": 0.8906034720308625,
+            "tp": 1616,
+            "fp": 188,
+            "fn": 209
+          },
+          "option": {
+            "f1": 0.008247422680412371,
+            "tp": 2,
+            "fp": 0,
+            "fn": 481
+          }
+        },
+        "option": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "unit_accuracy": 0.7951807228915663,
+        "question_false_positive_rate": 0.023255813953488372,
+        "negatives": 43,
+        "parts": {
+          "ask": {
+            "examples": 20,
+            "token_f1": {
+              "question": {
+                "f1": 0.9498432601880877,
+                "tp": 303,
+                "fp": 14,
+                "fn": 18
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 323
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.35,
+            "question_false_positive_rate": 0.0,
+            "negatives": 0
+          },
+          "claude": {
+            "examples": 41,
+            "token_f1": {
+              "question": {
+                "f1": 0.9376623376623376,
+                "tp": 361,
+                "fp": 48,
+                "fn": 0
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.975609756097561,
+            "question_false_positive_rate": 0.0,
+            "negatives": 29
+          },
+          "pi": {
+            "examples": 22,
+            "token_f1": {
+              "question": {
+                "f1": 0.8572714993246285,
+                "tp": 952,
+                "fp": 126,
+                "fn": 191
+              },
+              "option": {
+                "f1": 0.024691358024691357,
+                "tp": 2,
+                "fp": 0,
+                "fn": 158
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.8636363636363636,
+            "question_false_positive_rate": 0.07142857142857142,
+            "negatives": 14
+          }
+        },
+        "errors": {
+          "gold_options": 67,
+          "exact_range": 0,
+          "off_by_whitespace_marker": 0,
+          "partly_overlapping": 2,
+          "missed": 65,
+          "spurious_inside_gold_unit": 0,
+          "spurious_negative_context": 0
+        }
+      }
+    },
+    "curve-100-createml-bold": {
+      "training": {
+        "backend": "createml",
+        "bold": true,
+        "seed": 0,
+        "train": 264,
+        "eval": 83,
+        "train_seconds": 5.305,
+        "model_bytes": 775221,
+        "swift": "trained 264 evaluated 83 in 5.06s"
+      },
+      "eval": {
+        "examples": 83,
+        "token_f1": {
+          "question": {
+            "f1": 0.6476388168137001,
+            "tp": 624,
+            "fp": 79,
+            "fn": 600
+          },
+          "option": {
+            "f1": 0.0,
+            "tp": 0,
+            "fp": 13,
+            "fn": 290
+          }
+        },
+        "option": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "unit_accuracy": 0.6987951807228916,
+        "question_false_positive_rate": 0.023255813953488372,
+        "negatives": 43,
+        "parts": {
+          "ask": {
+            "examples": 20,
+            "token_f1": {
+              "question": {
+                "f1": 0.625,
+                "tp": 85,
+                "fp": 16,
+                "fn": 86
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 184
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.2,
+            "question_false_positive_rate": 0.0,
+            "negatives": 0
+          },
+          "claude": {
+            "examples": 41,
+            "token_f1": {
+              "question": {
+                "f1": 0.5087281795511222,
+                "tp": 102,
+                "fp": 26,
+                "fn": 171
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.9024390243902439,
+            "question_false_positive_rate": 0.0,
+            "negatives": 29
+          },
+          "pi": {
+            "examples": 22,
+            "token_f1": {
+              "question": {
+                "f1": 0.696969696969697,
+                "tp": 437,
+                "fp": 37,
+                "fn": 343
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 13,
+                "fn": 106
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.7727272727272727,
+            "question_false_positive_rate": 0.07142857142857142,
+            "negatives": 14
+          }
+        },
+        "errors": {
+          "gold_options": 67,
+          "exact_range": 0,
+          "off_by_whitespace_marker": 0,
+          "partly_overlapping": 0,
+          "missed": 67,
+          "spurious_inside_gold_unit": 1,
+          "spurious_negative_context": 0
+        }
+      }
+    },
+    "curve-100-createml-nobold": {
+      "training": {
+        "backend": "createml",
+        "bold": false,
+        "seed": 0,
+        "train": 264,
+        "eval": 83,
+        "train_seconds": 4.813,
+        "model_bytes": 773765,
+        "swift": "trained 264 evaluated 83 in 4.56s"
+      },
+      "eval": {
+        "examples": 83,
+        "token_f1": {
+          "question": {
+            "f1": 0.6232508073196986,
+            "tp": 579,
+            "fp": 55,
+            "fn": 645
+          },
+          "option": {
+            "f1": 0.03680981595092025,
+            "tp": 6,
+            "fp": 30,
+            "fn": 284
+          }
+        },
+        "option": {
+          "precision": 0.6666666666666666,
+          "recall": 0.05970149253731343,
+          "f1": 0.10958904109589042
+        },
+        "unit_accuracy": 0.7228915662650602,
+        "question_false_positive_rate": 0.023255813953488372,
+        "negatives": 43,
+        "parts": {
+          "ask": {
+            "examples": 20,
+            "token_f1": {
+              "question": {
+                "f1": 0.6090225563909775,
+                "tp": 81,
+                "fp": 14,
+                "fn": 90
+              },
+              "option": {
+                "f1": 0.06315789473684211,
+                "tp": 6,
+                "fp": 0,
+                "fn": 178
+              }
+            },
+            "option": {
+              "precision": 1.0,
+              "recall": 0.06896551724137931,
+              "f1": 0.12903225806451613
+            },
+            "unit_accuracy": 0.25,
+            "question_false_positive_rate": 0.0,
+            "negatives": 0
+          },
+          "claude": {
+            "examples": 41,
+            "token_f1": {
+              "question": {
+                "f1": 0.5204081632653061,
+                "tp": 102,
+                "fp": 17,
+                "fn": 171
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.9024390243902439,
+            "question_false_positive_rate": 0.0,
+            "negatives": 29
+          },
+          "pi": {
+            "examples": 22,
+            "token_f1": {
+              "question": {
+                "f1": 0.66,
+                "tp": 396,
+                "fp": 24,
+                "fn": 384
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 30,
+                "fn": 106
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.8181818181818182,
+            "question_false_positive_rate": 0.07142857142857142,
+            "negatives": 14
+          }
+        },
+        "errors": {
+          "gold_options": 67,
+          "exact_range": 4,
+          "off_by_whitespace_marker": 0,
+          "partly_overlapping": 0,
+          "missed": 63,
+          "spurious_inside_gold_unit": 2,
+          "spurious_negative_context": 0
+        }
+      }
+    },
+    "synthetic-ettin-bold": {
+      "training": {
+        "backend": "ettin",
+        "model": "jhu-clsp/ettin-encoder-32m",
+        "bold": true,
+        "seed": 0,
+        "epochs": 3,
+        "batch_size": 4,
+        "max_length": 1024,
+        "train": 208,
+        "eval": 74,
+        "prep_seconds": 0.014,
+        "train_seconds": 19.078,
+        "warmup_steps": 5,
+        "real_tokens_per_second": 2310.0,
+        "padded_tokens_per_second": 2316.4,
+        "examples_per_second": 31.66,
+        "peak_current_bytes": 385128192,
+        "peak_driver_bytes": 1301725184,
+        "device": "mps",
+        "bf16_autocast": true
+      },
+      "eval": {
+        "examples": 74,
+        "token_f1": {
+          "question": {
+            "f1": 0.05925925925925926,
+            "tp": 8,
+            "fp": 9,
+            "fn": 245
+          },
+          "option": {
+            "f1": 0.48760330578512395,
+            "tp": 59,
+            "fp": 59,
+            "fn": 65
+          }
+        },
+        "option": {
+          "precision": 0.3409090909090909,
+          "recall": 0.3125,
+          "f1": 0.32608695652173914
+        },
+        "unit_accuracy": 0.2702702702702703,
+        "question_false_positive_rate": 0.23684210526315788,
+        "negatives": 38,
+        "parts": {
+          "synthetic": {
+            "examples": 74,
+            "token_f1": {
+              "question": {
+                "f1": 0.05925925925925926,
+                "tp": 8,
+                "fp": 9,
+                "fn": 245
+              },
+              "option": {
+                "f1": 0.48760330578512395,
+                "tp": 59,
+                "fp": 59,
+                "fn": 65
+              }
+            },
+            "option": {
+              "precision": 0.3409090909090909,
+              "recall": 0.3125,
+              "f1": 0.32608695652173914
+            },
+            "unit_accuracy": 0.2702702702702703,
+            "question_false_positive_rate": 0.23684210526315788,
+            "negatives": 38
+          }
+        }
+      }
+    },
+    "synthetic-ettin-nobold": {
+      "training": {
+        "backend": "ettin",
+        "model": "jhu-clsp/ettin-encoder-32m",
+        "bold": false,
+        "seed": 0,
+        "epochs": 3,
+        "batch_size": 4,
+        "max_length": 1024,
+        "train": 208,
+        "eval": 74,
+        "prep_seconds": 0.017,
+        "train_seconds": 19.161,
+        "warmup_steps": 5,
+        "real_tokens_per_second": 2300.0,
+        "padded_tokens_per_second": 2306.3,
+        "examples_per_second": 31.52,
+        "peak_current_bytes": 385128192,
+        "peak_driver_bytes": 1301725184,
+        "device": "mps",
+        "bf16_autocast": true
+      },
+      "eval": {
+        "examples": 74,
+        "token_f1": {
+          "question": {
+            "f1": 0.3155080213903743,
+            "tp": 59,
+            "fp": 62,
+            "fn": 194
+          },
+          "option": {
+            "f1": 0.48559670781893005,
+            "tp": 59,
+            "fp": 60,
+            "fn": 65
+          }
+        },
+        "option": {
+          "precision": 0.20512820512820512,
+          "recall": 0.3333333333333333,
+          "f1": 0.25396825396825395
+        },
+        "unit_accuracy": 0.4864864864864865,
+        "question_false_positive_rate": 0.9210526315789473,
+        "negatives": 38,
+        "parts": {
+          "synthetic": {
+            "examples": 74,
+            "token_f1": {
+              "question": {
+                "f1": 0.3155080213903743,
+                "tp": 59,
+                "fp": 62,
+                "fn": 194
+              },
+              "option": {
+                "f1": 0.48559670781893005,
+                "tp": 59,
+                "fp": 60,
+                "fn": 65
+              }
+            },
+            "option": {
+              "precision": 0.20512820512820512,
+              "recall": 0.3333333333333333,
+              "f1": 0.25396825396825395
+            },
+            "unit_accuracy": 0.4864864864864865,
+            "question_false_positive_rate": 0.9210526315789473,
+            "negatives": 38
+          }
+        }
+      }
+    },
+    "synthetic-createml-bold": {
+      "training": {
+        "backend": "createml",
+        "bold": true,
+        "seed": 0,
+        "train": 208,
+        "eval": 74,
+        "train_seconds": 0.719,
+        "model_bytes": 424053,
+        "swift": "trained 208 evaluated 74 in 0.49s"
+      },
+      "eval": {
+        "examples": 74,
+        "token_f1": {
+          "question": {
+            "f1": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 217
+          },
+          "option": {
+            "f1": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 74
+          }
+        },
+        "option": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "unit_accuracy": 0.5135135135135135,
+        "question_false_positive_rate": 0.0,
+        "negatives": 38,
+        "parts": {
+          "synthetic": {
+            "examples": 74,
+            "token_f1": {
+              "question": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 217
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 74
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.5135135135135135,
+            "question_false_positive_rate": 0.0,
+            "negatives": 38
+          }
+        }
+      }
+    },
+    "synthetic-createml-nobold": {
+      "training": {
+        "backend": "createml",
+        "bold": false,
+        "seed": 0,
+        "train": 208,
+        "eval": 74,
+        "train_seconds": 0.724,
+        "model_bytes": 424053,
+        "swift": "trained 208 evaluated 74 in 0.49s"
+      },
+      "eval": {
+        "examples": 74,
+        "token_f1": {
+          "question": {
+            "f1": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 217
+          },
+          "option": {
+            "f1": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 74
+          }
+        },
+        "option": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "unit_accuracy": 0.5135135135135135,
+        "question_false_positive_rate": 0.0,
+        "negatives": 38,
+        "parts": {
+          "synthetic": {
+            "examples": 74,
+            "token_f1": {
+              "question": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 217
+              },
+              "option": {
+                "f1": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 74
+              }
+            },
+            "option": {
+              "precision": 0.0,
+              "recall": 0.0,
+              "f1": 0.0
+            },
+            "unit_accuracy": 0.5135135135135135,
+            "question_false_positive_rate": 0.0,
+            "negatives": 38
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+[project]
+name = "kido-paragraph-ml"
+version = "0.0.0"
+description = "Data pipeline, training and conversion for the Shift paragraph tagger"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "coremltools>=9.0,<10",
+  "datasketch>=1.7",
+  "markdown-it-py>=3.0",
+  "numpy>=1.26,<2.3",
+  "openai>=1.60",
+  "regex>=2024.11",
+  "safetensors>=0.4",
+  "torch>=2.6",
+  "transformers>=4.56",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "ruff>=0.9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".build", "data", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
