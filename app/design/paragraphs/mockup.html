@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Kido Shift-hover — paragraphs, questions and answer options</title>
+<style>
+:root{color-scheme:light}
+body{margin:0;padding:28px 40px 40px;background:#ececec;font:13px/1.4 -apple-system,system-ui,sans-serif;color:#222}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:0 auto 18px;max-width:1100px}
+.controls select{border:1px solid #ccc;border-radius:7px;background:#fff;padding:5px 10px;font:inherit}
+.hint{margin-left:auto;font-size:12px;color:#777}
+.app{--bg:#192028;--text:#dddddd;--muted:#9a9a9a;--guide:#ffffff1f;--border:#ffffff13;--window:#ffffff13;--fg:#e6e6e6;--accent:#0a84ff;--ok:#30d158;--error:#ff453a;--cw:7.2px;--rh:21.6px;position:relative;width:min(1100px,100%);height:620px;margin:auto;background:var(--bg);color:var(--text);border-radius:18px;overflow:hidden;box-shadow:0 18px 60px #0003,0 0 0 .5px #0002;font-size:13px}
+.app.light{--bg:#fefaf1;--text:#000000d9;--muted:#00000080;--guide:#0000001f;--border:#00000013;--window:#00000013;--fg:#1a1a1a;--accent:#007aff;--ok:#34c759;--error:#ff3b30}
+.chrome{position:absolute;left:0;right:0;top:0;height:52px;border-bottom:.5px solid var(--guide)}
+.lights{position:absolute;left:19px;top:19px;display:flex;gap:9px}
+.lights i{height:14px;width:14px;border-radius:50%;background:linear-gradient(#ff5f57,#ff817a);box-shadow:inset 0 0 0 .5px #e64b43,0 1px 2px #0002}
+.lights i:nth-child(2){background:linear-gradient(#ffb51b,#ffdb55);box-shadow:inset 0 0 0 .5px #dfa009,0 1px 2px #0002}
+.lights i:nth-child(3){background:linear-gradient(#49c827,#99e477);box-shadow:inset 0 0 0 .5px #49ae25,0 1px 2px #0002}
+.tabs{position:absolute;left:96px;right:8px;top:8px;height:36px;display:flex;align-items:center}
+.tab{width:160px;height:28px;line-height:28px;text-align:center;font-size:11px;color:var(--muted);border-radius:7px;margin:0 1px 0 2px}
+.tab.active{color:var(--text);background:var(--window);box-shadow:0 0 0 .5px var(--border),inset 0 0 0 .5px var(--border);font-weight:600}
+.panes{position:absolute;inset:52px 0 0 0;display:flex}
+.pane{position:relative;flex:1;min-width:0;overflow:hidden;font:12px/21.6px ui-monospace,SFMono-Regular,Menlo,monospace;cursor:text}
+.pane+.pane{border-left:1px solid var(--guide)}
+.pane.narrow{flex:0 0 330px}
+.pane .text{position:absolute;left:20px;top:14px;white-space:pre;color:var(--text);user-select:none;margin:0}
+.pane .text .dim{color:var(--muted)}
+.pane .text .caret{display:inline-block;width:7px;height:14px;vertical-align:-2px;box-shadow:inset 0 0 0 1.5px var(--text)}
+.overlay{position:absolute;inset:0;pointer-events:none}
+.block{position:absolute;border-radius:4px;box-sizing:border-box;box-shadow:0 0 0 1px color-mix(in srgb,var(--fg) 12%,transparent);background:color-mix(in srgb,var(--fg) 5%,transparent);overflow:hidden;transition:opacity .12s}
+.block.pending{background:none;box-shadow:0 0 0 1px color-mix(in srgb,var(--fg) 10%,transparent)}
+.block.pending.shimmer::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 38%,color-mix(in srgb,var(--fg) 9%,transparent) 50%,transparent 62%);background-size:260% 100%;animation:sweep 1.6s ease-in-out infinite}
+.block.pending.pulse{animation:pulse 1.2s ease-in-out infinite}
+.block.cut-top{border-top-left-radius:0;border-top-right-radius:0}
+@keyframes sweep{from{background-position:120% 0}to{background-position:-20% 0}}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 1px color-mix(in srgb,var(--fg) 10%,transparent)}50%{box-shadow:0 0 0 1.5px color-mix(in srgb,var(--fg) 28%,transparent)}}
+.opt{position:absolute;border-radius:3px;box-sizing:border-box;pointer-events:auto;cursor:pointer;background:color-mix(in srgb,var(--accent) 16%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 65%,transparent);transition:background .1s,box-shadow .1s}
+.opt.hot{background:color-mix(in srgb,var(--accent) 30%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 90%,transparent)}
+.opt.ok{background:color-mix(in srgb,var(--ok) 30%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--ok) 90%,transparent);cursor:default}
+.opt.bad{background:color-mix(in srgb,var(--error) 30%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--error) 90%,transparent);cursor:default}
+.note{position:absolute;height:16px;line-height:16px;padding:0 6px;border-radius:5px;font:10px/16px -apple-system,system-ui,sans-serif;white-space:nowrap;color:var(--muted);background:color-mix(in srgb,var(--bg) 80%,var(--fg) 20%);box-shadow:0 0 0 .5px color-mix(in srgb,var(--fg) 14%,transparent)}
+.note.err{color:#fff;background:var(--error);box-shadow:none}
+.note.ok{color:#fff;background:var(--ok);box-shadow:none}
+.note.fade{animation:fadeout 1s ease-in 1.4s forwards}
+@keyframes fadeout{to{opacity:0}}
+.cursor-tag{position:absolute;right:12px;bottom:10px;font:10px -apple-system,system-ui,sans-serif;color:var(--muted)}
+.legend{max-width:1100px;margin:14px auto 0;display:grid;grid-template-columns:1fr 1fr;gap:10px 24px;font-size:12px;color:#444}
+.legend b{color:#222}
+.sentas{max-width:1100px;margin:14px auto 0;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px 14px;white-space:pre;color:#333}
+.gallery{max-width:1100px;margin:18px auto 0;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.gallery .card{position:relative;height:150px;border-radius:10px;overflow:hidden;font:12px/21.6px ui-monospace,SFMono-Regular,Menlo,monospace}
+.gallery .card .cap{position:absolute;left:10px;top:4px;font:11px -apple-system,system-ui,sans-serif;color:var(--muted);z-index:2}
+.gallery .card .text{position:absolute;left:20px;top:30px;white-space:pre;color:var(--text);margin:0}
+</style></head><body>
+<div class="controls"><strong>Shift-hover · paragraphs and answer options</strong>
+<label>State <select id="state">
+<option value="live" selected>Live · hold Shift over a pane</option>
+<option value="analysing">1 · hover, analysing</option>
+<option value="options">2 · question with options</option>
+<option value="hover">2 · option hovered</option>
+<option value="inline">2 · inline options (no list)</option>
+<option value="noopts">3 · question, no options located</option>
+<option value="notq">4 · not a question</option>
+<option value="sent">5 · sent</option>
+<option value="failed">5 · failed (not delivered)</option>
+<option value="noagent">5 · no agent to send to</option>
+<option value="wrapped">6 · wrapped span and list lines</option>
+<option value="cut">6 · block partly scrolled off</option>
+<option value="moved">7 · hover moved mid-analysis</option>
+<option value="released">7 · Shift released (nothing)</option>
+</select></label>
+<label>Analysing effect <select id="effect"><option value="shimmer" selected>Shimmer sweep (proposed)</option><option value="pulse">Outline pulse (alternative)</option></select></label>
+<label>Theme <select id="theme"><option>Light</option><option>Dark</option></select></label>
+<span class="hint">Live: hold ⇧, move over a block, click an option</span></div>
+
+<div class="app light" id="app"><div class="chrome"><div class="lights" aria-hidden="true"><i></i><i></i><i></i></div><div class="tabs"><div class="tab active">@kido-app</div><div class="tab">@kido</div><div class="tab">tests</div></div></div>
+<div class="panes">
+<section class="pane" id="paneA" aria-label="Pane 1"><pre class="text" id="textA"></pre><div class="overlay" id="ovA"></div><div class="cursor-tag" id="curA"></div></section>
+<section class="pane narrow" id="paneB" aria-label="Pane 2"><pre class="text" id="textB"></pre><div class="overlay" id="ovB"></div></section>
+</div></div>
+
+<div class="legend">
+<div><b>Block</b>: fill fg 5%, 1pt edge fg 12%, radius 4, inset −3pt x / −1pt y around the block's cell rect. <b>Analysing</b>: no fill, edge fg 10%, plus the chosen effect.</div>
+<div><b>Option span</b>: fill accent 16%, 1pt edge accent 65%, radius 3, one rect per row segment. <b>Hovered</b>: 30% / 90%, pointing hand. <b>Sent</b>: green 30% / 90% for 1 s. <b>Failed</b>: red, with a caption.</div>
+</div>
+<div class="sentas" id="sentas"></div>
+
+<div class="gallery" id="gallery"></div>
+
+<script>
+const $=id=>document.getElementById(id);const CW=7.2,RH=21.6,PX=20,PY=14;
+const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+// A block: consecutive non-blank rows. wrapped rows are soft-wrapped continuations of the previous row (no newline in the text).
+const fixtureA=[
+ {lines:['$ pi'],dim:true},
+ {lines:['Reading lib/prompt.ml and the callers of Prompt.deliver.'],q:false},
+ {lines:['The fix is small: Prompt.deliver returns Error on an advertised but','unavailable inbox instead of falling back to a paste. Two call sites','need the new result shape.'],q:false},
+ {lines:['Should I also update the docs, or keep the change to the code only?'],q:true,options:['update the docs','keep the change to the code only']},
+ {lines:['How do you want the paste fallback handled?','a) Shift-hover an option here to answer','b) Remove the fallback entirely','c) Keep it, but only when no inbox is advertised','d) Ask me again after the tests run'],q:true,options:['Shift-hover an option here to answer','Remove the fallback entirely','Keep it, but only when no inbox is advertised','Ask me again after the tests run']},
+ {lines:['Which deployment window works for you?'],q:true,options:[]},
+ {lines:['Waiting for your answer.'],dim:true,q:false},
+];
+const fixtureB=[
+ {lines:['interactive shell and a batch zsh -c.','Thus, it confuses the two.'],q:false,cut:true},
+ {lines:['Which reading of the format','should the sidebar use?','1. Keep pane_current_command','   and accept the confusion','2. Use #{alternate_on} together','   with the OSC 133 command line','3. Neither; wait for the fork fix'],q:true,options:['Keep pane_current_command and accept the confusion','Use #{alternate_on} together with the OSC 133 command line','Neither; wait for the fork fix'],wrapped:[3,5]},
+ {lines:['$ '],caret:true},
+];
+// Layout: assign rows. A blank row separates blocks. Pane B's first block starts above the viewport (scrolled off by one row).
+function layout(fixture,startRow){let row=startRow;const blocks=[];for(const b of fixture){const first=row;const rows=b.lines.map((text,i)=>({row:row++,text,wrapped:(b.wrapped||[]).includes(i)}));blocks.push({...b,first,last:row-1,rows});row++}return blocks}
+const blocksA=layout(fixtureA,0),blocksB=layout(fixtureB,-1);
+function rowsOf(blocks){const out=[];for(const b of blocks)for(const r of b.rows)out[r.row]=r;return out}
+function drawText(id,blocks){const rows=rowsOf(blocks);const max=Math.max(...blocks.map(b=>b.last));const parts=[];for(let r=Math.min(0,blocks[0].first);r<=max;r++){const row=rows[r];const b=row&&blocks.find(x=>x.rows.includes(row));let s=row?esc(row.text):'';if(b?.dim)s='<span class="dim">'+s+'</span>';if(b?.caret&&row===b.rows[b.rows.length-1])s+='<span class="caret"></span>';if(r>=0)parts.push(s)}$(id).innerHTML=parts.join('\n')}
+// Block text as the model sees it: rows joined, wrapped rows joined without a newline.
+function blockText(b){let t='';b.rows.forEach((r,i)=>{t+=(i>0&&!r.wrapped?'\n':'')+r.text});return t}
+function stripMarker(s){return s.replace(/^\s*(?:[a-z][).]|\d+[).]|[-*•])\s+/,'')}
+// Locate an option in the block: character range over the block text (ignoring list markers and the wrap joins), mapped to row segments.
+function locate(b,option){const rows=b.rows;const norm=s=>s.replace(/\s+/g,' ');const joined=rows.map(r=>r.text).join('\n');const want=norm(option);let best=null;for(let start=0;start<joined.length;start++){if(norm(joined.slice(start,start+option.length+8)).startsWith(want)){let end=start,acc='';while(norm(acc)!==want&&end<joined.length){acc+=joined[end++]}best=[start,end];break}}if(!best)return null;const segs=[];let idx=0;rows.forEach((r,i)=>{const s=idx,e=idx+r.text.length;const a=Math.max(best[0],s),z=Math.min(best[1],e);if(z>a){const lead=r.text.length-r.text.trimStart().length;const col0=a-s,col1=z-s-1;segs.push({row:r.row,c0:Math.max(col0,lead),c1:col1})}idx=e+1});return {text:option,segs}}
+function blockRect(b){const lead=Math.min(...b.rows.map(r=>r.text.length-r.text.trimStart().length));const last=Math.max(...b.rows.map(r=>r.text.trimEnd().length-1));return {x:PX+lead*CW-3,y:PY+b.first*RH-1,w:(last-lead+1)*CW+6,h:(b.last-b.first+1)*RH+2}}
+function segRect(s){return {x:PX+s.c0*CW-2,y:PY+s.row*RH,w:(s.c1-s.c0+1)*CW+4,h:RH}}
+function box(cls,r){const d=document.createElement('div');d.className=cls;d.style.left=r.x+'px';d.style.top=r.y+'px';d.style.width=r.w+'px';d.style.height=r.h+'px';return d}
+function note(ov,text,cls,anchor){const n=document.createElement('div');n.className='note '+cls;n.textContent=text;n.style.left=(anchor.x+anchor.w+8)+'px';n.style.top=(anchor.y+(anchor.h-16)/2)+'px';ov.append(n);const paneW=ov.getBoundingClientRect().width;if(n.offsetLeft+n.offsetWidth>paneW-8){n.style.left=anchor.x+'px';n.style.top=(anchor.y+anchor.h+3)+'px'}return n}
+// Draw a scene: {block, phase:'pending'|'done'|'none', hot:index, feedback:{index,kind}, noteText}
+function scene(ov,blocks,sc){ov.innerHTML='';if(!sc||!sc.block)return;const b=sc.block;const br=blockRect(b);if(b.cut){br.h+=br.y+1;br.y=-1}
+ if(sc.phase==='pending'){const d=box('block pending '+$('effect').value,br);if(b.cut)d.classList.add('cut-top');ov.append(d);return}
+ if(sc.phase!=='done')return;
+ if(!b.q){return}
+ const d=box('block',br);if(b.cut)d.classList.add('cut-top');ov.append(d);
+ const located=(b.options||[]).map(o=>locate(b,o)).filter(Boolean);
+ if(!located.length){note(ov,'No answer options found',''  ,{x:br.x,y:br.y+br.h-RH-1,w:br.w,h:RH});return}
+ located.forEach((o,i)=>{o.segs.forEach((s,j)=>{const r=segRect(s);const e=box('opt',r);if(sc.hot===i)e.classList.add('hot');if(sc.feedback&&sc.feedback.index===i)e.classList.add(sc.feedback.kind==='ok'?'ok':'bad');e.dataset.index=i;e.title='';e.onclick=ev=>{if(ev.shiftKey||$('state').value!=='live')send(ov,blocks,b,o,i)};e.onmouseenter=()=>{if(live.on)hot(ov,i,true)};e.onmouseleave=()=>{if(live.on)hot(ov,i,false)};ov.append(e)});
+  if(sc.feedback&&sc.feedback.index===i){const last=segRect(o.segs[o.segs.length-1]);if(sc.feedback.kind==='ok')note(ov,'Sent to @kido-app','ok fade',last);else if(sc.feedback.kind==='noagent')note(ov,'No agent in this window or session','err',last);else note(ov,'Not delivered: '+(sc.feedback.reason||'connection reset'),'err',last)}
+ })}
+function hot(ov,i,on){ov.querySelectorAll('.opt[data-index="'+i+'"]').forEach(e=>e.classList.toggle('hot',on))}
+function payload(b,o){return blockText(b).split('\n').map(l=>'> '+l).join('\n')+'\n\n'+stripMarker(o.text)}
+function send(ov,blocks,b,o,i){const kind=$('state').value==='noagent'?'noagent':$('state').value==='failed'?'bad':'ok';$('sentas').textContent='Sent to the nearest agent through the prompt RPC:\n\n'+payload(b,o);scene(ov,blocks,{block:b,phase:'done',feedback:{index:i,kind}});if(kind==='ok'&&$('state').value==='live')setTimeout(()=>{if(live.on&&live.block===b)scene(ov,blocks,{block:b,phase:'done'})},1000)}
+// Canned states for screenshots
+const B=blocksA,BB=blocksB;
+const states={
+ analysing:[{ov:'ovA',blocks:B,sc:{block:B[4],phase:'pending'}}],
+ options:[{ov:'ovA',blocks:B,sc:{block:B[4],phase:'done'}}],
+ hover:[{ov:'ovA',blocks:B,sc:{block:B[4],phase:'done',hot:2}}],
+ inline:[{ov:'ovA',blocks:B,sc:{block:B[3],phase:'done',hot:1}}],
+ noopts:[{ov:'ovA',blocks:B,sc:{block:B[5],phase:'done'}}],
+ notq:[{ov:'ovA',blocks:B,sc:{block:B[2],phase:'done'}}],
+ sent:[{ov:'ovA',blocks:B,sc:{block:B[4],phase:'done',feedback:{index:1,kind:'ok'}}}],
+ failed:[{ov:'ovA',blocks:B,sc:{block:B[4],phase:'done',feedback:{index:1,kind:'bad'}}}],
+ noagent:[{ov:'ovA',blocks:B,sc:{block:B[4],phase:'done',feedback:{index:1,kind:'noagent'}}}],
+ wrapped:[{ov:'ovB',blocks:BB,sc:{block:BB[1],phase:'done',hot:1}}],
+ cut:[{ov:'ovB',blocks:BB,sc:{block:BB[0],phase:'pending'}}],
+ moved:[{ov:'ovA',blocks:B,sc:{block:B[3],phase:'pending'}}],
+ released:[],
+};
+const live={on:false,block:null,timer:null};
+function cursorTag(){const s=$('state').value;$('curA').textContent=s==='live'?(live.on?'⇧ held · cursor: I-beam, pointing hand over an option':'cursor: I-beam'):s==='hover'||s==='wrapped'||s==='inline'?'cursor: pointing hand over the option':s==='released'?'⇧ released: overlays gone, cursor: I-beam':'cursor: I-beam'}
+function render(){const s=$('state').value;$('app').className='app '+$('theme').value.toLowerCase();drawText('textA',B);drawText('textB',BB);$('ovA').innerHTML='';$('ovB').innerHTML='';if(s!=='live'){live.on=false;clearTimeout(live.timer);(states[s]||[]).forEach(x=>scene($(x.ov),x.blocks,x.sc));if(['sent','failed','noagent'].includes(s)){const o=locate(B[4],B[4].options[1]);$('sentas').textContent=(s==='sent'?'Sent':'Would send')+' to the nearest agent through the prompt RPC:\n\n'+payload(B[4],o)}else if(s==='moved'){$('sentas').textContent='Hover moved from the list question to this block while the first analysis was still running: the first highlight is gone, this block shimmers, and the stale result is dropped when it arrives.'}else $('sentas').textContent='Hold Shift and click an option to see what is sent.'}else $('sentas').textContent='Hold Shift and click an option to see what is sent.';cursorTag();gallery()}
+// Live mode: Shift held, hover blocks, analysis simulated at 1.4 s.
+function blockAt(blocks,y){const row=Math.floor((y-PY)/RH);return blocks.find(b=>row>=b.first&&row<=b.last)||null}
+function livePointer(ov,blocks,y){if(!live.on)return;const b=blockAt(blocks,y);if(b===live.block)return;clearTimeout(live.timer);live.block=b;$('ovA').innerHTML='';$('ovB').innerHTML='';if(!b)return;scene(ov,blocks,{block:b,phase:'pending'});live.timer=setTimeout(()=>{if(live.on&&live.block===b)scene(ov,blocks,{block:b,phase:'done'})},1400)}
+for(const [pane,ov,blocks] of [['paneA','ovA',B],['paneB','ovB',BB]]){$(pane).addEventListener('mousemove',e=>{if($('state').value!=='live')return;const r=$(pane).getBoundingClientRect();livePointer($(ov),blocks,e.clientY-r.top)});$(pane).addEventListener('mouseleave',()=>{if(live.on){clearTimeout(live.timer);live.block=null;$(ov).innerHTML=''}})}
+document.addEventListener('keydown',e=>{if(e.key==='Shift'&&!live.on&&$('state').value==='live'){live.on=true;cursorTag()}});
+document.addEventListener('keyup',e=>{if(e.key==='Shift'&&live.on){live.on=false;clearTimeout(live.timer);live.block=null;$('ovA').innerHTML='';$('ovB').innerHTML='';cursorTag()}});
+window.addEventListener('blur',()=>{if(live.on){live.on=false;live.block=null;$('ovA').innerHTML='';$('ovB').innerHTML='';cursorTag()}});
+// Gallery: the core states side by side in the other theme.
+function gallery(){const g=$('gallery');g.innerHTML='';const other=$('theme').value==='Light'?'dark':'light';const mini=[{lines:['Should I also update the docs, or keep the change to the code only?'],q:true,options:['update the docs','keep the change to the code only']},{lines:['Pick a window:','a) now','b) after the tests run']},{lines:['Pick a window:','a) now','b) after the tests run'],q:true,options:['now','after the tests run']}];
+ const cards=[['Analysing (shimmer)',mini[1],{phase:'pending'}],['Options, one hovered',mini[2],{phase:'done',hot:1}],['Inline options',mini[0],{phase:'done'}],['Sent',mini[2],{phase:'done',feedback:{index:0,kind:'ok'}}]];
+ for(const [cap,fx,sc] of cards){const card=document.createElement('div');card.className='app card '+other;card.innerHTML='<div class="cap">'+cap+' · '+other+'</div><pre class="text"></pre><div class="overlay"></div>';g.append(card);const blocks=layout([fx],0);const pre=card.querySelector('.text');pre.innerHTML=blocks[0].rows.map(r=>esc(r.text)).join('\n');pre.style.top='30px';const ov=card.querySelector('.overlay');ov.style.top='16px';scene(ov,blocks,{block:blocks[0],...sc})}}
+for(const id of ['state','effect','theme'])$(id).onchange=render;
+render();
+</script></body></html>

@@ -41,6 +41,12 @@ public struct PromptCandidate: Decodable, Equatable, Sendable {
     }
 }
 
+extension PromptCandidate {
+    public static func preferred(in window: WindowID, among candidates: [PromptCandidate]) -> PromptCandidate? {
+        candidates.first { $0.window == window } ?? candidates.first
+    }
+}
+
 public enum PromptErrorKind: String, Decodable, Sendable {
     case refused, unknown, invalid
 }
@@ -48,6 +54,7 @@ public enum PromptErrorKind: String, Decodable, Sendable {
 public enum PromptVia: String, Decodable, Sendable {
     case inbox, paste
 }
+
 
 public struct PromptDelivered: Decodable, Equatable, Sendable {
     public let pane: PaneID

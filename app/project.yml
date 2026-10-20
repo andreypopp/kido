@@ -74,6 +74,7 @@ targets:
       - sdk: QuartzCore.framework
       - sdk: IOSurface.framework
       - sdk: Carbon.framework
+      - sdk: FoundationModels.framework
   VisualTests:
     type: bundle.unit-test
     platform: macOS

@@ -49,3 +49,38 @@ VsyncTests/testIdleFocusedPaneWithoutCursorBlinkDoesNotBlink  # inherent: a fixe
 VsyncTests/testSparseKittyUpdatesWithoutHostTicks  # inherent: a fixed 2 s window checks the 0.4 s sparse update cadence
 VsyncTests/testThirtyTwoOffscreenSurfacesAndChurnNeverAllocateCV  # inherent: builds 32 surfaces and samples idle CPU over fixed windows
 VsyncTests/testUnavailableOutputHiddenDiscardRecovery  # inherent: fixed drain and frame windows around hidden-output recovery
+VisualTests/testParagraphAnalysing  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphAnalysingReduceMotion  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphOptions  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphOptionHovered  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphInlineOptions  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphNoOptions  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphNotAQuestion  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphSent  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphFailed  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphNoAgent  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphTooLong  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphUnavailable  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphCouldNotAnalyse  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphWrappedOption  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testParagraphCutBlock  # inherent: a tmux server and one or two image snapshots per state
+VisualTests/testUnitGrowsToTheListAfterTheQuestion  # inherent: a tmux server, a 180 ms growth and two layout waits
+VisualTests/testUnitGrowsUpwardWhenTheListParagraphIsHovered  # inherent: a tmux server and a 180 ms growth
+VisualTests/testHoverInsideTheUnitKeepsIt  # inherent: a tmux server and a 180 ms growth
+VisualTests/testScrollAfterGrowthKeepsFramesOnContent  # inherent: a tmux server, a growth and a scroll round trip
+VisualTests/testNumberedQuestionsAreThreeUnitsAndQuoteOnlyTheirOwn  # inherent: a tmux server, two analyses and a prompt round trip
+VisualTests/testInvalidRangeFallsBackToTheHoveredParagraph  # inherent: a tmux server and a 180 ms growth
+VisualTests/testKnownUnitRestoresWithoutARequest  # inherent: a tmux server, a growth and two hover changes
+VisualTests/testEditingAUnitParagraphStartsANewAnalysis  # inherent: a tmux server, a growth and an in-place edit round trip
+VisualTests/testParagraphGrownUnit  # inherent: a tmux server, a 180 ms growth and two image snapshots
+VisualTests/testParagraphGrownUpward  # inherent: a tmux server, a 180 ms growth and two image snapshots
+VisualTests/testParagraphHoverMoved  # inherent: a tmux server, two gated analyses and two image snapshots
+VisualTests/testPendingAnalysisRestartsWhenTheContextChanges  # inherent: a tmux server and a gated analysis restart
+VisualTests/testClickDuringGrowthSendsNothing  # inherent: a tmux server and a 180 ms growth window
+VisualTests/testScrollDuringGrowthRemovesTheOldAnimation  # inherent: a tmux server, a growth and a fractional scroll
+VisualTests/testPointerMoveInsideTheUnitReadsNoRows  # inherent: a tmux server and a growth
+VisualTests/testBlankRowHoverReadsOneChunk  # inherent: a tmux server and a blank-row hover
+VisualTests/testBudgetStopsContextReads  # inherent: a tmux server and a budget-saturated context
+VisualTests/testCacheIsSharedAcrossPanes  # inherent: a tmux server, a split and a cache restore
+VisualTests/testKnownUnitEndpointRestoresWithoutARequest  # inherent: a tmux server, a growth and two hover changes
+VisualTests/testDuplicateUnitTextRestoresTheHoveredBlock  # inherent: a tmux server, a growth and two hover changes

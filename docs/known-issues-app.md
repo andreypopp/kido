@@ -153,6 +153,17 @@ Gesture logic is exercised, but hit testing and real delivery can still fail
 for users without a stress failure. An on-screen event harness is medium-to-large
 work; a manual smoke test is small. Status: untested.
 
+## Shift paragraphs are verified off screen
+
+The Shift paragraph tests send mouse events through `NSWindow.sendEvent`.
+They call `PaneView.flagsChanged` and `keyDown` with synthesized NSEvents and
+scroll through the pane's scroll entry point, because off-screen `sendEvent`
+does not deliver key, flag or wheel events. A canned analyzer replaces Apple's model. Real AppKit delivery,
+the pointing-hand cursor on screen, the shimmer's look and the model's latency and
+answer quality, including the unit line ranges, need an on-screen manual
+check. The snapshots draw the terminal and then the overlay layer into one
+image, because `cacheDisplay` does not capture a sublayer added by hand. Status: untested.
+
 ## App checks do not run in CI
 
 `.github/workflows/ci.yml` builds and tests the CLI, not Kido.app.
@@ -228,6 +239,13 @@ a different owner. If mouse reporting toggles or one alternate-screen program
 replaces another without a wheel packet between them, a carried half-row can
 make the next small scroll emit one report or key early. This matches upstream.
 Status: accepted.
+
+## Paragraph spans can miss by a column
+
+`Paragraphs.cellWidth` estimates a character's cell width. When Ghostty
+gives another width (rare emoji sequences, ambiguous-width characters), an
+option span after that character moves by a column. The tests cover CJK,
+emoji and combining marks. Status: accepted.
 
 ## Tmux prefix bindings do not fire
 

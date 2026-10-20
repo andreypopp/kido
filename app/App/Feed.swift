@@ -4,6 +4,37 @@ import TmuxControl
 
 typealias RPCRequestHandler = @MainActor @Sendable (RPCRequest, @escaping @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void) -> Void
 
+enum PromptFailure: Equatable, Sendable {
+    case refused(String), unknown(String), invalid(String), failed(String)
+
+    var message: String {
+        switch self {
+        case .refused(let message), .unknown(let message), .invalid(let message), .failed(let message): message
+        }
+    }
+}
+
+extension RPCRequest {
+    static let unexpectedPromptReply = "Unexpected prompt reply"
+
+    static func promptFailure(_ result: Result<RPCEvent.Reply.Value, Failure>, sending: Bool, notReady: String) -> PromptFailure? {
+        switch result {
+        case .success(.promptError(let message, let kind)):
+            guard sending else { return .failed(message) }
+            return switch kind {
+            case .refused: .refused(message)
+            case .unknown: .unknown(message)
+            case .invalid: .invalid(message)
+            }
+        case .failure(let error):
+            guard sending else { return .failed(error.message) }
+            return error.message == notReady ? .invalid(error.message) : .unknown(error.message)
+        default:
+            return nil
+        }
+    }
+}
+
 final class Feed: @unchecked Sendable {
     typealias Location = String
     typealias Locate = (@escaping @Sendable (Result<Location, Failure>) -> Void) -> Void

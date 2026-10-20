@@ -40,6 +40,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onScrollTop: () -> Void = {}
     var onCopyCheck: (@escaping @MainActor @Sendable (Bool) -> Void) -> Void = { $0(true) }
     var onFindChange: () -> Void = {}
+    var onParagraphMode: (Bool) -> Void = { _ in }
+    var onParagraphPointer: (NSPoint) -> Void = { _ in }
+    var onParagraphPointerExit: () -> Void = {}
+    var paragraphRequest: RPCRequestHandler = Feed.unavailable
+    var paragraphCursorRectsChanged: () -> Void = {}
+    private var paragraphSuppressed = false
+    private(set) lazy var paragraphs = PaneParagraphs(pane: self)
     let scroller = PaneScroller()
     var find: PaneFind? { didSet { needsLayout = true; onFindChange() } }
     var onPrompt: (PaneView, PromptAnchor) -> Void = { _, _ in }
@@ -130,6 +137,33 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         CGRect(x: 0, y: renderInsets.bottom, width: bounds.width,
                height: max(0, bounds.height - renderInsets.top - renderInsets.bottom))
             .subtracting(subviews.filter { $0 !== terminal && !$0.isHidden && $0.alphaValue > 0 }.map(\.frame))
+            .flatMap { $0.subtracting(paragraphs.cursorRects) }
+    }
+
+    func paragraphViewport() -> ScrollPosition? {
+        var position = scrollPosition()
+        let distance = scrollPresentation.distance ?? Double(position.retainedHistoryRows - position.offset)
+        position.fraction = min(max(Double(position.retainedHistoryRows) - distance - Double(position.offset), 0), 1)
+        return position
+    }
+
+    func paragraphRows(_ range: Range<Int>) -> [Paragraphs.Row] {
+        #if KIDO_VISUAL
+        paragraphRowReads += range.count
+        #endif
+        let columns = max(1, Int(ghostty_surface_size(surface).columns))
+        return range.map { row in
+            var text = ghostty_text_s()
+            let selection = ghostty_selection_s(
+                top_left: point((0, row)),
+                bottom_right: point((columns - 1, row)),
+                rectangle: false)
+            var line = ""
+            if ghostty_surface_read_text(surface, selection, &text), let value = decodedText(&text) {
+                line = String(value.prefix { $0 != "\n" && $0 != "\r" })
+            }
+            return Paragraphs.Row(text: line, wrapped: ghostty_surface_row_wrapped(surface, UInt32(row)))
+        }
     }
 
     private let terminal = TerminalView()
@@ -216,6 +250,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let retainedHistoryRows: Int
         let offset: Int
         let rows: Int
+        var fraction = 0.0
+
+        var len: Int { rows }
+        var total: Int { retainedHistoryRows + rows }
     }
 
     nonisolated var historyEpoch: Int { grid.withLock { $0.epoch } }
@@ -276,6 +314,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             defer { completeEntry() }
             guard !grid.withLock({ $0.replay }) else { return }
             applyReflows()
+            paragraphs.refresh()
             if deferred, !grid.withLock({ $0.ready }), let acceptedGrid {
                 resize(cols: acceptedGrid.cols, rows: acceptedGrid.rows)
             }
@@ -400,6 +439,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             || distance < Double(position.retainedHistoryRows)
         scroller.update(history: position.retainedHistoryRows, rows: position.rows,
                         offset: Double(position.retainedHistoryRows) - distance, alternate: alternate)
+        paragraphs.viewportChanged()
     }
 
     func requestScroll(_ distance: Int) {
@@ -550,6 +590,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     #endif
 
     #if KIDO_VISUAL
+    private(set) var paragraphRowReads = 0
     nonisolated let postProbe = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private(set) var visualSwallowedDrags = 0
     #endif
@@ -729,6 +770,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         guard self.alternate != alternate else { return }
         if case .entering = copyMode {} else { endCopy() }
         self.alternate = alternate
+        paragraphs.screenChanged()
         onAlternateChange()
         resetScroll()
         find?.search()
@@ -738,7 +780,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         super.layout()
         terminal.frame = bounds
         rowHeight = cell.height
+        paragraphs.layoutChanged()
         presentScroll()
+        paragraphs.refresh()
         guard let chrome = copyLabel.superview?.bounds else { return }
         let capsule = min(420, max(200, chrome.width - 16))
         find?.frame = NSRect(x: chrome.width - 8 - capsule, y: 8, width: capsule, height: 32)
@@ -834,6 +878,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private(set) var disposed = false
 
     func dispose() {
+        paragraphs.setMode(on: false)
         vsyncContext?.takeUnretainedValue().close()
         guard !disposed else { return }
         disposed = true
@@ -874,6 +919,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         layer?.masksToBounds = true
         terminal.frame = bounds
         addSubview(terminal)
+        layer?.addSublayer(paragraphs.layer)
         var config = ghostty_surface_config_new()
         let this = Unmanaged.passUnretained(self).toOpaque()
         config.userdata = this
@@ -1047,6 +1093,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                 if captured != scrollGeometry.captured { snapScroll() }
                 scrollGeometry.captured = captured
                 updateAlternate(alternate)
+                paragraphs.refresh()
             }
             return true
         }
@@ -1146,6 +1193,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         if let acceptedGrid { resize(cols: acceptedGrid.cols, rows: acceptedGrid.rows) }
         else { grid.withLock { $0.ready = true } }
         syncResize()
+        paragraphs.refresh()
     }
 
     func restoreFailed(epoch: Int) {
@@ -1167,6 +1215,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func startCopy() {
+        paragraphs.setMode(on: false)
         guard !disposed, acceptingInput, superview != nil, !isHiddenOrHasHiddenAncestor, window?.attachedSheet == nil,
               paste == nil, clipboard == nil, pressed.isEmpty, !resizeDirty,
               (window?.delegate as? WindowOwner)?.uploading(self) != true else { return refuseCopy() }
@@ -1234,6 +1283,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         let dirty = grid.withLock { $0.freeze = .off; return $0.dirty }
         copyMode = nil
+        paragraphs.setMode(on: false)
         if case .pending = leftGesture { leftGesture = .swallowed }
         else if case .released = leftGesture { leftGesture = nil }
         copyFind = (nil, true)
@@ -1528,6 +1578,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func resignFirstResponder() -> Bool {
+        paragraphs.setMode(on: false)
         snapScroll()
         let result = super.resignFirstResponder()
         if result { ghostty_surface_set_focus(surface, false) }
@@ -1559,7 +1610,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     @objc private func present() {
-        if isHiddenOrHasHiddenAncestor || window == nil { endCopy() }
+        if isHiddenOrHasHiddenAncestor || window == nil {
+            endCopy()
+            paragraphs.setMode(on: false)
+        }
         vsyncContext?.takeUnretainedValue().updateAvailability()
         let hidden = isHiddenOrHasHiddenAncestor
         var visible = window?.occlusionState.contains(.visible) == true
@@ -1791,6 +1845,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if paragraphs.click(at: convert(event.locationInWindow, from: nil)) {
+            leftGesture = .swallowed
+            return
+        }
         if copyMode == nil, Self.copyPress(event) {
             beginCopyPress(event)
             return
@@ -1980,8 +2038,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     override func otherMouseDown(with event: NSEvent) { if copyMode == nil { _ = button(event, GHOSTTY_MOUSE_PRESS) } }
     override func otherMouseUp(with event: NSEvent) { if copyMode == nil { _ = button(event, GHOSTTY_MOUSE_RELEASE) } }
-    override func mouseEntered(with event: NSEvent) { position(event) }
-    override func mouseMoved(with event: NSEvent) { position(event) }
+    override func mouseEntered(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        onParagraphPointer(convert(local, to: superview))
+        paragraphs.pointerMoved(local)
+        position(event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        onParagraphPointer(convert(local, to: superview))
+        paragraphs.pointerMoved(local)
+        position(event)
+    }
     override func mouseDragged(with event: NSEvent) {
         if entering {
             if case .pending(var press) = leftGesture {
@@ -2010,6 +2079,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     override func otherMouseDragged(with event: NSEvent) { position(event) }
 
     override func mouseExited(with event: NSEvent) {
+        onParagraphPointerExit()
+        paragraphs.pointerExited()
         guard NSEvent.pressedMouseButtons == 0, copyMode == nil else { return }
         ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
     }
@@ -2077,6 +2148,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     var windowID: WindowID? { (superview as? WindowView)?.windowID }
+
+    var paragraphEligible: Bool {
+        !disposed && !isHiddenOrHasHiddenAncestor && copyMode == nil && !hasMarkedText()
+    }
 
     #if KIDO_VISUAL
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -2225,6 +2300,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func keyDown(with event: NSEvent) {
+        if !event.modifierFlags.intersection([.shift, .control, .option, .command]).isEmpty {
+            paragraphSuppressed = true
+        }
+        onParagraphMode(false)
         if copyMode != nil { return copyKey(event) }
         resizeAnchor = nil
         if scrollTarget != nil { resetScroll() }
@@ -2312,6 +2391,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         guard !hasMarkedText(), copyMode == nil else { return }
         let held = Self.mods(event.modifierFlags).rawValue & mod.rawValue != 0
         let sidePressed = rightMask.map { event.modifierFlags.rawValue & UInt($0) != 0 } ?? true
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == [.shift] {
+            if !paragraphSuppressed { onParagraphMode(true) }
+        } else {
+            if flags.isEmpty { paragraphSuppressed = false }
+            else if flags.contains(.shift) { paragraphSuppressed = true }
+            onParagraphMode(false)
+        }
         keyAction(held && sidePressed ? GHOSTTY_ACTION_PRESS : GHOSTTY_ACTION_RELEASE, event: event)
     }
 

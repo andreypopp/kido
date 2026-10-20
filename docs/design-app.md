@@ -625,6 +625,177 @@ closed box does nothing.
 The `Feed` has no timeout for a request. Thus, a `prompt` send that blocks
 kido's RPC loop until the inbox times out does not restart the helper.
 
+### Shift paragraphs
+
+Hold Shift alone over a pane in the key window. The paragraph under the
+pointer is highlighted at once. Apple's on-device model (`FoundationModels`)
+decides if it belongs to a question, which paragraphs form the question unit
+(the question and its answer options), and names the options. The highlight
+grows to the unit. Each option that the app finds in the unit text becomes a
+clickable span. A click sends the unit and the option to the nearest agent. The look is in `app/design/paragraphs/`
+(`NOTES.md`, `mockup.html`). Where `NOTES.md` differs on the block rule, the
+debounce, the cache or the quoted text, this section applies.
+
+Shift is held when a `flagsChanged` has device-independent flags that are
+exactly Shift. A `keyDown` with modifiers, or Shift together with another
+modifier, suppresses the mode until all modifiers are released. Thus Shift+key
+types as before, and Shift with Cmd, or Shift after a held Cmd, never starts
+the mode. Typing without modifiers does not suppress the next Shift. The usual
+`flagsChanged` guards apply: no copy mode, no marked text. While Shift is
+held, the `WindowView` gives the mode to the frontmost visible pane under the
+pointer, also when the pointer moves into another pane. A pane in copy mode,
+hidden, disposed or with marked text does not get the mode. Every other pane
+is off. The mode ends on Shift release, on resign key, on app deactivation, on
+resign first responder, on copy-mode entry or exit, when the pane is hidden,
+on dispose and when a pane or divider drag starts. When the pointer leaves a
+pane, that pane clears its hover. The mode stays on after a click on an
+option.
+
+State lives in `PaneParagraphs` (`app/App/ParagraphMode.swift`), one per
+`PaneView`:
+
+- `off`: the mode is off.
+- `idle`: Shift is held, no paragraph is under the pointer.
+- `analysing`: the hovered paragraph's edge and the analysing effect show.
+  The model call starts after 100 ms in the same task, so a sweep across
+  paragraphs starts no request per paragraph. A hover change cancels the task
+  and the model call.
+- `tooLong`: the hovered paragraph alone has more than 60 logical lines or
+  6000 characters. It is highlighted and not analysed.
+- `unavailable`: the model reports no availability. No request starts.
+  Availability is read on each Shift press.
+- `answered`: a question unit; the options are spans.
+- `plain`: not a question. The paragraph fades out in 120 ms.
+- `failed`: the model call threw.
+
+`NOTES.md` has the captions of `answered` without options, and of the send
+results. The other captions are: "Too long to analyse"; "On-device model not
+available on this Mac", "Turn on Apple Intelligence to analyse text",
+"On-device model is still downloading" or "On-device model unavailable", one
+for each availability reason; "Could not analyse this block".
+
+The overlay is a `CALayer` on the pane, not a subview, because
+`terminalCursorRects` subtracts every visible subview frame. AppKit puts the
+terminal's layer above a sublayer added by hand, so the overlay has
+`zPosition = 1`. It is clipped to
+the terminal rows between the render insets, and so are the option hit and
+cursor rects. The option rects are subtracted from the terminal cursor rects
+and added by `WindowView.resetCursorRects` with the pointing hand. The
+analysing effect is a `CAGradientLayer` masked by the block's rounded path,
+with a repeating `CABasicAnimation` on its start and end points. With Reduce
+Motion it is an animation of the block edge's colour and width. There is no
+per-frame drawing.
+
+**Anchoring.** Blocks are anchored to content, not to the viewport. The
+hovered paragraph and its unit are identified by their text. A refresh reads rows in Ghostty's
+SCREEN coordinates, with each row's wrap flag, outward from the row under the
+pointer to cover the hovered paragraph, its context and its unit, at most
+200 rows beyond the viewport each way. A paragraph or unit partly off screen
+is thus analysed and quoted whole, within that limit. The read stops when the
+nearest boundaries are known or the budget admits no further neighbour; a
+hover on a blank row reads one chunk and is idle. A pointer move inside the
+current paragraph or unit reads nothing. Rows are re-read on every change, because scrollback eviction shifts
+every SCREEN row without a change of `row_space_revision`. Refreshes are
+coalesced to one run per main-loop turn. `Paragraphs.partition` joins wrapped
+rows without a separator, trims the trailing whitespace of each logical line
+and splits paragraphs at blank logical lines, with no other rule. The model
+decides which paragraphs form one question unit (see Analysis).
+
+The viewport comes from `presentScroll()`, the one place that every applied
+scroll, snap and reset reaches: the top row `offset` and the fraction
+`(total − len) − distance − offset` of the applied scroll position. A row `r`
+has its bottom edge at
+`y = height − renderInsets.top − (r − offset + 1 − fraction) × cell.height`.
+The pointer's row is the inverse of the same formula. A change of the
+fraction moves the layers and hit-tests the pointer again; it reads rows only
+when the pointer has left the hovered paragraph or unit. A change of
+`offset`, `len` or `total` re-reads the rows. Live output, a history prepend
+or snapshot replay, a reflow, a cell size change (font), layout and a
+primary/alternate switch also re-read. An unchanged hovered text keeps its
+state and its cached analysis, and the options are located again by text in
+the new rows. A changed text in the context is a new hover. A switch between the primary and the
+alternate screen cancels the hover. The mode works on the alternate screen,
+where the paragraphs are the screen rows.
+
+**Analysis.** The input is the hovered paragraph and its context: up to 2
+paragraphs before and 2 after, nearest first, within 60 logical lines and
+6000 characters in total, blank separator lines included. The hovered
+paragraph is always included. The prompt numbers the logical lines from 1;
+blank separators are numbered empty lines, and the hovered paragraph's lines
+are marked with `>`. `ParagraphModel` asks a new `LanguageModelSession` for a
+`@Generable` answer: `isQuestion`, `options`, `firstLine` and `lastLine`, the
+line range of the question unit (the question and its answer options). For a
+non-question the range is the hovered lines.
+
+Validation is pure code in `Paragraphs`. The range is clamped to the context
+and snapped outward to whole paragraphs. If it does not contain the hovered
+paragraph, the unit is the hovered paragraph alone. If a kept option is found
+only in a context paragraph outside the unit, the unit extends to that
+paragraph. Then the options are located and the first 6 are kept. The
+unit's text is its paragraphs with the blank lines between
+them; its columns are the union of its paragraphs. The model may give poor
+ranges; validation bounds the damage to the context.
+
+One process-wide cache keeps 256 results and drops the oldest. Its key is
+the prompt text, which holds the context and the hovered paragraph. Its value
+is "not a question", or a question with the unit's paragraph texts and the
+option texts. A failure is not cached. A known unit is found again by its
+paragraph texts in the rows around the pointer, within the read margin; the
+match must contain the hovered paragraph, and of several matches the one
+nearest the previous one wins. Hovering any paragraph of a known unit thus
+restores it with no request and no shimmer, and only the option hover
+changes. While the rect grows, the options have no hit or cursor rects.
+
+When the result arrives, the shimmer stops and the rect animates from the
+paragraph to the unit in 180 ms with ease-out, while the fill and edge change
+from the analysing style to the analysed style. The option rects appear when
+the animation completes. With Reduce Motion the frame is set directly. The
+unit is one rounded rect across its blank rows. Only a result animates; a
+scroll or refresh moves the layers without animation.
+
+`Paragraphs.unit` trims each option and drops options under 3 characters,
+duplicates after case and whitespace normalisation and options it cannot
+locate. It locates an option exactly, then
+case-insensitively with any whitespace between words, then without a leading
+list marker. A span is one rect for each row segment. Columns come from
+`Paragraphs.cellWidth`. The kept options and each drop with its reason go to
+stderr under `KIDO_APP_DEBUG=1`. A result is applied only if the pane still
+analyses a paragraph with the same context.
+
+**Click.** A press on an option span is swallowed (`leftGesture = .swallowed`):
+it never reaches Ghostty or the program and never enters copy mode. A
+Shift-press elsewhere enters copy mode as before. The click sends a `prompt`
+resolve request for the pane, picks the candidate with
+`PromptCandidate.preferred(in:among:)` (the prompt box's rule: the first agent
+in the pane's window, else the first agent), and sends
+
+    > <each unit line>
+
+    <option text without its list marker>
+
+A click commits the send: Shift release or a hover change before the replies
+does not stop it. Only the result display needs the same hover. The option
+turns green for 1 s with "Sent to @<title>". A refused or invalid send turns
+it red with "Not delivered: <message>", and no candidate with "No agent in
+this window or session". An `unknown` result, or a feed failure after the send
+was written, says that the text may have arrived, as a prompt box does. The
+red clears after 4 s or on the next hover change.
+
+Under `KIDO_VISUAL`, `ParagraphModel.testAnalyze` and `testAvailability`
+replace the model, and `PaneParagraphs.visual*` expose the state, frames and
+caption to the tests. `PaneParagraphs.visualFrozen` draws the analysing effect
+at a fixed phase and keeps send feedback, so that the image snapshots
+(`ParagraphSnapshotTests`, light and dark, one for each state of the mockup)
+are stable. Each snapshot draws the terminal and then the overlay layer.
+`Stress.Action.shiftParagraphs` holds Shift across
+stress steps, moves the pointer, clicks a located option and releases Shift.
+
+The embedded Ghostty clamped the row of every point to the active row count,
+so no SCREEN row past `rows − 1` could be read. The fork's
+`embedded_selection.zig` no longer clamps the row of SCREEN and HISTORY
+points; the pin lookup rejects a row past the screen. ACTIVE and VIEWPORT
+points keep the clamp.
+
 ### Clipboard
 
 Live OSC 52 writes copy text to the Mac general pasteboard. Reads use Ghostty's

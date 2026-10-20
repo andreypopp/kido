@@ -23,11 +23,12 @@ typealias AppWindow = StressWindow
         case gripDragKill = "grip-drag-kill", appearance, edgeResize = "edge-resize", detachReconnect = "detach-reconnect"
         case hiddenResize = "hidden-resize", clearHistory = "clear-history"
         case tabs, sidebarJump = "sidebar-jump", sidebarMode = "sidebar-mode"
+        case shiftParagraphs = "shift-paragraphs"
     }
     private static let actions: [Action] = [
         .wheel, .wheel, .stripPress, .stripWheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
         .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect, .hiddenResize, .clearHistory,
-        .tabs, .sidebarJump, .sidebarMode,
+        .tabs, .sidebarJump, .sidebarMode, .shiftParagraphs,
     ]
     private let window: NSWindow
     private let send: ([Command]) -> Void
@@ -41,6 +42,7 @@ typealias AppWindow = StressWindow
     private var resizeCompleted = Set<ObjectIdentifier>()
     private var resizeAcknowledged: [String: Double] = [:]
     private var childWindows = Set<String>()
+    private var paragraphShift: (pane: PaneView, view: WindowView, phase: Int)?
 
     init(window: NSWindow, send: @escaping ([Command]) -> Void, reconnect: @escaping () -> Void) {
         self.window = window
@@ -807,11 +809,34 @@ typealias AppWindow = StressWindow
             send([Command("clear-history", "-t", pane.pane)])
         case .appearance:
             NSApp.appearance = NSAppearance(named: random(2) == 0 ? .aqua : .darkAqua)
+        case .shiftParagraphs:
+            guard let view = pane.superview as? WindowView else { break }
+            if paragraphShift == nil {
+                pane.flagsChanged(with: key("", 56, [.shift], type: .flagsChanged))
+                paragraphShift = (pane, view, 0)
+            }
+            guard let held = paragraphShift else { break }
+            let local = NSPoint(x: held.pane.bounds.midX, y: held.pane.bounds.midY + CGFloat(held.phase % 3) * held.pane.cell.height)
+            switch held.phase {
+            case 0, 1:
+                held.view.routeShift(held.pane.convert(local, to: held.view))
+            case 2:
+                if let option = held.pane.paragraphs.cursorRects.first {
+                    let point = held.pane.convert(NSPoint(x: option.midX, y: option.midY), to: nil)
+                    held.pane.mouseDown(with: event(.leftMouseDown, point))
+                    held.pane.mouseUp(with: event(.leftMouseUp, point))
+                }
+            default:
+                held.pane.flagsChanged(with: key("", 56, [], type: .flagsChanged))
+                paragraphShift = nil
+            }
+            if paragraphShift != nil, let current = paragraphShift { paragraphShift = (current.pane, current.view, current.phase + 1) }
         }
     }
 
-    private func key(_ text: String, _ code: UInt16 = 0, _ modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
-        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
+    private func key(_ text: String, _ code: UInt16 = 0, _ modifiers: NSEvent.ModifierFlags = [],
+                     type: NSEvent.EventType = .keyDown) -> NSEvent {
+        NSEvent.keyEvent(with: type, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
                         windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text,
                         isARepeat: false, keyCode: code)!
     }

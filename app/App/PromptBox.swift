@@ -317,11 +317,11 @@ final class PromptBox: PaneCapsule, NSTextViewDelegate {
         request(.prompt(pane: paneID, text: nil, target: nil)) { [weak self] result in
             guard let self, host?.contains(self) == true else { return }
             guard case .success(.prompt(.candidates(let list))) = result else {
-                if case .success(.prompt) = result { return apply(.failed("Unexpected prompt reply")) }
-                return apply(failureState(result, sending: false) ?? .failed("Unexpected prompt reply"))
+                if case .success(.prompt) = result { return apply(.failed(RPCRequest.unexpectedPromptReply)) }
+                return apply(failureState(result, sending: false) ?? .failed(RPCRequest.unexpectedPromptReply))
             }
             candidates = list
-            target = list.first { $0.window == windowID } ?? list.first
+            target = PromptCandidate.preferred(in: windowID, among: list)
             updateTargets()
             apply(list.isEmpty ? .noAgent : .ready)
         }
@@ -345,15 +345,12 @@ final class PromptBox: PaneCapsule, NSTextViewDelegate {
     }
 
     private func failureState(_ result: Result<RPCEvent.Reply.Value, Failure>, sending: Bool) -> State? {
-        switch result {
-        case .success(.promptError(let message, let kind)):
-            guard sending else { return .failed(message) }
-            return kind == .refused ? .refused(message) : kind == .unknown ? .unknown(message) : .invalid(message)
-        case .failure(let error):
-            guard sending else { return .failed(error.message) }
-            return error.message == Feed.notReady ? .invalid(error.message) : .unknown(error.message)
-        default:
-            return nil
+        return switch RPCRequest.promptFailure(result, sending: sending, notReady: Feed.notReady) {
+        case .refused(let message): .refused(message)
+        case .unknown(let message): .unknown(message)
+        case .invalid(let message): .invalid(message)
+        case .failed(let message): .failed(message)
+        case nil: nil
         }
     }
 
@@ -563,7 +560,7 @@ final class PromptBox: PaneCapsule, NSTextViewDelegate {
                 }
                 return
             }
-            apply(failureState(result, sending: true) ?? .invalid("Unexpected prompt reply"))
+            apply(failureState(result, sending: true) ?? .invalid(RPCRequest.unexpectedPromptReply))
         }
     }
 

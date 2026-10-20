@@ -100,10 +100,13 @@ final class WindowView: NSView {
         return lines.joined(separator: "\n")
     }
     var visualPaneDragging: Bool { paneDrag != nil }
+    var visualDividerDragging: Bool { drag != nil }
     func visualBeginDrag(_ pane: PaneID, _ event: NSEvent) { beginDrag(pane, event) }
     #endif
 
     var hot: Bool { !panes.isEmpty }
+    private var shiftHeld = false
+    private var paragraphPointer: NSPoint?
 
     private var dividerDrain: UUID?
     var defersRestore: Bool {
@@ -338,6 +341,7 @@ final class WindowView: NSView {
         if toolbar?.superview === chrome, toolbar?.frame != chrome.toolbarFrame { toolbar?.frame = chrome.toolbarFrame }
         view.renderInsets = insets
         if view.frame != content { view.frame = content }
+        view.paragraphs.refresh()
         chrome.content = content.offsetBy(dx: -frame.minX, dy: -frame.minY)
         chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
         if floating || content.minY < placement.topLine.maxY {
@@ -403,6 +407,11 @@ final class WindowView: NSView {
         else { return nil }
         view.onURL = { [weak connection] in connection?.openURL($0) }
         view.onPrompt = { [weak self] pane, anchor in self?.session?.boxes.open(pane, anchor) }
+        view.onParagraphMode = { [weak self] on in self?.shiftMode(on) }
+        view.onParagraphPointer = { [weak self] point in self?.routeShift(point) }
+        view.onParagraphPointerExit = { [weak self] in self?.clearShiftPointer() }
+        view.paragraphRequest = { [weak self] request, done in self?.session?.boxes.request(request, done) }
+        view.paragraphCursorRectsChanged = { [weak self] in self?.invalidateCursorRects() }
         view.onSelect = { [weak self] in
             guard let self else { return }
             connection?.userFocus()
@@ -426,7 +435,10 @@ final class WindowView: NSView {
         }
         view.onAlternateChange = { [weak self] in self?.place() }
         view.onFindChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
-        view.onCellChange = { [weak self] in self?.session?.cellChanged() }
+        view.onCellChange = { [weak self, weak view] in
+            self?.session?.cellChanged()
+            view?.paragraphs.refresh()
+        }
         view.onFontChange = { [weak self] in self?.session?.fontChanged($0) }
         view.onResync = { [weak connection] in connection?.syncResize(id) ?? false }
         view.onGridFailure = { [weak connection] in connection?.gridFailed() }
@@ -583,6 +595,7 @@ final class WindowView: NSView {
             cancelDrag(); return
         }
         if event.type != .leftMouseDown { updateDrag(event); return }
+        shiftOff()
         guard !zoomed, let pane = shown?.visible.root.panes.first(where: { $0.id == pane }) else { return }
         endDrag()
         guard claimPaneDrag() else { return }
@@ -607,6 +620,46 @@ final class WindowView: NSView {
 
     func invalidateCursorRects() {
         if paneDrag == nil { window?.invalidateCursorRects(for: self) }
+    }
+
+    private func shiftMode(_ on: Bool) {
+        shiftHeld = on
+        guard on, !isHidden, paneDrag == nil, drag == nil, let window else {
+            panes.forEach { $0.paragraphs.setMode(on: false) }
+            return
+        }
+        let point = paragraphPointer ?? convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        applyShiftTarget(shiftTarget(point), point: point)
+    }
+
+    func routeShift(_ point: NSPoint) {
+        paragraphPointer = point
+        guard shiftHeld, !isHidden, paneDrag == nil, drag == nil else { return }
+        applyShiftTarget(shiftTarget(point), point: point)
+    }
+
+    private func clearShiftPointer() {
+        paragraphPointer = nil
+        panes.forEach { $0.paragraphs.setMode(on: false) }
+    }
+
+    private func shiftTarget(_ point: NSPoint) -> PaneView? {
+        var view = hitTest(convert(point, to: superview))
+        while let current = view {
+            if let pane = current as? PaneView { return pane.paragraphEligible ? pane : nil }
+            view = current.superview
+        }
+        return nil
+    }
+
+    private func applyShiftTarget(_ target: PaneView?, point: NSPoint) {
+        for pane in panes {
+            if let target, pane === target {
+                pane.paragraphs.setMode(on: true, pointer: pane.convert(point, from: self))
+            } else {
+                pane.paragraphs.setMode(on: false)
+            }
+        }
     }
 
     private func claimPaneDrag() -> Bool {
@@ -783,6 +836,7 @@ final class WindowView: NSView {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         if let (pane, edge) = floatEdge(point) {
+            shiftOff()
             endDrag()
             guard let placement, claimPaneDrag() else { return }
             paneDrag = .floating(pane, event.locationInWindow, floatFrame(pane.id, pane.geometry, placement), edge)
@@ -797,7 +851,10 @@ final class WindowView: NSView {
         guard let placement else { return }
         drag = shown?.visible.root.dividers.first { hitArea($0, placement).contains(point) }
             .map { ($0, point, $0.direction == .leftRight ? $0.geometry.x : $0.geometry.y) }
-        if drag != nil { panes.forEach { $0.beginResizeIntent() } }
+        if drag != nil {
+            shiftOff()
+            panes.forEach { $0.beginResizeIntent() }
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -854,6 +911,9 @@ final class WindowView: NSView {
             let cuts = edges + (chrome.map { chrome in chrome.overlays.map { convert($0, from: chrome) } } ?? [])
             for rect in view.terminalCursorRects {
                 for rect in convert(rect, from: view).subtracting(cuts) { add(rect, view.mouseCursor) }
+            }
+            for rect in view.paragraphs.cursorRects {
+                for rect in convert(rect, from: view).subtracting(cuts) { add(rect, .pointingHand) }
             }
         }
         if !zoomed {
@@ -939,6 +999,14 @@ final class WindowView: NSView {
             center.addObserver(self, selector: #selector(cancelDrag), name: name, object: window)
         }
         center.addObserver(self, selector: #selector(cancelDrag), name: NSApplication.didResignActiveNotification, object: NSApp)
+        center.addObserver(self, selector: #selector(shiftOff), name: NSWindow.didResignKeyNotification, object: window)
+        center.addObserver(self, selector: #selector(shiftOff), name: NSApplication.didResignActiveNotification, object: NSApp)
+    }
+
+    @objc private func shiftOff() {
+        shiftHeld = false
+        paragraphPointer = nil
+        panes.forEach { $0.paragraphs.setMode(on: false) }
     }
 
     @objc private func didBecomeKey() {
