@@ -101,12 +101,27 @@ Hugging Face offsets only with the NFC position mapping.
 1. **Segments.** One splitter cuts the text into segments: sentences, and
    each list item as one segment. The rows of one paragraph or list item
    are one unit: a row break is not a segment boundary, and a sentence
-   can span rows. A blank line is its own segment. The splitter keeps
-   paths, versions (`v1.2`), `e.g.`, code spans, URLs and list items
-   without a full stop in one segment. A code block is one
-   segment per line. This plan implements the splitter in Python with a
-   JSON file of test cases; the app plan ports it to Swift against the
-   same file.
+   can span rows. A blank line is its own segment. The splitter sees
+   only screen text. Both TUIs remove inline backticks. pi keeps the
+   ``` fence rows (with a 2-space code indent) and `### ` headings;
+   Claude Code removes fences and heading prefixes. The unit rule is
+   layout: a unit is a run of non-blank rows with one continuation
+   indent; a blank row, a list marker or a row whose indent differs from
+   the unit's continuation indent starts a new unit. In pi a fence row is
+   also a unit boundary, and the rows between fences are code, one
+   segment per row. In Claude Code code is recognised only by layout: an
+   indented block with a blank row before it is its own units, one
+   segment per row. In both, code never joins the question after it.
+   Inside a
+   unit, a sentence ends at `.`, `?` or `!` followed by a space or the
+   row end, when the next character is a capital letter or a digit and
+   the word before the mark has two or more letters. This keeps paths,
+   versions (`v1.2`), `e.g.`, `a.` and URLs in one segment. An inline
+   code span that looks like a sentence end (`a. B`) can still split;
+   that is a known limit, and the phase 1 boundary measure counts it.
+   No marker that is not on the screen enters the text. This plan
+   implements the splitter in Python with a JSON file of test cases; the
+   app plan ports it to Swift against the same file.
 2. **Questions.** An encoder (Ettin-32m, as before) reads the whole text.
    A head tags the first token of each segment `B-Q`, `I-Q` or `O`; the
    loss ignores every other token. A question is a `B-Q` segment and the
@@ -225,8 +240,12 @@ Hugging Face offsets only with the NFC position mapping.
   (600 eval texts × 5 samples, 2,100 train texts × 1 sample) cost $21.78
   and would cost about $30 to $40 now; it does not fit in $23.79. The
   phase 1 smoke (5 texts, v4-pro thinking) measured $0.013 to $0.03 per
-  text, a mean of 7,750 reasoning tokens per call, and 3 calls for a
-  length drop. The ledger is at $26.37, remainder $23.63. At $0.02 per
+  text, a mean of 7,750 reasoning tokens per call. One runaway text
+  (finish `length` 3 times, 16,384 reasoning tokens each, $0.098) was
+  61% of the smoke spend; the good texts cost $0.0078 each with at most
+  5,493 completion tokens. Thus a stop on `length` is dropped and
+  counted, never resampled, and `max_tokens` is 10,000 to 12,000. The
+  ledger is at $26.37, remainder $23.63. At $0.02 per
   text, 2,100 train texts × 1 sample is about $42 and 500 eval texts × 3
   samples about $30: thinking mode does not fit. Phase 1 compares cheaper
   labeller settings on the spike's 100 texts (see "Phases"). Phase 2
@@ -279,8 +298,9 @@ uses them, and changed only where the new contract needs it:
 - Redaction (`redact.py`) and its tests, unchanged. Phase 1.
 - The DeepSeek client from `label.py`: the spend ledger and cap with
   reserve and settle, the response cache keyed on the request body,
-  resampling on length, cancel on interrupt. The prompt and schema are
-  new. Phase 1 (the spike labels 100 texts).
+  cancel on interrupt. Resampling on length is not moved: a stop on
+  `length` is dropped and counted (see "Spend"). The prompt and schema
+  are new. Phase 1 (the spike labels 100 texts).
 - The session split with union-find over sessions and families, and
   MinHash dedup (`split.py`). Phase 2.
 - The training loop on MPS (`train.py`), seeds and runner (`runner.py`,
@@ -396,3 +416,13 @@ under the unchanged $50 cap (under "Decisions").
   disabled, lower effort or shorter `max_tokens`) on the spike's 100
   texts, scored as agreement with thinking-mode labels and cost per text.
   "Spend" and "Phases" say so.
+- 2026-10-20, p1-rev-correct, corrected by p1-impl's capture: both TUIs
+  remove inline backticks; pi keeps fence rows and headings, Claude Code
+  removes them. "Design" item 1 now defines the unit rule by layout
+  (indent and blank rows, plus pi's fence rows) and the sentence rule by
+  the characters around the mark, and names the inline-code split as a
+  known limit that the boundary measure counts.
+- 2026-10-20, p1-rev-efficiency: one runaway text resampled 3 times on
+  `length` was 61% of the smoke spend. A stop on `length` is now dropped
+  and counted, not resampled, and `max_tokens` is 10,000 to 12,000
+  ("Spend", "What moves").
