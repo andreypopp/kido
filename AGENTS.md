@@ -944,6 +944,13 @@ A brief does not repeat them.
   6. It reports to the top-level session: the result, and each finding
      with the reason it was applied or rejected. Then it stops the
      implementer.
+
+  When the work follows a mockup, the implementer adds visual snapshot
+  tests for every state of the mockup. Tests that only read state or
+  frames are not sufficient. The manager reads each recorded snapshot,
+  compares it with the mockup and sends every difference to the
+  implementer. The work is not complete until the snapshots agree with
+  the mockup.
 - **Do the task yourself.** An implementer or reviewer does not spawn
   subagents.
   Do not call `ask_agent`.
