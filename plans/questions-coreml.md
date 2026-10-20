@@ -224,9 +224,15 @@ Hugging Face offsets only with the NFC position mapping.
   (p50 1,513 against 797 characters for texts with a `?`). The old recipe
   (600 eval texts × 5 samples, 2,100 train texts × 1 sample) cost $21.78
   and would cost about $30 to $40 now; it does not fit in $23.79. The
-  defaults are 3 eval samples and 500 eval texts. The smoke run measures
-  the cost per text; the phase 2 manager computes the full-run cost from
-  it and cuts the run size if it exceeds the remainder.
+  phase 1 smoke (5 texts, v4-pro thinking) measured $0.013 to $0.03 per
+  text, a mean of 7,750 reasoning tokens per call, and 3 calls for a
+  length drop. The ledger is at $26.37, remainder $23.63. At $0.02 per
+  text, 2,100 train texts × 1 sample is about $42 and 500 eval texts × 3
+  samples about $30: thinking mode does not fit. Phase 1 compares cheaper
+  labeller settings on the spike's 100 texts (see "Phases"). Phase 2
+  picks the labeller setting and the run sizes from that comparison so
+  the whole phase fits the remainder, and the manager cuts the run size
+  if a computed full-run cost exceeds it.
 
 ## Metrics
 
@@ -335,8 +341,14 @@ advice or a question to `advisor`.
    whole messages. The baseline scored on those 100 texts with the new
    metrics. The two-heads-or-two-models choice: train the option head for
    one epoch on the spike's options and report whether a shared encoder
-   hurts the question head. Deliverable: the numbers, the go/no-go and
-   the choices.
+   hurts the question head. The labeller comparison: label the same 100
+   texts with v4-pro with thinking disabled, and, if useful, with a lower
+   reasoning effort or a shorter `max_tokens`; report for each setting
+   the agreement with the thinking-mode labels (question count, question
+   boundaries, option sets, each separately), the validation drop rate
+   and the cost per text. Deliverable: the numbers, the go/no-go, the
+   choices, and the labeller setting and run sizes that fit phase 2 in
+   the remainder.
 2. **Data.** Schema, prompt, validator, synthetic generator, the frozen
    session plan and eval set, the labelling of all texts with v4-pro, the
    split, the manifest. The check by eye. Deliverable: the labelled set,
@@ -378,3 +390,9 @@ under the unchanged $50 cap (under "Decisions").
   are screen rows. The contract, the splitter (a row break is not a
   boundary) and the renderer check (wrap at a random width, each TUI's
   layout by source) say so.
+- 2026-10-20, p1-impl's smoke, decided by the top-level session: thinking
+  mode costs $0.013 to $0.03 per text, so the phase 2 recipe does not fit
+  the $23.63 remainder. Phase 1 adds a labeller comparison (thinking
+  disabled, lower effort or shorter `max_tokens`) on the spike's 100
+  texts, scored as agreement with thinking-mode labels and cost per text.
+  "Spend" and "Phases" say so.
