@@ -6,9 +6,13 @@ Status: not started. Date: 2026-10-20. Branch `kido-app-questions`, from
 
 ## Contract
 
-The input is plain text. Each input line is one logical line: the app
-joins wrapped rows before it calls the model, as `Paragraphs.partition`
-does today. The output is every question in the text, in text order:
+The input is plain text. Its lines are the screen's logical lines. pi
+and Claude Code word-wrap their own output at the pane width, so tmux
+has no wrapped flag for them and a paragraph or list item spans several
+lines with the TUI's own breaks and indents (pi: a hanging indent for
+list items; Claude Code: `⏺ ` on the first row and a 2-space gutter).
+A question substring contains those row breaks. The output is every
+question in the text, in text order:
 
     {"questions": [{"question": "…", "options": ["…", "…"]}]}
 
@@ -95,9 +99,11 @@ Hugging Face offsets only with the NFC position mapping.
 ## Design
 
 1. **Segments.** One splitter cuts the text into segments: sentences, and
-   each list item as one segment. A blank line is its own segment. The
-   splitter keeps paths, versions (`v1.2`), `e.g.`, code spans, URLs and
-   list items without a full stop in one segment. A code block is one
+   each list item as one segment. The rows of one paragraph or list item
+   are one unit: a row break is not a segment boundary, and a sentence
+   can span rows. A blank line is its own segment. The splitter keeps
+   paths, versions (`v1.2`), `e.g.`, code spans, URLs and list items
+   without a full stop in one segment. A code block is one
    segment per line. This plan implements the splitter in Python with a
    JSON file of test cases; the app plan ports it to Swift against the
    same file.
@@ -147,13 +153,15 @@ Hugging Face offsets only with the NFC position mapping.
   about the first attempt's counts: about 2,100 real texts for train and
   dev, about half positive candidates, and every text with two or more
   `?` paragraphs that the scan finds, up to the budget below.
-- **Renderer check first:** compare the logical lines of one real pi
-  question and one real Claude Code question, read from the app, with
-  the renderer's lines for the same transcript turn. The pass rule: the
-  same text after the turn marker (`⏺` and the like) is removed, the
-  same list markers, the same blank lines. Fix the renderer if they
-  differ. Then the synthetic templates use the TUIs' real markers and
-  turn markers. This is a check, not a data source.
+- **Renderer check first:** compare the lines of one real pi question
+  and one real Claude Code question, read from the app, with the
+  renderer's lines for the same transcript turn at the same width. The
+  pass rule: the same text, the same row breaks and indents, the same
+  list markers, the same blank lines. Fix the renderer if they differ.
+  The renderer keeps word wrap at a random width (about 60 to 220
+  columns) with cell widths, and copies each TUI's layout by source (pi's
+  hanging indent; Claude Code's `⏺ ` and gutter). The synthetic
+  templates use the same layouts. This is a check, not a data source.
 - **Labeller view:** the labeller sees the text as numbered segments, one
   per line, blank lines kept as numbered empty lines. The index is the
   only reliable way to get a boundary from the model; a copied substring
@@ -365,3 +373,8 @@ under the unchanged $50 cap (under "Decisions").
   500 real eval texts; the cap stays and the manager cuts a run that
   would exceed the remainder. Under "Decisions", to confirm with the
   user.
+- 2026-10-20, p1-impl's renderer check, decided by the top-level
+  session: pi and Claude Code wrap their own output, so the app's lines
+  are screen rows. The contract, the splitter (a row break is not a
+  boundary) and the renderer check (wrap at a random width, each TUI's
+  layout by source) say so.
