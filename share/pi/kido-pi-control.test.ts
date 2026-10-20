@@ -115,10 +115,11 @@ test("an inbound steer is delivered as steer; a message and an ask stay followUp
       const from = { session: "root", name: "root", pane: "%2" };
 
       assert.equal(await sendToInbox(s.inboxPath, envelope("steer", "drop that, do X", { from })), "ok");
-      const steered = s.delivered.find((d) => d.text.includes("drop that, do X"));
+      const steered = customMessages(s, "kido-steer")[0];
       assert.ok(steered, "the steer reached the model");
       assert.equal((steered!.opts as { deliverAs?: string }).deliverAs, "steer", "a steer joins the running turn rather than queueing behind it");
-      assert.match(steered!.text, /root/, "and says who is redirecting the work");
+      assert.equal((steered!.opts as { triggerTurn?: boolean }).triggerTurn, true, "and triggers a turn when idle");
+      assert.match(steered!.message.content, /root/, "and says who is redirecting the work");
 
       assert.equal(await sendToInbox(s.inboxPath, envelope("message", "when you get a moment", { from })), "ok");
       const queued = customMessages(s, "kido-message")[0];
@@ -144,7 +145,7 @@ test("an inbound steer from a non-ancestor is refused and delivers nothing", asy
       const s = await startWithSpies(fx, kidoPi, "mid");
       const resp = await sendToInbox(s.inboxPath, envelope("steer", "do my bidding", { from: { session: "peer", name: "peer", pane: "%3" } }));
       assert.equal(resp, "refused");
-      assert.equal(s.delivered.filter((d) => d.text.includes("do my bidding")).length, 0, "and nothing reached the model");
+      assert.equal(customMessages(s, "kido-steer").length, 0, "and nothing reached the model");
     }, { parent: "root", name: "mid" });
   } finally {
     await fx.restore();

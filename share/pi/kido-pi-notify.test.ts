@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 
 import { join } from "node:path";
 
@@ -106,6 +106,23 @@ test("a report over the cap is kept whole, and the notice names the file within 
       assert.ok(multibyte.isWellFormed(), "the head of a multi-byte report is cut on a rune boundary");
       assert.ok(!multibyte.includes("\uFFFD"));
     });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("notify_parent fails, and sends nothing, when the report cannot be written", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    fx.setPanes([agentPane({ pane: "%1", session: SELF, name: "worker" }), agentPane({ pane: "%2", session: "boss-session", name: "boss", inbox: inbox.path })]);
+    await asSubagent(fx, SELF, async () => {
+      const s = await startNamedSession(fx, "worker", SELF);
+      mkdirSync(join(fx.agentDir("boss-session", "worker"), "report"));
+      const result = await s.tools.get("notify_parent").execute("c1", { summary: "the merge is done" });
+      assert.match(result.content[0].text, /^could not notify parent: .*report/);
+      assert.equal(inbox.received().length, 0, "a report that was not kept is not sent");
+    }, { parent: "boss-session", name: "worker" });
   } finally {
     await fx.restore();
   }

@@ -961,8 +961,9 @@ agent directory's `report` file (design-subagents.md, "A child's life").
 
 A session that is not itself a spawned child is refused before sending.
 Such a session has no parent to notify. The refusal states this instead
-of silently doing nothing. A parent whose pane no longer shows its
-session under a pi root has exited. This is an error, not permission to
+of silently doing nothing. A parent whose pane is gone, dead or no
+longer shows its session has exited: a missing pi root alone is not
+evidence, because pi clears it in the external editor. This is an error, not permission to
 use a fallback.
 
 **What this costs, and what covers it.** A crashed subagent that never

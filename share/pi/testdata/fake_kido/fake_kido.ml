@@ -103,6 +103,11 @@ let run () =
       exit 0
   | "runs" ->
       Fake_common.log "KIDO_FAKE_RUNS_LOG" argv;
+      let fail_once = Fs.getenv "KIDO_FAKE_RUNS_FAIL_ONCE" in
+      if (not (String.is_empty fail_once)) && not (Sys.file_exists fail_once) then begin
+        Fs.write ~perm:0o644 fail_once "";
+        exit 1
+      end;
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUNS_GATE");
       let parent = ref None and id = ref None and all = ref false in
       let rec parse = function

@@ -34,8 +34,6 @@ const PANE_FIELDS = [
 ];
 const PANE_FORMAT = PANE_FIELDS.join(PANE_SEPARATOR);
 
-export type DeliverAs = "followUp" | "steer";
-
 export type Sender = { session: string; name?: string; pane?: string };
 
 export type Envelope = { id: string; from: Sender; text: string } & (
@@ -277,6 +275,8 @@ export const noticeHeader = (from: string): string => `notice from ${from} (a su
 
 const MESSAGE_CUSTOM_TYPE = "kido-message";
 
+const STEER_CUSTOM_TYPE = "kido-steer";
+
 const RELATIONS = ["parent", "child", "peer"] as const;
 type SenderRelation = (typeof RELATIONS)[number];
 
@@ -294,6 +294,8 @@ const ASK_CUSTOM_TYPE = "kido-ask";
 const REPLY_CUSTOM_TYPE = "kido-reply";
 
 export const replyHeader = (from: string, replyTo: string): string => `${from} replied (to ask ${replyTo}): `;
+
+const steerHeader = (from: string): string => `${from} is redirecting this work: `;
 
 const inboundHeader = (sender: string | undefined, verb: string | undefined): string =>
   `${sender && sender !== "another agent" ? `@${sender}` : "another agent"}${verb ? ` ${verb}` : ""}:`;
@@ -699,11 +701,9 @@ export default function (pi: ExtensionAPI) {
     spawnSync("tmux", ["if-shell", "-F", "-t", pane, owns, unsetArgs(pane).join(" ")], { timeout: 1000, stdio: "ignore" });
   };
 
-  // pi drains followUp only once the agent has decided to stop; "steer" is drained
-  // inside the loop and joins the run already under way.
-  const deliver = (text: string, deliverAs: DeliverAs = "followUp"): void => {
+  const deliver = (text: string): void => {
     workStarted();
-    pi.sendUserMessage(text, { deliverAs });
+    pi.sendUserMessage(text, { deliverAs: "followUp" });
   };
 
   const labelFrom = (from: Sender): string => from.name || from.session || from.pane || "another agent";
@@ -729,7 +729,7 @@ export default function (pi: ExtensionAPI) {
         customType: MESSAGE_CUSTOM_TYPE,
         content: `${senderHeader("message", sender.name, sender.relation)}\n${env.text}`,
         display: true,
-        details: { from: sender.name, relation: sender.relation },
+        details: { from: sender.name, relation: sender.relation, work: sender.relation === "parent" },
       },
       { deliverAs: "followUp", triggerTurn: true },
     );
@@ -846,7 +846,20 @@ export default function (pi: ExtensionAPI) {
 
   const handleInboundSteer = async (env: Envelope): Promise<"ok" | "refused"> => {
     if (!senderIsAncestor(env)) return "refused";
-    if (env.text) deliver(`${labelFrom(env.from)} is redirecting this work: ${env.text}`, "steer");
+    if (env.text) {
+      const from = labelFrom(env.from);
+      workStarted();
+      // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
+      pi.sendMessage(
+        {
+          customType: STEER_CUSTOM_TYPE,
+          content: steerHeader(from) + env.text,
+          display: true,
+          details: { from, work: !!edge && env.from.session === edge.parent },
+        },
+        { deliverAs: "steer", triggerTurn: true },
+      );
+    }
     return "ok";
   };
 
@@ -903,12 +916,16 @@ export default function (pi: ExtensionAPI) {
 
   const reported = (entry: AgentEntry): boolean => reportState(entry.dir).reported;
 
+  const writeWork = (dir: string): void => {
+    try {
+      writeFileSync(join(dir, "work"), "");
+    } catch {}
+  };
+
   const markWork = (target: AgentRow, entries: AgentEntry[]): void => {
     const entry = ownEntry(target, entries);
     if (!entry) return;
-    try {
-      writeFileSync(join(entry.dir, "work"), "");
-    } catch {}
+    writeWork(entry.dir);
   };
 
   const agentRun = (run: RunRow, byRun: Map<string, AgentEntry>, bySession: Map<string, AgentEntry>): AgentEntry | undefined =>
@@ -944,11 +961,11 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const myRuns = async (): Promise<RunRow[]> => {
+  const myRunsOnce = async (): Promise<RunRow[] | undefined> => {
     const key = parentKey();
     if (!key) return [];
     const parsed = await readRuns(["--all", "--parent", key]);
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) return undefined;
     const rows: RunRow[] = [];
     for (const value of parsed) {
       const row = runRow(value);
@@ -956,6 +973,8 @@ export default function (pi: ExtensionAPI) {
     }
     return rows;
   };
+
+  const myRuns = async (): Promise<RunRow[]> => (await myRunsOnce()) ?? [];
 
   type Snapshot = { rows: AgentRow[]; all: AgentRow[]; mySession: string; entries: AgentEntry[]; runs: RunRow[] };
 
@@ -1235,11 +1254,12 @@ export default function (pi: ExtensionAPI) {
     return utf8Prefix(text, budget - Buffer.byteLength(suffix, "utf8")) + suffix + PARENT_GUIDANCE;
   };
 
-  const notifyParent = async (text: string, status: boolean): Promise<{ ok: boolean; text: string }> => {
+  const notifyParent = async (text: string, status: boolean, still?: () => boolean): Promise<{ ok: boolean; text: string; stale?: boolean }> => {
     if (!edge) return { ok: false, text: "this session has no parent (it was not spawned as a subagent); notify_parent has nobody to tell" };
     const parentSession = edge.parent;
     const agentDir = edge.dir;
     const found = await sessionPane(parentSession, parentPane);
+    if (still && !still()) return { ok: false, text: "superseded by new work or control; nothing sent", stale: true };
     if (found === "unknown") return { ok: false, text: "could not read tmux; nothing sent" };
     if (!found) return { ok: false, text: `no live process holds session "${parentSession}"; the parent is gone, nothing sent` };
     if (!found.inbox) return { ok: false, text: `session ${parentSession} has no inbox` };
@@ -1248,7 +1268,9 @@ export default function (pi: ExtensionAPI) {
     if (!status) {
       try {
         writeFileSync(path, text);
-      } catch {}
+      } catch (err) {
+        return { ok: false, text: `could not keep the report at ${path}: ${err instanceof Error ? err.message : String(err)}` };
+      }
     }
     return deliveryText(found.name || parentSession, "notice", await sendEnvelope(found.inbox, { kind: "notice" }, body));
   };
@@ -1632,12 +1654,12 @@ export default function (pi: ExtensionAPI) {
     return entry ? { entry, starting: childStarting(entry, resolved.snapshot.runs) } : null;
   };
 
-  const restartChild = async (entry: AgentEntry, firstPrompt: string | null): Promise<string | null> => {
+  const restartChild = async (entry: AgentEntry, firstPrompt: string | null, work: boolean): Promise<string | null> => {
     const parent = parentKey();
     if (!parent) return null;
     const sessionFile = sessionFileOf(entry);
     if (!sessionFile) rmSync(join(entry.dir, "delivered"), { force: true });
-    rmSync(join(entry.dir, "report"), { force: true });
+    if (work) rmSync(join(entry.dir, "report"), { force: true });
     const command = piArgs(entry, { sessionFile, fork: null });
     if (firstPrompt !== null) command.push(firstPrompt);
     const started = await startChild(parent, entry.name, entry.dir, command);
@@ -1670,6 +1692,7 @@ export default function (pi: ExtensionAPI) {
     message: string | null,
     initial: Snapshot,
     refuse: (entry: AgentEntry) => string | null,
+    work: boolean,
   ): Promise<RestartPrep> => {
     const first = endedTarget(address, resolveIn(initial, address));
     if (!first) return { snapshot: initial, entry: null, restartedRun: null, firstPrompt: null };
@@ -1680,8 +1703,9 @@ export default function (pi: ExtensionAPI) {
       const refusal = refuse(ended.entry);
       if (refusal) return { error: { kind: "refused", message: refusal } };
       if (ended.starting) return { snapshot, entry: ended.entry, restartedRun: null, firstPrompt: null };
-      const firstPrompt = message !== null && sessionFileOf(ended.entry) ? message : null;
-      const run = await restartChild(ended.entry, firstPrompt);
+      const sessionFile = sessionFileOf(ended.entry);
+      const firstPrompt = message !== null && sessionFile ? message : null;
+      const run = await restartChild(ended.entry, firstPrompt, work || !sessionFile);
       if (!run) return { error: { kind: "restart", message: "could not restart it" } };
       return { snapshot, entry: ended.entry, restartedRun: run, firstPrompt };
     });
@@ -1722,19 +1746,26 @@ export default function (pi: ExtensionAPI) {
     nameClaims.delete(name.toLowerCase());
   };
 
-  let liveWatch: Promise<void> | undefined;
+  let liveWatch: Promise<boolean> | undefined;
 
-  const watchLiveChildren = (): Promise<void> =>
-    (liveWatch ??= (async () => {
+  const watchLiveChildren = async (): Promise<boolean> => {
+    liveWatch ??= (async () => {
+      const runs = await myRunsOnce();
+      if (!runs) return false;
       const entries = own(dir ? agentEntries(dir) : []);
       const bySession = bySessionOf(entries);
       const byRun = byRunOf(entries);
-      for (const run of await myRuns()) {
+      for (const run of runs) {
         if (run.outcome || watches.has(run.id) || !run.output) continue;
         const entry = agentRun(run, byRun, bySession);
         watch(watchData(run.id, entry?.name || run.name || run.id, run.output, entry ?? null, false));
       }
-    })());
+      return true;
+    })();
+    const found = await liveWatch;
+    if (!found) liveWatch = undefined;
+    return found;
+  };
 
   const handleInbound = async (prompt: string): Promise<"ok" | "refused"> => {
     const env = parseEnvelope(prompt);
@@ -1874,6 +1905,12 @@ export default function (pi: ExtensionAPI) {
     return renderInbound(message, theme, message.details?.from, "replies", raw.startsWith(header) ? raw.slice(header.length) : raw);
   });
 
+  pi.registerMessageRenderer<{ from: string }>(STEER_CUSTOM_TYPE, (message, _options, theme) => {
+    const raw = typeof message.content === "string" ? message.content : "";
+    const header = steerHeader(message.details?.from ?? "");
+    return renderInbound(message, theme, message.details?.from, "redirects", raw.startsWith(header) ? raw.slice(header.length) : raw);
+  });
+
   pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, _options, theme) => {
     const from = message.details?.from || "another agent";
     const raw = typeof message.content === "string" ? message.content : "";
@@ -1889,10 +1926,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_start", (event) => {
     const m = event?.message;
+    const details = isRecord(m) && isRecord(m.details) ? m.details : undefined;
+    if (edge && details?.work === true) writeWork(edge.dir);
     if (m?.role !== "custom" || m.customType !== NOTICE_CUSTOM_TYPE) return;
-    const details = m.details;
-    if (typeof details !== "object" || details === null || !("noticeId" in details)) return;
-    const noticeId = details.noticeId;
+    const noticeId = details?.noticeId;
     if (typeof noticeId !== "string" || !noticeId || !pendingNotices.has(noticeId)) return;
     pendingNotices.delete(noticeId);
     renderNoticeWidget();
@@ -1966,7 +2003,7 @@ export default function (pi: ExtensionAPI) {
       const spec = params.replyTo ? { kind, replyTo: params.replyTo } : { kind };
       const snapshot = await discovery();
       const address = askerPane ? snapshot.all.find((a) => a.pane === askerPane)?.id ?? params.to : params.to;
-      const prep = await prepareRestart(address, params.message, snapshot, () => null);
+      const prep = await prepareRestart(address, params.message, snapshot, () => null, kind === "message");
       if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error.message}`);
       const bound = Date.now() + 5000;
       if (prep.entry) {
@@ -2020,7 +2057,7 @@ export default function (pi: ExtensionAPI) {
       const first = await discovery();
       const prepared = await prepareRestart(params.to, null, first, (entry) =>
         canReply(entry, childInbox(entry)) ? null : cannotReply(entry.name),
-      );
+      false);
       if ("error" in prepared) {
         return reply(prepared.error.kind === "restart" ? `could not ask ${params.to}: ${prepared.error.message}` : prepared.error.message);
       }
@@ -2550,11 +2587,12 @@ export default function (pi: ExtensionAPI) {
           : { kind: "other" };
   });
 
-  pi.on("agent_settled", async (_event: unknown, ctx: { isIdle(): boolean }) => {
+  pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
     if (!ctx.isIdle()) return;
     finishWorking();
     settled = true;
     if (!edge) return;
+    if (event?.aborted) return;
     if (turnEndedByControl) return;
     if (ending.kind === "aborted") return;
     if (ending.kind === "error") {
@@ -2564,25 +2602,30 @@ export default function (pi: ExtensionAPI) {
       if (turnEndedByControl || generation !== workGeneration) return;
       if (isRecord(run) && runRow(run)?.outcome !== undefined) return;
       ending.notified = true;
-      await notifyParent(
+      const notice = await notifyParent(
         `subagent stopped on an error: ${trimErrorMessage(ending.text)}\nrun: ${edge.run}\nmessage it to retry, or stop_run to end it`,
         true,
+        () => !turnEndedByControl,
       );
+      if (notice.stale) ending.notified = false;
       return;
     }
     const generation = workGeneration;
-    const state = reportState(edge.dir);
+    const ownDir = edge.dir;
+    const state = reportState(ownDir);
     if (state.reported || (idleNotice && idleNotice.work === state.work)) return;
-    await watchLiveChildren();
+    if (!(await watchLiveChildren())) return;
     if (turnEndedByControl || generation !== workGeneration) return;
     for (const watch of watches.values()) {
       if (watch.target.kind === "bash" || !reported(watch.target.entry)) return;
     }
     idleNotice = { work: state.work };
-    await notifyParent(
+    const notice = await notifyParent(
       `subagent ${edge.run} is idle without reporting: its last turn ended and it did not call notify_parent. Continue it with message_agent, or end it with stop_run.`,
       true,
+      () => !turnEndedByControl && reportState(ownDir).work === state.work,
     );
+    if (notice.stale) idleNotice = undefined;
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {

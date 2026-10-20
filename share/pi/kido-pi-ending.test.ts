@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
 
@@ -40,10 +40,26 @@ function assistant(stopReason: string, errorMessage?: string) {
   return { role: "assistant", stopReason, errorMessage };
 }
 
-async function idleTurn(s: { emit: (event: string, ...args: unknown[]) => Promise<unknown[]> }): Promise<void> {
+function paneReads(fx: Fixture): number {
+  return fx.tmuxCalls().filter((argv) => argv[0] === "list-panes").length;
+}
+
+async function idleTurn(s: { emit: (event: string, ...args: unknown[]) => Promise<unknown[]> }, settle: { aborted?: boolean } = {}): Promise<void> {
   await s.emit("agent_start");
   await s.emit("agent_end", { messages: [assistant("stop")] });
-  await s.emit("agent_settled", {}, { isIdle: () => true });
+  await s.emit("agent_settled", settle, { isIdle: () => true });
+}
+
+async function duringParentLookup(fx: Fixture, settle: () => Promise<unknown>, action: () => Promise<void> | void): Promise<void> {
+  const gate = join(fx.stateDir, "tmux-gate");
+  await withEnv({ KIDO_FAKE_TMUX_GATE: gate }, async () => {
+    const before = paneReads(fx);
+    const settling = settle();
+    await pollUntil(() => paneReads(fx) > before, 2000, "the ending's parent lookup");
+    await action();
+    writeFileSync(gate, "");
+    await settling;
+  });
 }
 
 test("session_shutdown records this run's own outcome: completed when it settled, failed while a turn is running", async () => {
@@ -526,7 +542,7 @@ test("a tmux read that fails is not evidence that the parent is gone", async () 
       async () => {
         await withEnv({ KIDO_PARENT_POLL_MS: "20", KIDO_FAKE_TMUX_FAIL: "1" }, async () => {
           const s = await startWithSpies(fx, kidoPi, SELF);
-          await pollUntil(() => fx.tmuxCalls().filter((argv) => argv[0] === "list-panes").length >= 3, 2000, "several failing readings");
+          await pollUntil(() => paneReads(fx) >= 3, 2000, "several failing readings");
           assert.equal(s.shutdowns(), 0, "a failing query says nothing");
         });
       },
@@ -547,7 +563,7 @@ test("a parent poll with a pane hint reads only that pane", async () => {
       async () => {
         await withEnv({ KIDO_PARENT_POLL_MS: "10" }, async () => {
           const s = await startWithSpies(fx, kidoPi, SELF);
-          await pollUntil(() => fx.tmuxCalls().filter((argv) => argv[0] === "list-panes").length >= 6, 2000, "parent polls");
+          await pollUntil(() => paneReads(fx) >= 6, 2000, "parent polls");
           const calls = fx.tmuxCalls().filter((argv) => argv[0] === "list-panes");
           const later = calls.slice(1);
           assert.ok(
@@ -604,12 +620,12 @@ test("a slow parent read does not let ticks pile up concurrent readings", async 
       async () => {
         await withEnv({ KIDO_PARENT_POLL_MS: "10", KIDO_FAKE_TMUX_GATE: gate }, async () => {
           const s = await startWithSpies(fx, kidoPi, SELF);
-          await pollUntil(() => fx.tmuxCalls().filter((argv) => argv[0] === "list-panes").length >= 1, 2000, "the first reading");
+          await pollUntil(() => paneReads(fx) >= 1, 2000, "the first reading");
           await new Promise((r) => setTimeout(r, 120));
-          const stuck = fx.tmuxCalls().filter((argv) => argv[0] === "list-panes").length;
+          const stuck = paneReads(fx);
           assert.equal(stuck, 1, "one reading in flight holds every later tick back");
           writeFileSync(gate, "");
-          await pollUntil(() => fx.tmuxCalls().filter((argv) => argv[0] === "list-panes").length >= 3, 2000, "later readings on the parent's own pane");
+          await pollUntil(() => paneReads(fx) >= 3, 2000, "later readings on the parent's own pane");
           assert.equal(s.shutdowns(), 0, "the parent is still there");
         });
       },
@@ -731,6 +747,264 @@ test("a stop accepted while an ending's outcome query runs still silences it", a
           writeFileSync(gate, "");
           await settling;
           assert.equal(inbox.received().length, 0, "a stop during the outcome query still silences the ending");
+        });
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a settled user abort sends neither an error nor an idle notice", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startNamedSession(fx, "worker", SELF);
+        await s.emit("agent_start");
+        await s.emit("agent_end", { messages: [assistant("error", "boom")] });
+        await s.emit("agent_settled", { aborted: true }, { isIdle: () => true });
+        assert.equal(inbox.received().length, 0, "Escape during a retry is not an error to report");
+
+        await idleTurn(s, { aborted: true });
+        assert.equal(inbox.received().length, 0, "a cancelled turn is not idle without reporting");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("work the parent writes during an ending's parent lookup silences the idle notice", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startNamedSession(fx, "worker", SELF);
+        await s.emit("agent_end", { messages: [assistant("stop")] });
+        await duringParentLookup(fx, () => s.emit("agent_settled", {}, { isIdle: () => true }), () => {
+          writeFileSync(join(fx.agentDir("boss-session", "worker"), "work"), "");
+        });
+        assert.equal(inbox.received().length, 0, "the captured work was replaced while the lookup ran");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a stop accepted during an ending's parent lookup silences the idle notice", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startWithSpies(fx, kidoPi, SELF);
+        await s.emit("agent_end", { messages: [assistant("stop")] });
+        await duringParentLookup(fx, () => s.emit("agent_settled", {}, { isIdle: () => true }), async () => {
+          assert.equal(await sendToInbox(s.inboxPath, envelope("stop", "", { from: { session: "boss-session", name: "boss", pane: "%2" } })), "ok");
+          assert.equal(s.shutdowns(), 1);
+        });
+        assert.equal(inbox.received().length, 0, "the stop arrived while the lookup ran");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a parent's queued message becomes work only when pi consumes it", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startNamedSession(fx, "worker", SELF);
+        assert.equal(await sendToInbox(s.inboxPath, envelope("message", "do B", { from: { session: "boss-session", name: "boss" } })), "ok");
+        const queued = customMessages(s, "kido-message")[0]!;
+        await s.tools.get("notify_parent").execute("c", { summary: "A is done" });
+        const report = join(fx.agentDir("boss-session", "worker"), "report");
+        const past = new Date(Date.now() - 2000);
+        utimesSync(report, past, past);
+        await s.emit("message_start", { message: queued.message });
+        await s.emit("agent_end", { messages: [assistant("stop")] });
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        assert.equal(inbox.received().length, 2, "the report for A does not cover the consumed work B");
+        assert.match(JSON.parse(inbox.received()[1]!).text, IDLE_NOTICE);
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a parent's message or steer rewrites work when pi changes the content", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startNamedSession(fx, "worker", SELF);
+        const work = join(fx.agentDir("boss-session", "worker"), "work");
+        const from = { session: "boss-session", name: "boss" };
+        for (const [kind, customType] of [
+          ["message", "kido-message"],
+          ["steer", "kido-steer"],
+        ] as const) {
+          assert.equal(await sendToInbox(s.inboxPath, envelope(kind, `do ${kind}`, { from })), "ok");
+          const sent = customMessages(s, customType)[0]!;
+          const past = new Date(Date.now() - 2000);
+          writeFileSync(work, "");
+          utimesSync(work, past, past);
+          await s.emit("message_start", { message: { ...sent.message, content: `  ${sent.message.content}\n` } });
+          assert.ok(statSync(work).mtimeMs > past.getTime(), `work is rewritten from the ${kind}'s details`);
+        }
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a flagged message still marks work after pi settles idle before consuming it", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startNamedSession(fx, "worker", SELF);
+        assert.equal(await sendToInbox(s.inboxPath, envelope("message", "do B", { from: { session: "boss-session", name: "boss" } })), "ok");
+        const queued = customMessages(s, "kido-message")[0]!;
+        const dir = fx.agentDir("boss-session", "worker");
+        const work = join(dir, "work");
+        const past = new Date(Date.now() - 2000);
+        writeFileSync(work, "");
+        utimesSync(work, past, past);
+        writeFileSync(join(dir, "report"), "earlier");
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        await s.emit("message_start", { message: { ...queued.message, content: `  ${queued.message.content}\n` } });
+        assert.ok(statSync(work).mtimeMs > past.getTime(), "work is rewritten after an idle settle");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a fresh extension instance marks work from a flagged message it did not send", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const first = await startNamedSession(fx, "worker", SELF);
+        assert.equal(await sendToInbox(first.inboxPath, envelope("message", "do B", { from: { session: "boss-session", name: "boss" } })), "ok");
+        const queued = customMessages(first, "kido-message")[0]!;
+        const second = await startNamedSession(fx, "worker", SELF);
+        const work = join(fx.agentDir("boss-session", "worker"), "work");
+        const past = new Date(Date.now() - 2000);
+        writeFileSync(work, "");
+        utimesSync(work, past, past);
+        await second.emit("message_start", { message: { ...queued.message, content: `  ${queued.message.content}\n` } });
+        assert.ok(statSync(work).mtimeMs > past.getTime(), "work is rewritten from the message's own flag");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("an ask or a peer's message is not work when pi consumes it", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    parentSetup(fx, inbox.path);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        const s = await startNamedSession(fx, "worker", SELF);
+        const dir = fx.agentDir("boss-session", "worker");
+        writeFileSync(join(dir, "work"), "");
+        const past = new Date(Date.now() - 2000);
+        utimesSync(join(dir, "work"), past, past);
+        writeFileSync(join(dir, "report"), "A is done");
+        assert.equal(await sendToInbox(s.inboxPath, envelope("ask", "status?", { from: { session: "boss-session", name: "boss" } })), "ok");
+        assert.equal(await sendToInbox(s.inboxPath, envelope("message", "hello", { from: { session: "peer-x", name: "peer" } })), "ok");
+        for (const kind of ["kido-ask", "kido-message"]) await s.emit("message_start", { message: customMessages(s, kind)[0]!.message });
+        await s.emit("agent_end", { messages: [assistant("stop")] });
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        assert.equal(inbox.received().length, 0, "neither an ask nor a peer's message creates a report obligation");
+      },
+      { parent: "boss-session", name: "worker" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a failed discovery at settlement is not cached as no live children", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    const failOnce = join(fx.stateDir, "runs-fail-once");
+    const waitGate = join(fx.stateDir, "wait-gate");
+    const childDir = fx.writeAgent(SELF, "kid", { session: "kid-session", run: "live-kid" });
+    writeFileSync(join(childDir, "report"), "done");
+    fx.setPanes([
+      selfPane(),
+      agentPane({ pane: "%2", session: "boss-session", name: "boss", inbox: inbox.path }),
+      agentPane({ pane: "%3", session: "kid-session", name: "kid" }),
+    ]);
+    const output = join(fx.stateDir, "runs", "live-kid", "output");
+    mkdirSync(join(fx.stateDir, "runs", "live-kid"), { recursive: true });
+    writeFileSync(output, "line\n");
+    fx.setRuns([{ id: "live-kid", name: "kid", parent: SELF, pane: "%3", session: "kid-session", startedAt: "2023-11-14T22:00:00Z", output }]);
+    await asSubagent(
+      fx,
+      SELF,
+      async () => {
+        await withEnv({ KIDO_FAKE_RUNS_FAIL_ONCE: failOnce, KIDO_FAKE_RUN_WAIT_GATE: waitGate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "completed", text: "" }) }, async () => {
+          const s = await startNamedSession(fx, "worker", SELF);
+          await s.emit("agent_end", { messages: [assistant("stop")] });
+          await s.emit("agent_settled", {}, { isIdle: () => true });
+          assert.equal(inbox.received().length, 0, "a failed read is not evidence that nothing is live");
+
+          await s.emit("agent_settled", {}, { isIdle: () => true });
+          await pollUntil(() => inbox.received().length === 1, 2000, "the idle notice after a successful retry");
+          assert.match(JSON.parse(inbox.received()[0]!).text, IDLE_NOTICE);
+          await pollUntil(() => fx.runWaitCalls().some((call) => call.includes("live-kid")), 2000, "the live child's watch after the retry");
         });
       },
       { parent: "boss-session", name: "worker" },

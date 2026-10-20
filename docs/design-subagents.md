@@ -227,14 +227,26 @@ harness knows:
   leaves no marker and stays eligible for the next attempt.
 - `session-file`: the child writes its pi session file at
   `session_start`. A restart needs it.
-- `report`: `notify_parent` writes the whole report.
+- `report`: `notify_parent` writes the whole report. If it cannot
+  write the file, the tool fails and sends nothing.
 - `work`: the parent writes it, empty, before it sends its own child new
   work by `message_agent` (not a reply) or `steer_subagent`. It stays
-  after a failed send, because the message can have arrived. An ask
-  and an interrupt are not new work. A restart that delivers the
-  message as the child's first prompt writes no `work`: the restart
-  removes `report` before the child starts, and a later `work` could
-  hide a report that the child wrote before the restart returned.
+  after a failed send, because the message can have arrived. The child
+  writes it again when pi takes its parent's message or steer into the
+  transcript (`message_start`), because a report written while the
+  message waits in pi's queue covers only the earlier work. The child
+  marks each message and steer from its parent with `work: true` in
+  the custom message's `details`, and writes `work` when
+  `message_start` shows that mark. The message carries the fact, so
+  the child keeps no list of pending work: pi keeps queued custom
+  messages through Escape, an aborted run and `/reload`, and a list
+  in the extension would not. The child never compares the content,
+  which pi can change. An ask, a reply, a notice, a message from
+  another agent and an interrupt are not new work. A restart that
+  delivers the message as the child's first prompt writes no `work`:
+  the restart removes `report` before the child starts, and a later
+  `work` could hide a report that the child wrote before the restart
+  returned.
 
 A child **has reported** when `report` exists and `work` is absent or
 older than `report`. Both sides read this rule: the parent for its
@@ -287,8 +299,10 @@ that ends every report notice - the child stays alive, so end it with
 `stop_run` or continue it with `message_agent` - is part of that bound.
 
 Thus, `notify_parent` writes the full text as `report` in the agent
-directory. A report that does not fit sends its start plus a final line
-that names the file:
+directory before it sends. If the write fails, the tool returns the
+error and sends nothing: a sent report without its file would be
+followed by a false idle notice. A report that does not fit sends its
+start plus a final line that names the file:
 
     full report: <kido-pi state>/agents/<parent>/<name>/report
 
@@ -316,17 +330,29 @@ bash run. A
 subagent of its own that reported but stays alive does not count, so a
 manager that forgot to report is still noticed. A restarted child first
 finishes its read of its live runs, so an early settle cannot miss
-them. When the last such run
+them. A failed read (`kido runs --json` fails or prints no list) is
+not an empty list: that settle sends nothing and keeps nothing in
+memory, and the next turn event or settle reads again. When the last such run
 reports or ends, its notice wakes the child for a turn. That turn
 settles with nothing to wait for, and the notice goes then. A turn that stops
 on a provider error sends the error instead, once per failed attempt,
 with how to retry. An aborted turn sends nothing: someone stopped it
-deliberately. This also holds for a turn that an accepted interrupt or
+deliberately. The child reads this from `agent_settled`'s `aborted`
+field, not only from the last stop reason: Escape during pi's retry
+delay after a provider error leaves an error as the last stop reason.
+This also holds for a turn that an accepted interrupt or
 stop request ended, and for an error ending when the child's run
 already has an outcome (`stop_run --force` writes one and sends no
 request). A terminated provider can end the turn with an error, not an
 abort, so the rule does not rely on the stop reason alone. These status notices write no `report` and carry no
-guidance: a status is not the child's account of its work. The idle
+guidance: a status is not the child's account of its work. The child
+finds the parent's pane before it sends, and that lookup waits on
+tmux. pi holds back a message that arrives during `agent_settled`
+until the handler returns, so no new turn shows the change. Thus,
+after the lookup, the child checks again: an accepted interrupt or
+stop, or (for the idle notice) a `work` time different from the one
+it read, cancels the send. A cancelled notice is not sent and does
+not count as sent. The idle
 notice goes once for each piece of unreported work: the child keeps in
 memory the `work` time that it last sent the notice for, and a later
 settle on the same work sends nothing. New `work` from the parent
@@ -466,10 +492,13 @@ new run under the same session. The rules:
   lost. The child starts, then receives the ask envelope over its
   inbox. The ask's deadline starts before the restart, so it includes
   pi's start and the wait for the inbox.
+- A restart that delivers work removes the old `report` before the
+  child starts: a message, or the stored task again when there is no
+  `session-file`. An ask or a reply with a `session-file` is not work,
+  so the old report stays and the child does not owe a new one.
 - The extension rewrites `agent.json` with the new run before it
-  delivers the message, removes the old `report` and starts a new
-  `run-wait`. A second message while the new run's inbox is not bound
-  waits for the inbox. It never starts a second run, because the run
+  delivers the message, and starts a new `run-wait`. A second message
+  while the new run's inbox is not bound waits for the inbox. It never starts a second run, because the run
   in `agent.json` is live.
 - A stopped child restarts on a message. Stopped is not finished.
 
@@ -627,6 +656,18 @@ These nested windows no longer follow tmux's own order. design.md,
   and last screen. Only the run record remains, and the parent's notice
   reads `died`.
 - A re-watched bash run after a parent restart sends no batches.
+- Report state is file times, not work ids. Two `work` writes with
+  the same time share one idle notice. A clock that moves back can
+  make new work older than an old report.
+- A status notice that the child could not send (tmux unreadable,
+  parent inbox gone) still counts as sent for that work.
+- The agent directory is shared by the runs of one child. If a
+  message restarts the child before the parent formats the old run's
+  ending, that ending reads the new run's `report` state.
+- A `run-wait` that exits without an outcome sends no ending and
+  removes the watch, so it no longer holds the idle notice back.
+- `/reload` forgets the last turn's error and that the first turn
+  never ran. A quit after the reload records `completed` without them.
 - A child idle behind an async bash run that never ends, such as a
   watcher, never sends the idle-without-reporting notice while that run
   lives ("A child's life").
