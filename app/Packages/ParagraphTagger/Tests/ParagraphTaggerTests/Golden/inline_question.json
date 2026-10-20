@@ -1,0 +1,12 @@
+{
+  "expected": {
+    "isQuestion": true,
+    "options": [
+      "also update the docs",
+      "keep the change small"
+    ],
+    "firstLine": 3,
+    "lastLine": 3
+  },
+  "prompt": "  1: The report build takes one minute.\n  2: \n> 3: Should I also update the docs, or keep the change small?\n  4: \n  5: The footer stays as it is."
+}

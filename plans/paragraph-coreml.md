@@ -1,8 +1,10 @@
 # Plan: a Core ML tagger for Shift paragraphs
 
 Status: phases 0 to 3b done (see "Phase 0 results", "Phase 1 data",
-"Phase 2 results" and "Phase 3 results");
-code in `app/ml/`. Date: 2026-10-20. Updated with the user's
+"Phase 2 results" and "Phase 3 results"). The phase 4 demo showed that
+the line-class format merges questions; "Phase 6. Questions as segments"
+replaces it and needs new labels and a new training run. Phase 4 is parked
+until phase 6 is done. Code in `app/ml/`. Date: 2026-10-20. Updated with the user's
 decisions: Core ML detection only, English only, DeepSeek as the labeller, no hand labelling, no pi
 extension change, FoundationModels is deleted when the tagger passes.
 
@@ -931,6 +933,119 @@ fixtures: `fixtures/list_question.txt`, `inline_question.txt`, `plain.txt`.
   by dropping outer context paragraphs.
 - The phase 1 split defect (the tool-call part shares sessions with train)
   is unchanged; fix it before the next training run.
+
+## Phase 6. Questions as segments
+
+### Why
+
+In the phase 4 demo, the tagger merged questions next to each other into
+one unit, and its options were often wrong. The causes are in the format,
+not only in the model:
+
+- A label gives one class to each logical line. No field tells which
+  question a line belongs to.
+- `validate.units` makes a unit from each run of lines that are not
+  `other`, and blank lines do not stop a run. Two questions next to each
+  other always become one unit, in the labels and in the predictions.
+- A logical line is a whole paragraph or list item. Two questions in one
+  paragraph get one class.
+- A numbered list of questions ("1. Should I X? 2. Should I Y?") has the
+  same form as one question with numbered options.
+- The unit metric used the same run rule, so it did not count a merge as
+  an error.
+- Options could be anywhere near a unit, not only inside the question.
+- The model input had a `>` marker on the hovered lines. This came from
+  the FoundationModels interface (questions about one paragraph), not
+  from a need. The label never depended on the hover, so each hover
+  variant was a copy of its context (11,480 examples from 3,557
+  contexts), and "unit accuracy" measured mostly a selection rule.
+
+### Design
+
+1. **Segments.** Split the context into segments: sentences, and each list
+   item as one segment. One splitter, with the same rules in Python and
+   Swift. It must keep paths, versions (`v1.2`), `e.g.`, code spans and
+   list items without a full stop in one segment.
+2. **Question tags per segment.** The encoder reads the whole context as
+   now. A head tags each segment `B-Q`, `I-Q` or `O` from the first token
+   of the segment. A question is one `B-Q` segment and the `I-Q` segments
+   after it, its list items included. The run rule is deleted.
+   The input has no hover marker: the model returns every question in the
+   context, and the result is the same for every pointer position. The app
+   selects the question that contains the hover after the model. The
+   hover only places the context window that the app cuts. One context is
+   one example; the hover variants are deleted.
+3. **Options only inside one question.** A second pass reads the text of
+   one question only and tags option spans in it (`B-OPTION`, `I-OPTION`,
+   `O`). An option outside its question cannot occur. The input is tens of
+   tokens, so the pass costs about 2 ms for each question. The same
+   encoder may serve both passes, with one head each; the spike decides.
+
+4. **Input length.** The model reads the whole context, as the app cuts
+   it (about 60 lines, under 1,024 tokens, about 2.4 ms on the GPU). No
+   sliding window of a few segments: a question with its list items or a
+   question after its options does not fit, and windows need a merge
+   step. Text above 2,048 tokens (the CLI, long scrollback) is cut into
+   large overlapping chunks at paragraph boundaries; each question is
+   kept from the chunk where it is farthest from an edge. Training uses
+   chunks cut the same way, with random start points, so the model also
+   sees text that starts inside a list.
+5. **CLI.** `uv run tagger [FILE]` reads plain text (no marker, no
+   `--hover`) and prints
+   `{"questions": [{"question": "…", "options": ["…"]}]}`, in text order.
+   `--ranges` adds the character ranges in the input. The eval compares
+   this list with the gold list of each context.
+
+### Labels
+
+- New labeller schema: a list of questions, each with its first and last
+  segment, and its options as exact substrings of the question text.
+- The validator checks that questions do not overlap, that every option is
+  inside its question and occurs once in it, and that segment indexes are
+  in range.
+- The prompt defines a numbered list of questions against one question
+  with numbered options, with examples of each, and a question of more
+  than one sentence ("I see two ways. Which one do you prefer?").
+- The synthetic generator adds contexts with 2 to 4 questions, in one
+  paragraph, in adjacent paragraphs and as a numbered list of questions.
+- Relabel the phase 1 train, dev and eval families with v4-pro, with the
+  same agreement filter for eval. Estimate: $4 to $11, cumulative cap $50.
+- Before training, the top-level session checks by eye about 50 labelled
+  contexts with more than one question. This checks the labels; it is not
+  hand labelling.
+
+### Metrics
+
+- Question span F1 with exact segment boundaries.
+- The number of questions per context, exact; a merge or a split is an
+  error. Merges and splits are counted separately.
+- Option exact F1 only inside a correctly found question, and inside the
+  gold question (the option pass alone).
+- Question FPR on negatives, target < 2% as before.
+
+### Steps
+
+1. **Renderer check.** Read the rows and `wrapped` flags of one real pi
+   question and one real Claude Code question in the app, and compare them
+   with `render.py`. Fix the renderer if they differ. This is a check, not
+   a new data source.
+2. **Splitter spike.** The splitter in Python, with tests on hard text
+   (paths, versions, code, lists). Measure how often a gold question
+   boundary is not a segment boundary on the phase 1 labels, after a
+   relabel of a sample.
+3. **Baseline.** Split the phase 2 tagger's output at segment ends and
+   start a new question at each segment that ends with `?`. Score it with
+   the new metrics. The new model must beat it.
+4. **Labels.** The schema, the validator, the prompt and the synthetic
+   contexts above; the relabel; the check by eye.
+5. **Training and eval.** Both passes, 3 seeds, hyperparameters on dev
+   only, metrics per eval part. Fix the phase 1 split defect (the
+   tool-call part shares sessions with train) before this run.
+6. **Conversion and CLI.** Core ML functions for both passes, parity
+   against PyTorch, latency; `uv run tagger` with the output shape in
+   "Design".
+
+Then phase 4 continues with the splitter in the Swift package.
 
 ## Later
 

@@ -1,4 +1,5 @@
 import AppKit
+import ParagraphTagger
 import QuartzCore
 import SidebarFeed
 
@@ -9,7 +10,6 @@ final class PaneParagraphs {
         case idle
         case analysing(Paragraphs.Block)
         case tooLong(Paragraphs.Block)
-        case unavailable(Paragraphs.Block, String)
         case answered(Paragraphs.Block, [Paragraphs.Option])
         case plain(Paragraphs.Block)
         case failed(Paragraphs.Block)
@@ -49,7 +49,7 @@ final class PaneParagraphs {
     private var optionRects: [(index: Int, rect: CGRect)] = []
     private var refreshScheduled = false
     private var effectActive = false
-    private var availability: ParagraphModel.Availability = .ready
+    private var failureCaption: String?
     private var captionKey: (text: String, style: Caption, fg: NSColor, background: NSColor)?
     private var clipPath = CGRect.zero
     private var shimmerSize = CGSize.zero
@@ -98,7 +98,6 @@ final class PaneParagraphs {
         }
         guard state == .off, let pane, pane.paragraphEligible else { return }
         lastPointer = pointer
-        availability = ParagraphModel.shared.availability()
         state = .idle
         refreshNow()
     }
@@ -311,11 +310,6 @@ final class PaneParagraphs {
             apply()
             return
         }
-        if case .unavailable(let caption) = availability {
-            state = .unavailable(hovered, caption)
-            apply()
-            return
-        }
         state = .analysing(hovered)
         apply()
         start(context)
@@ -392,7 +386,8 @@ final class PaneParagraphs {
                 self.finish(answer, context: context)
             } catch {
                 guard !Task.isCancelled, let self else { return }
-                self.fail(context)
+                let loadFailure = (error as? ParagraphTaggerError)?.isLoadFailure == true
+                self.fail(context, caption: loadFailure ? "Paragraph model failed to load" : nil)
             }
         }
     }
@@ -466,13 +461,14 @@ final class PaneParagraphs {
         }
     }
 
-    private func fail(_ oldContext: Paragraphs.Context) {
+    private func fail(_ oldContext: Paragraphs.Context, caption: String?) {
         analysisTask = nil
         let context = currentContext ?? oldContext
         let hovered = context.paragraphs[context.hovered]
         guard pendingPrompt == context.prompt,
               case .analysing(let block) = state, block.text == hovered.text else { return }
         pendingPrompt = nil
+        failureCaption = caption
         state = .failed(hovered)
         apply()
     }
@@ -481,7 +477,6 @@ final class PaneParagraphs {
         switch state {
         case .analysing: state = .analysing(block)
         case .tooLong: state = .tooLong(block)
-        case .unavailable(_, let caption): state = .unavailable(block, caption)
         case .answered: break
         case .plain: state = .plain(block)
         case .failed: state = .failed(block)
@@ -496,6 +491,7 @@ final class PaneParagraphs {
         hoveredOption = nil
         pendingPrompt = nil
         currentContext = nil
+        failureCaption = nil
     }
 
     private func idle() {
@@ -635,10 +631,8 @@ final class PaneParagraphs {
         switch state {
         case .tooLong:
             text = "Too long to analyse"
-        case .unavailable(_, let caption):
-            text = caption
         case .failed:
-            text = "Could not analyse this block"
+            text = failureCaption ?? "Could not analyse this block"
         case .answered:
             switch feedback {
             case .sent(let index, let name):
@@ -835,7 +829,7 @@ extension PaneParagraphs.State {
         switch self {
         case .off, .idle: nil
         case .analysing(let block), .tooLong(let block), .plain(let block), .failed(let block): block
-        case .unavailable(let block, _), .answered(let block, _): block
+        case .answered(let block, _): block
         }
     }
 }
@@ -850,7 +844,6 @@ extension PaneParagraphs {
         case .idle: "idle"
         case .analysing: "analysing"
         case .tooLong: "too-long"
-        case .unavailable: "unavailable"
         case .answered: "answered"
         case .plain: "plain"
         case .failed: "failed"

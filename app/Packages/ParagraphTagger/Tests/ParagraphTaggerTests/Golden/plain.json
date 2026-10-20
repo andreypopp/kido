@@ -1,0 +1,9 @@
+{
+  "expected": {
+    "isQuestion": false,
+    "options": [],
+    "firstLine": 3,
+    "lastLine": 3
+  },
+  "prompt": "  1: The deploy script copies the files to the server.\n  2: \n> 3: It then restarts the worker.\n  4: \n  5: The log keeps the last run."
+}

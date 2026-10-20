@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import ParagraphTagger
 import SidebarFeed
 import TmuxControl
 import XCTest
@@ -439,37 +440,36 @@ extension VisualTests {
         XCTAssertEqual(analyzer.calls, 0)
     }
 
-    func testUnavailableAndFailedAnalysis() async throws {
+    func testModelLoadFailureHasItsOwnCaption() async throws {
         ParagraphModel.reset()
         addTeardownBlock { @MainActor in ParagraphModel.reset() }
         let pane = try await paragraphPane()
-        try await paragraphPaint(pane, ["Unavailable question?", "", "1. An answer", "", "Failing question?", "", "1. Another answer"])
+        try await paragraphPaint(pane, ["Which approach?", "", "1. Keep the change"])
+        ParagraphModel.testAnalyze = { _ in throw ParagraphTaggerError.loadFailed }
+        paragraphEnter(pane, paragraphPoint(pane, row: 0, column: 2))
+        try await wait("failed load", within: 3) { pane.paragraphs.visualState == "failed" }
+        XCTAssertEqual(pane.paragraphs.visualCaption, "Paragraph model failed to load")
+    }
+
+    func testFailedAnalysisIsNotCached() async throws {
+        ParagraphModel.reset()
+        addTeardownBlock { @MainActor in ParagraphModel.reset() }
+        let pane = try await paragraphPane()
+        try await paragraphPaint(pane, ["Failing question?", "", "1. An answer", "", "Other question?", "", "1. Another answer"])
         let analyzer = paragraphAnalyzer()
         analyzer.failure = CancellationError()
-        let unavailable = ParagraphModel.Availability.unavailable("Turn on Apple Intelligence to analyse text")
-        ParagraphModel.testAvailability = unavailable
         paragraphEnter(pane, paragraphPoint(pane, row: 0, column: 2))
-        try await wait("unavailable", within: 2) { pane.paragraphs.visualState == "unavailable" }
-        XCTAssertEqual(pane.paragraphs.visualCaption, "Turn on Apple Intelligence to analyse text")
-        XCTAssertEqual(analyzer.calls, 0)
-        XCTAssertNil(pane.paragraphs.visualOptionFrames.first)
-
-        ParagraphModel.testAvailability = .ready
-        paragraphFlags(pane, [])
-        let failing = paragraphPoint(pane, row: 4, column: 2)
-        paragraphEnter(pane, failing)
         try await wait("failed analysis", within: 3) { pane.paragraphs.visualState == "failed" }
         XCTAssertEqual(pane.paragraphs.visualCaption, "Could not analyse this block")
         XCTAssertEqual(analyzer.calls, 1)
 
         paragraphFlags(pane, [])
-        ParagraphModel.testAvailability = unavailable
-        paragraphEnter(pane, paragraphPoint(pane, row: 0, column: 2))
-        try await wait("hover away", within: 2) { pane.paragraphs.visualState == "unavailable" }
+        paragraphEnter(pane, paragraphPoint(pane, row: 4, column: 2))
+        try await wait("second failure", within: 3) { pane.paragraphs.visualState == "failed" && analyzer.calls == 2 }
+
         paragraphFlags(pane, [])
-        ParagraphModel.testAvailability = .ready
-        paragraphEnter(pane, failing)
-        try await wait("a failure is not cached", within: 3) { pane.paragraphs.visualState == "failed" && analyzer.calls == 2 }
+        paragraphEnter(pane, paragraphPoint(pane, row: 0, column: 2))
+        try await wait("a failure is not cached", within: 3) { analyzer.calls == 3 }
     }
 }
 
@@ -1154,5 +1154,30 @@ extension VisualTests {
         let rows = try XCTUnwrap(pane.paragraphs.visualBlockRows)
         XCTAssertTrue(rows.contains(6))
         XCTAssertFalse(rows.contains(0))
+    }
+}
+
+extension VisualTests {
+    func testParagraphTaggerAnswersTheShiftGesture() async throws {
+        ParagraphModel.reset()
+        addTeardownBlock { @MainActor in ParagraphModel.reset() }
+        let pane = try await paragraphPane()
+        try await paragraphPaint(pane, [
+            "The deploy script copies the files to the server.",
+            "",
+            "Which colour should the banner use?",
+            "",
+            "1. Teal",
+            "2. Amber",
+            "3. Slate",
+            "",
+            "The footer keeps the colour until the next deploy.",
+        ])
+        paragraphEnter(pane, paragraphPoint(pane, row: 2, column: 4))
+        try await wait("the tagger answers", within: 10) {
+            pane.paragraphs.visualState == "answered" && !pane.paragraphs.visualGrowing
+                && pane.paragraphs.visualOptionFrames.count == 3
+        }
+        XCTAssertEqual(pane.paragraphs.visualBlockText, "Which colour should the banner use?\n\n1. Teal\n2. Amber\n3. Slate")
     }
 }

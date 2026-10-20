@@ -27,6 +27,8 @@ packages:
     path: Packages/TmuxControl
   SidebarFeed:
     path: Packages/SidebarFeed
+  ParagraphTagger:
+    path: Packages/ParagraphTagger
 targets:
   Kido:
     type: application
@@ -36,6 +38,10 @@ targets:
       - path: Resources/Assets.xcassets
         buildPhase: resources
       - path: Resources/themes
+        type: folder
+        buildPhase: resources
+      - path: build/ParagraphModel/ParagraphTagger.mlpackage
+      - path: build/ParagraphModel/tokenizer
         type: folder
         buildPhase: resources
     info:
@@ -68,13 +74,13 @@ targets:
     dependencies:
       - package: TmuxControl
       - package: SidebarFeed
+      - package: ParagraphTagger
       - framework: build/GhosttyKit.xcframework
         embed: false
       - sdk: Metal.framework
       - sdk: QuartzCore.framework
       - sdk: IOSurface.framework
       - sdk: Carbon.framework
-      - sdk: FoundationModels.framework
   VisualTests:
     type: bundle.unit-test
     platform: macOS
@@ -92,6 +98,7 @@ targets:
       - package: SnapshotTesting
       - package: TmuxControl
       - package: SidebarFeed
+      - package: ParagraphTagger
       - framework: build/GhosttyKit.xcframework
         embed: false
         link: false

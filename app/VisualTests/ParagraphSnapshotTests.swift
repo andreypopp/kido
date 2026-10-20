@@ -264,13 +264,6 @@ extension VisualTests {
         try await paragraphSnapshot("too-long", pane, testName: #function)
     }
 
-    func testParagraphUnavailable() async throws {
-        let pane = try await paragraphSnapshotStart(paragraphSnapshotText())
-        ParagraphModel.testAvailability = .unavailable("Turn on Apple Intelligence to analyse text")
-        try await paragraphSnapshotPrepare(pane, paragraphPoint(pane, row: 7, column: 2))
-        try await wait("unavailable", within: 2) { pane.paragraphs.visualState == "unavailable" }
-        try await paragraphSnapshot("unavailable", pane, testName: #function)
-    }
 
     func testParagraphCouldNotAnalyse() async throws {
         let pane = try await paragraphSnapshotStart(paragraphSnapshotText())

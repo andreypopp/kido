@@ -1,0 +1,13 @@
+{
+  "expected": {
+    "isQuestion": true,
+    "options": [
+      "Teal",
+      "Amber",
+      "Slate"
+    ],
+    "firstLine": 3,
+    "lastLine": 7
+  },
+  "prompt": "  1: The deploy script copies the files to the server.\n  2: \n> 3: Which colour should the banner use?\n  4: \n  5: 1. Teal\n  6: 2. Amber\n  7: 3. Slate\n  8: \n  9: The footer keeps the colour until the next deploy."
+}

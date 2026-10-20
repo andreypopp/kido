@@ -1,2 +1,4 @@
 build/
 Kido.xcodeproj/
+Packages/ParagraphTagger/.build/
+Packages/ParagraphTagger/Package.resolved

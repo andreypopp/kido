@@ -1,0 +1,14 @@
+{
+  "expected": {
+    "isQuestion": true,
+    "options": [
+      "alpha",
+      "beta",
+      "Alpha",
+      "Beta"
+    ],
+    "firstLine": 3,
+    "lastLine": 6
+  },
+  "prompt": "  1: Intro line.\n  2: \n> 3: Should the panel use\talpha or beta?\n  4: \n  5: \t1. Alpha\n  6: \t2. Beta"
+}
