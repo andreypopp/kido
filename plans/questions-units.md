@@ -153,8 +153,19 @@ Ledger $8.78, of which $1.08 is held for killed calls; the runs were in
 DeepSeek peak at the user's request. Gate 4 passed: integrity, the eval
 agreement replay and leakage are clean; 74 of 90 sampled labels are
 correct. Known label noise: lead-ins such as "Still open:" and a leading
-`- ` are inconsistently inside question spans. Gate 5, training, has
-started.
+`- ` are inconsistently inside question spans.
+
+Gate 5 is done. Dev, seeds 0 / 1 / 2: question F1 0.658 / 0.650 /
+0.663, option F1 end to end 0.477 / 0.485 / 0.509, FPR 1.29% / 0.64% /
+0.97%; seed 2 is selected. Eval, once, 2,547 units: question F1 exact
+0.723, overlap 0.849; option F1 end to end 0.497, inside gold 0.675;
+whole-unit exact 0.932. Units with 2 or more questions (40): 0.682 /
+0.882 / 0.515. Units with `choice` questions (101): 0.669 / 0.852 /
+0.523. FPR: `?` with an empty label 3.33%, no `?` 0.98%, all 1.11%.
+Token ceiling: question 0.989, option 0.992. 24 eval units exceed 512
+tokens. `uv run extract` loads `data/model/selected`; the four fixtures
+give the expected output; the 2 smoke tests pass in 1.9 s. The code is
+committed. Next, not started: the Core ML backend.
 
 ## Tests
 
