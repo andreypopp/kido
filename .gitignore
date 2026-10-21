@@ -5,11 +5,16 @@ _build/
 _build-ci-like/
 
 app/ml/data/
-app/ml/data-paragraphs/
-
-app/ml/swift-offsets/.build/
 app/ml/.venv/
 app/ml/.pytest_cache/
 app/ml/.ruff_cache/
 app/ml/**/__pycache__/
-app/ml/**/*.pyc
+
+app/ml_old/data/
+app/ml_old/data-paragraphs/
+app/ml_old/swift-offsets/.build/
+app/ml_old/.venv/
+app/ml_old/.pytest_cache/
+app/ml_old/.ruff_cache/
+app/ml_old/**/__pycache__/
+app/ml_old/**/*.pyc

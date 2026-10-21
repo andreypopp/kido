@@ -1,7 +1,7 @@
 # Plan: a Core ML question extractor
 
-Status: phases 1 to 4 done; the user's test found two structural
-misses, so phase 5 changes the question model's decoder.
+Status: phases 1 to 5 done (phase 5 did not beat the phase 3 model);
+phase 6 changes the unit to one paragraph and relabels.
 Date: 2026-10-21. Branch `kido-app-questions`, from
 `kido-app` 0.29.1. This plan replaces `plans/paragraph-coreml.md` on
 `kido-app-paragraphs` (last commit 85ed85e5). The advisor owns this file.
@@ -918,29 +918,76 @@ p50 2.6 ms, option 512 2.8 ms. The user's fixtures 1 to 3 still fail.
 Whether `flat-c` replaces the shipped model is the user's decision,
 pending.
 
-**Proposed next, not decided.** The options miss on the user's texts 2
-and 3 is a label-definition problem, not only data size: in train, a
-list after a `?` is gold options inside the question 76 times and each
-item its own question 299 times (dev 8 and 61). More data labelled with
-the current prompt keeps that split. Proposed first: a written
-list-scope rule in the labelling prompt (a list after a question whose
-items answer it are its options; items that ask something are their own
-questions), then a relabel of only the affected texts (a question
-followed by a list), with the cost estimated before any paid call.
+**Conclusion.** `flat-c-s2` did not beat the phase 3 model on the eval;
+the CRF and the two-ends emission show no clear gain. Commit ace15407
+holds phase 5. The options miss on the user's texts 2 and 3 is a
+label-definition problem, not only data size: in train, a list after a
+`?` is gold options inside the question 76 times and each item its own
+question 299 times (dev 8 and 61). Phase 6 fixes the unit and the
+prompt.
 
-After the learning curve, in this order:
+## Phase 6: one unit as the input
 
-1. More labelled data, mainly for the option model, together with the
-   list-scope prompt rule above.
-2. A context ablation for the question model: a segment with 1 or 2
-   neighbours against the whole chunk, about 15 minutes, to test whether
-   it uses long context. Proposed to the user.
-3. Ettin-150m for the question model.
+User decisions, 2026-10-21. Step A (code only) has started.
 
-Data sources for item 1:
+- **Unit.** For labelling, training and inference. A paragraph is a run
+  of non-blank segments. A list paragraph (its first segment is a list
+  item) joins the unit before it when that unit's last segment ends with
+  `?` or `:` or is a list item; joins chain. Each unit is one line: its
+  segments joined by single spaces, whitespace collapsed. List markers
+  stay as written; no marker normalisation.
+- **No renderer, and a whitelist.** Training units come directly from
+  the transcript markdown, recovered as raw text for each frozen id.
+  Units are made only from plain text paragraphs and lists. Everything
+  else is dropped in every phase: code blocks, block quotes, headings
+  (ATX and setext), tables, horizontal rules, HTML blocks, front matter
+  and footnote definitions. Inline images are dropped; inline HTML tags
+  are removed; the other inline markup a TUI does not show is removed
+  (emphasis markers, inline backticks, link syntax with the link text
+  kept). At inference the screen-text normaliser drops fence blocks,
+  pi's heading rows (with `#`), quote-prefix rows (the implementer
+  confirms each TUI's prefix; otherwise `> `), table rows and rule
+  rows. Claude Code shows headings and code rows without markers, so
+  they pass as text, a known limit. One normalise function serves
+  markdown and screen text, with a test that the markdown, pi screen
+  and Claude Code screen forms of one text give the same units. The
+  random wrap width, the gutters and the `⏺ ` marker are gone from the
+  training input.
+- **Scope.** A question and its options are inside one unit by
+  definition. Known cost, on real gold only (the earlier 314 of 2,178
+  included synthetic): questions that cross a unit are train 39 of 635,
+  dev 11 of 148, eval 17 of 412 (with plain paragraphs: 45 / 11 / 36).
+  The join rule recovers 56 of the 78 eval options that plain
+  paragraphs lose. Patterns under plain paragraphs, train / eval:
+  options or context, blank, question 29 / 15; question, blank, list
+  1 / 19; other 15 / 2. The model has no context outside the unit for
+  "is it addressed to the user".
+- **Labeller.** `deepseek-flash` with `reasoning_effort: low`, one call
+  per unit. The prompt is the user's file `app/ml/unit_prompt.md`: the
+  answer gives questions and options as exact substrings, not segment
+  numbers; its rules cover several questions, numbered questions, a
+  question plus a list of answers, a leading clause, the context
+  sentence excluded, options before the question, inline options and
+  yes/no. The user removed the not-a-question rule entirely
+  (rhetorical, self-answered, quoted, in code): recognising those is
+  acceptable. The FPR strata are still reported.
+- **No pilot.** flash-low labels every phase 6 unit: the eval with 3
+  samples and the 2-of-3 agreement rule, train and dev with 1 sample.
+  After the code review, a paid smoke of about 10 units checks only the
+  pipeline.
+- **Full run**, off-peak, after the smoke: relabel the train, dev and
+  eval units. Negatives (units without a `?`) are sampled as before, the
+  decision-word pool first, then uniform. The run size comes from step
+  A's dry-run cost estimate, within the $70 cap, stop at $68.
+- **Model.** Only the (a') model; the CRF and two-ends code is deleted.
+  The input is one unit; `extract` splits its input into units and runs
+  each.
 
-- More DeepSeek labels under the $70 cap (about $23.70 left after the
-  reserve).
+**Still proposed, not decided**, after phase 6: a context ablation
+(a segment with 1 or 2 neighbours against a whole chunk) is moot under
+the paragraph unit; Ettin-150m for the question model; more data from:
+
+- More DeepSeek labels under the $70 cap.
 - One public dataset, as new real texts:
   `nlile/misc-merged-claude-code-traces-v1` (32,133 merged Claude Code
   traces, 1.2 GB, no licence stated: local training only, never
@@ -1143,6 +1190,33 @@ Known synthetic failures, for the first two items:
   dev gain does not hold on the eval (higher recall, looser boundaries,
   lower option end to end); replacing the shipped model is pending with
   the user.
+- 2026-10-21, user, via the top-level session: phase 5 concluded
+  without a gain (commit ace15407); phase 6 makes one paragraph the
+  unit, relabels with flash-low per paragraph after a 450-paragraph
+  pilot against pro, and recompares (a') and (c'); "Proposed next" is
+  folded into it.
+- 2026-10-21, top-level session: phase 6 is paused for the user's
+  prompt tweaks; the cross-blank counts are corrected to real gold only
+  (train 7%, eval 9%) with their patterns and the possible
+  question-plus-list rule.
+- 2026-10-21, user, via the top-level session: the phase 6 unit joins a
+  list paragraph to a unit that ends in `?` or `:` or a list item (39 /
+  11 / 17 questions still cross; 56 of 78 eval options recovered); the
+  prompt is `app/ml/unit_prompt.md` without a not-a-question rule; only
+  (a'), CRF and two-ends deleted; step A started.
+- 2026-10-21, user, via the top-level session: no pilot; flash-low
+  labels everything (eval 3 samples, train and dev 1); a 10-unit paid
+  smoke checks the pipeline, then the full off-peak run sized from the
+  dry-run estimate.
+- 2026-10-21, user, via the top-level session: no renderer in phase 6;
+  units come from the transcript markdown with only non-displayed
+  inline markup removed, and inference uses the same unit function on
+  screen text. Later: code blocks are dropped everywhere (Claude Code
+  screen code rows pass as text, a known limit), with one normalise
+  function and a three-form equality test. Then generalised to a
+  whitelist: units come only from plain paragraphs and lists; code,
+  quotes, headings, tables, rules, HTML, front matter, footnotes and
+  images are dropped in every phase.
 - 2026-10-21, p4-rev-simplify: the 2,048 question function is kept
   through the B4 measurement; then the plan decides explicitly, and if
   chunking stays, 2,048 is a measurement build, not a shipped function.
