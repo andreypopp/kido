@@ -769,10 +769,11 @@ own bench gives 2.36 ms at 1,024 and 5.48 ms at 2,048.
 
 ## To confirm with the user
 
-The open-question rule with `kind`, 3 samples on 400 real eval texts
-under the unchanged $50 cap, labelling only texts with a `?`, and the
-acceptance of the phase 3 model with its two exceptions (under
-"Decisions" and "Spend").
+The open-question rule with `kind`; 3 samples on 400 real eval texts
+under the unchanged $50 cap; DeepSeek labels for the negatives too, with
+no automatic empty labels; the acceptance of the phase 3 model with its
+exceptions, the 2% FPR target included (4.6% combined); and the kept
+`B-Q` threshold t 0.8 (under "Decisions", "Data" and "Spend").
 
 ## Next improvement, after the user's test
 
