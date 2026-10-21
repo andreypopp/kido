@@ -18,7 +18,9 @@ from torch import nn
 from transformers import AutoConfig, AutoModel, AutoTokenizer, logging
 from transformers.initialization import no_init_weights
 
-from chunks import decode
+from chunks import Chunk, Encoded, decode, emissions, ids_of, slots
+from crf import Transitions, viterbi
+from flat import INPUT
 
 std_logging.getLogger("torch.distributed.elastic.multiprocessing.redirects").setLevel(
     std_logging.ERROR
@@ -55,8 +57,8 @@ def load_tokenizer(path: Path | None = None):
 
 
 class Tagger(nn.Module):
-    def __init__(self, tasks: tuple[str, ...], config=None) -> None:
-        """A tagger from the pinned hub weights, or with a given config and random weights."""
+    def __init__(self, tasks: tuple[str, ...], config=None, two_ends: bool = False) -> None:
+        """Hub weights, or a given config with random weights. two_ends: six question outputs."""
         super().__init__()
         if config is None:
             self.encoder = AutoModel.from_pretrained(
@@ -65,7 +67,12 @@ class Tagger(nn.Module):
         else:
             self.encoder = AutoModel.from_config(config, attn_implementation="sdpa")
         self.heads = nn.ModuleDict(
-            {task: nn.Linear(self.encoder.config.hidden_size, 3) for task in tasks}
+            {
+                task: nn.Linear(
+                    self.encoder.config.hidden_size, 6 if two_ends and task == "question" else 3
+                )
+                for task in tasks
+            }
         )
 
     def forward(self, ids: torch.Tensor, mask: torch.Tensor, task: str) -> torch.Tensor:
@@ -85,8 +92,11 @@ def load(path: Path) -> Tagger:
     tasks = tuple(
         key.split(".")[1] for key in weights if key.startswith("heads.") and key.endswith("weight")
     )
+    two_ends = (
+        weights.get("heads.question.weight", weights.get("heads.option.weight")).shape[0] == 6
+    )
     with no_init_weights():  # the random init costs 1.6 s and the weights replace it
-        model = Tagger(tasks, AutoConfig.from_pretrained(path))
+        model = Tagger(tasks, AutoConfig.from_pretrained(path), two_ends)
     model.load_state_dict(weights)
     return model.eval()
 
@@ -99,32 +109,59 @@ def load_models(path: Path) -> dict[str, Tagger]:
     return dict.fromkeys(model.heads, model)
 
 
+def load_settings(path: Path) -> dict:
+    settings = path / SETTINGS
+    return json.loads(settings.read_text()) if settings.exists() else {}
+
+
+def update_settings(path: Path, **items: object) -> None:
+    (path / SETTINGS).write_text(json.dumps(load_settings(path) | items) + "\n")
+
+
+def require_flat(path: Path) -> None:
+    """A directory made for another input would feed its model the wrong text."""
+    if load_settings(path).get("input") != INPUT:
+        raise ValueError(f"{path} was not made for the {INPUT} input; train or convert it again")
+
+
 def load_threshold(path: Path) -> float | None:
     """The B-Q probability threshold stored with a checkpoint; None means the likeliest tag."""
-    settings = path / SETTINGS
-    return json.loads(settings.read_text()).get("question_threshold") if settings.exists() else None
+    return load_settings(path).get("question_threshold")
 
 
-def save_threshold(path: Path, threshold: float) -> None:
-    (path / SETTINGS).write_text(json.dumps({"question_threshold": threshold}) + "\n")
+def load_crf(path: Path) -> Transitions | None:
+    crf = load_settings(path).get("crf")
+    return Transitions.from_json(crf) if crf else None
 
 
 class Backend:
-    """A source of logits for the two passes; the question tags use the threshold."""
+    """question_tags: one tag per slot; Viterbi with CRF transitions, else argmax and threshold."""
 
-    def __init__(self, threshold: float | None = None) -> None:
-        self.threshold = threshold
+    def __init__(self, threshold: float | None = None, crf: Transitions | None = None) -> None:
+        self.threshold, self.crf = threshold, crf
 
     def logits(self, task: str, ids: list[int]) -> np.ndarray:
         raise NotImplementedError
 
     def tags(self, task: str, ids: list[int]) -> list[int]:
-        return decode(self.logits(task, ids), self.threshold if task == "question" else None)
+        return decode(self.logits(task, ids))
+
+    def question_tags(self, enc: Encoded, chunk: Chunk) -> list[int]:
+        present = slots(enc, chunk)
+        emission = emissions(self.logits("question", ids_of(enc, chunk)), present)
+        if self.crf is not None:
+            return viterbi(emission, self.crf, chunk.lo > 0)
+        return decode(emission, self.threshold)
 
 
 class TorchBackend(Backend):
-    def __init__(self, models: dict[str, Tagger], threshold: float | None = None) -> None:
-        super().__init__(threshold)
+    def __init__(
+        self,
+        models: dict[str, Tagger],
+        threshold: float | None = None,
+        crf: Transitions | None = None,
+    ) -> None:
+        super().__init__(threshold, crf)
         self.hardware = device()
         self.models = {task: model.to(self.hardware).eval() for task, model in models.items()}
 

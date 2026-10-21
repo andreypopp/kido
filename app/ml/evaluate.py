@@ -17,6 +17,7 @@ from chunks import OPTION_LENGTH, O
 from corpus import is_multi_candidate
 from examples import option_example, option_spans
 from extract import load, options, predict
+from flat import Flat, flatten
 from jsonl import file_digest, read_json, read_jsonl, write_json
 from metrics import Counts, Found, add_text, overlap, summary
 from model import WEIGHTS, load_tokenizer
@@ -28,7 +29,7 @@ from split import is_synthetic
 
 Record = dict[str, object]
 Predict = Callable[[Record], list[Found]]
-OptionsIn = Callable[[Record, int, int], tuple[str, ...]]
+OptionsIn = Callable[[Record, Flat, int, int], tuple[str, ...]]
 FPR_LIMIT = 0.02
 
 
@@ -79,7 +80,8 @@ def score(
     counts: dict[str, Counts] = {}
     for record in records:
         gold = gold_of(record)
-        in_gold = [options_in(record, g[0], g[1]) for (g, _) in gold] if options_in else None
+        flat = flatten(str(record["text"]))
+        in_gold = [options_in(record, flat, g[0], g[1]) for (g, _) in gold] if options_in else None
         predicted = predict_record(record)
         cuts = segments(str(record["text"]))
         views = {"": ([g for g, _ in gold], predicted, in_gold)}
@@ -114,13 +116,13 @@ class Replay:
 def oracle(tokenizer, records: list[Record]) -> dict[str, dict[str, object]]:
     """The option pass fed the gold tags: what token boundaries alone cost."""
 
-    def options_in(record: Record, start: int, end: int) -> tuple[str, ...]:
+    def options_in(record: Record, flat: Flat, start: int, end: int) -> tuple[str, ...]:
         text = str(record["text"])
         question = next(q for q in questions_of(text, record["label"]) if q.start == start)  # type: ignore[arg-type]
         example = option_example(
-            tokenizer, text, start, end, option_spans(text, question, start, end)
+            tokenizer, flat, start, end, option_spans(text, question, start, end)
         )
-        return options(tokenizer, Replay(example["labels"]), text, start, end)
+        return options(tokenizer, Replay(example["labels"]), text, flat, start, end)
 
     result = score(records, lambda record: [g for g, _ in gold_of(record)], options_in)
     return {part: {"option_f1_in_gold": s["option_f1_in_gold"]} for part, s in result.items()}
@@ -133,7 +135,9 @@ def score_backend(
     return score(
         records,
         lambda record: predict_text(tokenizer, backend, str(record["text"])),
-        lambda record, start, end: options(tokenizer, backend, str(record["text"]), start, end),
+        lambda record, flat, start, end: options(
+            tokenizer, backend, str(record["text"]), flat, start, end
+        ),
     )
 
 
@@ -153,7 +157,8 @@ def score_model(path: Path, records: list[Record]) -> dict[str, object]:
     gold_sizes = [size(str(r["text"]), g) for r in records for g, _ in gold_of(r)]
     return {
         "train": read_json(path / "train.json"),
-        "question_threshold": backend.threshold,
+        "crf": backend.crf is not None,
+        "question_threshold": None if backend.crf is not None else backend.threshold,
         "weights": {str(p.relative_to(path)): file_digest(p) for p in sorted(path.rglob(WEIGHTS))},
         "scores": scores,
         "question_tokens": {

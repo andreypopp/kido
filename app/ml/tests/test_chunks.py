@@ -15,6 +15,7 @@ from chunks import (
     paragraph_starts,
     plan,
     sample_chunks,
+    slots,
     training_starts,
 )
 from segments import BLANK
@@ -25,19 +26,24 @@ TOKENIZER = WordTokenizer()
 def test_short_text_is_one_chunk_with_every_segment() -> None:
     enc = encode(TOKENIZER, "Hello there.\n\nWhich one?\n- alpha\n- beta")
     (chunk,) = plan(enc)
-    assert (chunk.first, chunk.last, chunk.lo, chunk.hi) == (0, len(enc.cuts) - 1, 0, len(enc.ids))
+    assert (chunk.first, chunk.last, chunk.lo, chunk.hi) == (
+        0,
+        len(enc.flat.cuts) - 1,
+        0,
+        len(enc.ids),
+    )
     assert chunk.lo == 0 and chunk.hi == len(enc.ids)
-    assert [enc.cuts[k].kind for k in members(enc, chunk)].count(BLANK) == 0
+    assert [enc.flat.cuts[k].kind for k in members(enc, chunk)].count(BLANK) == 0
 
 
 def test_plan_covers_the_text_and_cuts_at_paragraphs() -> None:
     enc = encode(TOKENIZER, paragraphs(40))
     chunks = plan(enc)
     assert len(chunks) > 2
-    assert chunks[0].first == 0 and chunks[-1].last == len(enc.cuts) - 1
+    assert chunks[0].first == 0 and chunks[-1].last == len(enc.flat.cuts) - 1
     for before, after in zip(chunks, chunks[1:], strict=False):
         assert after.first <= before.last + 1
-        assert enc.cuts[after.first - 1].kind == BLANK
+        assert enc.flat.cuts[after.first - 1].kind == BLANK
         assert 512 <= enc.begin[after.first] - enc.begin[before.first] <= 768
         assert before.hi < len(enc.ids) and after.lo > 0
     assert all(c.hi - c.lo <= ROOM for c in chunks)
@@ -85,6 +91,20 @@ def test_every_segment_of_a_long_paragraph_is_in_some_training_window() -> None:
         windows = [chunk_from(enc, s) for s in starts]
         return {k for w in windows for k in range(w.first, w.last + 1)}
 
-    everything = {k for k, c in enumerate(enc.cuts) if c.kind != BLANK}
+    everything = {k for k, c in enumerate(enc.flat.cuts) if c.kind != BLANK}
     assert everything <= covered(training_starts(enc))
-    assert not everything <= covered(paragraph_starts(enc.cuts))
+    assert not everything <= covered(paragraph_starts(enc.flat.cuts))
+
+
+def test_slots_clamp_the_last_token_of_a_segment_that_the_chunk_cuts() -> None:
+    enc = encode(TOKENIZER, "start\n\n" + " ".join(["word"] * 1500) + "?\n\nend")
+    chunk = chunk_from(enc, 2)
+    ((k, head, last),) = slots(enc, chunk)
+    assert k == 2 and enc.last[2] == len(enc.ids) - 2
+    assert head == 1 and last == chunk.hi - chunk.lo
+    whole = plan(encode(TOKENIZER, "Which one?\n- a\n- b"))[0]
+    assert [(h, e) for _, h, e in slots(encode(TOKENIZER, "Which one?\n- a\n- b"), whole)] == [
+        (1, 2),
+        (3, 4),
+        (5, 6),
+    ]

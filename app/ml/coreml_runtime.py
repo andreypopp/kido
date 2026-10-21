@@ -4,7 +4,6 @@ settings.json, which holds the function shapes, the pad id and the question thre
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -16,15 +15,19 @@ logging.getLogger("coremltools").setLevel(logging.ERROR)
 import coremltools as ct  # noqa: E402
 from coremltools.models import CompiledMLModel  # noqa: E402
 
-from model import SETTINGS, Backend  # noqa: E402
+from crf import Transitions  # noqa: E402
+from model import Backend, load_settings  # noqa: E402
 
 UNITS = {"cpu": "CPU_ONLY", "gpu": "CPU_AND_GPU", "ane": "CPU_AND_NE", "all": "ALL"}
 
 
 class CoreMLBackend(Backend):
     def __init__(self, directory: Path, compute: str) -> None:
-        settings = json.loads((directory / SETTINGS).read_text())
-        super().__init__(settings.get("question_threshold"))
+        settings = load_settings(directory)
+        crf = settings.get("crf")
+        super().__init__(
+            settings.get("question_threshold"), Transitions.from_json(crf) if crf else None
+        )
         self.directory, self.compute = directory, compute
         self.shapes: dict[str, list[int]] = settings["shapes"]
         self.pad_id: int = settings["pad_token_id"]

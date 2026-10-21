@@ -242,3 +242,7 @@ def test_peak_hours_stop_before_the_send_and_before_a_retry(tmp_path: Path) -> N
         )
     assert len(client.calls) == 1
     assert spend.total < 0.01
+
+
+def test_the_worst_cost_follows_the_model() -> None:
+    assert worst_cost(MESSAGES, model="deepseek-flash") < worst_cost(MESSAGES) / 3

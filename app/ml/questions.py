@@ -16,7 +16,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from deepseek import MAX_TOKENS, Spend, complete, now, parse_response
+from deepseek import MAX_TOKENS, MODEL, Spend, complete, now, parse_response
 from redact import redact
 from segments import BLANK, LIST_ITEM, Segment, segments
 
@@ -286,6 +286,9 @@ def label_text(
     sample: int = 1,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], datetime] = now,
+    allow_peak: bool = False,
+    effort: str | None = None,
+    model: str = MODEL,
 ) -> dict[str, object]:
     """{"label": ...} or {"errors": [...]}. A rejected label goes back once with its reasons;
     a stop on length is dropped at once."""
@@ -315,6 +318,9 @@ def label_text(
             max_tokens=max_tokens,
             sleep=sleep,
             clock=clock,
+            allow_peak=allow_peak,
+            effort=effort,
+            model=model,
         )
         if finish == "length":
             return {"errors": [LENGTH]}

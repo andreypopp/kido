@@ -1,6 +1,7 @@
 # Plan: a Core ML question extractor
 
-Status: phases 1 to 4 done; the CLI is ready for the user's test.
+Status: phases 1 to 4 done; the user's test found two structural
+misses, so phase 5 changes the question model's decoder.
 Date: 2026-10-21. Branch `kido-app-questions`, from
 `kido-app` 0.29.1. This plan replaces `plans/paragraph-coreml.md` on
 `kido-app-paragraphs` (last commit 85ed85e5). The advisor owns this file.
@@ -39,9 +40,10 @@ From the user and from the first attempt:
   0.68 option exact F1 on the real eval part in the first attempt).
 - Model storage for production is decided later. Until then the model is
   a local build output.
-- Cumulative DeepSeek spend cap: $50. The first attempt spent $26.21 (the
-  ledger `usage.jsonl` agrees), so this plan has $23.79. Ask the user
-  before more.
+- Cumulative DeepSeek spend cap: $50, raised by the user on 2026-10-21
+  to $70. The first attempt spent $26.21 (the ledger `usage.jsonl`
+  agrees). The $2 reserve rule stays, so labelling stops at $68. Ask
+  the user before more.
 - A smoke run may make a small number of paid DeepSeek calls (a few
   texts) to check the prompt, the schema and the validator end to end.
   Full runs (the relabel, the eval labelling with several samples,
@@ -315,7 +317,8 @@ Hugging Face offsets only with the NFC position mapping.
   and agreed only 62%). The ledger is at $27.13, remainder $22.87. Order
   of the phase 2 runs: the eval first, 400 real texts × 3 samples (about
   $8.2), then the 150 negative sample, then train with what is left
-  minus a $2 reserve (a $48 cumulative limit in code).
+  minus a $2 reserve (a $48 cumulative limit in code; $68 after the
+  cap rose to $70 on 2026-10-21).
   `reasoning_effort: low` was not tested: rejected, because the
   thinking-high labels are proven, the budget fits, and the off-peak
   time is better spent on the eval run. Off-peak is every
@@ -475,7 +478,7 @@ advice or a question to `advisor`.
    extract`. Deliverable: the package and three example commands for
    the user.
 
-App integration follows as a separate plan after phase 4. It ports the
+App integration follows as a separate plan after phase 5. It ports the
 splitter and the chunking to Swift against the shared test file.
 
 ## Phase 1 results
@@ -775,6 +778,182 @@ no automatic empty labels; the acceptance of the phase 3 model with its
 exceptions, the 2% FPR target included (4.6% combined); and the kept
 `B-Q` threshold t 0.8 (under "Decisions", "Data" and "Spend").
 
+## Phase 5: question-model structure
+
+Decided by the user on 2026-10-21 after the CLI test. Implementer:
+`crf-impl`. Code review before any full training. The data stays
+fixed; the option model is unchanged.
+
+**The two misses.** "For the 2,048-token function, which should the
+CLI ship?" with a numbered list gives no question: P(O) 0.95 at the
+first token, while "Which should the CLI ship?" alone gives P(B) 1.0.
+"I checked the build." then "Which one do you prefer?" gives the
+question `I-Q` 0.99 after `O`, so strict decoding drops it. A
+decode-only lenient rule (an orphan `I` starts a question) was
+measured worse on real eval: question F1 0.697 to 0.675 at t 0.8
+(checkpoint `data/model`).
+
+**Flat input** (user decision, 2026-10-21, revised the same day). The
+model input loses its layout. Segments are cut as now. Each non-blank
+segment has its whitespace (row breaks, indents, the gutter, `⏺ `)
+collapsed to one space. Segments inside a paragraph join with one
+space; a paragraph break (one or more blank segments) is `\n\n`.
+Bullet markers (`-`, `*`, `+`, `•`) become `-`; every numbered or
+lettered marker in the splitter's item forms (`1.`, `12)`, `a.`, `B)`)
+becomes `1.`; `(3)` is not an item marker in `segments.py` and stays as
+text. The text keeps its original case (no lowercasing), so the character map is one
+to one. Tags stay one per
+segment at its first token (and its last token for the two-ends
+variant), with their original ranges, so the contract and the labels
+are unchanged. The option model reads the flat question text and maps
+its spans back to the original ranges. Rejected with data: a hard rule
+"a blank line ends a question". 314 of 2,178 train gold questions (14%)
+and 125 of 911 eval questions cross a blank line, mostly `choice`:
+options plus text, blank, question 187 train / 66 eval; question,
+blank, list 64 / 33; question plus text, blank, list 27 / 14. Thus
+`\n\n` is only an input signal. Two old-input 10-epoch CRF runs
+(`data/runs/crf-s0`, `crf2-s0`) stay as old-input references.
+
+**Flat-input review** (flat-rev, passed, no must-fix). Property tests
+on all 1,844 dev and eval texts and 7,600 random inputs: every option
+inside its question, the map is an identity, head and last tokens,
+chunk slices. The oracle ceiling is unchanged (real eval 0.973, real
+dev 0.919). Checkpoints need `"input": "flat"`; `extract.load` and
+`convert` refuse old-input checkpoints. Known issues, not fixed because
+the labels are segment-indexed and the data is fixed: a row with only
+`⏺ ` is not blank in `segments.py` and gives an empty sentence segment
+(170 of 4,000 random texts); a row that starts with "A. Smith said" is
+an item and becomes "1. Smith". Step B runs: (a') `--kind two`, seeds 0
+to 2; (b') and (c') train the question model only and use the option
+model of the (a') run with the same seed. Reason: probes on the user's texts show that layout and wording
+noise dominate: 2 spaces of indent change the items' P(I) from 0.00 to
+0.96, and "Which should we ship?" against "Which should the CLI ship?"
+flips the items.
+
+A fact from the train labels: a `?` segment followed by a numbered item
+has the item as its own question 287 times and as an option inside the
+question 76 times; for bullets, 141 inside and 3 as their own question.
+
+**Variants of the question model**, against (a), the current model on
+the old input at argmax and at t 0.8. The review fixes of the CRF step
+A are applied first.
+
+- (a') The flat input with the current head.
+- (b') The flat input with a linear-chain CRF over the segment slots.
+  The transitions `O -> I` and `start -> I` are fixed at minus infinity;
+  a chunk that starts inside the text may still start with `I`, so the
+  start constraint applies to a chunk that begins at the start of the
+  text only. Viterbi decoding, no `B` threshold. The transitions are
+  stored in the checkpoint's settings.
+- (c') The CRF of (b') with an emission from the concatenation of the
+  segment's first-token state and its last non-space token's state.
+
+3 seeds each. Selection on the real dev by the unchanged rule (mean of
+real question F1 and real option F1 end to end, FPR under 2% to be
+eligible). The eval runs only for the selected variant and is reported
+against (a) on every part. The user's failing texts are eval fixtures
+only, never training data.
+
+**Step B results** (real dev, 3 seeds, 10 epochs, lr 1e-4; selection
+score | combined FPR | real question F1 | option end to end):
+
+- (a') flat: 0.4925 ± 0.029 | 1.08% | 0.615 | 0.370.
+- (b') flat and CRF: 0.4954 ± 0.003 | 1.25% | 0.640 | 0.351.
+- (c') flat, CRF and two ends: 0.5056 ± 0.041 | 0.85% | 0.640 | 0.371.
+- (a) old input at argmax: 0.4696 ± 0.008 | 1.08% | 0.615 | 0.324.
+
+Flat option F1 in gold 0.507 ± 0.028 (old 0.47 to 0.50). On the 26
+empty-labelled `?` dev texts: (a') 14.1%, (b') 15.4%, (c') 6.4% ± 4.4.
+The same-paragraph dev subset has 8 texts, too small to rank. The fixed
+rule selects (c'), checkpoint `flat-c-s2`; every gain is within the
+seed spread. The user's probes: text 1, with the leading clause "For
+the 2,048-token function, which …", is missed by every variant; texts 2
+and 3 get their question from (a') and (c') but no options from any
+variant; text 4 is correct with (a') and (c'), and (b') merges the
+context sentence.
+
+**Step B, learning curve** (user, 2026-10-21). For the selected
+variant: 25% and 50% of train, as a session-whole subsample with real
+and synthetic at the same fraction, seeds 0 and 1, next to the 100%
+runs; real-dev scores. If the dev score still rises clearly from 50% to
+100%, more data is the next lever; if it is flat, the next step is
+Ettin-150m or a fix of the labels or the task.
+
+**Step B2 results** ((c'), real dev, 2 seeds per point; 1.0 is
+`flat-c-s0` and `s1`). Fraction 0.25 / 0.5 / 1.0, about 1,110 / 1,880 /
+3,736 train texts: selection score 0.400 / 0.453 / 0.493; real question
+F1 0.593 / 0.599 / 0.629; option end to end 0.207 / 0.308 / 0.357;
+option in gold 0.279 / 0.382 / 0.523; combined FPR 0.85% / 1.28% /
+0.94%. The 0.5 to 1.0 step of the score (+0.040) is about one 3-seed SD
+(0.041) and smaller than the seed gap at 1.0 (0.069), so by the score
+rule it is not clearly rising. Option in gold rises steadily (+0.10,
++0.14) while question F1 is almost flat. Reading: more data helps the
+option model; the question model is limited by something else: the
+labels, the user-addressed judgement, the model size or its use of
+context.
+
+**Step C results** (eval, run once; flat (c') 3-seed mean ± SD, with
+the delivered `flat-c-s2` after the slash | the phase 3 shipped
+`two-s1` at t 0.8 | the baseline):
+
+- Real: question F1 0.682 ± 0.015 / 0.698 | 0.697 | 0.470; option end
+  to end 0.452 ± 0.008 | 0.548 | 0.003; option in gold 0.597 ± 0.035 |
+  0.632; whole exact 0.570 | 0.566; count exact 0.837 | 0.754.
+- Real multi-question: question F1 0.659 | 0.709; option end to end
+  0.488 | 0.626.
+- Ask: question F1 0.250 ± 0.190 | 0.571 | 0.615. `real-noq`: 0.293 |
+  0.125. Synthetic: 0.991 | 0.995.
+- FPR: non-`?` 1.4% | 0.35%; empty-labelled `?` 16.5% | 13.3% | 24.8%;
+  combined 5.5% | 3.85% | 6.9%.
+- Accounting on real (exact / overlapping / absent): 264 / 93 / 21
+  against 243 / 44 / 91. Much higher recall, looser boundaries (merges
+  10.7 against 3).
+
+The dev gain does not hold on the eval. There is no clear improvement
+over the shipped model: (c') trades missed questions for boundary
+errors, which costs option end to end. Core ML: question tag agreement
+1.000000 (Viterbi matches), option 0.999876; the parity gate fails at
+0.0071 (1 or 2 options on real-unanimous). Bench on the GPU: question
+p50 2.6 ms, option 512 2.8 ms. The user's fixtures 1 to 3 still fail.
+Whether `flat-c` replaces the shipped model is the user's decision,
+pending.
+
+**Proposed next, not decided.** The options miss on the user's texts 2
+and 3 is a label-definition problem, not only data size: in train, a
+list after a `?` is gold options inside the question 76 times and each
+item its own question 299 times (dev 8 and 61). More data labelled with
+the current prompt keeps that split. Proposed first: a written
+list-scope rule in the labelling prompt (a list after a question whose
+items answer it are its options; items that ask something are their own
+questions), then a relabel of only the affected texts (a question
+followed by a list), with the cost estimated before any paid call.
+
+After the learning curve, in this order:
+
+1. More labelled data, mainly for the option model, together with the
+   list-scope prompt rule above.
+2. A context ablation for the question model: a segment with 1 or 2
+   neighbours against the whole chunk, about 15 minutes, to test whether
+   it uses long context. Proposed to the user.
+3. Ettin-150m for the question model.
+
+Data sources for item 1:
+
+- More DeepSeek labels under the $70 cap (about $23.70 left after the
+  reserve).
+- One public dataset, as new real texts:
+  `nlile/misc-merged-claude-code-traces-v1` (32,133 merged Claude Code
+  traces, 1.2 GB, no licence stated: local training only, never
+  redistributed). No other public set. First step, no paid calls:
+  download, count the texts with a `?` and with hard-pool decision
+  terms, measure the overlap with our sessions (dedup); then label with
+  DeepSeek under the new cap.
+- A local open LLM as labeller, checked against DeepSeek on the spike
+  set.
+- Label-preserving augmentation (list marker, case, trailing period,
+  opening clauses) and recombined question-plus-list texts, with no
+  paid calls.
+
 ## Next improvement, after the user's test
 
 In this order: questions not addressed to the user (data: more `?`
@@ -784,7 +963,9 @@ question in the same paragraph (on the eval, 17 gold questions in 8
 texts share a prose paragraph: at t 0.8 13 exact, 2 absent, 2 merged;
 at argmax 15, 0, 2), question boundaries (exact 0.69 against lenient
 0.78), options end to end (0.53), `real-noq` (0.20 on 14 texts), and
-`AskUserQuestion` boxes.
+`AskUserQuestion` boxes. The phase 5 learning curve decides whether
+more data, a larger encoder or a label fix comes first ("Phase 5",
+"Step B").
 
 Known synthetic failures, for the first two items:
 
@@ -922,6 +1103,46 @@ Known synthetic failures, for the first two items:
   everything confirmed, the status is "phases 1 to 4 done; the CLI is
   ready for the user's test", and the three known synthetic failures are
   under "Next improvement".
+- 2026-10-21, user, via the top-level session: phase 5 adds a CRF
+  decoder to the question model (variants b and c against a), after
+  two structural misses in the CLI test; data and option model fixed;
+  the status line follows.
+- 2026-10-21, user, via the top-level session: phase 5 uses a flat
+  input (whitespace collapsed per segment, segments joined by newlines,
+  blank lines kept), variants a', b', c' against (a); the numbered-item
+  label counts are recorded; augmentation is proposed, not decided.
+- 2026-10-21, user, via the top-level session: the flat input is
+  revised (one space inside a paragraph, `\n\n` for a paragraph break,
+  unified list markers); the "blank line ends a question" rule is
+  rejected with counts. Later the same day: the original case is kept,
+  no lowercasing.
+- 2026-10-21, user, via the top-level session: phase 5 step B adds a
+  learning curve (25%, 50%, 100%; seeds 0 and 1) for the selected
+  variant, with the decision rule and the data options recorded under
+  "Phase 5" and "Next improvement".
+- 2026-10-21, user, via the top-level session: the cap rises to $70
+  (labelling stops at $68); public datasets join the data options with
+  a no-paid-calls first step; later the same day the user kept only
+  `nlile/misc-merged-claude-code-traces-v1` ("Decisions", "Spend",
+  "Proposed next").
+- 2026-10-21, flat-rev via the top-level session: the marker rule names
+  the splitter's item forms only (`(3)` stays text); the review's
+  property tests, the known splitter issues, the flat-only checkpoint
+  check and the step B run layout are recorded under "Phase 5".
+- 2026-10-21, step B results via the top-level session: (c') selected
+  by the fixed rule within seed noise; the user's probes recorded; the
+  learning curve (step B2) started.
+- 2026-10-21, top-level session: the options miss is a label-definition
+  problem (76 inside against 299 own questions in train); a list-scope
+  prompt rule and a relabel of the affected texts lead "Proposed next".
+- 2026-10-21, step B2 via the top-level session: the learning curve is
+  flat for questions and rising for options; "Proposed next" is
+  reordered (data for options with the prompt rule, a context ablation,
+  Ettin-150m).
+- 2026-10-21, step C via the top-level session: the flat CRF model's
+  dev gain does not hold on the eval (higher recall, looser boundaries,
+  lower option end to end); replacing the shipped model is pending with
+  the user.
 - 2026-10-21, p4-rev-simplify: the 2,048 question function is kept
   through the B4 measurement; then the plan decides explicitly, and if
   chunking stays, 2,048 is a measurement build, not a shipped function.

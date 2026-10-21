@@ -10,15 +10,18 @@ from pathlib import Path
 
 import numpy as np
 
-from chunks import B, Chunk, Encoded, I, encode, ids_of, option_input, plan, slots
+from chunks import B, Chunk, Encoded, I, encode, option_input, plan, slots
+from flat import Flat, question_body
 from metrics import Found
 from model import (
     COMPUTE_UNITS,
     DEFAULT_COMPUTE,
     TorchBackend,
+    load_crf,
     load_models,
     load_threshold,
     load_tokenizer,
+    require_flat,
 )
 from paths import COREML, MODEL
 
@@ -44,9 +47,9 @@ def chunk_questions(enc: Encoded, chunk: Chunk, tags: list[int]) -> list[tuple[i
     """(start, end, distance from the chunk edge) of the questions that the chunk found. One that
     touches a cut edge of the chunk is dropped."""
     present = slots(enc, chunk)
-    cuts = enc.cuts
+    cuts = enc.flat.cuts
     found = []
-    for first, last in runs([tags[position] for _, position in present]):
+    for first, last in runs(tags):
         start, end = cuts[present[first][0]].start, cuts[present[last][0]].end
         left = start - cuts[present[0][0]].start if chunk.lo > 0 else FAR
         right = cuts[present[-1][0]].end - end if chunk.hi < len(enc.ids) else FAR
@@ -55,14 +58,13 @@ def chunk_questions(enc: Encoded, chunk: Chunk, tags: list[int]) -> list[tuple[i
     return found
 
 
-def questions(tokenizer, backend, text: str, windows=plan) -> list[tuple[int, int]]:
+def questions(backend, enc: Encoded, windows=plan) -> list[tuple[int, int]]:
     """Question ranges in text order. Of overlapping questions from several windows the one
     farthest from its window edge stays."""
-    enc = encode(tokenizer, text)
     found = [
         item
         for chunk in windows(enc)
-        for item in chunk_questions(enc, chunk, backend.tags("question", ids_of(enc, chunk)))
+        for item in chunk_questions(enc, chunk, backend.question_tags(enc, chunk))
     ]
     kept: list[tuple[int, int, int]] = []
     for start, end, edge in sorted(found, key=lambda item: -item[2]):
@@ -71,25 +73,34 @@ def questions(tokenizer, backend, text: str, windows=plan) -> list[tuple[int, in
     return sorted((start, end) for start, end, _ in kept)
 
 
-def options(tokenizer, backend, text: str, start: int, end: int) -> tuple[str, ...]:
-    """The options of the question text[start:end], in text order, as substrings of it. Only the
-    first OPTION_LENGTH tokens of the question are read."""
-    body = text[start:end]
+def options(tokenizer, backend, text: str, flat: Flat, start: int, end: int) -> tuple[str, ...]:
+    """The options of the question text[start:end], in text order, as substrings of it. The
+    option pass reads the flat question, its first OPTION_LENGTH tokens; a span on spaces of the
+    flat text snaps inward to the characters that it has in text."""
+    body, shift = question_body(flat, start, end)
     ids, offsets = option_input(tokenizer, body)
     tags = backend.tags("option", ids)
     real = [n for n, (a, b) in enumerate(offsets) if a != b]
     found: list[str] = []
     for first, last in runs([tags[n] for n in real]):
-        option = body[offsets[real[first]][0] : offsets[real[last]][1]].strip()
-        if option and option not in found:
+        a, b = offsets[real[first]][0], offsets[real[last]][1]
+        while a < b and body[a].isspace():
+            a += 1
+        while a < b and body[b - 1].isspace():
+            b -= 1
+        if a == b:
+            continue
+        option = text[flat.origin[shift + a] : flat.origin[shift + b - 1] + 1]
+        if option not in found:
             found.append(option)
     return tuple(found)
 
 
 def predict(tokenizer, backend, text: str, windows=plan) -> list[Found]:
+    enc = encode(tokenizer, text)
     return [
-        (start, end, options(tokenizer, backend, text, start, end))
-        for start, end in questions(tokenizer, backend, text, windows)
+        (start, end, options(tokenizer, backend, text, enc.flat, start, end))
+        for start, end in questions(backend, enc, windows)
     ]
 
 
@@ -105,10 +116,12 @@ def contract(text: str, found: list[Found], *, ranges: bool = False) -> dict[str
 
 def load(path: Path, backend: str = "torch", compute: str = DEFAULT_COMPUTE):
     """The tokenizer and the backend of a directory: a PyTorch checkpoint, or converted Core ML
-    models, which hold their own tokenizer and settings."""
+    models, which hold their own tokenizer and settings. A directory made for another input is
+    refused: its model would read the wrong text."""
+    require_flat(path)
     tokenizer = load_tokenizer(path)
     if backend == "torch":
-        return tokenizer, TorchBackend(load_models(path), load_threshold(path))
+        return tokenizer, TorchBackend(load_models(path), load_threshold(path), load_crf(path))
     from coreml_runtime import CoreMLBackend  # imports coremltools, which torch runs avoid
 
     return tokenizer, CoreMLBackend(path, compute)
@@ -166,7 +179,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(f"extract: {error}")
     started = time.perf_counter()
     path = args.model if args.backend == "torch" else args.coreml
-    tokenizer, backend = load(path, args.backend, args.compute)
+    try:
+        tokenizer, backend = load(path, args.backend, args.compute)
+    except ValueError as error:
+        sys.exit(f"extract: {error}")
     if args.bench:
         load_ms = round((time.perf_counter() - started) * 1000, 1)
         result = timed(lambda: predict(tokenizer, backend, text), args.bench)

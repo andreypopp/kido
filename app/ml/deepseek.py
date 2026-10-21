@@ -21,9 +21,11 @@ from jsonl import append_jsonl, read_jsonl
 from redact import redact
 
 MODEL = "deepseek-v4-pro"
-CACHE_HIT = (0.022, 0.044)
-CACHE_MISS = (0.66, 1.32)
-OUTPUT = (1.98, 3.96)
+MODELS = {"pro": MODEL, "flash": "deepseek-flash"}
+PRICES = {  # per 1M tokens: (cache hit, cache miss, output), each (off-peak, peak)
+    MODEL: ((0.022, 0.044), (0.66, 1.32), (1.98, 3.96)),
+    "deepseek-flash": ((0.003, 0.006), (0.15, 0.3), (0.6, 1.2)),
+}
 MAX_TOKENS = 12000
 PEAK_HOURS = ((1, 4), (6, 10))
 PEAK_MARGIN = timedelta(minutes=15)
@@ -50,14 +52,22 @@ class PeakHours(Exception):
     pass
 
 
-def request_body(messages: list[dict[str, str]], max_tokens: int = MAX_TOKENS) -> dict[str, object]:
-    return {
-        "model": MODEL,
+def request_body(
+    messages: list[dict[str, str]],
+    max_tokens: int = MAX_TOKENS,
+    effort: str | None = None,
+    model: str = MODEL,
+) -> dict[str, object]:
+    body: dict[str, object] = {
+        "model": model,
         "messages": messages,
         "response_format": {"type": "json_object"},
         "max_tokens": max_tokens,
         "extra_body": {"thinking": {"type": "enabled"}},
     }
+    if effort is not None:
+        body["reasoning_effort"] = effort
+    return body
 
 
 def parse_response(content: str) -> object:
@@ -79,7 +89,7 @@ class Usage:
     cost: float
 
 
-def usage_of(usage: object | None, peak: bool) -> Usage:
+def usage_of(usage: object | None, peak: bool, model: str = MODEL) -> Usage:
     if usage is None:
         return Usage(0, 0, 0, 0, 0, peak, 0.0)
     details = getattr(usage, "completion_tokens_details", None)
@@ -88,7 +98,8 @@ def usage_of(usage: object | None, peak: bool) -> Usage:
     hit = int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
     miss = int(getattr(usage, "prompt_cache_miss_tokens", 0) or 0) or max(0, prompt_tokens - hit)
     index = 1 if peak else 0
-    cost = (hit * CACHE_HIT[index] + miss * CACHE_MISS[index] + completion * OUTPUT[index]) / 1e6
+    cache_hit, cache_miss, output = PRICES[model]
+    cost = (hit * cache_hit[index] + miss * cache_miss[index] + completion * output[index]) / 1e6
     reasoning = int(getattr(details, "reasoning_tokens", 0) or 0)
     return Usage(prompt_tokens, completion, hit, miss, reasoning, peak, cost)
 
@@ -158,10 +169,16 @@ class Spend:
             return reservation
 
     def settle(
-        self, reservation: str, worst: float, stage: str, cost: float, usage: dict[str, object]
+        self,
+        reservation: str,
+        worst: float,
+        stage: str,
+        cost: float,
+        usage: dict[str, object],
+        model: str = MODEL,
     ) -> None:
         with self.lock:
-            item = {"id": reservation, "stage": stage, "model": MODEL, **usage, "cost": cost}
+            item = {"id": reservation, "stage": stage, "model": model, **usage, "cost": cost}
             append_jsonl(self.path, {**item, "at": datetime.now(UTC).isoformat(timespec="seconds")})
             self._charge(stage, cost - worst)
 
@@ -169,10 +186,13 @@ class Spend:
         self.guard.close()
 
 
-def worst_cost(messages: list[dict[str, str]], max_tokens: int = MAX_TOKENS) -> float:
+def worst_cost(
+    messages: list[dict[str, str]], max_tokens: int = MAX_TOKENS, model: str = MODEL
+) -> float:
     """Every UTF-8 byte is at most one token."""
     tokens = sum(len(message["content"].encode()) + 20 for message in messages) + 500
-    return (tokens * CACHE_MISS[1] + max_tokens * OUTPUT[1]) / 1e6
+    _, cache_miss, output = PRICES[model]
+    return (tokens * cache_miss[1] + max_tokens * output[1]) / 1e6
 
 
 def cache_key(body: dict[str, object], nonce: str) -> str:
@@ -203,10 +223,12 @@ def _send(
     stage: str,
     sleep: Callable[[float], None],
     clock: Callable[[], datetime],
+    allow_peak: bool,
 ) -> tuple[str, str]:
-    worst = worst_cost(body["messages"], int(body["max_tokens"]))  # type: ignore[arg-type]
+    model = str(body["model"])
+    worst = worst_cost(body["messages"], int(body["max_tokens"]), model)  # type: ignore[arg-type]
     for attempt in range(MAX_ATTEMPTS):
-        if near_peak(clock()):
+        if near_peak(clock()) and not allow_peak:
             raise PeakHours
         sent = is_peak(clock())
         reservation = spend.reserve(worst, stage)
@@ -215,7 +237,7 @@ def _send(
         except APIStatusError as error:
             if error.status_code not in NOT_BILLED:
                 raise
-            spend.settle(reservation, worst, stage, 0.0, {})
+            spend.settle(reservation, worst, stage, 0.0, {}, model)
             if attempt == MAX_ATTEMPTS - 1:
                 raise
             sleep(min(30.0, float(2**attempt)) + random.random())
@@ -226,9 +248,9 @@ def _send(
         if usage is None:
             cost, fields = worst, {}
         else:
-            counted = usage_of(usage, sent)
+            counted = usage_of(usage, sent, model)
             cost, fields = counted.cost, {k: v for k, v in vars(counted).items() if k != "cost"}
-        spend.settle(reservation, worst, stage, cost, fields)
+        spend.settle(reservation, worst, stage, cost, fields, model)
         choice = response.choices[0]
         return choice.message.content or "", str(choice.finish_reason or "stop")
     raise RuntimeError("unreachable")
@@ -246,6 +268,9 @@ def complete(
     max_tokens: int = MAX_TOKENS,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], datetime] = now,
+    allow_peak: bool = False,
+    effort: str | None = None,
+    model: str = MODEL,
 ) -> tuple[str, str]:
     """(content, finish_reason). A message that redaction would change is refused. A cached
     answer costs nothing. A stop on length is returned as it is. A request that would start
@@ -256,12 +281,14 @@ def complete(
             and redact(message["content"], user=user) != message["content"]
         ):
             raise ValueError("a message is not redacted")
-    body = request_body(messages, max_tokens)
+    body = request_body(messages, max_tokens, effort, model)
     key = cache_key(body, nonce)
     hit = read_cache(cache_dir, key)
     if hit is not None:
         return hit
-    content, finish = _send(client, body, spend=spend, stage=stage, sleep=sleep, clock=clock)
+    content, finish = _send(
+        client, body, spend=spend, stage=stage, sleep=sleep, clock=clock, allow_peak=allow_peak
+    )
     write_cache(cache_dir, key, content, finish)
     return content, finish
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from evaluate import dev_score, score_backend
 from extract import load
 from jsonl import read_jsonl, write_json
-from model import save_threshold
+from model import load_crf, update_settings
 from paths import REPORTS, output_path
 
 GRID = (None, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95)
@@ -41,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=REPORTS / "threshold.json")
     args = parser.parse_args(argv)
+    if load_crf(args.model) is not None:
+        parser.error("a CRF checkpoint decodes by Viterbi and has no threshold")
     records = read_jsonl(output_path("dev"))
     tokenizer, backend = load(args.model)
     curve = []
@@ -66,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     chosen = choose(curve)
     write_json(args.output, {"curve": curve, "chosen": chosen})
     if chosen is not None:
-        save_threshold(args.model, chosen["threshold"])
+        update_settings(args.model, question_threshold=chosen["threshold"])
     print("chosen", chosen)
     return 0
 

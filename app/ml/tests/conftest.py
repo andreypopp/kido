@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from transformers import AutoConfig
 
+from chunks import ids_of, slots
 from model import MODEL, REVISION, Tagger
 
 USER = "alice"
@@ -78,12 +79,16 @@ class FakeBackend:
     def tags(self, task: str, ids: list[int]) -> list[int]:
         return [1 if i - 10 in self.begin else 2 if i - 10 in self.inside else 0 for i in ids]
 
+    def question_tags(self, enc, chunk) -> list[int]:
+        tags = self.tags("question", ids_of(enc, chunk))
+        return [tags[head] for _, head, _ in slots(enc, chunk)]
+
 
 def paragraphs(count: int, words: int = 60) -> str:
     return "\n\n".join(" ".join(f"p{p}w{w}" for w in range(words)) for p in range(count))
 
 
-def tiny(tasks: tuple[str, ...]) -> Tagger:
+def tiny(tasks: tuple[str, ...], two_ends: bool = False) -> Tagger:
     config = AutoConfig.from_pretrained(
         MODEL,
         revision=REVISION,
@@ -93,4 +98,8 @@ def tiny(tasks: tuple[str, ...]) -> Tagger:
         num_attention_heads=2,
         layer_types=["full_attention", "sliding_attention"],
     )
-    return Tagger(tasks, config).eval()
+    return Tagger(tasks, config, two_ends).eval()
+
+
+def tiny_two_ends() -> Tagger:
+    return tiny(("question",), two_ends=True)

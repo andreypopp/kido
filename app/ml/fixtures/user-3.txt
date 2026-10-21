@@ -1,0 +1,4 @@
+Which should the CLI ship?
+- Only the 1,024 function, with chunking.
+- Both functions, and the CLI selects by text length.
+- Only the 2,048 function.

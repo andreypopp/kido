@@ -27,7 +27,7 @@ def test_option_labels_mark_the_first_token_of_each_option() -> None:
 
 def test_moves_add_or_remove_one_segment_and_never_take_another_question() -> None:
     item = make_item(TOKENIZER, record())
-    cuts = item.enc.cuts
+    cuts = item.enc.flat.cuts
     assert item.gold == [(2, 4), (8, 8)]
     assert moves(cuts, item.gold, 0) == [(0, 4), (2, 6), (3, 4), (2, 3)]
     assert moves(cuts, item.gold, 1) == [(6, 8)]

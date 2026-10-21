@@ -6,6 +6,7 @@ import random
 from dataclasses import dataclass
 
 from chunks import IGNORE, B, Encoded, I, O, encode, option_input
+from flat import Flat, question_body, to_flat
 from questions import Question, option_ranges, questions_of
 from segments import BLANK, Segment
 
@@ -24,13 +25,14 @@ class Item:
         return [(q.first, q.last) for q in self.questions]
 
 
-def option_example(tokenizer, text: str, start: int, end: int, spans: list[tuple[int, int]]):
-    ids, offsets = option_input(tokenizer, text[start:end])
+def option_example(tokenizer, flat: Flat, start: int, end: int, spans: list[tuple[int, int]]):
+    body, shift = question_body(flat, start, end)
+    ids, offsets = option_input(tokenizer, body)
     labels = [IGNORE if a == b else O for a, b in offsets]
     for first, last in spans:
         tag = B
         for n, (a, b) in enumerate(offsets):
-            if a != b and a < last - start and b > first - start:
+            if a != b and a < to_flat(flat, last) - shift and b > to_flat(flat, first) - shift:
                 labels[n], tag = tag, I
     return {"ids": ids, "labels": labels}
 
@@ -44,11 +46,12 @@ def option_spans(text: str, question: Question, start: int, end: int) -> list[tu
 def make_item(tokenizer, record: dict[str, object]) -> Item:
     text = str(record["text"])
     questions = questions_of(text, record["label"])  # type: ignore[arg-type]
+    enc = encode(tokenizer, text)
     options = [
-        option_example(tokenizer, text, q.start, q.end, option_spans(text, q, q.start, q.end))
+        option_example(tokenizer, enc.flat, q.start, q.end, option_spans(text, q, q.start, q.end))
         for q in questions
     ]
-    return Item(text, encode(tokenizer, text), questions, options)
+    return Item(text, enc, questions, options)
 
 
 def moves(cuts: list[Segment], gold: list[tuple[int, int]], index: int) -> list[tuple[int, int]]:
@@ -73,13 +76,13 @@ def perturbed_examples(tokenizer, items: list[Item], rng: random.Random) -> list
         (item, index, found)
         for item in items
         for index in range(len(item.questions))
-        if (found := moves(item.enc.cuts, item.gold, index))
+        if (found := moves(item.enc.flat.cuts, item.gold, index))
     ]
     share = round(PERTURBED_SHARE * sum(len(item.questions) for item in items))
     out = []
     for item, index, found in rng.sample(options, min(share, len(options))):
         first, last = rng.choice(found)
-        start, end = item.enc.cuts[first].start, item.enc.cuts[last].end
+        start, end = item.enc.flat.cuts[first].start, item.enc.flat.cuts[last].end
         spans = option_spans(item.text, item.questions[index], start, end)
-        out.append(option_example(tokenizer, item.text, start, end, spans))
+        out.append(option_example(tokenizer, item.enc.flat, start, end, spans))
     return out

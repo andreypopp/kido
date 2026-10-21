@@ -14,7 +14,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from segments import BLANK, Segment, segments
+from flat import Flat, flatten
+from segments import BLANK, Segment
 
 LENGTH = 1024  # the question pass reads at most this many tokens
 OPTION_LENGTH = 512  # the option pass reads at most this many tokens
@@ -31,9 +32,10 @@ IGNORE = -100
 @dataclass(frozen=True)
 class Encoded:
     ids: list[int]
-    cuts: list[Segment]
-    begin: list[int]  # the first token of the rows of segment k, with its indent
+    flat: Flat
+    begin: list[int]  # the first token of segment k, with the spaces before it
     head: list[int]  # the first token of segment k
+    last: list[int]  # the token with the last non-space character of segment k
     cls: int
     sep: int
 
@@ -47,19 +49,28 @@ class Chunk:
 
 
 def encode(tokenizer, text: str) -> Encoded:
-    out = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+    flat = flatten(text)
+    out = tokenizer(flat.text, return_offsets_mapping=True, add_special_tokens=False)
     ends = [end for _, end in out["offset_mapping"]]
-    cuts = segments(text)
     begin = []
-    for cut in cuts:
-        at = cut.start
-        while at > 0 and text[at - 1] in " \t":
-            at -= 1
-        begin.append(bisect.bisect_right(ends, at))
-    begin[0:1] = [0] if cuts else []
-    head = [bisect.bisect_right(ends, cut.start) for cut in cuts]
+    for first, _ in flat.ranges:
+        if first > 0 and flat.text[first - 1] == " ":
+            first -= 1
+        begin.append(bisect.bisect_right(ends, first))
+    begin[0:1] = [0] if flat.cuts else []
+    head = [bisect.bisect_right(ends, first) for first, _ in flat.ranges]
+    last = [
+        max(h, bisect.bisect_right(ends, stop) - 1)
+        for h, (_, stop) in zip(head, flat.ranges, strict=True)
+    ]
     return Encoded(
-        list(out["input_ids"]), cuts, begin, head, tokenizer.cls_token_id, tokenizer.sep_token_id
+        list(out["input_ids"]),
+        flat,
+        begin,
+        head,
+        last,
+        tokenizer.cls_token_id,
+        tokenizer.sep_token_id,
     )
 
 
@@ -70,7 +81,7 @@ def option_input(tokenizer, body: str) -> tuple[list[int], list[tuple[int, int]]
 
 
 def chunk_from(enc: Encoded, i: int) -> Chunk:
-    count = len(enc.cuts)
+    count = len(enc.flat.cuts)
 
     def stop(j: int) -> int:
         return enc.begin[j + 1] if j + 1 < count else len(enc.ids)
@@ -90,17 +101,17 @@ def paragraph_starts(cuts: list[Segment]) -> list[int]:
 
 def plan(enc: Encoded) -> list[Chunk]:
     out: list[Chunk] = []
-    paragraphs = set(paragraph_starts(enc.cuts))
+    paragraphs = set(paragraph_starts(enc.flat.cuts))
     i = 0
-    while enc.cuts:
+    while enc.flat.cuts:
         chunk = chunk_from(enc, i)
         out.append(chunk)
-        if chunk.last + 1 >= len(enc.cuts):
+        if chunk.last + 1 >= len(enc.flat.cuts):
             break
         after = [
             k
             for k in range(i + 1, chunk.last + 1)
-            if enc.begin[k] - enc.begin[i] >= OVERLAP and enc.cuts[k].kind != BLANK
+            if enc.begin[k] - enc.begin[i] >= OVERLAP and enc.flat.cuts[k].kind != BLANK
         ]
         paragraph = [
             k for k in after if k in paragraphs and enc.begin[k] - enc.begin[i] <= STEP_MAX
@@ -114,13 +125,16 @@ def members(enc: Encoded, chunk: Chunk) -> list[int]:
     return [
         k
         for k in range(chunk.first, chunk.last + 1)
-        if enc.cuts[k].kind != BLANK and enc.head[k] < chunk.hi
+        if enc.flat.cuts[k].kind != BLANK and enc.head[k] < chunk.hi
     ]
 
 
-def slots(enc: Encoded, chunk: Chunk) -> list[tuple[int, int]]:
-    """(segment, position in ids_of(chunk)) for each tagged segment."""
-    return [(k, enc.head[k] - chunk.lo + 1) for k in members(enc, chunk)]
+def slots(enc: Encoded, chunk: Chunk) -> list[tuple[int, int, int]]:
+    """(segment, first position, last position in ids_of(chunk)); the last is clamped."""
+    return [
+        (k, enc.head[k] - chunk.lo + 1, min(enc.last[k], chunk.hi - 1) - chunk.lo + 1)
+        for k in members(enc, chunk)
+    ]
 
 
 def ids_of(enc: Encoded, chunk: Chunk) -> list[int]:
@@ -130,7 +144,7 @@ def ids_of(enc: Encoded, chunk: Chunk) -> list[int]:
 def training_starts(enc: Encoded) -> list[int]:
     """Paragraph starts, and the later segments of a paragraph from OVERLAP tokens in, where
     the plan falls back to a segment start; so every segment is in some window."""
-    cuts, begin = enc.cuts, enc.begin
+    cuts, begin = enc.flat.cuts, enc.begin
     starts = paragraph_starts(cuts)
     out = list(starts)
     for k, start in enumerate(starts):
@@ -151,7 +165,10 @@ def sample_chunks(enc: Encoded, gold: list[tuple[int, int]], rng: random.Random)
         return whole
     starts = training_starts(enc)
     inside = [
-        k for first, last in gold for k in range(first + 1, last + 1) if enc.cuts[k].kind != BLANK
+        k
+        for first, last in gold
+        for k in range(first + 1, last + 1)
+        if enc.flat.cuts[k].kind != BLANK
     ]
     return [
         chunk_from(enc, rng.choice(inside if inside and rng.random() < INSIDE_SHARE else starts))
@@ -164,21 +181,29 @@ def labels_of(enc: Encoded, chunk: Chunk, gold: list[tuple[int, int]]) -> list[i
     chunk leaves its remaining segments as O; one that ends after it keeps its tags."""
     labels = [IGNORE] * (chunk.hi - chunk.lo + 2)
     present = slots(enc, chunk)
-    for _, position in present:
+    for _, position, _ in present:
         labels[position] = O
     for first, last in gold:
         if not chunk.first <= first <= chunk.last:
             continue
         tag = B
-        for k, position in present:
+        for k, position, _ in present:
             if first <= k <= last:
                 labels[position] = tag
                 tag = I
     return labels
 
 
+def emissions(out: np.ndarray, chunk_slots: list[tuple[int, int, int]]) -> np.ndarray:
+    """Slot scores: 3 columns at the first token, or 6: columns 0-2 there plus 3-5 at the last."""
+    first = out[[head for _, head, _ in chunk_slots]]
+    if out.shape[1] == 3:
+        return first[:, :3]
+    return first[:, :3] + out[[last for _, _, last in chunk_slots]][:, 3:]
+
+
 def decode(logits: np.ndarray, threshold: float | None = None) -> list[int]:
-    """The tag of each position. With a threshold a B stays only if its probability reaches it;
+    """The tag of each row. With a threshold a B stays only if its probability reaches it;
     otherwise the position takes the likelier of I and O."""
     tags = logits.argmax(-1)
     if threshold is not None:
@@ -186,3 +211,15 @@ def decode(logits: np.ndarray, threshold: float | None = None) -> list[int]:
         weak = (tags == B) & (shifted[:, B] / shifted.sum(-1) < threshold)
         tags = np.where(weak, np.where(logits[:, I] > logits[:, O], I, O), tags)
     return tags.tolist()
+
+
+def question_example(enc: Encoded, chunk: Chunk, gold: list[tuple[int, int]]) -> dict:
+    """ids, labels (IGNORE except at slot first tokens) and the slot positions for the CRF."""
+    present = slots(enc, chunk)
+    return {
+        "ids": ids_of(enc, chunk),
+        "labels": labels_of(enc, chunk, gold),
+        "heads": [head for _, head, _ in present],
+        "lasts": [last for _, _, last in present],
+        "inside": chunk.lo > 0,
+    }

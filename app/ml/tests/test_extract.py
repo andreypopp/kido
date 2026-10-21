@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 from conftest import FakeBackend, WordTokenizer, paragraphs
 
-from chunks import B, I, O, decode
+from chunks import B, I, O, decode, emissions, encode, plan
 from extract import contract, options, positive, predict, questions, read_input, runs
+from flat import flatten
 
 TOKENIZER = WordTokenizer()
 
@@ -22,7 +23,7 @@ def test_a_question_that_spans_a_blank_row_is_one_range() -> None:
     text = "Intro here.\n\nWhich branch\n\n- main\n- dev\n\nDone."
     words = text.split()
     backend = FakeBackend({words.index("Which")}, {4, 6})
-    (start, end) = questions(TOKENIZER, backend, text)[0]
+    (start, end) = questions(backend, encode(TOKENIZER, text))[0]
     assert text[start:end] == "Which branch\n\n- main\n- dev"
 
 
@@ -31,14 +32,14 @@ def test_a_question_at_a_chunk_edge_is_taken_from_the_other_chunk() -> None:
     words = text.split()
     first = words.index("p15w0")
     backend = FakeBackend({first}, {words.index("p16w0")})
-    found = questions(TOKENIZER, backend, text)
+    found = questions(backend, encode(TOKENIZER, text))
     assert [text[a:b] for a, b in found] == [text[text.index("p15w0") : text.index("p16w59") + 6]]
 
 
 def test_options_are_substrings_in_text_order() -> None:
     text = "Should I update the docs or keep the change? Reply soon."
     backend = FakeBackend({2, 6}, {3, 4, 7, 8})
-    found = options(TOKENIZER, backend, text, 0, 44)
+    found = options(TOKENIZER, backend, text, flatten(text), 0, 44)
     assert found == ("update the docs", "keep the change?")
     assert all(option in text for option in found)
 
@@ -86,3 +87,51 @@ def test_bench_counts_must_be_positive() -> None:
     assert positive("3") == 3
     with pytest.raises(argparse.ArgumentTypeError):
         positive("0")
+
+
+def test_a_crf_backend_decodes_a_question_after_prose_where_argmax_would_start_with_i() -> None:
+    from crf import Crf
+    from model import Backend
+
+    class Scored(Backend):
+        def logits(self, task, ids):
+            out = np.zeros((len(ids), 6))
+            out[:, 2] = 2.0  # I
+            out[:, 1] = 1.0  # B a little behind
+            out[0, 0] = out[1, 0] = 0.0
+            return out
+
+    text = "I checked the build.\n\nWhich one do you prefer?"
+    enc = encode(TOKENIZER, text)
+    (chunk,) = plan(enc)
+    plain = Scored()
+    assert plain.question_tags(enc, chunk) == [I, I]
+    assert questions(plain, encode(TOKENIZER, text)) == []
+    crf = Scored(crf=Crf().transitions())
+    assert crf.question_tags(enc, chunk) == [B, I]
+    ((start, end),) = questions(crf, encode(TOKENIZER, text))
+    assert text[start:end] == text
+
+
+def test_two_ends_emissions_add_the_last_token_columns() -> None:
+    out = np.arange(18, dtype=np.float32).reshape(3, 6)
+    assert emissions(out, [(0, 0, 2), (1, 1, 1)]).tolist() == [
+        [0 + 15, 1 + 16, 2 + 17],
+        [6 + 9, 7 + 10, 8 + 11],
+    ]
+    assert emissions(out[:, :3], [(0, 1, 1)]).tolist() == [[6, 7, 8]]
+
+
+def test_a_checkpoint_for_another_input_is_refused(tmp_path) -> None:
+    from extract import load, main
+
+    (tmp_path / "settings.json").write_text('{"question_threshold": 0.8}')
+    with pytest.raises(ValueError, match="train or convert it again") as error:
+        load(tmp_path)
+    assert str(tmp_path) in str(error.value)
+    (tmp_path / "in.txt").write_text("Which one?")
+    with pytest.raises(SystemExit, match="extract: .*train or convert") as exit_:
+        main([str(tmp_path / "in.txt"), "--model", str(tmp_path)])
+    assert exit_.value.code != 0
+    with pytest.raises(ValueError):
+        load(tmp_path / "missing", "coreml")

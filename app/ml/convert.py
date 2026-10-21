@@ -2,9 +2,10 @@
 
 Each task gets one multifunction package with a fixed-shape function for each length, in fp16,
 plus its compiled model. The output directory is self-contained: it also holds the tokenizer,
-settings.json (shapes, pad id, tag ids, limits and the question threshold of the checkpoint) and
-manifest.json (hashes of the checkpoint and the packages, sizes, the op placement for each compute
-unit). --long adds the 2,048-token question function that only the measurement uses.
+settings.json (shapes, pad id, tag ids, limits and the question threshold or CRF transitions of
+the checkpoint) and manifest.json (hashes of the checkpoint and the packages, sizes, the op
+placement for each compute unit). --long adds the 2,048-token question function that only the
+measurement uses.
 """
 
 from __future__ import annotations
@@ -23,7 +24,15 @@ import torch
 from chunks import LENGTH, LONG, OPTION_LENGTH, OPTION_SHAPES, OVERLAP, B, I, O
 from coreml_runtime import UNITS
 from jsonl import file_digest, write_json
-from model import SETTINGS, WEIGHTS, Tagger, load_models, load_threshold, load_tokenizer
+from model import (
+    SETTINGS,
+    WEIGHTS,
+    Tagger,
+    load_models,
+    load_settings,
+    load_tokenizer,
+    require_flat,
+)
 from paths import COREML, MODEL
 from provenance import code_state
 
@@ -34,6 +43,7 @@ import coremltools as ct  # noqa: E402
 from coremltools.models.compute_plan import MLComputePlan  # noqa: E402
 
 MASKED = -10000.0
+KEPT_SETTINGS = ("input", "question_threshold", "crf")
 
 
 def padded_attention(self, hidden_states, position_embeddings=None, attention_mask=None, **_):
@@ -159,6 +169,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=COREML)
     parser.add_argument("--long", action="store_true", help="add the 2,048-token function")
     args = parser.parse_args(argv)
+    try:
+        require_flat(args.model)
+    except ValueError as error:
+        parser.error(str(error))
     if args.output.exists():
         parser.error(f"{args.output} exists")
     shapes = {
@@ -176,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     shutil.rmtree(scratch)
     tokenizer = load_tokenizer(args.model)
     tokenizer.save_pretrained(args.output)
-    threshold = load_threshold(args.model)
+    kept = {k: v for k, v in load_settings(args.model).items() if k in KEPT_SETTINGS}
     write_json(
         args.output / SETTINGS,
         {
@@ -185,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
             "tags": {"O": O, "B": B, "I": I},
             "limits": {"question": LENGTH, "option": OPTION_LENGTH, "overlap": OVERLAP},
         }
-        | ({"question_threshold": threshold} if threshold is not None else {}),
+        | kept,
     )
     write_json(
         args.output / "manifest.json",

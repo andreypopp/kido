@@ -23,19 +23,27 @@ LIMIT = 0.005
 
 
 class Compared(Backend):
-    """Answers with the candidate's logits and counts where the reference's tags differ."""
+    """Answers with the candidate's logits; counts where the reference's tags differ."""
 
     def __init__(self, reference: Backend, candidate: Backend) -> None:
-        super().__init__(candidate.threshold)
+        super().__init__(candidate.threshold, candidate.crf)
         self.reference, self.candidate = reference, candidate
         self.same = {"question": 0, "option": 0}
         self.total = {"question": 0, "option": 0}
 
     def logits(self, task: str, ids: list[int]) -> np.ndarray:
         got = self.candidate.logits(task, ids)
-        expected = self.reference.logits(task, ids).argmax(-1)
-        self.same[task] += int((got.argmax(-1) == expected).sum())
-        self.total[task] += len(ids)
+        if task == "option":
+            expected = self.reference.logits(task, ids).argmax(-1)
+            self.same[task] += int((got.argmax(-1) == expected).sum())
+            self.total[task] += len(ids)
+        return got
+
+    def question_tags(self, enc, chunk) -> list[int]:
+        got = super().question_tags(enc, chunk)
+        expected = self.reference.question_tags(enc, chunk)
+        self.same["question"] += sum(a == b for a, b in zip(got, expected, strict=True))
+        self.total["question"] += len(got)
         return got
 
     def agreement(self) -> dict[str, float]:
@@ -45,7 +53,7 @@ class Compared(Backend):
 def whole_text(tokenizer, backend, text: str):
     """Predictions with the whole text in one window."""
     return predict(
-        tokenizer, backend, text, lambda enc: [Chunk(0, len(enc.cuts) - 1, 0, len(enc.ids))]
+        tokenizer, backend, text, lambda enc: [Chunk(0, len(enc.flat.cuts) - 1, 0, len(enc.ids))]
     )
 
 

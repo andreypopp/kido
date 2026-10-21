@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 extract = "extract:main"
+label = "label_cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -37,6 +38,7 @@ only-include = [
   "extract.py",
   "jsonl.py",
   "label.py",
+  "label_cli.py",
   "metrics.py",
   "model.py",
   "parity.py",

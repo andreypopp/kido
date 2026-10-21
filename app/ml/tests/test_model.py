@@ -48,3 +48,19 @@ def test_a_loaded_checkpoint_has_the_same_logits_as_one_built_the_slow_way(tmp_p
             fast(ids, torch.ones_like(ids), "option"),
             slow.eval()(ids, torch.ones_like(ids), "option"),
         )
+
+
+def test_a_two_ends_checkpoint_keeps_its_width_and_crf_settings(tmp_path) -> None:
+    from conftest import tiny_two_ends
+
+    from crf import Crf
+    from model import load_crf, update_settings
+
+    save(tiny_two_ends(), load_tokenizer(), tmp_path / "question")
+    assert load_models(tmp_path / "question")["question"].heads["question"].out_features == 6
+    assert load_crf(tmp_path) is None
+    update_settings(tmp_path, question_threshold=0.8)
+    update_settings(tmp_path, crf=Crf().transitions().to_json())
+    update_settings(tmp_path, question_threshold=0.7)
+    assert load_crf(tmp_path) is not None
+    assert load_crf(tmp_path).trans[0, 2] == -float("inf")
