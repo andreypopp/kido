@@ -69,9 +69,7 @@ units for labelling, training and inference.
   occurs exactly once inside its question. One correction turn carries
   the errors back. A stop on length is dropped and counted.
 - Redaction runs before any call. The client refuses an unredacted unit.
-- Budget: this pipeline's own ledger has a $23.60 limit. The prior spend
-  is $44.37 of the user's $68 stop under the $70 cap; the $2 reserve is
-  inside the $68.
+- Budget: this pipeline's own ledger has a $30 limit.
 - Peak hours (DeepSeek, UTC): Monday to Friday 01:00 to 04:00 and 06:00
   to 10:00. No send within 15 minutes before a peak. A `--peak` flag
   permits a small run in peak.
