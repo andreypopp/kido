@@ -1,0 +1,3 @@
+The migration is ready and the tests pass on my side.
+
+Should I merge it into main now or open a pull request for review first?

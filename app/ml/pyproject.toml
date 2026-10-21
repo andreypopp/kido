@@ -15,6 +15,9 @@ dependencies = [
   "transformers>=4.56",
 ]
 
+[project.scripts]
+extract = "extract:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -22,13 +25,23 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 only-include = [
   "baseline.py",
+  "bench.py",
   "build.py",
+  "chunks.py",
+  "convert.py",
+  "coreml_runtime.py",
   "corpus.py",
   "deepseek.py",
+  "evaluate.py",
+  "examples.py",
+  "extract.py",
   "jsonl.py",
   "label.py",
   "metrics.py",
+  "model.py",
+  "parity.py",
   "paths.py",
+  "provenance.py",
   "questions.py",
   "redact.py",
   "render.py",
@@ -36,6 +49,8 @@ only-include = [
   "select_texts.py",
   "split.py",
   "synthetic.py",
+  "threshold.py",
+  "train.py",
 ]
 
 [dependency-groups]

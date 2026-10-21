@@ -1,0 +1,8 @@
+I checked the build setup and found two things that need your input.
+
+Which package manager should the CI use?
+  - npm, as the lockfile already exists
+  - pnpm, which is faster for the monorepo
+  - yarn, which the old scripts use
+
+The second one is smaller. Do you want me to delete the generated cache folder?

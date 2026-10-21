@@ -1,6 +1,7 @@
 # Plan: a Core ML question extractor
 
-Status: not started. Date: 2026-10-20. Branch `kido-app-questions`, from
+Status: phases 1 to 4 done; the CLI is ready for the user's test.
+Date: 2026-10-21. Branch `kido-app-questions`, from
 `kido-app` 0.29.1. This plan replaces `plans/paragraph-coreml.md` on
 `kido-app-paragraphs` (last commit 85ed85e5). The advisor owns this file.
 
@@ -356,7 +357,8 @@ the contract's JSON, and the comparison is on character ranges.
 `uv run extract [FILE]` reads plain text from FILE or stdin and prints the
 contract's JSON. `--ranges` adds character ranges in the input.
 `--backend torch|coreml`, `--compute cpu|gpu|ane|all`, `--bench N` as in
-the first attempt.
+the first attempt. With `--bench`, the output is the timing JSON only,
+not the contract's object.
 
 ## What moves from `kido-app-paragraphs`
 
@@ -703,6 +705,68 @@ calls.
 - **Checkpoint.** Seeds two-s0/s1/s2 score 0.463 / 0.479 / 0.467 on dev;
   `data/model` is two-s1 (best dev). The 3-seed means are the report.
 
+## Phase 4 results
+
+Run on 2026-10-21 by p3-impl; a results review is running. Reports in
+`data/reports/` (`parity`, `parity-long`, `bench`, `bench-long`) and
+`data/coreml/manifest.json`. No paid calls, nothing retrained. The
+results review's first listing caught a rebuild of `data/coreml` in
+progress (02:19); the directory is complete now and the three commands
+pass without stderr. The results review confirmed everything: the
+three commands in a stripped environment with empty stderr; empty,
+CRLF, wide and Claude-layout inputs; the self-contained `data/coreml`
+with every hash matching; parity reproduced exactly, with the one
+failing cell (eval-ask option F1 in gold, -0.0196, one option of 55,
+so the 0.005 gate is not fully met); the bench plausible as warm-cache;
+the 2,048 decision a reasonable trade-off; 167 tests, ruff clean. Its
+own bench gives 2.36 ms at 1,024 and 5.48 ms at 2,048.
+
+- **Package.** `data/coreml`: a question function at 1,024 tokens and
+  option functions at 128 and 512, fp16, converted in 17 s. On disk 253
+  MB: question 66.3 MB package plus 66.3 MB compiled, option 64.8 plus
+  64.8. Self-contained: tokenizer, `settings.json` (shapes, pad id, tag
+  ids, limits, threshold 0.8), `manifest.json` (code and tool versions,
+  checkpoint and package hashes, placement). Placement: GPU and all put
+  417 ops on the GPU; the Neural Engine takes 412 with 5 on the CPU.
+- **Parity** (985 eval texts, GPU, both sides at t 0.8): tag agreement
+  question 0.999904, option 0.999922; every metric of every part within
+  0.0019, except eval-ask option F1 in gold at 0.0196 (one of 55 options
+  flips); that cell fails the 0.005 rule and is reported as such. The
+  four fixtures give byte-identical JSON on torch and Core ML.
+- **2,048 against chunking** (43 eval texts over 1,024, 41 fit 2,048):
+  Core ML equals torch on the same input (0.99997). Question F1 0.720
+  single against 0.706 chunked on that subset; options and whole exact
+  (0.641) equal; 2.3 times the GPU latency. Not shipped:
+  `data/coreml-long` (271 MB) is a measurement build only.
+- **Latency**, p50 / p95 ms, fresh process per function, 30 runs: GPU
+  question 2.37 / 4.11 (first call of a first process 98 ms), option
+  128 1.55 / 3.16,
+  option 512 1.92 / 3.53; all: question 2.34 / 2.94, option 128 0.68 /
+  0.84; Neural Engine: question 17.5 / 18.0 (first call of a first
+  process 1,966 ms; not a proven cold start, because parity and the
+  tests ran before and the bench does not clear the OS or Core ML
+  cache), option 128 0.72 / 0.81, option 512 5.5 / 5.6; CPU:
+  question 24.5 / 25.1, option 128 2.0 / 2.1. Whole CLI on a fixture
+  1.9 s on both backends (imports dominate; a torch model loads in
+  0.006 s). `extract --bench 20`: load 180 ms, first 96 ms, p50 2.5,
+  p95 4.7.
+- **Option inputs over 512 tokens:** 2 of 3,513 gold questions over
+  all splits, 0 of 891 predicted in the eval.
+- **Two questions in one paragraph** (results review, Core ML GPU CLI
+  path). Of the 145 `real-multi` texts, 58 have 2 or more gold
+  questions. Texts with two gold questions in one prose paragraph: 8,
+  with 17 gold questions. At t 0.8: 13 exact, 2 missed with no overlap,
+  2 merged (one predicted span over 2 or more gold questions). At
+  argmax: 15 exact, 0 missed, 2 merged. The synthetic text "Should I
+  push it now, or wait for CI? Also, do you want the docs updated?"
+  misses the second question at both settings: P(O) 0.530, P(B) 0.444,
+  P(I) 0.026. A plain model miss, not the threshold.
+- **The three commands** (from `app/ml`): `uv run extract
+  fixtures/choice-and-list.txt --ranges`; `uv run extract
+  fixtures/inline-options.txt --backend coreml --compute gpu`; `uv run
+  extract fixtures/negative.txt --backend coreml --bench 20`. Core ML
+  needs the built, gitignored `data/coreml`.
+
 ## To confirm with the user
 
 The open-question rule with `kind`, 3 samples on 400 real eval texts
@@ -714,15 +778,27 @@ acceptance of the phase 3 model with its two exceptions (under
 
 In this order: questions not addressed to the user (data: more `?`
 texts with no question for the user; the next dev set needs at least
-100 empty-labelled `?` texts, since 26 cannot measure it), question
-boundaries (exact 0.69 against lenient 0.78),
-options end to end (0.53), `real-noq` (0.20 on 14 texts), and
+100 empty-labelled `?` texts, since 26 cannot measure it), a second
+question in the same paragraph (on the eval, 17 gold questions in 8
+texts share a prose paragraph: at t 0.8 13 exact, 2 absent, 2 merged;
+at argmax 15, 0, 2), question boundaries (exact 0.69 against lenient
+0.78), options end to end (0.53), `real-noq` (0.20 on 14 texts), and
 `AskUserQuestion` boxes.
+
+Known synthetic failures, for the first two items:
+
+- A second question after "Also," in the same paragraph: a plain model
+  miss, P(B) 0.44.
+- A lowercase question after a `?` merges with the one before it: the
+  splitter needs a capital letter or a digit after the mark
+  (`segments.py`).
+- "Should I fix it? Why did the test fail?" misses the second question,
+  P(B) 0.05.
 
 ## Open items
 
-- The option pass's input shape (phase 3 measures question lengths).
-- A 2,048 shape against chunking at 1,024 (phase 4 measures).
+- None. The option shapes are 128 and 512; 2,048 is a measurement build
+  ("Phase 4 results").
 
 ## Changes from advice
 
@@ -833,6 +909,18 @@ options end to end (0.53), `real-noq` (0.20 on 14 texts), and
   ask; the 2% FPR target joins the accepted exceptions; the next dev
   set needs 100 empty-labelled `?` texts; the no-open deltas, the
   synthetic slices and the accounting partition are recorded.
+- 2026-10-21, phase 4 results recorded; both open items are closed.
+- 2026-10-21, p4-results: `--bench` prints timing JSON only, now in
+  "CLI"; the bench's "after change" figure is labelled first call of a
+  first process, not a cold start.
+- 2026-10-21, p4-results re-check: package, hashes and parity verified
+  independently; the unverified mark is removed; the two-questions-in-
+  one-paragraph counts and the "Also," probabilities are recorded and
+  the case is added to the next improvements.
+- 2026-10-21, top-level session after the phase 4 results review:
+  everything confirmed, the status is "phases 1 to 4 done; the CLI is
+  ready for the user's test", and the three known synthetic failures are
+  under "Next improvement".
 - 2026-10-21, p4-rev-simplify: the 2,048 question function is kept
   through the B4 measurement; then the plan decides explicitly, and if
   chunking stays, 2,048 is a measurement build, not a shipped function.

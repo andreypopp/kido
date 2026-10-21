@@ -8,7 +8,6 @@ DATA = Path("data")
 OLD = Path("data-paragraphs")
 OLD_LEDGER = OLD / "usage.jsonl"
 OLD_PLAN = OLD / "session-plan.json"
-TOKENIZER = OLD / "models" / "ettin"
 LEDGER = DATA / "usage.jsonl"
 CACHE = DATA / "response-cache"
 PLAN = DATA / "session-plan.json"
@@ -17,6 +16,9 @@ ASK = DATA / "eval-ask.jsonl"
 SELECTION = DATA / "selection.json"
 NEGATIVES = DATA / "selection-negatives.json"
 MANIFEST = Path("manifest.json")
+MODEL = DATA / "model"
+COREML = DATA / "coreml"
+REPORTS = DATA / "reports"
 
 
 def synthetic_path(part: str) -> Path:

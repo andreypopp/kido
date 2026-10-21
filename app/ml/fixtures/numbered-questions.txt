@@ -1,0 +1,5 @@
+Before I continue I have three questions about the release:
+
+1. Should the changelog list internal changes?
+2. What should the version number be?
+3. Is it fine to publish from the main branch?

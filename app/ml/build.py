@@ -18,12 +18,12 @@ from corpus import candidates, is_multi_candidate
 from deepseek import read_ledger
 from jsonl import file_digest, read_jsonl, write_json, write_jsonl
 from label import STAGES, stage_ids
+from model import load_tokenizer
 from paths import (
     ASK,
     LEDGER,
     MANIFEST,
     OLD_LEDGER,
-    TOKENIZER,
     drops_path,
     labels_path,
     output_path,
@@ -77,10 +77,7 @@ def boundary_screen(records: list[Record]) -> dict[str, int]:
 
 
 def token_report(records: list[Record]) -> dict[str, object]:
-    from transformers import AutoTokenizer, logging
-
-    logging.set_verbosity_error()
-    tokenizer = AutoTokenizer.from_pretrained(str(TOKENIZER))
+    tokenizer = load_tokenizer()
     texts = [str(r["text"]) for r in records]
     sizes = sorted(len(ids) for ids in tokenizer(texts, add_special_tokens=True)["input_ids"])
     over = sum(size > 1024 for size in sizes)

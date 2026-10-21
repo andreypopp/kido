@@ -33,6 +33,8 @@ class Question:
     end: int
     kind: str
     options: tuple[str, ...]
+    first: int  # segment indexes from 0, both included
+    last: int
 
 
 def view(text: str) -> str:
@@ -237,6 +239,8 @@ def questions_of(text: str, label: dict[str, object]) -> list[Question]:
             *span(cuts, item["first"], item["last"]),  # type: ignore[index]
             item["kind"],  # type: ignore[index]
             tuple(item["options"]),  # type: ignore[index]
+            item["first"] - 1,  # type: ignore[index]
+            item["last"] - 1,  # type: ignore[index]
         )
         for item in label["questions"]  # type: ignore[attr-defined]
     ]
@@ -250,13 +254,23 @@ def canonical(label: dict[str, object]) -> tuple[tuple[object, ...], ...]:
     )
 
 
+def option_ranges(
+    text: str, start: int, options: tuple[str, ...] | list[str]
+) -> list[tuple[int, int]]:
+    """The range of each option in text, found from the start of its question; each option
+    occurs once in its question."""
+    return [(text.find(o, start), text.find(o, start) + len(o)) for o in options]
+
+
 def ordered_options(text: str, label: dict[str, object]) -> dict[str, object]:
     """The label with the options of each question in the order of the text."""
     cuts = segments(text)
     items = []
     for item in label["questions"]:  # type: ignore[attr-defined]
-        body = text[slice(*span(cuts, item["first"], item["last"]))]
-        items.append({**item, "options": sorted(item["options"], key=body.find)})
+        start, _ = span(cuts, item["first"], item["last"])
+        items.append(
+            {**item, "options": sorted(item["options"], key=lambda o: text.find(o, start))}
+        )
     return {"questions": items}
 
 

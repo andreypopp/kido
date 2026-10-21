@@ -9,12 +9,12 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 
-from jsonl import read_jsonl
-from metrics import Counts, Found, add_text, summary
-from paths import output_path
-from questions import questions_of
-from segments import segments
-from split import is_synthetic
+from evaluate import score
+from jsonl import read_jsonl, write_json
+from metrics import Found
+from model import device as model_device
+from paths import REPORTS, output_path
+from segments import BLANK, segments
 
 CHECKPOINT = Path("data-paragraphs/output/phase2-nobold-s0")
 TAGS = ["O", "B-QUESTION", "I-QUESTION", "B-OPTION", "I-OPTION"]
@@ -57,7 +57,8 @@ def units(classes: list[str], blank: list[bool]) -> list[tuple[int, int]]:
     return runs
 
 
-def predict(model, tokenizer, text: str, device) -> list[Found]:
+def tagged(model, tokenizer, text: str, device):
+    """The baseline's reading of a text: line classes, option spans and the prompt's token count."""
     text_rows = text.split("\n")
     row_starts = [sum(len(r) + 1 for r in text_rows[:i]) for i in range(len(text_rows))]
     prompt_rows, prompt = [], ""
@@ -65,6 +66,7 @@ def predict(model, tokenizer, text: str, device) -> list[Found]:
         prefix = f"  {index + 1}: "
         prompt_rows.append((len(prompt) + len(prefix), len(prompt) + len(prefix) + len(row)))
         prompt += prefix + row + ("\n" if index + 1 < len(text_rows) else "")
+    whole = tokenizer(prompt, add_special_tokens=True)["input_ids"]
     encoded = tokenizer(prompt, return_offsets_mapping=True, truncation=True, max_length=MAX_LENGTH)
     with torch.no_grad():
         logits = model(
@@ -95,8 +97,13 @@ def predict(model, tokenizer, text: str, device) -> list[Found]:
             if a <= start and end <= b:
                 at = row_starts[index] + start - a
                 options.append((at, text[at : at + end - start]))
+    return classes, options, row_starts, text_rows, len(whole)
+
+
+def predict(model, tokenizer, text: str, device) -> list[Found]:
+    classes, options, row_starts, text_rows, _ = tagged(model, tokenizer, text, device)
     found: list[Found] = []
-    cuts = [s for s in segments(text) if s.kind != "blank"]
+    cuts = [s for s in segments(text) if s.kind != BLANK]
     for first, last in units(classes, [not r.strip() for r in text_rows]):
         low, high = row_starts[first], row_starts[last] + len(text_rows[last])
         inside = [s for s in cuts if low <= s.start and s.end <= high]
@@ -121,23 +128,27 @@ def predict(model, tokenizer, text: str, device) -> list[Found]:
 
 
 def main() -> int:
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = model_device()
     tokenizer = AutoTokenizer.from_pretrained(CHECKPOINT)
     model = AutoModelForTokenClassification.from_pretrained(CHECKPOINT).to(device).eval()
-    report = {}
-    for part in ("eval-real", "eval-negative", "eval-ask", "synthetic"):
-        records = [
-            r
-            for r in read_jsonl(output_path("eval"))
-            if (part == "synthetic" and is_synthetic(r)) or r["part"] == part
-        ]
-        counts = Counts()
-        for record in records:
-            text = str(record["text"])
-            gold = [(q.start, q.end, q.options) for q in questions_of(text, record["label"])]  # type: ignore[arg-type]
-            add_text(counts, gold, predict(model, tokenizer, text, device))
-        report[part] = summary(counts)
-    print(json.dumps(report, indent=1))
+    records = read_jsonl(output_path("eval"))
+
+    def options_in(record: dict[str, object], start: int, end: int) -> tuple[str, ...]:
+        body = str(record["text"])[start:end]
+        return tuple(o for _, o in tagged(model, tokenizer, body, device)[1])
+
+    report = score(
+        records,
+        lambda record: predict(model, tokenizer, str(record["text"]), device),
+        options_in,
+    )
+    cut = sum(tagged(model, tokenizer, str(r["text"]), device)[4] > MAX_LENGTH for r in records)
+    write_json(
+        REPORTS / "baseline.json",
+        {"scores": report, "truncated_texts": cut, "texts": len(records)},
+    )
+    print(json.dumps({key: value["question_f1"] for key, value in report.items()}, indent=1))
+    print(f"truncated at {MAX_LENGTH} tokens: {cut} of {len(records)} texts")
     return 0
 
 
