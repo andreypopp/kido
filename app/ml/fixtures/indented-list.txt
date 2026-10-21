@@ -1,0 +1,4 @@
+    For the 2,048-token function, which should the CLI ship?
+    1. Only the 1,024 function, with chunking
+    2. Both functions, and the CLI selects by text length
+    3. Only the 2,048 function

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from markdown_it import MarkdownIt
 
 MARKDOWN = MarkdownIt("commonmark").enable("table")
+SCREEN = MarkdownIt("commonmark").enable("table").disable("code")
 FOOTNOTE = re.compile(r"\s*\[\^[^\]]+\]:")
 FRONT_MATTER_END = re.compile(r"---\s*|\.\.\.\s*")
 SCREEN_DROP = re.compile(r"\s*(?:#{1,6}(?:\s|$)|[>▎]|[|┌└├│┃╭╰]|(?:[-*_=]\s*){3,}$|[─━═]+$)")
@@ -124,11 +125,11 @@ def is_pseudo_heading(inline) -> bool:
     )
 
 
-def prose_lines(lines: list[str]) -> set[int]:
+def prose_lines(lines: list[str], *, screen: bool) -> set[int]:
     """Lines of the paragraphs that are not in block quotes and are not pseudo-headings; a list
-    item can hold them."""
+    item can hold them. On screen text, indentation never makes a code block."""
     kept, quoted, listed = set(), 0, 0
-    tokens = MARKDOWN.parse("\n".join(lines))
+    tokens = (SCREEN if screen else MARKDOWN).parse("\n".join(lines))
     for number, token in enumerate(tokens):
         if token.type == "blockquote_open":
             quoted += 1
@@ -162,7 +163,7 @@ def normalise(text: str, *, screen: bool) -> Mapped:
     lines = [mapped.text[a:b].replace("\r", " ") for a, b in bounds]
     front = front_matter_lines(lines)
     lines[:front] = [""] * front
-    kept = prose_lines(lines)
+    kept = prose_lines(lines, screen=screen)
     mask = [True] * len(mapped.text)
     for number, (start, end) in enumerate(bounds):
         if number not in kept:
