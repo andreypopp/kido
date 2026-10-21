@@ -55,6 +55,17 @@ From the user and from the first attempt:
   400 after the phase 1 cost measure); the $50 cap stays; if a full run
   would exceed the remainder, the manager cuts the run size, not the
   cap.
+- Decided by the top-level session on 2026-10-21, to confirm with the
+  user: the phase 3 model is accepted, with two named exceptions to
+  "beat the baseline on every metric": eval-ask question F1 (n is 19,
+  SD 0.195; the baseline's lenient advantage comes from its line format
+  on tool boxes) and synthetic-unshared count exact and lenient F1
+  (synthetic, near the ceiling for both), on the non-`?` negatives
+  count exact 0.993 against 0.9965 and FPR 0.5% against 0.35%, and the
+  2% FPR target itself (4.6% combined at the phase 3 C threshold). The
+  real question and option metrics decide, and they beat the baseline.
+  Phase 3 C's `B-Q` threshold t 0.8 stays by its pre-registered rule;
+  no other phase 3b now.
 - Role models. Implementers: `claude-bridge/claude-sonnet-5-5`. Managers:
   `claude-bridge/claude-opus-5-5`. Simplify reviewers: a mix of
   `claude-bridge/claude-opus-5-5` and `openai-codex/gpt-6-astra`.
@@ -268,8 +279,14 @@ Hugging Face offsets only with the NFC position mapping.
     labeller gave a question. Reported as its own part.
   - Held-out synthetic templates. In the built set, the synthetic eval
     is vocabulary-held-out, not fully template-held-out: one inline
-    template is shared and supplies 72 of its questions in 58 texts.
-    Report the synthetic part with and without those 58 texts.
+    template is shared and supplies 72 of its questions in 58 texts;
+    with the shared negative templates, 172 of its 289 texts share a
+    template with train. Report the synthetic part with and without
+    those 172 texts (117 remain).
+  - Negatives for the FPR gate are every real eval text without a gold
+    question: the 285 non-`?` negatives and the `?` texts whose label
+    is empty. Report the FPR on each stratum and on both together; the
+    gate applies to both together.
 - **Dev:** from train sessions, at most 20% of the real train texts.
   Its targets, at least 100 option spans and at least 50 multi-question
   texts, count real and synthetic together; synthetic fills what the
@@ -307,7 +324,10 @@ Hugging Face offsets only with the NFC position mapping.
 ## Metrics
 
 All per eval part, mean ± SD over 3 seeds, on the multi-question subset
-of the real part separately, and with and without `open` questions:
+of the real part separately, and with and without `open` questions.
+"Without `open`" removes each gold `open` question and every
+prediction whose range overlaps one, then scores the rest; it never
+excludes a whole text:
 
 - Question span F1, exact segment boundaries. Also a lenient F1 (one
   segment off at either end), reported only to explain errors.
@@ -426,15 +446,32 @@ advice or a question to `advisor`.
    the eval set, the manifest and the spend.
 3. **Training and eval.** Both passes; two models against one jointly
    trained encoder, 3 seeds each, picked by dev; a small sweep on dev
-   only; 3 seeds; error counts per kind (merge, split, boundary, missed option, spurious
-   option, false question, missed question). Deliverable: a checkpoint
-   and the report, against the baseline.
+   only; 3 seeds; error counts per kind (merge, split, boundary, missed
+   option, spurious option, false question, missed question). The dev
+   selection rule, for the sweep and the architecture choice: a
+   candidate is eligible when its FPR on the real dev negatives is
+   under 2%; the primary score is the mean of real dev question F1 and
+   real dev option F1 end to end, averaged over 3 seeds for the
+   architecture choice. The synthetic dev is diagnostic and a tie-break
+   only: a pooled score masks a real F1 of 0.55 behind a synthetic one
+   of 0.998. If no candidate is eligible, report the failure; do not
+   substitute a synthetic score. The real dev is small (83 options, 16
+   multi-question texts), so report the seed SD next to the score.
+   Deliverable: a checkpoint and the report, against the baseline.
 4. **Core ML and CLI.** One fixed-shape function per pass (1,024 tokens
    for questions, and a 2,048 function measured against chunking at
-   1,024 on the eval texts over 1,024 tokens; the option pass's shape
-   from the question token lengths measured in phase 3), parity against
-   PyTorch, latency, `uv run extract`. Deliverable: the package and three example commands for the
-   user.
+   1,024 on the eval texts over 1,024 tokens; after that measurement,
+   decide explicitly whether to ship 2,048: if chunking stays, 2,048 is
+   a measurement build only, not a function of the shipped package (the
+   question package is 75 MB, the option package 65 MB); the option pass
+   reads the first 512 tokens of a question, without windowing: only 2
+   of 3,513 gold questions over train, dev and eval exceed 512 tokens
+   (p99.9 457), and a window-and-merge path is new code with its own
+   boundary bugs for that 0.06% case; the report counts the eval
+   questions over 512 and the options lost beyond the cut, and the CLI
+   does not fail on them), parity against PyTorch, latency, `uv run
+   extract`. Deliverable: the package and three example commands for
+   the user.
 
 App integration follows as a separate plan after phase 4. It ports the
 splitter and the chunking to Swift against the shared test file.
@@ -550,11 +587,137 @@ numbers in p1-impl's report and `app/ml/manifest.json`.
   unsettled timeout is counted at its maximum ($0.0465). No further paid
   calls without the user.
 
+## Phase 3 results
+
+Run on 2026-10-21 by p3-impl; a results review is running. Reports in
+`app/ml/data/reports/` (`dev-joint`, `dev-two`, `eval-two`, `baseline`),
+runs in `data/runs/`, the checkpoint in `data/model` (two-s1). No paid
+calls.
+
+- **Training.** Gradient norm over 1 in 92% of the epoch-1 steps, 44% in
+  epoch 3, 1 to 2% at epoch 10 (max 80 in epoch 3): clipping stays on
+  for every step. A joint epoch takes about 25 s with a dev score; 10
+  epochs about 4.5 min. Equal exposure of both tasks: each stream once
+  per epoch, shuffled interleave.
+- **Sweep** (joint, seed 0, 10 epochs; dev score = mean of real-dev
+  question F1 and option F1 end to end; FPR): lr 3e-5 0.457 (1.7%),
+  5e-5 0.428 (1.4%), 1e-4 0.466 (1.0%). All within noise; 1e-4 by the
+  rule. 15 epochs at 1e-4: 0.450, best epoch 10 at 0.468; flat from
+  about epoch 8, so 10 epochs.
+- **Architecture** (lr 1e-4, 10 epochs, 3 seeds, real dev): joint
+  0.461 ± 0.008, two models 0.470 ± 0.008, FPR 1.1% both, synthetic
+  0.999 both. Question F1 0.618 against 0.615; option in gold 0.417
+  against 0.484; option end to end 0.305 against 0.324. The gap is
+  noise; two models picked by the rule. Joint would be one package.
+- **Eval, two models, 3 seeds, mean ± SD (baseline in brackets):
+  question F1 | option end to end | whole exact.**
+  - real (378): 0.691 ± 0.019 (0.470) | 0.530 ± 0.033 (0.003) |
+    0.561 ± 0.016 (0.421).
+  - real multi-question (145): 0.689 ± 0.023 (0.391) | 0.575 ± 0.055
+    (0.000) | 0.439 ± 0.031 (0.221). Merges 3.3 against 20 on real.
+  - real unanimous (272): 0.731 ± 0.020 (0.495) | 0.579 (0.000) |
+    0.664 ± 0.018 (0.493).
+  - `real-noq` (14): 0.199 ± 0.064 (0.125) | 0.199 | 0.095.
+  - negatives (285 non-`?` texts): FPR 0.7% ± 0.4 (0.4%); count exact
+    0.993. **Gate caveat (results review):** on the 105 real `?` texts
+    with an empty label the FPR is 17.5% ± 1.5; on both strata
+    together 61 of 1,170 over 3 seeds, 5.2%; the chosen seed 18 of 390,
+    4.6%. The plan's 2% gate on texts without a question is not met in
+    general; only the non-`?` stratum meets it.
+  - ask (19): 0.454 ± 0.195 (0.615) | 0.429 ± 0.190 | 0.281 ± 0.152
+    (0.000). The baseline wins question F1 and lenient F1 (0.82 against
+    0.55) here; n is 19.
+  - synthetic (289): 0.969 ± 0.024 (0.732) | 0.957 | 0.930. Without
+    the shared template (117): 0.971 (0.913); count exact 0.929 against
+    the baseline's 1.000, lenient 0.980 against 0.992.
+
+  Without `open` questions: whole exact +0.014 on real, +0.023 on
+  multi-question, +0.072 on `real-noq`; question F1 -0.002 on real,
+  -0.004 on multi-question, +0.013 on `real-noq`. Option F1 in the
+  gold question on real: 0.616 ± 0.039; the oracle ceiling (gold tags
+  decoded) is 0.973 on real and 1.0 on synthetic, so tokenizer
+  boundaries cost under 3 points. The baseline truncates 53 of 985 eval
+  texts at 1,024 tokens in its numbered format; its option F1 in gold on
+  real is 0.01.
+- **Errors, real, mean of 3 seeds (baseline):** merge 3.3 (20), split
+  9.7 (1), boundary 38 (87), missed option 66 (82), spurious option 51
+  (118), false question 63 (74), missed question 57 (65). The new model
+  does not beat the baseline on ask question F1 or on synthetic-unshared
+  count exact and lenient F1 (the unshared set is 117 texts after 172
+  shared-template texts, inline or negative, are excluded). The
+  every-metric baseline gate does not pass, and the FPR gate does not
+  pass on all texts without a question. Its weak points are question
+  boundaries (lenient 0.78 against exact 0.69) and option end to end
+  (0.53). Error definitions: a merge is one predicted span over two or
+  more gold questions; a split is two or more predicted spans inside one
+  gold question; a boundary error is a predicted span that overlaps
+  exactly one gold question without equal range and is neither; a false
+  question overlaps no gold question; a missed question has no
+  overlapping prediction; a missed or spurious option is counted inside
+  a found question.
+- **False positives read locally** (14 of the chosen seed's, top-level
+  session): questions not addressed to the user, such as research
+  questions for a subagent, "Its questions: 1. …", reported and
+  rhetorical questions.
+- **Phase 3 C, done.** A `B-Q` probability threshold, tuned on the
+  real dev only: the largest primary score with a combined real-dev FPR
+  of 2% or less; if that costs more than 0.05 question F1, the largest
+  score at 5% or less. The threshold is `question_threshold` in the
+  checkpoint's `settings.json`, read for torch and Core ML; a `B` below
+  it becomes the likelier of `I` and `O`. The sweep on real dev (two-s1;
+  score, combined FPR): argmax 0.479 at 0.34%; 0.6 and 0.7 about 0.488;
+  0.8 0.494 at 0%; 0.85 0.476; 0.9 0.454. Every point is eligible, so
+  the rule chose t 0.8 (stored in `data/model` and the three seeds). The
+  dev cannot see the eval problem: it has only 26 empty-labelled `?`
+  texts, with FPR 0 at argmax.
+
+  FPR strata on eval, no threshold | t 0.8 | baseline: non-`?` (285)
+  0.7% | 0.5% | 0.35%; empty-labelled `?` (105) 17.5% | 15.9% | 24.8%;
+  combined (390) 5.2% | 4.6% | 6.9%. Eval at t 0.8 against none: real
+  question F1 0.692 against 0.691, option end to end 0.518 against
+  0.530, whole exact 0.564 against 0.561; `real-noq` question F1 0.083
+  against 0.199; ask 0.422 against 0.454; synthetic 0.965 against 0.969;
+  missed questions 79 against 57. Decision: keep t 0.8, the
+  pre-registered rule; a change on eval numbers would be selection on
+  eval. The 2% FPR target is not met (4.6% combined) and joins the
+  accepted exceptions; the root cause is questions not addressed to the
+  user, which the dev is too small to measure. New eval parts:
+  `eval-negatives`, `-no-question-mark`, `-with-question-mark`; dev
+  parts `dev-real-no-question-mark` (561) and `-with-question-mark`
+  (26).
+- **Accounting** (real, 378 gold questions, no threshold, mean of 3
+  seeds): exact 265 + overlapping not exact 55.7 + absent 57.3; of 259
+  gold options, matched 121.3 + missed inside exact questions 65.7 +
+  inside unmatched questions 72.0. Spurious options (51 on exact
+  questions) are on the predicted side, outside the partition. Every
+  part's summary has an `accounting` key.
+- **Synthetic slices** (no threshold): all 289 question F1 0.969, exact
+  0.930; unshared (no inline, no negative forms; 117) 0.971 and 0.920
+  (baseline 0.913, 0.521); `synthetic-no-inline` (231) 0.966 ± 0.027,
+  option end to end 0.935, exact 0.929 ± 0.047 (baseline 0.785, 0.472).
+- **Question token lengths, eval.** Gold p50 14, p90 49, p99 142, max
+  329; predicted p99 91, max 185; none over 512 in the eval by this
+  count. Over train, dev and eval, 2 of 3,513 gold questions exceed 512
+  (p99.9 457, max 893). An option shape of 384 covers the rest; 256
+  loses a few gold questions. Phase 4 chooses 384 or 512.
+- **Checkpoint.** Seeds two-s0/s1/s2 score 0.463 / 0.479 / 0.467 on dev;
+  `data/model` is two-s1 (best dev). The 3-seed means are the report.
+
 ## To confirm with the user
 
 The open-question rule with `kind`, 3 samples on 400 real eval texts
-under the unchanged $50 cap, and labelling only texts with a `?` (under
+under the unchanged $50 cap, labelling only texts with a `?`, and the
+acceptance of the phase 3 model with its two exceptions (under
 "Decisions" and "Spend").
+
+## Next improvement, after the user's test
+
+In this order: questions not addressed to the user (data: more `?`
+texts with no question for the user; the next dev set needs at least
+100 empty-labelled `?` texts, since 26 cannot measure it), question
+boundaries (exact 0.69 against lenient 0.78),
+options end to end (0.53), `real-noq` (0.20 on 14 texts), and
+`AskUserQuestion` boxes.
 
 ## Open items
 
@@ -641,3 +804,35 @@ under the unchanged $50 cap, and labelling only texts with a `?` (under
   shared-template texts; the baseline covers `real-noq`; the boundary
   coverage cannot be re-measured from index labels, so the 98.84% stays
   a tune-set figure.
+- 2026-10-21, p3-rev-correct: the dev selection rule is real-dev only
+  (mean of question F1 and option F1 end to end, FPR under 2% to be
+  eligible, failure reported rather than a synthetic substitute);
+  "without `open`" removes open questions and their overlapping
+  predictions, never whole texts.
+- 2026-10-21, top-level session: the phase 3 model is accepted with two
+  named exceptions; no phase 3b; the next improvements are listed under
+  "Next improvement, after the user's test".
+- 2026-10-21, p3-results: the FPR gate counted only the 285 non-`?`
+  negatives; on the 105 empty-labelled `?` texts it is 17.5% and on
+  both together 5.2%, so the 2% gate is not met in general. The eval
+  parts now define the FPR negatives as both strata. The synthetic
+  unshared set is 117 texts after 172 shared-template texts.
+- 2026-10-21, top-level session, after the review: phase 3 C adds a
+  dev-tuned `B-Q` threshold stored in the checkpoint; the acceptance
+  gains the negatives' count exact and FPR as exceptions; the no-open
+  deltas, the error definitions and the false-positive reading are
+  recorded; "questions not addressed to the user" leads the next
+  improvements.
+- 2026-10-21, p4-rev-correct, overridden by the top-level session:
+  `option_input` reads the first 512 tokens of a question. Only 2 of
+  3,513 gold questions over all splits exceed that, so no windowing;
+  the report counts the eval questions over 512 and the options lost,
+  and the CLI does not fail.
+- 2026-10-21, phase 3 C results, decided by the top-level session: t
+  0.8 stays by the pre-registered rule although it costs `real-noq` and
+  ask; the 2% FPR target joins the accepted exceptions; the next dev
+  set needs 100 empty-labelled `?` texts; the no-open deltas, the
+  synthetic slices and the accounting partition are recorded.
+- 2026-10-21, p4-rev-simplify: the 2,048 question function is kept
+  through the B4 measurement; then the plan decides explicitly, and if
+  chunking stays, 2,048 is a measurement build, not a shipped function.
