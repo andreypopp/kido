@@ -1,7 +1,6 @@
 """Scores of the taggers on labelled units: question and option F1, exact match, false positives."""
 
 from label import gold_of
-from model import predict
 from tagging import MAX_TOKENS, OPTION_TRAILING, Span, project, token_count
 
 Unit = list[tuple[Span, tuple[Span, ...]]]  # (question span, option spans in the question)
@@ -106,14 +105,14 @@ def evaluate(tokenizer, taggers: dict, records: list[dict]) -> dict[str, dict]:
     originals = [gold_of(r) for r in records]
     held = [project_gold(tokenizer, t, g) for t, g in zip(texts, originals, strict=True)]
     gold = [[(q, options) for _, q, options in filter(None, unit)] for unit in held]
-    spans = predict(tokenizer, taggers["question"], texts)
+    spans = taggers["question"](texts)
     asked = [t[a:b] for t, found in zip(texts, spans, strict=True) for a, b in found]
-    options = iter(predict(tokenizer, taggers["option"], asked, OPTION_TRAILING))
+    options = iter(taggers["option"](asked, OPTION_TRAILING))
     pred = [[((a, b), tuple(next(options))) for a, b in found] for found in spans]
     gold_questions = [
         t[a:b] for t, unit in zip(texts, held, strict=True) for (a, b), _, _ in filter(None, unit)
     ]
-    options = iter(predict(tokenizer, taggers["option"], gold_questions, OPTION_TRAILING))
+    options = iter(taggers["option"](gold_questions, OPTION_TRAILING))
     inner = [[(q, tuple(next(options))) for q, _ in unit] for unit in gold]
     parts = {
         "all": lambda g: True,

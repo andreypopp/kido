@@ -14,6 +14,10 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+def file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
 def write_text(path: Path, text: str) -> None:
     """Replace the file whole, with mode 0600; a reader never sees half of it."""
     path.parent.mkdir(parents=True, exist_ok=True)

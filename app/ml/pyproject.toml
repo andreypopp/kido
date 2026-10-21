@@ -16,6 +16,9 @@ extract = "extract:main"
 label = "label_cli:main"
 label-corpus = "label_corpus:main"
 report = "report:main"
+convert = "convert:main"
+parity = "parity:main"
+bench = "bench:main"
 train = "train:main"
 
 [build-system]
@@ -24,8 +27,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 only-include = [
-  "corpus.py", "deepseek.py", "evaluate.py", "extract.py", "jsonl.py", "label.py",
-  "label_cli.py", "label_corpus.py", "model.py", "normalise.py", "redact.py", "report.py",
+  "bench.py", "convert.py", "coreml.py", "corpus.py", "deepseek.py", "evaluate.py", "extract.py", "jsonl.py", "label.py",
+  "label_cli.py", "label_corpus.py", "model.py", "normalise.py", "parity.py", "redact.py", "report.py",
   "tagging.py", "train.py", "transcripts.py", "units.py",
 ]
 

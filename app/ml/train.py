@@ -17,7 +17,16 @@ from corpus import load_units
 from evaluate import evaluate
 from jsonl import DATA
 from label import gold_of, load_labelled, load_prompt
-from model import CHECKPOINT, batch_tensors, device, load, load_tokenizer, new_model, save
+from model import (
+    CHECKPOINT,
+    batch_tensors,
+    device,
+    load,
+    load_tokenizer,
+    new_model,
+    save,
+    torch_taggers,
+)
 from tagging import Span, encode, tags_for
 
 LABELS = DATA / "labels.jsonl"
@@ -100,7 +109,7 @@ def run(
     for seed in seeds:
         taggers = train(tokenizer, train_records, seed, epochs)
         save(taggers, tokenizer, out / f"seed{seed}")
-        scores[seed] = evaluate(tokenizer, taggers, dev_records)["all"]
+        scores[seed] = evaluate(tokenizer, torch_taggers(tokenizer, taggers), dev_records)["all"]
     chosen = select(scores)
     if chosen is not None:
         shutil.copytree(out / f"seed{chosen}", out / "selected", dirs_exist_ok=True)
@@ -118,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"train: skipped records {skipped}", file=sys.stderr)
     tokenizer = load_tokenizer()
     if args.eval:
-        scores = evaluate(tokenizer, load(CHECKPOINT), labelled["eval"])
+        scores = evaluate(tokenizer, torch_taggers(tokenizer, load(CHECKPOINT)), labelled["eval"])
     else:
         chosen, scores = run(
             tokenizer,

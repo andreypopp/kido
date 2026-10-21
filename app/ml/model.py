@@ -1,6 +1,7 @@
 """The Ettin encoder as a BIO token tagger: the question model and the option model."""
 
 import logging as std_logging
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -68,6 +69,11 @@ def batch_tensors(tokenizer, ids: list[list[int]], hardware, labels=None) -> dic
     if labels is not None:
         batch["labels"] = [t + [-100] * (width - len(t)) for t in labels]
     return {key: torch.tensor(value, device=hardware) for key, value in batch.items()}
+
+
+def torch_taggers(tokenizer, models: dict) -> dict:
+    """For each task, a function from texts (and trailing characters to cut) to their spans."""
+    return {task: partial(predict, tokenizer, model) for task, model in models.items()}
 
 
 def predict(tokenizer, model, texts: list[str], trailing: str = "") -> list[list[Span]]:

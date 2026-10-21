@@ -125,9 +125,21 @@ def is_pseudo_heading(inline) -> bool:
     )
 
 
-def prose_lines(lines: list[str], *, screen: bool) -> set[int]:
+def is_bold_paragraph(lines: list[str], bold: list[list[bool]]) -> bool:
+    """Every character of the paragraph is bold, except spaces and a final colon, and it has no
+    "?"."""
+    text = "".join(lines)
+    flags = [b for line in bold for b in line]
+    cells = [(c, b) for c, b in zip(text, flags, strict=True) if not c.isspace()]
+    if cells and cells[-1][0] == ":":
+        cells.pop()
+    return "?" not in text and bool(cells) and all(b for _, b in cells)
+
+
+def prose_lines(lines: list[str], *, screen: bool, bold: list[list[bool]] | None) -> set[int]:
     """Lines of the paragraphs that are not in block quotes and are not pseudo-headings; a list
-    item can hold them. On screen text, indentation never makes a code block."""
+    item can hold them. On screen text, indentation never makes a code block, and `bold` (one
+    flag per character of each line) decides the pseudo-headings."""
     kept, quoted, listed = set(), 0, 0
     tokens = (SCREEN if screen else MARKDOWN).parse("\n".join(lines))
     for number, token in enumerate(tokens):
@@ -140,7 +152,12 @@ def prose_lines(lines: list[str], *, screen: bool) -> set[int]:
         elif token.type in ("bullet_list_close", "ordered_list_close"):
             listed -= 1
         elif token.type == "paragraph_open" and not quoted and token.map:
-            heading = not listed and is_pseudo_heading(tokens[number + 1])
+            if bold is None:
+                heading = not listed and is_pseudo_heading(tokens[number + 1])
+            else:
+                heading = not listed and is_bold_paragraph(
+                    lines[slice(*token.map)], bold[slice(*token.map)]
+                )
             if not heading and not FOOTNOTE.match(lines[token.map[0]]):
                 kept.update(range(*token.map))
     return kept
@@ -154,8 +171,10 @@ def front_matter_lines(lines: list[str]) -> int:
     return 0
 
 
-def normalise(text: str, *, screen: bool) -> Mapped:
-    """The paragraphs and list items of a message, with the lines of the others empty."""
+def normalise(text: str, *, screen: bool, bold: list[bool] | None = None) -> Mapped:
+    """The paragraphs and list items of a message, with the lines of the others empty. `bold` has
+    one flag per character of a screen text; without it a paragraph is a pseudo-heading when
+    markdown makes it one strong span."""
     mapped = Mapped(text, list(range(len(text))))
     if screen:
         mapped = mapped.keep(screen_mask(mapped))
@@ -163,7 +182,10 @@ def normalise(text: str, *, screen: bool) -> Mapped:
     lines = [mapped.text[a:b].replace("\r", " ") for a, b in bounds]
     front = front_matter_lines(lines)
     lines[:front] = [""] * front
-    kept = prose_lines(lines, screen=screen)
+    flags = None
+    if screen and bold is not None:
+        flags = [[bold[mapped.origin[a + i]] for i in range(b - a)] for a, b in bounds]
+    kept = prose_lines(lines, screen=screen, bold=flags)
     mask = [True] * len(mapped.text)
     for number, (start, end) in enumerate(bounds):
         if number not in kept:
