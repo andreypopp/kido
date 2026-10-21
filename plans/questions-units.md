@@ -146,6 +146,62 @@ extract` works with the trained model. The manager chooses the
 labelling sizes within the $30 limit and passes the gates without a
 wait for the user.
 
+## Core ML
+
+- Both taggers become fp16 Core ML packages. The question model reads
+  up to 512 tokens with fixed shapes 128 and 512; choose the shapes from
+  the unit token lengths. The option model has shapes 128 and 512.
+- Each package is self-contained: the compiled model, the tokenizer
+  files, and settings (tags, max tokens, trims, the `DECISION` regex
+  source, digests of the checkpoint and the package).
+- `uv run extract --backend coreml`; the default stays torch.
+- Parity on all eval units, on decoded spans, not raw logits: every
+  metric within 0.005 of torch.
+- Bench: GPU and CPU p50 and p95, and the CLI wall time.
+
+## Swift port
+
+A Swift package in `app/Packages`, one module, with:
+
+- The screen normaliser. Input: terminal rows with per-cell bold. It
+  drops fence blocks, `#` heading rows, quote-prefix rows, table rows,
+  rule rows, a leading `⏺ `, and whole-bold paragraphs without a `?`.
+  No inline markup pass.
+- The unit rule and the `DECISION` filter.
+- The Ettin tokenizer from the package's tokenizer files: the
+  swift-transformers Tokenizers or a minimal BPE, the implementer's
+  choice. It must give the Python tokens exactly.
+- Core ML inference, BIO decode with the same span trimming, and the
+  map from unit characters back to input characters.
+
+Golden fixtures: a Python script writes, for a few hundred screen texts
+(the eval units rendered as plain text, the CLI fixtures, and edge
+cases: CRLF, wide characters, emoji, the `⏺` gutter, nested lists, bold
+lines), the expected units, token ids and extracted questions and
+options. One Swift test reads them and requires identical output. No
+other tests.
+
+## App integration
+
+- Port the Shift-hover UI of commit e81915e7 (diff 13a02ede..e81915e7 on
+  the `kido-app-paragraphs` branch: overlay, highlight, option hit
+  rects, pointer cursor, a click sends the unit and the option to the
+  nearest agent, visual snapshots of each state; `docs/design-app.md`
+  has its section) onto this branch, without its old analyzer.
+- Set the Ghostty submodule to 273b7e72e (andreypopp/ghostty, branch
+  `kido-app-paragraphs`: selection points beyond the viewport).
+- Analysis: the unit under the pointer goes through the Swift pipeline
+  to questions and options. A question with no options shows Yes/No.
+- Bold comes from the Ghostty cell style. If the app cannot read it, a
+  Ghostty fork change on branch `kido-app-paragraphs`: the Ghostty
+  commit first, then the pin.
+- The model packages are bundled for the demo; storage is decided later.
+  The build fails with a clear instruction when they are missing.
+- Verification: the app's `make test` and `make visual`, with the
+  snapshots reviewed against every state of the mockup; zero warnings;
+  `xcodebuild` runs serialised; Release windows stay off-screen except
+  the user's demo. `cd app && make demo` builds the demo.
+
 ## Status
 
 Labelling is done: every `?` unit and every pool unit is labelled.
@@ -165,7 +221,8 @@ whole-unit exact 0.932. Units with 2 or more questions (40): 0.682 /
 Token ceiling: question 0.989, option 0.992. 24 eval units exceed 512
 tokens. `uv run extract` loads `data/model/selected`; the four fixtures
 give the expected output; the 2 smoke tests pass in 1.9 s. The code is
-committed. Next, not started: the Core ML backend.
+committed. The user decided on 2026-10-21 to go to completion: Core ML,
+then the Swift port, then the app integration, to a demo build.
 
 ## Tests
 
