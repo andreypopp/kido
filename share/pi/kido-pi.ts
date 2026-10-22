@@ -2323,7 +2323,8 @@ export default function (pi: ExtensionAPI) {
     promptSnippet:
       "async_bash(command, name, stream?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile; list_runs lists it and stop_run stops it with its run id",
     promptGuidelines: [
-      "A command whose result you need before continuing (tests, a build, anything you will act on) runs in foreground bash, however long it takes - length alone is never a reason to use async_bash. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its output file. If you have nothing else to do, end your turn; the notice wakes you.",
+      "Use async_bash when you can do other work while a command runs, when someone (the user, your parent or a child) may need an answer from you meanwhile, when you start several independent jobs at once, or for a server that keeps running. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its output file. If you have nothing else to do, end your turn; the notice wakes you.",
+      "Use async_bash instead of background bash jobs (`nohup`, a trailing `&`, `setsid`, `disown`).",
       "list_runs lists an async_bash run and stop_run stops it with the returned run id.",
       NOT_THE_USER_RULE,
     ],

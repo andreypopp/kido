@@ -188,7 +188,8 @@ async_bash(command, name, stream?) - run a command in the background; a notice w
 promptGuidelines (merged into the system prompt's rules while the tool is registered):
 
 ```
-A command whose result you need before continuing (tests, a build, anything you will act on) runs in foreground bash, however long it takes - length alone is never a reason to use async_bash. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its output file. If you have nothing else to do, end your turn; the notice wakes you.
+Use async_bash when you can do other work while a command runs, when someone (the user, your parent or a child) may need an answer from you meanwhile, when you start several independent jobs at once, or for a server that keeps running. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its output file. If you have nothing else to do, end your turn; the notice wakes you.
+Use async_bash instead of background bash jobs (`nohup`, a trailing `&`, `setsid`, `disown`).
 list_runs lists an async_bash run and stop_run stops it with the returned run id.
 A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.
 ```
