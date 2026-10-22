@@ -666,7 +666,7 @@ test("spawn_subagent and async_bash carry promptGuidelines pi merges into its ru
       assert.match(guidelines, /notice is information, not the user speaking/, `${name} carries the shared notice rule`);
     }
     assert.match(s.tools.get("spawn_subagent").promptGuidelines.join("\n"), /never ask a child for its result/);
-    assert.match(s.tools.get("async_bash").promptGuidelines.join("\n"), /foreground bash/);
+    assert.match(s.tools.get("async_bash").promptGuidelines.join("\n"), /Use async_bash when/);
   } finally {
     await fx.restore();
   }
