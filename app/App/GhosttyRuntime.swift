@@ -66,7 +66,7 @@ import GhosttyKit
         Self.protectClipboard(config)
         for i in 0..<ghostty_config_diagnostics_count(config) {
             let message = String(cString: ghostty_config_get_diagnostic(config, i).message)
-            if message.hasSuffix(":\(sidebarKey): unknown field") { continue }
+            if message == "\(sidebarKey): unknown field" || message.hasSuffix(":\(sidebarKey): unknown field") { continue }
             note("ghostty config: \(message)")
         }
         self.config = config
