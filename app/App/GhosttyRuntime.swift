@@ -7,6 +7,7 @@ import GhosttyKit
     private(set) var config: ghostty_config_t
     private var appearance: NSKeyValueObservation?
     let pasteboard: NSPasteboard
+    let sidebarShade: Double?
     nonisolated private static func protectClipboard(_ config: ghostty_config_t) {
         var access: UnsafePointer<CChar>?
         let key = "clipboard-read"
@@ -49,12 +50,24 @@ import GhosttyKit
         let file = configFile ?? (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
         if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
         ghostty_config_load_recursive_files(config)
+        let sidebarKey = "kido-sidebar-shade"
+        let sidebarValue = ((try? String(contentsOfFile: file, encoding: .utf8)) ?? "").split(whereSeparator: \.isNewline).compactMap { line -> String? in
+            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            return parts.count == 2 && parts[0] == sidebarKey ? parts[1] : nil
+        }.last
+        sidebarShade = sidebarValue.flatMap { value in
+            guard let percent = Double(value.hasSuffix("%") ? String(value.dropLast()) : value), (-100...100).contains(percent)
+            else { note("\(sidebarKey): not a percentage from -100 to 100: \(value)"); return nil }
+            return percent / 100
+        }
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
         ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
         ghostty_config_finalize(config)
         Self.protectClipboard(config)
         for i in 0..<ghostty_config_diagnostics_count(config) {
-            note("ghostty config: \(String(cString: ghostty_config_get_diagnostic(config, i).message))")
+            let message = String(cString: ghostty_config_get_diagnostic(config, i).message)
+            if message.hasSuffix(":\(sidebarKey): unknown field") { continue }
+            note("ghostty config: \(message)")
         }
         self.config = config
 
