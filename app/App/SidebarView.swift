@@ -598,7 +598,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var visualDragging: String? { dragging.map { "\($0)" } }
     var visualInsertion: NSRect? { insertion.isHidden ? nil : insertion.frame }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
+        (layer?.backgroundColor.flatMap { NSColor(cgColor: $0) } ?? .windowBackgroundColor).setFill()
         bounds.fill()
     }
     #endif
