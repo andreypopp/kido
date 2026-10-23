@@ -298,6 +298,7 @@ private class AlertEscape: NSView {
         let theme = (background: background, appearance: NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua))
         window.appearance = theme.appearance
         sidebar.tabs.theme = theme
+        sidebar.listBackground = runtime.sidebarShade.flatMap { background.blended(withFraction: abs($0), of: $0 < 0 ? .black : .white) }
         session?.updateBackground()
     }
 
