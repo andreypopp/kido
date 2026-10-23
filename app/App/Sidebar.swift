@@ -55,6 +55,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         }
     }
     var changed: () -> Void = {}
+    var listBackground: NSColor? { didSet { view.needsLayout = true } }
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -134,6 +135,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         }
         view.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "newSession" }?.isHidden = isCollapsed || isFloating
         dockedGlass?.cornerRadius = isFloating ? 18 : 0
+        list.layer?.backgroundColor = listBackground?.cgColor
         #if KIDO_VISUAL
         dockedGlass?.wantsLayer = true
         dockedGlass?.layer?.backgroundColor = isFloating ? NSColor.windowBackgroundColor.cgColor : nil
