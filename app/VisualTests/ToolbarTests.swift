@@ -279,6 +279,76 @@ import TmuxControl
         }
     }
 
+    func testSidebarShade() async throws {
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("shade-\(UUID().uuidString).conf")
+        defer { try? FileManager.default.removeItem(at: config) }
+        let board = NSPasteboard(name: .init("shade-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        let notes = FileManager.default.temporaryDirectory.appendingPathComponent("shade-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: notes) }
+        for (value, shade, note) in [("-30%", -0.3, nil), ("-30", -0.3, nil), ("0", 0, nil), ("100%", 1, nil),
+                                     ("101", nil, "kido-sidebar-shade: not a percentage from -100 to 100: 101"),
+                                     ("dark", nil, "kido-sidebar-shade: not a percentage from -100 to 100: dark"),
+                                     (nil, nil, nil)] as [(String?, Double?, String?)] {
+            try ("background = #172029\nkido-sidebar-shad = 1\n" + (value.map { "kido-sidebar-shade = \($0)\n" } ?? "")).write(to: config, atomically: true, encoding: .utf8)
+            FileManager.default.createFile(atPath: notes.path, contents: nil)
+            let log = try FileHandle(forWritingTo: notes)
+            let saved = dup(STDERR_FILENO)
+            dup2(log.fileDescriptor, STDERR_FILENO)
+            let runtime = GhosttyRuntime(configFile: config.path, pasteboard: board)
+            dup2(saved, STDERR_FILENO)
+            close(saved)
+            try log.close()
+            XCTAssertEqual(try XCTUnwrap(runtime).sidebarShade, shade, "\(value ?? "unset")")
+            let lines = try String(contentsOf: notes, encoding: .utf8).split(separator: "\n")
+            XCTAssertFalse(lines.contains { $0.contains("kido-sidebar-shade: unknown field") }, "\(value ?? "unset"): the app's own key is not a Ghostty error: \(lines)")
+            XCTAssertTrue(lines.contains { $0.contains("kido-sidebar-shad: unknown field") }, "\(value ?? "unset"): other Ghostty errors still show")
+            XCTAssertEqual(lines.contains { $0.hasSuffix(note ?? "kido-sidebar-shade:") }, note != nil, "\(value ?? "unset") note")
+        }
+
+        let fixture = try sidebarFixture()
+        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
+        defer { SidebarView.visualNow = nil }
+        for hex in ["fffaf0", "172029"] {
+            for value in [nil, "-30%", "20%"] as [String?] {
+                try ("background = #\(hex)\n" + (value.map { "kido-sidebar-shade = \($0)\n" } ?? "")).write(to: config, atomically: true, encoding: .utf8)
+                let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
+                let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+                defer { owner.close() }
+                let list = owner.sidebar.list
+                list.update(.running(fixture))
+                let root = try XCTUnwrap(owner.window.contentView?.superview)
+                let background = try XCTUnwrap(runtime.background.usingColorSpace(.sRGB))
+                let expected = runtime.sidebarShade.flatMap { background.blended(withFraction: abs($0), of: $0 < 0 ? .black : .white)?.usingColorSpace(.sRGB) }
+                XCTAssertEqual(list.layer?.backgroundColor.flatMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB) }, expected, "\(hex) \(value ?? "unset")")
+                guard let expected, let value else { continue }
+                for mode in ["docked", "floating"] {
+                    owner.sidebar.dismissFloating()
+                    owner.sidebar.isCollapsed = mode != "docked"
+                    if mode == "docked" { owner.sidebar.splitView.setPosition(236, ofDividerAt: 0) }
+                    else { owner.sidebar.focusSidebar(nil) }
+                    root.layoutSubtreeIfNeeded()
+                    owner.sidebar.viewDidLayout()
+                    owner.window.display()
+                    await mainQueueFence()
+                    let rect = list.convert(list.bounds, to: root)
+                    let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: rect))
+                    root.cacheDisplay(in: rect, to: bitmap)
+                    let scale = CGFloat(bitmap.pixelsWide) / rect.width
+                    let empty = try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh - Int(30 * scale)))
+                    XCTAssertEqual(empty.redComponent, expected.redComponent, accuracy: 2 / 255, "\(hex) \(value) \(mode) red")
+                    XCTAssertEqual(empty.greenComponent, expected.greenComponent, accuracy: 2 / 255, "\(hex) \(value) \(mode) green")
+                    XCTAssertEqual(empty.blueComponent, expected.blueComponent, accuracy: 2 / 255, "\(hex) \(value) \(mode) blue")
+                    let image = NSImage(size: rect.size)
+                    image.addRepresentation(bitmap)
+                    let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+                    if let failure = verifySnapshot(of: image, as: .image, named: "\(hex)-\(value == "-30%" ? "darker" : "lighter")-\(mode)", record: record),
+                       !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+                }
+            }
+        }
+    }
+
     func testLiveHeaderTheme() async throws {
         XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
         final class NativeHeader: NSView {
