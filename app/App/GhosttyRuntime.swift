@@ -458,6 +458,10 @@ extension NSColor {
             PaneView.onMain(userdata) { ($0.window?.delegate as? WindowOwner)?.newSession() }
             return true
         }
+        if action.tag == GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE {
+            PaneView.onMain(userdata) { ($0.window?.delegate as? WindowOwner)?.togglePalette() }
+            return true
+        }
         guard let command = command(action) else { return false }
         PaneView.onMain(userdata) { $0.onCommand(command) }
         return true
