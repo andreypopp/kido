@@ -6,6 +6,8 @@
 
 import childProcess from "node:child_process";
 
+import assert from "node:assert/strict";
+
 import { syncBuiltinESMExports } from "node:module";
 
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from "node:fs";
@@ -14,7 +16,7 @@ import { dirname, join, delimiter } from "node:path";
 
 import net from "node:net";
 
-import kidoPi from "./kido-pi.ts";
+import kidoPi, { PARENT_GUIDANCE } from "./kido-pi.ts";
 
 export interface AgentRecord {
   session: string;
@@ -433,6 +435,33 @@ export const fakeTheme = {
   },
 } as any;
 
+export function parentSetup(fx: Fixture, inboxPath: string, workerInbox = ""): void {
+  fx.setPanes([
+    agentPane({ pane: "%1", session: "self-session", name: "worker", inbox: workerInbox }),
+    agentPane({ pane: "%2", session: "boss-session", name: "boss", inbox: inboxPath }),
+  ]);
+}
+
+export function assistant(stopReason: string, text?: string, errorMessage?: string) {
+  return { role: "assistant", stopReason, errorMessage, content: text === undefined ? [] : [{ type: "text", text }] };
+}
+
+export async function idleTurn(
+  s: { emit: (event: string, ...args: unknown[]) => Promise<unknown[]> },
+  text?: string,
+  settle: { aborted?: boolean } = {},
+): Promise<void> {
+  await s.emit("agent_start");
+  await s.emit("agent_end", { messages: [assistant("stop", text)] });
+  await s.emit("agent_settled", settle, { isIdle: () => true });
+}
+
+export function assertReport(inbox: Inbox, index: number, text: string): void {
+  const notice: { kind?: string; text?: string } = JSON.parse(inbox.received()[index]!);
+  assert.equal(notice.kind, "notice");
+  assert.equal(notice.text, text + PARENT_GUIDANCE);
+}
+
 export function fakeCtx(sessionId: string | undefined = "self-session", ui?: unknown, idle: () => boolean = () => true) {
   return {
     hasUI: true,
@@ -558,23 +587,18 @@ export function sendToInbox(path: string, payload: string): Promise<string> {
   });
 }
 
-export function envelope(kind: string, text: string, extra: { id?: string; replyTo?: string; from?: { session: string; name?: string; pane?: string } } = {}): string {
+export function envelope(kind: string, text: string, extra: { from?: { session: string; name?: string; pane?: string } } = {}): string {
   return JSON.stringify({
     v: 1,
     kind,
-    id: extra.id ?? "env-" + Math.random().toString(36).slice(2),
+    id: "env-" + Math.random().toString(36).slice(2),
     from: extra.from ?? { session: "peer-x", name: "peer-x" },
-    replyTo: extra.replyTo,
     text,
   });
 }
 
 export function customMessages(s: Pick<ReturnType<typeof createFakePi>, "messages">, customType: string) {
   return s.messages.filter((m) => m.message.customType === customType);
-}
-
-export function askSent(s: Pick<ReturnType<typeof createFakePi>, "messages">, includes: string) {
-  return customMessages(s, "kido-ask").find((m) => m.message.content.includes(includes));
 }
 
 export function agentJson(fx: Fixture, parent: string, name: string): { session: string; run: string; model: string; tools: string[]; fork: boolean } {

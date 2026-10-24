@@ -67,7 +67,6 @@ let deliver ~tmux (r : reachable) text =
     | Ok () -> Ok Inbox
     | Error (Unavailable _) ->
         Error { kind = Refused; message = r.name ^ " is not accepting messages" }
-    | Error (Refused message) -> Error { kind = Refused; message }
     | Error (Failed message) -> Error { kind = Unknown; message }
 
 let resolve ~tmux ~dir pane =

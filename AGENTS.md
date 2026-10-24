@@ -11,7 +11,6 @@ supplies context that the code does not contain:
 
 - The authoritative store for each fact.
 - The inbox protocol and addressing.
-- The ask/reply cycle rule.
 - Spawning and the window lifecycle.
 - Run outcomes.
 - The boundary between kido and its pi extension.
@@ -768,10 +767,6 @@ a stage slower needs a reason.
   70 ms. A fake delay is a `KIDO_FAKE_*` gate that the test releases,
   not a delay that the test waits out. A test that reads only the
   registered tools needs no fixture.
-- An ask's `timeoutMs` starts before discovery and the send. On
-  macOS, the first execution of a freshly built fake costs about
-  140 ms. Thus, an ask that expects a reply gets a timeout of
-  seconds. Only a test of the timeout path uses a short one.
 - A test earns its time. Do not keep a test that repeats another test,
   the prompt snapshot or the compiler.
 
@@ -962,8 +957,6 @@ A brief does not repeat them.
      implementer.
 - **Do the task yourself.** An implementer or reviewer does not spawn
   subagents.
-  Do not call `ask_agent`.
-  Nobody waits for a question.
 - **No git writes.** Do not commit, push, reset, add, checkout or stash.
   The top-level session commits.
   Leave work uncommitted.
@@ -1030,7 +1023,7 @@ A brief does not repeat them.
   An implementer or reviewer does not edit `docs/`, this file or
   READMEs. Put prose that a change needs in your report.
   The manager writes the docs.
-- **Report through `notify_parent`, under 4000 characters**.
+- **Your last message is your report. Keep it under 4000 characters**.
   Start with what you built and the pre-fix failures.
 
 ## Releasing
@@ -1102,9 +1095,8 @@ Use recent history as the reference:
 The subagent system has these design limits:
 
 - A child moves to another session.
-- A blocked ask holds a whole turn.
 - A child exits before its window is kept.
-- A child crashes before `notify_parent`.
+- A child crashes before it reports.
 
 These limits are under "Known limits" in docs/design.md and "Limits" in
 docs/design-subagents.md.

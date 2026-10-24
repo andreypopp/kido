@@ -1,4 +1,4 @@
-type error = Unavailable of string | Refused of string | Failed of string
+type error = Unavailable of string | Failed of string
 
 exception Timeout
 
@@ -71,13 +71,6 @@ let deliver ?(timeout = 2.) ~path text =
             | reply -> (
                 match String.trim reply with
                 | "ok" -> Ok ()
-                | "refused" ->
-                    Error
-                      (Refused
-                         (Printf.sprintf
-                            "inbox %s: ask refused: the target already has an ask outstanding to \
-                             the asker"
-                            path))
                 | got ->
                     Error (Failed (Printf.sprintf "inbox %s: answered %S, want \"ok\"" path got)))
             | exception ((Timeout | Unix.Unix_error _) as e) ->
@@ -104,21 +97,11 @@ let%test_module "Tests" =
     héllo unicode ✳
     |}]
 
-    let%expect_test "a refused reply is Refused, never Unavailable" =
-      let path, _ = Test_support.start_inbox ~reply:"refused\n" in
-      (match deliver ~path "hi" with
-      | Error (Refused _) -> print_endline "refused, as expected"
-      | Error (Unavailable _) -> print_endline "WRONG: unavailable"
-      | Error (Failed _) -> print_endline "WRONG: failed"
-      | Ok () -> print_endline "WRONG: ok");
-      [%expect {| refused, as expected |}]
-
     let%expect_test "an unrecognised reply is Failed, never Unavailable" =
       let path, _ = Test_support.start_inbox ~reply:"nope\n" in
       (match deliver ~path "hi" with
       | Error (Failed _) -> print_endline "failed, as expected"
       | Error (Unavailable _) -> print_endline "WRONG: unavailable"
-      | Error (Refused _) -> print_endline "WRONG: refused"
       | Ok () -> print_endline "WRONG: ok");
       [%expect {| failed, as expected |}]
 
@@ -132,7 +115,6 @@ let%test_module "Tests" =
           print_endline "failed, as expected";
           print_endline (if String.mem ~sub:": timed out" m then "timed out" else m)
       | Error (Unavailable _) -> print_endline "WRONG: unavailable"
-      | Error (Refused _) -> print_endline "WRONG: refused"
       | Ok () -> print_endline "WRONG: ok");
       Printf.printf "under budget: %b\n" Float.(Unix.gettimeofday () -. start < 1.0);
       print_endline (String.concat ";" (received ()));
@@ -155,7 +137,6 @@ let%test_module "Tests" =
         (fun (name, path) ->
           match deliver ~path "hi" with
           | Error (Unavailable _) -> Printf.printf "%s: unavailable, as expected\n" name
-          | Error (Refused _) -> Printf.printf "%s: WRONG refused\n" name
           | Error (Failed _) -> Printf.printf "%s: WRONG failed\n" name
           | Ok () -> Printf.printf "%s: WRONG ok\n" name)
         cases;

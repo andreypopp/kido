@@ -37,8 +37,7 @@ const PANE_FORMAT = PANE_FIELDS.join(PANE_SEPARATOR);
 export type Sender = { session: string; name?: string; pane?: string };
 
 export type Envelope = { id: string; from: Sender; text: string } & (
-  | { kind: "message" | "ask" | "notice" | "steer" | "interrupt" | "stop" }
-  | { kind: "reply"; replyTo: string }
+  | { kind: "message" | "notice" | "steer" | "interrupt-and-steer" | "stop" }
   | { kind: "unrecognised"; claimed: string }
 );
 
@@ -72,14 +71,11 @@ export function parseEnvelope(text: string): Envelope | null {
   const kind = str(obj.kind);
   switch (kind) {
     case "message":
-    case "ask":
     case "notice":
     case "steer":
-    case "interrupt":
+    case "interrupt-and-steer":
     case "stop":
       return { ...base, kind };
-    case "reply":
-      return { ...base, kind, replyTo: str(obj.replyTo) };
     default:
       return { ...base, kind: "unrecognised", claimed: kind };
   }
@@ -159,13 +155,6 @@ function agentEntries(dir: string): AgentEntry[] {
   }
   return parents.flatMap((parent) => childEntries(root, parent));
 }
-
-function canReply(entry: AgentEntry | undefined, inbox: string): boolean {
-  return inbox !== "" && (entry === undefined || entry.tools.length === 0 || entry.tools.includes("message_agent"));
-}
-
-const cannotReply = (name: string): string =>
-  `${name} was spawned without the message_agent tool and cannot reply; use message_agent, or wait for its notify_parent notice`;
 
 function chain(bySession: Map<string, AgentEntry>, start: string): string[] {
   const seen = new Set<string>();
@@ -286,14 +275,9 @@ export const MESSAGE_RELATION: Record<SenderRelation, string> = {
   peer: "another agent in this session, not the user",
 };
 
-export const senderHeader = (kind: "message" | "ask", from: string, relation: SenderRelation): string =>
-  `${kind} from @${from} (${MESSAGE_RELATION[relation]}):`;
+export const senderHeader = (from: string, relation: SenderRelation): string =>
+  `message from @${from} (${MESSAGE_RELATION[relation]}):`;
 
-const ASK_CUSTOM_TYPE = "kido-ask";
-
-const REPLY_CUSTOM_TYPE = "kido-reply";
-
-export const replyHeader = (from: string, replyTo: string): string => `${from} replied (to ask ${replyTo}): `;
 
 const steerHeader = (from: string): string => `${from} is redirecting this work: `;
 
@@ -307,8 +291,6 @@ const MIN_ID_PREFIX = 8;
 const MAX_AGENT_COMPLETIONS = 10;
 
 const MAX_NOTICE_BYTES = 4000;
-
-const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
 
 const MAX_TASK_BYTES = 1024 * 1024;
 
@@ -345,7 +327,6 @@ type AgentRow = {
   self: boolean;
   cwd: string;
   canMessage: boolean;
-  canReply: boolean;
   model: string;
   kind: "agent" | "subagent" | "bash";
   relationship: "parent" | "peer" | "own" | "other";
@@ -412,12 +393,12 @@ const NOT_THE_USER_RULE =
   "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
 
 export const SPAWN_RESULT_RULE =
-  "its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id";
+  "its result arrives as a notice when it ends a turn with nothing of its own still running - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id";
 
-const NOTIFY_PARENT_INSTRUCTION =
-  "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise. " +
-  "Reporting does not end this session: it stays alive until your parent ends it with stop_run, and the parent can continue it with message_agent. " +
-  "When you reply to another agent's question with message_agent, that call is the entire response - end the turn there, with no summary or sign-off after it.";
+const SUBAGENT_INSTRUCTION =
+  "You were spawned as a subagent. When a turn of yours ends with no async run of yours running and no subagent of yours still owing you a report, your last message of that turn goes to your parent as your report, once for each piece of work the parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
+  "If you must stop to wait for another agent or for the user, say so in that message; when the work completes later, tell your parent with message_agent. " +
+  "Reporting does not end this session: it stays alive until your parent ends it with stop_run, and the parent can continue it with message_agent.";
 
 export type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
@@ -727,7 +708,7 @@ export default function (pi: ExtensionAPI) {
     pi.sendMessage(
       {
         customType: MESSAGE_CUSTOM_TYPE,
-        content: `${senderHeader("message", sender.name, sender.relation)}\n${env.text}`,
+        content: `${senderHeader(sender.name, sender.relation)}\n${env.text}`,
         display: true,
         details: { from: sender.name, relation: sender.relation, work: sender.relation === "parent" },
       },
@@ -761,61 +742,6 @@ export default function (pi: ExtensionAPI) {
     pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } }, { deliverAs: "steer", triggerTurn: true });
   };
 
-  const pendingInboundAsks = new Map<string, string>();
-
-  type GaveUp = "timeout" | "inbox" | "unsent" | "gone" | "aborted";
-  type AskOutcome = { reply: string } | { gaveUp: GaveUp };
-
-  const pendingOutbound = new Map<string, { targetSession: string; settle: (outcome: AskOutcome) => void }>();
-
-  const abandonPending = (): void => {
-    for (const waiter of [...pendingOutbound.values()]) waiter.settle({ gaveUp: "inbox" });
-  };
-
-  const STOP_AFTER_ASK_REPLY =
-    "That message_agent call is the entire response - end the turn there, with no summary or sign-off after it.";
-
-  const handleInboundAsk = async (env: Envelope): Promise<"ok" | "refused"> => {
-    const asker = env.from;
-    if ([...pendingOutbound.values()].some((w) => w.targetSession === asker.session)) return "refused";
-    const sender = messageSender(asker);
-    const from = sender?.name ?? labelFrom(asker);
-    const relation = sender?.relation ?? "peer";
-    if (env.from.pane) pendingInboundAsks.set(env.id, env.from.pane);
-    pi.sendMessage(
-      {
-        customType: ASK_CUSTOM_TYPE,
-        content:
-          `${senderHeader("ask", from, relation)}\n${from} is asking (id ${env.id}): ${env.text}\n\n` +
-          `${from} cannot see this session's context, so make the answer self-contained. ` +
-          `Reply with message_agent(to=${JSON.stringify(from)}, message=<answer>, replyTo=${JSON.stringify(env.id)}). ${STOP_AFTER_ASK_REPLY}`,
-        display: true,
-        details: { from, relation, id: env.id, question: env.text },
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
-    return "ok";
-  };
-
-  const handleInboundReply = (env: Envelope & { kind: "reply" }): void => {
-    const waiter = pendingOutbound.get(env.replyTo);
-    if (waiter) {
-      waiter.settle({ reply: env.text });
-      return;
-    }
-    if (!env.text) return;
-    const from = labelFrom(env.from);
-    pi.sendMessage(
-      {
-        customType: REPLY_CUSTOM_TYPE,
-        content: replyHeader(from, env.replyTo) + env.text,
-        display: true,
-        details: { from, replyTo: env.replyTo },
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
-  };
-
   const bySessionOf = (entries: AgentEntry[]): Map<string, AgentEntry> => new Map(entries.map((e) => [e.session, e]));
   const byRunOf = (entries: AgentEntry[]): Map<string, AgentEntry> => new Map(entries.map((e) => [e.run, e]));
 
@@ -831,17 +757,6 @@ export default function (pi: ExtensionAPI) {
     if (edge && sender.session === edge.parent) return true;
     if (!dir || !ownSessionId) return false;
     return isAncestorOf(agentEntries(dir), sender.session, ownSessionId);
-  };
-
-  const handleInboundControl = async (env: Envelope, kind: "interrupt" | "stop"): Promise<"ok" | "refused"> => {
-    if (!senderIsAncestor(env)) return "refused";
-    turnEndedByControl = true;
-    if (kind === "interrupt") {
-      await session?.abort();
-    } else {
-      session?.shutdown();
-    }
-    return "ok";
   };
 
   const handleInboundSteer = async (env: Envelope): Promise<"ok" | "refused"> => {
@@ -868,19 +783,22 @@ export default function (pi: ExtensionAPI) {
       case "message":
         await handleInboundMessage(env);
         return "ok";
-      case "ask":
-        return await handleInboundAsk(env);
-      case "reply":
-        handleInboundReply(env);
-        return "ok";
       case "notice":
         if (env.text) deliverNotice(env.text, labelFrom(env.from));
         return "ok";
       case "steer":
         return handleInboundSteer(env);
-      case "interrupt":
+      case "interrupt-and-steer":
+        if (!senderIsAncestor(env)) return "refused";
+        turnEndedByControl = true;
+        await session?.abort();
+        await handleInboundMessage(env);
+        return "ok";
       case "stop":
-        return handleInboundControl(env, env.kind);
+        if (!senderIsAncestor(env)) return "refused";
+        turnEndedByControl = true;
+        session?.shutdown();
+        return "ok";
       case "unrecognised":
         if (env.text) {
           deliver(`[unrecognised message kind ${JSON.stringify(env.claimed)} from ${labelFrom(env.from)}] ${env.text}`);
@@ -1007,7 +925,6 @@ export default function (pi: ExtensionAPI) {
         self,
         cwd: p.cwd,
         canMessage: p.inbox !== "",
-        canReply: canReply(entry, p.inbox),
         model: entry?.model ?? "",
         kind: entry?.parent ? "subagent" : "agent",
         relationship: self ? "own" : isParent ? "parent" : isPeer ? "peer" : "other",
@@ -1053,7 +970,6 @@ export default function (pi: ExtensionAPI) {
         self: false,
         cwd: r.cwd ?? "",
         canMessage: !!entry && !!livePane && livePane.inbox !== "",
-        canReply: !!entry && canReply(entry, livePane?.inbox ?? ""),
         model: entry?.model ?? "",
         kind: entry ? "subagent" : "bash",
         relationship: "own",
@@ -1117,8 +1033,6 @@ export default function (pi: ExtensionAPI) {
     return { snapshot, error: `no agent session matches "${wanted}"` };
   };
 
-  const resolveAgent = async (to: string): Promise<Resolution> => resolveIn(await discovery(), to);
-
   const resolutionError = (resolution: Resolution): string =>
     "error" in resolution ? resolution.error : "no agent session matches";
 
@@ -1168,11 +1082,10 @@ export default function (pi: ExtensionAPI) {
   };
 
   type SendResult = { ok: true } | { ok: false; kind: "unavailable" | "refused" | "failed"; message: string };
-  type EnvelopeSpec = { kind: string; id?: string; replyTo?: string };
 
   const newId = (): string => randomUUID().replace(/-/g, "");
 
-  const sendEnvelope = (path: string, spec: EnvelopeSpec, text: string): Promise<SendResult> =>
+  const sendEnvelope = (path: string, kind: Envelope["kind"], text: string): Promise<SendResult> =>
     new Promise((resolve) => {
       if (!path) {
         resolve({ ok: false, kind: "unavailable", message: "no inbox" });
@@ -1182,8 +1095,7 @@ export default function (pi: ExtensionAPI) {
       const name = pi.getSessionName() ?? "";
       if (name) from.name = name;
       if (pane) from.pane = pane;
-      const envelope: Record<string, unknown> = { v: 1, kind: spec.kind, id: spec.id ?? newId(), from, text };
-      if (spec.replyTo) envelope.replyTo = spec.replyTo;
+      const envelope: Record<string, unknown> = { v: 1, kind, id: newId(), from, text };
       const payload = JSON.stringify(envelope);
       const sock = createConnection(path);
       let out = "";
@@ -1229,7 +1141,7 @@ export default function (pi: ExtensionAPI) {
     if (kind === "message" && working) {
       return {
         ok: true,
-        text: `queued for ${name}: it is running and reads this when its current turn ends${steerable ? "; to reach it now, use steer_subagent" : ""}`,
+        text: `queued for ${name}: it is running and reads this when its current turn ends${steerable ? "; to reach it now, use message_agent with mode steer" : ""}`,
       };
     }
     return { ok: true, text: `delivered to ${name} by inbox` };
@@ -1244,35 +1156,31 @@ export default function (pi: ExtensionAPI) {
     return !!entry && isAncestor(entries, ownSessionId, entry);
   };
 
-  const ancestorOfMe = (session: string, entries: AgentEntry[]): boolean =>
-    !!edge && isAncestorOf(entries, session, edge.parent);
-
   const reportNotice = (text: string, path: string): string => {
+    if (text === "") return `subagent ${quote(pi.getSessionName() ?? "")} ended its turn with no message${PARENT_GUIDANCE}`;
     const budget = MAX_NOTICE_BYTES - Buffer.byteLength(PARENT_GUIDANCE, "utf8");
     if (Buffer.byteLength(text, "utf8") <= budget) return text + PARENT_GUIDANCE;
     const suffix = `\n\nfull report: ${path}`;
     return utf8Prefix(text, budget - Buffer.byteLength(suffix, "utf8")) + suffix + PARENT_GUIDANCE;
   };
 
-  const notifyParent = async (text: string, status: boolean, still?: () => boolean): Promise<{ ok: boolean; text: string; stale?: boolean }> => {
-    if (!edge) return { ok: false, text: "this session has no parent (it was not spawned as a subagent); notify_parent has nobody to tell" };
-    const parentSession = edge.parent;
-    const agentDir = edge.dir;
-    const found = await sessionPane(parentSession, parentPane);
-    if (still && !still()) return { ok: false, text: "superseded by new work or control; nothing sent", stale: true };
-    if (found === "unknown") return { ok: false, text: "could not read tmux; nothing sent" };
-    if (!found) return { ok: false, text: `no live process holds session "${parentSession}"; the parent is gone, nothing sent` };
-    if (!found.inbox) return { ok: false, text: `session ${parentSession} has no inbox` };
-    const path = join(agentDir, "report");
-    const body = status ? utf8Prefix(text, MAX_NOTICE_BYTES) : reportNotice(text, path);
-    if (!status) {
+  type ParentNotice = { kind: "report"; text: string } | { kind: "status"; text: string };
+
+  const notifyParent = async (parent: ParentEdge, notice: ParentNotice, still: () => boolean): Promise<"superseded" | undefined> => {
+    const found = await sessionPane(parent.parent, parentPane);
+    if (!still()) return "superseded";
+    if (found === "unknown") return;
+    const path = join(parent.dir, "report");
+    if (notice.kind === "report") {
       try {
-        writeFileSync(path, text);
-      } catch (err) {
-        return { ok: false, text: `could not keep the report at ${path}: ${err instanceof Error ? err.message : String(err)}` };
+        writeFileSync(path, notice.text);
+      } catch {
+        return;
       }
     }
-    return deliveryText(found.name || parentSession, "notice", await sendEnvelope(found.inbox, { kind: "notice" }, body));
+    if (!found?.inbox) return;
+    const body = notice.kind === "status" ? utf8Prefix(notice.text, MAX_NOTICE_BYTES) : reportNotice(notice.text, path);
+    await sendEnvelope(found.inbox, "notice", body);
   };
 
   type Watch = WatchData & {
@@ -1449,7 +1357,7 @@ export default function (pi: ExtensionAPI) {
       ? `${head}\n`
       : state.report !== undefined
         ? `${head} without reporting on its last work: its earlier report is ${reportPath}\n`
-        : `${head} without reporting: it never called notify_parent, so this is the whole account of it\n`;
+        : `${head} without a report: none of its turns ended in a report, so this is the whole account of it\n`;
     if (outcome.text) body += `detail: ${outcome.text}\n`;
     body += `run: ${watch.run}\n`;
     if (!state.reported) body += "message it to continue it, or stop_run to end it\n";
@@ -1554,7 +1462,6 @@ export default function (pi: ExtensionAPI) {
     parentTimer.unref();
   };
 
-  let idleNotice: { work: number | undefined } | undefined;
   let settled = true;
   let turnEndedByControl = false;
   let workGeneration = 0;
@@ -1566,12 +1473,12 @@ export default function (pi: ExtensionAPI) {
     | { kind: "awaiting-first-turn" }
     | { kind: "aborted" }
     | { kind: "error"; text: string; notified: boolean }
-    | { kind: "other" };
-  let ending: Ending = { kind: "other" };
+    | { kind: "ended"; text: string };
+  let ending: Ending = { kind: "ended", text: "" };
 
   const beginWork = (): void => {
     settled = false;
-    if (ending.kind === "awaiting-first-turn") ending = { kind: "other" };
+    if (ending.kind === "awaiting-first-turn") ending = { kind: "ended", text: "" };
   };
 
   const workStarted = (): void => {
@@ -1614,7 +1521,6 @@ export default function (pi: ExtensionAPI) {
     self: false,
     cwd: "",
     canMessage: true,
-    canReply: canReply(entry, childInbox(entry)),
     model: entry.model,
     kind: "subagent",
     relationship: "own",
@@ -1654,20 +1560,6 @@ export default function (pi: ExtensionAPI) {
     return entry ? { entry, starting: childStarting(entry, resolved.snapshot.runs) } : null;
   };
 
-  const restartChild = async (entry: AgentEntry, firstPrompt: string | null, work: boolean): Promise<string | null> => {
-    const parent = parentKey();
-    if (!parent) return null;
-    const sessionFile = sessionFileOf(entry);
-    if (!sessionFile) rmSync(join(entry.dir, "delivered"), { force: true });
-    if (work) rmSync(join(entry.dir, "report"), { force: true });
-    const command = piArgs(entry, { sessionFile, fork: null });
-    if (firstPrompt !== null) command.push(firstPrompt);
-    const started = await startChild(parent, entry.name, entry.dir, command);
-    if ("error" in started) return null;
-    adopt(started.created, entry);
-    return started.created.id;
-  };
-
   const restartLocks = new Map<string, Promise<unknown>>();
 
   const withRestartLock = <T>(session: string, fn: () => Promise<T>): Promise<T> => {
@@ -1684,15 +1576,13 @@ export default function (pi: ExtensionAPI) {
   };
 
   type RestartPrep =
-    | { error: { kind: "refused" | "restart"; message: string } }
+    | { error: string }
     | { snapshot: Snapshot; entry: AgentEntry | null; restartedRun: string | null; firstPrompt: string | null };
 
   const prepareRestart = async (
     address: string,
-    message: string | null,
+    message: string,
     initial: Snapshot,
-    refuse: (entry: AgentEntry) => string | null,
-    work: boolean,
   ): Promise<RestartPrep> => {
     const first = endedTarget(address, resolveIn(initial, address));
     if (!first) return { snapshot: initial, entry: null, restartedRun: null, firstPrompt: null };
@@ -1700,20 +1590,26 @@ export default function (pi: ExtensionAPI) {
       const snapshot = await discovery();
       const ended = endedTarget(address, resolveIn(snapshot, address));
       if (!ended) return { snapshot, entry: null, restartedRun: null, firstPrompt: null };
-      const refusal = refuse(ended.entry);
-      if (refusal) return { error: { kind: "refused", message: refusal } };
       if (ended.starting) return { snapshot, entry: ended.entry, restartedRun: null, firstPrompt: null };
       const sessionFile = sessionFileOf(ended.entry);
-      const firstPrompt = message !== null && sessionFile ? message : null;
-      const run = await restartChild(ended.entry, firstPrompt, work || !sessionFile);
-      if (!run) return { error: { kind: "restart", message: "could not restart it" } };
-      return { snapshot, entry: ended.entry, restartedRun: run, firstPrompt };
+      const firstPrompt = sessionFile ? message : null;
+      const parent = parentKey();
+      if (!parent) return { error: "could not restart it" };
+      const entry = ended.entry;
+      if (!sessionFile) rmSync(join(entry.dir, "delivered"), { force: true });
+      rmSync(join(entry.dir, "report"), { force: true });
+      const command = piArgs(entry, { sessionFile, fork: null });
+      if (firstPrompt !== null) command.push(firstPrompt);
+      const started = await startChild(parent, entry.name, entry.dir, command);
+      if ("error" in started) return { error: "could not restart it" };
+      adopt(started.created, entry);
+      return { snapshot, entry, restartedRun: started.created.id, firstPrompt };
     });
   };
 
-  const sendWhenBound = async (path: string, spec: EnvelopeSpec, text: string, deadline: number): Promise<SendResult> => {
+  const sendWhenBound = async (path: string, kind: Envelope["kind"], text: string, deadline: number): Promise<SendResult> => {
     for (;;) {
-      const result = await sendEnvelope(path, spec, text);
+      const result = await sendEnvelope(path, kind, text);
       if (result.ok || result.kind !== "unavailable" || Date.now() > deadline) return result;
       await sleep(50);
     }
@@ -1888,21 +1784,10 @@ export default function (pi: ExtensionAPI) {
     const from = message.details?.from || "another agent";
     const raw = typeof message.content === "string" ? message.content : "";
     const header = RELATIONS
-      .map((relation) => `${senderHeader("message", from, relation)}\n`)
+      .map((relation) => `${senderHeader(from, relation)}\n`)
       .find((line) => raw.startsWith(line));
     const content = header ? raw.slice(header.length) : raw;
     return renderInbound(message, theme, message.details?.from, "says", content);
-  });
-
-  pi.registerMessageRenderer<{ from: string; question: string }>(ASK_CUSTOM_TYPE, (message, _options, theme) => {
-    const question = message.details?.question ?? (typeof message.content === "string" ? message.content : "");
-    return renderInbound(message, theme, message.details?.from, "asks", question);
-  });
-
-  pi.registerMessageRenderer<{ from: string; replyTo: string }>(REPLY_CUSTOM_TYPE, (message, _options, theme) => {
-    const raw = typeof message.content === "string" ? message.content : "";
-    const header = replyHeader(message.details?.from ?? "", message.details?.replyTo ?? "");
-    return renderInbound(message, theme, message.details?.from, "replies", raw.startsWith(header) ? raw.slice(header.length) : raw);
   });
 
   pi.registerMessageRenderer<{ from: string }>(STEER_CUSTOM_TYPE, (message, _options, theme) => {
@@ -1980,240 +1865,48 @@ export default function (pi: ExtensionAPI) {
     name: "message_agent",
     label: "Message Agent",
     description:
-      "Send a message to another agent in this tmux session, addressed by name, session id, or a unique id prefix. It waits for the receiver to finish its current turn, and a running descendant's turn is usually its whole task: to give one new information, evidence, scope or a correction, use steer_subagent. message_agent is for what can wait until the receiver finishes.",
-    promptSnippet: "message_agent(to, message, replyTo?) - send a message to another agent in this tmux session",
+      "Send text to an agent by name, session id, or unique id prefix. message (default) queues for any agent until its current turn ends; to an ended subagent of yours it resumes that subagent in its own session, with its history, and the message is its next turn. steer joins a descendant's current turn. interrupt-and-steer aborts a descendant's current turn, then starts a new turn with the text.",
+    promptSnippet: "message_agent(to, message, mode?) - send a message to another agent in this tmux session",
     parameters: Type.Object(
       {
         to: Type.String({
           description: "Who to message: an agent's exact name, exact session id, or a unique prefix of its session id.",
         }),
         message: Type.String({ description: "The message text to deliver." }),
-        replyTo: Type.Optional(
-          Type.String({ description: "The id of an earlier ask this message answers, if any." }),
-        ),
+        mode: Type.Optional(Type.Union([Type.Literal("message"), Type.Literal("steer"), Type.Literal("interrupt-and-steer")], {
+          description: "message queues until the turn ends, and resumes an ended subagent of yours with its history (default). steer joins a descendant's current turn. interrupt-and-steer aborts a descendant's turn, then starts a new turn with the text.",
+        })),
       },
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
       if (!params.message) return reply(`could not message ${params.to}: the message is empty; nothing sent`);
       if (!params.message.isWellFormed()) return reply(`could not message ${params.to}: the message is not valid UTF-8`);
-      const askerPane = params.replyTo ? pendingInboundAsks.get(params.replyTo) : undefined;
-      if (askerPane && params.replyTo) pendingInboundAsks.delete(params.replyTo);
-      const kind = params.replyTo ? "reply" : "message";
-      const spec = params.replyTo ? { kind, replyTo: params.replyTo } : { kind };
+      const kind = params.mode ?? "message";
       const snapshot = await discovery();
-      const address = askerPane ? snapshot.all.find((a) => a.pane === askerPane)?.id ?? params.to : params.to;
-      const prep = await prepareRestart(address, params.message, snapshot, () => null, kind === "message");
-      if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error.message}`);
-      const bound = Date.now() + 5000;
-      if (prep.entry) {
-        if (prep.firstPrompt !== null) return reply(restartedReply(prep.entry.name, prep.restartedRun ?? ""));
-        if (kind === "message") markWork(entryRow(prep.entry), prep.snapshot.entries);
-        const row = entryRow(prep.entry);
-        const sent = sendText(row, kind, await sendWhenBound(row.inbox, spec, params.message, bound), prep.snapshot.entries);
-        if (!sent.ok) return reply(`could not message ${params.to}: ${sent.text}`);
-        return reply(prep.restartedRun ? `restarted ${prep.entry.name} as run ${prep.restartedRun} and ${sent.text}` : sent.text);
-      }
-      const resolved = resolveIn(prep.snapshot, address);
-      const target = resolved.agent;
+      const prep: RestartPrep = kind === "message"
+        ? await prepareRestart(params.to, params.message, snapshot)
+        : { snapshot, entry: null, restartedRun: null, firstPrompt: null };
+      if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error}`);
+      if (prep.entry && prep.firstPrompt !== null) return reply(restartedReply(prep.entry.name, prep.restartedRun ?? ""));
+      const resolved = resolveIn(prep.snapshot, params.to);
+      const target = prep.entry ? entryRow(prep.entry) : resolved.agent;
       if (!target) return reply(`could not message ${params.to}: ${resolutionError(resolved)}`);
-      if (isMyself(target)) return reply(`${agentName(target)} is this agent`);
-      if (target.kind === "bash") return reply(`could not message ${params.to}: ${agentName(target)} is a background command, not an agent; it cannot be messaged`);
-      if (!target.canMessage) return reply(`could not message ${params.to}: ${agentName(target)} has no inbox to reach it on`);
-      if (kind === "message") markWork(target, prep.snapshot.entries);
-      const sent = sendText(target, kind, await sendEnvelope(target.inbox, spec, params.message), prep.snapshot.entries);
+      const name = agentName(target);
+      if (isMyself(target)) return reply(`${name} is this agent`);
+      if (target.kind === "bash") return reply(`could not message ${params.to}: ${name} is a background command, not an agent; it cannot be messaged`);
+      if (!target.canMessage) return reply(`could not message ${params.to}: ${name} has no inbox to reach it on`);
+      if (kind !== "message") {
+        if (!isDescendant(target, prep.snapshot.entries)) return reply(`${name} is not this agent's descendant`);
+        if (target.state === "ended") return reply(`could not message ${params.to}: ${name} is no longer running`);
+      }
+      markWork(target, prep.snapshot.entries);
+      const result = prep.entry
+        ? await sendWhenBound(target.inbox, kind, params.message, Date.now() + 5000)
+        : await sendEnvelope(target.inbox, kind, params.message);
+      const sent = sendText(target, kind, result, prep.snapshot.entries);
       if (!sent.ok) return reply(`could not message ${params.to}: ${sent.text}`);
-      return reply(askerPane ? `${sent.text} ${STOP_AFTER_ASK_REPLY}` : sent.text);
-    },
-  });
-
-  pi.registerTool({
-    name: "ask_agent",
-    label: "Ask Agent",
-    description:
-      "Ask another agent a question and block until it replies - one full turn of the target's latency, not a round-trip, since a busy target does not see the question until it would otherwise have stopped. Refused for an ancestor, a target outside this tmux session, one with no inbox or no message_agent tool, or yourself. Not for collecting a subagent's result: that arrives on its own as a notice when the child finishes, and an ask blocks this turn until the target answers, so the notice cannot be read until the ask returns.",
-    promptSnippet:
-      "ask_agent(to, question, timeoutMs?) - ask another agent a question and wait for its reply (DO NOT use to get subagent results, wait for notification instead)",
-    parameters: Type.Object(
-      {
-        to: Type.String({
-          description: "Who to ask: an agent's exact name, exact session id, or a unique prefix of its session id.",
-        }),
-        question: Type.String({ description: "The question to ask." }),
-        timeoutMs: Type.Optional(
-          Type.Integer({
-            description: `How long to wait for a reply, in milliseconds. Defaults to ${DEFAULT_ASK_TIMEOUT_MS} (5 minutes) - expect a full turn of the target's latency, not a round-trip.`,
-            minimum: 1,
-          }),
-        ),
-      },
-      { additionalProperties: false },
-    ),
-    async execute(_toolCallId, params, signal) {
-      if (!params.question.isWellFormed()) return reply(`could not ask ${params.to}: the question is not valid UTF-8`);
-      const startedAt = Date.now();
-      const timeoutMs = params.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
-      const deadline = startedAt + timeoutMs;
-      const first = await discovery();
-      const prepared = await prepareRestart(params.to, null, first, (entry) =>
-        canReply(entry, childInbox(entry)) ? null : cannotReply(entry.name),
-      false);
-      if ("error" in prepared) {
-        return reply(prepared.error.kind === "restart" ? `could not ask ${params.to}: ${prepared.error.message}` : prepared.error.message);
-      }
-      const snapshot = prepared.snapshot;
-      const resolved = resolveIn(snapshot, params.to);
-      const target = prepared.entry ? entryRow(prepared.entry) : resolved.agent;
-      const restartInbox = prepared.entry ? childInbox(prepared.entry) : "";
-      const restarted = prepared.entry !== null;
-      if (!target) return reply(`could not ask ${params.to}: ${resolutionError(resolved)}`);
-      const who = agentName(target);
-      if (isMyself(target)) return reply("cannot ask yourself");
-      if (ancestorOfMe(target.id, snapshot.entries)) {
-        return reply(`${who} is an ancestor; the parent stays free to orchestrate, so it cannot be asked`);
-      }
-      if (target.kind === "bash") return reply(`${who} is not an agent; an ask cannot work over a run`);
-      if (!target.canMessage) {
-        return reply(`${who} has no inbox; an ask cannot work over a paste, there is no way back`);
-      }
-      if (!target.canReply) return reply(cannotReply(who));
-      if (target.state === "ended") return reply(`${who} is no longer running; refusing to wait for a reply`);
-      // Checked synchronously, with no await before pendingOutbound.set below.
-      if (!inboxOpen()) {
-        return reply(`this session's inbox is unavailable; no reply from ${params.to} can be waited for`);
-      }
-
-      const id = newId();
-
-      let settleReply: (outcome: AskOutcome) => void = () => {};
-      let watch: NodeJS.Timeout | null = null;
-      let settled = false;
-      const answered = new Promise<AskOutcome>((resolve) => {
-        settleReply = resolve;
-      });
-      const onAbort = () => settle({ gaveUp: "aborted" });
-      const settle = (outcome: AskOutcome): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (watch) clearInterval(watch);
-        signal?.removeEventListener("abort", onAbort);
-        pendingOutbound.delete(id);
-        settleReply(outcome);
-      };
-      const timer = setTimeout(() => settle({ gaveUp: "timeout" }), Math.max(1, deadline - Date.now()));
-      timer.unref();
-      pendingOutbound.set(id, { targetSession: target.id, settle });
-      if (signal?.aborted) onAbort();
-      else signal?.addEventListener("abort", onAbort, { once: true });
-
-      const sent = restarted
-        ? await sendWhenBound(restartInbox, { kind: "ask", id }, params.question, deadline)
-        : await sendEnvelope(target.inbox, { kind: "ask", id }, params.question);
-      if (!sent.ok) settle({ gaveUp: "unsent" });
-
-      if (!settled) {
-        let reading = false;
-        const t = target;
-        watch = setInterval(() => {
-          if (reading) return;
-          reading = true;
-          const found = sessionPane(t.id, t.pane || null);
-          void found.then((pane) => {
-            reading = false;
-            if (pane === null) settle({ gaveUp: "gone" });
-          });
-        }, envMs("KIDO_ASK_POLL_MS", 5000));
-        watch.unref();
-      }
-
-      const outcome = await answered;
-      if ("reply" in outcome) return reply(outcome.reply);
-      const gaveUpText: Record<GaveUp, string> = {
-        unsent: `could not ask ${params.to}: ${sent.ok ? "" : sent.message}`,
-        aborted: `the ask to ${params.to} was interrupted (ask id ${id}); a later reply naming this id will still arrive as a message`,
-        gone: `${who} stopped running before answering (ask id ${id}); no reply can come from it now`,
-        inbox: `this session's inbox closed before ${params.to} answered (ask id ${id}); no reply can reach it now, so ask again if the answer still matters`,
-        timeout: `no reply from ${params.to} within ${timeoutMs}ms (ask id ${id}); a later reply naming this id will still arrive as a message`,
-      };
-      return reply(gaveUpText[outcome.gaveUp]);
-    },
-  });
-
-  pi.registerTool({
-    name: "notify_parent",
-    label: "Notify Parent",
-    description:
-      "Tell your parent your work is done, carrying a short summary. Call this once, when you have an answer or have given up - nothing else reports it. You stay alive after this report: the parent ends you with stop_run, or continues you with message_agent. Only meaningful for a subagent; refused for a session with no parent.",
-    promptSnippet: "notify_parent(summary) - tell your parent your work is done, once it actually is",
-    parameters: Type.Object(
-      {
-        summary: Type.String({
-          description:
-            `A short summary of the finished work to send to your parent. Your parent reads the first ${MAX_NOTICE_BYTES} bytes; ` +
-            `anything longer is kept in full in your agent directory and the notice names it, so nothing is lost.`,
-        }),
-      },
-      { additionalProperties: false },
-    ),
-    async execute(_toolCallId, params) {
-      if (!params.summary.isWellFormed()) return reply("could not notify parent: the summary is not valid UTF-8");
-      const sent = await notifyParent(params.summary, false);
-      if (!sent.ok) return reply(`could not notify parent: ${sent.text}`);
-      return reply(sent.text);
-    },
-  });
-
-  const controlSend = async (kind: "steer" | "interrupt", to: string, text: string): Promise<string> => {
-    const resolved = await resolveAgent(to);
-    if (!resolved.agent) return `could not ${kind} ${to}: ${resolutionError(resolved)}`;
-    const target = resolved.agent;
-    const name = agentName(target);
-    if (isMyself(target)) return `${name} is this agent`;
-    if (!isDescendant(target, resolved.snapshot.entries)) return `${name} is not this agent's descendant`;
-    if (kind === "steer") markWork(target, resolved.snapshot.entries);
-    const result = await sendEnvelope(target.inbox, { kind }, text);
-    if (!result.ok) return `could not ${kind} ${to}: ${deliveryText(name, kind, result).text}`;
-    return kind === "steer" ? `delivered to ${name} by inbox` : `interrupted ${name}`;
-  };
-
-  pi.registerTool({
-    name: "steer_subagent",
-    label: "Steer Subagent",
-    description:
-      "Redirect a descendant that is already working, without aborting its turn: the message joins the run it is in rather than waiting for it to finish. For anything a running descendant needs before it finishes: new evidence, a change of scope, a correction or a warning. Refused for anything but a descendant. Use message_agent when the message can wait for the current turn to end; use stop_run to end a run.",
-    promptSnippet: "steer_subagent(to, message) - redirect a descendant mid-task without aborting; stop_run ends a run",
-    parameters: Type.Object(
-      {
-        to: Type.String({
-          description: "Who to steer: a descendant's exact name, exact session id, or a unique prefix of its session id.",
-        }),
-        message: Type.String({ description: "The course correction to deliver." }),
-      },
-      { additionalProperties: false },
-    ),
-    async execute(_toolCallId, params) {
-      if (!params.message.isWellFormed()) return reply(`could not steer ${params.to}: the message is not valid UTF-8`);
-      return reply(await controlSend("steer", params.to, params.message));
-    },
-  });
-
-  pi.registerTool({
-    name: "interrupt_subagent",
-    label: "Interrupt Subagent",
-    description:
-      "Abort a descendant's current turn without ending its session - it stays alive and idle, ready for a corrected instruction. Refused for anything but a descendant; use stop_run to end a run.",
-    promptSnippet: "interrupt_subagent(to) - abort a descendant's turn without ending its session; stop_run ends a run",
-    parameters: Type.Object(
-      {
-        to: Type.String({
-          description: "Who to interrupt: an agent's exact name, exact session id, or a unique prefix of its session id.",
-        }),
-      },
-      { additionalProperties: false },
-    ),
-    async execute(_toolCallId, params) {
-      return reply(await controlSend("interrupt", params.to, ""));
+      return reply(prep.restartedRun ? `restarted ${name} as run ${prep.restartedRun} and ${sent.text}` : sent.text);
     },
   });
 
@@ -2221,11 +1914,11 @@ export default function (pi: ExtensionAPI) {
     name: "spawn_subagent",
     label: "Spawn Subagent",
     description:
-      "Create a subagent in its own tmux window with a task. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result; it stays alive after it reports, so end it with stop_run when you need nothing more from it, or message it to continue.",
+      "Create a subagent in its own tmux window with a task. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it ends a turn with nothing of its own still running; it stays alive after it reports, so end it with stop_run when you need nothing more from it, or message it to continue.",
     promptSnippet:
       "spawn_subagent(task, name, model?, tools?, fork?) - delegate a task to a new subagent, optionally forked from your own context, in its own window; list_runs lists it and stop_run stops it with the returned run id",
     promptGuidelines: [
-      "A subagent's result arrives on its own as a notice when it finishes; never ask a child for its result and never poll list_runs for it; list_runs lists the run and stop_run stops it with the returned run id.",
+      "A subagent's result arrives on its own as a notice when it finishes; never poll list_runs for it; list_runs lists the run and stop_run stops it with the returned run id.",
       "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
       NOT_THE_USER_RULE,
     ],
@@ -2246,7 +1939,7 @@ export default function (pi: ExtensionAPI) {
         ),
         tools: Type.Optional(
           Type.Array(Type.String(), {
-            description: "Tool names the subagent may use - its capability ceiling. notify_parent is always included. Omit to leave it at pi's default set.",
+            description: "Tool names the subagent may use - its capability ceiling. Omit to leave it at pi's default set.",
           }),
         ),
         fork: Type.Optional(
@@ -2285,8 +1978,7 @@ export default function (pi: ExtensionAPI) {
       const modelError = await validateModel(params.model);
       if (modelError) return reply(`could not spawn subagent: ${modelError}`);
 
-      const selected = params.tools ? [...params.tools] : [];
-      const tools = selected.length && !selected.includes("notify_parent") ? [...selected, "notify_parent"] : selected;
+      const tools = params.tools ? [...params.tools] : [];
       const childSession = newId();
       const childDir = join(dir ?? "", "agents", ownSessionId, name);
       mkdirSync(childDir, { recursive: true, mode: 0o700 });
@@ -2432,13 +2124,13 @@ export default function (pi: ExtensionAPI) {
       }
       const name = target.name || target.id;
       const entry = entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
-      if (!force && !target.inbox) return reply(`subagent ${name} has no inbox to ask nicely over; pass --force to kill its window instead`);
+      if (!force && !target.inbox) return reply(`subagent ${name} has no inbox for a stop request; pass --force to kill its window instead`);
       const recordArgs = ["run-outcome", run, "--result", entry && reported(entry) ? "completed" : "stopped"];
       const recorded = await runCommand(command, recordArgs, { timeoutMs: stopDeadline(stopWait) });
       if (!recorded.ok && recorded.code !== 5) return reply(recorded.error);
       let requestFailure = "";
       if (!force && target.inbox) {
-        const request = await sendEnvelope(target.inbox, { kind: "stop" }, "");
+        const request = await sendEnvelope(target.inbox, "stop", "");
         if (!request.ok && request.kind !== "refused") requestFailure = request.message;
       }
       const res = await runCommand(command, ["run-stop", run, "--wait", String(stopWait)], { timeoutMs: stopDeadline(stopWait) });
@@ -2448,7 +2140,7 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.promptGuidelines.push(NEVER_SLEEP_RULE);
-    if (edge) event.systemPromptOptions.promptGuidelines.push(NOTIFY_PARENT_INSTRUCTION);
+    if (edge) event.systemPromptOptions.promptGuidelines.push(SUBAGENT_INSTRUCTION);
   });
 
   pi.on("session_start", async (_event, ctx) => {
@@ -2464,9 +2156,8 @@ export default function (pi: ExtensionAPI) {
     process.on("exit", unsetOptionsSync);
     pendingNotices.clear();
     written.clear();
-    ending = { kind: "other" };
+    ending = { kind: "ended", text: "" };
     settled = true;
-    idleNotice = undefined;
     turnEndedByControl = false;
     liveWatch = undefined;
 
@@ -2575,17 +2266,22 @@ export default function (pi: ExtensionAPI) {
     if (event?.toolResults?.length) flushStreams();
   });
 
-  pi.on("agent_end", (event: { messages?: { role?: string; stopReason?: string; errorMessage?: string }[] }) => {
+  pi.on("agent_end", (event: { messages?: { role?: string; stopReason?: string; errorMessage?: string; content?: unknown }[] }) => {
     finishWorking();
     const assistants = (event?.messages ?? []).filter((m) => m?.role === "assistant");
     const last = assistants[assistants.length - 1];
-    if (!last) return;
+    if (!last) {
+      ending = { kind: "ended", text: "" };
+      return;
+    }
+    const blocks = Array.isArray(last.content) ? last.content : [];
+    const text = blocks.flatMap((block) => (isRecord(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : [])).join("");
     ending =
       last.stopReason === "error"
         ? { kind: "error", text: last.errorMessage || "no error message given", notified: false }
         : last.stopReason === "aborted"
           ? { kind: "aborted" }
-          : { kind: "other" };
+          : { kind: "ended", text };
   });
 
   pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
@@ -2603,36 +2299,29 @@ export default function (pi: ExtensionAPI) {
       if (turnEndedByControl || generation !== workGeneration) return;
       if (isRecord(run) && runRow(run)?.outcome !== undefined) return;
       ending.notified = true;
-      const notice = await notifyParent(
-        `subagent stopped on an error: ${trimErrorMessage(ending.text)}\nrun: ${edge.run}\nmessage it to retry, or stop_run to end it`,
-        true,
+      const superseded = await notifyParent(
+        edge,
+        { kind: "status", text: `subagent stopped on an error: ${trimErrorMessage(ending.text)}\nrun: ${edge.run}\nmessage it to retry, or stop_run to end it` },
         () => !turnEndedByControl,
       );
-      if (notice.stale) ending.notified = false;
+      if (superseded) ending.notified = false;
       return;
     }
     const generation = workGeneration;
     const ownDir = edge.dir;
     const state = reportState(ownDir);
-    if (state.reported || (idleNotice && idleNotice.work === state.work)) return;
+    if (state.reported) return;
     if (!(await watchLiveChildren())) return;
     if (turnEndedByControl || generation !== workGeneration) return;
     for (const watch of watches.values()) {
       if (watch.target.kind === "bash" || !reported(watch.target.entry)) return;
     }
-    idleNotice = { work: state.work };
-    const notice = await notifyParent(
-      `subagent ${edge.run} is idle without reporting: its last turn ended and it did not call notify_parent. Continue it with message_agent, or end it with stop_run.`,
-      true,
-      () => !turnEndedByControl && reportState(ownDir).work === state.work,
-    );
-    if (notice.stale) idleNotice = undefined;
+    await notifyParent(edge, { kind: "report", text: ending.kind === "ended" ? ending.text : "" }, () => !turnEndedByControl && reportState(ownDir).work === state.work);
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
     const reload = event?.reason === "reload";
     stopInbox({ keepListening: reload });
-    abandonPending();
     stopParentWatch();
     if (reload) {
       globalThis.__kidoPiExtensionWatches = [...watches.values()].map(

@@ -35,7 +35,7 @@ it.
 4. When kido-app reports the release, run kido's release in a subagent,
    because scripts/release.sh builds two worktrees and takes minutes. Spawn
    one agent on deepseek/deepseek-flash:low. It does the work itself: no
-   subagents, no ask_agent. It may make only these git writes: the tap pull
+   subagents. It may make only these git writes: the tap pull
    and what scripts/release.sh does itself. Its steps:
    - `git -C homebrew-tap pull --ff-only`. The tap head must be
      kido-app's tap commit.

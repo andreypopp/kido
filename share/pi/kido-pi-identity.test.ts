@@ -39,7 +39,7 @@ test("a process that merely inherited a subagent's environment is not a subagent
       };
       await s.emit("before_agent_start", event);
       assert.ok(
-        event.systemPromptOptions.promptGuidelines.every((line) => !line.includes("notify_parent")),
+        event.systemPromptOptions.promptGuidelines.every((line) => !line.includes("You were spawned as a subagent")),
         "it is told nothing about a parent it does not have",
       );
     });
@@ -50,7 +50,7 @@ test("a process that merely inherited a subagent's environment is not a subagent
 
 // Negative control for the test above: the directory names this process's own
 // session id, so the parent edge is trustworthy.
-test("a real subagent still gets the parent edge and the standing notify_parent instruction", async () => {
+test("a real subagent still gets the parent edge and the standing subagent instruction", async () => {
   const fx = makeFixture();
   try {
     await asSubagent(fx, "child-session", async () => {
@@ -61,7 +61,7 @@ test("a real subagent still gets the parent edge and the standing notify_parent 
       };
       await s.emit("before_agent_start", event);
       const guidelines = event.systemPromptOptions.promptGuidelines.join("\n");
-      assert.match(guidelines, /notify_parent/, "the standing instruction rides on every turn");
+      assert.match(guidelines, /your last message of that turn goes to your parent as your report/, "the standing instruction rides on every turn");
       assert.match(guidelines, /never run `sleep`/i, "so does the always-on never-sleep rule");
     });
   } finally {
@@ -82,7 +82,7 @@ test("an unresolved session id is not a subagent, whatever the environment claim
       };
       await s.emit("before_agent_start", event);
       assert.equal(event.systemPromptOptions.promptGuidelines.length, 1, "the always-on never-sleep rule still applies");
-      assert.doesNotMatch(event.systemPromptOptions.promptGuidelines.join("\n"), /notify_parent/);
+      assert.doesNotMatch(event.systemPromptOptions.promptGuidelines.join("\n"), /You were spawned as a subagent/);
     });
   } finally {
     await fx.restore();

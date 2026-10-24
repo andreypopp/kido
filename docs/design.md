@@ -182,7 +182,7 @@ the agent map outlives a server. It is not under `$TMPDIR`, because the
 map outlives a reboot. It holds:
 
 - `inbox/<session-id>.sock`, in a 0700 directory. The path derives from
-  the session id, so `notify_parent` needs no lookup. The 103-byte
+  the session id, so a child's report needs no lookup. The 103-byte
   socket limit applies.
 - `agents/<parent-session>/<name>/`, the agent map
   (design-subagents.md, "The agent directory").
@@ -207,14 +207,14 @@ pane is a local pi agent only with an OSC 7501 root with `app=pi`
 (`#{pane_program_status}`) and `@kido_session`. Discovery and
 addressing apply it. A stale option on a shell pane is no agent.
 Liveness of a known session is the exception, because pi clears its
-root while it runs ("Window lifecycle", rule 2). The ask's liveness
-poll, `notify_parent` and the parent watch find a session alive while a
+root while it runs ("Window lifecycle", rule 2). A child's report and
+the parent watch find a session alive while a
 pane that is not dead holds its `@kido_session`, with or without a pi
 root. A dead pane counts as gone, because a run pane keeps
 `remain-on-exit` and thus the stale options of a killed child.
 Thus, an agent in its external editor or suspended is not listed and
-cannot be addressed, but an ask that already waits on it continues, and
-a child's report reaches a parent in its editor. A suspended pi reads
+cannot be addressed, but a child's report reaches a parent in its
+editor. A suspended pi reads
 its inbox only after `fg`.
 
 **One copy.** On its first factory call, the extension claims
@@ -296,7 +296,7 @@ discard it.
 
 A reload also keeps the four pane options, because the socket stays
 bound and the session continues. Unsetting them would make the parent
-look gone during the gap: a child's `notify_parent` would find no
+look gone during the gap: a child's report would find no
 parent, and its parent watch would end it. Only the other reasons unset
 them. The `run-wait` watches survive in
 `globalThis.__kidoPiExtensionWatches`, with all their stream state: the
@@ -340,19 +340,6 @@ with the full text. Unlike a notice, a message never collapses, because
 its purpose is to be read. Only v0 text, which `kido prompt` sends, is
 the user's own text, without a header.
 
-An `ask` uses the same custom-message handling and relationship header:
-`ask from @<name> (your parent, who spawned you):`, and the other forms.
-The model's text includes:
-
-- the question;
-- the ask's id;
-- a line saying the asker cannot see this session's context;
-- the exact `message_agent` call for the reply.
-
-The renderer displays only `ask from @<name>:` and the question. The id
-and reply instructions are for the model, not the human reading the
-transcript.
-
 ### Steer and followUp
 
 The extension uses `followUp` to queue work and `steer` to interleave
@@ -360,17 +347,17 @@ work. An idle recipient uses the wake path below.
 
 The rule, one line:
 
-> Steer what is safe to interleave. Queue what must be answered in order.
+> Steer what is safe to interleave. Queue what waits for the turn to end.
 
 This rule determines the incoming work and report kinds:
 
-- **`ask` queues.** An ask requires a correlated reply. Two asks must
-  never remain in flight inside one turn. `followUp` keeps correlated
-  questions in order. The cost is the wait under "Known limits".
-- **`message` queues.** It has no correlation to confuse and no authority
-  over the receiver's work. It waits for the current turn, like user text.
+- **`message` queues.** It has no authority over the receiver's work. It
+  waits for the current turn, like user text.
 - **`steer` steers.** The agent that assigned the work sends a correction.
-  It needs no correlation and has no value after that work ends.
+  It has no value after that work ends.
+- **`interrupt-and-steer` queues after the abort.** The receiver aborts
+  the turn first, so nothing remains to steer into. The text is the next
+  turn's first message.
 - **`notice` steers.** The parent needs this information to assign the
   next work. Thus, it is interleaved instead of queued.
 - **A stream batch steers.** It is not an envelope: the parent tails the
@@ -403,20 +390,17 @@ message.
 **One run at a time.** pi counts the session as busy from the start of
 the run, also while `before_agent_start` handlers run. A second
 arrival during that time goes into the starting run's queue in its own
-mode. It does not start a second run. Two asks can thus be in one run.
-Each ask has its own id and receives a reply with `replyTo`, so
-simultaneous arrival causes no misattribution.
+mode. It does not start a second run.
 
 ### v0 and v1
 
 A v0 payload is raw prompt text. A v1 payload is one JSON object with:
 
 - a version;
-- a kind (`message`, `ask`, `reply`, `notice`, `steer`, `interrupt`,
+- a kind (`message`, `notice`, `steer`, `interrupt-and-steer`,
   `stop`);
 - an id;
 - a sender: session, name and pane;
-- an optional `replyTo`;
 - the text.
 
 A payload is v1 only if it parses as a JSON object with both `v` and
@@ -437,7 +421,7 @@ session. Without this exclusion, one agent and one live child in the
 session would give two candidates and exit 5. A human could reasonably
 have meant the agent.
 
-The protocol has no version gates, including for interrupt and stop.
+The protocol has no version gates.
 kido runs on one machine, and the binary and extension upgrade together.
 Thus, a version gate would serve no purpose. Stop escalation kills the
 pane whether or not the target understands the request.
@@ -467,7 +451,7 @@ not accept messages.
 The extension never pastes. A target without `@kido_inbox` is "not
 accepting messages". Model-authored text must not run as a command line
 in the target's pane. A refusal (`refused`) is not a delivery failure.
-The target reads the question and intentionally declines it.
+The target received the envelope and intentionally declines it.
 
 The extension refuses two more sends before sending: a message to the
 caller itself, which would return as a fresh user turn, and text that is
@@ -475,8 +459,8 @@ not valid UTF-8.
 
 ## Addressing
 
-The tmux session limits addressing for `message_agent`, `ask_agent`,
-`steer_subagent` and `interrupt_subagent`. `list_runs` has a narrower
+The tmux session limits addressing for `message_agent` in every mode.
+`list_runs` has a narrower
 scope (design-subagents.md, "The tools, and what they call").
 
 The tools show names, not ids, and still accept a session id or a
@@ -495,12 +479,6 @@ found". Unnamed pi sessions match only by id. Native-only panes have no
 addressable session. `stop_run` resolves run ids first; its rules are in
 design-subagents.md, "Redirecting one, and ending one from outside".
 
-The extension refuses instead of guessing. It never infers `replyTo`,
-even with exactly one pending ask from the target. A wrong guess would
-resolve the wrong pending ask and assign one question's answer to
-another question. A reply re-resolves the asker from the pane the ask
-came from, so it reaches an asker whose session id a `/reload` changed.
-
 In pi's prompt editor, `@` and a prefix complete live agent rows from
 `list_runs`. Completion excludes bash and ended runs. Each row shows
 status, activity and a subagent's parent. The extension wraps the
@@ -513,105 +491,6 @@ prefix, which addressing resolves like a name.
 A keystroke uses the last list without waiting for discovery. If the
 list is older than `KIDO_AGENT_LIST_TTL_MS` (1s), a background refresh
 starts. Nothing is fetched until the first `@`.
-
-## Ask and reply
-
-An ask blocks the calling tool until an answer arrives at the asker's
-inbox. The extension assigns the envelope id and registers a waiter
-before it sends the `ask`. The answer arrives later in a separate
-`reply` envelope with that id.
-
-The wire `ok` means received, not answered. A model turn takes minutes.
-The two-second inbox timeout must not include that turn.
-
-**A caller with no inbox is refused.** Replies can arrive only through
-the asker's inbox. Without one, nothing can answer the caller's
-question.
-
-The extension also refuses a target that cannot reply. A reply requires
-a `message_agent` call. A child's tools allowlist can exclude that tool,
-leaving no way to answer. The ask would only block. `list_runs` reports
-`canReply` beside `canMessage`.
-
-The expected latency is one full turn, not a round-trip. Questions
-queue with `followUp` and wait for an explicit `message_agent` reply.
-The default wait is five minutes. Thus, timeout does not mean that the
-question failed. A late reply reaches the model as an ordinary message
-instead of being discarded. The ask id remains a valid correlation for
-that reply.
-
-### The cycle edge
-
-A subagent cannot ask an ancestor, so the parent remains free to
-coordinate work. The extension follows the parent chain of the agent
-map to enforce this rule. Parent-to-child and peer-to-peer asks remain
-possible. Thus, two peers can block on each other.
-
-Each extension keeps the prevention rule in memory. If this session
-already has a waiting ask to an inbound ask's sender, it answers
-`refused` on the wire. It does not deliver that ask to the model.
-An on-disk edge set would survive `kill -9` on the asker. It would then
-permanently block future reverse asks.
-
-The edge set is the waiting-ask map itself, not a separate count.
-An edge exists exactly while an ask to that target waits. Thus, no
-second count can disagree. An unmatched reply-shaped envelope does not
-remove a waiter.
-
-The extension registers the waiter synchronously before the `await`
-that starts sending. An inbound ask already sees the edge while the
-send is in flight. Settling a waiter is idempotent.
-
-### When the inbox goes away
-
-Without an answer destination, a waiter would wait for its whole
-timeout on an unserved socket. Its cycle edge would remain closed for
-the same duration. Thus, shutdown releases every waiting ask, including
-on reload. On reload, the socket remains bound and the reloaded module
-adopts the listener; the old module's waiters have no module to settle
-in.
-
-`session_shutdown` first stops this module from serving the inbox:
-it parks the socket on reload, or closes it for any other reason. Then
-it releases every waiter. `ask_agent` uses one synchronous "is the inbox
-open" check before it registers a waiter, with no `await` between them.
-The check reads the module's view, not the held server. It refuses
-during a reload gap, even while the socket listens.
-
-### When the target goes away
-
-Only the asked process can answer. If the target stops running, the
-ask ends, unless a SIGKILL leaves its options on a live shell pane
-(below). A target can be alive at
-the send and dead a second later. Without another check, the asker would
-wait for the whole `timeoutMs`.
-
-A waiting ask therefore reads the target's pane every
-`KIDO_ASK_POLL_MS` (five seconds), or every pane with `list-panes -a`
-when the target's pane is not known, as after a restart. A successful
-read that shows no pane, or only a dead pane, with the target's
-`@kido_session` settles the waiter. The pi root does not count: pi
-clears it while the external editor is open, and its inbox and turns
-continue. Ctrl+Z also clears it and stops the process, and the reply
-can arrive after `fg`, within `timeoutMs` ("The trust rule"). A
-failed read supplies no evidence and settles nothing. The poll cannot
-tell a suspended pi from one that SIGKILL ended in a live shell, because
-both leave the options on a pane that is not dead. Such an ask waits for
-`timeoutMs`.
-The poll prevents overlapping reads, and its timer is unref'd, so the
-wait never keeps pi's event loop open.
-
-Using `notify_parent` to settle a pending ask would infer a `replyTo`
-that the child never supplied. A notice is not an answer. A killed or
-crashed child cannot refuse on the wire. One mechanism reads the fact
-common to every case: the process is gone.
-
-### When the human interrupts
-
-The ask tool listens to its `AbortSignal`. The signal settles the
-waiter like any other outcome. It removes the pending entry and cycle
-edge. The tool reports the ask id as it does for a timeout. A later
-reply still reaches the model as a message.
 
 ## Spawning
 
@@ -865,11 +744,11 @@ Only three things end it:
 - the orphan rule, after its parent ends.
 
 The parent decides, because only the parent knows whether it needs more
-work. The child's report is not an ending. The notice a parent receives
-from `notify_parent` says so: end the child with `stop_run` when nothing
+work. The child's report is not an ending. The report notice that a
+parent receives says so: end the child with `stop_run` when nothing
 more is needed, or continue it with `message_agent`.
 
-**An ended child restarts on a message.** `message_agent` or `ask_agent`
+**An ended child restarts on a message.** `message_agent`
 to an ended subagent starts it again as a new run under the same pi
 session, with `kido-pi --session <session file>` and the message as
 pi's first prompt. There is no resume tool: a reused name means "message
@@ -879,27 +758,26 @@ rules.
 ## Steer, interrupt and stop
 
 These three verbs intentionally differ, in increasing order of force.
-`steer` adds text to a running turn inside the loop. See "Steer and
-followUp". The target reads the correction between tool calls and
-continues, instead of restarting. `interrupt` aborts the current turn
-through pi's `ctx.abort()`. It leaves the target alive and idle, ready
-for a corrected instruction. An interrupt answers only after the abort
-settles.
+`message_agent` in `steer` mode adds text to a running turn inside the
+loop. See "Steer and followUp". The target reads the correction between
+tool calls and continues, instead of restarting.
+`interrupt-and-steer` mode aborts the current turn and then starts a
+new turn with the text (design-subagents.md, "Redirecting one, and
+ending one from outside"). An interrupt always carries the next
+instruction, so a child is never left idle with work it did not finish
+and no report owed.
 
 Interrupt has no escalation. A target that cannot receive it cannot
 abort a turn. No destructive fallback fits "redirect this, do not kill
 it". `stop` ends the session through the normal exit's shutdown path.
 It needs no second teardown.
 
-**Scope.** An agent can reach only its descendants: agents with the
-caller in their parent chain in the agent map. Unlike `message_agent`,
-steer has the same restriction as interrupt. Both redirect current work
-with the same authority, but steer uses less force.
-
-Allowing anyone to steer while only ancestors can interrupt would be
-inconsistent. Names express this scope: `_subagent` tools act on your
-descendants; `_agent` tools act on any agent. See
-`docs/design-subagents.md`, "The tools, and what they call".
+**Scope.** These verbs reach only descendants: agents with the caller
+in their parent chain in the agent map, a grandchild included. Unlike
+`message` mode, `steer` mode has the same restriction as
+`interrupt-and-steer`. Both redirect current work with the same
+authority, but steer uses less force. Allowing anyone to steer while
+only ancestors can interrupt would be inconsistent.
 
 This is not a security boundary. It prevents a confused peer from
 acting on a tree branch it does not own. The sender checks the scope
@@ -940,52 +818,35 @@ destructive and irreversible, so it requires `force`.
 
 ## Notifying the parent
 
-Notification is explicit. The model calls `notify_parent(summary)`
-only when it decides its work is complete. The tool sends an ordinary
-`notice` envelope, without a second transport or automatic notification.
-Automatic notification cannot identify completion of delegated work.
-Any work can settle a turn, not only the delegated task.
+Notification is automatic. When a subagent's turn settles idle after
+work from its parent, and it waits on nothing of its own, the harness
+sends the last assistant message of that run to the parent as an
+ordinary `notice` envelope, without a second transport.
+design-subagents.md, "A child's life", Reporting, gives the trigger,
+its conditions, the `report` file and the cases that send nothing. An
+explicit tool would make each report depend on the model calling it at
+the right moment. The parent reads the child's own closing text, which
+says what it did or what it waits for.
 
-For example, answering a peer's inbox `ask_agent` settles a turn just
-like finishing the delegated task. Only the subagent's model knows
-whether a turn completes the work its parent needs.
-
-The content is the model's summary. The parent receives at most 4000
-bytes. Every report notice ends with the guidance that the child stays
-alive, so the parent must end it with `stop_run` or continue it with
-`message_agent`. That guidance is part of the bound. This exceeds the
-activity cap, because it carries work results, not a UI label. It is
-much smaller than the 1MB inbox payload cap, because the whole message
-enters the parent's context. Every delivered report is kept whole in the
-agent directory's `report` file (design-subagents.md, "A child's life").
-
-A session that is not itself a spawned child is refused before sending.
-Such a session has no parent to notify. The refusal states this instead
-of silently doing nothing. A parent whose pane is gone, dead or no
-longer shows its session has exited: a missing pi root alone is not
-evidence, because pi clears it in the external editor. This is an error, not permission to
-use a fallback.
+The parent receives at most 4000 bytes, the guidance included. This
+exceeds the activity cap, because it carries work results, not a UI
+label. It is much smaller than the 1MB inbox payload cap, because the
+whole message enters the parent's context.
 
 **What this costs, and what covers it.** A crashed subagent that never
-calls `notify_parent` supplies no work report. kido does not invent one.
-A settled turn says nothing reliable about completion of delegated work.
+settles a turn supplies no work report. kido does not invent one.
 Instead, the parent's own `run-wait` tells it how the run ended
 (design-subagents.md, "A child's life", Endings). An ending needs no
 judgment about the work. Without this limited notice, a parent could
-wait forever for a child that no longer exists. A child idle while it
-has a live async bash run or an unreported subagent waits on it and
-sends no idle notice; the notice
-comes when it settles with nothing left to wait for
-(design-subagents.md, "A child's life"). Only the parent's work makes
-a child owe a report.
+wait forever for a child that no longer exists.
 
 **Telling a child this is its job.** `before_agent_start` appends a
-standing instruction to the subagent's system prompt on every turn. It
-uses the same parent-edge test as the tool's refusal. A `/reload`, a
-restart, or a later parent message can start work without the task's
-one-time first message. The system prompt keeps the instruction present
-throughout the session. The model must consider it on every turn, so it
-uses only two sentences.
+standing instruction to the subagent's system prompt on every turn, if
+it has a parent edge. A `/reload`, a restart, or a later parent message
+can start work without the task's one-time first message. The system
+prompt keeps the instruction present throughout the session: the last
+message is the report, it must stand on its own, and a later completion
+after a wait goes through `message_agent`.
 
 **The rendered side.** An inbound `notice` uses a custom message:
 `pi.sendMessage` with a `customType`, not `pi.sendUserMessage`.
@@ -1015,8 +876,7 @@ to coordinate, would otherwise delay the report until that turn ends.
 The extension sends a steer, not an abort. The model decides whether to
 act now or continue.
 
-Plain messages and asks intentionally keep `followUp`. The model replies
-to an ask through `message_agent`, on its own schedule. A plain message
+Plain messages intentionally keep `followUp`. A plain message
 has no equivalent urgency. A notice exists to communicate that urgency.
 
 ## Run outcomes
@@ -1576,7 +1436,6 @@ variables are:
 - `KIDO_LINGER_SECONDS`, the sweep's grace;
 - `KIDO_STOP_ESCALATION_MS`;
 - `KIDO_PARENT_POLL_MS`;
-- `KIDO_ASK_POLL_MS`;
 - `KIDO_SPAWN_TIMEOUT_MS`;
 - `KIDO_AGENT_LIST_TTL_MS`;
 - `KIDO_STREAM_POLL_MS`, the extension's output tail;
@@ -1599,9 +1458,7 @@ in the environment of the process under test.
   lives. The user must close its window. The sweep still collects its
   dead pane.
 - A subagent moved to another session with `move-window` is outside its
-  parent's scope and cannot be asked.
-- A blocked `ask_agent` holds a whole pi turn, for one turn of the
-  target's latency.
+  parent's scope and cannot be messaged.
 - A child that exits before `remain-on-exit` lands loses its window and
   its last screen; only the run record remains.
 - Runs are never pruned, and neither is the agent map.

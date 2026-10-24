@@ -81,7 +81,7 @@ test("list_runs joins my runs with my parent, same-parent peers, and a subagent'
         const raw = (await (s.tools.get("list_runs") as ListTool).execute("c", {})).content[0].text;
         assert.deepEqual(Object.keys((JSON.parse(raw) as Array<Record<string, unknown>>)[0]!), [
           "id", "name", "named", "pane", "window", "status", "activity", "parent", "depth",
-          "self", "cwd", "canMessage", "canReply", "model", "kind", "relationship", "run", "state",
+          "self", "cwd", "canMessage", "model", "kind", "relationship", "run", "state",
         ]);
       },
       { parent: "boss-session", name: "mid", run: "mid-run" },

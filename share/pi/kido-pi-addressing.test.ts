@@ -1,12 +1,14 @@
 import { test } from "node:test";
 
 import assert from "node:assert/strict";
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
-import { makeFixture, selfPane, agentPane, startNamedSession, asSubagent, pollUntil } from "./kido-pi-fixture.ts";
+import { makeFixture, selfPane, agentPane, startNamedSession, asSubagent } from "./kido-pi-fixture.ts";
 
 const SELF = "self-session";
 
-function json(payload: string): { kind: string; id: string; replyTo?: string; text: string; from: { session: string; name?: string; pane?: string }; v?: number } {
+function json(payload: string): { kind: string; id: string; text: string; from: { session: string; name?: string; pane?: string }; v?: number } {
   return JSON.parse(payload);
 }
 
@@ -69,31 +71,7 @@ test("message_agent resolves by name, exact session id and unique prefix, and ex
   }
 });
 
-test("message_agent sends a reply envelope when replyTo is set, and an ask envelope from ask_agent", async () => {
-  const fx = makeFixture();
-  try {
-    const inbox = await fx.startInbox();
-    fx.setPanes([selfPane(), agentPane({ pane: "%2", session: "peer", name: "peer", inbox: inbox.path })]);
-    const s = await startNamedSession(fx, "asker");
 
-    assert.equal((await s.tools.get("message_agent").execute("c", { to: "peer", message: "hi there", replyTo: "ask-1" })).content[0].text, "delivered to peer by inbox");
-    const reply = json(inbox.received()[0]);
-    assert.equal(reply.kind, "reply");
-    assert.equal(reply.replyTo, "ask-1");
-    assert.equal(reply.text, "hi there");
-
-    const asked = s.tools.get("ask_agent").execute("c", { to: "peer", question: "are you done?" });
-    await pollUntil(() => inbox.received().length === 2, 2000, "the ask envelope");
-    const ask = json(inbox.received()[1]);
-    assert.equal(ask.kind, "ask");
-    assert.equal(ask.text, "are you done?");
-    assert.match(ask.id, /^[0-9a-f]{32}$/);
-    await s.emit("session_shutdown", { reason: "quit" });
-    assert.match((await asked).content[0].text, /inbox closed/);
-  } finally {
-    await fx.restore();
-  }
-});
 
 // A plain message to a running agent waits for its turn to end, so the line
 // says so rather than "delivered"; the steer hint goes only to a caller that
@@ -117,7 +95,7 @@ test("a message to a running agent says it is queued, and only a descendant gets
     );
     assert.equal(
       (await s.tools.get("message_agent").execute("c", { to: "kid", message: "x" })).content[0].text,
-      "queued for kid: it is running and reads this when its current turn ends; to reach it now, use steer_subagent",
+      "queued for kid: it is running and reads this when its current turn ends; to reach it now, use message_agent with mode steer",
     );
   } finally {
     await fx.restore();
@@ -127,7 +105,7 @@ test("a message to a running agent says it is queued, and only a descendant gets
 // The tree: root (top-level) -> mid (me) -> child -> grandchild, plus a peer
 // under root. A steer reaches a descendant however deep; nothing reaches a
 // peer, an ancestor or the caller.
-test("steer_subagent and interrupt_subagent reach descendants only", async () => {
+test("message_agent modes restrict control to descendants and mark parent work", async () => {
   const fx = makeFixture();
   try {
     const inbox = await fx.startInbox();
@@ -135,31 +113,24 @@ test("steer_subagent and interrupt_subagent reach descendants only", async () =>
     fx.writeAgent("mid", "child", { session: "child" });
     fx.writeAgent("child", "grandchild", { session: "grandchild" });
     fx.writeAgent("root", "peer", { session: "peer" });
-    fx.setPanes([
-      agentPane({ pane: "%1", session: "mid", name: "mid", inbox: inbox.path }),
-      agentPane({ pane: "%2", session: "child", name: "child", inbox: inbox.path }),
-      agentPane({ pane: "%3", session: "grandchild", name: "grandchild", inbox: inbox.path }),
-      agentPane({ pane: "%4", session: "peer", name: "peer", inbox: inbox.path }),
-      agentPane({ pane: "%5", session: "root", name: "root", inbox: inbox.path }),
-    ]);
+    fx.setPanes(["mid", "child", "grandchild", "peer", "root"].map((session, i) =>
+      agentPane({ pane: `%${i + 1}`, session, name: session, inbox: inbox.path })));
     await asSubagent(fx, "mid", async () => {
       const s = await startNamedSession(fx, "mid", "mid");
-      const steer = s.tools.get("steer_subagent");
-      const interrupt = s.tools.get("interrupt_subagent");
-
-      assert.equal((await steer.execute("c", { to: "child", message: "stop and do X instead" })).content[0].text, "delivered to child by inbox");
-      assert.equal((await steer.execute("c", { to: "grandchild", message: "deeper" })).content[0].text, "delivered to grandchild by inbox");
-      assert.equal((await steer.execute("c", { to: "peer", message: "x" })).content[0].text, "peer is not this agent's descendant");
-      assert.equal((await steer.execute("c", { to: "root", message: "x" })).content[0].text, "root is not this agent's descendant");
-      assert.equal((await steer.execute("c", { to: "mid", message: "x" })).content[0].text, "mid is this agent");
-      assert.equal((await interrupt.execute("c", { to: "child" })).content[0].text, "interrupted child");
-
-      const envelopes = inbox.received().map(json);
-      assert.deepEqual(envelopes.map((e) => e.kind), ["steer", "steer", "interrupt"]);
-      assert.equal(envelopes[0].text, "stop and do X instead");
-      assert.equal(envelopes[1].text, "deeper");
-      assert.equal(envelopes[2].text, "");
-      assert.deepEqual(envelopes[0].from, { session: "mid", name: "mid", pane: "%1" });
+      const message = s.tools.get("message_agent");
+      for (const mode of ["message", "steer", "interrupt-and-steer"]) {
+        const work = join(fx.agentDir("mid", "child"), "work");
+        rmSync(work, { force: true });
+        assert.equal((await message.execute("c", { to: "child", message: "new work", mode })).content[0].text, "delivered to child by inbox");
+        assert.ok(existsSync(work), `${mode} marks new parent work`);
+        assert.equal((await message.execute("c", { to: "grandchild", message: "deeper", mode })).content[0].text, "delivered to grandchild by inbox");
+        for (const to of ["peer", "root"]) {
+          const result = (await message.execute("c", { to, message: "x", mode })).content[0].text;
+          assert.equal(result, mode === "message" ? `delivered to ${to} by inbox` : `${to} is not this agent's descendant`);
+        }
+        assert.equal((await message.execute("c", { to: "mid", message: "x", mode })).content[0].text, "mid is this agent");
+      }
+      assert.deepEqual(inbox.received().map(json).map(e => e.kind), ["message", "message", "message", "message", "steer", "steer", "interrupt-and-steer", "interrupt-and-steer"]);
     });
   } finally {
     await fx.restore();
@@ -178,12 +149,12 @@ test("a control tool to a target without an inbox refuses and never pastes", asy
     await asSubagent(fx, "mid", async () => {
       const s = await startNamedSession(fx, "mid", "mid");
       assert.equal(
-        (await s.tools.get("steer_subagent").execute("c", { to: "mute", message: "x" })).content[0].text,
-        "could not steer mute: mute is not accepting messages",
+        (await s.tools.get("message_agent").execute("c", { to: "mute", message: "x", mode: "steer" })).content[0].text,
+        "could not message mute: mute has no inbox to reach it on",
       );
       assert.equal(
-        (await s.tools.get("interrupt_subagent").execute("c", { to: "mute" })).content[0].text,
-        "could not interrupt mute: mute is not accepting messages",
+        (await s.tools.get("message_agent").execute("c", { to: "mute", message: "x", mode: "interrupt-and-steer" })).content[0].text,
+        "could not message mute: mute has no inbox to reach it on",
       );
     });
   } finally {

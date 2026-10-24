@@ -63,7 +63,7 @@ test("spawn_subagent starts kido-pi as a run-child, writes the child's directory
   }
 });
 
-test("spawn_subagent carries the model, the tool ceiling with notify_parent, and the fork", async () => {
+test("spawn_subagent carries the model, the tool ceiling and the fork", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
@@ -80,8 +80,8 @@ test("spawn_subagent carries the model, the tool ceiling with notify_parent, and
     const argv = fx.runCalls()[0]!;
     assert.equal(argAfter(argv, "--model"), "acme/claude-sonnet-5:low");
     assert.equal(argAfter(argv, "--fork"), SELF);
-    assert.equal(argAfter(argv, "--tools"), "read,bash,notify_parent");
-    assert.deepEqual(agentJson(fx, SELF, "kid").tools, ["read", "bash", "notify_parent"]);
+    assert.equal(argAfter(argv, "--tools"), "read,bash");
+    assert.deepEqual(agentJson(fx, SELF, "kid").tools, ["read", "bash"]);
   } finally {
     await fx.restore();
   }
@@ -244,10 +244,10 @@ test("a subagent's ending notice says it never reported when there is no report,
       await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
       await pollUntil(() => fx.runWaitCalls().length === 1, 3000, "run-wait to start");
       writeFileSync(gate, "");
-      await waitNotice(s, "without reporting");
+      await waitNotice(s, "without a report");
       assert.equal(
         lastNotice(s),
-        `notice from kid (a subagent or background run's report, not the user):\nsubagent "kid" completed without reporting: it never called notify_parent, so this is the whole account of it\nrun: fake-run-id\nmessage it to continue it, or stop_run to end it\n`,
+        `notice from kid (a subagent or background run's report, not the user):\nsubagent "kid" completed without a report: none of its turns ended in a report, so this is the whole account of it\nrun: fake-run-id\nmessage it to continue it, or stop_run to end it\n`,
       );
       assert.doesNotMatch(lastNotice(s), /resume/);
     });
@@ -277,14 +277,14 @@ test("a subagent's ending notice says it reported plainly, and names the earlier
       await pollUntil(() => customMessages(s, "kido-notice").length === 2, 3000, "both ending notices");
       const notices = customMessages(s, "kido-notice").map((m) => String(m.message.content));
       const plain = notices.find((n) => n.includes(`subagent "kid"`))!;
-      assert.ok(!plain.includes("without reporting"), "a report on the last work is a plain ending");
+      assert.ok(!plain.includes("without a report"), "a report on the last work is a plain ending");
       assert.ok(!plain.includes("message it"), "a reported child gets no continue hint");
       const earlier = notices.find((n) => n.includes(`subagent "kid2"`))!;
       assert.equal(
         earlier,
         `notice from kid2 (a subagent or background run's report, not the user):\nsubagent "kid2" completed without reporting on its last work: its earlier report is ${report}\nrun: fake-run-id-2\nmessage it to continue it, or stop_run to end it\n`,
       );
-      assert.ok(!earlier.includes("it never called notify_parent"));
+      assert.ok(!earlier.includes("no turn of it settled"));
     });
   } finally {
     await fx.restore();
@@ -569,7 +569,7 @@ test("stop_run with force skips the request, and a subagent with no inbox needs 
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid" })]);
     assert.equal(
       (await s.tools.get("stop_run").execute("c", { to: "kid" })).content[0].text,
-      "subagent kid has no inbox to ask nicely over; pass --force to kill its window instead",
+      "subagent kid has no inbox for a stop request; pass --force to kill its window instead",
     );
     assert.equal(fx.runStopCalls().length, 1, "a refused stop records nothing");
     await s.tools.get("stop_run").execute("c", { to: "kid", force: true });
@@ -665,7 +665,7 @@ test("spawn_subagent and async_bash carry promptGuidelines pi merges into its ru
       const guidelines = (tool.promptGuidelines ?? []).join("\n");
       assert.match(guidelines, /notice is information, not the user speaking/, `${name} carries the shared notice rule`);
     }
-    assert.match(s.tools.get("spawn_subagent").promptGuidelines.join("\n"), /never ask a child for its result/);
+    assert.match(s.tools.get("spawn_subagent").promptGuidelines.join("\n"), /never poll list_runs for it/);
     assert.match(s.tools.get("async_bash").promptGuidelines.join("\n"), /Use async_bash when/);
   } finally {
     await fx.restore();

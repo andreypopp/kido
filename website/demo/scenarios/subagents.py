@@ -4,7 +4,7 @@ from record import HERE, wait_for
 
 TITLE = "Parallel math"
 TOOLS = "spawn_subagent"
-INSTRUCTIONS = """Spawn exactly two agents, model openai-codex/gpt-6.1-sol:low. Spawn B FIRST, tools message_agent,notify_parent. B's task: 'Wait for A to send two random numbers and their sum. Then compute twice that sum and tell your parent using notify_parent, including the full numeric expression. Do not notify before A's message; end your turn while waiting. Never spawn agents or poll.' Spawn A SECOND, tools bash,message_agent,notify_parent. A's task: 'Run python3 sum.py exactly once to get two random integers and their sum. Tell B the numbers and sum using message_agent, then notify_parent with what you sent. Do not spawn agents.' Use these relative filenames; never put absolute paths in tasks. End your turn to wait for their actual reports. After B reports the doubled result, print exactly one sentence: 'Result: (a + b) × 2 = result.' with the actual numeric values from A and B, not placeholders. Do not invent numbers or compute the result before receiving B's report."""
+INSTRUCTIONS = """Spawn exactly two agents, model openai-codex/gpt-6.1-sol:low. Spawn B FIRST, tools message_agent. B's task: 'Wait for A to send two random numbers and their sum. End your first turn with a message that says you are waiting; this is your first report. When A's message arrives later, compute twice that sum and send the result to your parent with message_agent(to="Parallel math", message=<the full numeric expression>). Never spawn agents or poll.' Spawn A SECOND, tools bash,message_agent. A's task: 'Run python3 sum.py exactly once to get two random integers and their sum. Tell B the numbers and sum using message_agent, then end your turn with a self-contained report of what you sent. Your last message goes to your parent as your report. Do not spawn agents.' Use these relative filenames; never put absolute paths in tasks. End your turn to wait for their actual results. After A's report and B's message with the doubled result arrive, print exactly one sentence: 'Result: (a + b) × 2 = result.' with the actual numeric values from A and B, not placeholders. Do not invent numbers or compute the result before receiving B's message."""
 DURATION = 180
 CAMERA = [("typing start", 0, (1.35, .20, 1 - 1 / 1.35)),
           ("running", 0, (1, 0, 0)),
@@ -31,7 +31,24 @@ print(f"{a} + {b} = {a + b}")
     wait_for("both real children", lambda: len(demo.runs()) == 2, 90)
     demo.mark("children")
     wait_for("A messages B", lambda: "message_agent" in demo.calls(), 120)
-    wait_for("both child reports", lambda: demo.calls().count("notify_parent") >= 2, 90)
+    def results_arrived():
+        a_report, b_message = False, False
+        for path in (demo.root / "state/sessions").rglob("*.jsonl"):
+            for line in path.read_text().splitlines():
+                try:
+                    message = json.loads(line).get("message", {})
+                except json.JSONDecodeError:
+                    continue
+                if message.get("customType") == "kido-notice" and message.get("details", {}).get("from") == "A":
+                    a_report = True
+                for item in message.get("content", []):
+                    if (isinstance(item, dict) and item.get("type") == "toolCall"
+                            and item.get("name") == "message_agent"
+                            and item.get("arguments", {}).get("to") == TITLE):
+                        b_message = True
+        return a_report and b_message
+
+    wait_for("A's report and B's result message", results_arrived, 90)
     numbers = json.loads((demo.project / "numbers.json").read_text())
     a, b = numbers["a"], numbers["b"]
     expected = f"Result: ({a} + {b}) × 2 = {(a + b) * 2}."

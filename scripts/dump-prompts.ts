@@ -8,7 +8,7 @@
 //   node --experimental-strip-types scripts/dump-prompts.ts > prompts.txt
 //
 // The texts the extension injects as messages at runtime (a task, an inbound
-// ask, a steer, a notice, a stream batch, an ending) are built inside
+// message, a steer, a notice, a stream batch, an ending) are built inside
 // closures and are listed in the second half by hand.
 
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -39,7 +39,7 @@ process.env.KIDO_RUN_ID = "dump-run";
 process.env.KIDO_PI_STATE_DIR = join(agentDir, "state");
 delete process.env.TMUX_PANE;
 
-const { default: kidoPi, MESSAGE_RELATION, senderHeader, replyHeader, noticeHeader, PARENT_GUIDANCE, SPAWN_RESULT_RULE } = await import("../share/pi/kido-pi.ts");
+const { default: kidoPi, MESSAGE_RELATION, senderHeader, noticeHeader, PARENT_GUIDANCE, SPAWN_RESULT_RULE } = await import("../share/pi/kido-pi.ts");
 kidoPi(pi as never);
 for (const tool of registered.values()) tools.push(tool as Tool);
 await emit("session_start", { type: "session_start" }, { hasUI: false, sessionManager: { getSessionId: () => "dump-run", getSessionFile: () => undefined } });
@@ -78,36 +78,34 @@ out.push("## Messages the extension injects at runtime", "");
 out.push("Built inside share/pi/kido-pi.ts's closures. `<from>` is the sender's name, else its session id, else its pane, else \"another agent\".", "");
 const injected: Array<[string, string, string]> = [
   ["a spawned task (deliver)", "the task text verbatim, as a user message, once", ""],
-  ["an inbound ask (handleInboundAsk)", `${senderHeader("ask", "<from>", "parent")} | (${MESSAGE_RELATION.child}): | (${MESSAGE_RELATION.peer}):\n<from> is asking (id <id>): <question>\n\n<from> cannot see this session's context, so make the answer self-contained. Reply with message_agent(to=\"<from>\", message=<answer>, replyTo=\"<id>\"). That message_agent call is the entire response - end the turn there, with no summary or sign-off after it. As a custom message of type kido-ask; the TUI takes the header and everything past the question back off and shows only \"ask from @<from>:\" with the question`, "followUp"],
-  ["a reply nobody is waiting for (handleInboundReply)", `${replyHeader("<from>", "<id>")}<text>`, "followUp"],
-  ["a message from another agent", `${senderHeader("message", "<name>", "parent")} | (${MESSAGE_RELATION.child}): | (${MESSAGE_RELATION.peer}):\n<text> verbatim, as a custom message of type kido-message; the TUI takes the header back off and shows \"message from @<name>:\" with the text in full, never collapsed`, "followUp"],
+  ["a message from another agent", `${senderHeader("<name>", "parent")} | (${MESSAGE_RELATION.child}): | (${MESSAGE_RELATION.peer}):\n<text> verbatim, as a custom message of type kido-message; the TUI takes the header back off and shows \"message from @<name>:\" with the text in full, never collapsed`, "followUp"],
   ["a message with no calling session", "the text verbatim, unlabelled: no session is the user speaking", "followUp"],
   ["a steer from an ancestor (handleInboundSteer)", "<from> is redirecting this work: <text>", "steer"],
   ["a notice (deliverNotice)", `${noticeHeader("<from>")}\n<text> verbatim, as a custom message of type kido-notice; the TUI takes the header back off and shows it collapsed as \"notification from <from>: <first line>\"`, "steer"],
   ["a stream batch (flushWatch)", "async run \"<name>\" output (run <id>)\n<the last lines, capped>; with lines dropped: \"... N lines omitted (see <output path>)\" first", "steer, at a moment that costs no turn"],
   ["an unknown kind", "[unrecognised message kind \"<kind>\" from <from>] <text>", "followUp"],
-  ["a settled turn with no report (agent_settled)", "notice from <from> (a subagent or background run's report, not the user):\nsubagent <run id> is idle without reporting: its last turn ended and it did not call notify_parent. Continue it with message_agent, or end it with stop_run.", "steer"],
+  ["a child's report (agent_settled)", `${noticeHeader("<from>")}\n<its last assistant message's text, then the guidance below>`, "steer"],
+  ["a child's empty report (agent_settled)", `${noticeHeader("<from>")}\nsubagent "<name>" ended its turn with no message<the guidance below>`, "steer"],
   ["a turn that ended on an error (agent_settled)", "subagent stopped on an error: <text>\nrun: <run id>\nmessage it to retry, or stop_run to end it", "steer"],
   ["a spawn's result (spawn_subagent)", `spawned <name> (window <window id>, pane <pane id>, run <run id>); ${SPAWN_RESULT_RULE}. A fork adds \", forked from this session's context\" before the semicolon.`, "tool result"],
   ["a restart's result (message_agent)", "restarted <name> as run <run id>; the same result rule as a spawn follows", "tool result"],
-  ["message_agent's result while answering an ask", "delivered to <to> by inbox That message_agent call is the entire response - end the turn there, with no summary or sign-off after it.", "tool result"],
 ];
 for (const [when, text, how] of injected) {
   out.push(`### ${when}`, "", "```", text, "```", how ? `delivered as: ${how}` : "", "");
 }
 out.push("## Ending notices the extension composes (kido-pi.ts)", "");
-out.push("`endingBody` builds the notice for a run this session started; `notifyParent` sends a child's own report.", "");
+out.push("`endingBody` builds the notice for a run this session started; a child's last message of a settled turn becomes its report (`agent_settled`).", "");
 out.push("```", `async run "<name>" <result>: <text>
 run: <id>
 output: <path>
 --- last <n> bytes of output (<m> omitted) ---   | --- output --- | --- no output --- | --- output unreadable: <err> ---`, "```", "");
-out.push("```", `subagent "<name>" <result> without reporting: it never called notify_parent, so this is the whole account of it
+out.push("```", `subagent "<name>" <result> without a report: none of its turns ended in a report, so this is the whole account of it
 subagent "<name>" <result>
 detail: <text>   [when there is one]
 run: <id>
 message it to continue it, or stop_run to end it   [when there is no report]`, "```", "");
-out.push("A notify_parent report that does not fit in the 4000-byte notice is sent as its head plus:", "", "```", "\n\nfull report: <path>", "```", "");
-out.push("Every notify_parent notice also ends with:", "", "```", PARENT_GUIDANCE, "```", "");
+out.push("A report that does not fit in the 4000-byte notice is sent as its head plus:", "", "```", "\n\nfull report: <path>", "```", "");
+out.push("Every report notice also ends with:", "", "```", PARENT_GUIDANCE, "```", "");
 process.stdout.write(out.join("\n"));
 
 rmSync(agentDir, { recursive: true, force: true });

@@ -125,7 +125,7 @@ test("a /reload keeps this session's pane options, and a real shutdown unsets th
     const s1 = await startSession(fx, { factory: await freshExtension() });
     await s1.emit("session_shutdown", { reason: "reload" });
     const unsetSession = fx.optionWrites().filter((write) => write.key === "@kido_session" && write.value === undefined);
-    assert.deepEqual(unsetSession, [], "a reload must keep the options a child's notify_parent reads");
+    assert.deepEqual(unsetSession, [], "a reload must keep the options a child's report reads");
 
     const s2 = await startSession(fx, { factory: await freshExtension() });
     await s2.emit("session_shutdown", { reason: "quit" });
@@ -245,7 +245,7 @@ test("pi's clearQueue restores only editor text and preserves both custom queues
   assert.equal(typeof globalThis.__kidoPiExtensionClearQueue, "function", "pi must expose clearQueue");
   const { Agent } = await import(import.meta.resolve("@earendil-works/pi-agent-core"));
   const agent = new Agent();
-  const custom = ["kido-message", "kido-ask", "kido-notice", "kido-reply"].map((customType) => ({
+  const custom = ["kido-message", "kido-notice", "kido-steer"].map((customType) => ({
     role: "custom", customType, content: customType, display: true, timestamp: 0,
   }));
   const user = { role: "user", content: "editor text", timestamp: 0 };

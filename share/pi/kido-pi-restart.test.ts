@@ -17,8 +17,6 @@ import {
   customMessages,
   agentJson,
   argAfter,
-  sendToInbox,
-  envelope,
   type Fixture,
 } from "./kido-pi-fixture.ts";
 
@@ -195,25 +193,7 @@ test("a stopped child restarts on a message, because stopped is not finished", a
   }
 });
 
-test("ask_agent restarts an ended child, waits for its new inbox, and takes the reply", async () => {
-  const fx = makeFixture();
-  try {
-    const { s, child } = await endedChild(fx);
-    const inbox = await fx.startInboxAt(fx.inboxPath(child.session));
-    await withEnv({ KIDO_FAKE_RUN_ID: "restarted-run" }, async () => {
-      const asked = s.tools.get("ask_agent").execute("c", { to: "kid", question: "status?" });
-      await pollUntil(() => inbox.received().length === 1, 3000, "the ask to the restarted child");
-      const ask = JSON.parse(inbox.received()[0]!);
-      assert.equal(ask.kind, "ask");
-      assert.equal(ask.text, "status?");
-      assert.equal(argAfter(fx.runCalls()[1]!, "--session-id"), child.session, "ask restarts, then asks over the inbox");
-      await sendToInbox(s.inboxPath, envelope("reply", "fine", { replyTo: ask.id, from: ask.from }));
-      assert.equal((await asked).content[0].text, "fine");
-    });
-  } finally {
-    await fx.restore();
-  }
-});
+
 
 test("a restarted parent starts one run-wait per live child on its first turn", async () => {
   const fx = makeFixture();
@@ -274,21 +254,6 @@ test("a child writes its pi session file into its agent directory at session_sta
       await startNamedSession(fx, "worker", SELF);
       assert.equal(readFileSync(join(fx.agentDir("boss-session", "worker"), "session-file"), "utf8"), `/tmp/${SELF}.json`);
     });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("the spawn and notify_parent descriptions say message it, never resume", async () => {
-  const fx = makeFixture();
-  try {
-    const s = await startNamedSession(fx, "Self");
-    const spawn = s.tools.get("spawn_subagent").description as string;
-    const notify = s.tools.get("notify_parent").description as string;
-    assert.match(spawn, /message it/);
-    assert.doesNotMatch(spawn, /resume/);
-    assert.doesNotMatch(notify, /resume/);
-    assert.match(notify, /message_agent/);
   } finally {
     await fx.restore();
   }
@@ -365,37 +330,20 @@ test("an inbox answer that stalls after the request was sent is not retried", as
   }
 });
 
-test("an ask to an ended reported child keeps its report", async () => {
+test("controls refuse ended reported children without creating new work or restarting", async () => {
   const fx = makeFixture();
   try {
-    const { s, child } = await endedChild(fx, { sessionFile: true });
+    const { s } = await endedChild(fx);
     const dir = fx.agentDir(SELF, "kid");
-    writeFileSync(join(dir, "report"), "the answer");
-    const inbox = await fx.startInboxAt(fx.inboxPath(child.session));
-    await withEnv({ KIDO_FAKE_RUN_ID: "restarted-run" }, async () => {
-      const asked = s.tools.get("ask_agent").execute("c", { to: "kid", question: "status?" });
-      await pollUntil(() => inbox.received().length === 1, 3000, "the ask to the restarted child");
-      assert.equal(readFileSync(join(dir, "report"), "utf8"), "the answer", "an ask is not new work, so it creates no new report obligation");
-      const ask = JSON.parse(inbox.received()[0]!);
-      await sendToInbox(s.inboxPath, envelope("reply", "fine", { replyTo: ask.id, from: ask.from }));
-      await asked;
-    });
-
-    await childSettlesSilently(fx, child.session, "the surviving report still covers the child's work");
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a reply to an ended reported child keeps its report", async () => {
-  const fx = makeFixture();
-  try {
-    const { s } = await endedChild(fx, { sessionFile: true });
-    const dir = fx.agentDir(SELF, "kid");
-    writeFileSync(join(dir, "report"), "the answer");
-    const result = await withEnv<{ content: { text: string }[] }>({ KIDO_FAKE_RUN_ID: "restarted-run" }, () => s.tools.get("message_agent").execute("c", { to: "kid", message: "fine", replyTo: "ask-1" }));
-    assert.match(result.content[0].text, /^restarted kid as run restarted-run/);
-    assert.equal(readFileSync(join(dir, "report"), "utf8"), "the answer", "a reply is not new work, so it creates no new report obligation");
+    writeFileSync(join(dir, "report"), "done");
+    const before = fx.runCalls().length;
+    for (const mode of ["steer", "interrupt-and-steer"]) {
+      const result = await s.tools.get("message_agent").execute("c", { to: "kid", message: "new work", mode });
+      assert.match(result.content[0].text, /could not message kid:/);
+      assert.equal(existsSync(join(dir, "work")), false, "a refused control leaves the report current");
+      assert.equal(readFileSync(join(dir, "report"), "utf8"), "done");
+      assert.equal(fx.runCalls().length, before, "controls never restart an ended child");
+    }
   } finally {
     await fx.restore();
   }

@@ -70,19 +70,17 @@ envelope that the tools send, dispatched by kind:
 
 - `message`: a custom message headed with its sender and relationship
   (parent, subagent or peer), queued with `followUp`.
-- `ask`: the same, with the ask id and the exact `message_agent` call
-  for the reply. Refused on the wire if this session waits on an ask to
-  the same sender (a cycle).
-- `reply`: settles the waiting `ask_agent` call with that id, else
-  arrives as an ordinary message. A reply is never dropped.
 - `notice`: a dimmed row above the editor at once, then a collapsed
   custom message steered into the current turn.
 - `steer`: joins the running turn (`deliverAs: "steer"`), labelled with
   its sender.
-- `interrupt`, `stop`: `ctx.abort()`, `ctx.shutdown()`.
+- `interrupt-and-steer`: aborts the running turn, waits for the abort to
+  settle, then queues the text as a `message` from its sender. The
+  aborted turn sends no report or notice.
+- `stop`: `ctx.shutdown()`.
 - anything else: delivered as text marked with the unrecognised kind.
 
-`steer`, `interrupt` and `stop` are refused on the wire unless the sender
+`steer`, `interrupt-and-steer` and `stop` are refused on the wire unless the sender
 is an ancestor of this session in the agent map. `from` is advisory.
 
 An empty message is ignored, and a payload over 1 MiB is dropped. A
@@ -95,23 +93,23 @@ the reloaded module.
   subagent and bash runs (all running, the newest 20 ended).
 - `set_status(activity)`: one line, at most 256 bytes, in
   `@kido_activity`; an empty string clears it.
-- `message_agent(to, message, replyTo?)`: to an agent's inbox; with
-  `replyTo` a reply. To an ended child of this session, it restarts the
-  child with the message.
-- `ask_agent(to, question, timeoutMs?)`: sends an ask and blocks until
-  the reply, the timeout (5 minutes), an abort, the target's end or this
-  inbox's close. Refused for an ancestor, yourself, a target without an
-  inbox or without `message_agent`.
+- `message_agent(to, message, mode?)`: to an agent's inbox. `message`
+  (the default) queues for any agent until its turn ends; to an ended
+  child of this session, it resumes the child in its own session, with
+  its history, and the message is its next turn.
+  `steer` joins a descendant's running turn. `interrupt-and-steer`
+  aborts a descendant's turn, then starts a new turn with the text.
 - `spawn_subagent(task, name, model?, tools?, fork?)`: a child through
   `kido run-child ... -- kido-pi`. Its ending arrives as a notice.
 - `async_bash(command, name, stream?)`: a command through
   `kido run-child ... -- bash -o pipefail -c '... | tee "$KIDO_RUN_OUTPUT"'`.
   Its ending arrives as a notice with the output tail; with `stream`,
   batches of output arrive while it runs.
-- `steer_subagent(to, message)`, `interrupt_subagent(to)`: to a
-  descendant's inbox.
 - `stop_run(to, force?)`: a bash run through `kido run-stop`; a subagent
   by a stop request, then `kido run-stop --wait 5`. A child that reported
   since its last new work ends as completed, else stopped.
-- `notify_parent(summary)`: a notice to the parent. The whole report is
-  kept in the agent directory's `report`.
+
+A subagent has no report tool. When its turn ends with nothing of its
+own still running, its last message goes to its parent as a notice,
+once for each piece of work. The whole report is kept in the agent
+directory's `report`.

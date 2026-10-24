@@ -260,7 +260,7 @@ Pi and Claude Code report their status through OSC 7501.
   kido removes `msg` if it repeats the title. If there is no `msg`, `@kido_activity`
   supplies the message.
 - Supports: everything in `design.md` and `design-subagents.md`:
-  - The inbox for `kido prompt` and `message_agent`/ask/steer/interrupt.
+  - The inbox for `kido prompt` and `message_agent` in its three modes.
   - Name addressing when named.
   - `list_runs`.
   - Parent links.
@@ -300,7 +300,7 @@ Pi and Claude Code report their status through OSC 7501.
 - A pane's kind determines only its row and `kido prompt` scope.
   The extension's messaging and control use `@kido_inbox` and session
   ids under the same trust rule, so a pane whose pi root clears is not
-  reachable as an agent. A waiting ask, `notify_parent` and the parent
+  reachable as an agent. A child's report and the parent
   watch read only `@kido_session` and pane death (design.md, "The
   trust rule").
 

@@ -35,7 +35,7 @@ test("parseEnvelope agrees with Msg.parse's v0/v1 discriminator table", () => {
   }
 });
 
-test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 raw text all reach the model", async () => {
+test("kind dispatch: messages, notices, unrecognised kinds and v0 text reach the model", async () => {
   const fx = makeFixture();
   try {
     fx.writeAgent("root-x", "peer-a", { session: "peer-a", run: "peer-a" });
@@ -57,15 +57,10 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
       "kind notice reaches the model as a custom message, named by its sender, full text intact",
     );
 
-    const askResp = await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-x", from }));
-    assert.equal(askResp, "ok");
-    assert.ok(
-      customMessages(s, "kido-ask").some((m) => m.message.content.includes("peer-a is asking") && m.message.content.includes("you there?")),
-      "kind ask reaches the model as a custom message",
-    );
-
-    await sendToInbox(s.inboxPath, envelope("reply", "an answer", { replyTo: "no-such-ask", from }));
-    assert.ok(customMessages(s, "kido-reply").some((m) => m.message.content === "peer-a replied (to ask no-such-ask): an answer"));
+    for (const kind of ["ask", "reply"]) {
+      await sendToInbox(s.inboxPath, envelope(kind, "old kind", { from }));
+      assert.ok(s.delivered.some(d => d.text.includes(`unrecognised message kind "${kind}"`)));
+    }
 
     await sendToInbox(s.inboxPath, envelope("ping", "unknown kind text", { from }));
     assert.ok(s.delivered.some((d) => d.text.includes("unrecognised message kind") && d.text.includes("unknown kind text")));
@@ -121,46 +116,7 @@ test("every message with a session is labelled with its sender and their relatio
   }
 });
 
-// Headed the way a message is, but the renderer shows only the question - the id,
-// reply call and parenthetical are for the model alone.
-test("an inbound ask is headed like a message and renders as just the question, with the id and reply instructions hidden", async () => {
-  const fx = makeFixture();
-  try {
-    await asSubagent(fx, SELF, async () => {
-      const s = await startSession(fx, { factory: await freshExtension() });
 
-      await sendToInbox(s.inboxPath, envelope("ask", "is the build green?", { id: "ask-hdr", from: { session: "boss-session", name: "boss" } }));
-      const sent = customMessages(s, "kido-ask")[0]!;
-      assert.ok(sent, "an ask reaches the model as a custom message");
-      assert.deepEqual(sent.opts, { deliverAs: "followUp", triggerTurn: true }, "an ask queues behind a running turn, and starts one while idle");
-
-      const content = sent.message.content as string;
-      assert.match(content, /^ask from @boss \(your parent, who spawned you\):\n/, "headed the way a message from the same sender would be");
-      assert.match(content, /is asking \(id ask-hdr\): is the build green\?/, "the model's text still carries the question and the id");
-      assert.match(content, /cannot see this session's context, so make the answer self-contained/, "and the self-contained-answer line");
-      assert.match(content, /message_agent\(to="boss", message=<answer>, replyTo="ask-hdr"\)/, "and the exact reply call");
-      assert.match(content, /entire response|whole response/i, "and STOP_AFTER_ASK_REPLY");
-      assert.match(content, /no summary|sign-off/i, "and says plainly not to follow the reply with narration");
-
-      const renderer = s.renderers.get("kido-ask");
-      assert.ok(renderer, "the extension registered a renderer for its own ask type");
-      const drawn = renderer!(sent.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-      assert.match(drawn, /^│ @boss asks:/, "the row names the sender, without the parenthetical");
-      assert.ok(drawn.includes("is the build green?"), "and shows the question");
-      assert.ok(!drawn.includes("ask-hdr"), "the id is hidden");
-      assert.ok(!drawn.includes("message_agent"), "the reply instructions are hidden");
-      assert.ok(!drawn.includes("who spawned you"), "the parenthetical is for the model, not the transcript");
-
-      // A transcript entry reloaded with no details at all falls back to the raw
-      // content rather than showing nothing.
-      const noDetails = { ...sent.message, details: undefined };
-      const fallback = renderer!(noDetails, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-      assert.ok(fallback.includes("is the build green?"), "the fallback still shows the question, from the raw content");
-    });
-  } finally {
-    await fx.restore();
-  }
-});
 
 test("a notice names its sender, shows its full text, and keeps the model header off the transcript", async () => {
   const fx = makeFixture();
@@ -207,7 +163,7 @@ test("a notice names its sender, shows its full text, and keeps the model header
   }
 });
 
-test("all four inbound renderers dim headers, wrap normal text behind a border, and retain click toggles across component recreation", async () => {
+test("all inbound renderers dim headers, wrap normal text behind a border, and retain click toggles across component recreation", async () => {
   const fx = makeFixture();
   try {
     const s = await startSession(fx);
@@ -223,13 +179,13 @@ test("all four inbound renderers dim headers, wrap normal text behind a border, 
       type: "click", button: "left", x: 0, y: 0, screenX: 0, screenY: 0,
       width: 80, height: 1, shift: false, alt: false, ctrl: false, clickCount: 1,
     };
-    for (const [kind, verb] of [["message", "says"], ["ask", "asks"], ["notice", "notifies"], ["reply", "replies"]]) {
+    for (const [kind, verb] of [["message", "says"], ["steer", "redirects"], ["notice", "notifies"]]) {
       const renderer = s.renderers.get(`kido-${kind}`)!;
       const header = `@boss ${verb}:`;
       const message = {
         customType: `kido-${kind}`, timestamp: 123,
         content: body,
-        details: { from: "boss", question: body, noticeId: "notice-1" },
+        details: { from: "boss", noticeId: "notice-1" },
       };
       const draw = (expanded: boolean) => renderer(JSON.parse(JSON.stringify(message)), { expanded, outputPad: 1 }, theme);
       s.pi.getSettings = () => ({});
@@ -270,7 +226,7 @@ test("all four inbound renderers dim headers, wrap normal text behind a border, 
         ["short\nmore", 80, `│ ${header} short...`],
         ["\x1b[31m" + "界".repeat(30) + "\x1b[0m", 2 + visibleWidth(header) + 1 + 4 + 3, `│ ${header} 界界...`],
       ] as const) {
-        const lines = renderer({ ...message, content: text, details: { from: "boss", question: text } }, { expanded: true }, theme).render(width);
+        const lines = renderer({ ...message, content: text, details: { from: "boss" } }, { expanded: true }, theme).render(width);
         assert.deepEqual(lines.map(stripTerminalSequences), [expected], `${kind}: collapsed preview never wraps`);
         assert.ok(visibleWidth(lines[0]) <= width, "ANSI and CJK fit the available width");
         assert.ok(lines[0].includes(`\x1b[2m${header}\x1b[0m`), "only the preview header is dim");
