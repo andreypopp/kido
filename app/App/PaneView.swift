@@ -907,7 +907,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         self.surface = surface
         driver.attach(surface)
-        ghostty_surface_set_focus(surface, window?.firstResponder === self)
+        syncFocus()
         _ = ghostty_surface_set_render_presented_callback(surface, { @Sendable userdata, token in
             PaneView.onMain(userdata) { $0.rendered(token, status: GHOSTTY_RENDER_PRESENTATION_PRESENTED) }
         }, this)
@@ -1127,9 +1127,30 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         presentScroll()
     }
 
+    var shiftedBackground = false { didSet { updatePaper() } }
+    var transparentPaper = false {
+        didSet { if transparentPaper != oldValue { reloadConfig() } }
+    }
+
+    var paperColor: NSColor { shiftedBackground ? runtime.background.shifted(runtime.settings.unfocusedShift) : runtime.background }
+
+    func updatePaper() {
+        layer?.backgroundColor = paperColor.cgColor
+    }
+
     func reloadConfig() {
+        updatePaper()
         reflow { [weak self] in
-            if let self { ghostty_surface_update_config(surface, runtime.config) }
+            guard let self else { return }
+            guard transparentPaper, let config = ghostty_config_clone(runtime.config) else {
+                ghostty_surface_update_config(surface, runtime.config)
+                return
+            }
+            defer { ghostty_config_free(config) }
+            let paper = "background-opacity = 0\nbackground-opacity-cells = false\n"
+            ghostty_config_load_string(config, paper, UInt(paper.utf8.count), "/kido-paper")
+            ghostty_config_finalize(config)
+            ghostty_surface_update_config(surface, config)
         }
     }
 
@@ -1527,6 +1548,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     override var acceptsFirstResponder: Bool { true }
 
+    func syncFocus() {
+        guard let surface else { return }
+        ghostty_surface_set_focus(surface, window?.firstResponder === self)
+    }
+
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
         if result { ghostty_surface_set_focus(surface, true) }
@@ -1542,6 +1568,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        syncFocus()
         viewDidChangeBackingProperties()
         let center = NotificationCenter.default
         center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)

@@ -160,6 +160,16 @@ Swift, embedding and visual regressions can merge without automated app checks
 and need not heal. Add a macOS app job after resolving dependency cost
 (medium infrastructure work). Status: untested in CI.
 
+## Live sidebar-resize frames are not tested
+
+`testPaneFocusTreatment` checks the paper in an inactive pane's padding
+after the sidebar collapses and expands, and it fails with a wrong padding
+fill. Visual snapshots repaint the chrome off screen, so the test cannot
+show the frames of a live sidebar animation or a live window resize; see
+[Focus treatment](design-app.md#focus-treatment). A defect that leaves old
+paper in those frames is found only by hand. Check by hand after a change
+to pane backings (small). Status: accepted coverage limitation.
+
 ## Visual references depend on the machine
 
 Snapshot rasterization depends on macOS and backing scale, so another setup
@@ -178,6 +188,16 @@ captures. `make visual` covers a transferred-host stand-in, not AppKit's
 The dark-theme negative control can differ by no more than the 2/255
 pixel tolerance, so it cannot reliably detect a missing background cover.
 Status: accepted coverage limitation.
+
+## Transparent paper changes glyph edges
+
+Tiled panes draw on transparent Ghostty paper over an opaque app layer
+([Focus treatment](design-app.md#focus-treatment)). Ghostty's native alpha
+blending then gives antialias edge pixels that differ from opaque
+rendering by at most 27/255 on kido-light and 17/255 on kido-dark. Glyph
+interiors and the paper match within 2/255, and the difference is not
+visible at normal size. A Ghostty-side paper colour would remove it, but it
+needs a fork change (medium). Status: accepted limitation.
 
 ## OSC 52 clipboard scope and permission
 

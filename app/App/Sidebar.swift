@@ -1,5 +1,51 @@
 import AppKit
 
+private final class SidebarSeparator: NSView {
+    var color = NSColor.separatorColor { didSet { needsDisplay = true } }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) { color.setFill(); bounds.fill() }
+}
+
+private final class SidebarShadow: NSView {
+    enum Shape: Equatable { case docked, floating(NSRect) }
+    var shape = Shape.docked { didSet { if shape != oldValue { needsDisplay = true } } }
+    override func setFrameSize(_ newSize: NSSize) {
+        let previous = bounds.size
+        super.setFrameSize(newSize)
+        if bounds.size != previous { needsDisplay = true }
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            bounds.clip()
+            let shadow = NSShadow()
+            let path: NSBezierPath
+            switch shape {
+            case .docked:
+                shadow.shadowOffset = NSSize(width: 4, height: 0)
+                path = NSBezierPath(rect: NSRect(x: -66, y: 2, width: 64, height: max(0, bounds.height - 4)))
+            case .floating(let rect):
+                let clip = NSBezierPath(rect: bounds)
+                clip.append(NSBezierPath(roundedRect: rect, xRadius: 18, yRadius: 18))
+                clip.windingRule = .evenOdd
+                clip.addClip()
+                shadow.shadowOffset = NSSize(width: 0, height: -4)
+                path = NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 2), xRadius: 16, yRadius: 16)
+            }
+            shadow.shadowBlurRadius = 14
+            let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            shadow.shadowColor = NSColor.black.withAlphaComponent(dark ? 0.4 : 0.18)
+            shadow.set()
+            NSColor.black.setFill()
+            path.fill()
+        }
+    }
+}
+
 final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     private final class ToolbarButtonCell: NSButtonCell {
         override func hitTest(for event: NSEvent, in cellFrame: NSRect, of controlView: NSView) -> NSCell.HitResult {
@@ -13,6 +59,16 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         override var intrinsicContentSize: NSSize { NSSize(width: 10000, height: 36) }
     }
 
+    private let focusEdge = FocusEdge()
+    #if KIDO_VISUAL
+    var visualFocusEdge: FocusEdge { focusEdge }
+    var visualSeparator: NSView { separator }
+    #endif
+    private let separator = SidebarSeparator()
+    private let shadow = SidebarShadow()
+    var separatorColor: NSColor = .separatorColor {
+        didSet { separator.color = separatorColor }
+    }
     let list = SidebarView()
     let content = NSView()
     let tabs = WindowTabs()
@@ -56,6 +112,15 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     }
     var changed: () -> Void = {}
     var listBackground: NSColor? { didSet { view.needsLayout = true } }
+
+    func updateAppearance(runtime: GhosttyRuntime) {
+        let background = runtime.background
+        tabs.theme = (background, NSAppearance(named: background.isDark ? .darkAqua : .aqua))
+        let shade = background.shifted(runtime.settings.sidebarShade)
+        listBackground = shade
+        separatorColor = runtime.sidebarSeparator
+        list.appearance = NSAppearance(named: shade.luminance < 0.179 ? .darkAqua : .aqua)
+    }
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -113,9 +178,35 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         let edge = glass.convert(NSPoint(x: glass.bounds.maxX, y: glass.bounds.maxY), to: nil)
         return host.convertPoint(fromScreen: window.convertPoint(toScreen: edge)).x
     }
+    func updateFocusEdge() {
+        focusEdge.isHidden = !list.containsFocus || isCollapsed
+    }
+
     override func viewDidLayout() {
         super.viewDidLayout()
         tabs.refreshHeader()
+        if let root = view.window?.contentView?.superview, let glass = dockedGlass {
+            if focusEdge.superview !== root { root.addSubview(focusEdge, positioned: .above, relativeTo: nil) }
+            focusEdge.frame = glass.convert(glass.bounds, to: root)
+            if separator.superview !== root {
+                root.addSubview(separator, positioned: .above, relativeTo: nil)
+            }
+            separator.frame = NSRect(x: focusEdge.frame.maxX, y: focusEdge.frame.minY,
+                                     width: 1 / (root.window?.backingScaleFactor ?? 2), height: focusEdge.frame.height)
+            separator.isHidden = isCollapsed || isFloating
+            if shadow.superview !== root { root.addSubview(shadow, positioned: .below, relativeTo: focusEdge) }
+            if isFloating {
+                shadow.frame = focusEdge.frame.insetBy(dx: -32, dy: -32).intersection(root.bounds)
+                shadow.shape = .floating(focusEdge.convert(focusEdge.bounds, to: shadow))
+            } else {
+                shadow.frame = NSRect(x: separator.frame.maxX, y: separator.frame.minY,
+                                      width: min(48, max(0, root.bounds.maxX - separator.frame.maxX)), height: separator.frame.height)
+                shadow.shape = .docked
+            }
+            shadow.isHidden = isCollapsed
+            focusEdge.floating = isFloating
+            updateFocusEdge()
+        }
         list.frame = dock.bounds
         list.layer?.cornerRadius = isFloating ? 18 : 0
         list.layer?.borderWidth = isFloating ? 1 / (view.window?.backingScaleFactor ?? 2) : 0
@@ -138,6 +229,10 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             item.view?.appearance = !isCollapsed || isFloating ? list.appearance : nil
         }
         dockedGlass?.cornerRadius = isFloating ? 18 : 0
+        dockedGlass?.shadow = nil
+        dockedGlass?.layer?.shadowOpacity = 0
+        dockedGlass?.layer?.cornerRadius = isFloating ? 18 : 0
+        dockedGlass?.layer?.masksToBounds = isFloating
         list.layer?.backgroundColor = listBackground?.cgColor
         #if KIDO_VISUAL
         dockedGlass?.wantsLayer = true
@@ -178,7 +273,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             item.paletteLabel = item.label
             item.toolTip = item.label
             item.isBordered = false
-            let button = NSButton(frame: .zero)
+            let button = MouseButton(frame: .zero)
             button.cell = ToolbarButtonCell()
             button.image = NSImage(systemSymbolName: toggle ? "sidebar.left" : "plus.square.on.square", accessibilityDescription: item.label)?
                 .withSymbolConfiguration(IconButton.sidebarSymbols)
