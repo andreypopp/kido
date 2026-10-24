@@ -2,13 +2,40 @@ import AppKit
 import os
 import GhosttyKit
 
+extension NSColor {
+    var luminance: Double {
+        let rgb = usingColorSpace(.sRGB)!
+        let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
+            $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
+        }
+        return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+    }
+
+    var isDark: Bool { luminance < 0.5 }
+
+    func shifted(_ amount: Double) -> NSColor {
+        return mixed(toward: isDark ? .white : .black, amount: amount)
+    }
+
+    func mixed(toward color: NSColor, amount: Double) -> NSColor {
+        let a = usingColorSpace(.sRGB)!, b = color.usingColorSpace(.sRGB)!
+        return NSColor(srgbRed: a.redComponent * (1 - amount) + b.redComponent * amount,
+                       green: a.greenComponent * (1 - amount) + b.greenComponent * amount,
+                       blue: a.blueComponent * (1 - amount) + b.blueComponent * amount, alpha: 1)
+    }
+}
+
 @MainActor final class GhosttyRuntime {
     private(set) var app: ghostty_app_t!
     private(set) var config: ghostty_config_t
     private var appearance: NSKeyValueObservation?
     let pasteboard: NSPasteboard
     let configFile: String
-    private(set) var sidebarShade: Double?
+    struct KidoSettings {
+        var sidebarShade = 0.05
+        var unfocusedShift = 0.03
+    }
+    private(set) var settings: KidoSettings
     private var watches: [String: DispatchSourceFileSystemObject] = [:]
     private var reloadWork: DispatchWorkItem?
     private struct FileStat: Equatable {
@@ -34,7 +61,6 @@ import GhosttyKit
     }
     var onConfigChange: () -> Void = {}
     var onConfigReload: () -> Void = {}
-    var onColorSchemeChange: () -> Void = {}
 
     var colorScheme: ghostty_color_scheme_e {
         NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
@@ -67,7 +93,7 @@ import GhosttyKit
         self.loadedStat = Self.fileStat(self.configFile)
         guard let loaded = Self.loadConfig(file: self.configFile) else { return nil }
         self.config = loaded.config
-        self.sidebarShade = loaded.shade
+        self.settings = loaded.settings
 
         var runtime = ghostty_runtime_config_s(
             userdata: Unmanaged.passUnretained(self).toOpaque(),
@@ -146,7 +172,6 @@ import GhosttyKit
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 ghostty_app_set_color_scheme(app, self.colorScheme)
-                self.onColorSchemeChange()
             }
         }
 
@@ -166,26 +191,35 @@ import GhosttyKit
         refreshWatches()
     }
 
-    static func loadConfig(file: String) -> (config: ghostty_config_t, shade: Double?)? {
+    struct LoadedConfig {
+        let config: ghostty_config_t
+        let settings: KidoSettings
+    }
+
+    static func loadConfig(file: String) -> LoadedConfig? {
         guard let config = ghostty_config_new() else { return nil }
         let themes = Bundle.main.resourceURL!.appendingPathComponent("themes").path
         let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\nalpha-blending = linear\nscrollback-limit = 536870912\nkeybind = super+k=unbind\nkeybind = super+j=unbind\nkeybind = super+s=unbind\nkeybind = super+shift+s=unbind\n"
         ghostty_config_load_string(config, defaults, UInt(defaults.utf8.count), "/kido-defaults")
         if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
         ghostty_config_load_recursive_files(config)
-        let sidebarKey = "kido-sidebar-shade"
-        var sidebarValue: String?
+        let keys: [String: WritableKeyPath<KidoSettings, Double>] = [
+            "kido-sidebar-shade": \.sidebarShade,
+            "kido-unfocused-background-shift": \.unfocusedShift
+        ]
+        var values: [String: String] = [:]
         var files: [String] = []
-        func readShade(_ path: String) {
+        func readSettings(_ path: String) {
             guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
             for line in text.split(whereSeparator: \.isNewline) {
                 let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                 guard parts.count == 2 else { continue }
                 var value = parts[1]
-                if parts[0] == sidebarKey {
+                if keys[parts[0]] != nil {
                     if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
-                    sidebarValue = value.isEmpty ? nil : value
+                    value = value.trimmingCharacters(in: .whitespaces)
+                    values[parts[0]] = value.isEmpty ? nil : value
                 }
                 if parts[0] == "config-file" {
                     if value.isEmpty { files.removeAll(); continue }
@@ -204,18 +238,21 @@ import GhosttyKit
                 }
             }
         }
-        readShade(file)
+        readSettings(file)
         var loaded = Set<String>()
         var index = 0
         while index < files.count {
             let path = files[index]
-            if loaded.insert(path).inserted { readShade(path) }
+            if loaded.insert(path).inserted { readSettings(path) }
             index += 1
         }
-        let shade = sidebarValue.flatMap { value -> Double? in
-            guard let percent = Double(value.hasSuffix("%") ? String(value.dropLast()) : value), (-100...100).contains(percent)
-            else { note("\(sidebarKey): not a percentage from -100 to 100: \(value)"); return nil }
-            return percent / 100
+        var settings = KidoSettings()
+        for (key, field) in keys {
+            guard let value = values[key] else { continue }
+            guard value.range(of: #"^-?[0-9]+(\.[0-9]+)?%?$"#, options: .regularExpression) != nil,
+                  let percent = Double(value.hasSuffix("%") ? String(value.dropLast()) : value), (-100...100).contains(percent)
+            else { note("\(key): not a percentage from -100 to 100: \(value)"); continue }
+            settings[keyPath: field] = abs(percent) / 100
         }
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
         ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
@@ -223,10 +260,10 @@ import GhosttyKit
         protectClipboard(config)
         for i in 0..<ghostty_config_diagnostics_count(config) {
             let message = String(cString: ghostty_config_get_diagnostic(config, i).message)
-            if message == "\(sidebarKey): unknown field" || message.hasSuffix(":\(sidebarKey): unknown field") { continue }
+            if keys.keys.contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) { continue }
             note("ghostty config: \(message)")
         }
-        return (config, shade)
+        return LoadedConfig(config: config, settings: settings)
     }
 
     private func reloadConfig() {
@@ -237,7 +274,7 @@ import GhosttyKit
         let changed = Data(UnsafeRawBufferPointer(start: old.ptr, count: Int(old.len))) != Data(UnsafeRawBufferPointer(start: new.ptr, count: Int(new.len)))
         ghostty_string_free(old)
         ghostty_string_free(new)
-        sidebarShade = loaded.shade
+        settings = loaded.settings
         ghostty_app_update_config_without_surface_propagation(app, loaded.config)
         ghostty_config_free(loaded.config)
         if changed { DispatchQueue.main.async { [weak self] in self?.onConfigReload() } }
@@ -306,6 +343,8 @@ import GhosttyKit
 
     var background: NSColor { color("background") }
     var foreground: NSColor { color("foreground") }
+    var separator: NSColor { background.mixed(toward: foreground, amount: 0.18) }
+    var sidebarSeparator: NSColor { background.isDark ? separator : background.mixed(toward: foreground, amount: 0.28) }
 
     private func color(_ key: String) -> NSColor {
         var color = ghostty_config_color_s()

@@ -40,7 +40,7 @@ final class WindowView: NSView {
     var stale = false
     private var needsReconcile = true
     private var dividers: [NSBox] = []
-    private var floatingBoxes: [PaneID: NSBox] = [:]
+    private var backings: [PaneID: NSBox] = [:]
     private var freeFrames: [PaneID: CGRect] = [:]
     private var placed: PaneLayout?
     private enum FloatFrame { case dragging(PaneID, CGRect), settling(PaneID, CGRect) }
@@ -96,7 +96,8 @@ final class WindowView: NSView {
             lines.append("pane \(pane.pane) tmux=\(geometry.map { String(describing: $0.geometry) } ?? "-") layer=\(geometry.map { String(describing: $0.layer) } ?? "-") grid=\(rect(grid)) content=\(rect(pane.frame)) chrome=\(chrome.map { rect($0.frame) } ?? "-") \(pane.visualState)")
         }
         lines += dividers.map { "divider=\(rect($0.frame))" }.sorted()
-        lines += floatingBoxes.sorted { $0.key.number < $1.key.number }.map { "float \($0.key)=\(rect($0.value.frame))" }
+        lines += backings.filter { pair in shown?.visible.root.panes.contains { $0.id == pair.key && $0.layer != .tiled } == true }
+            .sorted { $0.key.number < $1.key.number }.map { "float \($0.key)=\(rect($0.value.frame))" }
         return lines.joined(separator: "\n")
     }
     var visualPaneDragging: Bool { paneDrag != nil }
@@ -115,11 +116,12 @@ final class WindowView: NSView {
 
     func updateBackground() {
         layer?.backgroundColor = runtime.background.cgColor
+        updateFocusTreatment(forcePaper: true)
         for chrome in subviews.compactMap({ $0 as? PaneChrome }) {
             chrome.needsDisplay = true
             for overlay in chrome.subviews { overlay.needsDisplay = true }
         }
-        floatingBoxes.values.forEach { $0.fillColor = runtime.background }
+        dividers.forEach { $0.fillColor = runtime.separator }
     }
 
     private var session: SessionView? { superview as? SessionView }
@@ -180,7 +182,7 @@ final class WindowView: NSView {
         toolbar?.removeFromSuperview()
         toolbar = nil
         dividers = []
-        floatingBoxes = [:]
+        backings = [:]
         freeFrames = [:]
         liveFrame = nil
         placed = nil
@@ -190,7 +192,7 @@ final class WindowView: NSView {
 
     func focus(_ pane: PaneID) {
         active = pane
-        for chrome in subviews.compactMap({ $0 as? PaneChrome }) { chrome.dimmed = chrome.pane != active }
+        updateFocusTreatment()
         focusActive(force: false)
     }
 
@@ -226,7 +228,7 @@ final class WindowView: NSView {
         installGrids(Array(views.values))
         let overlays = Dictionary(uniqueKeysWithValues: subviews.compactMap { $0 as? PaneChrome }.map { ($0.pane, $0) })
         var tiled: [NSView] = [], floating: [(z: Int, views: [NSView])] = []
-        floatingBoxes = [:]
+        backings = [:]
         for pane in layoutPanes {
             guard let view = views[pane.id] else { continue }
             let g = (seen[pane.id] ?? pane).geometry
@@ -240,10 +242,13 @@ final class WindowView: NSView {
             chrome.layer?.masksToBounds = isFloating
             place(chrome, view, g, placement, floating: isFloating)
             chrome.isHidden = view.isHidden
-            chrome.dimmed = pane.id != active
+            view.transparentPaper = !isFloating
             switch (seen[pane.id] ?? pane).layer {
             case .tiled:
-                tiled += [view, chrome]
+                let backing = box(chrome.frame, border: 0, fill: view.paperColor)
+                backing.isHidden = view.isHidden
+                backings[pane.id] = backing
+                tiled += [backing, view, chrome]
             case .floating(let z):
                 if view.isHidden { floating.append((z, [view, chrome])) }
                 else {
@@ -256,17 +261,18 @@ final class WindowView: NSView {
                     shadow.shadowBlurRadius = 12
                     shadow.shadowOffset = NSSize(width: 0, height: -3)
                     backing.shadow = shadow
-                    floatingBoxes[pane.id] = backing
+                    backings[pane.id] = backing
                     floating.append((z, [backing, view, chrome]))
                 }
             }
         }
-        dividers = (shown.visible.root.dividers.map { placement.line($0, pixel: pixel) } + [placement.topLine]).map {
-            box($0, border: 0, fill: .separatorColor)
+        dividers = (shown.visible.root.dividers.map { drawnLine($0, placement, root: shown.visible.root) } + [placement.topLine]).map {
+            box($0, border: 0, fill: runtime.separator)
         }
         preview.frame = bounds
         preview.autoresizingMask = [.width, .height]
         subviews = dividers + tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views) + [preview]
+        updateFocusTreatment()
         for view in views.values where existing[view.pane] == nil {
             synced?.enter()
             connection?.attach(view) { synced?.leave() }
@@ -297,14 +303,14 @@ final class WindowView: NSView {
         var changed = false
         for chrome in subviews.compactMap({ $0 as? PaneChrome }) where !chrome.isHidden {
             guard let pane = seen[chrome.pane], let view = views[chrome.pane] else { continue }
-            chrome.dimmed = chrome.pane != active
             let previous = chrome.frame
             place(chrome, view, pane.geometry, placement, floating: pane.layer != .tiled)
             changed = changed || previous != chrome.frame
         }
-        for (box, frame) in zip(dividers, shown.visible.root.dividers.map { placement.line($0, pixel: pixel) } + [placement.topLine]) {
+        for (box, frame) in zip(dividers, shown.visible.root.dividers.map { drawnLine($0, placement, root: shown.visible.root) } + [placement.topLine]) {
             if box.frame != frame { box.frame = frame; changed = true }
         }
+        updateFocusTreatment()
         if changed { invalidateCursorRects() }
     }
 
@@ -320,6 +326,43 @@ final class WindowView: NSView {
         #endif
     }
 
+    private func drawnLine(_ divider: Divider, _ placement: PaneLayout, root: Node) -> CGRect {
+        let geometry: Geometry = switch root {
+        case .pane(let pane): pane.geometry
+        case .split(_, let geometry, _): geometry
+        }
+        let g = divider.geometry
+        var line = placement.line(divider, pixel: pixel)
+        if divider.direction == .leftRight {
+            if g.y + g.height == geometry.y + geometry.height { line.size.height = bounds.maxY - line.minY }
+        } else {
+            let right = g.x + g.width == geometry.x + geometry.width ? bounds.maxX : line.maxX
+            if g.x == geometry.x { line.origin.x = bounds.minX }
+            line.size.width = right - line.minX
+        }
+        return line
+    }
+
+    func updateFocusTreatment(forcePaper: Bool = false) {
+        let lookup = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
+        let chromes = subviews.compactMap { $0 as? PaneChrome }
+        let multiple = chromes.filter { !$0.isHidden && lookup[$0.pane]?.transparentPaper == true }.count > 1
+        let sidebarFocused = session?.sidebarFocused() ?? false
+        for pane in panes { pane.syncFocus() }
+        for chrome in chromes {
+            guard let pane = lookup[chrome.pane] else { continue }
+            let tiled = pane.transparentPaper
+            let shifted = tiled && multiple && (sidebarFocused || chrome.pane != active)
+            chrome.treatment = tiled
+                ? (multiple && !sidebarFocused && chrome.pane == active ? .edge : .plain)
+                : (chrome.pane == active ? .plain : .overlay)
+            let changed = shifted != pane.shiftedBackground
+            if changed { pane.shiftedBackground = shifted }
+            else if forcePaper { pane.updatePaper() }
+            if changed || forcePaper { backings[chrome.pane]?.fillColor = pane.paperColor }
+        }
+    }
+
     private func place(_ chrome: PaneChrome, _ view: PaneView, _ g: Geometry, _ placement: PaneLayout, floating: Bool) {
         let frame: CGRect, grid: CGRect, content: CGRect, insets: PaneLayout.RenderInsets
         if floating {
@@ -333,7 +376,7 @@ final class WindowView: NSView {
             (frame, grid, content, insets) = (tiled.chrome, tiled.grid, tiled.content, tiled.insets)
         }
         if chrome.frame != frame { chrome.frame = frame; view.needsLayout = true }
-        if floatingBoxes[chrome.pane]?.frame != frame { floatingBoxes[chrome.pane]?.frame = frame }
+        if backings[chrome.pane]?.frame != frame { backings[chrome.pane]?.frame = frame }
         for overlay in view.chromeViews where overlay.superview !== chrome { chrome.addSubview(overlay); view.needsLayout = true }
         if toolbar?.superview === chrome, toolbar?.frame != chrome.toolbarFrame { toolbar?.frame = chrome.toolbarFrame }
         view.renderInsets = insets
