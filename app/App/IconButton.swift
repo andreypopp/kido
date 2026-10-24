@@ -1,6 +1,18 @@
 import AppKit
 
-final class IconButton: NSButton {
+class MouseButton: NSButton {
+    private var selectingWithMouse = false
+    override var acceptsFirstResponder: Bool {
+        !selectingWithMouse && NSApp.currentEvent?.type != .leftMouseDown && super.acceptsFirstResponder
+    }
+    override func mouseDown(with event: NSEvent) {
+        selectingWithMouse = true
+        defer { selectingWithMouse = false }
+        super.mouseDown(with: event)
+    }
+}
+
+final class IconButton: MouseButton {
     static let sidebarSymbols = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular, scale: .small)
     var invoke: () -> Void = {}
     var press: ((NSEvent) -> Void)?
@@ -29,6 +41,7 @@ final class IconButton: NSButton {
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override var acceptsFirstResponder: Bool { press != nil || super.acceptsFirstResponder }
     override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.35 } }
     private var radius: CGFloat { hoverStyle == .close ? 4 : hoverStyle == .text ? 6 : 8 }
     override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill() }

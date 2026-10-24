@@ -470,6 +470,62 @@ import TmuxControl
         XCTAssertEqual(requests.count, 2)
     }
 
+    func testSidebarResizeStartsOnSeparator() async throws {
+        let owner = try owner(fixture())
+        let window = try XCTUnwrap(owner.window), sidebar = owner.sidebar
+        window.display()
+        let root = try XCTUnwrap(window.contentView?.superview)
+        root.layoutSubtreeIfNeeded()
+        sidebar.splitView.setPosition(236, ofDividerAt: 0)
+        root.layoutSubtreeIfNeeded()
+        sidebar.viewDidLayout()
+        try await wait("native sidebar width settles") { abs(sidebar.list.bounds.width - 236) < 1 }
+        sidebar.viewDidLayout()
+        let separator = sidebar.visualSeparator
+        let start = separator.convert(NSPoint(x: separator.bounds.midX, y: separator.bounds.midY), to: nil)
+        let hit = try XCTUnwrap(root.hitTest(root.convert(start, from: nil)))
+        guard hit !== separator else { return XCTFail("sidebar separator must pass resize gestures through") }
+        let before = sidebar.list.bounds.width
+        let end = NSPoint(x: start.x + 36, y: start.y)
+        NSApp.postEvent(mouse(.leftMouseDragged, end, window), atStart: false)
+        NSApp.postEvent(mouse(.leftMouseUp, end, window), atStart: false)
+        hit.mouseDown(with: mouse(.leftMouseDown, start, window))
+        root.layoutSubtreeIfNeeded()
+        try await wait("separator resize changes the sidebar width") { sidebar.list.bounds.width > before + 20 }
+        XCTAssertGreaterThan(sidebar.list.bounds.width, before + 20, "resize starts on the visible separator line")
+    }
+
+    func testSidebarClickDoesNotTakeFocus() async throws {
+        final class ClickWindow: OwnerWindow {
+            var key = true
+            override var isKeyWindow: Bool { key }
+        }
+        let window = ClickWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.key = false; window.close() }
+        let sidebar = Sidebar()
+        window.contentViewController = sidebar
+        let list = sidebar.list, table = list.visualTable as! Table
+        list.update(.running(try fixture()))
+        window.display()
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
+        let row = try XCTUnwrap(list.visualRows.firstIndex { $0.target != nil })
+        _ = window.makeFirstResponder(window)
+        sidebar.visualFocusEdge.isHidden = true
+        var sidebarFocus = 0
+        window.focusChanged = { _, _ in
+            sidebar.updateFocusEdge()
+            if list.containsFocus || !sidebar.visualFocusEdge.isHidden { sidebarFocus += 1 }
+        }
+        try press(table, row, drag: false)
+        XCTAssertEqual(sidebarFocus, 0, "sidebar mouse click must not show its focus edge, even before navigation returns")
+        XCTAssertFalse(list.containsFocus)
+        list.focus()
+        XCTAssertTrue(list.containsFocus, "keyboard sidebar focus is unchanged")
+        XCTAssertFalse(sidebar.visualFocusEdge.isHidden)
+        XCTAssertGreaterThan(sidebarFocus, 0)
+    }
+
     func testSidebarClickActivatesOnceAndDragsNever() async throws {
         let snapshot = try fixture()
         let owner = try owner(snapshot)
