@@ -1081,7 +1081,7 @@ export default function (pi: ExtensionAPI) {
     args.push("--name", entry.name);
     args.push("--model", entry.model);
     if (policy.fork) args.push("--fork", policy.fork);
-    return args;
+    return kido ? [kido, "shell", "--", ...args] : args;
   };
 
   const adopt = (created: Created, entry: AgentEntry): void => {
@@ -2078,7 +2078,7 @@ export default function (pi: ExtensionAPI) {
           }
           let deliveryError = "";
           if (target === "toplevel") {
-            const deadline = Date.now() + 5000;
+            const deadline = Date.now() + envMs("KIDO_INBOX_WAIT_MS", 30000);
             for (;;) {
               const live = (await listPanes()).find((agent) => agent.agentSession === childSession && !agent.dead && agent.inbox);
               if (live) {

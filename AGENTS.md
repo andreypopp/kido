@@ -242,7 +242,8 @@ Conventions:
       launch.ml        the launcher and `kido server`: --server, the
                        server.conf in its state dir, the KIDO_SERVER stamp
       build_id.ml      the immutable dune-build-info version, or unknown
-      shell.ml, prime.ml  kido shell: the login shell and its priming files
+      shell.ml, prime.ml  kido shell: the login shell and its priming files,
+                       and `kido shell --`, an agent's login environment
       bin_dir.ml       the shipped-file and bin-directory lookup
       tmux_vars.ml     names of kido's tmux user options and environment variables
       state.ml         the pane view and its one read: every pane, its

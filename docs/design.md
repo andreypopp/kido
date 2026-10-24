@@ -497,7 +497,8 @@ starts. Nothing is fetched until the first `@`.
 `spawn_agent` starts a child through `kido run-child`, or a top-level
 agent through `kido run` (design-subagents.md, "What a child is given"
 and "A top-level agent"). Both create a detached window in the caller's
-tmux session. Three `new-window` flags
+tmux session, and both wrap pi in `kido shell --` ("The login
+environment", below). Three `new-window` flags
 are necessary:
 
 - `-d` keeps focus on the caller's window during its turn.
@@ -524,6 +525,48 @@ instead of silently changing them. The extension applies the same rule
 before it calls kido. The extension also uses the name as a directory,
 `agents/<parent>/<name>/`. Thus, it refuses an empty name, `.`, `..`
 and a name with `/` before it writes anything.
+
+### The login environment
+
+tmux starts a run's argv directly, with only the server and session
+environment. A pi that the user starts in a pane runs under `kido
+shell`, which read the user's dotfiles: EDITOR, PATH additions, API
+keys, LANG. So that every agent gets the same environment, the
+extension's one pi argv builder starts each pi, child or top-level, new
+or restarted, as `<its kido path> shell -- kido-pi ...`. `async_bash`
+starts its command directly, because its command is not an agent.
+`kido run` and `kido run-child` add no wrapper; the wrapper is part of
+the argv that the caller gives.
+
+`kido shell -- CMD...` resolves the shell as the bare `kido shell`
+does ("Priming a local shell"). For bash, zsh, sh, dash and ksh it
+execs `SHELL -l -i -c SCRIPT SHELL CMD...`. SCRIPT puts kido's bin
+directory first on PATH again, as a primed pane does after the login
+files, then runs `exec "$@"`. It names only kido's own directory, and
+the argv passes as positional parameters, so no shell parses model
+text. The shell is interactive, because EDITOR often
+lives in `.zshrc`:
+
+- zsh reads `.zshenv`, `.zprofile`, `.zshrc` and `.zlogin`, under
+  `ZDOTDIR` if the environment sets it.
+- bash reads `/etc/profile` and the first of `.bash_profile`,
+  `.bash_login` and `.profile`, as an interactive login pane does.
+  `.bashrc` runs only if that file sources it.
+
+The shell integration is not installed, and no prompt runs before the
+exec. So the pane gets no OSC 133 marks from kido, and pi's OSC 7501
+root classifies it. A dotfile that prints marks, reads the terminal,
+exits or execs another program changes this, as it would in a pane.
+Because the shell execs, pi keeps the pane's process:
+`#{pane_dead_status}` and `#{pane_dead_signal}` are pi's, and "Run
+outcomes" applies unchanged. If the exec fails, the shell exits 127
+(126 for permission). Another shell, such as fish, has no `"$@"`
+semantics: kido execs CMD directly, and the user's dotfiles do not run.
+If that exec fails, kido reports `kido shell: ...` and exits 1.
+
+A top-level agent's task goes over its inbox, so the spawn waits for
+the inbox through the shell's startup and pi's: up to
+`KIDO_INBOX_WAIT_MS`, 30000 ms by default.
 
 ### Failure leaves a record
 
@@ -553,8 +596,9 @@ window.
 command's first word (`bash`, `pi`) says nothing; it passes `Tmux.safe`
 and the 64-byte cap. `--session` takes a session id or name and
 defaults to the caller's session; `--cwd` defaults to the caller's cwd.
-The argv is the pane's command, `execvp`'d by tmux; no wrapper runs
-around it. The window's environment has `KIDO_RUN_ID` and
+The argv is the pane's command, `execvp`'d by tmux; kido adds no
+wrapper (the extension's `kido shell --` is part of the argv, "The
+login environment"). The window's environment has `KIDO_RUN_ID` and
 `KIDO_RUN_OUTPUT=<dir>/runs/<id>/output`, plus each `--env`. The
 SESSION column of `kido runs` is the live pane's `@kido_session` while
 the pane has a pi root, else empty; kido stores nothing for it.
@@ -1347,6 +1391,9 @@ in OCaml and once in sh. A plain-mode local shell uses tmux's dashed
 argv[0]; the remote shell uses `-l`. sh cannot set another process's
 argv[0].
 
+`kido shell -- CMD...` runs a command in the same shell, without
+priming ("The login environment").
+
 ### The bin directory
 
 kido ships four `sh` shims in `<prefix>/share/kido/bin`: `kido`, `tmux`,
@@ -1444,6 +1491,7 @@ variables are:
 - `KIDO_STOP_ESCALATION_MS`;
 - `KIDO_PARENT_POLL_MS`;
 - `KIDO_SPAWN_TIMEOUT_MS`;
+- `KIDO_INBOX_WAIT_MS`, a top-level spawn's wait for the new inbox;
 - `KIDO_AGENT_LIST_TTL_MS`;
 - `KIDO_STREAM_POLL_MS`, the extension's output tail;
 - `KIDO_STREAM_FLUSH_MS`, `KIDO_STREAM_MAX_WAIT_MS` and

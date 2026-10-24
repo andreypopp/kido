@@ -30,7 +30,7 @@ state directory, and writes to inboxes.
 | `list_runs()` | `kido runs --json --all --parent P`, `agents/<me>/*`, one `tmux list-panes -a` |
 | `set_status(activity)` | `tmux set-option -p @kido_activity` |
 | `message_agent(to, message, mode?)` | the target's inbox; `kido run-child` to restart an ended child |
-| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `kido run-child P --name N --cwd D --env ... -- kido-pi ...`, or `kido run` for a top-level agent |
+| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `kido run-child P --name N --cwd D --env ... -- kido shell -- kido-pi ...`, or `kido run` for a top-level agent |
 | `stop_run(to, force?)` | the target's inbox, then `kido run-stop` |
 | `async_bash(command, name, stream?)` | `kido run-child P --name N -- bash -o pipefail -c ...` |
 
@@ -122,8 +122,12 @@ child's agent directory, `task` and `agent.json` with an empty `run`,
 before the child starts. Then it runs:
 
     kido run-child P --name N --cwd C --env KIDO_AGENT_PARENT_SESSION=S \
-      --env KIDO_AGENT_DIR=D -- kido-pi --session-id <minted id> \
-      --name N --model M [--fork <session file>]
+      --env KIDO_AGENT_DIR=D -- kido shell -- kido-pi \
+      --session-id <minted id> --name N --model M [--fork <session file>]
+
+`kido shell --` starts pi through the user's login shell, so the child
+has the environment of an interactive pane (design.md, "The login
+environment").
 
 S is the caller's own pi session id. The extension mints the child's
 session id. It writes the run id that `run-child` prints into
@@ -256,14 +260,14 @@ no report was owed`.
 
 `toplevel: true` starts the agent with no parent edge:
 
-    kido run --name N --cwd C --session <caller's tmux session> -- kido-pi ...
+    kido run --name N --cwd C --session <caller's tmux session> -- kido shell -- kido-pi ...
 
 The window is in the caller's tmux session. There is no agent
 directory, no `KIDO_AGENT_DIR`, no `run-wait` and no notice to the
 caller, and the run meta has no parent, so the orphan rule never
 applies. The task goes over the new agent's inbox, as a message from
-the caller. The spawn waits up to 5000 ms for the pane to publish
-`@kido_session` and its inbox, also for an empty task, and holds the
+the caller. The spawn waits up to `KIDO_INBOX_WAIT_MS` (30000 ms) for the pane to
+publish `@kido_session` and its inbox, also for an empty task, and holds the
 name claim and the session lock during the wait. Thus, a second spawn
 from the same caller sees the agent live. On a timeout, the result
 still names the agent and adds `timed out waiting for its inbox; no task
@@ -598,7 +602,7 @@ new run under the same session. The rules:
   spawn. A stale parent would make the sweep's orphan rule close the
   child at once.
 - With `session-file`, the restart is
-  `kido run-child P ... -- kido-pi --session <session-file> --name N --model M`.
+  `kido run-child P ... -- kido shell -- kido-pi --session <session-file> --name N --model M`.
   The message is never in pi's argv: pi's parser reads an argument that
   starts with `@` as a file, even after `--`. The extension writes the
   message as `task` and removes `delivered`, and the child delivers it

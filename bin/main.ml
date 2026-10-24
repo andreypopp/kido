@@ -466,11 +466,22 @@ let server =
        0
 
 let shell =
-  Cmd.v (Cmd.info "shell" ~doc:"Exec the pane's login shell, primed with kido's shell integration.")
-  @@ let+ () = Term.const () in
+  Cmd.v
+    (Cmd.info "shell"
+       ~doc:"Exec the primed login shell, or run a command through an interactive login shell."
+       ~man:
+         [
+           `S Manpage.s_synopsis;
+           `P "kido shell [-- CMD [ARG]...]";
+           `S Manpage.s_description;
+           `P
+             "CMD runs through an interactive login shell without priming, with kido's bin \
+              directory first on PATH.";
+         ])
+  @@ let+ args = rest in
      run ~name:"shell" (fun () ->
          ignore (state_dir ());
-         Shell.run ())
+         Shell.run args)
 
 let ssh =
   Cmd.v (Cmd.info "ssh" ~doc:"Run ssh, priming the remote login shell when it can.")

@@ -1,2 +1,2 @@
 val with_env : string array -> (string * string) list -> string array
-val run : unit -> int
+val run : string list -> int

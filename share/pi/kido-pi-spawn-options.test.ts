@@ -144,6 +144,7 @@ test("toplevel holds its name until publication, sends @ tasks by inbox, and sta
     const result = await spawned;
     assert.match(result.content[0].text, /independent peer; no report or ending notice/);
     assert.equal(argv[0], "run");
+    assert.deepEqual(argv.slice(argv.indexOf("--") + 2, argv.indexOf("--") + 5), ["shell", "--", "kido-pi"]);
     assert.equal(argAfter(argv, "--session"), "$1");
     assert.equal(argAfter(argv, "--cwd"), fx.stateDir);
     assert.equal(argAfter(argv, "--env"), undefined);

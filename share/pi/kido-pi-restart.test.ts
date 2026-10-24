@@ -72,7 +72,7 @@ test("a saved child restarts with an @ message through its task file, never pi a
       "run-child", "%1", "--name", "kid",
       "--env", `KIDO_AGENT_PARENT_SESSION=${SELF}`,
       "--env", `KIDO_AGENT_DIR=${join(fx.stateDir, "agents", SELF, "kid")}`,
-      "--", "kido-pi", "--session", "/tmp/kid.json", "--name", "kid", "--model", "acme/caller:high",
+      "--", join(fx.binDir, "kido"), "shell", "--", "kido-pi", "--session", "/tmp/kid.json", "--name", "kid", "--model", "acme/caller:high",
     ]);
     assert.equal(agentJson(fx, SELF, "kid").run, "restarted-run", "agent.json names the new run");
     assert.equal(agentJson(fx, SELF, "kid").session, child.session, "the pi session is the same");

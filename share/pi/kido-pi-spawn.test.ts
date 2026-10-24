@@ -55,7 +55,7 @@ test("spawn_agent starts kido-pi as a run-child, writes the child's directory fi
       "run-child", "%1", "--name", "kid", "--cwd", process.cwd(),
       "--env", `KIDO_AGENT_PARENT_SESSION=${SELF}`,
       "--env", `KIDO_AGENT_DIR=${join(fx.stateDir, "agents", SELF, "kid")}`,
-      "--", "kido-pi", "--session-id", childSession, "--name", "kid", "--model", "acme/caller:high",
+      "--", join(fx.binDir, "kido"), "shell", "--", "kido-pi", "--session-id", childSession, "--name", "kid", "--model", "acme/caller:high",
     ]);
     assert.deepEqual(agentJson(fx, SELF, "kid"), { session: childSession, run: "fake-run-id", model: "acme/caller:high", fork: false });
     assert.equal(readFileSync(join(fx.agentDir(SELF, "kid"), "task"), "utf8"), "do the thing");

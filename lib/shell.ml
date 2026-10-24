@@ -36,7 +36,7 @@ let argv path mode command =
   in
   head @ match command with Some c -> [ "-c"; c ] | None -> []
 
-let run () =
+let run args =
   let tmux = Tmux.create () in
   let global_option name =
     Result.get_or ~default:"" (Tmux.exec tmux [ "show-options"; "-gqv"; name ])
@@ -48,18 +48,29 @@ let run () =
         |> Option.get_or ~default:"/bin/sh")
       (match global_option Tmux_vars.user_command with "" -> None | c -> Some c)
   in
-  let zdotdir = Sys.getenv_opt "ZDOTDIR" and env = Unix.environment () in
-  let mode =
-    Prime.local_mode
-      ~dotdir:(match zdotdir with None | Some "" -> Fs.getenv "HOME" | Some d -> d)
-      ~env path
-  in
-  let mode, add =
-    match Prime.local ~zdotdir ~bin_dir:(Bin_dir.own ()) mode with
-    | add -> (mode, add)
-    | exception (Sys_error _ | Unix.Unix_error _) -> (Prime.Plain, [])
-  in
-  Unix.execve path (Array.of_list (argv path mode command)) (with_env env add)
+  match args with
+  | [] ->
+      let zdotdir = Sys.getenv_opt "ZDOTDIR" and env = Unix.environment () in
+      let mode =
+        Prime.local_mode
+          ~dotdir:(match zdotdir with None | Some "" -> Fs.getenv "HOME" | Some d -> d)
+          ~env path
+      in
+      let mode, add =
+        match Prime.local ~zdotdir ~bin_dir:(Bin_dir.own ()) mode with
+        | add -> (mode, add)
+        | exception (Sys_error _ | Unix.Unix_error _) -> (Prime.Plain, [])
+      in
+      Unix.execve path (Array.of_list (argv path mode command)) (with_env env add)
+  | executable :: _ -> (
+      match Filename.basename path with
+      | "bash" | "zsh" | "sh" | "dash" | "ksh" ->
+          let script =
+            (match Bin_dir.own () with Some dir -> Bin_dir.path_prepend_script dir | None -> "")
+            ^ {|exec "$@"|}
+          in
+          Unix.execv path (Array.of_list ([ path; "-l"; "-i"; "-c"; script; path ] @ args))
+      | _ -> Unix.execvp executable (Array.of_list args))
 
 let%test_module "Tests" =
   (module struct

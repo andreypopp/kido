@@ -100,7 +100,8 @@ the reloaded module.
   `steer` joins a descendant's running turn. `interrupt-and-steer`
   aborts a descendant's turn, then starts a new turn with the text.
 - `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)`:
-  a child through `kido run-child ... -- kido-pi`, in the caller's model
+  a child through `kido run-child ... -- kido shell -- kido-pi`, in the
+  user's login-shell environment and the caller's model
   unless `model` names one. `resume_from` continues a saved pi session
   by id or unique prefix; with `fork`, it starts a copy. `toplevel`
   starts a peer through `kido run`, with no parent, report or notice.
