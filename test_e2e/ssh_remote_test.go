@@ -18,23 +18,24 @@ var sshOpts = []string{
 	"-o", "StrictHostKeyChecking=accept-new",
 }
 
-// requireLocalSSH skips unless an unattended ssh to localhost works.
-// Unlike the patched tmux this is never required: a machine with no sshd
-// is an ordinary place to run the suite, and KIDO_E2E_REQUIRED says
-// nothing about it.
-func requireLocalSSH(t *testing.T) {
+func requireLocalSSH(t *testing.T) string {
 	t.Helper()
 	if os.Getenv("KIDO_E2E_HOST_SSH") != "1" {
 		t.Skip("set KIDO_E2E_HOST_SSH=1 to use host sshd; the remote shell reads the real user's dotfiles")
 	}
 	if _, err := exec.LookPath("ssh"); err != nil {
-		t.Skip("no ssh in PATH")
+		t.Fatal("no ssh in PATH")
 	}
 	cmd := exec.Command("ssh", append(append([]string{}, sshOpts...), "localhost", "true")...)
 	cmd.Env = cleanEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("no unattended ssh to localhost: %v\n%s", err, out)
+		t.Fatalf("no unattended ssh to localhost: %v\n%s", err, out)
 	}
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Fatal("no zsh in PATH")
+	}
+	return zsh
 }
 
 func localSSHDestination(t *testing.T) string {
@@ -61,11 +62,7 @@ func localSSHDestination(t *testing.T) string {
 // they were written), with the destination still the label.
 func TestSSHRemoteShellStatus(t *testing.T) {
 	t.Parallel()
-	zsh, err := exec.LookPath("zsh")
-	if err != nil {
-		t.Skip("no zsh in PATH")
-	}
-	requireLocalSSH(t)
+	zsh := requireLocalSSH(t)
 	h := start(t, "alpha")
 
 	script, err := filepath.Abs(filepath.Join("..", "share", "zsh", "integration.zsh"))

@@ -854,6 +854,14 @@ native program status.
 - The ssh tests that use the host's sshd run only with
   `KIDO_E2E_HOST_SSH=1`. sshd starts the real user's shell, which reads
   that user's dotfiles whatever `HOME` the test sets.
+  The tests also need a local zsh.
+  With the variable set, a failed ssh probe or a missing zsh is a
+  test failure, not a skip.
+  CI sets the variable on both runners. The CI step "Set up localhost
+  SSH" starts sshd and authorizes a new key for localhost.
+  On macOS, it changes the runner's login shell to zsh because the
+  image's Bash 3.2 is too old for `kido ssh` to prime.
+  ssh reads `~/.ssh` from the passwd home, not the private `HOME`.
 - `settle = 5s` is the default wait deadline.
   Wait helpers poll at 100ms, kido's tick.
   Shorten grace periods (linger, stop escalation)
@@ -878,8 +886,10 @@ native program status.
   (no TTY, `setsid`). Otherwise, the run hangs.
   Prefer timing ratios against a baseline measured in the same run
   to fixed wall-clock bounds.
-- Ubuntu CI does not install zsh.
-  compinit's insecure-directories prompt blocks e2e shells.
+- Ubuntu CI installs zsh and sets `skip_global_compinit=1` in
+  `/etc/zsh/zshenv` before any test runs. Without it, Debian's
+  `/etc/zsh/zshrc` runs compinit, and its insecure-directories prompt
+  blocks test shells.
   Unit probes of host shells silently skip a missing shell.
   They print only mismatches.
 - `dune test --force` can reuse a cached `.exe.output` target.

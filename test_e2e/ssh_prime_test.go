@@ -3,7 +3,6 @@ package e2e
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,12 +18,8 @@ const sshSettle = 20 * time.Second
 // pane needs one: kido only believes a far side is reporting once it
 // marks a prompt later than the local shell marked the ssh as started
 // (Sidebar.observe_remote).
-func integratedShellPane(t *testing.T, h *harness) string {
+func integratedShellPane(t *testing.T, h *harness, zsh string) string {
 	t.Helper()
-	zsh, err := exec.LookPath("zsh")
-	if err != nil {
-		t.Skip("no zsh in PATH")
-	}
 	script, err := filepath.Abs(filepath.Join("..", "share", "zsh", "integration.zsh"))
 	if err != nil {
 		t.Fatal(err)
@@ -59,9 +54,9 @@ func integratedShellPane(t *testing.T, h *harness) string {
 // primes a pristine zsh".
 func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	t.Parallel()
-	requireLocalSSH(t)
+	zsh := requireLocalSSH(t)
 	h := start(t, "alpha")
-	pane := integratedShellPane(t, h)
+	pane := integratedShellPane(t, h, zsh)
 	opts := strings.Join(sshOpts, " ")
 
 	// A remote command long enough for its prompt to land in a later
@@ -121,9 +116,9 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 // that never execs anything.
 func TestKidoSSHOpensAnOrdinarySession(t *testing.T) {
 	t.Parallel()
-	requireLocalSSH(t)
+	zsh := requireLocalSSH(t)
 	h := start(t, "alpha")
-	pane := integratedShellPane(t, h)
+	pane := integratedShellPane(t, h, zsh)
 
 	h.in("send-keys", "-t", pane, kidoBin+" ssh "+strings.Join(sshOpts, " ")+" localhost", "Enter")
 	// kido exec's ssh, so the pane's foreground process is ssh itself.

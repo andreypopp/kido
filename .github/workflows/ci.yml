@@ -40,12 +40,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install tmux dependencies (Ubuntu)
+      - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libevent-dev libncurses-dev libutf8proc-dev \
-            bison autoconf automake pkg-config
+            bison autoconf automake pkg-config openssh-server zsh
+          # Debian's global compinit can block test shells with an insecure-directories prompt.
+          echo 'skip_global_compinit=1' | sudo tee -a /etc/zsh/zshenv
 
       - name: Install tmux dependencies (macOS)
         if: runner.os == 'macOS'
@@ -106,8 +108,30 @@ jobs:
         if: runner.os == 'macOS'
         run: sysctl kern.tty.ptmx_max; ls /dev/ttys* | wc -l
 
+      # Host-sshd e2e tests need localhost SSH. launchctl avoids systemsetup's
+      # Full Disk Access requirement. macOS Bash 3.2 is too old to prime,
+      # so the account uses zsh with a startup file instead.
+      - name: Set up localhost SSH
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo systemctl start ssh
+          else
+            sudo chsh -s /bin/zsh "$USER"
+            touch "$HOME/.zshrc"
+            sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist
+          fi
+          mkdir -p "$HOME/.ssh"
+          ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519"
+          cat "$HOME/.ssh/id_ed25519.pub" >> "$HOME/.ssh/authorized_keys"
+          ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new localhost '
+            case "$SHELL" in
+              */zsh) exit 0 ;;
+              */bash) "$SHELL" -c '\''(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) ))'\'' ;;
+              *) exit 1 ;;
+            esac'
+
       - name: E2E tests
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 make e2e
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 KIDO_E2E_HOST_SSH=1 make e2e
 
       - name: TypeScript tests
         run: KIDO_TS_TEST_REQUIRED=1 ./scripts/test-ts.sh
