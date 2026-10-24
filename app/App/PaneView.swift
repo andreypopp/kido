@@ -1127,6 +1127,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         presentScroll()
     }
 
+    func reloadConfig() {
+        reflow { [weak self] in
+            if let self { ghostty_surface_update_config(surface, runtime.config) }
+        }
+    }
+
     func reflow(_ change: @escaping @MainActor () -> Void) {
         beginResizeIntent(gesture: false)
         grid.withLock { $0.dirty = true; $0.suspended = true }

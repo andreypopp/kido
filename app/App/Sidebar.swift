@@ -134,11 +134,14 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             tabs.needsDisplay = true
         }
         view.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "newSession" }?.isHidden = isCollapsed || isFloating
+        for item in view.window?.toolbar?.items ?? [] where ["newSession", "toggleSidebar"].contains(item.itemIdentifier.rawValue) {
+            item.view?.appearance = !isCollapsed || isFloating ? list.appearance : nil
+        }
         dockedGlass?.cornerRadius = isFloating ? 18 : 0
         list.layer?.backgroundColor = listBackground?.cgColor
         #if KIDO_VISUAL
         dockedGlass?.wantsLayer = true
-        dockedGlass?.layer?.backgroundColor = isFloating ? NSColor.windowBackgroundColor.cgColor : nil
+        dockedGlass?.layer?.backgroundColor = isFloating ? listBackground?.cgColor : nil
         dockedGlass?.layer?.cornerRadius = isFloating ? list.layer?.cornerRadius ?? 0 : 0
         #endif
     }
