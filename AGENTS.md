@@ -397,6 +397,10 @@ Kido's commit order on master is:
 - The control-client fixes: pause flush, `%exit` reason, hanging up a
   pane's child.
 - Terminal query-reply routing to the query's owner, in one commit.
+  tmux, a pane's passthrough and the side job each own their queries.
+  A reply goes to the oldest open query with the same frame key.
+  A reply that matches no query takes upstream's key path.
+  The commit message gives the routing rules and their limits.
 - OSC 7501 program status, in one commit.
 
 Before you force-push `fork`, push its previous head as a dated branch
