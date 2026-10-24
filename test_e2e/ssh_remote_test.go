@@ -24,6 +24,9 @@ var sshOpts = []string{
 // nothing about it.
 func requireLocalSSH(t *testing.T) {
 	t.Helper()
+	if os.Getenv("KIDO_E2E_HOST_SSH") != "1" {
+		t.Skip("set KIDO_E2E_HOST_SSH=1 to use host sshd; the remote shell reads the real user's dotfiles")
+	}
 	if _, err := exec.LookPath("ssh"); err != nil {
 		t.Skip("no ssh in PATH")
 	}

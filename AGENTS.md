@@ -844,6 +844,16 @@ native program status.
   The suite often runs from a tracked agent's pane.
   `new-window` gives the inner server's environment to a spawned child.
   Otherwise, the developer's parent edge would enter the tests.
+- No test shell reads the developer's dotfiles.
+  Before any test starts a process, the suite gives itself a private
+  `HOME`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME`. It unsets `ZDOTDIR`,
+  `ENV`, `BASH_ENV`, `KIDO_ORIG_*` and exported bash functions.
+  The Go cache paths are kept from the real `HOME`.
+  `test_e2e/dotfiles_test.go` fails if a harness or login shell reads
+  an inherited dotfile.
+- The ssh tests that use the host's sshd run only with
+  `KIDO_E2E_HOST_SSH=1`. sshd starts the real user's shell, which reads
+  that user's dotfiles whatever `HOME` the test sets.
 - `settle = 5s` is the default wait deadline.
   Wait helpers poll at 100ms, kido's tick.
   Shorten grace periods (linger, stop escalation)
