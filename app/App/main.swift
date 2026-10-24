@@ -12,6 +12,8 @@ import SidebarFeed
     let routes = WindowRoutes()
     private var ordinaryLaunchEvent = true
     private var pendingJumps: [Host: (target: NoticeTarget, deadline: Date)] = [:]
+    private var startsSession = false
+    private(set) var palettePanel: PalettePanel?
 
     #if KIDO_VISUAL
     init(runtime: GhosttyRuntime? = nil) {
@@ -57,6 +59,7 @@ import SidebarFeed
         self.runtime = runtime
         NSApp.mainMenu = mainMenu()
         menus.send = { [weak self] in self?.current?.perform($0) }
+        menus.canSend = { [weak self] in self?.current != nil }
         runtime.onConfigChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateAppearance() } }
         runtime.onConfigReload = { [weak self] in self?.owners.filter(\.alive).forEach { $0.reloadConfig() } }
         runtime.onColorSchemeChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateColorScheme() } }
@@ -87,8 +90,12 @@ import SidebarFeed
         let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause)
         owners.append(owner)
         owner.snapshotReceived = { [weak self, weak owner] in
-            guard let self, let owner, let snapshot = owner.snapshot, snapshot.error == nil,
-                  let pending = pendingJumps[host] else { return }
+            guard let self, let owner, let snapshot = owner.snapshot, snapshot.error == nil else { return }
+            if host == .local, startsSession {
+                startsSession = false
+                owner.newSession()
+            }
+            guard let pending = pendingJumps[host] else { return }
             if pending.deadline <= Date() || snapshot.serverInstance != pending.target.instance {
                 pendingJumps.removeValue(forKey: host)
             } else if sidebarRows(snapshot).contains(where: { $0.target?.pane == pending.target.position.pane }) {
@@ -122,11 +129,7 @@ import SidebarFeed
             ?? containing.first { $0.window.isKeyWindow } ?? containing.first
             ?? candidates.first { $0.window.isKeyWindow } ?? candidates.first
         if let owner {
-            if !background {
-                NSApp.activate(ignoringOtherApps: true)
-                owner.window.deminiaturize(nil)
-                owner.window.makeKeyAndOrderFront(nil)
-            }
+            owner.reveal()
             owner.perform(.jump(target.position))
         } else {
             pendingJumps[host] = (target, now.addingTimeInterval(30))
@@ -175,8 +178,11 @@ import SidebarFeed
         view.items = [
             item("Hide Sidebar", #selector(Sidebar.toggleSidebar(_:)), "S", [.command, .shift]),
             item("Focus Sidebar", #selector(Sidebar.focusSidebar(_:)), "s", .command),
+            .separator(),
+            item("Command Palette…", #selector(togglePalette), "p", .command),
         ]
         for item in view.items.prefix(2) { item.target = current?.sidebar }
+        view.items.last?.target = self
         let file = NSMenu(title: "File")
         let newWindow = item("New Window", #selector(PaneView.runCommand(_:)), "t", .command)
         newWindow.representedObject = PaneCommand.newWindow
@@ -232,7 +238,32 @@ import SidebarFeed
     @objc func newLocalWindow() { routes.ordinaryOpen(cause: .newWindow) }
     @objc private func connectRemoteHost() { RemoteHostDialog(routes: routes).show(on: NSApp.keyWindow) }
 
-    @objc private func newSession() { current?.newSession() }
+    @objc func newSession() {
+        if let current { return current.newSession() }
+        if let owner = owners.first(where: { $0.alive && $0.host == .local }) {
+            owner.reveal()
+            return owner.newSession()
+        }
+        startsSession = true
+        routes.connect(.local, cause: .newWindow)
+    }
+
+    @objc func togglePalette() {
+        if let palettePanel { return palettePanel.close() }
+        let open = owners.filter(\.alive)
+        let hosts = routes.recent.entries.map(\.host).filter { alias in !open.contains { $0.host == .remote(alias) } }
+        let entries = (open.filter { $0 === current } + open.filter { $0 !== current }).flatMap(PaletteEntry.sessions)
+            + hosts.map { alias in PaletteEntry(title: alias, detail: "Connect", symbol: "network") { [routes] in routes.connect(.remote(alias)) } }
+            + (NSApp.mainMenu.map { PaletteEntry.commands($0) } ?? [])
+        if let current { return current.togglePalette(entries) }
+        guard let runtime, let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let panel = PalettePanel(palette: Palette(runtime: runtime, entries: entries), on: screen.visibleFrame) { [weak self] in self?.palettePanel = nil }
+        palettePanel = panel
+        if !background {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
     @objc private func quitItem() { quit("the Quit menu item") }
     func quit(_ reason: String) { trigger = reason; NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
