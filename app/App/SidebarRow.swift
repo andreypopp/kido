@@ -162,6 +162,11 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         updateTrackingAreas()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         guard let row else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
