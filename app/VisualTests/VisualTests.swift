@@ -195,6 +195,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         session = nil
         runtime?.onConfigChange = {}
         runtime?.onColorSchemeChange = {}
+        runtime?.onConfigReload = {}
         runtime = nil
         PaneView.renderOffscreen = false
         NSApp.appearance = nil
@@ -224,7 +225,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         await fulfillment(of: [done], timeout: 5)
     }
 
-    private func loadRuntime() throws {
+    private func loadRuntime(configFile: String? = nil) throws {
+        if let configFile {
+            let board = NSPasteboard(name: .init("config-test-\(UUID().uuidString)"))
+            addTeardownBlock { @MainActor in board.releaseGlobally() }
+            runtime = try XCTUnwrap(GhosttyRuntime(configFile: configFile, pasteboard: board))
+            return
+        }
         if Self.processRuntime == nil {
             let config = directory.appendingPathComponent("ghostty.conf")
             let themes = app.appendingPathComponent("Resources/themes").path
@@ -243,14 +250,15 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         return owner
     }
 
-    @discardableResult func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000) async throws -> String {
+    @discardableResult func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000, configFile: String? = nil) async throws -> String {
         NSApp.appearance = NSAppearance(named: .aqua)
-        try loadRuntime()
+        try loadRuntime(configFile: configFile)
         window = OwnerWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
                              styleMask: [.titled, .fullSizeContentView, .resizable], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .aqua)
         window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
+        runtime.onConfigReload = { [weak self] in self?.session.reloadConfig() }
         session.onPaneChange = { [weak self] in self?.updateTabs() }
         session.frame = NSRect(x: 0, y: 0, width: 700, height: height)
         window.contentView = session
@@ -290,6 +298,31 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await settle()
         if dark { try await darken() }
         return clipboardMode
+    }
+
+    func testLiveConfigReflowsPane() async throws {
+        let config = directory.appendingPathComponent("live.conf")
+        try "font-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        let before = ghostty_surface_size(pane.surface)
+        let epoch = pane.historyEpoch
+        let shaded = expectation(description: "shade-only reload")
+        runtime.onConfigChange = { shaded.fulfill() }
+        try "font-family = Menlo\nfont-size = 13\nkido-sidebar-shade = -30%\n".write(to: config, atomically: false, encoding: .utf8)
+        await fulfillment(of: [shaded], timeout: 0.3)
+        await mainQueueFence()
+        XCTAssertEqual(pane.historyEpoch, epoch, "shade-only reload must not reflow the pane")
+        let changed = expectation(description: "font config reload")
+        runtime.onConfigChange = { changed.fulfill() }
+        try "font-family = Menlo\nfont-size = 20\n".write(to: config, atomically: false, encoding: .utf8)
+        await fulfillment(of: [changed], timeout: 0.3)
+        try await settle()
+        let after = ghostty_surface_size(pane.surface)
+        XCTAssertGreaterThan(after.cell_height_px, before.cell_height_px)
+        XCTAssertNotEqual(after.columns, before.columns)
+        let size = try await command(["display-message", "-p", "-t", pane.pane.description, "#{pane_width}x#{pane_height}"])
+        XCTAssertEqual(size, "\(after.columns)x\(after.rows)")
     }
 
     func darken() async throws {
