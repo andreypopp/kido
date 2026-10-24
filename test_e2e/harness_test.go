@@ -212,6 +212,9 @@ func setup(m *testing.M) (int, error) {
 			return 0, err
 		}
 	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".zshrc"), nil, 0600); err != nil {
+		return 0, err
+	}
 	if tmuxBin != "" {
 		serverPathPrefix = filepath.Dir(kidoBin) + string(os.PathListSeparator) + tmuxDir
 		if err := startWatchdog(); err != nil {

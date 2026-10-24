@@ -113,16 +113,50 @@ jobs:
       # so the account uses zsh with a startup file instead.
       - name: Set up localhost SSH
         run: |
+          set -euo pipefail
+          diagnose_ssh() {
+            status=$?
+            set +e
+            ls -ld "$HOME" "$HOME/.ssh" "$HOME/.ssh/authorized_keys"
+            sudo /usr/sbin/sshd -T | grep -Ei 'authorizedkeys|pubkey|strictmodes'
+            ssh -v -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new localhost true
+            if [[ "$RUNNER_OS" == macOS ]]; then
+              dseditgroup -o checkmember -m "$(id -un)" com.apple.access_ssh
+              ls -l /etc/ssh/sshd_config.d
+              sudo grep -H '^' /etc/ssh/sshd_config.d/*
+              sudo log show --last 5m --style compact --predicate 'process == "sshd"' | tail -50
+            else
+              sudo journalctl -u ssh --no-pager -n 50
+            fi
+            exit "$status"
+          }
+          trap diagnose_ssh ERR
           if [[ "$RUNNER_OS" == Linux ]]; then
+            account_home=$(getent passwd "$(id -un)" | cut -d: -f6)
             sudo systemctl start ssh
+            sudo systemctl is-active --quiet ssh
           else
-            sudo chsh -s /bin/zsh "$USER"
+            account_home=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory | cut -d' ' -f2-)
+            sudo chsh -s /bin/zsh "$(id -un)"
             touch "$HOME/.zshrc"
-            sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist
+            sudo launchctl enable system/com.openssh.sshd
+            if ! sudo launchctl print system/com.openssh.sshd >/dev/null 2>&1; then
+              sudo launchctl bootstrap system /System/Library/LaunchDaemons/ssh.plist
+            fi
+            sudo launchctl print system/com.openssh.sshd
           fi
+          test "$HOME" = "$account_home"
+          chmod go-w "$HOME"
           mkdir -p "$HOME/.ssh"
-          ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519"
-          cat "$HOME/.ssh/id_ed25519.pub" >> "$HOME/.ssh/authorized_keys"
+          chmod 700 "$HOME/.ssh"
+          if [[ ! -f "$HOME/.ssh/id_ed25519" ]]; then
+            ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519"
+          fi
+          ssh-keygen -y -f "$HOME/.ssh/id_ed25519" > "$HOME/.ssh/id_ed25519.pub"
+          touch "$HOME/.ssh/authorized_keys"
+          key=$(< "$HOME/.ssh/id_ed25519.pub")
+          grep -qxF "$key" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$key" >> "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/authorized_keys"
           ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new localhost '
             case "$SHELL" in
               */zsh) exit 0 ;;
