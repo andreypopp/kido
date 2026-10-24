@@ -219,7 +219,7 @@ test("a child woken by a user prompt after it reported sends no report", async (
 });
 
 const LIVE_RUN_TOOLS: Array<[string, Record<string, unknown>]> = [
-  ["spawn_subagent", { task: "x", name: "kid" }],
+  ["spawn_agent", { task: "x", name: "kid" }],
   ["async_bash", { command: "make", name: "build" }],
 ];
 
@@ -273,7 +273,7 @@ test("a child whose only live subagent already reported sends the report", async
         await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate }, async () => {
           const s = await startNamedSession(fx, "worker", SELF);
           await s.emit("agent_start");
-          await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
+          await s.tools.get("spawn_agent").execute("c", { task: "x", name: "kid" });
           await pollUntil(() => fx.runWaitCalls().length === 1, 2000, "the child's run-wait");
           writeFileSync(join(fx.agentDir(SELF, "kid"), "report"), "done");
           await s.emit("agent_end", { messages: [assistant("stop", "my account")] });
@@ -303,7 +303,7 @@ test("new work delivered to a child that already reported holds back the parent'
         await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate }, async () => {
           const s = await startNamedSession(fx, "worker", SELF);
           await s.emit("agent_start");
-          await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
+          await s.tools.get("spawn_agent").execute("c", { task: "x", name: "kid" });
           await pollUntil(() => fx.runWaitCalls().length === 1, 2000, "the child's run-wait");
           const child = agentJson(fx, SELF, "kid");
           fx.setPanes([

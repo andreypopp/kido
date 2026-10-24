@@ -30,7 +30,7 @@ state directory, and writes to inboxes.
 | `list_runs()` | `kido runs --json --all --parent P`, `agents/<me>/*`, one `tmux list-panes -a` |
 | `set_status(activity)` | `tmux set-option -p @kido_activity` |
 | `message_agent(to, message, mode?)` | the target's inbox; `kido run-child` to restart an ended child |
-| `spawn_subagent(task, name, model?, tools?, fork?)` | `pi --list-models`, `kido run-child P --name N --env ... -- kido-pi ...` |
+| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `kido run-child P --name N --cwd D --env ... -- kido-pi ...`, or `kido run` for a top-level agent |
 | `stop_run(to, force?)` | the target's inbox, then `kido run-stop` |
 | `async_bash(command, name, stream?)` | `kido run-child P --name N -- bash -o pipefail -c ...` |
 
@@ -96,7 +96,7 @@ The `@` completion reads the list and excludes bash and ended rows.
 
 ## What a child is given
 
-**Names.** `spawn_subagent` and `async_bash` require `name`. The
+**Names.** `spawn_agent` and `async_bash` require `name`. The
 extension refuses a name with `'`, `"`, `$`, `#`, `\`, a backtick, a
 newline or a carriage return, and a name over 64 bytes, before kido
 sees it. kido's `run-child` applies the same rule (`Tmux.safe`). A name
@@ -104,16 +104,26 @@ is unique within its parent, for live and ended children: the
 directory `agents/<parent>/<name>/` or a run of the same name exists, or
 it does not. A reused name is refused with "message it instead" (spawn)
 or "choose another name" (async_bash). A name a child of the same parent
-used means "message it" ("Restarting through a message", below).
+used means "message it" ("Restarting through a message", below). A
+`toplevel` name is unique among the live agents in the caller's tmux
+session instead ("A top-level agent", below).
 
-**Spawning.** `spawn_subagent` checks the model with
-`pi --list-models`. It checks the depth (maximum 2). Then it writes the
+**Spawning.** Without `model`, the child runs the caller's current model
+and thinking level, `provider/model-id:thinking`. A caller with no
+model is refused: "caller has no model; specify model". An explicit
+`model` is checked with `pi --list-models`. `agent.json` records the
+resolved value, never an empty string, so a restart runs the model that
+the child actually ran. `cwd` must be an existing directory; else the
+spawn is refused. Without it, the child starts in the caller's
+directory, or in a resumed session's own directory ("Resuming a saved
+session", below). The extension passes it as `--cwd`, which reaches
+`new-window -c`. Then it checks the depth (maximum 2). Then it writes the
 child's agent directory, `task` and `agent.json` with an empty `run`,
 before the child starts. Then it runs:
 
-    kido run-child P --name N --env KIDO_AGENT_PARENT_SESSION=S \
+    kido run-child P --name N --cwd C --env KIDO_AGENT_PARENT_SESSION=S \
       --env KIDO_AGENT_DIR=D -- kido-pi --session-id <minted id> \
-      --name N [--model M] [--fork S] [--tools a,b]
+      --name N --model M [--fork <session file>]
 
 S is the caller's own pi session id. The extension mints the child's
 session id. It writes the run id that `run-child` prints into
@@ -136,11 +146,6 @@ edge only when `agent.json` in `KIDO_AGENT_DIR` names its own pi session
 id (design.md, "Identity"). This prevents a nested pi from reporting for
 another session and from recording another run's outcome.
 
-**Tools.** A non-empty `tools` list goes to pi as `--tools`, as
-given. A child needs no tool to report. An empty list keeps pi's default
-tools. `agent.json` records the list, so a restart uses it again. A
-narrow toolset limits possible effects; the depth ceiling does not.
-
 **Depth** is the length of the session's parent chain in the agent map.
 No record stores it, and no caller can claim it. The extension refuses a
 spawn at depth 3.
@@ -155,13 +160,14 @@ option lasts as long as the pane. A user's split reads no `@kido_run`,
 so the sweep and `run-stop` act on the run's pane only.
 
 The tool immediately returns
-`spawned <name> (window @N, pane %N, run <id>)`. It does not wait for the
-child. The result ends with the rule that the child's result arrives as
+`spawned <name> (session <id>, window @N, pane %N, run <id>)`, and the
+same fields in its details. The text says that the session id is what
+`resume_from` takes later. It does not wait for the child. The result ends with the rule that the child's result arrives as
 a notice. Do not wait for, request or predict that result. The model
 reads the launch result when it has a child but no result, which is when
 it invents a result or blocks.
 
-`spawn_subagent` and `async_bash` also register `promptGuidelines`:
+`spawn_agent` and `async_bash` also register `promptGuidelines`:
 
 - A notice arrives on its own. Do not request or poll for it.
 - A child's report states what it intended. Check the diff.
@@ -174,25 +180,107 @@ authority.
 
 ## Forking the caller's context
 
-`spawn_subagent(fork: true)` starts the child as
-`kido-pi --session-id <minted id> --fork <caller's session>`. The task
-is its first message. Everything else is a fresh spawn: its own run, the
-parent edge, the mark, the depth ceiling, the tool allowlist and the
-model.
+`spawn_agent(fork: true)` starts the child as
+`kido-pi --session-id <minted id> --fork <caller's session file>`. The
+task is its first message, and a copy requires one. Everything else is a
+fresh spawn: its own run, the parent edge, the mark, the depth ceiling
+and the model.
 
 Only the source of the child's context changes. The child starts with
 the caller's whole transcript. The parent can assign a judgement, such
 as a merge or a decision between two options it already considered.
 The parent does not have to repeat its decisions and reasons.
 
-The forked session is the **caller's own**. pi gives the extension its
-id. Nothing resolves a session that the model names. There is exactly
-one correct answer, and the model does not supply it. `--session-id`
-keeps the child's id the one that `agent.json` records, so the child
-can prove its edge.
+Without `resume_from`, the forked session is the **caller's own**: pi
+gives the extension its file. With `resume_from`, the copy's source is
+that session ("Resuming a saved session", below). `--session-id` keeps
+the child's id the one that `agent.json` records, so the child can
+prove its edge.
 
 **Forking is for a short judgement step, not a long worker.** A worker
 needs a task and a clean context.
+
+## Resuming a saved session
+
+`resume_from` names a pi session by its id or a unique prefix of at
+least eight characters. pi names each session file `<time>_<id>.jsonl`
+in a directory for its working directory, under one sessions root. The
+extension reads only directory listings: the caller's session directory
+(`ctx.sessionManager.getSessionDir()`) and each directory directly
+under its parent. It matches the id at the end of a file name. It does
+not use pi's `SessionManager.list`, because that parses every session
+file. An exact id wins; otherwise the prefix must match one file. An
+unknown id reads `unknown session "<id>"`; an ambiguous prefix reads
+`"<p>" matches several sessions by id: ...` with up to five ids. The extension then reads the header line of the one match,
+where pi records the session's working directory.
+
+**Continue** (`resume_from` alone) starts
+`kido-pi --session <session file>` in a new window: the same session id,
+with its history. pi takes the working directory of a `--session` from
+the header, not from its process. Thus, the agent runs in its recorded
+directory: a different `cwd` is refused, and so is a recorded directory
+that no longer exists. A session is refused while it is live: a pane that is not
+dead holds its `@kido_session`, with or without a pi root ("session <id> is live in a pane"), or it
+is one of the caller's own children whose recorded run is live. Two pi
+processes must never write one session file. The lookup and the check
+run under the restart lock for that session ("Restarting through a
+message").
+
+- An ended child of the caller resumes through the restart path of
+  `message_agent` ("Restarting through a message"): the same name is
+  required.
+- The caller itself and its ancestors in the agent map are refused,
+  because the map must stay a tree: "session <id> is an ancestor of
+  this session".
+- Any other session becomes the caller's child: a new agent directory
+  under the caller with `session-file`, started by the same restart
+  path. After the launch succeeds, the
+  extension removes every other parent's `agent.json` for that session.
+  Their `task`, `report` and history stay. Thus, the session has one
+  parent edge, and the old parent can no longer restart it by name.
+
+**Copy** (`resume_from` with `fork: true`) starts
+`kido-pi --session-id <minted id> --fork <session file>`. The original
+stays as it was, and a live original is not refused, because pi only
+reads it. pi's fork takes the process's working directory, so `cwd`
+applies.
+
+**An empty task** (or only whitespace) is allowed only to continue a
+session. The session comes back and starts no turn. The extension writes
+an empty `task`, `delivered` and no `work`, and a child with an empty `task` and no `work` has reported
+("The agent directory"). Thus, it owes no report until its parent
+sends it work. Its ending notice reads `subagent "<name>" completed;
+no report was owed`.
+
+## A top-level agent
+
+`toplevel: true` starts the agent with no parent edge:
+
+    kido run --name N --cwd C --session <caller's tmux session> -- kido-pi ...
+
+The window is in the caller's tmux session. There is no agent
+directory, no `KIDO_AGENT_DIR`, no `run-wait` and no notice to the
+caller, and the run meta has no parent, so the orphan rule never
+applies. The task goes over the new agent's inbox, as a message from
+the caller. The spawn waits up to 5000 ms for the pane to publish
+`@kido_session` and its inbox, also for an empty task, and holds the
+name claim and the session lock during the wait. Thus, a second spawn
+from the same caller sees the agent live. On a timeout, the result
+still names the agent and adds `timed out waiting for its inbox; no task
+was delivered`. The
+agent is a peer: the
+caller reaches it with `message_agent` in `message` mode. `stop_run`
+and the `steer` and `interrupt-and-steer` modes refuse it, because it is
+not a descendant. A top-level caller sees it in `list_runs` as a peer.
+A subagent caller does not, because a subagent sees only its parent and
+siblings ("list_runs", above); it addresses the agent by the name or
+session id in the spawn result.
+
+The depth ceiling does not apply. `fork`, `resume_from`, `model` and
+`cwd` apply as for a child. One of the caller's own children cannot
+become top-level: "resume this child with its existing name and without
+toplevel". Another parent's ended child loses that parent's
+`agent.json` after the launch, as above.
 
 ## The agent directory
 
@@ -202,9 +290,12 @@ authoritative for what"). The extension's agent directory
 (`<kido-pi state>/agents/<parent-session>/<name>/`) holds what only the
 harness knows:
 
-- `agent.json`: `session`, `run`, `model`, `tools`, `fork`. The parent
-  writes it at spawn and at each restart.
-- `task`: the parent writes it before the child starts.
+- `agent.json`: `session`, `run`, `model`, `fork`. The parent
+  writes it at spawn and at each restart. `model` is the resolved
+  `provider/model-id:thinking`, never empty.
+- `task`: the parent writes it before the child starts. A restart with
+  a session file rewrites it to the new first prompt. It is empty only
+  for a resume without work.
 - `delivered`: the child writes it after it delivers the task. Thus,
   `/reload` does not deliver the task twice. A task that cannot be read
   leaves no marker and stays eligible for the next attempt.
@@ -233,7 +324,8 @@ harness knows:
   returned.
 
 A child **has reported** when `report` exists and `work` is absent or
-older than `report`. Both sides read this rule: the parent for its
+older than `report`, or when `task` is empty and `work` is absent: such
+a child was given no work. Both sides read this rule: the parent for its
 children, and the child for its own report. A tie counts as not
 reported: the child then reports again on its next settle, which is the
 safe direction. Thus, an earlier report does not count for later work, and the
@@ -506,15 +598,18 @@ new run under the same session. The rules:
   spawn. A stale parent would make the sweep's orphan rule close the
   child at once.
 - With `session-file`, the restart is
-  `kido run-child P ... -- kido-pi --session <session-file> --name N [--model M] [--tools ...] <message>`.
-  The message is pi's first prompt, in argv, so there is no inbox race.
+  `kido run-child P ... -- kido-pi --session <session-file> --name N --model M`.
+  The message is never in pi's argv: pi's parser reads an argument that
+  starts with `@` as a file, even after `--`. The extension writes the
+  message as `task` and removes `delivered`, and the child delivers it
+  at `session_start`, so there is no inbox race.
 - Without `session-file`, the restart uses `--session-id <id>` and no
   prompt. The extension removes `delivered`, so the stored task is
   delivered again. The message follows over the inbox, which the
   sender waits for up to 5000 ms.
-- A restart that delivers work removes the old `report` before the
-  child starts: a message, or the stored task again when there is no
-  `session-file`.
+- A restart removes the old `report` and `work` before the child
+  starts. `spawn_agent` with `resume_from` uses the same path for an
+  ended child ("Resuming a saved session").
 - The extension rewrites `agent.json` with the new run before it
   delivers the message, and starts a new `run-wait`. A second message
   while the new run's inbox is not bound waits for the inbox. It never starts a second run, because the run
@@ -692,5 +787,12 @@ These nested windows no longer follow tmux's own order. design.md,
   life").
 - A subagent's window moved to another tmux session is outside its
   parent's scope. The parent cannot reach it.
+- The session lock and the name claim are in the caller's process. Two
+  different callers that resume one saved session at the same time can
+  both pass the live check before either agent publishes
+  `@kido_session`, and two pi processes then write one session file.
+- A subagent does not see a top-level agent that it started in
+  `list_runs`. It addresses it by the name or session id from the spawn
+  result.
 - Everything assumes one machine: a shared filesystem and a kido binary
   beside every agent.

@@ -157,7 +157,7 @@ duplicates its session name.
 
 The extension uses only these interfaces of kido:
 
-- The run commands `run-child`, `runs --json --all [--parent P]`,
+- The run commands `run`, `run-child`, `runs --json --all [--parent P]`,
   `run-wait ID --json`, `run-stop` and `run-outcome`.
 - `tmux set-option -p -t %PANE` and `set-option -pu`, for the four
   pane options.
@@ -494,14 +494,17 @@ starts. Nothing is fetched until the first `@`.
 
 ## Spawning
 
-`spawn_subagent` starts a child through `kido run-child`
-(design-subagents.md, "What a child is given"). `run-child` creates a
-detached window in the caller's tmux session. Three `new-window` flags
+`spawn_agent` starts a child through `kido run-child`, or a top-level
+agent through `kido run` (design-subagents.md, "What a child is given"
+and "A top-level agent"). Both create a detached window in the caller's
+tmux session. Three `new-window` flags
 are necessary:
 
 - `-d` keeps focus on the caller's window during its turn.
-- `-c` starts the child in the parent's directory, not the session's
-  default directory.
+- `-c` starts the child in the directory of `--cwd`: the `cwd`
+  argument, a resumed session's own directory, or the caller's. pi
+  takes a continued session's directory from its session file, not
+  from the process.
 - `-e` supplies each variable. `new-window` uses the server and session
   environment, not the caller's environment. No other route supplies
   those variables.
@@ -509,8 +512,10 @@ are necessary:
 The task is never a command-line argument. A model writes text of any
 form. A tmux command line nests three parsers, and no escape survives
 all three. The task is a file in the agent directory, and the child
-reads it at `session_start`. A restart's message is an exception: it is
-pi's argv, which tmux `execvp`s without a parser.
+reads it at `session_start`; a restart's message also goes there. A
+top-level agent has no agent directory, so its task goes over its inbox.
+No task is pi's argv: pi's parser reads an argument that starts with
+`@` as a file, even after `--`.
 
 The model also writes the window name, which does enter the command
 line. `Tmux.safe` refuses characters that cannot survive the nested
@@ -751,9 +756,11 @@ more is needed, or continue it with `message_agent`.
 **An ended child restarts on a message.** `message_agent`
 to an ended subagent starts it again as a new run under the same pi
 session, with `kido-pi --session <session file>` and the message as
-pi's first prompt. There is no resume tool: a reused name means "message
-it". design-subagents.md, "Restarting through a message", gives the
-rules.
+pi's first prompt. A reused name means "message it".
+design-subagents.md, "Restarting through a message", gives the rules.
+`spawn_agent` with `resume_from` continues any saved session that no
+pane holds, and resumes an ended child through the same path
+(design-subagents.md, "Resuming a saved session").
 
 ## Steer, interrupt and stop
 

@@ -87,7 +87,7 @@ const injected: Array<[string, string, string]> = [
   ["a child's report (agent_settled)", `${noticeHeader("<from>")}\n<its last assistant message's text, then the guidance below>`, "steer"],
   ["a child's empty report (agent_settled)", `${noticeHeader("<from>")}\nsubagent "<name>" ended its turn with no message<the guidance below>`, "steer"],
   ["a turn that ended on an error (agent_settled)", "subagent stopped on an error: <text>\nrun: <run id>\nmessage it to retry, or stop_run to end it", "steer"],
-  ["a spawn's result (spawn_subagent)", `spawned <name> (window <window id>, pane <pane id>, run <run id>); ${SPAWN_RESULT_RULE}. A fork adds \", forked from this session's context\" before the semicolon.`, "tool result"],
+  ["a spawn's result (spawn_agent)", `spawned <name> (session <pi session id>, window <window id>, pane <pane id>, run <run id>); session id is what resume_from takes later; ${SPAWN_RESULT_RULE}. A fork adds \", forked from session <source session id>\" before the semicolon. Toplevel instead ends with \"independent peer; no report or ending notice\".`, "tool result"],
   ["a restart's result (message_agent)", "restarted <name> as run <run id>; the same result rule as a spawn follows", "tool result"],
 ];
 for (const [when, text, how] of injected) {
@@ -101,6 +101,7 @@ output: <path>
 --- last <n> bytes of output (<m> omitted) ---   | --- output --- | --- no output --- | --- output unreadable: <err> ---`, "```", "");
 out.push("```", `subagent "<name>" <result> without a report: none of its turns ended in a report, so this is the whole account of it
 subagent "<name>" <result>
+subagent "<name>" <result>; no report was owed
 detail: <text>   [when there is one]
 run: <id>
 message it to continue it, or stop_run to end it   [when there is no report]`, "```", "");

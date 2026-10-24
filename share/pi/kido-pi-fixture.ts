@@ -16,13 +16,14 @@ import { dirname, join, delimiter } from "node:path";
 
 import net from "node:net";
 
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+
 import kidoPi, { PARENT_GUIDANCE } from "./kido-pi.ts";
 
 export interface AgentRecord {
   session: string;
   run?: string;
   model?: string;
-  tools?: string[];
   fork?: boolean;
 }
 
@@ -294,7 +295,7 @@ export function makeFixture(): Fixture {
     writeAgent(parent, name, record) {
       const child = agentDir(parent, name);
       mkdirSync(child, { recursive: true });
-      writeFileSync(join(child, "agent.json"), JSON.stringify({ run: record.session, model: "", tools: [], fork: false, ...record }));
+      writeFileSync(join(child, "agent.json"), JSON.stringify({ run: record.session, model: "acme/caller:high", fork: false, ...record }));
       return child;
     },
     inboxPath(session) {
@@ -365,7 +366,7 @@ export function makeFixture(): Fixture {
   }
 }
 
-export function createFakePi() {
+export function createFakePi(sessionDir = "/tmp/kido-pi-no-sessions/caller") {
   const tools = new Map<string, any>();
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
   const delivered: Array<{ text: string; opts: unknown }> = [];
@@ -376,9 +377,11 @@ export function createFakePi() {
     sessionName: undefined as string | undefined,
     getSessionName: (): string | undefined => pi.sessionName,
     getSettings: (): { tuiMode?: "regular" | "fullscreen" } => ({ tuiMode: "regular" }),
+    getThinkingLevel: () => "high",
     getAllTools: () => [...tools.values()],
     registerTool(tool: any) {
-      tools.set(tool.name, tool);
+      const execute = tool.execute;
+      tools.set(tool.name, { ...tool, execute: (id: string, params: unknown, signal?: AbortSignal, update?: unknown, ctx = fakeCtx("self-session", undefined, () => true, sessionDir)) => execute(id, params, signal, update, ctx) });
     },
     on(event: string, handler: (...args: any[]) => unknown) {
       (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
@@ -426,6 +429,15 @@ export function createFakePi() {
   };
 }
 
+export function savedSession(dir: string, cwd: string, id: string): string {
+  mkdirSync(dir, { recursive: true });
+  const session = SessionManager.create(cwd, dir, { id });
+  const path = session.getSessionFile();
+  assert.ok(path);
+  writeFileSync(path, JSON.stringify(session.getHeader()) + "\n");
+  return path;
+}
+
 export const fakeTheme = {
   fg: (_color: string, text: string) => text,
   bgCalls: [] as Array<{ color: string; text: string }>,
@@ -462,15 +474,17 @@ export function assertReport(inbox: Inbox, index: number, text: string): void {
   assert.equal(notice.text, text + PARENT_GUIDANCE);
 }
 
-export function fakeCtx(sessionId: string | undefined = "self-session", ui?: unknown, idle: () => boolean = () => true) {
+export function fakeCtx(sessionId: string | undefined = "self-session", ui?: unknown, idle: () => boolean = () => true, sessionDir = "/tmp/kido-pi-no-sessions/caller") {
   return {
     hasUI: true,
     sessionManager: {
       getSessionId: () => sessionId,
       getSessionName: () => undefined,
+      getSessionDir: () => sessionDir,
       getSessionFile: () => (sessionId ? "/tmp/" + sessionId + ".json" : undefined),
     },
-    model: undefined,
+    cwd: process.cwd(),
+    model: { provider: "acme", id: "caller" },
     isIdle: idle,
     hasPendingMessages: () => false,
     abort: () => {},
@@ -485,7 +499,7 @@ export async function startSessionCore(
   buildCtx: (created: ReturnType<typeof createFakePi>) => unknown,
   { record = true }: { record?: boolean } = {},
 ) {
-  const created = createFakePi();
+  const created = createFakePi(join(fx.stateDir, "sessions", "caller"));
   factory(created.pi as never);
   const ctx = buildCtx(created);
   if (record) fx.sessions.push(() => created.emit("session_shutdown", { reason: "new" }));
@@ -601,7 +615,7 @@ export function customMessages(s: Pick<ReturnType<typeof createFakePi>, "message
   return s.messages.filter((m) => m.message.customType === customType);
 }
 
-export function agentJson(fx: Fixture, parent: string, name: string): { session: string; run: string; model: string; tools: string[]; fork: boolean } {
+export function agentJson(fx: Fixture, parent: string, name: string): { session: string; run: string; model: string; fork: boolean } {
   return JSON.parse(readFileSync(join(fx.agentDir(parent, name), "agent.json"), "utf8"));
 }
 

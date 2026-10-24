@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 
@@ -108,20 +108,18 @@ function inboxPath(dir: string, session: string): string | null {
   return path;
 }
 
-type AgentRecord = { session: string; run: string; model: string; tools: string[]; fork: boolean };
+type AgentRecord = { session: string; run: string; model: string; fork: boolean };
 
 type AgentEntry = AgentRecord & { name: string; parent: string; dir: string };
 
 function readAgentRecord(dir: string): AgentRecord | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(join(dir, "agent.json"), "utf8"));
-    if (!isRecord(parsed) || typeof parsed.session !== "string" || typeof parsed.run !== "string") return null;
-    const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+    if (!isRecord(parsed) || typeof parsed.session !== "string" || typeof parsed.run !== "string" || typeof parsed.model !== "string" || !parsed.model) return null;
     return {
       session: parsed.session,
       run: parsed.run,
-      model: typeof parsed.model === "string" ? parsed.model : "",
-      tools: list(parsed.tools),
+      model: parsed.model,
       fork: parsed.fork === true,
     };
   } catch {
@@ -826,10 +824,18 @@ export default function (pi: ExtensionAPI) {
 
   const exists = (path: string): boolean => fileTime(path) !== undefined;
 
+  const owesWork = (task: string): boolean => task.trim().length > 0;
+
   const reportState = (dir: string): { report: number | undefined; work: number | undefined; reported: boolean } => {
     const report = fileTime(join(dir, "report"));
     const work = fileTime(join(dir, "work"));
-    return { report, work, reported: report !== undefined && (work === undefined || report > work) };
+    if (report !== undefined && (work === undefined || report > work)) return { report, work, reported: true };
+    let task: string | undefined;
+    if (work === undefined) {
+      const path = join(dir, "task");
+      try { task = statSync(path).size === 0 ? "" : readTextFile(path); } catch {}
+    }
+    return { report, work, reported: task !== undefined && !owesWork(task) };
   };
 
   const reported = (entry: AgentEntry): boolean => reportState(entry.dir).reported;
@@ -894,7 +900,7 @@ export default function (pi: ExtensionAPI) {
 
   const myRuns = async (): Promise<RunRow[]> => (await myRunsOnce()) ?? [];
 
-  type Snapshot = { rows: AgentRow[]; all: AgentRow[]; mySession: string; entries: AgentEntry[]; runs: RunRow[] };
+  type Snapshot = { rows: AgentRow[]; all: AgentRow[]; panes: PaneInfo[]; mySession: string; entries: AgentEntry[]; runs: RunRow[] };
 
   const discovery = async (): Promise<Snapshot> => {
     const [panes, runs] = await Promise.all([listPanes(), myRuns()]);
@@ -924,12 +930,12 @@ export default function (pi: ExtensionAPI) {
         depth: depthOfSession(p.agentSession, bySession),
         self,
         cwd: p.cwd,
-        canMessage: p.inbox !== "",
+        canMessage: !p.dead && p.inbox !== "",
         model: entry?.model ?? "",
         kind: entry?.parent ? "subagent" : "agent",
         relationship: self ? "own" : isParent ? "parent" : isPeer ? "peer" : "other",
         run: entry?.run ?? "",
-        state: "running",
+        state: p.dead ? "ended" : "running",
         tmux: p.session,
         inbox: p.inbox,
       });
@@ -982,7 +988,7 @@ export default function (pi: ExtensionAPI) {
       });
     }
     const rows = all.filter((a) => !a.self && a.relationship !== "other");
-    return { rows, all, mySession, entries, runs };
+    return { rows, all, panes, mySession, entries, runs };
   };
 
   const toolRow = (a: AgentRow) => {
@@ -1041,11 +1047,13 @@ export default function (pi: ExtensionAPI) {
   type Created = { id: string; window: string; pane: string; output: string };
   type Started = { created: Created } | { error: string };
 
-  const startChild = async (parent: string, name: string, agentDir: string | null, command: string[]): Promise<Started> => {
+  const startChild = async (parent: string | null, name: string, agentDir: string | null, command: string[], cwd?: string, session?: string): Promise<Started> => {
     const executable = kido;
     if (!executable) return { error: "kido is not on PATH" };
     const args = [
-      "run-child", parent, "--name", name,
+      ...(parent ? ["run-child", parent] : ["run"]), "--name", name,
+      ...(cwd ? ["--cwd", cwd] : []),
+      ...(session ? ["--session", session] : []),
       ...(agentDir === null ? [] : ["--env", `KIDO_AGENT_PARENT_SESSION=${ownSessionId}`, "--env", `KIDO_AGENT_DIR=${agentDir}`]),
       "--", ...command,
     ];
@@ -1058,11 +1066,12 @@ export default function (pi: ExtensionAPI) {
         created = { id: parsed.id, window: parsed.window, pane: parsed.pane, output: parsed.output };
       }
     } catch {}
-    return created ? { created } : { error: "kido run-child printed no run" };
+    return created ? { created } : { error: "kido printed no run" };
   };
 
   const writeAgentJson = (agentDir: string, record: AgentRecord): void => {
-    writeFileSync(join(agentDir, "agent.json"), JSON.stringify(record));
+    const { session, run, model, fork } = record;
+    writeFileSync(join(agentDir, "agent.json"), JSON.stringify({ session, run, model, fork }));
   };
 
   const piArgs = (entry: AgentEntry, policy: { sessionFile: string | null; fork: string | null }): string[] => {
@@ -1070,14 +1079,13 @@ export default function (pi: ExtensionAPI) {
     if (policy.sessionFile) args.push("--session", policy.sessionFile);
     else args.push("--session-id", entry.session);
     args.push("--name", entry.name);
-    if (entry.model) args.push("--model", entry.model);
+    args.push("--model", entry.model);
     if (policy.fork) args.push("--fork", policy.fork);
-    if (entry.tools.length) args.push("--tools", entry.tools.join(","));
     return args;
   };
 
   const adopt = (created: Created, entry: AgentEntry): void => {
-    writeAgentJson(entry.dir, { session: entry.session, run: created.id, model: entry.model, tools: entry.tools, fork: entry.fork });
+    writeAgentJson(entry.dir, { session: entry.session, run: created.id, model: entry.model, fork: entry.fork });
     watch(watchData(created.id, entry.name, created.output, { ...entry, run: created.id }, false));
   };
 
@@ -1354,7 +1362,7 @@ export default function (pi: ExtensionAPI) {
     const reportPath = join(watch.target.entry.dir, "report");
     const head = `subagent ${quote(watch.name)} ${outcome.result}`;
     body += state.reported
-      ? `${head}\n`
+      ? `${head}${state.report === undefined ? "; no report was owed" : ""}\n`
       : state.report !== undefined
         ? `${head} without reporting on its last work: its earlier report is ${reportPath}\n`
         : `${head} without a report: none of its turns ended in a report, so this is the whole account of it\n`;
@@ -1577,34 +1585,42 @@ export default function (pi: ExtensionAPI) {
 
   type RestartPrep =
     | { error: string }
-    | { snapshot: Snapshot; entry: AgentEntry | null; restartedRun: string | null; firstPrompt: string | null };
+    | { snapshot: Snapshot; entry: AgentEntry | null; created: { run: Created; delivery: "task" | "inbox" } | null };
+
+  const restartAgent = async (entry: AgentEntry, task: string | null, policy: { sessionFile: string | null; fork: string | null }, cwd?: string): Promise<Started> => {
+    const parent = parentKey();
+    if (!parent) return { error: "this session has no run or pane" };
+    if (task !== null) writeFileSync(join(entry.dir, "task"), task);
+    if (policy.sessionFile) writeFileSync(join(entry.dir, "session-file"), policy.sessionFile);
+    if (task === null || owesWork(task)) rmSync(join(entry.dir, "delivered"), { force: true });
+    else writeFileSync(join(entry.dir, "delivered"), "");
+    rmSync(join(entry.dir, "report"), { force: true });
+    rmSync(join(entry.dir, "work"), { force: true });
+    writeAgentJson(entry.dir, entry);
+    const started = await startChild(parent, entry.name, entry.dir, piArgs(entry, policy), cwd);
+    if (!("error" in started)) adopt(started.created, entry);
+    return started;
+  };
 
   const prepareRestart = async (
     address: string,
     message: string,
     initial: Snapshot,
+    resume?: { model: string; sessionFile: string; cwd: string },
   ): Promise<RestartPrep> => {
     const first = endedTarget(address, resolveIn(initial, address));
-    if (!first) return { snapshot: initial, entry: null, restartedRun: null, firstPrompt: null };
-    return withRestartLock(first.entry.session, async () => {
-      const snapshot = await discovery();
+    if (!first) return { snapshot: initial, entry: null, created: null };
+    const restart = async (snapshot: Snapshot): Promise<RestartPrep> => {
       const ended = endedTarget(address, resolveIn(snapshot, address));
-      if (!ended) return { snapshot, entry: null, restartedRun: null, firstPrompt: null };
-      if (ended.starting) return { snapshot, entry: ended.entry, restartedRun: null, firstPrompt: null };
-      const sessionFile = sessionFileOf(ended.entry);
-      const firstPrompt = sessionFile ? message : null;
-      const parent = parentKey();
-      if (!parent) return { error: "could not restart it" };
-      const entry = ended.entry;
-      if (!sessionFile) rmSync(join(entry.dir, "delivered"), { force: true });
-      rmSync(join(entry.dir, "report"), { force: true });
-      const command = piArgs(entry, { sessionFile, fork: null });
-      if (firstPrompt !== null) command.push(firstPrompt);
-      const started = await startChild(parent, entry.name, entry.dir, command);
-      if ("error" in started) return { error: "could not restart it" };
-      adopt(started.created, entry);
-      return { snapshot, entry, restartedRun: started.created.id, firstPrompt };
-    });
+      if (!ended) return { snapshot, entry: null, created: null };
+      if (ended.starting) return { snapshot, entry: ended.entry, created: null };
+      const entry = resume ? { ...ended.entry, model: resume.model } : ended.entry;
+      const sessionFile = resume?.sessionFile ?? sessionFileOf(entry);
+      const started = await restartAgent(entry, sessionFile ? message : null, { sessionFile, fork: null }, resume?.cwd);
+      if ("error" in started) return { error: started.error };
+      return { snapshot, entry, created: { run: started.created, delivery: sessionFile ? "task" : "inbox" } };
+    };
+    return resume ? restart(initial) : withRestartLock(first.entry.session, async () => restart(await discovery()));
   };
 
   const sendWhenBound = async (path: string, kind: Envelope["kind"], text: string, deadline: number): Promise<SendResult> => {
@@ -1624,11 +1640,10 @@ export default function (pi: ExtensionAPI) {
     return validateModelRows(model, modelRows(res.out));
   };
 
-  const nameTaken = async (name: string): Promise<boolean> => {
-    const ownEntries = own(dir ? agentEntries(dir) : []);
-    if (ownEntries.some((e) => e.name === name)) return true;
+  const nameTaken = async (name: string, entries = dir ? agentEntries(dir) : [], runs?: RunRow[]): Promise<boolean> => {
     const wanted = name.toLowerCase();
-    return (await myRuns()).some((r) => (r.name ?? "").toLowerCase() === wanted);
+    if (own(entries).some((e) => e.name.toLowerCase() === wanted)) return true;
+    return (runs ?? await myRuns()).some((r) => (r.name ?? "").toLowerCase() === wanted);
   };
 
   const nameClaims = new Set<string>();
@@ -1886,9 +1901,9 @@ export default function (pi: ExtensionAPI) {
       const snapshot = await discovery();
       const prep: RestartPrep = kind === "message"
         ? await prepareRestart(params.to, params.message, snapshot)
-        : { snapshot, entry: null, restartedRun: null, firstPrompt: null };
+        : { snapshot, entry: null, created: null };
       if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error}`);
-      if (prep.entry && prep.firstPrompt !== null) return reply(restartedReply(prep.entry.name, prep.restartedRun ?? ""));
+      if (prep.entry && prep.created?.delivery === "task") return reply(restartedReply(prep.entry.name, prep.created.run.id));
       const resolved = resolveIn(prep.snapshot, params.to);
       const target = prep.entry ? entryRow(prep.entry) : resolved.agent;
       if (!target) return reply(`could not message ${params.to}: ${resolutionError(resolved)}`);
@@ -1906,17 +1921,17 @@ export default function (pi: ExtensionAPI) {
         : await sendEnvelope(target.inbox, kind, params.message);
       const sent = sendText(target, kind, result, prep.snapshot.entries);
       if (!sent.ok) return reply(`could not message ${params.to}: ${sent.text}`);
-      return reply(prep.restartedRun ? `restarted ${name} as run ${prep.restartedRun} and ${sent.text}` : sent.text);
+      return reply(prep.created ? `restarted ${name} as run ${prep.created.run.id} and ${sent.text}` : sent.text);
     },
   });
 
   pi.registerTool({
-    name: "spawn_subagent",
-    label: "Spawn Subagent",
+    name: "spawn_agent",
+    label: "Spawn Agent",
     description:
-      "Create a subagent in its own tmux window with a task. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it ends a turn with nothing of its own still running; it stays alive after it reports, so end it with stop_run when you need nothing more from it, or message it to continue.",
+      "Start an agent in a new tmux window. Resume a saved session or fork a copy of it; fork alone copies this session. Returns the pi session id for later resume_from. Children report by notice and stay alive. A toplevel agent is an independent peer: no report, notice, depth limit or descendant controls; fork is allowed, but an existing child cannot become a peer.",
     promptSnippet:
-      "spawn_subagent(task, name, model?, tools?, fork?) - delegate a task to a new subagent, optionally forked from your own context, in its own window; list_runs lists it and stop_run stops it with the returned run id",
+      "spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child",
     promptGuidelines: [
       "A subagent's result arrives on its own as a notice when it finishes; never poll list_runs for it; list_runs lists the run and stop_run stops it with the returned run id.",
       "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
@@ -1926,84 +1941,163 @@ export default function (pi: ExtensionAPI) {
       {
         task: Type.String({
           description:
-            "The task to give the new subagent, delivered as its first message. " +
-            "The subagent starts with no context beyond this text (a fork excepted), so name the files, the lines and the specific change, say what it must report back, and say whether it is to write code or only research. " +
-            "Synthesize what you already know into the task rather than writing \"based on your findings\".",
+            "First task. State the files, changes and required result. Empty only when resuming without fork: starts no turn and owes no report.",
         }),
-        name: Type.String({ description: "A name for the subagent's window and session; it must be unique among this session's children, and a reused name is refused - message the live agent instead." }),
+        name: Type.String({ description: "Window and session name. Unique among this caller's children; for toplevel, unique among live agents in the tmux session. Resume an ended child with its existing name." }),
         model: Type.Optional(
           Type.String({
             description:
-              'Model for the subagent to run, as "provider/model-id" (e.g. claude-bridge/claude-sonnet-5), optionally suffixed :<thinking>, e.g. claude-bridge/claude-sonnet-5:low - see `pi --list-models`. A bare alias like "sonnet" is refused, not resolved.',
+              'Model as provider/model-id[:thinking]. Default: caller’s current model and thinking level. Required if the caller has no model. Bare aliases are refused; see pi --list-models.',
           }),
         ),
-        tools: Type.Optional(
-          Type.Array(Type.String(), {
-            description: "Tool names the subagent may use - its capability ceiling. Omit to leave it at pi's default set.",
-          }),
-        ),
+        cwd: Type.Optional(Type.String({ description: "Existing working directory. Default: saved session's directory with resume_from, else caller's. Continue requires its recorded directory; fork can copy into another directory." })),
+        resume_from: Type.Optional(Type.String({ description: "Pi session id or unique prefix of at least eight characters. Continuing a live session is refused; fork copies it." })),
+        toplevel: Type.Optional(Type.Boolean({ description: "Start an independent peer, with no parent, reports or notices. Depth does not apply. Fork is allowed; an existing child cannot become a peer." })),
         fork: Type.Optional(
           Type.Boolean({
             description:
-              "Start the subagent holding this session's context: it is forked from this conversation and then given the task. For a short judgement or merge step that has to know what was already decided - the whole context is replayed on every one of its turns, so it is a poor choice for a long worker. Defaults to false.",
+              "Copy resume_from, or this session when omitted. A copy requires a task. Defaults to false.",
           }),
         ),
       },
       { additionalProperties: false },
     ),
-    async execute(_toolCallId, params) {
-      const command = kido;
-      if (!command) return reply("could not spawn subagent: kido is not on PATH");
-      if (!ownSessionId) return reply("could not spawn subagent: this session has no id of its own to parent a subagent with");
-      if (!pane) return reply("could not spawn subagent: this session has no pane to parent a subagent from");
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const refuse = (text: string) => reply(`could not spawn agent: ${text}`);
+      if (!kido) return refuse("kido is not on PATH");
+      if (!ownSessionId) return refuse("this session has no id");
+      if (!pane) return refuse("this session has no tmux pane");
+      const parentSession = ownSessionId;
       const name = params.name;
-      if (!name) return reply("could not spawn subagent: --name is required");
+      if (!name) return refuse("name is required");
       const nameError = checkName(name);
-      if (nameError) return reply(`could not spawn subagent: ${nameError}`);
-      if (Buffer.byteLength(params.task, "utf8") > MAX_TASK_BYTES) {
-        return reply(`could not spawn subagent: the task is over the ${MAX_TASK_BYTES} byte task limit`);
+      if (nameError) return refuse(nameError);
+      if (Buffer.byteLength(params.task, "utf8") > MAX_TASK_BYTES) return refuse(`the task is over the ${MAX_TASK_BYTES} byte task limit`);
+      const task = owesWork(params.task) ? params.task : "";
+      if (!task && (!params.resume_from || params.fork)) return refuse("task is required unless resuming without fork");
+      const model = params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}:${pi.getThinkingLevel()}` : null);
+      if (!model) return refuse("caller has no model; specify model");
+      if (params.model) {
+        const error = await validateModel(model);
+        if (error) return refuse(error);
       }
-      if (!claimName(name)) {
-        return reply(`could not spawn subagent: the name ${quote(name)} is already taken by one of this session's runs; message it instead`);
+      let source: { id: string; path: string; cwd: string } | undefined;
+      if (params.resume_from) {
+        const wanted = params.resume_from;
+        const sessionDir = ctx.sessionManager.getSessionDir();
+        const directories = new Set([sessionDir]);
+        try {
+          for (const entry of readdirSync(dirname(sessionDir), { withFileTypes: true })) {
+            if (entry.isDirectory() || entry.isSymbolicLink()) directories.add(join(dirname(sessionDir), entry.name));
+          }
+        } catch {}
+        const files: { id: string; path: string }[] = [];
+        for (const directory of directories) {
+          try {
+            for (const file of readdirSync(directory)) {
+              const id = /_([^_]+)\.jsonl$/.exec(file)?.[1];
+              if (id) files.push({ id, path: join(directory, file) });
+            }
+          } catch {}
+        }
+        const exact = files.filter((file) => file.id === wanted);
+        if (!exact.length && wanted.length < MIN_ID_PREFIX) return refuse(`session prefixes need at least ${MIN_ID_PREFIX} characters`);
+        const matches = exact.length ? exact : files.filter((file) => file.id.startsWith(wanted));
+        if (matches.length !== 1) return refuse(matches.length
+          ? `${quote(wanted)} matches several sessions by id: ${matches.slice(0, 5).map((file) => file.id).sort().join(", ")}`
+          : `unknown session ${quote(wanted)}`);
+        const file = matches[0];
+        if (!file) return refuse(`unknown session ${quote(wanted)}`);
+        const fd = openSync(file.path, "r");
+        try {
+          const buffer = Buffer.alloc(4096);
+          const chunks: Buffer[] = [];
+          for (let bytes = 0; bytes < 1024 * 1024;) {
+            const count = readSync(fd, buffer, 0, buffer.length, bytes);
+            if (!count) break;
+            bytes += count;
+            const chunk = Buffer.from(buffer.subarray(0, count));
+            chunks.push(chunk);
+            if (chunk.includes(10)) break;
+          }
+          const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8").split("\n", 1)[0] ?? "");
+          if (!isRecord(parsed) || parsed.type !== "session" || parsed.id !== file.id || typeof parsed.cwd !== "string") return refuse(`invalid session header: ${file.path}`);
+          source = { ...file, cwd: parsed.cwd };
+        } catch { return refuse(`invalid session header: ${file.path}`); }
+        finally { closeSync(fd); }
       }
-      try {
-      if (await nameTaken(name)) {
-        return reply(`could not spawn subagent: the name ${quote(name)} is already taken by one of this session's runs; message it instead`);
-      }
-      const entries = dir ? agentEntries(dir) : [];
-      const depth = (ownSessionId ? depthOfSession(ownSessionId, bySessionOf(entries)) : 0) + 1;
-      if (depth > MAX_DEPTH) {
-        return reply(`could not spawn subagent: refusing to spawn at depth ${depth}: maximum nesting is ${MAX_DEPTH} (root 0, subagent 1, subagent 2)`);
-      }
-      const modelError = await validateModel(params.model);
-      if (modelError) return reply(`could not spawn subagent: ${modelError}`);
-
-      const tools = params.tools ? [...params.tools] : [];
-      const childSession = newId();
-      const childDir = join(dir ?? "", "agents", ownSessionId, name);
-      mkdirSync(childDir, { recursive: true, mode: 0o700 });
-      writeFileSync(join(childDir, "task"), params.task);
-      const record = { session: childSession, run: "", model: params.model ?? "", tools, fork: !!params.fork };
-      writeAgentJson(childDir, record);
-
-      const entry: AgentEntry = { ...record, name, parent: ownSessionId, dir: childDir };
-      const piCommand = piArgs(entry, { sessionFile: null, fork: params.fork ? ownSessionId : null });
-      const parent = parentKey();
-      if (!parent) return reply("could not spawn subagent: this session has no run or pane to parent a subagent from");
-      const started = await startChild(parent, name, childDir, piCommand);
-      if ("error" in started) {
-        rmSync(childDir, { recursive: true, force: true });
-        return reply(`could not spawn subagent: ${started.error}`);
-      }
-      const created = started.created;
-      adopt(created, { ...entry, run: created.id });
-      return reply(
-        `spawned ${name} (window ${created.window}, pane ${created.pane}, run ${created.id})${params.fork ? ", forked from this session's context" : ""}; ${SPAWN_RESULT_RULE}`,
-        { name, window: created.window, pane: created.pane, run: created.id, fork: !!params.fork },
-      );
-      } finally {
-        releaseName(name);
-      }
+      type Session = { kind: "fresh" } | { kind: "continue"; source: { id: string; path: string; cwd: string } } | { kind: "copy"; file: string };
+      const forkFile = params.fork ? source?.path ?? ctx.sessionManager.getSessionFile() : undefined;
+      if (params.fork && !forkFile) return refuse("caller has no session file to copy");
+      const session: Session = forkFile ? { kind: "copy", file: forkFile } : source ? { kind: "continue", source } : { kind: "fresh" };
+      const target = params.toplevel ? "toplevel" : "child";
+      const cwd = resolve(ctx.cwd, params.cwd ?? source?.cwd ?? ctx.cwd);
+      if (session.kind === "continue" && cwd !== resolve(session.source.cwd)) return refuse(`a continued session runs in its recorded directory ${session.source.cwd}; fork copies it into another`);
+      let directoryExists = false;
+      try { directoryExists = statSync(cwd).isDirectory(); } catch {}
+      if (!directoryExists) return refuse(`cwd is not a directory: ${cwd}`);
+      const childSession = session.kind === "continue" ? session.source.id : newId();
+      const taken = () => refuse(`the name ${quote(name)} is already taken by ${target === "toplevel" ? "a live agent in this tmux session" : "one of this session's runs; message it instead"}`);
+      return withRestartLock(childSession, async () => {
+        const snapshot = session.kind === "continue" || target === "toplevel" ? await discovery() : null;
+        const entries = snapshot?.entries ?? (dir ? agentEntries(dir) : []);
+        if (session.kind === "continue" && target === "child" && chain(bySessionOf(entries), parentSession).includes(childSession)) return refuse(`session ${childSession} is an ancestor of this session`);
+        if (session.kind === "continue" && snapshot?.panes.some((agent) => agent.agentSession === childSession && !agent.dead)) return refuse(`session ${childSession} is live in a pane`);
+        const existing = session.kind === "continue" ? bySessionOf(own(entries)).get(childSession) : undefined;
+        if (existing && (target === "toplevel" || existing.name !== name)) return refuse("resume this child with its existing name and without toplevel");
+        if (!claimName(name)) return taken();
+        try {
+          if (target === "toplevel" ? snapshot?.all.some((agent) => agent.tmux === snapshot.mySession && agent.state === "running" && agent.name.toLowerCase() === name.toLowerCase() && snapshot.panes.some((pane) => pane.pane === agent.pane && !pane.dead)) : !existing && await nameTaken(name, entries, snapshot?.runs)) return taken();
+          const depth = depthOfSession(parentSession, bySessionOf(entries)) + 1;
+          if (target === "child" && depth > MAX_DEPTH) return refuse(`refusing to spawn at depth ${depth}: maximum nesting is ${MAX_DEPTH} (root 0, subagent 1, subagent 2)`);
+          if (target === "toplevel" && !snapshot?.mySession) return refuse("caller's tmux session is unknown");
+          const childDir = existing?.dir ?? join(dir ?? "", "agents", parentSession, name);
+          const entry: AgentEntry = { session: childSession, run: existing?.run ?? "", model, fork: session.kind === "copy", name, parent: parentSession, dir: childDir };
+          const policy = { sessionFile: session.kind === "continue" ? session.source.path : null, fork: session.kind === "copy" ? session.file : null };
+          let started: Started;
+          if (existing && snapshot && session.kind === "continue") {
+            const prepared = await prepareRestart(childSession, task, snapshot, { model, sessionFile: session.source.path, cwd });
+            if ("error" in prepared) return refuse(prepared.error);
+            if (!prepared.created) return refuse(`session ${childSession} already has a live run`);
+            started = { created: prepared.created.run };
+          } else if (target === "child") {
+            mkdirSync(childDir, { recursive: true, mode: 0o700 });
+            started = await restartAgent(entry, task, policy, cwd);
+          } else {
+            started = await startChild(null, name, null, piArgs(entry, policy), cwd, snapshot?.mySession);
+          }
+          if ("error" in started) {
+            if (!existing && target === "child") rmSync(childDir, { recursive: true, force: true });
+            return refuse(started.error);
+          }
+          const created = started.created;
+          if (session.kind === "continue") {
+            for (const previous of entries) {
+              if (previous.session === childSession && previous.parent !== parentSession) rmSync(join(previous.dir, "agent.json"), { force: true });
+            }
+          }
+          let deliveryError = "";
+          if (target === "toplevel") {
+            const deadline = Date.now() + 5000;
+            for (;;) {
+              const live = (await listPanes()).find((agent) => agent.agentSession === childSession && !agent.dead && agent.inbox);
+              if (live) {
+                if (task) {
+                  const sent = await sendWhenBound(live.inbox, "message", task, deadline);
+                  if (!sent.ok) deliveryError = `; task delivery failed: ${sent.message}`;
+                }
+                break;
+              }
+              if (Date.now() >= deadline) { deliveryError = "; timed out waiting for its inbox; no task was delivered"; break; }
+              await sleep(50);
+            }
+          }
+          return reply(
+            `spawned ${name} (session ${childSession}, window ${created.window}, pane ${created.pane}, run ${created.id})${session.kind === "copy" ? `, forked from session ${source?.id ?? parentSession}` : ""}; session id is what resume_from takes later; ${target === "toplevel" ? "independent peer; no report or ending notice" : SPAWN_RESULT_RULE}${deliveryError}`,
+            { session: childSession, name, window: created.window, pane: created.pane, run: created.id, fork: session.kind === "copy" },
+          );
+        } finally { releaseName(name); }
+      });
     },
   });
 
@@ -2231,7 +2325,7 @@ export default function (pi: ExtensionAPI) {
           try {
             writeFileSync(marker, "");
           } catch {}
-          if (task.trim()) {
+          if (owesWork(task)) {
             deliver(task);
             ending = { kind: "awaiting-first-turn" };
           }

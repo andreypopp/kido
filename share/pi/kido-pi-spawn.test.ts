@@ -38,66 +38,68 @@ function waitNotice(s: { messages: Array<{ message: { customType?: string; conte
   return pollUntil(() => lastNotice(s).includes(includes), 3000, `a notice naming ${JSON.stringify(includes)}`);
 }
 
-test("spawn_subagent starts kido-pi as a run-child, writes the child's directory first, and returns its identity", async () => {
+test("spawn_agent starts kido-pi as a run-child, writes the child's directory first, and returns its identity", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
     const s = await startNamedSession(fx, "Self");
-    const result = await s.tools.get("spawn_subagent").execute("c", { task: "do the thing", name: "kid" });
+    const paneReads = fx.tmuxCalls().filter((args) => args[0] === "list-panes").length;
+    const result = await s.tools.get("spawn_agent").execute("c", { task: "do the thing", name: "kid" });
+    assert.equal(fx.tmuxCalls().filter((args) => args[0] === "list-panes").length, paneReads, "a fresh child does not need pane discovery");
 
-    assert.match(result.content[0].text, /^spawned kid \(window @9, pane %9, run fake-run-id\); its result arrives as a notice/);
+    assert.match(result.content[0].text, /^spawned kid \(session [0-9a-f]+, window @9, pane %9, run fake-run-id\); session id is what resume_from takes later; its result arrives as a notice/);
     const argv = fx.runCalls()[0]!;
     const childSession = argAfter(argv, "--session-id")!;
     assert.match(childSession, /^[0-9a-f]{32}$/, "the parent mints the child's pi session id");
     assert.deepEqual(argv, [
-      "run-child", "%1", "--name", "kid",
+      "run-child", "%1", "--name", "kid", "--cwd", process.cwd(),
       "--env", `KIDO_AGENT_PARENT_SESSION=${SELF}`,
       "--env", `KIDO_AGENT_DIR=${join(fx.stateDir, "agents", SELF, "kid")}`,
-      "--", "kido-pi", "--session-id", childSession, "--name", "kid",
+      "--", "kido-pi", "--session-id", childSession, "--name", "kid", "--model", "acme/caller:high",
     ]);
-    assert.deepEqual(agentJson(fx, SELF, "kid"), { session: childSession, run: "fake-run-id", model: "", tools: [], fork: false });
+    assert.deepEqual(agentJson(fx, SELF, "kid"), { session: childSession, run: "fake-run-id", model: "acme/caller:high", fork: false });
     assert.equal(readFileSync(join(fx.agentDir(SELF, "kid"), "task"), "utf8"), "do the thing");
     assert.equal(result.details?.run, "fake-run-id");
+    assert.equal(result.details?.session, childSession);
   } finally {
     await fx.restore();
   }
 });
 
-test("spawn_subagent carries the model, the tool ceiling and the fork", async () => {
+test("spawn_agent carries the model and the fork", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
     fx.setPi("#!/bin/sh\ncase \"$*\" in *--list-models*) printf 'PROVIDER\\tMODEL\\nacme\\tclaude-sonnet-5\\n' ;; esac\nexit 0\n");
     const s = await startNamedSession(fx, "Self");
-    const result = await s.tools.get("spawn_subagent").execute("c", {
+    const result = await s.tools.get("spawn_agent").execute("c", {
       task: "judge",
       name: "kid",
       model: "acme/claude-sonnet-5:low",
-      tools: ["read", "bash"],
       fork: true,
     });
-    assert.match(result.content[0].text, /forked from this session's context/);
+    assert.match(result.content[0].text, /forked from session self-session/);
     const argv = fx.runCalls()[0]!;
     assert.equal(argAfter(argv, "--model"), "acme/claude-sonnet-5:low");
-    assert.equal(argAfter(argv, "--fork"), SELF);
-    assert.equal(argAfter(argv, "--tools"), "read,bash");
-    assert.deepEqual(agentJson(fx, SELF, "kid").tools, ["read", "bash"]);
+    assert.equal(argAfter(argv, "--fork"), `/tmp/${SELF}.json`);
+    assert.equal(argAfter(argv, "--tools"), undefined);
+    assert.equal("tools" in agentJson(fx, SELF, "kid"), false);
   } finally {
     await fx.restore();
   }
 });
 
-test("spawn_subagent refuses a bare model alias, an unknown thinking level, and a replayed name", async () => {
+test("spawn_agent refuses a bare model alias, an unknown thinking level, and a replayed name", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
     fx.setPi("#!/bin/sh\ncase \"$*\" in *--list-models*) printf 'PROVIDER\\tMODEL\\nacme\\tclaude-sonnet-5\\nacme  claude-opus-5\\nother\\tgemini-pro\\n' ;; esac\nexit 0\n");
     const s = await startNamedSession(fx, "Self");
-    const spawn = s.tools.get("spawn_subagent");
+    const spawn = s.tools.get("spawn_agent");
 
     assert.match(
       (await spawn.execute("c", { task: "x", name: "kid", model: "sonnet" })).content[0].text,
-      /could not spawn subagent: model "sonnet" is not a model of a configured provider; configured: acme\/\{claude-sonnet-5,claude-opus-5\}, other\/\{gemini-pro\}/,
+      /could not spawn agent: model "sonnet" is not a model of a configured provider; configured: acme\/\{claude-sonnet-5,claude-opus-5\}, other\/\{gemini-pro\}/,
     );
     assert.match(
       (await spawn.execute("c", { task: "x", name: "kid", model: "acme/claude-sonnet-5:nope" })).content[0].text,
@@ -116,7 +118,7 @@ test("spawn_subagent refuses a bare model alias, an unknown thinking level, and 
   }
 });
 
-test("spawn_subagent refuses depth 3, a missing name, and a task over the cap", async () => {
+test("spawn_agent refuses depth 3, a missing name, and a task over the cap", async () => {
   const fx = makeFixture();
   try {
     fx.writeAgent("root", "mid", { session: "mid" });
@@ -127,12 +129,12 @@ test("spawn_subagent refuses depth 3, a missing name, and a task over the cap", 
       "kid",
       async () => {
         const s = await startNamedSession(fx, "kid", "kid");
-        const spawn = s.tools.get("spawn_subagent");
+        const spawn = s.tools.get("spawn_agent");
         assert.equal(
           (await spawn.execute("c", { task: "x", name: "grandkid" })).content[0].text,
-          "could not spawn subagent: refusing to spawn at depth 3: maximum nesting is 2 (root 0, subagent 1, subagent 2)",
+          "could not spawn agent: refusing to spawn at depth 3: maximum nesting is 2 (root 0, subagent 1, subagent 2)",
         );
-        assert.equal((await spawn.execute("c", { task: "x", name: "" })).content[0].text, "could not spawn subagent: --name is required");
+        assert.equal((await spawn.execute("c", { task: "x", name: "" })).content[0].text, "could not spawn agent: name is required");
         assert.match(
           (await spawn.execute("c", { task: "x".repeat(1024 * 1024 + 1), name: "big" })).content[0].text,
           /the task is over the 1048576 byte task limit/,
@@ -146,14 +148,14 @@ test("spawn_subagent refuses depth 3, a missing name, and a task over the cap", 
   }
 });
 
-test("spawn_subagent and async_bash refuse a name that is not one safe path component, before any write", async () => {
+test("spawn_agent and async_bash refuse a name that is not one safe path component, before any write", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
     const s = await startNamedSession(fx, "Self");
     for (const name of ["../other", "a/b", ".", ".."]) {
-      const message = (await s.tools.get("spawn_subagent").execute("c", { task: "x", name })).content[0].text;
-      assert.match(message, /^could not spawn subagent: refusing window name/, `${JSON.stringify(name)} was not refused: ${message}`);
+      const message = (await s.tools.get("spawn_agent").execute("c", { task: "x", name })).content[0].text;
+      assert.match(message, /^could not spawn agent: refusing window name/, `${JSON.stringify(name)} was not refused: ${message}`);
       assert.equal(existsSync(join(fx.stateDir, "agents", SELF, name)), false, `${JSON.stringify(name)} wrote a directory`);
       const bash = (await s.tools.get("async_bash").execute("c", { command: "true", name })).content[0].text;
       assert.match(bash, /^could not start background command: refusing window name/);
@@ -241,7 +243,7 @@ test("a subagent's ending notice says it never reported when there is no report,
     const gate = join(fx.stateDir, "gate");
     await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "completed", text: "" }) }, async () => {
       const s = await startNamedSession(fx, "Self");
-      await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
+      await s.tools.get("spawn_agent").execute("c", { task: "x", name: "kid" });
       await pollUntil(() => fx.runWaitCalls().length === 1, 3000, "run-wait to start");
       writeFileSync(gate, "");
       await waitNotice(s, "without a report");
@@ -263,9 +265,9 @@ test("a subagent's ending notice says it reported plainly, and names the earlier
     const gate = join(fx.stateDir, "gate");
     await withEnv({ KIDO_FAKE_RUN_WAIT_GATE: gate, KIDO_FAKE_RUN_WAIT_OUTCOME: JSON.stringify({ result: "completed", text: "" }) }, async () => {
       const s = await startNamedSession(fx, "Self");
-      await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
+      await s.tools.get("spawn_agent").execute("c", { task: "x", name: "kid" });
       await pollUntil(() => fx.runWaitCalls().length === 1, 3000, "the first run-wait to start");
-      await withEnv({ KIDO_FAKE_RUN_ID: "fake-run-id-2" }, () => s.tools.get("spawn_subagent").execute("c", { task: "y", name: "kid2" }));
+      await withEnv({ KIDO_FAKE_RUN_ID: "fake-run-id-2" }, () => s.tools.get("spawn_agent").execute("c", { task: "y", name: "kid2" }));
       await pollUntil(() => fx.runWaitCalls().length === 2, 3000, "the second run-wait to start");
       writeFileSync(join(fx.agentDir(SELF, "kid"), "report"), "done");
       const report = join(fx.agentDir(SELF, "kid2"), "report");
@@ -389,14 +391,14 @@ test("a working agent holds stream lines past the idle deadline, and agent_end s
   }
 });
 
-test("concurrent spawn_subagent calls with one name launch one child and refuse the other", async () => {
+test("concurrent spawn_agent calls with one name launch one child and refuse the other", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
     const gate = join(fx.stateDir, "runs-gate");
     await withEnv({ KIDO_FAKE_RUNS_GATE: gate, KIDO_FAKE_RUN_ID: "fake-run-id" }, async () => {
       const s = await startNamedSession(fx, "Self");
-      const spawn = s.tools.get("spawn_subagent");
+      const spawn = s.tools.get("spawn_agent");
       const first = spawn.execute("a", { task: "first task", name: "kid" });
       const second = spawn.execute("b", { task: "second task", name: "kid" });
       await pollUntil(() => fx.runsCalls().length >= 1, 3000, "the first name check");
@@ -516,7 +518,7 @@ test("stop_run asks a subagent to stop first, then records completed only when i
     const inbox = await fx.startInbox();
     fx.setPanes([selfPane()]);
     const s = await startNamedSession(fx, "Self");
-    await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
+    await s.tools.get("spawn_agent").execute("c", { task: "x", name: "kid" });
     const child = agentJson(fx, SELF, "kid");
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid", inbox: inbox.path })]);
     const rows = [{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session }];
@@ -555,7 +557,7 @@ test("stop_run with force skips the request, and a subagent with no inbox needs 
     const inbox = await fx.startInbox();
     fx.setPanes([selfPane()]);
     const s = await startNamedSession(fx, "Self");
-    await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
+    await s.tools.get("spawn_agent").execute("c", { task: "x", name: "kid" });
     const child = agentJson(fx, SELF, "kid");
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid", inbox: inbox.path })]);
     fx.setRuns([{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session }]);
@@ -656,16 +658,16 @@ test("the task a spawn writes is delivered as the child's first message, once", 
   }
 });
 
-test("spawn_subagent and async_bash carry promptGuidelines pi merges into its rules section", async () => {
+test("spawn_agent and async_bash carry promptGuidelines pi merges into its rules section", async () => {
   const fx = makeFixture();
   try {
     const s = await startSession(fx);
-    for (const name of ["spawn_subagent", "async_bash"]) {
+    for (const name of ["spawn_agent", "async_bash"]) {
       const tool = s.tools.get(name);
       const guidelines = (tool.promptGuidelines ?? []).join("\n");
       assert.match(guidelines, /notice is information, not the user speaking/, `${name} carries the shared notice rule`);
     }
-    assert.match(s.tools.get("spawn_subagent").promptGuidelines.join("\n"), /never poll list_runs for it/);
+    assert.match(s.tools.get("spawn_agent").promptGuidelines.join("\n"), /never poll list_runs for it/);
     assert.match(s.tools.get("async_bash").promptGuidelines.join("\n"), /Use async_bash when/);
   } finally {
     await fx.restore();
@@ -679,8 +681,8 @@ test("a spawn whose run-child never answers times out, and leaves no name behind
     const gate = join(fx.stateDir, "run-gate");
     await withEnv({ KIDO_FAKE_RUN_GATE: gate, KIDO_SPAWN_TIMEOUT_MS: "20" }, async () => {
       const s = await startNamedSession(fx, "Self");
-      const result = await s.tools.get("spawn_subagent").execute("c", { task: "x", name: "kid" });
-      assert.match(result.content[0].text, /could not spawn subagent: .*timed out after 20ms/);
+      const result = await s.tools.get("spawn_agent").execute("c", { task: "x", name: "kid" });
+      assert.match(result.content[0].text, /could not spawn agent: .*timed out after 20ms/);
       assert.equal(existsSync(fx.agentDir(SELF, "kid")), false, "a failed spawn frees its name");
       assert.equal(fx.runWaitCalls().length, 0, "no watcher is started for a run that never began");
     });

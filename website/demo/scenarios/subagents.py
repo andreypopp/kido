@@ -3,7 +3,7 @@ import time
 from record import HERE, wait_for
 
 TITLE = "Parallel math"
-TOOLS = "spawn_subagent"
+TOOLS = "spawn_agent"
 INSTRUCTIONS = """Spawn exactly two agents, model openai-codex/gpt-6.1-sol:low. Spawn B FIRST, tools message_agent. B's task: 'Wait for A to send two random numbers and their sum. End your first turn with a message that says you are waiting; this is your first report. When A's message arrives later, compute twice that sum and send the result to your parent with message_agent(to="Parallel math", message=<the full numeric expression>). Never spawn agents or poll.' Spawn A SECOND, tools bash,message_agent. A's task: 'Run python3 sum.py exactly once to get two random integers and their sum. Tell B the numbers and sum using message_agent, then end your turn with a self-contained report of what you sent. Your last message goes to your parent as your report. Do not spawn agents.' Use these relative filenames; never put absolute paths in tasks. End your turn to wait for their actual results. After A's report and B's message with the doubled result arrive, print exactly one sentence: 'Result: (a + b) × 2 = result.' with the actual numeric values from A and B, not placeholders. Do not invent numbers or compute the result before receiving B's message."""
 DURATION = 180
 CAMERA = [("typing start", 0, (1.35, .20, 1 - 1 / 1.35)),

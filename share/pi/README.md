@@ -99,8 +99,13 @@ the reloaded module.
   its history, and the message is its next turn.
   `steer` joins a descendant's running turn. `interrupt-and-steer`
   aborts a descendant's turn, then starts a new turn with the text.
-- `spawn_subagent(task, name, model?, tools?, fork?)`: a child through
-  `kido run-child ... -- kido-pi`. Its ending arrives as a notice.
+- `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)`:
+  a child through `kido run-child ... -- kido-pi`, in the caller's model
+  unless `model` names one. `resume_from` continues a saved pi session
+  by id or unique prefix; with `fork`, it starts a copy. `toplevel`
+  starts a peer through `kido run`, with no parent, report or notice.
+  The result holds the new pi session id, which `resume_from` takes. A
+  child's ending arrives as a notice.
 - `async_bash(command, name, stream?)`: a command through
   `kido run-child ... -- bash -o pipefail -c '... | tee "$KIDO_RUN_OUTPUT"'`.
   Its ending arrives as a notice with the output tail; with `stream`,

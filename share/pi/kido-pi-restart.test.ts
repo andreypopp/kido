@@ -29,7 +29,7 @@ type Started = Awaited<ReturnType<typeof startNamedSession>>;
 async function endedChild(fx: Fixture, options: { sessionFile?: boolean; outcome?: string } = {}): Promise<{ s: Started; child: { session: string; run: string } }> {
   fx.setPanes([selfPane()]);
   const s = await startNamedSession(fx, "Self");
-  await s.tools.get("spawn_subagent").execute("c", { task: "do the thing", name: "kid" });
+  await s.tools.get("spawn_agent").execute("c", { task: "do the thing", name: "kid" });
   const child = agentJson(fx, SELF, "kid");
   fx.setRuns([
     {
@@ -60,11 +60,11 @@ async function childSettlesSilently(fx: Fixture, childSession: string, expected:
   );
 }
 
-test("a message to an ended child restarts it with the message as pi's first prompt when a session file exists", async () => {
+test("a saved child restarts with an @ message through its task file, never pi argv", async () => {
   const fx = makeFixture();
   try {
     const { s, child } = await endedChild(fx, { sessionFile: true });
-    const result = await withEnv<{ content: { text: string }[] }>({ KIDO_FAKE_RUN_ID: "restarted-run" }, () => s.tools.get("message_agent").execute("c", { to: "kid", message: "carry on" }));
+    const result = await withEnv<{ content: { text: string }[] }>({ KIDO_FAKE_RUN_ID: "restarted-run" }, () => s.tools.get("message_agent").execute("c", { to: "kid", message: "@not-a-file" }));
 
     assert.match(result.content[0].text, /^restarted kid as run restarted-run; its result arrives as a notice/);
     const argv = fx.runCalls()[1]!;
@@ -72,11 +72,16 @@ test("a message to an ended child restarts it with the message as pi's first pro
       "run-child", "%1", "--name", "kid",
       "--env", `KIDO_AGENT_PARENT_SESSION=${SELF}`,
       "--env", `KIDO_AGENT_DIR=${join(fx.stateDir, "agents", SELF, "kid")}`,
-      "--", "kido-pi", "--session", "/tmp/kid.json", "--name", "kid", "carry on",
+      "--", "kido-pi", "--session", "/tmp/kid.json", "--name", "kid", "--model", "acme/caller:high",
     ]);
     assert.equal(agentJson(fx, SELF, "kid").run, "restarted-run", "agent.json names the new run");
     assert.equal(agentJson(fx, SELF, "kid").session, child.session, "the pi session is the same");
     await pollUntil(() => fx.runWaitCalls().some((call) => call.includes("restarted-run")), 2000, "a run-wait for the new run");
+    assert.equal(readFileSync(join(fx.agentDir(SELF, "kid"), "task"), "utf8"), "@not-a-file");
+    await asSubagent(fx, child.session, async () => {
+      const resumed = await startNamedSession(fx, "kid", child.session);
+      assert.deepEqual(resumed.delivered.map((message) => message.text), ["@not-a-file"]);
+    }, { parent: SELF, name: "kid", run: "restarted-run" });
   } finally {
     await fx.restore();
   }
@@ -105,21 +110,23 @@ test("a report the restarted child writes before its launch returns is not made 
   }
 });
 
-test("without a session file the restart mints a new session under the stored id, delivers the stored task, and messages over the inbox", async () => {
+test("without a session file the restart replays the original task and sends the message by inbox", async () => {
   const fx = makeFixture();
   try {
     const { s, child } = await endedChild(fx);
     const inbox = await fx.startInboxAt(fx.inboxPath(child.session));
-    const result = await withEnv<{ content: { text: string }[] }>({ KIDO_FAKE_RUN_ID: "restarted-run" }, () => s.tools.get("message_agent").execute("c", { to: "kid", message: "carry on" }));
+    const task = join(fx.agentDir(SELF, "kid"), "task");
+    const written = statSync(task).mtimeMs;
+    const result = await withEnv<{ content: { text: string }[] }>({ KIDO_FAKE_RUN_ID: "restarted-run" }, () => s.tools.get("message_agent").execute("c", { to: "kid", message: "@carry-on" }));
 
     assert.match(result.content[0].text, /^restarted kid as run restarted-run and delivered to kid by inbox/);
     const argv = fx.runCalls()[1]!;
     assert.equal(argAfter(argv, "--session-id"), child.session);
-    assert.equal(argv.includes("carry on"), false, "the message is not a pi prompt here");
+    assert.equal(argv.includes("@carry-on"), false, "the message is not a pi prompt here");
     assert.equal(existsSync(join(fx.agentDir(SELF, "kid"), "delivered")), false, "the stored task will be delivered again");
-    const sent = JSON.parse(inbox.received()[0]!);
-    assert.equal(sent.kind, "message");
-    assert.equal(sent.text, "carry on");
+    assert.equal(readFileSync(task, "utf8"), "do the thing");
+    assert.equal(statSync(task).mtimeMs, written, "the original task file is unchanged");
+    assert.equal(JSON.parse(inbox.received()[0]!).text, "@carry-on");
   } finally {
     await fx.restore();
   }
@@ -314,10 +321,11 @@ test("concurrent messages to an ended child restart it once", async () => {
 test("an inbox answer that stalls after the request was sent is not retried", async () => {
   const fx = makeFixture();
   try {
-    const { s, child } = await endedChild(fx);
+    const { s, child } = await endedChild(fx, { sessionFile: true });
     const inbox = await fx.startInboxAt(fx.inboxPath(child.session));
-    const release = inbox.hold();
     await withEnv({ KIDO_FAKE_RUN_ID: "restarted-run" }, async () => {
+      await s.tools.get("message_agent").execute("c", { to: "kid", message: "bootstrap" });
+      const release = inbox.hold();
       const result = s.tools.get("message_agent").execute("c", { to: "kid", message: "once" });
       await pollUntil(() => inbox.received().length >= 1, 4000, "the request to reach the inbox");
       const text = (await result).content[0].text;

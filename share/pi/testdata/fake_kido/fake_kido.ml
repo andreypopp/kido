@@ -57,13 +57,13 @@ let run () =
   let argv = Array.to_list Sys.argv |> List.tl in
   let command = match argv with command :: _ -> command | [] -> "" in
   match command with
-  | "run-child" ->
+  | "run" | "run-child" ->
       Fake_common.log "KIDO_FAKE_RUN_LOG" argv;
       let run_id = Option.value ~default:"fake-run-id" (Sys.getenv_opt "KIDO_FAKE_RUN_ID") in
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_GATE");
       let output = Fs.getenv "KIDO_FAKE_STATE_DIR" ^ "/runs/" ^ run_id ^ "/output" in
       Fs.mkdir_p ~perm:0o700 (Filename.dirname output);
-      let parent = positional argv in
+      let parent = if String.equal command "run" then "" else positional argv in
       let ending =
         if String.equal (Fs.getenv "KIDO_FAKE_RUN_EXEC") "1" then
           match after_double_dash argv with

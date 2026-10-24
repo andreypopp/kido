@@ -366,7 +366,7 @@ control client and launcher.
 `share/bin/tmux` does the same for shell use.
 
 **The harness is one pi extension.** `share/pi/kido-pi.ts` holds every
-agent tool. It calls only kido's run commands (`run-child`, `runs
+agent tool. It calls only kido's run commands (`run`, `run-child`, `runs
 --json`, `run-wait --json`, `run-stop`, `run-outcome`) and tmux. These
 commands, their flags, exit codes and JSON are the contract between the
 two (docs/design.md, "The pi extension, kido-pi"). The extension never
