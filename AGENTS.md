@@ -849,6 +849,11 @@ native program status.
   `HOME`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME`. It unsets `ZDOTDIR`,
   `ENV`, `BASH_ENV`, `KIDO_ORIG_*` and exported bash functions.
   The Go cache paths are kept from the real `HOME`.
+  The private `HOME` contains only an empty `.zshrc`.
+  An interactive zsh with no `.zshenv`, `.zprofile`, `.zshrc` or
+  `.zlogin` runs zsh-newuser-install before its startup files.
+  Its menu waits for a key and blocks the test shell.
+  macOS does not show this menu, but Debian does.
   `test_e2e/dotfiles_test.go` fails if a harness or login shell reads
   an inherited dotfile.
 - The ssh tests that use the host's sshd run only with
@@ -858,7 +863,15 @@ native program status.
   With the variable set, a failed ssh probe or a missing zsh is a
   test failure, not a skip.
   CI sets the variable on both runners. The CI step "Set up localhost
-  SSH" starts sshd and authorizes a new key for localhost.
+  SSH" starts sshd and authorizes a key for localhost.
+  It can run again on the same runner. It fails if the passwd home is
+  not `$HOME`. It removes group and other write permission from the
+  home, `~/.ssh` and `authorized_keys`, because sshd's StrictModes
+  refuses the key otherwise. On failure, it prints the modes, the
+  effective sshd settings and `ssh -v`.
+  On macOS, `launchctl load` reports an error when sshd is already
+  loaded. Thus, the step enables `system/com.openssh.sshd` and
+  bootstraps it only if `launchctl print` does not find it.
   On macOS, it changes the runner's login shell to zsh because the
   image's Bash 3.2 is too old for `kido ssh` to prime.
   ssh reads `~/.ssh` from the passwd home, not the private `HOME`.
