@@ -1192,21 +1192,35 @@ at narrow widths.
 Command-P (View > Command Palette…) and Ghostty's `toggle_command_palette`
 (Shift-Command-P) open the palette. The same keys close it. The palette is
 a capsule at the top of the terminal area, in the theme of the pane toolbar.
-It has no data of its own. When it opens, it reads two lists once:
+If no Kido window is key, for example when every window is closed or
+minimized, the palette opens in a borderless panel near the top of the
+main screen. The panel closes when it is no longer key.
 
-- Every pane of the last snapshot, in sidebar order, with its row title,
-  status mark and session name. A pane activates through one RPC jump, as a
-  sidebar row does.
+The palette has no data of its own. When it opens, `AppDelegate` reads
+three lists once:
+
+- Every session and pane of each open window, in sidebar order. The key
+  window comes first. A session row has a stack symbol and selects the
+  session through one RPC. A pane row has its status mark and activates
+  through one RPC jump, as a sidebar row does. The row's window comes to
+  the front first. A remote window's rows start their path with the host.
+- Each recent remote host that has no open window, with a globe symbol.
+  It connects as the Connect to Remote Host dialog does.
 - Every enabled main-menu item that has an action, with its menu path and
   key equivalent. Before the read, each menu runs its update for the
   current first responder, so the list agrees with the menu bar. The
   palette item itself is not in the list. An item runs through
   `NSApp.sendAction` after the focus returns to its earlier responder.
-  Window and session switching come from the Window and Session menus.
+  Window and session switching come from the Window and Session menus,
+  which are disabled when no window is key.
 
-Each row shows its path: the session name or menu path, dim, then ` › `
-and the title. With no text, the list shows the panes and then the
-commands. Spaces, `>` and `›` split the text into words. Each word must
+New Session (Command-N) with no key window uses a local window that is
+open but not key, or opens one. The new window makes a session on its
+first snapshot.
+
+Each row shows its path: the host, session name or menu path, dim, then
+` › ` and the title. With no text, the list shows the sessions and panes,
+then the hosts, then the commands. Spaces, `>` and `›` split the text into words. Each word must
 match the title or the path, in any order, so `main term` and
 `main > term` find the Terminal pane of session main. A word uses the same
 fuzzy scorer as the terminal sidebar (`fuzzyMatch` in SidebarFeed): the

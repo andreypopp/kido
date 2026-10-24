@@ -913,24 +913,23 @@ private class AlertEscape: NSView {
         prepareAlert(alert) { response in if response == .alertFirstButtonReturn { close() } }
     }
 
-    func togglePalette() {
+    func togglePalette(_ entries: [PaletteEntry]) {
         guard palette == nil else { return closePalette(restoring: nil) }
         let previous = window.firstResponder
-        let palette = Palette(runtime: runtime, entries: PaletteEntry.panes(snapshot, seen: seen.value) + (NSApp.mainMenu.map { PaletteEntry.commands($0) } ?? []))
+        let palette = Palette(runtime: runtime, entries: entries)
         palette.frame = sidebar.content.bounds
         palette.dismiss = { [weak self] in self?.closePalette(restoring: previous) }
-        palette.run = { [weak self] action in
-            guard let self else { return }
-            closePalette(restoring: previous)
-            switch action {
-            case .request(let request): perform(request)
-            case .menu(let item): if let selector = item.action { NSApp.sendAction(selector, to: item.target, from: item) }
-            }
-        }
         self.palette = palette
         sidebar.content.addSubview(palette)
         palette.layoutSubtreeIfNeeded()
         window.makeFirstResponder(palette.field)
+    }
+
+    func reveal() {
+        guard !background else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        window.deminiaturize(nil)
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func closePalette(restoring previous: NSResponder?) {
