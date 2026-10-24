@@ -290,15 +290,24 @@ private class AlertEscape: NSView {
             view.layer?.backgroundColor = background.cgColor
         }
         banner?.background = background
-        let rgb = background.usingColorSpace(.deviceRGB) ?? .black
-        let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
-            $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
+        func luminance(_ color: NSColor) -> Double {
+            let rgb = color.usingColorSpace(.sRGB)!
+            let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
+                $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
+            }
+            return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
         }
-        let luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
-        let theme = (background: background, appearance: NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua))
+        let dark = luminance(background) < 0.5
+        let theme = (background: background, appearance: NSAppearance(named: dark ? .darkAqua : .aqua))
         window.appearance = theme.appearance
         sidebar.tabs.theme = theme
-        sidebar.listBackground = runtime.sidebarShade.flatMap { background.blended(withFraction: abs($0), of: $0 < 0 ? .black : .white) }
+        let rgb = background.usingColorSpace(.sRGB)!
+        let value = runtime.sidebarShade ?? (dark ? 0.05 : -0.05)
+        let amount = abs(value), white = value > 0 ? amount : 0
+        let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map { $0 * (1 - amount) + white }
+        let shade = NSColor(srgbRed: channels[0], green: channels[1], blue: channels[2], alpha: 1)
+        sidebar.listBackground = shade
+        sidebar.list.appearance = NSAppearance(named: luminance(shade) < 0.179 ? .darkAqua : .aqua)
         session?.updateBackground()
     }
 
@@ -1090,6 +1099,7 @@ private class AlertEscape: NSView {
     func windowDidMiniaturize(_ notification: Notification) { attend() }
     func windowDidDeminiaturize(_ notification: Notification) { attend() }
     func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert(); attend() }
+    func reloadConfig() { session?.reloadConfig() }
     func updateColorScheme() { session?.updateColorScheme() }
     var navigation: SessionModel { navigationModel }
 
