@@ -375,6 +375,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         {
             table.selectRowIndexes([index], byExtendingSelection: false)
         }
+        table.requestingFocus = true
+        defer { table.requestingFocus = false }
         window?.makeFirstResponder(table)
         table.scrollRowToVisible(table.selectedRow)
     }
@@ -624,7 +626,14 @@ final class Table: NSTableView {
     var keyboardSelection = false {
         didSet { enumerateAvailableRowViews { row, _ in row.subviews.forEach { $0.needsDisplay = true } } }
     }
+    private var selectingWithMouse = false
+    var requestingFocus = false
+    override var acceptsFirstResponder: Bool {
+        (requestingFocus || (!selectingWithMouse && NSApp.currentEvent?.type != .leftMouseDown)) && super.acceptsFirstResponder
+    }
     override func mouseDown(with event: NSEvent) {
+        selectingWithMouse = true
+        defer { selectingWithMouse = false }
         keyboardSelection = false
         super.mouseDown(with: event)
         guard let up = NSApp.currentEvent, up.type == .leftMouseUp,
