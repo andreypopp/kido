@@ -1955,6 +1955,39 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || NSApp.isActive)
     }
 
+    func testPaletteJumpToAPaneHiddenByZoomShowsAndFocusesIt() async throws {
+        directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "requires a private KIDO_APP_SERVER")
+        socket = directory.appendingPathComponent("socket").path
+        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        XCTAssertEqual(output.status, 0, output.err)
+        let first = try await command(["display-message", "-p", "-t", "$0:", "#{pane_id}"])
+        _ = try await command(["respawn-pane", "-k", "-t", first, "exec /bin/cat"])
+        let second = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", first, "exec /bin/cat"])
+        _ = try await command(["resize-pane", "-Z", "-t", first])
+        let owner = try sidebarOwner()
+        owner.start()
+        func shown() -> [String] {
+            owner.testSession?.windows.values.first { !$0.isHidden }?.panes.filter { !$0.isHidden }.map(\.pane.description) ?? []
+        }
+        let rows = { sidebarRows(owner.snapshot, seen: owner.seen.value).filter { $0.kind == .header || $0.target != nil } }
+        try await wait("the zoomed pane alone is shown") {
+            owner.testConnection != nil && shown() == [first] && rows().contains { $0.target?.pane.description == second }
+        }
+        owner.togglePalette(PaletteEntry.sessions(owner))
+        let palette = try XCTUnwrap(owner.palette)
+        let field = try XCTUnwrap(owner.window.firstResponder as? NSTextView)
+        let index = try XCTUnwrap(rows().firstIndex { $0.target?.pane.description == second })
+        XCTAssertEqual(palette.shown.count, rows().count)
+        for _ in 0..<index { field.doCommand(by: #selector(NSResponder.moveDown(_:))) }
+        field.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        XCTAssertNil(owner.palette)
+        try await wait("both panes shown, the chosen one focused") {
+            Set(shown()) == [first, second] && (owner.window.firstResponder as? PaneView)?.pane.description == second
+        }
+        let state = try await command(["display-message", "-p", "-t", second, "#{window_zoomed_flag} #{pane_active}"])
+        XCTAssertEqual(state, "0 1", "tmux unzooms the window and makes the chosen pane active")
+    }
+
     func testReorderHoldYieldsToEverythingElse() async throws {
         directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "requires a private KIDO_APP_SERVER")
         socket = directory.appendingPathComponent("socket").path
