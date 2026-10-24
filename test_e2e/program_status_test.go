@@ -111,8 +111,8 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	h.waitRow("╶ Build Plan")
 	wait("done", "Idle:success", 1)
 	h.in("switch-client", "-c", h.client, "-t", "status:0")
-	// Re-reporting an unchanged done is not a new outcome: its serial and the TUI's seen state hold.
-	emit("state=done:app=builder:title=QnVpbGQ=:msg=UGxhbg==")
+	// Re-reporting done with a new message is not a new outcome: its serial and the TUI's seen state hold.
+	emit("state=done:app=builder:title=QnVpbGQ=:msg=UGxhbjI=")
 	r, _ = feedRowFor(f.waitLast(func(s feedSnapshot) bool {
 		r, ok := feedRowFor(s, pane)
 		return ok && r.ProgramStatus.Serial > raw
@@ -120,7 +120,7 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	if report(r) != "Idle:success" || outcomeSerial(r) != serial {
 		t.Fatalf("an unchanged done re-armed: %+v", r.Lifecycle.Shell.Report.Outcome)
 	}
-	h.waitRow("╶ Build Plan")
+	h.waitRow("╶ Build Plan2")
 	emit("state=error:app=builder:title=QnVpbGQ=:msg=UGxhbg==")
 	r = wait("error", "Idle:failure", 1)
 	if outcomeSerial(r) <= serial {

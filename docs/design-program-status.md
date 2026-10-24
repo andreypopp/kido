@@ -24,6 +24,10 @@ Every topology read includes this variable in `State.format` and
 parses it once into the pane. This applies to control-mode and one-shot
 views. `%program-status` notifications only wake the tick.
 kido ignores their payload.
+tmux makes a new payload, serial and notification only when a report
+changes the pane's records. A report identical to the stored record
+with its id changes nothing, and it does not refresh the record's
+place in the eviction order.
 When it parses records, kido removes any working record with progress 0
 and no app, title or msg.
 
