@@ -175,8 +175,11 @@ import SidebarFeed
         view.items = [
             item("Hide Sidebar", #selector(Sidebar.toggleSidebar(_:)), "S", [.command, .shift]),
             item("Focus Sidebar", #selector(Sidebar.focusSidebar(_:)), "s", .command),
+            .separator(),
+            item("Command Palette…", #selector(togglePalette), "p", .command),
         ]
         for item in view.items.prefix(2) { item.target = current?.sidebar }
+        view.items.last?.target = self
         let file = NSMenu(title: "File")
         let newWindow = item("New Window", #selector(PaneView.runCommand(_:)), "t", .command)
         newWindow.representedObject = PaneCommand.newWindow
@@ -233,6 +236,7 @@ import SidebarFeed
     @objc private func connectRemoteHost() { RemoteHostDialog(routes: routes).show(on: NSApp.keyWindow) }
 
     @objc private func newSession() { current?.newSession() }
+    @objc func togglePalette() { current?.togglePalette() }
     @objc private func quitItem() { quit("the Quit menu item") }
     func quit(_ reason: String) { trigger = reason; NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
