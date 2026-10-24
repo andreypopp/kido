@@ -54,7 +54,7 @@ let osc133 out = List.exists (fun c -> String.mem ~sub:("\027]133;" ^ c) out) [ 
 let reports what out =
   List.iter
     (fun m -> check (Printf.sprintf "%s reports %S in %S" what m out) (String.mem ~sub:m out))
-    [ "\027]133;A"; "\027]133;C;cmdline=true"; "\027]133;D;0" ]
+    [ "\027]133;A"; "\027]133;C;cmdline_url=true 'a%25b%3Bc'"; "\027]133;D;0" ]
 
 let zsh_home rc =
   let home = temp () in

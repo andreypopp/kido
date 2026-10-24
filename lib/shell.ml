@@ -141,7 +141,7 @@ let%test_module "Tests" =
       Option.iter
         (fun zsh ->
           let home = Sh.zsh_home "" in
-          let run argv env = Sh.output ~stdin:"true\nexit\n" ~env zsh argv in
+          let run argv env = Sh.output ~stdin:"true 'a%b;c'\nexit\n" ~env zsh argv in
           Sh.check "the pristine shell reports nothing without kido"
             (not (Sh.osc133 (run [ zsh; "-l" ] (Sh.base ~path ~home zsh))));
           let mode = Prime.local_mode ~dotdir:home ~env:(Unix.environment ()) zsh in

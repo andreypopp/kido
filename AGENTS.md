@@ -379,21 +379,25 @@ that a run command prints. kido never reads the extension's files.
 kido runs only under [andreypopp/tmux](https://github.com/andreypopp/tmux),
 vendored as the submodule `third_party/tmux`.
 `tmux -V` prints `next-3.9`. kido pins the `fork` branch.
-This branch contains kido's commits in a linear sequence after
-[PR tmux/tmux#5468](https://github.com/tmux/tmux/pull/5468) (side status).
-The PR's commits are rebased onto current upstream tmux master.
+Upstream tmux master contains side status
+([PR tmux/tmux#5468](https://github.com/tmux/tmux/pull/5468), applied
+by nicm with changes). It also contains `#{pane_command_line}` and the
+control-state guard. This branch contains only kido's commits, in a
+linear sequence directly on upstream master.
 
-When master changes, the PR's commits and kido's commits are rebased
-onto it. If the PR is merged, kido's commits follow master directly.
+When master changes, kido's commits are rebased onto it.
 Use only rebase for maintenance, never merges or cherry-picks from upstream.
+Keep the difference from upstream minimal: small, localized, additive
+hooks. When upstream adds an equivalent, drop kido's commit.
 
-Kido's commit order after the PR is:
+Kido's commit order on master is:
 
-- Side status first: `side-status-command`, its conventions, the drag
-  fixes, the pane-border edge.
-- Then OSC 133 command-line capture; the control-client fixes (pause
-  flush, `%exit` reason, control-state guard, hanging up a pane's child);
-  terminal query-reply routing to the query's owner.
+- `side-status-command`, with the side column's edge drawn as a pane
+  border, in one commit.
+- The control-client fixes: pause flush, `%exit` reason, hanging up a
+  pane's child.
+- Terminal query-reply routing to the query's owner, in one commit.
+- OSC 7501 program status, in one commit.
 
 Before you force-push `fork`, push its previous head as a dated branch
 `fork-YYYY-MM-DD`. This keeps older submodule pins reachable.
@@ -432,10 +436,19 @@ Its absence means exactly "not started as a side column":
 A popup or plain pane gets the one-shot picker.
 The client flag `side-status-focus` specifies keyboard focus.
 
+Upstream gives the column's edge the mouse location `StatusBorder`, with
+the default bindings `MouseDrag1StatusBorder` (set the session's
+`side-status-width`) and `DoubleClick1StatusBorder` (unset it).
+`share/tmux/kido-tmux.conf` replaces both bindings: the drag sets the
+global width, and the double-click sets it back to kido's width. The side column's other mouse events go to the
+`side-status-command` job before the key tables. A drag belongs to
+where it started, from upstream's stored drag origin: an edge drag goes
+to the binding, and a drag from the job stays with the job until release.
+
 **OSC 133.**
 [docs/design-program-status.md](docs/design-program-status.md) describes
 the sequences and how kido reads them.
-The fork's `input_osc_133()` in `input.c` stores them as the
+tmux's `input_osc_133()` in `input.c` stores them as the
 `#{pane_last_prompt_time}` and `#{pane_command_*}` formats.
 It fires these hooks:
 
@@ -443,16 +456,19 @@ It fires these hooks:
 - `pane-command-started` (`C`).
 - `pane-command-finished` (`D`).
 
-`C` stores its `cmdline=` parameter as `#{pane_command_line}`.
+`C` stores its `cmdline_url=` parameter as `#{pane_command_line}`.
+tmux decodes `%HH` escapes. A `%` without two hex digits, a NUL,
+invalid UTF-8 or more than 16384 decoded bytes drops the command line.
+A `;` ends the parameter.
 tmux stores the value through `clean_name()`.
 `utf8_stravis()` escapes control bytes and backslashes.
 `#(` becomes `_(`.
 
-Thus, the shell integrations send the command line **verbatim**, except
-that they blank control characters and limit it to 1024 characters.
-The fork limits it to 1024 bytes without splitting UTF-8.
-If the integrations escaped anything, tmux would escape it again.
-The sidebar would receive unreadable text.
+Thus, the shell integrations blank control characters, limit the
+command line to 1024 characters, and encode only `%` as `%25` and `;`
+as `%3B`. They do not escape control bytes or backslashes. tmux applies
+`clean_name()` after it decodes, so such escapes would reach the sidebar
+as unreadable text.
 
 Consequences:
 

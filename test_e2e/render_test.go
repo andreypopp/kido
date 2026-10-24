@@ -87,7 +87,7 @@ func TestSSHRow(t *testing.T) {
 	// the row must name the far side's running command too.
 	script := "{ sleep 1; printf '\\033]133;C\\007';" +
 		" sleep 2; printf '\\033]133;A\\007';" +
-		" sleep 1; printf '\\033]133;C;cmdline=sleep 45\\007'; } >/dev/tty &\n" +
+		" sleep 1; printf '\\033]133;C;cmdline_url=sleep%%2045\\007'; } >/dev/tty &\n" +
 		"exec " + kidoBin + " ssh -F /dev/null -o ProxyCommand=" + h.sshProxy() + " deploy@example.test\n"
 	h.newWindow("alpha", "", "sh", "-c", script)
 	h.waitRow("ssh deploy@example.test")

@@ -28,9 +28,12 @@ kido_osc133_preexec() {
   # so a cut can split a multibyte rune.
   ((${#cmdline} > 1024)) && cmdline=${cmdline:0:1024}
   # Control characters only: a BEL or an ESC would end the sequence early.
-  # Everything else goes through verbatim - tmux escapes it once already.
   cmdline=${cmdline//[[:cntrl:]]/ }
-  printf '\033]133;C;cmdline=%s\007' "$cmdline"
+  # A ';' ends the parameter and a '%' starts a two-digit hex escape, so
+  # encode those two. Everything else goes through verbatim.
+  cmdline=${cmdline//%/\%25}
+  cmdline=${cmdline//;/%3B}
+  printf '\033]133;C;cmdline_url=%s\007' "$cmdline"
 }
 
 # Sourced twice, each hook is installed once: a second PS0 fragment would

@@ -442,7 +442,7 @@ exit 0
       |> Option.map (fun real ->
           Sh.write (Sh.temp () // "bash") ("#!/bin/sh\nexec " ^ real ^ " \"$@\" -i\n"))
 
-    let script = "true\nexit\n"
+    let script = "true 'a%b;c'\nexit\n"
 
     (* The claim `kido ssh` is for, with its negative control: run against a fresh $HOME, since a
    remote that already sourced kido's integration could not tell the two halves apart. *)
@@ -465,7 +465,8 @@ exit 0
       Option.iter
         (fun zsh ->
           let out, _ = bootstrap ~stdin:script ~home:(Sh.zsh_home "setopt SH_WORD_SPLIT\n") zsh in
-          Sh.check "primed under SH_WORD_SPLIT" (String.mem ~sub:"\027]133;C;cmdline=true" out))
+          Sh.check "primed under SH_WORD_SPLIT"
+            (String.mem ~sub:"\027]133;C;cmdline_url=true 'a%25b%3Bc'" out))
         (Sh.interactive_zsh ~path ());
       [%expect {| |}]
 

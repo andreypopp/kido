@@ -679,6 +679,13 @@ func (h *harness) click(x, y int) {
 	h.mouseSeq(0, x, y, false)
 }
 
+func (h *harness) doubleClick(x, y int) {
+	h.t.Helper()
+	h.click(x, y)
+	h.mouseSeq(0, x, y, true)
+	h.mouseSeq(0, x, y, false)
+}
+
 func (h *harness) wheelUp(x, y int)   { h.t.Helper(); h.mouseSeq(64, x, y, true) }
 func (h *harness) wheelDown(x, y int) { h.t.Helper(); h.mouseSeq(65, x, y, true) }
 

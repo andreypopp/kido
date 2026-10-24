@@ -76,4 +76,38 @@ func TestMouseDragResizes(t *testing.T) {
 	if !strings.Contains(strings.Join(h.rows(), "\n"), "alpha") {
 		t.Error("the sidebar lost its content after the resize")
 	}
+
+	// Shrinking starts on the same edge, but the first drag sample is
+	// already inside the job, which must not eat it.
+	h.drag(w, w-10, 10)
+	h.waitFor(func() bool {
+		now, _ := strconv.Atoi(h.in("show", "-gv", "side-status-width"))
+		return now < w
+	}, settle, func() string {
+		return "side-status-width shrank from " + strconv.Itoa(w) + " (is " + h.in("show", "-gv", "side-status-width") + ")"
+	})
+	shrunk, _ := strconv.Atoi(h.in("show", "-gv", "side-status-width"))
+
+	h.doubleClick(shrunk, 10)
+	h.waitFor(func() bool { return h.in("show", "-gv", "side-status-width") == strconv.Itoa(sideWidth) },
+		settle, func() string {
+			return "double-click restored side-status-width (is " + h.in("show", "-gv", "side-status-width") + ")"
+		})
+
+	// On the right side the line is at the left of the side column, so a
+	// shrink drag moves right and its samples are inside the job.
+	h.in("set", "-g", "side-status", "right")
+	cw, _ := strconv.Atoi(h.in("display-message", "-p", "#{client_width}"))
+	sep := cw - sideWidth + 1
+	h.waitFor(func() bool { return h.separatorAt(sep) }, settle, msgf("the right separator at column %d", sep))
+	h.drag(sep, sep+10, 10)
+	h.waitFor(func() bool {
+		now, _ := strconv.Atoi(h.in("show", "-gv", "side-status-width"))
+		return now < sideWidth
+	}, settle, func() string {
+		return "the right side shrank (is " + h.in("show", "-gv", "side-status-width") + ")"
+	})
+	shrunk, _ = strconv.Atoi(h.in("show", "-gv", "side-status-width"))
+	sep = cw - shrunk + 1
+	h.waitFor(func() bool { return h.separatorAt(sep) }, settle, msgf("the right separator moved to column %d", sep))
 }

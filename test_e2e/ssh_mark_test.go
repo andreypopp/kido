@@ -22,13 +22,13 @@ func main() {
   if strings.Contains(strings.Join(os.Args," "),"realm") { fmt.Print("user deploy@realm\nhostname next.test\n"); return }
   fmt.Print("user deploy\nhostname example.test\n"); return
  }
- fmt.Print("\x1b]133;C;cmdline=ssh alias\x07")
+ fmt.Print("\x1b]133;C;cmdline_url=ssh%20alias\x07")
  sc:=bufio.NewScanner(os.Stdin)
  for sc.Scan() {
   line:=sc.Text()
   switch line {
   case "prompt": <-time.After(1100*time.Millisecond); fmt.Print("\x1b]133;A\x07")
-  case "run": fmt.Print("\x1b]133;C;cmdline=sleep 45\x07")
+  case "run": fmt.Print("\x1b]133;C;cmdline_url=sleep%2045\x07")
   case "agent": fmt.Print("\x1b]2;Remote Claude\x07\x1b]7501;state=idle:app=claude-code\x07")
   case "quit": fmt.Print("\x1b]7501;state=clear\x07"); return
   default: fmt.Println("received:",line)

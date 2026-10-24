@@ -15,9 +15,12 @@ kido_osc133_preexec() {
   # By character, not by byte: zsh indexes strings by character here.
   (( ${#cmdline} > 1024 )) && cmdline=${cmdline[1,1024]}
   # Control characters only: a BEL or an ESC would end the sequence early.
-  # Everything else goes through verbatim - tmux escapes it once already.
   cmdline=${cmdline//[[:cntrl:]]/ }
-  printf '\033]133;C;cmdline=%s\007' "$cmdline"
+  # A ';' ends the parameter and a '%' starts a two-digit hex escape, so
+  # encode those two. Everything else goes through verbatim.
+  cmdline=${cmdline//\%/%25}
+  cmdline=${cmdline//;/%3B}
+  printf '\033]133;C;cmdline_url=%s\007' "$cmdline"
 }
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd  kido_osc133_precmd
