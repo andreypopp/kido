@@ -1,6 +1,25 @@
 import AppKit
 import TmuxControl
 
+final class FocusEdge: NSView {
+    var floating = false { didSet { if floating != oldValue { needsDisplay = true } } }
+    static func stroke(_ rect: NSRect, floating: Bool = false) {
+        NSColor.controlAccentColor.withAlphaComponent(0.5).setStroke()
+        NSBezierPath(roundedRect: rect.insetBy(dx: floating ? 1 : 0.5, dy: floating ? 1 : 0.5),
+                     xRadius: floating ? 17 : 0, yRadius: floating ? 17 : 0).stroke()
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            Self.stroke(bounds, floating: floating)
+        }
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
 extension CGRect {
     func subtracting(_ cuts: [CGRect]) -> [CGRect] {
         cuts.reduce(isNull || isEmpty ? [] : [self]) { rects, cut in
@@ -29,7 +48,8 @@ final class PaneChrome: NSView {
     var padding: [CGRect] { bounds.insetBy(dx: 5, dy: 5).subtracting([content] + overlays) }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var content = CGRect.zero
-    var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
+    enum Treatment { case plain, edge, overlay }
+    var treatment = Treatment.plain { didSet { if treatment != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: subviews.contains { $0 is PaneFind } ? 48 : 8, width: min(145, bounds.width), height: 32)
     }
@@ -47,10 +67,14 @@ final class PaneChrome: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        guard dimmed else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            runtime.background.withAlphaComponent(0.45).setFill()
-            bounds.fill()
+            switch treatment {
+            case .plain: break
+            case .edge: FocusEdge.stroke(bounds)
+            case .overlay:
+                runtime.background.withAlphaComponent(0.45).setFill()
+                bounds.fill()
+            }
         }
     }
     override func viewDidChangeEffectiveAppearance() {
@@ -152,9 +176,7 @@ class PaneCapsule: NSView {
     }
     override func updateLayer() {
         let background = runtime.background, foreground = runtime.foreground
-        layer?.backgroundColor = NSColor(srgbRed: background.redComponent * 0.92 + foreground.redComponent * 0.08,
-                                         green: background.greenComponent * 0.92 + foreground.greenComponent * 0.08,
-                                         blue: background.blueComponent * 0.92 + foreground.blueComponent * 0.08, alpha: 1).cgColor
+        layer?.backgroundColor = background.mixed(toward: foreground, amount: 0.08).cgColor
         edge.borderColor = foreground.withAlphaComponent(0.12).cgColor
         effectiveAppearance.performAsCurrentDrawingAppearance {
             for separator in separators { separator.backgroundColor = NSColor.separatorColor.cgColor }

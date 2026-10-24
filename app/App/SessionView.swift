@@ -9,6 +9,7 @@ final class SessionView: NSView {
     #endif
     var reorder = Reorder()
     var onPaneChange: () -> Void = {}
+    var sidebarFocused: () -> Bool = { false }
     private(set) var updating = false
     let runtime: GhosttyRuntime
     let boxes: PromptBoxes
