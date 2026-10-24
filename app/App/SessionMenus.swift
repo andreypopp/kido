@@ -2,8 +2,9 @@ import AppKit
 import TmuxControl
 import SidebarFeed
 
-final class SessionMenus: NSObject {
+final class SessionMenus: NSObject, NSMenuItemValidation {
     var send: (RPCRequest) -> Void = { _ in }
+    var canSend: () -> Bool = { true }
     let window = NSMenu(title: "Window")
     let session = NSMenu(title: "Session")
 
@@ -37,6 +38,8 @@ final class SessionMenus: NSObject {
         item.representedObject = command
         return item
     }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool { canSend() }
 
     @objc private func run(_ sender: NSMenuItem) {
         guard let command = sender.representedObject as? RPCRequest else { return }

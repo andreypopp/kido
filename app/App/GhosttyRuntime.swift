@@ -459,7 +459,7 @@ extension NSColor {
             return true
         }
         if action.tag == GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE {
-            PaneView.onMain(userdata) { ($0.window?.delegate as? WindowOwner)?.togglePalette() }
+            PaneView.onMain(userdata) { _ in (NSApp.delegate as? AppDelegate)?.togglePalette() }
             return true
         }
         guard let command = command(action) else { return false }

@@ -2,20 +2,25 @@ import AppKit
 import SidebarFeed
 
 struct PaletteEntry {
-    enum Action { case request(RPCRequest), menu(NSMenuItem) }
     let title: String
     let detail: String
     var shortcut = ""
     var status: SidebarRow.Status?
+    var symbol: String?
     var agent = false
-    let action: Action
+    let action: @MainActor () -> Void
 
-    static func panes(_ snapshot: Snapshot?, seen: SidebarSeen) -> [PaletteEntry] {
+    @MainActor static func sessions(_ owner: WindowOwner) -> [PaletteEntry] {
+        let host = if case .remote(let destination) = owner.host { [destination] } else { [String]() }
+        func go(_ request: RPCRequest) -> @MainActor () -> Void { { [weak owner] in owner?.reveal(); owner?.perform(request) } }
         var session = ""
-        return sidebarRows(snapshot, seen: seen).compactMap { row in
-            if case .header = row.kind { session = row.title }
+        return sidebarRows(owner.snapshot, seen: owner.seen.value).compactMap { row in
+            if case .header(let id) = row.id {
+                session = row.title
+                return PaletteEntry(title: row.title, detail: host.joined(), symbol: "square.stack", action: go(.selectSession(id)))
+            }
             guard let target = row.target else { return nil }
-            return PaletteEntry(title: row.title, detail: session, status: row.status, agent: row.agent, action: .request(.jump(target)))
+            return PaletteEntry(title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: row.agent, action: go(.jump(target)))
         }
     }
 
@@ -27,13 +32,15 @@ struct PaletteEntry {
             if let submenu = item.submenu { return commands(submenu, path: path + [item.title].filter { !$0.isEmpty }) }
             guard let action = item.action, action != #selector(AppDelegate.togglePalette), !item.isHidden, item.isEnabled,
                   titles.insert(item.title).inserted else { return [] }
-            return [PaletteEntry(title: item.title, detail: path.joined(separator: " › "), shortcut: shortcut(item), action: .menu(item))]
+            return [PaletteEntry(title: item.title, detail: path.joined(separator: " › "), shortcut: shortcut(item)) {
+                NSApp.sendAction(action, to: item.target, from: item)
+            }]
         }
     }
 
     private static let keys: [String: String] = [
         String(UnicodeScalar(NSLeftArrowFunctionKey)!): "←", String(UnicodeScalar(NSUpArrowFunctionKey)!): "↑",
-        String(UnicodeScalar(NSRightArrowFunctionKey)!): "→", String(UnicodeScalar(NSDownArrowFunctionKey)!): "↓", "\r": "↩",
+        String(UnicodeScalar(NSRightArrowFunctionKey)!): "→", String(UnicodeScalar(NSDownArrowFunctionKey)!): "↓", "\r": "↩", " ": "Space",
     ]
 
     private static func shortcut(_ item: NSMenuItem) -> String {
@@ -41,7 +48,7 @@ struct PaletteEntry {
         guard !key.isEmpty else { return "" }
         var modifiers = item.keyEquivalentModifierMask
         if key != key.lowercased() { modifiers.insert(.shift) }
-        let glyphs: [(NSEvent.ModifierFlags, String)] = [(.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")]
+        let glyphs: [(NSEvent.ModifierFlags, String)] = [(.function, "fn "), (.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")]
         return glyphs.filter { modifiers.contains($0.0) }.map(\.1).joined() + (keys[key] ?? key.uppercased())
     }
 
@@ -70,6 +77,11 @@ final class Palette: NSView, NSTextFieldDelegate, NSTableViewDataSource, NSTable
         override func draw(_ dirtyRect: NSRect) {
             guard let entry else { return }
             if let status = entry.status { drawStatusMark(status, at: NSPoint(x: 22, y: bounds.midY), flipped: true) }
+            if let symbol = entry.symbol.flatMap({ NSImage(systemSymbolName: $0, accessibilityDescription: nil) }) {
+                let image = symbol.withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: .secondaryLabelColor))) ?? symbol
+                image.draw(in: NSRect(x: 22 - image.size.width / 2, y: (bounds.height - image.size.height) / 2, width: image.size.width, height: image.size.height),
+                           from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
             var right = bounds.maxX - 16
             if !entry.shortcut.isEmpty {
                 let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]
@@ -109,7 +121,6 @@ final class Palette: NSView, NSTextFieldDelegate, NSTableViewDataSource, NSTable
     private let empty = NSTextField(labelWithString: "No matches")
     private let entries: [PaletteEntry]
     private(set) var shown: [(entry: PaletteEntry, offsets: [[Int]])] = []
-    var run: (PaletteEntry.Action) -> Void = { _ in }
     var dismiss: () -> Void = {}
     override var isFlipped: Bool { true }
 
@@ -188,7 +199,8 @@ final class Palette: NSView, NSTextFieldDelegate, NSTableViewDataSource, NSTable
 
     func choose(_ row: Int) {
         guard shown.indices.contains(row) else { return }
-        run(shown[row].entry.action)
+        dismiss()
+        shown[row].entry.action()
     }
 
     @objc private func clicked() { choose(table.clickedRow) }
@@ -218,5 +230,41 @@ final class Palette: NSView, NSTextFieldDelegate, NSTableViewDataSource, NSTable
         cell.setAccessibilityRole(.staticText)
         cell.setAccessibilityLabel([shown[row].entry.title, shown[row].entry.detail, shown[row].entry.shortcut].filter { !$0.isEmpty }.joined(separator: ", "))
         return cell
+    }
+}
+
+final class PalettePanel: NSPanel {
+    let palette: Palette
+    private let closed: () -> Void
+    private var closing = false
+    override var canBecomeKey: Bool { true }
+
+    init(palette: Palette, on screen: NSRect, closed: @escaping () -> Void) {
+        self.palette = palette
+        self.closed = closed
+        super.init(contentRect: NSRect(x: screen.minX, y: screen.minY, width: screen.width, height: screen.height * 0.8),
+                   styleMask: [.borderless], backing: .buffered, defer: false)
+        isReleasedWhenClosed = false
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        level = .floating
+        contentView = palette
+        palette.dismiss = { [weak self] in self?.close() }
+        palette.layoutSubtreeIfNeeded()
+        makeFirstResponder(palette.field)
+    }
+
+    override func resignKey() {
+        super.resignKey()
+        close()
+    }
+
+    override func close() {
+        guard !closing else { return }
+        closing = true
+        palette.field.abortEditing()
+        super.close()
+        closed()
     }
 }
