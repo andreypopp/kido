@@ -60,7 +60,7 @@ message_agent(to, message, mode?) - send a message to another agent in this tmux
 
 parameters:
 
-- `to` (string, required): Who to message: an agent's exact name, exact session id, or a unique prefix of its session id.
+- `to` (string, required): Who to message: an agent's exact name, session id, run id, a unique id prefix of at least 8 characters, or an @-mention from the prompt such as @impl (run 9702ddd1).
 - `message` (string, required): The message text to deliver.
 - `mode` (undefined): message queues until the turn ends, and resumes an ended subagent of yours with its history (default). steer joins a descendant's current turn. interrupt-and-steer aborts a descendant's turn, then starts a new turn with the text.
 
@@ -141,7 +141,7 @@ stop_run(to, force?) - end a descendant subagent or bash run found in list_runs
 
 parameters:
 
-- `to` (string, required): Run id, unique prefix of at least 8 characters, or unambiguous run name; one leading @ is ignored.
+- `to` (string, required): Run or session id, unique id prefix of at least 8 characters, unambiguous running name, or an @-mention such as @impl (run 9702ddd1).
 - `force` (boolean): For a subagent with no usable inbox, allow killing its pane instead. Not needed for bash runs. Destructive and irreversible.
 
 ## Messages the extension injects at runtime

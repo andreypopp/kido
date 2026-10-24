@@ -606,7 +606,7 @@ test("stop_run refuses an unrelated run and resolves a unique prefix of at least
     fx.setRuns([{ id: "abcdef0123456789", name: "job", parent: "%1" }]);
     const s = await startNamedSession(fx, "Self");
     assert.equal((await s.tools.get("stop_run").execute("c", { to: "nope" })).content[0].text, 'no run matches "nope"');
-    assert.equal((await s.tools.get("stop_run").execute("c", { to: "a" })).content[0].text, 'no run matches "a"', "a prefix shorter than the minimum is not a prefix");
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: "a" })).content[0].text, 'id prefixes need at least 8 characters', "a prefix shorter than the minimum is refused");
     assert.equal((await s.tools.get("stop_run").execute("c", { to: "abcdef01" })).content[0].text, "stopped run abcdef0123456789; killed its pane");
   } finally {
     await fx.restore();

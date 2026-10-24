@@ -463,14 +463,16 @@ The tmux session limits addressing for `message_agent` in every mode.
 `list_runs` has a narrower
 scope (design-subagents.md, "The tools, and what they call").
 
-The tools show names, not ids, and still accept a session id or a
-unique prefix: two top-level pis may share a name, and another parent's
-child has no name for the caller. Within scope, a target resolves by
-these rules in order:
+The tools show names, not ids, and still accept a session id, a run id
+or a unique id prefix: two top-level pis may share a name, and another
+parent's child has no name for the caller. Within scope, a target
+resolves by these rules in order:
 
 1. An exact case-insensitive name.
-2. An exact session id.
-3. A unique id prefix.
+2. An exact session id or run id.
+3. A unique prefix of a session id or run id, of at least eight
+   characters. A shorter prefix that matches an id is refused for its
+   length, before the scope rules below apply.
 
 Each rule reports its own ambiguity. It does not try another rule to
 guess a match. A match in the caller's tmux session wins over a match
@@ -479,14 +481,33 @@ found". Unnamed pi sessions match only by id. Native-only panes have no
 addressable session. `stop_run` resolves run ids first; its rules are in
 design-subagents.md, "Redirecting one, and ending one from outside".
 
+Every tool that takes `to` removes one leading `@`. It also accepts a
+whole mention from the prompt: `@impl (run 9702ddd1)` or
+`@reviewer (session 01a0bfcf)` resolves by the id in the parentheses
+only, so another agent's name cannot capture it.
+
 In pi's prompt editor, `@` and a prefix complete live agent rows from
 `list_runs`. Completion excludes bash and ended runs. Each row shows
-status, activity and a subagent's parent. The extension wraps the
-completion provider to place agent matches first. It delegates tokens
-with no agent match. A token matches the start of a name or any word in
-it, with whole-name matches first. A whitespace name cannot form one
-`@` token. For that name, completion inserts the shortest unique id
-prefix, which addressing resolves like a name.
+the name, status, activity and a subagent's parent. The extension wraps
+the completion provider to place agent matches first. It delegates
+tokens with no agent match. A token matches the start of a name or any
+word in it, with whole-name matches first. The extension finds the
+`@` token with the same boundaries and quote rules as pi's
+CombinedAutocompleteProvider, and delegates a quoted file token. Completion
+inserts:
+
+- `@impl (run 9702ddd1)` for an agent with a run: a subagent or a
+  spawned top-level agent.
+- `@reviewer (session 01a0bfcf)` for a pi that the user started in a
+  pane.
+
+The id is the shortest prefix, of at least eight characters, that no
+other row's session id or run id starts with. The rows include those
+that completion does not offer: bash runs, ended runs and agents
+outside the list, because `message_agent` and `stop_run` resolve over
+them. An id shorter than that appears whole. The id distinguishes
+agents that share a name and supports names with whitespace. Native
+agents are not listed, so they get no mention.
 
 A keystroke uses the last list without waiting for discovery. If the
 list is older than `KIDO_AGENT_LIST_TTL_MS` (1s), a background refresh

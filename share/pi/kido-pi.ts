@@ -494,21 +494,42 @@ export function oneLine(text: string, max: number): string {
 // Must agree with pi's own CombinedAutocompleteProvider (extractAtPrefix), since
 // the merged list carries one prefix for the agents and the files both.
 function atToken(textBeforeCursor: string): string | undefined {
-  const m = textBeforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
-  return m ? m[1] : undefined;
-}
-
-function completionValue(agents: AgentRow[], agent: AgentRow): string {
-  if (agent.relationship !== "own" && !/\s/.test(agent.name)) return `@${agent.name}`;
-  const others = agents.filter((a) => a.id !== agent.id);
-  for (let n = MIN_ID_PREFIX; n <= agent.id.length; n++) {
-    const prefix = agent.id.slice(0, n);
-    if (!others.some((a) => a.id.startsWith(prefix))) return `@${prefix}`;
+  const separator = /[\s"'=]|(?=\p{Punctuation})[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]|[，．：；！？（）［］｛｝“”‘’…—]/u;
+  const wrappers: Record<string, string> = { "(": ")", "[": "]", "{": "}", "<": ">", "`": "`" };
+  const quote = textBeforeCursor.lastIndexOf('"');
+  if ((textBeforeCursor.match(/"/g)?.length ?? 0) % 2 && textBeforeCursor[quote - 1] === "@") {
+    let start = quote - 1;
+    while (wrappers[textBeforeCursor[start - 1]]) start--;
+    if (start === 0 || separator.test(textBeforeCursor[start - 1])) return undefined;
   }
-  return `@${agent.id}`;
+  let token = textBeforeCursor.split(separator).at(-1) ?? "";
+  while (wrappers[token[0]] && !token.includes(wrappers[token[0]], 1)) token = token.slice(1);
+  return token.startsWith("@") ? token.slice(1) : undefined;
 }
 
-function agentCompletionItems(agents: AgentRow[], token: string): AutocompleteItem[] {
+function normalizeAddress(to: string): { wanted: string; mention: boolean } {
+  const raw = to.replace(/^@/, "");
+  const id = raw.match(/^(?:.* )?\((?:run|session) ([^\s()]+)\)$/)?.[1];
+  return { wanted: id ?? raw, mention: id !== undefined };
+}
+
+function rowIds(row: { id: string; run: string }): string[] {
+  return [row.id, row.run].filter(Boolean);
+}
+
+function matchesId(row: { id: string; run: string }, wanted: string, prefix = false): boolean {
+  return rowIds(row).some((id) => prefix ? wanted.length >= MIN_ID_PREFIX && id.startsWith(wanted) : id === wanted);
+}
+
+function completionValue(ids: Array<{ row: AgentRow; id: string }>, agent: AgentRow): string {
+  const id = agent.run || agent.id;
+  let n = MIN_ID_PREFIX;
+  while (n < id.length && ids.some((other) => other.row !== agent && other.id.startsWith(id.slice(0, n)))) n++;
+  return `@${agent.name} (${agent.run ? "run" : "session"} ${id.slice(0, n)})`;
+}
+
+function agentCompletionItems(agents: AgentRow[], all: AgentRow[], token: string): AutocompleteItem[] {
+  const ids = all.flatMap((row) => rowIds(row).map((id) => ({ row, id })));
   const nameByID = new Map<string, string>();
   for (const a of agents) {
     nameByID.set(a.id, a.name);
@@ -525,11 +546,10 @@ function agentCompletionItems(agents: AgentRow[], token: string): AutocompleteIt
   matched.sort((x, y) => x.rank - y.rank);
   return matched.slice(0, MAX_AGENT_COMPLETIONS).map(({ agent: a }) => {
     const parent = a.parent ? nameByID.get(a.parent) || a.parent : "";
-    const value = completionValue(agents, a);
+    const value = completionValue(ids, a);
     const description = [
       a.activity ? `${a.status || "agent"} - ${a.activity}` : a.status || "agent",
       parent ? `subagent of ${parent}` : "",
-      value === `@${a.name}` ? "" : `inserts ${value}`,
     ].filter(Boolean).join(", ");
     return { value, label: `@${a.name}`, description };
   });
@@ -644,7 +664,7 @@ export default function (pi: ExtensionAPI) {
 
   const parentKey = (): string | null => (edge ? edge.run : pane);
 
-  let completion: { rows: AgentRow[]; at: number; refreshing: Promise<void> | null } | null = null;
+  let completion: { rows: AgentRow[]; all: AgentRow[]; at: number; refreshing: Promise<void> | null } | null = null;
 
   const insideKido = (): boolean =>
     !!process.env.KIDO_RUN_ID || (!!process.env.TMUX && findKido() !== null);
@@ -1013,24 +1033,30 @@ export default function (pi: ExtensionAPI) {
     return null;
   };
 
-  const matchAddress = (rows: AgentRow[], wanted: string): Address | null => {
+  const matchAddress = (rows: AgentRow[], { wanted, mention }: ReturnType<typeof normalizeAddress>): Address | null => {
     const live = rows.filter((a) => a.state !== "ended");
     const either = <T>(f: (group: AgentRow[]) => T | null): T | null => f(live) ?? f(rows);
     const named = either((group) => decide(group.filter((a) => a.named && a.name && a.name.toLowerCase() === wanted.toLowerCase()), wanted, "name"));
-    if (named) return named;
-    const exact = either((group) => group.find((a) => a.id === wanted) ?? null);
-    if (exact) return { agent: exact };
-    return either((group) => decide(group.filter((a) => a.id.startsWith(wanted)), wanted, "id"));
+    if (!mention && named) return named;
+    const exact = either((group) => decide(group.filter((a) => matchesId(a, wanted)), wanted, "id"));
+    if (exact) return exact;
+    const prefixes = (group: AgentRow[]) => group.filter((a) => matchesId(a, wanted, true));
+    return either((group) => decide(prefixes(group), wanted, "id"));
   };
 
   type Resolution = { snapshot: Snapshot } & ({ agent: AgentRow } | { error: string; agent?: undefined });
 
-  const resolveIn = (snapshot: Snapshot, to: string): Resolution => {
-    const wanted = to.replace(/^@/, "");
+  const resolveIn = (snapshot: Snapshot, address: ReturnType<typeof normalizeAddress>): Resolution => {
+    const { wanted, mention } = address;
+    if (wanted.length < MIN_ID_PREFIX &&
+        !snapshot.all.some((a) => matchesId(a, wanted) || (!mention && a.named && a.name.toLowerCase() === wanted.toLowerCase())) &&
+        snapshot.all.some((a) => rowIds(a).some((id) => id.startsWith(wanted)))) {
+      return { snapshot, error: `id prefixes need at least ${MIN_ID_PREFIX} characters` };
+    }
     const mine = snapshot.mySession ? snapshot.all.filter((a) => a.tmux === snapshot.mySession) : [];
-    const first = matchAddress(mine, wanted);
+    const first = matchAddress(mine, address);
     if (first) return { snapshot, ...first };
-    const second = matchAddress(snapshot.all, wanted);
+    const second = matchAddress(snapshot.all, address);
     if (second && "agent" in second) {
       if (second.agent.tmux !== snapshot.mySession) return { snapshot, error: `${wanted} (${second.agent.id}) is in another tmux session, not this one` };
       return { snapshot, ...second };
@@ -1540,22 +1566,19 @@ export default function (pi: ExtensionAPI) {
 
   const childStarting = (entry: AgentEntry, runs: RunRow[]): boolean => entry.run !== "" && runs.some((r) => r.id === entry.run && !r.outcome);
 
-  const endedChild = (to: string, own: AgentEntry[], live: Set<string>, runs: RunRow[]): AgentEntry | null => {
-    const raw = to.replace(/^@/, "");
-    const wanted = raw.toLowerCase();
+  const endedChild = ({ wanted, mention }: ReturnType<typeof normalizeAddress>, own: AgentEntry[], live: Set<string>, runs: RunRow[]): AgentEntry | null => {
     const matches = own.filter(
       (e) =>
         !live.has(e.session) &&
-        (e.name.toLowerCase() === wanted ||
-          e.session === raw ||
-          (raw.length >= MIN_ID_PREFIX && (e.session.startsWith(raw) || (e.run !== "" && e.run.startsWith(raw))))),
+        ((!mention && e.name.toLowerCase() === wanted.toLowerCase()) ||
+          matchesId({ id: e.session, run: e.run }, wanted) || matchesId({ id: e.session, run: e.run }, wanted, true)),
     );
     if (matches.length <= 1) return matches[0] ?? null;
     const startedAt = (e: AgentEntry): string => runs.find((r) => r.id === e.run)?.startedAt ?? "";
     return matches.sort((a, b) => startedAt(b).localeCompare(startedAt(a))).at(0) ?? null;
   };
 
-  const endedTarget = (to: string, resolved: Resolution): { entry: AgentEntry; starting: boolean } | null => {
+  const endedTarget = (to: ReturnType<typeof normalizeAddress>, resolved: Resolution): { entry: AgentEntry; starting: boolean } | null => {
     const ownEntries = own(resolved.snapshot.entries);
     const live = new Set(resolved.snapshot.all.filter((a) => a.state === "running").map((a) => a.id));
     const row = resolved.agent;
@@ -1603,7 +1626,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const prepareRestart = async (
-    address: string,
+    address: ReturnType<typeof normalizeAddress>,
     message: string,
     initial: Snapshot,
     resume?: { model: string; sessionFile: string; cwd: string },
@@ -1885,7 +1908,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object(
       {
         to: Type.String({
-          description: "Who to message: an agent's exact name, exact session id, or a unique prefix of its session id.",
+          description: `Who to message: an agent's exact name, session id, run id, a unique id prefix of at least ${MIN_ID_PREFIX} characters, or an @-mention from the prompt such as @impl (run 9702ddd1).`,
         }),
         message: Type.String({ description: "The message text to deliver." }),
         mode: Type.Optional(Type.Union([Type.Literal("message"), Type.Literal("steer"), Type.Literal("interrupt-and-steer")], {
@@ -1898,13 +1921,14 @@ export default function (pi: ExtensionAPI) {
       if (!params.message) return reply(`could not message ${params.to}: the message is empty; nothing sent`);
       if (!params.message.isWellFormed()) return reply(`could not message ${params.to}: the message is not valid UTF-8`);
       const kind = params.mode ?? "message";
+      const address = normalizeAddress(params.to);
       const snapshot = await discovery();
       const prep: RestartPrep = kind === "message"
-        ? await prepareRestart(params.to, params.message, snapshot)
+        ? await prepareRestart(address, params.message, snapshot)
         : { snapshot, entry: null, created: null };
       if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error}`);
       if (prep.entry && prep.created?.delivery === "task") return reply(restartedReply(prep.entry.name, prep.created.run.id));
-      const resolved = resolveIn(prep.snapshot, params.to);
+      const resolved = resolveIn(prep.snapshot, address);
       const target = prep.entry ? entryRow(prep.entry) : resolved.agent;
       if (!target) return reply(`could not message ${params.to}: ${resolutionError(resolved)}`);
       const name = agentName(target);
@@ -2056,7 +2080,7 @@ export default function (pi: ExtensionAPI) {
           const policy = { sessionFile: session.kind === "continue" ? session.source.path : null, fork: session.kind === "copy" ? session.file : null };
           let started: Started;
           if (existing && snapshot && session.kind === "continue") {
-            const prepared = await prepareRestart(childSession, task, snapshot, { model, sessionFile: session.source.path, cwd });
+            const prepared = await prepareRestart(normalizeAddress(childSession), task, snapshot, { model, sessionFile: session.source.path, cwd });
             if ("error" in prepared) return refuse(prepared.error);
             if (!prepared.created) return refuse(`session ${childSession} already has a live run`);
             started = { created: prepared.created.run };
@@ -2175,7 +2199,7 @@ export default function (pi: ExtensionAPI) {
       {
         to: Type.String({
           description:
-            "Run id, unique prefix of at least 8 characters, or unambiguous run name; one leading @ is ignored.",
+            `Run or session id, unique id prefix of at least ${MIN_ID_PREFIX} characters, unambiguous running name, or an @-mention such as @impl (run 9702ddd1).`,
         }),
         force: Type.Optional(
           Type.Boolean({
@@ -2192,17 +2216,16 @@ export default function (pi: ExtensionAPI) {
       const { all, entries } = await discovery();
       const to = params.to;
       const force = !!params.force;
-      const wanted = to.replace(/^@/, "");
+      const { wanted, mention } = normalizeAddress(to);
       const candidates = all.filter((a) => !a.self && (a.relationship === "own" || isDescendant(a, entries)));
-      let matches = candidates.filter((a) => a.id === wanted || a.run === wanted);
+      let matches = candidates.filter((a) => matchesId(a, wanted));
       if (!matches.length) {
-        matches = wanted.length >= MIN_ID_PREFIX
-          ? candidates.filter((a) => a.id.startsWith(wanted) || (a.run !== "" && a.run.startsWith(wanted)))
-          : [];
+        matches = candidates.filter((a) => matchesId(a, wanted, true));
       }
       if (!matches.length) {
-        matches = candidates.filter((a) => a.named && a.name.toLowerCase() === wanted.toLowerCase() && a.state === "running");
+        matches = candidates.filter((a) => !mention && a.named && a.name.toLowerCase() === wanted.toLowerCase() && a.state === "running");
       }
+      if (!matches.length && wanted.length < MIN_ID_PREFIX && candidates.some((a) => rowIds(a).some((id) => id.startsWith(wanted)))) return reply(`id prefixes need at least ${MIN_ID_PREFIX} characters`);
       if (!matches.length) return reply(`no run matches ${quote(to)}`);
       if (matches.length > 1) {
         return reply(`${quote(to)} matches several runs: ${matches.map((a) => a.run || a.id).sort().join(", ")}`);
@@ -2259,7 +2282,7 @@ export default function (pi: ExtensionAPI) {
     // both simply get no `@name` completion.
     const ui = ctx.ui;
     if (ui?.addAutocompleteProvider && !completion) {
-      const cache: { rows: AgentRow[]; at: number; refreshing: Promise<void> | null } = { rows: [], at: 0, refreshing: null };
+      const cache: { rows: AgentRow[]; all: AgentRow[]; at: number; refreshing: Promise<void> | null } = { rows: [], all: [], at: 0, refreshing: null };
       completion = cache;
       ui.addAutocompleteProvider((current: AutocompleteProvider): AutocompleteProvider => ({
         triggerCharacters: current.triggerCharacters,
@@ -2268,7 +2291,8 @@ export default function (pi: ExtensionAPI) {
           if (token === undefined) return current.getSuggestions(lines, cursorLine, cursorCol, options);
           if (!cache.refreshing && Date.now() - cache.at >= envMs("KIDO_AGENT_LIST_TTL_MS", 1000)) {
             cache.refreshing = discovery()
-              .then(({ rows }) => {
+              .then(({ rows, all }) => {
+                cache.all = all;
                 cache.rows = rows.filter((a) => a.kind !== "bash" && a.state !== "ended");
                 cache.at = Date.now();
               })
@@ -2277,7 +2301,7 @@ export default function (pi: ExtensionAPI) {
                 cache.refreshing = null;
               });
           }
-          const items = agentCompletionItems(cache.rows, token);
+          const items = agentCompletionItems(cache.rows, cache.all, token);
           const files = await current.getSuggestions(lines, cursorLine, cursorCol, options);
           if (items.length === 0) return files;
           const prefix = `@${token}`;

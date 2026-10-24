@@ -18,8 +18,8 @@ test("message_agent resolves by name, exact session id and unique prefix, and ex
     const inbox = await fx.startInbox();
     fx.setPanes([
       selfPane(),
-      agentPane({ pane: "%2", session: "abc123", name: "Worker-2", inbox: inbox.path }),
-      agentPane({ pane: "%3", session: "abd456", title: "π - ", inbox: inbox.path }),
+      agentPane({ pane: "%2", session: "abc12345-one", name: "Worker-2", inbox: inbox.path }),
+      agentPane({ pane: "%3", session: "abc12345-two", title: "π - ", inbox: inbox.path }),
       agentPane({ pane: "%4", session: "worker-x", name: "scout" }),
       agentPane({ pane: "%5", session: "worker-y", name: "scout" }),
       agentPane({ pane: "%6", session: "worker-6", name: "worker-6", inbox: inbox.path }),
@@ -34,12 +34,13 @@ test("message_agent resolves by name, exact session id and unique prefix, and ex
     assert.equal(await deliver("worker-2"), "delivered to Worker-2 by inbox", "a name is caseless");
     assert.equal(await deliver("@worker-2"), "delivered to Worker-2 by inbox", "a leading @ is ignored");
     assert.equal(await deliver("worker-6"), "delivered to worker-6 by inbox");
-    assert.equal(await deliver("abc123"), "delivered to Worker-2 by inbox", "an exact session id wins over a prefix");
-    assert.equal(await deliver("abd"), "delivered to π -  by inbox", "a unique prefix resolves; an unnamed agent shows its title");
+    assert.equal(await deliver("abc12345-one"), "delivered to Worker-2 by inbox", "an exact session id wins over a prefix");
+    assert.equal(await deliver("abc12345-t"), "delivered to π -  by inbox", "a unique prefix resolves; an unnamed agent shows its title");
     assert.equal(
-      await deliver("ab"),
-      'could not message ab: "ab" matches several agents by id: abc123 (Worker-2), abd456 (π - )',
+      await deliver("abc12345"),
+      'could not message abc12345: "abc12345" matches several agents by id: abc12345-one (Worker-2), abc12345-two (π - )',
     );
+    assert.equal(await deliver("abc"), 'could not message abc: id prefixes need at least 8 characters');
     assert.equal(await deliver("nope"), 'could not message nope: no agent session matches "nope"');
     assert.equal(
       await deliver("scout"),
@@ -132,6 +133,37 @@ test("message_agent modes restrict control to descendants and mark parent work",
       }
       assert.deepEqual(inbox.received().map(json).map(e => e.kind), ["message", "message", "message", "message", "steer", "steer", "interrupt-and-steer", "interrupt-and-steer"]);
     });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("run addresses and pasted mentions resolve names before ids and exact ids before prefixes", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    const second = await fx.startInbox();
+    fx.setPanes([
+      selfPane(),
+      agentPane({ pane: "%2", session: "session-one", name: "first", inbox: inbox.path }),
+      agentPane({ pane: "%3", session: "session-two", name: "run-aaaa", inbox: second.path }),
+    ]);
+    fx.writeAgent(SELF, "first", { session: "session-one", run: "run-aaaa-one" });
+    fx.writeAgent(SELF, "run-aaaa", { session: "session-two", run: "run-aaaa-one-more" });
+    fx.setRuns([
+      { id: "run-aaaa-one", name: "first", pane: "%2", session: "session-one", parent: "%1" },
+      { id: "run-aaaa-one-more", name: "run-aaaa", pane: "%3", session: "session-two", parent: "%1" },
+    ]);
+    const s = await startNamedSession(fx, "Self");
+    const deliver = async (to: string) => (await s.tools.get("message_agent").execute("c", { to, message: "x" })).content[0].text;
+    for (const to of ["run-aaaa-one", "@first (run run-aaaa-one)", "@first (session session-one)", "session-o"]) {
+      assert.equal(await deliver(to), "delivered to first by inbox");
+    }
+    assert.equal(await deliver("run-aaaa"), "delivered to run-aaaa by inbox");
+    assert.match(await deliver("run-aaaa-"), /matches several agents by id: session-one \(first\), session-two \(run-aaaa\)/);
+    assert.equal(await deliver("run-aaaa-one-m"), "delivered to run-aaaa by inbox");
+    assert.equal(inbox.received().length, 4);
+    assert.equal(second.received().length, 2);
   } finally {
     await fx.restore();
   }

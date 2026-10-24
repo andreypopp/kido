@@ -553,8 +553,8 @@ interrupt without text: a parent that wants the child idle stops it with
 
 `stop_run` resolves its target among the caller's own runs and its
 descendants, in this order: an exact run or session id, a unique prefix
-of at least eight characters, an unambiguous running name. It removes
-one leading `@`.
+of at least eight characters, an unambiguous running name. It accepts
+a mention as design.md, "Addressing", describes.
 
 - A bash run: `kido run-stop ID`.
 - A subagent: `kido run-outcome ID` records `completed` if the child has

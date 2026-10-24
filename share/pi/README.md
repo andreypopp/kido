@@ -99,6 +99,9 @@ the reloaded module.
   its history, and the message is its next turn.
   `steer` joins a descendant's running turn. `interrupt-and-steer`
   aborts a descendant's turn, then starts a new turn with the text.
+  `to` takes a name, a session or run id, a unique id prefix of at
+  least eight characters, or a mention such as `@impl (run 9702ddd1)`,
+  which `@` completion inserts in the prompt editor.
 - `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)`:
   a child through `kido run-child ... -- kido shell -- kido-pi`, in the
   user's login-shell environment and the caller's model
