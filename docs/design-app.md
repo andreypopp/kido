@@ -308,20 +308,22 @@ follow the effective Ghostty background and its light or dark
 appearance.
 
 The sidebar list's background is a shade of the terminal background.
-The default is -5% on a light terminal background and +5% on a dark
-one, with the same light or dark decision as the window appearance.
+The shade mixes the terminal background toward black on a light
+terminal background and toward white on a dark one, with the same light
+or dark decision as the window appearance. The default is 5%.
 Thus the default follows each reload and each live theme switch.
 `kido-sidebar-shade = <percent>` is the app's own key
 in that file. Ghostty does not know it, and its unknown-field
-diagnostic is hidden for this key only. The value is -100 to 100, with
-or without `%` and optionally in double quotes. A negative value mixes
-the terminal background with black, and a positive value mixes it
-with white, per sRGB component (as CSS `color-mix(in srgb, ...)`).
+diagnostic is hidden only for the app's two keys, this one and
+`kido-unfocused-background-shift`. The value is a decimal number from -100
+to 100 (digits, an optional leading `-` and an optional fraction), with or
+without `%` and optionally in double quotes. The app uses its absolute
+value, and the theme gives the direction. The mix is per sRGB component (as CSS
+`color-mix(in srgb, ...)`).
 `NSColor.blended` is not used: it mixes in generic RGB and gives a
 different colour. An absent key and an empty value (`kido-sidebar-shade =`,
 Ghostty's reset syntax) give the default. An invalid value gives a note
-on stderr and the default. An explicit value applies as given on light
-and dark themes. AppKit's sidebar glass is not shown. The
+on stderr and the default. AppKit's sidebar glass is not shown. The
 app reads the key from the same files as Ghostty: the main file, then
 its `config-file` includes in Ghostty's breadth-first order, with
 relative paths, `~/`, optional `?` paths and cycles resolved as Ghostty
@@ -680,6 +682,74 @@ closed box does nothing.
 The `Feed` has no timeout for a request. Thus, a `prompt` send that blocks
 kido's RPC loop until the inbox times out does not restart the helper.
 
+### Focus treatment
+
+In a window with two or more visible tiled panes, the focused pane is the
+only one with the pure terminal background. Every other tiled pane gets
+the shifted paper: the terminal background mixed 3% toward black on a light
+background and 3% toward white on a dark one (relative luminance < 0.5), per
+sRGB component. This is the direction rule of the sidebar shade, and one
+helper computes both. The pane shift does not follow `kido-sidebar-shade`,
+so a strong sidebar value does not make inactive panes hard to read. Its own
+key, `kido-unfocused-background-shift = <percent>`, has the syntax, range,
+include order and diagnostic rules of `kido-sidebar-shade`, with
+a 3% default, and the same reader reads both keys. A reload that changes only this key repaints the
+panes. The focused pane also gets a 1pt `controlAccentColor`
+stroke at 50% alpha, inside its chrome rect, over the padding and not over
+cells. A single-pane window draws no shift and no edge on its pane, in
+every focus state. Floating panes keep a 45% theme-background overlay when
+they are not active.
+
+The shift changes the paper, not the ink. Each tiled surface gets its own
+clone of the app's Ghostty config with `background-opacity = 0` and
+`background-opacity-cells = false`. Ghostty then leaves default-background
+cells transparent and still draws explicit cell backgrounds, selection and
+search highlights opaque. An opaque box under each tiled pane, the size of
+its chrome rect, and the pane view's layer carry the pure or shifted paper.
+Thus glyphs, the cursor, selection, find highlights and the COPY and
+history pills keep their colours. A cell whose program sets an explicit
+background equal to the default colour stays pure in an inactive pane.
+A `kido-app.conf` reload clones the new config for each surface. On a
+theme switch, Ghostty changes the app config, the app gives each surface
+the new colour scheme, and each surface then asks for a reload of its own
+config, which clones the current app config. The app sends the scheme
+change only after it installs the new app config, so a clone never keeps
+the old theme's foreground.
+
+When the sidebar list is first responder, no pane looks focused: every
+tiled pane takes the shift, no pane has the edge, and Ghostty draws the
+active pane's cursor hollow because its surface is unfocused. Each
+focus-treatment update, and each move of a pane view between windows, sets
+every surface's Ghostty focus from the window's actual first responder, so
+a reparented view does not keep a stale solid cursor. The sidebar
+then has the same 1pt accent stroke around its whole column, including the
+band behind the toolbar, also in a single-pane window. The active pane
+stays remembered, and focus that returns to the terminal (a click, Escape)
+restores its edge. Only one surface has the edge at a time. A mouse click
+on a sidebar row, a sidebar toolbar button or a pane toolbar button does
+not make that view first responder, so a click that navigates and returns
+focus to a pane does not flash the sidebar edge. The pane grip is the
+exception: it takes first responder for its drag and Escape. Keyboard focus to the sidebar still shows
+it.
+
+The toolbar top line and the pane dividers use the terminal background
+mixed 18% toward the terminal foreground, one device pixel, so they stay
+visible between two shifted surfaces. A pane divider that meets the outer
+edge of the tiled tree is drawn on through the outer margin to the
+terminal area's edge; its hit area and the layout do not change. The sidebar's split divider uses the
+same 18% on a dark background and 28% on a light one. An app-owned
+one-device-pixel line covers AppKit's divider, through the toolbar band.
+The docked sidebar casts a shadow onto the terminal area from its right
+edge: offset 4pt to the right, 14pt blur, spread −2pt, black at 40% on
+a dark background and 18% on a light one. It falls over the paper and the
+toolbar band and never over the sidebar. The floating sidebar card has an
+ambient shadow with the same blur and alpha, offset 4pt down, around its
+18pt corners. AppKit's glass shadow is cleared, so each mode has one
+shadow. When the floating card's list is first responder, its edge is
+the same stroke inset 1pt inside its hairline border, with a 17pt radius.
+The panes then behave as under docked sidebar focus. Accent and
+appearance-dependent colours resolve at draw time.
+
 ### Clipboard
 
 Live OSC 52 writes copy text to the Mac general pasteboard. Reads use Ghostty's
@@ -786,7 +856,7 @@ The tiled grid bottom is 12pt above the terminal area bottom, rounded upward
 onto a whole device pixel if necessary: the gap is at least 12pt and less
 than 12pt plus one device pixel. Left, right and bottom edge panes extend their chrome to the terminal
 area bounds, owning the side margins and bottom gap as padding. Background,
-dimming and padding input reach those edges; toolbar hot zones and scroller
+focus treatment and padding input reach those edges; toolbar hot zones and scroller
 strips follow the new pane boundary, with the knob still 4pt inward. The
 content, chrome and divider tops respect the separator's bottom edge.
 Below the separator, the global vertical subcell remainder sits above the
@@ -816,7 +886,7 @@ or resize anchors; the live bottom remains distance zero. Floats stay inset-free
 in the same shifted grid coordinate space, with the point-to-cell inverse and
 pixel-exact free frames unchanged. Floating bounds end at the same pixel-aligned 12pt bottom margin,
 so a float's existing bottom padding remains above that margin. Dividers have
-six-point hit areas; unfocused panes are dimmed by a theme-background overlay; a
+six-point hit areas; [Focus treatment](#focus-treatment) marks the focused pane; a
 pane shows the window’s shared glass toolbar only in its top-right hot
 zone: the toolbar frame plus 24pt to its left and below, clipped to the
 pane. It splits, zooms and closes through the same commands as the menus.
@@ -999,8 +1069,9 @@ the right of the live sidebar glass edge in both docked and floating modes,
 leaving AppKit's own sidebar glass uncovered up to the top of the screen.
 The main window's full-height sidebar already extends under that host. The docked list adds no rounding or outline to AppKit's
 square sidebar; only the floating list has an 18pt radius and hairline
-border. With the sidebar collapsed, the whole band is themed. No private views are mutated or additional glass installed.
-WindowTabs paints no background of its own, preserving the native sidebar shadow.
+border. With the sidebar collapsed, the whole band is themed. No additional glass is installed. AppKit's glass shadow is cleared in both
+modes; the sidebar shadows are the app's own ([Focus treatment](#focus-treatment)).
+WindowTabs paints no background of its own.
 
 Tabs project the current session's top-level windows from the
 feed; descendant windows activate their ancestor tab. The control client's

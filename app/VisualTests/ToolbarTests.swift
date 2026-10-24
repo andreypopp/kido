@@ -216,7 +216,17 @@ import TmuxControl
                     let card = owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root)
                     var parent = owner.sidebar.list.superview
                     while let view = parent, !(view is NSGlassEffectView) { parent = view.superview }
-                    XCTAssertEqual(try XCTUnwrap(parent as? NSGlassEffectView).cornerRadius, 18)
+                    let glass = try XCTUnwrap(parent as? NSGlassEffectView)
+                    XCTAssertEqual(glass.cornerRadius, 18)
+                    let cardImage = try XCTUnwrap(glass.bitmapImageRepForCachingDisplay(in: glass.bounds))
+                    glass.cacheDisplay(in: glass.bounds, to: cardImage)
+                    let cardScale = CGFloat(cardImage.pixelsHigh) / glass.bounds.height
+                    for x in [2.0, glass.bounds.maxX - 2] {
+                        for y in [2.0, glass.bounds.maxY - 2] {
+                            let pixel = try XCTUnwrap(cardImage.colorAt(x: Int(x * cardScale), y: Int(y * cardScale)))
+                            XCTAssertLessThan(pixel.alphaComponent, 0.05, "floating card corners stay transparent without its separate shadow")
+                        }
+                    }
                     for (name, view) in [("windowed", root), ("fullscreen-host", headerContent)] {
                         let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
                         view.cacheDisplay(in: view.bounds, to: image)
@@ -233,9 +243,16 @@ import TmuxControl
                             let color = try XCTUnwrap(image.colorAt(x: Int(local.x * scale), y: Int((view.bounds.maxY - local.y) * scale)))
                             sampled += 1
                             let cornerExpected = name == "fullscreen-host" ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1) : expected
-                            XCTAssertEqual(color.redComponent, cornerExpected.redComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc red")
-                            XCTAssertEqual(color.greenComponent, cornerExpected.greenComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc green")
-                            XCTAssertEqual(color.blueComponent, cornerExpected.blueComponent, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc blue")
+                            for (channel, value, expected) in [("red", color.redComponent, cornerExpected.redComponent),
+                                                               ("green", color.greenComponent, cornerExpected.greenComponent),
+                                                               ("blue", color.blueComponent, cornerExpected.blueComponent)] {
+                                if name == "fullscreen-host" {
+                                    XCTAssertEqual(value, expected, accuracy: 2 / 255, "\(hex) \(name) \(corner) outside floating arc \(channel)")
+                                } else {
+                                    XCTAssertLessThanOrEqual(value, expected + 2 / 255, "\(hex) \(corner) shadow cannot lighten \(channel)")
+                                    XCTAssertGreaterThanOrEqual(value, expected * (hex == "172029" ? 0.6 : 0.82) - 2 / 255, "\(hex) \(corner) bounded floating shadow \(channel)")
+                                }
+                            }
                         }
                         XCTAssertEqual(sampled, name == "windowed" ? 4 : 2)
                     }
@@ -281,9 +298,9 @@ import TmuxControl
                     let y = Int((view.bounds.maxY - rect.midY) * scale)
                     let inside = try XCTUnwrap(image.colorAt(x: x, y: y))
                     let left = try XCTUnwrap(image.colorAt(x: x - 1, y: y))
-                    XCTAssertEqual(inside.redComponent, left.redComponent, accuracy: 6 / (255 * scale), "\(hex) \(name) \(mode) shadow column red continuity")
-                    XCTAssertEqual(inside.greenComponent, left.greenComponent, accuracy: 6 / (255 * scale), "\(hex) \(name) \(mode) shadow column green continuity")
-                    XCTAssertEqual(inside.blueComponent, left.blueComponent, accuracy: 6 / (255 * scale), "\(hex) \(name) \(mode) shadow column blue continuity")
+                    XCTAssertEqual(inside.redComponent * 255, left.redComponent * 255, accuracy: 6 / scale, "\(hex) \(name) \(mode) shadow column red continuity")
+                    XCTAssertEqual(inside.greenComponent * 255, left.greenComponent * 255, accuracy: 6 / scale, "\(hex) \(name) \(mode) shadow column green continuity")
+                    XCTAssertEqual(inside.blueComponent * 255, left.blueComponent * 255, accuracy: 6 / scale, "\(hex) \(name) \(mode) shadow column blue continuity")
                     let outside = try XCTUnwrap(image.colorAt(x: x, y: Int((view.bounds.maxY - rect.minY + 2) * scale)))
                     XCTAssertEqual(inside.redComponent, outside.redComponent, accuracy: 2 / 255, "\(hex) \(name) \(mode) shadow red continuity")
                     XCTAssertEqual(inside.greenComponent, outside.greenComponent, accuracy: 2 / 255, "\(hex) \(name) \(mode) shadow green continuity")
@@ -318,56 +335,72 @@ import TmuxControl
         let notes = directory.appendingPathComponent("notes.log")
         try FileManager.default.createSymbolicLink(at: directory.appendingPathComponent("linked.conf"),
                                                   withDestinationURL: directory.appendingPathComponent("other/theme.conf"))
-        for (text, files, shade, note) in [
-            ("kido-sidebar-shade = -30%", [:], -0.3, nil),
-            ("kido-sidebar-shade = -30", [:], -0.3, nil),
-            ("kido-sidebar-shade = 0", [:], 0, nil),
-            ("kido-sidebar-shade = 100%", [:], 1, nil),
-            ("kido-sidebar-shade = 101", [:], nil, "kido-sidebar-shade: not a percentage from -100 to 100: 101"),
-            ("kido-sidebar-shade = dark", [:], nil, "kido-sidebar-shade: not a percentage from -100 to 100: dark"),
-            ("", [:], nil, nil),
-            ("kido-sidebar-shade = 20%\nkido-sidebar-shade =", [:], nil, nil),
-            ("kido-sidebar-shade = 20%\nkido-sidebar-shade =   ", [:], nil, nil),
-            ("config-file = included.conf", ["included.conf": "kido-sidebar-shade = -30%"], -0.3, nil),
-            ("kido-sidebar-shade = 20%\nconfig-file = ?missing.conf\nconfig-file = ?\"included.conf\"",
-             ["included.conf": "config-file = nested.conf", "nested.conf": "kido-sidebar-shade = \"-30%\""], -0.3, nil),
-            ("kido-sidebar-shade = 20%\nconfig-file = included.conf",
-             ["included.conf": "kido-sidebar-shade ="], nil, nil),
-            ("config-file = included.conf\nconfig-file = sibling.conf",
-             ["included.conf": "kido-sidebar-shade = 10%\nconfig-file = nested.conf",
-              "sibling.conf": "kido-sidebar-shade = 20%",
-              "nested.conf": "kido-sidebar-shade = 30%\nconfig-file = included.conf"], 0.3, nil),
-            ("config-file = linked.conf",
-             ["other/theme.conf": "config-file = child.conf", "other/child.conf": "kido-sidebar-shade = -40%",
-              "child.conf": "kido-sidebar-shade = 50%"], -0.4, nil)
-        ] as [(String, [String: String], Double?, String?)] {
-            try ("background = #172029\nkido-sidebar-shad = 1\n" + text + "\n").write(to: config, atomically: false, encoding: .utf8)
-            for (name, contents) in files {
-                try contents.write(to: directory.appendingPathComponent(name), atomically: false, encoding: .utf8)
+        for (key, field, fallback, diagnostic) in [
+            ("kido-sidebar-shade", \GhosttyRuntime.KidoSettings.sidebarShade, 0.05, "kido-sidebar-shade: not a percentage from -100 to 100: "),
+            ("kido-unfocused-background-shift", \GhosttyRuntime.KidoSettings.unfocusedShift, 0.03, "kido-unfocused-background-shift: not a percentage from -100 to 100: ")
+        ] {
+            for (text, files, shade, note) in [
+                ("kido-sidebar-shade = 30%", [:], 0.3, nil),
+                ("kido-sidebar-shade = 30", [:], 0.3, nil),
+                ("kido-sidebar-shade = 0", [:], 0, nil),
+                ("kido-sidebar-shade = -0", [:], 0, nil),
+                ("kido-sidebar-shade = -100", [:], 1, nil),
+                ("kido-sidebar-shade = \"\"", [:], nil, nil),
+                ("kido-sidebar-shade = 20%\nkido-sidebar-shade = 40%", [:], 0.4, nil),
+                ("kido-sidebar-shade =   \" 30.5% \"  ", [:], 0.305, nil),
+                ("kido-sidebar-shade = +30", [:], nil, "+30"),
+                ("kido-sidebar-shade = 1e1", [:], nil, "1e1"),
+                ("kido-sidebar-shade = 0x1p4", [:], nil, "0x1p4"),
+                ("kido-sidebar-shade = 100%", [:], 1, nil),
+                ("kido-sidebar-shade = 101", [:], nil, "101"),
+                ("kido-sidebar-shade = -10%", [:], 0.1, nil),
+                ("kido-sidebar-shade = -101", [:], nil, "-101"),
+                ("kido-sidebar-shade = dark", [:], nil, "dark"),
+                ("", [:], nil, nil),
+                ("kido-sidebar-shade = 20%\nkido-sidebar-shade =", [:], nil, nil),
+                ("kido-sidebar-shade = 20%\nkido-sidebar-shade =   ", [:], nil, nil),
+                ("config-file = included.conf", ["included.conf": "kido-sidebar-shade = 30%"], 0.3, nil),
+                ("kido-sidebar-shade = 20%\nconfig-file = ?missing.conf\nconfig-file = ?\"included.conf\"",
+                 ["included.conf": "config-file = nested.conf", "nested.conf": "kido-sidebar-shade = \"30%\""], 0.3, nil),
+                ("kido-sidebar-shade = 20%\nconfig-file = included.conf",
+                 ["included.conf": "kido-sidebar-shade ="], nil, nil),
+                ("config-file = included.conf\nconfig-file = sibling.conf",
+                 ["included.conf": "kido-sidebar-shade = 10%\nconfig-file = nested.conf",
+                  "sibling.conf": "kido-sidebar-shade = 20%",
+                  "nested.conf": "kido-sidebar-shade = 30%\nconfig-file = included.conf"], 0.3, nil),
+                ("config-file = linked.conf",
+                 ["other/theme.conf": "config-file = child.conf", "other/child.conf": "kido-sidebar-shade = 40%",
+                  "child.conf": "kido-sidebar-shade = 50%"], 0.4, nil)
+            ] as [(String, [String: String], Double?, String?)] {
+                let text = text.replacingOccurrences(of: "kido-sidebar-shade", with: key)
+                try ("background = #172029\nkido-sidebar-shad = 1\n" + text + "\n").write(to: config, atomically: false, encoding: .utf8)
+                for (name, contents) in files {
+                    try contents.replacingOccurrences(of: "kido-sidebar-shade", with: key).write(to: directory.appendingPathComponent(name), atomically: false, encoding: .utf8)
+                }
+                FileManager.default.createFile(atPath: notes.path, contents: nil)
+                let log = try FileHandle(forWritingTo: notes)
+                let saved = dup(STDERR_FILENO)
+                dup2(log.fileDescriptor, STDERR_FILENO)
+                let loaded = GhosttyRuntime.loadConfig(file: config.path)
+                dup2(saved, STDERR_FILENO)
+                close(saved)
+                try log.close()
+                let parsed = try XCTUnwrap(loaded)
+                ghostty_config_free(parsed.config)
+                XCTAssertEqual(parsed.settings[keyPath: field], shade ?? fallback, text)
+                let lines = try String(contentsOf: notes, encoding: .utf8).split(separator: "\n")
+                XCTAssertFalse(lines.contains { $0.contains("\(key): unknown field") }, "\(text): \(lines)")
+                XCTAssertTrue(lines.contains { $0.contains("kido-sidebar-shad: unknown field") }, text)
+                XCTAssertEqual(lines.contains { $0.contains("not a percentage") }, note != nil, text)
+                if let note { XCTAssertTrue(lines.contains { $0.hasSuffix(diagnostic + note) }, text) }
             }
-            FileManager.default.createFile(atPath: notes.path, contents: nil)
-            let log = try FileHandle(forWritingTo: notes)
-            let saved = dup(STDERR_FILENO)
-            dup2(log.fileDescriptor, STDERR_FILENO)
-            let loaded = GhosttyRuntime.loadConfig(file: config.path)
-            dup2(saved, STDERR_FILENO)
-            close(saved)
-            try log.close()
-            let parsed = try XCTUnwrap(loaded)
-            ghostty_config_free(parsed.config)
-            XCTAssertEqual(parsed.shade, shade, text)
-            let lines = try String(contentsOf: notes, encoding: .utf8).split(separator: "\n")
-            XCTAssertFalse(lines.contains { $0.contains("kido-sidebar-shade: unknown field") }, "\(text): \(lines)")
-            XCTAssertTrue(lines.contains { $0.contains("kido-sidebar-shad: unknown field") }, text)
-            XCTAssertEqual(lines.contains { $0.contains("not a percentage") }, note != nil, text)
-            if let note { XCTAssertTrue(lines.contains { $0.hasSuffix(note) }, text) }
         }
 
         let fixture = try sidebarFixture()
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
         defer { SidebarView.visualNow = nil }
         for hex in ["fffaf0", "172029"] {
-            for value in [nil, "-30%", "20%"] as [String?] {
+            for value in [nil, "30%", "20%"] as [String?] {
                 try ("background = #\(hex)\n" + (value.map { "kido-sidebar-shade = \($0)\n" } ?? "")).write(to: config, atomically: true, encoding: .utf8)
                 let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
                 let owner = WindowOwner(host: .local, runtime: runtime, start: false)
@@ -375,11 +408,16 @@ import TmuxControl
                 let list = owner.sidebar.list
                 list.update(.running(fixture))
                 let root = try XCTUnwrap(owner.window.contentView?.superview)
-                let background = try XCTUnwrap(runtime.background.usingColorSpace(.sRGB))
-                let shade = runtime.sidebarShade ?? (hex == "fffaf0" ? -0.05 : 0.05)
-                let amount = abs(shade), white = shade > 0 ? amount : 0
-                let channels = [background.redComponent, background.greenComponent, background.blueComponent].map { $0 * (1 - amount) + white }
-                let expected = NSColor(srgbRed: channels[0], green: channels[1], blue: channels[2], alpha: 1)
+                let channels: [Double]
+                switch (hex, value) {
+                case ("fffaf0", nil): channels = [242.25, 237.5, 228]
+                case ("fffaf0", "30%"): channels = [178.5, 175, 168]
+                case ("fffaf0", _): channels = [204, 200, 192]
+                case (_, nil): channels = [34.6, 43.15, 51.7]
+                case (_, "30%"): channels = [92.6, 98.9, 105.2]
+                default: channels = [69.4, 76.6, 83.8]
+                }
+                let expected = NSColor(srgbRed: channels[0] / 255, green: channels[1] / 255, blue: channels[2] / 255, alpha: 1)
                 XCTAssertEqual(list.layer?.backgroundColor.flatMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB) }, expected, "\(hex) \(value ?? "unset")")
                 guard let value else { continue }
                 for mode in ["docked", "floating"] {
@@ -402,7 +440,7 @@ import TmuxControl
                     let image = NSImage(size: rect.size)
                     image.addRepresentation(bitmap)
                     let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                    if let failure = verifySnapshot(of: image, as: .image, named: "\(hex)-\(value == "-30%" ? "darker" : "lighter")-\(mode)", record: record),
+                    if let failure = verifySnapshot(of: image, as: .image, named: "\(hex)-\(value == "30%" ? "darker" : "lighter")-\(mode)", record: record),
                        !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 }
             }
@@ -419,7 +457,7 @@ import TmuxControl
         let board = NSPasteboard(name: .init("live-config-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file.path, pasteboard: board))
-        XCTAssertNil(runtime.sidebarShade)
+        XCTAssertEqual(runtime.settings.sidebarShade, 0.05)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         defer { runtime.onConfigChange = {}; owner.close() }
         func reload(_ edit: () throws -> Void) async throws {
@@ -428,22 +466,24 @@ import TmuxControl
             try edit()
             await fulfillment(of: [changed], timeout: 0.3)
         }
-        for (text, shade, atomic) in [("kido-sidebar-shade = -30%\nbackground = #172029\n", -0.3, false),
+        for (text, shade, atomic) in [("kido-sidebar-shade = 30%\nbackground = #172029\n", 0.3, false),
                                       ("kido-sidebar-shade = 20%\nbackground = #fffaf0\n", 0.2, true),
                                       ("kido-sidebar-shade = 40%\n", 0.4, false),
-                                      ("background = #172029\n", nil, false),
-                                      ("kido-sidebar-shade =\n", nil, false),
-                                      ("kido-sidebar-shade = bad\n", nil, false),
-                                      ("background = #fefaf1\n", nil, false),
-                                      ("background = #192028\n", nil, false),
-                                      ("background = #fff9ec\n", nil, false),
-                                      ("background = #171717\n", nil, false),
-                                      (nil, nil, false)] as [(String?, Double?, Bool)] {
+                                      ("background = #172029\n", 0.05, false),
+                                      ("kido-sidebar-shade =\n", 0.05, false),
+                                      ("kido-sidebar-shade = bad\n", 0.05, false),
+                                      ("kido-sidebar-shade = -10%\nbackground = #171717\n", 0.1, false),
+                                      ("kido-sidebar-shade = 40%\nbackground = #171717\n", 0.4, false),
+                                      ("background = #fefaf1\n", 0.05, false),
+                                      ("background = #192028\n", 0.05, false),
+                                      ("background = #fff9ec\n", 0.05, false),
+                                      ("background = #171717\n", 0.05, false),
+                                      (nil, 0.05, false)] as [(String?, Double, Bool)] {
             try await reload {
                 if let text { try text.write(to: file, atomically: atomic, encoding: .utf8) }
                 else { try FileManager.default.removeItem(at: file) }
             }
-            XCTAssertEqual(runtime.sidebarShade, shade)
+            XCTAssertEqual(runtime.settings.sidebarShade, shade)
             owner.sidebar.viewDidLayout()
             XCTAssertEqual(owner.sidebar.list.layer?.backgroundColor, owner.sidebar.listBackground?.cgColor)
             if let text, let expected = ["background = #fefaf1\n": [241.3, 237.5, 228.95], "background = #192028\n": [36.5, 43.15, 50.75],
@@ -453,19 +493,23 @@ import TmuxControl
                     XCTAssertEqual(actual, target / 255, accuracy: 0.000001)
                 }
             }
+            if text == "kido-sidebar-shade = 40%\nbackground = #171717\n" {
+                let color = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
+                XCTAssertEqual([color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }, [116, 116, 116])
+            }
             if text?.contains("#fffaf0") == true { XCTAssertEqual(owner.window.appearance?.name, .aqua) }
             if text?.contains("#172029") == true { XCTAssertEqual(owner.window.appearance?.name, .darkAqua) }
         }
         try await reload { try "config-file = included.conf\n".write(to: file, atomically: false, encoding: .utf8) }
         try await reload {
-            try "kido-sidebar-shade = -70%\n".write(to: included, atomically: false, encoding: .utf8)
+            try "kido-sidebar-shade = 70%\n".write(to: included, atomically: false, encoding: .utf8)
             var action = ghostty_action_s()
             action.tag = GHOSTTY_ACTION_RELOAD_CONFIG
             var target = ghostty_target_s()
             target.tag = GHOSTTY_TARGET_APP
             XCTAssertTrue(GhosttyRuntime.action(runtime.app, target, action))
         }
-        XCTAssertEqual(runtime.sidebarShade, -0.7)
+        XCTAssertEqual(runtime.settings.sidebarShade, 0.7)
         let events = runtime.visualWatchEvents, scheduled = runtime.visualReloadsScheduled
         try "swap".write(to: directory.appendingPathComponent("kido.conf"), atomically: true, encoding: .utf8)
         try await wait("unrelated directory event handled", within: 0.3) { runtime.visualWatchEvents > events }
@@ -475,17 +519,22 @@ import TmuxControl
         for name in [NSAppearance.Name.darkAqua, .aqua] {
             try await reload { NSApp.appearance = NSAppearance(named: name) }
             XCTAssertEqual(owner.window.appearance?.name, name)
-            XCTAssertEqual(runtime.sidebarShade, -0.7)
+            XCTAssertEqual(runtime.settings.sidebarShade, 0.7)
             let actual = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-            XCTAssertEqual(actual.redComponent, runtime.background.redComponent * 0.3, accuracy: 0.000001)
+            let expected = name == .darkAqua ? [185.4, 185.4, 185.4] : [76.5, 74.7, 70.8]
+            for (channel, target) in zip([actual.redComponent, actual.greenComponent, actual.blueComponent], expected) {
+                XCTAssertEqual(channel, target / 255, accuracy: 0.000001)
+            }
         }
         try await reload { try FileManager.default.removeItem(at: file) }
         for name in [NSAppearance.Name.darkAqua, .aqua] {
             try await reload { NSApp.appearance = NSAppearance(named: name) }
-            XCTAssertNil(runtime.sidebarShade)
+            XCTAssertEqual(runtime.settings.sidebarShade, 0.05)
             let actual = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-            let expected = runtime.background.redComponent * 0.95 + (name == .darkAqua ? 0.05 : 0)
-            XCTAssertEqual(actual.redComponent, expected, accuracy: 0.000001)
+            let expected = name == .darkAqua ? [34.6, 34.6, 34.6] : [242.25, 236.55, 224.2]
+            for (channel, target) in zip([actual.redComponent, actual.greenComponent, actual.blueComponent], expected) {
+                XCTAssertEqual(channel, target / 255, accuracy: 0.000001)
+            }
         }
     }
 
@@ -508,11 +557,11 @@ import TmuxControl
             await fulfillment(of: [changed], timeout: 0.3)
         }
         try await reload { try FileManager.default.moveItem(at: target, to: targetDirectory.appendingPathComponent("old.conf")) }
-        XCTAssertNil(runtime.sidebarShade)
-        try await reload { try "kido-sidebar-shade = -30%\n".write(to: target, atomically: false, encoding: .utf8) }
-        XCTAssertEqual(runtime.sidebarShade, -0.3)
+        XCTAssertEqual(runtime.settings.sidebarShade, 0.05)
+        try await reload { try "kido-sidebar-shade = 30%\n".write(to: target, atomically: false, encoding: .utf8) }
+        XCTAssertEqual(runtime.settings.sidebarShade, 0.3)
         try await reload { try "kido-sidebar-shade = 40%\n".write(to: target, atomically: false, encoding: .utf8) }
-        XCTAssertEqual(runtime.sidebarShade, 0.4)
+        XCTAssertEqual(runtime.settings.sidebarShade, 0.4)
         runtime.onConfigChange = {}
     }
 
@@ -527,15 +576,15 @@ import TmuxControl
         let changed = expectation(description: "directory and config created")
         runtime.onConfigChange = { changed.fulfill() }
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "kido-sidebar-shade = -30%\n".write(to: file, atomically: false, encoding: .utf8)
+        try "kido-sidebar-shade = 30%\n".write(to: file, atomically: false, encoding: .utf8)
         await fulfillment(of: [changed], timeout: 0.3)
-        XCTAssertEqual(runtime.sidebarShade, -0.3)
+        XCTAssertEqual(runtime.settings.sidebarShade, 0.3)
         runtime.onConfigChange = {}
     }
 
-    func testSidebarContrastPlus100() async throws { try await sidebarContrast(hex: "172029", value: "100%", appearance: .aqua) }
-    func testSidebarContrastMinus100() async throws { try await sidebarContrast(hex: "fffaf0", value: "-100%", appearance: .darkAqua) }
-    func testSidebarContrastMinus60() async throws { try await sidebarContrast(hex: "fffaf0", value: "-60%", appearance: .darkAqua) }
+    func testSidebarContrastDark100() async throws { try await sidebarContrast(hex: "172029", value: "100%", appearance: .aqua) }
+    func testSidebarContrastLight100() async throws { try await sidebarContrast(hex: "fffaf0", value: "100%", appearance: .darkAqua) }
+    func testSidebarContrastLight60() async throws { try await sidebarContrast(hex: "fffaf0", value: "60%", appearance: .darkAqua) }
 
     func testSidebarDefaultLight() async throws { try await sidebarContrast(hex: "fff9ec", value: nil, appearance: .aqua) }
     func testSidebarDefaultDark() async throws { try await sidebarContrast(hex: "171717", value: nil, appearance: .darkAqua) }
