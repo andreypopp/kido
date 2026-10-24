@@ -300,12 +300,67 @@ from the app; its menus and Ghostty's split and tab actions stand in.
 Ghostty's configuration is `kido-app.conf` beside `kido.conf`
 (`$XDG_CONFIG_HOME/kido/`, else `~/.config/kido/`), in Ghostty's syntax,
 and Ghostty's own config files are not read; `config-file =
-~/.config/ghostty/config` there shares them. It is read once at launch,
-over built-in light and dark themes that follow the macOS appearance
-and switch live on existing panes. The file overrides these defaults,
-including the theme, background and non-blinking cursor. The window
-and pane chrome follow the effective Ghostty background and its light
-or dark appearance.
+~/.config/ghostty/config` there shares them. It is read over built-in
+light and dark themes that follow the macOS appearance and switch live
+on existing panes. The file overrides these defaults, including the
+theme, background and non-blinking cursor. The window and pane chrome
+follow the effective Ghostty background and its light or dark
+appearance.
+
+The sidebar list's background is a shade of the terminal background.
+The default is -5% on a light terminal background and +5% on a dark
+one, with the same light or dark decision as the window appearance.
+Thus the default follows each reload and each live theme switch.
+`kido-sidebar-shade = <percent>` is the app's own key
+in that file. Ghostty does not know it, and its unknown-field
+diagnostic is hidden for this key only. The value is -100 to 100, with
+or without `%` and optionally in double quotes. A negative value mixes
+the terminal background with black, and a positive value mixes it
+with white, per sRGB component (as CSS `color-mix(in srgb, ...)`).
+`NSColor.blended` is not used: it mixes in generic RGB and gives a
+different colour. An absent key and an empty value (`kido-sidebar-shade =`,
+Ghostty's reset syntax) give the default. An invalid value gives a note
+on stderr and the default. An explicit value applies as given on light
+and dark themes. AppKit's sidebar glass is not shown. The
+app reads the key from the same files as Ghostty: the main file, then
+its `config-file` includes in Ghostty's breadth-first order, with
+relative paths, `~/`, optional `?` paths and cycles resolved as Ghostty
+resolves them. The last value wins.
+
+The sidebar has its own light or dark appearance, from the relative
+luminance L of its shade colour: dark (light text) when L < 0.179,
+else light (dark text). At 0.179, white text and black text have the
+same contrast ratio on that colour. Thus every value in the range stays
+readable, also +100% on a dark theme and -100% or -60% on a light
+theme. The appearance applies to the sidebar subtree: the list, its
+rows, marks and focused-row fill, and the sidebar's toolbar controls
+while the sidebar is shown. The rest of the window, and the toolbar
+controls of a collapsed sidebar, follow the terminal background. The sidebar's
+colours resolve at draw time from the sidebar's appearance, so a reload
+that changes the appearance redraws them.
+
+The file reloads live, with no polling. The app watches the file and
+its directory, so a save in place, a save by atomic rename, and the
+creation or deletion of the file all cause a reload. A deleted file
+gives the built-in defaults. If the directory does not exist, the app
+watches the nearest existing ancestor until the directory appears. If
+the file is a symlink, the app also watches the directory of its
+target. A change to another file in a watched directory does not cause
+a reload. A burst of events gives one reload. Each reload reads the included files
+again, but the app does not watch them: a change to an include has no
+automatic reload. Ghostty's reload action for the app also reads the
+file and its includes again.
+
+Launch and reload build the config in the same way, and a reload prints
+its diagnostics to stderr as at launch. If Ghostty's part of the config
+is different, a reload applies the new config to each live pane inside
+`PaneView.reflow`, so that a font change
+resizes the pane and its tmux grid. A change to only the shade does not
+reflow the panes, so it does not end copy mode or resync a pane. The
+app gets the config without surface propagation. `PaneView.reflow` can
+delay its change while a pane replays, so the delayed change reads the
+current config of the app. The chrome of every window then follows the new
+background and appearance.
 
 A pane is synced by one command line: its captures, pending parser
 bytes and mode state. tmux queues `%output` ahead of the reply, so
