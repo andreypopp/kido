@@ -7,7 +7,24 @@ import GhosttyKit
     private(set) var config: ghostty_config_t
     private var appearance: NSKeyValueObservation?
     let pasteboard: NSPasteboard
-    let sidebarShade: Double?
+    let configFile: String
+    private(set) var sidebarShade: Double?
+    private var watches: [String: DispatchSourceFileSystemObject] = [:]
+    private var reloadWork: DispatchWorkItem?
+    private struct FileStat: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        let seconds: Int
+        let nanoseconds: Int
+        let size: off_t
+    }
+    private static func fileStat(_ path: String) -> FileStat? {
+        var value = stat()
+        guard stat(path, &value) == 0 else { return nil }
+        return FileStat(device: value.st_dev, inode: value.st_ino, seconds: value.st_mtimespec.tv_sec,
+                        nanoseconds: value.st_mtimespec.tv_nsec, size: value.st_size)
+    }
+    private var loadedStat: FileStat?
     nonisolated private static func protectClipboard(_ config: ghostty_config_t) {
         var access: UnsafePointer<CChar>?
         let key = "clipboard-read"
@@ -16,6 +33,7 @@ import GhosttyKit
         ghostty_config_load_string(config, policy, UInt(policy.utf8.count), "/kido-clipboard")
     }
     var onConfigChange: () -> Void = {}
+    var onConfigReload: () -> Void = {}
     var onColorSchemeChange: () -> Void = {}
 
     var colorScheme: ghostty_color_scheme_e {
@@ -24,6 +42,8 @@ import GhosttyKit
     }
     nonisolated private let ticking = OSAllocatedUnfairLock(initialState: false)
     #if KIDO_VISUAL
+    var visualWatchEvents = 0
+    var visualReloadsScheduled = 0
     nonisolated private let wakeups = OSAllocatedUnfairLock(initialState: 0)
     nonisolated var visualWakeups: Int { wakeups.withLock { $0 } }
     #endif
@@ -41,35 +61,13 @@ import GhosttyKit
 
     init?(configFile: String? = nil, pasteboard: NSPasteboard) {
         self.pasteboard = pasteboard
-        guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS,
-              let config = ghostty_config_new() else { return nil }
-        let themes = Bundle.main.resourceURL!.appendingPathComponent("themes").path
-        let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\nalpha-blending = linear\nscrollback-limit = 536870912\nkeybind = super+k=unbind\nkeybind = super+j=unbind\nkeybind = super+s=unbind\nkeybind = super+shift+s=unbind\n"
-        ghostty_config_load_string(config, defaults, UInt(defaults.utf8.count), "/kido-defaults")
+        guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else { return nil }
         let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
-        let file = configFile ?? (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
-        if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
-        ghostty_config_load_recursive_files(config)
-        let sidebarKey = "kido-sidebar-shade"
-        let sidebarValue = ((try? String(contentsOfFile: file, encoding: .utf8)) ?? "").split(whereSeparator: \.isNewline).compactMap { line -> String? in
-            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            return parts.count == 2 && parts[0] == sidebarKey ? parts[1] : nil
-        }.last
-        sidebarShade = sidebarValue.flatMap { value in
-            guard let percent = Double(value.hasSuffix("%") ? String(value.dropLast()) : value), (-100...100).contains(percent)
-            else { note("\(sidebarKey): not a percentage from -100 to 100: \(value)"); return nil }
-            return percent / 100
-        }
-        let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
-        ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
-        ghostty_config_finalize(config)
-        Self.protectClipboard(config)
-        for i in 0..<ghostty_config_diagnostics_count(config) {
-            let message = String(cString: ghostty_config_get_diagnostic(config, i).message)
-            if message == "\(sidebarKey): unknown field" || message.hasSuffix(":\(sidebarKey): unknown field") { continue }
-            note("ghostty config: \(message)")
-        }
-        self.config = config
+        self.configFile = configFile ?? (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
+        self.loadedStat = Self.fileStat(self.configFile)
+        guard let loaded = Self.loadConfig(file: self.configFile) else { return nil }
+        self.config = loaded.config
+        self.sidebarShade = loaded.shade
 
         var runtime = ghostty_runtime_config_s(
             userdata: Unmanaged.passUnretained(self).toOpaque(),
@@ -165,6 +163,145 @@ import GhosttyKit
         ) { _ in
             ghostty_app_keyboard_changed(app)
         }
+        refreshWatches()
+    }
+
+    static func loadConfig(file: String) -> (config: ghostty_config_t, shade: Double?)? {
+        guard let config = ghostty_config_new() else { return nil }
+        let themes = Bundle.main.resourceURL!.appendingPathComponent("themes").path
+        let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\nalpha-blending = linear\nscrollback-limit = 536870912\nkeybind = super+k=unbind\nkeybind = super+j=unbind\nkeybind = super+s=unbind\nkeybind = super+shift+s=unbind\n"
+        ghostty_config_load_string(config, defaults, UInt(defaults.utf8.count), "/kido-defaults")
+        if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
+        ghostty_config_load_recursive_files(config)
+        let sidebarKey = "kido-sidebar-shade"
+        var sidebarValue: String?
+        var files: [String] = []
+        func readShade(_ path: String) {
+            guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+            for line in text.split(whereSeparator: \.isNewline) {
+                let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                guard parts.count == 2 else { continue }
+                var value = parts[1]
+                if parts[0] == sidebarKey {
+                    if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
+                    sidebarValue = value.isEmpty ? nil : value
+                }
+                if parts[0] == "config-file" {
+                    if value.isEmpty { files.removeAll(); continue }
+                    if value.first == "?" { value.removeFirst() }
+                    if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
+                    if value.isEmpty { continue }
+                    if value.hasPrefix("~/") { value = NSHomeDirectory() + value.dropFirst() }
+                    if !value.hasPrefix("/") {
+                        value = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(value).path
+                        if let resolved = realpath(value, nil) {
+                            value = String(cString: resolved)
+                            free(resolved)
+                        } else { value = URL(fileURLWithPath: value).standardized.path }
+                    }
+                    files.append(value)
+                }
+            }
+        }
+        readShade(file)
+        var loaded = Set<String>()
+        var index = 0
+        while index < files.count {
+            let path = files[index]
+            if loaded.insert(path).inserted { readShade(path) }
+            index += 1
+        }
+        let shade = sidebarValue.flatMap { value -> Double? in
+            guard let percent = Double(value.hasSuffix("%") ? String(value.dropLast()) : value), (-100...100).contains(percent)
+            else { note("\(sidebarKey): not a percentage from -100 to 100: \(value)"); return nil }
+            return percent / 100
+        }
+        let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
+        ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
+        ghostty_config_finalize(config)
+        protectClipboard(config)
+        for i in 0..<ghostty_config_diagnostics_count(config) {
+            let message = String(cString: ghostty_config_get_diagnostic(config, i).message)
+            if message == "\(sidebarKey): unknown field" || message.hasSuffix(":\(sidebarKey): unknown field") { continue }
+            note("ghostty config: \(message)")
+        }
+        return (config, shade)
+    }
+
+    private func reloadConfig() {
+        loadedStat = Self.fileStat(configFile)
+        guard let loaded = Self.loadConfig(file: configFile) else { return }
+        let old = ghostty_config_serialize(config)
+        let new = ghostty_config_serialize(loaded.config)
+        let changed = Data(UnsafeRawBufferPointer(start: old.ptr, count: Int(old.len))) != Data(UnsafeRawBufferPointer(start: new.ptr, count: Int(new.len)))
+        ghostty_string_free(old)
+        ghostty_string_free(new)
+        sidebarShade = loaded.shade
+        ghostty_app_update_config_without_surface_propagation(app, loaded.config)
+        ghostty_config_free(loaded.config)
+        if changed { DispatchQueue.main.async { [weak self] in self?.onConfigReload() } }
+    }
+
+    private func refreshWatches() {
+        var paths: Set<String> = [configFile]
+        var resolved = configFile
+        if let target = try? FileManager.default.destinationOfSymbolicLink(atPath: configFile) {
+            resolved = target.hasPrefix("/") ? target : URL(fileURLWithPath: configFile).deletingLastPathComponent().appendingPathComponent(target).path
+        }
+        resolved = URL(fileURLWithPath: resolved).resolvingSymlinksInPath().path
+        for path in [configFile, resolved] {
+            var target = URL(fileURLWithPath: path).deletingLastPathComponent()
+            while !FileManager.default.fileExists(atPath: target.path), target.pathComponents.count > 1 {
+                target.deleteLastPathComponent()
+            }
+            paths.insert(target.path)
+        }
+        for path in watches.keys where !paths.contains(path) {
+            watches.removeValue(forKey: path)?.cancel()
+        }
+        for path in paths where watches[path] == nil { watch(path) }
+    }
+
+    private func watch(_ path: String) {
+        let fd = open(path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd, eventMask: [.write, .delete, .rename], queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                #if KIDO_VISUAL
+                self.visualWatchEvents += 1
+                #endif
+                let events = self.watches[path]?.data ?? []
+                if events.contains(.delete) || events.contains(.rename) {
+                    self.watches.removeValue(forKey: path)?.cancel()
+                }
+                let changed = Self.fileStat(self.configFile) != self.loadedStat
+                if changed, path != self.configFile { self.watches.removeValue(forKey: self.configFile)?.cancel() }
+                self.refreshWatches()
+                if changed { self.scheduleReload() }
+            }
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        watches[path] = source
+    }
+
+    private func scheduleReload() {
+        #if KIDO_VISUAL
+        visualReloadsScheduled += 1
+        #endif
+        reloadWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reloadConfig() }
+        reloadWork = work
+        #if KIDO_VISUAL
+        let delay = 0.02
+        #else
+        let delay = 0.1
+        #endif
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     var background: NSColor { color("background") }
@@ -176,7 +313,13 @@ import GhosttyKit
         return NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1)
     }
 
-    deinit { MainActor.assumeIsolated { ghostty_config_free(config) } }
+    deinit {
+        MainActor.assumeIsolated {
+            watches.values.forEach { $0.cancel() }
+            reloadWork?.cancel()
+            ghostty_config_free(config)
+        }
+    }
 
     nonisolated static func action(_ app: ghostty_app_t, _ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
         let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(ghostty_app_userdata(app)!).takeUnretainedValue()
@@ -194,10 +337,10 @@ import GhosttyKit
         }
         if action.tag == GHOSTTY_ACTION_RELOAD_CONFIG {
             if target.tag == GHOSTTY_TARGET_APP {
-                DispatchQueue.main.async { ghostty_app_update_config_without_surface_propagation(runtime.app, runtime.config) }
+                DispatchQueue.main.async { runtime.reloadConfig() }
             } else if let surface = target.target.surface {
                 PaneView.onMain(ghostty_surface_userdata(surface)) { pane in
-                    pane.reflow { ghostty_surface_update_config(pane.surface, runtime.config) }
+                    pane.reloadConfig()
                 }
             }
             return true
