@@ -105,6 +105,7 @@ private class AlertEscape: NSView {
     private var completing = false
     var request: RPCRequestHandler = Feed.unavailable
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
+    private(set) var palette: Palette?
 
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
     private static let seenChanged = Notification.Name("KidoSeenChanged")
@@ -264,6 +265,8 @@ private class AlertEscape: NSView {
             guard let self else { return }
             sidebar.updateFocusEdge()
             session?.windows.values.filter { !$0.isHidden }.forEach { $0.updateFocusTreatment() }
+            // NSTextField's setFrameSize ends and restarts editing, which briefly makes the window first responder.
+            if let palette, next !== window, !((next as? NSView)?.isDescendant(of: palette) ?? false) { closePalette(restoring: nil) }
             if let view = next as? NSView,
                let box = session?.boxes.boxes.first(where: { $0 === view || view.isDescendant(of: $0) }) {
                 session?.boxes.raise(box)
@@ -897,6 +900,35 @@ private class AlertEscape: NSView {
         alert.addButton(withTitle: "Close").keyEquivalent = "\r"
         alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
         prepareAlert(alert) { response in if response == .alertFirstButtonReturn { close() } }
+    }
+
+    func togglePalette() {
+        guard palette == nil else { return closePalette(restoring: nil) }
+        let previous = window.firstResponder
+        let palette = Palette(runtime: runtime, entries: PaletteEntry.panes(snapshot, seen: seen.value) + (NSApp.mainMenu.map { PaletteEntry.commands($0) } ?? []))
+        palette.frame = sidebar.content.bounds
+        palette.dismiss = { [weak self] in self?.closePalette(restoring: previous) }
+        palette.run = { [weak self] action in
+            guard let self else { return }
+            closePalette(restoring: previous)
+            switch action {
+            case .request(let request): perform(request)
+            case .menu(let item): if let selector = item.action { NSApp.sendAction(selector, to: item.target, from: item) }
+            }
+        }
+        self.palette = palette
+        sidebar.content.addSubview(palette)
+        palette.layoutSubtreeIfNeeded()
+        window.makeFirstResponder(palette.field)
+    }
+
+    private func closePalette(restoring previous: NSResponder?) {
+        guard let palette else { return }
+        self.palette = nil
+        palette.field.abortEditing()
+        palette.removeFromSuperview()
+        if let view = previous as? NSView, view.window === window { window.makeFirstResponder(view) }
+        else if previous != nil { focusSelected() }
     }
 
     func perform(_ request: RPCRequest) {
