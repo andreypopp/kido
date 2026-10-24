@@ -61,10 +61,10 @@ import XCTest
         }
         XCTAssertEqual(poster.badgeCount, 0)
         owner.testAttended = false
-        try tty.write(contentsOf: Data("\u{1b}]133;A\u{7}\u{1b}]133;C;cmdline=make\u{7}\u{1b}]133;D;2\u{7}".utf8))
+        try tty.write(contentsOf: Data("\u{1b}]133;A\u{7}\u{1b}]133;C;cmdline_url=make\u{7}\u{1b}]133;D;2\u{7}".utf8))
         try await wait("command failure posts") { poster.posts.count == postsBefore + 2 }
         XCTAssertEqual(poster.posts.last?.body, "Exit 2: make")
-        try tty.write(contentsOf: Data("\u{1b}]133;C;cmdline=cancel\u{7}\u{1b}]133;D;130\u{7}".utf8))
+        try tty.write(contentsOf: Data("\u{1b}]133;C;cmdline_url=cancel\u{7}\u{1b}]133;D;130\u{7}".utf8))
         try await wait("interrupted command observed") {
             var nodes = owner.snapshot?.sessions.flatMap(\.nodes) ?? []
             while let node = nodes.popLast() {
