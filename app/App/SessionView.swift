@@ -50,6 +50,8 @@ final class SessionView: NSView {
         for view in others.values { view.updateBackground() }
     }
 
+    func reloadConfig() { forEachPane { $0.reloadConfig() } }
+
     func updateColorScheme() {
         forEachPane { ghostty_surface_set_color_scheme($0.surface, runtime.colorScheme) }
     }
