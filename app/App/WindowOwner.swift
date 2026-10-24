@@ -262,6 +262,8 @@ private class AlertEscape: NSView {
         sidebar.focusTerminal = { [weak self] in self?.focusSelected() }
         (window as? OwnerWindow)?.focusChanged = { [weak self] old, next in
             guard let self else { return }
+            sidebar.updateFocusEdge()
+            session?.windows.values.filter { !$0.isHidden }.forEach { $0.updateFocusTreatment() }
             if let view = next as? NSView,
                let box = session?.boxes.boxes.first(where: { $0 === view || view.isDescendant(of: $0) }) {
                 session?.boxes.raise(box)
@@ -290,24 +292,10 @@ private class AlertEscape: NSView {
             view.layer?.backgroundColor = background.cgColor
         }
         banner?.background = background
-        func luminance(_ color: NSColor) -> Double {
-            let rgb = color.usingColorSpace(.sRGB)!
-            let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
-                $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
-            }
-            return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
-        }
-        let dark = luminance(background) < 0.5
+        let dark = background.isDark
         let theme = (background: background, appearance: NSAppearance(named: dark ? .darkAqua : .aqua))
         window.appearance = theme.appearance
-        sidebar.tabs.theme = theme
-        let rgb = background.usingColorSpace(.sRGB)!
-        let value = runtime.sidebarShade ?? (dark ? 0.05 : -0.05)
-        let amount = abs(value), white = value > 0 ? amount : 0
-        let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map { $0 * (1 - amount) + white }
-        let shade = NSColor(srgbRed: channels[0], green: channels[1], blue: channels[2], alpha: 1)
-        sidebar.listBackground = shade
-        sidebar.list.appearance = NSAppearance(named: luminance(shade) < 0.179 ? .darkAqua : .aqua)
+        sidebar.updateAppearance(runtime: runtime)
         session?.updateBackground()
     }
 
@@ -731,6 +719,7 @@ private class AlertEscape: NSView {
         do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
         note("dialing \(server.socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
         let view = SessionView(runtime: runtime)
+        view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
         view.boxes.request = request
         view.onPaneChange = { [weak self] in
