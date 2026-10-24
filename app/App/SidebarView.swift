@@ -182,18 +182,19 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         statusLine.lineBreakMode = .byTruncatingTail
         statusLine.maximumNumberOfLines = 1
         for view in [scroll, statusLine] { addSubview(view) }
-        updateAppearance()
+        wantsLayer = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        updateAppearance()
+        needsDisplay = true
+        table.needsDisplay = true
     }
 
-    private func updateAppearance() {
-        wantsLayer = true
+    override func viewWillDraw() {
+        super.viewWillDraw()
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.12).cgColor
         }

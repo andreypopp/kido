@@ -58,6 +58,7 @@ import SidebarFeed
         NSApp.mainMenu = mainMenu()
         menus.send = { [weak self] in self?.current?.perform($0) }
         runtime.onConfigChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateAppearance() } }
+        runtime.onConfigReload = { [weak self] in self?.owners.filter(\.alive).forEach { $0.reloadConfig() } }
         runtime.onColorSchemeChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateColorScheme() } }
         routes.ready(isDefaultLaunch: isDefaultLaunch == true && ordinaryLaunchEvent) { [weak self] in _ = self?.open($0, cause: $1) }
         #if KIDO_VISUAL
