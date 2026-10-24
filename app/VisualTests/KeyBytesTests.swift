@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import GhosttyKit
 import TmuxControl
 import XCTest
@@ -154,6 +155,11 @@ extension VisualTests {
     }
 
     func testKeyBytes() async throws {
+        let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+        let id = Unmanaged<CFString>.fromOpaque(TISGetInputSourceProperty(source, kTISPropertyInputSourceID)).takeUnretainedValue() as String
+        guard id == "com.apple.keylayout.ABC" || id == "com.apple.keylayout.US" else {
+            throw XCTSkip("keyboard layout is \(id); the test needs ABC or US")
+        }
         try await start()
         let pane = try XCTUnwrap(terminal?.panes.first)
         let conf = try String(contentsOf: directory.appendingPathComponent("server.conf"), encoding: .utf8)
