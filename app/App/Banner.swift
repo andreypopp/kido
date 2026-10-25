@@ -5,7 +5,7 @@ final class Banner: NSView {
     private let detail = NSTextField(wrappingLabelWithString: "")
     private let button: NSButton
 
-    var background: NSColor { didSet { layer?.backgroundColor = background.withAlphaComponent(0.85).cgColor } }
+    var background: NSColor { didSet { layer?.backgroundColor = Chrome.bannerVeil(background).cgColor } }
 
     init(background: NSColor, target: AnyObject, action: Selector) {
         self.background = background
@@ -13,10 +13,10 @@ final class Banner: NSView {
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
         wantsLayer = true
-        layer?.backgroundColor = background.withAlphaComponent(0.85).cgColor
+        layer?.backgroundColor = Chrome.bannerVeil(background).cgColor
         title.font = .boldSystemFont(ofSize: 15)
         for label in [title, detail] {
-            label.textColor = .labelColor
+            label.textColor = Chrome.ink
             label.alignment = .center
         }
         let stack = NSStackView(views: [title, detail, button])

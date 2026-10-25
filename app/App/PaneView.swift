@@ -957,7 +957,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         scroller.jump = { [weak self] in self?.requestScroll($0) }
         let label = NSTextField(labelWithString: "Older history not loaded")
         label.font = .systemFont(ofSize: 11)
-        label.textColor = .secondaryLabelColor
+        label.textColor = Chrome.inkSecondary
         let loadMore = IconButton("", "Load more", hoverStyle: .text)
         loadMore.title = "Load more"
         loadMore.font = .systemFont(ofSize: 11, weight: .medium)
@@ -1304,7 +1304,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         copyLabel.isHidden = copyMode == nil
         let entering = if case .entering = copyMode { true } else { false }
         (copyLabel.subviews[0] as? NSTextField)?.attributedStringValue = NSAttributedString(string: entering ? "COPY…" : "COPY", attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .kern: 0.44, .foregroundColor: entering ? NSColor.secondaryLabelColor : .labelColor])
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold), .kern: 0.44, .foregroundColor: entering ? Chrome.inkSecondary : Chrome.ink])
         needsLayout = true
         presentScroll()
     }
