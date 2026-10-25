@@ -28,7 +28,7 @@ enum PaneCommand {
     case select(Side)
     case resize(Side, points: Double)
     case window(WindowStep)
-    case next, previous, zoom, equalize, close, newWindow, clear
+    case next, previous, zoom, equalize, close, newWindow
 
     // Ghostty's resize amount is in points.
     func command(_ pane: PaneID, cell: CGSize) -> Command? {
@@ -42,7 +42,6 @@ enum PaneCommand {
         case .window, .newWindow, .close: nil
         case .next: Command("select-pane", "-t", ":.+")
         case .previous: Command("select-pane", "-t", ":.-")
-        case .clear: Command("send-keys", "-R", "-t", pane)
         case .zoom: Command("resize-pane", "-Z", "-t", pane)
         case .equalize: Command("select-layout", "-E", "-t", pane)
         }
@@ -60,7 +59,6 @@ enum PaneCommand {
         add("Split Down", .split(.down), "D")
         add("Close Pane", .close, "w")
         menu.addItem(.separator())
-        add("Clear", .clear, "k", [.command, .option])
         add("Zoom Pane", .zoom, "\r", [.command, .shift])
         menu.addItem(.separator())
         add("Select Pane Left", .select(.left), arrow(NSLeftArrowFunctionKey), [.command, .option])
