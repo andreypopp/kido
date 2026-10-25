@@ -35,9 +35,8 @@ extension NSColor {
     func expand(_ value: String) -> String { value == "~" || value.hasPrefix("~/") ? home + value.dropFirst() : value }
     func abbreviate(_ value: String) -> String { value == home || value.hasPrefix(home + "/") ? "~" + value.dropFirst(home.count) : value }
     struct KidoSettings {
-        var sidebarShade = 0.05
         var unfocusedShift = 0.03
-        var paneSpacing: CGFloat = 0
+        var paneSpacing: CGFloat = 8
     }
     private(set) var settings: KidoSettings
     enum ThemeOverride: Equatable { case none, preview(String), session(String) }
@@ -245,7 +244,6 @@ extension NSColor {
     }
 
     private static let settingKeys: [String: WritableKeyPath<KidoSettings, Double>] = [
-        "kido-sidebar-shade": \.sidebarShade,
         "kido-unfocused-background-shift": \.unfocusedShift
     ]
     private static let spacingKey = "kido-pane-spacing"
@@ -310,8 +308,8 @@ extension NSColor {
             settings[keyPath: field] = abs(percent) / 100
         }
         if let value = values[spacingKey] {
-            if let points = Double(value), (0...32).contains(points) { settings.paneSpacing = points }
-            else { note("\(spacingKey): not a number of points from 0 to 32: \(value)") }
+            if let points = Double(value), (2...32).contains(points) { settings.paneSpacing = points }
+            else { note("\(spacingKey): not a number of points from 2 to 32: \(value)") }
         }
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
         ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
@@ -424,10 +422,9 @@ extension NSColor {
     }
 
     var background: NSColor { color("background") }
+    var canvas: NSColor { background.mixed(toward: .black, amount: background.isDark ? 0.35 : 0.06) }
     var foreground: NSColor { color("foreground") }
-    var separator: NSColor { background.mixed(toward: foreground, amount: 0.18) }
     var unfocusedPaper: NSColor { background.shifted(settings.unfocusedShift) }
-    var sidebarSeparator: NSColor { background.isDark ? separator : background.mixed(toward: foreground, amount: 0.28) }
 
     private func color(_ key: String) -> NSColor { Self.color(key, config: config) }
     static func color(_ key: String, config: ghostty_config_t) -> NSColor {

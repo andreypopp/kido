@@ -204,7 +204,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             if dirtyRect.intersects(titleRect), !header || nameField.isHidden {
                 (row.title as NSString).draw(in: titleRect,
                                        withAttributes: [.font: header ? fonts.section : row.agent ? fonts.agent : fonts.regular,
-                                                        .foregroundColor: header || row.quietShell ? Chrome.inkSecondary : Chrome.ink,
+                                                        .foregroundColor: header ? NSColor.controlAccentColor : row.quietShell ? Chrome.inkSecondary : Chrome.ink,
                                                         .paragraphStyle: paragraph])
             }
             let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - 12), height: 15)

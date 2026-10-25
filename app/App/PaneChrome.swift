@@ -3,15 +3,12 @@ import TmuxControl
 
 final class FocusEdge: NSView {
     var floating = false { didSet { if floating != oldValue { needsDisplay = true } } }
-    static func stroke(_ rect: NSRect, floating: Bool = false) {
-        Chrome.focusStroke.setStroke()
-        NSBezierPath(roundedRect: rect.insetBy(dx: floating ? 1 : 0.5, dy: floating ? 1 : 0.5),
-                     xRadius: floating ? 17 : 0, yRadius: floating ? 17 : 0).stroke()
-    }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            Self.stroke(bounds, floating: floating)
+            NSColor.controlAccentColor.withAlphaComponent(0.5).setStroke()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: floating ? 1 : 0.5, dy: floating ? 1 : 0.5),
+                         xRadius: floating ? 17 : 0, yRadius: floating ? 17 : 0).stroke()
         }
     }
     override func viewDidChangeEffectiveAppearance() {
@@ -70,8 +67,7 @@ final class PaneChrome: NSView {
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             switch treatment {
-            case .plain: break
-            case .edge: if card == nil { FocusEdge.stroke(bounds) }
+            case .plain, .edge: break
             case .overlay:
                 Chrome.floatingOverlay(runtime.background).setFill()
                 bounds.fill()

@@ -470,7 +470,7 @@ import TmuxControl
         XCTAssertEqual(requests.count, 2)
     }
 
-    func testSidebarResizeStartsOnSeparator() async throws {
+    func testSidebarResizeStartsOnEdge() async throws {
         let owner = try owner(fixture())
         let window = try XCTUnwrap(owner.window), sidebar = owner.sidebar
         window.display()
@@ -481,18 +481,17 @@ import TmuxControl
         sidebar.viewDidLayout()
         try await wait("native sidebar width settles") { abs(sidebar.list.bounds.width - 236) < 1 }
         sidebar.viewDidLayout()
-        let separator = sidebar.visualSeparator
-        let start = separator.convert(NSPoint(x: separator.bounds.midX, y: separator.bounds.midY), to: nil)
+        let edge = sidebar.visualFocusEdge.frame
+        let start = root.convert(NSPoint(x: edge.maxX, y: edge.midY), to: nil)
         let hit = try XCTUnwrap(root.hitTest(root.convert(start, from: nil)))
-        guard hit !== separator else { return XCTFail("sidebar separator must pass resize gestures through") }
         let before = sidebar.list.bounds.width
         let end = NSPoint(x: start.x + 36, y: start.y)
         NSApp.postEvent(mouse(.leftMouseDragged, end, window), atStart: false)
         NSApp.postEvent(mouse(.leftMouseUp, end, window), atStart: false)
         hit.mouseDown(with: mouse(.leftMouseDown, start, window))
         root.layoutSubtreeIfNeeded()
-        try await wait("separator resize changes the sidebar width") { sidebar.list.bounds.width > before + 20 }
-        XCTAssertGreaterThan(sidebar.list.bounds.width, before + 20, "resize starts on the visible separator line")
+        try await wait("edge resize changes the sidebar width") { sidebar.list.bounds.width > before + 20 }
+        XCTAssertGreaterThan(sidebar.list.bounds.width, before + 20, "resize starts on the sidebar edge")
     }
 
     func testSidebarClickDoesNotTakeFocus() async throws {
@@ -574,11 +573,6 @@ import TmuxControl
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.contentViewController = sidebar
-        let toolbar = NSToolbar(identifier: "ReorderTabs")
-        toolbar.delegate = sidebar
-        toolbar.displayMode = .iconOnly
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 900, height: 560))
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
