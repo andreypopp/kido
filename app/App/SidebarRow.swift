@@ -3,10 +3,10 @@ import SidebarFeed
 
 func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bool) {
     let color: NSColor = switch status {
-    case .quiet: .secondaryLabelColor.withAlphaComponent(NSColor.secondaryLabelColor.alphaComponent * 0.45)
-    case .running, .done: .systemGreen
-    case .waiting: .systemOrange
-    case .error: .systemRed
+    case .quiet: Chrome.statusQuiet
+    case .running, .done: Chrome.statusRunning
+    case .waiting: Chrome.statusWaiting
+    case .error: Chrome.statusError
     }
     if status == .done {
         let direction: CGFloat = flipped ? 1 : -1
@@ -91,7 +91,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         nameField.isEditable = true
         nameField.isSelectable = true
         nameField.font = fonts.section
-        nameField.textColor = .labelColor
+        nameField.textColor = Chrome.ink
         nameField.isBezeled = true
         nameField.bezelStyle = .roundedBezel
         nameField.focusRingType = .none
@@ -100,7 +100,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         nameField.setAccessibilityLabel("Session name")
         nameField.isHidden = true
         renameError.font = .systemFont(ofSize: 10)
-        renameError.textColor = .systemRed
+        renameError.textColor = Chrome.errorText
         renameError.setAccessibilityRole(.group)
         renameError.setAccessibilitySubrole(.init(rawValue: "AXApplicationAlert"))
         renameError.isHidden = true
@@ -179,14 +179,13 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 && (enclosingScrollView?.documentView as? Table)?.keyboardSelection == true
                 && window?.firstResponder === enclosingScrollView?.documentView
             if row.focused || selected {
-                NSColor.labelColor.withAlphaComponent(0.10).setFill()
+                Chrome.rowSelection.setFill()
                 NSBezierPath(roundedRect: NSRect(x: CGFloat(row.indent) * 15, y: 0,
                                                width: bounds.width - CGFloat(row.indent) * 15, height: bounds.height),
                              xRadius: 7, yRadius: 7).fill()
             }
             let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            (dark ? NSColor(srgbRed: 79 / 255, green: 85 / 255, blue: 92 / 255, alpha: 1)
-                  : NSColor(srgbRed: 191 / 255, green: 186 / 255, blue: 177 / 255, alpha: 1)).setFill()
+            Chrome.treeGuide(dark: dark).setFill()
             for guide in row.guides {
                 let rect = NSRect(x: guide.x - 0.5, y: guide.top, width: 1, height: guide.bottom - guide.top)
                 let pixels = convertToBacking(rect)
@@ -205,16 +204,16 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             if dirtyRect.intersects(titleRect), !header || nameField.isHidden {
                 (row.title as NSString).draw(in: titleRect,
                                        withAttributes: [.font: header ? fonts.section : row.agent ? fonts.agent : fonts.regular,
-                                                        .foregroundColor: header || row.quietShell ? NSColor.secondaryLabelColor : NSColor.labelColor,
+                                                        .foregroundColor: header || row.quietShell ? Chrome.inkSecondary : Chrome.ink,
                                                         .paragraphStyle: paragraph])
             }
             let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - 12), height: 15)
             if dirtyRect.intersects(tailRect) {
                 (row.tail.split(whereSeparator: \.isNewline).joined(separator: " ") as NSString).draw(in: tailRect,
-                                          withAttributes: [.font: fonts.tail, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
+                                          withAttributes: [.font: fonts.tail, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
             }
             (clock as NSString).draw(at: NSPoint(x: bounds.width - 12 - clockWidth, y: y + 2),
-                                     withAttributes: [.font: fonts.clock, .foregroundColor: NSColor.secondaryLabelColor])
+                                     withAttributes: [.font: fonts.clock, .foregroundColor: Chrome.inkSecondary])
             if pane && close.isHidden {
                 drawStatusMark(row.status, at: NSPoint(x: dotX, y: y + 9), flipped: true)
             }
@@ -228,10 +227,10 @@ final class SessionNameCell: NSTextFieldCell {
     override func draw(withFrame rect: NSRect, in view: NSView) {
         view.effectiveAppearance.performAsCurrentDrawingAppearance {
             let edge = NSBezierPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), xRadius: 3, yRadius: 3)
-            NSColor.controlAccentColor.withAlphaComponent(0.4).setStroke()
+            Chrome.renameEdge.setStroke()
             edge.lineWidth = 3
             edge.stroke()
-            NSColor.separatorColor.setStroke()
+            Chrome.hairline.setStroke()
             edge.lineWidth = 0.5
             edge.stroke()
         }

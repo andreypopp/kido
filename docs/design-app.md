@@ -299,7 +299,18 @@ light and dark themes that follow the macOS appearance and switch live
 on existing panes. The file overrides these defaults, including the
 theme, background and non-blinking cursor. The window and pane chrome
 follow the effective Ghostty background and its light or dark
-appearance.
+appearance. Colours derived from the theme stay in `GhosttyRuntime`.
+Every other chrome colour, alpha and shadow is a named role in
+`app/App/Chrome.swift`: system colours, the macOS accent, fixed values,
+and the constants that are mixed with theme colours. A role is named for
+its use, not for its value, so two roles can have the same value.
+`app/scripts/lint-colors.sh` runs first in `make test`. It refuses colour
+constructors, system colour names, `withAlphaComponent` and literal
+shadow values in `app/App` and `app/Packages/*/Sources` outside
+`Chrome.swift`. A line with a trailing `// chrome-allow: <reason>` is
+exempt; the theme derivations in `GhosttyRuntime` use this marker.
+`app/VisualTests` is not checked. The `PromptMarkdown` package cannot
+import the app, so the prompt view passes it its three ink roles.
 
 The built-in defaults unbind Ghostty's `super+k`. The app has no Clear
 command, and Ghostty binds Command-K to `clear_screen` by default. That
