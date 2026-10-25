@@ -47,7 +47,9 @@ final class SessionView: NSView {
         for view in others.values { view.updateBackground() }
     }
 
-    func reloadConfig() { forEachPane { $0.reloadConfig() } }
+    func reloadConfig(font: Float?) {
+        forEachPane { $0.reloadConfig(font: font) }
+    }
 
     func updateColorScheme() {
         forEachPane { ghostty_surface_set_color_scheme($0.surface, runtime.colorScheme) }
@@ -149,10 +151,9 @@ final class SessionView: NSView {
     }
 
     func fontChanged(_ points: Float) {
-        let action = "set_font_size:\(points)"
         forEachPane { pane in
             guard pane.font != points else { return }
-            pane.reflow { _ = ghostty_surface_binding_action(pane.surface, action, UInt(action.utf8.count)) }
+            pane.reflow { pane.setFontSize(points) }
         }
         cellChanged()
     }
