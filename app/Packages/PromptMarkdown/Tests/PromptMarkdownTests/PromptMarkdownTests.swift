@@ -2,12 +2,14 @@ import AppKit
 import XCTest
 @testable import PromptMarkdown
 
+private let colors = (ink: NSColor.labelColor, secondary: NSColor.secondaryLabelColor, tertiary: NSColor.tertiaryLabelColor)
+
 final class PromptMarkdownTests: XCTestCase {
     @MainActor func testStylesAndOffsets() {
         let text = "# Heading\n\né😀 **bold** *italic* `code`\n\n> quoted\nlazy\n\nplain"
-        let result = render(text)
+        let result = render(text, colors: colors)
         XCTAssertEqual(lineHeight, 18)
-        XCTAssertEqual(result.text.attributes(at: 10, effectiveRange: nil) as NSDictionary, baseAttributes as NSDictionary)
+        XCTAssertEqual(result.text.attributes(at: 10, effectiveRange: nil) as NSDictionary, baseAttributes(ink: colors.ink) as NSDictionary)
         XCTAssertEqual(result.text.string, text)
         let source = text as NSString
         for token in ["# Heading", "**bold**"] {
@@ -30,7 +32,7 @@ final class PromptMarkdownTests: XCTestCase {
 
     @MainActor func testNestedEmphasisKeepsSemibold() {
         for text in ["***x***", "**_x_**", "# *x*"] {
-            let rendered = render(text).text
+            let rendered = render(text, colors: colors).text
             let font = rendered.attribute(.font, at: (text as NSString).range(of: "x").location, effectiveRange: nil) as! NSFont
             let expected = NSFontManager.shared.convert(NSFont.systemFont(ofSize: 13, weight: .semibold), toHaveTrait: .italicFontMask)
             XCTAssertEqual(font, expected, text)
@@ -39,18 +41,18 @@ final class PromptMarkdownTests: XCTestCase {
     }
 
     @MainActor func testSeparateQuotes() {
-        let result = render("> one\n> two\n\n> three")
+        let result = render("> one\n> two\n\n> three", colors: colors)
         XCTAssertEqual(result.quoteLines.count, 3)
-        let separated = render("> one\n\n> two")
+        let separated = render("> one\n\n> two", colors: colors)
         XCTAssertEqual(separated.quoteLines.count, 2)
-        let unicode = render("é😀\n\n> 🐈 **été** `λ`")
+        let unicode = render("é😀\n\n> 🐈 **été** `λ`", colors: colors)
         XCTAssertEqual(unicode.text.attribute(.foregroundColor, at: 5, effectiveRange: nil) as? NSColor, .tertiaryLabelColor)
         XCTAssertEqual(unicode.codeRanges.map { (unicode.text.string as NSString).substring(with: $0) }, ["`λ`"])
     }
 
     @MainActor func testLineEndingsKeepTheirRanges() {
         let text = "plain\r\n**bold**\r`code`\n> q"
-        let rendered = render(text)
+        let rendered = render(text, colors: colors)
         XCTAssertEqual(rendered.text.string, text)
         XCTAssertEqual(rendered.text.attribute(.font, at: 7, effectiveRange: nil) as? NSFont, NSFont.systemFont(ofSize: 13, weight: .semibold))
         XCTAssertEqual(rendered.codeRanges, [NSRange(location: 16, length: 6)])
@@ -80,7 +82,7 @@ final class PromptMarkdownTests: XCTestCase {
         storage.addLayoutManager(manager)
         manager.addTextContainer(container)
         let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 400), textContainer: container)
-        let result = render("plain\n\n> quote\n> next\n\n`code`")
+        let result = render("plain\n\n> quote\n> next\n\n`code`", colors: colors)
         storage.setAttributedString(result.text)
         manager.ensureLayout(for: container)
         let marker = (result.text.string as NSString).range(of: "> quote").location

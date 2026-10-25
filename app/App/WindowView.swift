@@ -255,10 +255,10 @@ final class WindowView: NSView {
                     let backing = box(chrome.frame, border: pixel, fill: runtime.background)
                     backing.wantsLayer = true
                     backing.cornerRadius = floatingRadius
-                    backing.borderColor = .separatorColor
+                    backing.borderColor = Chrome.hairline
                     let shadow = NSShadow()
-                    shadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
-                    shadow.shadowBlurRadius = 12
+                    shadow.shadowColor = Chrome.floatShadow.color
+                    shadow.shadowBlurRadius = Chrome.floatShadow.blur
                     shadow.shadowOffset = NSSize(width: 0, height: -3)
                     backing.shadow = shadow
                     backings[pane.id] = backing

@@ -29,7 +29,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private final class Insertion: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func draw(_ dirtyRect: NSRect) {
-            NSColor.controlAccentColor.set()
+            Chrome.insertion.set()
             let ring = NSBezierPath(ovalIn: NSRect(x: 2.75, y: bounds.midY - 2.75, width: 5.5, height: 5.5))
             ring.lineWidth = 1.5
             ring.stroke()
@@ -196,7 +196,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     override func viewWillDraw() {
         super.viewWillDraw()
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.12).cgColor
+            layer?.borderColor = Chrome.floatingListHairline.cgColor
         }
     }
 
@@ -220,11 +220,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         case .invalidBundle, .protocolMismatch: break
         case .starting:
             show(nil)
-            feedNote = ("Starting…", .secondaryLabelColor)
+            feedNote = ("Starting…", Chrome.inkSecondary)
         case .restarting(let message):
             captionTimer?.invalidate()
             captionTimer = nil
-            feedNote = ("The sidebar feed is not running, retrying…\n\(message)", .secondaryLabelColor)
+            feedNote = ("The sidebar feed is not running, retrying…\n\(message)", Chrome.inkSecondary)
         case .running(let snapshot):
             if feedNote != nil { captions = SidebarCaptions() }
             show(snapshot, captionTick: feedNote != nil)
@@ -235,7 +235,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     func offline(_ reason: String) {
         show(nil)
-        feedNote = (reason, .secondaryLabelColor)
+        feedNote = (reason, Chrome.inkSecondary)
         noteChanged()
     }
 
@@ -252,7 +252,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     private func noteChanged() {
-        let note = failure.map { ($0, NSColor.systemRed) } ?? feedNote ?? snapshot?.error.map { ($0, NSColor.systemRed) }
+        let note = failure.map { ($0, Chrome.errorText) } ?? feedNote ?? snapshot?.error.map { ($0, Chrome.errorText) }
         statusLine.stringValue = note?.0.replacingOccurrences(of: "\n", with: " ") ?? ""
         statusLine.toolTip = note?.0
         statusLine.textColor = note?.1
@@ -601,7 +601,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var visualDragging: String? { dragging.map { "\($0)" } }
     var visualInsertion: NSRect? { insertion.isHidden ? nil : insertion.frame }
     override func draw(_ dirtyRect: NSRect) {
-        (layer?.backgroundColor.flatMap { NSColor(cgColor: $0) } ?? .windowBackgroundColor).setFill()
+        (layer?.backgroundColor.flatMap { NSColor(cgColor: $0) } ?? Chrome.defaultPaper).setFill() // chrome-allow: visual-only layer colour conversion
         bounds.fill()
     }
     #endif
