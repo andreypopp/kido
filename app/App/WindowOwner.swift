@@ -1139,7 +1139,7 @@ private class AlertEscape: NSView {
     func windowDidMiniaturize(_ notification: Notification) { attend() }
     func windowDidDeminiaturize(_ notification: Notification) { attend() }
     func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert(); attend() }
-    func reloadConfig() { session?.reloadConfig() }
+    func reloadConfig(font: Float?) { session?.reloadConfig(font: font) }
     func updateColorScheme() { session?.updateColorScheme() }
     var navigation: SessionModel { navigationModel }
 

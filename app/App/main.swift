@@ -47,7 +47,7 @@ import SidebarFeed
             self?.owners.filter(\.alive).forEach { $0.updateColorScheme(); $0.updateAppearance() }
             self?.palettePanel?.palette.themeChanged()
         }
-        runtime.onConfigReload = { [weak self] in self?.owners.filter(\.alive).forEach { $0.reloadConfig() } }
+        runtime.onConfigReload = { [weak self] font in self?.owners.filter(\.alive).forEach { $0.reloadConfig(font: font) } }
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {

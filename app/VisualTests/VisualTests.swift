@@ -203,7 +203,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         connection = nil
         session = nil
         runtime?.onConfigChange = {}
-        runtime?.onConfigReload = {}
+        runtime?.onConfigReload = { _ in }
         runtime = nil
         PaneView.renderOffscreen = false
         NSApp.appearance = nil
@@ -264,7 +264,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.appearance = NSAppearance(named: .aqua)
         window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
-        runtime.onConfigReload = { [weak self] in self?.session.reloadConfig() }
+        runtime.onConfigReload = { [weak self] font in self?.session.reloadConfig(font: font) }
         session.onPaneChange = { [weak self] in self?.updateTabs() }
         session.frame = NSRect(x: 0, y: 0, width: 700, height: height)
         window.contentView = session
@@ -350,6 +350,49 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             _ = try await command(["kill-pane", "-t", split])
             try await wait("single pane restored") { self.terminal?.panes.count == 1 }
         }
+    }
+
+    func testAdjustedFontConfigReload() async throws {
+        let config = directory.appendingPathComponent("adjusted-font.conf")
+        try "font-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        let first = try XCTUnwrap(terminal?.panes.first)
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "=",
+            charactersIgnoringModifiers: "=", isARepeat: false, keyCode: 24))
+        first.keyDown(with: key)
+        try await wait("adjusted font") { first.font > 13 }
+        let adjusted = first.font
+        _ = try await command(["split-window", "-h", "exec /bin/cat"])
+        try await wait("new pane") { self.terminal?.panes.count == 2 }
+        let panes = try XCTUnwrap(terminal).panes
+        for pane in panes { XCTAssertEqual(pane.font, adjusted) }
+        _ = try await command(["new-window", "exec /bin/cat"])
+        try await wait("hidden window") { first.isHidden || first.superview?.isHidden == true }
+        let allPanes = session.windows.values.flatMap(\.panes)
+        XCTAssertTrue(allPanes.contains { $0 === first }, "the cached hidden pane must be checked")
+        XCTAssertEqual(allPanes.count, 3)
+        let reloads: [(configSize: Int, background: String, expectedSize: Float)] = [
+            (13, "#112233", adjusted), (20, "#223344", 20),
+        ]
+        for (size, background, expected) in reloads {
+            let changed = expectation(description: "config reload")
+            runtime.onConfigChange = { changed.fulfill() }
+            try "font-family = Menlo\nfont-size = \(size)\nbackground = \(background)\n".write(to: config, atomically: false, encoding: .utf8)
+            await fulfillment(of: [changed], timeout: 3)
+            await mainQueueFence()
+            for pane in allPanes {
+                XCTAssertEqual(pane.font, expected, "pane \(pane.pane) after font-size \(size)")
+            }
+        }
+        let active = try XCTUnwrap(terminal?.panes.first)
+        active.keyDown(with: key)
+        try await wait("font shortcut after reload") { allPanes.allSatisfy { $0.font > 20 } }
+        let reset = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "0",
+            charactersIgnoringModifiers: "0", isARepeat: false, keyCode: 29))
+        active.keyDown(with: reset)
+        try await wait("reset uses new config font") { allPanes.allSatisfy { $0.font == 20 } }
     }
 
     func testLiveConfigReflowsPane() async throws {
