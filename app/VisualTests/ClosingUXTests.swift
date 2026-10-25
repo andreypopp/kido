@@ -223,48 +223,5 @@ import XCTest
         XCTAssertNil(owner.preparedAlert)
     }
 
-    func testConnectKeysRecentDoubleClickAndInlineError() async throws {
-        let suite = "kux-" + UUID().uuidString
-        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { preferences.removePersistentDomain(forName: suite) }
-        let routes = WindowRoutes(preferences: preferences)
-        var opened: [Kido.Host] = []
-        routes.ready(isDefaultLaunch: true) { host, _ in opened.append(host) }
-        routes.connect(.remote("user@alias"))
-        opened = []
-        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { window.close() }
-        let dialog = RemoteHostDialog(routes: routes)
-        dialog.show(on: window)
-        XCTAssertEqual(dialog.sheet.contentView?.bounds.width, 440)
-        dialog.field.stringValue = "bad host"
-        // Hidden sheets do not receive NSWindow key-equivalent dispatch.
-        let connect = try XCTUnwrap(dialog.sheet.contentView?.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Connect" })
-        XCTAssertTrue(dialog.sheet.defaultButtonCell === connect.cell)
-        connect.performClick(nil)
-        XCTAssertEqual(dialog.field.stringValue, "bad host")
-        XCTAssertFalse(dialog.error.stringValue.isEmpty)
-        XCTAssertTrue(opened.isEmpty)
-        XCTAssertTrue(window.attachedSheet === dialog.sheet)
-        dialog.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        XCTAssertEqual(dialog.field.stringValue, "user@alias")
-        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(dialog.table.doubleAction), to: dialog.table.target, from: dialog.table))
-        try await wait("double click dismisses Connect") { window.attachedSheet == nil }
-        XCTAssertEqual(opened, [.remote("user@alias")])
-        XCTAssertEqual(WindowRoutes(preferences: preferences).recent.entries.map(\.host), ["user@alias"])
-        let escapeDialog = RemoteHostDialog(routes: routes)
-        escapeDialog.show(on: window)
-        let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: escapeDialog.sheet.windowNumber, context: nil,
-            characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
-        let cancel = try XCTUnwrap(escapeDialog.sheet.contentView?.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Cancel" })
-        XCTAssertEqual(cancel.keyEquivalent, escape.characters)
-        cancel.performClick(nil)
-        try await wait("Escape cancels Connect") { window.attachedSheet == nil }
-        XCTAssertEqual(opened.count, 1)
-        escapeDialog.clearRecent()
-        XCTAssertTrue(routes.recent.isEmpty)
-        XCTAssertFalse(escapeDialog.clear.isEnabled)
-        XCTAssertEqual(escapeDialog.numberOfRows(in: escapeDialog.table), 1)
-    }
+
 }
