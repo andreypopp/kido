@@ -95,6 +95,7 @@ targets:
       - package: TmuxControl
       - package: SidebarFeed
       - package: PromptMarkdown
+        link: false
       - framework: build/GhosttyKit.xcframework
         embed: false
         link: false
