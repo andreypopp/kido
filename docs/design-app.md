@@ -312,15 +312,55 @@ exempt; the theme derivations in `GhosttyRuntime` use this marker.
 `app/VisualTests` is not checked. The `PromptMarkdown` package cannot
 import the app, so the prompt view passes it its three ink roles.
 
-The defaults name `kido-light` and `kido-dark` by absolute path into the
-bundle's `themes` folder, which `project.yml` ships whole as a folder
-resource. That folder also bundles `ahrefs-light` and `ahrefs-dark`
+The defaults are `theme = light:kido-light,dark:kido-dark`, by bare name.
+`main.swift` sets `GHOSTTY_RESOURCES_DIR` to the bundle's `ghostty` folder
+before Ghostty starts, and Ghostty searches a bare theme name in
+`$XDG_CONFIG_HOME/ghostty/themes` (else `~/.config/ghostty/themes`), then in
+`<resources dir>/themes`. Thus, a name in the user's file still resolves
+after the app moves or in a dev build. Spawned tmux and shells inherit the
+variable; Ghostty never starts a shell in Kido, so it has no effect there.
+`project.yml` ships `app/Resources/ghostty` whole as a folder resource. Its
+`themes` folder holds `kido-light` and `kido-dark`, and also `ahrefs-light` and `ahrefs-dark`
 (kido's own, notes in `app/design/themes/ahrefs/`) and `solarized-light`
 and `solarized-dark`. The Solarized pair are iTerm2-Color-Schemes'
 Ghostty exports "iTerm2 Solarized Light" and "iTerm2 Solarized Dark",
 unchanged, from the release that the notice names.
-`app/Resources/themes/LICENSE-iTerm2-Color-Schemes` is their MIT
+`app/Resources/ghostty/themes/LICENSE-iTerm2-Color-Schemes` is their MIT
 notice, with one line per copied file that names its original.
+
+The palette's Theme mode ([Command palette](#command-palette)) previews and
+writes the theme. A preview never writes the file. `GhosttyRuntime` holds a
+theme override: none, a preview or a session theme. `loadConfig` loads the
+override last, as `theme = <value>` after the tiling block, so a single
+value sets both appearances and a theme of the other appearance previews
+anyway. Every reload applies the override, so an external edit of the file
+during a preview keeps the preview. A preview step goes through the usual
+reload path: every pane clones the new config, and the chrome and the open
+palette card follow through `onConfigChange` (`PaletteView.themeChanged`).
+The steps are debounced at 60 ms; the last selection wins. Closing the
+palette ends the preview and goes back to the session theme if there is one,
+else to the file. A session theme comes from the save step's "This session
+only" row or from a failed write. It holds until the next successful write or
+quit. `loadConfig` keeps Ghostty's diagnostics, and
+the mode reads them to dim a theme file that fails after it was listed.
+
+`app/App/ThemeConf.swift` reads and writes only the `theme` line of
+`kido-app.conf` itself. It does not walk `config-file` includes, and an
+include that sets `theme` wins in Ghostty without the picker knowing. The
+last line whose trimmed key is `theme` counts. Its value is a pair if it
+contains `,`, `:` or `=`, as in Ghostty, else one name for both sides. A pair
+needs both `light:` and `dark:`; Ghostty rejects a line without them and keeps
+the value before it, and so does the parse. With no valid line, the pair is
+the defaults. A save merges the chosen side into
+that pair and always writes `theme = light:L,dark:D`. It replaces the line
+or appends one, and keeps every other byte, CRLF included. It writes
+`<target>.tmp-<pid>` beside the target with the target's mode (0600 for a
+new file), syncs it and renames it over the target. The target is the
+conf's resolved path, so a symlinked conf keeps its link; a dangling link
+writes its target. A missing directory is created with mode 0700. If the
+merged pair equals the file's pair, nothing is written. The watcher sees the
+rename and reloads; the override is cleared before, so the reload shows the
+written theme with no flash.
 
 The built-in defaults unbind Ghostty's `super+k`. The app has no Clear
 command, and Ghostty binds Command-K to `clear_screen` by default. That
@@ -1274,7 +1314,7 @@ The root list is built from live state, in this order:
   key equivalent: New Session, Rename Session…, Close Session, New Window,
   Close Window, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
   Remote Host…, Hide/Show Sidebar, Focus Sidebar, Enter Full Screen, Find…,
-  Copy Mode, Prompt… and Reset Clipboard and Upload Permissions. The window
+  Copy Mode, Prompt…, Reset Clipboard and Upload Permissions and Theme…. The window
   commands need an anchor. The pane commands need a live focused pane: a
   connected anchor whose saved responder is a visible pane of that window, or
   a view inside one, such as its Find bar. Prompt… also needs an agent in the
@@ -1305,7 +1345,7 @@ characters gets a fill of the terminal foreground at 14% with a 3pt radius;
 the text keeps its colour and weight. With no match, the list shows "No
 matches".
 
-The palette has three modes besides the root. A mode shows a chip left of the
+The palette has four modes besides the root. A mode shows a chip left of the
 field (22pt, the mode's symbol and name) and a foot that names its keys.
 Entering a mode clears the query and the error. An error is a red line between
 the field and the list; an edit clears it.
@@ -1330,6 +1370,8 @@ the field and the list; an edit clears it.
 - **Prompt** (`bubble.left`). It sends a prompt to an agent through kido's
   `prompt` RPC ([Prompting an agent](design-rpc.md#prompting-an-agent)). It
   replaces the list with its own view, `PalettePrompt`, described below.
+- **Theme** (`paintpalette`, "Search themes"). View → Theme… (no shortcut)
+  and its root row enter it, also with no window. It is described below.
 
 ### Prompt mode
 
@@ -1514,7 +1556,7 @@ unbound Command key to the main menu, which is how Command-P reaches the
 palette.
 
 The field's accessibility label names the mode: "Command palette", "Connect
-to remote host" or "Rename session". In Prompt mode, the field is "Prompt",
+to remote host", "Rename session" or "Theme". In Prompt mode, the field is "Prompt",
 the picker is a pop-up button "Send to @name", and the buttons are "Send
 prompt", "Retry" and "Copy Prompt". Each row's label joins its title, detail
 and shortcut, and adds the status as the tabs do (" — error", " — waiting",
@@ -1523,6 +1565,81 @@ subrole is a floating window.
 
 New Session (Command-N) with no key window is described in
 [Sidebar](#sidebar).
+
+### Theme mode
+
+Theme mode picks the terminal theme and shows it live. Its visuals are
+`app/design/palette/` (NOTES.md "Theme mode"). The preview and the writer
+are in [Panes](#panes). `PaletteTheme` reads the list once when the mode
+opens:
+
+- The bundled themes in one fixed order: `kido-light`, `kido-dark`,
+  `ahrefs-light`, `ahrefs-dark`, `solarized-light`, `solarized-dark`. They
+  are written by bare name.
+- Then the regular files in `themes` beside `kido-app.conf`
+  (`$XDG_CONFIG_HOME/kido/themes`, else `~/.config/kido/themes`), sorted
+  with `localizedStandardCompare`. Dotfiles and names that contain `,`, `:`
+  or `=` are not listed; a symlink to a regular file is. They are written
+  by absolute path, because Ghostty does not search this directory.
+  `~/.config/ghostty/themes` is not listed, but a name there still resolves.
+
+Each row loads its file through a private Ghostty config for the swatch: the
+background with "Aa" in the foreground, and palette colours 4, 2, 1 and 3.
+The "light" or "dark" tag is the background's luminance. The row shows the
+file name. "✓ Light" and "✓ Dark" mark the rows that the conf's pair
+names: a bundled row by bare name, a user row by path with `~/` expanded. A
+file that is missing or has diagnostics is a dimmed row with an empty swatch,
+no tag and "theme file not found" or "invalid: <diagnostic>" in red. It can
+be selected and hovered; then the preview shows the theme that
+`kido-app.conf` sets now, not the broken file. Return and click on it do
+nothing. A file that disappears after the list was read is dimmed when it is
+previewed or saved, and the save writes nothing. The marks and the list are
+read once, when the mode opens; an external edit of the conf does not change
+them.
+
+If Ghostty fails to load the theme that a side of the pair names, the red
+status says "<value>: not found. The current config names it for
+<Light|Dark>; Ghostty's default colours are shown instead.", or "<value>:
+invalid: <diagnostic>. …" for a file with errors. The user's `theme` line
+replaces kido's defaults, so Ghostty falls back to its own colours. A theme
+that Ghostty loads but the list does not show (from
+`~/.config/ghostty/themes` or another path) gets no status and no mark. The
+current appearance's side is checked first.
+
+The selection starts on the theme of the current appearance, with no
+preview. Each later selection change previews: Up/Down, a new query (its
+row 0), and the pointer over the list. Hover does not move the selection;
+leaving the list previews the selection again, and a scroll previews the row
+now under the pointer. With no match, the last preview stays. The status
+says "Previewing <name>. ↩ chooses where to use it, esc restores the current
+theme." The preview is app-wide: every window and pane follow, whatever
+copy mode, zoom or full screen they are in.
+
+Return or a click on a row opens the save step. The head shows the theme as a
+chip with its swatch, the field reads "Use for…" and takes no text, and three
+radio rows follow: the current appearance (selected), the other one, Both,
+and "This session only · not saved to kido-app.conf". Up/Down move the
+radio. Return or a click writes, applies and closes. The session row writes
+nothing and reads nothing: the theme becomes the session theme for both
+appearances until quit or the next successful save, and its foot says
+"applies until quit; <conf path> is not changed".
+Escape or ⌫ goes back to the list with the query, the selection and the
+preview kept. The foot shows the exact line, from the same
+`ThemeConf.line` that the writer calls, and the conf path. Both writes the
+one theme to both sides.
+
+If the write fails, the list stays open with the red status "Could not write
+<path>: <reason>. <name> is applied for this session only." and "Reveal in
+Finder", which selects the conf or, if it is absent, its directory. The
+theme becomes the session theme: a later preview is restored to it, not to
+the file.
+
+In the list, Escape, or ⌫ on an empty field, goes back to the root and
+restores the theme. Tab and Shift-Tab do nothing in either step, and typing
+does nothing in the save step. Command keys reach the menu as in the root.
+Every other close path restores it too: Command-P, a click outside, another
+window becoming key and the app's deactivation. The panel's `close` ends the
+preview, so one place serves them all.
 
 ## Notifications
 
@@ -1653,7 +1770,14 @@ and layout diffs. References live in `app/VisualTests/__Snapshots__`.
 state of the approved mockup, `app/design/palette/` (`mockup.html` with its
 `NOTES.md`), in light and dark: `palette.<theme>-<state>.png` for root,
 filtered, filtered2, nomatch, connect, connect-typing, connect-invalid,
-connect-none, rename, rename-error, rename-error2, nowindow and match-run.
+connect-none, rename, rename-error, rename-error2, nowindow, match-run,
+theme, theme-filtered, theme-preview, theme-save, theme-save-session,
+theme-err-write and theme-err-file. The theme images are recorded last in the same test. Their
+conf lives in the visual scheme's private `HOME` (`XDG_CONFIG_HOME` is
+`$HOME/.config`), so the paths read `~/.config/kido`; the test checks that
+`HOME` is that private directory before it writes. theme-err-file removes the
+built app's bundled theme file and restores its bytes in a `defer`.
+`ThemeConfTests` tests the conf text functions and the writer.
 `palette.light-window-root.png` records the card over a real two-pane window
 at the mockup's 1100x740pt, with the panes' cursors hollow. The fixture
 clears the panes' tmux history after fixed output, because `respawn-pane -k`
