@@ -312,6 +312,16 @@ exempt; the theme derivations in `GhosttyRuntime` use this marker.
 `app/VisualTests` is not checked. The `PromptMarkdown` package cannot
 import the app, so the prompt view passes it its three ink roles.
 
+The defaults name `kido-light` and `kido-dark` by absolute path into the
+bundle's `themes` folder, which `project.yml` ships whole as a folder
+resource. That folder also bundles `ahrefs-light` and `ahrefs-dark`
+(kido's own, notes in `app/design/themes/ahrefs/`) and `solarized-light`
+and `solarized-dark`. The Solarized pair are iTerm2-Color-Schemes'
+Ghostty exports "iTerm2 Solarized Light" and "iTerm2 Solarized Dark",
+unchanged, from the release that the notice names.
+`app/Resources/themes/LICENSE-iTerm2-Color-Schemes` is their MIT
+notice, with one line per copied file that names its original.
+
 The built-in defaults unbind Ghostty's `super+k`. The app has no Clear
 command, and Ghostty binds Command-K to `clear_screen` by default. That
 action clears only the Ghostty surface. Under `MANUAL_MIRROR` the surface
