@@ -1,0 +1,101 @@
+<!doctype html><meta charset="utf-8"><title>ahrefs themes</title>
+<style>
+html,body{margin:0;background:#888;font-family:-apple-system,"Helvetica Neue",sans-serif}
+.wrap{display:grid;grid-template-columns:600px 600px;width:1200px;height:900px}
+.wrap.one{grid-template-columns:1200px}.wrap.one .theme{display:flex}.wrap.one .theme.off{display:none}
+.theme{min-width:0;overflow:hidden;background:var(--bg);color:var(--fg);display:flex;flex-direction:column}
+.theme h2{margin:0;padding:8px 14px;font-size:12px;font-weight:600;color:var(--c8);border-bottom:1px solid var(--c20)}
+.pane{display:flex;flex:1;min-height:0}
+.side{width:170px;background:var(--side);padding:10px 8px;font-size:12px;line-height:18px;flex:none}
+.side .head{font-size:11px;font-weight:600;color:var(--c8);margin-bottom:6px}
+.side .row{display:flex;min-width:0;}.side .row span:last-child{overflow:hidden;text-overflow:ellipsis}.side .row{align-items:center;gap:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side .sub{padding-left:15px}
+.dot{width:6px;height:6px;border-radius:3px;background:var(--c2);flex:none;font-size:8px;line-height:6px}
+.dot.idle{background:var(--c8);opacity:.45}
+.dot.done{background:none;color:var(--c2);font-weight:700}
+.agent{font-weight:600;color:var(--fg)}
+.muted{color:var(--c8)}
+.term{margin:0;padding:12px 14px;font:12.5px/18px Menlo,"SF Mono",monospace;flex:1;overflow:hidden;white-space:pre}
+.b{font-weight:700}
+.sw{display:inline-block;width:14px;height:12px;background:currentColor;vertical-align:-2px;margin-right:2px}
+.cursor{background:var(--cursor);display:inline-block;width:8px}
+.c0{color:var(--c0)}.c1{color:var(--c1)}.c2{color:var(--c2)}.c3{color:var(--c3)}.c4{color:var(--c4)}.c5{color:var(--c5)}.c6{color:var(--c6)}.c7{color:var(--c7)}.c8{color:var(--c8)}.c9{color:var(--c9)}.c10{color:var(--c10)}.c11{color:var(--c11)}.c12{color:var(--c12)}.c13{color:var(--c13)}.c14{color:var(--c14)}.c15{color:var(--c15)}.c16{color:var(--c16)}.c17{color:var(--c17)}.c18{color:var(--c18)}.c19{color:var(--c19)}.c20{color:var(--c20)}
+</style>
+<div class="wrap">
+<div class="theme" style="--bg:#FFFFFF;--fg:#1C1A14;--c0:#1C1A14;--c1:#B8321A;--c2:#2E7D3E;--c3:#A85400;--c4:#3A57FC;--c5:#9A3A94;--c6:#157A8E;--c7:#635F55;--c8:#767269;--c9:#D93A1A;--c10:#3F9A4C;--c11:#FF8D00;--c12:#3A75FF;--c13:#C94CBE;--c14:#1A98B8;--c15:#A09C92;--c16:#1C1A14;--c17:#8C8880;--c18:#B8B4A8;--c19:#E5E5E5;--c20:#F6F5F2;--side:color-mix(in srgb, #FFFFFF 95%, black);--cursor:#AAAAAA"><h2>ahrefs-light · background #FFFFFF · foreground #1C1A14 · sidebar bg mixed 5% toward black</h2>
+<div class="pane">
+<div class="side"><div class="head">Session · kido</div>
+<div class="row"><span class="dot"></span><span class="agent">@reviewer · fix contrast in themes</span></div>
+<div class="row"><span class="dot idle"></span><span class="muted">Terminal</span></div>
+<div class="row"><span class="dot"></span><span class="agent">@impl · ahrefs palette</span></div>
+<div class="row sub"><span class="dot done">✓</span><span class="muted">build · 12s</span></div>
+</div>
+<pre class="term"><span class="c2 b">andrepopp@kido</span> <span class="c4 b">~/Workspace/kido-app</span> <span class="c8">(kido-app)</span>
+<span class="c0 b">$</span> git diff --stat app/Resources/themes
+<span class="c3">diff --git a/themes/ahrefs-light b/themes/ahrefs-light</span>
+<span class="c6">@@ -1,6 +1,6 @@</span>
+ background = #F6F5F2
+<span class="c1">-foreground = #424242</span>
+<span class="c2">+foreground = #1C1A14</span>
+<span class="c1">-palette = 3=#dc682a</span>
+<span class="c2">+palette = 3=#a85400</span>
+<span class="c0 b">$</span> make build
+<span class="c8">[1/4]</span> compiling <span class="c4">app/App/GhosttyRuntime.swift</span>
+<span class="c8">[2/4]</span> compiling <span class="c4">app/App/SidebarView.swift</span>
+<span class="c3 b">warning:</span> <span class="c4">app/App/PaneView.swift:212:9</span> variable 'rows' was never mutated
+<span class="c3">warning:</span> unused import <span class="c5">Combine</span>
+<span class="c1 b">error:</span> <span class="c4">app/App/Feed.swift:40:12</span> cannot find 'palette16' in scope
+<span class="c8">[4/4]</span> linking <span class="c6">Kido.app</span> … <span class="c2 b">done</span> in <span class="c5">12.4s</span>
+<span class="c0 b">$</span> kido runs
+<span class="c8">id        status     title</span>
+<span class="c7">r8f2a1</span>    <span class="c2">running</span>    ahrefs palette
+<span class="c7">r7c0d9</span>    <span class="c1">failed</span>     exit 1
+<span class="c7">r6b113</span>    <span class="c8">completed</span>  review
+
+normal  <span class="c0">black</span> <span class="c1">red</span> <span class="c2">green</span> <span class="c3">yellow</span> <span class="c4">blue</span> <span class="c5">magenta</span> <span class="c6">cyan</span> <span class="c7">white</span>
+bright  <span class="c8">black</span> <span class="c9">red</span> <span class="c10">green</span> <span class="c11">yellow</span> <span class="c12">blue</span> <span class="c13">magenta</span> <span class="c14">cyan</span> <span class="c15">white</span>
+bold    <span class="c0 b">black</span> <span class="c1 b">red</span> <span class="c2 b">green</span> <span class="c3 b">yellow</span> <span class="c4 b">blue</span> <span class="c5 b">magenta</span> <span class="c6 b">cyan</span> <span class="c7 b">white</span>
+kido    <span class="c16">16</span> <span class="c17">17 muted</span> <span class="c18">18</span> <span class="c19">19</span> <span style="background:var(--c20)"> 20 surface </span>
+swatch  <span class="sw c1"></span><span class="sw c2"></span><span class="sw c3"></span><span class="sw c4"></span><span class="sw c5"></span><span class="sw c6"></span> <span class="sw c9"></span><span class="sw c10"></span><span class="sw c11"></span><span class="sw c12"></span><span class="sw c13"></span><span class="sw c14"></span>
+<span class="c0 b">$</span> <span class="cursor"> </span></pre></div></div>
+<div class="theme" style="--bg:#1E1E1E;--fg:#C7C7C7;--c0:#F6F5F2;--c1:#F0553C;--c2:#43BF6E;--c3:#FF8D00;--c4:#5C8CFF;--c5:#CC73C2;--c6:#4BB8CC;--c7:#B8B4A8;--c8:#8C8880;--c9:#FF7A5C;--c10:#6ADB92;--c11:#FFB528;--c12:#2592FA;--c13:#E491D9;--c14:#7FD1E3;--c15:#A09C92;--c16:#1C1A14;--c17:#8C8880;--c18:#B8B4A8;--c19:#E5E5E5;--c20:#272727;--side:color-mix(in srgb, #1E1E1E 95%, white);--cursor:#999999"><h2>ahrefs-dark · background #1E1E1E · foreground #C7C7C7 · sidebar bg mixed 5% toward white</h2>
+<div class="pane">
+<div class="side"><div class="head">Session · kido</div>
+<div class="row"><span class="dot"></span><span class="agent">@reviewer · fix contrast in themes</span></div>
+<div class="row"><span class="dot idle"></span><span class="muted">Terminal</span></div>
+<div class="row"><span class="dot"></span><span class="agent">@impl · ahrefs palette</span></div>
+<div class="row sub"><span class="dot done">✓</span><span class="muted">build · 12s</span></div>
+</div>
+<pre class="term"><span class="c2 b">andrepopp@kido</span> <span class="c4 b">~/Workspace/kido-app</span> <span class="c8">(kido-app)</span>
+<span class="c0 b">$</span> git diff --stat app/Resources/themes
+<span class="c3">diff --git a/themes/ahrefs-light b/themes/ahrefs-light</span>
+<span class="c6">@@ -1,6 +1,6 @@</span>
+ background = #F6F5F2
+<span class="c1">-foreground = #424242</span>
+<span class="c2">+foreground = #1C1A14</span>
+<span class="c1">-palette = 3=#dc682a</span>
+<span class="c2">+palette = 3=#a85400</span>
+<span class="c0 b">$</span> make build
+<span class="c8">[1/4]</span> compiling <span class="c4">app/App/GhosttyRuntime.swift</span>
+<span class="c8">[2/4]</span> compiling <span class="c4">app/App/SidebarView.swift</span>
+<span class="c3 b">warning:</span> <span class="c4">app/App/PaneView.swift:212:9</span> variable 'rows' was never mutated
+<span class="c3">warning:</span> unused import <span class="c5">Combine</span>
+<span class="c1 b">error:</span> <span class="c4">app/App/Feed.swift:40:12</span> cannot find 'palette16' in scope
+<span class="c8">[4/4]</span> linking <span class="c6">Kido.app</span> … <span class="c2 b">done</span> in <span class="c5">12.4s</span>
+<span class="c0 b">$</span> kido runs
+<span class="c8">id        status     title</span>
+<span class="c7">r8f2a1</span>    <span class="c2">running</span>    ahrefs palette
+<span class="c7">r7c0d9</span>    <span class="c1">failed</span>     exit 1
+<span class="c7">r6b113</span>    <span class="c8">completed</span>  review
+
+normal  <span class="c0">black</span> <span class="c1">red</span> <span class="c2">green</span> <span class="c3">yellow</span> <span class="c4">blue</span> <span class="c5">magenta</span> <span class="c6">cyan</span> <span class="c7">white</span>
+bright  <span class="c8">black</span> <span class="c9">red</span> <span class="c10">green</span> <span class="c11">yellow</span> <span class="c12">blue</span> <span class="c13">magenta</span> <span class="c14">cyan</span> <span class="c15">white</span>
+bold    <span class="c0 b">black</span> <span class="c1 b">red</span> <span class="c2 b">green</span> <span class="c3 b">yellow</span> <span class="c4 b">blue</span> <span class="c5 b">magenta</span> <span class="c6 b">cyan</span> <span class="c7 b">white</span>
+kido    <span class="c16">16</span> <span class="c17">17 muted</span> <span class="c18">18</span> <span class="c19">19</span> <span style="background:var(--c20)"> 20 surface </span>
+swatch  <span class="sw c1"></span><span class="sw c2"></span><span class="sw c3"></span><span class="sw c4"></span><span class="sw c5"></span><span class="sw c6"></span> <span class="sw c9"></span><span class="sw c10"></span><span class="sw c11"></span><span class="sw c12"></span><span class="sw c13"></span><span class="sw c14"></span>
+<span class="c0 b">$</span> <span class="cursor"> </span></pre></div></div>
+</div>
+<script>
+const h=location.hash.slice(1);if(h==='light'||h==='dark'){document.querySelector('.wrap').classList.add('one');
+document.querySelectorAll('.theme').forEach((e,i)=>{if((i===0)!==(h==='light'))e.classList.add('off')})}
+</script>
