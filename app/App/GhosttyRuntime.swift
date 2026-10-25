@@ -43,6 +43,7 @@ extension NSColor {
     private enum Preview: Equatable { case file, theme(String) }
     private var preview: Preview?
     private var sessionTheme: String?
+    private var loadedFont: Float = 0
     private var loadedTheme: String?
     var themeOverride: ThemeOverride {
         switch preview { case .file: .none; case .theme(let value): .preview(value); case nil: sessionTheme.map(ThemeOverride.session) ?? .none }
@@ -100,7 +101,7 @@ extension NSColor {
         ghostty_config_load_string(config, policy, UInt(policy.utf8.count), "/kido-clipboard")
     }
     var onConfigChange: () -> Void = {}
-    var onConfigReload: () -> Void = {}
+    var onConfigReload: (Float?) -> Void = { _ in }
 
     var colorScheme: ghostty_color_scheme_e {
         NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
@@ -135,6 +136,8 @@ extension NSColor {
         guard let loaded = Self.loadConfig(file: self.configFile, home: home) else { return nil }
         self.fileDiagnostics = loaded.diagnostics
         self.config = loaded.config
+        let fontKey = "font-size"
+        _ = ghostty_config_get(loaded.config, &loadedFont, fontKey, UInt(fontKey.utf8.count))
         self.settings = loaded.settings
         self.diagnostics = loaded.diagnostics
 
@@ -341,11 +344,16 @@ extension NSColor {
             ghostty_string_free(old)
             ghostty_string_free(new)
         }
+        var newFont: Float = 0
+        let fontKey = "font-size"
+        _ = ghostty_config_get(loaded.config, &newFont, fontKey, UInt(fontKey.utf8.count))
+        let font = loadedFont != newFont ? newFont : nil
+        loadedFont = newFont
         loadedTheme = override
         settings = loaded.settings
         ghostty_app_update_config_without_surface_propagation(app, loaded.config)
         ghostty_config_free(loaded.config)
-        if changed { DispatchQueue.main.async { [weak self] in self?.onConfigReload() } }
+        if changed { DispatchQueue.main.async { [weak self] in self?.onConfigReload(font) } }
     }
 
     private func refreshWatches() {
