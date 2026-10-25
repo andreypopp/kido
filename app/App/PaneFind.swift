@@ -30,13 +30,13 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         setAccessibilityRole(.group)
         setAccessibilitySubrole(.init(rawValue: "AXLandmarkSearch"))
         setAccessibilityLabel("Find in Terminal")
-        magnifier.contentTintColor = .secondaryLabelColor
+        magnifier.contentTintColor = Chrome.inkSecondary
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: 13)
         field.placeholderAttributedString = NSAttributedString(string: "Find in Terminal", attributes: [
-            .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor])
+            .font: NSFont.systemFont(ofSize: 13), .foregroundColor: Chrome.inkSecondary])
         field.setAccessibilityLabel("Find in Terminal")
         field.delegate = self
         count.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -60,7 +60,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
 
     override func updateLayer() {
         super.updateLayer()
-        let text: NSColor = focused ? .labelColor : .secondaryLabelColor
+        let text: NSColor = focused ? Chrome.ink : Chrome.inkSecondary
         if field.textColor != text { field.textColor = text }
     }
 
@@ -75,7 +75,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         case .failed: (compact ? "Failed" : "Search failed", false)
         case .loaded(let total): (compact ? "\(total) (loaded)" : total > 0 ? "\(total) matches (loaded)" : "No matches (loaded)", total > 0)
         }
-        count.textColor = status == .failed ? .systemRed : .secondaryLabelColor
+        count.textColor = status == .failed ? Chrome.errorText : Chrome.inkSecondary
         previousButton.isEnabled = navigable
         nextButton.isEnabled = navigable
         guard count.stringValue != text else { return }

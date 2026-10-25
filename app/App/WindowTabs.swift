@@ -4,7 +4,7 @@ import TmuxControl
 
 final class WindowTabs: NSView {
     private final class HeaderBackground: NSView {
-        var color = NSColor.windowBackgroundColor
+        var color = Chrome.defaultPaper
         override var isOpaque: Bool { true }
         override func draw(_ rect: NSRect) {
             effectiveAppearance.performAsCurrentDrawingAppearance { color.setFill(); bounds.fill() }
@@ -25,7 +25,7 @@ final class WindowTabs: NSView {
         }
         let separatorWidth = sidebar?.separatorWidth ?? 0
         headerSeparator.frame = NSRect(x: 0, y: 0, width: separatorWidth, height: frame.height)
-        headerSeparator.color = sidebar?.separatorColor ?? .separatorColor
+        headerSeparator.color = sidebar?.separatorColor ?? Chrome.hairline
         headerSeparator.isHidden = sidebar == nil || showsActivity
         headerShadow.frame = NSRect(x: separatorWidth, y: 0,
                                     width: SidebarShadow.dockedWidth, height: frame.height).insetBy(dx: 0, dy: -32)
@@ -138,7 +138,7 @@ final class WindowTabs: NSView {
     }
     var select: (WindowStep) -> Void = { _ in }
     var hostLabel: () -> (text: String, alias: String, connected: Bool)? = { nil }
-    var theme: (background: NSColor, appearance: NSAppearance?) = (.windowBackgroundColor, nil) {
+    var theme: (background: NSColor, appearance: NSAppearance?) = (Chrome.defaultPaper, nil) {
         didSet {
             headerBackground.color = theme.background
             synchronizeHost()
@@ -331,12 +331,12 @@ final class WindowTabs: NSView {
             let hostWidth = geometry.host, tabWidth = geometry.width
             if let host = hostLabel(), hostWidth > 25 {
                 NSGraphicsContext.saveGraphicsState()
-                NSGraphicsContext.current?.cgContext.setAlpha(host.connected ? 1 : 0.45)
+                NSGraphicsContext.current?.cgContext.setAlpha(host.connected ? 1 : Chrome.disconnectedHostAlpha)
                 let style = NSMutableParagraphStyle()
                 style.lineBreakMode = .byTruncatingTail
                 (host.text as NSString).draw(in: NSRect(x: 2, y: bounds.midY - 8, width: hostWidth - 25, height: 16),
-                    withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style])
-                NSColor.separatorColor.setFill()
+                    withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: Chrome.inkSecondary, .paragraphStyle: style])
+                Chrome.hairline.setFill()
                 NSRect(x: hostWidth - 11, y: bounds.midY - 8, width: 1, height: 16).fill()
                 NSGraphicsContext.restoreGraphicsState()
             }
@@ -355,16 +355,16 @@ final class WindowTabs: NSView {
                     NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
                 }
                 if tab.active || index == dragged {
-                    NSColor.labelColor.withAlphaComponent(0.075).setFill()
+                    Chrome.tabPill.setFill()
                     let path = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
                     path.fill()
-                    NSColor.labelColor.withAlphaComponent(0.075).setStroke()
+                    Chrome.tabPill.setStroke()
                     path.lineWidth = 1
                     path.stroke()
                 }
                 let status = visibleStatus(tab.status)
                 (tab.displayName as NSString).draw(in: label(x, tabWidth),
-                    withAttributes: [.font: labelFont(tab), .foregroundColor: tab.active ? NSColor.labelColor : NSColor.secondaryLabelColor,
+                    withAttributes: [.font: labelFont(tab), .foregroundColor: tab.active ? Chrome.ink : Chrome.inkSecondary,
                                      .paragraphStyle: paragraph])
                 if status != .quiet && hovered != index {
                     drawStatusMark(status, at: NSPoint(x: rect.minX + 15, y: rect.midY), flipped: false)
