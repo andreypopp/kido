@@ -1,7 +1,7 @@
 import AppKit
 
 final class SidebarSeparator: NSView {
-    var color = NSColor.separatorColor { didSet { needsDisplay = true } }
+    var color = Chrome.hairline { didSet { needsDisplay = true } }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) { color.setFill(); bounds.fill() }
 }
@@ -37,11 +37,12 @@ final class SidebarShadow: NSView {
                 shadow.shadowOffset = NSSize(width: 0, height: -4)
                 path = NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 2), xRadius: 16, yRadius: 16)
             }
-            shadow.shadowBlurRadius = 14
             let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            shadow.shadowColor = NSColor.black.withAlphaComponent(dark ? 0.4 : 0.18)
+            let shadowStyle = Chrome.sidebarShadow(dark: dark)
+            shadow.shadowBlurRadius = shadowStyle.blur
+            shadow.shadowColor = shadowStyle.color
             shadow.set()
-            NSColor.black.setFill()
+            Chrome.shadowMask.setFill()
             path.fill()
         }
     }
@@ -67,7 +68,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     #endif
     private let separator = SidebarSeparator()
     private let shadow = SidebarShadow()
-    var separatorColor: NSColor = .separatorColor {
+    var separatorColor: NSColor = Chrome.hairline {
         didSet {
             separator.color = separatorColor
             tabs.refreshHeader()
@@ -236,7 +237,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         }
         dockedGlass?.cornerRadius = isFloating ? 18 : 0
         dockedGlass?.shadow = nil
-        dockedGlass?.layer?.shadowOpacity = 0
+        dockedGlass?.layer?.shadowOpacity = 0 // chrome-allow: disable the native glass shadow
         dockedGlass?.layer?.cornerRadius = isFloating ? 18 : 0
         dockedGlass?.layer?.masksToBounds = isFloating
         list.layer?.backgroundColor = listBackground?.cgColor

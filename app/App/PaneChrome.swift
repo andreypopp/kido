@@ -4,7 +4,7 @@ import TmuxControl
 final class FocusEdge: NSView {
     var floating = false { didSet { if floating != oldValue { needsDisplay = true } } }
     static func stroke(_ rect: NSRect, floating: Bool = false) {
-        NSColor.controlAccentColor.withAlphaComponent(0.5).setStroke()
+        Chrome.focusStroke.setStroke()
         NSBezierPath(roundedRect: rect.insetBy(dx: floating ? 1 : 0.5, dy: floating ? 1 : 0.5),
                      xRadius: floating ? 17 : 0, yRadius: floating ? 17 : 0).stroke()
     }
@@ -72,7 +72,7 @@ final class PaneChrome: NSView {
             case .plain: break
             case .edge: FocusEdge.stroke(bounds)
             case .overlay:
-                runtime.background.withAlphaComponent(0.45).setFill()
+                Chrome.floatingOverlay(runtime.background).setFill()
                 bounds.fill()
             }
         }
@@ -111,7 +111,7 @@ final class PaneDropPreview: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let rect else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            NSColor.controlAccentColor.withAlphaComponent(0.3).setFill()
+            Chrome.dropPreview.setFill()
             let bar = rect.width == 4 || rect.height == 4
             NSBezierPath(roundedRect: bar ? rect : rect.insetBy(dx: 3, dy: 3), xRadius: bar ? 2 : 8, yRadius: bar ? 2 : 8).fill()
         }
@@ -123,8 +123,7 @@ class PaneCapsule: NSView {
     let spinner = CAShapeLayer()
     let runtime: GhosttyRuntime
     private let radius: CGFloat
-    private let fillMix: Double
-    private let edgeAlpha: CGFloat
+    private let surface: (fillMix: Double, edgeAlpha: CGFloat)
     private let edgeOutset: CGFloat
     private let edge = CALayer()
     private let highlight = CAShapeLayer()
@@ -134,24 +133,23 @@ class PaneCapsule: NSView {
     var separatorX: [CGFloat] = [] { didSet { needsLayout = true } }
     var focused: Bool { false }
 
-    init(runtime: GhosttyRuntime, radius: CGFloat, separators: Int = 0, fillMix: Double = 0.08, edgeAlpha: CGFloat = 0.12, edgeOutset: CGFloat = 0.5) {
+    init(runtime: GhosttyRuntime, radius: CGFloat, separators: Int = 0, surface: (fillMix: Double, edgeAlpha: CGFloat) = Chrome.capsuleSurface, edgeOutset: CGFloat = 0.5) {
         self.runtime = runtime
         self.radius = radius
-        self.fillMix = fillMix
-        self.edgeAlpha = edgeAlpha
+        self.surface = surface
         self.edgeOutset = edgeOutset
         self.separators = (0..<separators).map { _ in CALayer() }
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = radius
         let shadow = NSShadow()
-        shadow.shadowColor = .black.withAlphaComponent(0.2)
+        shadow.shadowColor = Chrome.capsuleShadow.color
         shadow.shadowOffset = NSSize(width: 0, height: -6)
-        shadow.shadowBlurRadius = 9
+        shadow.shadowBlurRadius = Chrome.capsuleShadow.blur
         self.shadow = shadow
         edge.borderWidth = 0.5
         edge.cornerRadius = radius + edgeOutset
-        highlight.fillColor = CGColor(gray: 1, alpha: 0.12)
+        highlight.fillColor = Chrome.capsuleHighlight
         highlight.fillRule = .evenOdd
         highlight.cornerRadius = radius
         highlight.masksToBounds = true
@@ -182,12 +180,12 @@ class PaneCapsule: NSView {
     }
     override func updateLayer() {
         let background = runtime.background, foreground = runtime.foreground
-        layer?.backgroundColor = background.mixed(toward: foreground, amount: fillMix).cgColor
-        edge.borderColor = foreground.withAlphaComponent(edgeAlpha).cgColor
+        layer?.backgroundColor = background.mixed(toward: foreground, amount: surface.fillMix).cgColor
+        edge.borderColor = Chrome.capsuleEdge(foreground, alpha: surface.edgeAlpha).cgColor
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            for separator in separators { separator.backgroundColor = NSColor.separatorColor.cgColor }
-            spinner.strokeColor = NSColor.secondaryLabelColor.cgColor
-            ring.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.4).cgColor
+            for separator in separators { separator.backgroundColor = Chrome.hairline.cgColor }
+            spinner.strokeColor = Chrome.inkSecondary.cgColor
+            ring.borderColor = Chrome.capsuleRing.cgColor
         }
     }
     override func layout() {
