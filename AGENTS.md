@@ -916,8 +916,7 @@ native program status.
 
 Many tests have a comment that identifies their check or their
 important assertion. Before you weaken or simplify such a test, read
-its comment. Negative controls are essential.
-Never delete one half of a pair.
+its comment.
 
 ### Other traps
 
@@ -1039,12 +1038,11 @@ A brief does not repeat them.
   Do not add new tests for it.
   Trivial changes include a character of spacing or a word of text.
 
-  Use negative controls only where a test could pass without checking
-  the intended behaviour:
-  timing, races, deduplication or polling.
-  Negative controls break the code to prove that a test can fail.
-  Never use them for a trivial change such as text, spacing or a
-  renamed field.
+  Make sure that each test checks the intended behaviour. Assert the
+  specific effect of the change, not a fact that is also true without
+  it. For timing, races, deduplication or polling, assert the result
+  that a defect would change. Do not break the code to prove that a
+  test can fail.
 
   After the last edit, run `make verify` once.
   Use `E2E=TestFoo` to limit e2e to the changed behaviour.
