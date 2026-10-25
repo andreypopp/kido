@@ -445,7 +445,8 @@ final class WindowView: NSView {
             onInput: { [weak connection] in connection?.sendKeys(id, $0) })
         else { return nil }
         view.onURL = { [weak connection] in connection?.openURL($0) }
-        view.onPrompt = { [weak self] pane, anchor in self?.session?.boxes.open(pane, anchor) }
+        view.canPrompt = { [weak self] in self?.session?.canPrompt() == true }
+        view.onPrompt = { [weak self] pane, quote in self?.session?.onPrompt(pane, quote) }
         view.onSelect = { [weak self] in
             guard let self else { return }
             connection?.userFocus()

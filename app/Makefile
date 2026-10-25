@@ -85,6 +85,7 @@ demo-stop:
 test: all
 	cd Packages/TmuxControl && swift test
 	cd Packages/SidebarFeed && swift test
+	cd Packages/PromptMarkdown && swift test
 
 clean:
 	rm -rf build/xcode.noindex/derived build/xcode.noindex/derived-demo build/xcode.noindex/derived-tsan build/xcode.noindex/derived-asan build/xcode.noindex/derived-stress build/xcode.noindex/derived-tsan-stress build/xcode.noindex/derived-asan-stress Kido.xcodeproj

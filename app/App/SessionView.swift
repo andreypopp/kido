@@ -12,8 +12,8 @@ final class SessionView: NSView {
     var sidebarFocused: () -> Bool = { false }
     private(set) var updating = false
     let runtime: GhosttyRuntime
-    let boxes: PromptBoxes
-    private var sessionID: SessionID?
+    var canPrompt: () -> Bool = { false }
+    var onPrompt: (PaneView, String?) -> Void = { _, _ in }
     // The client's session's windows, and the hot windows of other sessions,
     // which tmux sends no output for.
     private(set) var windows: [WindowID: WindowView] = [:]
@@ -23,12 +23,9 @@ final class SessionView: NSView {
 
     init(runtime: GhosttyRuntime) {
         self.runtime = runtime
-        boxes = PromptBoxes()
         super.init(frame: .zero)
         wantsLayer = true
         clipsToBounds = true
-        boxes.session = self
-        addSubview(boxes)
     }
 
     required init?(coder: NSCoder) {
@@ -36,7 +33,6 @@ final class SessionView: NSView {
     }
 
     func close() {
-        boxes.closeAll()
         for view in windows.values { view.close() }
         for view in others.values { view.close() }
         windows = [:]
@@ -57,7 +53,7 @@ final class SessionView: NSView {
         forEachPane { ghostty_surface_set_color_scheme($0.surface, runtime.colorScheme) }
     }
 
-    func update(_ listing: [WindowListing], alive: Set<WindowID>, session: SessionID, sessions: [SessionListing]) {
+    func update(_ listing: [WindowListing], alive: Set<WindowID>) {
         updating = true
         defer { updating = false }
         let old = windows.merging(others) { $1 }
@@ -69,7 +65,7 @@ final class SessionView: NSView {
             if view.superview == nil {
                 view.frame = bounds
                 view.isHidden = true
-                addSubview(view, positioned: .below, relativeTo: boxes)
+                addSubview(view)
             }
             windows[w.id] = view
             view.update(w.layout, w.visible)
@@ -78,21 +74,15 @@ final class SessionView: NSView {
         others.values.forEach { $0.stale = true }
         for (id, gone) in old where windows[id] == nil && others[id] == nil { gone.close() }
         recent.removeAll { windows[$0] == nil && others[$0] == nil }
-        self.sessionID = session
-        let panes = Set(listing.flatMap { $0.layout.root.panes.map(\.id) + $0.visible.root.panes.map(\.id) })
-        boxes.update(session: session, live: Set(sessions.map(\.id)), panes: panes)
     }
 
     func layoutChanged(_ window: WindowID, _ layout: Layout, _ visible: Layout) {
         windows[window]?.update(layout, visible)
-        guard let sessionID else { return }
-        boxes.layoutChanged(session: sessionID, panes: Set(windows.values.flatMap(\.paneIDs)))
     }
 
     private var shown: WindowView? { windows.values.first { !$0.isHidden } }
 
     func show(_ window: WindowID?) {
-        boxes.show(sessionID)
         let start = DispatchTime.now(), before = shown, last = recent.first
         let focused = (self.window?.firstResponder as? PaneView)?.isDescendant(of: self) == true
         defer { DispatchQueue.main.async { [weak self] in self?.evict() } }
@@ -140,11 +130,6 @@ final class SessionView: NSView {
     func pane(_ pane: PaneID) -> PaneView? { windows.values.lazy.flatMap(\.panes).first { $0.pane == pane } }
 
     func windowName(_ window: WindowID) -> String? { windows[window]?.name }
-
-    override func layout() {
-        super.layout()
-        boxes.frame = bounds
-    }
 
     // tmux has one grid for all panes, so every surface has one font size,
     // and the lowest-numbered pane is the one the cell metric is read from.
