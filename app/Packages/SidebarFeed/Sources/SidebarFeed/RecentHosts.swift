@@ -14,9 +14,4 @@ public struct RecentHosts: Codable, Equatable, Sendable {
     }
     public mutating func clear() { entries = [] }
     public var isEmpty: Bool { entries.isEmpty }
-    public func relativeTime(_ entry: Entry, now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(entry.date)))
-        return seconds < 60 ? "Just now" : seconds < 3600 ? "\(seconds / 60) m ago"
-            : seconds < 86400 ? "\(seconds / 3600) h ago" : "\(seconds / 86400) d ago"
-    }
 }

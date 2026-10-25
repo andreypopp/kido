@@ -54,12 +54,13 @@ private class AlertEscape: NSView {
     let notificationID = UUID().uuidString
     var feedFresh = true
     enum DialCause {
-        case launch, newWindow, reopen, remoteRequest, reconnect, serverRestart
+        case launch, newWindow, newSession, reopen, remoteRequest, reconnect, serverRestart
         case redial(String)
         var label: String {
             switch self {
             case .launch: "launch"
             case .newWindow: "new window"
+            case .newSession: "new session"
             case .reopen: "reopen"
             case .remoteRequest: "remote request"
             case .reconnect: "reconnect"
@@ -97,6 +98,11 @@ private class AlertEscape: NSView {
         return model
     }
     private(set) var snapshot: Snapshot?
+    var canNavigate: Bool {
+        if case .mismatch = link { return false }
+        return alive && snapshot != nil && snapshot?.error == nil
+    }
+    private var pendingNewSession = false
     private var navigationModel = SessionModel()
     private enum Target { case pane(Snapshot.Position), window(SessionID, WindowID) }
     private var focusTarget: Target?
@@ -105,7 +111,6 @@ private class AlertEscape: NSView {
     private var completing = false
     var request: RPCRequestHandler = Feed.unavailable
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
-    private(set) var palette: Palette?
 
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
     private static let seenChanged = Notification.Name("KidoSeenChanged")
@@ -189,6 +194,7 @@ private class AlertEscape: NSView {
     init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
         self.openBrowser = openBrowser
         self.host = host
+        if case .newSession = cause { pendingNewSession = true }
         self.runtime = runtime
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(localServerRestarted(_:)), name: Self.localServerRestarted, object: nil)
@@ -240,11 +246,7 @@ private class AlertEscape: NSView {
         }
         sidebar.list.renameSession = { [weak self] id, name, done in
             guard let self else { return done("The control client is not ready.") }
-            send([Command("rename-session", "-t", id, "--", name)]) { replies in
-                guard let reply = replies?.first else { return done("The control client is not ready.") }
-                if case .failure(let lines) = reply { done(lines.joined(separator: "\n")) }
-                else { done(nil) }
-            }
+            renameSession(id, name, done: done)
         }
         sidebar.list.reorder = reorder
         sidebar.tabs.reorder = reorder
@@ -265,8 +267,6 @@ private class AlertEscape: NSView {
             guard let self else { return }
             sidebar.updateFocusEdge()
             session?.windows.values.filter { !$0.isHidden }.forEach { $0.updateFocusTreatment() }
-            // NSTextField's setFrameSize ends and restarts editing, which briefly makes the window first responder.
-            if let palette, next !== window, !((next as? NSView)?.isDescendant(of: palette) ?? false) { closePalette(restoring: nil) }
             if let view = next as? NSView,
                let box = session?.boxes.boxes.first(where: { $0 === view || view.isDescendant(of: $0) }) {
                 session?.boxes.raise(box)
@@ -793,7 +793,10 @@ private class AlertEscape: NSView {
             endHold()
             _ = observeSeen()
             Notifier.shared.update(host: host, snapshotOwner: self)
-            snapshotReceived()
+            if pendingNewSession, snapshot.error == nil {
+                pendingNewSession = false
+                newSession()
+            }
         default: break
         }
         if case .running(let snapshot) = status {
@@ -802,6 +805,7 @@ private class AlertEscape: NSView {
             updateTabs(projected)
         } else { sidebar.list.update(status) }
         ready()
+        if case .running = status { menuChanged(); snapshotReceived() }
     }
 
     #if KIDO_VISUAL || KIDO_STRESS
@@ -854,6 +858,30 @@ private class AlertEscape: NSView {
         }
     }
 
+    var currentSession: SessionNodes? {
+        snapshot?.sessions.first { $0.id == navigation.session }
+    }
+
+    private var currentWindow: (id: WindowID, name: String)? {
+        navigation.windows.first { $0.id == navigation.window }.map { ($0.id, $0.name) }
+    }
+
+    func closeCurrentWindow() {
+        if let window = currentWindow { confirmClose(.window(window.id), name: window.name) }
+    }
+
+    func closeCurrentSession() {
+        if let session = currentSession { confirmClose(.session(session.id), name: session.name) }
+    }
+
+    func renameSession(_ id: SessionID, _ name: String, done: @escaping (String?) -> Void) {
+        send([Command("rename-session", "-t", id, "--", name)]) { replies in
+            guard let reply = replies?.first else { return done("The control client is not ready.") }
+            if case .failure(let lines) = reply { done(lines.joined(separator: "\n")) }
+            else { done(nil) }
+        }
+    }
+
     @objc func newSession() { perform(.newSession) }
 
     func selectWindow(_ step: WindowStep) {
@@ -874,6 +902,7 @@ private class AlertEscape: NSView {
         let command: Command = switch target {
         case .pane(let id): Command("kill-pane", "-t", id)
         case .window(let id): Command("kill-window", "-t", id)
+        case .session(let id): Command("kill-session", "-t", id)
         }
         let scope = closeScope(snapshot, target: target)
         let commands = scope.descendants.map { Command("kill-window", "-t", $0) } + [command]
@@ -896,22 +925,11 @@ private class AlertEscape: NSView {
         alert.informativeText = switch target {
         case .pane: "A process is still running in this pane. Closing the pane will end it."
         case .window: "Processes are still running in this window. Closing the window will end them."
+        case .session: "Processes are still running in this session. Closing the session will end them."
         }
         alert.addButton(withTitle: "Close").keyEquivalent = "\r"
         alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
         prepareAlert(alert) { response in if response == .alertFirstButtonReturn { close() } }
-    }
-
-    func togglePalette(_ entries: [PaletteEntry]) {
-        guard palette == nil else { return closePalette(restoring: nil) }
-        let previous = window.firstResponder
-        let palette = Palette(runtime: runtime, entries: entries)
-        palette.frame = sidebar.content.bounds
-        palette.dismiss = { [weak self] in self?.closePalette(restoring: previous) }
-        self.palette = palette
-        sidebar.content.addSubview(palette)
-        palette.layoutSubtreeIfNeeded()
-        window.makeFirstResponder(palette.field)
     }
 
     func reveal() {
@@ -919,15 +937,6 @@ private class AlertEscape: NSView {
         NSApp.activate(ignoringOtherApps: true)
         window.deminiaturize(nil)
         window.makeKeyAndOrderFront(nil)
-    }
-
-    private func closePalette(restoring previous: NSResponder?) {
-        guard let palette else { return }
-        self.palette = nil
-        palette.field.abortEditing()
-        palette.removeFromSuperview()
-        if let view = previous as? NSView, view.window === window { window.makeFirstResponder(view) }
-        else if previous != nil { focusSelected() }
     }
 
     func perform(_ request: RPCRequest) {
@@ -1014,7 +1023,7 @@ private class AlertEscape: NSView {
         sidebar.tabs.animated { updateTabs(projected) }
     }
 
-    private func focusSelected() {
+    func focusSelected() {
         if let target = focusTarget {
             switch target {
             case .pane(let position):

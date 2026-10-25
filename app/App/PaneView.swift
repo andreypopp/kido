@@ -809,6 +809,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     func visualRefuseInput() { acceptingInput = false }
     static var renderOffscreen = false
     private var visualFrames: [UInt64: (ghostty_render_presentation_status_e) -> Void] = [:]
+    var visualInstalledPixels: CGSize? { installedPixels }
     var visualReady: Bool { !resizeDirty && finalEpoch == nil && restoreRequested == nil && scrollPending == nil && rendering == nil }
     var visualState: String {
         "insets=\(renderInsets.top),\(renderInsets.bottom) pill=\(!historyLimit.isHidden) find=\(find != nil) alternate=\(alternate) scroll=\(String(describing: scrollDistance))"
@@ -1548,21 +1549,28 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     override var acceptsFirstResponder: Bool { true }
 
+    private var surfaceFocus: Bool?
+
+    private func setSurfaceFocus(_ focused: Bool) {
+        guard !disposed, let surface, surfaceFocus != focused else { return }
+        surfaceFocus = focused
+        ghostty_surface_set_focus(surface, focused)
+    }
+
     func syncFocus() {
-        guard let surface else { return }
-        ghostty_surface_set_focus(surface, window?.firstResponder === self)
+        setSurfaceFocus(window?.firstResponder === self && (NSApp.keyWindow == nil || NSApp.keyWindow === window))
     }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result { ghostty_surface_set_focus(surface, true) }
+        if result { syncFocus() }
         return result
     }
 
     override func resignFirstResponder() -> Bool {
         snapScroll()
         let result = super.resignFirstResponder()
-        if result { ghostty_surface_set_focus(surface, false) }
+        if result { setSurfaceFocus(false) }
         return result
     }
 
@@ -1634,7 +1642,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     @objc func runCommand(_ sender: NSMenuItem) {
         guard let command = sender.representedObject as? PaneCommand else { return }
-        if case .clear = command, copyMode != nil { return }
         onCommand(command)
     }
 

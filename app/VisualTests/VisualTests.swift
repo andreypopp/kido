@@ -1956,15 +1956,28 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     func testPaletteJumpToAPaneHiddenByZoomShowsAndFocusesIt() async throws {
-        directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "requires a private KIDO_APP_SERVER")
-        socket = directory.appendingPathComponent("socket").path
         let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
         XCTAssertEqual(output.status, 0, output.err)
+        let server = try JSONDecoder().decode(Server.self, from: Data(output.out.utf8))
         let first = try await command(["display-message", "-p", "-t", "$0:", "#{pane_id}"])
-        _ = try await command(["respawn-pane", "-k", "-t", first, "exec /bin/cat"])
-        let second = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", first, "exec /bin/cat"])
+        _ = try await command(["respawn-pane", "-k", "-t", first, "printf '\\033[2J\\033[HPALETTE UPPER\\r\\n'; exec /bin/cat"])
+        let second = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", first, "printf '\\033[2J\\033[HPALETTE LOWER\\r\\n'; exec /bin/cat"])
+        for (pane, line) in [(first, "PALETTE UPPER"), (second, "PALETTE LOWER")] {
+            let deadline = Date().addingTimeInterval(5)
+            var text = try await command(["capture-pane", "-p", "-t", pane])
+            while text != line && Date() < deadline { text = try await command(["capture-pane", "-p", "-t", pane]) }
+            XCTAssertEqual(text, line)
+            _ = try await command(["clear-history", "-t", pane])
+            let history = try await command(["capture-pane", "-p", "-S", "-", "-t", pane])
+            XCTAssertEqual(history, line)
+        }
+        _ = try await command(["rename-window", "-t", first, "cat", ";", "select-pane", "-t", first, "-T", "cat", ";", "select-pane", "-t", second, "-T", "cat"])
         _ = try await command(["resize-pane", "-Z", "-t", first])
-        let owner = try sidebarOwner()
+        try loadRuntime()
+        let app = AppDelegate(runtime: runtime)
+        let owner = try XCTUnwrap(app.open(.local, start: false))
+        defer { app.closePalette(); owner.close() }
+        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
         owner.start()
         func shown() -> [String] {
             owner.testSession?.windows.values.first { !$0.isHidden }?.panes.filter { !$0.isHidden }.map(\.pane.description) ?? []
@@ -1973,19 +1986,95 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("the zoomed pane alone is shown") {
             owner.testConnection != nil && shown() == [first] && rows().contains { $0.target?.pane.description == second }
         }
-        owner.togglePalette(PaletteEntry.sessions(owner))
-        let palette = try XCTUnwrap(owner.palette)
-        let field = try XCTUnwrap(owner.window.firstResponder as? NSTextView)
+        app.togglePalette()
+        let panel = try XCTUnwrap(app.palettePanel)
+        let palette = panel.palette
+        let field = try XCTUnwrap(panel.firstResponder as? NSTextView)
         let index = try XCTUnwrap(rows().firstIndex { $0.target?.pane.description == second })
-        XCTAssertEqual(palette.shown.count, rows().count)
+        XCTAssertEqual(palette.shown.prefix(rows().count).map(\.entry.title), rows().map(\.title))
         for _ in 0..<index { field.doCommand(by: #selector(NSResponder.moveDown(_:))) }
         field.doCommand(by: #selector(NSResponder.insertNewline(_:)))
-        XCTAssertNil(owner.palette)
+        XCTAssertNil(app.palettePanel)
         try await wait("both panes shown, the chosen one focused") {
             Set(shown()) == [first, second] && (owner.window.firstResponder as? PaneView)?.pane.description == second
         }
         let state = try await command(["display-message", "-p", "-t", second, "#{window_zoomed_flag} #{pane_active}"])
         XCTAssertEqual(state, "0 1", "tmux unzooms the window and makes the chosen pane active")
+        owner.window.setFrame(NSRect(origin: owner.window.frame.origin, size: NSSize(width: 1100, height: 740)), display: false)
+        let windowView = try XCTUnwrap(owner.testSession?.windows.values.first { !$0.isHidden })
+        let root = try XCTUnwrap(owner.window.contentView?.superview)
+        func layoutWindow() {
+            owner.sidebar.view.needsLayout = true
+            root.needsLayout = true
+            root.layoutSubtreeIfNeeded()
+            owner.sidebar.viewDidLayout()
+        }
+        layoutWindow()
+        try await wait("resized two-pane window and sidebar selection are ready") {
+            windowView.visualGeometryReady && windowView.panes.allSatisfy(\.visualReady)
+                && rows().contains { $0.focused && $0.target?.pane.description == second }
+        }
+        _ = try await command(["select-layout", "-t", first, "even-vertical"])
+        let heights = try await command(["list-panes", "-t", first, "-F", "#{pane_id} #{pane_height}"])
+        XCTAssertEqual(heights, "\(first) 22\n\(second) 22")
+        try await wait("both even-vertical panes have 22 rendered rows") {
+            windowView.visualGeometryReady && windowView.panes.allSatisfy {
+                $0.visualReady && ghostty_surface_size($0.surface).rows == 22
+            }
+        }
+        let previous = NSApp.mainMenu
+        defer { NSApp.mainMenu = previous }
+        NSApp.mainMenu = app.mainMenu()
+        app.togglePalette()
+        let rootPanel = try XCTUnwrap(app.palettePanel)
+        owner.window.makeFirstResponder(owner.window)
+        layoutWindow()
+        rootPanel.palette.layoutSubtreeIfNeeded()
+        let frames = [first: NSRect(x: 7.5, y: 0.5, width: 792, height: 338), second: NSRect(x: 7.5, y: 339, width: 792, height: 349)]
+        try await wait("complete native pane layout and matching surface sizes") {
+            windowView.visualGeometryReady && windowView.panes.allSatisfy { pane in
+                guard let frame = frames[pane.pane.description] else { return false }
+                return pane.frame == frame && pane.visualReady
+                    && pane.visualInstalledPixels == CGSize(width: frame.width * 2, height: frame.height * 2)
+            }
+        }
+        for pane in windowView.panes {
+            let presented = expectation(description: "palette background pane frame")
+            pane.visualFrame { result in
+                XCTAssertEqual(result, GHOSTTY_RENDER_PRESENTATION_PRESENTED)
+                presented.fulfill()
+            }
+            await fulfillment(of: [presented], timeout: 10)
+            var text = ghostty_text_s()
+            let selection = ghostty_selection_s(top_left: ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0), bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0), rectangle: false)
+            XCTAssertTrue(ghostty_surface_read_text(pane.surface, selection, &text))
+            let bytes = try XCTUnwrap(text.text)
+            defer { ghostty_surface_free_text(pane.surface, &text) }
+            XCTAssertEqual(String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), pane.pane.description == first ? "PALETTE UPPER" : "PALETTE LOWER")
+        }
+        for pane in windowView.panes {
+            let frame = try XCTUnwrap(frames[pane.pane.description])
+            XCTAssertEqual(pane.frame, frame, pane.resizeDebug)
+            XCTAssertEqual(pane.visualInstalledPixels, CGSize(width: frame.width * 2, height: frame.height * 2), pane.resizeDebug)
+            print("palette capture", pane.pane, pane.resizeDebug)
+            guard pane.frame == frame, pane.visualInstalledPixels == CGSize(width: frame.width * 2, height: frame.height * 2) else { return }
+        }
+        for view in root.subviews { print("palette capture view", type(of: view), view.frame) }
+        let scene = NSView(frame: root.bounds)
+        for (source, frame) in [(root, root.bounds), (rootPanel.palette, root.convert(owner.window.convertFromScreen(rootPanel.frame), from: nil))] {
+            let bitmap = try XCTUnwrap(source.bitmapImageRepForCachingDisplay(in: source.bounds))
+            source.cacheDisplay(in: source.bounds, to: bitmap)
+            let rendered = NSImage(size: source.bounds.size)
+            rendered.addRepresentation(bitmap)
+            let imageView = NSImageView(frame: frame)
+            imageView.image = rendered
+            imageView.imageScaling = .scaleAxesIndependently
+            scene.addSubview(imageView)
+        }
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        let snapshots = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("__Snapshots__/PaletteTests").path
+        if let failure = verifySnapshot(of: scene, as: .image, named: "light-window-root", record: record, snapshotDirectory: snapshots, testName: "palette"),
+           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 
     func testReorderHoldYieldsToEverythingElse() async throws {
