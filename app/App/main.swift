@@ -18,6 +18,8 @@ import SidebarFeed
     private var ordinaryLaunchEvent = true
     private var pendingJumps: [Host: (target: NoticeTarget, deadline: Date)] = [:]
     private(set) var palettePanel: PalettePanel?
+    var promptDrafts: [PromptDraft.Key: PromptDraft] = [:]
+    private var pendingPrompt: PalettePrompt?
     private var paletteFocus: (owner: WindowOwner, responder: NSResponder?)?
     private var paletteObservers: [NSObjectProtocol] = []
     private var paletteBusy = false
@@ -107,6 +109,7 @@ import SidebarFeed
         owner.snapshotReceived = { [weak self, weak owner] in
             guard let self else { return }
             defer { paletteStateChanged() }
+            if let owner { prunePromptDrafts(owner) }
             guard let owner, let snapshot = owner.snapshot, snapshot.error == nil else { return }
             guard let pending = pendingJumps[host] else { return }
             if pending.deadline <= Date() || snapshot.serverInstance != pending.target.instance {
@@ -118,6 +121,7 @@ import SidebarFeed
         }
         owner.onClose = { [weak self, weak owner] in
             if self?.paletteFocus?.owner === owner { self?.closePalette(.moved) }
+            if let owner { self?.promptDrafts = self?.promptDrafts.filter { $0.key.host != owner.host } ?? [:] }
             self?.updateMenu(self?.current)
             self?.paletteStateChanged()
             owner?.ended.notify(queue: .main) { [weak self, weak owner] in self?.owners.removeAll { $0 === owner } }
@@ -225,6 +229,18 @@ import SidebarFeed
         let edit = NSMenu(title: "Edit")
         edit.delegate = self
         editMenu = edit
+        edit.items = [
+            item("Undo", Selector(("undo:")), "z", .command),
+            item("Redo", Selector(("redo:")), "Z", [.command, .shift]),
+            .separator(),
+            item("Cut", #selector(NSText.cut(_:)), "x", .command),
+            item("Copy", #selector(NSText.copy(_:)), "c", .command),
+            item("Paste", #selector(NSText.paste(_:)), "v", .command),
+            item("Paste and Match Style", #selector(NSTextView.pasteAsPlainText(_:)), "V", [.command, .option, .shift]),
+            item("Delete", #selector(NSText.delete(_:)), "", []),
+            item("Select All", #selector(NSText.selectAll(_:)), "a", .command),
+            .separator(),
+        ]
         edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
         edit.addItem(item("Prompt with Selection…", #selector(PaneView.promptSelectionItem(_:)), "o", .command))
         edit.addItem(item("Copy Mode", #selector(PaneView.toggleCopyMode(_:)), "c", [.command, .shift]))
@@ -245,7 +261,7 @@ import SidebarFeed
         let pane = PaneView.owner(responder)
         item.target = pane
         item.title = pane?.hasSelection == true ? "Prompt with Selection…" : "Prompt…"
-        item.isEnabled = pane != nil
+        item.isEnabled = pane?.validateMenuItem(item) == true
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -289,8 +305,27 @@ import SidebarFeed
         item.action != #selector(closeWindow) || (paletteFocus?.owner ?? current) != nil
     }
 
+    private func keepPromptDraft(_ owner: WindowOwner) -> (PromptDraft.Key) -> Bool {
+        let current = PromptSource.current(in: owner)
+        let paneExists = PromptSource.paneExists(in: owner)
+        return { current($0.instance) && paneExists($0.pane) }
+    }
+
+    private func prunePromptDrafts(_ owner: WindowOwner) {
+        guard !promptDrafts.isEmpty else { return }
+        let keep = keepPromptDraft(owner)
+        promptDrafts = promptDrafts.filter { key, _ in key.host != owner.host || keep(key) }
+    }
+
     func paletteStateChanged() {
-        guard let panel = palettePanel, !paletteBusy, panel.palette.mode == .root else { return }
+        if let pendingPrompt, !pendingPrompt.source.valid { self.pendingPrompt = nil }
+        guard let panel = palettePanel, !paletteBusy else { return }
+        if case .prompt(let source) = panel.palette.mode {
+            guard source.current else { closePalette(.moved); return }
+            panel.palette.prompt?.sourceChanged(gone: !source.paneExists)
+            return
+        }
+        guard panel.palette.mode == .root else { return }
         withPaletteBusy {
             updateMenu(paletteFocus?.owner, responder: paletteFocus?.responder)
             panel.palette.refresh(paletteEntries(owner: paletteFocus?.owner, responder: paletteFocus?.responder))
@@ -298,18 +333,25 @@ import SidebarFeed
     }
 
     private func focusPalette(_ panel: PalettePanel) {
-        let selection = (panel.firstResponder as? NSTextView)?.selectedRange()
+        let editor = panel.palette.prompt?.textView ?? panel.palette.field.currentEditor()
+        let selection = panel.firstResponder === editor ? (editor as? NSTextView)?.selectedRange() : nil
         panel.makeKey()
-        panel.makeFirstResponder(panel.palette.field)
+        panel.makeFirstResponder(panel.palette.prompt?.textView ?? panel.palette.field)
         if let selection { (panel.firstResponder as? NSTextView)?.setSelectedRange(selection) }
+        if let field = panel.palette.prompt?.textView { field.scrollRangeToVisible(field.selectedRange()) }
     }
 
     @objc func togglePalette() {
+        pendingPrompt = nil
         if palettePanel != nil { return closePalette() }
+        showPalette()
+    }
+
+    private func showPalette(_ prepared: PalettePrompt? = nil) {
         updateMenu(current, responder: current?.window.firstResponder)
         let entries = paletteEntries(owner: current, responder: current?.window.firstResponder)
         guard let runtime = current?.runtime ?? runtime else { return }
-        paletteFocus = current.map { ($0, $0.window.firstResponder) }
+        paletteFocus = (prepared?.source.owner ?? current).map { ($0, $0.window.firstResponder) }
         let panel = PalettePanel(palette: PaletteView(runtime: runtime, entries: entries)) { [weak self] in
             guard let self, !paletteBusy else { return }
             closePalette(.moved)
@@ -317,6 +359,20 @@ import SidebarFeed
         palettePanel = panel
         panel.toggle = { [weak self] in self?.closePalette() }
         panel.connect = { [weak self] in self?.connectRemoteHost() }
+        panel.prompt = { [weak self, weak panel] in
+            guard let self, let panel else { return }
+            if let entry = panel.palette.selectedEntry, entry.promptable, case .pane(let host, let position) = entry.id,
+               let owner = owners.first(where: { $0.host == host && $0.alive }),
+               let source = owner.promptSource(session: position.session, window: position.window, pane: position.pane, quote: nil, preselect: position.pane) {
+                panel.palette.enter(.prompt(source))
+            } else if let pane = PaneView.owner(paletteFocus?.responder) {
+                pane.openPrompt()
+            }
+        }
+        panel.palette.makePrompt = { [weak self, weak panel] source in
+            self?.resolvePrompt(source, panel: panel)
+        }
+        panel.palette.modeChanged = { [weak self] in self?.pendingPrompt = nil }
         panel.palette.dismiss = { [weak self] in self?.closePalette() }
         panel.palette.chooseEntry = { [weak self, weak panel] entry in
             guard let self, let panel else { return }
@@ -348,6 +404,7 @@ import SidebarFeed
                 }
             }
         }
+        if let prepared { panel.palette.enter(.prompt(prepared.source), prompt: prepared) }
         panel.place(over: paletteFocus?.owner)
         let center = NotificationCenter.default
         for name in [NSWindow.didBecomeKeyNotification, NSApplication.didResignActiveNotification] {
@@ -391,8 +448,13 @@ import SidebarFeed
     }
 
     func closePalette(_ reason: CloseReason = .dismiss) {
+        pendingPrompt = nil
         guard let panel = palettePanel else { return }
         withPaletteBusy {
+            panel.palette.prompt?.storeDraft()
+            if case .prompt(let source) = panel.palette.mode, !source.current {
+                prunePromptDrafts(source.owner)
+            }
             palettePanel = nil
             paletteObservers.forEach { NotificationCenter.default.removeObserver($0) }
             paletteObservers = []
@@ -402,6 +464,49 @@ import SidebarFeed
             panel.close()
             if reason == .dismiss { restorePaletteFocus(focus) }
         }
+    }
+
+    func openPrompt(owner: WindowOwner, pane: PaneView, quote: String?) {
+        guard let session = owner.currentSession, let window = pane.windowID,
+              let source = owner.promptSource(session: session.id, window: window, pane: pane.pane, quote: quote) else { return }
+        resolvePrompt(source, panel: palettePanel, responder: pane)
+    }
+
+    private func resolvePrompt(_ source: PromptSource, panel: PalettePanel?, responder: NSResponder? = nil) {
+        guard pendingPrompt == nil else { return }
+        let mode = panel?.palette.mode
+        let prompt = PalettePrompt(source: source, runtime: source.owner.runtime)
+        pendingPrompt = prompt
+        prompt.load = { [weak self, weak prompt] key in
+            guard let self else { return nil }
+            if pendingPrompt === prompt { palettePanel?.palette.prompt?.storeDraft() }
+            return promptDrafts[key]
+        }
+        prompt.save = { [weak self] key, draft in
+            guard let self else { return }
+            promptDrafts[key] = keepPromptDraft(source.owner)(key) ? draft : nil
+        }
+        prompt.dismiss = { [weak self] in self?.closePalette() }
+        prompt.delivered = { [weak self] in
+            self?.closePalette()
+            source.owner.promptDelivered(pane: source.pane)
+        }
+        prompt.resolved = { [weak self, weak prompt, weak panel] in
+            guard let self, let prompt, pendingPrompt === prompt else { return }
+            pendingPrompt = nil
+            guard source.valid, palettePanel === panel, panel?.palette.mode == mode else { return }
+            if panel == nil { showPalette(prompt) }
+            guard let destination = palettePanel else { return }
+            if let responder { paletteFocus = (source.owner, responder) }
+            prompt.active = { [weak self, weak destination] in
+                guard let destination else { return false }
+                return self?.palettePanel === destination && destination.palette.mode == .prompt(source)
+            }
+            prompt.resolved = {}
+            if panel != nil { destination.palette.enter(.prompt(source), prompt: prompt) }
+            focusPalette(destination)
+        }
+        prompt.resolve()
     }
 
     private func restorePaletteFocus(_ saved: (owner: WindowOwner, responder: NSResponder?)? = nil) {

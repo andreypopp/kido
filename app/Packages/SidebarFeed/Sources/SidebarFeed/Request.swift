@@ -33,13 +33,6 @@ public enum RPCRequest: Equatable, Sendable {
         return try JSONSerialization.data(withJSONObject: operation.merging(["id": id]) { _, new in new }) + Data([10])
     }
 
-    public static func composePrompt(prompt: String, selection: String) -> String {
-        var quoted = selection
-        if quoted.hasSuffix("\n") { quoted.removeLast() }
-        let lines = quoted.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }.joined(separator: "\n")
-        return (prompt.hasSuffix(":") ? prompt : prompt + ":") + "\n" + lines
-    }
-
     public func accepts(_ value: RPCEvent.Reply.Value) -> Bool {
         switch (self, value) {
         case (_, .error), (.prompt(_, _, _), .promptError(_, _)), (.switchWindow, .switched), (.switchSession, .switched), (.jump, .jumped),

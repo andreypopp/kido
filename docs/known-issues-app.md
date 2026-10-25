@@ -257,6 +257,19 @@ Prefix users must use app menus/actions or another client. This is permanent,
 not a transient failure. Add explicit key-table integration (large) or keep
 the current actions. Status: accepted.
 
+## Edit items can take a custom Ghostty binding
+
+A pane offers a key whose Ghostty binding is consumed, and neither `all` nor
+`performable`, to the main menu first. The pane performs Select All, Copy and
+Paste itself through Ghostty's `select_all`, `copy_to_clipboard` and
+`paste_from_clipboard`. It does not perform Undo, Redo or Cut, so these items
+are disabled in a pane. Ghostty's default ⌘Z is performable and does not go
+through the menu. A user binding on ⌘Z, ⇧⌘Z or ⌘X that is neither `all` nor
+`performable` goes to the disabled item, which consumes the key without
+Ghostty. Likewise, a user binding that moves ⌘A, ⌘C
+or ⌘V to another action is replaced by the fixed action of the menu item.
+Status: accepted.
+
 ## Resize anchors cover only the newest capture
 
 A resize preserves position only inside the newest 10k physical history rows
@@ -304,29 +317,10 @@ drag selection is untested. Reserve space or narrow/condition hit testing
 Visual tests call the mouse handlers and `menu(for:)` directly. The
 Shift-press tests send synthesized events through `NSWindow.sendEvent`, not
 through the window server. Real AppKit delivery of clicks, drags, autoscroll
-and the context menu, on screen, is untested. This includes the ⌘O key equivalent, which the tests reach through
-the menu item's action, and a prompt box drag, click-to-raise and its open and
-closed hand cursors. The beep for ⌘O without a selection is not
-asserted. A user `right-click-action` other than `context-menu` consumes
+and the context menu, on screen, is untested. The beep for ⌘O, `p` and
+Prompt with Selection… without an agent is not asserted. A user `right-click-action` other than `context-menu` consumes
 the right-click in Ghostty outside copy mode, and no menu opens. The `prompt`
 RPC is tested only against a fake `kido rpc`. Status: untested.
-
-## A reconnect closes every prompt box
-
-A redial makes a new `SessionView`, so every open prompt box closes, with its
-text. A box is meant to close only on ×, Escape, delivery or the end of its
-session. Carrying the boxes over to the new view is possible but not done.
-Status: accepted.
-
-## A moved source pane shows "pane closed" for a moment
-
-A box recomputes its source pane from every window's layout on each
-`%layout-change`. tmux reports a same-session `move-pane` as the source
-window's layout change first and the destination's second
-(`cmd-join-pane.c`), so between the two the source pane is in no layout and
-the box shows "(pane closed)" until the second notification clears it. A
-send in that moment names the target as its own pane, which kido accepts.
-Status: accepted.
 
 ## Feed restart can lose or re-arm outcomes
 

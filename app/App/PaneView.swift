@@ -12,8 +12,28 @@ private final class Overlay: PaneCapsule {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-final class PaneView: NSView, @preconcurrency NSTextInputClient {
+final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool { acceptsKeyInput && canPerformMenuItem(item) }
+
+    func canPerformMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(promptSelectionItem(_:)): canPrompt()
+        case #selector(copySelectionItem(_:)), #selector(NSText.copy(_:)): hasSelection
+        case #selector(NSText.selectAll(_:)), #selector(NSText.paste(_:)): copyMode == nil
+        case #selector(runCommand(_:)), #selector(toggleCopyMode(_:)),
+             #selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)): true
+        default: false
+        }
+    }
+
     #if KIDO_VISUAL
+    var visualKeyUps = 0
+    var visualKeyUpMonitor: ((NSEvent) -> NSEvent?)?
+    var visualKeyEvents = 0
+    var visualBindingQueries = 0
+    var visualBindingActions = 0
+    var visualTextInputs = 0
+    var visualMenuCommands = 0
     @MainActor static var pasteEventTimeout: TimeInterval = 30
     @MainActor static var clipboardTimeout: TimeInterval = 8
     @MainActor static var copyEntryTimeout: TimeInterval = 2
@@ -42,7 +62,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onFindChange: () -> Void = {}
     let scroller = PaneScroller()
     var find: PaneFind? { didSet { needsLayout = true; onFindChange() } }
-    var onPrompt: (PaneView, PromptAnchor) -> Void = { _, _ in }
+    var canPrompt: () -> Bool = { false }
+    var selectionQuote: String? { hasSelection ? readSelection() : nil }
+    var onPrompt: (PaneView, String?) -> Void = { _, _ in }
     var chromeViews: [NSView] { [historyLimit, copyLabel] + [find].compactMap { $0 } }
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
@@ -202,7 +224,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         var view = responder as? NSView
         while let current = view {
             if let pane = current as? PaneView { return pane }
-            if let box = current as? PromptBox { return box.host?.session?.pane(box.paneID) }
             view = (current as? PaneFind)?.pane ?? current.superview
         }
         return nil
@@ -832,6 +853,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var clipboard: (state: UnsafeMutableRawPointer, mimes: [String], list: Bool, timeout: DispatchWorkItem?, deadline: DispatchTime)?
     private var pasteEvent: (changeCount: Int, deadline: DispatchTime, text: String?)?
     private(set) var acceptingInput = true
+    private var acceptsKeyInput: Bool { acceptingInput && (window as? OwnerWindow)?.allowsPaneInput != false }
     private(set) var disposed = false
 
     func dispose() {
@@ -954,13 +976,17 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         registerForDraggedTypes([.fileURL] + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) })
         // AppKit sends no keyUp through the responder chain while Command is
         // held (SurfaceView_AppKit.swift).
-        keyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
-            guard let self, event.modifierFlags.contains(.command), let window, event.window === window,
+        let monitor: (NSEvent) -> NSEvent? = { [weak self] event in
+            guard let self, acceptsKeyInput, event.modifierFlags.contains(.command), let window, event.window === window,
                 window.firstResponder === self
             else { return event }
             keyUp(with: event)
             return nil
         }
+        #if KIDO_VISUAL
+        visualKeyUpMonitor = monitor
+        #endif
+        keyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp, handler: monitor)
     }
 
     required init?(coder: NSCoder) {
@@ -1641,6 +1667,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     @objc func runCommand(_ sender: NSMenuItem) {
+        #if KIDO_VISUAL
+        visualMenuCommands += 1
+        #endif
         guard let command = sender.representedObject as? PaneCommand else { return }
         onCommand(command)
     }
@@ -2068,48 +2097,28 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         return menu
     }
 
+    private func bindingAction(_ action: String) {
+        #if KIDO_VISUAL
+        visualBindingActions += 1
+        #endif
+        _ = ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
+    }
+
+    override func selectAll(_ sender: Any?) { bindingAction("select_all") }
+    @objc func copy(_ sender: Any?) { copySelectionItem(sender) }
+    @objc func paste(_ sender: Any?) { bindingAction("paste_from_clipboard") }
+
     @objc func copySelectionItem(_ sender: Any?) {
         if copyMode != nil { copyMove("y") }
-        else { _ = ghostty_surface_binding_action(surface, "copy_to_clipboard", 17) }
+        else { bindingAction("copy_to_clipboard") }
     }
 
     @objc func promptSelectionItem(_ sender: Any?) { openPrompt() }
 
     func openPrompt() {
         if case .entering = copyMode { return }
-        var bar = ghostty_surface_scrollbar_s()
-        guard ghostty_surface_scrollbar(surface, &bar) else { return }
-        let height = self.bounds.height - renderInsets.top
-        if hasSelection {
-            let selection = readSelection()
-            guard let bounds = selectionBounds(), !selection.isEmpty else { return }
-            let rows = CGFloat(bounds.1.y - bounds.0.y + 1)
-            onPrompt(self, PromptAnchor(selection: selection, rect: NSRect(
-                x: CGFloat(bounds.0.x) * cell.width,
-                y: height - CGFloat(bounds.1.y - Int(bar.offset) + 1) * cell.height,
-                width: cell.width,
-                height: rows * cell.height)))
-            return
-        }
-        let rect: NSRect
-        if copyMode != nil {
-            guard let cursor = selectionBounds()?.0 else { return }
-            rect = NSRect(x: CGFloat(cursor.x) * cell.width,
-                          y: height - CGFloat(cursor.y - Int(bar.offset) + 1) * cell.height,
-                          width: cell.width, height: cell.height)
-        } else {
-            var x = 0.0, y = 0.0, width = 0.0, cellHeight = 0.0
-            ghostty_surface_ime_point(surface, &x, &y, &width, &cellHeight)
-            var metrics = ghostty_surface_grid_metrics_s()
-            let padding = ghostty_surface_grid_metrics(surface, &metrics) ? metrics.padding_top : 0
-            let cursorRow = Int(((y - padding) / cell.height).rounded()) - 1
-            let retainedHistoryRows = max(0, Int(bar.total) - Int(bar.len))
-            let viewportRow = min(max(0, retainedHistoryRows + cursorRow - Int(bar.offset)), max(0, Int(bar.len) - 1))
-            rect = NSRect(x: x - cell.width / 2,
-                          y: self.bounds.height - renderInsets.top - padding - CGFloat(viewportRow + 1) * cell.height,
-                          width: cell.width, height: cell.height)
-        }
-        onPrompt(self, PromptAnchor(selection: nil, rect: rect))
+        guard canPrompt() else { beep(); return }
+        onPrompt(self, selectionQuote)
     }
 
     func promptDelivered() {
@@ -2265,6 +2274,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func keyDown(with event: NSEvent) {
+        #if KIDO_VISUAL
+        visualKeyEvents += 1
+        #endif
         if copyMode != nil { return copyKey(event) }
         resizeAnchor = nil
         if scrollTarget != nil { resetScroll() }
@@ -2330,6 +2342,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func keyUp(with event: NSEvent) {
+        #if KIDO_VISUAL
+        visualKeyUps += 1
+        #endif
         guard copyMode == nil else { return }
         keyAction(GHOSTTY_ACTION_RELEASE, event: event)
     }
@@ -2361,11 +2376,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     // consumed Ghostty binding goes to a menu item with that shortcut first,
     // as in Ghostty's own app.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard event.type == .keyDown, window?.firstResponder === self else { return false }
+        guard acceptsKeyInput, event.type == .keyDown, window?.firstResponder === self else { return false }
         let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
         let chord = event.charactersIgnoringModifiers?.lowercased()
         if mods == [.command, .shift] && chord == "c" { toggleCopyMode(nil); return true }
         if copyMode != nil {
+            if mods == .command, chord == "o" {
+                if case .entering = copyMode { return true }
+                if !canPrompt() { beep(); return true }
+            }
             // AppKit's Edit menu adds Emoji & Symbols (fn-E), which a plain e also matches.
             if mods.contains(.command), mods != [.command] || chord != "c", NSApp.mainMenu?.performKeyEquivalent(with: event) == true { return true }
             copyKey(event)
@@ -2377,6 +2396,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         key.keycode = UInt32(event.keyCode)
         key.mods = Self.mods(event.modifierFlags)
         key.unshifted_codepoint = event.characters(byApplyingModifiers: [])?.unicodeScalars.first?.value ?? 0
+        #if KIDO_VISUAL
+        visualBindingQueries += 1
+        #endif
         var flags = ghostty_binding_flags_e(0)
         let isBinding = (event.characters ?? "").withCString { ptr in
             key.text = ptr
@@ -2432,6 +2454,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func doCommand(by selector: Selector) {
+        guard acceptsKeyInput else { return }
         if copyMode == nil, let last = lastPerformKeyEvent, let current = NSApp.currentEvent, last == current.timestamp {
             NSApp.sendEvent(current)
         }
@@ -2457,7 +2480,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     func selectedRange() -> NSRange { NSRange() }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        guard copyMode == nil else { return }
+        guard acceptsKeyInput, copyMode == nil else { return }
         resizeAnchor = nil
         snapScroll()
         switch string {
@@ -2469,7 +2492,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func unmarkText() {
-        guard markedText.length > 0 else { return }
+        guard acceptsKeyInput, markedText.length > 0 else { return }
         markedText.mutableString.setString("")
         syncPreedit()
     }
@@ -2491,6 +2514,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func insertText(_ string: Any, replacementRange: NSRange) {
+        guard acceptsKeyInput else { return }
+        #if KIDO_VISUAL
+        visualTextInputs += 1
+        #endif
         guard copyMode == nil else { return }
         resizeAnchor = nil
         snapScroll()
