@@ -281,3 +281,66 @@ func pixelAlignedBottomMargin(pixel: CGFloat) {
         }
     }
 }
+
+@Test(arguments: [CGFloat(1), CGFloat(0.5)], [CGFloat(8), 12])
+func spacedCards(pixel: CGFloat, spacing: CGFloat) {
+    let cell = CGSize(width: 8, height: 17)
+    let bounds = CGRect(x: 0, y: 52, width: 900, height: 648)
+    func pane(_ id: UInt32, _ x: Int, _ y: Int, _ width: Int, _ height: Int) -> Node {
+        .pane(Pane(id: PaneID(number: id), index: Int(id), geometry: Geometry(x: x, y: y, width: width, height: height), focus: .unvisited, layer: .tiled))
+    }
+    func tree(_ cols: Int, _ rows: Int, shift: Int = 0) -> Node {
+        let left = cols / 2 + shift, top = rows / 2, inner = (cols - left - 1) / 2
+        return .split(.leftRight, Geometry(x: 0, y: 0, width: cols, height: rows), [
+            .split(.topBottom, Geometry(x: 0, y: 0, width: left, height: rows), [
+                pane(0, 0, 0, left, top), pane(1, 0, top + 1, left, rows - top - 1),
+            ]),
+            .split(.topBottom, Geometry(x: left + 1, y: 0, width: cols - left - 1, height: rows), [
+                .split(.leftRight, Geometry(x: left + 1, y: 0, width: cols - left - 1, height: top), [
+                    pane(2, left + 1, 0, inner, top), pane(3, left + inner + 2, 0, cols - left - inner - 2, top),
+                ]),
+                pane(4, left + 1, top + 1, cols - left - 1, rows - top - 1),
+            ]),
+        ])
+    }
+    let probe = tree(80, 30)
+    let client = PaneLayout(root: probe, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing).client
+    let root = tree(Int(client.width), Int(client.height))
+    let layout = PaneLayout(root: root, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
+    #expect(layout.client == client)
+    #expect(client.width < PaneLayout(root: root, bounds: bounds, cell: cell, pixel: pixel).client.width)
+    let cards = root.panes.map { layout.tiled($0.geometry, alternate: false) }
+    let resized = PaneLayout(root: tree(Int(client.width), Int(client.height), shift: 1), bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
+    #expect(resized == layout)
+    #expect(resized.tiled(Geometry(x: 0, y: 0, width: Int(client.width) / 2 + 1, height: Int(client.height) / 2), alternate: false).chrome.maxX > cards[0].chrome.maxX)
+    let close = { (a: CGFloat, b: CGFloat) in abs(a - b) < 0.0001 }
+    #expect(close(cards[1].chrome.minY - cards[0].chrome.maxY, spacing))
+    #expect(close(cards[2].chrome.minX - cards[0].chrome.maxX, spacing))
+    #expect(close(cards[3].chrome.minX - cards[2].chrome.maxX, spacing))
+    #expect(close(cards[4].chrome.minY - cards[2].chrome.maxY, spacing))
+    #expect(close(cards[4].chrome.minX, cards[2].chrome.minX) && close(cards[4].chrome.maxX, cards[3].chrome.maxX))
+    #expect(cards[0].chrome.minX >= bounds.minX + spacing && abs(cards[0].chrome.minX - bounds.minX - (bounds.maxX - cards[3].chrome.maxX)) <= pixel)
+    #expect(cards[0].chrome.minY >= layout.topLine.maxY + spacing && abs(bounds.maxY - cards[4].chrome.maxY - spacing) < pixel)
+    for (pane, card) in zip(root.panes, cards) {
+        #expect(card.grid.size == CGSize(width: CGFloat(pane.geometry.width) * cell.width, height: CGFloat(pane.geometry.height) * cell.height))
+        #expect(card.content == card.grid && card.insets == .init())
+        #expect(close(card.grid.minX - card.chrome.minX, spacing) && card.chrome.maxX - card.grid.maxX >= spacing - 0.0001)
+        let padY = (max(cell.height, 2 * spacing) - spacing) / 2
+        #expect(close(card.grid.minY - card.chrome.minY, padY) && close(card.chrome.maxY - card.grid.maxY, padY))
+        #expect((card.grid.minX / pixel).rounded() == card.grid.minX / pixel && (card.grid.minY / pixel).rounded() == card.grid.minY / pixel)
+    }
+    let lines = root.dividers.map { layout.line($0, pixel: pixel) }
+    #expect(lines.count == 4)
+    #expect(close(lines[0].minX, cards[0].chrome.maxX) && close(lines[0].maxX, cards[2].chrome.minX))
+    #expect(close(lines[0].minY, cards[0].chrome.minY) && close(lines[0].maxY, cards[1].chrome.maxY))
+    #expect(close(lines[1].minY, cards[0].chrome.maxY) && close(lines[1].maxY, cards[1].chrome.minY))
+    #expect(close(lines[1].minX, cards[0].chrome.minX) && close(lines[1].maxX, cards[0].chrome.maxX))
+    #expect(close(lines[2].minY, cards[2].chrome.maxY) && close(lines[2].maxY, cards[4].chrome.minY))
+    #expect(close(lines[3].minX, cards[2].chrome.maxX) && close(lines[3].maxX, cards[3].chrome.minX))
+    let zoomed = pane(0, 0, 0, Int(client.width), Int(client.height))
+    let zoom = PaneLayout(root: zoomed, shape: root, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
+    #expect(zoom.client == client)
+    let whole = zoom.tiled(zoomed.geometry, alternate: false)
+    #expect(close(whole.chrome.width, whole.grid.width + 2 * spacing) && abs(whole.chrome.midX - bounds.midX) <= pixel)
+    #expect(PaneLayout(root: zoomed, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing).client.width > client.width)
+}

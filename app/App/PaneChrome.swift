@@ -50,6 +50,7 @@ final class PaneChrome: NSView {
     var content = CGRect.zero
     enum Treatment { case plain, edge, overlay }
     var treatment = Treatment.plain { didSet { if treatment != oldValue { needsDisplay = true } } }
+    var card: CGFloat? { didSet { if card != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: subviews.contains { $0 is PaneFind } ? 48 : 8, width: min(145, bounds.width), height: 32)
     }
@@ -70,11 +71,17 @@ final class PaneChrome: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             switch treatment {
             case .plain: break
-            case .edge: FocusEdge.stroke(bounds)
+            case .edge: if card == nil { FocusEdge.stroke(bounds) }
             case .overlay:
                 Chrome.floatingOverlay(runtime.background).setFill()
                 bounds.fill()
             }
+            guard let card else { return }
+            let focused = treatment == .edge, width: CGFloat = focused ? 1.5 : 0.5
+            (focused ? NSColor.controlAccentColor : runtime.foreground.withAlphaComponent(0.12)).setStroke()
+            let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: width / 2, dy: width / 2), xRadius: card - width / 2, yRadius: card - width / 2)
+            edge.lineWidth = width
+            edge.stroke()
         }
     }
     override func viewDidChangeEffectiveAppearance() {
