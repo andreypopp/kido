@@ -1,12 +1,13 @@
 import AppKit
 
-private final class SidebarSeparator: NSView {
+final class SidebarSeparator: NSView {
     var color = NSColor.separatorColor { didSet { needsDisplay = true } }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) { color.setFill(); bounds.fill() }
 }
 
-private final class SidebarShadow: NSView {
+final class SidebarShadow: NSView {
+    static let dockedWidth: CGFloat = 48
     enum Shape: Equatable { case docked, floating(NSRect) }
     var shape = Shape.docked { didSet { if shape != oldValue { needsDisplay = true } } }
     override func setFrameSize(_ newSize: NSSize) {
@@ -67,7 +68,10 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     private let separator = SidebarSeparator()
     private let shadow = SidebarShadow()
     var separatorColor: NSColor = .separatorColor {
-        didSet { separator.color = separatorColor }
+        didSet {
+            separator.color = separatorColor
+            tabs.refreshHeader()
+        }
     }
     let list = SidebarView()
     let content = NSView()
@@ -173,6 +177,8 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         super.viewDidAppear()
         view.needsLayout = true
     }
+    var separatorWidth: CGFloat { 1 / (view.window?.backingScaleFactor ?? 2) }
+
     func headerDivider(in host: NSWindow) -> CGFloat? {
         guard let window = view.window, !isCollapsed, let glass = dockedGlass else { return nil }
         let edge = glass.convert(NSPoint(x: glass.bounds.maxX, y: glass.bounds.maxY), to: nil)
@@ -192,7 +198,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
                 root.addSubview(separator, positioned: .above, relativeTo: nil)
             }
             separator.frame = NSRect(x: focusEdge.frame.maxX, y: focusEdge.frame.minY,
-                                     width: 1 / (root.window?.backingScaleFactor ?? 2), height: focusEdge.frame.height)
+                                     width: separatorWidth, height: focusEdge.frame.height)
             separator.isHidden = isCollapsed || isFloating
             if shadow.superview !== root { root.addSubview(shadow, positioned: .below, relativeTo: focusEdge) }
             if isFloating {
@@ -200,7 +206,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
                 shadow.shape = .floating(focusEdge.convert(focusEdge.bounds, to: shadow))
             } else {
                 shadow.frame = NSRect(x: separator.frame.maxX, y: separator.frame.minY,
-                                      width: min(48, max(0, root.bounds.maxX - separator.frame.maxX)), height: separator.frame.height)
+                                      width: min(SidebarShadow.dockedWidth, max(0, root.bounds.maxX - separator.frame.maxX)), height: separator.frame.height)
                 shadow.shape = .docked
             }
             shadow.isHidden = isCollapsed
