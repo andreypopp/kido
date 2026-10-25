@@ -31,11 +31,51 @@ extension NSColor {
     private var appearance: NSKeyValueObservation?
     let pasteboard: NSPasteboard
     let configFile: String
+    let home: String
+    func expand(_ value: String) -> String { value == "~" || value.hasPrefix("~/") ? home + value.dropFirst() : value }
+    func abbreviate(_ value: String) -> String { value == home || value.hasPrefix(home + "/") ? "~" + value.dropFirst(home.count) : value }
     struct KidoSettings {
         var sidebarShade = 0.05
         var unfocusedShift = 0.03
     }
     private(set) var settings: KidoSettings
+    enum ThemeOverride: Equatable { case none, preview(String), session(String) }
+    private enum Preview: Equatable { case file, theme(String) }
+    private var preview: Preview?
+    private var sessionTheme: String?
+    private var loadedTheme: String?
+    var themeOverride: ThemeOverride {
+        switch preview { case .file: .none; case .theme(let value): .preview(value); case nil: sessionTheme.map(ThemeOverride.session) ?? .none }
+    }
+    private var overrideValue: String? { switch themeOverride { case .none: nil; case .preview(let value), .session(let value): value } }
+    private(set) var diagnostics: [String] = []
+    private(set) var fileDiagnostics: [String] = []
+    #if KIDO_VISUAL
+    var visualThemeApplies = 0
+    #endif
+    func previewTheme(_ value: String?) {
+        let next = value.map(Preview.theme) ?? .file
+        guard preview != next else { return }
+        preview = next
+        if overrideValue == loadedTheme, reloadWork == nil { return }
+        scheduleReload(delay: 0.06)
+    }
+    func flushTheme() {
+        guard reloadWork != nil else { return }
+        reloadWork?.cancel()
+        reloadConfig()
+    }
+    func endThemePreview() {
+        preview = nil
+        reloadWork?.cancel(); reloadWork = nil
+        if loadedTheme != overrideValue || loadedStat != Self.fileStat(configFile) { reloadConfig() }
+    }
+    func saveThemeOverride(_ value: String?, reload: Bool = false) {
+        reloadWork?.cancel(); reloadWork = nil
+        sessionTheme = value
+        preview = nil
+        if reload { reloadConfig() }
+    }
     private var watches: [String: DispatchSourceFileSystemObject] = [:]
     private var reloadWork: DispatchWorkItem?
     private struct FileStat: Equatable {
@@ -87,13 +127,16 @@ extension NSColor {
 
     init?(configFile: String? = nil, pasteboard: NSPasteboard) {
         self.pasteboard = pasteboard
+        self.home = ProcessInfo.processInfo.environment["HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else { return nil }
         let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
-        self.configFile = configFile ?? (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
+        self.configFile = configFile ?? (xdg ?? home + "/.config") + "/kido/kido-app.conf"
         self.loadedStat = Self.fileStat(self.configFile)
-        guard let loaded = Self.loadConfig(file: self.configFile) else { return nil }
+        guard let loaded = Self.loadConfig(file: self.configFile, home: home) else { return nil }
+        self.fileDiagnostics = loaded.diagnostics
         self.config = loaded.config
         self.settings = loaded.settings
+        self.diagnostics = loaded.diagnostics
 
         var runtime = ghostty_runtime_config_s(
             userdata: Unmanaged.passUnretained(self).toOpaque(),
@@ -194,19 +237,26 @@ extension NSColor {
     struct LoadedConfig {
         let config: ghostty_config_t
         let settings: KidoSettings
+        let diagnostics: [String]
     }
 
-    static func loadConfig(file: String) -> LoadedConfig? {
+    private static let settingKeys: [String: WritableKeyPath<KidoSettings, Double>] = [
+        "kido-sidebar-shade": \.sidebarShade,
+        "kido-unfocused-background-shift": \.unfocusedShift
+    ]
+    private static func readDiagnostics(_ config: ghostty_config_t) -> [String] {
+        (0..<ghostty_config_diagnostics_count(config)).compactMap { index in
+            let message = String(cString: ghostty_config_get_diagnostic(config, index).message)
+            return settingKeys.keys.contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) ? nil : message
+        }
+    }
+    static func loadConfig(file: String, home: String, override: String? = nil) -> LoadedConfig? {
         guard let config = ghostty_config_new() else { return nil }
-        let themes = Bundle.main.resourceURL!.appendingPathComponent("themes").path
-        let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\nalpha-blending = linear\nscrollback-limit = 536870912\nkeybind = super+k=unbind\nkeybind = super+j=unbind\nkeybind = super+s=unbind\nkeybind = super+shift+s=unbind\n"
+        let defaults = ThemeConf.line(.init()) + "\ncursor-style-blink = false\nalpha-blending = linear\nscrollback-limit = 536870912\nkeybind = super+k=unbind\nkeybind = super+j=unbind\nkeybind = super+s=unbind\nkeybind = super+shift+s=unbind\n"
         ghostty_config_load_string(config, defaults, UInt(defaults.utf8.count), "/kido-defaults")
         if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
         ghostty_config_load_recursive_files(config)
-        let keys: [String: WritableKeyPath<KidoSettings, Double>] = [
-            "kido-sidebar-shade": \.sidebarShade,
-            "kido-unfocused-background-shift": \.unfocusedShift
-        ]
+        let keys = settingKeys
         var values: [String: String] = [:]
         var files: [String] = []
         func readSettings(_ path: String) {
@@ -226,7 +276,7 @@ extension NSColor {
                     if value.first == "?" { value.removeFirst() }
                     if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
                     if value.isEmpty { continue }
-                    if value.hasPrefix("~/") { value = NSHomeDirectory() + value.dropFirst() }
+                    if value.hasPrefix("~/") { value = home + value.dropFirst() }
                     if !value.hasPrefix("/") {
                         value = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(value).path
                         if let resolved = realpath(value, nil) {
@@ -256,24 +306,42 @@ extension NSColor {
         }
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
         ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
+        if let override {
+            let text = "theme = \(override)\n"
+            ghostty_config_load_string(config, text, UInt(text.utf8.count), "/kido-theme")
+        }
         ghostty_config_finalize(config)
         protectClipboard(config)
-        for i in 0..<ghostty_config_diagnostics_count(config) {
-            let message = String(cString: ghostty_config_get_diagnostic(config, i).message)
-            if keys.keys.contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) { continue }
-            note("ghostty config: \(message)")
-        }
-        return LoadedConfig(config: config, settings: settings)
+        let diagnostics = readDiagnostics(config)
+        for message in diagnostics { note("ghostty config: \(message)") }
+        return LoadedConfig(config: config, settings: settings, diagnostics: diagnostics)
     }
 
     private func reloadConfig() {
-        loadedStat = Self.fileStat(configFile)
-        guard let loaded = Self.loadConfig(file: configFile) else { return }
-        let old = ghostty_config_serialize(config)
-        let new = ghostty_config_serialize(loaded.config)
-        let changed = Data(UnsafeRawBufferPointer(start: old.ptr, count: Int(old.len))) != Data(UnsafeRawBufferPointer(start: new.ptr, count: Int(new.len)))
-        ghostty_string_free(old)
-        ghostty_string_free(new)
+        reloadWork = nil
+        let stat = Self.fileStat(configFile)
+        let override = overrideValue
+        if override != nil, stat != loadedStat, let file = Self.loadConfig(file: configFile, home: home) {
+            fileDiagnostics = file.diagnostics
+            ghostty_config_free(file.config)
+        }
+        loadedStat = stat
+        guard let loaded = Self.loadConfig(file: configFile, home: home, override: override) else { return }
+        diagnostics = loaded.diagnostics
+        if override == nil { fileDiagnostics = loaded.diagnostics }
+        var changed = loadedTheme != override
+        if changed {
+            #if KIDO_VISUAL
+            visualThemeApplies += 1
+            #endif
+        } else {
+            let old = ghostty_config_serialize(config)
+            let new = ghostty_config_serialize(loaded.config)
+            changed = Data(UnsafeRawBufferPointer(start: old.ptr, count: Int(old.len))) != Data(UnsafeRawBufferPointer(start: new.ptr, count: Int(new.len)))
+            ghostty_string_free(old)
+            ghostty_string_free(new)
+        }
+        loadedTheme = override
         settings = loaded.settings
         ghostty_app_update_config_without_surface_propagation(app, loaded.config)
         ghostty_config_free(loaded.config)
@@ -326,7 +394,7 @@ extension NSColor {
         watches[path] = source
     }
 
-    private func scheduleReload() {
+    private func scheduleReload(delay: TimeInterval? = nil) {
         #if KIDO_VISUAL
         visualReloadsScheduled += 1
         #endif
@@ -334,11 +402,11 @@ extension NSColor {
         let work = DispatchWorkItem { [weak self] in self?.reloadConfig() }
         reloadWork = work
         #if KIDO_VISUAL
-        let delay = 0.02
+        let defaultDelay = 0.02
         #else
-        let delay = 0.1
+        let defaultDelay = 0.1
         #endif
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (delay ?? defaultDelay), execute: work)
     }
 
     var background: NSColor { color("background") }
@@ -347,10 +415,14 @@ extension NSColor {
     var unfocusedPaper: NSColor { background.shifted(settings.unfocusedShift) }
     var sidebarSeparator: NSColor { background.isDark ? separator : background.mixed(toward: foreground, amount: 0.28) }
 
-    private func color(_ key: String) -> NSColor {
-        var color = ghostty_config_color_s()
-        guard ghostty_config_get(config, &color, key, UInt(key.utf8.count)) else { return .black } // chrome-allow: theme read fallback
-        return NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1) // chrome-allow: theme colour decoding
+    private func color(_ key: String) -> NSColor { Self.color(key, config: config) }
+    static func color(_ key: String, config: ghostty_config_t) -> NSColor {
+        var value = ghostty_config_color_s()
+        _ = ghostty_config_get(config, &value, key, UInt(key.utf8.count))
+        return color(value)
+    }
+    static func color(_ color: ghostty_config_color_s) -> NSColor {
+        NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1) // chrome-allow: theme colour decoding
     }
 
     deinit {
@@ -371,6 +443,8 @@ extension NSColor {
             DispatchQueue.main.async {
                 ghostty_config_free(runtime.config)
                 runtime.config = owned
+                runtime.diagnostics = readDiagnostics(owned)
+                if runtime.overrideValue == nil { runtime.fileDiagnostics = runtime.diagnostics }
                 runtime.onConfigChange()
             }
             return true

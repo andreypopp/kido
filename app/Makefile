@@ -44,7 +44,7 @@ visual-slow: VISUAL_FLAG = only
 visual visual-fast visual-slow: DERIVED = build/xcode.noindex/derived-visual
 visual visual-fast visual-slow: VISUAL_TMUX = $(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux)
 visual visual-fast visual-slow: project
-	mkdir -p build/bundle/visual/{home,state,tmp,config}
+	mkdir -p build/bundle/visual/{home,state,tmp}
 	clang -dynamiclib -Werror -Wno-deprecated-declarations scripts/vsync-cv-count.c -framework CoreVideo -o build/bundle/visual/vsync-cv-count.dylib
 	@set -e; select=''; \
 	if test -n '$(VISUAL_FLAG)'; then \
