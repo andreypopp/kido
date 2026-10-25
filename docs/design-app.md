@@ -1368,6 +1368,10 @@ scrolls and shows its scroller. The card keeps its top edge as it grows.
 The field's text is markdown, and it is exactly the text that is sent. The
 package `app/Packages/PromptMarkdown` parses it with apple/swift-markdown after
 each edit and sets only display attributes; styling never changes the text.
+Only the app links the package. `VisualTests` imports it with `link: false`
+in `project.yml` and gets its symbols from the host app. When both targets
+link it in one build, Xcode builds swift-cmark as a framework and warns that it has no
+umbrella header.
 The package also owns the quote-append rule below, as a text function. Quote
 styling follows the parsed `BlockQuote` nodes, not lines that start with `>`:
 the quote text is in the secondary label colour, its visible `>` marker and
