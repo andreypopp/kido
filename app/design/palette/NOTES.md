@@ -39,11 +39,20 @@ One prompt at a time, in the palette card, centred over the window like the othe
 
 **Layout, top to bottom.**
 
-- Head row (45pt): the mode chip `bubble.left` "Prompt", then the **target picker**: a popup-style chip "Prompt **@kido-app** in this window ⌄" (12pt, agent semibold, place in `secondaryLabelColor`, chevron). With no agent in scope it reads "No agent in this window or session" in secondary colour and is disabled. For a closed source pane the place reads "in window app (pane closed)".
-- Field: 13pt, 18pt lines, 9pt/10pt vertical padding, placeholder "Ask the agent" ("Ask about the selection" with a quote). Shift-Return adds a line; the card grows to 6 lines (108pt) then the field scrolls. Return sends.
-- Quote, only with a selection: between the field and the foot, 2pt accent-60% bar, 11pt monospace secondary, condensed as the box did (first line, italic "⋯ N lines", last line; all lines for 1–3). Hover shows the full selection as a tooltip.
+- Head row (45pt): the mode chip `bubble.left` "Prompt", then the **target picker**: a popup-style chip "Prompt **@kido-app** in this window ⌄" (12pt, agent semibold, place in `secondaryLabelColor`, chevron). For a closed source pane the place reads "in window app (pane closed)".
+- Field: 13pt, 18pt lines, 9pt/10pt vertical padding, no placeholder: an empty field shows only the caret. Shift-Return adds a line; the card grows to 6 lines (108pt) then the field scrolls. Return sends. The field holds plain markdown, styled in place as the user types; markers stay visible and the text is exactly what kido gets.
+- Quote: no separate block. Select + ⌘O appends to the end of the text: if the text is not empty and does not end with a blank line, a blank line first; then the empty caret line; then the selection as `> ` lines. Thus the caret line always has a blank line before it (after earlier text or an earlier quote) and the quote directly after it: a blockquote can interrupt a paragraph, so what the user types on the caret line stays a paragraph, and the blank line before it keeps it out of an earlier quote (CommonMark's lazy continuation). A second selection appends the same way (duplicates are not skipped, state `prompt-twoquotes`: text, blank, quote 1, blank, caret line, quote 2). The quote shows in full and is ordinary text: editable, deletable.
+
+**Markdown styles in the field** (state `prompt-markdown`). All styles keep the 18pt line and the 13pt base size, so lines never reflow when a marker is typed.
+
+- Quote styling follows the markdown parse (blockquote nodes from swift-markdown), not each line that starts with `> `; a lazy continuation line is styled as quote because it is one. A blockquote line shows the bar, its `> ` marker and the quote text. The marker (`>` and its following space) is visible, in `tertiaryLabelColor`; the quote text after it is in `secondaryLabelColor`; nothing is hidden, so editing has no special cases. The marker sits at the field's normal text edge and the quote text follows it; the 2pt bar sits in the padding, 8pt left of that edge (x = 8pt in the 16pt padding), in `secondaryLabelColor` at 45% opacity, spanning the line's full 18pt so consecutive quote lines form one bar; an empty line between quotes breaks the bar.
+- The other markers (`**`, `*`, `` ` ``, `#`) stay visible for now; the user asked only about quotes.
+- `` `code` ``: SF Mono 12pt on the 18pt line, `labelColor` 8% fill, 3pt radius, 1pt horizontal padding, backticks inside the fill.
+- `**bold**`: semibold, markers included. `*italic*`: italic, markers included.
+- `# heading` (any level): semibold at the same 13pt, marker included; no size change, so the line stays 18pt.
+- Nothing else is styled (lists, links, rules render as plain text).
 - Status line (11pt, between quote and foot, `separatorColor` rule above): sending (spinner, "Sending to @kido-app…"), refused (red, `exclamationmark.triangle.fill`, message, **Retry** at the right in accent), unknown (red, "<message> It may have arrived; not resent.", **Copy Prompt** at the right, field read-only and muted, Send hidden), invalid (red, message; the picker stays enabled), pane closed (secondary, "Source pane closed; agents resolved earlier stay available."). After a successful send the palette closes; no sent state.
-- Foot: key hints `↩ send · ⇧↩ new line · ⇥ agent · esc close, keeps draft`, "· draft restored" when a draft came back, and the 26pt Send button at the right (8pt radius, accent, `arrow.right`; 14% label fill when the field is empty or sending is impossible).
+- Foot: key hints `↩ send · ⇧↩ new line · ⇥ agent · esc close, keeps draft`, "· draft restored" when a draft came back, and the 26pt Send button at the right (8pt radius, accent, `arrow.right`; 14% label fill when the field has no non-blank text or sending is impossible).
 
 **Picker operation.** Mouse: click the chip opens an NSMenu-style list under it: group "This window" with its agents, then "Session <name>" with the rest, the current one checked. Keyboard: Tab moves focus from the field to the chip (2pt accent-55% focus ring); Space or Return opens the list; Up/Down move in the list, Return chooses and focus returns to the field; Escape closes the list without change. With the chip focused and the list closed, Left/Right cycle agents without opening it. Up/Down inside the field move the caret, so the field and the picker never fight. Shift-Tab from the field goes to the Send button.
 
@@ -51,7 +60,24 @@ One prompt at a time, in the palette card, centred over the window like the othe
 
 **Drafts.** Closing the palette (click outside, window switch, Escape) keeps one draft per source pane with its text, quote and chosen target; the next ⌘O from that pane restores it and the foot says "draft restored". Send clears it; deleting the text discards it.
 
-**Decided (user).** Escape keeps the draft. Tab focuses the picker. The "⌘O prompt" hint shows only on the highlighted agent row. With no agent in scope the field stays editable so a draft can be written; Send is disabled.
+**Decided (user).** Send is enabled whenever the field holds any non-blank text, a quote alone included. No placeholders. Quote markers visible, dimmed to `tertiaryLabelColor` (reversed from hidden: too many editing edge cases). Escape keeps the draft. Tab focuses the picker. The "⌘O prompt" hint shows only on the highlighted agent row. With no agent in this window or session, ⌘O and every other prompt entry (root command, `p` in copy mode, right-click Prompt with Selection…) only beep and open nothing; there is no no-agent Prompt state. The root command "Prompt…" is absent from the list (state `root-noagent`) because the PR lists only enabled menu items and the Prompt… menu item is disabled without an agent.
+
+## Theme mode (approved)
+
+Root entry "View › Theme…" (no shortcut). States `theme*`.
+
+**List.** Chip `paintpalette` "Theme", placeholder "Search themes", fuzzy-filtered. One row per theme, 34pt: a swatch (18pt rounded square in the theme's background with "Aa" in its foreground, plus a 2×2 grid of its blue, green, red and yellow), the name, a small "light" or "dark" tag derived from the background luminance (below 0.5 is dark), and at the right "✓ Light" / "✓ Dark" on the themes the config currently uses for each appearance. Order: bundled first, then `~/.config/kido/themes` by name. No light/dark grouping: the tag and the filter are enough for four to twenty themes.
+
+**Preview.** Moving the selection (Up/Down, or hover with the mouse) applies the theme live to every pane, the sidebar shade, the chrome and the palette card itself; the card's colours derive from the terminal theme, so it changes with the app and never floats in the old colours. A status line says "Previewing <name>. ↩ chooses where to use it, esc restores the current theme." Escape, click outside, window switch and ⌘P all restore the current theme. Hover previews only while the pointer is over the list and restores the keyboard selection's preview when it leaves.
+
+**Save step** (second step in the palette, not an alert). The head shows the chosen theme as a chip with its swatch and the field reads "Use for…". Three radio rows, keyboard Up/Down, ↩ confirms, Escape goes back to the list: "<Current appearance> mode · the current appearance" (preselected), the other mode, "Both · one theme whatever the appearance". The foot shows the exact line it will write: `theme = light:A,dark:B` into `~/.config/kido/kido-app.conf` (Ghostty syntax), with the other side kept from the config, or the current default when the config has no theme line. On ↩ the palette writes, applies and closes.
+
+**Errors.**
+
+- Config not writable: red status "Could not write ~/.config/kido/kido-app.conf: permission denied. <theme> is applied for this session only." with "Reveal in Finder" at the right. The list stays open.
+- Theme file missing or invalid: the row is dimmed with "theme file not found" (or "invalid: <line>") in red at the right and cannot be previewed or chosen; a red status explains what the config names and what is shown instead.
+
+**Decided (user).** Pointer hover previews and restores on leave. "Both" with no theme line writes `theme = light:<name>,dark:<name>`. The current marks are the text "✓ Light" / "✓ Dark". Themes of the other appearance preview anyway. There is no check for inline colours in the config (dropped).
 
 ## Match highlight (open, user to choose)
 
