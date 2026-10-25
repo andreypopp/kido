@@ -1132,7 +1132,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         didSet { if transparentPaper != oldValue { reloadConfig() } }
     }
 
-    var paperColor: NSColor { shiftedBackground ? runtime.background.shifted(runtime.settings.unfocusedShift) : runtime.background }
+    var paperColor: NSColor { shiftedBackground ? runtime.unfocusedPaper : runtime.background }
 
     func updatePaper() {
         layer?.backgroundColor = paperColor.cgColor

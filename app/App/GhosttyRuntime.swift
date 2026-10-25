@@ -344,6 +344,7 @@ extension NSColor {
     var background: NSColor { color("background") }
     var foreground: NSColor { color("foreground") }
     var separator: NSColor { background.mixed(toward: foreground, amount: 0.18) }
+    var unfocusedPaper: NSColor { background.shifted(settings.unfocusedShift) }
     var sidebarSeparator: NSColor { background.isDark ? separator : background.mixed(toward: foreground, amount: 0.28) }
 
     private func color(_ key: String) -> NSColor {
