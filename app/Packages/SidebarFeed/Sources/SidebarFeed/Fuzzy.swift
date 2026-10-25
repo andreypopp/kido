@@ -20,8 +20,12 @@ public func fuzzyMatch(_ pattern: String, _ text: String) -> FuzzyMatch? {
 }
 
 public func fuzzyMatch(_ query: String, fields: [String]) -> (score: Int, offsets: [[Int]])? {
+    fuzzyMatch(words: query.split(whereSeparator: { $0.isWhitespace || $0 == ">" || $0 == "›" }), fields: fields)
+}
+
+public func fuzzyMatch(words: [Substring], fields: [String]) -> (score: Int, offsets: [[Int]])? {
     var score = 0, offsets = fields.map { _ in Set<Int>() }
-    for word in query.split(whereSeparator: { $0.isWhitespace || $0 == ">" || $0 == "›" }) {
+    for word in words {
         let best = fields.enumerated().compactMap { index, field in
             fuzzyMatch(String(word), field).map { (score: $0.score - index, index: index, offsets: $0.offsets) }
         }.max { ($0.score, -$0.index) < ($1.score, -$1.index) }
