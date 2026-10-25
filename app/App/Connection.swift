@@ -351,8 +351,7 @@ final class Connection: @unchecked Sendable {
             let listing = windows.compactMap(WindowListing.init)
             DispatchQueue.main.sync {
                 guard let self, self.active else { return }
-                self.view?.update(listing, alive: Set(all.compactMap(WindowID.init)), session: session,
-                                  sessions: sessions.compactMap(SessionListing.init))
+                self.view?.update(listing, alive: Set(all.compactMap(WindowID.init)))
                 self.model = SessionModel(
                     sessions: sessions.compactMap(SessionListing.init), session: session,
                     windows: listing.map { .init(id: $0.id, name: $0.name) }, window: listing.first(where: \.active)?.id)

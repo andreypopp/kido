@@ -576,107 +576,16 @@ that word. The copy cursor alone is not a selection. With no text and no
 selection, no menu opens. Copy acts like `y` in copy mode and like Ghostty's
 copy outside it. ⌘O is the key equivalent of an Edit menu item. It reads
 "Prompt with Selection…" when the focused pane has a selection, in copy mode or
-a Ghostty selection, and "Prompt…" otherwise. With a selection it opens a prompt
-box with a quote. Without one it opens a box with no quote at the cursor: the
-copy cursor in copy mode, else the terminal cursor that Ghostty reports through
-`ghostty_surface_ime_point`. Ghostty reports that cursor relative to the
-active screen, not the viewport. Thus, when the viewport is scrolled back, the
-app maps the cursor row through the scrollbar and clamps it to the visible rows.
-⌘O never beeps, and it does nothing while copy mode is still entering. The
-title follows the focused pane when the Edit menu opens. With no focused pane,
-the item reads "Prompt…" and is disabled. In copy mode, `p` opens a box only
-with a selection, and beeps without one. While copy mode is still entering, mouse
-clicks are ignored, except that a held Shift-press gesture continues. The wheel
-still scrolls.
-
-A prompt box (`PromptBox`) floats over the terminal area. It is a view, not a
-window. `SessionView` owns one `PromptBoxes` layer above every `WindowView`,
-divider, floating pane and pane chrome. Each open makes a new box with its own
-quote, picker, text and state, and opening one never closes another. There is
-no limit. The width is min(560, area width − 16), and the height follows the
-content. The box opens 6 pt below the last selected row, with its left edge at
-the first selected cell. If it does not fit, it opens 6 pt above the first
-selected row. If it fits neither way, it sits at the bottom of the area. When a
-visible box has its top-left corner within 4 pt of the new one, the new one
-moves +16, +16 until it is free. The frame is then clamped 8 pt inside the area,
-so a box can cross pane borders. A drag on the header or foot background, or
-around the quote, moves the box with the same clamp. The field, the quote and
-the controls do not drag. The cursor is the open hand where a press drags, the
-arrow over the buttons and the popup, and the I-beam over the field. A resize clamps every box
-again. The position is not saved.
-
-The newest box takes focus and is on top. A click on a box raises it and
-focuses its field. A click on the terminal leaves every box open. For the copy mode
-focus rule, a focused box counts as its source pane: focus that moves into a box
-keeps copy mode in its source pane, and focus that then moves to another pane
-ends it. There is no key to cycle between
-boxes.
-
-A box belongs to the tmux session it was opened in. A window switch in that
-session does not change it. Another session hides it, and a return shows it at
-the same place. A session that tmux no longer lists closes its boxes. A disconnect
-or reconnect makes a new `SessionView` and closes every box. The box keeps the
-source pane id, window id and window name, and the request handler. It keeps
-no reference to the pane view. The source window's name stays as captured at
-open, so "(pane closed)" can name a killed window. Other candidates' window
-names are read when the popup is built.
-
-A box without a selection anchors to the cursor cell in the same way, below
-or above that cell. It has no quote block, its placeholder reads "Ask the
-agent", and it is 90 pt tall with a one-line field. It sends exactly the typed
-text.
-
-The quote is the selection text captured at open. Later selection changes,
-copy mode exit, scrolling, output, layout and zoom do not change or move a box.
-A box closes only on ×, Escape while it has focus, or delivery. Up to three
-lines show whole. A longer quote shows the first line, an italic "⋯ N lines"
-for the hidden middle lines, and the last line. Each line is truncated with an
-ellipsis, and the tooltip shows the full text.
-
-When the box opens, it sends a `prompt` resolve request for the source pane. The
-head is a target popup, as wide as the selected title up to the box's width. It
-shows "Resolving…" until the reply arrives. It lists
-the agents in the pane's window first, in kido's order, and preselects the
-first. A candidate is in the same window when its `window` equals the pane's
-window. With no candidate, the head reads "No agent in this window or session",
-and the field and Send are disabled. Return sends when Send is enabled, and
-Shift-Return adds a newline. Tab and Shift-Tab move through the field, popup,
-Cancel and Send, and skip disabled controls. A mouse press anywhere in a box,
-also on a control, raises the box and gives its field focus. The control
-still acts on the press. Escape closes the box. If the box had focus, the source pane becomes the
-active tmux pane and gets focus, and copy mode and its selection stay. When the
-source pane is not shown or is gone, the session's active pane gets focus. A box
-that closes without focus moves no focus. While the text view has focus, ⌘ chords go to it, not to the
-pane. With a quote, the sent text is the prompt with ":" added unless it ends
-with one. Then follows each selection line with "> ", without the selection's
-trailing newline. A send always names the picked target. States:
-
-- Sending: a spinner, and the inputs are disabled.
-- Delivered: the box closes. If the box had focus and the source pane still
-  exists, the source pane's selection clears and copy mode exits. The source
-  pane gets focus when it is shown, and otherwise the shown window's active
-  pane gets focus. A box without focus changes nothing else, because the
-  pane's selection can belong to a newer box.
-- `refused`: kido's message and Retry. Send stays disabled until Retry or an
-  edit.
-- `unknown`: kido's message with "It may have arrived; not resent." and Copy
-  Prompt. Send is hidden, and the box never sends again by itself.
-- `invalid`, or an error with no `kind`: the message only. Send stays
-  disabled until an edit or another pick in the popup.
-- A failure of the feed after the send request was written (the helper ended
-  or the connection closed) is `unknown`, because the text may have arrived.
-
-When the source pane leaves every window layout of the session, the box stays
-and keeps the candidates it resolved. A cold window whose pane views were
-evicted does not count as gone. The popup detail reads "in window <name> (pane closed)", and the
-status reads "Source pane closed; agents resolved earlier stay available." The
-box does not resolve again. kido's `prompt` send looks up its candidates from
-the request's pane, so a box whose source is gone names the target as that
-pane too. The target is always its own candidate. A send to a target that is
-gone fails as `invalid`, and the text stays.
-
-A failed resolve shows its message, and Retry resolves again. A late reply to a
-closed box does nothing.
+a Ghostty selection, and "Prompt…" otherwise. It enters the palette's Prompt
+mode ([Command palette](#command-palette)), with the selection appended as a
+markdown quote, or with no quote. ⌘O does nothing while copy mode is still entering. The title
+follows the focused pane when the Edit menu opens. The item is disabled with no
+focused pane, and when the pane's tmux session has no agent that kido's
+`prompt` can reach: no sidebar row of that session is an agent outside a run
+window. Then ⌘O beeps and opens nothing, also in copy mode. In copy mode, `p`
+enters Prompt mode only with a selection, and beeps without one. While copy
+mode is still entering, mouse clicks are ignored, except that a held
+Shift-press gesture continues. The wheel still scrolls.
 
 The `Feed` has no timeout for a request. Thus, a `prompt` send that blocks
 kido's RPC loop until the inbox times out does not restart the helper.
@@ -1347,7 +1256,8 @@ The root list is built from live state, in this order:
   Copy Mode, Prompt… and Reset Clipboard and Upload Permissions. The window
   commands need an anchor. The pane commands need a live focused pane: a
   connected anchor whose saved responder is a visible pane of that window, or
-  a view inside one, such as its Find bar or prompt box.
+  a view inside one, such as its Find bar. Prompt… also needs an agent in the
+  pane's session, as its menu item does.
   Navigation items, Select Pane, the numbered lists, Find Next/Previous, Hide,
   Quit and the palette item are never in the list.
 
@@ -1374,7 +1284,7 @@ characters gets a fill of the terminal foreground at 14% with a 3pt radius;
 the text keeps its colour and weight. With no match, the list shows "No
 matches".
 
-The palette has two modes besides the root. A mode shows a chip left of the
+The palette has three modes besides the root. A mode shows a chip left of the
 field (22pt, the mode's symbol and name) and a foot that names its keys.
 Entering a mode clears the query and the error. An error is a red line between
 the field and the list; an edit clears it.
@@ -1396,20 +1306,192 @@ the field and the list; an edit clears it.
   no change; a name with `:` or `.` or a duplicate name shows the rule's message
   and selects the text again; a tmux refusal shows tmux's message. The sidebar's
   inline rename and this mode call the same `WindowOwner.renameSession`.
+- **Prompt** (`bubble.left`). It sends a prompt to an agent through kido's
+  `prompt` RPC ([Prompting an agent](design-rpc.md#prompting-an-agent)). It
+  replaces the list with its own view, `PalettePrompt`, described below.
+
+### Prompt mode
+
+Prompt mode shows one prompt at a time. Its source is a `PromptSource`: the
+owner, the server instance, the session, window and pane it was opened from,
+the window name at open, the selection of this open as the quote, and an
+optional preselected agent pane. The entry points are:
+
+- ⌘O, "Prompt with Selection…" in a pane's context menu, and `p` in copy mode
+  ([Panes](#panes)). The source is the focused pane, and the quote is its
+  selection, if any. With the palette closed, `WindowOwner` forwards the pane
+  to `AppDelegate.openPrompt`, which opens the palette over the pane's window
+  with the pane as the focus to restore.
+- ⌘O in the root list. On a highlighted agent pane row outside a run window,
+  the source is that agent's own pane, preselected, with no quote. On any
+  other row, ⌘O acts as the Prompt… row. Only the highlighted agent row shows "⌘O prompt" in its
+  shortcut column. In another mode, ⌘O does nothing.
+- The root row Prompt…: the focused pane, with its current selection.
+
+The pane entries first check for an agent in the source pane's session, from
+the snapshot that the sidebar draws. Agents in a run window do not count,
+because kido's `prompt` excludes every pane of a run window. Without one, a
+key entry beeps and opens nothing, the context-menu item and the Edit item are
+disabled, and the root list has no Prompt… row. Root ⌘O on an agent row needs
+no other check, because the row is the agent. Thus, no entry opens Prompt mode
+when its snapshot has no agent. Only a resolve with no candidate shows the no-agent state below.
+
+The card's head row has the mode chip and the target picker, "Prompt
+**@name** in this window ⌄" or "in window <name>", with the place in
+secondary colour. Under it are the field, a status line and the foot. The
+head is 47pt and the foot 40pt. The field is a plain TextKit 1 `NSTextView`
+with 13pt text on 18pt lines, 9pt above and 12pt below, as the mockup render
+measures. It has no placeholder. It grows with its text up to 6 lines, then it
+scrolls and shows its scroller. The card keeps its top edge as it grows.
+
+The field's text is markdown, and it is exactly the text that is sent. The
+package `app/Packages/PromptMarkdown` parses it with apple/swift-markdown after
+each edit and sets only display attributes; styling never changes the text.
+The package also owns the quote-append rule below, as a text function. Quote
+styling follows the parsed `BlockQuote` nodes, not lines that start with `>`:
+the quote text is in the secondary label colour, its visible `>` marker and
+the space after it in the tertiary label colour, and a 2pt bar in the
+secondary label colour at 45% is drawn 8pt left of the text edge over each
+quote line, so consecutive lines make one bar and a blank line breaks it.
+Inline code is SF Mono 12pt over a fill of the label colour at 8% with a 3pt
+radius. Strong text and headings are semibold at 13pt, and emphasis adds the
+italic trait to the font it is in.
+Every marker stays visible, and every line stays 18pt. Thus the field needs no
+caret, selection or Backspace rules of its own: hidden markers would need one
+for each editing gesture.
+
+A selection is appended to the text as a quote: if the text is not empty and
+does not end with a blank line, a blank line first; then an empty line for the
+caret; then each selection line prefixed with `> `, or a bare `>` for an
+empty line. The caret goes on the
+empty line, scrolled into view. The blank line keeps the caret line out of an
+earlier quote, because CommonMark makes a text line directly after a quote
+line a lazy continuation of that quote. A quote may directly follow the caret
+line, because a blockquote can interrupt a paragraph. An equal quote is
+appended again.
+
+The foot names the keys, "↩ send
+· ⇧↩ new line · ⇥ agent · esc close, keeps draft", adds "· draft restored"
+when a draft came back, and has Send at the right: 26pt, 8pt radius,
+`controlAccentColor`, or the label colour at 14% when disabled.
+
+An entry first sends a `prompt` resolve request for the source pane. Nothing
+changes on screen until the reply: a closed palette stays closed, and the root
+list stays as it is. Then the palette opens or enters Prompt mode with the
+target, its draft and the appended quote at the final height. Thus, no field
+accepts text before its target is known: a reply that arrives after the user
+started to type would replace that text. A second entry while a resolve is
+pending starts no other request. If no reply arrives in 5 s, the prompt opens
+failed with "kido did not reply" and Retry, because the feed's requests have no
+time limit. A palette close, a mode change, an owner close, a changed server
+instance or a source pane that is gone cancels the pending open. A reply after
+the cancel or the time limit does nothing. The chosen agent is the
+preselected pane if it is a candidate, else the source pane itself if it is
+a candidate (⌘O in an agent's own pane), else the first candidate in the
+source pane's window, else the first candidate. A reply with no candidate (the
+agent ended after the check) disables the picker, the field and Send, and the
+picker reads "No agent in this window or session". A failed resolve shows its
+message and Retry, which resolves again, with the same time limit, in the open
+prompt.
+
+The picker is an `NSControl` that pops up a native `NSMenu`: "This window"
+with its agents, then "Session <name>" with the others and their window
+names, the chosen one checked. A section with no agent shows a disabled "No
+agents". A click or Space or Return on the focused picker opens the menu. Left
+and Right with the menu closed choose the previous or next candidate. A
+choice in the `invalid` state returns to ready.
+
+Keys in the field go through the text view's `doCommandBy`: Return sends,
+Shift-Return inserts a newline, Tab focuses the picker, Shift-Tab focuses
+Send, and Escape closes the palette. Up and Down move the caret only. From the
+picker, Shift-Tab returns to the field, Tab goes to Send (or the field when
+Send is disabled) and Escape closes the palette. Tab from Send returns to the
+field. An open menu handles its own keys, and Escape there closes only the
+menu.
+
+A send names the chosen target, and the source pane as its pane, or the
+target itself when the source pane is gone. The text is the field's raw
+markdown. Send is enabled for any text that is not blank, a quote alone
+included. States:
+
+- Sending: a spinner and "Sending to @name…". The field, the picker and Send
+  are disabled.
+- Delivered: the draft is removed, and the palette closes and restores the
+  focus. Then, if the source pane still exists, its selection clears and copy
+  mode exits.
+- `refused`: a red triangle, kido's message, and Retry, which sends again. An
+  edit returns to ready.
+- `unknown`, or a feed failure after the send was written: kido's message with
+  " It may have arrived; not resent." and Copy Prompt, which puts the composed
+  text on the pasteboard. The field is read-only and muted: all its text,
+markers included, is in the secondary label colour. Send is hidden, and
+  the palette never sends again by itself. The draft stays.
+- `invalid`, `Feed.notReady` or an error with no `kind`: the message in red.
+  The picker stays enabled. An edit or another target returns to ready.
+
+A late reply after the mode changed or the palette closed does nothing.
+While Prompt mode is open, each owner snapshot checks the source. A changed
+`server_instance` or a closed owner closes the palette as `.moved`. A source
+pane that is in no sidebar row of its session sets "pane closed". When the
+chosen agent is in the source window, the picker reads "in window <name> (pane
+closed)" with the window name captured at open. In the ready state, the status
+reads "Source pane closed; agents resolved earlier stay available."; the other
+states keep their own status. The candidates stay, and the palette does not resolve again. A
+send to a target that is gone fails as `invalid` from kido.
+
+**Drafts.** `AppDelegate.promptDrafts` holds one draft per target agent, in
+memory only. The key is the host, the server instance and the agent's pane.
+The value is the text. Thus, ⌘O from a pane, ⌘O in the agent's
+own pane and root ⌘O on its row open the same draft. When the target becomes
+known, from the resolve reply or a picker change, the field shows that
+agent's draft with the caret at the end, and the foot adds "draft restored".
+After the resolve reply only, this open's selection is appended to that text. Every close in Prompt mode, and the `unknown` state, stores
+the field under the current target if its trimmed text is not empty, else
+removes the key. A delivery removes it. A picker change from A to B stores the
+field under A. If B has a draft, the field shows it. Else the field keeps its
+text, A's key is removed, and the content belongs to B. Each owner
+snapshot drops the drafts of that host whose instance differs or whose pane is
+no longer in the snapshot, and an owner close drops its host's drafts. A pane
+that stops being an agent for a while keeps its draft: pi clears its root
+while it runs an external editor or is suspended.
+
+While the palette is open, in every mode, no key reaches a pane. One
+`OwnerWindow` check, the palette is closed or this window is key, guards each
+place where a key enters a pane: the window's key delivery,
+`PaneView.performKeyEquivalent`, a pane's menu validation, and the local
+Command key-up monitor. Thus a main-menu item with a pane target, a Ghostty
+binding or text input cannot act on a pane behind the palette.
+
+The Edit menu has the standard nil-target text items (Undo, Redo, Cut, Copy,
+Paste, Select All and the others that AppKit expects), so every text field in
+the app, the prompt field included, gets the standard editing keys through the
+responder chain. The prompt field supplies its own undo manager. A pane
+answers Select All, Copy and Paste itself with Ghostty's `select_all`,
+`copy_to_clipboard` and `paste_from_clipboard`. A pane offers a key whose
+Ghostty binding is consumed, and neither `all` nor `performable`, to the main
+menu first. Thus ⌘A, ⌘C and ⌘V with Ghostty's default bindings keep their
+result, and the items also work from the menu. The items run these fixed
+actions, not a binding that the user moved to another action
+([known issue](known-issues-app.md#edit-items-can-take-a-custom-ghostty-binding)). A pane's validation
+enables only these and the pane's own items.
 
 Keys reach the panel first; no pane is in its responder chain. The panel's
-`performKeyEquivalent` takes Command-P and Shift-Command-P (close) and
-Shift-Command-K (Connect) before the field editor. Other Command keys go to the
+`performKeyEquivalent` takes Command-P and Shift-Command-P (close),
+Shift-Command-K (Connect) and Command-O (Prompt, in the root only) before the
+field editor. With the palette closed, these keys keep their pane behaviour. Other Command keys go to the
 main menu. The field's `control(_:textView:doCommandBy:)` handles the rest:
 Up, Down, Control-P and Control-N move the selection with wraparound; Return
-runs it; Escape returns from a mode to the root and closes at the root;
+runs it; Escape returns from Connect or Rename to the root and closes at
+the root;
 Backspace on an empty field in a mode returns to the root. Command-P has no
 Ghostty default. From a pane, `PaneView.performKeyEquivalent` offers an
 unbound Command key to the main menu, which is how Command-P reaches the
 palette.
 
 The field's accessibility label names the mode: "Command palette", "Connect
-to remote host" or "Rename session". Each row's label joins its title, detail
+to remote host" or "Rename session". In Prompt mode, the field is "Prompt",
+the picker is a pop-up button "Send to @name", and the buttons are "Send
+prompt", "Retry" and "Copy Prompt". Each row's label joins its title, detail
 and shortcut, and adds the status as the tabs do (" — error", " — waiting",
 " — running", " — done"). An error is announced at high priority. The panel's
 subrole is a floating window.

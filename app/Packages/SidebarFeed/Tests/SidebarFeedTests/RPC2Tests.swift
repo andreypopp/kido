@@ -59,8 +59,6 @@ import TmuxControl
 
 @Test func promptRequestsAndReplies() throws {
     let pane = PaneID(number: 9), target = PaneID(number: 12)
-    #expect(RPCRequest.composePrompt(prompt: "Explain", selection: "a\n\nb\n") == "Explain:\n> a\n> \n> b")
-    #expect(RPCRequest.composePrompt(prompt: "Why:", selection: "a") == "Why:\n> a")
     let candidates = try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(#"{"id":7,"prompt":{"candidates":[{"pane":"%12","session":"$3","window":"@4","title":"claude-code"}]}}"#.utf8))
     guard case .prompt(.candidates(let list)) = candidates.value else { Issue.record("not candidates"); return }
     #expect(list.map(\.pane) == [target])

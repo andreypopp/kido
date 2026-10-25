@@ -4,10 +4,12 @@ import TmuxControl
 
 enum PaletteMode: Equatable {
     case root, connect
+    case prompt(PromptSource)
     case rename(WindowOwner, ServerInstance, SessionID, original: String)
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
         case (.root, .root), (.connect, .connect): true
+        case let (.prompt(a), .prompt(b)): a == b
         case let (.rename(a, ai, asid, an), .rename(b, bi, bsid, bn)): a === b && ai == bi && asid == bsid && an == bn
         default: false
         }
@@ -16,8 +18,8 @@ enum PaletteMode: Equatable {
 
 private final class PaletteChip: NSView {
     var mode: PaletteMode = .root
-    private var title: String { if case .connect = mode { "Connect" } else { "Rename session" } }
-    private var symbol: String { if case .connect = mode { "globe" } else { "pencil" } }
+    private var title: String { switch mode { case .prompt: "Prompt"; case .connect: "Connect"; default: "Rename session" } }
+    private var symbol: String { switch mode { case .prompt: "bubble.left"; case .connect: "globe"; default: "pencil" } }
     var width: CGFloat { 33 + (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -95,6 +97,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
         var entry: PaletteEntry?
         var highlightColor = NSColor.labelColor
         var offsets: [[Int]] = [[], []]
+        var selected = false
         override var isFlipped: Bool { true }
 
         override func draw(_ dirtyRect: NSRect) {
@@ -106,11 +109,12 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
                            from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             }
             var right = bounds.maxX - 16
-            if !entry.shortcut.isEmpty {
+            let shortcut = selected && entry.promptable ? "⌘O prompt" : entry.shortcut
+            if !shortcut.isEmpty {
                 let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]
-                let size = (entry.shortcut as NSString).size(withAttributes: attributes)
+                let size = (shortcut as NSString).size(withAttributes: attributes)
                 right -= size.width
-                (entry.shortcut as NSString).draw(at: NSPoint(x: right, y: (bounds.height - size.height) / 2), withAttributes: attributes)
+                (shortcut as NSString).draw(at: NSPoint(x: right, y: (bounds.height - size.height) / 2), withAttributes: attributes)
                 right -= 12
             }
             let paragraph = NSMutableParagraphStyle()
@@ -187,6 +191,17 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     @objc private func clicked() { choose(clickedRow) }
 
+    override func selectRowIndexes(_ indexes: IndexSet, byExtendingSelection extend: Bool) {
+        let old = selectedRow
+        super.selectRowIndexes(indexes, byExtendingSelection: extend)
+        for row in Set([old, selectedRow]).filter({ shown.indices.contains($0) }) {
+            if let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? Cell {
+                cell.selected = selectedRow == row
+                cell.needsDisplay = true
+            }
+        }
+    }
+
     func numberOfRows(in tableView: NSTableView) -> Int { shown.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
@@ -198,6 +213,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let cell = Cell()
         cell.entry = shown[row].entry
+        cell.selected = selectedRow == row
         cell.highlightColor = highlightColor
         cell.offsets = shown[row].offsets
         cell.setAccessibilityElement(true)
@@ -211,6 +227,10 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
 
 final class PaletteView: NSView, NSTextFieldDelegate {
     let field = NSTextField()
+    private(set) var prompt: PalettePrompt?
+    var makePrompt: (PromptSource) -> Void = { _ in }
+    var modeChanged: () -> Void = {}
+    var selectedEntry: PaletteEntry? { shown.indices.contains(table.selectedRow) ? shown[table.selectedRow].entry : nil }
     private let chip = PaletteChip()
     private let errorLine = PaletteError()
     private let foot = PaletteFoot()
@@ -271,22 +291,30 @@ final class PaletteView: NSView, NSTextFieldDelegate {
 
     override func layout() {
         super.layout()
+        field.isHidden = prompt != nil
+        foot.isHidden = prompt != nil || mode == .root
+        footSeparator.isHidden = foot.isHidden
+        errorLine.isHidden = prompt != nil || error == nil
+        chip.isHidden = mode == .root
+        let width: CGFloat = 600
+        let chipWidth = mode == .root ? 0 : chip.width
+        card.frame = NSRect(x: 0, y: 0, width: width, height: preferredHeight)
+        chip.frame = NSRect(x: 16, y: preferredHeight - 34, width: chipWidth, height: 22)
+        if let prompt {
+            prompt.targetButton.frame = NSRect(x: 16 + chip.width + 10, y: preferredHeight - 34, width: min(460 - chip.width, prompt.targetButton.fittingSize.width), height: 22)
+            separator.frame = NSRect(x: 0, y: prompt.preferredHeight, width: 600, height: 1)
+            prompt.frame = NSRect(x: 0, y: 0, width: 600, height: prompt.preferredHeight)
+            prompt.layoutSubtreeIfNeeded()
+            return
+        }
         let list = listHeight
         let footer: CGFloat = mode == .root ? 0 : 30
         let errorHeight: CGFloat = error == nil ? 0 : errorLine.height
-        let width: CGFloat = 600
-        card.frame = NSRect(x: 0, y: 0, width: width, height: preferredHeight)
-        chip.isHidden = mode == .root
-        let chipWidth = mode == .root ? 0 : chip.width
-        chip.frame = NSRect(x: 16, y: preferredHeight - 34, width: chipWidth, height: 22)
         field.frame = NSRect(x: 16 + chipWidth + (chipWidth > 0 ? 8 : 0), y: preferredHeight - (mode == .root ? 34 : 35), width: width - 32 - chipWidth - (chipWidth > 0 ? 8 : 0), height: 22)
         separator.frame = NSRect(x: 0, y: list + footer + errorHeight, width: width, height: 1)
         scroll.frame = NSRect(x: 0, y: footer, width: width, height: list)
-        errorLine.isHidden = error == nil
         errorLine.frame = NSRect(x: 0, y: footer + list, width: width, height: errorHeight)
-        footSeparator.isHidden = mode == .root
         footSeparator.frame = NSRect(x: 0, y: footer, width: width, height: 1)
-        foot.isHidden = mode == .root
         foot.frame = NSRect(x: 0, y: 0, width: width, height: footer)
         table.tableColumns.first?.width = width
         empty.frame.size = empty.textSize
@@ -298,14 +326,29 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         if mode == .connect, shown.isEmpty { return field.stringValue.isEmpty ? 42 : 8 }
         return shown.isEmpty ? PaletteList.entryHeight : CGFloat(min(shown.count, 12)) * PaletteList.entryHeight + 8 - (shown.prefix(12).contains { $0.entry.id == .clearRecent } ? 6 : 0)
     }
-    var preferredHeight: CGFloat { 45 + listHeight + (mode == .root ? 0 : 30) + (error == nil ? 0 : errorLine.height) }
+    var preferredHeight: CGFloat { if let prompt { 47 + prompt.preferredHeight } else { 45 + listHeight + (mode == .root ? 0 : 30) + (error == nil ? 0 : errorLine.height) } }
 
-    func enter(_ mode: PaletteMode) {
+    func enter(_ mode: PaletteMode, prompt prepared: PalettePrompt? = nil) {
         guard mode != self.mode else { return }
+        if case .prompt(let source) = mode, prepared == nil { return makePrompt(source) }
+        modeChanged()
+        prompt?.storeDraft()
+        prompt?.targetButton.removeFromSuperview()
+        prompt?.removeFromSuperview()
+        prompt = nil
         self.mode = mode
         error = nil
         field.stringValue = ""
         switch mode {
+        case .prompt:
+            guard let view = prepared else { return }
+            prompt = view
+            card.addSubview(view)
+            card.addSubview(view.targetButton)
+            view.resized = { [weak self] in
+                self?.needsLayout = true
+                (self?.window as? PalettePanel)?.resizeCard()
+            }
         case .root:
             entries = rootEntries()
             field.placeholderString = "Search sessions, panes and commands"
@@ -323,8 +366,9 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         chip.needsDisplay = true
         foot.needsDisplay = true
         filter()
-        window?.makeFirstResponder(field)
-        field.selectText(nil)
+        layoutSubtreeIfNeeded()
+        window?.makeFirstResponder(prompt?.textView ?? field)
+        if prompt == nil { field.selectText(nil) }
     }
 
     func reject(_ message: String) {
@@ -353,7 +397,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         case .root: shown = PaletteEntry.ranked(entries, query: field.stringValue)
         case .connect:
             shown = modeEntries(field.stringValue, error != nil)
-        case .rename: shown = []
+        case .rename, .prompt: shown = []
         }
         table.reloadData()
         empty.text = mode == .connect ? "No recent hosts" : "No matches"
@@ -361,7 +405,8 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         empty.setAccessibilityRole(.staticText)
         empty.setAccessibilityLabel(empty.text)
         empty.needsDisplay = true
-        if case .rename = mode { empty.isHidden = true }
+        if prompt != nil { empty.isHidden = true }
+        else if case .rename = mode { empty.isHidden = true }
         else { empty.isHidden = !shown.isEmpty || (mode == .connect && !field.stringValue.isEmpty) }
         scroll.isHidden = shown.isEmpty
         select(0)
@@ -411,9 +456,13 @@ final class PalettePanel: NSPanel {
     override var canBecomeMain: Bool { false }
     var toggle: () -> Void = {}
     var connect: () -> Void = {}
-
+    var prompt: () -> Void = {}
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
+        if event.charactersIgnoringModifiers?.lowercased() == "o", modifiers == .command {
+            if palette.mode == .root { prompt() }
+            return true
+        }
         if event.charactersIgnoringModifiers?.lowercased() == "p", modifiers == .command || modifiers == [.command, .shift] {
             toggle(); return true
         }
