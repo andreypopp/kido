@@ -25,6 +25,15 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 }
 
 @MainActor class VisualTestCase: XCTestCase {
+    func surfaceText(_ pane: PaneView, in tag: ghostty_point_tag_e = GHOSTTY_POINT_SCREEN) -> String {
+        var text = ghostty_text_s()
+        let selection = ghostty_selection_s(top_left: ghostty_point_s(tag: tag, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
+                                            bottom_right: ghostty_point_s(tag: tag, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0), rectangle: false)
+        guard ghostty_surface_read_text(pane.surface, selection, &text), let bytes = text.text else { return "" }
+        defer { ghostty_surface_free_text(pane.surface, &text) }
+        return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
+    }
+
     func observeFrames(_ layer: CALayer, _ frame: @escaping @MainActor () -> Void) -> NSKeyValueObservation {
         layer.observe(\.contents, options: .new) { layer, _ in
             guard layer.contents != nil else { return }
@@ -215,7 +224,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
-    var promptBoxes: PromptBoxes { session.boxes }
     var currentModel: SessionModel { model }
 
     func rpcRequest(_ request: RPCRequest) async throws {
