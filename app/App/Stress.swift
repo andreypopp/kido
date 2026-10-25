@@ -22,12 +22,12 @@ typealias AppWindow = StressWindow
         case resizeBurst = "resize-burst", loadMore = "load-more", gripDrag = "grip-drag"
         case gripDragKill = "grip-drag-kill", appearance, edgeResize = "edge-resize", detachReconnect = "detach-reconnect"
         case hiddenResize = "hidden-resize", clearHistory = "clear-history"
-        case tabs, sidebarJump = "sidebar-jump", sidebarMode = "sidebar-mode"
+        case windowKeys = "window-keys", sidebarJump = "sidebar-jump", sidebarMode = "sidebar-mode"
     }
     private static let actions: [Action] = [
         .wheel, .wheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
         .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect, .hiddenResize, .clearHistory,
-        .tabs, .sidebarJump, .sidebarMode,
+        .windowKeys, .sidebarJump, .sidebarMode,
     ]
     private let window: NSWindow
     private let send: ([Command]) -> Void
@@ -52,7 +52,7 @@ typealias AppWindow = StressWindow
     }
 
     func run() {
-        log(["input-delivery": "Off-screen: view event methods and menu performKeyEquivalent called directly; toolbar toggle invokes its entry point, not an NSToolbar click"])
+        log(["input-delivery": "Off-screen: view event methods and menu performKeyEquivalent called directly; sidebar toggle invokes its entry point, not a click"])
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             if self.env["KIDO_FIND_CLEAR_VERIFY"] == "1" || self.env["KIDO_FIND_INVALIDATE_VERIFY"] == "1" {
                 guard let pane = (self.window.contentView.map(self.views) ?? []).compactMap({ $0 as? PaneView }).first else { exit(1) }
@@ -697,7 +697,7 @@ typealias AppWindow = StressWindow
         log(["step": step, "action": action.rawValue, "pane": pane?.pane.description ?? "", "panes": panes.count,
              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
              "active": NSApp.isActive, "onScreenWindows": onScreen()])
-        if [.tabs, .sidebarJump, .sidebarMode].contains(action) { performUI(action) }
+        if [.windowKeys, .sidebarJump, .sidebarMode].contains(action) { performUI(action) }
         else if let pane { perform(action, pane, all) }
         if step % 5 == 0 { verifyUI() }
         log(["tick": step, "counts": counts])
@@ -706,7 +706,7 @@ typealias AppWindow = StressWindow
 
     private func perform(_ action: Action, _ pane: PaneView, _ all: [NSView]) {
         switch action {
-        case .tabs, .sidebarJump, .sidebarMode: break
+        case .windowKeys, .sidebarJump, .sidebarMode: break
         case .alternate:
             send([Command("new-window", "-n", "stress-alt", "while :; do printf '\\033[?1049hALT SCREEN\\n'; sleep 2; printf '\\033[?1049l'; sleep 2; done")])
         case .wheel:
@@ -811,7 +811,6 @@ typealias AppWindow = StressWindow
                     return
                 }
                 self.check("displayed-window", matched)
-                self.check("tab-order", app.sidebar.tabs.entries.map(\.id) == navigation.windows.map(\.id))
                 let menu = NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu
                 self.check("shortcut-order", menu?.items.dropFirst(3).enumerated().allSatisfy { index, item in
                     (item.representedObject as? RPCRequest) == navigation.select(.number(index + 1))
@@ -849,25 +848,13 @@ typealias AppWindow = StressWindow
         guard let table = all.compactMap({ $0 as? Table }).first else { return }
         counts[action.rawValue + "-delivered", default: 0] += 1
         switch action {
-        case .tabs:
-            let tabs = sidebar.tabs
-            guard !tabs.entries.isEmpty else { return }
-            switch random(3) {
-            case 0:
-                let children = tabs.accessibilityChildren()?.compactMap { $0 as? NSAccessibilityElement } ?? []
-                let rects = children.map { $0.accessibilityFrameInParentSpace() }.filter { tabs.bounds.contains(NSPoint(x: $0.midX, y: $0.midY)) }
-                guard !rects.isEmpty else { return }
-                let rect = rects[random(rects.count)]
-                let point = tabs.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
-                tabs.mouseDown(with: event(.leftMouseDown, point))
-                tabs.mouseUp(with: event(.leftMouseUp, point))
-                counts["tab-mouse-down", default: 0] += 1
-            case 1:
+        case .windowKeys:
+            if random(2) == 0 {
                 _ = NSApp.mainMenu?.performKeyEquivalent(with: key("\(random(9) + 1)", 0, .command))
-                counts["tab-cmd-number", default: 0] += 1
-            default:
+                counts["window-cmd-number", default: 0] += 1
+            } else {
                 _ = NSApp.mainMenu?.performKeyEquivalent(with: key(random(2) == 0 ? "}" : "{", 0, .command))
-                counts["tab-cmd-brace", default: 0] += 1
+                counts["window-cmd-brace", default: 0] += 1
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.verifyUI() }
         case .sidebarJump:

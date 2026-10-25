@@ -1,7 +1,4 @@
-bounds=0.00,0.00,764.00,588.00 separator=0.00,0.00,764.00,0.50 banner=false
-pane %0 tmux=Geometry(x: 0, y: 0, width: 46, height: 38) layer=tiled grid=9.50,6.00,368.00,570.00 content=9.50,0.50,368.00,587.50 chrome=0.00,0.50,381.50,587.50 insets=5.5,12.0 pill=false find=false alternate=false scroll=nil
-pane %1 tmux=Geometry(x: 47, y: 0, width: 46, height: 19) layer=tiled grid=385.50,6.00,368.00,285.00 content=385.50,0.50,368.00,298.00 chrome=382.00,0.50,382.00,298.00 insets=5.5,7.5 pill=false find=false alternate=false scroll=nil
-pane %2 tmux=Geometry(x: 47, y: 20, width: 46, height: 18) layer=tiled grid=385.50,306.00,368.00,270.00 content=385.50,299.00,368.00,289.00 chrome=382.00,299.00,382.00,289.00 insets=7.0,12.0 pill=false find=false alternate=false scroll=nil
-divider=0.00,0.00,764.00,0.50
-divider=381.50,0.50,0.50,587.50
-divider=382.00,298.50,382.00,0.50
+bounds=0.00,0.00,764.00,640.00 top=0.00 banner=false
+pane %0 tmux=Geometry(x: 0, y: 0, width: 44, height: 41) layer=tiled grid=16.00,12.50,352.00,615.00 chrome=8.00,8.00,368.00,624.00 pill=false find=false alternate=false scroll=nil
+pane %1 tmux=Geometry(x: 45, y: 0, width: 44, height: 20) layer=tiled grid=394.00,12.00,352.00,300.00 chrome=384.00,8.00,372.00,308.00 pill=false find=false alternate=false scroll=nil
+pane %2 tmux=Geometry(x: 45, y: 21, width: 44, height: 20) layer=tiled grid=394.00,328.00,352.00,300.00 chrome=384.00,324.00,372.00,308.00 pill=false find=false alternate=false scroll=nil

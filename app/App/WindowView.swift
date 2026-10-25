@@ -160,7 +160,10 @@ final class WindowView: NSView {
         if changed {
             if isHidden {
                 installGrids(panes)
-            } else { relayout() }
+            } else {
+                relayout()
+                sizeClient()
+            }
         }
         if !known { focusActive(force: false) }
     }

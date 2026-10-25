@@ -139,7 +139,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             guard let entry else { return }
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
-            if let status = entry.status { drawStatusMark(status, at: NSPoint(x: 24, y: bounds.midY), flipped: true) }
+            if let status = entry.status { drawStatusMark(status, at: NSPoint(x: 24, y: bounds.midY)) }
             if let symbol = entry.symbol.flatMap({ NSImage(systemSymbolName: $0, accessibilityDescription: nil) }) {
                 let image = symbol.withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: Chrome.inkSecondary))) ?? symbol
                 image.draw(in: NSRect(x: 24 - image.size.width / 2, y: (bounds.height - image.size.height) / 2, width: image.size.width, height: image.size.height),
@@ -745,4 +745,16 @@ final class PalettePanel: NSPanel {
         closed()
     }
 
+}
+
+extension SidebarRow.Status {
+    var accessibilitySuffix: String {
+        switch self {
+        case .error: " — error"
+        case .waiting: " — waiting"
+        case .running: " — running"
+        case .done: " — done"
+        case .quiet: ""
+        }
+    }
 }

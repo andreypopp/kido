@@ -36,12 +36,11 @@ final class Sidebar: NSSplitViewController {
     private let focusEdge = FocusEdge()
     #if KIDO_VISUAL
     var visualFocusEdge: FocusEdge { focusEdge }
+    var visualTitle: NSTextField { titleLabel }
     #endif
     private let shadow = SidebarShadow()
     let list = SidebarView()
     let content = NSView()
-    let tabs = WindowTabs()
-    private var lastTabActivity = false
     let terminalHost = NSView()
     private let slot = NSView()
     private let dock = NSView()
@@ -96,15 +95,12 @@ final class Sidebar: NSSplitViewController {
     var listBackground: NSColor? { didSet { view.needsLayout = true } }
 
     func updateAppearance(runtime: GhosttyRuntime) {
-        let background = runtime.background
-        tabs.theme = (runtime.unfocusedPaper, NSAppearance(named: background.isDark ? .darkAqua : .aqua))
         listBackground = runtime.canvas
         list.appearance = NSAppearance(named: runtime.canvas.luminance < 0.179 ? .darkAqua : .aqua)
     }
 
     init() {
         super.init(nibName: nil, bundle: nil)
-        tabs.sidebar = self
         splitView.frame = NSRect(x: 0, y: 0, width: 900, height: 560)
         let controller = NSViewController()
         slot.addSubview(dock)
@@ -162,18 +158,12 @@ final class Sidebar: NSSplitViewController {
         super.viewDidAppear()
         view.needsLayout = true
     }
-    func headerDivider(in host: NSWindow) -> CGFloat? {
-        guard let window = view.window, !isCollapsed, let glass = dockedGlass else { return nil }
-        let edge = glass.convert(NSPoint(x: glass.bounds.maxX, y: glass.bounds.maxY), to: nil)
-        return host.convertPoint(fromScreen: window.convertPoint(toScreen: edge)).x
-    }
     func updateFocusEdge() {
         focusEdge.isHidden = !list.containsFocus || isCollapsed
     }
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        tabs.refreshHeader()
         let root = view.window?.contentView?.superview
         if let root, let glass = dockedGlass, !isFloating, !isCollapsed {
             if focusEdge.superview !== root { root.addSubview(focusEdge, positioned: .above, relativeTo: nil) }
@@ -206,11 +196,6 @@ final class Sidebar: NSSplitViewController {
         let left = terminalHost.safeAreaInsets.left
         if !background, view.window != nil, !isCollapsed, !isFloating, left >= 200 {
             UserDefaults.standard.set(left, forKey: "nativeSidebarWidth")
-        }
-        let tabActivity = tabs.showsActivity
-        if tabActivity != lastTabActivity {
-            lastTabActivity = tabActivity
-            tabs.needsDisplay = true
         }
         let fullScreen = view.window?.styleMask.contains(.fullScreen) == true
         let titled = (isCollapsed || isFloating) && !fullScreen

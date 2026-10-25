@@ -71,15 +71,6 @@ import TmuxControl
                            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)!
     }
 
-    private func send(_ tabs: WindowTabs, _ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat = 18) {
-        let event = mouse(type, tabs.convert(NSPoint(x: x, y: y), to: nil), tabs.window!)
-        switch type {
-        case .leftMouseDown: tabs.mouseDown(with: event)
-        case .leftMouseDragged: tabs.mouseDragged(with: event)
-        default: tabs.mouseUp(with: event)
-        }
-    }
-
     private func center(_ table: NSTableView, _ row: Int, dy: CGFloat = 0) -> NSPoint {
         let rect = table.rect(ofRow: row)
         return table.convert(NSPoint(x: rect.midX, y: rect.midY + dy), to: nil)
@@ -140,7 +131,7 @@ import TmuxControl
         XCTAssertEqual(list.visualRows.map(\.id), snapshot.sessions.map { .header($0.id) }, "only headings remain once the drag moves")
         for row in 0..<table.numberOfRows { XCTAssertEqual(list.tableView(table, heightOfRow: row), 29) }
         XCTAssertEqual(try XCTUnwrap(viewportY(list, .header(source))), pinned, accuracy: 0.5, "the dragged heading stays where it was grabbed")
-        XCTAssertFalse(owner.reorder.claim(.tab))
+        XCTAssertFalse(owner.reorder.claim(.sidebar))
         XCTAssertFalse(owner.reorder.claim(.pane))
 
         let target = try XCTUnwrap(list.visualRows.firstIndex { $0.id == .header(anchor) })
@@ -163,7 +154,7 @@ import TmuxControl
         XCTAssertEqual(try XCTUnwrap(viewportY(list, .header(source))), dropped, accuracy: 0.5, "children return around the dropped heading")
         XCTAssertEqual(list.visualRows[table.selectedRow].id, .pane(SessionID(number: 13), PaneID(number: 905)), "selection survives by id")
         XCTAssertEqual(requests.count, 1, "no activation from the drag")
-        XCTAssertFalse(owner.reorder.claim(.tab), "no new reorder gesture while a drop is pending")
+        XCTAssertFalse(owner.reorder.claim(.sidebar), "no new reorder gesture while a drop is pending")
         XCTAssertTrue(owner.reorder.claim(.pane))
         owner.reorder.release(.pane)
 
@@ -176,7 +167,7 @@ import TmuxControl
         XCTAssertNil(owner.reorder.state.pending)
         XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id))
         XCTAssertNotNil(list.tableView(table, pasteboardWriterForRow: row))
-        XCTAssertTrue(owner.reorder.claim(.tab))
+        XCTAssertTrue(owner.reorder.claim(.sidebar))
         XCTAssertEqual(list.visualDiagnostic, "")
     }
 
@@ -564,241 +555,17 @@ import TmuxControl
         XCTAssertEqual(requests.last, .reorder(.window(SessionID(number: 0), WindowID(number: 797), relativeTo: WindowID(number: 0), .before)))
     }
 
-    func testTabDragReflowsAndCommitsOnce() async throws {
-        let sidebar = Sidebar()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
-                              styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { window.contentViewController = nil; window.close() }
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.contentViewController = sidebar
-        window.setContentSize(NSSize(width: 900, height: 560))
-        let root = try XCTUnwrap(window.contentView?.superview)
-        root.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(236, ofDividerAt: 0)
-        sidebar.viewDidLayout()
-        let tabs = sidebar.tabs, reorder = Reorder()
-        tabs.reorder = reorder
-        sidebar.list.reorder = reorder
-        sidebar.list.update(.running(try fixture()))
-        let ids = (1...4).map { WindowID(number: $0) }
-        tabs.entries = ids.map { SessionModel.Tab(id: $0, name: "Window \($0.number)", active: $0.number == 1, status: .quiet) }
-        root.layoutSubtreeIfNeeded()
-        tabs.layoutSubtreeIfNeeded()
-        var moves: [String] = [], selected: [String] = [], added = 0
-        tabs.scope = .init(session: SessionID(number: 0), generation: 1, instance: nil)
-        tabs.move = { if case .window(_, let source, let anchor, let placement) = $0 { moves.append("\(source) \(placement) \(anchor)") } }
-        tabs.select = { selected.append("\($0)") }
-        tabs.addWindow.invoke = { added += 1 }
-        let frame = window.frame
-        let labels = ids.indices.map { tabs.labelRect($0) }
-        let width = labels[1].minX - labels[0].minX
-        func at(_ x: CGFloat, _ y: CGFloat = 18) -> NSPoint { tabs.convert(NSPoint(x: x, y: y), to: nil) }
-        for index in ids.indices {
-            let hit = root.hitTest(root.convert(at(labels[index].midX), from: nil))
-            XCTAssertTrue(hit === tabs, "tab bodies hit the strip, never the titlebar")
-        }
-        XCTAssertFalse(tabs.mouseDownCanMoveWindow)
-        XCTAssertTrue(root.hitTest(root.convert(at(tabs.bounds.maxX - 14), from: nil)) === tabs.addWindow)
-
-        send(tabs, .leftMouseDown, labels[1].midX)
-        XCTAssertEqual(selected, [], "a press alone selects nothing")
-        send(tabs, .leftMouseUp, labels[1].midX)
-        XCTAssertEqual(selected, ["number(2)"])
-
-        send(tabs, .leftMouseDown, labels[0].midX)
-        send(tabs, .leftMouseDragged, labels[0].midX + 3)
-        XCTAssertEqual(tabs.labelRect(1), labels[1], "no reflow below the 4pt threshold")
-        XCTAssertNil(reorder.gesture)
-        send(tabs, .leftMouseDragged, labels[0].midX + 2 * width)
-        XCTAssertEqual(reorder.gesture, .tab)
-        XCTAssertEqual(tabs.labelRect(1).minX, labels[0].minX, accuracy: 0.5, "neighbours reflow live")
-        XCTAssertEqual(tabs.labelRect(2).minX, labels[1].minX, accuracy: 0.5)
-        XCTAssertEqual(tabs.labelRect(0).minX, labels[2].minX, accuracy: 0.5)
-        XCTAssertTrue(tabs.closeButton.isHidden)
-        XCTAssertFalse(reorder.claim(.sidebar), "one gesture at a time")
-        XCTAssertNil(sidebar.list.tableView(sidebar.list.visualTable, pasteboardWriterForRow: 0))
-        send(tabs, .leftMouseUp, labels[0].midX + 2 * width)
-        XCTAssertEqual(moves, ["@1 before @4"])
-        XCTAssertEqual(selected.count, 1, "a drag never selects")
-        XCTAssertNil(reorder.gesture)
-        XCTAssertEqual(tabs.labelRect(1), labels[1])
-        XCTAssertNotNil(sidebar.list.tableView(sidebar.list.visualTable, pasteboardWriterForRow: 0))
-
-        send(tabs, .leftMouseDown, labels[3].midX)
-        send(tabs, .leftMouseDragged, labels[0].midX)
-        XCTAssertEqual(tabs.labelRect(0).minX, labels[1].minX, accuracy: 0.5)
-        NSApp.postEvent(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
-                                         characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!, atStart: false)
-        try await wait("Escape cancels the tab drag") { reorder.gesture == nil }
-        XCTAssertEqual(tabs.labelRect(0), labels[0])
-        send(tabs, .leftMouseDragged, labels[1].midX)
-        send(tabs, .leftMouseUp, labels[1].midX)
-
-        send(tabs, .leftMouseDown, labels[1].midX)
-        send(tabs, .leftMouseDragged, labels[3].midX)
-        send(tabs, .leftMouseDragged, labels[3].midX, -40)
-        XCTAssertEqual(tabs.labelRect(2), labels[2], "outside the strip the tabs fall back")
-        send(tabs, .leftMouseUp, labels[3].midX, -40)
-        send(tabs, .leftMouseDown, labels[2].midX)
-        send(tabs, .leftMouseDragged, tabs.bounds.maxX - 14)
-        send(tabs, .leftMouseUp, tabs.bounds.maxX - 14)
-        XCTAssertEqual(moves.count, 1, "Escape or a drop outside the strip cancels")
-        XCTAssertEqual(selected.count, 1)
-        XCTAssertEqual(added, 0, "a drag over + never triggers it")
-        XCTAssertEqual(window.frame, frame, "a tab drag never moves the window")
-
-        tabs.entries = (1...12).map { SessionModel.Tab(id: WindowID(number: $0), name: "Window \($0)", active: false, status: .quiet) }
-        tabs.layoutSubtreeIfNeeded()
-        let start = tabs.labelRect(0).minX
-        let limit = 12 * (tabs.labelRect(1).minX - start) - (tabs.bounds.width - 28)
-        XCTAssertGreaterThan(limit, 0, "twelve tabs overflow the strip")
-        send(tabs, .leftMouseDown, tabs.labelRect(0).midX)
-        send(tabs, .leftMouseDragged, tabs.bounds.maxX - 30)
-        XCTAssertEqual(reorder.gesture, .tab)
-        try await wait("edge autoscroll") { tabs.labelRect(1).minX < start - 50 }
-        try await wait("autoscroll stops at the end") { abs(tabs.labelRect(1).minX - (start - limit)) < 0.5 }
-        let settled = tabs.labelRect(1)
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(tabs.labelRect(1), settled, "autoscroll is bounded")
-        send(tabs, .leftMouseUp, tabs.bounds.maxX - 30, -40)
-        XCTAssertEqual(moves.count, 1)
-        XCTAssertNil(reorder.gesture)
-        XCTAssertFalse(window.isVisible || window.isKeyWindow || NSApp.isActive)
-    }
-
-    func testTabReflowSlidesWhileTargetsStayExact() async throws {
-        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { window.close(); WindowTabs.visualReduceMotion = nil }
-        WindowTabs.visualReduceMotion = false
-        let tabs = WindowTabs(frame: NSRect(x: 0, y: 120, width: 700, height: 36))
-        window.contentView!.addSubview(tabs)
-        let ids = (1...4).map { WindowID(number: $0) }
-        func entries(_ ids: [WindowID]) -> [SessionModel.Tab] { ids.map { .init(id: $0, name: "W\($0.number)", active: false, status: .quiet) } }
-        tabs.entries = entries(ids)
-        var moves: [String] = []
-        tabs.scope = .init(session: SessionID(number: 0), generation: 1, instance: nil)
-        tabs.move = { if case .window(_, let source, let anchor, let placement) = $0 { moves.append("\(source) \(placement) \(anchor)") } }
-        let labels = ids.indices.map { tabs.labelRect($0) }
-        let width = labels[1].minX - labels[0].minX
-        // AppKit's animator stops while the display sleeps, so only the first slide is awaited, and only on an awake display.
-        func settled() {
-            tabs.visualFinishAnimation()
-            for index in ids.indices { XCTAssertEqual(tabs.visualPresentedLabelRect(index), tabs.labelRect(index)) }
-        }
-
-        send(tabs, .leftMouseDown, labels[0].midX)
-        send(tabs, .leftMouseDragged, labels[0].midX + width)
-        XCTAssertTrue(tabs.visualAnimating, "the first drag step already slides the neighbour aside")
-        XCTAssertEqual(tabs.labelRect(1).minX, labels[0].minX, accuracy: 0.5, "targets are the final layout while the slide runs")
-        XCTAssertEqual(tabs.visualPresentedLabelRect(1).minX, labels[1].minX, accuracy: 0.5, "the drawn tab starts where it was")
-        XCTAssertTrue(tabs.hitTest(tabs.superview!.convert(NSPoint(x: labels[0].midX, y: 18), from: tabs)) === tabs)
-        send(tabs, .leftMouseUp, labels[0].midX + width)
-        XCTAssertEqual(moves, ["@1 before @3"], "the drop uses the target layout, not the in-flight frames")
-        XCTAssertTrue(tabs.visualAnimating, "the dropped tab settles into its slot")
-        if CGDisplayIsAsleep(CGMainDisplayID()) == 0 { try await wait("animation ends") { !tabs.visualAnimating } }
-        settled()
-
-        send(tabs, .leftMouseDown, labels[3].midX)
-        send(tabs, .leftMouseDragged, labels[1].midX)
-        settled()
-        tabs.animated { tabs.entries = entries([ids[0], ids[3], ids[1], ids[2]]) }
-        XCTAssertFalse(tabs.visualAnimating, "a press without its drag is ended by the change")
-        tabs.entries = entries(ids)
-        send(tabs, .leftMouseDown, labels[3].midX)
-        send(tabs, .leftMouseDragged, labels[3].midX - 10)
-        send(tabs, .leftMouseDragged, labels[1].midX)
-        settled()
-        send(tabs, .leftMouseUp, labels[1].midX, -40)
-        XCTAssertTrue(tabs.visualAnimating, "a cancel slides the tabs back")
-        XCTAssertEqual(tabs.labelRect(1), labels[1])
-        settled()
-
-        tabs.animated { tabs.entries = entries([ids[1], ids[0], ids[2], ids[3]]) }
-        XCTAssertTrue(tabs.visualAnimating, "a reorder revert slides")
-        settled()
-        tabs.entries = entries(ids)
-        XCTAssertFalse(tabs.visualAnimating, "a snapshot update outside a drag is instant")
-        tabs.animated { tabs.entries = entries(ids + [WindowID(number: 9)]) }
-        XCTAssertFalse(tabs.visualAnimating, "added or removed tabs are instant")
-        tabs.entries = entries(ids)
-
-        WindowTabs.visualReduceMotion = true
-        send(tabs, .leftMouseDown, labels[0].midX)
-        send(tabs, .leftMouseDragged, labels[0].midX + 10)
-        send(tabs, .leftMouseDragged, labels[0].midX + width)
-        XCTAssertFalse(tabs.visualAnimating, "reduce motion jumps")
-        XCTAssertEqual(tabs.visualPresentedLabelRect(1), tabs.labelRect(1))
-        send(tabs, .leftMouseUp, labels[0].midX + width, -40)
-        XCTAssertFalse(tabs.visualAnimating)
-        XCTAssertEqual(moves.count, 1)
-        XCTAssertFalse(window.isVisible || window.isKeyWindow || NSApp.isActive)
-    }
-
-    func testTabDragKeepsTheSessionItStartedIn() throws {
-        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { window.close() }
-        let tabs = WindowTabs(frame: NSRect(x: 0, y: 120, width: 700, height: 36))
-        window.contentView!.addSubview(tabs)
-        let reorder = Reorder()
-        tabs.reorder = reorder
-        let ids = (1...3).map { WindowID(number: $0) }
-        tabs.entries = ids.map { .init(id: $0, name: "W\($0.number)", active: false, status: .quiet) }
-        var moves: [String] = []
-        tabs.move = { if case .window(let session, let source, let anchor, let placement) = $0 { moves.append("\(session) \(source) \(placement) \(anchor)") } }
-        let labels = ids.indices.map { tabs.labelRect($0) }
-        tabs.scope = .init(session: SessionID(number: 0), generation: 1, instance: nil)
-        send(tabs, .leftMouseDown, labels[0].midX)
-        send(tabs, .leftMouseDragged, labels[2].midX)
-        tabs.scope = .init(session: SessionID(number: 1), generation: 1, instance: nil)
-        XCTAssertNil(reorder.gesture, "a session switch cancels the drag")
-        XCTAssertEqual(tabs.labelRect(0), labels[0], "the tabs restore")
-        send(tabs, .leftMouseUp, labels[2].midX)
-        XCTAssertEqual(moves, [], "a drop never reorders another session that links the window")
-
-        send(tabs, .leftMouseDown, labels[0].midX)
-        send(tabs, .leftMouseDragged, labels[2].midX)
-        tabs.scope = .init(session: SessionID(number: 1), generation: 2, instance: nil)
-        send(tabs, .leftMouseUp, labels[2].midX)
-        XCTAssertEqual(moves, [], "a reconnect cancels the drag too")
-
-        send(tabs, .leftMouseDown, labels[0].midX)
-        send(tabs, .leftMouseDragged, labels[2].midX)
-        send(tabs, .leftMouseUp, labels[2].midX)
-        XCTAssertEqual(moves, ["$1 @1 after @3"], "an unchanged scope drops in the session it started in")
-    }
-
-    func testRemoteHostLabelAndEmptyTitlebarStillMoveTheWindow() throws {
-        let owner = try owner(try fixture(), host: .remote("buildbox"))
-        let tabs = owner.sidebar.tabs, window = owner.window!
-        let root = try XCTUnwrap(window.contentView?.superview)
-        tabs.entries = [SessionModel.Tab(id: WindowID(number: 1), name: "Only", active: true, status: .quiet)]
-        root.layoutSubtreeIfNeeded()
-        tabs.layoutSubtreeIfNeeded()
-        let label = tabs.labelRect(0)
-        for x in [4, label.maxX + 60] {
-            let hit = try XCTUnwrap(root.hitTest(root.convert(tabs.convert(NSPoint(x: x, y: 18), to: nil), from: nil)))
-            XCTAssertFalse(hit === tabs)
-            XCTAssertTrue(hit.mouseDownCanMoveWindow, "\(x): \(hit)")
-        }
-        XCTAssertTrue(root.hitTest(root.convert(tabs.convert(NSPoint(x: label.midX, y: 18), to: nil), from: nil)) === tabs)
-    }
-
     func testNavigationHidesUnknownNonCurrentWindows() throws {
         let snapshot = try fixture()
         var model = SessionModel(session: SessionID(number: 0),
                                  windows: [0, 786, 5].map { .init(id: WindowID(number: $0), name: "w\($0)") }, window: WindowID(number: 0))
-        XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id.number), [0])
+        XCTAssertEqual(model.navigation(snapshot).windows.map(\.id.number), [0])
         model.window = WindowID(number: 5)
         let navigation = model.navigation(snapshot)
-        XCTAssertEqual(navigation.tabs.map(\.id.number), [0, 5])
-        XCTAssertEqual(navigation.tabs.filter(\.active).map(\.id.number), [5])
-        XCTAssertEqual(navigation.model.title, "Kido — w5")
-        XCTAssertEqual(navigation.model.select(.number(2)), .selectWindow(SessionID(number: 0), WindowID(number: 5)))
-        XCTAssertEqual(model.navigation(nil).tabs.map(\.id.number), [0, 786, 5])
+        XCTAssertEqual(navigation.windows.map(\.id.number), [0, 5])
+        XCTAssertEqual(navigation.title, "Kido — w5")
+        XCTAssertEqual(navigation.select(.number(2)), .selectWindow(SessionID(number: 0), WindowID(number: 5)))
+        XCTAssertEqual(model.navigation(nil).windows.map(\.id.number), [0, 786, 5])
     }
 
     func testNavigationFollowsProjectedRootOrder() throws {
@@ -807,16 +574,15 @@ import TmuxControl
         let model = SessionModel(sessions: [try XCTUnwrap(SessionListing("$1\u{1F}@11\u{1F}visa")), try XCTUnwrap(SessionListing("$0\u{1F}@0\u{1F}main"))],
                                  session: main,
                                  windows: [797, 0, 5, 458].map { .init(id: WindowID(number: $0), name: "w\($0)") }, window: WindowID(number: 0))
-        let navigation = model.navigation(snapshot).model
-        XCTAssertEqual(navigation.windows.map(\.id.number), [0, 458, 797], "snapshot roots order the tabs; an unreported non-current window is hidden")
+        let navigation = model.navigation(snapshot)
+        XCTAssertEqual(navigation.windows.map(\.id.number), [0, 458, 797], "snapshot roots order the windows; an unreported non-current window is hidden")
         XCTAssertEqual(navigation.sessions.map(\.id), [main, SessionID(number: 1)])
-        XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id.number), [0, 458, 797])
         XCTAssertEqual(navigation.select(.number(1)), .selectWindow(main, WindowID(number: 0)))
-        XCTAssertEqual(model.navigation(nil).model.windows.map(\.id.number), [797, 0, 5, 458], "inventory order before the first snapshot")
+        XCTAssertEqual(model.navigation(nil).windows.map(\.id.number), [797, 0, 5, 458], "inventory order before the first snapshot")
 
         var state = ReorderState()
         XCTAssertNotNil(state.submit(.window(main, WindowID(number: 797), relativeTo: WindowID(number: 0), .before), to: snapshot))
-        let projected = model.navigation(state.project(snapshot)).model
+        let projected = model.navigation(state.project(snapshot))
         XCTAssertEqual(projected.windows.map(\.id.number), [797, 0, 458])
         let menus = SessionMenus()
         var sent: [RPCRequest] = []

@@ -1,8 +1,8 @@
 # A color for each connection in Kido.app
 
 Status: research done, no code changed. Paths are under `app/`.
-This plan builds on `plans/app-no-tab-bar.md` (the title is in the
-sidebar top row) and on the work that now makes the focus ring show on a
+This plan builds on the window chrome in `docs/design-app.md` (the title
+is in the sidebar top row) and on the work that now makes the focus ring show on a
 single or zoomed pane and gives the title the ring color. Do that work
 first, or do both in one pass.
 
@@ -70,8 +70,7 @@ Wanted:
   the pending-connect tuple (`WindowOwner.swift:223`), the notification
   subtitle (docs: "using the resolved identity the window title shows",
   `docs/design-app.md:1503-1506`), `testIdentity` (`WindowOwner.swift:1134`)
-  and `RemoteTests.swift:377`. It also invalidates the tab strip layout
-  (`WindowOwner.swift:79`), which the no-tab-bar plan removes.
+  and `RemoteTests.swift:377`. It no longer touches a tab strip: the tabs are removed.
 - `docs/design-app.md:102-104` states the current title rule.
 
 ### Where the accent is drawn
@@ -130,11 +129,10 @@ changes.
 
 ### Contrast (reasoning; not measured)
 
-- The title sits on the sidebar shade (the terminal background shifted 5%,
-  `docs/design-app.md:309-312`) when docked, and on the canvas (terminal
-  background) when collapsed (`Sidebar.swift:228-240`). The sidebar has
-  its own light/dark appearance from the luminance of its shade
-  (`docs/design-app.md:339-349`), and the title label takes it
+- The title sits on the canvas (the terminal background mixed toward
+  black, `docs/design-app.md`, "Panes") when docked or
+  collapsed. The sidebar has its own light/dark appearance from the
+  luminance of the canvas, and the title label takes it
   (`Sidebar.swift:236`). Collapsed, the label uses the window appearance
   (`Sidebar.swift:230`), which follows the terminal background
   (`WindowOwner.swift:297-299`).
@@ -152,7 +150,7 @@ changes.
 | Option | For | Against |
 | --- | --- | --- |
 | A. UserDefaults, one dictionary `hostAccents: [clipboardKey: Accent]` | Same place as every other per-host user choice. Set from UI. No file writes by the app. One source of truth. | Not editable by hand. |
-| B. `kido-app.conf` keys, for example `kido-accent-local`, `kido-accent-ssh-devbox` | Hand-editable, live reload exists. | The app must write a Ghostty-syntax file that the user also edits (two writers). A UI choice would have to rewrite a file with includes. Keys are dynamic, but the config reader knows three fixed keys. |
+| B. `kido-app.conf` keys, for example `kido-accent-local`, `kido-accent-ssh-devbox` | Hand-editable, live reload exists. | The app must write a Ghostty-syntax file that the user also edits (two writers). A UI choice would have to rewrite a file with includes. Keys are dynamic, but the config reader knows two fixed keys. |
 | C. Store inside the recent list | Reuses `RecentHosts`. | The user clears recents: that would lose the color. Local is not in it. Mixes two facts. |
 
 **Recommend A.** The color is a UI choice, not theme configuration.
@@ -229,7 +227,7 @@ no change on Local. "Automatic" in the palette removes the stored value.
 
 1. **Measure first.** A small throw-away script (not committed) that
    computes WCAG contrast of each preset, in the light and dark built-in
-   themes, against the sidebar shade and the canvas, for the text (4.5:1)
+   themes, against the canvas, for the text (4.5:1)
    and the ring (3:1). Drop or adjust any preset that fails both themes.
    Record the numbers in this plan before step 3.
 2. **Data model.** Add `App/Accent.swift`: `Accent`, `Preset`, `Codable`,

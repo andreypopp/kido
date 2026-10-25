@@ -80,3 +80,5 @@ e2e: $(if $(KIDO_TMUX),,pinned-fork)
 # included; --contend is for one named failure, not for a whole suite
 ci-like:
 	./scripts/ci-like.sh $(ARGS)
+
+-include Makefile.local

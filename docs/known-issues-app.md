@@ -180,15 +180,6 @@ pin the runner environment (medium). Status: accepted coverage limitation.
 
 # Accepted limitations
 
-## Full-screen header colour coverage
-
-The real full-screen header colour is verified only by authorized on-screen
-captures. `make visual` covers a transferred-host stand-in, not AppKit's
-`NSToolbarFullScreenWindow`; see [Sidebar](design-app.md#sidebar).
-The dark-theme negative control can differ by no more than the 2/255
-pixel tolerance, so it cannot reliably detect a missing background cover.
-Status: accepted coverage limitation.
-
 ## Transparent paper changes glyph edges
 
 Tiled panes draw on transparent Ghostty paper over an opaque app layer

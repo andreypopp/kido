@@ -1,3 +1,2 @@
-bounds=0.00,0.00,764.00,588.00 separator=0.00,0.00,764.00,0.50 banner=false
-pane %0 tmux=Geometry(x: 0, y: 0, width: 93, height: 38) layer=tiled grid=9.50,6.00,744.00,570.00 content=9.50,0.50,744.00,587.50 chrome=0.00,0.50,764.00,587.50 insets=5.5,12.0 pill=false find=false alternate=false scroll=nil
-divider=0.00,0.00,764.00,0.50
+bounds=0.00,0.00,764.00,640.00 top=0.00 banner=false
+pane %0 tmux=Geometry(x: 0, y: 0, width: 89, height: 41) layer=tiled grid=26.00,12.50,712.00,615.00 chrome=8.00,8.00,748.00,624.00 pill=false find=false alternate=false scroll=nil

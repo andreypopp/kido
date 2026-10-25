@@ -11,15 +11,6 @@ struct SessionModel: Equatable {
         let id: WindowID
         let name: String
     }
-    struct Tab: Equatable {
-        let id: WindowID
-        let name: String
-        let active: Bool
-        let status: SidebarRow.Status
-        var agent = false
-        var messageable = false
-        var displayName: String { sidebarTitle(name, messageable: messageable) }
-    }
 
     var sessions: [SessionListing] = []
     var session: SessionID?
@@ -32,15 +23,12 @@ struct SessionModel: Equatable {
         return "\(session) — \(window.name)"
     }
 
-    func navigation(_ snapshot: Snapshot?, activePanes: [WindowID: PaneID] = [:], seen: SidebarSeen = SidebarSeen()) -> (model: SessionModel, tabs: [Tab]) {
-        let projection = sidebarWindows(snapshot, session: session, surviving: Set(windows.map(\.id)), activePanes: activePanes, seen: seen)
+    func navigation(_ snapshot: Snapshot?) -> SessionModel {
+        let projection = sidebarWindows(snapshot, session: session, surviving: Set(windows.map(\.id)))
         var model = self
         model.sessions = arranged(sessions, by: snapshot?.sessions.map(\.id) ?? [], \.id)
         model.windows = arranged(windows.filter { projection.ancestors[$0.id] == $0.id || (projection.ancestors[$0.id] == nil && (snapshot == nil || $0.id == window)) }, by: projection.order, \.id)
-        let active = window.flatMap { projection.ancestors[$0] ?? $0 }
-        return (model, model.windows.map { Tab(id: $0.id, name: projection.labels[$0.id]?.title ?? $0.name, active: $0.id == active,
-                                              status: projection.statuses[$0.id] ?? .quiet, agent: projection.labels[$0.id]?.agent ?? false,
-                                              messageable: projection.labels[$0.id]?.messageable ?? false) })
+        return model
     }
 
     func select(_ step: WindowStep) -> RPCRequest? {

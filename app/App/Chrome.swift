@@ -21,7 +21,6 @@ enum Chrome {
     static var closeHover: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
     static var rowSelection: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
     static var iconHover: NSColor { NSColor.labelColor.withAlphaComponent(0.12) }
-    static var tabPill: NSColor { NSColor.labelColor.withAlphaComponent(0.075) }
     static var scrollerKnob: NSColor { NSColor.labelColor.withAlphaComponent(0.3) }
     static var scrollerKnobActive: NSColor { NSColor.labelColor.withAlphaComponent(0.5) }
     static var modeChipFill: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
@@ -42,7 +41,6 @@ enum Chrome {
     static var floatShadow: (color: NSColor, blur: CGFloat) { (.black.withAlphaComponent(0.22), 12) }
     static func sidebarShadow(dark: Bool) -> (color: NSColor, blur: CGFloat) { (.black.withAlphaComponent(dark ? 0.4 : 0.18), 14) }
     static var shadowMask: NSColor { .black }
-    static var disconnectedHostAlpha: CGFloat { 0.45 }
     static var disabledIconAlpha: CGFloat { 0.35 }
     static var pickerRing: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.55) }
     static var codeFill: NSColor { NSColor.labelColor.withAlphaComponent(NSColor.labelColor.alphaComponent * 0.08) }

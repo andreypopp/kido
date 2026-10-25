@@ -72,14 +72,14 @@ private class AlertEscape: NSView {
     private var drain: Drain?
     private var initial: DispatchWorkItem?
     private(set) var ssh: SSH?
-    private(set) var identity: String? { didSet { sidebar.tabs.needsLayout = true; sidebar.tabs.needsDisplay = true } }
+    private(set) var identity: String?
     var menuChanged: () -> Void = {}
     var onClose: () -> Void = {}
     var snapshotReceived: () -> Void = {}
     private(set) var window: NSWindow!
     private var banner: Banner!
     private var session: SessionView?
-    private var link = Link.down { didSet { sidebar.tabs.needsDisplay = true } }
+    private var link = Link.down
     let sidebar = Sidebar()
     let reorder = Reorder()
     private var feed: Feed?
@@ -146,7 +146,7 @@ private class AlertEscape: NSView {
 
     private func refreshSeen() {
         sidebar.list.refresh()
-        updateTabs()
+        updateNavigation()
     }
 
     @objc private func localServerRestarted(_ notification: Notification) {
@@ -214,10 +214,6 @@ private class AlertEscape: NSView {
         window.titlebarSeparatorStyle = .none
         updateAppearance()
         window.contentViewController = sidebar
-        sidebar.tabs.hostLabel = { [weak self] in
-            guard let self, case .remote(let alias) = self.host else { return nil }
-            return (self.identity ?? alias, alias, { if case .connected = self.link { return true }; return false }())
-        }
         window.setContentSize(NSSize(width: 900, height: 560))
         window.contentView?.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
@@ -239,15 +235,7 @@ private class AlertEscape: NSView {
             renameSession(id, name, done: done)
         }
         sidebar.list.reorder = reorder
-        sidebar.tabs.reorder = reorder
         sidebar.list.move = { [weak self] in self?.submit($0) }
-        sidebar.tabs.move = sidebar.list.move
-        sidebar.tabs.select = { [weak self] in self?.selectWindow($0) }
-        sidebar.tabs.close = { [weak self] tab in self?.confirmClose(.window(tab.id), name: tab.name) }
-        sidebar.tabs.addWindow.invoke = { [weak self] in
-            guard let self, let window = model.window else { return }
-            perform(.newWindow(window))
-        }
         sidebar.list.closePane = { [weak self] row in
             guard let pane = row.target?.pane else { return }
             self?.confirmClose(.pane(pane), name: row.title)
@@ -286,16 +274,11 @@ private class AlertEscape: NSView {
             view.layer?.backgroundColor = runtime.canvas.cgColor
         }
         banner?.background = background
-        let dark = background.isDark
-        let theme = (background: background, appearance: NSAppearance(named: dark ? .darkAqua : .aqua))
-        window.appearance = theme.appearance
+        window.appearance = NSAppearance(named: background.isDark ? .darkAqua : .aqua)
         sidebar.updateAppearance(runtime: runtime)
         sidebar.margin = runtime.settings.paneSpacing
         session?.updateBackground()
     }
-
-    func windowDidEnterFullScreen(_ notification: Notification) { updateAppearance() }
-    func windowDidExitFullScreen(_ notification: Notification) { updateAppearance() }
 
     func send(_ commands: [Command], then done: (@MainActor @Sendable ([Reply]?) -> Void)? = nil) {
         guard case .connected(let connection, _, _) = link else { return done?(nil) ?? () }
@@ -719,7 +702,7 @@ private class AlertEscape: NSView {
         }
         view.onPaneChange = { [weak self] in
             guard let self, accepts(generation) else { return }
-            updateTabs()
+            updateNavigation()
             if focusTarget != nil { focusSelected() }
         }
         view.frame = sidebar.content.bounds
@@ -794,7 +777,7 @@ private class AlertEscape: NSView {
         if case .running(let snapshot) = status {
             let projected = reorder.state.project(snapshot)
             sidebar.list.update(.running(projected))
-            updateTabs(projected)
+            updateNavigation(projected)
         } else { sidebar.list.update(status) }
         ready()
         if case .running = status { menuChanged(); snapshotReceived() }
@@ -807,12 +790,10 @@ private class AlertEscape: NSView {
     }
     #endif
 
-    private func updateTabs(_ projected: Snapshot?? = nil) {
-        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), activePanes: session?.windows.compactMapValues(\.active) ?? [:], seen: seen.value)
-        if sidebar.tabs.entries != next.tabs { sidebar.tabs.entries = next.tabs }
-        sidebar.tabs.scope = next.model.session.map { .init(session: $0, generation: generation, instance: snapshot?.serverInstance) }
-        if navigationModel != next.model {
-            navigationModel = next.model
+    private func updateNavigation(_ projected: Snapshot?? = nil) {
+        let next = model.navigation(projected ?? snapshot.map(reorder.state.project))
+        if navigationModel != next {
+            navigationModel = next
             menuChanged()
         }
     }
@@ -827,7 +808,7 @@ private class AlertEscape: NSView {
         let model = model
         show(title: host == .local ? model.title : "\(identity ?? host.label) / \(model.title)")
         if model.session == nil { snapshot = nil }
-        updateTabs()
+        updateNavigation()
         if view.superview == nil {
             session?.removeFromSuperview()
             session = view
@@ -1027,7 +1008,7 @@ private class AlertEscape: NSView {
     private func showOrder() {
         let projected = snapshot.map(reorder.state.project)
         sidebar.list.show(projected)
-        sidebar.tabs.animated { updateTabs(projected) }
+        updateNavigation(projected)
     }
 
     func focusSelected() {
@@ -1108,7 +1089,7 @@ private class AlertEscape: NSView {
         if !keepingSnapshot {
             controlModel = SessionModel()
             snapshot = nil
-            updateTabs()
+            updateNavigation()
         }
         show(title: host == .local ? "Local" : identity ?? host.label)
     }
