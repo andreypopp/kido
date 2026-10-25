@@ -463,9 +463,7 @@ final class WindowView: NSView {
             default: break
             }
             guard let tmux = command.command(id, cell: self?.session?.cell ?? .zero) else { return }
-            if case .clear = command {
-                connection.sync(id, first: [tmux, Command("clear-history", "-t", id)])
-            } else { self?.sendPane([tmux]) }
+            self?.sendPane([tmux])
         }
         view.onAlternateChange = { [weak self] in self?.place() }
         view.onFindChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
@@ -979,12 +977,18 @@ final class WindowView: NSView {
         guard let window else { return }
         center.addObserver(self, selector: #selector(didBecomeKey), name: NSWindow.didBecomeKeyNotification, object: window)
         for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
-            center.addObserver(self, selector: #selector(cancelDrag), name: name, object: window)
+            center.addObserver(self, selector: #selector(lostKey), name: name, object: window)
         }
         center.addObserver(self, selector: #selector(cancelDrag), name: NSApplication.didResignActiveNotification, object: NSApp)
     }
 
+    @objc private func lostKey() {
+        cancelDrag()
+        DispatchQueue.main.async { [weak self] in self?.panes.forEach { $0.syncFocus() } }
+    }
+
     @objc private func didBecomeKey() {
+        for pane in panes { pane.syncFocus() }
         guard !isHidden, let pane = window?.firstResponder as? PaneView, pane.pane != active else { return }
         connection?.send([Command("select-pane", "-t", pane.pane)])
     }
