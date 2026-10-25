@@ -157,7 +157,7 @@ test("toplevel holds its name until publication, sends @ tasks by inbox, and sta
     assert.deepEqual(customMessages(s, "kido-notice"), []);
     const listed = JSON.parse((await s.tools.get("list_runs").execute("c", {})).content[0].text);
     assert.equal(listed.some((r: { id: string; relationship: string }) => r.id === session && r.relationship === "peer"), true);
-    assert.match((await s.tools.get("stop_run").execute("c", { to: session })).content[0].text, /no run matches/);
+    assert.match((await s.tools.get("stop_run").execute("c", { to: [session] })).content[0].text, /no run matches/);
     for (const mode of ["steer", "interrupt-and-steer"]) assert.match((await s.tools.get("message_agent").execute("c", { to: session, message: "change", mode })).content[0].text, /descendant/);
     assert.match((await s.tools.get("message_agent").execute("c", { to: "peer", message: "hello" })).content[0].text, /delivered to peer by inbox/);
     assert.match((await s.tools.get("spawn_agent").execute("c", { name: "PEER", task: "x", toplevel: true })).content[0].text, /already taken/);
@@ -166,7 +166,7 @@ test("toplevel holds its name until publication, sends @ tasks by inbox, and sta
       fx.setPanes([agentPane({ pane: "%1", session: "worker-session", name: "worker" }), agentPane({ pane: "%2", session: "boss", name: "boss" }), agentPane({ pane: "%9", session, name: "peer", inbox: inbox.path })]);
       const child = await startNamedSession(fx, "worker", "worker-session");
       const rows = JSON.parse((await child.tools.get("list_runs").execute("c", {})).content[0].text);
-      assert.equal(rows.some((r: { id: string }) => r.id === session), false);
+      assert.equal(rows.some((r: { id: string; relationship: string }) => r.id === session && r.relationship === "relative"), true);
       assert.match((await child.tools.get("message_agent").execute("c", { to: session, message: "hello from child" })).content[0].text, /delivered to peer by inbox/);
     }, { parent: "boss", name: "worker" });
     const saved = "deadbeef111111111111111111111111";

@@ -68,8 +68,8 @@ test("an empty last message is still the report: the notice says so, the file is
 
     fx.setRuns([{ id: SELF, name: "worker", parent: "boss-session", pane: "%1", session: SELF, startedAt: "" }]);
     const boss = await startNamedSession(fx, "boss", "boss-session");
-    const stopped = await boss.tools.get("stop_run").execute("c", { to: "worker" });
-    assert.match(stopped.content[0].text, /^stopped worker/);
+    const stopped = await boss.tools.get("stop_run").execute("c", { to: ["worker"] });
+    assert.match(stopped.content[0].text, /^completed worker/);
     assert.deepEqual(fx.runOutcomeCalls()[0], ["run-outcome", SELF, "--result", "completed"]);
   } finally {
     await fx.restore();

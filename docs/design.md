@@ -460,8 +460,9 @@ not valid UTF-8.
 ## Addressing
 
 The tmux session limits addressing for `message_agent` in every mode.
-`list_runs` has a narrower
-scope (design-subagents.md, "The tools, and what they call").
+`list_runs` and the `@` completion share a narrower discovery scope
+(design-subagents.md, "The tools, and what they call"). That scope
+never limits addressing.
 
 The tools show names, not ids, and still accept a session id, a run id
 or a unique id prefix: two top-level pis may share a name, and another
@@ -487,7 +488,8 @@ whole mention from the prompt: `@impl (run 9702ddd1)` or
 only, so another agent's name cannot capture it.
 
 In pi's prompt editor, `@` and a prefix complete live agent rows from
-`list_runs`. Completion excludes bash and ended runs. Each row shows
+`list_runs`, so completion offers the same discovery scope. Completion
+excludes bash and ended runs. Each row shows
 the name, status, activity and a subagent's parent. The extension wraps
 the completion provider to place agent matches first. It delegates
 tokens with no agent match. A token matches the start of a name or any

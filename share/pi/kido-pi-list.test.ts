@@ -35,6 +35,15 @@ function rows(s: { tools: Map<string, unknown> }): Promise<Row[]> {
   return tool.execute("c", {}).then((r) => JSON.parse(r.content[0].text) as Row[]);
 }
 
+function completion(s: Awaited<ReturnType<typeof startNamedSession>>, getSuggestions = async (): Promise<{ items: { value: string; label: string }[]; prefix: string } | null> => null) {
+  const provider = s.autocompleteFactories[0]({
+    triggerCharacters: ["@"],
+    getSuggestions,
+    applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+  });
+  return (text: string) => provider.getSuggestions([text], 0, text.length, { signal: new AbortController().signal });
+}
+
 function run(fx: Fixture, options: { edge: boolean }): void {
   fx.writeAgent("boss-session", "mid", { session: "mid", run: "mid-run" });
   fx.writeAgent("boss-session", "peer", { session: "peer" });
@@ -47,7 +56,7 @@ function run(fx: Fixture, options: { edge: boolean }): void {
     agentPane({ pane: "%2", session: "boss-session", name: "boss" }),
     agentPane({ pane: "%3", session: "peer", name: "peer" }),
     agentPane({ pane: "%4", session: "stranger", name: "stranger" }),
-    agentPane({ pane: "%5", session: "kid-session", name: "kid" }),
+    agentPane({ pane: "%5", session: "kid-session", name: "kid", tmux: "$2" }),
   ]);
   void options;
 }
@@ -114,7 +123,7 @@ test("list_runs keeps every running run and the newest twenty ended ones", async
       async () => {
         const s = await startNamedSession(fx, "mid", "mid");
         const listed = await rows(s);
-        const own = listed.filter((r) => r.relationship === "own");
+        const own = listed.filter((r) => r.relationship === "own" && r.kind === "bash");
         assert.equal(own.length, 22, "two running and twenty ended");
         assert.deepEqual(own.slice(0, 2).map((r) => r.id), ["live-a", "live-b"]);
         assert.deepEqual(own.slice(2).map((r) => r.id), ended.slice(0, 20).map((r) => r.id), "newest first");
@@ -140,7 +149,7 @@ test("a live grandchild carries its agent entry's run id, so stop_run names its 
       "mid-session",
       async () => {
         const s = await startNamedSession(fx, "mid", "mid-session");
-        await s.tools.get("stop_run").execute("c", { to: "grand", force: true });
+        await s.tools.get("stop_run").execute("c", { to: ["grand"], force: true });
         assert.ok(fx.runStopCalls()[0]?.includes("grand-run"), "stop_run passes the descendant's run id, not its session id");
       },
       { parent: "root", name: "mid", run: "mid-run" },
@@ -194,15 +203,8 @@ test("@ completion offers this session's agents first and still returns the buil
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: "worker-session", name: "worker-2", state: "idle" })]);
     const s = await startNamedSession(fx, "Self");
     assert.equal(s.autocompleteFactories.length, 1, "a completion provider is registered");
-    const current = {
-      triggerCharacters: ["@"],
-      async getSuggestions() {
-        return { items: [{ value: "@worker-2.ts", label: "worker-2.ts" }], prefix: "@wo" };
-      },
-      applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
-    };
-    const provider = s.autocompleteFactories[0](current);
-    const suggest = () => provider.getSuggestions(["@wo"], 0, 3, { signal: new AbortController().signal });
+    const complete = completion(s, async () => ({ items: [{ value: "@worker-2.ts", label: "worker-2.ts" }], prefix: "@wo" }));
+    const suggest = () => complete("@wo");
     let out = await suggest();
     await pollUntil(async () => {
       out = await suggest();
@@ -288,20 +290,16 @@ test("completion mentions round-trip by id across hidden collisions and ignore i
       { id: "abcdefgh-two", name: "hidden", parent: "%1", outcome: { result: "completed" } },
     ]);
     const s = await startNamedSession(fx, "Self");
-    const provider = s.autocompleteFactories[0]({
-      triggerCharacters: ["@"],
-      async getSuggestions() { return null; },
-      applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
-    });
-    const suggest = () => provider.getSuggestions(["@wo"], 0, 3, { signal: new AbortController().signal });
+    const complete = completion(s);
+    const suggest = () => complete("@wo");
     let value = "";
     await pollUntil(async () => { value = (await suggest())?.items[0]?.value ?? ""; return !!value; }, 2000, "the agent mention");
     assert.equal(value, "@worker (run abcdefgh-o)", "ended runs still constrain the prefix");
     assert.equal((await s.tools.get("message_agent").execute("c", { to: value, message: "hello" })).content[0].text, "delivered to worker by inbox");
     assert.equal(inbox.received().length, 1);
     assert.equal(decoy.received().length, 0);
-    assert.equal((await s.tools.get("stop_run").execute("c", { to: "abc" })).content[0].text, "id prefixes need at least 8 characters");
-    await s.tools.get("stop_run").execute("c", { to: value });
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: ["abc"] })).content[0].text, '"abc": error: id prefixes need at least 8 characters');
+    await s.tools.get("stop_run").execute("c", { to: [value] });
     assert.deepEqual(fx.runStopCalls().at(-1), ["run-stop", "abcdefgh-one", "--wait", "5"]);
     assert.equal(inbox.received().length, 2);
     assert.equal(decoy.received().length, 0);
@@ -316,12 +314,7 @@ test("completion follows pi wrapper boundaries and delegates quoted attachments"
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: "worker-session", name: "worker" })]);
     const s = await startNamedSession(fx, "Self");
     const files = { items: [{ label: "file", value: '@"path @worker.ts"' }], prefix: '@"path @wo' };
-    const provider = s.autocompleteFactories[0]({
-      triggerCharacters: ["@"],
-      async getSuggestions() { return files; },
-      applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
-    });
-    const suggest = (text: string) => provider.getSuggestions([text], 0, text.length, { signal: new AbortController().signal });
+    const suggest = completion(s, async () => files);
     await pollUntil(async () => ((await suggest("@wo"))?.items[0]?.label ?? "") === "@worker", 2000, "the agent list");
     assert.deepEqual(await suggest('@"path @wo'), files);
     assert.equal((await suggest("(@wo"))?.items[0]?.label, "@worker");
@@ -350,6 +343,61 @@ test("@ completion serves the last agent list without waiting for the subprocess
       const second = await suggest();
       assert.deepEqual(second!.items.map((i: { value: string }) => i.value), ["@worker-2 (session worker-s)"], "the cached list answers at once");
     });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("discovery agrees for listing and completion without restricting addressing", async () => {
+  const fx = makeFixture();
+  try {
+    const leafInbox = await fx.startInbox();
+    const cousinInbox = await fx.startInbox();
+    for (const [owner, child] of [
+      ["root", "mid"], ["root", "midpeer"], ["mid", "leaf"],
+      ["mid", "leafpeer"], ["leaf", "child"], ["child", "grandchild"],
+      ["midpeer", "cousin"], ["toppeer", "otherchild"],
+    ]) fx.writeAgent(owner, child, { session: child });
+    const names = ["root", "toppeer", "mid", "midpeer", "leaf", "leafpeer", "child", "grandchild", "cousin", "otherchild", "elsewhere"];
+    fx.setPanes(names.map((session, i) => agentPane({
+      pane: `%${i + 1}`, session, name: session,
+      inbox: session === "leaf" ? leafInbox.path : session === "cousin" ? cousinInbox.path : "",
+      tmux: session === "elsewhere" ? "$2" : "$1",
+    })));
+    for (const [caller, parent, expected] of [
+      ["root", "", ["toppeer", "mid", "midpeer"]],
+      ["mid", "root", ["root", "toppeer", "midpeer", "leaf", "leafpeer"]],
+      ["leaf", "mid", ["root", "toppeer", "mid", "midpeer", "leafpeer", "child"]],
+    ] as const) {
+      const check = async () => {
+        const s = await startNamedSession(fx, caller, caller);
+        const listed = await rows(s);
+        assert.deepEqual(listed.map(r => r.name).sort(), [...expected].sort(), caller);
+        if (caller === "mid") assert.deepEqual(listed.map(r => [r.name, r.relationship]), [
+          ["root", "parent"], ["toppeer", "relative"], ["midpeer", "peer"],
+          ["leaf", "own"], ["leafpeer", "own"],
+        ]);
+        const suggest = completion(s);
+        let suggestions: { items: { label: string; value: string }[] } | null = null;
+        await pollUntil(async () => {
+          suggestions = await suggest("@");
+          return suggestions?.items.length === expected.length;
+        }, 2000, `${caller} discovery completions`);
+        assert.deepEqual(suggestions!.items.map(i => i.label.slice(1)).sort(), [...expected].sort(), caller);
+        if (caller === "root") {
+          for (const to of ["leaf", "cousin"]) assert.equal(
+            (await s.tools.get("message_agent").execute("c", { to, message: to })).content[0].text,
+            `delivered to ${to} by inbox`);
+          assert.deepEqual(leafInbox.received().map(raw => JSON.parse(raw).text), ["leaf"]);
+          assert.deepEqual(cousinInbox.received().map(raw => JSON.parse(raw).text), ["cousin"]);
+        }
+        await s.emit("session_shutdown", { reason: "new" });
+      };
+      await withEnv({ TMUX_PANE: `%${names.indexOf(caller) + 1}` }, async () => {
+        if (parent) await asSubagent(fx, caller, check, { parent, name: caller });
+        else await check();
+      });
+    }
   } finally {
     await fx.restore();
   }

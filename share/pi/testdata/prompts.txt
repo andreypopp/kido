@@ -33,13 +33,13 @@ parameters:
 description:
 
 ```
-List same-parent peers and your parent in this tmux session, plus your own subagents and async_bash jobs: all running and the newest 20 ended, newest first. Use message_agent for agents and stop_run with a run id to stop your runs.
+List agents in your discovery scope (top-level agents, your peers, each ancestor and its peers, and your direct subagents in this tmux session), plus your own async_bash jobs: all running and the newest 20 ended, newest first. message_agent can also address agents outside this list in the same tmux session. Use stop_run with a run id to stop your runs.
 ```
 
 promptSnippet:
 
 ```
-list_runs() - find same-parent peers and your parent to message, and your own subagents and jobs to stop with stop_run
+list_runs() - discover agents, and your own subagents and jobs to stop with stop_run
 ```
 
 parameters: none
@@ -130,18 +130,18 @@ parameters:
 description:
 
 ```
-Stop a descendant subagent or async_bash run found in list_runs. Asks a subagent to shut down, killing its pane if needed; sends TERM to a bash run's process group. A child that already reported ends as completed; one stopped before it reported ends as stopped.
+Stop own runs and descendant subagents in parallel. Pass a non-empty array of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped.
 ```
 
 promptSnippet:
 
 ```
-stop_run(to, force?) - end a descendant subagent or bash run found in list_runs
+stop_run(to, force?) - end own runs and descendant subagents in parallel; to is a non-empty array of addresses
 ```
 
 parameters:
 
-- `to` (string, required): Run or session id, unique id prefix of at least 8 characters, unambiguous running name, or an @-mention such as @impl (run 9702ddd1).
+- `to` (string[], required): <no description>
 - `force` (boolean): For a subagent with no usable inbox, allow killing its pane instead. Not needed for bash runs. Destructive and irreversible.
 
 ## Messages the extension injects at runtime

@@ -89,8 +89,11 @@ the reloaded module.
 
 ## Tools
 
-- `list_runs()`: same-parent peers, the caller's parent, and its own
-  subagent and bash runs (all running, the newest 20 ended).
+- `list_runs()`: the agents in the caller's discovery scope (top-level
+  agents, its peers, each ancestor and its peers, its direct subagents)
+  and its own subagent and bash runs (all running, the newest 20
+  ended). The `@` completion offers the same agents. `message_agent`
+  still addresses any agent in the tmux session.
 - `set_status(activity)`: one line, at most 256 bytes, in
   `@kido_activity`; an empty string clears it.
 - `message_agent(to, message, mode?)`: to an agent's inbox. `message`
@@ -114,9 +117,10 @@ the reloaded module.
   `kido run-child ... -- bash -o pipefail -c '... | tee "$KIDO_RUN_OUTPUT"'`.
   Its ending arrives as a notice with the output tail; with `stream`,
   batches of output arrive while it runs.
-- `stop_run(to, force?)`: a bash run through `kido run-stop`; a subagent
-  by a stop request, then `kido run-stop --wait 5`. A child that reported
-  since its last new work ends as completed, else stopped.
+- `stop_run(to[], force?)`: one or more runs, stopped in parallel, with
+  one result line for each target; a bash run through `kido run-stop`; a
+  subagent by a stop request, then `kido run-stop --wait 5`. A child that
+  reported since its last new work ends as completed, else stopped.
 
 A subagent has no report tool. When its turn ends with nothing of its
 own still running, its last message goes to its parent as a notice,

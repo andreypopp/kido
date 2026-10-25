@@ -430,7 +430,7 @@ test("stop_run refuses this session's own name, session id and run id", async ()
         fx.setPanes([agentPane({ pane: "%1", session: "worker-session", name: "worker", inbox: inbox.path })]);
         const s = await startNamedSession(fx, "worker", "worker-session");
         for (const to of ["worker", "worker-session", "worker-run"]) {
-          assert.match((await s.tools.get("stop_run").execute("c", { to })).content[0].text, /^no run matches/, to);
+          assert.match((await s.tools.get("stop_run").execute("c", { to: [to] })).content[0].text, /error: no run matches/, to);
         }
         assert.equal(fx.runOutcomeCalls().length, 0, "self is not recorded");
         assert.equal(fx.runStopCalls().length, 0, "self is not stopped");
@@ -505,7 +505,7 @@ test("stop_run stops a bash run with run-stop, and a subagent with a stop reques
     fx.setPanes([selfPane()]);
     const s = await startNamedSession(fx, "Self");
     await s.tools.get("async_bash").execute("c", { command: "make", name: "build" });
-    assert.equal((await s.tools.get("stop_run").execute("c", { to: "build" })).content[0].text, "stopped run fake-run-id; killed its pane");
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: ["build"] })).content[0].text, "stopped run fake-run-id; killed its pane");
     assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id"]);
   } finally {
     await fx.restore();
@@ -527,8 +527,8 @@ test("stop_run asks a subagent to stop first, then records completed only when i
     const work = join(fx.agentDir(SELF, "kid"), "work");
     writeFileSync(report, "done");
 
-    const result = await s.tools.get("stop_run").execute("c", { to: "kid" });
-    assert.match(result.content[0].text, /^stopped kid; /);
+    const result = await s.tools.get("stop_run").execute("c", { to: ["kid"] });
+    assert.match(result.content[0].text, /^completed kid; /);
     assert.deepEqual(fx.runOutcomeCalls()[0], ["run-outcome", "fake-run-id", "--result", "completed"], "the ending is recorded before the child is asked to shut down");
     assert.equal(JSON.parse(inbox.received()[0]!).kind, "stop", "the child is asked to shut down over its inbox");
     assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--wait", "5"]);
@@ -537,14 +537,14 @@ test("stop_run asks a subagent to stop first, then records completed only when i
     const past = new Date(Date.now() - 2000);
     utimesSync(report, past, past);
     fx.setRuns(rows);
-    await s.tools.get("stop_run").execute("c", { to: "kid" });
+    await s.tools.get("stop_run").execute("c", { to: ["kid"] });
     assert.deepEqual(fx.runOutcomeCalls()[1], ["run-outcome", "fake-run-id", "--result", "stopped"], "a child at work on unreported work is stopped");
 
     const tied = new Date();
     utimesSync(report, tied, tied);
     utimesSync(work, tied, tied);
     fx.setRuns(rows);
-    await s.tools.get("stop_run").execute("c", { to: "kid" });
+    await s.tools.get("stop_run").execute("c", { to: ["kid"] });
     assert.deepEqual(fx.runOutcomeCalls()[2], ["run-outcome", "fake-run-id", "--result", "stopped"], "a report tied with the work is not newer, so it is stopped");
   } finally {
     await fx.restore();
@@ -562,7 +562,7 @@ test("stop_run with force skips the request, and a subagent with no inbox needs 
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid", inbox: inbox.path })]);
     fx.setRuns([{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session }]);
 
-    await s.tools.get("stop_run").execute("c", { to: "kid", force: true });
+    await s.tools.get("stop_run").execute("c", { to: ["kid"], force: true });
     assert.equal(inbox.received().length, 0, "force skips the stop request");
     assert.deepEqual(fx.runOutcomeCalls()[0], ["run-outcome", "fake-run-id", "--result", "stopped"]);
     assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id", "--wait", "5"]);
@@ -570,29 +570,46 @@ test("stop_run with force skips the request, and a subagent with no inbox needs 
     fx.setRuns([{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session }]);
     fx.setPanes([selfPane(), agentPane({ pane: "%2", session: child.session, name: "kid" })]);
     assert.equal(
-      (await s.tools.get("stop_run").execute("c", { to: "kid" })).content[0].text,
-      "subagent kid has no inbox for a stop request; pass --force to kill its window instead",
+      (await s.tools.get("stop_run").execute("c", { to: ["kid"] })).content[0].text,
+      '"kid": error: subagent kid has no inbox for a stop request; pass --force to kill its window instead',
     );
     assert.equal(fx.runStopCalls().length, 1, "a refused stop records nothing");
-    await s.tools.get("stop_run").execute("c", { to: "kid", force: true });
+    await s.tools.get("stop_run").execute("c", { to: ["kid"], force: true });
     assert.equal(fx.runStopCalls().length, 2);
   } finally {
     await fx.restore();
   }
 });
 
-test("the stop wrapper's deadline outlives run-stop's wait and escalation", async () => {
+test("stop_run batches stops in parallel, preserves input order and deduplicates runs", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
+    fx.setRuns([
+      { id: "first-run", name: "first", parent: "%1" },
+      { id: "second-run", name: "second", parent: "%1" },
+    ]);
     const gate = join(fx.stateDir, "stop-gate");
     await withEnv({ KIDO_FAKE_RUN_STOP_GATE: gate, KIDO_STOP_ESCALATION_MS: "50" }, async () => {
       const s = await startNamedSession(fx, "Self");
-      await s.tools.get("async_bash").execute("c", { command: "make", name: "build" });
-      const stopped = s.tools.get("stop_run").execute("c", { to: "build" });
-      await pollUntil(() => fx.runStopCalls().length === 1, 2000, "run-stop to start");
+      const stopped = s.tools.get("stop_run").execute("c", { to: ["missing", "second", "first", "second-run"] });
+      await pollUntil(() => fx.runStopCalls().length === 2, 2000, "both stops to reach the gate before either finishes");
       writeFileSync(gate, "");
-      assert.equal((await stopped).content[0].text, "stopped run fake-run-id; killed its pane");
+      const result = await stopped;
+      assert.equal(result.isError, false);
+      assert.deepEqual(result.content[0].text.split("\n"), [
+        '"missing": error: no run matches "missing"',
+        "stopped run second-run; killed its pane",
+        "stopped run first-run; killed its pane",
+        "stopped run second-run; killed its pane",
+      ]);
+      assert.deepEqual(fx.runStopCalls().map(args => args[1]).sort(), ["first-run", "second-run"]);
+      const listed = JSON.parse((await s.tools.get("list_runs").execute("c", {})).content[0].text);
+      assert.equal(listed.length, 2);
+      assert.ok(listed.every((row: { state: string; outcome: { result: string } }) => row.state === "ended" && row.outcome.result === "stopped"));
+      const refused = await s.tools.get("stop_run").execute("c", { to: ["missing", "unknown"] });
+      assert.equal(refused.isError, true);
+      assert.equal(refused.content[0].text.split("\n").length, 2);
     });
   } finally {
     await fx.restore();
@@ -605,9 +622,9 @@ test("stop_run refuses an unrelated run and resolves a unique prefix of at least
     fx.setPanes([selfPane()]);
     fx.setRuns([{ id: "abcdef0123456789", name: "job", parent: "%1" }]);
     const s = await startNamedSession(fx, "Self");
-    assert.equal((await s.tools.get("stop_run").execute("c", { to: "nope" })).content[0].text, 'no run matches "nope"');
-    assert.equal((await s.tools.get("stop_run").execute("c", { to: "a" })).content[0].text, 'id prefixes need at least 8 characters', "a prefix shorter than the minimum is refused");
-    assert.equal((await s.tools.get("stop_run").execute("c", { to: "abcdef01" })).content[0].text, "stopped run abcdef0123456789; killed its pane");
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: ["nope"] })).content[0].text, '"nope": error: no run matches "nope"');
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: ["a"] })).content[0].text, '"a": error: id prefixes need at least 8 characters', "a prefix shorter than the minimum is refused");
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: ["abcdef01"] })).content[0].text, "stopped run abcdef0123456789; killed its pane");
   } finally {
     await fx.restore();
   }

@@ -31,7 +31,7 @@ state directory, and writes to inboxes.
 | `set_status(activity)` | `tmux set-option -p @kido_activity` |
 | `message_agent(to, message, mode?)` | the target's inbox; `kido run-child` to restart an ended child |
 | `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `kido run-child P --name N --cwd D --env ... -- kido shell -- kido-pi ...`, or `kido run` for a top-level agent |
-| `stop_run(to, force?)` | the target's inbox, then `kido run-stop` |
+| `stop_run(to[], force?)` | the target's inbox, then `kido run-stop` |
 | `async_bash(command, name, stream?)` | `kido run-child P --name N -- bash -o pipefail -c ...` |
 
 P is the caller's `KIDO_RUN_ID` for a subagent, else its `$TMUX_PANE`.
@@ -64,19 +64,24 @@ a report whole, because it is a work product. Only the text *sent* to
 the parent has a bound ("Reporting", below).
 
 **list_runs** is the only tool for finding agents to message and runs to
-stop with `stop_run`. A top-level caller sees other top-level agents in
-its tmux session as peers. A subagent sees its parent and its live
-sibling subagents as peers. It does not see other top-level agents or
-its parent's bash runs.
+stop with `stop_run`. It lists the caller's discovery scope: the agents
+in its tmux session whose parent is the root level, the caller, or an
+ancestor of the caller. Thus, a top-level caller sees the other
+top-level agents and its direct subagents. A subagent sees its peers,
+its direct subagents, its parent and the parent's peers, the
+grandparent and its peers, and so on up to the top-level agents. No
+caller sees a grandchild, the subagents of a peer or of an ancestor's
+peer, or another agent's bash runs.
 
-Both callers see their own runs: all running runs and the newest 20
-ended runs, newest first. The list excludes the caller itself and
-unrelated agents' runs. A live child merges into its pane's row: the row
+Every caller also sees its own runs: all running runs and the newest 20
+ended runs, newest first, also when a run's window moved to another
+tmux session. The list excludes the caller itself. A live child merges into its pane's row: the row
 id is the child's session id, and `run` is its current run id. Children
 that `kido run-child %N` started for a top-level pi are listed too.
 
 Rows carry `kind` (`agent`, `subagent`, `bash`) and `relationship`
-(`peer`, `parent`, `own`). The agent map decides `subagent` against
+(`own`, `parent`, `peer` for the same parent, or `relative`: a
+farther ancestor or an ancestor's peer). The agent map decides `subagent` against
 `bash`, not kido. Live agents carry id, name, pane, window, status,
 activity, parent, depth, cwd, model and `canMessage`. Own
 runs add `run`, `startedAt`, `state` (`running` or `ended`), the
@@ -88,11 +93,15 @@ done, error or idle, else unknown. The name is the pane's `@kido_name`,
 or its title when the session has no name. Native Claude Code has no
 `@kido_session` and does not appear in the list.
 
-Names still resolve across the entire tmux session for every
-`message_agent` mode. The list does not restrict
-addressing. Sender checks and ancestry use the same
-snapshot: all panes and the whole agent map, not the scoped display.
-The `@` completion reads the list and excludes bash and ended rows.
+The discovery scope limits only discovery: `list_runs` and the `@`
+completion, which reads the same list and excludes bash and ended rows.
+It never limits addressing. Names resolve across the entire tmux
+session for every `message_agent` mode. Discovery is not symmetric: a
+subagent sees its grandparent's peer, but that peer does not see the
+subagent. An agent that receives a message from outside its scope can
+still reply, because the header names the sender and addressing is
+open. Sender checks and ancestry use the same snapshot: all panes and
+the whole agent map, not the scoped list.
 
 ## What a child is given
 
@@ -275,10 +284,8 @@ was delivered`. The
 agent is a peer: the
 caller reaches it with `message_agent` in `message` mode. `stop_run`
 and the `steer` and `interrupt-and-steer` modes refuse it, because it is
-not a descendant. A top-level caller sees it in `list_runs` as a peer.
-A subagent caller does not, because a subagent sees only its parent and
-siblings ("list_runs", above); it addresses the agent by the name or
-session id in the spawn result.
+not a descendant. Every caller sees it in `list_runs`, because the
+discovery scope includes all top-level agents ("list_runs", above).
 
 The depth ceiling does not apply. `fork`, `resume_from`, `model` and
 `cwd` apply as for a child. One of the caller's own children cannot
@@ -551,10 +558,18 @@ modes are new work from the parent ("Reporting", `work`). There is no
 interrupt without text: a parent that wants the child idle stops it with
 `stop_run`, or steers it to wait.
 
-`stop_run` resolves its target among the caller's own runs and its
-descendants, in this order: an exact run or session id, a unique prefix
-of at least eight characters, an unambiguous running name. It accepts
-a mention as design.md, "Addressing", describes.
+`stop_run` takes a list of one or more targets. It resolves each
+target among the caller's own runs and its descendants, in this order:
+an exact run or session id, a unique prefix of at least eight
+characters, an unambiguous running name. It accepts a mention as
+design.md, "Addressing", describes. It resolves every target before it
+stops any. A target that does not resolve, is ambiguous or is outside
+this rule gets its own error line and does not block the others. Two
+targets that name one run stop it once. The resolved runs stop in
+parallel, so a call takes about one escalation, not one for each run.
+The result has one line for each target, in input order: completed,
+stopped or the error. The call is an error only if no target stopped a
+run.
 
 - A bash run: `kido run-stop ID`.
 - A subagent: `kido run-outcome ID` records `completed` if the child has
@@ -795,8 +810,5 @@ These nested windows no longer follow tmux's own order. design.md,
   different callers that resume one saved session at the same time can
   both pass the live check before either agent publishes
   `@kido_session`, and two pi processes then write one session file.
-- A subagent does not see a top-level agent that it started in
-  `list_runs`. It addresses it by the name or session id from the spawn
-  result.
 - Everything assumes one machine: a shared filesystem and a kido binary
   beside every agent.

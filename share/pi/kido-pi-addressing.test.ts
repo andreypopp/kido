@@ -104,8 +104,8 @@ test("a message to a running agent says it is queued, and only a descendant gets
 });
 
 // The tree: root (top-level) -> mid (me) -> child -> grandchild, plus a peer
-// under root. A steer reaches a descendant however deep; nothing reaches a
-// peer, an ancestor or the caller.
+// under root. A steer reaches a descendant however deep; the steer modes
+// refuse a peer, an ancestor and the caller.
 test("message_agent modes restrict control to descendants and mark parent work", async () => {
   const fx = makeFixture();
   try {
@@ -132,7 +132,7 @@ test("message_agent modes restrict control to descendants and mark parent work",
         assert.equal((await message.execute("c", { to: "mid", message: "x", mode })).content[0].text, "mid is this agent");
       }
       assert.deepEqual(inbox.received().map(json).map(e => e.kind), ["message", "message", "message", "message", "steer", "steer", "interrupt-and-steer", "interrupt-and-steer"]);
-    });
+    }, { parent: "root", name: "mid" });
   } finally {
     await fx.restore();
   }

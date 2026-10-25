@@ -6,7 +6,7 @@ let rows () = Fake_common.read_rows "KIDO_FAKE_RUNS_FILE"
 
 let write_rows rows =
   if not (String.is_empty rows_path) then
-    Fs.write ~perm:0o644 rows_path (Yojson.Safe.to_string (`List rows))
+    Fs.write_atomic ~perm:0o644 rows_path (Yojson.Safe.to_string (`List rows))
 
 let outcome row =
   match row with `Assoc fields -> List.assoc_opt ~eq:String.equal "outcome" fields | _ -> None
@@ -16,19 +16,26 @@ let with_outcome row result text =
   `Assoc (("outcome", `Assoc [ ("result", `String result); ("text", `String text) ]) :: fields)
 
 let with_row id f =
-  let found = ref None in
-  let rows =
-    List.map
-      (fun row ->
-        if String.equal (member "id" row) id then begin
-          found := Some row;
-          f row
-        end
-        else row)
-      (rows ())
-  in
-  write_rows rows;
-  !found
+  if String.is_empty rows_path then None
+  else
+    let lock = Unix.openfile (rows_path ^ ".lock") [ Unix.O_WRONLY; Unix.O_CREAT ] 0o600 in
+    Unix.lockf lock Unix.F_LOCK 0;
+    Fun.protect
+      ~finally:(fun () -> Unix.close lock)
+      (fun () ->
+        let found = ref None in
+        let rows =
+          List.map
+            (fun row ->
+              if String.equal (member "id" row) id then begin
+                found := Some row;
+                f row
+              end
+              else row)
+            (rows ())
+        in
+        write_rows rows;
+        !found)
 
 let find_row id = List.find_opt (fun row -> String.equal (member "id" row) id) (rows ())
 let positional argv = match argv with _command :: id :: _ -> id | _ -> ""

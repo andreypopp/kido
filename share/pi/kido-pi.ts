@@ -327,7 +327,7 @@ type AgentRow = {
   canMessage: boolean;
   model: string;
   kind: "agent" | "subagent" | "bash";
-  relationship: "parent" | "peer" | "own" | "other";
+  relationship: "parent" | "peer" | "own" | "relative" | "other";
   run: string;
   state: "running" | "ended";
   tmux: string;
@@ -931,6 +931,7 @@ export default function (pi: ExtensionAPI) {
     const ownByRun = byRunOf(ownEntries);
     const mySession = panes.find((p) => p.pane === pane)?.session ?? "";
     const all: AgentRow[] = [];
+    const parents = new Set(["", ...chain(bySession, edge?.parent ?? "")]);
 
     for (const p of panes) {
       if (!isAgentPane(p)) continue;
@@ -953,7 +954,7 @@ export default function (pi: ExtensionAPI) {
         canMessage: !p.dead && p.inbox !== "",
         model: entry?.model ?? "",
         kind: entry?.parent ? "subagent" : "agent",
-        relationship: self ? "own" : isParent ? "parent" : isPeer ? "peer" : "other",
+        relationship: self || entry?.parent === ownSessionId ? "own" : isParent ? "parent" : isPeer ? "peer" : parents.has(entry?.parent ?? "") ? "relative" : "other",
         run: entry?.run ?? "",
         state: p.dead ? "ended" : "running",
         tmux: p.session,
@@ -1007,7 +1008,8 @@ export default function (pi: ExtensionAPI) {
         startedAt: r.startedAt,
       });
     }
-    const rows = all.filter((a) => !a.self && a.relationship !== "other");
+    const rows = all.filter((a) => !a.self && a.relationship !== "other" &&
+      (a.relationship === "own" || a.tmux === mySession));
     return { rows, all, panes, mySession, entries, runs };
   };
 
@@ -1883,8 +1885,8 @@ export default function (pi: ExtensionAPI) {
     name: "list_runs",
     label: "List Runs",
     description:
-      "List same-parent peers and your parent in this tmux session, plus your own subagents and async_bash jobs: all running and the newest 20 ended, newest first. Use message_agent for agents and stop_run with a run id to stop your runs.",
-    promptSnippet: "list_runs() - find same-parent peers and your parent to message, and your own subagents and jobs to stop with stop_run",
+      "List agents in your discovery scope (top-level agents, your peers, each ancestor and its peers, and your direct subagents in this tmux session), plus your own async_bash jobs: all running and the newest 20 ended, newest first. message_agent can also address agents outside this list in the same tmux session. Use stop_run with a run id to stop your runs.",
+    promptSnippet: "list_runs() - discover agents, and your own subagents and jobs to stop with stop_run",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
       const { rows, entries } = await discovery();
@@ -2176,7 +2178,7 @@ export default function (pi: ExtensionAPI) {
       watch(watchData(created.id, params.name, created.output, null, !!params.stream));
       
       return reply(
-        `started run ${created.id}${params.name ? ` (${params.name})` : ""} in window ${created.window}; list_runs lists it and stop_run("${created.id}") stops it; ` +
+        `started run ${created.id}${params.name ? ` (${params.name})` : ""} in window ${created.window}; list_runs lists it and stop_run(["${created.id}"]) stops it; ` +
           `a notice with its exit status and a tail of its output arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ` +
           (params.stream
             ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${created.output}`
@@ -2193,14 +2195,14 @@ export default function (pi: ExtensionAPI) {
     name: "stop_run",
     label: "Stop Run",
     description:
-      "Stop a descendant subagent or async_bash run found in list_runs. Asks a subagent to shut down, killing its pane if needed; sends TERM to a bash run's process group. A child that already reported ends as completed; one stopped before it reported ends as stopped.",
-    promptSnippet: "stop_run(to, force?) - end a descendant subagent or bash run found in list_runs",
+      "Stop own runs and descendant subagents in parallel. Pass a non-empty array of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped.",
+    promptSnippet: "stop_run(to, force?) - end own runs and descendant subagents in parallel; to is a non-empty array of addresses",
     parameters: Type.Object(
       {
-        to: Type.String({
+        to: Type.Array(Type.String({
           description:
             `Run or session id, unique id prefix of at least ${MIN_ID_PREFIX} characters, unambiguous running name, or an @-mention such as @impl (run 9702ddd1).`,
-        }),
+        }), { minItems: 1 }),
         force: Type.Optional(
           Type.Boolean({
             description:
@@ -2214,45 +2216,65 @@ export default function (pi: ExtensionAPI) {
       const command = kido;
       if (!command) return reply("could not stop: kido is not on PATH");
       const { all, entries } = await discovery();
-      const to = params.to;
       const force = !!params.force;
-      const { wanted, mention } = normalizeAddress(to);
       const candidates = all.filter((a) => !a.self && (a.relationship === "own" || isDescendant(a, entries)));
-      let matches = candidates.filter((a) => matchesId(a, wanted));
-      if (!matches.length) {
-        matches = candidates.filter((a) => matchesId(a, wanted, true));
-      }
-      if (!matches.length) {
-        matches = candidates.filter((a) => !mention && a.named && a.name.toLowerCase() === wanted.toLowerCase() && a.state === "running");
-      }
-      if (!matches.length && wanted.length < MIN_ID_PREFIX && candidates.some((a) => rowIds(a).some((id) => id.startsWith(wanted)))) return reply(`id prefixes need at least ${MIN_ID_PREFIX} characters`);
-      if (!matches.length) return reply(`no run matches ${quote(to)}`);
-      if (matches.length > 1) {
-        return reply(`${quote(to)} matches several runs: ${matches.map((a) => a.run || a.id).sort().join(", ")}`);
-      }
-      const target = matches.at(0);
-      if (!target) return reply(`no run matches ${quote(to)}`);
-      const run = target.run || target.id;
-      const stopWait = 5;
-      const stopDeadline = (wait: number): number => wait * 1000 + envMs("KIDO_STOP_ESCALATION_MS", 5000) + 1500;
-      if (target.kind === "bash") {
-        const res = await runCommand(command, ["run-stop", run], { timeoutMs: stopDeadline(0) });
-        return reply(res.ok ? res.out : res.error);
-      }
-      const name = target.name || target.id;
-      const entry = entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
-      if (!force && !target.inbox) return reply(`subagent ${name} has no inbox for a stop request; pass --force to kill its window instead`);
-      const recordArgs = ["run-outcome", run, "--result", entry && reported(entry) ? "completed" : "stopped"];
-      const recorded = await runCommand(command, recordArgs, { timeoutMs: stopDeadline(stopWait) });
-      if (!recorded.ok && recorded.code !== 5) return reply(recorded.error);
-      let requestFailure = "";
-      if (!force && target.inbox) {
-        const request = await sendEnvelope(target.inbox, "stop", "");
-        if (!request.ok && request.kind !== "refused") requestFailure = request.message;
-      }
-      const res = await runCommand(command, ["run-stop", run, "--wait", String(stopWait)], { timeoutMs: stopDeadline(stopWait) });
-      if (res.ok) return reply(requestFailure ? `stopped ${name}; ${res.out}; the stop request failed: ${requestFailure}` : `stopped ${name}; ${res.out}`);
-      return reply(requestFailure ? `${res.error}; the stop request failed: ${requestFailure}` : res.error);
+      const resolved = params.to.map((to): { target: AgentRow } | { error: string } => {
+        const { wanted, mention } = normalizeAddress(to);
+        let matches = candidates.filter((a) => matchesId(a, wanted));
+        if (!matches.length) {
+          matches = candidates.filter((a) => matchesId(a, wanted, true));
+        }
+        if (!matches.length) {
+          matches = candidates.filter((a) => !mention && a.named && a.name.toLowerCase() === wanted.toLowerCase() && a.state === "running");
+        }
+        if (!matches.length && wanted.length < MIN_ID_PREFIX && candidates.some((a) => rowIds(a).some((id) => id.startsWith(wanted)))) return { error: `id prefixes need at least ${MIN_ID_PREFIX} characters` };
+        const [target, ...rest] = matches;
+        if (!target) return { error: `no run matches ${quote(to)}` };
+        if (rest.length) {
+          return { error: `${quote(to)} matches several runs: ${matches.map((a) => a.run || a.id).sort().join(", ")}` };
+        }
+        return { target };
+      });
+      const stops = new Map<string, Promise<{ text: string } | { error: string }>>();
+      const stop = async (target: AgentRow, run: string): Promise<{ text: string } | { error: string }> => {
+        const stopWait = 5;
+        const stopDeadline = (wait: number): number => wait * 1000 + envMs("KIDO_STOP_ESCALATION_MS", 5000) + 1500;
+        if (target.kind === "bash") {
+          const res = await runCommand(command, ["run-stop", run], { timeoutMs: stopDeadline(0) });
+          return res.ok ? { text: res.out } : { error: res.error };
+        }
+        const name = target.name || target.id;
+        const entry = entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
+        if (!force && !target.inbox) return { error: `subagent ${name} has no inbox for a stop request; pass --force to kill its window instead` };
+        const outcome = entry && reported(entry) ? "completed" : "stopped";
+        const recordArgs = ["run-outcome", run, "--result", outcome];
+        const recorded = await runCommand(command, recordArgs, { timeoutMs: stopDeadline(stopWait) });
+        if (!recorded.ok && recorded.code !== 5) return { error: recorded.error };
+        let requestFailure = "";
+        if (!force && target.inbox) {
+          const request = await sendEnvelope(target.inbox, "stop", "");
+          if (!request.ok && request.kind !== "refused") requestFailure = request.message;
+        }
+        const res = await runCommand(command, ["run-stop", run, "--wait", String(stopWait)], { timeoutMs: stopDeadline(stopWait) });
+        if (res.ok) return { text: requestFailure ? `${outcome} ${name}; ${res.out}; the stop request failed: ${requestFailure}` : `${outcome} ${name}; ${res.out}` };
+        return { error: requestFailure ? `${res.error}; the stop request failed: ${requestFailure}` : res.error };
+      };
+      const results = await Promise.all(resolved.map((result) => {
+        if ("error" in result) return result;
+        const run = result.target.run || result.target.id;
+        let pending = stops.get(run);
+        if (!pending) {
+          pending = stop(result.target, run);
+          stops.set(run, pending);
+        }
+        return pending;
+      }));
+      return {
+        ...reply(results.map((result, i) => "error" in result
+          ? `${quote(params.to[i] ?? "")}: error: ${result.error}`
+          : result.text).map((line) => line.trim().replace(/\s*\n\s*/g, "; ")).join("\n")),
+        isError: results.every((result) => "error" in result),
+      };
     },
   });
   pi.on("before_agent_start", (event) => {
