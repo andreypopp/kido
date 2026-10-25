@@ -260,7 +260,7 @@ Pi and Claude Code report their status through OSC 7501.
 
 - Detected: root app `pi` and `@kido_session`.
 - Title: `@kido_name` when set, otherwise the pane title.
-- Status: as `Some_agent`, from the pi root (pi 1.1's native emitter).
+- Status: as `Some_agent`, from the pi root (pi 1.4.0's native emitter).
   kido removes `msg` if it repeats the title. If there is no `msg`, `@kido_activity`
   supplies the message.
 - Supports: everything in `design.md` and `design-subagents.md`:

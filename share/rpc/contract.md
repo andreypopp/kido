@@ -535,7 +535,7 @@ only wake the next read; their payload is ignored. OSC 133 A clears the
 applicable records; process exit, RIS and respawn also follow the fork's
 program-status clear rules.
 These behaviours come from the pinned fork, not stock tmux.
-pi status comes from pi 1.2.0's native OSC 7501 root record, with no
+pi status comes from pi 1.4.0's native OSC 7501 root record, with no
 title or progress. Named pi labels use the session name reported in its run,
 exactly as set by /name. Unnamed or untracked pi labels use the pane title
 set through OSC 0/2, verbatim; unnamed tracked sessions

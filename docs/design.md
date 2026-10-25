@@ -146,7 +146,7 @@ in front of every argument. It has no case for pi's package
 subcommands; use plain `pi` for those. A bare `pi` in a kido pane is
 plain pi: it reports OSC 7501 status and has no harness.
 
-After interactive terminal feature detection, pi 1.2.0 natively emits
+After interactive terminal feature detection, pi 1.4.0 natively emits
 OSC 7501 root records with `app=pi`. Its lifecycle supplies working,
 blocked, done, idle and error. Native dialogs report blocked; extension
 custom UI does not. Terminal stop clears the root without app.

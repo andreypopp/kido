@@ -1,7 +1,7 @@
 # pi extension: kido-pi
 
 `kido-pi.ts` is kido's harness for pi: the agent tools, the inbox, the
-subagent lifecycle and the pane options that kido reads. pi 1.2.0
+subagent lifecycle and the pane options that kido reads. pi 1.4.0
 natively reports status through OSC 7501 in interactive mode after
 terminal feature detection. Its pane title, set through OSC 0/2, names
 the session in kido. These work without the extension.
