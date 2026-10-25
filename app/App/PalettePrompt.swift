@@ -3,6 +3,8 @@ import SidebarFeed
 import TmuxControl
 import PromptMarkdown
 
+@MainActor private let baseAttributes = PromptMarkdown.baseAttributes(ink: Chrome.ink)
+
 struct PromptSource: Equatable {
     let owner: WindowOwner
     let instance: ServerInstance
@@ -47,7 +49,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
     }
     let source: PromptSource
     final class Field: NSTextView {
-        var rendering = PromptMarkdown.render("")
+        var rendering = PromptMarkdown.render("", colors: Chrome.markdownInk)
         convenience init() {
             let storage = NSTextStorage()
             let layout = NSLayoutManager()
@@ -59,11 +61,11 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         override func draw(_ dirtyRect: NSRect) {
             if let layout = layoutManager, let container = textContainer {
                 let glyphs = layout.glyphRange(forBoundingRect: dirtyRect.offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y), in: container)
-                NSColor.labelColor.withAlphaComponent(NSColor.labelColor.alphaComponent * 0.08).setFill()
+                Chrome.codeFill.setFill()
                 for rect in codeFillRects(ranges: rendering.codeRanges, layoutManager: layout, textContainer: container, glyphRange: glyphs, origin: textContainerOrigin) {
                     NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).fill()
                 }
-                NSColor.secondaryLabelColor.withAlphaComponent(NSColor.secondaryLabelColor.alphaComponent * 0.45).setFill()
+                Chrome.quoteBar.setFill()
                 for rect in quoteBarRects(lines: rendering.quoteLines, layoutManager: layout, glyphRange: glyphs, origin: textContainerOrigin) { rect.fill() }
             }
             super.draw(dirtyRect)
@@ -130,7 +132,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.drawsBackground = false
-        textView.textColor = .labelColor
+        textView.textColor = Chrome.ink
         textView.textContainerInset = NSSize(width: 8, height: 0)
         textView.textContainer?.lineFragmentPadding = 0
         textView.typingAttributes = baseAttributes
@@ -147,12 +149,12 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         status.font = .systemFont(ofSize: 11)
         status.lineBreakMode = .byTruncatingTail
         hint.font = .systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
+        hint.textColor = Chrome.inkSecondary
         spinner.style = .spinning
         spinner.controlSize = .mini
         spinner.isDisplayedWhenStopped = false
         warning.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)
-        warning.contentTintColor = .systemRed
+        warning.contentTintColor = Chrome.errorText
         for rule in [fieldRule, footRule] { rule.boxType = .separator }
         send.target = self
         send.action = #selector(sendComposed)
@@ -161,7 +163,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         for button in [retry, copyPrompt] {
             button.isBordered = false
             button.font = .systemFont(ofSize: 11, weight: .medium)
-            button.contentTintColor = .controlAccentColor
+            button.contentTintColor = Chrome.linkText
             button.target = self
             button.setAccessibilityLabel(button.title)
         }
@@ -263,11 +265,11 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         case .failed: title = "Prompt unavailable"
         default: title = target.map { "Prompt @\($0.title) in \(place($0))" } ?? "Prompt unavailable"
         }
-        let label = NSMutableAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor])
-        if title.hasPrefix("Prompt @") { label.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: 6)) }
+        let label = NSMutableAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: Chrome.inkSecondary])
+        if title.hasPrefix("Prompt @") { label.addAttribute(.foregroundColor, value: Chrome.ink, range: NSRange(location: 0, length: 6)) }
         if let target, let range = title.range(of: "@\(target.title)") {
             let nameRange = NSRange(range, in: title)
-            label.addAttributes([.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor], range: nameRange)
+            label.addAttributes([.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: Chrome.ink], range: nameRange)
             label.addAttribute(.kern, value: 2, range: NSRange(location: nameRange.location - 1, length: 1))
             label.addAttribute(.kern, value: 2, range: NSRange(location: NSMaxRange(nameRange), length: 1))
         }
@@ -313,18 +315,18 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         send.isEnabled = false
         targetButton.isEnabled = false
         textView.isEditable = false
-        textView.textColor = .secondaryLabelColor
-        status.textColor = .secondaryLabelColor
+        textView.textColor = Chrome.inkSecondary
+        status.textColor = Chrome.inkSecondary
         switch state {
         case .noAgent: break
         case .ready:
             targetButton.isEnabled = true
             textView.isEditable = true
-            textView.textColor = .labelColor
+            textView.textColor = Chrome.ink
             send.isEnabled = hasPrompt
             if sourceGone { status.stringValue = "Source pane closed; agents resolved earlier stay available." }
         case .sending:
-            textView.textColor = .labelColor
+            textView.textColor = Chrome.ink
             status.stringValue = "Sending to @\(target?.title ?? "agent")…"
             spinner.isHidden = false
             spinner.startAnimation(nil)
@@ -332,7 +334,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
             status.stringValue = message
             retry.isHidden = false
             textView.isEditable = true
-            textView.textColor = .labelColor
+            textView.textColor = Chrome.ink
             send.isEnabled = hasPrompt
             warning.isHidden = false
         case .unknown(let message):
@@ -345,7 +347,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
             status.stringValue = message
             targetButton.isEnabled = true
             textView.isEditable = true
-            textView.textColor = .labelColor
+            textView.textColor = Chrome.ink
             warning.isHidden = false
         case .failed(let message):
             status.stringValue = message
@@ -353,7 +355,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
             warning.isHidden = false
         }
         styleText()
-        if !warning.isHidden { status.textColor = .systemRed }
+        if !warning.isHidden { status.textColor = Chrome.errorText }
         status.isHidden = status.stringValue.isEmpty
         if !status.isHidden {
             NSAccessibility.post(element: status, notification: .announcementRequested, userInfo: [.announcement: status.stringValue, .priority: NSAccessibilityPriorityLevel.high.rawValue])
@@ -406,7 +408,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
     }
     private func updateContent() {
         textView.setAccessibilityLabel("Prompt")
-        let hintAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]
+        let hintAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: Chrome.inkSecondary]
         let hintText = NSMutableAttributedString()
         for part in ["↩ send", "⇧↩ new line", "⇥ agent", "esc close, keeps draft"] + (restored ? ["· draft restored"] : []) {
             if hintText.length > 0 {
@@ -422,13 +424,13 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
     private func styleText() {
         guard let storage = textView.textStorage else { return }
         let marked = textView.hasMarkedText() ? textView.markedRange() : NSRange(location: NSNotFound, length: 0)
-        let rendering = PromptMarkdown.render(textView.string)
+        let rendering = PromptMarkdown.render(textView.string, colors: Chrome.markdownInk)
         let registration = editingUndoManager.isUndoRegistrationEnabled
         if registration { editingUndoManager.disableUndoRegistration() }
         storage.beginEditing()
         rendering.text.enumerateAttributes(in: NSRange(location: 0, length: rendering.text.length)) { attributes, range, _ in
             var desired = attributes
-            if case .unknown = state { desired[.foregroundColor] = NSColor.secondaryLabelColor }
+            if case .unknown = state { desired[.foregroundColor] = Chrome.inkSecondary }
             storage.enumerateAttributes(in: range) { current, span, _ in
                 guard !NSDictionary(dictionary: current).isEqual(to: desired) else { return }
                 if NSIntersectionRange(span, marked).length == 0 { storage.setAttributes(desired, range: span) }
@@ -514,21 +516,21 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
                 path.lineWidth = 1.5
                 path.lineCapStyle = .round
                 path.lineJoinStyle = .round
-                NSColor.white.setStroke()
+                Chrome.onAccent.setStroke()
                 path.stroke()
                 return true
             }
             image?.isTemplate = false
             imagePosition = .imageOnly
             imageScaling = .scaleNone
-            contentTintColor = .white
+            contentTintColor = Chrome.onAccent
             toolTip = "Send (Return)"
             setAccessibilityLabel("Send prompt")
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
         override var isEnabled: Bool {
             didSet {
-                contentTintColor = .white
+                contentTintColor = Chrome.onAccent
                 needsDisplay = true
             }
         }
@@ -545,7 +547,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         #endif
         override func draw(_ dirtyRect: NSRect) {
             effectiveAppearance.performAsCurrentDrawingAppearance {
-                let fill = isEnabled ? NSColor.controlAccentColor : NSColor.labelColor.withAlphaComponent(0.14)
+                let fill = isEnabled ? Chrome.sendFill : Chrome.disabledFill
                 fill.setFill()
                 NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
             }
@@ -598,7 +600,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         }
         override func draw(_ dirtyRect: NSRect) {
             if window?.firstResponder === self {
-                NSColor.controlAccentColor.withAlphaComponent(0.55).setStroke()
+                Chrome.pickerRing.setStroke()
                 let ring = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6)
                 ring.lineWidth = 2
                 ring.stroke()
@@ -613,7 +615,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
                 path.lineWidth = 1.6
                 path.lineJoinStyle = .round
                 path.lineCapStyle = .round
-                NSColor.secondaryLabelColor.setStroke()
+                Chrome.inkSecondary.setStroke()
                 path.stroke()
             }
         }

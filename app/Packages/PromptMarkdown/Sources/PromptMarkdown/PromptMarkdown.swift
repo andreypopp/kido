@@ -2,13 +2,13 @@ import AppKit
 import Markdown
 
 public let lineHeight: CGFloat = 18
-@MainActor public let baseAttributes: [NSAttributedString.Key: Any] = {
+@MainActor public func baseAttributes(ink: NSColor) -> [NSAttributedString.Key: Any] {
     let paragraph = NSMutableParagraphStyle()
     paragraph.minimumLineHeight = lineHeight
     paragraph.maximumLineHeight = lineHeight
-    return [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor,
+    return [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: ink,
             .paragraphStyle: paragraph.copy(), .baselineOffset: -1]
-}()
+}
 
 public struct Rendering {
     public let text: NSAttributedString
@@ -32,7 +32,8 @@ private func utf16Range(_ range: SourceRange, text: String, lines: [(utf8: Int, 
     return NSRange(location: start, length: end - start)
 }
 
-@MainActor public func render(_ text: String) -> Rendering {
+@MainActor public func render(_ text: String, colors: (ink: NSColor, secondary: NSColor, tertiary: NSColor)) -> Rendering {
+    let baseAttributes = baseAttributes(ink: colors.ink)
     let base = baseAttributes[.font] as! NSFont
     let result = NSMutableAttributedString(string: text, attributes: baseAttributes)
     let source = text as NSString
@@ -53,7 +54,7 @@ private func utf16Range(_ range: SourceRange, text: String, lines: [(utf8: Int, 
     func visit(_ node: any Markup) {
         if let sourceRange = node.range, let range = utf16Range(sourceRange, text: text, lines: lines) {
             if node is BlockQuote {
-                result.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: range)
+                result.addAttribute(.foregroundColor, value: colors.secondary, range: range)
                 var start = source.lineRange(for: NSRange(location: range.location, length: 0)).location
                 while start < NSMaxRange(range) {
                     let line = source.lineRange(for: NSRange(location: start, length: 0))
@@ -66,7 +67,7 @@ private func utf16Range(_ range: SourceRange, text: String, lines: [(utf8: Int, 
                         var end = cursor + 1
                         if end < source.length, source.character(at: end) == 32 { end += 1 }
                         let marker = NSRange(location: cursor, length: end - cursor)
-                        result.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: marker)
+                        result.addAttribute(.foregroundColor, value: colors.tertiary, range: marker)
                         cursor = end
                     }
                     start = NSMaxRange(line)
