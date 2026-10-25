@@ -27,6 +27,8 @@ packages:
     path: Packages/TmuxControl
   SidebarFeed:
     path: Packages/SidebarFeed
+  PromptMarkdown:
+    path: Packages/PromptMarkdown
 targets:
   Kido:
     type: application
@@ -68,6 +70,7 @@ targets:
     dependencies:
       - package: TmuxControl
       - package: SidebarFeed
+      - package: PromptMarkdown
       - framework: build/GhosttyKit.xcframework
         embed: false
       - sdk: Metal.framework
@@ -91,6 +94,7 @@ targets:
       - package: SnapshotTesting
       - package: TmuxControl
       - package: SidebarFeed
+      - package: PromptMarkdown
       - framework: build/GhosttyKit.xcframework
         embed: false
         link: false
