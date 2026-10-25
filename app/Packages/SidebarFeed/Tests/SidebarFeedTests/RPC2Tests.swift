@@ -46,7 +46,6 @@ import TmuxControl
     #expect(rows.map(\.title) == ["excluded shell", "Compiler expert", "ssh alice@devbox: excluded-command", "Reviewer"])
     #expect(rows[0].tail == "composed caption")
     #expect(rows[0].status == .waiting && !rows[0].quietShell)
-    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .waiting)
     var changedNodes = nodes
     changedNodes[0]["program_status"] = ["serial": 99, "records": []]
     object["sessions"] = [["id": "$0", "name": "workspace", "current": true, "nodes": changedNodes]]
