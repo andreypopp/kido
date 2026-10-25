@@ -2195,14 +2195,14 @@ export default function (pi: ExtensionAPI) {
     name: "stop_run",
     label: "Stop Run",
     description:
-      "Stop own runs and descendant subagents in parallel. Pass a non-empty array of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped.",
-    promptSnippet: "stop_run(to, force?) - end own runs and descendant subagents in parallel; to is a non-empty array of addresses",
+      "Stop own runs and descendant subagents in parallel. Pass an address or a non-empty list of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped.",
+    promptSnippet: "stop_run(to, force?) - end own runs and descendant subagents in parallel; to is an address or a non-empty list of addresses",
     parameters: Type.Object(
       {
-        to: Type.Array(Type.String({
+        to: Type.Union([Type.String(), Type.Array(Type.String(), { minItems: 1 })], {
           description:
-            `Run or session id, unique id prefix of at least ${MIN_ID_PREFIX} characters, unambiguous running name, or an @-mention such as @impl (run 9702ddd1).`,
-        }), { minItems: 1 }),
+            `An address or a list of addresses: run or session id, unique id prefix of at least ${MIN_ID_PREFIX} characters, unambiguous running name, or an @-mention such as @impl (run 9702ddd1).`,
+        }),
         force: Type.Optional(
           Type.Boolean({
             description:
@@ -2213,13 +2213,14 @@ export default function (pi: ExtensionAPI) {
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
+      const addresses = typeof params.to === "string" ? [params.to] : params.to;
       const command = kido;
       if (!command) return reply("could not stop: kido is not on PATH");
       const { all, entries } = await discovery();
       const force = !!params.force;
       const candidates = all.filter((a) => !a.self && (a.relationship === "own" || isDescendant(a, entries)));
-      const resolved = params.to.map((to): { target: AgentRow } | { error: string } => {
-        const { wanted, mention } = normalizeAddress(to);
+      const resolved = addresses.map((address): { target: AgentRow } | { error: string } => {
+        const { wanted, mention } = normalizeAddress(address);
         let matches = candidates.filter((a) => matchesId(a, wanted));
         if (!matches.length) {
           matches = candidates.filter((a) => matchesId(a, wanted, true));
@@ -2229,9 +2230,9 @@ export default function (pi: ExtensionAPI) {
         }
         if (!matches.length && wanted.length < MIN_ID_PREFIX && candidates.some((a) => rowIds(a).some((id) => id.startsWith(wanted)))) return { error: `id prefixes need at least ${MIN_ID_PREFIX} characters` };
         const [target, ...rest] = matches;
-        if (!target) return { error: `no run matches ${quote(to)}` };
+        if (!target) return { error: `no run matches ${quote(address)}` };
         if (rest.length) {
-          return { error: `${quote(to)} matches several runs: ${matches.map((a) => a.run || a.id).sort().join(", ")}` };
+          return { error: `${quote(address)} matches several runs: ${matches.map((a) => a.run || a.id).sort().join(", ")}` };
         }
         return { target };
       });
@@ -2271,7 +2272,7 @@ export default function (pi: ExtensionAPI) {
       }));
       return {
         ...reply(results.map((result, i) => "error" in result
-          ? `${quote(params.to[i] ?? "")}: error: ${result.error}`
+          ? `${quote(addresses[i] ?? "")}: error: ${result.error}`
           : result.text).map((line) => line.trim().replace(/\s*\n\s*/g, "; ")).join("\n")),
         isError: results.every((result) => "error" in result),
       };

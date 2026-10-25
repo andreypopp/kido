@@ -507,6 +507,9 @@ test("stop_run stops a bash run with run-stop, and a subagent with a stop reques
     await s.tools.get("async_bash").execute("c", { command: "make", name: "build" });
     assert.equal((await s.tools.get("stop_run").execute("c", { to: ["build"] })).content[0].text, "stopped run fake-run-id; killed its pane");
     assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id"]);
+    await withEnv({ KIDO_FAKE_RUN_ID: "fake-run-id-2" }, () => s.tools.get("async_bash").execute("c", { command: "make", name: "build-string" }));
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: "build-string" })).content[0].text, "stopped run fake-run-id-2; killed its pane");
+    assert.deepEqual(fx.runStopCalls()[1], ["run-stop", "fake-run-id-2"]);
   } finally {
     await fx.restore();
   }

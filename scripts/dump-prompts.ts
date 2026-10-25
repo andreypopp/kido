@@ -17,12 +17,16 @@ import { join } from "node:path";
 
 import { createFakePi } from "../share/pi/kido-pi-fixture.ts";
 
+type Schema = { type?: string; items?: Schema; anyOf?: Schema[]; description?: string };
+const typeName = (schema: Schema): string =>
+  schema.anyOf ? schema.anyOf.map(typeName).join(" | ") : schema.type === "array" ? `${typeName(schema.items ?? {})}[]` : schema.type ?? "any";
+
 type Tool = {
   name: string;
   description: string;
   promptSnippet?: string;
   promptGuidelines?: string[];
-  parameters?: { properties?: Record<string, { type?: string; items?: { type?: string }; description?: string }>; required?: string[] };
+  parameters?: { properties?: Record<string, Schema>; required?: string[] };
 };
 
 const { pi, tools: registered, handlers, emit } = createFakePi();
@@ -68,7 +72,7 @@ for (const t of tools) {
   }
   out.push("parameters:", "");
   for (const [name, schema] of Object.entries(props)) {
-    const type = schema.type === "array" ? `${schema.items?.type ?? "any"}[]` : schema.type;
+    const type = typeName(schema);
     out.push(`- \`${name}\` (${type}${required.has(name) ? ", required" : ""}): ${schema.description ?? "<no description>"}`);
   }
   out.push("");

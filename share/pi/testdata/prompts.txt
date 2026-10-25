@@ -62,7 +62,7 @@ parameters:
 
 - `to` (string, required): Who to message: an agent's exact name, session id, run id, a unique id prefix of at least 8 characters, or an @-mention from the prompt such as @impl (run 9702ddd1).
 - `message` (string, required): The message text to deliver.
-- `mode` (undefined): message queues until the turn ends, and resumes an ended subagent of yours with its history (default). steer joins a descendant's current turn. interrupt-and-steer aborts a descendant's turn, then starts a new turn with the text.
+- `mode` (string | string | string): message queues until the turn ends, and resumes an ended subagent of yours with its history (default). steer joins a descendant's current turn. interrupt-and-steer aborts a descendant's turn, then starts a new turn with the text.
 
 ### spawn_agent
 
@@ -130,18 +130,18 @@ parameters:
 description:
 
 ```
-Stop own runs and descendant subagents in parallel. Pass a non-empty array of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped.
+Stop own runs and descendant subagents in parallel. Pass an address or a non-empty list of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped.
 ```
 
 promptSnippet:
 
 ```
-stop_run(to, force?) - end own runs and descendant subagents in parallel; to is a non-empty array of addresses
+stop_run(to, force?) - end own runs and descendant subagents in parallel; to is an address or a non-empty list of addresses
 ```
 
 parameters:
 
-- `to` (string[], required): <no description>
+- `to` (string | string[], required): An address or a list of addresses: run or session id, unique id prefix of at least 8 characters, unambiguous running name, or an @-mention such as @impl (run 9702ddd1).
 - `force` (boolean): For a subagent with no usable inbox, allow killing its pane instead. Not needed for bash runs. Destructive and irreversible.
 
 ## Messages the extension injects at runtime

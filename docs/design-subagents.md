@@ -31,7 +31,7 @@ state directory, and writes to inboxes.
 | `set_status(activity)` | `tmux set-option -p @kido_activity` |
 | `message_agent(to, message, mode?)` | the target's inbox; `kido run-child` to restart an ended child |
 | `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `kido run-child P --name N --cwd D --env ... -- kido shell -- kido-pi ...`, or `kido run` for a top-level agent |
-| `stop_run(to[], force?)` | the target's inbox, then `kido run-stop` |
+| `stop_run(to, force?)`, `to` one address or a list | the target's inbox, then `kido run-stop` |
 | `async_bash(command, name, stream?)` | `kido run-child P --name N -- bash -o pipefail -c ...` |
 
 P is the caller's `KIDO_RUN_ID` for a subagent, else its `$TMUX_PANE`.
