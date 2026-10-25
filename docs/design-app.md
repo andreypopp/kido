@@ -424,6 +424,17 @@ delay its change while a pane replays, so the delayed change reads the
 current config of the app. The chrome of every window then follows the new
 background and appearance.
 
+tmux has one grid, so every pane has one font size. ⌘+, ⌘− and ⌘0 change
+it on one surface, and `SessionView.fontChanged` gives that size to every
+pane with Ghostty's `set_font_size:` action. Ghostty keeps a size set in
+this way when the config reloads. Thus a reload that changes `font-size`
+gives the new value to every pane of every window, hidden panes included,
+after the pane gets the new config. The runtime compares the new
+`font-size` with the one that it loaded last. A new pane starts at the
+current size with the same action, so Ghostty also keeps its size. Thus a
+reload that does not change `font-size` keeps one adjusted size in all
+panes.
+
 A pane is synced by one command line: its captures, pending parser
 bytes and mode state. tmux queues `%output` ahead of the reply, so
 output before the reply is wiped by the restore and output after it is

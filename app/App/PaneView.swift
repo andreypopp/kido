@@ -929,6 +929,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             return nil
         }
         self.surface = surface
+        // Ghostty does not mark config.font_size as adjusted; a reload replaces it.
+        if font > 0 { setFontSize(font) }
         driver.attach(surface)
         syncFocus()
         _ = ghostty_surface_set_render_presented_callback(surface, { @Sendable userdata, token in
@@ -1165,19 +1167,25 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         layer?.backgroundColor = paperColor.cgColor
     }
 
-    func reloadConfig() {
+    func setFontSize(_ points: Float) {
+        let action = "set_font_size:\(points)"
+        _ = ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
+    }
+
+    func reloadConfig(font: Float? = nil) {
         updatePaper()
         reflow { [weak self] in
             guard let self else { return }
-            guard transparentPaper, let config = ghostty_config_clone(runtime.config) else {
+            if transparentPaper, let config = ghostty_config_clone(runtime.config) {
+                let paper = "background-opacity = 0\nbackground-opacity-cells = false\n"
+                ghostty_config_load_string(config, paper, UInt(paper.utf8.count), "/kido-paper")
+                ghostty_config_finalize(config)
+                ghostty_surface_update_config(surface, config)
+                ghostty_config_free(config)
+            } else {
                 ghostty_surface_update_config(surface, runtime.config)
-                return
             }
-            defer { ghostty_config_free(config) }
-            let paper = "background-opacity = 0\nbackground-opacity-cells = false\n"
-            ghostty_config_load_string(config, paper, UInt(paper.utf8.count), "/kido-paper")
-            ghostty_config_finalize(config)
-            ghostty_surface_update_config(surface, config)
+            if let font { setFontSize(font) }
         }
     }
 
