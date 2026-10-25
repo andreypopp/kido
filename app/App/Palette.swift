@@ -23,12 +23,12 @@ private final class PaletteChip: NSView {
     var width: CGFloat { 33 + (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.labelColor.withAlphaComponent(0.1).setFill()
+        Chrome.modeChipFill.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!
-            .withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: NSColor.labelColor.withAlphaComponent(0.8))))!
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: Chrome.modeChipInk)))!
         image.draw(in: NSRect(x: 8, y: 5, width: 12, height: 12), from: .zero, operation: .sourceOver, fraction: 1)
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.labelColor]
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: Chrome.ink]
         let size = (title as NSString).size(withAttributes: attributes)
         (title as NSString).draw(at: NSPoint(x: 25, y: (bounds.height - size.height) / 2), withAttributes: attributes)
     }
@@ -38,7 +38,7 @@ private final class PaletteEmpty: NSView {
     var text = ""
     var textSize: NSSize { (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]) }
     override func draw(_ dirtyRect: NSRect) {
-        (text as NSString).draw(at: .zero, withAttributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor])
+        (text as NSString).draw(at: .zero, withAttributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: Chrome.inkSecondary])
     }
 }
 
@@ -46,7 +46,7 @@ private final class PaletteFoot: NSView {
     var mode: PaletteMode = .root
 
     override func draw(_ dirtyRect: NSRect) {
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: Chrome.inkSecondary]
         var x: CGFloat = 16
         let session: String? = if case .rename(_, _, _, let original) = mode { original } else { nil }
         for text in session == nil ? ["↩ connect", "⌫ on empty field back", "esc back"] : ["↩ rename", "esc back"] {
@@ -56,7 +56,7 @@ private final class PaletteFoot: NSView {
         }
         if let session {
             let text = NSMutableAttributedString(string: "session ", attributes: attributes)
-            text.append(NSAttributedString(string: session, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.labelColor]))
+            text.append(NSAttributedString(string: session, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: Chrome.ink]))
             text.append(NSAttributedString(string: " of the key window", attributes: attributes))
             text.draw(at: NSPoint(x: bounds.width - 16 - text.size().width, y: (bounds.height - text.size().height) / 2))
         }
@@ -69,7 +69,7 @@ private final class PaletteError: NSView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.minimumLineHeight = 16
         paragraph.maximumLineHeight = 16
-        return NSAttributedString(string: message, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.systemRed, .paragraphStyle: paragraph])
+        return NSAttributedString(string: message, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: Chrome.errorText, .paragraphStyle: paragraph])
     }
     private var textHeight: CGFloat {
         ceil(text.boundingRect(with: NSSize(width: 550, height: 100), options: [.usesLineFragmentOrigin]).height)
@@ -78,7 +78,7 @@ private final class PaletteError: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)!
-            .withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(paletteColors: [NSColor.white, NSColor.systemRed])))!
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(paletteColors: [Chrome.onError, Chrome.errorText])))!
         image.draw(in: NSRect(x: 16, y: (bounds.height - 12) / 2, width: 12, height: 12), from: .zero, operation: .sourceOver, fraction: 1)
         text.draw(with: NSRect(x: 34, y: (bounds.height - textHeight) / 2, width: bounds.width - 50, height: textHeight),
                   options: [.usesLineFragmentOrigin])
@@ -88,14 +88,14 @@ private final class PaletteError: NSView {
 final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate {
     private final class Row: NSTableRowView {
         override func drawSelection(in dirtyRect: NSRect) {
-            NSColor.labelColor.withAlphaComponent(0.1).setFill()
+            Chrome.rowSelection.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 1), xRadius: 6, yRadius: 6).fill()
         }
     }
 
     private final class Cell: NSView {
         var entry: PaletteEntry?
-        var highlightColor = NSColor.labelColor
+        var highlightColor = Chrome.ink
         var offsets: [[Int]] = [[], []]
         var selected = false
         override var isFlipped: Bool { true }
@@ -104,14 +104,14 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             guard let entry else { return }
             if let status = entry.status { drawStatusMark(status, at: NSPoint(x: 24, y: bounds.midY), flipped: true) }
             if let symbol = entry.symbol.flatMap({ NSImage(systemSymbolName: $0, accessibilityDescription: nil) }) {
-                let image = symbol.withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: .secondaryLabelColor))) ?? symbol
+                let image = symbol.withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: Chrome.inkSecondary))) ?? symbol
                 image.draw(in: NSRect(x: 24 - image.size.width / 2, y: (bounds.height - image.size.height) / 2, width: image.size.width, height: image.size.height),
                            from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             }
             var right = bounds.maxX - 16
             let shortcut = selected && entry.promptable ? "⌘O prompt" : entry.shortcut
             if !shortcut.isEmpty {
-                let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]
+                let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: Chrome.inkSecondary]
                 let size = (shortcut as NSString).size(withAttributes: attributes)
                 right -= size.width
                 (shortcut as NSString).draw(at: NSPoint(x: right, y: (bounds.height - size.height) / 2), withAttributes: attributes)
@@ -124,10 +124,10 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             }
             let line = NSMutableAttributedString()
             if !entry.detail.isEmpty {
-                line.append(part(entry.detail, .systemFont(ofSize: 13), .secondaryLabelColor))
-                line.append(part(" › ", .systemFont(ofSize: 13), .tertiaryLabelColor))
+                line.append(part(entry.detail, .systemFont(ofSize: 13), Chrome.inkSecondary))
+                line.append(part(" › ", .systemFont(ofSize: 13), Chrome.inkTertiary))
             }
-            let titleColor: NSColor = entry.id == .connectTyped ? .controlAccentColor : entry.id == .clearRecent ? .secondaryLabelColor : .labelColor
+            let titleColor: NSColor = entry.id == .connectTyped ? Chrome.linkText : entry.id == .clearRecent ? Chrome.inkSecondary : Chrome.ink
             let left: CGFloat = entry.id == .clearRecent ? 78 : 42
             let titleFont = NSFont.systemFont(ofSize: entry.id == .clearRecent ? 12 : 13, weight: entry.agent ? .semibold : .regular)
             let title = NSMutableAttributedString(attributedString: part(entry.title, titleFont, titleColor))
@@ -150,7 +150,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
                         let rect = NSRect(x: x + prefix.size(withAttributes: attributes).width - 1,
                                           y: (bounds.height - height) / 2 - 1,
                                           width: run.size(withAttributes: attributes).width + 2, height: height + 2)
-                        highlightColor.withAlphaComponent(0.14).setFill()
+                        Chrome.matchHighlight(highlightColor).setFill()
                         NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).fill()
                     }
                     start = end
@@ -170,7 +170,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
 
     static let entryHeight: CGFloat = 34
     var shown: [(entry: PaletteEntry, offsets: [[Int]])] = []
-    var highlightColor = NSColor.labelColor
+    var highlightColor = Chrome.ink
     var choose: (Int) -> Void = { _ in }
 
     init() {
@@ -256,7 +256,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
 
     init(runtime: GhosttyRuntime, entries: [PaletteEntry]) {
         self.entries = entries
-        card = PaneCapsule(runtime: runtime, radius: 12, fillMix: 0.07, edgeAlpha: 0.14, edgeOutset: 0)
+        card = PaneCapsule(runtime: runtime, radius: 12, surface: Chrome.cardSurface, edgeOutset: 0)
         card.shadow = nil
         super.init(frame: .zero)
         appearance = NSAppearance(named: runtime.background.isDark ? .darkAqua : .aqua)

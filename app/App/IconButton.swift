@@ -42,7 +42,7 @@ final class IconButton: MouseButton {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var acceptsFirstResponder: Bool { press != nil || super.acceptsFirstResponder }
-    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.35 } }
+    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : Chrome.disabledIconAlpha } }
     private var radius: CGFloat { hoverStyle == .close ? 4 : hoverStyle == .text ? 6 : 8 }
     override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill() }
     @objc private func invokeAction() { invoke() }
@@ -72,14 +72,14 @@ final class IconButton: MouseButton {
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             if hovered && isEnabled && hoverStyle != .iconOnly {
-                NSColor.labelColor.withAlphaComponent(hoverStyle == .close ? 0.10 : 0.12).setFill()
+                (hoverStyle == .close ? Chrome.closeHover : Chrome.iconHover).setFill()
                 NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
             }
             super.draw(dirtyRect)
         }
     }
     private func updateHover() {
-        contentTintColor = hoverStyle == .text ? .controlAccentColor : hovered ? .labelColor : .secondaryLabelColor
+        contentTintColor = hoverStyle == .text ? Chrome.linkText : hovered ? Chrome.ink : Chrome.inkSecondary
         needsDisplay = true
     }
 }
