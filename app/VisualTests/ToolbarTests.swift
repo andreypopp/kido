@@ -416,7 +416,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 let log = try FileHandle(forWritingTo: notes)
                 let saved = dup(STDERR_FILENO)
                 dup2(log.fileDescriptor, STDERR_FILENO)
-                let loaded = GhosttyRuntime.loadConfig(file: config.path)
+                let loaded = GhosttyRuntime.loadConfig(file: config.path, home: directory.path)
                 dup2(saved, STDERR_FILENO)
                 close(saved)
                 try log.close()

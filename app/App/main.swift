@@ -37,8 +37,18 @@ import SidebarFeed
         self.runtime = runtime
         self.routes = routes
         super.init()
+        if let runtime { configureRuntime(runtime) }
     }
     #endif
+
+    private func configureRuntime(_ runtime: GhosttyRuntime) {
+        self.runtime = runtime
+        runtime.onConfigChange = { [weak self] in
+            self?.owners.filter(\.alive).forEach { $0.updateColorScheme(); $0.updateAppearance() }
+            self?.palettePanel?.palette.themeChanged()
+        }
+        runtime.onConfigReload = { [weak self] in self?.owners.filter(\.alive).forEach { $0.reloadConfig() } }
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         Upload.sweepPromises(launch: true)
@@ -76,10 +86,8 @@ import SidebarFeed
         let pasteboard = NSPasteboard.general
         #endif
         guard let runtime = GhosttyRuntime(pasteboard: pasteboard) else { fatalError("libghostty failed to initialise") }
-        self.runtime = runtime
+        configureRuntime(runtime)
         NSApp.mainMenu = mainMenu()
-        runtime.onConfigChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateColorScheme(); $0.updateAppearance() } }
-        runtime.onConfigReload = { [weak self] in self?.owners.filter(\.alive).forEach { $0.reloadConfig() } }
         routes.ready(isDefaultLaunch: isDefaultLaunch == true && ordinaryLaunchEvent) { [weak self] in _ = self?.open($0, cause: $1) }
         #if KIDO_VISUAL
         if ProcessInfo.processInfo.environment["KIDO_APP_QUIT_VERIFY"] == "1", let owner = owners.first ?? open(.local) {
@@ -205,6 +213,7 @@ import SidebarFeed
             item("Focus Sidebar", #selector(Sidebar.focusSidebar(_:)), "s", .command),
             .separator(),
             item("Command Palette…", #selector(togglePalette), "p", .command),
+            item("Theme…", #selector(showThemes), "", []),
         ]
         for item in view.items.prefix(2) { item.target = current?.sidebar }
         let alternate = item("Command Palette…", #selector(togglePalette), "P", [.command, .shift])
@@ -212,7 +221,7 @@ import SidebarFeed
         alternate.isHidden = true
         alternate.allowsKeyEquivalentWhenHidden = true
         view.addItem(alternate)
-        for item in view.items where item.action == #selector(togglePalette) { item.target = self }
+        for item in view.items where item.action == #selector(togglePalette) || item.action == #selector(showThemes) { item.target = self }
         let file = NSMenu(title: "File")
         let newWindow = item("New Window", #selector(PaneView.runCommand(_:)), "t", .command)
         newWindow.representedObject = PaneCommand.newWindow
@@ -287,6 +296,11 @@ import SidebarFeed
               let instance = owner.snapshot?.serverInstance else { return }
         if palettePanel == nil { togglePalette() }
         palettePanel?.palette.enter(.rename(owner, instance, session.id, original: session.name))
+    }
+
+    @objc func showThemes() {
+        if palettePanel == nil { togglePalette() }
+        palettePanel?.palette.enter(.theme(.pick))
     }
 
     @objc func closeWindow() { (paletteFocus?.owner ?? current)?.closeCurrentWindow() }
@@ -439,6 +453,7 @@ import SidebarFeed
                     closePalette(.choice)
                     routes.connect(host)
                 } catch { panel.palette.reject(error.message); focusPalette(panel) }
+            case .themeChoose, .themeUse: break
             case .clearRecent:
                 routes.clearRecent()
                 panel.palette.reloadMode()
@@ -574,6 +589,7 @@ func milliseconds(since start: DispatchTime) -> String {
     String(format: "%.1fms", Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e6)
 }
 
+setenv("GHOSTTY_RESOURCES_DIR", Bundle.main.resourceURL!.appendingPathComponent("ghostty").path, 1)
 let delegate = AppDelegate()
 NSApplication.shared.delegate = delegate
 NSApplication.shared.setActivationPolicy(background ? .prohibited : .regular)

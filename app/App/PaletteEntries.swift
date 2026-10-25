@@ -4,7 +4,7 @@ import TmuxControl
 
 struct PaletteEntry {
     enum ID: Equatable {
-        case session(Host, SessionID), pane(Host, Snapshot.Position), host(String), command(Int), connectTyped, clearRecent
+        case session(Host, SessionID), pane(Host, Snapshot.Position), host(String), command(Int), connectTyped, clearRecent, theme(String), themeUse(Int)
     }
     let id: ID
     var order = 0
@@ -13,11 +13,13 @@ struct PaletteEntry {
     var shortcut = ""
     var status: SidebarRow.Status?
     var symbol: String?
+    var theme: ThemeRow?
+    var radio: Bool { if case .themeUse = id { true } else { false } }
     var agent = false
     var promptable = false
     var check: @MainActor () -> String? = { nil }
     enum Operation {
-        case run(@MainActor () -> Void), enter(PaletteMode), connectTyped(String), clearRecent
+        case run(@MainActor () -> Void), enter(PaletteMode), connectTyped(String), clearRecent, themeChoose, themeUse
     }
     let operation: Operation
 
@@ -60,6 +62,7 @@ struct PaletteEntry {
             guard available, enabled(item, responder: responder) else { return [] }
             let operation: Operation
             if action == #selector(AppDelegate.connectRemoteHost) { operation = .enter(.connect) }
+            else if action == #selector(AppDelegate.showThemes) { operation = .enter(.theme(.pick)) }
             else if action == #selector(SessionMenus.renameItem), let owner, let session = owner.currentSession, let instance = owner.snapshot?.serverInstance {
                 operation = .enter(.rename(owner, instance, session.id, original: session.name))
             } else if action == #selector(PaneView.promptSelectionItem(_:)), let owner, let pane = livePane(owner, responder),
@@ -122,6 +125,7 @@ struct PaletteEntry {
         case #selector(PaneView.toggleCopyMode(_:)): (14, .pane)
         case #selector(PaneView.promptSelectionItem(_:)): (15, .pane)
         case #selector(AppDelegate.resetClipboardPermissions): (16, .window)
+        case #selector(AppDelegate.showThemes): (17, .always)
         default: nil
         }
     }
