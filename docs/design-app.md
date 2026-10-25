@@ -374,8 +374,8 @@ or dark decision as the window appearance. The default is 5%.
 Thus the default follows each reload and each live theme switch.
 `kido-sidebar-shade = <percent>` is the app's own key
 in that file. Ghostty does not know it, and its unknown-field
-diagnostic is hidden only for the app's two keys, this one and
-`kido-unfocused-background-shift`. The value is a decimal number from -100
+diagnostic is hidden only for the app's three keys, this one,
+`kido-unfocused-background-shift` and `kido-pane-spacing`. The value is a decimal number from -100
 to 100 (digits, an optional leading `-` and an optional fraction), with or
 without `%` and optionally in double quotes. The app uses its absolute
 value, and the theme gives the direction. The mix is per sRGB component (as CSS
@@ -388,6 +388,14 @@ app reads the key from the same files as Ghostty: the main file, then
 its `config-file` includes in Ghostty's breadth-first order, with
 relative paths, `~/`, optional `?` paths and cycles resolved as Ghostty
 resolves them. The last value wins.
+
+`kido-pane-spacing = <points>` is the app's third key in that file,
+read from the same files and in the same way. The value is a number
+from 0 to 32, optionally in double quotes. 0, an absent key and an
+empty value give the default 0: the panes have no spacing and are
+separated by one-pixel divider lines (see the layout rules below). An
+invalid value gives a note on stderr and 0. A reload applies the new
+spacing to every window.
 
 The sidebar has its own light or dark appearance, from the relative
 luminance L of its shade colour: dark (light text) when L < 0.179,
@@ -862,6 +870,28 @@ scrolled up, clipped only at the window edge. At the live bottom there are no
 following rows, so the band is plain background below the fully visible last
 row. Empty history shows background. Alternate-screen panes keep their
 unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. Each top band runs from the grid top to the separator or split divider, possibly spanning several history rows. The full-width one-device-pixel separator sits at the supplied terminal-bounds top, rounded upward to a device pixel; outer-top vertical dividers meet its bottom edge. Dividers stay behind tiled panes and floats. During a stale-root shrink, terminal content is clipped below the separator without changing its grid. Committed and free floating chrome frames are bounded below the separator too.
+
+With `kido-pane-spacing` above 0, each tiled pane is a card: its
+paper box with a 10pt corner radius, on a canvas that is the
+background mixed with black (35% on a dark theme, 6% on a light theme).
+The spacing S is the gap between two cards and between a card and the
+window edges. The horizontal padding from a card edge to its grid is S.
+The vertical padding is (max(cell height, 2S) - S) / 2. tmux still
+puts one border cell between two panes. When that cell is narrower than
+2 × padding + S, the app adds the difference to each divider, and the
+client is smaller by the extra points on the widest path across the
+layout. The client size comes from the full layout, also while a pane
+is zoomed. A subtree with fewer dividers than its siblings gets the
+surplus as right or top padding of its last card. The tree has its exact
+size: it is centered horizontally, at the bottom of the area, and the
+remainder goes to the outer margin. A split or a close can change the
+client size, because the divider count changes. Thus tmux resizes every
+pane of the session's windows. Grids have no render insets, no divider
+lines are drawn, and the hit area of a divider is the whole gap
+between its cards, along the full length of the split. The focus treatment does not change, but the
+focused card's edge is a 1.5pt accent ring on the card's rounded edge.
+The other cards have a 0.5pt edge (foreground at 12%). Floats do not
+change.
 
 PaneLayout returns the grid, expanded content, clipped chrome and paired render insets
 for each tiled pane. Chrome uses the content rect for hit testing;

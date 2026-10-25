@@ -41,6 +41,7 @@ final class WindowView: NSView {
     private var needsReconcile = true
     private var dividers: [NSBox] = []
     private var backings: [PaneID: NSBox] = [:]
+    private var spacing: CGFloat = 0
     private var freeFrames: [PaneID: CGRect] = [:]
     private var placed: PaneLayout?
     private enum FloatFrame { case dragging(PaneID, CGRect), settling(PaneID, CGRect) }
@@ -61,6 +62,13 @@ final class WindowView: NSView {
         autoresizingMask = [.width, .height]
         wantsLayer = true
         layer?.backgroundColor = runtime.background.cgColor
+    }
+
+    private var canvas: NSColor {
+        guard spacing > 0, let rgb = runtime.background.usingColorSpace(.sRGB) else { return runtime.background }
+        let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent]
+        let amount = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722 < 0.5 ? 0.35 : 0.06
+        return NSColor(srgbRed: channels[0] * (1 - amount), green: channels[1] * (1 - amount), blue: channels[2] * (1 - amount), alpha: 1)
     }
 
     required init?(coder: NSCoder) {
@@ -115,7 +123,12 @@ final class WindowView: NSView {
     }
 
     func updateBackground() {
-        layer?.backgroundColor = runtime.background.cgColor
+        if spacing != runtime.settings.paneSpacing, hot {
+            needsReconcile = true
+            relayout()
+            sizeClient()
+        }
+        layer?.backgroundColor = canvas.cgColor
         updateFocusTreatment(forcePaper: true)
         for chrome in subviews.compactMap({ $0 as? PaneChrome }) {
             chrome.needsDisplay = true
@@ -222,7 +235,9 @@ final class WindowView: NSView {
         for (id, gone) in existing where views[id] == nil { gone.dispose(); connection?.detach(gone) }
         let cell = session?.cell ?? views.values.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 } ?? .zero
         guard cell.width > 0, cell.height > 0 else { return }
-        let placement = PaneLayout(root: shown.visible.root, bounds: bounds, cell: cell, pixel: pixel)
+        spacing = runtime.settings.paneSpacing
+        layer?.backgroundColor = canvas.cgColor
+        let placement = PaneLayout(root: shown.visible.root, shape: shown.layout.root, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
         validateFrames(placement)
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
         installGrids(Array(views.values))
@@ -240,6 +255,7 @@ final class WindowView: NSView {
             chrome.wantsLayer = true
             chrome.layer?.cornerRadius = isFloating ? floatingRadius : 0
             chrome.layer?.masksToBounds = isFloating
+            chrome.card = !isFloating && spacing > 0 ? floatingRadius : nil
             place(chrome, view, g, placement, floating: isFloating)
             chrome.isHidden = view.isHidden
             view.transparentPaper = !isFloating
@@ -247,6 +263,10 @@ final class WindowView: NSView {
             case .tiled:
                 let backing = box(chrome.frame, border: 0, fill: view.paperColor)
                 backing.isHidden = view.isHidden
+                if spacing > 0 {
+                    backing.wantsLayer = true
+                    backing.cornerRadius = floatingRadius
+                }
                 backings[pane.id] = backing
                 tiled += [backing, view, chrome]
             case .floating(let z):
@@ -266,9 +286,7 @@ final class WindowView: NSView {
                 }
             }
         }
-        dividers = (shown.visible.root.dividers.map { drawnLine($0, placement, root: shown.visible.root) } + [placement.topLine]).map {
-            box($0, border: 0, fill: runtime.separator)
-        }
+        dividers = lines(placement).map { box($0, border: 0, fill: runtime.separator) }
         preview.frame = bounds
         preview.autoresizingMask = [.width, .height]
         subviews = dividers + tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views) + [preview]
@@ -307,11 +325,15 @@ final class WindowView: NSView {
             place(chrome, view, pane.geometry, placement, floating: pane.layer != .tiled)
             changed = changed || previous != chrome.frame
         }
-        for (box, frame) in zip(dividers, shown.visible.root.dividers.map { drawnLine($0, placement, root: shown.visible.root) } + [placement.topLine]) {
+        for (box, frame) in zip(dividers, lines(placement)) {
             if box.frame != frame { box.frame = frame; changed = true }
         }
         updateFocusTreatment()
         if changed { invalidateCursorRects() }
+    }
+
+    private func lines(_ placement: PaneLayout) -> [CGRect] {
+        (spacing > 0 ? [] : (shown.map { shown in shown.visible.root.dividers.map { drawnLine($0, placement, root: shown.visible.root) } } ?? [])) + [placement.topLine]
     }
 
     private func placeFloat(_ id: PaneID, _ placement: PaneLayout) {
@@ -430,7 +452,7 @@ final class WindowView: NSView {
 
     private var placement: PaneLayout? {
         guard let shown, let cell = session?.cell else { return nil }
-        return PaneLayout(root: shown.visible.root, bounds: bounds, cell: cell, pixel: pixel)
+        return PaneLayout(root: shown.visible.root, shape: shown.layout.root, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
     }
 
     func cellChanged() {
@@ -808,6 +830,7 @@ final class WindowView: NSView {
 
     private func hitArea(_ divider: Divider, _ placement: PaneLayout) -> CGRect {
         let line = placement.line(divider, pixel: pixel)
+        if spacing > 0 { return line }
         return divider.direction == .leftRight ? line.insetBy(dx: -(6 - pixel) / 2, dy: 0) : line.insetBy(dx: 0, dy: -(6 - pixel) / 2)
     }
 

@@ -370,6 +370,20 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let notes = directory.appendingPathComponent("notes.log")
         try FileManager.default.createSymbolicLink(at: directory.appendingPathComponent("linked.conf"),
                                                   withDestinationURL: directory.appendingPathComponent("other/theme.conf"))
+        func load(_ text: String) throws -> (settings: GhosttyRuntime.KidoSettings, lines: [Substring]) {
+            try ("background = #172029\nkido-sidebar-shad = 1\n" + text + "\n").write(to: config, atomically: false, encoding: .utf8)
+            FileManager.default.createFile(atPath: notes.path, contents: nil)
+            let log = try FileHandle(forWritingTo: notes)
+            let saved = dup(STDERR_FILENO)
+            dup2(log.fileDescriptor, STDERR_FILENO)
+            let loaded = GhosttyRuntime.loadConfig(file: config.path, home: directory.path)
+            dup2(saved, STDERR_FILENO)
+            close(saved)
+            try log.close()
+            let parsed = try XCTUnwrap(loaded)
+            ghostty_config_free(parsed.config)
+            return (parsed.settings, try String(contentsOf: notes, encoding: .utf8).split(separator: "\n"))
+        }
         for (key, field, fallback, diagnostic) in [
             ("kido-sidebar-shade", \GhosttyRuntime.KidoSettings.sidebarShade, 0.05, "kido-sidebar-shade: not a percentage from -100 to 100: "),
             ("kido-unfocused-background-shift", \GhosttyRuntime.KidoSettings.unfocusedShift, 0.03, "kido-unfocused-background-shift: not a percentage from -100 to 100: ")
@@ -408,27 +422,31 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                   "child.conf": "kido-sidebar-shade = 50%"], 0.4, nil)
             ] as [(String, [String: String], Double?, String?)] {
                 let text = text.replacingOccurrences(of: "kido-sidebar-shade", with: key)
-                try ("background = #172029\nkido-sidebar-shad = 1\n" + text + "\n").write(to: config, atomically: false, encoding: .utf8)
                 for (name, contents) in files {
                     try contents.replacingOccurrences(of: "kido-sidebar-shade", with: key).write(to: directory.appendingPathComponent(name), atomically: false, encoding: .utf8)
                 }
-                FileManager.default.createFile(atPath: notes.path, contents: nil)
-                let log = try FileHandle(forWritingTo: notes)
-                let saved = dup(STDERR_FILENO)
-                dup2(log.fileDescriptor, STDERR_FILENO)
-                let loaded = GhosttyRuntime.loadConfig(file: config.path, home: directory.path)
-                dup2(saved, STDERR_FILENO)
-                close(saved)
-                try log.close()
-                let parsed = try XCTUnwrap(loaded)
-                ghostty_config_free(parsed.config)
-                XCTAssertEqual(parsed.settings[keyPath: field], shade ?? fallback, text)
-                let lines = try String(contentsOf: notes, encoding: .utf8).split(separator: "\n")
+                let (settings, lines) = try load(text)
+                XCTAssertEqual(settings[keyPath: field], shade ?? fallback, text)
                 XCTAssertFalse(lines.contains { $0.contains("\(key): unknown field") }, "\(text): \(lines)")
                 XCTAssertTrue(lines.contains { $0.contains("kido-sidebar-shad: unknown field") }, text)
                 XCTAssertEqual(lines.contains { $0.contains("not a percentage") }, note != nil, text)
                 if let note { XCTAssertTrue(lines.contains { $0.hasSuffix(diagnostic + note) }, text) }
             }
+        }
+
+        for (text, spacing, note) in [
+            ("kido-pane-spacing = 8", 8, nil),
+            ("kido-pane-spacing = \"12.5\"", 12.5, nil),
+            ("", 0, nil),
+            ("kido-pane-spacing = 8\nkido-pane-spacing =", 0, nil),
+            ("kido-pane-spacing = 33", 0, "kido-pane-spacing: not a number of points from 0 to 32: 33"),
+            ("kido-pane-spacing = wide", 0, "kido-pane-spacing: not a number of points from 0 to 32: wide"),
+        ] as [(String, CGFloat, String?)] {
+            let (parsed, lines) = try load(text)
+            XCTAssertEqual(parsed.paneSpacing, spacing, text)
+            XCTAssertFalse(lines.contains { $0.contains("kido-pane-spacing: unknown field") }, "\(text): \(lines)")
+            XCTAssertEqual(lines.contains { $0.contains("not a number of points") }, note != nil, text)
+            if let note { XCTAssertTrue(lines.contains { $0.hasSuffix(note) }, text) }
         }
 
         let fixture = try sidebarFixture()

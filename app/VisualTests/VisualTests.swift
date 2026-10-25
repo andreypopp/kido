@@ -1247,23 +1247,44 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func testSplitZoomFloat() async throws {
         try await start()
+        try await splitZoomFloat()
+    }
+
+    func testSpacedSplitZoomFloat() async throws {
+        let config = directory.appendingPathComponent("spaced.conf")
+        let themes = app.appendingPathComponent("Resources/themes").path
+        let base = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = false\n"
+        try (base + "kido-pane-spacing = 8\n").write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        try await splitZoomFloat()
+        try await darken()
+        try await paint()
+        try await snapshot("dark")
+        let changed = expectation(description: "spacing reload")
+        runtime.onConfigChange = { [weak self] in self?.session.updateBackground(); changed.fulfill() }
+        try (base + "kido-pane-spacing = 0\n").write(to: config, atomically: false, encoding: .utf8)
+        await fulfillment(of: [changed], timeout: 2)
+        try await wait("dividers after spacing 0") { (self.terminal?.visualLayout.components(separatedBy: "divider=").count ?? 0) > 2 }
+    }
+
+    private func splitZoomFloat(testName: String = #function) async throws {
         _ = try await command(["split-window", "-h", "-t", "visual", "exec /bin/cat"])
         _ = try await command(["split-window", "-v", "-t", "visual:0.0", "exec /bin/cat"])
         _ = try await command(["split-window", "-v", "-t", "visual:0.1", "exec /bin/cat"])
         _ = try await command(["select-layout", "-t", "visual", "tiled"])
         try await wait("four panes") { self.terminal?.panes.count == 4 }
         try await paint()
-        try await snapshot("2x2")
+        try await snapshot("2x2", testName: testName)
         _ = try await command(["resize-pane", "-Z", "-t", "visual:0.0"])
         try await wait("zoom") { self.terminal?.panes.filter { !$0.isHidden }.count == 1 }
         try await paint()
-        try await snapshot("zoom")
+        try await snapshot("zoom", testName: testName)
         _ = try await command(["resize-pane", "-Z", "-t", "visual:0.0"])
         _ = try await command(["break-pane", "-W", "-s", "visual:0.3", "-X", "5", "-Y", "0", "-x", "35", "-y", "10"])
         try await wait("floating layout") { self.terminal?.visualLayout.contains("float %") == true }
         try await settle()
         try await paint()
-        try await snapshot("float-top")
+        try await snapshot("float-top", testName: testName)
     }
 
     func testEmptyPaneWheelDoesNotFloodMetadata() async throws {

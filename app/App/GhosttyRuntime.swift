@@ -37,6 +37,7 @@ extension NSColor {
     struct KidoSettings {
         var sidebarShade = 0.05
         var unfocusedShift = 0.03
+        var paneSpacing: CGFloat = 0
     }
     private(set) var settings: KidoSettings
     enum ThemeOverride: Equatable { case none, preview(String), session(String) }
@@ -247,10 +248,11 @@ extension NSColor {
         "kido-sidebar-shade": \.sidebarShade,
         "kido-unfocused-background-shift": \.unfocusedShift
     ]
+    private static let spacingKey = "kido-pane-spacing"
     private static func readDiagnostics(_ config: ghostty_config_t) -> [String] {
         (0..<ghostty_config_diagnostics_count(config)).compactMap { index in
             let message = String(cString: ghostty_config_get_diagnostic(config, index).message)
-            return settingKeys.keys.contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) ? nil : message
+            return (settingKeys.keys + [spacingKey]).contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) ? nil : message
         }
     }
     static func loadConfig(file: String, home: String, override: String? = nil) -> LoadedConfig? {
@@ -269,7 +271,7 @@ extension NSColor {
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                 guard parts.count == 2 else { continue }
                 var value = parts[1]
-                if keys[parts[0]] != nil {
+                if keys[parts[0]] != nil || parts[0] == spacingKey {
                     if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
                     value = value.trimmingCharacters(in: .whitespaces)
                     values[parts[0]] = value.isEmpty ? nil : value
@@ -306,6 +308,10 @@ extension NSColor {
                   let percent = Double(value.hasSuffix("%") ? String(value.dropLast()) : value), (-100...100).contains(percent)
             else { note("\(key): not a percentage from -100 to 100: \(value)"); continue }
             settings[keyPath: field] = abs(percent) / 100
+        }
+        if let value = values[spacingKey] {
+            if let points = Double(value), (0...32).contains(points) { settings.paneSpacing = points }
+            else { note("\(spacingKey): not a number of points from 0 to 32: \(value)") }
         }
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
         ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
