@@ -1072,6 +1072,9 @@ separate `NSToolbarFullScreenWindow`: its native right-hand material draws
 white or grey rather than the terminal theme. The backing paints only to
 the right of the live sidebar glass edge in both docked and floating modes,
 leaving AppKit's own sidebar glass uncovered up to the top of the screen.
+The opaque backing covers the main window's sidebar separator and shadow,
+so with the docked sidebar it carries its own `SidebarSeparator` and
+`SidebarShadow` at its left edge, which continue them through the band.
 The main window's full-height sidebar already extends under that host. The docked list adds no rounding or outline to AppKit's
 square sidebar; only the floating list has an 18pt radius and hairline
 border. With the sidebar collapsed, the whole band is themed. No additional glass is installed. AppKit's glass shadow is cleared in both

@@ -129,7 +129,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         final class NativeHeader: NSView {
             override func draw(_ rect: NSRect) { NSColor.white.setFill(); bounds.fill() }
         }
-        final class SidebarShadow: NSView {
+        final class ShadowStandIn: NSView {
             override func draw(_ rect: NSRect) {
                 NSGradient(starting: NSColor(calibratedWhite: 0, alpha: 0.2), ending: .clear)!.draw(in: bounds, angle: 0)
             }
@@ -148,7 +148,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             let root = try XCTUnwrap(owner.window.contentView?.superview)
             let rgb = headerPaperRGB["\(hex)-shifted"]!
             let expected = NSColor(srgbRed: rgb[0] / 255, green: rgb[1] / 255, blue: rgb[2] / 255, alpha: 1)
-            let windowedShadow = SidebarShadow()
+            let windowedShadow = ShadowStandIn()
             owner.window.contentView?.addSubview(windowedShadow)
             let header = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 52), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
             header.isReleasedWhenClosed = false
@@ -166,7 +166,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             XCTAssertNil(paintedBackground.hitTest(.zero))
             XCTAssertTrue(header.titlebarAppearsTransparent)
             header.setFrame(NSRect(x: owner.window.frame.minX, y: owner.window.frame.maxY - 52, width: 900, height: 52), display: false)
-            let transferredShadow = SidebarShadow()
+            let transferredShadow = ShadowStandIn()
             headerContent.addSubview(transferredShadow, positioned: .below, relativeTo: transferredTabs)
             for mode in ["docked", "docked-wide", "collapsed", "floating"] {
                 owner.sidebar.dismissFloating()
@@ -185,7 +185,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 transferredTabs.frame = NSRect(x: tabsRect.minX, y: 8, width: tabsRect.width, height: 36)
                 transferredShadow.frame = NSRect(x: tabsRect.minX - 8, y: 0, width: 12, height: headerContent.bounds.height)
                 windowedShadow.isHidden = mode == "collapsed"
-                transferredShadow.isHidden = mode == "collapsed"
+                transferredShadow.isHidden = mode != "floating"
                 XCTAssertEqual(owner.sidebar.list.layer?.cornerRadius, mode == "floating" ? 18 : 0, "docked sidebar must have square corners")
                 XCTAssertEqual(owner.sidebar.list.layer?.borderWidth, mode == "floating" ? 1 / owner.window.backingScaleFactor : 0, "docked sidebar must not draw an extra outline")
                 transferredTabs.refreshHeader()
@@ -277,6 +277,23 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 let hostImage = try XCTUnwrap(headerContent.bitmapImageRepForCachingDisplay(in: headerContent.bounds))
                 headerContent.cacheDisplay(in: headerContent.bounds, to: hostImage)
                 let hostPixels = try XCTUnwrap(hostImage.converting(to: .sRGB, renderingIntent: .default))
+                if mode.hasPrefix("docked") {
+                    let shadow = try XCTUnwrap(paintedBackground.subviews.first as? SidebarShadow)
+                    let mainShadow = try XCTUnwrap(root.subviews.compactMap { $0 as? SidebarShadow }.first)
+                    let mainEdge = owner.window.convertPoint(toScreen: mainShadow.convert(.zero, to: nil)).x
+                    let headerEdge = header.convertPoint(toScreen: shadow.convert(NSPoint(x: 0, y: 32), to: nil)).x
+                    XCTAssertEqual(headerEdge, mainEdge, accuracy: 0.01, "fullscreen shadow continues the main-window shadow column")
+                    let scale = CGFloat(hostPixels.pixelsWide) / headerContent.bounds.width
+                    let x = Int((paintedBackground.frame.minX + 2) * scale)
+                    let separator = try XCTUnwrap(owner.sidebar.separatorColor.usingColorSpace(.sRGB))
+                    for y in [2, hostPixels.pixelsHigh / 2, hostPixels.pixelsHigh - 3] {
+                        try assertPaperPixel(hostPixels, x: Int(paintedBackground.frame.minX * scale), y: y,
+                                             expected: [separator.redComponent * 255, separator.greenComponent * 255, separator.blueComponent * 255], "fullscreen band separator")
+                        let edge = try XCTUnwrap(hostPixels.colorAt(x: x, y: y))
+                        let paper = try XCTUnwrap(hostPixels.colorAt(x: x + Int(36 * scale), y: y))
+                        XCTAssertLessThan(edge.redComponent, paper.redComponent - 2 / 255, "\(hex) shadow covers the full fullscreen band at y=\(y)")
+                    }
+                }
                 if mode == "collapsed" { XCTAssertEqual(paintedBackground.frame, headerContent.bounds) }
                 try assertPaperPixel(hostPixels, x: 20, y: 10, expected: mode == "collapsed" ? rgb : headerPaperRGB["white"]!, "fullscreen sidebar region must remain uncovered")
                 if mode == "docked" || mode == "floating" {
@@ -705,6 +722,14 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 view.cacheDisplay(in: view.bounds, to: image)
                 let expected = headerPaperRGB["\(hex)-shifted"]!
                 if transferred {
+                    let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))
+                    let scale = CGFloat(pixels.pixelsWide) / view.bounds.width
+                    let edge = try XCTUnwrap(owner.sidebar.headerDivider(in: header))
+                    let separator = try XCTUnwrap(owner.sidebar.separatorColor.usingColorSpace(.sRGB))
+                    for y in [2, pixels.pixelsHigh / 2, pixels.pixelsHigh - 3] {
+                        try assertPaperPixel(pixels, x: Int(edge * scale), y: y,
+                                             expected: [separator.redComponent * 255, separator.greenComponent * 255, separator.blueComponent * 255], "live fullscreen band separator")
+                    }
                     try assertPaperPixel(image, x: 20, y: 10, expected: headerPaperRGB["white"]!)
                     let snapshot = NSImage(size: view.bounds.size)
                     snapshot.addRepresentation(image)
