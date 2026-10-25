@@ -37,7 +37,7 @@ targets:
       - App
       - path: Resources/Assets.xcassets
         buildPhase: resources
-      - path: Resources/themes
+      - path: Resources/ghostty
         type: folder
         buildPhase: resources
     info:
@@ -118,7 +118,7 @@ schemes:
         HOME: "$(SRCROOT)/build/bundle/visual/home"
         XDG_STATE_HOME: "$(SRCROOT)/build/bundle/visual/state"
         TMUX_TMPDIR: "$(SRCROOT)/build/bundle/visual/tmp"
-        XDG_CONFIG_HOME: "$(SRCROOT)/build/bundle/visual/config"
+        XDG_CONFIG_HOME: "$(SRCROOT)/build/bundle/visual/home/.config"
         KIDO_VISUAL_RECORD: "$(KIDO_VISUAL_RECORD)"
         KIDO_VSYNC_MEASURE: "$(KIDO_VSYNC_MEASURE)"
         KIDO_VISUAL_TMUX: "$(KIDO_VISUAL_TMUX)"
