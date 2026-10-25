@@ -5,6 +5,8 @@ import SidebarFeed
 final class SessionMenus: NSObject, NSMenuItemValidation {
     var send: (RPCRequest) -> Void = { _ in }
     var canSend: () -> Bool = { true }
+    var rename: () -> Void = {}
+    var close: () -> Void = {}
     let window = NSMenu(title: "Window")
     let session = NSMenu(title: "Session")
 
@@ -27,7 +29,15 @@ final class SessionMenus: NSObject, NSMenuItemValidation {
             entry.state = s.id == model.session ? .on : .off
             return entry
         }
+        session.addItem(.separator())
+        for (title, action) in [("Rename Session…", #selector(renameItem)), ("Close Session", #selector(closeItem))] {
+            let item = session.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+        }
     }
+
+    @objc func renameItem() { rename() }
+    @objc func closeItem() { close() }
 
     private func item(
         _ title: String, _ key: String, _ command: RPCRequest?, _ modifiers: NSEvent.ModifierFlags = .command

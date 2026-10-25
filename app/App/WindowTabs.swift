@@ -383,13 +383,7 @@ final class WindowTabs: NSView {
             element.setAccessibilityRole(.button)
             element.setAccessibilityParent(self)
             element.setAccessibilityFrameInParentSpace(NSRect(x: origin(index, geometry), y: bounds.midY - 14, width: tabWidth, height: 28))
-            let suffix: String = switch visibleStatus(tab.status) {
-            case .error: " — error"
-            case .waiting: " — waiting"
-            case .running: " — running"
-            case .done: " — done"
-            case .quiet: ""
-            }
+            let suffix = visibleStatus(tab.status).accessibilitySuffix
             element.setAccessibilityLabel("Window: " + tab.name + suffix)
             element.setAccessibilityValue(tab.active ? "selected" : "")
             return element
@@ -400,5 +394,17 @@ final class WindowTabs: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
+    }
+}
+
+extension SidebarRow.Status {
+    var accessibilitySuffix: String {
+        switch self {
+        case .error: " — error"
+        case .waiting: " — waiting"
+        case .running: " — running"
+        case .done: " — done"
+        case .quiet: ""
+        }
     }
 }

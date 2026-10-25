@@ -3,11 +3,10 @@ ClipboardTests/testDenySurvivesAnotherConnectionsAlwaysAllowAndReset  # fix: two
 ClipboardTests/testHiddenUnapprovedReadAndEightSecondDeadline  # fix: waits out the shortened 0.5 s clipboard deadline plus sheet round trips
 ClipboardTests/testModeFiveFiveTwoTwoCmdVEmitsPasteEventForOneRead  # fix: waits out the shortened paste-event expiry plus many sheet and drain round trips
 ClipboardTests/testRichReadAsksSeparatelyAndResetDeniesIt  # fix: many drain fences and clipboard-sheet round trips
-ClosingUXTests/testConnectKeysRecentDoubleClickAndInlineError  # fix: two animated sheet attach and dismiss cycles on an offscreen window
 ClosingUXTests/testKillTargetsConfirmationCmdWAndNewWindowFocus  # inherent: eight window create/close confirmations with real sheets
-FileMenuTests/testRemoteDialogNativeInvalidInputStaysAttached  # fix: two sheet animations, each awaited through a main-queue hop
 NotificationTests/testPrivateServerNotifications  # inherent: real tmux tty OSC 7501/133 writes and four notification-state waits
 NotificationTests/testRoutingAndPendingJumps  # inherent: four AppDelegates and three pending-jump rounds
+PaletteTests/testCloseSessionConfirmsAndKills  # inherent: private tmux control client and session-close confirmation
 RemoteTests/testCancelledOneShotRemainsInDrainUntilReaped  # inherent: real child process with a TERM trap, reaped through the drain
 RemoteTests/testKittyClipboardLocalhostRemoteWindow  # inherent: real ssh to localhost plus a clipboard query child
 RemoteTests/testLocalSSHPaneUploadsThroughItsRecordedArguments  # inherent: real ssh uploads and a fixed 1 s late-reply guard
