@@ -108,7 +108,8 @@ body{margin:0;padding:24px;background:#8d8a84;font:13px/1.45 -apple-system,Blink
 <option value="theme">Theme, list (current marks)</option>
 <option value="theme-filtered">Theme, filtered "sol"</option>
 <option value="theme-preview">Theme, previewing Solarized (app follows)</option>
-<option value="theme-save">Theme, save step: Light / Dark / Both</option>
+<option value="theme-save">Theme, save step: Light / Dark / Both / This session</option>
+<option value="theme-save-session">Theme, save step: This session only selected</option>
 <option value="theme-err-write">Theme, config not writable</option>
 <option value="theme-err-file">Theme, theme file missing or invalid</option>
 <option value="prompt">Prompt, empty (⌘O, closest agent)</option>
@@ -196,21 +197,22 @@ function prompt(state){const target='@kido-app';
 const themes=[['kido-light','#FFF9EC','#424242',['#014ca6','#008550','#c0392b','#b58900'],'light'],['kido-dark','#171717','#C9C9C9',['#2466b5','#05ab69','#e5484d','#d6a93b'],'dark'],['Solarized Light','#fdf6e3','#657b83',['#268bd2','#859900','#dc322f','#b58900'],'light'],['Solarized Dark','#002b36','#839496',['#268bd2','#859900','#dc322f','#b58900'],'dark']];
 function swatch(t){return `<span class="sw"><span class="bgfg" style="background:${t[1]};color:${t[2]}">Aa</span><span class="dots">${t[3].map(c=>`<i style="background:${c}"></i>`).join('')}</span></span>`}
 function theme(state){const q=state==='theme-filtered'?'sol':'';const previewing=['theme-preview','theme-err-write','theme-err-file'].includes(state);
-  const selName=previewing||state==='theme-save'?(document.getElementById('theme').value==='Light'?'Solarized Light':'Solarized Dark'):'kido-light';
+  const saving=state==='theme-save'||state==='theme-save-session';const selName=previewing||saving?(document.getElementById('theme').value==='Light'?'Solarized Light':'Solarized Dark'):'kido-light';
   const field=(txt,ph)=>`<div class="field">${txt?txt:`<span class="ph">${ph}</span>`}<span class="caret"></span></div>`;
-  if(state==='theme-save'){const dark=selName==='Solarized Dark';
+  if(saving){const dark=selName==='Solarized Dark';const sess=state==='theme-save-session';
     return `<div class="palette"><div class="head"><span class="chip">${ico.paint}Theme</span><span class="tchip">${swatch(themes.find(t=>t[0]===selName))}<b>${selName}</b></span><div class="field"><span class="ph">Use for…</span></div></div><div class="list">
-<div class="item on"><span class="radio on"></span><span class="t">${dark?'Dark mode':'Light mode'} <span class="d">· the current appearance</span></span><span class="k">↩</span></div>
+<div class="item${sess?'':' on'}"><span class="radio${sess?'':' on'}"></span><span class="t">${dark?'Dark mode':'Light mode'} <span class="d">· the current appearance</span></span>${sess?'':'<span class="k">↩</span>'}</div>
 <div class="item"><span class="radio"></span><span class="t">${dark?'Light mode':'Dark mode'}</span></div>
-<div class="item"><span class="radio"></span><span class="t">Both <span class="d">· one theme whatever the appearance</span></span></div></div>
-<div class="foot"><span>writes <kbd>theme = light:${dark?'kido-light':selName},dark:${dark?selName:'kido-dark'}</kbd> to ~/.config/kido/kido-app.conf</span><span style="margin-left:auto"><kbd>esc</kbd> back</span></div></div>`}
-  let rows=[];for(const t of themes){const x=hlr(t[0],q);if(q&&x.rest)continue;const on=t[0]===selName;const cur=t[0]==='kido-light'?'<span class="cur"><span>Light</span></span>':t[0]==='kido-dark'?'<span class="cur"><span>Dark</span></span>':'';
+<div class="item"><span class="radio"></span><span class="t">Both <span class="d">· one theme whatever the appearance</span></span></div>
+<div class="item${sess?' on':''}"><span class="radio${sess?' on':''}"></span><span class="t">This session only <span class="d">· not saved to kido-app.conf</span></span>${sess?'<span class="k">↩</span>':''}</div></div>
+<div class="foot"><span>${sess?'applies until quit; ~/.config/kido/kido-app.conf is not changed':`writes <kbd>theme = light:${dark?'kido-light':selName},dark:${dark?selName:'kido-dark'}</kbd> to ~/.config/kido/kido-app.conf`}</span><span style="margin-left:auto"><kbd>esc</kbd> back</span></div></div>`}
+  let rows=[];for(const t of themes){const x=hlr(t[0],q);if(q&&x.rest)continue;const on=t[0]===selName;const lightName=state==='theme-err-file'?'Solarized Light':'kido-light';const cur=t[0]===lightName?'<span class="cur"><span>Light</span></span>':t[0]==='kido-dark'?'<span class="cur"><span>Dark</span></span>':'';
     const broken=state==='theme-err-file'&&t[0]==='Solarized Light';
-    rows.push(`<div class="item${on?' on':''}${broken?' dis':''}">${swatch(t)}<span class="t">${x.html}<span class="tag">${t[4]}</span></span>${broken?'<span class="k">theme file not found</span>':cur}</div>`)}
+    rows.push(`<div class="item${on?' on':''}${broken?' dis':''}">${swatch(t)}<span class="t">${x.html}<span class="tag">${t[4]}</span></span>${broken?'<span class="k">theme file not found</span>'+cur:cur}</div>`)}
   let status='';
   if(state==='theme-preview')status=`<div class="status">Previewing ${selName}. <kbd style="font:inherit;color:var(--text);opacity:.7">↩</kbd> chooses where to use it, <kbd style="font:inherit;color:var(--text);opacity:.7">esc</kbd> restores the current theme.</div>`;
   if(state==='theme-err-write')status=`<div class="status err">${ico.warn}Could not write ~/.config/kido/kido-app.conf: permission denied. ${selName} is applied for this session only.<span class="act">Reveal in Finder</span></div>`;
-  if(state==='theme-err-file')status=`<div class="status err">${ico.warn}~/.config/kido/themes/solarized-light: not found. The current config names it; kido-light is shown instead.</div>`;
+  if(state==='theme-err-file')status=`<div class="status err">${ico.warn}~/.config/kido/themes/solarized-light: not found. The current config names it for Light; Ghostty's default colours are shown instead.</div>`;
   return `<div class="palette"><div class="head"><span class="chip">${ico.paint}Theme</span>${field(q,'Search themes')}</div><div class="list">${rows.join('')}</div>${status}<div class="foot"><span><kbd>↑↓</kbd> preview</span><span><kbd>↩</kbd> use</span><span><kbd>esc</kbd> back, restores</span><span style="margin-left:auto">themes: bundled + ~/.config/kido/themes</span></div></div>`}
 function stage(state,light){const nowin=state==='nowindow';
   const win=`<div class="app"><div class="header"><div class="lights"><i></i><i></i><i></i></div><div class="tabs"><div class="tab active agent"><i></i>@kido-app</div><div class="tab"><i style="background:var(--attention)"></i>@pi-ui</div><div class="tab">zsh</div></div></div>
@@ -236,7 +238,7 @@ go test ./test_e2e/ ............ running
 <span class="b">$</span> git status --short
  M lib/run.ml
 <span class="b">$</span> <span class="cur"></span></pre></section><div class="div dv"></div><div class="div dh"></div></div></div>`;
-  const prev=['theme-preview','theme-save','theme-err-write'].includes(state);const sol=light?'--bg:#fdf6e3;--fg:#657b83;--muted:#93a1a1;--accent:#268bd2;--green:#859900':'--bg:#002b36;--fg:#839496;--muted:#586e75;--accent:#268bd2;--green:#859900';
+  const prev=['theme-preview','theme-save','theme-save-session','theme-err-write'].includes(state);const sol=light?'--bg:#fdf6e3;--fg:#657b83;--muted:#93a1a1;--accent:#268bd2;--green:#859900':'--bg:#002b36;--fg:#839496;--muted:#586e75;--accent:#268bd2;--green:#859900';
   return `<div class="stage ${light?'light':''} ${nowin?'desktop':''} m-${document.getElementById('match').value}"${prev?` style="${sol}"`:''}>${nowin?'':win}${palette(state)}</div>`}
 function apply(){const s=document.getElementById('state').value,light=document.getElementById('theme').value==='Light';const st=document.getElementById('stage');st.outerHTML=stage(s,light).replace('class="stage','id="stage" class="stage');gallery()}
 function compare(){const c=document.getElementById('compare');c.querySelectorAll('.cell').forEach(x=>x.remove());const st=document.getElementById('state').value;for(const o of document.getElementById('match').options)for(const light of [true,false]){const cell=document.createElement('div');cell.className='cell';cell.innerHTML=`<div class="cw stage ${light?'light':''} m-${o.value}" style="height:auto;width:auto;box-shadow:none;margin:0;border-radius:12px">${palette(st)}</div><div class="cap">${o.textContent} · ${light?'light':'dark'}</div>`;c.appendChild(cell)}}

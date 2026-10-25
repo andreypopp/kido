@@ -1,6 +1,12 @@
 import AppKit
 
 enum Chrome {
+    static var fieldInk: NSColor { .controlTextColor }
+    static var themeRadioInk: NSColor { NSColor.labelColor.withAlphaComponent(0.4) }
+    static var themeRadioSelection: NSColor { .controlAccentColor }
+    static var themeTagFill: NSColor { NSColor.labelColor.withAlphaComponent(0.08) }
+    static var themeSwatchEdge: NSColor { NSColor.labelColor.withAlphaComponent(0.25) }
+    static var themeDisabledAlpha: CGFloat { 0.5 }
     static var markdownInk: (ink: NSColor, secondary: NSColor, tertiary: NSColor) { (ink, inkSecondary, inkTertiary) }
     static var statusRunning: NSColor { .systemGreen }
     static var statusWaiting: NSColor { .systemOrange }
