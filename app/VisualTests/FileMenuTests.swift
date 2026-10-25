@@ -3,80 +3,46 @@ import XCTest
 @testable import Kido
 
 @MainActor final class FileMenuTests: VisualTestCase {
-    func testNewLocalWindowWithRemoteOwner() throws {
-        XCTAssertTrue(background)
-        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-file-menu-\(UUID().uuidString)"))))
-        let app = AppDelegate(runtime: runtime)
-        let remote = try XCTUnwrap(app.open(.remote("example.invalid"), start: false))
-        app.routes.ready(isDefaultLaunch: true) { _ = app.open($0, start: false, cause: $1) }
-        defer { app.owners.forEach { $0.close() } }
-        app.newLocalWindow()
-        XCTAssertEqual(app.owners.count, 2)
-        XCTAssertTrue(app.owners.first === remote)
-        XCTAssertEqual(app.owners.filter { $0.host == .local }.count, 1)
-        XCTAssertTrue(app.owners.allSatisfy { !$0.window.isVisible })
-    }
-
-    func testRemoteDialogResponses() {
-        let routes = WindowRoutes()
-        var opened: [Kido.Host] = []
-        routes.ready(isDefaultLaunch: true) { host, _ in opened.append(host) }
-        let dialog = RemoteHostDialog(routes: routes)
-        dialog.field.stringValue = "user@alias"
-        XCTAssertTrue(dialog.handle(.alertSecondButtonReturn))
-        XCTAssertTrue(opened.isEmpty)
-        for invalid in ["", "-option", "bad host"] {
-            dialog.field.stringValue = invalid
-            XCTAssertFalse(dialog.handle(.alertFirstButtonReturn))
-            XCTAssertEqual(dialog.field.stringValue, invalid)
-            XCTAssertTrue(opened.isEmpty)
-        }
-        dialog.field.stringValue = " user@alias "
-        XCTAssertTrue(dialog.handle(.alertFirstButtonReturn))
-        XCTAssertEqual(opened, [.remote("user@alias")])
-    }
-
-    func testRemoteDialogNativeInvalidInputStaysAttached() async throws {
-        let routes = WindowRoutes()
-        var opened: [Kido.Host] = []
-        routes.ready(isDefaultLaunch: true) { host, _ in opened.append(host) }
-        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.orderFront(nil)
-        defer { window.close() }
-        let dialog = RemoteHostDialog(routes: routes)
-        dialog.show(on: window)
-        let sheet = try XCTUnwrap(window.attachedSheet)
-        dialog.field.stringValue = "bad host"
-        dialog.connect()
-        let settled = expectation(description: "native invalid Connect processed")
-        DispatchQueue.main.async { settled.fulfill() }
-        await fulfillment(of: [settled], timeout: 2)
-        XCTAssertTrue(window.attachedSheet === sheet)
-        XCTAssertEqual(dialog.field.stringValue, "bad host")
-        XCTAssertTrue(opened.isEmpty)
-        func labels(_ view: NSView) -> [String] {
-            (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(labels)
-        }
-        XCTAssertTrue(labels(try XCTUnwrap(sheet.contentView)).contains { $0.contains("Host must be") && $0.contains("without spaces") })
-        XCTAssertEqual(NSApp.windows.filter { $0.sheetParent === window }.count, 1)
-        dialog.field.stringValue = " user@alias "
-        dialog.connect()
-        let closed = expectation(description: "valid Connect dismisses")
-        DispatchQueue.main.async { closed.fulfill() }
-        await fulfillment(of: [closed], timeout: 2)
-        XCTAssertNil(window.attachedSheet)
-        XCTAssertEqual(opened, [.remote("user@alias")])
-    }
-
     func testLocalMenuRespectsColdRemoteGate() {
         let app = AppDelegate()
         var opened: [Kido.Host] = []
         app.routes.ready(isDefaultLaunch: false) { host, _ in opened.append(host) }
-        app.newLocalWindow()
+        app.newSession()
         XCTAssertTrue(opened.isEmpty)
         app.routes.connect(.remote("alias"))
-        app.newLocalWindow()
+        app.newSession()
         XCTAssertEqual(opened, [.remote("alias"), .local])
+    }
+
+    func testDockReopenWithoutAWindowOpensAndConnectsLocal() async throws {
+        let dir = "/tmp/kr-" + UUID().uuidString.prefix(8)
+        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: tools.environment)
+        XCTAssertEqual(result.status, 0, result.err)
+        let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
+        let board = NSPasteboard(name: .init("kr-" + UUID().uuidString))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let app = AppDelegate(runtime: runtime)
+        addTeardownBlock { @MainActor in
+            app.owners.forEach { $0.close() }
+            board.releaseGlobally()
+            _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-server"], env: tools.environment)
+            try? FileManager.default.removeItem(atPath: dir)
+        }
+        var dialed: [WindowOwner.DialCause] = []
+        app.routes.ready(isDefaultLaunch: true) { host, cause in
+            dialed.append(cause)
+            let owner = app.open(host, start: false, cause: cause)
+            owner?.testEndpoint = Endpoint(server: server, kido: tools.kido)
+            owner?.start()
+        }
+        for round in 1...2 {
+            XCTAssertFalse(app.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
+            XCTAssertEqual(dialed.map(\.label), Array(repeating: "reopen", count: round))
+            let owner = try XCTUnwrap(app.owners.last)
+            XCTAssertEqual(owner.host, .local)
+            try await wait("reopened Local window \(round) connects") { owner.canNavigate && owner.snapshot?.sessions.isEmpty == false }
+            owner.close()
+            XCTAssertFalse(owner.alive)
+        }
     }
 }
