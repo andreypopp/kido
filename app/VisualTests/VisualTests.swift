@@ -241,10 +241,9 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         if Self.processRuntime == nil {
             let config = directory.appendingPathComponent("ghostty.conf")
-            let themes = app.appendingPathComponent("Resources/themes").path
-            let theme = "light:\(themes)/kido-light,dark:\(themes)/kido-dark"
+            let theme = ThemeConf.line(.init())
             let blink = ProcessInfo.processInfo.environment["KIDO_VSYNC_MEASURE"] == "1"
-            try "theme = \(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = \(blink)\nkeybind = super+e=text:X\nkeybind = super+shift+c=text:Y\n".write(to: config, atomically: true, encoding: .utf8)
+            try "\(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = \(blink)\nkeybind = super+e=text:X\nkeybind = super+shift+c=text:Y\n".write(to: config, atomically: true, encoding: .utf8)
             Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         }
         runtime = try XCTUnwrap(Self.processRuntime)
@@ -916,9 +915,9 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
         defer { SidebarView.visualNow = nil }
         let config = directory.appendingPathComponent("focus.conf")
-        let themes = app.appendingPathComponent("Resources/themes").path
+        let themes = app.appendingPathComponent("Resources/ghostty/themes").path
         let settings = "font-family = Menlo\nfont-size = 13\ncursor-style-blink = false\n"
-        try ("theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\n" + settings).write(to: config, atomically: true, encoding: .utf8)
+        try (ThemeConf.line(.init()) + "\n" + settings).write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
         let sidebar = Sidebar()
         window.titleVisibility = .hidden
