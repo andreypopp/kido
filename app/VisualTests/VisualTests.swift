@@ -299,6 +299,52 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         return clipboardMode
     }
 
+    func testSinglePaneHeaderPaper() async throws {
+        let config = directory.appendingPathComponent("single-pane-header.conf")
+        try "background = #fffaf0\n".write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        defer { owner.close() }
+        let content = owner.sidebar.content
+        content.addSubview(session)
+        session.frame = content.bounds
+        session.autoresizingMask = [.width, .height]
+        for hex in ["fffaf0", "172029"] {
+            let changed = expectation(description: "single pane theme")
+            runtime.onConfigChange = { owner.updateAppearance(); self.session.updateBackground(); changed.fulfill() }
+            let config = try XCTUnwrap(ghostty_config_new())
+            let text = "background = #\(hex)\n"
+            ghostty_config_load_string(config, text, UInt(text.utf8.count), "/single-pane-header")
+            ghostty_config_finalize(config)
+            ghostty_app_update_config(runtime.app, config)
+            ghostty_config_free(config)
+            await fulfillment(of: [changed], timeout: 3)
+            for collapsed in [false, true] {
+                owner.sidebar.isCollapsed = collapsed
+                let root = try XCTUnwrap(owner.window.contentView?.superview)
+                root.layoutSubtreeIfNeeded()
+                owner.window.display()
+                await mainQueueFence()
+                let pane = try XCTUnwrap(terminal?.panes.first)
+                XCTAssertEqual(terminal?.panes.count, 1)
+                XCTAssertEqual(pane.paperColor, runtime.background)
+                let image = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+                content.cacheDisplay(in: content.bounds, to: image)
+                let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))
+                for point in [(2, 2), (pixels.pixelsWide - 2, pixels.pixelsHigh - 2), (pixels.pixelsWide / 2, pixels.pixelsHigh / 2)] {
+                    try assertPaperPixel(pixels, x: point.0, y: point.1, expected: headerPaperRGB[hex]!, "\(hex) single pane paper and outer padding stay pure")
+                }
+            }
+            let split = try await command(["split-window", "-h", "-P", "-F", "#{pane_id}", "exec /bin/cat"])
+            try await wait("inactive tiled paper") { self.terminal?.panes.count == 2 }
+            let inactive = try XCTUnwrap(terminal?.panes.first { $0.shiftedBackground })
+            XCTAssertEqual(inactive.paperColor, owner.window.backgroundColor)
+            XCTAssertEqual(inactive.paperColor, owner.sidebar.tabs.theme.background)
+            _ = try await command(["kill-pane", "-t", split])
+            try await wait("single pane restored") { self.terminal?.panes.count == 1 }
+        }
+    }
+
     func testLiveConfigReflowsPane() async throws {
         let config = directory.appendingPathComponent("live.conf")
         try "font-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
@@ -2178,7 +2224,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertTrue(owner.testBanner.isHidden)
         XCTAssertEqual(owner.sidebar.content.layer?.backgroundColor, runtime.background.cgColor)
-        XCTAssertEqual(owner.window.backgroundColor, runtime.background)
+        let background = try XCTUnwrap(owner.window.backgroundColor?.usingColorSpace(.sRGB))
+        for (value, expected) in zip([background.redComponent, background.greenComponent, background.blueComponent], headerPaperRGB["fff9ec-shifted"]!) {
+            XCTAssertEqual(value * 255, expected, accuracy: 0.001)
+        }
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verifySnapshot(of: owner.sidebar.content, as: .image, named: "no-terminal", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
