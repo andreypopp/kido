@@ -286,11 +286,11 @@ private class AlertEscape: NSView {
 
     func updateAppearance() {
         let background = runtime.background
-        window.backgroundColor = background
-        for view in [sidebar.terminalHost, sidebar.content] {
-            view.wantsLayer = true
-            view.layer?.backgroundColor = background.cgColor
-        }
+        window.backgroundColor = runtime.unfocusedPaper
+        sidebar.terminalHost.wantsLayer = true
+        sidebar.terminalHost.layer?.backgroundColor = runtime.unfocusedPaper.cgColor
+        sidebar.content.wantsLayer = true
+        sidebar.content.layer?.backgroundColor = background.cgColor
         banner?.background = background
         let dark = background.isDark
         let theme = (background: background, appearance: NSAppearance(named: dark ? .darkAqua : .aqua))

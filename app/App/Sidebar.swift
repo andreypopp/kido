@@ -115,7 +115,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
 
     func updateAppearance(runtime: GhosttyRuntime) {
         let background = runtime.background
-        tabs.theme = (background, NSAppearance(named: background.isDark ? .darkAqua : .aqua))
+        tabs.theme = (runtime.unfocusedPaper, NSAppearance(named: background.isDark ? .darkAqua : .aqua))
         let shade = background.shifted(runtime.settings.sidebarShade)
         listBackground = shade
         separatorColor = runtime.sidebarSeparator

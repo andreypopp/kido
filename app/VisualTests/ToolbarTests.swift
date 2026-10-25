@@ -6,6 +6,27 @@ import SidebarFeed
 import TmuxControl
 @testable import Kido
 
+let headerPaperRGB: [String: [Double]] = [
+    "fffaf0": [255, 250, 240],
+    "fffaf0-shifted": [247.35, 242.5, 232.8],
+    "fffaf0-shifted10": [229.5, 225, 216],
+    "172029": [23, 32, 41],
+    "172029-shifted": [29.96, 38.69, 47.42],
+    "172029-shifted10": [46.2, 54.3, 62.4],
+    "white": [255, 255, 255],
+    "fff9ec-shifted": [247.35, 241.53, 228.92],
+]
+
+func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Double], _ message: String = "",
+                      file: StaticString = #filePath, line: UInt = #line) throws {
+    let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default), file: file, line: line)
+    let color = try XCTUnwrap(pixels.colorAt(x: x, y: y), file: file, line: line)
+    XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.001, message, file: file, line: line)
+    for (value, expected) in zip([color.redComponent, color.greenComponent, color.blueComponent], expected) {
+        XCTAssertEqual(value * 255, expected, accuracy: 2, message, file: file, line: line)
+    }
+}
+
 @MainActor final class ToolbarTests: VisualTestCase {
     func testTabActivityMarks() throws {
         let config = FileManager.default.temporaryDirectory.appendingPathComponent("tab-marks-\(UUID().uuidString).conf")
@@ -125,7 +146,8 @@ import TmuxControl
             defer { owner.close() }
             owner.sidebar.tabs.entries = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 0), name: "Shell")], window: WindowID(number: 0)).navigation(nil).tabs
             let root = try XCTUnwrap(owner.window.contentView?.superview)
-            let expected = try XCTUnwrap(runtime.background.usingColorSpace(.sRGB))
+            let rgb = headerPaperRGB["\(hex)-shifted"]!
+            let expected = NSColor(srgbRed: rgb[0] / 255, green: rgb[1] / 255, blue: rgb[2] / 255, alpha: 1)
             let windowedShadow = SidebarShadow()
             owner.window.contentView?.addSubview(windowedShadow)
             let header = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 52), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
@@ -199,15 +221,10 @@ import TmuxControl
                         header.display()
                         let image = try XCTUnwrap(headerContent.bitmapImageRepForCachingDisplay(in: headerContent.bounds))
                         headerContent.cacheDisplay(in: headerContent.bounds, to: image)
-                        let scale = CGFloat(image.pixelsWide) / headerContent.bounds.width
-                        let left = try XCTUnwrap(image.colorAt(x: Int(20 * scale), y: 10))
-                        let right = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(20 * scale), y: 10))
-                        XCTAssertEqual(left.redComponent, 1, accuracy: 2 / 255, "floating fullscreen left stand-in must remain uncovered")
-                        XCTAssertEqual(left.greenComponent, 1, accuracy: 2 / 255)
-                        XCTAssertEqual(left.blueComponent, 1, accuracy: 2 / 255)
-                        XCTAssertEqual(right.redComponent, expected.redComponent, accuracy: 2 / 255)
-                        XCTAssertEqual(right.greenComponent, expected.greenComponent, accuracy: 2 / 255)
-                        XCTAssertEqual(right.blueComponent, expected.blueComponent, accuracy: 2 / 255)
+                        let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))
+                        let scale = CGFloat(pixels.pixelsWide) / headerContent.bounds.width
+                        try assertPaperPixel(pixels, x: Int(20 * scale), y: 10, expected: headerPaperRGB["white"]!, "floating fullscreen left stand-in must remain uncovered")
+                        try assertPaperPixel(pixels, x: pixels.pixelsWide - Int(20 * scale), y: 10, expected: rgb)
                     }
                     finishLayout()
                     await fulfillment(of: [laidOut], timeout: 0.3)
@@ -259,12 +276,9 @@ import TmuxControl
                 }
                 let hostImage = try XCTUnwrap(headerContent.bitmapImageRepForCachingDisplay(in: headerContent.bounds))
                 headerContent.cacheDisplay(in: headerContent.bounds, to: hostImage)
-                let leftColor = try XCTUnwrap(hostImage.colorAt(x: 20, y: 10))
-                let leftExpected = mode == "collapsed" ? expected : NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+                let hostPixels = try XCTUnwrap(hostImage.converting(to: .sRGB, renderingIntent: .default))
                 if mode == "collapsed" { XCTAssertEqual(paintedBackground.frame, headerContent.bounds) }
-                XCTAssertEqual(leftColor.redComponent, leftExpected.redComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
-                XCTAssertEqual(leftColor.greenComponent, leftExpected.greenComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
-                XCTAssertEqual(leftColor.blueComponent, leftExpected.blueComponent, accuracy: 2 / 255, "fullscreen sidebar region must remain uncovered")
+                try assertPaperPixel(hostPixels, x: 20, y: 10, expected: mode == "collapsed" ? rgb : headerPaperRGB["white"]!, "fullscreen sidebar region must remain uncovered")
                 if mode == "docked" || mode == "floating" {
                     let sidebarRect = owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root)
                     if mode == "floating" {
@@ -309,15 +323,19 @@ import TmuxControl
                 for view in [owner.sidebar.terminalHost, root, headerContent, try XCTUnwrap(headerContent.superview)] {
                     let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
                     view.cacheDisplay(in: view.bounds, to: image)
-                    let scale = CGFloat(image.pixelsHigh) / view.bounds.height
+                    let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))
+                    let scale = CGFloat(pixels.pixelsHigh) / view.bounds.height
                     // The trailing 28pt tab-strip slot contains the new-window plus.
                     for y in [CGFloat(3), 26, 49] {
-                        let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(40 * scale), y: Int(y * scale)))
-                        XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.001, "\(hex) \(mode) header opacity")
-                        XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 2 / 255, "\(hex) \(mode) header red")
-                        XCTAssertEqual(color.greenComponent, expected.greenComponent, accuracy: 2 / 255, "\(hex) \(mode) header green")
-                        XCTAssertEqual(color.blueComponent, expected.blueComponent, accuracy: 2 / 255, "\(hex) \(mode) header blue")
+                        try assertPaperPixel(pixels, x: pixels.pixelsWide - Int(40 * scale), y: Int(y * scale), expected: rgb, "\(hex) \(mode) header")
                     }
+                }
+                let paper = owner.sidebar.content
+                let paperImage = try XCTUnwrap(paper.bitmapImageRepForCachingDisplay(in: paper.bounds))
+                paper.cacheDisplay(in: paper.bounds, to: paperImage)
+                let paperPixels = try XCTUnwrap(paperImage.converting(to: .sRGB, renderingIntent: .default))
+                for point in [(paperPixels.pixelsWide / 2, paperPixels.pixelsHigh / 2), (paperPixels.pixelsWide - 2, paperPixels.pixelsHigh - 2)] {
+                    try assertPaperPixel(paperPixels, x: point.0, y: point.1, expected: headerPaperRGB[hex]!, "\(hex) \(mode) paper below band stays pure")
                 }
                 XCTAssertFalse(owner.window.isVisible)
             }
@@ -685,27 +703,50 @@ import TmuxControl
                 let view = try XCTUnwrap(tabs.window?.contentView)
                 let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
                 view.cacheDisplay(in: view.bounds, to: image)
-                let expected = try XCTUnwrap(runtime.background.usingColorSpace(.sRGB))
+                let expected = headerPaperRGB["\(hex)-shifted"]!
                 if transferred {
-                    let left = try XCTUnwrap(image.colorAt(x: 20, y: 10))
-                    XCTAssertEqual(left.redComponent, 1, accuracy: 2 / 255)
-                    XCTAssertEqual(left.greenComponent, 1, accuracy: 2 / 255)
-                    XCTAssertEqual(left.blueComponent, 1, accuracy: 2 / 255)
+                    try assertPaperPixel(image, x: 20, y: 10, expected: headerPaperRGB["white"]!)
                     let snapshot = NSImage(size: view.bounds.size)
                     snapshot.addRepresentation(image)
                     let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
                     if let failure = verifySnapshot(of: snapshot, as: .image, named: "fullscreen-switch-\(index)-\(hex)", record: record),
                        !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 }
-                let scale = CGFloat(image.pixelsHigh) / view.bounds.height
+                let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))
+                let scale = CGFloat(pixels.pixelsHigh) / view.bounds.height
                 // The trailing 28pt tab-strip slot contains the new-window plus.
                 for y in [CGFloat(3), 26, 49] {
-                    let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(40 * scale), y: Int(y * scale)))
-                    XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.001)
-                    XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 2 / 255)
-                    XCTAssertEqual(color.greenComponent, expected.greenComponent, accuracy: 2 / 255)
-                    XCTAssertEqual(color.blueComponent, expected.blueComponent, accuracy: 2 / 255)
+                    try assertPaperPixel(pixels, x: pixels.pixelsWide - Int(40 * scale), y: Int(y * scale), expected: expected)
                 }
+            }
+        }
+    }
+
+    func testHeaderShiftReload() async throws {
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("header-shift-\(UUID().uuidString).conf")
+        defer { try? FileManager.default.removeItem(at: config) }
+        let board = NSPasteboard(name: .init("header-shift-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        for hex in ["fffaf0", "172029"] {
+            try "background = #\(hex)\n".write(to: config, atomically: true, encoding: .utf8)
+            let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
+            let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+            defer { runtime.onConfigChange = {}; owner.close() }
+            for shift in [10, 3] {
+                let changed = expectation(description: "header shift-only reload")
+                runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
+                try "background = #\(hex)\nkido-unfocused-background-shift = \(shift)%\n".write(to: config, atomically: true, encoding: .utf8)
+                await fulfillment(of: [changed], timeout: 3)
+                owner.window.display()
+                let expected = headerPaperRGB["\(hex)-shifted" + (shift == 10 ? "10" : "")]!
+                let root = try XCTUnwrap(owner.window.contentView?.superview)
+                let image = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+                root.cacheDisplay(in: root.bounds, to: image)
+                let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))
+                let scale = CGFloat(pixels.pixelsHigh) / root.bounds.height
+                try assertPaperPixel(pixels, x: pixels.pixelsWide - Int(40 * scale), y: Int(26 * scale), expected: expected, "\(hex) shift-only reload repaints band")
+                XCTAssertEqual(owner.sidebar.tabs.theme.background, owner.window.backgroundColor)
+                XCTAssertEqual(owner.sidebar.content.layer?.backgroundColor, runtime.background.cgColor)
             }
         }
     }
