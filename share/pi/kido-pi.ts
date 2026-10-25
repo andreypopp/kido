@@ -2240,6 +2240,7 @@ export default function (pi: ExtensionAPI) {
       const stop = async (target: AgentRow, run: string): Promise<{ text: string } | { error: string }> => {
         const stopWait = 5;
         const stopDeadline = (wait: number): number => wait * 1000 + envMs("KIDO_STOP_ESCALATION_MS", 5000) + 1500;
+        if (target.state === "ended") return { error: `run ${run} has already ended` };
         if (target.kind === "bash") {
           const res = await runCommand(command, ["run-stop", run], { timeoutMs: stopDeadline(0) });
           return res.ok ? { text: res.out } : { error: res.error };

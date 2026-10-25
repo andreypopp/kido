@@ -554,6 +554,27 @@ test("stop_run asks a subagent to stop first, then records completed only when i
   }
 });
 
+test("stop_run refuses an ended subagent without an inbox and records nothing", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    fx.setPanes([selfPane()]);
+    const s = await startNamedSession(fx, "Self");
+    await s.tools.get("spawn_agent").execute("c", { task: "x", name: "kid" });
+    const child = agentJson(fx, SELF, "kid");
+    fx.setRuns([{ id: "fake-run-id", name: "kid", parent: "%1", pane: "%2", session: child.session,
+      outcome: { result: "died", text: "" } }]);
+
+    const result = await s.tools.get("stop_run").execute("c", { to: ["fake-run-id"] });
+    assert.equal(result.content[0].text, '"fake-run-id": error: run fake-run-id has already ended');
+    assert.deepEqual(inbox.received(), []);
+    assert.deepEqual(fx.runStopCalls(), []);
+    assert.deepEqual(fx.runOutcomeCalls(), []);
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("stop_run with force skips the request, and a subagent with no inbox needs force", async () => {
   const fx = makeFixture();
   try {
