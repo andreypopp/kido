@@ -77,7 +77,7 @@ final class PaneScroller: NSView {
 
     private func syncColor() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            knob.backgroundColor = NSColor.labelColor.withAlphaComponent(hovering || dragging != nil ? 0.5 : 0.3).cgColor
+            knob.backgroundColor = (hovering || dragging != nil ? Chrome.scrollerKnobActive : Chrome.scrollerKnob).cgColor
         }
     }
 

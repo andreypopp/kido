@@ -14,12 +14,12 @@ extension NSColor {
     var isDark: Bool { luminance < 0.5 }
 
     func shifted(_ amount: Double) -> NSColor {
-        return mixed(toward: isDark ? .white : .black, amount: amount)
+        return mixed(toward: isDark ? .white : .black, amount: amount) // chrome-allow: theme brightness derivation
     }
 
     func mixed(toward color: NSColor, amount: Double) -> NSColor {
         let a = usingColorSpace(.sRGB)!, b = color.usingColorSpace(.sRGB)!
-        return NSColor(srgbRed: a.redComponent * (1 - amount) + b.redComponent * amount,
+        return NSColor(srgbRed: a.redComponent * (1 - amount) + b.redComponent * amount, // chrome-allow: theme colour mix
                        green: a.greenComponent * (1 - amount) + b.greenComponent * amount,
                        blue: a.blueComponent * (1 - amount) + b.blueComponent * amount, alpha: 1)
     }
@@ -349,8 +349,8 @@ extension NSColor {
 
     private func color(_ key: String) -> NSColor {
         var color = ghostty_config_color_s()
-        guard ghostty_config_get(config, &color, key, UInt(key.utf8.count)) else { return .black }
-        return NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1)
+        guard ghostty_config_get(config, &color, key, UInt(key.utf8.count)) else { return .black } // chrome-allow: theme read fallback
+        return NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1) // chrome-allow: theme colour decoding
     }
 
     deinit {

@@ -82,7 +82,9 @@ demo demo-debug:
 demo-stop:
 	$(DEMO) scripts/demo.sh stop $(DERIVED)/Build/Products/Release/KidoDev.app/Contents/MacOS/KidoDev
 
-test: all
+test:
+	scripts/lint-colors.sh
+	$(MAKE) all
 	cd Packages/TmuxControl && swift test
 	cd Packages/SidebarFeed && swift test
 	cd Packages/PromptMarkdown && swift test
