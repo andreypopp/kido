@@ -3,21 +3,17 @@ import TmuxControl
 import SidebarFeed
 
 class OwnerWindow: NSWindow {
-    var focusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
-    private var nested = 0
+    var allowsPaneInput: Bool { isKeyWindow || (NSApp.delegate as? AppDelegate)?.palettePanel == nil }
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown, let content = contentView, let frame = content.superview {
-            var view = content.hitTest(frame.convert(event.locationInWindow, from: nil))
-            while let current = view {
-                if let box = current as? PromptBox {
-                    box.raiseAndFocus()
-                    break
-                }
-                view = current.superview
-            }
-        }
+        if !allowsPaneInput, [.keyDown, .keyUp, .flagsChanged].contains(event.type) { return }
         super.sendEvent(event)
     }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        allowsPaneInput && super.performKeyEquivalent(with: event)
+    }
+
+    var focusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
+    private var nested = 0
     // Ending a field editor's session first makes the window itself first
     // responder, through this method.
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
@@ -267,10 +263,6 @@ private class AlertEscape: NSView {
             guard let self else { return }
             sidebar.updateFocusEdge()
             session?.windows.values.filter { !$0.isHidden }.forEach { $0.updateFocusTreatment() }
-            if let view = next as? NSView,
-               let box = session?.boxes.boxes.first(where: { $0 === view || view.isDescendant(of: $0) }) {
-                session?.boxes.raise(box)
-            }
             if let pane = next as? PaneView, model.window.flatMap({ session?.windows[$0]?.active }) == pane.pane,
                old == nil || old is PaneView || old === window { return }
             supersedeIntent()
@@ -724,7 +716,11 @@ private class AlertEscape: NSView {
         let view = SessionView(runtime: runtime)
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
-        view.boxes.request = request
+        view.canPrompt = { [weak self] in self?.canPrompt == true }
+        view.onPrompt = { [weak self] pane, quote in
+            guard let self else { return }
+            (NSApp.delegate as? AppDelegate)?.openPrompt(owner: self, pane: pane, quote: quote)
+        }
         view.onPaneChange = { [weak self] in
             guard let self, accepts(generation) else { return }
             updateTabs()
@@ -856,6 +852,21 @@ private class AlertEscape: NSView {
             down("Detached from the kido server", detached, button: "Reconnect")
         case .ended(let reason): failed(generation, .transport(reason ?? "Control connection ended"), cause: cause)
         }
+    }
+
+    var canPrompt: Bool {
+        guard let session = currentSession else { return false }
+        return snapshot?.promptPanes.contains { $0.session == session.id && $0.agent } == true
+    }
+
+    func windowName(_ id: WindowID) -> String { session?.windowName(id) ?? id.description }
+
+    func promptDelivered(pane: PaneID) { session?.pane(pane)?.promptDelivered() }
+
+    func promptSource(session: SessionID, window: WindowID, pane: PaneID, quote: String?, preselect: PaneID? = nil) -> PromptSource? {
+        guard let snapshot else { return nil }
+        return PromptSource(owner: self, instance: snapshot.serverInstance, session: session, window: window, pane: pane,
+                            windowName: windowName(window), quote: quote, preselect: preselect)
     }
 
     var currentSession: SessionNodes? {

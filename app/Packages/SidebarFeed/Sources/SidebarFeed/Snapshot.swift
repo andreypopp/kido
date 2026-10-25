@@ -19,6 +19,19 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public let error: String?
     public var sessions: [SessionNodes]
 
+    public var promptPanes: [(session: SessionID, pane: PaneID, agent: Bool)] {
+        var items: [(SessionID, Item)] = []
+        func walk(_ nodes: [Node], session: SessionID) {
+            for node in nodes {
+                if case .item(let item) = node { items.append((session, item)) }
+                walk(node.children, session: session)
+            }
+        }
+        for session in sessions { walk(session.nodes, session: session.id) }
+        let runs = Set(items.compactMap { $0.1.run == nil ? nil : $0.1.window })
+        return items.map { (session: $0.0, pane: $0.1.pane, agent: $0.1.isAgent && !runs.contains($0.1.window)) }
+    }
+
     public func sameSidebarContent(as other: Snapshot) -> Bool {
         client == other.client && serverInstance == other.serverInstance && sessions == other.sessions
     }

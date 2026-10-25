@@ -14,6 +14,7 @@ struct PaletteEntry {
     var status: SidebarRow.Status?
     var symbol: String?
     var agent = false
+    var promptable = false
     var check: @MainActor () -> String? = { nil }
     enum Operation {
         case run(@MainActor () -> Void), enter(PaletteMode), connectTyped(String), clearRecent
@@ -37,6 +38,7 @@ struct PaletteEntry {
         func check(_ row: SidebarRow) -> @MainActor () -> String? {
             { resolve(row) == nil ? "That pane is gone" : nil }
         }
+        let reachable = Set(snapshot.promptPanes.filter(\.agent).map(\.pane))
         var session = ""
         return sidebarRows(owner.snapshot, seen: owner.seen.value).compactMap { row in
             if case .header(let id) = row.id {
@@ -44,7 +46,7 @@ struct PaletteEntry {
                 return PaletteEntry(id: .session(owner.host, id), title: row.title, detail: host.joined(), symbol: "square.stack", check: check(row), operation: .run(go(row, .selectSession(id))))
             }
             guard let target = row.target else { return nil }
-            return PaletteEntry(id: .pane(owner.host, target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: row.agent, check: check(row), operation: .run(go(row, .jump(target))))
+            return PaletteEntry(id: .pane(owner.host, target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: row.agent, promptable: reachable.contains(target.pane), check: check(row), operation: .run(go(row, .jump(target))))
         }
     }
 
@@ -60,6 +62,10 @@ struct PaletteEntry {
             if action == #selector(AppDelegate.connectRemoteHost) { operation = .enter(.connect) }
             else if action == #selector(SessionMenus.renameItem), let owner, let session = owner.currentSession, let instance = owner.snapshot?.serverInstance {
                 operation = .enter(.rename(owner, instance, session.id, original: session.name))
+            } else if action == #selector(PaneView.promptSelectionItem(_:)), let owner, let pane = livePane(owner, responder),
+                      let session = owner.currentSession, let window = pane.windowID,
+                      let source = owner.promptSource(session: session.id, window: window, pane: pane.pane, quote: pane.selectionQuote) {
+                operation = .enter(.prompt(source))
             } else { operation = .run { NSApp.sendAction(action, to: item.target, from: item) } }
             return [PaletteEntry(id: .command(order), order: order, title: item.title, detail: path.joined(separator: " › "), shortcut: shortcut(item),
                                  check: { [weak owner] in
@@ -87,6 +93,7 @@ struct PaletteEntry {
             if target == nil, let pane = PaneView.owner(responder), pane.responds(to: action) { target = pane }
             if target == nil { target = NSApp.target(forAction: action, to: nil, from: item) }
         }
+        if let pane = target as? PaneView { return pane.canPerformMenuItem(item) }
         if let validator = target as? NSMenuItemValidation { return validator.validateMenuItem(item) }
         if let validator = target as? NSUserInterfaceValidations { return validator.validateUserInterfaceItem(item) }
         return target != nil
