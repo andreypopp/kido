@@ -2,22 +2,38 @@ import AppKit
 import TmuxControl
 import SidebarFeed
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
     private var runtime: GhosttyRuntime?
     private(set) var owners: [WindowOwner] = []
     private let menus = SessionMenus()
     private var editMenu: NSMenu?
     private var signals: [DispatchSourceSignal] = []
     private var trigger: String?
-    let routes = WindowRoutes()
+    let routes: WindowRoutes
+
+    override init() {
+        routes = WindowRoutes()
+        super.init()
+    }
     private var ordinaryLaunchEvent = true
     private var pendingJumps: [Host: (target: NoticeTarget, deadline: Date)] = [:]
-    private var startsSession = false
     private(set) var palettePanel: PalettePanel?
+    private var paletteFocus: (owner: WindowOwner, responder: NSResponder?)?
+    private var paletteObservers: [NSObjectProtocol] = []
+    private var paletteBusy = false
+    enum CloseReason { case dismiss, choice, moved }
+
+    private func withPaletteBusy(_ body: () -> Void) {
+        let saved = paletteBusy
+        paletteBusy = true
+        defer { paletteBusy = saved }
+        body()
+    }
 
     #if KIDO_VISUAL
-    init(runtime: GhosttyRuntime? = nil) {
+    init(runtime: GhosttyRuntime? = nil, routes: WindowRoutes = WindowRoutes()) {
         self.runtime = runtime
+        self.routes = routes
         super.init()
     }
     #endif
@@ -38,11 +54,13 @@ import SidebarFeed
         }
     }
 
-    var current: WindowOwner? { owners.first { $0.alive && $0.window === NSApp.keyWindow } ?? (background ? owners.first(where: \.alive) : nil) }
+    var current: WindowOwner? { owners.first { $0.alive && $0.window === NSApp.keyWindow } ?? (background && palettePanel == nil ? owners.first(where: \.alive) : nil) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let isDefaultLaunch = notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool
         NSApp.applicationIconImage = NSImage(named: "AppIcon")
+        // AppKit marks a windowless app as terminated by TAL; no Dock reopen reached such a process (pid log, 2026-10-25).
+        ProcessInfo.processInfo.disableAutomaticTermination("a Dock reopen with no window opens a Local window")
         for signal in [SIGTERM, SIGINT, SIGHUP] {
             Darwin.signal(signal, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signal, queue: .main)
@@ -58,8 +76,6 @@ import SidebarFeed
         guard let runtime = GhosttyRuntime(pasteboard: pasteboard) else { fatalError("libghostty failed to initialise") }
         self.runtime = runtime
         NSApp.mainMenu = mainMenu()
-        menus.send = { [weak self] in self?.current?.perform($0) }
-        menus.canSend = { [weak self] in self?.current != nil }
         runtime.onConfigChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateColorScheme(); $0.updateAppearance() } }
         runtime.onConfigReload = { [weak self] in self?.owners.filter(\.alive).forEach { $0.reloadConfig() } }
         routes.ready(isDefaultLaunch: isDefaultLaunch == true && ordinaryLaunchEvent) { [weak self] in _ = self?.open($0, cause: $1) }
@@ -89,11 +105,9 @@ import SidebarFeed
         let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause)
         owners.append(owner)
         owner.snapshotReceived = { [weak self, weak owner] in
-            guard let self, let owner, let snapshot = owner.snapshot, snapshot.error == nil else { return }
-            if host == .local, startsSession {
-                startsSession = false
-                owner.newSession()
-            }
+            guard let self else { return }
+            defer { paletteStateChanged() }
+            guard let owner, let snapshot = owner.snapshot, snapshot.error == nil else { return }
             guard let pending = pendingJumps[host] else { return }
             if pending.deadline <= Date() || snapshot.serverInstance != pending.target.instance {
                 pendingJumps.removeValue(forKey: host)
@@ -103,14 +117,16 @@ import SidebarFeed
             }
         }
         owner.onClose = { [weak self, weak owner] in
-            self?.updateMenu()
+            if self?.paletteFocus?.owner === owner { self?.closePalette(.moved) }
+            self?.updateMenu(self?.current)
+            self?.paletteStateChanged()
             owner?.ended.notify(queue: .main) { [weak self, weak owner] in self?.owners.removeAll { $0 === owner } }
         }
         owner.menuChanged = { [weak self, weak owner] in
-            guard let self, current === owner else { return }
-            updateMenu()
+            guard let self else { return }
+            if current === owner { updateMenu(current) }
         }
-        updateMenu()
+        updateMenu(current)
         return owner
     }
 
@@ -147,11 +163,12 @@ import SidebarFeed
         return false
     }
 
-    private func updateMenu() {
-        menus.update(current?.navigation ?? SessionModel())
+    func updateMenu(_ owner: WindowOwner?, responder: NSResponder? = nil) {
+        menus.update(owner?.navigation ?? SessionModel())
         let view = NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu
-        for item in view?.items.prefix(2) ?? [].prefix(2) { item.target = current?.sidebar }
-        view?.items.first?.title = current?.sidebar.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"
+        for item in view?.items.prefix(2) ?? [].prefix(2) { item.target = owner?.sidebar }
+        view?.items.first?.title = owner?.sidebar.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"
+        if let editMenu { updatePromptMenu(editMenu, responder: responder ?? owner?.window.firstResponder) }
     }
 
     func applicationDidResignActive(_ notification: Notification) { Notifier.shared.attendanceChanged() }
@@ -161,7 +178,12 @@ import SidebarFeed
         do throws(Failure) { try tools.validate() } catch { owners.forEach { $0.bundleChanged(error) } }
     }
 
-    private func mainMenu() -> NSMenu {
+    func mainMenu() -> NSMenu {
+        menus.rename = { [weak self] in self?.renameSession() }
+        menus.close = { [weak self] in self?.closeSession() }
+        menus.send = { [weak self] in (self?.paletteFocus?.owner ?? self?.current)?.perform($0) }
+        menus.canSend = { [weak self] in (self?.paletteFocus?.owner ?? self?.current) != nil }
+        menus.update(current?.navigation ?? SessionModel())
         let app = NSMenu(title: "Kido")
         app.items = [
             NSMenuItem(title: "Hide Kido", action: #selector(NSApplication.hide(_:)), keyEquivalent: ""),
@@ -181,14 +203,19 @@ import SidebarFeed
             item("Command Palette…", #selector(togglePalette), "p", .command),
         ]
         for item in view.items.prefix(2) { item.target = current?.sidebar }
-        view.items.last?.target = self
+        let alternate = item("Command Palette…", #selector(togglePalette), "P", [.command, .shift])
+        alternate.isAlternate = true
+        alternate.isHidden = true
+        alternate.allowsKeyEquivalentWhenHidden = true
+        view.addItem(alternate)
+        for item in view.items where item.action == #selector(togglePalette) { item.target = self }
         let file = NSMenu(title: "File")
         let newWindow = item("New Window", #selector(PaneView.runCommand(_:)), "t", .command)
         newWindow.representedObject = PaneCommand.newWindow
         file.items = [item("New Session", #selector(newSession), "n", .command), newWindow,
-                      .separator(), item("New Local Window", #selector(newLocalWindow), "", []),
-                      item("Connect to Remote Host…", #selector(connectRemoteHost), "", [])]
-        for entry in file.items.suffix(2) { entry.target = self }
+                      item("Close Window", #selector(closeWindow), "", []), .separator(),
+                      item("Connect to Remote Host…", #selector(connectRemoteHost), "K", [.command, .shift])]
+        for entry in file.items where entry.action != #selector(PaneView.runCommand(_:)) { entry.target = self }
         let find = NSMenu(title: "Find")
         find.items = [
             item("Find…", #selector(PaneView.showFind(_:)), "f", .command),
@@ -230,12 +257,24 @@ import SidebarFeed
         menu.items.first { $0.action == #selector(PaneView.promptSelectionItem(_:)) }?.target = nil
     }
 
-    @objc private func resetClipboardPermissions() {
+    @objc func resetClipboardPermissions() {
         WindowOwner.resetClipboardPermissions(owners)
     }
 
-    @objc func newLocalWindow() { routes.ordinaryOpen(cause: .newWindow) }
-    @objc private func connectRemoteHost() { RemoteHostDialog(routes: routes).show(on: NSApp.keyWindow) }
+    @objc func connectRemoteHost() {
+        if palettePanel == nil { togglePalette() }
+        palettePanel?.palette.enter(.connect)
+    }
+
+    @objc func renameSession() {
+        guard let owner = paletteFocus?.owner ?? current, let session = owner.currentSession,
+              let instance = owner.snapshot?.serverInstance else { return }
+        if palettePanel == nil { togglePalette() }
+        palettePanel?.palette.enter(.rename(owner, instance, session.id, original: session.name))
+    }
+
+    @objc func closeWindow() { (paletteFocus?.owner ?? current)?.closeCurrentWindow() }
+    @objc func closeSession() { (paletteFocus?.owner ?? current)?.closeCurrentSession() }
 
     @objc func newSession() {
         if let current { return current.newSession() }
@@ -243,25 +282,134 @@ import SidebarFeed
             owner.reveal()
             return owner.newSession()
         }
-        startsSession = true
-        routes.connect(.local, cause: .newWindow)
+        routes.ordinaryOpen(cause: .newSession)
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        item.action != #selector(closeWindow) || (paletteFocus?.owner ?? current) != nil
+    }
+
+    func paletteStateChanged() {
+        guard let panel = palettePanel, !paletteBusy, panel.palette.mode == .root else { return }
+        withPaletteBusy {
+            updateMenu(paletteFocus?.owner, responder: paletteFocus?.responder)
+            panel.palette.refresh(paletteEntries(owner: paletteFocus?.owner, responder: paletteFocus?.responder))
+        }
+    }
+
+    private func focusPalette(_ panel: PalettePanel) {
+        let selection = (panel.firstResponder as? NSTextView)?.selectedRange()
+        panel.makeKey()
+        panel.makeFirstResponder(panel.palette.field)
+        if let selection { (panel.firstResponder as? NSTextView)?.setSelectedRange(selection) }
     }
 
     @objc func togglePalette() {
-        if let palettePanel { return palettePanel.close() }
-        let open = owners.filter(\.alive)
-        let hosts = routes.recent.entries.map(\.host).filter { alias in !open.contains { $0.host == .remote(alias) } }
-        let entries = (open.filter { $0 === current } + open.filter { $0 !== current }).flatMap(PaletteEntry.sessions)
-            + hosts.map { alias in PaletteEntry(title: alias, detail: "Connect", symbol: "network") { [routes] in routes.connect(.remote(alias)) } }
-            + (NSApp.mainMenu.map { PaletteEntry.commands($0) } ?? [])
-        if let current { return current.togglePalette(entries) }
-        guard let runtime, let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let panel = PalettePanel(palette: Palette(runtime: runtime, entries: entries), on: screen.visibleFrame) { [weak self] in self?.palettePanel = nil }
-        palettePanel = panel
-        if !background {
-            NSApp.activate(ignoringOtherApps: true)
-            panel.makeKeyAndOrderFront(nil)
+        if palettePanel != nil { return closePalette() }
+        updateMenu(current, responder: current?.window.firstResponder)
+        let entries = paletteEntries(owner: current, responder: current?.window.firstResponder)
+        guard let runtime = current?.runtime ?? runtime else { return }
+        paletteFocus = current.map { ($0, $0.window.firstResponder) }
+        let panel = PalettePanel(palette: PaletteView(runtime: runtime, entries: entries)) { [weak self] in
+            guard let self, !paletteBusy else { return }
+            closePalette(.moved)
         }
+        palettePanel = panel
+        panel.toggle = { [weak self] in self?.closePalette() }
+        panel.connect = { [weak self] in self?.connectRemoteHost() }
+        panel.palette.dismiss = { [weak self] in self?.closePalette() }
+        panel.palette.chooseEntry = { [weak self, weak panel] entry in
+            guard let self, let panel else { return }
+            performPalette(entry, panel: panel)
+        }
+        panel.palette.rootEntries = { [weak self] in
+            guard let self else { return [] }
+            updateMenu(paletteFocus?.owner, responder: paletteFocus?.responder)
+            return paletteEntries(owner: paletteFocus?.owner, responder: paletteFocus?.responder)
+        }
+        panel.palette.modeEntries = { [weak self] query, invalid in self?.connectEntries(query: query, invalid: invalid) ?? [] }
+        panel.palette.rename = { [weak self, weak panel] text in
+            guard let self, let panel, self.palettePanel === panel,
+                  case .rename(let owner, let instance, let id, let original) = panel.palette.mode else { return }
+            let mode = panel.palette.mode
+            guard owner.alive, owner.canNavigate, let snapshot = owner.snapshot, snapshot.serverInstance == instance,
+                  snapshot.sessions.contains(where: { $0.id == id }) else {
+                panel.palette.reject("That session is gone")
+                return
+            }
+            switch SessionRename(text, session: id, original: original, sessions: snapshot.sessions) {
+            case .revert: closePalette()
+            case .reject(let message): panel.palette.reject(message)
+            case .rename(let name):
+                owner.renameSession(id, name) { [weak self, weak panel] error in
+                    guard let self, let panel, self.palettePanel === panel, panel.palette.mode == mode else { return }
+                    if let error { panel.palette.reject(error) }
+                    else { self.closePalette() }
+                }
+            }
+        }
+        panel.place(over: paletteFocus?.owner)
+        let center = NotificationCenter.default
+        for name in [NSWindow.didBecomeKeyNotification, NSApplication.didResignActiveNotification] {
+            paletteObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self, weak panel] notification in
+                let window = notification.object as? NSWindow
+                MainActor.assumeIsolated {
+                    guard let self, self.palettePanel != nil, !self.paletteBusy else { return }
+                    if window !== panel { self.closePalette(.moved) }
+                }
+            })
+        }
+        withPaletteBusy {
+            if !background { panel.makeKeyAndOrderFront(nil) }
+            focusPalette(panel)
+        }
+    }
+
+    private func performPalette(_ entry: PaletteEntry, panel: PalettePanel) {
+        withPaletteBusy {
+            restorePaletteFocus()
+            if let error = entry.check() {
+                panel.palette.reject(error)
+                focusPalette(panel)
+                return
+            }
+            switch entry.operation {
+            case .run(let action): closePalette(.choice); action()
+            case .enter(let mode): panel.palette.enter(mode); focusPalette(panel)
+            case .connectTyped(let text):
+                do throws(Failure) {
+                    let host = try Host(text)
+                    closePalette(.choice)
+                    routes.connect(host)
+                } catch { panel.palette.reject(error.message); focusPalette(panel) }
+            case .clearRecent:
+                routes.clearRecent()
+                panel.palette.reloadMode()
+                focusPalette(panel)
+            }
+        }
+    }
+
+    func closePalette(_ reason: CloseReason = .dismiss) {
+        guard let panel = palettePanel else { return }
+        withPaletteBusy {
+            palettePanel = nil
+            paletteObservers.forEach { NotificationCenter.default.removeObserver($0) }
+            paletteObservers = []
+            let focus = paletteFocus
+            paletteFocus = nil
+            panel.palette.field.abortEditing()
+            panel.close()
+            if reason == .dismiss { restorePaletteFocus(focus) }
+        }
+    }
+
+    private func restorePaletteFocus(_ saved: (owner: WindowOwner, responder: NSResponder?)? = nil) {
+        guard let focus = saved ?? paletteFocus, focus.owner.alive else { return }
+        if !background { focus.owner.window.makeKeyAndOrderFront(nil) }
+        if let view = focus.responder as? NSView, view.window === focus.owner.window {
+            focus.owner.window.makeFirstResponder(view)
+        } else { focus.owner.focusSelected() }
     }
     @objc private func quitItem() { quit("the Quit menu item") }
     func quit(_ reason: String) { trigger = reason; NSApp.terminate(nil) }

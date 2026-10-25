@@ -41,7 +41,6 @@ import TmuxControl
     recent.add("first", at: Date(timeIntervalSince1970: 30))
     #expect(recent.entries.map(\.host) == ["first", "second"])
     #expect(recent.entries[0].date == Date(timeIntervalSince1970: 30))
-    #expect(recent.relativeTime(recent.entries[0], now: Date(timeIntervalSince1970: 86430)) == "1 d ago")
     #expect(try JSONDecoder().decode(RecentHosts.self, from: JSONEncoder().encode(recent)) == recent)
     recent.clear()
     #expect(recent.isEmpty)

@@ -1,7 +1,7 @@
 import TmuxControl
 
 public enum CloseTarget: Equatable, Sendable {
-    case pane(PaneID), window(WindowID)
+    case pane(PaneID), window(WindowID), session(SessionID)
 }
 
 public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (running: Bool, descendants: [WindowID]) {
@@ -15,7 +15,10 @@ public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (running: 
         }
         if matches { roots.append(node) } else { node.children.forEach(find) }
     }
-    snapshot?.sessions.forEach { $0.nodes.forEach(find) }
+    snapshot?.sessions.forEach {
+        if case .session(let id) = target, $0.id == id { roots += $0.nodes }
+        else { $0.nodes.forEach(find) }
+    }
     var running = false, descendants: [WindowID] = []
     func collect(_ node: Node, rootWindow: WindowID) {
         if case .item(let item) = node {
@@ -27,6 +30,7 @@ public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (running: 
         if node.window != rootWindow, !descendants.contains(node.window) { descendants.append(node.window) }
     }
     for root in roots { collect(root, rootWindow: root.window) }
+    if case .session = target { descendants = [] }
     return (running, descendants)
 }
 

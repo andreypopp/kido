@@ -88,23 +88,17 @@ URL delivery and the App Intent share Host validation and window routing. Each r
 creates a new native window, including repeated requests for one alias.
 Host is trimmed and accepts an SSH alias or user@hostname, not options,
 whitespace, controls or shell syntax. Ports and jump hosts belong in SSH
-config. File → **New Local Window** uses ordinary Local routing even when other
-windows exist; the cold remote-launch gate still holds Local requests back.
-File → **Connect to Remote Host…** uses the same remote routing as URLs and the
-App Intent. Its dialog is a 440pt titled sheet on the key window, or a free
-window without one: bold title, a one-line lead, a labeled **Host:** field with
-its help line, a bordered **Recent** table (132pt, 24pt rows of host and
-relative time) and, along the bottom, **Clear Recent** at the left with
-Cancel and the default Connect at the right. Selecting a recent row fills
-the field; double-clicking connects it. Invalid input keeps the sheet open,
-retaining the text and showing an inline red error under the field that grows
-the same sheet by 32pt; Connect dismisses only after validation succeeds. Neither
-item has a shortcut. Dock reopen still focuses existing windows. The recent
-list lives in preferences (`recentHosts`) and is refreshed by every remote
-path, dialog, URL or intent alike; Clear Recent empties it and disables itself
-until a host is added. There is no remote restore. Off-screen FileMenuTests
-exercise the dialog response handler directly rather than running a modal
-sheet, and create inert window owners without starting a server.
+config. File → **Connect to Remote Host…** (Shift-Command-K) opens the
+[command palette](#command-palette) in its Connect mode. The mode uses the same
+remote routing as URLs and the App Intent. The cold
+remote-launch gate still holds Local requests back. Dock reopen still focuses
+existing windows; with no window it opens a Local window. The app opts out of
+automatic termination at launch: AppKit marks a windowless app as terminated
+by the transparent app lifecycle (TAL), and a Dock reopen then does not reach
+the process. The recent list lives in preferences (`recentHosts`) and is
+refreshed by every remote path, palette, URL or intent alike. There is no
+remote restore. Off-screen FileMenuTests create inert window owners without
+starting a server.
 Local keeps `SessionModel.title` (session and current window); remote prefixes
 it with resolved `user@host / `. The original dialing alias is the window
 content's tooltip. Offline titles drop the session/window name.
@@ -306,6 +300,11 @@ on existing panes. The file overrides these defaults, including the
 theme, background and non-blinking cursor. The window and pane chrome
 follow the effective Ghostty background and its light or dark
 appearance.
+
+The built-in defaults unbind Ghostty's `super+k`. The app has no Clear
+command, and Ghostty binds Command-K to `clear_screen` by default. That
+action clears only the Ghostty surface. Under `MANUAL_MIRROR` the surface
+then no longer agrees with tmux's grid, so the key does nothing.
 
 The sidebar list's background is a shade of the terminal background.
 The shade mixes the terminal background toward black on a light
@@ -701,6 +700,13 @@ stroke at 50% alpha, inside its chrome rect, over the padding and not over
 cells. A single-pane window draws no shift and no edge on its pane, in
 every focus state. Floating panes keep a 45% theme-background overlay when
 they are not active.
+
+A pane has Ghostty surface focus, and a solid cursor, only while it is its
+window's first responder and that window is key, or while no app window is
+key. Each pane observes the key-window notifications. Thus, a key panel
+over the window, such as the [command palette](#command-palette), makes
+the focused pane's cursor hollow without moving the window's first
+responder.
 
 The shift changes the paper, not the ink. Each tiled surface gets its own
 clone of the app's Ghostty config with `background-opacity = 0` and
@@ -1136,6 +1142,19 @@ side by side. A quiet target closes at once. The close kills descendant windows
 before the target, and a failed kill reports "Pane command failed" in another
 sheet. Only one alert is prepared at a time.
 
+File → Close Window and Session → Close Session have no shortcut. They
+use the same confirmation. Close Window kills the key window's current tmux
+window. On a session's last window this also ends the session, with no
+extra warning. Close Session checks every pane of every window of the
+session, and asks with "Processes are still running in this session.
+Closing the session will end them." It then sends `kill-session`. The
+control client is attached with `no-detach-on-destroy`. Thus, tmux moves it to
+another session, and the window follows that switch as it follows any switch.
+If the session was the last one, the server exits, and the window stays open
+with the no-server banner and its Start button. The native window's close
+button still only disconnects ([Remote hosts](#remote-hosts)). With no window,
+the Window and Session menus and Close Window are disabled.
+
 Captions use a display-only 200ms debounce per row. New text must remain
 stable for 200ms; empty text must persist for 200ms before the old caption
 is hidden. The first snapshot after launch or reconnect shows captions
@@ -1228,7 +1247,12 @@ across sessions; a sole eligible window can select itself and null is a no-op.
 Option-Command-]/[ switches sessions in the
 sidebar session order, with wraparound and a single-session no-op.
 Session navigation uses RPC switch-session and selects the returned current window.
-Command-N and toolbar plus create a session via new-session. Each session
+Command-N and toolbar plus create a session via new-session. File → New
+Session with no key window uses an open local window that is not key, or opens
+a local window. The window that it opens has the dial cause `newSession`: it
+makes a session on its first error-free snapshot, once. The intent belongs to
+that window. Closing it before its snapshot drops the intent, and a later
+ordinary open does not make a session. Each session
 header plus creates a window after that session's current window via new-window.
 Command-T sends new-window with the current window id; the server inserts
 immediately after it using its active pane's cwd. Numbered and last tabs use
@@ -1266,53 +1290,132 @@ first observes an error-free snapshot count as seen. Seen is not persisted acros
 The sidebar is visible by default; it does not automatically collapse
 at narrow widths.
 
-### Command palette
+## Command palette
 
-Command-P (View > Command Palette…) and Ghostty's `toggle_command_palette`
-(Shift-Command-P) open the palette. The same keys close it. The palette is
-a capsule at the top of the terminal area, in the theme of the pane toolbar.
-If no Kido window is key, for example when every window is closed or
-minimized, the palette opens in a borderless panel near the top of the
-main screen. The panel closes when it is no longer key.
+Command-P (View → Command Palette…) opens the palette and closes it.
+Shift-Command-P does the same. It is Ghostty's `toggle_command_palette`
+default, and from a pane it arrives through Ghostty's action hook. The sidebar
+has no filter; the fuzzy scorer belongs to the palette.
 
-The palette has no data of its own. When it opens, `AppDelegate` reads
-three lists once:
+`AppDelegate` owns the one palette: a `PalettePanel`, a borderless, floating
+`NSPanel` the size of its card, and the focus to restore (the anchor owner and
+its window's first responder). `WindowOwner` has no palette state. The palette
+acts on windows only through the owner's own methods (`perform`,
+`confirmClose`, `renameSession`, `newSession`, `reveal`). The anchor is the
+key Kido window's owner when the palette opens.
 
-- Every session and pane of each open window, in sidebar order. The key
-  window comes first. A session row has a stack symbol and selects the
-  session through one RPC. A pane row has its status mark and activates
-  through one RPC jump, as a sidebar row does. The row's window comes to
-  the front first. A remote window's rows start their path with the host.
-- Each recent remote host that has no open window, with a globe symbol.
-  It connects as the Connect to Remote Host dialog does.
-- Every enabled main-menu item that has an action, with its menu path and
-  key equivalent. Before the read, each menu runs its update for the
-  current first responder, so the list agrees with the menu bar. The
-  palette item itself is not in the list. An item runs through
-  `NSApp.sendAction` after the focus returns to its earlier responder.
-  Window and session switching come from the Window and Session menus,
-  which are disabled when no window is key.
+The card is always 600pt wide. Over a window, it is centred horizontally on
+the content area below the toolbar, also when the window is narrower, and its
+top is 20% of that area's height below the area's top. With no window, it is
+centred on the main screen's visible frame, with its top 20% below the top of
+that frame. The frame is then clamped into the screen's visible frame. The
+panel is not a child window and does not follow a window drag: a press on the
+window makes that window key, which closes the palette. The card takes the
+anchor's terminal theme, or the app's theme with no window: the terminal
+background mixed 7% toward the foreground, a 0.5pt edge of the foreground at
+14%, and a 12pt radius. The card draws no layer shadow: the panel is exactly
+the card's size, so a layer shadow would be clipped to its square corners.
+The panel is clear and not opaque, and the window server draws its shadow
+around the rounded card.
 
-New Session (Command-N) with no key window uses a local window that is
-open but not key, or opens one. The new window makes a session on its
-first snapshot.
+One close path serves every trigger: the two keys, Escape at the root, a
+choice, the anchor window's resign-key or close, another window becoming key,
+and the app's deactivation. It restores the saved focus: the saved responder
+if it is still a view in that window, else the owner's selected pane. It does
+not restore focus when another window became key, because the user moved
+there. A choice restores the focus before its action runs. Thus, an action
+that reads the first responder (Find…, Copy Mode, Prompt…, Split) sees the
+pane, and a jump's own focus target, installed later, wins. The pane under an
+open palette draws a hollow cursor ([Focus treatment](#focus-treatment)).
 
-Each row shows its path: the host, session name or menu path, dim, then
-` › ` and the title. With no text, the list shows the sessions and panes,
-then the hosts, then the commands. Spaces, `>` and `›` split the text into words. Each word must
-match the title or the path, in any order, so `main term` and
-`main > term` find the Terminal pane of session main. A word uses the same
-fuzzy scorer as the terminal sidebar (`fuzzyMatch` in SidebarFeed): the
-characters match in order, a run of adjacent matches scores more, and a
-gap scores less. A word scores one less on the path than on the title, so
-a title match wins a tie. The row score is the sum of its words. Equal
-scores keep the list order. The matched characters use the accent colour.
+The root list is built from live state, in this order:
 
-Up and Down, or Control-P and Control-N, move the selection. Return runs it.
-Escape, a click outside the capsule or a focus change outside the palette
-closes it. A focus change to the window itself does not close it: when the
-search field changes size, AppKit ends and restarts its editing, and the
-window is first responder for that time.
+- The sessions and panes of every connected owner, in sidebar order. The
+  anchor comes first, then the other owners. A session row has the
+  `square.stack` symbol and selects the session through one RPC. A pane row
+  has its status mark and jumps through one RPC, as a sidebar row does. The
+  row's window comes to the front first. A remote owner's rows start their
+  detail with the host. An owner that is offline or reconnecting adds no rows.
+- Each recent host that has no open Kido window, newest first, with the
+  `globe` symbol and the detail "Connect". This holds also when windows are
+  open.
+- A fixed list of commands, each read from its menu item (found by action and
+  represented object, never by title) for its title, menu path and current
+  key equivalent: New Session, Rename Session…, Close Session, New Window,
+  Close Window, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
+  Remote Host…, Hide/Show Sidebar, Focus Sidebar, Enter Full Screen, Find…,
+  Copy Mode, Prompt… and Reset Clipboard and Upload Permissions. The window
+  commands need an anchor. The pane commands need a live focused pane: a
+  connected anchor whose saved responder is a visible pane of that window, or
+  a view inside one, such as its Find bar or prompt box.
+  Navigation items, Select Pane, the numbered lists, Find Next/Previous, Hide,
+  Quit and the palette item are never in the list.
+
+While the palette is open, each owner snapshot or model change and each window
+close rebuilds the entries from the saved owner and responder. The panel stays
+key. The query is applied again, and the selection is kept by entry identity,
+else row 0. A row is checked again when it runs. A session or pane row needs
+an owner of the same host with the same `server_instance` whose rows still
+contain the target; else the palette shows "That pane is gone" and sends
+nothing. A pane command needs a live focused pane again. Then a command
+updates its menu and runs only if its item is enabled, through
+`NSApp.sendAction`. Else the
+palette shows "Not available now" and stays open.
+
+Each row shows a detail (the host, session name or menu path) in secondary
+colour, then ` › ` and the title; agents are semibold. Spaces, `>` and `›`
+split the query into words. Each word must match the title or the detail, in
+any order, so `main term` finds the Terminal pane of session main. A word uses
+`fuzzyMatch` in SidebarFeed: the characters match in order, a run of adjacent
+matches scores more, and a gap scores less. A word scores one less on the
+detail than on the title, so a title match wins a tie. The row score is the
+sum of its words, and equal scores keep the list order. Each run of matched
+characters gets a fill of the terminal foreground at 14% with a 3pt radius;
+the text keeps its colour and weight. With no match, the list shows "No
+matches".
+
+The palette has two modes besides the root. A mode shows a chip left of the
+field (22pt, the mode's symbol and name) and a foot that names its keys.
+Entering a mode clears the query and the error. An error is a red line between
+the field and the list; an edit clears it.
+
+- **Connect** (`globe`, "user@hostname or SSH alias"). The root row Connect
+  to Remote Host…, File → Connect to Remote Host… and Shift-Command-K enter it.
+  With text, the first row is "Connect to <text>", selected. The recent hosts
+  that match follow, with their relative time. With no text, the last row is
+  Clear Recent Hosts, which clears the list without confirmation. With no
+  text and no recent hosts, the list shows "No recent hosts". Return on the
+  typed row validates the text as a `Host`. An invalid host keeps the text and
+  shows the validation message as the error, and the typed row is absent until
+  the text changes. A valid host or a host row connects through the same
+  remote routing as URLs and opens a new window.
+- **Rename session** (`pencil`). Session → Rename Session… and its root row
+  enter it. It targets the anchor's current session, with the current name in
+  the field, selected. Return commits through `SessionRename`, the rules of the
+  sidebar's inline rename: an empty or unchanged name closes the palette with
+  no change; a name with `:` or `.` or a duplicate name shows the rule's message
+  and selects the text again; a tmux refusal shows tmux's message. The sidebar's
+  inline rename and this mode call the same `WindowOwner.renameSession`.
+
+Keys reach the panel first; no pane is in its responder chain. The panel's
+`performKeyEquivalent` takes Command-P and Shift-Command-P (close) and
+Shift-Command-K (Connect) before the field editor. Other Command keys go to the
+main menu. The field's `control(_:textView:doCommandBy:)` handles the rest:
+Up, Down, Control-P and Control-N move the selection with wraparound; Return
+runs it; Escape returns from a mode to the root and closes at the root;
+Backspace on an empty field in a mode returns to the root. Command-P has no
+Ghostty default. From a pane, `PaneView.performKeyEquivalent` offers an
+unbound Command key to the main menu, which is how Command-P reaches the
+palette.
+
+The field's accessibility label names the mode: "Command palette", "Connect
+to remote host" or "Rename session". Each row's label joins its title, detail
+and shortcut, and adds the status as the tabs do (" — error", " — waiting",
+" — running", " — done"). An error is announced at high priority. The panel's
+subrole is a floating window.
+
+New Session (Command-N) with no key window is described in
+[Sidebar](#sidebar).
 
 ## Notifications
 
@@ -1415,7 +1518,7 @@ two owners, feed restart and `route` against the recording poster.
 
 `make visual` runs hosted SnapshotTesting tests against a private tmux
 socket, never activating a window. Clipboard sheets use visible windows placed
-far off screen, as do native-button local-mismatch and remote-host validation tests;
+far off screen, as do native-button local-mismatch tests;
 the other fixtures keep their windows unordered. Menlo 13 and the built-in
 light/dark themes isolate terminal-area image and compact layout references:
 single panes at three heights, splits, floats, zoom, fractional history,
@@ -1438,6 +1541,25 @@ Liquid Glass (sidebar and pane toolbar) and animation/scroll smoothness are
 not covered. Re-record with `make visual RECORD=1` after intentional visual
 changes, a macOS update or a different backing scale, and review the images
 and layout diffs. References live in `app/VisualTests/__Snapshots__`.
+
+`PaletteTests` records one image of the palette's content view for each
+state of the approved mockup, `app/design/palette/` (`mockup.html` with its
+`NOTES.md`), in light and dark: `palette.<theme>-<state>.png` for root,
+filtered, filtered2, nomatch, connect, connect-typing, connect-invalid,
+connect-none, rename, rename-error, rename-error2, nowindow and match-run.
+`palette.light-window-root.png` records the card over a real two-pane window
+at the mockup's 1100x740pt, with the panes' cursors hollow. The fixture
+clears the panes' tmux history after fixed output, because `respawn-pane -k`
+keeps history. It lays the window out completely before the presented-frame
+fences, and it checks the pane frames against the tmux layout: a layout pass
+after the fences resizes the panes and the sidebar shadow after the captured
+frames. The background
+test app has the `.prohibited` activation policy, so AppKit does not make
+the unordered panel key. The key tests therefore assert `canBecomeKey` and
+the panel's field editor, not `isKeyWindow`. They send Command keys as real
+events through the panel's `performKeyEquivalent`, the call that
+`NSApplication` makes for a key window, and other keys through its
+`sendEvent`.
 
 
 `make tsan` and `make asan` build Debug with ReleaseSafe GhosttyKit into
