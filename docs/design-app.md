@@ -689,12 +689,14 @@ only one with the pure terminal background. Every other tiled pane gets
 the shifted paper: the terminal background mixed 3% toward black on a light
 background and 3% toward white on a dark one (relative luminance < 0.5), per
 sRGB component. This is the direction rule of the sidebar shade, and one
-helper computes both. The pane shift does not follow `kido-sidebar-shade`,
-so a strong sidebar value does not make inactive panes hard to read. Its own
+helper computes both. The titlebar and toolbar band uses this shifted
+paper in all sidebar modes and in full screen. Thus it matches an inactive
+pane. The pane shift does not follow `kido-sidebar-shade`, so a strong
+sidebar value does not make inactive panes hard to read. Its own
 key, `kido-unfocused-background-shift = <percent>`, has the syntax, range,
 include order and diagnostic rules of `kido-sidebar-shade`, with
 a 3% default, and the same reader reads both keys. A reload that changes only this key repaints the
-panes. The focused pane also gets a 1pt `controlAccentColor`
+panes and the band. The focused pane also gets a 1pt `controlAccentColor`
 stroke at 50% alpha, inside its chrome rect, over the padding and not over
 cells. A single-pane window draws no shift and no edge on its pane, in
 every focus state. Floating panes keep a 45% theme-background overlay when
@@ -1048,7 +1050,10 @@ supplies the floating glass, collapse animation and saved width (236pt,
 200-360pt). The window has an icon-only unified toolbar only because the
 sidebar's glass reaches the top of the window, traffic lights inside it,
 when there is one; without it AppKit adds a plain titlebar strip. The
-window, chrome, native header and terminal share the Ghostty theme background.
+chrome follows the Ghostty theme background. The native header band, the
+window background, the terminal host and the tabs' theme use it with the
+inactive-pane shift ([Focus treatment](#focus-treatment)). The terminal
+content view, banners and a single-pane window's paper and padding stay pure.
 Full screen keeps the toolbar visible by removing `.autoHideToolbar` from
 the presentation options. New Session is a standard
 image toolbar item, as is the sidebar toggle, targeting the split view
