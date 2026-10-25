@@ -16,7 +16,7 @@ typealias AppWindow = StressWindow
 
 @MainActor final class Stress {
     private enum Action: String {
-        case wheel, stripPress = "strip-press", stripWheel = "strip-wheel", alternate
+        case wheel, alternate
         case scrollerDrag = "scroller-drag", scrollRequest = "scroll-request"
         case find, findNext = "find-next", findCloseResync = "find-close-resync"
         case resizeBurst = "resize-burst", loadMore = "load-more", gripDrag = "grip-drag"
@@ -25,7 +25,7 @@ typealias AppWindow = StressWindow
         case tabs, sidebarJump = "sidebar-jump", sidebarMode = "sidebar-mode"
     }
     private static let actions: [Action] = [
-        .wheel, .wheel, .stripPress, .stripWheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
+        .wheel, .wheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
         .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect, .hiddenResize, .clearHistory,
         .tabs, .sidebarJump, .sidebarMode,
     ]
@@ -78,9 +78,8 @@ typealias AppWindow = StressWindow
         let surfaces = [pane, reference]
         for surface in surfaces {
             window.contentView?.addSubview(surface)
-            surface.frame = NSRect(x: -10000, y: -10000, width: surface.cell.width * 80, height: surface.cell.height * 12 + 9.5)
+            surface.frame = NSRect(x: -10000, y: -10000, width: surface.cell.width * 80, height: surface.cell.height * 12)
             surface.resize(cols: 80, rows: 12)
-            surface.renderInsets.top = 9.5
             surface.layoutSubtreeIfNeeded()
             ghostty_surface_set_occlusion(surface.surface, true)
         }
@@ -249,8 +248,8 @@ typealias AppWindow = StressWindow
     private var snapFixture: PaneView?
     private var wheelInputs = Data()
 
-    private func wheel(_ pane: PaneView, y: Int32, x: Int32 = 0, precise: Bool = true, shift: Bool = false, band: Int = 0, momentum: Int64 = 0) {
-        guard let event = pane.wheelEvent(y: y, x: x, precise: precise, shift: shift, band: band, momentum: momentum) else { exit(1) }
+    private func wheel(_ pane: PaneView, y: Int32, x: Int32 = 0, precise: Bool = true, shift: Bool = false, momentum: Int64 = 0) {
+        guard let event = pane.wheelEvent(y: y, x: x, precise: precise, shift: shift, momentum: momentum) else { exit(1) }
         pane.mouseMoved(with: event)
         pane.scrollWheel(with: event)
     }
@@ -264,7 +263,7 @@ typealias AppWindow = StressWindow
         for precise in [true, false] {
             for y: Int32 in [-1, 1] {
                 for momentum: Int64 in [0, 1, 2, 3] {
-                    for band in [0, 1, -1] { wheel(pane, y: y, precise: precise, band: band, momentum: momentum) }
+                    wheel(pane, y: y, precise: precise, momentum: momentum)
                 }
             }
         }
@@ -302,30 +301,25 @@ typealias AppWindow = StressWindow
 
     private func verifyWheelPrograms(_ pane: PaneView, index: Int, completion: @escaping @MainActor () -> Void) {
         let size = ghostty_surface_size(pane.surface)
-        let cases: [(String, String, Int32, Int32, Bool, Int, Bool)] = [
-            ("\u{1b}[?1049h\u{1b}[?1007h\u{1b}[?1l", "\u{1b}[A", Int32(size.cell_height_px), 0, false, 0, false),
-            ("", "\u{1b}[B", -Int32(size.cell_height_px), 0, false, 0, false),
-            ("\u{1b}[?1h", "\u{1b}OB", -Int32(size.cell_height_px), 0, false, 0, false),
-            ("", "\u{1b}OA", Int32(size.cell_height_px), 0, false, 0, false),
-            ("\u{1b}[?1007l", "", Int32(size.cell_height_px), 0, false, 0, false),
-            ("", "", Int32(size.cell_height_px), 0, false, 1, false),
-            ("\u{1b}[?1007h", "", Int32(size.cell_height_px), 0, false, -1, false),
-            ("\u{1b}[?1049l\u{1b}[?1000h\u{1b}[?1006h", "\u{1b}[<68;1;1M", Int32(size.cell_height_px), 0, true, 0, false),
-            ("", "\u{1b}[<66;1;1M", 0, Int32(size.cell_width_px), false, 0, false),
-            ("\u{1b}[?1049h", "\u{1b}[<64;1;1M", Int32(size.cell_height_px), 0, false, 0, false),
-            ("", "", Int32(size.cell_height_px), 0, true, 1, false),
-            ("", "", Int32(size.cell_height_px), 0, false, -1, false),
-            ("\u{1b}[?1049l", "", 1, 0, false, 1, true),
-            ("", "", 1, 0, false, -1, true),
-            ("", "", 1, 0, false, 0, true)
+        let cases: [(String, String, Int32, Int32, Bool, Bool)] = [
+            ("\u{1b}[?1049h\u{1b}[?1007h\u{1b}[?1l", "\u{1b}[A", Int32(size.cell_height_px), 0, false, false),
+            ("", "\u{1b}[B", -Int32(size.cell_height_px), 0, false, false),
+            ("\u{1b}[?1h", "\u{1b}OB", -Int32(size.cell_height_px), 0, false, false),
+            ("", "\u{1b}OA", Int32(size.cell_height_px), 0, false, false),
+            ("\u{1b}[?1007l", "", Int32(size.cell_height_px), 0, false, false),
+            ("\u{1b}[?1007h\u{1b}[?1049l\u{1b}[?1000h\u{1b}[?1006h", "\u{1b}[<68;1;1M", Int32(size.cell_height_px), 0, true, false),
+            ("", "\u{1b}[<66;1;1M", 0, Int32(size.cell_width_px), false, false),
+            ("\u{1b}[?1049h", "\u{1b}[<64;1;1M", Int32(size.cell_height_px), 0, false, false),
+            ("\u{1b}[?1049l", "", 1, 0, false, true),
+            ("", "", 1, 0, false, true)
         ]
         guard index < cases.count else {
             pane.resetScroll()
-            self.log(["wheel-programs": "passed", "shift-report": "passed", "horizontal-report": "passed", "bands": "passed", "reporting-disabled": "passed", "empty-pane": "passed"])
+            self.log(["wheel-programs": "passed", "shift-report": "passed", "horizontal-report": "passed", "reporting-disabled": "passed", "empty-pane": "passed"])
             completion()
             return
         }
-        let (output, expected, y, x, shift, band, viewport) = cases[index]
+        let (output, expected, y, x, shift, viewport) = cases[index]
         if index == 0 || index == cases.count - 1 {
             guard let config = ghostty_config_new() else { exit(1) }
             let text = "mouse-reporting = \(index == cases.count - 1 ? "false" : "true")\nmouse-scroll-multiplier = 1\nmouse-shift-capture = never\n"
@@ -342,7 +336,7 @@ typealias AppWindow = StressWindow
         }
         DispatchQueue.main.async {
             let before = pane.scrollPosition()
-            self.wheel(pane, y: y, x: x, shift: shift, band: band)
+            self.wheel(pane, y: y, x: x, shift: shift)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 let after = pane.scrollPosition()
                 let state = viewport ? (pane.scrollTarget ?? 0) > 0 : (pane.scrollTarget ?? 0) == 0 && before.offset == after.offset
@@ -365,8 +359,7 @@ typealias AppWindow = StressWindow
             guard let fixture = PaneView(runtime: runtime, pane: original.pane, font: original.font,
                                          onInput: { [weak self] in self?.wheelInputs.append($0) }) else { exit(1) }
             window.contentView?.addSubview(fixture)
-            fixture.renderInsets = PaneLayout.RenderInsets(top: 8, bottom: 8)
-            fixture.frame = NSRect(x: -10000, y: -10000, width: fixture.cell.width * 80, height: fixture.cell.height * 24 + 16)
+            fixture.frame = NSRect(x: -10000, y: -10000, width: fixture.cell.width * 80, height: fixture.cell.height * 24)
             fixture.resize(cols: 80, rows: 24)
             fixture.needsLayout = true
             fixture.layout()
@@ -699,8 +692,7 @@ typealias AppWindow = StressWindow
             }
         }
         counts["alternate-pane-steps", default: 0] += panes.filter(\.alternate).count
-        let pool = action == .stripPress || action == .stripWheel ? panes.filter { $0.renderInsets.top > 0 } : panes
-        let pane = pool.isEmpty ? nil : pool[random(pool.count)]
+        let pane = panes.isEmpty ? nil : panes[random(panes.count)]
         counts[action.rawValue, default: 0] += 1
         log(["step": step, "action": action.rawValue, "pane": pane?.pane.description ?? "", "panes": panes.count,
              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
@@ -715,14 +707,9 @@ typealias AppWindow = StressWindow
     private func perform(_ action: Action, _ pane: PaneView, _ all: [NSView]) {
         switch action {
         case .tabs, .sidebarJump, .sidebarMode: break
-        case .stripPress:
-            let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.renderInsets.top / 2), to: nil)
-            pane.mouseDown(with: event(.leftMouseDown, point))
-            pane.mouseUp(with: event(.leftMouseUp, point))
-            counts["strip-press-delivered", default: 0] += 1
         case .alternate:
             send([Command("new-window", "-n", "stress-alt", "while :; do printf '\\033[?1049hALT SCREEN\\n'; sleep 2; printf '\\033[?1049l'; sleep 2; done")])
-        case .wheel, .stripWheel:
+        case .wheel:
             let delta = Int32(random(2) == 0 ? 1500 : -500)
             let precise = random(2) == 0
             let packets: [(Int64, Int64)] = precise ? [(1, 0), (2, 0), (4, 0), (0, 1), (0, 2), (0, 3)] : [(0, 0)]
@@ -731,20 +718,7 @@ typealias AppWindow = StressWindow
                                     wheelCount: 1, wheel1: phase == 4 || momentum == 3 ? 0 : delta, wheel2: 0, wheel3: 0) {
                     cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
                     cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
-                    if action == .stripWheel, let initial = NSEvent(cgEvent: cg) {
-                        let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.renderInsets.top / 2), to: nil)
-                        cg.location = CGPoint(x: cg.location.x + point.x - initial.locationInWindow.x,
-                                              y: cg.location.y - point.y + initial.locationInWindow.y)
-                    }
                     if let e = NSEvent(cgEvent: cg) {
-                        if action == .stripWheel {
-                            let local = pane.convert(e.locationInWindow, from: nil)
-                            guard pane.bounds.contains(local), pane.bounds.height - local.y < pane.renderInsets.top else {
-                                counts["strip-wheel-missed", default: 0] += 1
-                                continue
-                            }
-                            counts["strip-wheel-delivered", default: 0] += 1
-                        }
                         counts[e.hasPreciseScrollingDeltas ? "wheel-precise-packet" : "wheel-discrete-packet", default: 0] += 1
                         if !e.momentumPhase.isEmpty { counts["wheel-momentum-packet", default: 0] += 1 }
                         pane.scrollWheel(with: e)

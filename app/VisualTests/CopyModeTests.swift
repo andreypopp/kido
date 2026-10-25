@@ -1172,7 +1172,7 @@ extension VisualTests {
         var bar = ghostty_surface_scrollbar_s()
         _ = ghostty_surface_scrollbar(pane.surface, &bar)
         return mouse(pane, type, at: NSPoint(x: (CGFloat(x) + 0.5) * pane.cell.width,
-                                             y: pane.bounds.height - pane.renderInsets.top - (CGFloat(y - Int(bar.offset)) + 0.5) * pane.cell.height),
+                                             y: pane.bounds.height - (CGFloat(y - Int(bar.offset)) + 0.5) * pane.cell.height),
                      clickCount: clickCount, mods: mods)
     }
 

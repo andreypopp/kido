@@ -90,7 +90,6 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let root = try XCTUnwrap(owner.window.contentView?.superview)
         var selections = 0
         tabs.select = { _ in selections += 1 }
-        XCTAssertFalse(owner.window(owner.window, willUseFullScreenPresentationOptions: [.fullScreen, .autoHideToolbar]).contains(.autoHideToolbar))
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         for (name, text, connected) in [("connected", "dev@buildbox", true), ("offline", "dev@buildbox", false), ("long", "developer@buildbox.production.eu-west.example.net", true), ("local", "", true)] {
             tabs.hostLabel = { text.isEmpty ? nil : (text, "buildbox", connected) }
@@ -277,23 +276,6 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 let hostImage = try XCTUnwrap(headerContent.bitmapImageRepForCachingDisplay(in: headerContent.bounds))
                 headerContent.cacheDisplay(in: headerContent.bounds, to: hostImage)
                 let hostPixels = try XCTUnwrap(hostImage.converting(to: .sRGB, renderingIntent: .default))
-                if mode.hasPrefix("docked") {
-                    let shadow = try XCTUnwrap(paintedBackground.subviews.first as? SidebarShadow)
-                    let mainShadow = try XCTUnwrap(root.subviews.compactMap { $0 as? SidebarShadow }.first)
-                    let mainEdge = owner.window.convertPoint(toScreen: mainShadow.convert(.zero, to: nil)).x
-                    let headerEdge = header.convertPoint(toScreen: shadow.convert(NSPoint(x: 0, y: 32), to: nil)).x
-                    XCTAssertEqual(headerEdge, mainEdge, accuracy: 0.01, "fullscreen shadow continues the main-window shadow column")
-                    let scale = CGFloat(hostPixels.pixelsWide) / headerContent.bounds.width
-                    let x = Int((paintedBackground.frame.minX + 2) * scale)
-                    let separator = try XCTUnwrap(owner.sidebar.separatorColor.usingColorSpace(.sRGB))
-                    for y in [2, hostPixels.pixelsHigh / 2, hostPixels.pixelsHigh - 3] {
-                        try assertPaperPixel(hostPixels, x: Int(paintedBackground.frame.minX * scale), y: y,
-                                             expected: [separator.redComponent * 255, separator.greenComponent * 255, separator.blueComponent * 255], "fullscreen band separator")
-                        let edge = try XCTUnwrap(hostPixels.colorAt(x: x, y: y))
-                        let paper = try XCTUnwrap(hostPixels.colorAt(x: x + Int(36 * scale), y: y))
-                        XCTAssertLessThan(edge.redComponent, paper.redComponent - 2 / 255, "\(hex) shadow covers the full fullscreen band at y=\(y)")
-                    }
-                }
                 if mode == "collapsed" { XCTAssertEqual(paintedBackground.frame, headerContent.bounds) }
                 try assertPaperPixel(hostPixels, x: 20, y: 10, expected: mode == "collapsed" ? rgb : headerPaperRGB["white"]!, "fullscreen sidebar region must remain uncovered")
                 if mode == "docked" || mode == "floating" {
@@ -359,19 +341,17 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         }
     }
 
-    func testSidebarShade() async throws {
+    func testKidoSettings() async throws {
         XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("shade-\(UUID().uuidString)")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("settings-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory.appendingPathComponent("other"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let config = directory.appendingPathComponent("kido-app.conf")
-        let board = NSPasteboard(name: .init("shade-\(UUID().uuidString)"))
-        defer { board.releaseGlobally() }
         let notes = directory.appendingPathComponent("notes.log")
         try FileManager.default.createSymbolicLink(at: directory.appendingPathComponent("linked.conf"),
                                                   withDestinationURL: directory.appendingPathComponent("other/theme.conf"))
         func load(_ text: String) throws -> (settings: GhosttyRuntime.KidoSettings, lines: [Substring]) {
-            try ("background = #172029\nkido-sidebar-shad = 1\n" + text + "\n").write(to: config, atomically: false, encoding: .utf8)
+            try ("background = #172029\nkido-unknown-key = 1\n" + text + "\n").write(to: config, atomically: false, encoding: .utf8)
             FileManager.default.createFile(atPath: notes.path, contents: nil)
             let log = try FileHandle(forWritingTo: notes)
             let saved = dup(STDERR_FILENO)
@@ -384,119 +364,67 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             ghostty_config_free(parsed.config)
             return (parsed.settings, try String(contentsOf: notes, encoding: .utf8).split(separator: "\n"))
         }
-        for (key, field, fallback, diagnostic) in [
-            ("kido-sidebar-shade", \GhosttyRuntime.KidoSettings.sidebarShade, 0.05, "kido-sidebar-shade: not a percentage from -100 to 100: "),
-            ("kido-unfocused-background-shift", \GhosttyRuntime.KidoSettings.unfocusedShift, 0.03, "kido-unfocused-background-shift: not a percentage from -100 to 100: ")
-        ] {
-            for (text, files, shade, note) in [
-                ("kido-sidebar-shade = 30%", [:], 0.3, nil),
-                ("kido-sidebar-shade = 30", [:], 0.3, nil),
-                ("kido-sidebar-shade = 0", [:], 0, nil),
-                ("kido-sidebar-shade = -0", [:], 0, nil),
-                ("kido-sidebar-shade = -100", [:], 1, nil),
-                ("kido-sidebar-shade = \"\"", [:], nil, nil),
-                ("kido-sidebar-shade = 20%\nkido-sidebar-shade = 40%", [:], 0.4, nil),
-                ("kido-sidebar-shade =   \" 30.5% \"  ", [:], 0.305, nil),
-                ("kido-sidebar-shade = +30", [:], nil, "+30"),
-                ("kido-sidebar-shade = 1e1", [:], nil, "1e1"),
-                ("kido-sidebar-shade = 0x1p4", [:], nil, "0x1p4"),
-                ("kido-sidebar-shade = 100%", [:], 1, nil),
-                ("kido-sidebar-shade = 101", [:], nil, "101"),
-                ("kido-sidebar-shade = -10%", [:], 0.1, nil),
-                ("kido-sidebar-shade = -101", [:], nil, "-101"),
-                ("kido-sidebar-shade = dark", [:], nil, "dark"),
-                ("", [:], nil, nil),
-                ("kido-sidebar-shade = 20%\nkido-sidebar-shade =", [:], nil, nil),
-                ("kido-sidebar-shade = 20%\nkido-sidebar-shade =   ", [:], nil, nil),
-                ("config-file = included.conf", ["included.conf": "kido-sidebar-shade = 30%"], 0.3, nil),
-                ("kido-sidebar-shade = 20%\nconfig-file = ?missing.conf\nconfig-file = ?\"included.conf\"",
-                 ["included.conf": "config-file = nested.conf", "nested.conf": "kido-sidebar-shade = \"30%\""], 0.3, nil),
-                ("kido-sidebar-shade = 20%\nconfig-file = included.conf",
-                 ["included.conf": "kido-sidebar-shade ="], nil, nil),
-                ("config-file = included.conf\nconfig-file = sibling.conf",
-                 ["included.conf": "kido-sidebar-shade = 10%\nconfig-file = nested.conf",
-                  "sibling.conf": "kido-sidebar-shade = 20%",
-                  "nested.conf": "kido-sidebar-shade = 30%\nconfig-file = included.conf"], 0.3, nil),
-                ("config-file = linked.conf",
-                 ["other/theme.conf": "config-file = child.conf", "other/child.conf": "kido-sidebar-shade = 40%",
-                  "child.conf": "kido-sidebar-shade = 50%"], 0.4, nil)
-            ] as [(String, [String: String], Double?, String?)] {
-                let text = text.replacingOccurrences(of: "kido-sidebar-shade", with: key)
-                for (name, contents) in files {
-                    try contents.replacingOccurrences(of: "kido-sidebar-shade", with: key).write(to: directory.appendingPathComponent(name), atomically: false, encoding: .utf8)
-                }
-                let (settings, lines) = try load(text)
-                XCTAssertEqual(settings[keyPath: field], shade ?? fallback, text)
-                XCTAssertFalse(lines.contains { $0.contains("\(key): unknown field") }, "\(text): \(lines)")
-                XCTAssertTrue(lines.contains { $0.contains("kido-sidebar-shad: unknown field") }, text)
-                XCTAssertEqual(lines.contains { $0.contains("not a percentage") }, note != nil, text)
-                if let note { XCTAssertTrue(lines.contains { $0.hasSuffix(diagnostic + note) }, text) }
+        for (text, files, shade, note) in [
+            ("kido-unfocused-background-shift = 30%", [:], 0.3, nil),
+            ("kido-unfocused-background-shift = 30", [:], 0.3, nil),
+            ("kido-unfocused-background-shift = 0", [:], 0, nil),
+            ("kido-unfocused-background-shift = -0", [:], 0, nil),
+            ("kido-unfocused-background-shift = -100", [:], 1, nil),
+            ("kido-unfocused-background-shift = \"\"", [:], nil, nil),
+            ("kido-unfocused-background-shift = 20%\nkido-unfocused-background-shift = 40%", [:], 0.4, nil),
+            ("kido-unfocused-background-shift =   \" 30.5% \"  ", [:], 0.305, nil),
+            ("kido-unfocused-background-shift = +30", [:], nil, "+30"),
+            ("kido-unfocused-background-shift = 1e1", [:], nil, "1e1"),
+            ("kido-unfocused-background-shift = 0x1p4", [:], nil, "0x1p4"),
+            ("kido-unfocused-background-shift = 100%", [:], 1, nil),
+            ("kido-unfocused-background-shift = 101", [:], nil, "101"),
+            ("kido-unfocused-background-shift = -10%", [:], 0.1, nil),
+            ("kido-unfocused-background-shift = -101", [:], nil, "-101"),
+            ("kido-unfocused-background-shift = dark", [:], nil, "dark"),
+            ("", [:], nil, nil),
+            ("kido-unfocused-background-shift = 20%\nkido-unfocused-background-shift =", [:], nil, nil),
+            ("kido-unfocused-background-shift = 20%\nkido-unfocused-background-shift =   ", [:], nil, nil),
+            ("config-file = included.conf", ["included.conf": "kido-unfocused-background-shift = 30%"], 0.3, nil),
+            ("kido-unfocused-background-shift = 20%\nconfig-file = ?missing.conf\nconfig-file = ?\"included.conf\"",
+             ["included.conf": "config-file = nested.conf", "nested.conf": "kido-unfocused-background-shift = \"30%\""], 0.3, nil),
+            ("kido-unfocused-background-shift = 20%\nconfig-file = included.conf",
+             ["included.conf": "kido-unfocused-background-shift ="], nil, nil),
+            ("config-file = included.conf\nconfig-file = sibling.conf",
+             ["included.conf": "kido-unfocused-background-shift = 10%\nconfig-file = nested.conf",
+              "sibling.conf": "kido-unfocused-background-shift = 20%",
+              "nested.conf": "kido-unfocused-background-shift = 30%\nconfig-file = included.conf"], 0.3, nil),
+            ("config-file = linked.conf",
+             ["other/theme.conf": "config-file = child.conf", "other/child.conf": "kido-unfocused-background-shift = 40%",
+              "child.conf": "kido-unfocused-background-shift = 50%"], 0.4, nil)
+        ] as [(String, [String: String], Double?, String?)] {
+            for (name, contents) in files {
+                try contents.write(to: directory.appendingPathComponent(name), atomically: false, encoding: .utf8)
             }
+            let (settings, lines) = try load(text)
+            XCTAssertEqual(settings.unfocusedShift, shade ?? 0.03, text)
+            XCTAssertFalse(lines.contains { $0.contains("kido-unfocused-background-shift: unknown field") }, "\(text): \(lines)")
+            XCTAssertTrue(lines.contains { $0.contains("kido-unknown-key: unknown field") }, text)
+            XCTAssertEqual(lines.contains { $0.contains("not a percentage") }, note != nil, text)
+            if let note { XCTAssertTrue(lines.contains { $0.hasSuffix("kido-unfocused-background-shift: not a percentage from -100 to 100: " + note) }, text) }
         }
 
         for (text, spacing, note) in [
             ("kido-pane-spacing = 8", 8, nil),
             ("kido-pane-spacing = \"12.5\"", 12.5, nil),
-            ("", 0, nil),
-            ("kido-pane-spacing = 8\nkido-pane-spacing =", 0, nil),
-            ("kido-pane-spacing = 33", 0, "kido-pane-spacing: not a number of points from 0 to 32: 33"),
-            ("kido-pane-spacing = wide", 0, "kido-pane-spacing: not a number of points from 0 to 32: wide"),
+            ("kido-pane-spacing = 2", 2, nil),
+            ("kido-pane-spacing = 32", 32, nil),
+            ("", 8, nil),
+            ("kido-pane-spacing = 12\nkido-pane-spacing =", 8, nil),
+            ("kido-pane-spacing = 33", 8, "kido-pane-spacing: not a number of points from 2 to 32: 33"),
+            ("kido-pane-spacing = 1.9", 8, "kido-pane-spacing: not a number of points from 2 to 32: 1.9"),
+            ("kido-pane-spacing = 0", 8, "kido-pane-spacing: not a number of points from 2 to 32: 0"),
+            ("kido-pane-spacing = wide", 8, "kido-pane-spacing: not a number of points from 2 to 32: wide"),
         ] as [(String, CGFloat, String?)] {
             let (parsed, lines) = try load(text)
             XCTAssertEqual(parsed.paneSpacing, spacing, text)
             XCTAssertFalse(lines.contains { $0.contains("kido-pane-spacing: unknown field") }, "\(text): \(lines)")
             XCTAssertEqual(lines.contains { $0.contains("not a number of points") }, note != nil, text)
             if let note { XCTAssertTrue(lines.contains { $0.hasSuffix(note) }, text) }
-        }
-
-        let fixture = try sidebarFixture()
-        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
-        defer { SidebarView.visualNow = nil }
-        for hex in ["fffaf0", "172029"] {
-            for value in [nil, "30%", "20%"] as [String?] {
-                try ("background = #\(hex)\n" + (value.map { "kido-sidebar-shade = \($0)\n" } ?? "")).write(to: config, atomically: true, encoding: .utf8)
-                let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
-                let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-                defer { owner.close() }
-                let list = owner.sidebar.list
-                list.update(.running(fixture))
-                let root = try XCTUnwrap(owner.window.contentView?.superview)
-                let channels: [Double]
-                switch (hex, value) {
-                case ("fffaf0", nil): channels = [242.25, 237.5, 228]
-                case ("fffaf0", "30%"): channels = [178.5, 175, 168]
-                case ("fffaf0", _): channels = [204, 200, 192]
-                case (_, nil): channels = [34.6, 43.15, 51.7]
-                case (_, "30%"): channels = [92.6, 98.9, 105.2]
-                default: channels = [69.4, 76.6, 83.8]
-                }
-                let expected = NSColor(srgbRed: channels[0] / 255, green: channels[1] / 255, blue: channels[2] / 255, alpha: 1)
-                XCTAssertEqual(list.layer?.backgroundColor.flatMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB) }, expected, "\(hex) \(value ?? "unset")")
-                guard let value else { continue }
-                for mode in ["docked", "floating"] {
-                    owner.sidebar.dismissFloating()
-                    owner.sidebar.isCollapsed = mode != "docked"
-                    if mode == "docked" { owner.sidebar.splitView.setPosition(236, ofDividerAt: 0) }
-                    else { owner.sidebar.focusSidebar(nil) }
-                    root.layoutSubtreeIfNeeded()
-                    owner.sidebar.viewDidLayout()
-                    owner.window.display()
-                    await mainQueueFence()
-                    let rect = list.convert(list.bounds, to: root)
-                    let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: rect))
-                    root.cacheDisplay(in: rect, to: bitmap)
-                    let scale = CGFloat(bitmap.pixelsWide) / rect.width
-                    let empty = try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh - Int(30 * scale)))
-                    XCTAssertEqual(empty.redComponent, expected.redComponent, accuracy: 2 / 255, "\(hex) \(value) \(mode) red")
-                    XCTAssertEqual(empty.greenComponent, expected.greenComponent, accuracy: 2 / 255, "\(hex) \(value) \(mode) green")
-                    XCTAssertEqual(empty.blueComponent, expected.blueComponent, accuracy: 2 / 255, "\(hex) \(value) \(mode) blue")
-                    let image = NSImage(size: rect.size)
-                    image.addRepresentation(bitmap)
-                    let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                    if let failure = verifySnapshot(of: image, as: .image, named: "\(hex)-\(value == "30%" ? "darker" : "lighter")-\(mode)", record: record),
-                       !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
-                }
-            }
         }
     }
 
@@ -506,11 +434,11 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("kido-app.conf")
         let included = directory.appendingPathComponent("included.conf")
-        try "kido-sidebar-shade = 20%\n".write(to: included, atomically: false, encoding: .utf8)
+        try "kido-unfocused-background-shift = 20%\n".write(to: included, atomically: false, encoding: .utf8)
         let board = NSPasteboard(name: .init("live-config-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file.path, pasteboard: board))
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.05)
+        XCTAssertEqual(runtime.settings.unfocusedShift, 0.03)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         defer { runtime.onConfigChange = {}; owner.close() }
         func reload(_ edit: () throws -> Void) async throws {
@@ -519,50 +447,46 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             try edit()
             await fulfillment(of: [changed], timeout: 0.3)
         }
-        for (text, shade, atomic) in [("kido-sidebar-shade = 30%\nbackground = #172029\n", 0.3, false),
-                                      ("kido-sidebar-shade = 20%\nbackground = #fffaf0\n", 0.2, true),
-                                      ("kido-sidebar-shade = 40%\n", 0.4, false),
-                                      ("background = #172029\n", 0.05, false),
-                                      ("kido-sidebar-shade =\n", 0.05, false),
-                                      ("kido-sidebar-shade = bad\n", 0.05, false),
-                                      ("kido-sidebar-shade = -10%\nbackground = #171717\n", 0.1, false),
-                                      ("kido-sidebar-shade = 40%\nbackground = #171717\n", 0.4, false),
-                                      ("background = #fefaf1\n", 0.05, false),
-                                      ("background = #192028\n", 0.05, false),
-                                      ("background = #fff9ec\n", 0.05, false),
-                                      ("background = #171717\n", 0.05, false),
-                                      (nil, 0.05, false)] as [(String?, Double, Bool)] {
+        for (text, shade, atomic) in [("kido-unfocused-background-shift = 30%\nbackground = #172029\n", 0.3, false),
+                                      ("kido-unfocused-background-shift = 20%\nbackground = #fffaf0\n", 0.2, true),
+                                      ("kido-unfocused-background-shift = 40%\n", 0.4, false),
+                                      ("background = #172029\n", 0.03, false),
+                                      ("kido-unfocused-background-shift =\n", 0.03, false),
+                                      ("kido-unfocused-background-shift = bad\n", 0.03, false),
+                                      ("kido-unfocused-background-shift = -10%\nbackground = #171717\n", 0.1, false),
+                                      ("kido-unfocused-background-shift = 40%\nbackground = #171717\n", 0.4, false),
+                                      ("background = #fefaf1\n", 0.03, false),
+                                      ("background = #192028\n", 0.03, false),
+                                      ("background = #fff9ec\n", 0.03, false),
+                                      ("background = #171717\n", 0.03, false),
+                                      (nil, 0.03, false)] as [(String?, Double, Bool)] {
             try await reload {
                 if let text { try text.write(to: file, atomically: atomic, encoding: .utf8) }
                 else { try FileManager.default.removeItem(at: file) }
             }
-            XCTAssertEqual(runtime.settings.sidebarShade, shade)
+            XCTAssertEqual(runtime.settings.unfocusedShift, shade)
             owner.sidebar.viewDidLayout()
             XCTAssertEqual(owner.sidebar.list.layer?.backgroundColor, owner.sidebar.listBackground?.cgColor)
-            if let text, let expected = ["background = #fefaf1\n": [241.3, 237.5, 228.95], "background = #192028\n": [36.5, 43.15, 50.75],
-                                        "background = #fff9ec\n": [242.25, 236.55, 224.2], "background = #171717\n": [34.6, 34.6, 34.6]][text] {
+            if let text, let expected = ["background = #fefaf1\n": [238.76, 235, 226.54], "background = #192028\n": [16.25, 20.8, 26],
+                                        "background = #fff9ec\n": [239.7, 234.06, 221.84], "background = #171717\n": [14.95, 14.95, 14.95]][text] {
                 let color = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
                 for (actual, target) in zip([color.redComponent, color.greenComponent, color.blueComponent], expected) {
                     XCTAssertEqual(actual, target / 255, accuracy: 0.000001)
                 }
-            }
-            if text == "kido-sidebar-shade = 40%\nbackground = #171717\n" {
-                let color = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-                XCTAssertEqual([color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }, [116, 116, 116])
             }
             if text?.contains("#fffaf0") == true { XCTAssertEqual(owner.window.appearance?.name, .aqua) }
             if text?.contains("#172029") == true { XCTAssertEqual(owner.window.appearance?.name, .darkAqua) }
         }
         try await reload { try "config-file = included.conf\n".write(to: file, atomically: false, encoding: .utf8) }
         try await reload {
-            try "kido-sidebar-shade = 70%\n".write(to: included, atomically: false, encoding: .utf8)
+            try "kido-unfocused-background-shift = 70%\n".write(to: included, atomically: false, encoding: .utf8)
             var action = ghostty_action_s()
             action.tag = GHOSTTY_ACTION_RELOAD_CONFIG
             var target = ghostty_target_s()
             target.tag = GHOSTTY_TARGET_APP
             XCTAssertTrue(GhosttyRuntime.action(runtime.app, target, action))
         }
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.7)
+        XCTAssertEqual(runtime.settings.unfocusedShift, 0.7)
         let events = runtime.visualWatchEvents, scheduled = runtime.visualReloadsScheduled
         try "swap".write(to: directory.appendingPathComponent("kido.conf"), atomically: true, encoding: .utf8)
         try await wait("unrelated directory event handled", within: 0.3) { runtime.visualWatchEvents > events }
@@ -572,9 +496,9 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         for name in [NSAppearance.Name.darkAqua, .aqua] {
             try await reload { NSApp.appearance = NSAppearance(named: name) }
             XCTAssertEqual(owner.window.appearance?.name, name)
-            XCTAssertEqual(runtime.settings.sidebarShade, 0.7)
+            XCTAssertEqual(runtime.settings.unfocusedShift, 0.7)
             let actual = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-            let expected = name == .darkAqua ? [185.4, 185.4, 185.4] : [76.5, 74.7, 70.8]
+            let expected = name == .darkAqua ? [14.95, 14.95, 14.95] : [239.7, 234.06, 221.84]
             for (channel, target) in zip([actual.redComponent, actual.greenComponent, actual.blueComponent], expected) {
                 XCTAssertEqual(channel, target / 255, accuracy: 0.000001)
             }
@@ -582,9 +506,9 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         try await reload { try FileManager.default.removeItem(at: file) }
         for name in [NSAppearance.Name.darkAqua, .aqua] {
             try await reload { NSApp.appearance = NSAppearance(named: name) }
-            XCTAssertEqual(runtime.settings.sidebarShade, 0.05)
+            XCTAssertEqual(runtime.settings.unfocusedShift, 0.03)
             let actual = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-            let expected = name == .darkAqua ? [34.6, 34.6, 34.6] : [242.25, 236.55, 224.2]
+            let expected = name == .darkAqua ? [14.95, 14.95, 14.95] : [239.7, 234.06, 221.84]
             for (channel, target) in zip([actual.redComponent, actual.greenComponent, actual.blueComponent], expected) {
                 XCTAssertEqual(channel, target / 255, accuracy: 0.000001)
             }
@@ -598,7 +522,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         defer { for path in [directory, targetDirectory] { try? FileManager.default.removeItem(at: path) } }
         let file = directory.appendingPathComponent("kido-app.conf")
         let target = targetDirectory.appendingPathComponent("target.conf")
-        try "kido-sidebar-shade = 20%\n".write(to: target, atomically: false, encoding: .utf8)
+        try "kido-unfocused-background-shift = 20%\n".write(to: target, atomically: false, encoding: .utf8)
         try FileManager.default.createSymbolicLink(at: file, withDestinationURL: target)
         let board = NSPasteboard(name: .init("linked-config-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
@@ -610,11 +534,11 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             await fulfillment(of: [changed], timeout: 0.3)
         }
         try await reload { try FileManager.default.moveItem(at: target, to: targetDirectory.appendingPathComponent("old.conf")) }
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.05)
-        try await reload { try "kido-sidebar-shade = 30%\n".write(to: target, atomically: false, encoding: .utf8) }
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.3)
-        try await reload { try "kido-sidebar-shade = 40%\n".write(to: target, atomically: false, encoding: .utf8) }
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.4)
+        XCTAssertEqual(runtime.settings.unfocusedShift, 0.03)
+        try await reload { try "kido-unfocused-background-shift = 30%\n".write(to: target, atomically: false, encoding: .utf8) }
+        XCTAssertEqual(runtime.settings.unfocusedShift, 0.3)
+        try await reload { try "kido-unfocused-background-shift = 40%\n".write(to: target, atomically: false, encoding: .utf8) }
+        XCTAssertEqual(runtime.settings.unfocusedShift, 0.4)
         runtime.onConfigChange = {}
     }
 
@@ -629,71 +553,10 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let changed = expectation(description: "directory and config created")
         runtime.onConfigChange = { changed.fulfill() }
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "kido-sidebar-shade = 30%\n".write(to: file, atomically: false, encoding: .utf8)
+        try "kido-unfocused-background-shift = 30%\n".write(to: file, atomically: false, encoding: .utf8)
         await fulfillment(of: [changed], timeout: 0.3)
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.3)
+        XCTAssertEqual(runtime.settings.unfocusedShift, 0.3)
         runtime.onConfigChange = {}
-    }
-
-    func testSidebarContrastDark100() async throws { try await sidebarContrast(hex: "172029", value: "100%", appearance: .aqua) }
-    func testSidebarContrastLight100() async throws { try await sidebarContrast(hex: "fffaf0", value: "100%", appearance: .darkAqua) }
-    func testSidebarContrastLight60() async throws { try await sidebarContrast(hex: "fffaf0", value: "60%", appearance: .darkAqua) }
-
-    func testSidebarDefaultLight() async throws { try await sidebarContrast(hex: "fff9ec", value: nil, appearance: .aqua) }
-    func testSidebarDefaultDark() async throws { try await sidebarContrast(hex: "171717", value: nil, appearance: .darkAqua) }
-
-    private func sidebarContrast(hex: String, value: String?, appearance: NSAppearance.Name, testName: String = #function) async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("contrast-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let config = directory.appendingPathComponent("kido-app.conf")
-        try "background = #\(hex)\nkido-sidebar-shade = 0\n".write(to: config, atomically: false, encoding: .utf8)
-        let board = NSPasteboard(name: .init("contrast-\(UUID().uuidString)"))
-        defer { board.releaseGlobally() }
-        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        defer { runtime.onConfigChange = {}; owner.close() }
-        let terminalAppearance = owner.window.effectiveAppearance.name
-        if value != nil { XCTAssertNotEqual(owner.sidebar.list.effectiveAppearance.name, appearance) }
-        let changed = expectation(description: "shade crosses contrast threshold")
-        runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
-        try ("background = #\(hex)\n" + (value.map { "kido-sidebar-shade = \($0)\n" } ?? "")).write(to: config, atomically: false, encoding: .utf8)
-        await fulfillment(of: [changed], timeout: 0.3)
-        XCTAssertEqual(owner.sidebar.list.effectiveAppearance.name, appearance)
-        XCTAssertEqual(owner.window.effectiveAppearance.name, terminalAppearance)
-        if value == nil {
-            let color = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-            let rgb = [color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }
-            XCTAssertEqual(rgb, hex == "fff9ec" ? [242, 237, 224] : [35, 35, 35])
-        }
-        let list = owner.sidebar.list
-        list.update(.running(try sidebarFixture()))
-        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
-        defer { SidebarView.visualNow = nil }
-        for floating in [false, true] {
-            owner.sidebar.dismissFloating()
-            owner.sidebar.isCollapsed = floating
-            if floating { owner.sidebar.focusSidebar(nil) }
-            else { owner.sidebar.splitView.setPosition(236, ofDividerAt: 0) }
-            let root = try XCTUnwrap(owner.window.contentView?.superview)
-            root.layoutSubtreeIfNeeded()
-            owner.sidebar.viewDidLayout()
-            owner.window.display()
-            await mainQueueFence()
-            XCTAssertEqual(list.visualTable.effectiveAppearance.name, appearance)
-            for item in owner.window.toolbar?.items ?? [] where ["newSession", "toggleSidebar"].contains(item.itemIdentifier.rawValue) {
-                XCTAssertEqual(item.view?.effectiveAppearance.name, appearance)
-            }
-            XCTAssertEqual(owner.sidebar.tabs.effectiveAppearance.name, terminalAppearance)
-            let rect = list.convert(list.bounds, to: root)
-            let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: rect))
-            root.cacheDisplay(in: rect, to: bitmap)
-            let image = NSImage(size: rect.size)
-            image.addRepresentation(bitmap)
-            let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-            if let failure = verifySnapshot(of: image, as: .image, named: floating ? "floating" : "docked", record: record, testName: testName),
-               !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
-        }
     }
 
     func testLiveHeaderTheme() async throws {
@@ -740,14 +603,6 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 view.cacheDisplay(in: view.bounds, to: image)
                 let expected = headerPaperRGB["\(hex)-shifted"]!
                 if transferred {
-                    let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))
-                    let scale = CGFloat(pixels.pixelsWide) / view.bounds.width
-                    let edge = try XCTUnwrap(owner.sidebar.headerDivider(in: header))
-                    let separator = try XCTUnwrap(owner.sidebar.separatorColor.usingColorSpace(.sRGB))
-                    for y in [2, pixels.pixelsHigh / 2, pixels.pixelsHigh - 3] {
-                        try assertPaperPixel(pixels, x: Int(edge * scale), y: y,
-                                             expected: [separator.redComponent * 255, separator.greenComponent * 255, separator.blueComponent * 255], "live fullscreen band separator")
-                    }
                     try assertPaperPixel(image, x: 20, y: 10, expected: headerPaperRGB["white"]!)
                     let snapshot = NSImage(size: view.bounds.size)
                     snapshot.addRepresentation(image)
@@ -892,52 +747,4 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         sidebar.dismissFloating()
     }
 
-    func testToolbarHitRegions() throws {
-        let sidebar = Sidebar()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
-                              styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { window.contentViewController = nil; window.close() }
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.contentViewController = sidebar
-        let toolbar = NSToolbar(identifier: "ToolbarHitRegions")
-        toolbar.delegate = sidebar
-        toolbar.displayMode = .iconOnly
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
-        let root = try XCTUnwrap(window.contentView?.superview)
-        root.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(236, ofDividerAt: 0)
-        for width in [900, 800] {
-            window.setContentSize(NSSize(width: width, height: 560))
-            for collapsed in [false, true] {
-                sidebar.isCollapsed = collapsed
-                root.layoutSubtreeIfNeeded()
-                sidebar.viewDidLayout()
-                root.layoutSubtreeIfNeeded()
-                for id in ["newSession", "toggleSidebar"] {
-                    let item = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == id })
-                    XCTAssertEqual(item.isHidden, id == "newSession" && collapsed)
-                    if item.isHidden { continue }
-                    let button = try XCTUnwrap(item.view as? NSButton)
-                    let cell = try XCTUnwrap(button.cell)
-                    XCTAssertFalse(button.isBordered)
-                    let frame = button.convert(button.bounds, to: nil)
-                    XCTAssertGreaterThanOrEqual(frame.height, 28)
-                    for y in stride(from: frame.minY + 0.5, through: frame.maxY - 0.5, by: 1) {
-                        for x in stride(from: frame.minX + 0.5, through: frame.maxX - 0.5, by: 1) {
-                            let point = NSPoint(x: x, y: y)
-                            let target = try XCTUnwrap(root.hitTest(root.convert(point, from: nil)))
-                            XCTAssertTrue(target === button || target.isDescendant(of: button) || target === button.superview)
-                            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point,
-                                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
-                                eventNumber: 1, clickCount: 1, pressure: 1))
-                            XCTAssertEqual(cell.hitTest(for: event, in: button.bounds, of: button), [.contentArea, .trackableArea])
-                        }
-                    }
-                }
-            }
-        }
-    }
 }

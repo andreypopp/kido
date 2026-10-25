@@ -12,8 +12,6 @@ final class WindowTabs: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
     private let headerBackground = HeaderBackground()
-    private let headerShadow = SidebarShadow()
-    private let headerSeparator = SidebarSeparator()
     weak var sidebar: Sidebar?
     func refreshHeader() {
         guard let window, let content = headerBackground.superview else { return }
@@ -23,13 +21,6 @@ final class WindowTabs: NSView {
             headerBackground.frame = frame
             content.needsDisplay = true
         }
-        let separatorWidth = sidebar?.separatorWidth ?? 0
-        headerSeparator.frame = NSRect(x: 0, y: 0, width: separatorWidth, height: frame.height)
-        headerSeparator.color = sidebar?.separatorColor ?? Chrome.hairline
-        headerSeparator.isHidden = sidebar == nil || showsActivity
-        headerShadow.frame = NSRect(x: separatorWidth, y: 0,
-                                    width: SidebarShadow.dockedWidth, height: frame.height).insetBy(dx: 0, dy: -32)
-        headerShadow.isHidden = sidebar == nil || showsActivity
         headerBackground.needsDisplay = true
     }
 
@@ -44,8 +35,6 @@ final class WindowTabs: NSView {
     private var hovered: Int?
     override init(frame: NSRect) {
         super.init(frame: frame)
-        headerBackground.addSubview(headerShadow)
-        headerBackground.addSubview(headerSeparator)
         addSubview(addWindow)
         addSubview(closeButton)
         closeButton.isHidden = true

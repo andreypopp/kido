@@ -205,7 +205,7 @@ private class AlertEscape: NSView {
         window.delegate = self
         Notifier.shared.register(self)
         window.isReleasedWhenClosed = false
-        window.title = host.label
+        show(title: host.label)
         window.collectionBehavior = .fullScreenPrimary
         window.contentMinSize = Sidebar.minSize
         let width = background ? 292 : UserDefaults.standard.object(forKey: "nativeSidebarWidth") as? Double ?? 292
@@ -218,12 +218,6 @@ private class AlertEscape: NSView {
             guard let self, case .remote(let alias) = self.host else { return nil }
             return (self.identity ?? alias, alias, { if case .connected = self.link { return true }; return false }())
         }
-        let toolbar = NSToolbar(identifier: "KidoSidebar")
-        toolbar.delegate = sidebar
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 900, height: 560))
         window.contentView?.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
@@ -279,23 +273,25 @@ private class AlertEscape: NSView {
         if start { begin(cause) }
     }
 
+    private func show(title: String) {
+        window.title = title
+        sidebar.windowTitle = title
+    }
+
     func updateAppearance() {
         let background = runtime.background
-        window.backgroundColor = runtime.unfocusedPaper
-        sidebar.terminalHost.wantsLayer = true
-        sidebar.terminalHost.layer?.backgroundColor = runtime.unfocusedPaper.cgColor
-        sidebar.content.wantsLayer = true
-        sidebar.content.layer?.backgroundColor = background.cgColor
+        window.backgroundColor = runtime.canvas
+        for view in [sidebar.terminalHost, sidebar.content] {
+            view.wantsLayer = true
+            view.layer?.backgroundColor = runtime.canvas.cgColor
+        }
         banner?.background = background
         let dark = background.isDark
         let theme = (background: background, appearance: NSAppearance(named: dark ? .darkAqua : .aqua))
         window.appearance = theme.appearance
         sidebar.updateAppearance(runtime: runtime)
+        sidebar.margin = runtime.settings.paneSpacing
         session?.updateBackground()
-    }
-
-    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
-        proposedOptions.subtracting(.autoHideToolbar)
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) { updateAppearance() }
@@ -829,7 +825,7 @@ private class AlertEscape: NSView {
     private func present(_ view: SessionView) {
         if let held, !holds(held) { self.held = nil }
         let model = model
-        window.title = host == .local ? model.title : "\(identity ?? host.label) / \(model.title)"
+        show(title: host == .local ? model.title : "\(identity ?? host.label) / \(model.title)")
         if model.session == nil { snapshot = nil }
         updateTabs()
         if view.superview == nil {
@@ -1114,7 +1110,7 @@ private class AlertEscape: NSView {
             snapshot = nil
             updateTabs()
         }
-        window.title = host == .local ? "Local" : identity ?? host.label
+        show(title: host == .local ? "Local" : identity ?? host.label)
     }
 
     func close(cause: Connection.CloseCause = .windowClosed) {
