@@ -415,6 +415,9 @@ Kido's commit order on master is:
   (`-K`), so it drops with them.
 - Kitty frame edits (`a=f` on frame 1), in one commit. It depends on
   the image capture and shared-memory commits, so it drops with them.
+- Kitty animation (frames, `a=a`, `a=c`, `d=f`) and its restore
+  through `-K`, in one commit. It depends on the frame edits commit,
+  so it drops with it.
 
 Before you force-push `fork`, push its previous head as a dated branch
 `fork-YYYY-MM-DD`. This keeps older submodule pins reachable.
@@ -450,7 +453,7 @@ When you test such edits, delete the cache directory first.
 `#{image_support}` is 1 in kido's build.
 share/rpc/contract.md, "Pane images", specifies `capture-pane -G`,
 `-K`, `-k`, `refresh-client -C WxHxXPxYP`, kitty `t=s`, kitty `a=f`
-frame edits and the `image-shm` control flag.
+frame edits, kitty animation and the `image-shm` control flag.
 The server image limits stay at upstream's defaults.
 `kido-tmux.conf` sets none of them.
 

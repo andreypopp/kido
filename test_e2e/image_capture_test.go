@@ -211,6 +211,24 @@ func TestImageCapture(t *testing.T) {
 	if got, failed := pixels(""); failed || got != wantFrame {
 		t.Fatalf("edited root pixels: failed=%v got=%q want=%q", failed, got, wantFrame)
 	}
+	t.Run("animation capture", func(t *testing.T) {
+		want := wantFrame
+		for _, frame := range []struct {
+			keys string
+			data []byte
+		}{
+			{"a=f,i=91,f=32,s=4,v=4,X=1,z=75,q=2", bytes.Repeat([]byte{0, 255, 0, 255}, 16)},
+			{"a=f,i=91,f=32,s=4,v=4,X=1,z=-1,q=2", bytes.Repeat([]byte{0, 0, 255, 255}, 16)},
+		} {
+			emit(kitty(frame.keys, frame.data))
+			want += string(kitty(frame.keys, frame.data)) + "\n"
+		}
+		emit(kitty("a=a,i=91,r=1,z=100,c=2,s=1,v=4,q=2", nil))
+		want += "\033_Ga=a,i=91,r=1,z=100,c=2,s=1,v=4,q=2\033\\\n"
+		if got, failed := pixels(""); failed || got != want {
+			t.Fatalf("animation pixels and playback: failed=%v got=%q want=%q", failed, got, want)
+		}
+	})
 	emit(kitty("a=d,d=A,q=2", nil))
 	bitmap := image.NewRGBA(image.Rect(0, 0, 32, 32))
 	for y := 0; y < 32; y++ {

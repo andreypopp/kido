@@ -1,6 +1,6 @@
 # kido rpc protocol 6.2
 
-fork revision: a0422edea09188133f9ea7cd408ba5f7c1922694
+fork revision: c3be2327977b157836693b8af202e951aa900729
 
 Protocol.value is the binary's protocol constant. It versions this RPC
 surface and the tmux commands this contract names, such as the "Pane
@@ -643,10 +643,8 @@ Ghostty (non-premultiplied source over) or, with `X=1`, replaces the
 pixels. A rectangle that overhangs the image is clipped;
 one larger than the image answers `EINVAL`. `c=` and `Y=` have no
 effect on an edit, as in kitty and Ghostty. A missing image answers
-`ENOENT`. The reply is `ESC _G i=I,r=1;OK ESC \`. tmux does not yet
-store more frames: `r=0`, or an `r=` that names a new frame, answers
-`ENOTSUP`, while the app adds that frame. Thus frame numbers can differ
-until a restore.
+`ENOENT`. The reply is `ESC _G i=I,r=1;OK ESC \`. Other frames are
+under "Animation" below.
 
 In every chunked upload (`m=1`), tmux keeps the first chunk's keys, as
 Ghostty does. A later chunk changes only `m=`, and its `q=` applies
@@ -663,6 +661,69 @@ edit, `-K` writes the image's current pixels, not the received bytes:
 `f=32,s=W,v=H`. An edit of an image that stays a mapping of the
 program's object (`t=s` below) first copies it, so tmux never writes
 the object.
+
+Animation. tmux stores kitty animations as the app does, so that frame
+numbers agree and a restore reproduces the app's state. Frame 1 is the
+image; frames 2..N are full RGBA canvases of the image's size. An image
+sent without `i=` cannot be animated (the spec requires `i=`); `I=`
+answers `ENOTSUP`.
+
+- `a=f` with `r=0`, or `r=` greater than the frame count, appends frame
+  N+1. Its canvas is a copy of frame `c=` (a frame that does not exist
+  answers `EINVAL`), else filled with `Y=` (32-bit RGBA, default 0).
+  The rectangle is then composed as for a frame edit. `a=f` with `r=`
+  of an existing frame edits that frame in place. The gap is `z=` ms;
+  `z=` below 0 makes the frame gapless (skipped in playback); a new
+  frame without `z=` gets 40 ms; an edit without `z=` keeps its gap.
+  The reply is `ESC _G i=I,r=N;OK ESC \` with the resolved frame N.
+- `a=a` applies, in this order: `r=` with `z=` sets that frame's gap;
+  `c=` sets the current frame; `s=` sets the state (1 stopped, 2
+  loading, 3 running) and resets the loop count; `v=` sets the loops
+  (1 infinite, n plays n-1 loops). Values out of range are ignored. A
+  success has no reply; a missing image answers `ENOENT`.
+- `a=c` copies the rectangle `w`x`h` at `X`,`Y` of frame `r=` onto frame
+  `c=` at `x`,`y`, blended, or replaced with `C=1`. `w=0` or `h=0` is the
+  full size. A missing frame answers `ENOENT`; a rectangle outside the
+  image or one that overlaps itself in the same frame answers `EINVAL`.
+  The reply is `ESC _G i=I;OK ESC \`.
+- `a=d,d=f` (`d=F`) deletes frame `r=` (0 is frame 1, a number past the
+  end is the last frame) and renumbers the frames after it, as the app
+  does. Deleting frame 1 makes frame 2 the image. When only frame 1
+  remains, `d=f` does nothing and `d=F` deletes the image.
+- Each frame counts toward `image-total-size-limit`; a frame that does
+  not fit answers `ENOSPC`. A retransmit with the same `i=` drops the
+  frames and the state.
+
+tmux has no animation timer. It computes the current frame from the
+elapsed time when it captures or draws the image: it walks the gaps from
+the time the current frame was shown, skips gapless frames, parks a
+loading animation on its last shown frame, counts loops and stops on the
+last shown frame when the loops are used up. An `a=a` first brings the
+frame up to date, so it applies at the frame that the app shows. An image without a placement does not
+advance. A terminal client sees a new frame only when the pane redraws
+for another reason. A frame that one side accepts and the other rejects
+(different size limits) shifts the numbering until the next restore.
+
+`-K` writes an animated image as its frame 1 (as above), then each
+further frame in order as a fully composed append, then its state:
+
+    ESC _G a=f,i=I,f=32,s=W,v=H,X=1,z=G,q=2,m=1;BASE64 ESC \
+    ESC _G m=1,q=2;BASE64 ESC \
+    ...
+    ESC _G a=a,i=I[,r=1,z=G1],c=K,s=S,v=V,q=2 ESC \
+
+Each append has no `r=`, so the client appends it as the next frame.
+`G` is the frame's gap in ms, `-1` for a gapless frame. Its chunks follow
+the rules for frame 1; with `image-shm` it is one `t=s` line with
+`f=32,s=W,v=H,X=1,z=G`. The `a=a` line comes after the last frame, only
+when the image has more than one frame, a gap on frame 1 or a state other
+than stopped. `r=1,z=G1` appears when frame 1 has a gap. `K` is the
+current frame at capture time, `S` the state and `V` the remaining loops
+plus 1 (1 is infinite). When the loops are used up, `S` and `V` are 1 and
+`K` is the frame it stopped on. The client applies the `a=f` and `a=a` lines to the
+image that the same reply sequence transmitted. A `more` cut can fall in
+any frame. `image changed` also applies when a frame of the token's image
+was edited, deleted or renumbered since the previous call.
 
 `-K` depends on the target pane, not on the calling client's session or
 size. It gives the same output to a one-shot client and to a control
