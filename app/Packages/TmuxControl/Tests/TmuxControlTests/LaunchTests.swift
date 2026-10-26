@@ -8,6 +8,13 @@ import Testing
     #expect(launch.arguments == ["-u", "-S", "/tmp/state space $literal/socket", "-N", "-T", "hyperlinks", "-C", "attach-session", "-t", "$7", "-f", "pause-after=5,new-layouts,no-detach-on-destroy"])
 }
 
+@Test func imageAttachDoesNotResizeDetachOrUpdateEnvironment() {
+    let launch = Launch.attachImages("/remote/install/bin/kido-tmux", socket: "/tmp/state/socket", session: SessionID(number: 7))
+    #expect(launch.path == "/usr/bin/env")
+    #expect(launch.arguments == ["-u", "TMUX", "/remote/install/bin/kido-tmux", "-u", "-S", "/tmp/state/socket", "-C", "attach-session", "-E", "-f",
+                                 "no-output,ignore-size,no-detach-on-destroy", "-t", "$7"])
+}
+
 @Test(.timeLimit(.minutes(1))) func stoppedPreparedClientIsKilled() async throws {
     let seen = Recorder<Event>()
     let client = Client(launch: Launch("/bin/sh", ["-c", "trap '' TERM; printf '%%session-renamed $0 %s\\n' \"$PRIVATE\"; kill -STOP $$; while :; do /bin/sleep 1; done"], environment: ["PRIVATE": "prepared"]))

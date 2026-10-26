@@ -133,22 +133,25 @@ final class SessionView: NSView {
 
     func windowName(_ window: WindowID) -> String? { windows[window]?.name }
 
-    // tmux has one grid for all panes, so every surface has one font size,
-    // and the lowest-numbered pane is the one the cell metric is read from.
-    private func forEachPane(_ body: (PaneView) -> Void) {
-        for view in windows.values { view.panes.forEach(body) }
-        for view in others.values { view.panes.forEach(body) }
+    private var panes: [PaneView] {
+        (windows.values.flatMap(\.panes) + others.values.flatMap(\.panes)).sorted { $0.pane.number < $1.pane.number }
     }
+
+    private func forEachPane(_ body: (PaneView) -> Void) { panes.forEach(body) }
 
     var cell: CGSize? {
-        let panes = (windows.values.flatMap(\.panes) + others.values.flatMap(\.panes)).sorted { $0.pane.number < $1.pane.number }
-        return panes.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 }
+        guard let cell = panes.first?.cell, cell.width > 0, cell.height > 0 else { return nil }
+        return cell
     }
 
-    var font: Float {
-        let panes = windows.values.flatMap(\.panes) + others.values.flatMap(\.panes)
-        return panes.min { $0.pane.number < $1.pane.number }?.font ?? 0
+    var cellPixels: (width: UInt32, height: UInt32)? {
+        guard let pane = panes.first else { return nil }
+        let size = ghostty_surface_size(pane.surface)
+        guard size.cell_width_px > 0, size.cell_height_px > 0 else { return nil }
+        return (size.cell_width_px, size.cell_height_px)
     }
+
+    var font: Float { panes.first?.font ?? 0 }
 
     func fontChanged(_ points: Float) {
         forEachPane { pane in

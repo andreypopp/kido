@@ -68,6 +68,23 @@ Build identity is checked only at discovery and explicit restart; automatic
 redial only re-attaches, so a different kido manually started in that directory
 is rejected at the next discovery.
 
+Each connection also attaches a second control client that is used only
+for image pixels (`capture-pane -K`, see [Images](#images)):
+`env -u TMUX kido-tmux -u -S <socket> -C attach-session -E -f
+no-output,ignore-size,no-detach-on-destroy -t <session id>`, on a remote
+window through the same ssh launch as the main client. It gets no pane
+output and is never sized: the app sends `refresh-client -C` only on
+the main client, so the image client does not change the window size or
+the `CSI 14t`/`16t` answers. It is never attached with `-d`, which would
+detach the main client. The app ignores its notifications and moves it
+with `switch-client -c` when the main client changes session, so it
+never keeps another session attached. kido commands that take a client
+name always get the main client's name. It starts at the connection's
+first session listing, fetches once its name is known, and closes with
+the connection; its loss closes the connection, and the redial is
+the usual full reset. A large pixel transfer thus never holds back pane
+text, locally or on its own ssh channel.
+
 ## Remote hosts
 
 On macOS Tahoe, the Shortcuts action **Connect to Remote Host in Kido**
@@ -663,6 +680,82 @@ Shift-press gesture continues. The wheel still scrolls.
 
 The `Feed` has no timeout for a request. Thus, a `prompt` send that blocks
 kido's RPC loop until the inbox times out does not restart the helper.
+
+### Images
+
+Panes show kitty-graphics images. tmux (the fork, built with images)
+stores them as it stores text, and it is the one authority for them. The
+live path does not change: `%output` carries a program's APC unchanged
+and Ghostty draws it. Programs must send direct APC: an image wrapped in
+tmux passthrough (`DCS tmux;`) is not shown and not restored, by design.
+tmux answers `a=q` itself, and `MANUAL_MIRROR` suppresses Ghostty's
+answers, so a program gets exactly tmux's replies (`ImageTests`,
+`testImagesParserReplies`).
+
+The main client's every size send is `refresh-client -C WxHxXPxYP`,
+with the cell size in pixels from a shown pane's `ghostty_surface_size`.
+No size is sent before a pane has real metrics and the view has
+bounds; until the first layout, a query in that moment gets another
+client's cell size or tmux's 16x32 default. A font-size or scale change changes the
+pixel fields, so the size is sent again even when the columns and
+rows stay the same. tmux then answers
+`CSI 14t`/`16t` and places images with the real cell size instead of
+its 16x32 default.
+
+A restore has two phases. The text phase is the usual capture batch
+with `-G`: each placement is an `a=p,i=,p=,c=,r=,x=,y=,w=,h=,C=1`
+written inline at its cell, in the history chunk, the screen and the
+saved main screen, so it lands on its row when the row is replayed.
+Ghostty holds a placement whose image it does not have yet: under
+`restoring`, an `a=p` for an unknown id adds a pending image
+(`addPendingImage`) and the placement. A held placement draws nothing;
+the row shows the text that tmux captured under it. The pixel phase
+then fetches the screen rows with `capture-pane -K` on the image
+client. Rows of loaded history are fetched when they come near the
+viewport: on every viewport publish of a shown pane (wheel, thumb,
+find, copy mode, the snap after Load more) the app asks for the
+visible rows plus one screen height above and below, minus the rows
+already fetched in this epoch. One `-K` per pane is in flight; while
+it runs, newer wishes only replace the wanted range, and the next
+fetch is computed from the viewport when the reply arrives. A hidden pane asks for nothing.
+Load more shifts the fetched set by the rows it inserts. The fetch
+never loads history text, never moves the viewport and never changes
+the surface budget. In the alternate screen, `-K -a` also fills the
+saved main screen. The fill names its target screen when the fetch
+starts, so a screen switch before the reply cannot fill the wrong
+screen.
+
+`-K` is paged: a reply holds at most 8 MiB, and an image can stop
+mid-transmission with `m=1`; a final line `more <token>` asks for the
+same range again with `-k <token>`. The error `image changed` resets
+the fill and starts the range again without a token, once. Every
+reply goes to `ghostty_surface_fill_images`, never to the live
+stream: it has its own APC parser and chunk assembly, kept from one
+page to the next and reset by `ghostty_surface_fill_images_reset` on a
+new fetch, a cancel or an epoch change. `restore_output` resets the
+live parser, and a `-K` reply arrives out of order with `%output`,
+possibly in the middle of a live APC or upload. The rule: **a fill
+transmit only completes a pending image; it never creates or
+replaces one.** A live replace that arrives first leaves the image
+complete, and a live delete leaves it unknown; either way the stale
+transmit is dropped, so a deleted image never comes back. A row is
+marked fetched only when no held placement in it is still without
+data (`ghostty_surface_pending_images`, which also counts
+Unicode-placeholder cells); such rows are asked for again only after
+new pane output or a new wanted range.
+
+A fetch belongs to one connection generation and one pane epoch.
+A restore, resize, dirty content, copy-mode entry or connection close
+drops its replies; after a redial both phases run again and the
+fetched set starts empty.
+
+`prepend_history` moves the scratch terminal's images and placements,
+held or not, into the target screen with their rows; an id that the
+target already has keeps the target's image.
+
+Memory is bounded by Ghostty's `image-storage-limit` (the user's
+setting; the app sets none) and by tmux's image limits, which stay at
+upstream's defaults.
 
 ### Focus treatment
 

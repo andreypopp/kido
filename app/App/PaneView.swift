@@ -58,6 +58,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var onFindCoverage: (Int, UUID) -> Void = { _, _ in }
     var onLoadMore: () -> Void = {}
     var onScrollTop: () -> Void = {}
+    var onImageViewport: (ScrollPosition, Int, Bool) -> Void = { _, _, _ in }
+    var onImageFreeze: (Int) -> Void = { _ in }
     var onCopyCheck: (@escaping @MainActor @Sendable (Bool) -> Void) -> Void = { $0(true) }
     var onFindChange: () -> Void = {}
     let scroller = PaneScroller()
@@ -241,6 +243,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     nonisolated var historyEpoch: Int { grid.withLock { $0.epoch } }
 
+    nonisolated private func advanceImageEpoch(_ epoch: inout Int) {
+        epoch += 1
+        resetImageFill()
+    }
+
     nonisolated func scrollPosition() -> ScrollPosition {
         var value = ghostty_surface_scrollbar_s()
         _ = ghostty_surface_scrollbar(surface, &value)
@@ -304,7 +311,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     nonisolated func markContentDirty(preserveAnchor: Bool = false) {
-        grid.withLock { $0.epoch += 1; $0.dirty = true; $0.suspended = true }
+        grid.withLock { advanceImageEpoch(&$0.epoch); $0.dirty = true; $0.suspended = true }
         if !preserveAnchor { resizeAnchor = nil }
     }
 
@@ -413,8 +420,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
+    private var imageViewport: (Int, Int, Int, Int, Bool)?
+
     private func presentScroll() {
         let (position, applied, _) = scrollPresentation
+        let visible = presented.visible && !isHiddenOrHasHiddenAncestor
+        let image = (position.offset, position.rows, position.retainedHistoryRows, historyEpoch, visible)
+        if imageViewport.map({ $0 != image }) ?? true {
+            imageViewport = image
+            onImageViewport(position, historyEpoch, visible)
+        }
         let distance = applied ?? Double(position.retainedHistoryRows - position.offset)
         historyLimit.isHidden = copyMode != nil || alternate || resizeDirty || resizeIntent || restoreRequested != nil
             || !scrollGeometry.mayHaveOlderHistory || scrollGeometry.sampledTmuxHistoryRows <= position.retainedHistoryRows
@@ -857,7 +872,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         disposed = true
         _ = (window?.delegate as? WindowOwner)?.cancelUploads(self)
         invalidateClipboard()
-        grid.withLock { $0.ready = false; $0.epoch += 1 }
+        grid.withLock { $0.ready = false; advanceImageEpoch(&$0.epoch) }
         find?.close()
         stopAutoscroll()
         if let paste {
@@ -1000,7 +1015,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
                 guard state.ready, kind == .snapshot || !state.suspended,
                       expected.map({ $0 == state.epoch }) ?? true else { return nil }
                 guard state.freeze == .off else {
-                    if kind == .live { state.epoch += 1; state.dirty = true; state.suspended = true }
+                    if kind == .live { advanceImageEpoch(&state.epoch); state.dirty = true; state.suspended = true }
                     return nil
                 }
                 if kind == .snapshot { state.replay = true } else { state.parsing += 1 }
@@ -1063,6 +1078,23 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
+    nonisolated func resetImageFill() {
+        ghostty_surface_fill_images_reset(surface)
+    }
+
+    nonisolated func fillImages(_ bytes: Data, epoch: Int, alternate: Bool) -> Bool {
+        guard grid.withLock({ $0.ready && $0.epoch == epoch && !$0.suspended }) else { return false }
+        bytes.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            ghostty_surface_fill_images(surface, base.assumingMemoryBound(to: CChar.self), buffer.count, alternate)
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, historyEpoch == epoch else { return }
+            requestFinalRender()
+        }
+        return true
+    }
+
     var font: Float { ghostty_surface_font_size(surface) }
 
     var cell: CGSize {
@@ -1084,7 +1116,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         presentScroll()
         finalEpoch = nil
         let deferred = grid.withLock { state in
-            state.epoch += 1
+            advanceImageEpoch(&state.epoch)
             state.ready = false
             if state.replay { state.suspended = true }
             return state.replay
@@ -1112,7 +1144,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         endCopy(restore: false)
         if gesture { resizeIntent = true }
         snapScroll()
-        grid.withLock { $0.epoch += 1 }
+        grid.withLock { advanceImageEpoch(&$0.epoch) }
         restoreRequested = nil
         finalEpoch = nil
         captureAnchor()
@@ -1250,9 +1282,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         guard case .entering(let deadline) = copyMode, grid.withLock({ state in
             guard state.freeze == .entering, state.parsing == 0, !state.replay else { return false }
             state.freeze = .frozen
-            state.epoch += 1
+            advanceImageEpoch(&state.epoch)
             return true
         }) else { return }
+        onImageFreeze(historyEpoch)
         deadline.cancel()
         finalEpoch = nil
         refreshScroller()
@@ -1629,6 +1662,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         if next.realized != presented.realized { _ = ghostty_surface_set_renderer_realized(surface, next.realized) }
         if next.visible != presented.visible { ghostty_surface_set_occlusion(surface, next.visible) }
         presented = next
+        queueScroll()
         if next.visible { requestFinalRender() }
     }
 
@@ -1644,6 +1678,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         reflow { [weak self] in
             guard let self else { return }
             ghostty_surface_set_content_scale(surface, scale, scale)
+            onCellChange()
         }
         ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * scale).rounded()), UInt32((renderInsets.bottom * scale).rounded()))
     }

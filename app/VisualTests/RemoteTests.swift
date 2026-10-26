@@ -65,7 +65,7 @@ import SidebarFeed
         var launches: [[String]] = []
         let endpoint = try await Server.locate(prepare: { arguments in
             launches.append(arguments)
-            let output = arguments.first == "/bin/sh" ? "/tmp/kido\n/tmp/state ' $dir/kido-app\n" : "{\"tmux\":\"/tmp/tmux\",\"socket\":\"/tmp/state ' $dir/kido-app/socket\",\"server\":\"0123456789ab\",\"expected\":\"0123456789ab\",\"protocol\":\"6.0\"}\n"
+            let output = arguments.first == "/bin/sh" ? "/tmp/kido\n/tmp/state ' $dir/kido-app\n" : "{\"tmux\":\"/tmp/tmux\",\"socket\":\"/tmp/state ' $dir/kido-app/socket\",\"server\":\"0123456789ab\",\"expected\":\"0123456789ab\",\"protocol\":\"6.1\"}\n"
             return Launch("/usr/bin/printf", ["%s", output])
         })
         XCTAssertEqual(launches.last, ["/usr/bin/env", "SSH_AUTH_SOCK=" + endpoint.directory + "/agent.sock", "/tmp/kido", "server", "--server", endpoint.directory])
@@ -326,7 +326,8 @@ import SidebarFeed
         let wrapper = "#!/bin/sh\nprintf '%s\\n' \"$1\" >> " + SSH.quote(root + "/commands") + "\nexec " + SSH.quote(tools.kido) + " \"$@\"\n"
         try wrapper.write(toFile: root + "/bin/kido", atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root + "/bin/kido")
-        let env = ["HOME": root + "/home", "XDG_STATE_HOME": state, "PATH": root + "/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
+        var env = ["HOME": root + "/home", "XDG_STATE_HOME": state, "PATH": root + "/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
+        env["KIDO_TMUX"] = serverEnvironment["KIDO_TMUX"]
         var owners: [WindowOwner] = []
         var transports: [SSH] = []
         let cleanup = SSH.options + ["-o", "ForwardAgent=no", "-S", "none", "-o", "ControlMaster=no", "-T", "--", "localhost"]
@@ -362,7 +363,7 @@ import SidebarFeed
         }
         routes.connect(.remote("localhost"))
         let localDir = root + "/local"
-        let localResult = try await Child.run(tools.kido, ["server", "--server", localDir], env: tools.environment.merging(env) { _, new in new })
+        let localResult = try await Child.run(tools.kido, ["server", "--server", localDir], env: serverEnvironment.merging(env) { _, new in new })
         XCTAssertEqual(localResult.status, 0, localResult.err)
         let localServer = try JSONDecoder().decode(Server.self, from: Data(localResult.out.utf8))
         let local = WindowOwner(host: .local, runtime: runtime, start: false)
@@ -611,7 +612,7 @@ import SidebarFeed
         for path in [root + "/files", root + "/state"] {
             try fm.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
-        let launched = try await Child.run(tools.kido, ["server", "--server", root + "/server"], env: tools.environment)
+        let launched = try await Child.run(tools.kido, ["server", "--server", root + "/server"], env: serverEnvironment)
         XCTAssertEqual(launched.status, 0, launched.err)
         let server = try JSONDecoder().decode(Server.self, from: Data(launched.out.utf8))
         let board = NSPasteboard(name: .init("kido-ssh-pane-test-\(UUID().uuidString)"))
@@ -766,7 +767,7 @@ import SidebarFeed
             try? fm.removeItem(atPath: root)
             board.releaseGlobally()
         }
-        let launched = try await Child.run(tools.kido, ["server", "--server", root + "/state/kido-app"], env: tools.environment.merging(env) { _, new in new })
+        let launched = try await Child.run(tools.kido, ["server", "--server", root + "/state/kido-app"], env: serverEnvironment.merging(env) { _, new in new })
         XCTAssertEqual(launched.status, 0, launched.err)
         return (root, owner, board)
     }
