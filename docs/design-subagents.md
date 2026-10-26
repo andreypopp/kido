@@ -575,13 +575,16 @@ redirect a descendant's work:
   it between tool calls and continues with the correction instead of
   restarting. An idle child starts a turn with it.
 - `interrupt-and-steer` sends one `interrupt-and-steer` envelope with
-  the text. The child marks its turn as ended by a control, waits for
-  pi's `abort()` to settle, and then delivers the text as an ordinary
-  message from its parent with `followUp`. It answers `ok` only after
-  the abort settles and the text is queued. The text starts a new turn.
-  An idle child only starts that turn. The aborted turn's settle sends
-  no report, no error notice and no idle notice, because the control
-  mark holds until the text is delivered as new work.
+  the text. The child marks its turn as ended by a control, holds the
+  text, and requests pi's abort. It answers `ok` at once. pi's
+  extension `abort()` returns before the run ends. A blocked tool call
+  can keep the run going for a long time. A message sent while the run
+  streams is a follow-up, and the aborted run never drains it. Thus,
+  the child delivers the held text at the run's `agent_settled`, as an
+  ordinary message from its parent with `followUp`. The text starts a
+  new turn. An idle child delivers it at once. The aborted turn's
+  settle sends no report, no error notice and no idle notice, because
+  the control mark holds until the text is delivered as new work.
 
 On arrival, the text identifies its sender. Otherwise, an instruction
 arriving during a task would appear to be the child's own idea. Both

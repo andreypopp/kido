@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 import kidoPi from "./kido-pi.ts";
 
-import { makeFixture, agentPane, asSubagent, startWithSpies, fakeCtx, startSessionCore, sendToInbox, envelope, customMessages, pendingState, pollUntil } from "./kido-pi-fixture.ts";
+import { makeFixture, agentPane, asSubagent, startWithSpies, sendToInbox, envelope, customMessages } from "./kido-pi-fixture.ts";
 
 function tree(fx: ReturnType<typeof makeFixture>): void {
   fx.writeAgent("root", "mid", { session: "mid" });
@@ -27,8 +27,12 @@ test("an interrupt envelope from an ancestor aborts, and a stop envelope shuts d
       const from = { session: "root", name: "root", pane: "%2" };
       assert.equal(await sendToInbox(s.inboxPath, envelope("interrupt-and-steer", "new work", { from })), "ok");
       assert.equal(s.aborts(), 1);
+      await s.emit("agent_start");
+      assert.equal(await sendToInbox(s.inboxPath, envelope("interrupt-and-steer", "replacement work", { from })), "ok");
       assert.equal(await sendToInbox(s.inboxPath, envelope("stop", "", { from })), "ok");
       assert.equal(s.shutdowns(), 1);
+      await s.emit("agent_settled", { aborted: true }, { isIdle: () => true });
+      assert.equal(customMessages(s, "kido-message").length, 1, "stop discards held replacement work");
     }, { parent: "root", name: "mid" });
   } finally {
     await fx.restore();
@@ -68,43 +72,6 @@ test("a control is accepted from an ancestor at any depth, and refused from a de
       const s = await startWithSpies(fx, kidoPi, "mid");
       assert.equal(await sendToInbox(s.inboxPath, envelope("interrupt-and-steer", "new work", { from: { session: "leaf", name: "leaf" } })), "refused", "a child may not interrupt its parent");
       assert.equal(s.aborts(), 0);
-    }, { parent: "root", name: "mid" });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("an interrupt does not answer until ctx.abort() settles, so a message sent right after is not orphaned", async () => {
-  const fx = makeFixture();
-  try {
-    tree(fx);
-    await asSubagent(fx, "mid", async () => {
-      let release = (): void => {};
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      let aborts = 0;
-      const s = await startSessionCore(fx, kidoPi, (c) => ({
-        ...fakeCtx("mid", c.ui),
-        abort: () => {
-          aborts++;
-          return gate;
-        },
-      }));
-      const from = { session: "root", name: "root", pane: "%2" };
-      const sent = sendToInbox(fx.inboxPath("mid"), envelope("interrupt-and-steer", "new work", { from }));
-      await pollUntil(() => aborts === 1, 2000, "the abort to start");
-      try {
-        assert.equal(await pendingState(sent, 50), "pending", "the answer waits for the abort");
-        assert.equal(customMessages(s, "kido-message").length, 0, "new work cannot start during the abort");
-      } finally {
-        release();
-      }
-      assert.equal(await sent, "ok");
-      const message = customMessages(s, "kido-message")[0]!;
-      assert.ok(message.message.content.endsWith("new work"), "the new turn starts with the supplied text");
-      assert.deepEqual(message.opts, { deliverAs: "followUp", triggerTurn: true });
-      assert.equal(message.message.details.work, true, "new parent work retains its marker");
     }, { parent: "root", name: "mid" });
   } finally {
     await fx.restore();

@@ -811,6 +811,8 @@ export default function (pi: ExtensionAPI) {
     return "ok";
   };
 
+  const interruptedMessages: Envelope[] = [];
+
   const handleEnvelope = async (env: Envelope): Promise<"ok" | "refused"> => {
     switch (env.kind) {
       case "message":
@@ -821,14 +823,19 @@ export default function (pi: ExtensionAPI) {
         return "ok";
       case "steer":
         return handleInboundSteer(env);
-      case "interrupt-and-steer":
+      case "interrupt-and-steer": {
         if (!senderIsAncestor(env)) return "refused";
         turnEndedByControl = true;
-        await session?.abort();
-        await handleInboundMessage(env);
+        const busy = !settled;
+        // pi's extension abort returns void before the active tool and run end.
+        session?.abort();
+        if (busy) interruptedMessages.push(env);
+        else await handleInboundMessage(env);
         return "ok";
+      }
       case "stop":
         if (!senderIsAncestor(env)) return "refused";
+        interruptedMessages.length = 0;
         turnEndedByControl = true;
         session?.shutdown();
         return "ok";
@@ -2447,6 +2454,7 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.isIdle()) return;
     finishWorking();
     settled = true;
+    for (const env of interruptedMessages.splice(0)) await handleInboundMessage(env);
     if (!edge) return;
     if (event?.aborted) return;
     if (turnEndedByControl) return;

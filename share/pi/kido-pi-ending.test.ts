@@ -626,24 +626,15 @@ test("interrupt-and-steer suppresses the aborted turn's error and reports only t
     const inbox = await fx.startInbox();
     parentSetup(fx, inbox.path);
     await asSubagent(fx, SELF, async () => {
-      let aborts = 0;
-      let noticesDuringAbort = -1;
-      let messagesDuringAbort = -1;
-      const s = await startSessionCore(fx, kidoPi, c => ({
-        ...fakeCtx(SELF, c.ui),
-        abort: async () => {
-          aborts++;
-          await c.emit("agent_end", { messages: [assistant("error", undefined, "terminated provider")] });
-          await c.emit("agent_settled", {}, { isIdle: () => true });
-          noticesDuringAbort = inbox.received().length;
-          messagesDuringAbort = customMessages(c, "kido-message").length;
-        },
-      }));
+      const s = await startSessionCore(fx, kidoPi, c => fakeCtx(SELF, c.ui));
       await s.emit("agent_start");
       assert.equal(await sendToInbox(fx.inboxPath(SELF), envelope("interrupt-and-steer", "do B instead", { from: { session: "boss-session", name: "boss", pane: "%2" } })), "ok");
-      assert.equal(aborts, 1);
-      assert.equal(noticesDuringAbort, 0, "the aborted turn sends no error, idle or report notice");
-      assert.equal(messagesDuringAbort, 0, "new work waits until abort settles");
+      assert.equal(customMessages(s, "kido-message").length, 0, "new work waits until abort settles");
+      assert.equal(inbox.received().length, 0);
+      await s.emit("agent_end", { messages: [assistant("error", undefined, "This operation was aborted")] });
+      await s.emit("agent_settled", { aborted: true }, { isIdle: () => true });
+      assert.equal(inbox.received().length, 0, "the aborted turn sends no error, idle or report notice");
+      assert.equal(customMessages(s, "kido-message").length, 1);
       const message = customMessages(s, "kido-message")[0]!;
       assert.ok(message.message.content.endsWith("do B instead"));
       assert.equal(message.message.details.work, true);
