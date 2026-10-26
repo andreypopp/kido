@@ -330,6 +330,23 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         XCTAssertNil(PaneCommand.newWindow.command(PaneID(number: 0), cell: .zero))
     }
 
+    func testWindowMenuHasZoom() async throws {
+        let app = AppDelegate(runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("zoom-" + UUID().uuidString)))))
+        let owner = try XCTUnwrap(app.open(.local, start: false))
+        defer { owner.close() }
+        let menus = SessionMenus()
+        menus.update(SessionModel())
+        let zoom = try XCTUnwrap(menus.window.items.first { $0.title == "Zoom" })
+        XCTAssertEqual(zoom.action, #selector(NSWindow.performZoom(_:)))
+        owner.window.setFrame(NSRect(x: 100, y: 100, width: 600, height: 400), display: false)
+        owner.window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(owner.window.validateMenuItem(zoom))
+        let before = owner.window.frame
+        XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(zoom.action), to: owner.window, from: zoom))
+        try await wait("window zooms") { owner.window.frame != before }
+        XCTAssertTrue(owner.window.isZoomed)
+    }
+
     func testSessionShortcutsUseRPCNavigationOnce() {
         let menus = SessionMenus()
         var commands: [RPCRequest] = []

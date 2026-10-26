@@ -588,7 +588,7 @@ import TmuxControl
         var sent: [RPCRequest] = []
         menus.send = { sent.append($0) }
         menus.update(projected)
-        XCTAssertEqual(menus.window.items.dropFirst(3).dropLast(2).map(\.title), ["w797", "w0", "w458"])
+        XCTAssertEqual(menus.window.items.dropFirst(4).dropLast(3).map(\.title), ["w797", "w0", "w458"])
         let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
             windowNumber: 0, context: nil, characters: "1", charactersIgnoringModifiers: "1", isARepeat: false, keyCode: 18))
         XCTAssertTrue(menus.window.performKeyEquivalent(with: key))

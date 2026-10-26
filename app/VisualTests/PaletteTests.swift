@@ -1711,6 +1711,70 @@ import TmuxControl
         try await wait("quiet session closes without a sheet") { owner.snapshot?.sessions.contains { $0.id == quiet } == false }
     }
 
+    func testLastWindowReturnsToThePreviouslyShownWindow() async throws {
+        let dir = "/tmp/kl-" + UUID().uuidString.prefix(8)
+        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: tools.environment)
+        XCTAssertEqual(result.status, 0, result.err)
+        let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
+        let board = NSPasteboard(name: .init("kl-" + UUID().uuidString))
+        let app = AppDelegate(runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)))
+        let owner = try XCTUnwrap(app.open(.local, start: false))
+        let previous = NSApp.mainMenu
+        defer { NSApp.mainMenu = previous }
+        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        addTeardownBlock { @MainActor in
+            app.closePalette(); owner.close(); board.releaseGlobally()
+            for id in ["$0", "$1"] {
+                _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-session", "-t", id], env: tools.environment)
+            }
+            try? FileManager.default.removeItem(atPath: dir)
+        }
+        let setup = try await Child.run(server.tmux, ["-u", "-S", server.socket, "new-window", "-d"], env: tools.environment)
+        XCTAssertEqual(setup.status, 0, setup.err)
+        owner.start()
+        let (main, other) = (SessionID(number: 0), SessionID(number: 1))
+        let (a, b) = (WindowID(number: 0), WindowID(number: 1))
+        NSApp.mainMenu = app.mainMenu()
+        func lastWindow() -> PaletteEntry? {
+            PaletteEntry.commands(NSApp.mainMenu!, owner: owner, responder: owner.window.firstResponder).first { $0.title == "Last Window" }
+        }
+        func menuEnabled() -> Bool? {
+            let item = NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu?.items.first { $0.title == "Last Window" }
+            return item.flatMap { item in (item.target as? SessionMenus)?.validateMenuItem(item) }
+        }
+        func show(_ session: SessionID, _ window: WindowID) async throws {
+            owner.perform(.selectWindow(session, window))
+            try await wait("shows \(window)") { owner.navigation.session == session && owner.navigation.window == window }
+        }
+        func last(to session: SessionID, _ window: WindowID) async throws {
+            app.togglePalette()
+            let palette = try XCTUnwrap(app.palettePanel?.palette)
+            palette.choose(try XCTUnwrap(palette.shown.firstIndex { $0.entry.title == "Last Window" }))
+            try await wait("last shows \(window)") { owner.navigation.session == session && owner.navigation.window == window }
+        }
+        try await wait("two windows") { owner.canNavigate && owner.navigation.windows.count == 2 && owner.navigation.window == a }
+        XCTAssertNil(lastWindow(), "nothing was shown before")
+        XCTAssertEqual(menuEnabled(), false)
+        try await show(main, b)
+        try await wait("last window is known") { lastWindow() != nil }
+        XCTAssertEqual(menuEnabled(), true)
+        try await last(to: main, a)
+        try await last(to: main, b)
+        try await last(to: main, a)
+        owner.send([Command("select-window", "-t", b)])
+        try await wait("tmux shows \(b)") { owner.navigation.window == b }
+        try await last(to: main, a)
+        owner.send([Command("new-session", "-d", "-s", "other")])
+        try await wait("other session appears") { owner.snapshot?.sessions.contains { $0.id == other } == true }
+        try await show(other, WindowID(number: 2))
+        try await last(to: main, a)
+        try await show(main, b)
+        owner.send([Command("kill-window", "-t", a)])
+        try await wait("closed window leaves the sidebar") { owner.navigation.windows.map(\.id) == [b] }
+        try await wait("the closed window is no longer last") { lastWindow() == nil }
+        XCTAssertEqual(menuEnabled(), false)
+    }
+
     func testNewSessionWithoutAWindowOpensOneOnce() throws {
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("palette-" + UUID().uuidString))))
         let app = AppDelegate(runtime: runtime)

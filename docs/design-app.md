@@ -1237,6 +1237,20 @@ immediately after it using its active pane's cwd.
 Window menu items 1...9 (Command-1...9) and Ghostty's go-to-tab N select the
 Nth window of the sidebar's top-level order through select-window, with N
 clamped to the window count; Ghostty's go-to-last-tab selects the last one.
+Window → Last Window selects the window that this app window showed
+before the current one. It can be in another session. `WindowOwner` stores that
+one (session, window) pair when the shown window changes. Sidebar rows, the
+palette, New Window, Command-{ } and changes made in tmux all use this path.
+`#{window_last_flag}` is not used: it is per session and shared by all app
+windows. `WindowOwner` clears the pair when the control model resets, also on
+reconnect, because tmux can reuse window ids. `SessionModel.navigation` takes the
+pair as an argument and uses it only while that window is in the snapshot. If
+the window is gone, the item is disabled and is not in the palette. When the
+shown window closes, the pair names the closed window, so the item is disabled.
+The Window menu also has the standard Zoom item (`performZoom:`, no key in
+code). A user App Shortcut for the title "Zoom" works on it. Zoom Pane has a
+different title. The Visual test scheme passes `-NSUserKeyEquivalents {}` so
+user App Shortcuts do not change the palette snapshots.
 Absolute sessions use select-session. In the table, arrows and j/k
 move pane-only selection, Return activates with exactly one
 RPC jump, and Escape releases side focus via RPC and returns to the pane.
@@ -1373,13 +1387,13 @@ The root list is built from live state, in this order:
   key equivalent: New Session, Rename Session…, Close Session, New Window,
   Close Window, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
   Remote Host…, Hide/Show Sidebar, Focus Sidebar, Enter Full Screen, Find…,
-  Copy Mode, Prompt…, Reset Clipboard and Upload Permissions and Theme…. The window
+  Copy Mode, Prompt…, Last Window, Reset Clipboard and Upload Permissions and Theme…. The window
   commands need an anchor. The pane commands need a live focused pane: a
   connected anchor whose saved responder is a visible pane of that window, or
   a view inside one, such as its Find bar. Prompt… also needs an agent in the
   pane's session, as its menu item does.
-  Navigation items, Select Pane, the numbered lists, Find Next/Previous, Hide,
-  Quit and the palette item are never in the list.
+  Last Window is the only navigation item in the list. Select Pane, the
+  numbered lists, Find Next/Previous, Hide, Quit and the palette item are never in the list.
 
 While the palette is open, each owner snapshot or model change and each window
 close rebuilds the entries from the saved owner and responder. The panel stays
