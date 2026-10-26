@@ -29,6 +29,8 @@ log = open(out + '/actions.jsonl', 'w', buffering=1)
 
 
 def t(*a):
+    if a[0] not in ('list-clients', 'list-windows', 'list-panes', 'list-sessions', 'display-message'):
+        log.write(json.dumps(dict(event='tmux-command', command=a, uptime=time.monotonic())) + '\n')
     server_pid = t('display-message', '-p', '#{pid}') if a[0] == 'kill-server' else ''
     if a[0] in ('kill-pane', 'kill-window', 'kill-session', 'kill-server'):
         if a[0] == 'kill-pane':
@@ -53,7 +55,10 @@ def t(*a):
                     break
                 time.sleep(0.01)
             else:
-                raise RuntimeError('private tmux server did not exit after kill-server')
+                state = subprocess.run(['/bin/ps', '-p', server_pid, '-o', 'pid=,ppid=,stat=,command='], capture_output=True, text=True, timeout=3).stdout
+                log.write(json.dumps(dict(event='server-exit-timeout', process=state)) + '\n')
+                if state and 'Z' not in state.split(None, 3)[2]:
+                    raise RuntimeError('private tmux server did not exit after kill-server: ' + state)
         return p.stdout.strip()
     except subprocess.TimeoutExpired:
         return ''
@@ -106,6 +111,20 @@ def report_matches(text, pid):
     return False
 
 
+def app_descendants(pid):
+    processes = {}
+    for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,stat=,args='], text=True, errors='replace').splitlines():
+        bits = line.split(None, 3)
+        if len(bits) == 4:
+            processes[int(bits[0])] = (int(bits[1]), bits[2], bits[3])
+    owned = {pid}
+    while True:
+        children = {child for child, (parent, _, _) in processes.items() if parent in owned}
+        if children <= owned:
+            return {child: processes[child][2] for child in owned if child != pid}
+        owned.update(children)
+
+
 def app_children(pid):
     for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,args='], text=True, errors='replace').splitlines():
         bits = line.split(None, 2)
@@ -154,8 +173,11 @@ steps = int(args.duration / 0.4)
 previous = set()
 feed_pending = None
 feed_restart_failed = False
+known_helpers = {}
+unreaped_helpers = []
 try:
     for i in range(steps):
+        known_helpers.update(app_descendants(p.pid))
         if p.poll() is not None:
             break
         if feed_pending:
@@ -166,7 +188,9 @@ try:
             elif time.monotonic() > deadline:
                 feed_restart_failed = True
                 feed_pending = None
-        c = rng.choice(rows('list-clients', '-F', '#{client_name}') or [None])
+        clients = [line.split('\t', 1) for line in rows('list-clients', '-F', '#{client_name}\t#{client_flags}')]
+        candidates = [name for name, flags in clients if 'no-output' not in flags.split(',')]
+        c = rng.choice(candidates or [None])
         ws = rows('list-windows', '-a', '-F', '#{session_name}:#{window_index}')
         panes = rows('list-panes', '-a', '-F', '#{pane_id}')
         current = set(panes)
@@ -179,7 +203,7 @@ try:
             continue
         a = 0 if i % 100 < 35 else rng.randrange(25)
         counts[a] += 1
-        log.write(json.dumps(dict(i=i, elapsed=time.time() - start, action=a, pane=target, client=c)) + '\n')
+        log.write(json.dumps(dict(i=i, elapsed=time.time() - start, uptime=time.monotonic(), action=a, pane=target, client=c, clients=clients)) + '\n')
         if i in (steps * 2 // 5, steps * 4 // 5):
             t('kill-server')
             setup(False)
@@ -206,7 +230,8 @@ try:
         elif a == 13 and target:
             t('resize-pane', '-t', target, '-x', str(rng.randrange(10, 80)), '-y', str(rng.randrange(5, 40)))
         elif a == 14 and c:
-            t('refresh-client', '-c', c, '-C', f'{rng.randrange(90, 190)},{rng.randrange(30, 70)}')
+            cell = t('display-message', '-c', c, '-p', '#{client_cell_width}x#{client_cell_height}')
+            t('refresh-client', '-t', c, '-C', f'{rng.randrange(90, 190)}x{rng.randrange(30, 70)}x{cell}')
         elif a == 15 and feed_pending is None:
             for pid in app_children(p.pid):
                 try:
@@ -254,9 +279,17 @@ try:
             p.kill()
             p.wait(timeout=5)
 finally:
+    known_helpers.update(app_descendants(p.pid))
     if p.poll() is None:
         p.kill()
         p.wait(timeout=5)
+    for pid, command in known_helpers.items():
+        current = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat=,args='], capture_output=True, text=True, timeout=3).stdout.strip().split(None, 1)
+        if len(current) == 2 and not current[0].startswith('Z') and current[1] == command:
+            unreaped_helpers.append(pid)
+            os.kill(pid, signal.SIGKILL)
+    if unreaped_helpers:
+        log.write(json.dumps(dict(event='helpers-survived-app', pids=unreaped_helpers, app_exit=p.returncode)) + '\n')
     t('kill-server')
 
 lines = open(out + '/stderr.log', errors='replace').read().splitlines()
@@ -341,6 +374,8 @@ if done:
     done['counts']['killed_race'] = killed_race
 if bad:
     problems.append(f'{len(bad)} sanitizer/panic lines, first: {bad[0]}')
+if unreaped_helpers:
+    problems.append(f'app left helper processes: {unreaped_helpers}')
 if p.returncode != 0 or not done:
     problems.append(f'app exit {p.returncode}, finished={bool(done)}')
 if new:
