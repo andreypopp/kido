@@ -6,9 +6,16 @@ final class SessionMenus: NSObject, NSMenuItemValidation {
     var send: (RPCRequest) -> Void = { _ in }
     var canSend: () -> Bool = { true }
     var rename: () -> Void = {}
+    var connectionColor: () -> Void = {}
     var close: () -> Void = {}
     let window = NSMenu(title: "Window")
     let session = NSMenu(title: "Session")
+
+    private lazy var color: NSMenuItem = {
+        let item = NSMenuItem(title: "Connection Color…", action: #selector(colorItem), keyEquivalent: "")
+        item.target = self
+        return item
+    }()
 
     func update(_ model: SessionModel) {
         window.items = [
@@ -19,7 +26,7 @@ final class SessionMenus: NSObject, NSMenuItemValidation {
             let entry = item(w.name, n < 9 ? "\(n + 1)" : "", model.select(.number(n + 1)))
             entry.state = w.id == model.window ? .on : .off
             return entry
-        }
+        } + [.separator(), color]
         session.items = [
             item("Next Session", "]", .switchSession(next: true), [.command, .option]),
             item("Previous Session", "[", .switchSession(next: false), [.command, .option]),
@@ -37,6 +44,7 @@ final class SessionMenus: NSObject, NSMenuItemValidation {
     }
 
     @objc func renameItem() { rename() }
+    @objc func colorItem() { connectionColor() }
     @objc func closeItem() { close() }
 
     private func item(

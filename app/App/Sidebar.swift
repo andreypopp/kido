@@ -94,7 +94,10 @@ final class Sidebar: NSSplitViewController {
     var changed: () -> Void = {}
     var listBackground: NSColor? { didSet { view.needsLayout = true } }
 
-    func updateAppearance(runtime: GhosttyRuntime) {
+    func updateAppearance(runtime: GhosttyRuntime, colors: (text: NSColor, ring: NSColor) = (Chrome.accent, Chrome.accent)) {
+        titleLabel.textColor = colors.text
+        list.accent = colors.text
+        focusEdge.color = colors.ring
         listBackground = runtime.canvas
         list.appearance = NSAppearance(named: runtime.canvas.luminance < 0.179 ? .darkAqua : .aqua)
     }
@@ -108,7 +111,7 @@ final class Sidebar: NSSplitViewController {
         list.autoresizingMask = [.width, .height]
         titleLabel.font = .titleBarFont(ofSize: 0)
         titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.textColor = .controlAccentColor
+        titleLabel.textColor = Chrome.accent
         dock.addSubview(titleLabel)
         dock.addSubview(newSessionButton)
         dock.addSubview(toggleButton)

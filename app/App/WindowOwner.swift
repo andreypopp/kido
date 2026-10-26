@@ -86,6 +86,7 @@ private class AlertEscape: NSView {
     private var drain: Drain?
     private var initial: DispatchWorkItem?
     private(set) var ssh: SSH?
+    let accents: HostAccents
     var menuChanged: () -> Void = {}
     var onClose: () -> Void = {}
     var snapshotReceived: () -> Void = {}
@@ -200,13 +201,15 @@ private class AlertEscape: NSView {
         openBrowser(url)
     }
 
-    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
+    init(host: Host, runtime: GhosttyRuntime, accents: HostAccents, start: Bool = true, cause: DialCause = .launch, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
         self.openBrowser = openBrowser
         self.host = host
+        self.accents = accents
         if case .newSession = cause { pendingNewSession = true }
         self.runtime = runtime
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(localServerRestarted(_:)), name: Self.localServerRestarted, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(accentChanged(_:)), name: HostAccents.changed, object: accents)
         sidebar.list.seen = seen
         NotificationCenter.default.addObserver(self, selector: #selector(seenChanged(_:)), name: Self.seenChanged, object: seen)
         NotificationCenter.default.addObserver(self, selector: #selector(attend), name: NSApplication.didBecomeActiveNotification, object: nil)
@@ -275,6 +278,10 @@ private class AlertEscape: NSView {
         if start { begin(cause) }
     }
 
+    @objc private func accentChanged(_ notification: Notification) {
+        if notification.userInfo?["host"] as? Host == host { updateAppearance() }
+    }
+
     private func show(title: String) {
         window.title = title
         sidebar.windowTitle = title
@@ -289,7 +296,9 @@ private class AlertEscape: NSView {
         }
         banner?.background = background
         window.appearance = NSAppearance(named: background.isDark ? .darkAqua : .aqua)
-        sidebar.updateAppearance(runtime: runtime)
+        let colors = accents.colors(for: host, runtime: runtime)
+        sidebar.updateAppearance(runtime: runtime, colors: colors)
+        session?.ring = colors.ring
         sidebar.margin = runtime.settings.paneSpacing
         session?.updateBackground()
     }
@@ -707,6 +716,7 @@ private class AlertEscape: NSView {
         do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
         note("dialing \(server.socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
         let view = SessionView(runtime: runtime)
+        view.ring = accents.colors(for: host, runtime: runtime).ring
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
         view.canPrompt = { [weak self] in self?.canPrompt == true }

@@ -13,6 +13,11 @@ extension NSColor {
 
     var isDark: Bool { luminance < 0.5 }
 
+    func contrast(with other: NSColor) -> Double {
+        let a = luminance, b = other.luminance
+        return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
+
     func shifted(_ amount: Double) -> NSColor {
         return mixed(toward: isDark ? .white : .black, amount: amount) // chrome-allow: theme brightness derivation
     }
@@ -422,7 +427,7 @@ extension NSColor {
     }
 
     var background: NSColor { color("background") }
-    var canvas: NSColor { background.mixed(toward: .black, amount: background.isDark ? 0.35 : 0.06) }
+    var canvas: NSColor { background.mixed(toward: Chrome.pole(dark: false), amount: background.isDark ? 0.35 : 0.06) }
     var foreground: NSColor { color("foreground") }
     var unfocusedPaper: NSColor { background.shifted(settings.unfocusedShift) }
 

@@ -4,7 +4,7 @@ import TmuxControl
 
 struct PaletteEntry {
     enum ID: Equatable {
-        case pane(Snapshot.Position), host(String), command(Int), connectTyped, clearRecent, theme(String), themeUse(Int)
+        case pane(Snapshot.Position), host(String), command(Int), connectTyped, clearRecent, theme(String), themeUse(Int), color(String)
     }
     let id: ID
     var order = 0
@@ -15,11 +15,12 @@ struct PaletteEntry {
     var symbol: String?
     var theme: ThemeRow?
     var radio: Bool { if case .themeUse = id { true } else { false } }
+    var tint: NSColor?
     var agent = false
     var promptable = false
     var check: @MainActor () -> String? = { nil }
     enum Operation {
-        case run(@MainActor () -> Void), enter(PaletteMode), connectTyped(String), clearRecent, themeChoose, themeUse
+        case run(@MainActor () -> Void), enter(PaletteMode), connectTyped(String), chooseColor(Accent), customColor, clearRecent, themeChoose, themeUse
     }
     let operation: Operation
 
@@ -58,6 +59,7 @@ struct PaletteEntry {
                 else { operation = .run {} }
             }
             else if action == #selector(AppDelegate.showThemes) { operation = .enter(.theme(.pick)) }
+            else if action == #selector(SessionMenus.colorItem), let owner { operation = .enter(.color(.connection(owner.host))) }
             else if action == #selector(SessionMenus.renameItem), let owner, let session = owner.currentSession, let instance = owner.snapshot?.serverInstance {
                 operation = .enter(.sessionName(owner, instance, .rename(session.id, original: session.name)))
             } else if action == #selector(PaneView.promptSelectionItem(_:)), let owner, let pane = livePane(owner, responder),
@@ -123,6 +125,7 @@ struct PaletteEntry {
         case #selector(PaneView.promptSelectionItem(_:)): (16, .pane)
         case #selector(AppDelegate.resetClipboardPermissions): (17, .window)
         case #selector(AppDelegate.showThemes): (18, .always)
+        case #selector(SessionMenus.colorItem): (19, .window)
         default: nil
         }
     }
@@ -162,13 +165,30 @@ extension AppDelegate {
     }
     private func hostEntry(_ host: String, detail: String = "", shortcut: String = "") -> PaletteEntry {
         PaletteEntry(id: .host(host), title: host, detail: detail, shortcut: shortcut, symbol: "globe",
-                     operation: .run { [routes] in routes.connect(.remote(host)) })
+                     tint: routes.accents.known(.remote(host)).flatMap(swatch), operation: .connectTyped(host))
     }
 
-    func connectEntries(query: String, invalid: Bool) -> [(entry: PaletteEntry, offsets: [[Int]])] {
+    func swatch(_ accent: Accent) -> NSColor? { runtime.map { accent.legible(on: $0.background, minimum: Accent.ringContrast) } }
+
+    func effectiveAccent(_ text: String, chosen: Accent?) -> Accent {
+        chosen ?? (try? Host(text.trimmingCharacters(in: .whitespaces))).flatMap(routes.accents.known) ?? routes.accents.suggestion
+    }
+
+    func colorEntries(_ target: ColorTarget, current: Accent, query: String) -> [(entry: PaletteEntry, offsets: [[Int]])] {
+        let custom: Bool = if case .custom = current { true } else { false }
+        let entries = ([Accent.system] + Preset.allCases.map(Accent.preset)).map { accent in
+            PaletteEntry(id: .color(accent.name), title: accent.name, detail: "", shortcut: accent == current ? "Current" : "",
+                         symbol: "circle.fill", tint: swatch(accent), operation: .chooseColor(accent))
+        } + [PaletteEntry(id: .color("Custom"), title: "Custom…", detail: "", shortcut: custom ? "Current" : "",
+                          symbol: custom ? "circle.fill" : "paintpalette", tint: custom ? swatch(current) : nil, operation: .customColor)]
+        return PaletteEntry.ranked(entries, query: query)
+    }
+
+    func connectEntries(query: String, invalid: Bool, chosen: Accent?) -> [(entry: PaletteEntry, offsets: [[Int]])] {
         var result: [(PaletteEntry, [[Int]])] = []
         if !query.isEmpty, !invalid {
-            result.append((PaletteEntry(id: .connectTyped, title: "Connect to " + query, detail: "", shortcut: "↩", symbol: "globe", operation: .connectTyped(query)), [[], []]))
+            result.append((PaletteEntry(id: .connectTyped, title: "Connect to " + query, detail: "", shortcut: "↩", symbol: "globe",
+                                        tint: swatch(effectiveAccent(query, chosen: chosen)), operation: .connectTyped(query)), [[], []]))
         }
         let now = Date()
         result += routes.recent.entries.compactMap { recent -> (PaletteEntry, [[Int]])? in
