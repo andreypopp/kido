@@ -126,6 +126,7 @@ struct PaletteEntry {
         case #selector(AppDelegate.resetClipboardPermissions): (17, .window)
         case #selector(AppDelegate.showThemes): (18, .always)
         case #selector(SessionMenus.colorItem): (19, .window)
+        case #selector(SessionMenus.lastWindow(_:)): (20, .window)
         default: nil
         }
     }

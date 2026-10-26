@@ -114,6 +114,7 @@ private class AlertEscape: NSView {
     }
     private var pendingNewSession = false
     private var navigationModel = SessionModel()
+    private var previous: SessionModel.Place?
     private enum Target { case pane(Snapshot.Position), window(SessionID, WindowID) }
     private var focusTarget: Target?
     private var intent = 0
@@ -817,7 +818,7 @@ private class AlertEscape: NSView {
     #endif
 
     private func updateNavigation(_ projected: Snapshot?? = nil) {
-        let next = model.navigation(projected ?? snapshot.map(reorder.state.project))
+        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), previous: previous)
         if navigationModel != next {
             navigationModel = next
             menuChanged()
@@ -825,6 +826,10 @@ private class AlertEscape: NSView {
     }
 
     private func changed(_ view: SessionView, _ model: SessionModel) {
+        if let session = controlModel.session, let window = controlModel.window, model.session != nil, model.window != nil,
+           session != model.session || window != model.window {
+            previous = .init(session: session, window: window)
+        }
         controlModel = model
         present(view)
     }
@@ -1126,6 +1131,7 @@ private class AlertEscape: NSView {
             session?.close()
             session = nil
         }
+        previous = nil
         let closing = drain
         drain = nil
         closing?.close()
