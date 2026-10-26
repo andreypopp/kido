@@ -72,7 +72,7 @@ private class AlertEscape: NSView {
     private var drain: Drain?
     private var initial: DispatchWorkItem?
     private(set) var ssh: SSH?
-    private(set) var identity: String?
+    let accents: HostAccents
     var menuChanged: () -> Void = {}
     var onClose: () -> Void = {}
     var snapshotReceived: () -> Void = {}
@@ -187,13 +187,15 @@ private class AlertEscape: NSView {
         openBrowser(url)
     }
 
-    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
+    init(host: Host, runtime: GhosttyRuntime, accents: HostAccents, start: Bool = true, cause: DialCause = .launch, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
         self.openBrowser = openBrowser
         self.host = host
+        self.accents = accents
         if case .newSession = cause { pendingNewSession = true }
         self.runtime = runtime
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(localServerRestarted(_:)), name: Self.localServerRestarted, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(accentChanged(_:)), name: HostAccents.changed, object: accents)
         sidebar.list.seen = seen
         NotificationCenter.default.addObserver(self, selector: #selector(seenChanged(_:)), name: Self.seenChanged, object: seen)
         NotificationCenter.default.addObserver(self, selector: #selector(attend), name: NSApplication.didBecomeActiveNotification, object: nil)
@@ -261,6 +263,10 @@ private class AlertEscape: NSView {
         if start { begin(cause) }
     }
 
+    @objc private func accentChanged(_ notification: Notification) {
+        if notification.userInfo?["host"] as? Host == host { updateAppearance() }
+    }
+
     private func show(title: String) {
         window.title = title
         sidebar.windowTitle = title
@@ -275,7 +281,9 @@ private class AlertEscape: NSView {
         }
         banner?.background = background
         window.appearance = NSAppearance(named: background.isDark ? .darkAqua : .aqua)
-        sidebar.updateAppearance(runtime: runtime)
+        let colors = accents.colors(for: host, runtime: runtime)
+        sidebar.updateAppearance(runtime: runtime, colors: colors)
+        session?.ring = colors.ring
         sidebar.margin = runtime.settings.paneSpacing
         session?.updateBackground()
     }
@@ -513,7 +521,7 @@ private class AlertEscape: NSView {
         guard admitsUpload() else { return }
         if host == .local || uploadPermission == .allow || Self.clipboardConsent.allows(host, .upload) { return transfer(plan, base: base, to: pane) }
         if uploadPermission == .deny { return notice("Kido did not upload", "Uploads to “\(host.label)” are denied for this connection.") }
-        askUpload(plan, to: host.label, "Kido copies them to \(base)/drops on \(identity ?? host.label) and pastes their paths. Files are kept for about 7 days.",
+        askUpload(plan, to: host.label, "Kido copies them to \(base)/drops on \(host.label) and pastes their paths. Files are kept for about 7 days.",
                   ["Allow for this connection", "Always allow", "Deny"]) { [weak self, weak pane] response in
             guard let self else { return }
             if response == .alertSecondButtonReturn { Self.clipboardConsent.allowAlways(host, .upload) }
@@ -693,6 +701,7 @@ private class AlertEscape: NSView {
         do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
         note("dialing \(server.socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
         let view = SessionView(runtime: runtime)
+        view.ring = accents.colors(for: host, runtime: runtime).ring
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
         view.canPrompt = { [weak self] in self?.canPrompt == true }
@@ -806,7 +815,7 @@ private class AlertEscape: NSView {
     private func present(_ view: SessionView) {
         if let held, !holds(held) { self.held = nil }
         let model = model
-        show(title: host == .local ? model.title : "\(identity ?? host.label) / \(model.title)")
+        show(title: host == .local ? model.title : "\(host.label) / \(model.title)")
         if model.session == nil { snapshot = nil }
         updateNavigation()
         if view.superview == nil {
@@ -1036,9 +1045,7 @@ private class AlertEscape: NSView {
         if let testRemoteEnvironment { transport.testEnvironment(testRemoteEnvironment) }
         transport.testConfiguration = testSSHConfiguration
         #endif
-        let resolved = try await transport.start(drain: drain) { [weak self] error in self?.failed(token, error) }
-        guard accepts(token) else { return }
-        identity = resolved
+        try await transport.start(drain: drain) { [weak self] error in self?.failed(token, error) }
     }
 
     private func ready() {
@@ -1091,7 +1098,7 @@ private class AlertEscape: NSView {
             snapshot = nil
             updateNavigation()
         }
-        show(title: host == .local ? "Local" : identity ?? host.label)
+        show(title: host.label)
     }
 
     func close(cause: Connection.CloseCause = .windowClosed) {
@@ -1123,7 +1130,6 @@ private class AlertEscape: NSView {
     #if KIDO_VISUAL || KIDO_STRESS
     var testRemoteEnvironment: [String: String]?
     var testSSHConfiguration: String?
-    var testIdentity: String { identity ?? host.label }
     var testEndpoint: Endpoint?
     var testUploadBase: String?
     var testBanner: Banner { banner }

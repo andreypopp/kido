@@ -19,7 +19,7 @@ import XCTest
     private func kittyPane() throws -> (board: NSPasteboard, runtime: GhosttyRuntime, owner: WindowOwner, pane: PaneView, replies: Replies) {
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .remote("rich-host"), runtime: runtime, start: false)
+        let owner = WindowOwner(host: .remote("rich-host"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         let replies = Replies()
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { replies.data.append($0) })
         owner.window.contentView = pane
@@ -179,7 +179,7 @@ import XCTest
         var access: UnsafePointer<CChar>?
         XCTAssertTrue(ghostty_config_get(runtime.config, &access, "clipboard-read", 14))
         XCTAssertEqual(access.map { String(cString: $0) }, "ask")
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         var replies: [Data] = []
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { replies.append($0) })
         owner.window.contentView = pane
@@ -281,8 +281,8 @@ import XCTest
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let host = Host.remote("precedence-host")
-        let a = WindowOwner(host: host, runtime: runtime, start: false)
-        let b = WindowOwner(host: host, runtime: runtime, start: false)
+        let a = WindowOwner(host: host, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let b = WindowOwner(host: host, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         var replies: [Data] = []
         let pa = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: host) { replies.append($0) })
         let pb = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 1), font: 13, host: host) { _ in })
@@ -352,7 +352,7 @@ import XCTest
         defer { PaneView.clipboardTimeout = old }
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .remote("deadline-host"), runtime: runtime, start: false)
+        let owner = WindowOwner(host: .remote("deadline-host"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         var replies: [Data] = []
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { replies.append($0) })
         owner.window.contentView = pane

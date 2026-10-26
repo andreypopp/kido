@@ -100,8 +100,10 @@ refreshed by every remote path, palette, URL or intent alike. There is no
 remote restore. Off-screen FileMenuTests create inert window owners without
 starting a server.
 Local keeps `SessionModel.title` (session and current window); remote prefixes
-it with resolved `user@host / `. The original dialing alias is the window
-content's tooltip. Offline titles drop the session/window name.
+it with `Host.label`, the destination as typed (an SSH alias or `user@host`).
+The app does not show the `ssh -G` user and hostname. The notification
+subtitle and the upload sheet use the same name. Offline titles drop the
+session/window name.
 
 `AppDelegate` owns shared Ghostty configuration, app lifecycle and menus.
 Each `WindowOwner` owns its immutable Host, generation, transport, Connection,
@@ -674,7 +676,7 @@ the shifted paper: the terminal background mixed toward black on a light
 background and toward white on a dark one (relative luminance < 0.5), per
 sRGB component, by `kido-unfocused-background-shift` (default 3%; 0 turns
 the shift off). A reload that changes only this key repaints the panes.
-The focused pane also gets a 1.5pt `controlAccentColor` ring on its card's
+The focused pane also gets a 1.5pt ring in the connection color ([Connection color](#connection-color)) on its card's
 rounded edge, inside its chrome rect, over the padding and not over
 cells. The other tiled cards have a 0.5pt edge (foreground at 12%). A
 window with one visible tiled pane, or a zoomed pane, draws no shift and
@@ -710,7 +712,7 @@ active pane's cursor hollow because its surface is unfocused. Each
 focus-treatment update, and each move of a pane view between windows, sets
 every surface's Ghostty focus from the window's actual first responder, so
 a reparented view does not keep a stale solid cursor. The sidebar
-then has the same 1pt accent stroke around its whole column, including the
+then has the same 1pt stroke in the connection color around its whole column, including the
 title row, also in a single-pane window. The active pane
 stays remembered, and focus that returns to the terminal (a click, Escape)
 restores its edge. Only one surface has the edge at a time. A mouse click
@@ -1024,7 +1026,7 @@ the Ghostty theme background. The window background, the terminal host and
 the content view are the canvas ([Panes](#panes)). `NSWindow.title` stays
 set for the Window menu, Mission Control and the Dock menu. The title is the
 `session — window` of the current window. For a remote host it is
-`user@host / session — window`, and the host label alone before the first
+`host / session — window` with the host as typed (`Host.label`), and the host label alone before the first
 snapshot.
 
 Measured on macOS 27.0.1 with a probe window. The band is the height of the
@@ -1050,7 +1052,7 @@ The docked sidebar's top 32pt row (the `titlebar` constant) holds the traffic
 lights, the window title, the New Session button and the Toggle Sidebar
 button. The buttons are
 32 × 28pt, centered in the row, 40pt (toggle) and 72pt (New Session) from the
-right edge. The title is a label in `titleBarFont` and `controlAccentColor`
+right edge. The title is a label in `titleBarFont` and the connection color
 that takes no mouse, truncates at its tail and runs from x=80, past the
 traffic lights, to the buttons. In full screen the traffic lights are
 absent and the title starts at x=20. The buttons take their clicks. The
@@ -1082,13 +1084,13 @@ floating or collapsed, `dock` is in the glass's slot. The split view's own
 shadow views are hidden unless the sidebar floats. The docked list is
 square and has no outline, separator line or shadow; only the floating card
 has an 18pt radius and hairline border. The window title, the session names
-in the list and the focus ring use `controlAccentColor`. A colour per
-connection is planned in `plans/app-connection-color.md`.
+in the list, the sidebar focus edge and the pane focus ring use the
+connection color ([Connection color](#connection-color)).
 
 The functions of the former tab strip are in the sidebar: select (row,
 Command-{/}, Command-1...9, the palette), reorder (drag), close (row ×,
 Command-W), new window (the session header plus, Command-T). In the window
-chrome, the remote `user@host` appears only in the window title.
+chrome, the remote host appears only in the window title.
 
 `SidebarView` is a reusable `NSTableView` backed by the pure row model in
 `SidebarFeed/Rows.swift`. Sessions have noninteractive 29pt headers with
@@ -1267,6 +1269,56 @@ first observes an error-free snapshot count as seen. Seen is not persisted acros
 The sidebar is visible by default; it does not automatically collapse
 at narrow widths.
 
+## Connection color
+
+A connection is a `Host`. Its color is app state, not theme configuration:
+`HostAccents` keeps `[Host.clipboardKey: Accent]` as JSON in the UserDefaults
+key `hostAccents` (no store in background runs). `kido-app.conf` has no key for
+it, and the app never writes that file. `AppDelegate` owns the store through
+`WindowRoutes.accents`. A color change posts `HostAccents.changed`; every owner
+of that host redraws, and an owner of another host does not.
+
+`Accent` is `.system`, `.preset(Preset)` or `.custom(red, green, blue)`. The
+eight presets (red, orange, green, teal, blue, indigo, purple, pink) are a
+fixed table in `Preset.values`: one dimmed sRGB value for a light background and
+one for a dark one, chosen by the theme background's `isDark`. System resolves
+to `controlAccentColor`. A color with no stored value is `.preset(.blue)` for
+Local and System for a remote host.
+
+`Accent.legible(on:minimum:)` is the safety net. It mixes a color toward black
+or white in 5% steps until the contrast ratio reaches the minimum: 4.5:1
+for text (window title, session names, against the canvas) and 3:1 for
+strokes (pane ring, sidebar edge, swatches, against the pane background). The
+presets pass both on dark backgrounds, Solarized dark, #1e1e1e and white
+without a change. On the built-in light theme (#FFF9EC) six presets are 4.35 to
+4.41 as text on the canvas and get one step darker; the rest pass. A custom
+color gets the same rule.
+
+Used by the connection color: the window title, the session names, the sidebar
+focus edge and the focused-pane ring. Control states keep the system accent:
+the drop preview, the toolbar capsule, the reorder mark, the rename field,
+the prompt box and icon hover. The ring appears only with two or more tiled
+panes, as in Focus treatment.
+
+**Choosing a color.** Connect mode has a swatch button after the chip. With
+no host typed it shows `HostAccents.suggestion`: the least-used preset (the
+first in table order on a tie), counting each stored preset, and counting blue
+once for Local while Local has no stored color. When the typed text is a known host (one with a stored color), the swatch shows that
+host's color. The selected row does not change it. A click on the swatch enters Color mode for the new connection;
+the choice returns to Connect and is used by the next connect. Option-Command-C in
+Connect mode does the same. A pending Custom color survives the color panel
+becoming key; the palette closes when focus goes elsewhere. Connecting stores the pending color for the host. If the host has
+a stored color, that color stays (a pending color replaces it only when the
+user chose one). A host with no stored color, such as an old recent host or a
+URL or intent connection, gets the suggestion stored at its first connect, so a
+stored value is the only record of the color. The globe of a typed or recent
+remote row in the palette is tinted with the host's color when it has one.
+
+**Changing it later.** Window → Connection Color… opens Color mode for the
+anchor window's host; the choice applies to every window of that host. One
+store and one mode serve both uses; the Connect swatch reuses Color mode with a
+`ColorTarget.newConnection`, so no second picker exists.
+
 ## Command palette
 
 Command-P (View → Command Palette…) opens the palette and closes it.
@@ -1352,7 +1404,7 @@ characters gets a fill of the terminal foreground at 14% with a 3pt radius;
 the text keeps its colour and weight. With no match, the list shows "No
 matches".
 
-The palette has four modes besides the root. A mode shows a chip left of the
+The palette has five modes besides the root. A mode shows a chip left of the
 field (22pt, the mode's symbol and name) and a foot that names its keys.
 Entering a mode clears the query and the error. An error is a red line between
 the field and the list; an edit clears it.
@@ -1367,6 +1419,15 @@ the field and the list; an edit clears it.
   shows the validation message as the error, and the typed row is absent until
   the text changes. A valid host or a host row connects through the same
   remote routing as URLs and opens a new window.
+  A color button sits after the chip, before the field. See
+  [Connection color](#connection-color).
+- **Color** (`eyedropper`). Window → Connection Color… and the swatch in
+  Connect mode enter it. Rows: System, the eight presets and Custom…, each
+  with a swatch tinted in its color; the current one shows "Current".
+  Choosing a row for a connection stores it and closes the palette. In the
+  Connect swatch's use, it sets the pending color and returns to Connect.
+  Custom… opens the shared `NSColorPanel` (no alpha); each change of the panel
+  stores the color for the connection, or sets the pending color.
 - **Rename session** (`pencil`). Session → Rename Session… and its root row
   enter it. It targets the anchor's current session, with the current name in
   the field, selected. Return commits through `SessionRename`, the rules of the
@@ -1563,7 +1624,8 @@ unbound Command key to the main menu, which is how Command-P reaches the
 palette.
 
 The field's accessibility label names the mode: "Command palette", "Connect
-to remote host", "Rename session" or "Theme". In Prompt mode, the field is "Prompt",
+to remote host", "Color", "Rename session" or "Theme". The color button's label is
+"Connection color: <name>". In Prompt mode, the field is "Prompt",
 the picker is a pop-up button "Send to @name", and the buttons are "Send
 prompt", "Retry" and "Copy Prompt". Each row's label joins its title, detail
 and shortcut, and adds the status as the sidebar rows do (" — error", " — waiting",
@@ -1702,8 +1764,8 @@ and the notifier's entries with one (no banners). That asymmetry is
 deliberate.
 
 **Content.** Title is the sidebar row's title. Subtitle is the session
-name; for a remote window `user@host · session`, using the resolved
-identity the window title shows; for a `kido ssh` remote agent in a Local
+name; for a remote window `host · session`, with the host as typed
+(`Host.label`); for a `kido ssh` remote agent in a Local
 window, `session · destination`. Body: `Waiting` or
 `Waiting: <caption>`, else `Exit <code>: <command>` for a command, else
 `Failed` or `Failed: <caption>`. Nothing is truncated by the app.
@@ -1777,7 +1839,8 @@ and layout diffs. References live in `app/VisualTests/__Snapshots__`.
 state of the approved mockup, `app/design/palette/` (`mockup.html` with its
 `NOTES.md`), in light and dark: `palette.<theme>-<state>.png` for root,
 filtered, filtered2, nomatch, connect, connect-typing, connect-invalid,
-connect-none, rename, rename-error, rename-error2, nowindow, match-run,
+connect-none, connect-color, connect-known, color, color-custom, rename,
+rename-error, rename-error2, nowindow, match-run,
 theme, theme-filtered, theme-preview, theme-save, theme-save-session,
 theme-err-write and theme-err-file. The theme images are recorded last in the same test. Their
 conf lives in the visual scheme's private `HOME` (`XDG_CONFIG_HOME` is
@@ -1785,6 +1848,11 @@ conf lives in the visual scheme's private `HOME` (`XDG_CONFIG_HOME` is
 `HOME` is that private directory before it writes. theme-err-file removes the
 built app's bundled theme file and restores its bytes in a `defer`.
 `ThemeConfTests` tests the conf text functions and the writer.
+`AccentTests` records the connection color of the mockup
+`app/design/connection-color/mockup.html`: `connection-color.<state>-<red|purple|teal>-<light|dark>.png`
+for the ring, the sidebar edge and the docked, collapsed and sidebar-focused
+title. The same file has behavior tests for the store (two windows of one host,
+another host, a new store from the same suite) and for the contrast rule.
 `palette.light-window-root.png` records the card over a real two-pane window
 at the mockup's 1100x740pt, with the panes' cursors hollow. The fixture
 clears the panes' tmux history after fixed output, because `respawn-pane -k`

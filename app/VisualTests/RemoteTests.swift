@@ -208,7 +208,7 @@ import SidebarFeed
 
     func testCloseBeforeDiscoveryTaskRuns() async throws {
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
-        let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
+        let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         owner.testRemoteEnvironment = ["HOME": "/tmp/kr-queued-unused/home", "XDG_STATE_HOME": "/tmp/kr-queued-unused/state", "PATH": "/usr/bin:/bin"]
         defer { owner.ssh?.stop() }
         owner.start()
@@ -354,7 +354,7 @@ import SidebarFeed
         let routes = WindowRoutes()
         routes.connect(.remote("localhost"))
         routes.ready(isDefaultLaunch: false) { host, _ in
-            let owner = WindowOwner(host: host, runtime: runtime, start: false)
+            let owner = WindowOwner(host: host, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
             owner.testRemoteEnvironment = env
             owner.testSSHConfiguration = config
             owners.append(owner)
@@ -365,7 +365,7 @@ import SidebarFeed
         let localResult = try await Child.run(tools.kido, ["server", "--server", localDir], env: tools.environment.merging(env) { _, new in new })
         XCTAssertEqual(localResult.status, 0, localResult.err)
         let localServer = try JSONDecoder().decode(Server.self, from: Data(localResult.out.utf8))
-        let local = WindowOwner(host: .local, runtime: runtime, start: false)
+        let local = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         local.testEndpoint = Endpoint(server: localServer, kido: tools.kido)
         owners.append(local)
         local.start()
@@ -374,7 +374,7 @@ import SidebarFeed
         transports += owners.compactMap(\.ssh)
         XCTAssertEqual(owners.count, 3)
         XCTAssertNotEqual(first.ssh?.directory, second.ssh?.directory)
-        XCTAssertTrue(first.window.title.hasPrefix(first.testIdentity + " / main"))
+        XCTAssertTrue(first.window.title.hasPrefix(first.host.label + " / main"))
         let a = try XCTUnwrap(first.testSession?.windows.values.first?.panes.first)
         let b = try XCTUnwrap(second.testSession?.windows.values.first?.panes.first)
         let c = try XCTUnwrap(local.testSession?.windows.values.first?.panes.first)
@@ -448,7 +448,7 @@ import SidebarFeed
         XCTAssertEqual(quoted.out, "space $literal ' quote ☃")
         let socket = state + "/kido-app/socket"
         _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_SERVER", "9.9"]))
-        let mismatch = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
+        let mismatch = WindowOwner(host: .remote("localhost"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         mismatch.testRemoteEnvironment = env
         mismatch.testSSHConfiguration = config
         owners.append(mismatch)
@@ -481,7 +481,7 @@ import SidebarFeed
         mismatch.respondToAlert(.alertFirstButtonReturn)
         try await until("Reconnect rediscovers compatible protocol") { mismatch.testBanner.isHidden }
         transports += owners.compactMap(\.ssh)
-        let missing = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
+        let missing = WindowOwner(host: .remote("localhost"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         missing.testSSHConfiguration = config
         missing.testRemoteEnvironment = env.merging(["PATH": "/usr/bin:/bin"]) { _, new in new }
         owners.append(missing)
@@ -492,7 +492,7 @@ import SidebarFeed
         XCTAssertEqual(missing.generation, terminalGeneration, "missing kido is terminal, not an automatic retry")
         let untrustedConfig = root + "/untrusted.conf"
         try "Host localhost\n  ForwardAgent no\n  UserKnownHostsFile /dev/null\n  GlobalKnownHostsFile /dev/null\n".write(toFile: untrustedConfig, atomically: true, encoding: .utf8)
-        let untrusted = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
+        let untrusted = WindowOwner(host: .remote("localhost"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         untrusted.testSSHConfiguration = untrustedConfig
         untrusted.testRemoteEnvironment = env
         owners.append(untrusted)
@@ -616,7 +616,7 @@ import SidebarFeed
         let server = try JSONDecoder().decode(Server.self, from: Data(launched.out.utf8))
         let board = NSPasteboard(name: .init("kido-ssh-pane-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
         owner.testUploadBase = root + "/state"
         addTeardownBlock { @MainActor in
@@ -756,7 +756,7 @@ import SidebarFeed
         let env = ["HOME": root + "/home", "XDG_STATE_HOME": root + "/state", "PATH": root + "/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
+        let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         owner.testRemoteEnvironment = env
         try "Host localhost\n  ForwardAgent no\n".write(toFile: root + "/ssh.conf", atomically: true, encoding: .utf8)
         owner.testSSHConfiguration = root + "/ssh.conf"

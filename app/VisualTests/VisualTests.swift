@@ -236,7 +236,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     private func sidebarOwner() throws -> WindowOwner {
         try loadRuntime()
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         addTeardownBlock { @MainActor in owner.close() }
         return owner
     }
@@ -293,7 +293,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let config = directory.appendingPathComponent("single-pane-header.conf")
         try "background = #fffaf0\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         defer { owner.close() }
         let content = owner.sidebar.content
         content.addSubview(session)
@@ -829,7 +829,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             .write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
         window.styleMask.insert([.closable, .miniaturizable])
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         addTeardownBlock { @MainActor in owner.close() }
         let sidebar = owner.sidebar
         window.titleVisibility = .hidden
@@ -1710,7 +1710,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testSameWindowDeferredPaneFocus() async throws {
         try await start()
         let pane = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "exec /bin/cat"])
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
         defer { owner.close() }
@@ -1737,7 +1737,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await start()
         let other = try await command(["new-session", "-d", "-P", "-F", "#{session_id}", "-s", "other", "exec /bin/cat"])
         let current = try await command(["new-window", "-P", "-F", "#{window_id}", "-t", other, "exec /bin/cat"])
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
         defer { owner.close() }
@@ -1838,7 +1838,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testOSC52ClipboardConsentAndPrivatePaneTransport() async throws {
         let clipboardModeBeforeAttach = try await start()
         XCTAssertNotEqual(runtime.pasteboard.name.rawValue, "NSGeneralPboard")
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         window.contentView = nil
         window.isReleasedWhenClosed = false
         window.close()
@@ -2381,7 +2381,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         })
         defer { unstamped.stop() }
         try await wait("unstamped RPC refusal") { refused }
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         let unstampedOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(unstampedOutput.out.utf8)), kido: tools.kido)
         defer { owner.close() }

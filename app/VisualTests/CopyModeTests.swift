@@ -403,7 +403,7 @@ extension VisualTests {
         try "copy-on-select = clipboard\n".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
         owner.window.contentView = pane
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
@@ -565,7 +565,7 @@ extension VisualTests {
     func testPendingInputRefusalsAndLateWork() async throws {
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .remote("copy-host"), runtime: runtime, start: false)
+        let owner = WindowOwner(host: .remote("copy-host"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         owner.testUploadBase = "/tmp/kc-" + UUID().uuidString.prefix(8)
         var replies: [Data] = []
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { replies.append($0) })

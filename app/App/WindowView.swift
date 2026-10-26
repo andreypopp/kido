@@ -338,6 +338,7 @@ final class WindowView: NSView {
         for chrome in chromes {
             guard let pane = lookup[chrome.pane] else { continue }
             let tiled = pane.transparentPaper
+            chrome.ring = session?.ring ?? Chrome.accent
             let shifted = tiled && multiple && (sidebarFocused || chrome.pane != active)
             chrome.treatment = tiled
                 ? (multiple && !sidebarFocused && chrome.pane == active ? .edge : .plain)

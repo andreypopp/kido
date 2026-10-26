@@ -84,7 +84,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         try FileManager.default.createDirectory(atPath: root + "/files", withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let board = NSPasteboard(name: .init("kido-upload-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         owner.testUploadBase = root + "/state"
         let input = Input()
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { input.data.append($0) })

@@ -111,13 +111,9 @@ import TmuxControl
         return Launch("/usr/bin/ssh", options + ["-o", "ClearAllForwardings=yes"] + (control == nil ? ["-o", "ForwardAgent=no"] : []) + ["-S", directory + "/c", "-o", "ControlMaster=no", "-T", "--", destination, "exec " + command], environment: tools.environment)
     }
 
-    @discardableResult func start(drain: Drain? = nil, onLoss: @escaping (Failure) -> Void) async throws(Failure) -> String {
-        var identity = destination
+    func start(drain: Drain? = nil, onLoss: @escaping (Failure) -> Void) async throws(Failure) {
         let config = try await Child.run("/usr/bin/ssh", probeArguments, env: tools.environment, drain: drain)
         guard config.status == 0 else { throw Failure.ssh(destination + ": " + config.err) }
-        let fields = config.out.split(separator: "\n").map { $0.split(separator: " ", maxSplits: 1).map(String.init) }
-        if let user = fields.first(where: { $0.first == "user" })?.last,
-           let host = fields.first(where: { $0.first == "hostname" })?.last { identity = user + "@" + host }
         guard !stopped, !Task.isCancelled else { throw Failure(message: "Connection cancelled") }
         let child = try Child("/usr/bin/ssh", masterArguments, env: tools.environment, stdout: Pipe())
         master = child
@@ -128,7 +124,7 @@ import TmuxControl
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline, !stopped, !Task.isCancelled, child.process.isRunning {
             let check = try await Child.run("/usr/bin/ssh", checkArguments, env: tools.environment, deadline: 2, drain: drain)
-            if check.status == 0 { return identity }
+            if check.status == 0 { return }
             do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
         }
         throw Failure.ssh(destination + ": " + (child.stderr.isEmpty ? "SSH master did not become ready within 10 seconds" : child.stderr))

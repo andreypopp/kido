@@ -3,10 +3,11 @@ import TmuxControl
 
 final class FocusEdge: NSView {
     var floating = false { didSet { if floating != oldValue { needsDisplay = true } } }
+    var color = Chrome.accent { didSet { needsDisplay = true } }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            NSColor.controlAccentColor.withAlphaComponent(0.5).setStroke()
+            Chrome.capsuleEdge(color, alpha: 0.5).setStroke()
             NSBezierPath(roundedRect: bounds.insetBy(dx: floating ? 1 : 0.5, dy: floating ? 1 : 0.5),
                          xRadius: floating ? 17 : 0, yRadius: floating ? 17 : 0).stroke()
         }
@@ -48,6 +49,7 @@ final class PaneChrome: NSView {
     enum Treatment { case plain, edge, overlay }
     var treatment = Treatment.plain { didSet { if treatment != oldValue { needsDisplay = true } } }
     var card: CGFloat? { didSet { if card != oldValue { needsDisplay = true } } }
+    var ring = Chrome.accent { didSet { if ring != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: subviews.contains { $0 is PaneFind } ? 48 : 8, width: min(145, bounds.width), height: 32)
     }
@@ -74,7 +76,7 @@ final class PaneChrome: NSView {
             }
             guard let card else { return }
             let focused = treatment == .edge, width: CGFloat = focused ? 1.5 : 0.5
-            (focused ? NSColor.controlAccentColor : runtime.foreground.withAlphaComponent(0.12)).setStroke()
+            (focused ? ring : Chrome.capsuleEdge(runtime.foreground, alpha: 0.12)).setStroke()
             let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: width / 2, dy: width / 2), xRadius: card - width / 2, yRadius: card - width / 2)
             edge.lineWidth = width
             edge.stroke()

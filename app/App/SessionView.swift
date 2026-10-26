@@ -10,6 +10,9 @@ final class SessionView: NSView {
     var reorder = Reorder()
     var onPaneChange: () -> Void = {}
     var sidebarFocused: () -> Bool = { false }
+    var ring = Chrome.accent {
+        didSet { if ring != oldValue { (Array(windows.values) + others.values).forEach { $0.updateFocusTreatment() } } }
+    }
     private(set) var updating = false
     let runtime: GhosttyRuntime
     var canPrompt: () -> Bool = { false }

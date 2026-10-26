@@ -80,7 +80,7 @@ import TmuxControl
         }, matches: { runtime.background == rows[3].background })
         XCTAssertEqual(runtime.visualThemeApplies - before, 1)
         XCTAssertEqual(panes.map(\.paperColor), [runtime.background, runtime.background])
-        XCTAssertEqual(owner.window.backgroundColor, runtime.unfocusedPaper)
+        XCTAssertEqual(owner.window.backgroundColor, runtime.canvas)
         XCTAssertEqual(palette.appearance?.name, runtime.background.isDark ? .darkAqua : .aqua)
         let selected = table.selectedRow
         let point = table.convert(NSPoint(x: 70, y: table.rect(ofRow: 4).midY), to: nil)
@@ -302,7 +302,7 @@ import TmuxControl
             try themeCommand(panel, #selector(NSResponder.moveDown(_:)))
         }, matches: { fixture.runtime.background == row.background })
         XCTAssertEqual(panes.map(\.paperColor), panes.map { $0.shiftedBackground ? fixture.runtime.unfocusedPaper : fixture.runtime.background })
-        XCTAssertEqual(owner.window.backgroundColor, fixture.runtime.unfocusedPaper)
+        XCTAssertEqual(owner.window.backgroundColor, fixture.runtime.canvas)
     }
 
     func testThemeClickExternalReloadAndNoWrite() async throws {
@@ -488,6 +488,8 @@ import TmuxControl
             recent.add("dev@buildbox", at: now.addingTimeInterval(-86400))
             recent.add("devbox", at: now.addingTimeInterval(-7200))
             preferences.set(try JSONEncoder().encode(recent), forKey: "recentHosts")
+            preferences.set(try JSONEncoder().encode(["local": Accent.preset(.blue), "ssh:devbox": .preset(.teal),
+                                                      "ssh:dev@buildbox": .preset(.orange), "ssh:devbox-old": .preset(.purple)]), forKey: "hostAccents")
             let app = AppDelegate(runtime: runtime, routes: WindowRoutes(preferences: preferences))
             let owner = try XCTUnwrap(app.open(.local, start: false))
             owner.window.setFrame(NSRect(origin: owner.window.frame.origin, size: NSSize(width: 1100, height: 740)), display: false)
@@ -532,7 +534,17 @@ import TmuxControl
             query("ren"); image(palette, "\(theme)-filtered2")
             query("zzqq"); image(palette, "\(theme)-nomatch")
             palette.enter(.connect); image(palette, "\(theme)-connect")
+            palette.enter(.color(.newConnection)); image(palette, "\(theme)-connect-color")
+            palette.enter(.connect)
+            XCTAssertEqual(palette.selectedAccent, .preset(.red))
             query("dev"); image(palette, "\(theme)-connect-typing")
+            query("devbox"); image(palette, "\(theme)-connect-known")
+            XCTAssertEqual(palette.selectedAccent, .preset(.teal))
+            palette.enter(.color(.connection(.remote("devbox")))); image(palette, "\(theme)-color")
+            app.routes.accents.set(.custom(red: 0.76, green: 0.25, blue: 0.49), for: .remote("devbox"))
+            palette.enter(.root); palette.enter(.color(.connection(.remote("devbox")))); image(palette, "\(theme)-color-custom")
+            app.routes.accents.set(.preset(.teal), for: .remote("devbox"))
+            palette.enter(.root); palette.enter(.connect)
             query("me@dev box")
             palette.choose(0)
             XCTAssertNotNil(palette.error)
@@ -1454,6 +1466,114 @@ import TmuxControl
         XCTAssertEqual(clear.palette.shown.map(\.entry.title), ["New Session", "Connect to Remote Host…", "Theme…"])
         clear.sendEvent(try key(clear, "\u{1b}", code: 53))
         XCTAssertNil(app.palettePanel)
+    }
+
+    func testConnectColorButtonAndColorMode() throws {
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("palette-" + UUID().uuidString))))
+        let suite = "palette-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set(try JSONEncoder().encode(["local": Accent.preset(.blue), "ssh:devbox": .preset(.teal)]), forKey: "hostAccents")
+        let app = AppDelegate(runtime: runtime, routes: WindowRoutes(preferences: preferences))
+        let owner = try XCTUnwrap(app.open(.remote("devbox"), start: false))
+        let previousMenu = NSApp.mainMenu
+        NSApp.mainMenu = app.mainMenu()
+        defer { app.closePalette(); owner.close(); NSApp.mainMenu = previousMenu }
+        let accents = app.routes.accents
+        func open() throws -> (PalettePanel, PaletteView) {
+            app.closePalette()
+            app.connectRemoteHost()
+            let panel = try XCTUnwrap(app.palettePanel)
+            return (panel, panel.palette)
+        }
+        func type(_ palette: PaletteView, _ text: String) {
+            palette.field.stringValue = text
+            palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        }
+        func row(_ palette: PaletteView, _ title: String) throws -> Int { try XCTUnwrap(palette.shown.firstIndex { $0.entry.title == title }) }
+
+        var (panel, palette) = try open()
+        XCTAssertEqual(palette.mode, .connect)
+        XCTAssertEqual(palette.selectedAccent, .preset(.red), "the first preset no known connection uses")
+        type(palette, "devbox")
+        XCTAssertEqual(palette.selectedAccent, .preset(.teal), "a known host shows its own color")
+        type(palette, "newbox")
+        XCTAssertEqual(palette.selectedAccent, .preset(.red))
+        XCTAssertTrue(panel.performKeyEquivalent(with: try key(panel, "c", code: 8, modifiers: [.command, .option])))
+        XCTAssertEqual(palette.mode, .color(.newConnection))
+        XCTAssertEqual(palette.shown.map(\.entry.title), ["System"] + Preset.allCases.map { $0.rawValue.capitalized } + ["Custom…"])
+        XCTAssertEqual(palette.shown.filter { !$0.entry.shortcut.isEmpty }.map(\.entry.title), ["Red"])
+        panel.sendEvent(try key(panel, "\u{1b}", code: 53))
+        XCTAssertEqual(palette.mode, .connect)
+        XCTAssertEqual(palette.field.stringValue, "newbox", "Escape from the color list keeps the typed host")
+        XCTAssertNil(palette.connectAccent)
+        palette.enter(.color(.newConnection))
+        palette.choose(try row(palette, "Purple"))
+        XCTAssertEqual(palette.mode, .connect)
+        XCTAssertEqual(palette.field.stringValue, "newbox")
+        XCTAssertEqual(palette.connectAccent, .preset(.purple))
+        XCTAssertEqual(palette.selectedAccent, .preset(.purple))
+        palette.choose(0)
+        XCTAssertNil(app.palettePanel)
+        XCTAssertEqual(accents.known(.remote("newbox")), .preset(.purple))
+
+        (panel, palette) = try open()
+        type(palette, "devbox")
+        palette.choose(0)
+        XCTAssertEqual(accents.known(.remote("devbox")), .preset(.teal), "a stored color is kept")
+        (panel, palette) = try open()
+        type(palette, "fresh")
+        palette.choose(0)
+        XCTAssertEqual(accents.known(.remote("fresh")), .preset(.red), "no choice stores the first unused preset")
+
+        (panel, palette) = try open()
+        type(palette, "custombox")
+        palette.enter(.color(.newConnection))
+        palette.choose(try row(palette, "Custom…"))
+        XCTAssertEqual(palette.mode, .connect)
+        NSColorPanel.shared.color = NSColor(srgbRed: 0.2, green: 0.4, blue: 0.6, alpha: 1)
+        app.colorPanelChanged(NSColorPanel.shared)
+        guard case .custom(let red, let green, let blue)? = palette.connectAccent else { return XCTFail("custom color not applied") }
+        XCTAssertEqual(red, 0.2, accuracy: 0.002)
+        XCTAssertEqual(green, 0.4, accuracy: 0.002)
+        XCTAssertEqual(blue, 0.6, accuracy: 0.002)
+        palette.choose(0)
+        XCTAssertEqual(accents.known(.remote("custombox")), .custom(red: red, green: green, blue: blue))
+
+        (panel, palette) = try open()
+        app.connectionColor()
+        XCTAssertEqual(palette.mode, .color(.connection(.remote("devbox"))))
+        XCTAssertEqual(palette.shown.filter { !$0.entry.shortcut.isEmpty }.map(\.entry.title), ["Teal"])
+        palette.choose(try row(palette, "Pink"))
+        XCTAssertNil(app.palettePanel)
+        XCTAssertEqual(accents.known(.remote("devbox")), .preset(.pink))
+        XCTAssertEqual(owner.sidebar.visualTitle.textColor, Accent.preset(.pink).legible(on: runtime.canvas, minimum: 4.5))
+        app.togglePalette()
+        let root = try XCTUnwrap(app.palettePanel).palette
+        XCTAssertTrue(root.shown.contains { $0.entry.title == "Connection Color…" })
+        XCTAssertEqual(try XCTUnwrap(root.shown.first { $0.entry.id == .host("newbox") }?.entry.tint), Accent.preset(.purple).legible(on: runtime.background, minimum: 3))
+    }
+
+    func testNewConnectionCustomColorSurvivesTheColorPanelBecomingKey() async throws {
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("palette-" + UUID().uuidString))))
+        let app = AppDelegate(runtime: runtime)
+        let previousMenu = NSApp.mainMenu
+        NSApp.mainMenu = app.mainMenu()
+        defer { app.closePalette(); NSApp.mainMenu = previousMenu }
+        app.connectRemoteHost()
+        let palette = try XCTUnwrap(app.palettePanel).palette
+        palette.field.stringValue = "custombox"
+        palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        palette.enter(.color(.newConnection))
+        palette.choose(try XCTUnwrap(palette.shown.firstIndex { $0.entry.title == "Custom…" }))
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: NSColorPanel.shared)
+        await mainQueueFence()
+        XCTAssertNotNil(app.palettePanel, "the color panel becoming key keeps the palette")
+        NSColorPanel.shared.color = NSColor(srgbRed: 0.2, green: 0.4, blue: 0.6, alpha: 1)
+        app.colorPanelChanged(NSColorPanel.shared)
+        guard case .custom? = palette.connectAccent else { return XCTFail("custom color not applied") }
+        palette.choose(0)
+        guard case .custom? = app.routes.accents.known(.remote("custombox")) else { return XCTFail("custom color not stored") }
     }
 
     func testCommandsRunAgainstCurrentMenuState() throws {
