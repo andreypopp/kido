@@ -585,10 +585,13 @@ final class Connection: @unchecked Sendable {
                 guard active else { return }
                 let images = Client(launch: imageLaunch(session))
                 do {
-                    try startClient(images, onEvent: { _ in }, onClose: { [weak self, weak images] _, _ in
+                    try startClient(images, onEvent: { event in
+                        if case .exit(let reason) = event { debug("image-client-exit t=\(ProcessInfo.processInfo.systemUptime) reason=\(reason)") }
+                    }, onClose: { [weak self, weak images] status, stderr in
                         guard let self, let images else { return }
                         self.client.queue.async {
                             guard self.imageState.client === images else { return }
+                            debug("image-client-closed t=\(ProcessInfo.processInfo.systemUptime) status=\(status) stderr=\(stderr)")
                             self.closeClient(.failure("image client disconnected"))
                         }
                     })
