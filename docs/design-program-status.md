@@ -150,17 +150,19 @@ options, and trust them only while the pane has an OSC 7501 root with
 
 ### The ssh mark
 
-kido's `ssh` shim runs `kido ssh`. This command resolves the destination
-with `ssh -G`. It sets the pane option `@kido_ssh` (`set-option -p`) to
-`<user>@<host>` immediately before it replaces itself with ssh.
+kido's `ssh` shim runs `kido ssh`. This command resolves the user
+with `ssh -G`. Immediately before it replaces itself with ssh, it sets
+the pane option `@kido_ssh` (`set-option -p`) to `<user>@<host>`.
+`<host>` is the destination as entered, without its `user@` prefix,
+not the `HostName` from the ssh config.
 It never unsets the option. kido trusts `@kido_ssh` only while
 `#{pane_current_command}` is `ssh`. The next `kido ssh` in the pane
 overwrites it.
 
 Before exec, `kido ssh` also sets the pane option `@kido_ssh_args`.
 Its value is a JSON array of strings. The last element is the destination
-as entered, not the host from `ssh -G`. The preceding elements are ssh
-options and their values, in the user's order, before the destination.
+as entered. The preceding elements are ssh options and their values,
+in the user's order, before the destination.
 Grouped options and attached values become separate elements. ssh parses
 options before and after the destination, until `--` or the first remote
 command argument. `--` before the destination also stops option parsing

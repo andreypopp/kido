@@ -79,6 +79,9 @@ let ssh_connection_args a =
   then None
   else go a.options
 
+let typed_host dest =
+  match String.rfind ~sub:"@" dest with -1 -> dest | i -> String.drop (i + 1) dest
+
 let prepare ~ssh ~tty ~pane args =
   let parsed = parse_ssh args in
   Option.iter
@@ -88,8 +91,8 @@ let prepare ~ssh ~tty ~pane args =
       let status = Unix.close_process_in ic in
       let field key = List.find_map (String.chop_prefix ~pre:(key ^ " ")) lines in
       let destination =
-        match (status, field "user", field "hostname") with
-        | Unix.WEXITED 0, Some user, Some host -> Some (user ^ "@" ^ host)
+        match (status, field "user", parsed) with
+        | Unix.WEXITED 0, Some user, Some a -> Some (user ^ "@" ^ typed_host a.dest)
         | _ -> None
       in
       let tmux = Tmux.create () in
@@ -210,6 +213,14 @@ let%test_module "Tests" =
         refused
         refused
         refused
+      |}]
+
+    let%expect_test "typed host" =
+      List.iter (fun d -> print_endline (typed_host d)) [ "uk"; "team@uk"; "a@b@uk" ];
+      [%expect {|
+        uk
+        uk
+        uk
       |}]
 
     let%expect_test "ssh options after the destination" =
