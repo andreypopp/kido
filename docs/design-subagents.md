@@ -130,8 +130,9 @@ session", below). The extension passes it as `--cwd`, which reaches
 child's agent directory, `task` and `agent.json` with an empty `run`,
 before the child starts. Then it runs:
 
-    kido run-child P --name N --cwd C --env KIDO_AGENT_PARENT_SESSION=S \
-      --env KIDO_AGENT_DIR=D -- kido shell -- kido-pi \
+    kido run-child P --name N --cwd C [--env KIDO_AGENT_TRUSTED_ROOT=G] \
+      --env KIDO_AGENT_PARENT_SESSION=S --env KIDO_AGENT_DIR=D \
+      -- kido shell -- kido-pi \
       --session-id <minted id> --name N --model M [--fork <session file>]
 
 `kido shell --` starts pi through the user's login shell, so the child
@@ -143,7 +144,7 @@ session id. It writes the run id that `run-child` prints into
 `agent.json`. A failed spawn removes the directory.
 
 The window's environment is what `run-child` gives every run
-(design.md, "Window lifecycle") plus the two `--env` values:
+(design.md, "Window lifecycle") plus the `--env` values:
 
 | variable | what it carries |
 |---|---|
@@ -151,6 +152,7 @@ The window's environment is what `run-child` gives every run
 | `KIDO_RUN_OUTPUT` | the run's output path; a pi child writes nothing there |
 | `KIDO_AGENT_DIR` | the child's agent directory, which holds its task and its parent edge |
 | `KIDO_AGENT_PARENT_SESSION` | the parent's session id, read only by the repo's `no-git-writes` guard |
+| `KIDO_AGENT_TRUSTED_ROOT` | the git common directory of a repository that the parent trusts; absent otherwise |
 
 The environment does not prove identity. Everything that the child's
 process starts inherits the environment. Thus, a pi started inside a
@@ -158,6 +160,32 @@ subagent's pane receives the complete set. The child trusts the parent
 edge only when `agent.json` in `KIDO_AGENT_DIR` names its own pi session
 id (design.md, "Identity"). This prevents a nested pi from reporting for
 another session and from recording another run's outcome.
+
+**Project trust.** pi 1.4.0 asks "Trust project folder?" at startup
+when the directory has project resources that need trust, such as
+`.pi/extensions` or `.pi/prompts`. It asks before interactive mode
+starts, so pi reports no OSC 7501 status and kido shows no blocked
+agent. A child in a new worktree would wait there for a person, and its
+parent would get no notice.
+
+Thus, every run that a spawner starts gets `KIDO_AGENT_TRUSTED_ROOT=G`
+when the spawner's `ctx.isProjectTrusted()` is true and its directory
+is in a git repository. G is the real path of `git rev-parse
+--git-common-dir` in the spawner's directory. A restart adds it from the
+parent's trust at the time of the restart. The `project_trust` handler
+answers `yes` when the real common directory of pi's directory is G.
+All worktrees of one repository share it. A submodule has its own, so
+it gets no answer. The git lookups ignore the inherited `GIT_DIR`,
+`GIT_COMMON_DIR` and `GIT_WORK_TREE`, which would otherwise select
+another repository. In every other case the handler answers
+`undecided`, and pi checks its trust store and asks as before. The
+handler does not set `remember`, so the decision applies only to the
+current process.
+
+The variable is inherited, so a pi that a person starts in the child's
+pane gets the same answer. This is not a security boundary: the parent
+chose the directory, and any directory whose git metadata names the
+trusted repository passes.
 
 **Depth** is the length of the session's parent chain in the agent map.
 No record stores it, and no caller can claim it. The extension refuses a
@@ -287,8 +315,11 @@ and the `steer` and `interrupt-and-steer` modes refuse it, because it is
 not a descendant. Every caller sees it in `list_runs`, because the
 discovery scope includes all top-level agents ("list_runs", above).
 
-The depth ceiling does not apply. `fork`, `resume_from`, `model` and
-`cwd` apply as for a child. One of the caller's own children cannot
+The depth ceiling does not apply. `fork`, `resume_from`, `model`,
+`cwd` and `KIDO_AGENT_TRUSTED_ROOT` apply as for a child. The trust
+fact comes from the spawner, not from a parent edge, so a top-level
+agent in a worktree of a trusted repository also starts without the
+question. One of the caller's own children cannot
 become top-level: "resume this child with its existing name and without
 toplevel". Another parent's ended child loses that parent's
 `agent.json` after the launch, as above.

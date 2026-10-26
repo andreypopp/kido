@@ -485,6 +485,7 @@ export function fakeCtx(sessionId: string | undefined = "self-session", ui?: unk
     },
     cwd: process.cwd(),
     model: { provider: "acme", id: "caller" },
+    isProjectTrusted: () => false,
     isIdle: idle,
     hasPendingMessages: () => false,
     abort: () => {},

@@ -217,6 +217,13 @@ cannot be addressed, but a child's report reaches a parent in its
 editor. A suspended pi reads
 its inbox only after `fg`.
 
+**Project trust.** The extension handles pi's `project_trust` event,
+which pi sends to `--extension` extensions before it reads its trust
+store. It answers `yes` when the real git common directory of pi's
+directory is `KIDO_AGENT_TRUSTED_ROOT`, which a spawner passes only for
+a repository that it trusts. It never saves the answer
+(design-subagents.md, "What a child is given").
+
 **One copy.** On its first factory call, the extension claims
 `globalThis.__kidoPiExtensionCopy` with its path. A copy at another
 path registers nothing, because pi dedupes extensions by real path
@@ -1540,6 +1547,9 @@ in the environment of the process under test.
 - A child that exits before `remain-on-exit` lands loses its window and
   its last screen; only the run record remains.
 - Runs are never pruned, and neither is the agent map.
+- pi asks its startup project trust question before it reports OSC
+  7501 status. A pi that kido did not spawn into a trusted repository
+  shows no blocked status while it waits for the answer.
 - A `kido ssh` session killed after ssh starts but before remote zsh
   reads `.zshenv` leaves its temporary directory. The exec removes the
   trap before cleanup runs. This leaves one nearly empty directory under

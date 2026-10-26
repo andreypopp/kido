@@ -2,7 +2,7 @@ import { AgentSession, type ExtensionAPI, type ExtensionContext, type MessageRen
 import { type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -166,9 +166,9 @@ function chain(bySession: Map<string, AgentEntry>, start: string): string[] {
   return out;
 }
 
-async function runCommand(command: string, args: string[], opts: { timeoutMs: number } = { timeoutMs: KIDO_TIMEOUT_MS }): Promise<RunResult> {
+async function runCommand(command: string, args: string[], opts: { timeoutMs: number; env?: NodeJS.ProcessEnv } = { timeoutMs: KIDO_TIMEOUT_MS }): Promise<RunResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: opts.env ?? process.env });
     const finish = (result: RunResult): void => {
       clearTimeout(timer);
       resolve(result);
@@ -642,8 +642,23 @@ function validateModelRows(argument: string, rows: ModelRow[]): string | null {
 
 type ParentEdge = { parent: string; run: string; dir: string };
 
+async function gitCommonDir(cwd: string): Promise<string | undefined> {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_COMMON_DIR;
+  delete env.GIT_WORK_TREE;
+  const result = await runCommand("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { timeoutMs: 1000, env });
+  if (!result.ok) return undefined;
+  try { return realpathSync(result.out.trim()); } catch { return undefined; }
+}
+
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
+  pi.on("project_trust", async (event) => {
+    const root = process.env.KIDO_AGENT_TRUSTED_ROOT;
+    if (root && await gitCommonDir(event.cwd) === root) return { trusted: "yes" };
+    return { trusted: "undecided" };
+  });
   let kido: string | null = null;
   let session: ExtensionContext | null = null;
   let ownSessionId: string | null = null;
@@ -1075,13 +1090,15 @@ export default function (pi: ExtensionAPI) {
   type Created = { id: string; window: string; pane: string; output: string };
   type Started = { created: Created } | { error: string };
 
-  const startChild = async (parent: string | null, name: string, agentDir: string | null, command: string[], cwd?: string, session?: string): Promise<Started> => {
+  const startChild = async (parent: string | null, name: string, agentDir: string | null, command: string[], cwd?: string, sessionId?: string): Promise<Started> => {
     const executable = kido;
     if (!executable) return { error: "kido is not on PATH" };
+    const trustedRoot = session?.isProjectTrusted() ? await gitCommonDir(session.cwd) : undefined;
     const args = [
       ...(parent ? ["run-child", parent] : ["run"]), "--name", name,
       ...(cwd ? ["--cwd", cwd] : []),
-      ...(session ? ["--session", session] : []),
+      ...(sessionId ? ["--session", sessionId] : []),
+      ...(trustedRoot ? ["--env", `KIDO_AGENT_TRUSTED_ROOT=${trustedRoot}`] : []),
       ...(agentDir === null ? [] : ["--env", `KIDO_AGENT_PARENT_SESSION=${ownSessionId}`, "--env", `KIDO_AGENT_DIR=${agentDir}`]),
       "--", ...command,
     ];
