@@ -709,7 +709,17 @@ saved main screen, so it lands on its row when the row is replayed.
 Ghostty holds a placement whose image it does not have yet: under
 `restoring`, an `a=p` for an unknown id adds a pending image
 (`addPendingImage`) and the placement. A held placement draws nothing;
-the row shows the text that tmux captured under it. The pixel phase
+the row shows the text that tmux captured under it. Its size follows
+kitty's rule once the image is complete, exactly as for a complete
+image: with neither `c=` nor `r=` it is drawn at the image's own size,
+with one of them the other axis is proportional, with both it is
+stretched. So a `-G` key of 0 (an axis at the image's own size, from
+the contract) and a live `a=p` without `c=`/`r=` (notcurses, termpdf)
+both size correctly after the fill. A placement on a held image never
+moves the cursor. `-G` also carries `z=` and the `X=`/`Y=` offsets, and
+an image that was sent without `i=` comes back with an id in
+`0x80000000`-`0xffffffff` (`share/rpc/contract.md`, "Pane images"); the
+app passes all of it to Ghostty unparsed. The pixel phase
 then fetches the screen rows with `capture-pane -K` on the image
 client. Rows of loaded history are fetched when they come near the
 viewport: on every viewport publish of a shown pane (wheel, thumb,
