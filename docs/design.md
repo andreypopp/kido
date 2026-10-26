@@ -1145,9 +1145,8 @@ source `share/zsh/integration.zsh` or `share/bash/integration.bash`.
 Both emit the same four markers.
 
 On a host without an installed integration, the marked pane remains
-running throughout the connection. `kido ssh` resolves the user with
-`ssh -G`, takes the host as entered, sets `@kido_ssh` on its pane, then
-execs ssh. The mark
+running throughout the connection. `kido ssh` sets `@kido_ssh` on its pane to the destination as typed,
+then execs ssh. The mark
 remains after ssh exits. kido trusts it only while the foreground
 command is `ssh`. A remote pi or Claude Code root gives a nested
 `Remote_agent`, including paste prompt support; otherwise it gives
@@ -1225,8 +1224,7 @@ For priming, kido adds `-t` for an interactive shell. Every remote
 failure starts the same login shell without priming. These failures
 include an unsupported shell, missing `mktemp` or `base64`, directory
 creation failure and payload decoding failure. kido execs ssh. Signals,
-exit status and tty therefore behave as with ssh alone. If `ssh -G`
-fails, kido skips the pane mark but still runs the connection.
+exit status and tty therefore behave as with ssh alone.
 
 The bootstrap reads remote `$SHELL`. It primes zsh and bash, with both
 base64-encoded integrations on the command line. It selects the branch

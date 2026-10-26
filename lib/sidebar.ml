@@ -790,7 +790,7 @@ let%test_module "Tests" =
           records {|[{"id":"","app":"cargo","state":"working"}]|} (pane ~command:"zsh" "%5");
           records {|[{"id":"x","state":"idle"}]|} (pane ~command:"zsh" "%6");
           pane ~command:"zsh" "%7";
-          pane ~ssh:("deploy", "box") ~command:"ssh" "%8";
+          pane ~ssh:"box" ~command:"ssh" "%8";
           pane ~run:"run" ~command:"zsh" "%9";
           records {|[{"id":"","app":"pi","state":"idle"}]|} (pane ~title:"π - kido" "%10");
         ]

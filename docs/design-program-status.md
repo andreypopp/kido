@@ -150,19 +150,20 @@ options, and trust them only while the pane has an OSC 7501 root with
 
 ### The ssh mark
 
-kido's `ssh` shim runs `kido ssh`. This command resolves the user
-with `ssh -G`. Immediately before it replaces itself with ssh, it sets
-the pane option `@kido_ssh` (`set-option -p`) to `<user>@<host>`.
-`<host>` is the destination as entered, without its `user@` prefix,
-not the `HostName` from the ssh config.
+kido's `ssh` shim runs `kido ssh`. This command sets the pane option
+`@kido_ssh` (`set-option -p`) to the destination as the user typed it,
+immediately before it replaces itself with ssh. It does not resolve the
+destination: the ssh config of each machine selects the host.
+A typed `user@host` is the label as is. Otherwise the first `-l` user, if
+any, is prefixed as `user@destination`. An alias stays an alias.
 It never unsets the option. kido trusts `@kido_ssh` only while
 `#{pane_current_command}` is `ssh`. The next `kido ssh` in the pane
 overwrites it.
 
 Before exec, `kido ssh` also sets the pane option `@kido_ssh_args`.
 Its value is a JSON array of strings. The last element is the destination
-as entered. The preceding elements are ssh options and their values,
-in the user's order, before the destination.
+as entered. The preceding elements are ssh
+options and their values, in the user's order, before the destination.
 Grouped options and attached values become separate elements. ssh parses
 options before and after the destination, until `--` or the first remote
 command argument. `--` before the destination also stops option parsing
@@ -272,13 +273,13 @@ Pi and Claude Code report their status through OSC 7501.
   - Parent links.
   - Run records.
 
-### `Ssh { user; host; pane }`
+### `Ssh { destination; pane }`
 
 - Detected: the ssh mark, trusted while the pane's command is `ssh`.
   A remote program's OSC 133 and OSC 7501 reach the local pane through
   ssh like other output. `pane` is the kind of the remote root record.
-- Destination: typed `user` and `host`. The TUI labels a remote terminal
-  `ssh <user>@<host>`. While an interactive remote command runs, it adds
+- Destination: the typed destination (see "The ssh mark"). The TUI labels
+  a remote terminal `ssh <destination>`. While an interactive remote command runs, it adds
   `: <command line>`. A `Remote_agent` keeps its agent title.
 - Status: a `Remote_agent` uses its records' reduction. Otherwise, the
   pane is an ordinary command until a remote OSC 133 prompt strictly

@@ -15,13 +15,8 @@ func TestSSHMark(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	src := `package main
-import("bufio"; "fmt"; "os"; "strings"; "time")
+import("bufio"; "fmt"; "os"; "time")
 func main() {
- if len(os.Args)>1 && os.Args[1]=="-G" {
-  if strings.Contains(strings.Join(os.Args," "),"bad-config") { os.Exit(1) }
-  if strings.Contains(strings.Join(os.Args," "),"realm") { fmt.Print("user deploy@realm\nhostname next.test\n"); return }
-  fmt.Print("user deploy\nhostname example.test\n"); return
- }
  fmt.Print("\x1b]133;C;cmdline_url=ssh%20alias\x07")
  sc:=bufio.NewScanner(os.Stdin)
  for sc.Scan() {
@@ -51,19 +46,19 @@ func main() {
 	h.in("send-keys", "-t", pane, fmt.Sprintf("PATH=%s:$PATH %s ssh alias uptime", dir, kidoBin), "Enter")
 	h.waitPaneCommand(pane, "ssh")
 	mark := func() string { return h.in("show-options", "-p", "-v", "-t", pane, "@kido_ssh") }
-	if got := mark(); got != "deploy@alias" {
+	if got := mark(); got != "alias" {
 		t.Fatalf("ssh mark = %q", got)
 	}
 	argsMark := func() string { return h.in("show-options", "-p", "-v", "-t", pane, "@kido_ssh_args") }
 	if got := argsMark(); got != `["alias"]` {
 		t.Fatalf("ssh args = %q", got)
 	}
-	h.waitShellRow("╶◼ssh deploy@alias", "")
+	h.waitShellRow("╶◼ssh alias", "")
 	h.newWindow("alpha", "tail", "cat", "-")
 	h.in("send-keys", "-t", pane, "prompt", "Enter")
-	h.waitShellRow("╶ ssh deploy@alias", "")
+	h.waitShellRow("╶ ssh alias", "")
 	h.in("send-keys", "-t", pane, "run", "Enter")
-	h.waitShellRow("╶◼ssh deploy@alias: sleep 45", "")
+	h.waitShellRow("╶◼ssh alias: sleep 45", "")
 	h.in("send-keys", "-t", pane, "agent", "Enter")
 	h.waitRow("Remote Claude")
 	out, rc := h.kidoAs(pane, "pasted remote message", nil, "prompt")
@@ -73,7 +68,7 @@ func main() {
 	h.waitPaneText(pane, "received: pasted remote message")
 	h.in("send-keys", "-t", pane, "quit", "Enter")
 	h.waitPaneCommand(pane, "bash")
-	if got := mark(); got != "deploy@alias" {
+	if got := mark(); got != "alias" {
 		t.Fatalf("mark after ssh exit = %q", got)
 	}
 	if got := argsMark(); got != `["alias"]` {
@@ -88,25 +83,25 @@ func main() {
 		}
 		return false
 	}, "stale mark with bash ignored")
-	h.in("send-keys", "-t", pane, fmt.Sprintf("PATH=%s:$PATH %s ssh -l deploy@realm realm uptime", dir, kidoBin), "Enter")
+	h.in("send-keys", "-t", pane, fmt.Sprintf("PATH=%s:$PATH %s ssh -l team box uptime", dir, kidoBin), "Enter")
 	h.waitPaneCommand(pane, "ssh")
-	if got := mark(); got != "deploy@realm@realm" {
+	if got := mark(); got != "team@box" {
 		t.Fatalf("next ssh mark = %q", got)
 	}
-	if got := argsMark(); got != `["-l","deploy@realm","realm"]` {
+	if got := argsMark(); got != `["-l","team","box"]` {
 		t.Fatalf("replacement ssh args = %q", got)
 	}
-	h.waitShellRow("╶◼ssh deploy@realm@realm", "")
+	h.waitShellRow("╶◼ssh team@box", "")
 	stale.waitLast(func(s feedSnapshot) bool {
 		for _, item := range s.firstItems() {
 			if item.ID == pane {
 				l := item.Lifecycle
-				return l.Kind == "Ssh" && feedValue(l.User) == "deploy@realm" && feedValue(l.Host) == "realm" &&
+				return l.Kind == "Ssh" && feedValue(l.Destination) == "team@box" &&
 					l.Remote == "Remote_terminal" && !feedValue(l.Interactive) && item.Title == "ssh"
 			}
 		}
 		return false
-	}, "the destination as typed fields, the title the plain foreground command")
+	}, "the destination as typed, the title the plain foreground command")
 	h.in("send-keys", "-t", pane, "quit", "Enter")
 	h.waitPaneCommand(pane, "bash")
 	value := `ProxyCommand=printf 'a b' "#{$HOME}" \\path`
@@ -135,7 +130,7 @@ func main() {
 	if got := h.in("show-options", "-p", "-t", pane); strings.Contains(got, "@kido_ssh_args") {
 		t.Fatalf("unrecordable ssh kept old args: %s", got)
 	}
-	if got := mark(); got != "deploy@alias" {
+	if got := mark(); got != "alias" {
 		t.Fatalf("fresh mark for unrecordable ssh = %q", got)
 	}
 	h.in("send-keys", "-t", pane, "quit", "Enter")
@@ -157,11 +152,6 @@ func main() {
 		}
 		return false
 	}, "absolute ssh is a terminal")
-	failed := h.newWindow("alpha", "failed-config", "sh", "-c", fmt.Sprintf("PATH=%s:$PATH exec %s ssh bad-config uptime", dir, kidoBin))
-	h.waitPaneCommand(failed, "ssh")
-	if got := h.in("display-message", "-p", "-t", failed, "#{@kido_ssh}"); got != "" {
-		t.Fatalf("failed -G marks pane: %q", got)
-	}
 	for _, c := range []struct{ name, prefix string }{
 		{"failed-mark", "TMUX_PANE=%999999999"},
 		{"no-pane", "unset TMUX_PANE;"},

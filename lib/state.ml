@@ -27,7 +27,7 @@ type pane = {
   dead_status : int option;
   dead_signal : string option;
   run : string option;
-  ssh : (string * string) option;
+  ssh : string option;
   session_attached : bool;
   modal : bool;
   program_status : Program_status.t;
@@ -152,12 +152,7 @@ let parse_line line =
           session_attached = not (String.equal f.(21) "" || String.equal f.(21) "0");
           run = nonempty f.(22);
           pane_active = String.equal f.(23) "1";
-          ssh =
-            (match String.rindex_opt f.(24) '@' with
-            | Some i when i > 0 && i < String.length f.(24) - 1 ->
-                Some
-                  (String.sub f.(24) 0 i, String.sub f.(24) (i + 1) (String.length f.(24) - i - 1))
-            | _ -> None);
+          ssh = nonempty f.(24);
           program_status;
           modal = String.equal f.(26) "1";
           dead_status = int_of_string_opt f.(28);
@@ -367,7 +362,7 @@ let%test_module "Tests" =
         p.current_path p.alternate_on p.command_running (time p.command_start) (time p.last_prompt)
         (opt (fun (e : exit) -> Printf.sprintf "%d@%.0f" e.code e.at) p.last_exit)
         p.command_line (time p.dead_at) (opt Fun.id p.run)
-        (opt (fun (user, host) -> user ^ "@" ^ host) p.ssh)
+        (opt Fun.id p.ssh)
         p.session_attached p.modal p.title
 
     let line = String.concat sep
@@ -415,13 +410,13 @@ let%test_module "Tests" =
       List.iter
         (fun p ->
           show p;
-          Option.iter (fun (user, host) -> Printf.printf "user=%S host=%S\n" user host) p.ssh;
+          Option.iter (Printf.printf "ssh=%S\n") p.ssh;
           print_endline (Yojson.Safe.to_string (Program_status.yojson_of_t p.program_status)))
         (parse [ line values ]);
       [%expect
         {|
     str0 $1 created=1000002 order=-27 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true modal=true title="str34"
-    user="deploy@realm" host="example.test"
+    ssh="deploy@realm@example.test"
     {"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}
     |}]
 

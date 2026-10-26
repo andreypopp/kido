@@ -1,4 +1,4 @@
-# kido rpc protocol 6.0
+# kido rpc protocol 7.0
 
 fork revision: 5febaa93317770ab394df70378d12a3265d98733
 
@@ -28,10 +28,10 @@ first on PATH), all with fixed placeholder paths. Install paths do not change
 it; a fork bump, an edit to kido-tmux.conf, to the generated configuration or
 to the launch environment does.
 
-The first stdout line is {"hello":{"protocol":"6.0"}} when KIDO_SERVER equals
+The first stdout line is {"hello":{"protocol":"7.0"}} when KIDO_SERVER equals
 the binary's stamp. A differing or absent stamp produces
-{"hello":{"protocol":"6.0","server":"other","expected":"0123456789ab"}} or
-{"hello":{"protocol":"6.0","server":null,"expected":"0123456789ab"}}, followed
+{"hello":{"protocol":"7.0","server":"other","expected":"0123456789ab"}} or
+{"hello":{"protocol":"7.0","server":null,"expected":"0123456789ab"}}, followed
 by {"error":"server stamp does not match binary stamp"}, then exit 2.
 expected is the binary's stamp; the server needs a restart.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
@@ -158,6 +158,13 @@ A prompt error adds a `kind` to the error envelope:
   failed paste); the client must not send it again.
 - `invalid`: empty text, `pane` not found in fresh state, or `target` not a
   candidate of `pane`.
+
+## Changes from 6.0 to 7.0
+
+- Changed: the `Ssh` pane kind carries `destination`, the destination as
+  the user typed it, in place of `user` and `host`. It is an alias, or
+  `user@host` as typed. The first `-l user` gives `user@destination`.
+- Unchanged: everything else.
 
 ## Changes from 5.0 to 6.0
 
@@ -369,8 +376,8 @@ group's place. Groups are the "group" rows the app may draw differently.
 ["Terminal",{"phase":["Idle",{"last":null}],"report":null}]
 ["Some_agent",{"name":"claude-code","status":AGENT}]
 ["Pi_agent",{"session":"pi-session-id","status":AGENT}]
-["Ssh",{"user":"alice","host":"example.org","pane":["Remote_terminal",{"interactive":true,"status":SHELL}]}]
-["Ssh",{"user":"alice","host":"example.org","pane":["Remote_agent",{"name":"pi","status":AGENT}]}]
+["Ssh",{"destination":"uk","pane":["Remote_terminal",{"interactive":true,"status":SHELL}]}]
+["Ssh",{"destination":"uk","pane":["Remote_agent",{"name":"pi","status":AGENT}]}]
 ```
 
   Detection is OSC 7501 root app `pi` or `claude-code`, and the believed
@@ -503,7 +510,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"6.0","server":"0123456789ab","expected":"0123456789ab"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"7.0","server":"0123456789ab","expected":"0123456789ab"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_SERVER stamp, or null when absent, even when it matches expected.
 expected is the binary's own stamp, always a string. The app compares server

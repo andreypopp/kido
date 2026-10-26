@@ -30,7 +30,7 @@ and pane = {
   dead_status : int option;
   dead_signal : string option;
   run : string option;
-  ssh : (string * string) option;
+  ssh : string option;
   session_attached : bool;
   modal : bool;
   program_status : Tmux.Program_status.t;

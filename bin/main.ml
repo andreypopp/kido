@@ -503,7 +503,7 @@ let ssh =
            | st -> Stdlib.(st.st_kind = S_CHR)
            | exception Unix.Unix_error _ -> false
          in
-         let argv = Ssh.prepare ~ssh ~tty ~pane:(self_pane ()) args in
+         let argv = Ssh.prepare ~tty ~pane:(self_pane ()) args in
          Unix.execve ssh (Array.of_list argv) (Unix.environment ()))
 
 (* Go's time.Duration syntax, which every caller of --interval already speaks: "100ms", "5s",

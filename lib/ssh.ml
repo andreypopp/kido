@@ -79,29 +79,31 @@ let ssh_connection_args a =
   then None
   else go a.options
 
-let typed_host dest =
-  match String.rfind ~sub:"@" dest with -1 -> dest | i -> String.drop (i + 1) dest
+let destination a =
+  if String.contains a.dest '@' then a.dest
+  else
+    match
+      List.find_map
+        (fun o ->
+          match o.value with
+          | Some user when Char.equal o.letter 'l' && not (String.is_empty user) -> Some user
+          | _ -> None)
+        a.options
+    with
+    | Some user -> user ^ "@" ^ a.dest
+    | None -> a.dest
 
-let prepare ~ssh ~tty ~pane args =
+let prepare ~tty ~pane args =
   let parsed = parse_ssh args in
   Option.iter
     (fun pane ->
-      let ic = Unix.open_process_args_in ssh (Array.of_list ("ssh" :: "-G" :: args)) in
-      let lines = In_channel.input_all ic |> String.lines in
-      let status = Unix.close_process_in ic in
-      let field key = List.find_map (String.chop_prefix ~pre:(key ^ " ")) lines in
-      let destination =
-        match (status, field "user", parsed) with
-        | Unix.WEXITED 0, Some user, Some a -> Some (user ^ "@" ^ typed_host a.dest)
-        | _ -> None
-      in
       let tmux = Tmux.create () in
       let args = Option.flat_map ssh_connection_args parsed in
       let target = [ "-t"; Tmux.string_of_pane_id pane ] in
       let mark =
         Option.map
-          (fun destination -> [ "set-option"; "-p" ] @ target @ [ Tmux_vars.ssh; destination ])
-          destination
+          (fun a -> [ "set-option"; "-p" ] @ target @ [ Tmux_vars.ssh; destination a ])
+          parsed
       in
       let unset = [ "set-option"; "-p"; "-u" ] @ target @ [ Tmux_vars.ssh_args ] in
       let record =
@@ -132,6 +134,32 @@ let%test_module "Tests" =
     let print_connection_args args =
       print_endline
         (match args with None -> "refused" | Some args -> ssh_connection_args_json args)
+
+    let%expect_test "destination as typed" =
+      List.iter
+        (fun args ->
+          print_endline (match parse_ssh args with Some a -> destination a | None -> "none"))
+        [
+          [ "uk" ];
+          [ "me@uk" ];
+          [ "-l"; "team"; "box" ];
+          [ "-lteam"; "-l"; "late"; "box"; "uptime" ];
+          [ "-l"; "team"; "me@box" ];
+          [ "-o"; "User=x"; "box" ];
+          [ "-l"; "u"; "::1" ];
+          [ "-p" ];
+        ];
+      [%expect
+        {|
+        uk
+        me@uk
+        team@box
+        team@box
+        me@box
+        box
+        u@::1
+        none
+        |}]
 
     let%expect_test "ssh connection arguments" =
       List.iter
@@ -213,14 +241,6 @@ let%test_module "Tests" =
         refused
         refused
         refused
-      |}]
-
-    let%expect_test "typed host" =
-      List.iter (fun d -> print_endline (typed_host d)) [ "uk"; "team@uk"; "a@b@uk" ];
-      [%expect {|
-        uk
-        uk
-        uk
       |}]
 
     let%expect_test "ssh options after the destination" =

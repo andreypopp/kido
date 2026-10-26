@@ -52,7 +52,7 @@ type kind =
   | Terminal of shell
   | Some_agent of { name : string; status : agent }
   | Pi_agent of { session : string; status : agent }
-  | Ssh of { user : string; host : string; pane : remote }
+  | Ssh of { destination : string; pane : remote }
 [@@deriving yojson_of]
 
 type shown = [ `Running | `Waiting | `Idle of outcome option ] [@@deriving equal]
@@ -68,7 +68,7 @@ type episode = {
 type command = { start : float; observed : float; promoted : bool }
 type root = Agent of string | Program [@@deriving equal]
 
-type identity = { root : root; session : string option; ssh : (string * string) option }
+type identity = { root : root; session : string option; ssh : string option }
 [@@deriving equal]
 
 type track = {
@@ -246,7 +246,7 @@ let observe ~now (p : State.pane) (kind : Pane_kind.t) prev =
         | Pi_agent _ -> Agent "pi"
         | Terminal | Ssh { pane = Remote_terminal; _ } -> Program);
       session = (match kind with Pi_agent { session; _ } -> Some session | _ -> None);
-      ssh = (match kind with Ssh { user; host; _ } -> Some (user, host) | _ -> None);
+      ssh = (match kind with Ssh { destination; _ } -> Some destination | _ -> None);
     }
   in
   let t =
@@ -292,10 +292,10 @@ let observe ~now (p : State.pane) (kind : Pane_kind.t) prev =
         agent ~dedupe:true ~fallback:(if String.is_empty activity then None else Some activity)
       in
       (t, Pi_agent { session; status })
-  | Ssh { user; host; pane = Remote_agent { name } } ->
+  | Ssh { destination; pane = Remote_agent { name } } ->
       let t, status = agent ~dedupe:false ~fallback:None in
-      (t, Ssh { user; host; pane = Remote_agent { name; status } })
-  | Ssh { user; host; pane = Remote_terminal } ->
+      (t, Ssh { destination; pane = Remote_agent { name; status } })
+  | Ssh { destination; pane = Remote_terminal } ->
       let interactive =
         t.interactive
         ||
@@ -308,7 +308,7 @@ let observe ~now (p : State.pane) (kind : Pane_kind.t) prev =
           (reading ~transport:(not interactive) p)
           { t with interactive }
       in
-      (t, Ssh { user; host; pane = Remote_terminal { interactive; status } })
+      (t, Ssh { destination; pane = Remote_terminal { interactive; status } })
 
 let pending t = Option.exists (fun c -> not c.promoted) t.command
 
@@ -524,7 +524,7 @@ let%test_module "Tests" =
       step "same claude" claude_kind (records ~serial:5 [ ("", claude ^ {|"done"|}) ] p);
       step "root cleared" Terminal p;
       step "claude again" claude_kind (records ~serial:6 [ ("", claude ^ {|"done"|}) ] p);
-      let ssh host : Pane_kind.t = Ssh { user = "u"; host; pane = Remote_agent { name = "pi" } } in
+      let ssh destination : Pane_kind.t = Ssh { destination; pane = Remote_agent { name = "pi" } } in
       step "remote pi" (ssh "one") (records ~serial:7 [ ("", pi ^ {|"done"|}) ] p);
       step "same destination" (ssh "one") (records ~serial:8 [ ("", pi ^ {|"done"|}) ] p);
       step "new destination" (ssh "two") (records ~serial:9 [ ("", pi ^ {|"done"|}) ] p);
@@ -671,7 +671,7 @@ let%test_module "Tests" =
              ?exit:(Option.map (fun (code, e) -> (code, test_at +. e)) exit)
              ~command_line:cmd "%1")
           with
-          ssh = Some ("deploy", host);
+          ssh = Some host;
         } )
 
     let%expect_test
