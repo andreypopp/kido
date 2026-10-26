@@ -46,7 +46,7 @@ not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`6.0`. It versions only the RPC surface between the binary and its client,
+`7.0`. It versions only the RPC surface between the binary and its client,
 not anything in the tmux server. Thus, changing it never requires a
 server restart.
 
@@ -280,7 +280,7 @@ to the session tree it draws. Matching uses session names, agent titles
 and ssh destinations. It sorts matching sessions by score.
 Empty text keeps the original order.
 
-An ssh destination is the typed `user@host` of the pane kind, never
+An ssh destination is the typed destination of the pane kind, never
 remote command text. RPC accepts no filter request and emits no filter
 field.
 
@@ -311,6 +311,10 @@ Search clearing after successful activation and standalone picker exit
 remain TUI-local. Each frontend can recover from request errors and
 syscall failures at its execution boundary. These failures do not occupy
 `snapshot.error`.
+
+Protocol 7.0 changes from 6.0:
+- Changed: the `Ssh` pane kind carries `destination`, the destination as
+  the user typed it, in place of `user` and `host`.
 
 Protocol 6.0 changes from 5.0:
 - Changed: an item's `run` is the pane's `@kido_run` id, or null. It was

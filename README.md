@@ -44,7 +44,7 @@ the default. The sidebar's last row names the first invalid option.
 
 | option | styles |
 |--------|--------|
-| `@kido-sidebar-row-style` | pane titles: agents, and the host of an ssh row |
+| `@kido-sidebar-row-style` | pane titles: agents, and the destination of an ssh row |
 | `@kido-sidebar-command-style` | a shell's command |
 | `@kido-sidebar-dim-style` | tree lines, captions, elapsed times |
 | `@kido-sidebar-session-style` | other sessions' names; `bg=` fills the row |

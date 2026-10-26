@@ -32,9 +32,10 @@ let filter text sessions =
     and item i =
       (match i.row.lifecycle with
         | Live { status = Some_agent _ | Pi_agent _; _ } | Ended _ -> [ i.row.title ]
-        | Live { status = Ssh { user; host; pane = Remote_agent _ }; _ } ->
-            [ i.row.title; user ^ "@" ^ host ]
-        | Live { status = Ssh { user; host; _ }; _ } -> [ user ^ "@" ^ host ]
+        | Live { status = Ssh { destination; pane }; _ } -> (
+            match pane with
+            | Remote_agent _ -> [ i.row.title; destination ]
+            | Remote_terminal _ -> [ destination ])
         | _ -> [])
       @ List.concat_map node i.children
     in
@@ -319,8 +320,8 @@ let title theme (r : S.row) =
   let plain = span `Plain in
   match r.lifecycle with
   | Ended _ -> [ span `Dim r.title ]
-  | Live { status = Ssh { user; host; pane = Remote_terminal { interactive; status } }; _ } -> (
-      [ span `Proc "ssh "; plain (user ^ "@" ^ host) ]
+  | Live { status = Ssh { destination; pane = Remote_terminal { interactive; status } }; _ } -> (
+      [ span `Proc "ssh "; plain destination ]
       @
       match if interactive then command status else None with
       | Some c -> [ span `Proc ": "; plain c ]
@@ -1380,7 +1381,7 @@ let%test_module "Tests" =
             (pane ~session:"alpha" ~window:"@5" ~command:"ssh" ~prompt:at ~start:test_at
                ~command_line:"ssh box" "%5")
             with
-            ssh = Some ("deploy", "box");
+            ssh = Some "box";
           };
           records
             {|1,"records":[{"id":"","app":"claude-code","state":"blocked","kind":"permission","msg":"QXBwcm92ZQ=="}]|}
@@ -1392,7 +1393,7 @@ let%test_module "Tests" =
         ╶ zsh
         ╶◼Build compiling 40%
         ╶ vim
-        ╶ ssh deploy@box
+        ╶ ssh box
         ╶◆claude-code Approve
         |}]
 

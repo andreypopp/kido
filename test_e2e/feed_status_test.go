@@ -43,7 +43,7 @@ type feedLifecycle struct {
 	Result      *string
 	Kind        string
 	Name        *string
-	User, Host  *string
+	Destination *string
 	Remote      string
 	Interactive *bool
 	Agent       *feedStatus
@@ -182,10 +182,9 @@ func (l *feedLifecycle) UnmarshalJSON(raw []byte) error {
 			Status *json.RawMessage `json:"status"`
 		}{&l.Name, &agent},
 		"Ssh": &struct {
-			User **string         `json:"user"`
-			Host **string         `json:"host"`
-			Pane *json.RawMessage `json:"pane"`
-		}{&l.User, &l.Host, &remote},
+			Destination **string         `json:"destination"`
+			Pane        *json.RawMessage `json:"pane"`
+		}{&l.Destination, &remote},
 	})
 	if err == nil && l.Kind == "Ssh" {
 		l.Remote, err = feedVariant(remote, map[string]any{
@@ -296,7 +295,7 @@ func feedLabel(r feedRow) string {
 		command = feedValue(s.Command)
 	}
 	if l.Kind == "Ssh" {
-		label := "ssh " + feedValue(l.User) + "@" + feedValue(l.Host)
+		label := "ssh " + feedValue(l.Destination)
 		if feedValue(l.Interactive) && command != "" {
 			label += ": " + command
 		}

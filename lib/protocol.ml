@@ -1,4 +1,4 @@
-let value = "6.0"
+let value = "7.0"
 let matches ~expected server = Option.equal String.equal server (Some expected)
 
 let hello ~expected server =
@@ -878,15 +878,13 @@ let%test_module "Tests" =
             live
               (Ssh
                  {
-                   user = "alice";
-                   host = "example.org";
+                   destination = "uk";
                    pane = Remote_terminal { interactive = true; status = List.hd shells };
                  });
             live
               (Ssh
                  {
-                   user = "alice";
-                   host = "example.org";
+                   destination = "uk";
                    pane = Remote_agent { name = "pi"; status = List.hd agents };
                  });
           ]
@@ -948,10 +946,10 @@ let%test_module "Tests" =
            (snapshot { m with snap = { m.snap with err = Some "tmux: gone" }; sessions = [] }));
       [%expect
         {|
-        6.0
-        {"hello":{"protocol":"6.0"}}
-        {"hello":{"protocol":"6.0","server":"other","expected":"0123456789ab"}}
-        {"hello":{"protocol":"6.0","server":null,"expected":"0123456789ab"}}
+        7.0
+        {"hello":{"protocol":"7.0"}}
+        {"hello":{"protocol":"7.0","server":"other","expected":"0123456789ab"}}
+        {"hello":{"protocol":"7.0","server":null,"expected":"0123456789ab"}}
         {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}
         {"reply":{"id":7,"switched":null}}
         {"reply":{"id":7,"error":"invalid or unknown request"}}
@@ -980,8 +978,8 @@ let%test_module "Tests" =
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":"Finished","state":["Idle",{"outcome":{"serial":17,"result":"success"}}]}}]]
         ["Live",["Some_agent",{"name":"claude-code","status":{"since":100.0,"msg":"Failed","state":["Idle",{"outcome":{"serial":18,"result":"failure"}}]}}]]
         ["Live",["Pi_agent",{"session":"pi-session-id","status":{"since":100.0,"msg":null,"state":["Running",{"progress":42}]}}]]
-        ["Live",["Ssh",{"user":"alice","host":"example.org","pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Unknown"],"report":null}}]}]]
-        ["Live",["Ssh",{"user":"alice","host":"example.org","pane":["Remote_agent",{"name":"pi","status":{"since":100.0,"msg":null,"state":["Running",{"progress":42}]}}]}]]
+        ["Live",["Ssh",{"destination":"uk","pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Unknown"],"report":null}}]}]]
+        ["Live",["Ssh",{"destination":"uk","pane":["Remote_agent",{"name":"pi","status":{"since":100.0,"msg":null,"state":["Running",{"progress":42}]}}]}]]
         ["Ended",{"result":"unknown"}]
         ["Ended",{"result":"completed"}]
         ["Ended",{"result":"failed"}]

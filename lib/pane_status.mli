@@ -30,7 +30,7 @@ type kind =
   | Terminal of shell
   | Some_agent of { name : string; status : agent }
   | Pi_agent of { session : string; status : agent }
-  | Ssh of { user : string; host : string; pane : remote }
+  | Ssh of { destination : string; pane : remote }
 [@@deriving yojson_of]
 
 type track

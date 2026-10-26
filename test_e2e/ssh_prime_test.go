@@ -66,7 +66,7 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	reports := func(d time.Duration) bool {
 		deadline := time.Now().Add(d)
 		for time.Now().Before(deadline) {
-			if h.shellRow("╶✓ssh "+localSSHDestination(t), "32") {
+			if h.shellRow("╶✓ssh localhost", "32") {
 				return true
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -88,10 +88,10 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 		remote("exit")
 		t.Skip("localhost's own dotfiles already report to kido, so priming cannot be shown to be the cause here")
 	}
-	if h.shellRow("╶✓ssh "+localSSHDestination(t), "32") {
+	if h.shellRow("╶✓ssh localhost", "32") {
 		t.Fatalf("the unprimed remote reported after all; rows are %q", h.rows())
 	}
-	h.waitShellRow("╶◼ssh "+localSSHDestination(t), "")
+	h.waitShellRow("╶◼ssh localhost", "")
 	remote("exit")
 	h.waitPaneCommand(pane, "zsh")
 
@@ -124,7 +124,7 @@ func TestKidoSSHOpensAnOrdinarySession(t *testing.T) {
 	// kido exec's ssh, so the pane's foreground process is ssh itself.
 	h.waitPaneCommand(pane, "ssh")
 	// The destination is still the label, whatever the far side reports.
-	h.waitRow("ssh " + localSSHDestination(t))
+	h.waitRow("ssh localhost")
 
 	h.in("send-keys", "-t", pane, "echo kido-remote-$((21*2))", "Enter")
 	h.waitFor(func() bool {
