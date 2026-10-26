@@ -408,6 +408,8 @@ Kido's commit order on master is:
   image code. When upstream adds an equivalent, they drop from the top.
 - A `no-output` control client does not hold pane focus, in one
   commit. It is a candidate for upstream.
+- DA1 advertises sixel only while an attached terminal client has
+  the `sixel` feature, in one commit. It is a candidate for upstream.
 
 Before you force-push `fork`, push its previous head as a dated branch
 `fork-YYYY-MM-DD`. This keeps older submodule pins reachable.

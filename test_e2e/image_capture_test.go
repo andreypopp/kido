@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -306,7 +307,7 @@ func TestImageCapture(t *testing.T) {
 	large := bytes.Repeat([]byte{9, 17, 33, 255}, 1280*1320)
 	var pending strings.Builder
 	pending.WriteString("\033[2J\033[H")
-	keys := "a=T,i=71,f=32,s=1280,v=1320,c=4,r=2,C=1,q=2"
+	keys := "a=T,f=32,s=1280,v=1320,c=4,r=2,C=1,z=-1,q=2"
 	for _, chunk := range chunks(large[:len(large)-3072], 1) {
 		fmt.Fprintf(&pending, "\033_G%s,%s\033\\", keys, chunk)
 		keys = "q=2"
@@ -316,6 +317,10 @@ func TestImageCapture(t *testing.T) {
 		t.Fatal("oversized in-flight image was replayed")
 	}
 	emit(kitty("q=2", large[len(large)-3072:]))
+	largePlacement := regexp.MustCompile(`a=p,i=(\d+),z=-1,`).FindStringSubmatch(capture("-G"))
+	if len(largePlacement) != 2 {
+		t.Fatalf("large no-id placement: %q", capture("-G"))
+	}
 	fetch := func(want [][]byte) string {
 		var streams [][]byte
 		var current []byte
@@ -349,6 +354,9 @@ func TestImageCapture(t *testing.T) {
 					t.Fatalf("image chunk: %q", line)
 				}
 				if len(current) == 0 {
+					if len(streams) == 0 && !strings.HasPrefix(keys, "a=t,i="+largePlacement[1]+",") {
+						t.Fatalf("no-id transmit does not match placement: %q", keys)
+					}
 					if !strings.HasPrefix(keys, "a=t,i=") {
 						t.Fatalf("first chunk keys: %q", keys)
 					}
@@ -394,13 +402,9 @@ func TestImageCapture(t *testing.T) {
 	}
 	emit(append([]byte("\033[4;1H"), kitty("a=T,i=72,f=100,c=4,r=2,C=1,q=2", data)...))
 	fetch([][]byte{large, data})
-	emit(kitty("a=T,i=71,f=100,c=4,r=2,C=1,q=2", data))
+	emit(kitty("a=d,d=A,q=2", nil))
 	if got, failed := pixels("-k " + token); !failed || strings.TrimSpace(got) != "image changed" {
-		t.Fatalf("replaced continuation: %v %q", failed, got)
-	}
-	emit(kitty("a=d,d=I,i=71,q=2", nil))
-	if got, failed := pixels("-k " + token); !failed || strings.TrimSpace(got) != "image changed" {
-		t.Fatalf("deleted continuation: %v %q", failed, got)
+		t.Fatalf("deleted no-id continuation: %v %q", failed, got)
 	}
 	for _, bad := range []string{"bad", "0:0", "1:1", "1:99999999999999999999999999999"} {
 		if got, failed := pixels("-k " + bad); !failed || strings.TrimSpace(got) != "image changed" {

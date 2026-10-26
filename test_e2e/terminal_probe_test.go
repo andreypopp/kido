@@ -53,7 +53,7 @@ func TestSidebarDoesNotLeakTerminalReplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "\033[?1004;") || !strings.Contains(string(got), "\033[?1;2;4c") {
+	if !strings.Contains(string(got), "\033[?1004;") || !strings.Contains(string(got), "\033[?1;2c") {
 		t.Fatalf("querying inactive pane did not receive DECRPM and DA: %q", got)
 	}
 }

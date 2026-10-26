@@ -1,6 +1,6 @@
 # kido rpc protocol 6.1
 
-fork revision: b94d36a8207fe205bd5084e0e8b109becabfd469
+fork revision: 6dc4195e568b5ecc67f25d40d768e1f9eaa28dfb
 
 Protocol.value is the binary's protocol constant. It versions this RPC
 surface and the tmux commands this contract names, such as the "Pane
@@ -553,10 +553,16 @@ program's APC unchanged in `%output`. Three fork extensions let a client
 restore them. They are not RPC requests; the app sends them as tmux
 commands. The server image limits stay at upstream's defaults.
 
-Ids. Only an image that the pane's kitty map holds is written: one that
-was sent with `i=`. `i=` is the client id of the image, `p=` the client
-placement id, omitted when there is none. A later live `a=p i=N` or
-`a=d d=I i=N` thus names the same image in tmux and in the app.
+Ids. For an image sent with `i=`, `i=` is its client id, and `p=` the
+client placement id, omitted when there is none. A later live `a=p i=N`
+or `a=d d=I i=N` thus names the same image in tmux and in the app. An
+image sent without `i=` gets an id in `0x80000000`-`0xffffffff` at
+capture time, and its placements have no `p=`. That id is no client id
+in the pane and no other image's id in the capture. `-G` and `-K` with
+the same range and pane state give the image the same id, and the calls
+of one `-K` sequence keep it. A live program can later send a client id
+that equals such an id; the app then replaces the restored image with
+the program's image, while tmux keeps the two images separate.
 
 Selection. `-G` and `-K` use one rule: a placement counts when any of its
 grid spans lies on a row of the range (`-S`/`-E`; `-a` reads the saved
@@ -566,12 +572,24 @@ through a width resize.
 `capture-pane -p -G` writes each such placement into the text output at the
 cell where it starts, on its first row inside the range:
 
-    ESC _G a=p,i=I[,p=P],q=2,C=1,c=COLS,r=ROWS,x=X,y=Y,w=W,h=H ESC \
+    ESC _G a=p,i=I[,z=Z][,X=XO][,Y=YO][,p=P],q=2,C=1,c=COLS,r=ROWS,x=X,y=Y,w=W,h=H ESC \
+
+`z=` is the placement's z-index as the program sent it, omitted when it
+is 0. tmux stores it only for `-G` and the upload replay below; its own
+drawing for terminal clients ignores it. `X=` and `Y=` are the pixel
+offsets in the placement's first cell, written when they are not 0 and
+that cell's column (`X=`) or row (`Y=`) is in the output.
 
 `C=1` keeps the cursor, so the row text after it is unchanged; spaces
 before a placement are kept. `x=,y=,w=,h=` are the source rectangle of
 the rows in range. A placement whose top is above the range has a crop
-that starts at the first row in range. `-G` applies with `-e`, `-J` and
+that starts at the first row in range. `c=` and `r=` are the cells that
+the written part covers. When an axis is drawn at the image's own pixel
+size and its last cell is not full, that key is 0, so the client draws
+that axis at its own size and does not stretch it to the cell edge. A
+scaled axis whose last cell is not full (the program gave only one of
+`c=` and `r=`) keeps its cell count; the client then stretches it to the
+cell edge, a known limit. `-G` applies with `-e`, `-J` and
 every range. Without placements its output equals the same capture
 without `-G`. When the capture includes the live screen and the pane's
 program is in the middle of a chunked upload (`m=1`), `-G` writes after
@@ -624,6 +642,12 @@ Kido.app runs it on a second control client per connection, attached
 with `-f no-output,ignore-size`. Such a client takes no part in pane
 focus. Without images in the build, `-G` gives the capture without
 placements and `-K` writes nothing.
+
+DA1 (`CSI c`) from a pane answers `CSI ?1;2;4c` (sixel) only while at
+least one attached terminal client has the `sixel` terminal feature;
+otherwise `CSI ?1;2c`. Control clients do not count. Thus under
+Kido.app alone a program that selects sixel from DA1 (chafa, timg)
+prints text instead of sixel that the app does not show.
 
 `refresh-client -C WxHxXPxYP` also sets the control client's cell size in
 pixels. The plain `-C WxH` resets the pixels to 0. tmux gives the window
