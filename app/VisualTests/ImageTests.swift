@@ -5,9 +5,11 @@ import TmuxControl
 import XCTest
 @testable import Kido
 
+private let imageClear = "\u{1b}[2J\u{1b}[H\u{1b}[?25l"
+
 extension VisualTests {
     private var imageFixture: String {
-        "\u{1b}[2J\u{1b}[H\u{1b}[?25l" +
+        imageClear +
         "\u{1b}_Ga=T,i=7,f=100,c=8,r=4,C=1,q=2;iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAADUlEQVR4nGP4zwAE/wEHAAH/4iOeWQAAAABJRU5ErkJggg==\u{1b}\\" +
         "under image\r\nrow two\r\nrow three\r\nrow four\r\nIMAGE-READY"
     }
@@ -41,8 +43,43 @@ extension VisualTests {
         try await settle()
     }
 
+    func testImagesPlacementRestore() async throws {
+        try await start()
+        let fixture = imageClear +
+            "\u{1b}_Ga=T,i=7,f=24,s=1,v=1,c=22,r=4,C=1,z=-1,q=2;/wAA\u{1b}\\" +
+            "TEXT ABOVE RED IMAGE\r\nTEXT BEHIND BLUE IMAGE" +
+            "\u{1b}[2;6H\u{1b}_Ga=T,i=8,f=24,s=1,v=1,c=8,r=2,C=1,z=4,q=2;AAD/\u{1b}\\" +
+            "\u{1b}[6;1HZ ORDER\u{1b}[1;30H" +
+            "\u{1b}_Ga=T,f=24,s=1,v=1,c=12,r=4,C=1,q=2;/wD/\u{1b}\\" +
+            "\u{1b}[6;30HNO CLIENT ID\u{1b}[8;1H" +
+            "\u{1b}_Ga=T,i=9,f=100,X=3,Y=5,C=1,q=2;iVBORw0KGgoAAAANSUhEUgAAALsAAABJCAIAAADqqMAvAAAAmUlEQVR42u3SQQ0AAAgDsflXgVNmgTdpUgWXy07gTgIcg2NwDI7BMeAYHINjcAyOwTHgGByDY3AMjgHH4Bgcg2NwDI4Bx+AYHINjcAyOUQHH4Bgcg2NwDDgGx+AYHINjcAw4BsfgGByDY8AxOAbH4Bgcg2PAMTgGx+AYHINjwDE4BsfgGBwDjsExOAbH4BgcA47BMTgGx/BVAWdwdphSq8KeAAAAAElFTkSuQmCC\u{1b}\\" +
+            "\u{1b}[12;1HNATIVE 187 x 73 PIXELS"
+        try await imageOutput(fixture)
+        try await snapshot("live")
+        try await imageReconnect()
+        try await imagePixels(try XCTUnwrap(terminal?.panes.first))
+        try await snapshot("restored")
+
+        func imageIDs(_ capture: String) -> [UInt32] {
+            capture.components(separatedBy: "\u{1b}_Ga=p,i=").dropFirst().compactMap {
+                UInt32($0.prefix(while: \.isNumber))
+            }
+        }
+        let target = try XCTUnwrap(terminal?.panes.first).pane.description
+        let capture = try await command(["capture-pane", "-p", "-G", "-t", target])
+        let synthetic = try XCTUnwrap(imageIDs(capture).first { $0 >= 0x80000000 })
+        try await imageOutput("\u{1b}[13;30H\u{1b}_Ga=T,i=\(synthetic),f=24,s=1,v=1,c=12,r=4,C=1,q=2;AP//\u{1b}\\\u{1b}[18;30HCOLLIDING CLIENT ID")
+        try await snapshot("colliding-id")
+        let capturedIDs = imageIDs(try await command(["capture-pane", "-p", "-G", "-t", target]))
+        XCTAssertTrue(capturedIDs.contains(synthetic))
+        XCTAssertTrue(capturedIDs.contains { $0 >= 0x80000000 && $0 != synthetic })
+
+        try await imageOutput("\u{1b}[20;30H\u{1b}_Ga=T,i=10,f=24,s=1,v=1,c=12,r=4,C=1,q=2;AP8A\u{1b}\\\u{1b}[25;30HNORMAL CLIENT ID")
+        try await snapshot("normal-id")
+    }
+
     func testImagesSideBySideRestore() async throws {
-        let pair = "\u{1b}[2J\u{1b}[H\u{1b}[?25l\u{1b}[1;21H" +
+        let pair = imageClear + "\u{1b}[1;21H" +
             "\u{1b}_Ga=T,i=8,f=24,s=1,v=1,c=6,r=3,C=1,q=2;AAD/\u{1b}\\" +
             "\u{1b}[1;4H\u{1b}_Ga=T,i=7,f=24,s=1,v=1,c=6,r=3,C=1,q=2;/wAA\u{1b}\\" +
             "\u{1b}[5;1HIMAGE-READY"

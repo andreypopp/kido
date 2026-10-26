@@ -423,13 +423,6 @@ placements cover the usual cases. An image upload that is still in
 flight at a restore is replayed by `-G` only up to 8 MiB; a larger one
 shows after the next restore. Status: accepted.
 
-## A held image has no size before its pixels
-
-A placement that a program sends live, without `c=`/`r=`, for an
-image that is still held after a restore has no cell size until the
-pixels arrive, so its drawn size can differ from tmux's for that
-time. Restored placements always carry `c=`/`r=`. Status: accepted.
-
 ## Restore latency
 
 The reported Release baseline is roughly 20ms for 10k lines, dominated by
