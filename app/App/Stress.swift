@@ -848,7 +848,13 @@ typealias AppWindow = StressWindow
     }
 
     private func afterSidebarReply(_ owner: WindowOwner, verification: String, action: () -> Void, completed: @escaping @MainActor @Sendable () -> Void) {
-        let timeout = DispatchWorkItem { self.check("rpc-completion-deadline", false) }
+        let lock = env["STRESS_UI_LOCK"] ?? ""
+        let ownsLock = !FileManager.default.fileExists(atPath: lock)
+        if ownsLock { _ = FileManager.default.createFile(atPath: lock, contents: Data()) }
+        let timeout = DispatchWorkItem {
+            if ownsLock { try? FileManager.default.removeItem(atPath: lock) }
+            self.check("rpc-completion-deadline", false)
+        }
         rpcTimeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
         let original = owner.request
@@ -859,6 +865,7 @@ typealias AppWindow = StressWindow
                 done(result)
                 timeout.cancel()
                 self.rpcTimeout = nil
+                if ownsLock { try? FileManager.default.removeItem(atPath: lock) }
                 if case .failure(let error) = result { self.log(["rpc-error": error.message]); self.check("rpc-completion", false) }
                 else { completed() }
             }
