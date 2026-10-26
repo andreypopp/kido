@@ -550,7 +550,7 @@ import SidebarFeed
                 MainActor.assumeIsolated {
                     #if KIDO_VISUAL
                     if let files = ProcessInfo.processInfo.environment["KIDO_APP_QUIT_CHILDREN"] {
-                        let pids = files.split(separator: "|").compactMap { try? String(contentsOfFile: String($0), encoding: .utf8) }.compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                        let pids = files.split(separator: "|").compactMap { try? String(contentsOfFile: String($0), encoding: .utf8) }.flatMap { $0.split(whereSeparator: \.isWhitespace) }.compactMap { Int32($0) }
                         note("quit drain completed, unreaped=\(pids.filter { kill($0, 0) == 0 })")
                     }
                     #endif

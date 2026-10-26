@@ -109,7 +109,7 @@ import XCTest
 
     func testKillTargetsConfirmationCmdWAndNewWindowFocus() async throws {
         let dir = "/tmp/kux-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: tools.environment)
+        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
         XCTAssertEqual(result.status, 0, result.err)
         let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
         let board = NSPasteboard(name: .init("kux-" + UUID().uuidString))
