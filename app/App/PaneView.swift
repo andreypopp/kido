@@ -58,7 +58,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var onFindCoverage: (Int, UUID) -> Void = { _, _ in }
     var onLoadMore: () -> Void = {}
     var onScrollTop: () -> Void = {}
-    var onImageViewport: (ScrollPosition, Int, Bool) -> Void = { _, _, _ in }
+    var onImageViewport: (Int, Bool) -> Void = { _, _ in }
     var onImageFreeze: (Int) -> Void = { _ in }
     var onCopyCheck: (@escaping @MainActor @Sendable (Bool) -> Void) -> Void = { $0(true) }
     var onFindChange: () -> Void = {}
@@ -428,7 +428,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         let image = (position.offset, position.rows, position.retainedHistoryRows, historyEpoch, visible)
         if imageViewport.map({ $0 != image }) ?? true {
             imageViewport = image
-            onImageViewport(position, historyEpoch, visible)
+            onImageViewport(historyEpoch, visible)
         }
         let distance = applied ?? Double(position.retainedHistoryRows - position.offset)
         historyLimit.isHidden = copyMode != nil || alternate || resizeDirty || resizeIntent || restoreRequested != nil
@@ -572,6 +572,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
          "replay": scrollIntent.withLock { String(describing: $0.replay) }]
     }
     var gridReady: Bool { grid.withLock { $0.ready } }
+    #if KIDO_VISUAL
+    var renderedImage: CGImage? {
+        guard let io = installedSurface, let pixels = renderedPixels,
+              let provider = CGDataProvider(data: pixels as CFData), let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        return CGImage(width: IOSurfaceGetWidth(io), height: IOSurfaceGetHeight(io), bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: IOSurfaceGetWidth(io) * 4, space: space,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue).union(.byteOrder32Little),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+    #endif
     var renderedPixels: Data? {
         guard let io = installedSurface else { return nil }
         IOSurfaceLock(io, .readOnly, nil)
@@ -916,6 +926,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         config.font_size = font
         config.io_mode = GHOSTTY_SURFACE_IO_MANUAL_MIRROR
         config.kitty_clipboard = true
+        switch host {
+        case .local: config.kitty_image_media = GHOSTTY_IMAGE_MEDIA_LOCAL
+        case .remote: config.kitty_image_media = GHOSTTY_IMAGE_MEDIA_DIRECT
+        }
         config.io_write_userdata = this
         // Called on the reader or Ghostty's IO thread; a strong reference
         // taken there could be the view's last.
@@ -1078,15 +1092,27 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
-    nonisolated func resetImageFill() {
+    #if KIDO_VISUAL
+    nonisolated let visualPendingQueries = OSAllocatedUnfairLock(initialState: 0)
+    #endif
+    nonisolated func pendingImageRows(start: Int64, count: Int, alternate: Bool) -> [Bool] {
+        #if KIDO_VISUAL
+        visualPendingQueries.withLock { $0 += 1 }
+        #endif
+        var rows = [Bool](repeating: false, count: count)
+        rows.withUnsafeMutableBufferPointer { ghostty_surface_pending_image_rows(surface, start, alternate, $0.baseAddress, $0.count) }
+        return rows
+    }
+
+    @discardableResult nonisolated func resetImageFill() -> UInt64 {
         ghostty_surface_fill_images_reset(surface)
     }
 
-    nonisolated func fillImages(_ bytes: Data, epoch: Int, alternate: Bool) -> Bool {
+    nonisolated func fillImages(_ bytes: Data, epoch: Int, alternate: Bool, generation: UInt64, final: Bool) -> Bool {
         guard grid.withLock({ $0.ready && $0.epoch == epoch && !$0.suspended }) else { return false }
         bytes.withUnsafeBytes { buffer in
             guard let base = buffer.baseAddress else { return }
-            ghostty_surface_fill_images(surface, base.assumingMemoryBound(to: CChar.self), buffer.count, alternate)
+            ghostty_surface_fill_images(surface, base.assumingMemoryBound(to: CChar.self), buffer.count, alternate, generation, final)
         }
         DispatchQueue.main.async { [weak self] in
             guard let self, historyEpoch == epoch else { return }
