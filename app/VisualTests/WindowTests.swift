@@ -103,6 +103,23 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             XCTAssertEqual(lines.contains { $0.contains("not a number of points") }, note != nil, text)
             if let note { XCTAssertTrue(lines.contains { $0.hasSuffix(note) }, text) }
         }
+
+        for (text, width, note) in [
+            ("kido-focus-ring-width = 0.75", 0.75, nil),
+            ("kido-focus-ring-width = \"4\"", 4, nil),
+            ("kido-focus-ring-width = 0.5", 0.5, nil),
+            ("", 1.5, nil),
+            ("kido-focus-ring-width = 3\nkido-focus-ring-width =", 1.5, nil),
+            ("kido-focus-ring-width = 4.5", 1.5, "4.5"),
+            ("kido-focus-ring-width = 0.4", 1.5, "0.4"),
+            ("kido-focus-ring-width = thick", 1.5, "thick"),
+        ] as [(String, CGFloat, String?)] {
+            let (parsed, lines) = try load(text)
+            XCTAssertEqual(parsed.focusRingWidth, width, text)
+            XCTAssertFalse(lines.contains { $0.contains("kido-focus-ring-width: unknown field") }, "\(text): \(lines)")
+            XCTAssertEqual(lines.contains { $0.contains("not a number of points") }, note != nil, text)
+            if let note { XCTAssertTrue(lines.contains { $0.hasSuffix("kido-focus-ring-width: not a number of points from 0.5 to 4: " + note) }, text) }
+        }
     }
 
     func testLiveConfigFile() async throws {

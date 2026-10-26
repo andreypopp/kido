@@ -379,9 +379,9 @@ background, the colour of the terminal host and the margins between the
 pane cards, and the plain colour of the docked sidebar list. No setting
 changes it.
 
-The app has two keys of its own in that file, `kido-unfocused-background-shift`
-and `kido-pane-spacing`. Ghostty does not know them, and its unknown-field
-diagnostic is hidden only for these two. The app reads them from the same
+The app has three keys of its own in that file, `kido-unfocused-background-shift`,
+`kido-pane-spacing` and `kido-focus-ring-width`. Ghostty does not know them, and its
+unknown-field diagnostic is hidden only for these three. The app reads them from the same
 files as Ghostty: the main file, then its `config-file` includes in
 Ghostty's breadth-first order, with relative paths, `~/`, optional `?` paths
 and cycles resolved as Ghostty resolves them. The last value wins. An absent
@@ -397,6 +397,11 @@ shift off.
 `kido-pane-spacing = <points>` is a number from 2 to 32, optionally in
 double quotes. The default is 8. A reload applies the new spacing to every
 window (see the layout rules below).
+
+`kido-focus-ring-width = <points>` is a number from 0.5 to 4, optionally in
+double quotes. It is the width of the accent ring around the focused pane
+card. The default is 1.5. A reload redraws the ring in every window. The
+edge of an unfocused card stays 0.5pt.
 
 The sidebar has its own light or dark appearance, from the relative
 luminance L of the canvas: dark (light text) when L < 0.179,

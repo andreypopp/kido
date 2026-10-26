@@ -75,7 +75,7 @@ final class PaneChrome: NSView {
                 bounds.fill()
             }
             guard let card else { return }
-            let focused = treatment == .edge, width: CGFloat = focused ? 1.5 : 0.5
+            let focused = treatment == .edge, width: CGFloat = focused ? runtime.settings.focusRingWidth : 0.5
             (focused ? ring : Chrome.capsuleEdge(runtime.foreground, alpha: 0.12)).setStroke()
             let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: width / 2, dy: width / 2), xRadius: card - width / 2, yRadius: card - width / 2)
             edge.lineWidth = width
