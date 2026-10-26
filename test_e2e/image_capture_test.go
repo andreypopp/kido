@@ -201,6 +201,17 @@ func TestImageCapture(t *testing.T) {
 		return h.in(append([]string{"capture-pane", "-p", "-t", pane}, flags...)...)
 	}
 	pixels := func(extra string) (string, bool) { return images("capture-pane -p -K -t " + pane + " " + extra) }
+	frame := bytes.Repeat([]byte{255, 0, 0, 255}, 16)
+	emit(kitty("a=T,i=91,f=32,s=4,v=4,c=1,r=1,C=1,q=2", frame))
+	emit(kitty("a=f,i=91,r=1,f=32,s=2,v=2,x=1,y=1,X=1,q=2", bytes.Repeat([]byte{0, 255, 0, 255}, 4)))
+	for _, y := range []int{1, 2} {
+		copy(frame[(y*4+1)*4:], bytes.Repeat([]byte{0, 255, 0, 255}, 2))
+	}
+	wantFrame := "\033_Ga=t,i=91,f=32,s=4,v=4,q=2,m=0;" + base64.StdEncoding.EncodeToString(frame) + "\033\\\n"
+	if got, failed := pixels(""); failed || got != wantFrame {
+		t.Fatalf("edited root pixels: failed=%v got=%q want=%q", failed, got, wantFrame)
+	}
+	emit(kitty("a=d,d=A,q=2", nil))
 	bitmap := image.NewRGBA(image.Rect(0, 0, 32, 32))
 	for y := 0; y < 32; y++ {
 		for x := 0; x < 32; x++ {

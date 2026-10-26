@@ -1,6 +1,6 @@
 # kido rpc protocol 6.2
 
-fork revision: 179ad1e5ba61caa3fc42e50161c7d337af20295a
+fork revision: a0422edea09188133f9ea7cd408ba5f7c1922694
 
 Protocol.value is the binary's protocol constant. It versions this RPC
 surface and the tmux commands this contract names, such as the "Pane
@@ -627,12 +627,42 @@ When the cut is at an image boundary, the reply's last image is complete
 (`m=0`) and the next reply starts with the first chunk of the next image.
 Then come the images after it. The
 token is opaque. When the token's image is no longer in the range's
-images (deleted, replaced, or no longer placed there), or the token is
+images (deleted, replaced, or no longer placed there), the image was
+edited after the previous call (frame edits, below), or the token is
 invalid, the command fails with `image changed` and writes nothing; the
 client drops the partial transmission and starts again without `-k`.
 An empty reply means no images. If output scrolls between calls, the
 range can select other images; images that moved before the token's
 image are not sent in that sequence.
+
+Frame edits (`a=f`). tmux accepts a kitty `a=f` that edits frame 1,
+the image itself: `i=I,r=1`, a rectangle `s`x`v` at `x`,`y` in format
+24, 32 or 100, sent by `t=d` (also in `m=1` chunks) or `t=s`. It
+blends the rectangle over the image with the same integer arithmetic as
+Ghostty (non-premultiplied source over) or, with `X=1`, replaces the
+pixels. A rectangle that overhangs the image is clipped;
+one larger than the image answers `EINVAL`. `c=` and `Y=` have no
+effect on an edit, as in kitty and Ghostty. A missing image answers
+`ENOENT`. The reply is `ESC _G i=I,r=1;OK ESC \`. tmux does not yet
+store more frames: `r=0`, or an `r=` that names a new frame, answers
+`ENOTSUP`, while the app adds that frame. Thus frame numbers can differ
+until a restore.
+
+In every chunked upload (`m=1`), tmux keeps the first chunk's keys, as
+Ghostty does. A later chunk changes only `m=`, and its `q=` applies
+only when it is not 0. Thus `q=2` on the first chunk keeps the reply
+suppressed.
+
+An edit does not change the image's id or its placements. After an
+edit, `-K` writes the image's current pixels, not the received bytes:
+
+    ESC _G a=t,i=I,f=32,s=W,v=H,q=2,m=1;BASE64 ESC \
+
+`W` and `H` are the image's size in pixels. Chunks, the budget and
+`more` are as above. With `image-shm` it is one `t=s` line with
+`f=32,s=W,v=H`. An edit of an image that stays a mapping of the
+program's object (`t=s` below) first copies it, so tmux never writes
+the object.
 
 `-K` depends on the target pane, not on the calling client's session or
 size. It gives the same output to a one-shot client and to a control
@@ -645,8 +675,8 @@ with `-f no-output,ignore-size`. Such a client takes no part in pane
 focus. Without images in the build, `-G` gives the capture without
 placements and `-K` writes nothing.
 
-Shared memory (`t=s`). tmux accepts kitty `t=s` for `a=t`, `a=T` and
-`a=q`. The payload is the base64 name of a POSIX shared-memory object:
+Shared memory (`t=s`). tmux accepts kitty `t=s` for `a=t`, `a=T`,
+`a=f` and `a=q`. The payload is the base64 name of a POSIX shared-memory object:
 1 to 31 bytes (the macOS limit), an optional leading `/`, no other `/`,
 no NUL. Other names answer `EINVAL`. tmux opens the object read-only. It
 checks the byte range (`S=`, `O=`, else `s*v*bytes` for raw formats, else
@@ -685,9 +715,10 @@ the same read, it queues the image's stored bytes as `%output` chunks:
     ...
     ESC _G m=0,q=2;BASE64 ESC \
 
-`A` is the original action (`t` or `T`) and the other keys are the
+`A` is the original action (`t`, `T` or `f`) and the other keys are the
 original command's, so the client ends with the same image and the same
-placement. The chunk size is as for `-K`. `a=q` gets no chunks. No
+placement. For `a=f`, `r=`, `c=`, `x=`, `y=`, `X=`, `Y=` and `z=` are
+the frame keys, and the client applies the same edit. The chunk size is as for `-K`. `a=q` gets no chunks. No
 control client may act on `t=f` or `t=t` in `%output`: tmux answers
 them `ENOTSUP` and the path can denote another file on the client's
 machine.
