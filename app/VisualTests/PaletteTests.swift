@@ -272,7 +272,7 @@ import TmuxControl
         defer { fixture.close() }
         let owner = try XCTUnwrap(fixture.app.open(.local, start: false))
         let directory = "/tmp/kt-live-" + UUID().uuidString.prefix(8)
-        let started = try await Child.run(tools.kido, ["server", "--server", directory], env: tools.environment)
+        let started = try await Child.run(tools.kido, ["server", "--server", directory], env: serverEnvironment)
         XCTAssertEqual(started.status, 0, started.err)
         let server = try JSONDecoder().decode(Server.self, from: Data(started.out.utf8))
         addTeardownBlock { @MainActor in
@@ -448,7 +448,7 @@ import TmuxControl
         }
         func startServer(_ test: VisualTestCase) async throws -> Server {
             let dir = "/tmp/kpp-" + UUID().uuidString.prefix(8)
-            let started = try await Child.run(tools.kido, ["server", "--server", dir], env: tools.environment)
+            let started = try await Child.run(tools.kido, ["server", "--server", dir], env: test.serverEnvironment)
             XCTAssertEqual(started.status, 0, started.err)
             let server = try JSONDecoder().decode(Server.self, from: Data(started.out.utf8))
             owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
@@ -1490,7 +1490,7 @@ import TmuxControl
 
     func testCloseSessionConfirmsAndKills() async throws {
         let dir = "/tmp/kp-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: tools.environment)
+        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
         XCTAssertEqual(result.status, 0, result.err)
         let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
         let board = NSPasteboard(name: .init("kp-" + UUID().uuidString))

@@ -65,6 +65,18 @@ func paneSyncResetsHistoryPenBeforeScreen(wraps: Bool, alternate: Bool) throws {
     #expect(ScrollAnchor(lines: 2, text: "wrapped  tail").locate(rows) == 1)
 }
 
+@Test func paneSyncKeepsInlinePlacementsInByteOrder() throws {
+    let placement = "\u{1B}_Ga=p,i=7,p=3,c=8,r=4,C=1,q=2\u{1B}\\"
+    let state = ["1", "0", "0", "0", "0", "1", "0", "0", "0", "0", "0", "block", "", "", "7"].joined(separator: "\u{1F}")
+    let replies: [Reply] = [
+        .success(["1 0"]), .success(["before" + placement + "after"]), .success(["-1 - beforeafter"]),
+        .success(["left" + placement + "right"]), .success([]), .success([]), .success([state]), .success(["0 - leftright"]),
+    ]
+    let snapshot = try #require(PaneSync.restore(replies))
+    #expect(String(decoding: snapshot.data, as: UTF8.self).hasPrefix(
+        "\u{1B}c\u{1B}[3J\u{1B}[mbefore" + placement + "after\r\n\u{1B}[mleft" + placement + "right"))
+}
+
 @Test func historyMetadataRejectsMalformedState() {
     #expect(HistoryMetadata(.success(["123 1"]))?.history == 123)
     #expect(HistoryMetadata(.success(["123 1"]))?.alternate == true)

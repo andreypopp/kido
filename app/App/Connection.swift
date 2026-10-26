@@ -26,12 +26,26 @@ final class Connection: @unchecked Sendable {
     }
     private let client: Client
     private let ownerID: String
+    private let drain: Drain?
+    private enum ImageClient {
+        case stopped, starting(SessionID), identifying(Client, SessionID), ready(Client, String, SessionID)
+        var client: Client? {
+            switch self { case .identifying(let client, _), .ready(let client, _, _): client; default: nil }
+        }
+    }
+    private var imageState: ImageClient = .stopped
+    private var imageGeneration = UUID()
+    @MainActor private let imageLaunch: (SessionID) -> Launch
     private var closeCause: CloseCause?
     #if KIDO_VISUAL
     private let metadataQueries = OSAllocatedUnfairLock(initialState: 0)
     var visualMetadataQueries: Int { metadataQueries.withLock { $0 } }
     private let searchCaptures = OSAllocatedUnfairLock(initialState: 0)
     var visualSearchCaptures: Int { searchCaptures.withLock { $0 } }
+    private let imageCaptures = OSAllocatedUnfairLock(initialState: 0)
+    var visualImageCaptures: Int { imageCaptures.withLock { $0 } }
+    struct PixelProbe { var replies: [[Reply]] = []; var finished = 0 }
+    let visualPixels = OSAllocatedUnfairLock(initialState: PixelProbe())
     #endif
     private final class PaneFeed: @unchecked Sendable {
         enum Boundary { case older, exhausted(epoch: Int), refused }
@@ -59,9 +73,68 @@ final class Connection: @unchecked Sendable {
         var sampledTmuxHistoryRows = 0
         var outputEpoch = 0
         var goal: (distance: Int, token: UUID)?
+        struct Pixels {
+            var epoch: Int
+            var fetched = IndexSet()
+            var wanted: Range<Int>
+            var historyRows: Int
+            var screenRows: Int
+            var mainPending: Bool
+            var alternate: Bool
+            var inFlight: UUID?
+            var prepended = 0
+            struct Retry: Equatable { let outputEpoch: Int; let wanted: Range<Int> }
+            var retry: Retry?
+
+            mutating func viewport(_ position: PaneView.ScrollPosition) {
+                let previous = historyRows + screenRows, total = position.retainedHistoryRows + position.rows
+                if total > previous { fetched.insert(integersIn: previous..<total) }
+                historyRows = position.retainedHistoryRows
+                screenRows = position.rows
+                let start = max(0, position.offset - position.rows)
+                wanted = start..<max(start, min(total, position.offset + position.rows * 2))
+            }
+
+            mutating func freeze(_ next: Int) {
+                guard epoch + 1 == next else { return }
+                epoch = next
+                inFlight = nil
+                retry = nil
+            }
+
+            mutating func prepend(_ rows: Int) {
+                fetched.shift(startingAt: 0, by: rows)
+                wanted = (wanted.lowerBound + rows)..<(wanted.upperBound + rows)
+                historyRows += rows
+                prepended += rows
+            }
+
+            func missing(output: Int) -> (range: Range<Int>, screen: PixelScreen)? {
+                guard retry != Retry(outputEpoch: output, wanted: wanted) else { return nil }
+                if let range = IndexSet(integersIn: wanted).subtracting(fetched).rangeView.first {
+                    return (range, alternate ? .alternate : .primary)
+                }
+                return mainPending ? (historyRows..<(historyRows + screenRows), .savedPrimary) : nil
+            }
+
+            mutating func completed(_ request: PixelRequest, rows: IndexSet, output: Int) -> Bool {
+                inFlight = nil
+                let pending = rows.count != request.range.count
+                if pending { retry = Retry(outputEpoch: output, wanted: wanted) }
+                if request.screen == .savedPrimary { mainPending = pending }
+                else {
+                    var shifted = rows
+                    shifted.shift(startingAt: 0, by: prepended - request.prepended)
+                    fetched.formUnion(shifted)
+                }
+                return pending
+            }
+        }
+        var pixels: Pixels?
+        var imageVisible: Bool
         var preparingRestore = false
         var pendingRestore: (first: [Command], synced: (@Sendable () -> Void)?)?
-        init(_ view: PaneView) { self.view = view }
+        init(_ view: PaneView, visible: Bool) { self.view = view; imageVisible = visible }
         func completePendingRestore() {
             let pending = pendingRestore
             pendingRestore = nil
@@ -92,27 +165,25 @@ final class Connection: @unchecked Sendable {
     @MainActor private let onDiagnostic: (String) -> Void
 
     @MainActor init(
-        server: Server, view: SessionView, launch: Launch? = nil, host: Host = .local, drain: Drain? = nil, ownerID: String = String(UUID().uuidString.prefix(8)), onChange: @escaping (SessionModel) -> Void,
+        server: Server, view: SessionView, transport: ((Launch) -> Launch)? = nil, host: Host = .local, drain: Drain? = nil, ownerID: String = String(UUID().uuidString.prefix(8)), onChange: @escaping (SessionModel) -> Void,
         onDiagnostic: @escaping (String) -> Void, onClose: @escaping (Exit, CloseCause?) -> Void
     ) throws {
         self.view = view
         self.host = host
         self.ownerID = ownerID
+        self.drain = drain
+        self.imageLaunch = { session in
+            let launch = Launch.attachImages(server.tmux, socket: server.socket, session: session)
+            return transport?(launch) ?? launch
+        }
         self.onChange = onChange
         self.onClose = onClose
         self.onDiagnostic = onDiagnostic
-        client = Client(launch: launch ?? .attach(server.tmux, socket: server.socket))
+        let launch = Launch.attach(server.tmux, socket: server.socket)
+        client = Client(launch: transport?(launch) ?? launch)
         view.connection = self
-        try drain?.enter()
-        do {
-            try client.start(
-                onEvent: { [weak self] in self?.handle($0) },
-                onClose: { [weak self] status, stderr in self?.closed(status, stderr) },
-                onExit: { drain?.ended.leave() })
-        } catch {
-            drain?.ended.leave()
-            throw error
-        }
+        try startClient(client, onEvent: { [weak self] in self?.handle($0) },
+                        onClose: { [weak self] status, stderr in self?.closed(status, stderr) })
         client.send([Command("refresh-client", "-B", "windows::#{W:#{window_id}=#{window_index},}")]) { _ in }
     }
 
@@ -139,9 +210,10 @@ final class Connection: @unchecked Sendable {
 
     @MainActor func attach(_ pane: PaneView, synced: (@Sendable () -> Void)? = nil) {
         guard active else { return }
+        let visible = !pane.isHiddenOrHasHiddenAncestor
         client.queue.async {
             guard self.panes != nil else { return DispatchQueue.main.async { _ = pane } }
-            self.panes?[pane.pane] = PaneFeed(pane)
+            self.panes?[pane.pane] = PaneFeed(pane, visible: visible)
         }
         pane.onRestoreDrain = { [weak self, id = pane.pane] in
             guard let self else { return }
@@ -159,6 +231,23 @@ final class Connection: @unchecked Sendable {
                 if let hook = self.visualCopyCheck { return hook(reply) }
                 #endif
                 reply()
+            }
+        }
+        pane.onImageFreeze = { [weak self, id = pane.pane] epoch in
+            guard let self else { return }
+            client.queue.async {
+                self.panes?[id]?.pixels?.freeze(epoch)
+            }
+        }
+        pane.onImageViewport = { [weak self, id = pane.pane] position, epoch, visible in
+            guard let self else { return }
+            client.queue.async {
+                guard let feed = self.panes?[id] else { return }
+                feed.imageVisible = visible
+                guard var pixels = feed.pixels, pixels.epoch == epoch else { return }
+                pixels.viewport(position)
+                feed.pixels = pixels
+                self.fetchPixels(id, feed)
             }
         }
         pane.onScrollTop = { [weak self, id = pane.pane] in self?.load(id, metadataOnly: true) }
@@ -250,7 +339,9 @@ final class Connection: @unchecked Sendable {
     }
 
     @MainActor func resize(cols: Int, rows: Int) {
-        let size = "\(cols)x\(rows)"
+        guard cols > 0, rows > 0, let view, view.bounds.width > 0, view.bounds.height > 0,
+              let pixels = view.cellPixels else { return }
+        let size = "\(cols)x\(rows)x\(pixels.width)x\(pixels.height)"
         desiredSize = size == sentSize ? nil : size
         guard desiredSize != nil, sizing == nil, !sizeInFlight else { return }
         let item = DispatchWorkItem { [weak self] in self?.flushSize() }
@@ -292,6 +383,11 @@ final class Connection: @unchecked Sendable {
 
     private func closeClient(_ cause: CloseCause?) {
         recordCloseCause(cause)
+        client.queue.async {
+            self.imageGeneration = UUID()
+            self.imageState.client?.close()
+            self.panes?.values.forEach { $0.view.resetImageFill() }
+        }
         client.close()
     }
 
@@ -304,6 +400,7 @@ final class Connection: @unchecked Sendable {
                 feed.outputEpoch += 1
                 invalidateSearch(feed, restart: true)
                 feed.view.feed(Data(bytes))
+                fetchPixels(p, feed)
             }
         case .pause(let p):
             let resume = Command("refresh-client", "-A", "\(p):continue")
@@ -351,6 +448,7 @@ final class Connection: @unchecked Sendable {
             let listing = windows.compactMap(WindowListing.init)
             DispatchQueue.main.sync {
                 guard let self, self.active else { return }
+                self.startImages(session)
                 self.view?.update(listing, alive: Set(all.compactMap(WindowID.init)))
                 self.model = SessionModel(
                     sessions: sessions.compactMap(SessionListing.init), session: session,
@@ -393,6 +491,8 @@ final class Connection: @unchecked Sendable {
                     feed.pendingRestore = nil
                     let request = PaneFeed.RestoreRequest(epoch: epoch, synced: pending.synced)
                     feed.history = .syncing(request)
+                    feed.pixels = nil
+                    feed.view.resetImageFill()
                     self.invalidateSearch(feed, restart: false)
                     self.capture(pane, feed, request: request, first: pending.first)
                 }
@@ -440,6 +540,10 @@ final class Connection: @unchecked Sendable {
                     return
                 }
                 let position = feed.view.scrollPosition()
+                let alternate = ghostty_surface_is_alternate_screen(feed.view.surface)
+                feed.pixels = .init(epoch: epoch, wanted: position.retainedHistoryRows..<(position.retainedHistoryRows + position.rows),
+                                    historyRows: position.retainedHistoryRows, screenRows: position.rows, mainPending: alternate, alternate: alternate)
+                self.fetchPixels(pane, feed)
                 let distance = feed.view.resizeAnchor?.locate(snapshot.anchorRows).flatMap { $0 <= position.retainedHistoryRows ? $0 : nil } ?? 0
                 self.publish(feed, history: history, alternate: ghostty_surface_is_alternate_screen(feed.view.surface), insertionRefused: false)
                 DispatchQueue.main.async { [weak view = feed.view] in
@@ -455,6 +559,151 @@ final class Connection: @unchecked Sendable {
                 DispatchQueue.main.async { [weak view = feed.view] in view?.restoreFailed(epoch: epoch) }
                 self.report("could not capture \(pane): \(replies)")
             }
+        }
+    }
+
+    @MainActor private func startClient(_ client: Client, onEvent: @escaping @Sendable (Event) -> Void,
+                                        onClose: @escaping @Sendable (Int32, String) -> Void) throws {
+        try drain?.enter()
+        do { try client.start(onEvent: onEvent, onClose: onClose, onExit: { [drain] in drain?.ended.leave() }) }
+        catch { drain?.ended.leave(); throw error }
+    }
+
+    @MainActor private func startImages(_ session: SessionID) {
+        client.queue.async { [self] in
+            switch imageState {
+            case .ready(let images, let name, let current):
+                guard current != session else { return }
+                imageState = .ready(images, name, session)
+                gate("image-follow") { [self] in client.send([Command("switch-client", "-c", name, "-t", session)]) { _ in } }
+                return
+            case .starting: imageState = .starting(session); return
+            case .identifying(let images, _): imageState = .identifying(images, session); return
+            case .stopped: imageState = .starting(session)
+            }
+            DispatchQueue.main.async { [self] in
+                guard active else { return }
+                let images = Client(launch: imageLaunch(session))
+                do {
+                    try startClient(images, onEvent: { _ in }, onClose: { [weak self, weak images] _, _ in
+                        guard let self, let images else { return }
+                        self.client.queue.async {
+                            guard self.imageState.client === images else { return }
+                            self.closeClient(.failure("image client disconnected"))
+                        }
+                    })
+                } catch { closeClient(.failure("could not start image client: \(error)")); return }
+                client.queue.async { [self] in
+                    guard panes != nil, case .starting(let wanted) = imageState else { return images.close() }
+                    imageState = .identifying(images, wanted)
+                    images.send([Command("display-message", "-p", "#{client_name}")]) { replies in
+                        self.client.queue.async { [self] in
+                            guard case .identifying(let current, let wanted) = imageState, current === images,
+                                  case .success(let names)? = replies?.first, let name = names.first else { return }
+                            imageState = .ready(images, name, wanted)
+                            if wanted != session { client.send([Command("switch-client", "-c", name, "-t", wanted)]) { _ in } }
+                            for (pane, feed) in panes ?? [:] { fetchPixels(pane, feed) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func fetchPixels(_ pane: PaneID, _ feed: PaneFeed) {
+        guard case .ready = imageState, var pixels = feed.pixels, feed.imageVisible, pixels.inFlight == nil,
+              feed.view.historyEpoch == pixels.epoch,
+              let missing = pixels.missing(output: feed.outputEpoch), !missing.range.isEmpty,
+              ghostty_surface_is_alternate_screen(feed.view.surface) == pixels.alternate else { return }
+        let request = PixelRequest(token: UUID(), generation: imageGeneration, epoch: pixels.epoch, range: missing.range,
+                                   history: pixels.historyRows, screen: missing.screen, prepended: pixels.prepended)
+        pixels.inFlight = request.token
+        feed.pixels = pixels
+        feed.view.resetImageFill()
+        fetchPixelPage(pane, feed, request, continuation: nil)
+    }
+
+    private enum PixelScreen: Sendable { case primary, alternate, savedPrimary }
+
+    private struct PixelRequest: Sendable {
+        let token: UUID
+        let generation: UUID
+        let epoch: Int
+        let range: Range<Int>
+        let history: Int
+        let screen: PixelScreen
+        let prepended: Int
+        var canRestart = true
+    }
+
+    private func validPixels(_ pane: PaneID, _ feed: PaneFeed, _ request: PixelRequest) -> Bool {
+        guard panes?[pane] === feed, let pixels = feed.pixels,
+              pixels.epoch == request.epoch, pixels.inFlight == request.token,
+              imageGeneration == request.generation, feed.view.historyEpoch == request.epoch else { return false }
+        return ghostty_surface_is_alternate_screen(feed.view.surface) == (request.screen != .primary)
+    }
+
+    private func fetchPixelPage(_ pane: PaneID, _ feed: PaneFeed, _ request: PixelRequest, continuation: String?) {
+        guard case .ready(let images, _, _) = imageState else { return }
+        var args = ["-p", "-K", "-S", String(request.range.lowerBound - request.history), "-E", String(request.range.upperBound - request.history - 1), "-t", pane.description]
+        if request.screen == .savedPrimary { args.append("-a") }
+        if let continuation { args += ["-k", continuation] }
+        #if KIDO_VISUAL
+        imageCaptures.withLock { $0 += 1 }
+        #endif
+        images.send([Command(words: ["capture-pane"] + args)]) { [weak self, weak feed] response in
+            guard let self, let feed else { return }
+            #if KIDO_VISUAL
+            let replies = self.visualPixels.withLock { $0.replies.isEmpty ? response : $0.replies.removeFirst() }
+            #else
+            let replies = response
+            #endif
+            self.client.queue.async { self.gate("pixels") {
+                guard self.validPixels(pane, feed, request) else { return }
+                guard case .success(let lines)? = replies?.first else {
+                    feed.view.resetImageFill()
+                    if request.canRestart, case .failure(let error)? = replies?.first, error.contains("image changed") {
+                        var restarted = request
+                        restarted.canRestart = false
+                        return self.fetchPixelPage(pane, feed, restarted, continuation: nil)
+                    }
+                    feed.pixels?.inFlight = nil
+                    #if KIDO_VISUAL
+                    self.visualPixels.withLock { $0.finished += 1 }
+                    #endif
+                    return
+                }
+                let next = lines.last.flatMap { $0.hasPrefix("more ") ? String($0.dropFirst(5)) : nil }
+                let payload = lines.prefix(lines.count - (next == nil ? 0 : 1))
+                images.queue.async {
+                    var data = Data(capacity: payload.reduce(0) { $0 + $1.utf8.count })
+                    for line in payload { data.append(contentsOf: line.utf8) }
+                    let applied = feed.view.fillImages(data, epoch: request.epoch, alternate: request.screen == .alternate)
+                    var pendingRows = [Bool](repeating: false, count: next == nil ? request.range.count : 0)
+                    if applied, next == nil {
+                        pendingRows.withUnsafeMutableBufferPointer {
+                            ghostty_surface_pending_image_rows(feed.view.surface, Int64(request.range.lowerBound - request.history),
+                                                               request.screen == .alternate, $0.baseAddress, $0.count)
+                        }
+                    }
+                    let complete = IndexSet(pendingRows.enumerated().compactMap { $0.element ? nil : request.range.lowerBound + $0.offset })
+                    self.client.queue.async {
+                        guard self.validPixels(pane, feed, request) else { return }
+                        guard applied else {
+                            feed.view.resetImageFill()
+                            feed.pixels?.inFlight = nil
+                            return
+                        }
+                        if let next { return self.fetchPixelPage(pane, feed, request, continuation: next) }
+                        feed.view.resetImageFill()
+                        let pending = feed.pixels!.completed(request, rows: complete, output: feed.outputEpoch)
+                        #if KIDO_VISUAL
+                        self.visualPixels.withLock { $0.finished += 1 }
+                        #endif
+                        if !pending { self.fetchPixels(pane, feed) }
+                    }
+                }
+            } }
         }
     }
 
@@ -591,6 +840,10 @@ final class Connection: @unchecked Sendable {
                 return self.fetch(pane, feed, token: token, chunk: min(capture.history - position.retainedHistoryRows, chunk * 2))
             }
             let added = capture.rows == 0 ? 0 : feed.view.prepend(Data(capture.text.utf8), epoch: epoch)
+            if added > 0, var pixels = feed.pixels, pixels.epoch == epoch {
+                pixels.prepend(added)
+                feed.pixels = pixels
+            }
             guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, !feed.view.frozen else {
                 self.publish(feed, history: feed.sampledTmuxHistoryRows)
                 return
@@ -648,6 +901,11 @@ final class Connection: @unchecked Sendable {
     private func teardown() -> [PaneID: PaneFeed]? {
         let gone = panes
         panes = nil
+        imageGeneration = UUID()
+        let images = imageState.client
+        imageState = .stopped
+        images?.close()
+        gone?.values.forEach { $0.view.resetImageFill() }
         gone?.values.forEach { invalidateSearch($0, restart: false); $0.completePendingRestore() }
         return gone
     }

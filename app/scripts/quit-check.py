@@ -8,6 +8,10 @@ import sys
 import tempfile
 import time
 
+def read_pids(path):
+    return [int(pid) for pid in path.read_text().split()] if path.exists() else []
+
+
 bundle = pathlib.Path(sys.argv[1]).resolve()
 kido = bundle / "Contents/Resources/kido/bin/kido"
 tmux = bundle / "Contents/Resources/kido/bin/kido-tmux"
@@ -19,10 +23,10 @@ with tempfile.TemporaryDirectory(prefix="kido-quit-", dir="/tmp") as scratch:
     env.update(HOME=str(root / "home"), XDG_STATE_HOME=str(root / "xdg"), XDG_CONFIG_HOME=str(root / "config"), KIDO_APP_BACKGROUND="1", KIDO_APP_SERVER=str(root / "server"), KIDO_APP_QUIT_VERIFY="1")
     control = root / "control"
     feed = root / "feed"
-    control.write_text(f'#!/bin/sh\necho $$ > {shlex.quote(str(root / "control.pid"))}\nexec {shlex.quote(str(tmux))} "$@"\n')
+    control.write_text(f'#!/bin/sh\necho $$ >> {shlex.quote(str(root / "control.pid"))}\nexec {shlex.quote(str(tmux))} "$@"\n')
     feed.write_text('#!/usr/bin/python3\nimport os, signal, sys, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
                     + f'open({str(root / "feed.pid")!r}, "w").write(str(os.getpid()))\n'
-                    + 'print(\'{"hello":{"protocol":"6.0"}}\', flush=True)\n'
+                    + 'print(\'{"hello":{"protocol":"6.1"}}\', flush=True)\n'
                     + 'print(\'{"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"server_instance":{"started_at":1780000000,"pid":4242},"sessions":[]}\', flush=True)\n'
                     + 'while True: time.sleep(60)\n')
     control.chmod(0o700)
@@ -35,11 +39,14 @@ with tempfile.TemporaryDirectory(prefix="kido-quit-", dir="/tmp") as scratch:
         process = subprocess.Popen([str(bundle / "Contents/MacOS/Kido")], env=env, stdout=output, stderr=output)
         try:
             deadline = time.monotonic() + 20
-            while "quit verification ready, offscreen=true" not in log.read_text() and time.monotonic() < deadline and process.poll() is None:
+            while time.monotonic() < deadline and process.poll() is None:
+                if ("quit verification ready, offscreen=true" in log.read_text()
+                        and len(read_pids(root / "control.pid")) == 2 and len(read_pids(root / "feed.pid")) == 1):
+                    break
                 time.sleep(0.05)
-            if "quit verification ready, offscreen=true" not in log.read_text():
-                raise RuntimeError("offscreen quit check did not connect: " + log.read_text())
-            helpers = [int((root / (name + ".pid")).read_text()) for name in ("control", "feed")]
+            else:
+                raise RuntimeError("offscreen quit check did not connect both control clients and feed: " + log.read_text())
+            helpers = read_pids(root / "control.pid") + read_pids(root / "feed.pid")
             for pid in helpers:
                 os.kill(pid, signal.SIGSTOP)
             states = subprocess.check_output(["/bin/ps", "-p", ",".join(map(str, helpers)), "-o", "stat="], text=True).splitlines()
@@ -62,10 +69,10 @@ with tempfile.TemporaryDirectory(prefix="kido-quit-", dir="/tmp") as scratch:
                     pass
             if alive or "quit drain completed, unreaped=[]" not in log.read_text():
                 raise RuntimeError(f"quit replied before reaping SIGSTOP'd control/feed children: {alive}; " + log.read_text())
-            print("PASS: offscreen connected-owner quit reaps SIGSTOP'd control and feed children")
+            print("PASS: offscreen connected-owner quit reaps both SIGSTOP'd control clients and the feed child")
         finally:
             if not helpers:
-                helpers = [int(path.read_text()) for path in root.glob("*.pid")]
+                helpers = [pid for path in root.glob("*.pid") for pid in read_pids(path)]
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)

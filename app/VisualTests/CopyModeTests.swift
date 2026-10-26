@@ -10,42 +10,6 @@ import XCTest
 extension VisualTests {
     private var board: NSPasteboard { runtime.pasteboard }
 
-    private func rawPane(dark: Bool = false) async throws -> PaneView {
-        try await start(dark: dark)
-        let pane = try XCTUnwrap(terminal?.panes.first)
-        try await command(["respawn-pane", "-k", "-t", pane.pane.description, "stty raw -echo; exec /bin/cat"])
-        try await restore(pane)
-        return pane
-    }
-
-    private func restore(_ pane: PaneView) async throws {
-        let restored = expectation(description: "pane restored")
-        pane.markContentDirty()
-        connection.sync(pane.pane) { restored.fulfill() }
-        await fulfillment(of: [restored], timeout: 20)
-        try await settle()
-        window.makeFirstResponder(pane)
-    }
-
-    private func emit(_ pane: PaneView, _ text: String, until marker: String) async throws {
-        let bytes = text.utf8.map { String(format: "%02x", $0) }
-        for start in stride(from: 0, to: bytes.count, by: 300) {
-            try await command(["send-keys", "-t", pane.pane.description, "-H"] + bytes[start..<min(start + 300, bytes.count)])
-        }
-        let deadline = Date() + 5
-        while try await !command(["capture-pane", "-p", "-t", pane.pane.description]).contains(marker) {
-            guard Date() < deadline else { return XCTFail("tmux never showed \(marker)") }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        try await roundTrip()
-    }
-
-    private func roundTrip() async throws {
-        let done = expectation(description: "tmux reply")
-        connection.send([Command("display-message", "-p", "")]) { _ in done.fulfill() }
-        await fulfillment(of: [done], timeout: 2)
-    }
-
     private func key(_ pane: PaneView, _ characters: String, _ mods: NSEvent.ModifierFlags = [], code: UInt16 = 0,
                      ignoring: String? = nil, type: NSEvent.EventType = .keyDown) {
         let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: pane.window?.windowNumber ?? 0, context: nil,
@@ -1329,7 +1293,7 @@ extension VisualTests {
         let received = scratch.appendingPathComponent("received")
         let script = try fakeFeedScript(scratch, """
         import json, os, sys, time
-        print(json.dumps(dict(hello=dict(protocol="6.0"))))
+        print(json.dumps(dict(hello=dict(protocol="6.1"))))
         snapshot = {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},
                     "server_instance":{"started_at":1,"pid":2},"error":None,"sessions":[]}
         print(json.dumps(snapshot))

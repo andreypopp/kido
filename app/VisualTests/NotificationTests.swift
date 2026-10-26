@@ -11,7 +11,7 @@ import XCTest
         let authorizationBefore = poster.authorizeCalls
         let postsBefore = poster.posts.count
         let dir = "/tmp/ka-visual-notice-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: tools.environment)
+        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
         XCTAssertEqual(result.status, 0, result.err)
         let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
         let created = try await Child.run(server.tmux, ["-u", "-S", server.socket, "new-window", "-d", "-t", "$0", "-n", "notice", "-P", "-F", "#{pane_id}\t#{pane_tty}", "printf '\\033]2;Builder\\007\\033]7501;state=blocked:app=builder:msg=QXBwcm92ZQ==\\007'; exec sleep 300"], env: tools.environment)
@@ -92,7 +92,7 @@ import XCTest
     func testRoutingAndPendingJumps() async throws {
         XCTAssertTrue(background)
         let dir = "/tmp/ka-visual-route-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: tools.environment)
+        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
         XCTAssertEqual(result.status, 0, result.err)
         let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
         let created = try await Child.run(server.tmux, ["-u", "-S", server.socket, "new-session", "-d", "-s", "target", "-P", "-F", "#{session_id} #{window_id} #{pane_id}", "exec sleep 300"], env: tools.environment)
