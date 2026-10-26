@@ -56,7 +56,7 @@ import SidebarFeed
             XCTAssertTrue(helper.arguments.contains("ClearAllForwardings=yes"))
             XCTAssertEqual(helper.arguments.last, "exec '/usr/bin/env' '-u' 'SSH_AUTH_SOCK' '/usr/bin/printf' '%s' 'a'\"'\"'b $c'")
             let endpoint = Endpoint(server: Server(tmux: "/tmp/tmux ' $tool", socket: "/tmp/state ' $dir/socket", stamp: ServerStamp("visual"), expected: ServerStamp("visual")), kido: "/tmp/kido")
-            let attach = [endpoint.server.tmux] + Launch.attach(endpoint.server.tmux, socket: endpoint.server.socket).arguments
+            let attach = [endpoint.server.tmux] + Launch.attach(endpoint.server.tmux, socket: endpoint.server.socket, imageShm: false).arguments
             let control = ssh.passenger(attach, control: endpoint)
             XCTAssertFalse(control.arguments.contains("ForwardAgent=no"))
             XCTAssertEqual(control.arguments.last, "exec " + (["/bin/sh", "-c", SSH.attachScript, "kido-agent", endpoint.directory, endpoint.server.socket] + attach).map(SSH.quote).joined(separator: " "))
@@ -65,7 +65,7 @@ import SidebarFeed
         var launches: [[String]] = []
         let endpoint = try await Server.locate(prepare: { arguments in
             launches.append(arguments)
-            let output = arguments.first == "/bin/sh" ? "/tmp/kido\n/tmp/state ' $dir/kido-app\n" : "{\"tmux\":\"/tmp/tmux\",\"socket\":\"/tmp/state ' $dir/kido-app/socket\",\"server\":\"0123456789ab\",\"expected\":\"0123456789ab\",\"protocol\":\"6.1\"}\n"
+            let output = arguments.first == "/bin/sh" ? "/tmp/kido\n/tmp/state ' $dir/kido-app\n" : "{\"tmux\":\"/tmp/tmux\",\"socket\":\"/tmp/state ' $dir/kido-app/socket\",\"server\":\"0123456789ab\",\"expected\":\"0123456789ab\",\"protocol\":\"6.2\"}\n"
             return Launch("/usr/bin/printf", ["%s", output])
         })
         XCTAssertEqual(launches.last, ["/usr/bin/env", "SSH_AUTH_SOCK=" + endpoint.directory + "/agent.sock", "/tmp/kido", "server", "--server", endpoint.directory])
@@ -107,7 +107,7 @@ import SidebarFeed
         XCTAssertFalse(fm.fileExists(atPath: stable))
         for (index, forwarded) in [root + "/a.sock", root + "/b.sock", ""].enumerated() {
             let input = Pipe()
-            let args = ["-c", SSH.attachScript, "kido-agent", dir, socket, tools.tmux] + Launch.attach(tools.tmux, socket: socket, session: "main").arguments
+            let args = ["-c", SSH.attachScript, "kido-agent", dir, socket, tools.tmux] + Launch.attach(tools.tmux, socket: socket, session: "main", imageShm: false).arguments
             let env = forwarded.isEmpty ? environment : environment.merging(["SSH_AUTH_SOCK": forwarded]) { _, new in new }
             let control = try Child("/bin/sh", args, env: env, stdin: input, stdout: Pipe())
             controls.append(control)
