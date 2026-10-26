@@ -25,8 +25,8 @@ public enum PaneSync {
 
     public static func commands(_ pane: PaneID, chunk: Int = historyChunkSize) -> [Command] {
         HistoryCapture.commands(pane, loaded: 0, chunk: chunk) + [
-            Command("capture-pane", "-p", "-e", "-J", "-t", pane),
-            Command("capture-pane", "-p", "-e", "-J", "-a", "-q", "-t", pane),
+            Command("capture-pane", "-p", "-e", "-J", "-G", "-t", pane),
+            Command("capture-pane", "-p", "-e", "-J", "-G", "-a", "-q", "-t", pane),
             Command("capture-pane", "-p", "-P", "-C", "-t", pane),
             Command("display-message", "-p", "-t", pane, state),
             Command("capture-pane", "-p", "-F", "-L", "-T", "-N", "-t", pane),

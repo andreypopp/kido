@@ -734,7 +734,9 @@ private class AlertEscape: NSView {
         view.autoresizingMask = [.width, .height]
         do {
             let connection = try Connection(
-                server: server, view: view, launch: ssh.map { $0.launch([server.tmux] + Launch.attach(server.tmux, socket: server.socket).arguments, control: endpoint) }, host: host, drain: drain, ownerID: ownerID,
+                server: server, view: view, transport: ssh.map { ssh in { launch in
+                    ssh.launch([launch.path] + launch.arguments, control: launch.path == server.tmux ? endpoint : nil)
+                } }, host: host, drain: drain, ownerID: ownerID,
                 onChange: { [weak self] model in guard let self, accepts(generation) else { return }; changed(view, model) },
                 onDiagnostic: { [weak self] message in guard let self, accepts(generation) else { return }; banner.show(message, "", button: nil) },
                 onClose: { [weak self] exit, cause in guard let self, alive, self.generation == generation else { return }; closed(view, exit, cause: cause) })

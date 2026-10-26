@@ -25,6 +25,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 }
 
 @MainActor class VisualTestCase: XCTestCase {
+    var serverEnvironment: [String: String] = [:]
     func surfaceText(_ pane: PaneView, in tag: ghostty_point_tag_e = GHOSTTY_POINT_SCREEN) -> String {
         var text = ghostty_text_s()
         let selection = ghostty_selection_s(top_left: ghostty_point_s(tag: tag, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
@@ -94,6 +95,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     override func setUp() async throws {
+        serverEnvironment = tools.environment
+        if let tmux = ProcessInfo.processInfo.environment["KIDO_VISUAL_TMUX"] { serverEnvironment["KIDO_TMUX"] = tmux }
         WindowOwner.clipboardConsent.reset()
         NSApp.appearance = NSAppearance(named: .aqua)
     }
@@ -101,8 +104,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
 @MainActor final class VisualTests: VisualTestCase {
     private let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-    private var tmux = ""
-    private var socket = ""
+    var tmux = ""
+    var socket = ""
     var directory: URL!
     var window: NSWindow!
     private static var processRuntime: GhosttyRuntime?
@@ -111,7 +114,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     var connection: Connection!
     private var model = SessionModel()
     private var tabSnapshot: Snapshot?
-    private var rpc: Feed?
+    var rpc: Feed?
 
     func testBackgroundLaunchIsNotActivatable() {
         XCTAssertTrue(background)
@@ -154,7 +157,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         directory = URL(fileURLWithPath: "/tmp/kido-visual-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         socket = directory.appendingPathComponent("socket").path
-        tmux = try XCTUnwrap(ProcessInfo.processInfo.environment["KIDO_VISUAL_TMUX"])
+        tmux = try XCTUnwrap(serverEnvironment["KIDO_TMUX"])
         addTeardownBlock { @MainActor [self] in
             if FileManager.default.fileExists(atPath: socket) {
                 _ = try? await Child.run(tmux, ["-S", socket, "kill-server"])
@@ -176,6 +179,55 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         runtime = nil
         PaneView.renderOffscreen = false
         NSApp.appearance = nil
+    }
+
+    func rawPane(dark: Bool = false) async throws -> PaneView {
+        try await start(dark: dark)
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        try await rawPane(pane)
+        try await restore(pane)
+        return pane
+    }
+
+    func rawPane(_ pane: PaneView) async throws {
+        let ready = directory.appendingPathComponent("raw-ready-\(pane.pane.number)")
+        guard !FileManager.default.fileExists(atPath: ready.path) else { return }
+        try await command(["respawn-pane", "-k", "-t", pane.pane.description,
+                           "stty raw -echo; touch " + SSH.quote(ready.path) + "; exec /bin/cat"])
+        try await wait("raw pane ready") { FileManager.default.fileExists(atPath: ready.path) }
+    }
+
+    func restore(_ pane: PaneView) async throws {
+        let restored = expectation(description: "pane restored")
+        pane.markContentDirty()
+        connection.sync(pane.pane) { restored.fulfill() }
+        await fulfillment(of: [restored], timeout: 20)
+        try await settle()
+        window.makeFirstResponder(pane)
+    }
+
+    func emit(_ pane: PaneView, _ text: String, until marker: String? = nil) async throws {
+        let title = "raw-output-" + UUID().uuidString
+        let fixture = directory.appendingPathComponent("raw-output")
+        try (text + "\u{1b}]2;" + title + "\u{7}").write(to: fixture, atomically: true, encoding: .utf8)
+        try await command(["load-buffer", "-b", "raw-fixture", fixture.path])
+        try await command(["paste-buffer", "-S", "-r", "-d", "-b", "raw-fixture", "-t", pane.pane.description])
+        let deadline = Date().addingTimeInterval(5)
+        while try await command(["display-message", "-p", "-t", pane.pane.description, "#{pane_title}"]) != title {
+            guard Date() < deadline else { return XCTFail("raw output did not reach tmux") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        if let marker {
+            let captured = try await command(["capture-pane", "-p", "-t", pane.pane.description])
+            XCTAssertTrue(captured.contains(marker))
+        }
+        try await roundTrip()
+    }
+
+    func roundTrip() async throws {
+        let done = expectation(description: "tmux reply")
+        connection.send([Command("display-message", "-p", "")]) { _ in done.fulfill() }
+        await fulfillment(of: [done], timeout: 2)
     }
 
     @discardableResult func command(_ args: [String]) async throws -> String {
@@ -224,7 +276,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         return owner
     }
 
-    @discardableResult func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000, configFile: String? = nil) async throws -> String {
+    @discardableResult func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000, configFile: String? = nil, initialOutput: String? = nil) async throws -> String {
         NSApp.appearance = NSAppearance(named: .aqua)
         try loadRuntime(configFile: configFile)
         window = OwnerWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
@@ -238,13 +290,23 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.contentView = session
         let tmuxConfig = directory.appendingPathComponent("tmux.conf")
         try "set -g history-limit \(history)\nset -s get-clipboard request\n".write(to: tmuxConfig, atomically: true, encoding: .utf8)
-        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         XCTAssertEqual(endpoint.status, 0, endpoint.err)
         _ = try await command(["source-file", tmuxConfig.path])
         _ = try await command(["rename-session", "-t", "$0", "visual"])
         _ = try await command(["rename-window", "-t", "@0", "zsh"])
         _ = try await command(["respawn-pane", "-k", "-t", "%0", "exec /bin/cat"])
         _ = try await command(["clear-history", "-t", "%0"])
+        if let initialOutput {
+            let fixture = directory.appendingPathComponent("initial-output")
+            try initialOutput.write(to: fixture, atomically: true, encoding: .utf8)
+            _ = try await command(["respawn-pane", "-k", "-t", "%0", "/bin/cat " + SSH.quote(fixture.path) + "; exec /bin/sleep 600"])
+            let deadline = Date().addingTimeInterval(5)
+            while try await !command(["capture-pane", "-p", "-t", "%0"]).contains("IMAGE-READY") {
+                guard Date() < deadline else { XCTFail("initial image fixture did not print"); break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
         let clipboardMode = try await command(["show", "-sv", "get-clipboard"])
         connection = try Connection(server: Server(tmux: tmux, socket: socket, stamp: ServerStamp("visual"), expected: ServerStamp("visual")), view: session,
                                     onChange: { [weak self] model in
@@ -1684,7 +1746,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await start()
         let pane = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "exec /bin/cat"])
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
         defer { owner.close() }
         owner.start()
@@ -1711,7 +1773,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let other = try await command(["new-session", "-d", "-P", "-F", "#{session_id}", "-s", "other", "exec /bin/cat"])
         let current = try await command(["new-window", "-P", "-F", "#{window_id}", "-t", other, "exec /bin/cat"])
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
         defer { owner.close() }
         owner.start()
@@ -1735,7 +1797,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             try JSONSerialization.data(withJSONObject: object).write(to: fixture)
             let script = try fakeFeedScript(scratch, """
             import json, sys
-            print(json.dumps(dict(hello=dict(protocol="6.0"))))
+            print(json.dumps(dict(hello=dict(protocol="6.1"))))
             snapshot = json.load(open("\(fixture.path)"))
             print(json.dumps(snapshot))
             held = None
@@ -1870,8 +1932,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func testServerCompatibilityFields() throws {
         for (stamp, version, compatible) in [
-            ("null", "6.0", false), ("\"other\"", "6.0", false),
-            ("\"0123456789ab\"", "6.0", true), ("\"0123456789ab\"", "5.0", false)
+            ("null", "6.1", false), ("\"other\"", "6.1", false),
+            ("\"0123456789ab\"", "6.0", false), ("\"0123456789ab\"", "6.1", true), ("\"0123456789ab\"", "5.0", false)
         ] {
             let json = "{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"\(version)\",\"server\":\(stamp),\"expected\":\"0123456789ab\"}"
             let server = try JSONDecoder().decode(Server.self, from: Data(json.utf8))
@@ -1882,7 +1944,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     private func localMismatchOwners(_ count: Int, stamp: String = "2.1") async throws -> [WindowOwner] {
         directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "Native mismatch tests require a private KIDO_APP_SERVER")
         socket = directory.appendingPathComponent("socket").path
-        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         XCTAssertEqual(output.status, 0, output.err)
         _ = try await command(["set-environment", "-g", "KIDO_SERVER", stamp])
         var owners: [WindowOwner] = []
@@ -1900,7 +1962,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testReorderAgainstPrivateServer() async throws {
         directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "requires a private KIDO_APP_SERVER")
         socket = directory.appendingPathComponent("socket").path
-        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         XCTAssertEqual(output.status, 0, output.err)
         _ = try await command(["rename-session", "-t", "$0", "alpha"])
         let alphaText = try await command(["display-message", "-p", "-t", "alpha:", "#{session_id}"])
@@ -1974,7 +2036,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     func testPaletteJumpToAPaneHiddenByZoomShowsAndFocusesIt() async throws {
-        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         XCTAssertEqual(output.status, 0, output.err)
         let server = try JSONDecoder().decode(Server.self, from: Data(output.out.utf8))
         let first = try await command(["display-message", "-p", "-t", "$0:", "#{pane_id}"])
@@ -2098,7 +2160,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testReorderHoldYieldsToEverythingElse() async throws {
         directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "requires a private KIDO_APP_SERVER")
         socket = directory.appendingPathComponent("socket").path
-        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         XCTAssertEqual(output.status, 0, output.err)
         _ = try await command(["rename-session", "-t", "$0", "alpha"])
         let alphaText = try await command(["display-message", "-p", "-t", "alpha:", "#{session_id}"])
@@ -2281,18 +2343,18 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 XCTAssertEqual(alert.buttons[0].hasDestructiveAction, host == .local)
                 if host == .local { XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[1].cell) }
             }
-            for version in ["3.1", "6.1"] {
+            for version in ["3.1", "6.2"] {
                 let alert = WindowOwner.mismatchAlert(host: host, server: ServerStamp("same"), binary: try XCTUnwrap(RPCVersion(version)))
-                XCTAssertTrue(alert.informativeText.contains("needs kido RPC 6.0"))
+                XCTAssertTrue(alert.informativeText.contains("needs kido RPC 6.1"))
                 XCTAssertTrue(alert.informativeText.contains("speaks \(version)"))
                 if host != .local && version == "3.1" { XCTAssertTrue(alert.informativeText.contains("Upgrade kido there")) }
-                if version == "6.1" { XCTAssertTrue(alert.informativeText.contains("Update Kido.app, then reconnect.")) }
+                if version == "6.2" { XCTAssertTrue(alert.informativeText.contains("Update Kido.app, then reconnect.")) }
             }
         }
     }
 
     func testPrivateServerRPCAndProtocolSheet() async throws {
-        let endpointOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        let endpointOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         XCTAssertEqual(endpointOutput.status, 0, endpointOutput.err)
         let endpoint = try JSONDecoder().decode(Server.self, from: Data(endpointOutput.out.utf8))
         XCTAssertEqual(endpoint.stamp, endpoint.expected)
@@ -2356,7 +2418,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         defer { unstamped.stop() }
         try await wait("unstamped RPC refusal") { refused }
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        let unstampedOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        let unstampedOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(unstampedOutput.out.utf8)), kido: tools.kido)
         defer { owner.close() }
         owner.start()
@@ -2385,7 +2447,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertNil(owner.testConnection)
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
-        print("RPC E2E hello 6.0; unstamped server refused; local mismatch alert prepared off-screen")
+        print("RPC E2E hello 6.1; unstamped server refused; local mismatch alert prepared off-screen")
     }
 
     func testSidebarHeadersKeysAndAccessibility() throws {

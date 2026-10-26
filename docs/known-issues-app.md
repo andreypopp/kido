@@ -390,6 +390,46 @@ screen that the batch started from, because a SCROLLBAR action can update
 the alternate flag on main first (`testEntryKeepsAScreenSwitchParsedBeforeTheReply`).
 The cost is one short mutex hold per batch. Status: accepted cost.
 
+## Passthrough images are not shown
+
+An image that a program wraps in tmux passthrough (`DCS tmux;`) reaches
+Ghostty still wrapped, and tmux does not store it. Kido.app neither
+shows nor restores it. Programs that query (tmux answers `a=q`) and
+send direct APC work. Status: by design.
+
+## Image pixels share the ssh connection with text
+
+On a remote window the image client has its own ssh channel, but all
+channels share the master's one TCP connection. On a lossy network a
+lost packet delays text and images together. A second master only for
+image fetches would separate them. Status: accepted until a
+lossy-network test shows a problem.
+
+## Image cell size is read once by the program
+
+pi and most image programs read the cell size (`CSI 16t`) once at
+start. After a font-size change in Kido.app, a running program keeps
+the old size for its `c=`/`r=` until it restarts. A tty client with a
+larger cell that attaches later changes tmux's window value in the same
+way. Status: accepted.
+
+## Image fetch rows can drift
+
+The app names `-K` rows from its own stream position. Output that tmux
+has already processed but the app has not yet received shifts them by
+a few rows, and a paged fetch can skip images that moved before its
+continuation. The one-screen margin and the retry for rows with held
+placements cover the usual cases. An image upload that is still in
+flight at a restore is replayed by `-G` only up to 8 MiB; a larger one
+shows after the next restore. Status: accepted.
+
+## A held image has no size before its pixels
+
+A placement that a program sends live, without `c=`/`r=`, for an
+image that is still held after a restore has no cell size until the
+pixels arrive, so its drawn size can differ from tmux's for that
+time. Restored placements always carry `c=`/`r=`. Status: accepted.
+
 ## Restore latency
 
 The reported Release baseline is roughly 20ms for 10k lines, dominated by
