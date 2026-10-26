@@ -212,9 +212,9 @@ let%test_module "Tests" =
         [ Some "0123456789ab"; Some "other"; None ];
       [%expect
         {|
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"6.1","server":"0123456789ab","expected":"0123456789ab"}
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"6.1","server":"other","expected":"0123456789ab"}
-        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"6.1","server":null,"expected":"0123456789ab"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"6.2","server":"0123456789ab","expected":"0123456789ab"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"6.2","server":"other","expected":"0123456789ab"}
+        {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"6.2","server":null,"expected":"0123456789ab"}
         |}]
 
     let%expect_test

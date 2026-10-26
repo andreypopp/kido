@@ -106,6 +106,11 @@ func TestImageCapture(t *testing.T) {
 					if !ok {
 						t.Fatal("image control client closed")
 					}
+					if strings.HasPrefix(line, "%output ") {
+						reply.WriteString(line)
+						reply.WriteByte('\n')
+						continue
+					}
 					if strings.HasPrefix(line, "%begin ") {
 						begun = true
 						continue
@@ -413,5 +418,89 @@ func TestImageCapture(t *testing.T) {
 	}
 	if got, failed := images("display-message -p done"); failed || got != "done\n" {
 		t.Fatalf("image client after failed continuation: %v %q", failed, got)
+	}
+	helper := filepath.Join(h.dir, "image-shm")
+	compiler := exec.Command("cc", "-x", "c", "-o", helper, "-")
+	compiler.Stdin = strings.NewReader(`#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+ int fd, input;
+ struct stat sb;
+ void *p;
+ if (argc < 3) return 1;
+ if (!strcmp(argv[1], "unlink")) { shm_unlink(argv[2]); return 0; }
+ if (!strcmp(argv[1], "create")) {
+  input = open(argv[3], O_RDONLY);
+  if (input < 0 || fstat(input, &sb)) return 2;
+  fd = shm_open(argv[2], O_CREAT|O_EXCL|O_RDWR, 0600);
+  if (fd < 0 || ftruncate(fd, sb.st_size)) return 3;
+  p = mmap(NULL, sb.st_size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+  if (p == MAP_FAILED || read(input, p, sb.st_size) != sb.st_size) return 4;
+  close(input);
+ } else {
+  fd = shm_open(argv[2], O_RDONLY, 0);
+  if (fd < 0 || fstat(fd, &sb)) return 5;
+  if (sb.st_size < 64) return 7;
+  sb.st_size = 64;
+  p = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
+  if (p == MAP_FAILED || fwrite(p, 1, sb.st_size, stdout) != sb.st_size) return 6;
+ }
+ munmap(p, sb.st_size);
+ close(fd);
+ return 0;
+}
+`)
+	if output, err := compiler.CombinedOutput(); err != nil {
+		t.Fatalf("build shm helper: %v: %s", err, output)
+	}
+	runHelper := func(args ...string) []byte {
+		output, err := exec.Command(helper, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("shm helper %q: %v: %s", args, err, output)
+		}
+		return output
+	}
+
+	shmData := bytes.Repeat([]byte{255, 0, 0, 255}, 16)
+	payload := filepath.Join(h.dir, "image-pixels")
+	if err := os.WriteFile(payload, shmData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("/kido-test-%d", os.Getpid())
+	runHelper("create", name, payload)
+	t.Cleanup(func() { exec.Command(helper, "unlink", name).Run() })
+	local := attach("image-shm,ignore-size")
+	emit(append([]byte("\033c"), kitty("a=T,i=71,f=32,s=4,v=4,t=s,q=2,C=1", []byte(name))...))
+	raw, failed := local("display-message -p barrier")
+	if failed || !strings.Contains(raw, "t=s,q=2") || strings.Contains(raw, "t=d") {
+		t.Fatalf("flagged pane output: %v %q", failed, raw)
+	}
+	direct := capture("-K")
+	match := regexp.MustCompile(`;([^;]*)\x1b\\`).FindStringSubmatch(direct)
+	if len(match) != 2 || !strings.Contains(direct, "m=0") {
+		t.Fatalf("direct capture: %q", direct)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(match[1])
+	if err != nil || !bytes.Equal(decoded, shmData) {
+		t.Fatalf("direct bytes: %x, %v", decoded, err)
+	}
+	restored, failed := local("capture-pane -K -p -t " + pane)
+	match = regexp.MustCompile(`\x1b_Ga=t,i=71,f=32,s=4,v=4,t=s,S=64,q=2;([^;]*)\x1b\\`).FindStringSubmatch(restored)
+	if failed || len(match) != 2 || strings.Contains(restored, "m=") {
+		t.Fatalf("shm capture: %v %q", failed, restored)
+	}
+	decoded, err = base64.StdEncoding.DecodeString(match[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredName := string(decoded)
+	defer exec.Command(helper, "unlink", restoredName).Run()
+	if got := runHelper("read", restoredName); !bytes.Equal(got, shmData) {
+		t.Fatalf("restored shm bytes: %x, want %x", got, shmData)
 	}
 }

@@ -606,7 +606,7 @@ func TestRpcFailures(t *testing.T) {
 		if msg := stderr.String(); !strings.HasPrefix(msg, "kido rpc: "+c.want) {
 			t.Errorf("%q: stderr %q, want kido rpc: %s...", c.args, msg, c.want)
 		}
-		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"6.1\"}}\n" {
+		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"6.2\"}}\n" {
 			t.Errorf("%q: unexpected stdout %q", c.args, out)
 		}
 	}

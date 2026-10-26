@@ -1,10 +1,10 @@
-# kido rpc protocol 6.1
+# kido rpc protocol 6.2
 
-fork revision: 6dc4195e568b5ecc67f25d40d768e1f9eaa28dfb
+fork revision: 179ad1e5ba61caa3fc42e50161c7d337af20295a
 
 Protocol.value is the binary's protocol constant. It versions this RPC
 surface and the tmux commands this contract names, such as the "Pane
-images" capture flags; the server's compatibility is a separate stamp
+images" capture flags and the image-shm control flag; the server's compatibility is a separate stamp
 (below), so a protocol bump never requires restarting the tmux server. New fields and new enum values are MINOR changes:
 the app ignores unknown fields and decodes unknown enum values as unknown.
 Removing or renaming a field, changing its meaning, or changing a reply
@@ -30,10 +30,10 @@ first on PATH), all with fixed placeholder paths. Install paths do not change
 it; a fork bump, an installer edit, an edit to kido-tmux.conf, to the generated configuration or
 to the launch environment does.
 
-The first stdout line is {"hello":{"protocol":"6.1"}} when KIDO_SERVER equals
+The first stdout line is {"hello":{"protocol":"6.2"}} when KIDO_SERVER equals
 the binary's stamp. A differing or absent stamp produces
-{"hello":{"protocol":"6.1","server":"other","expected":"0123456789ab"}} or
-{"hello":{"protocol":"6.1","server":null,"expected":"0123456789ab"}}, followed
+{"hello":{"protocol":"6.2","server":"other","expected":"0123456789ab"}} or
+{"hello":{"protocol":"6.2","server":null,"expected":"0123456789ab"}}, followed
 by {"error":"server stamp does not match binary stamp"}, then exit 2.
 expected is the binary's stamp; the server needs a restart.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
@@ -505,7 +505,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"6.1","server":"0123456789ab","expected":"0123456789ab"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"6.2","server":"0123456789ab","expected":"0123456789ab"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_SERVER stamp, or null when absent, even when it matches expected.
 expected is the binary's own stamp, always a string. The app compares server
@@ -634,14 +634,75 @@ An empty reply means no images. If output scrolls between calls, the
 range can select other images; images that moved before the token's
 image are not sent in that sequence.
 
-`-K` depends only on the target pane, not on the calling client. It
-gives the same output to a one-shot client and to a control client.
+`-K` depends on the target pane, not on the calling client's session or
+size. It gives the same output to a one-shot client and to a control
+client, except that a client with `image-shm` gets shared-memory lines
+(below).
 In a control-mode reply, the capture lines are not octal-escaped (only
 `%output` is), so the ESC bytes arrive raw, as for `-e` captures.
 Kido.app runs it on a second control client per connection, attached
 with `-f no-output,ignore-size`. Such a client takes no part in pane
 focus. Without images in the build, `-G` gives the capture without
 placements and `-K` writes nothing.
+
+Shared memory (`t=s`). tmux accepts kitty `t=s` for `a=t`, `a=T` and
+`a=q`. The payload is the base64 name of a POSIX shared-memory object:
+1 to 31 bytes (the macOS limit), an optional leading `/`, no other `/`,
+no NUL. Other names answer `EINVAL`. tmux opens the object read-only. It
+checks the byte range (`S=`, `O=`, else `s*v*bytes` for raw formats, else
+the object's size) against the object's size and `image-size-limit`
+before it reads. A missing object or a bad range answers `EBADF`.
+`a=q,t=s` answers `OK`. Raw RGBA (`f=32` without `o=z`) on macOS stays a
+read-only mapping of the object; tmux never writes it. Other formats,
+and every format on Linux, are copied. tmux stores the image in the same
+read of pane output, before any control client gets that output. Thus a
+`-K` that the client sends after the `%output` line selects the image by
+its id. If the program has replaced the image with the same `i=`, `-K`
+returns the newer image.
+
+Every control client gets the raw `t=s` APC in `%output`, as it gets
+every APC. A control client attached or refreshed with `-f image-shm`
+(Kido.app on the local machine) opens the name itself, then unlinks it,
+as the kitty spec requires. tmux does not unlink the name while such a
+client receives the pane. When the block of `%output` that carries the
+APC has left tmux's queue of every such client (taken from the queue to
+be written, dropped by `%pause`, or the client went away), tmux unlinks
+the name after 1 s. The guard does not wait for the write to drain to
+the socket. It stops leaks from a client that never opens the name. If no such client receives the pane, tmux unlinks
+the name at once. When the server exits, it unlinks every name that it
+still guards. A client can stop after tmux has taken the block and open
+the name more than 1 s later. It then gets `ENOENT`, and it recovers
+the image with `-K` on its image client.
+
+A control client without `image-shm` must not act on `t=s` in
+`%output`: on a remote machine the name can denote another object, and
+tmux unlinks it at once. tmux gives such a client the image as `t=d`.
+Directly after the APC's terminator, before the bytes that follow it in
+the same read, it queues the image's stored bytes as `%output` chunks:
+
+    ESC _G a=A,t=d,i=I,p=P,f=F[,o=z][,s=S][,v=V],x=X,y=Y,w=W,h=H,X=XO,Y=YO,c=C,r=R,C=N,z=Z,S=SIZE,q=2,m=1;BASE64 ESC \
+    ESC _G m=1,q=2;BASE64 ESC \
+    ...
+    ESC _G m=0,q=2;BASE64 ESC \
+
+`A` is the original action (`t` or `T`) and the other keys are the
+original command's, so the client ends with the same image and the same
+placement. The chunk size is as for `-K`. `a=q` gets no chunks. No
+control client may act on `t=f` or `t=t` in `%output`: tmux answers
+them `ENOTSUP` and the path can denote another file on the client's
+machine.
+
+`-K` from a client with `image-shm` writes each selected image as one
+line, without `m=`:
+
+    ESC _G a=t,i=I,f=F[,o=z][,s=S][,v=V],t=s,S=SIZE,q=2;BASE64NAME ESC \
+
+The name is a new object, `/kt<pid>-<n>`, mode 0600, that holds the
+image's stored bytes (as received; `o=z` and PNG stay encoded). The
+client opens and unlinks it. tmux unlinks it 10 s after it creates it if
+the client has not. The 8 MiB budget and `more TOKEN` apply as for chunks.
+Without `image-shm`, `-K` writes chunks as above. `-G`'s replay of an
+incomplete upload always uses chunks.
 
 DA1 (`CSI c`) from a pane answers `CSI ?1;2;4c` (sixel) only while at
 least one attached terminal client has the `sixel` terminal feature;

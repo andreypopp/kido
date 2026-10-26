@@ -410,6 +410,9 @@ Kido's commit order on master is:
   commit. It is a candidate for upstream.
 - DA1 advertises sixel only while an attached terminal client has
   the `sixel` feature, in one commit. It is a candidate for upstream.
+- Kitty shared-memory images (`t=s`) and the `image-shm` control
+  flag, in one commit. It depends on the image capture commits
+  (`-K`), so it drops with them.
 
 Before you force-push `fork`, push its previous head as a dated branch
 `fork-YYYY-MM-DD`. This keeps older submodule pins reachable.
@@ -444,7 +447,8 @@ When you test such edits, delete the cache directory first.
 
 `#{image_support}` is 1 in kido's build.
 share/rpc/contract.md, "Pane images", specifies `capture-pane -G`,
-`-K`, `-k` and `refresh-client -C WxHxXPxYP`.
+`-K`, `-k`, `refresh-client -C WxHxXPxYP`, kitty `t=s` and the
+`image-shm` control flag.
 The server image limits stay at upstream's defaults.
 `kido-tmux.conf` sets none of them.
 
