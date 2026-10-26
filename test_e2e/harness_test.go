@@ -140,15 +140,11 @@ func setup(m *testing.M) (int, error) {
 		}
 	}
 	if bin := os.Getenv("KIDO_TMUX"); bin != "" {
-		cmd := exec.Command("git", "ls-files", "-s", "third_party/tmux")
+		cmd := exec.Command("bash", "scripts/install-tmux-fork.sh", "--print-build-key")
 		cmd.Dir = ".."
-		pin, err := cmd.Output()
+		expectedKey, err := cmd.Output()
 		if err != nil {
-			return 0, fmt.Errorf("read pinned tmux revision: %w", err)
-		}
-		fields := strings.Fields(string(pin))
-		if len(fields) != 4 {
-			return 0, fmt.Errorf("invalid tmux gitlink: %q", pin)
+			return 0, fmt.Errorf("read tmux build key: %w", err)
 		}
 		path, err := exec.LookPath(bin)
 		if err != nil {
@@ -158,13 +154,13 @@ func setup(m *testing.M) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		stamp := filepath.Join(filepath.Dir(path), "..", "share", "kido-tmux", "REVISION")
-		revision, err := os.ReadFile(stamp)
+		stamp := filepath.Join(filepath.Dir(path), "..", "share", "kido-tmux", "BUILD_KEY")
+		buildKey, err := os.ReadFile(stamp)
 		if err != nil {
-			return 0, fmt.Errorf("tmux fork REVISION missing at %s: rebuild with scripts/install-tmux-fork.sh: %w", stamp, err)
+			return 0, fmt.Errorf("tmux fork BUILD_KEY missing at %s: rebuild with scripts/install-tmux-fork.sh: %w", stamp, err)
 		}
-		if strings.TrimSpace(string(revision)) != fields[1] {
-			return 0, fmt.Errorf("tmux fork revision %q differs from pin %s; rebuild with scripts/install-tmux-fork.sh", strings.TrimSpace(string(revision)), fields[1])
+		if strings.TrimSpace(string(buildKey)) != strings.TrimSpace(string(expectedKey)) {
+			return 0, fmt.Errorf("tmux fork build key %q differs from %s; rebuild with scripts/install-tmux-fork.sh", strings.TrimSpace(string(buildKey)), strings.TrimSpace(string(expectedKey)))
 		}
 	}
 	var err error

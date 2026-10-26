@@ -53,7 +53,8 @@ server restart.
 The server uses a separate stamp, `Launch.stamp`. It contains the first
 12 hex digits of an MD5 over:
 
-- The fork revision pinned by the build.
+- The fork build key: the pinned fork revision and the digest of
+  `scripts/install-tmux-fork.sh`.
 - The `server.conf` that `Launch.server_conf` writes, without
   `kido-tmux-unstamped.conf`.
 - The environment that `Launch.server_env` gives the server.
@@ -64,7 +65,7 @@ the stamp. Nobody changes it manually.
 
 These changes change the stamp:
 
-- A fork revision change.
+- A fork revision change or an installer change.
 - A change to `kido-tmux.conf`.
 - A change to the generated template.
 - A change to the environment values that the launcher sets.
@@ -72,8 +73,9 @@ These changes change the stamp:
 The installation paths do not change the stamp: the kido executable,
 its bin directory, and the user's `kido.conf`.
 
-The build gets the revision from
-`scripts/install-tmux-fork.sh --print-revision`, which reads the gitlink.
+The build gets the key from
+`scripts/install-tmux-fork.sh --print-build-key`, which reads the gitlink
+and hashes the installer with `git hash-object`.
 Thus, it needs the git checkout that the fork build already needs.
 At creation, the launcher writes the stamp to the tmux server's global
 `KIDO_SERVER` before the configuration runs. RPC checks that stamp before

@@ -155,6 +155,13 @@ supplies no OSC title or progress. OSC 0/2 sets the pane title to
 "π - <name> - <cwd>". The caption omits a local pi message that
 duplicates its session name.
 
+The kido-pi shim sets `PI_IMAGE_PROTOCOL=kitty` unless it is set: pi
+turns images off under tmux, and kido's tmux stores kitty images, sends
+them raw to control clients, and draws a fallback for terminals without
+kitty output. A user value, also an empty one, is kept;
+`PI_IMAGE_PROTOCOL=none` turns images off. A plain `pi` gets no value
+from kido.
+
 The extension uses only these interfaces of kido:
 
 - The run commands `run`, `run-child`, `runs --json --all [--parent P]`,
@@ -1443,7 +1450,8 @@ those names resolve to these shims:
 - `ssh` runs `kido ssh "$@"`. For the same reason,
   `Bin_dir.look_path_past` finds the real ssh after the bin directory.
 - `kido-pi` runs the real pi with `--extension
-  share/kido/pi/kido-pi.ts` in front of every argument. It writes
+  share/kido/pi/kido-pi.ts` in front of every argument and
+  `PI_IMAGE_PROTOCOL=kitty` when that variable is unset. It writes
   nothing to `~/.pi/agent/extensions`. A bare `pi` is the user's own
   pi, without the harness.
 
@@ -1503,11 +1511,12 @@ Nothing reads those files from disk.
 into `PREFIX`, default `~/.local`. This tree contains `bin/kido`,
 `bin/kido-tmux` and `share/kido` together.
 
-The fork comes from the revision-keyed cache under `build/tmux-fork/`,
-shared with e2e. Repeated installs reuse it.
+The fork comes from the cache under `build/tmux-fork/`, keyed by the
+fork build key (the pinned revision and the installer's digest), shared
+with e2e. Repeated installs reuse it.
 `make install PREFIX=<prefix> SELF_CONTAINED=1` passes `--self-contained`
 to the fork installer and uses a separate
-`<revision>-self-contained` cache entry. The e2e harness copies the same
+`<key>-self-contained` cache entry. The e2e harness copies the same
 tree into `<tmp>`.
 
 ## Knobs

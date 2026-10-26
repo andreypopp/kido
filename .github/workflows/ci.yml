@@ -44,30 +44,26 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libevent-dev libncurses-dev libutf8proc-dev \
+          sudo apt-get install -y libevent-dev libncurses-dev libutf8proc-dev libpng-dev zlib1g-dev \
             bison autoconf automake pkg-config openssh-server zsh
           # Debian's global compinit can block test shells with an insecure-directories prompt.
           echo 'skip_global_compinit=1' | sudo tee -a /etc/zsh/zshenv
 
       - name: Install tmux dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install libevent ncurses utf8proc automake autoconf pkg-config
+        run: brew install libevent ncurses utf8proc libpng automake autoconf pkg-config
 
-      - name: Resolve tmux fork revision
+      - name: Resolve tmux fork build key
         id: tmux-fork
         run: |
-          sha=$(./scripts/install-tmux-fork.sh --print-revision)
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-
-      # restore/save rather than actions/cache: a failing job must still
-      # save the build it just paid for. The key is still the submodule's
-      # pinned revision, read from the gitlink rather than a tap lookup.
+          build_key=$(./scripts/install-tmux-fork.sh --print-build-key)
+          echo "build-key=$build_key" >> "$GITHUB_OUTPUT"
       - name: Restore tmux fork build
         id: tmux-cache
         uses: actions/cache/restore@v4
         with:
           path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}-${{ hashFiles('scripts/install-tmux-fork.sh') }}
+          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.build-key }}
 
       - name: Build and install tmux fork
         if: steps.tmux-cache.outputs.cache-hit != 'true'
@@ -78,7 +74,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}-${{ hashFiles('scripts/install-tmux-fork.sh') }}
+          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.build-key }}
 
       - name: Check tmux fork
         run: $HOME/tmux-side/bin/kido-tmux -V

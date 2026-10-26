@@ -5,4 +5,6 @@
 . "${0%/*}/../shim.sh"
 set -- --extension "$kido_share/pi/kido-pi.ts" "$@"
 kido_real pi
+PI_IMAGE_PROTOCOL=${PI_IMAGE_PROTOCOL-kitty}
+export PI_IMAGE_PROTOCOL
 exec "$kido_found" "$@"

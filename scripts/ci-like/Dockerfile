@@ -1,4 +1,4 @@
-# Built and run by scripts/ci-like.sh, which supplies TMUX_REVISION only to
+# Built and run by scripts/ci-like.sh, which supplies TMUX_BUILD_KEY only to
 # tag the image (a submodule bump then gets a new tag, not a stale reused
 # one); the build itself reads the fork's source from the submodule below.
 # Go is only the e2e suite's. Trixie for its OCaml: dune 3.24.2 needs
@@ -8,17 +8,17 @@ FROM golang:1.27-trixie
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		bash zsh git curl ca-certificates gnupg \
 		build-essential bison autoconf automake pkg-config \
-		libevent-dev libncurses-dev libutf8proc-dev \
+		libevent-dev libncurses-dev libutf8proc-dev libpng-dev zlib1g-dev \
 		unzip bubblewrap rsync \
 	&& curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 	&& apt-get install -y --no-install-recommends nodejs \
 	&& rm -rf /var/lib/apt/lists/*
 
 # The build context is the kido repo root (see ci-like.sh).
-ARG TMUX_REVISION
+ARG TMUX_BUILD_KEY
 COPY scripts/install-tmux-fork.sh /tmp/build-tmux/scripts/install-tmux-fork.sh
 COPY third_party/tmux /tmp/build-tmux/third_party/tmux
-RUN test -n "$TMUX_REVISION" \
+RUN test -n "$TMUX_BUILD_KEY" \
 	&& /tmp/build-tmux/scripts/install-tmux-fork.sh /usr/local/tmux-side \
 	&& /usr/local/tmux-side/bin/kido-tmux -V \
 	&& rm -rf /tmp/build-tmux

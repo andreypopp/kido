@@ -148,7 +148,8 @@ It does not use opam.
 - autoconf
 - automake
 - pkg-config
-- The headers and libraries for libevent, ncurses and utf8proc.
+- The headers and libraries for libevent, ncurses, utf8proc, libpng
+  (1.6 or newer) and zlib.
 
 `make e2e` needs Go. The TypeScript tests need Node 24 or newer.
 

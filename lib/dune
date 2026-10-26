@@ -59,6 +59,6 @@
     (cat %{project_root}/share/tmux/kido-tmux.conf)
     (echo "|kido}\n\nlet tmux_unstamped = {kido|")
     (cat %{project_root}/share/tmux/kido-tmux-unstamped.conf)
-    (echo "|kido}\n\nlet fork_revision = {kido|")
-    (run bash %{project_root}/scripts/install-tmux-fork.sh --print-revision)
+    (echo "|kido}\n\nlet fork_build_key = {kido|")
+    (run bash %{project_root}/scripts/install-tmux-fork.sh --print-build-key)
     (echo "|kido}\n")))))

@@ -7,17 +7,19 @@
 # Usage: scripts/install-tmux-fork.sh <prefix>
 #        scripts/install-tmux-fork.sh --self-contained <prefix>
 #        scripts/install-tmux-fork.sh --print-revision
+#        scripts/install-tmux-fork.sh --print-build-key
 #
 # --print-revision prints the pinned commit via `git ls-files -s third_party/tmux`:
 # the gitlink resolves without the submodule checked out. It is asked from the
 # script's own directory with a top-relative pathspec, so the copy dune builds
 # from inside _build answers too.
 #
-# Requires: git (for --print-revision only), sh, tar, a C toolchain,
+# Requires: git, sh, tar, a C toolchain,
 # bison, autoconf, automake, pkg-config, and the libevent/ncurses/utf8proc
-# development headers.
+# development headers, libpng >= 1.6 and zlib.
 # --self-contained is macOS-only: it uses Homebrew's static libevent archive,
-# builds pinned utf8proc source (curl, shasum), and links system ncurses.
+# builds pinned utf8proc source (curl, shasum), uses static libpng, and links
+# system ncurses and zlib.
 # Its binary needs no Homebrew installation; dependency licenses are installed
 # in <prefix>/share/kido-tmux.
 
@@ -27,6 +29,11 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 submodule="$repo_root/third_party/tmux"
 
+if [ "${1:-}" = "--print-build-key" ]; then
+	printf '%s-%s\n' "$("$0" --print-revision)" "$(git hash-object "$script_dir/install-tmux-fork.sh")"
+	exit 0
+fi
+
 if [ "${1:-}" = "--print-revision" ]; then
 	revision=$(git -C "$script_dir" ls-files -s ':(top)third_party/tmux' | awk '{print $2}')
 	[ -n "$revision" ] || { echo "install-tmux-fork.sh: no third_party/tmux gitlink" >&2; exit 1; }
@@ -34,6 +41,7 @@ if [ "${1:-}" = "--print-revision" ]; then
 	exit 0
 fi
 
+build_key=${TMUX_BUILD_KEY:-$("$0" --print-build-key)}
 self_contained=false
 if [ "${1:-}" = "--self-contained" ]; then
 	self_contained=true
@@ -74,6 +82,11 @@ if $self_contained; then
 	PKG_CONFIG=false
 	LIBEVENT_CORE_CFLAGS="-I$libevent/include"
 	LIBEVENT_CORE_LIBS="$libevent/lib/libevent_core.a"
+	libpng=$(brew --prefix libpng)
+	LIBPNG_CFLAGS="-I$libpng/include"
+	LIBPNG_LIBS="$libpng/lib/libpng16.a"
+	LIBZ_LIBS=-lz
+	export LIBPNG_CFLAGS LIBPNG_LIBS LIBZ_LIBS
 	LIBTINFOW_CFLAGS=" "
 	LIBTINFOW_LIBS="$(xcrun --show-sdk-path)/usr/lib/libncurses.tbd"
 	LIBUTF8PROC_CFLAGS="-I$utf8proc"
@@ -83,7 +96,7 @@ if $self_contained; then
 elif [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
 	# Homebrew's ncurses is keg-only, so pkg-config falls back to the OS's
 	# ancient one unless pointed at the brewed one explicitly.
-	PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+	PKG_CONFIG_PATH="$(brew --prefix libpng)/lib/pkgconfig:$(brew --prefix ncurses)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 	export PKG_CONFIG_PATH
 fi
 
@@ -92,8 +105,8 @@ sh autogen.sh
 
 # The fork's configure insists on an explicit jemalloc choice on Darwin;
 # passing --disable-jemalloc is a no-op on Linux, so it is unconditional.
-echo "==> configure --prefix=$prefix --enable-utf8proc --disable-jemalloc" >&2
-./configure --prefix="$prefix" --enable-utf8proc --disable-jemalloc
+echo "==> configure --prefix=$prefix --enable-utf8proc --enable-images --disable-jemalloc" >&2
+./configure --prefix="$prefix" --enable-utf8proc --enable-images --disable-jemalloc
 
 njobs=$(command -v nproc >/dev/null 2>&1 && nproc || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
@@ -118,8 +131,9 @@ if [ -e "$prefix/share/man/man1/tmux.1" ]; then
 fi
 
 mkdir -p "$prefix/share/kido-tmux"
-git -C "$submodule" rev-parse HEAD > "$prefix/share/kido-tmux/REVISION"
+printf '%s\n' "$build_key" > "$prefix/share/kido-tmux/BUILD_KEY"
 if $self_contained; then
+	cp "$libpng/LICENSE" "$prefix/share/kido-tmux/libpng-LICENSE"
 	cp "$libevent/LICENSE" "$prefix/share/kido-tmux/libevent-LICENSE"
 	cp "$utf8proc/LICENSE.md" "$prefix/share/kido-tmux/utf8proc-LICENSE.md"
 fi

@@ -206,7 +206,7 @@ If tmux cannot accept the unset, an old value can remain.
 A client reads the value with `show-options -p -v -t %P @kido_ssh_args`.
 It must use the same foreground-ssh check as for `@kido_ssh`. This option
 is not part of RPC. It does not change the RPC protocol or server stamp:
-the fork revision, server configuration and launcher environment stay
+the fork build key, server configuration and launcher environment stay
 the same.
 
 ## Pane kinds

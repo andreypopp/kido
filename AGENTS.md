@@ -328,13 +328,13 @@ Promotion substitutes the build id through dune-build-info.
 
 The stamp digests these inputs:
 
-- The pinned fork revision, read at build time through
-  `install-tmux-fork.sh --print-revision`.
+- The fork build key, read at build time through
+  `install-tmux-fork.sh --print-build-key`.
 - The `server.conf` template, without
   `share/tmux/kido-tmux-unstamped.conf`.
 - The launcher's environment changes.
 
-Thus, a fork or `kido-tmux.conf` change restarts the server.
+Thus, a fork, installer or `kido-tmux.conf` change restarts the server.
 An RPC protocol bump does not.
 A change to `kido-tmux-unstamped.conf` does not. Only new servers get it.
 docs/design.md, "The launcher", tells which file gets a setting.
@@ -402,6 +402,12 @@ Kido's commit order on master is:
   A reply that matches no query takes upstream's key path.
   The commit message gives the routing rules and their limits.
 - OSC 7501 program status, in one commit.
+- Kitty image capture for control clients, in three commits:
+  keep the received image bytes; `capture-pane -G` and `-K`;
+  `refresh-client -C WxHxXPxYP`. They depend only on upstream's
+  image code. When upstream adds an equivalent, they drop from the top.
+- A `no-output` control client does not hold pane focus, in one
+  commit. It is a candidate for upstream.
 
 Before you force-push `fork`, push its previous head as a dated branch
 `fork-YYYY-MM-DD`. This keeps older submodule pins reachable.
@@ -415,13 +421,29 @@ Only when the wire format changes, bump the protocol version.
 The server stamp follows the pin automatically.
 
 `scripts/install-tmux-fork.sh <prefix>` builds the fork into
-`<prefix>/bin/kido-tmux`.
+`<prefix>/bin/kido-tmux`, with `--enable-images`.
+This needs libpng 1.6 or newer and zlib, found through pkg-config.
 `--self-contained <prefix>` is macOS-only.
-It links Homebrew's static libevent, source-built utf8proc and system
-ncurses. Thus, the binary needs no Homebrew at runtime
-(licenses in `share/kido-tmux`).
+It links Homebrew's static libevent and libpng, source-built utf8proc,
+and system ncurses and zlib. Thus, the binary needs no Homebrew at
+runtime (licenses in `share/kido-tmux`).
 `--print-revision` reads the pin with `git ls-files -s`.
 It works if the submodule is not checked out or the pin is only staged.
+
+`--print-build-key` prints `<revision>-<git hash-object of the
+installer>`. One rule keys every fork build on it: the cache directory
+`build/tmux-fork/<key>/`, CI's cache, `scripts/ci-like.sh`'s image tag,
+the installed `share/kido-tmux/BUILD_KEY` that the e2e harness checks,
+and the server stamp. Thus, a change of configure flags or libraries in
+the installer rebuilds the fork and restarts the server.
+The cache key does not see uncommitted edits in `third_party/tmux`.
+When you test such edits, delete the cache directory first.
+
+`#{image_support}` is 1 in kido's build.
+share/rpc/contract.md, "Pane images", specifies `capture-pane -G`,
+`-K`, `-k` and `refresh-client -C WxHxXPxYP`.
+The server image limits stay at upstream's defaults.
+`kido-tmux.conf` sets none of them.
 
 `Tmux.binary` finds kido's tmux in this order:
 
@@ -680,9 +702,10 @@ It uses `Sys.executable_name` only as its last resort:
 - `bin/kido-tmux`.
 - `share/kido`, including the shim that routes bare `kido` to that prefix.
 
-It reuses the e2e revision-keyed fork cache under `build/tmux-fork/`.
+It reuses the e2e fork cache under `build/tmux-fork/`, keyed by the
+build key.
 `SELF_CONTAINED=1` passes `--self-contained` to the fork installer.
-It uses a separate `<revision>-self-contained` cache entry.
+It uses a separate `<key>-self-contained` cache entry.
 
 kido uses the dune **3.24.2** binary distribution for builds.
 Package management is on (`dune-workspace`).
@@ -744,7 +767,7 @@ Before a release, validation uses `make verify` in full.
 
 CI runs on Ubuntu and macOS on every push and PR.
 `scripts/main-watch.sh` watches main and reports each observed head's CI.
-CI builds the fork at the pinned revision, cached by SHA.
+CI builds the fork at the pinned revision, cached by OS and fork build key.
 `/gh-watch` starts `scripts/main-watch.sh` through streamed `async_bash`.
 While you work, use `dune test` for repeated checks.
 After you read an expect diff, `dune promote` accepts it.
@@ -788,15 +811,15 @@ precisely: parsers, formats and ordering. Layout above specifies their
 location.
 Do not write a unit test that execs the binary.
 
-`make e2e` builds the fork into `build/tmux-fork/<revision>/`.
-It rebuilds only on a submodule bump.
+`make e2e` builds the fork into `build/tmux-fork/<key>/`.
+It rebuilds only on a submodule bump or an installer change.
 It runs with `KIDO_E2E_REQUIRED=1`.
 `KIDO_TMUX` in the environment names another fork and skips the build.
 CI uses this to use its cached fork.
 A bare `go test ./test_e2e/` with neither skips.
 
-The harness requires the fork's `share/kido-tmux/REVISION` to match
-the gitlink pin. If it is missing or differs, rebuild with
+The harness requires the fork's `share/kido-tmux/BUILD_KEY` to match
+`install-tmux-fork.sh --print-build-key`. If it is missing or differs, rebuild with
 `scripts/install-tmux-fork.sh`.
 The TypeScript suite requires Node 24 or newer.
 Without it, the suite skips.

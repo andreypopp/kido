@@ -74,8 +74,8 @@ let server_env ~bin_dir env =
   | Some dir -> Shell.with_env env [ ("PATH", Bin_dir.path_with_first dir (lookup env "PATH")) ]
   | None -> env
 
-let digest ~revision ~conf ~env =
-  String.concat "\n" (String.trim revision :: conf :: Array.to_list env)
+let digest ~build_key ~conf ~env =
+  String.concat "\n" (String.trim build_key :: conf :: Array.to_list env)
   |> Digest.string |> Digest.to_hex |> String.take 12
 
 let placeholder_env = [| "KIDO_STATE_DIR=/state"; "PATH=/bin" |]
@@ -83,7 +83,7 @@ let placeholder_env = [| "KIDO_STATE_DIR=/state"; "PATH=/bin" |]
 let stamp =
   match server_conf ~exe:"/kido" ~user_conf:"/kido.conf" ~unstamped:"" with
   | Ok conf ->
-      digest ~revision:Embedded.fork_revision ~conf
+      digest ~build_key:Embedded.fork_build_key ~conf
         ~env:(server_env ~bin_dir:(Some "/kido-bin") placeholder_env)
   | Error e -> invalid_arg e
 
@@ -219,8 +219,8 @@ let%test_module "Tests" =
 
     let%expect_test
         "the stamp excludes the unstamped defaults and follows the template, env and fork" =
-      let installed ?(revision = Embedded.fork_revision) ?(extra = "") ?(include_unstamped = false)
-          exe user_conf bin_dir =
+      let installed ?(build_key = Embedded.fork_build_key) ?(extra = "")
+          ?(include_unstamped = false) exe user_conf bin_dir =
         let conf =
           Result.get_exn (server_conf ~exe ~user_conf ~unstamped:Embedded.tmux_unstamped)
         in
@@ -232,7 +232,7 @@ let%test_module "Tests" =
           else String.replace ~sub:Embedded.tmux_unstamped ~by:"" conf
         in
         let env = server_env ~bin_dir:(Some bin_dir) placeholder_env in
-        digest ~revision ~conf:(conf ^ extra)
+        digest ~build_key ~conf:(conf ^ extra)
           ~env:(Array.map (String.replace ~sub:bin_dir ~by:"/kido-bin") env)
       in
       let homebrew = installed "/opt/homebrew/bin/kido" "/Users/a/.config/kido/kido.conf" in
@@ -243,11 +243,11 @@ let%test_module "Tests" =
           installed "/home/b/.local/bin/kido" "/home/b/xdg/kido/kido.conf" "/home/b/share/kido/bin";
           installed ~extra:"set -g mouse off\n" "/opt/homebrew/bin/kido"
             "/Users/a/.config/kido/kido.conf" "/opt/homebrew/share/kido/bin";
-          installed ~revision:(String.make 40 '0') "/opt/homebrew/bin/kido"
+          installed ~build_key:(String.make 40 '0') "/opt/homebrew/bin/kido"
             "/Users/a/.config/kido/kido.conf" "/opt/homebrew/share/kido/bin";
           installed ~include_unstamped:true "/opt/homebrew/bin/kido"
             "/Users/a/.config/kido/kido.conf" "/opt/homebrew/share/kido/bin";
-          digest ~revision:Embedded.fork_revision
+          digest ~build_key:Embedded.fork_build_key
             ~conf:(Result.get_exn (server_conf ~exe:"/kido" ~user_conf:"/kido.conf" ~unstamped:""))
             ~env:placeholder_env;
         ];

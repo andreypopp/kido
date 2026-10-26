@@ -9,7 +9,7 @@ SELF_CONTAINED ?= 0
 INSTALL_FORK = $(TMUX_FORK)$(if $(filter 1,$(SELF_CONTAINED)),-self-contained,)
 
 define ensure-fork
-@if ! test -x $(1)/bin/kido-tmux || ! test -f $(1)/share/kido-tmux/REVISION; then ./scripts/install-tmux-fork.sh $(2) $(CURDIR)/$(1); fi
+@if ! test -x $(1)/bin/kido-tmux || ! test -f $(1)/share/kido-tmux/BUILD_KEY; then ./scripts/install-tmux-fork.sh $(2) $(CURDIR)/$(1); fi
 endef
 
 # dune lays out bin/kido and share/kido (the root dune file) as symlinks
@@ -33,11 +33,8 @@ test:
 	dune test --force
 	./scripts/test-ts.sh
 
-# the fork the e2e suite runs kido inside, built into the checkout under
-# a directory named by the pinned revision, so a submodule bump builds a
-# new one and a second run of the same pin builds nothing
-TMUX_FORK_REV := $(shell ./scripts/install-tmux-fork.sh --print-revision)
-TMUX_FORK := build/tmux-fork/$(TMUX_FORK_REV)
+TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
+TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
 .PHONY: pinned-fork verify flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts

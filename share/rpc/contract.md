@@ -1,6 +1,6 @@
 # kido rpc protocol 6.0
 
-fork revision: 5febaa93317770ab394df70378d12a3265d98733
+fork revision: b94d36a8207fe205bd5084e0e8b109becabfd469
 
 Protocol.value is the binary's protocol constant. It versions this RPC
 surface only; the server's compatibility is a separate stamp (below), so a
@@ -21,11 +21,12 @@ control client. Socket paths fit the platform's sun_path including NUL.
 Run outside tmux with no KIDO_AGENT_* environment.
 
 The launcher stamps the server's global KIDO_SERVER environment at creation
-with the binary's server stamp: 12 hex digits digesting the pinned fork
-revision, the server.conf the launcher generates and the environment changes
+with the binary's server stamp: 12 hex digits digesting the fork build key
+(the pinned fork revision and the digest of scripts/install-tmux-fork.sh),
+the server.conf the launcher generates and the environment changes
 it makes to the server's (dropping KIDO_STATE_DIR, putting its bin directory
 first on PATH), all with fixed placeholder paths. Install paths do not change
-it; a fork bump, an edit to kido-tmux.conf, to the generated configuration or
+it; a fork bump, an installer edit, an edit to kido-tmux.conf, to the generated configuration or
 to the launch environment does.
 
 The first stdout line is {"hello":{"protocol":"6.0"}} when KIDO_SERVER equals
@@ -542,6 +543,100 @@ set through OSC 0/2, verbatim; unnamed tracked sessions
 are addressable only by session id or id prefix. Generic programs retain
 their OSC record title. A pi message duplicating the session name is
 dropped from `msg`.
+
+## Pane images
+
+kido's tmux is built with images (`#{image_support}` is 1). A pane stores
+the kitty images that its program sends; control clients also get the
+program's APC unchanged in `%output`. Three fork extensions let a client
+restore them. They are not RPC requests; the app sends them as tmux
+commands. The server image limits stay at upstream's defaults.
+
+Ids. Only an image that the pane's kitty map holds is written: one that
+was sent with `i=`. `i=` is the client id of the image, `p=` the client
+placement id, omitted when there is none. A later live `a=p i=N` or
+`a=d d=I i=N` thus names the same image in tmux and in the app.
+
+Selection. `-G` and `-K` use one rule: a placement counts when any of its
+grid spans lies on a row of the range (`-S`/`-E`; `-a` reads the saved
+main grid). A placement keeps its spans when it scrolls into history and
+through a width resize.
+
+`capture-pane -p -G` writes each such placement into the text output at the
+cell where it starts, on its first row inside the range:
+
+    ESC _G a=p,i=I[,p=P],q=2,C=1,c=COLS,r=ROWS,x=X,y=Y,w=W,h=H ESC \
+
+`C=1` keeps the cursor, so the row text after it is unchanged; spaces
+before a placement are kept. `x=,y=,w=,h=` are the source rectangle of
+the rows in range. A placement whose top is above the range has a crop
+that starts at the first row in range. `-G` applies with `-e`, `-J` and
+every range. Without placements its output equals the same capture
+without `-G`. When the capture includes the live screen and the pane's
+program is in the middle of a chunked upload (`m=1`), `-G` writes after
+the last row that upload's bytes so far, as `a=T` or `a=t` chunks with
+its keys and `m=1`, if they fit in 8 MiB. The live chunks that follow
+the reply continue it. The replay carries the same decoded bytes; its
+chunk boundaries can differ from the sender's, and its last chunk can
+end in base64 padding.
+
+`capture-pane -p -K [-k TOKEN]` writes no text. For each selected image, in
+order of first appearance in the range, it writes the received bytes,
+verbatim, as a kitty transmit, one chunk per line:
+
+    ESC _G a=t,i=I,f=F[,o=z][,s=S][,v=V],q=2,m=1;BASE64 ESC \
+    ESC _G m=1,q=2;BASE64 ESC \
+    ...
+    ESC _G m=0,q=2;BASE64 ESC \
+
+The first chunk has the keys and the last has `m=0`; an image of one
+chunk has `m=0` on the first. `o=z` appears only for zlib data, `s=` and
+`v=` only when the sender sent them. Every chunk except an image's last
+carries 3072 bytes, 4096 base64 characters without padding. `a=t` only
+transmits; the placements come from `-G`. An image appears once in a
+reply sequence.
+
+A `-K` reply is at most 8 MiB, far below the control client's 64 MiB
+limit for buffered replies. When more remains, the reply's last line is
+
+    more TOKEN
+
+The client repeats the same range with `-k TOKEN` until a reply has no
+`more` line. When the cut is inside an image, the reply's last chunk has
+`m=1` and the next reply starts with continuation chunks of that image.
+When the cut is at an image boundary, the reply's last image is complete
+(`m=0`) and the next reply starts with the first chunk of the next image.
+Then come the images after it. The
+token is opaque. When the token's image is no longer in the range's
+images (deleted, replaced, or no longer placed there), or the token is
+invalid, the command fails with `image changed` and writes nothing; the
+client drops the partial transmission and starts again without `-k`.
+An empty reply means no images. If output scrolls between calls, the
+range can select other images; images that moved before the token's
+image are not sent in that sequence.
+
+`-K` depends only on the target pane, not on the calling client. It
+gives the same output to a one-shot client and to a control client.
+In a control-mode reply, the capture lines are not octal-escaped (only
+`%output` is), so the ESC bytes arrive raw, as for `-e` captures.
+Kido.app runs it on a second control client per connection, attached
+with `-f no-output,ignore-size`. Such a client takes no part in pane
+focus. Without images in the build, `-G` gives the capture without
+placements and `-K` writes nothing.
+
+`refresh-client -C WxHxXPxYP` also sets the control client's cell size in
+pixels. The plain `-C WxH` resets the pixels to 0. tmux gives the window
+the cell size of the clients that take part in its sizing (not
+`ignore-size` clients; with `window-size latest`, only the latest
+client): the first one that is strictly larger on both axes than the
+one before wins. With no pixel size from any of them, tmux uses 16x32.
+A manual window size keeps the window's current pixels. The window's
+value is used for kitty placement and the CSI 14t/16t replies. Thus the
+image client, which is `ignore-size`, does not set it; the main control
+client sends the pixel form. pi reads the cell size once at start, so
+the client sends it before it starts panes and after every size or font
+change. A pi that runs during a font change keeps its old cell size
+until it restarts.
 
 share/dune installs only its named source trees and files; this contract
 and testdata are checkout-only review artifacts.

@@ -53,7 +53,7 @@ func TestSidebarDoesNotLeakTerminalReplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "\033[?1004;") || !strings.Contains(string(got), "\033[?1;2c") {
+	if !strings.Contains(string(got), "\033[?1004;") || !strings.Contains(string(got), "\033[?1;2;4c") {
 		t.Fatalf("querying inactive pane did not receive DECRPM and DA: %q", got)
 	}
 }
@@ -70,7 +70,8 @@ func TestTerminalProbeReceivesFragmentedReplies(t *testing.T) {
 	replies := filepath.Join(h.dir, "side-replies")
 	queries := filepath.Join(h.dir, "side-queries")
 	script := filepath.Join(h.dir, "side-probe")
-	payload := "\033Ptmux;\033\033_Gi=31338,a=q;AAAA\033\033\\\033\\"
+	// The outer tmux parses this APC; q=2 suppresses its native reply.
+	payload := "\033Ptmux;\033\033_Gi=31338,a=q,q=2;AAAA\033\033\\\033\\"
 	body := fmt.Sprintf("stty raw -echo; : > %s; IFS= read -r -t 4 -n 1 trigger; printf '%%s' %s; end=$((SECONDS+4)); reply=; endseq=$(printf '\\033\\\\'); while [ $SECONDS -lt $end ] && IFS= read -r -t 2 -n 1 byte; do reply=$reply$byte; case $reply in *\"$endseq\") break;; esac; done; printf '%%s' \"$reply\" > %s; : > %s",
 		shellQuote(ready), shellQuote(payload), shellQuote(replies), shellQuote(done))
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
@@ -82,7 +83,7 @@ func TestTerminalProbeReceivesFragmentedReplies(t *testing.T) {
 	h.in("refresh-client", "-t", h.client, "-f", "side-status-focus")
 	h.sendLiteral("x")
 	h.in("refresh-client", "-t", h.client, "-f", "!side-status-focus")
-	h.waitFileContains(queries, "\033_Gi=31338,a=q;")
+	h.waitFileContains(queries, "\033_Gi=31338,a=q,q=2;")
 	h.sendLiteral("\033")
 	h.sendLiteral("_Gi=31338;O")
 	h.sendLiteral("K\033\\")
