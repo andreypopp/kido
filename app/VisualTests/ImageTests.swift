@@ -14,6 +14,51 @@ extension VisualTests {
         "under image\r\nrow two\r\nrow three\r\nrow four\r\nIMAGE-READY"
     }
 
+    private func imageDelivery(_ action: Connection.VisualOutput) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            connection.visualOutput(action) { continuation.resume() }
+        }
+    }
+
+    private func imageSharedMemory(_ action: String, _ name: String, rgba: [UInt8] = [255, 0, 0, 255]) async throws -> Int32 {
+        let script = """
+        import ctypes, json, mmap, os, sys, time
+        libc = ctypes.CDLL(None)
+        libc.shm_open.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        if sys.argv[1] in ('create', 'create-batch'):
+            images = json.loads(sys.argv[2]) if sys.argv[1] == 'create-batch' else {sys.argv[2]: list(map(int, sys.argv[3].split(',')))}
+            for key, rgba in images.items():
+                fd = libc.shm_open(key.encode(), os.O_CREAT | os.O_EXCL | os.O_RDWR, ctypes.c_uint(0o600))
+                if fd < 0: sys.exit(1)
+                os.ftruncate(fd, 16)
+                with mmap.mmap(fd, 16) as pixels: pixels[:] = bytes(rgba) * 4
+                os.close(fd)
+            sys.exit(0)
+        name = sys.argv[2].encode()
+        if sys.argv[1] == 'remove':
+            libc.shm_unlink(name)
+            sys.exit(0)
+        if sys.argv[1] in ('wait-gone', 'wait-gone-batch'):
+            names = json.loads(sys.argv[2]) if sys.argv[1] == 'wait-gone-batch' else [sys.argv[2]]
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                remaining = []
+                for key in names:
+                    fd = libc.shm_open(key.encode(), os.O_RDONLY)
+                    if fd >= 0:
+                        os.close(fd)
+                        remaining.append(key)
+                if not remaining: sys.exit(0)
+                names = remaining
+                time.sleep(0.01)
+            sys.exit(2)
+        fd = libc.shm_open(name, os.O_RDONLY)
+        if fd < 0: sys.exit(1)
+        os.close(fd)
+        """
+        return try await Child.run("/usr/bin/env", ["python3", "-c", script, action, name, rgba.map(String.init).joined(separator: ",")]).0
+    }
+
     private func imageOutput(_ bytes: String, pane target: PaneView? = nil) async throws {
         let pane = try XCTUnwrap(target ?? terminal?.panes.first)
         try await rawPane(pane)
@@ -23,9 +68,7 @@ extension VisualTests {
     private func imagePixels(_ pane: PaneView, start: Int64 = 0, end: Int64? = nil) async throws {
         let end = end ?? Int64(ghostty_surface_size(pane.surface).rows)
         try await wait("image pixels filled") {
-            var rows = [Bool](repeating: false, count: max(0, Int(end - start)))
-            rows.withUnsafeMutableBufferPointer { ghostty_surface_pending_image_rows(pane.surface, start, false, $0.baseAddress, $0.count) }
-            return !rows.contains(true)
+            !pane.pendingImageRows(start: start, count: max(0, Int(end - start)), alternate: false).contains(true)
         }
     }
 
@@ -374,6 +417,166 @@ extension VisualTests {
                        "P must retain final focus-out AFTER the image client follows to B")
     }
 
+    func testImagesSharedMemoryRecovery() async throws {
+        let pane = try await rawPane()
+        let objects = (0..<5).map { _ in "/kr-" + UUID().uuidString.prefix(16) }
+        let colors: [[UInt8]] = [[255, 0, 0, 255], [0, 255, 255, 255], [255, 0, 255, 255], [0, 255, 0, 255], [0, 0, 255, 255]]
+        let batch = try JSONSerialization.data(withJSONObject: Dictionary(uniqueKeysWithValues: zip(objects, colors)))
+        let created = try await imageSharedMemory("create-batch", String(decoding: batch, as: UTF8.self))
+        XCTAssertEqual(created, 0)
+        for name in objects { addTeardownBlock { @MainActor in _ = try? await self.imageSharedMemory("remove", name) } }
+        func resetScene() async throws {
+            try await imageOutput("\u{1b}_Ga=d,d=A,q=2\u{1b}\\" + imageClear + "\u{1b}[3J")
+            try await restore(pane)
+            try await imagePixels(pane)
+        }
+        try await resetScene()
+        try await settle()
+        let queries = pane.visualPendingQueries.withLock { $0 }
+        try await imageOutput("TEXT ONLY")
+        XCTAssertEqual(pane.visualPendingQueries.withLock { $0 }, queries, "plain output must not query image rows")
+        for implicit in [false, true] {
+            try await resetScene()
+            await imageDelivery(.hold)
+            let first = objects[implicit ? 2 : 0]
+            let firstPayload = Data(first.utf8).base64EncodedString()
+            let id = implicit ? "" : "i=7,"
+            let action = implicit ? "T" : "t"
+            let placement = implicit ? "" : "\u{1b}_Ga=p,i=7,c=8,r=4,C=1,q=2\u{1b}\\"
+            try await imageOutput("\u{1b}_Ga=d,d=A,q=2\u{1b}\\" + imageClear + "\u{1b}_Ga=\(action),\(id)t=s,f=32,s=4,v=1,c=8,r=4,C=1,q=2;\(firstPayload)\u{1b}\\" + placement + "\u{1b}[6;1HSHARED MEMORY RECOVERED")
+            var originals = [first]
+            if !implicit {
+                let latest = objects[1]
+                originals.append(latest)
+                let payload = Data(latest.utf8).base64EncodedString()
+                try await imageOutput("\u{1b}[1;1H\u{1b}_Ga=T,i=7,t=s,f=32,s=4,v=1,c=8,r=4,C=1,q=2;\(payload)\u{1b}\\")
+            }
+            let names = try JSONSerialization.data(withJSONObject: originals)
+            let gone = try await imageSharedMemory("wait-gone-batch", String(decoding: names, as: UTF8.self))
+            XCTAssertEqual(gone, 0)
+            let clients = try await command(["list-clients", "-F", "#{client_flags}"])
+            XCTAssertEqual(clients.split(separator: "\n").filter { $0.contains("image-shm") }.count, 2)
+            let captures = connection.visualImageCaptures, restores = connection.visualRestores
+            let finished = connection.visualPixels.withLock { $0.finished }
+            await imageDelivery(.release)
+            try await wait("one shared memory fetch completed") { self.connection.visualPixels.withLock { $0.finished } > finished }
+            try await imagePixels(pane)
+            try await snapshot(implicit ? "implicit-repaired" : "explicit-latest-recovered")
+            XCTAssertEqual(connection.visualImageCaptures - captures, 1,
+                           "implicit=\(implicit), requests=\(connection.visualPixels.withLock { Array($0.requests.dropFirst(captures)) })")
+            XCTAssertEqual(connection.visualRestores - restores, implicit ? 1 : 0)
+        }
+        try await resetScene()
+        await imageDelivery(.hold)
+        let deferredName = objects[3]
+        let deferredPayload = Data(deferredName.utf8).base64EncodedString()
+        try await imageOutput("\u{1b}_Ga=d,d=A,q=2\u{1b}\\" + imageClear + "\u{1b}_Ga=t,i=8,t=s,f=32,s=4,v=1,q=2;\(deferredPayload)\u{1b}\\\u{1b}[6;1HPLACED AFTER THE FAILED TRANSMIT")
+        let deferredGone = try await imageSharedMemory("wait-gone", deferredName)
+        XCTAssertEqual(deferredGone, 0)
+        let deferredCaptures = connection.visualImageCaptures
+        await imageDelivery(.release)
+        try await roundTrip()
+        XCTAssertEqual(connection.visualImageCaptures, deferredCaptures)
+        let deferredFinished = connection.visualPixels.withLock { $0.finished }
+        try await imageOutput("\u{1b}[1;1H\u{1b}_Ga=p,i=8,c=8,r=4,C=1,q=2\u{1b}\\")
+        try await wait("deferred placement filled") { self.connection.visualPixels.withLock { $0.finished } > deferredFinished }
+        try await imagePixels(pane)
+        try await snapshot("placed-later")
+        XCTAssertEqual(connection.visualImageCaptures - deferredCaptures, 1)
+
+        try await resetScene()
+        await imageDelivery(.hold)
+        let pausedName = objects[4]
+        let pausedPayload = Data(pausedName.utf8).base64EncodedString()
+        try await imageOutput("\u{1b}_Ga=d,d=A,q=2\u{1b}\\" + imageClear + "\u{1b}_Ga=T,i=9,t=s,f=32,s=4,v=1,c=8,r=4,C=1,q=2;\(pausedPayload)\u{1b}\\\u{1b}[6;1HPAUSE REPAIR")
+        let gone = try await imageSharedMemory("wait-gone", pausedName)
+        XCTAssertEqual(gone, 0)
+        let pauses = connection.visualPauses
+        let paused = expectation(description: "control client paused")
+        connection.send([Command("refresh-client", "-A", pane.pane.description + ":pause")]) { _ in paused.fulfill() }
+        await fulfillment(of: [paused], timeout: 5)
+        try await wait("pause notification") { self.connection.visualPauses > pauses }
+        let repaired = expectation(description: "pause repair captured")
+        connection.sync(pane.pane) { repaired.fulfill() }
+        await fulfillment(of: [repaired], timeout: 20)
+        await imageDelivery(.drop)
+        try await imagePixels(pane)
+        try await snapshot("pause-repaired")
+    }
+
+    func testImagesAnimationRestore() async throws {
+        try await start()
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        let testName = #function
+        func capture(_ name: String, color: Int) async throws {
+            let presented = expectation(description: "animation frame presented")
+            pane.visualFrame { status in
+                XCTAssertEqual(status, GHOSTTY_RENDER_PRESENTATION_PRESENTED)
+                presented.fulfill()
+            }
+            await fulfillment(of: [presented], timeout: 10)
+            try await wait("\(name) installed pixels", within: 3) { frameColor() == color }
+            let image = try XCTUnwrap(pane.renderedImage)
+            let view = NSImageView(frame: pane.bounds)
+            view.wantsLayer = true
+            view.layer?.backgroundColor = pane.paperColor.cgColor
+            view.image = NSImage(cgImage: image, size: pane.bounds.size)
+            try await snapshot(name, testName: testName, view: view)
+        }
+        try await imageOutput(imageClear + "\u{1b}_Ga=T,i=61,f=32,s=1,v=1,c=8,r=4,C=1,q=2;/wAA/w==\u{1b}\\" +
+                              "\u{1b}_Ga=f,i=61,f=32,s=1,v=1,X=1,z=200,q=2;AP8A/w==\u{1b}\\" +
+                              "\u{1b}_Ga=f,i=61,f=32,s=1,v=1,X=1,z=200,q=2;AAD//w==\u{1b}\\" +
+                              "\u{1b}_Ga=a,i=61,r=1,z=200,c=2,s=1,v=1,q=2\u{1b}\\\u{1b}[6;1HANIMATION: FRAME TWO")
+        try await capture("parked-live", color: 1)
+        try await restore(pane)
+        try await imagePixels(pane)
+        try await capture("parked-restored", color: 1)
+        try await imageOutput("\u{1b}_Ga=f,i=61,r=1,f=32,s=1,v=1,X=1,q=2;AP///w==\u{1b}\\" +
+                              "\u{1b}_Ga=a,i=61,c=1,s=1,q=2\u{1b}\\\u{1b}[6;1H\u{1b}[2KEDITED FRAME ONE")
+        try await capture("edited-live", color: 0)
+        try await restore(pane)
+        try await imagePixels(pane)
+        try await capture("edited-restored", color: 0)
+        func frameColor() -> Int? {
+            pane.visualFrame { _ in }
+            guard let pixels = pane.renderedPixels else { return nil }
+            return pixels.withUnsafeBytes { bytes in
+                let data = bytes.bindMemory(to: UInt8.self)
+                for offset in stride(from: 0, to: data.count - 3, by: 4) {
+                    if data[offset] > 240 && data[offset + 1] > 240 && data[offset + 2] < 15 { return 0 }
+                    if data[offset + 1] > 240 && data[offset] < 15 && data[offset + 2] < 15 { return 1 }
+                    if data[offset] > 240 && data[offset + 1] < 15 && data[offset + 2] < 15 { return 2 }
+                }
+                return nil
+            }
+        }
+        try await imageOutput("\u{1b}_Ga=a,i=61,c=2,s=3,v=1,q=2\u{1b}\\")
+        try await wait("live animation reaches green", within: 3) { frameColor() == 1 }
+        try await wait("live animation advances to blue", within: 3) { frameColor() == 2 }
+        try await restore(pane)
+        try await imagePixels(pane)
+        try await wait("restored animation reaches green", within: 3) { frameColor() == 1 }
+        try await wait("restored animation advances to blue", within: 3) { frameColor() == 2 }
+        try await imageOutput("\u{1b}_Ga=a,i=61,c=3,s=1,q=2\u{1b}\\\u{1b}[6;1H\u{1b}[2KANIMATION ADVANCED AFTER RESTORE")
+        try await capture("advanced-after-restore", color: 2)
+    }
+
+    func testImagesMediaPolicy() async throws {
+        try await start()
+        let localName = "/kido-" + UUID().uuidString.prefix(16)
+        addTeardownBlock { @MainActor in _ = try? await self.imageSharedMemory("remove", localName) }
+        let localStatus = try await imageSharedMemory("create", localName)
+        XCTAssertEqual(localStatus, 0)
+        let localPayload = Data(localName.utf8).base64EncodedString()
+        try await imageOutput(imageClear + "\u{1b}_Ga=T,i=7,t=s,f=32,s=1,v=1,c=8,r=4,C=1,q=2;\(localPayload)\u{1b}\\\u{1b}[6;1HLOCAL SHARED MEMORY")
+        try await imagePixels(try XCTUnwrap(terminal?.panes.first))
+        try await snapshot("local-shm")
+        let localExists = try await imageSharedMemory("exists", localName)
+        XCTAssertEqual(localExists, 1)
+
+
+    }
+
     func testImagesRemote() async throws {
         try await start(initialOutput: imageFixture)
         let ssh = try SSH("localhost")
@@ -385,5 +588,27 @@ extension VisualTests {
         try await snapshot("remote-restore")
         try await imageOutput(imageFixture)
         try await snapshot("remote-live")
+        let remoteName = "/kido-" + UUID().uuidString.prefix(16)
+        addTeardownBlock { @MainActor in _ = try? await self.imageSharedMemory("remove", remoteName) }
+        let file = directory.appendingPathComponent("local-image.rgba")
+        try Data([0, 255, 0, 255]).write(to: file)
+        let filePayload = Data(file.path.utf8).base64EncodedString()
+        let remotePayload = Data(remoteName.utf8).base64EncodedString()
+        let captures = connection.visualImageCaptures
+        await imageDelivery(.hold)
+        try await imageOutput("\u{1b}_Ga=d,d=A,q=2\u{1b}\\" + imageClear + "\u{1b}_Ga=T,i=12,t=s,f=32,s=1,v=1,c=8,r=4,C=1,q=2;\(remotePayload)\u{1b}\\" +
+                              "\u{1b}[1;12H\u{1b}_Ga=T,i=13,t=f,f=32,s=1,v=1,c=8,r=4,C=1,q=2;\(filePayload)\u{1b}\\" +
+                              "\u{1b}[1;24H\u{1b}_Ga=T,i=14,t=t,f=32,s=1,v=1,c=8,r=4,C=1,q=2;\(filePayload)\u{1b}\\" +
+                              "\u{1b}[1;36H\u{1b}_Ga=T,i=15,f=32,s=1,v=1,c=8,r=4,C=1,q=2;AAD//w==\u{1b}\\\u{1b}[6;1HREMOTE: ONLY DIRECT BLUE IMAGE")
+        let remoteStatus = try await imageSharedMemory("create", remoteName)
+        XCTAssertEqual(remoteStatus, 0)
+        await imageDelivery(.release)
+        try await imagePixels(try XCTUnwrap(terminal?.panes.first))
+        try await snapshot("remote-local-media-blocked")
+        let remoteExists = try await imageSharedMemory("exists", remoteName)
+        XCTAssertEqual(remoteExists, 0, "remote media must not unlink the local object")
+        XCTAssertEqual(connection.visualImageCaptures, captures,
+                       "blocked media must not fetch: \(connection.visualPixels.withLock { Array($0.requests.dropFirst(captures)) })")
+        XCTAssertEqual(try Data(contentsOf: file), Data([0, 255, 0, 255]))
     }
 }

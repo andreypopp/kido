@@ -36,7 +36,7 @@ func liveSessions() async throws {
     #expect(try server(tmux, socket, "new-window", "-t", "a", "-n", "two words", "/bin/sh") == 0)
     #expect(try server(tmux, socket, "new-session", "-d", "-s", "b c", "/bin/sh") == 0)
     let seen = Recorder<Event>()
-    let client = Client(launch: .attach(tmux.path, socket: socket, session: "a"))
+    let client = Client(launch: .attach(tmux.path, socket: socket, session: "a", imageShm: false))
     try client.start(onEvent: seen.add, onClose: seen.close)
     _ = try await seen.wait("attach") { e, _ in e.contains(.sessionChanged(s0, "a")) ? () : nil }
 

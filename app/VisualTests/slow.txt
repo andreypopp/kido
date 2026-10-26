@@ -29,10 +29,12 @@ VisualTests/testFloatingSidebar  # inherent: a second WindowOwner and floating-s
 VisualTests/testHistoryChunksAndResizeAnchors  # inherent: 100k-line history, deep find and chunk reload checks
 VisualTests/testHistoryPill  # inherent: 100k-line history and a 1000-line paint
 VisualTests/testHistoryPillDark  # inherent: 100k-line history and a 1000-line paint
+VisualTests/testImagesAnimationRestore  # inherent: two animation cycles, two restores and five rendered snapshots
 VisualTests/testImagesLazyHistory  # inherent: history prepend and five rendered image snapshots
 VisualTests/testImagesPlacementRestore  # inherent: reconnect and four rendered placement and id snapshots
-VisualTests/testImagesRemote  # inherent: owned localhost SSH master and two rendered image snapshots
+VisualTests/testImagesRemote  # inherent: owned localhost SSH master and three rendered image and media-policy snapshots
 VisualTests/testImagesRestorePaths  # inherent: image restore paths and rendered snapshots
+VisualTests/testImagesSharedMemoryRecovery  # inherent: shared-memory leak guards and four rendered recovery snapshots
 VisualTests/testLoadedTopNeverLoads  # inherent: 30k-line history and a 25000-line paint
 VisualTests/testLocalMismatchEscapeCloses  # inherent: localMismatchOwners starts a kido server and owner, then awaits the mismatch sheet
 VisualTests/testLocalMismatchNativeClose  # inherent: localMismatchOwners starts a kido server and owner, then awaits the mismatch sheet
