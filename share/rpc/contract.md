@@ -1,10 +1,11 @@
-# kido rpc protocol 6.0
+# kido rpc protocol 6.1
 
 fork revision: b94d36a8207fe205bd5084e0e8b109becabfd469
 
 Protocol.value is the binary's protocol constant. It versions this RPC
-surface only; the server's compatibility is a separate stamp (below), so a
-protocol bump never requires restarting the tmux server. New fields and new enum values are MINOR changes:
+surface and the tmux commands this contract names, such as the "Pane
+images" capture flags; the server's compatibility is a separate stamp
+(below), so a protocol bump never requires restarting the tmux server. New fields and new enum values are MINOR changes:
 the app ignores unknown fields and decodes unknown enum values as unknown.
 Removing or renaming a field, changing its meaning, or changing a reply
 shape is MAJOR. Snapshots retain "v":2 as a schema marker; hello governs
@@ -29,10 +30,10 @@ first on PATH), all with fixed placeholder paths. Install paths do not change
 it; a fork bump, an installer edit, an edit to kido-tmux.conf, to the generated configuration or
 to the launch environment does.
 
-The first stdout line is {"hello":{"protocol":"6.0"}} when KIDO_SERVER equals
+The first stdout line is {"hello":{"protocol":"6.1"}} when KIDO_SERVER equals
 the binary's stamp. A differing or absent stamp produces
-{"hello":{"protocol":"6.0","server":"other","expected":"0123456789ab"}} or
-{"hello":{"protocol":"6.0","server":null,"expected":"0123456789ab"}}, followed
+{"hello":{"protocol":"6.1","server":"other","expected":"0123456789ab"}} or
+{"hello":{"protocol":"6.1","server":null,"expected":"0123456789ab"}}, followed
 by {"error":"server stamp does not match binary stamp"}, then exit 2.
 expected is the binary's stamp; the server needs a restart.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
@@ -504,7 +505,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"6.0","server":"0123456789ab","expected":"0123456789ab"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"6.1","server":"0123456789ab","expected":"0123456789ab"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_SERVER stamp, or null when absent, even when it matches expected.
 expected is the binary's own stamp, always a string. The app compares server

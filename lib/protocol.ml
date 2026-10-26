@@ -1,4 +1,4 @@
-let value = "6.0"
+let value = "6.1"
 let matches ~expected server = Option.equal String.equal server (Some expected)
 
 let hello ~expected server =
@@ -948,10 +948,10 @@ let%test_module "Tests" =
            (snapshot { m with snap = { m.snap with err = Some "tmux: gone" }; sessions = [] }));
       [%expect
         {|
-        6.0
-        {"hello":{"protocol":"6.0"}}
-        {"hello":{"protocol":"6.0","server":"other","expected":"0123456789ab"}}
-        {"hello":{"protocol":"6.0","server":null,"expected":"0123456789ab"}}
+        6.1
+        {"hello":{"protocol":"6.1"}}
+        {"hello":{"protocol":"6.1","server":"other","expected":"0123456789ab"}}
+        {"hello":{"protocol":"6.1","server":null,"expected":"0123456789ab"}}
         {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}
         {"reply":{"id":7,"switched":null}}
         {"reply":{"id":7,"error":"invalid or unknown request"}}

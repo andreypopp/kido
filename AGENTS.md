@@ -417,7 +417,8 @@ Push over SSH (`git@github.com:andreypopp/tmux.git`).
 
 A fork change updates kido's submodule pin and the `fork revision:`
 line in `share/rpc/contract.md`. lint checks their agreement.
-Only when the wire format changes, bump the protocol version.
+Only when the wire format or a tmux command or flag that
+`share/rpc/contract.md` names changes, bump the protocol version.
 The server stamp follows the pin automatically.
 
 `scripts/install-tmux-fork.sh <prefix>` builds the fork into

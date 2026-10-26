@@ -46,9 +46,11 @@ not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`6.0`. It versions only the RPC surface between the binary and its client,
-not anything in the tmux server. Thus, changing it never requires a
-server restart.
+`6.1`. It versions the RPC surface between the binary and its client,
+and the tmux commands and flags that the contract names, such as
+`capture-pane -G` and `-K`. A remote kido with an older fork thus fails
+the version check, not the first capture. The version describes no tmux
+server state. Thus, changing it never requires a server restart.
 
 The server uses a separate stamp, `Launch.stamp`. It contains the first
 12 hex digits of an MD5 over:
