@@ -51,19 +51,19 @@ func main() {
 	h.in("send-keys", "-t", pane, fmt.Sprintf("PATH=%s:$PATH %s ssh alias uptime", dir, kidoBin), "Enter")
 	h.waitPaneCommand(pane, "ssh")
 	mark := func() string { return h.in("show-options", "-p", "-v", "-t", pane, "@kido_ssh") }
-	if got := mark(); got != "deploy@example.test" {
+	if got := mark(); got != "deploy@alias" {
 		t.Fatalf("ssh mark = %q", got)
 	}
 	argsMark := func() string { return h.in("show-options", "-p", "-v", "-t", pane, "@kido_ssh_args") }
 	if got := argsMark(); got != `["alias"]` {
 		t.Fatalf("ssh args = %q", got)
 	}
-	h.waitShellRow("╶◼ssh deploy@example.test", "")
+	h.waitShellRow("╶◼ssh deploy@alias", "")
 	h.newWindow("alpha", "tail", "cat", "-")
 	h.in("send-keys", "-t", pane, "prompt", "Enter")
-	h.waitShellRow("╶ ssh deploy@example.test", "")
+	h.waitShellRow("╶ ssh deploy@alias", "")
 	h.in("send-keys", "-t", pane, "run", "Enter")
-	h.waitShellRow("╶◼ssh deploy@example.test: sleep 45", "")
+	h.waitShellRow("╶◼ssh deploy@alias: sleep 45", "")
 	h.in("send-keys", "-t", pane, "agent", "Enter")
 	h.waitRow("Remote Claude")
 	out, rc := h.kidoAs(pane, "pasted remote message", nil, "prompt")
@@ -73,7 +73,7 @@ func main() {
 	h.waitPaneText(pane, "received: pasted remote message")
 	h.in("send-keys", "-t", pane, "quit", "Enter")
 	h.waitPaneCommand(pane, "bash")
-	if got := mark(); got != "deploy@example.test" {
+	if got := mark(); got != "deploy@alias" {
 		t.Fatalf("mark after ssh exit = %q", got)
 	}
 	if got := argsMark(); got != `["alias"]` {
@@ -90,18 +90,18 @@ func main() {
 	}, "stale mark with bash ignored")
 	h.in("send-keys", "-t", pane, fmt.Sprintf("PATH=%s:$PATH %s ssh -l deploy@realm realm uptime", dir, kidoBin), "Enter")
 	h.waitPaneCommand(pane, "ssh")
-	if got := mark(); got != "deploy@realm@next.test" {
+	if got := mark(); got != "deploy@realm@realm" {
 		t.Fatalf("next ssh mark = %q", got)
 	}
 	if got := argsMark(); got != `["-l","deploy@realm","realm"]` {
 		t.Fatalf("replacement ssh args = %q", got)
 	}
-	h.waitShellRow("╶◼ssh deploy@realm@next.test", "")
+	h.waitShellRow("╶◼ssh deploy@realm@realm", "")
 	stale.waitLast(func(s feedSnapshot) bool {
 		for _, item := range s.firstItems() {
 			if item.ID == pane {
 				l := item.Lifecycle
-				return l.Kind == "Ssh" && feedValue(l.User) == "deploy@realm" && feedValue(l.Host) == "next.test" &&
+				return l.Kind == "Ssh" && feedValue(l.User) == "deploy@realm" && feedValue(l.Host) == "realm" &&
 					l.Remote == "Remote_terminal" && !feedValue(l.Interactive) && item.Title == "ssh"
 			}
 		}
@@ -135,7 +135,7 @@ func main() {
 	if got := h.in("show-options", "-p", "-t", pane); strings.Contains(got, "@kido_ssh_args") {
 		t.Fatalf("unrecordable ssh kept old args: %s", got)
 	}
-	if got := mark(); got != "deploy@example.test" {
+	if got := mark(); got != "deploy@alias" {
 		t.Fatalf("fresh mark for unrecordable ssh = %q", got)
 	}
 	h.in("send-keys", "-t", pane, "quit", "Enter")

@@ -1145,8 +1145,9 @@ source `share/zsh/integration.zsh` or `share/bash/integration.bash`.
 Both emit the same four markers.
 
 On a host without an installed integration, the marked pane remains
-running throughout the connection. `kido ssh` resolves user and hostname
-with `ssh -G`, sets `@kido_ssh` on its pane, then execs ssh. The mark
+running throughout the connection. `kido ssh` resolves the user with
+`ssh -G`, takes the host as entered, sets `@kido_ssh` on its pane, then
+execs ssh. The mark
 remains after ssh exits. kido trusts it only while the foreground
 command is `ssh`. A remote pi or Claude Code root gives a nested
 `Remote_agent`, including paste prompt support; otherwise it gives
