@@ -3,16 +3,26 @@ import Testing
 @testable import TmuxControl
 
 @Test func attachLaunchNeverStartsServer() {
-    let launch = Launch.attach("/remote/install/bin/kido-tmux", socket: "/tmp/state space $literal/socket", session: "$7")
+    let launch = Launch.attach("/remote/install/bin/kido-tmux", socket: "/tmp/state space $literal/socket", session: "$7", imageShm: false)
     #expect(launch.path == "/remote/install/bin/kido-tmux")
     #expect(launch.arguments == ["-u", "-S", "/tmp/state space $literal/socket", "-N", "-T", "hyperlinks", "-C", "attach-session", "-t", "$7", "-f", "pause-after=5,new-layouts,no-detach-on-destroy"])
 }
 
 @Test func imageAttachDoesNotResizeDetachOrUpdateEnvironment() {
-    let launch = Launch.attachImages("/remote/install/bin/kido-tmux", socket: "/tmp/state/socket", session: SessionID(number: 7))
+    let launch = Launch.attachImages("/remote/install/bin/kido-tmux", socket: "/tmp/state/socket", session: SessionID(number: 7), imageShm: false)
     #expect(launch.path == "/usr/bin/env")
     #expect(launch.arguments == ["-u", "TMUX", "/remote/install/bin/kido-tmux", "-u", "-S", "/tmp/state/socket", "-C", "attach-session", "-E", "-f",
                                  "no-output,ignore-size,no-detach-on-destroy", "-t", "$7"])
+}
+
+@Test func imageShmIsAnExplicitCapabilityOnBothClients() throws {
+    for enabled in [false, true] {
+        for launch in [Launch.attach("tmux", socket: "/tmp/socket", imageShm: enabled),
+                       Launch.attachImages("tmux", socket: "/tmp/socket", session: SessionID(number: 7), imageShm: enabled)] {
+            let flags = launch.arguments[(try #require(launch.arguments.firstIndex(of: "-f"))) + 1].split(separator: ",")
+            #expect(flags.contains("image-shm") == enabled)
+        }
+    }
 }
 
 @Test(.timeLimit(.minutes(1))) func stoppedPreparedClientIsKilled() async throws {

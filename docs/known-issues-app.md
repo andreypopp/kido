@@ -423,6 +423,16 @@ placements cover the usual cases. An image upload that is still in
 flight at a restore is replayed by `-G` only up to 8 MiB; a larger one
 shows after the next restore. Status: accepted.
 
+## A shared-memory image shows later writes
+
+For a local `t=s` image in `f=32` whose offset and row pitch meet
+Metal's alignment, Ghostty draws straight from the program's
+shared-memory pages. A program that writes into an object
+after it has sent it therefore changes the image on screen, possibly
+mid-frame (tearing). The kitty spec expects a new object per frame,
+and on macOS an object cannot shrink, so this cannot crash. Status:
+accepted; it is the program's contract.
+
 ## Restore latency
 
 The reported Release baseline is roughly 20ms for 10k lines, dominated by

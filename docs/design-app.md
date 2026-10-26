@@ -72,7 +72,9 @@ Each connection also attaches a second control client that is used only
 for image pixels (`capture-pane -K`, see [Images](#images)):
 `env -u TMUX kido-tmux -u -S <socket> -C attach-session -E -f
 no-output,ignore-size,no-detach-on-destroy -t <session id>`, on a remote
-window through the same ssh launch as the main client. It gets no pane
+window through the same ssh launch as the main client. On a local
+window both clients add `image-shm` to their `-f` flags (see
+[Images](#images)); a remote window's clients never do. It gets no pane
 output and is never sized: the app sends `refresh-client -C` only on
 the main client, so the image client does not change the window size or
 the `CSI 14t`/`16t` answers. It is never attached with `-d`, which would
@@ -720,16 +722,24 @@ moves the cursor. `-G` also carries `z=` and the `X=`/`Y=` offsets, and
 an image that was sent without `i=` comes back with an id in
 `0x80000000`-`0xffffffff` (`share/rpc/contract.md`, "Pane images"); the
 app passes all of it to Ghostty unparsed. The pixel phase
-then fetches the screen rows with `capture-pane -K` on the image
-client. Rows of loaded history are fetched when they come near the
-viewport: on every viewport publish of a shown pane (wheel, thumb,
-find, copy mode, the snap after Load more) the app asks for the
-visible rows plus one screen height above and below, minus the rows
-already fetched in this epoch. One `-K` per pane is in flight; while
-it runs, newer wishes only replace the wanted range, and the next
-fetch is computed from the viewport when the reply arrives. A hidden pane asks for nothing.
-Load more shifts the fetched set by the rows it inserts. The fetch
-never loads history text, never moves the viewport and never changes
+then fetches with `capture-pane -K` on the image client. Ghostty's
+held placements are the whole record of what is missing: every loaded
+row got its placements from `-G`, so a row needs pixels exactly when
+`ghostty_surface_pending_image_rows` reports a held placement on it
+(it resolves the rows through Ghostty's render-state placement list,
+fixed, relative and virtual placements alike, in a pending mode that
+does not consume the renderer's dirty flags; for an image whose size
+is still unknown, the size comes from the placement's crop extent
+under the normal kitty size rule). On the restore and on every viewport publish of a shown pane
+(wheel, thumb, find, copy mode, the snap after Load more) the app asks
+that query for the visible rows plus one screen height above and below
+and fetches the first range that holds pending rows. The app keeps no
+fetched-row set; Load more needs no bookkeeping. One `-K` per pane is
+in flight; the next one is computed from the viewport when the reply
+arrives. A hidden pane asks for nothing. A range that stays pending
+after a complete reply (tmux could not supply it) is asked for again
+only after new pane output or a new wanted range, never in a loop.
+The fetch never loads history text, never moves the viewport and never changes
 the surface budget. In the alternate screen, `-K -a` also fills the
 saved main screen. The fill names its target screen when the fetch
 starts, so a screen switch before the reply cannot fill the wrong
@@ -738,26 +748,89 @@ screen.
 `-K` is paged: a reply holds at most 8 MiB, and an image can stop
 mid-transmission with `m=1`; a final line `more <token>` asks for the
 same range again with `-k <token>`. The error `image changed` resets
-the fill and starts the range again without a token, once. Every
-reply goes to `ghostty_surface_fill_images`, never to the live
-stream: it has its own APC parser and chunk assembly, kept from one
-page to the next and reset by `ghostty_surface_fill_images_reset` on a
-new fetch, a cancel or an epoch change. `restore_output` resets the
+the fill and starts the range again without a token, once per fetch.
+Every reply goes to `ghostty_surface_fill_images`, never to the live
+stream: it parses in its own scratch terminal (own APC parser and
+chunk assembly), kept from one page to the next of one fetch.
+`ghostty_surface_fill_images_reset` starts a new fill generation and
+returns it; each fetch carries its generation into every fill call,
+and Ghostty checks it again under the renderer lock before it moves
+anything to the screen, so a page of a cancelled fetch, even one
+whose decode starts late, changes nothing. A reset happens on a new
+fetch, a cancel and every pane epoch change. An image moves from the
+scratch to the screen when its own part of the reply is complete
+(its root, its frames and its `a=a` line: when the next image starts
+or on the last page), so images appear as they arrive and no partial
+animation is ever shown. `restore_output` resets the
 live parser, and a `-K` reply arrives out of order with `%output`,
 possibly in the middle of a live APC or upload. The rule: **a fill
 transmit only completes a pending image; it never creates or
 replaces one.** A live replace that arrives first leaves the image
 complete, and a live delete leaves it unknown; either way the stale
-transmit is dropped, so a deleted image never comes back. A row is
-marked fetched only when no held placement in it is still without
-data (`ghostty_surface_pending_images`, which also counts
-Unicode-placeholder cells); such rows are asked for again only after
-new pane output or a new wanted range.
+transmit is dropped, so a deleted image never comes back.
 
 A fetch belongs to one connection generation and one pane epoch.
 A restore, resize, dirty content, copy-mode entry or connection close
-drops its replies; after a redial both phases run again and the
-fetched set starts empty.
+drops its replies; after a redial both phases run again.
+
+**Animation and frame edits.** tmux stores frames and the playback
+state and computes the current frame at each capture; it has no timer.
+For an image with frames, `-K` writes the root, then each further
+frame as a composed `a=f,f=32,X=1,z=<gap>` append, then an
+`a=a,c=K,s=,v=` line with the current frame and state. The fill
+takes, when the sequence starts, the ids of the screen's pending
+images with their transmission stamp; only those images are assembled
+(root, `a=f` frames, `a=a`) in the scratch terminal and moved to the
+screen, and only while each is still pending with that stamp. The
+frames are Ghostty's own pending animation frames, reserved while they
+load and completed by `completeFrame`, and an animation with pending
+frames does not play. Any
+other `a=f`/`a=a` is dropped like a stale transmit. So a restart after `image changed` (the
+token's frame was edited, deleted or renumbered) or a cancel cannot
+append frames twice: an image already moved to the screen is complete,
+and the new sequence drops its root and frames. Ghostty animates the
+restored image from frame K. After an edit of frame 1, `-K` sends that
+frame's pixels as `f=32`.
+
+**Shared memory and the media policy.** Ghostty's accepted media are
+set per surface (`kitty_image_media` in the surface config, Ghostty's
+own load limits) and kept across config reloads; the fill's scratch
+terminal inherits them. A local window accepts `t=d` and `t=s`; a
+remote window accepts `t=d` only, so a remote program cannot make the
+app open, unlink or read a local shared-memory object or file. `t=f`
+and `t=t` are never accepted: tmux never acts on them, so a restore
+could not bring such an image back. A refused medium creates no image,
+no placement and no cursor move. Both local clients attach with
+`image-shm`: tmux then forwards a live `t=s` raw without a `t=d` copy,
+and `-K` answers with one `t=s` line per image, naming an object that
+tmux created for that reply. Ghostty opens a name exactly as received
+(`/name` and `name` are different objects on macOS) and unlinks it at
+once, as the kitty spec asks. For uncompressed `f=32`, the mapping of
+the object's page-aligned `O=`/`S=` region is the stored image:
+refcounted, unmapped on eviction, delete or replace by the last
+reference; the renderer takes a reference instead of a copy and wraps
+the pages in a Metal buffer without a copy (`newBufferWithBytesNoCopy`)
+with a linear texture over it. When the offset or row pitch misses
+Metal's linear-texture alignment, the upload falls back to the normal
+copying texture upload. The command buffer keeps the buffer,
+and so the mapping, until the GPU has read it, so a same-id stream
+never unmaps pages in use. Other formats still decode to a copy.
+Measured through tmux (Release, GPU completion): a 4K frame 13.4 ms →
+4.4 ms, 720p 2.1 ms → 1.4 ms; a 120 Hz paced stream presents 120 of
+120 frames at a median of 3.1 ms (4K) and 1.1 ms (720p).
+
+tmux unlinks a live object 1 s after the block has left every flagged
+client, and a `-K` object after its own guard. An app more than that
+behind (or a `%pause` drop) finds the object gone. Such a live
+transmit is not lost: an allowed medium that cannot be read leaves the
+image held (Ghostty's `unread` state) with its placement and no cursor
+move, while bad data (an invalid size or PNG) is an ordinary error.
+After each live batch, `ghostty_surface_take_unread_images` tells the
+app what to do: for images with an id, fetch their rows through `-K`
+as for a restore; for an image without an id, whose restore id only
+tmux knows, one normal pane restore, coalesced through the existing
+dirty-pane request. A restore's own held placements never trigger it,
+and a hidden pane only marks itself dirty.
 
 `prepend_history` moves the scratch terminal's images and placements,
 held or not, into the target screen with their rows; an id that the

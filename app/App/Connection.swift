@@ -42,10 +42,25 @@ final class Connection: @unchecked Sendable {
     var visualMetadataQueries: Int { metadataQueries.withLock { $0 } }
     private let searchCaptures = OSAllocatedUnfairLock(initialState: 0)
     var visualSearchCaptures: Int { searchCaptures.withLock { $0 } }
-    private let imageCaptures = OSAllocatedUnfairLock(initialState: 0)
-    var visualImageCaptures: Int { imageCaptures.withLock { $0 } }
-    struct PixelProbe { var replies: [[Reply]] = []; var finished = 0 }
+    var visualImageCaptures: Int { visualPixels.withLock { $0.requests.count } }
+    private let pauses = OSAllocatedUnfairLock(initialState: 0)
+    var visualPauses: Int { pauses.withLock { $0 } }
+    struct PixelProbe { var replies: [[Reply]] = []; var requests: [[String]] = []; var finished = 0 }
     let visualPixels = OSAllocatedUnfairLock(initialState: PixelProbe())
+    private var visualHeldOutput: [Event]?
+    enum VisualOutput: Sendable { case hold, release, drop }
+    func visualOutput(_ action: VisualOutput, done: @escaping @Sendable () -> Void) {
+        client.queue.async {
+            switch action {
+            case .hold: self.visualHeldOutput = []
+            case .release, .drop:
+                let events = self.visualHeldOutput ?? []
+                self.visualHeldOutput = nil
+                if case .release = action { events.forEach(self.handle) }
+            }
+            done()
+        }
+    }
     #endif
     private final class PaneFeed: @unchecked Sendable {
         enum Boundary { case older, exhausted(epoch: Int), refused }
@@ -75,25 +90,10 @@ final class Connection: @unchecked Sendable {
         var goal: (distance: Int, token: UUID)?
         struct Pixels {
             var epoch: Int
-            var fetched = IndexSet()
-            var wanted: Range<Int>
-            var historyRows: Int
-            var screenRows: Int
-            var mainPending: Bool
             var alternate: Bool
             var inFlight: UUID?
-            var prepended = 0
             struct Retry: Equatable { let outputEpoch: Int; let wanted: Range<Int> }
             var retry: Retry?
-
-            mutating func viewport(_ position: PaneView.ScrollPosition) {
-                let previous = historyRows + screenRows, total = position.retainedHistoryRows + position.rows
-                if total > previous { fetched.insert(integersIn: previous..<total) }
-                historyRows = position.retainedHistoryRows
-                screenRows = position.rows
-                let start = max(0, position.offset - position.rows)
-                wanted = start..<max(start, min(total, position.offset + position.rows * 2))
-            }
 
             mutating func freeze(_ next: Int) {
                 guard epoch + 1 == next else { return }
@@ -102,37 +102,11 @@ final class Connection: @unchecked Sendable {
                 retry = nil
             }
 
-            mutating func prepend(_ rows: Int) {
-                fetched.shift(startingAt: 0, by: rows)
-                wanted = (wanted.lowerBound + rows)..<(wanted.upperBound + rows)
-                historyRows += rows
-                prepended += rows
-            }
-
-            func missing(output: Int) -> (range: Range<Int>, screen: PixelScreen)? {
-                guard retry != Retry(outputEpoch: output, wanted: wanted) else { return nil }
-                if let range = IndexSet(integersIn: wanted).subtracting(fetched).rangeView.first {
-                    return (range, alternate ? .alternate : .primary)
-                }
-                return mainPending ? (historyRows..<(historyRows + screenRows), .savedPrimary) : nil
-            }
-
-            mutating func completed(_ request: PixelRequest, rows: IndexSet, output: Int) -> Bool {
-                inFlight = nil
-                let pending = rows.count != request.range.count
-                if pending { retry = Retry(outputEpoch: output, wanted: wanted) }
-                if request.screen == .savedPrimary { mainPending = pending }
-                else {
-                    var shifted = rows
-                    shifted.shift(startingAt: 0, by: prepended - request.prepended)
-                    fetched.formUnion(shifted)
-                }
-                return pending
-            }
         }
         var pixels: Pixels?
         var imageVisible: Bool
         var preparingRestore = false
+        var pixelsQueued = false
         var pendingRestore: (first: [Command], synced: (@Sendable () -> Void)?)?
         init(_ view: PaneView, visible: Bool) { self.view = view; imageVisible = visible }
         func completePendingRestore() {
@@ -173,13 +147,13 @@ final class Connection: @unchecked Sendable {
         self.ownerID = ownerID
         self.drain = drain
         self.imageLaunch = { session in
-            let launch = Launch.attachImages(server.tmux, socket: server.socket, session: session)
+            let launch = Launch.attachImages(server.tmux, socket: server.socket, session: session, imageShm: host == .local)
             return transport?(launch) ?? launch
         }
         self.onChange = onChange
         self.onClose = onClose
         self.onDiagnostic = onDiagnostic
-        let launch = Launch.attach(server.tmux, socket: server.socket)
+        let launch = Launch.attach(server.tmux, socket: server.socket, imageShm: host == .local)
         client = Client(launch: transport?(launch) ?? launch)
         view.connection = self
         try startClient(client, onEvent: { [weak self] in self?.handle($0) },
@@ -239,14 +213,12 @@ final class Connection: @unchecked Sendable {
                 self.panes?[id]?.pixels?.freeze(epoch)
             }
         }
-        pane.onImageViewport = { [weak self, id = pane.pane] position, epoch, visible in
+        pane.onImageViewport = { [weak self, id = pane.pane] epoch, visible in
             guard let self else { return }
             client.queue.async {
                 guard let feed = self.panes?[id] else { return }
                 feed.imageVisible = visible
-                guard var pixels = feed.pixels, pixels.epoch == epoch else { return }
-                pixels.viewport(position)
-                feed.pixels = pixels
+                guard feed.pixels?.epoch == epoch else { return }
                 self.fetchPixels(id, feed)
             }
         }
@@ -396,13 +368,41 @@ final class Connection: @unchecked Sendable {
     private func handle(_ event: Event) {
         switch event {
         case .output(let p, let bytes), .extendedOutput(let p, _, let bytes):
+            #if KIDO_VISUAL
+            if visualHeldOutput != nil { visualHeldOutput?.append(event); return }
+            #endif
             if let feed = panes?[p] {
                 feed.outputEpoch += 1
                 invalidateSearch(feed, restart: true)
-                feed.view.feed(Data(bytes))
-                fetchPixels(p, feed)
+                var fetch = feed.pixels?.retry != nil
+                if feed.view.feed(Data(bytes)) {
+                    let recovery = ghostty_surface_take_unread_images(feed.view.surface)
+                    if recovery != GHOSTTY_IMAGE_RECOVERY_NONE {
+                        fetch = recovery == GHOSTTY_IMAGE_RECOVERY_FETCH
+                        feed.pixels?.inFlight = nil
+                        feed.pixels?.retry = nil
+                        let alternate = ghostty_surface_is_alternate_screen(feed.view.surface)
+                        if recovery == GHOSTTY_IMAGE_RECOVERY_RESTORE || !feed.imageVisible || feed.pixels?.alternate != alternate {
+                            feed.view.markContentDirty()
+                            if feed.imageVisible { sync(p) }
+                            return
+                        }
+                    }
+                }
+                let screenChanged = feed.pixels?.alternate != ghostty_surface_is_alternate_screen(feed.view.surface)
+                if (fetch || screenChanged) && !feed.pixelsQueued {
+                    feed.pixelsQueued = true
+                    client.queue.async {
+                        feed.pixelsQueued = false
+                        guard self.panes?[p] === feed else { return }
+                        self.fetchPixels(p, feed)
+                    }
+                }
             }
         case .pause(let p):
+            #if KIDO_VISUAL
+            pauses.withLock { $0 += 1 }
+            #endif
             let resume = Command("refresh-client", "-A", "\(p):continue")
             if panes?[p] == nil { send([resume]) } else { sync(p, first: [resume]) }
         case .layoutChange(let window, let layout, let visible, _):
@@ -541,8 +541,7 @@ final class Connection: @unchecked Sendable {
                 }
                 let position = feed.view.scrollPosition()
                 let alternate = ghostty_surface_is_alternate_screen(feed.view.surface)
-                feed.pixels = .init(epoch: epoch, wanted: position.retainedHistoryRows..<(position.retainedHistoryRows + position.rows),
-                                    historyRows: position.retainedHistoryRows, screenRows: position.rows, mainPending: alternate, alternate: alternate)
+                feed.pixels = .init(epoch: epoch, alternate: alternate)
                 self.fetchPixels(pane, feed)
                 let distance = feed.view.resizeAnchor?.locate(snapshot.anchorRows).flatMap { $0 <= position.retainedHistoryRows ? $0 : nil } ?? 0
                 self.publish(feed, history: history, alternate: ghostty_surface_is_alternate_screen(feed.view.surface), insertionRefused: false)
@@ -614,15 +613,30 @@ final class Connection: @unchecked Sendable {
     }
 
     private func fetchPixels(_ pane: PaneID, _ feed: PaneFeed) {
-        guard case .ready = imageState, var pixels = feed.pixels, feed.imageVisible, pixels.inFlight == nil,
+        guard case .ready = imageState, var pixels = feed.pixels, feed.imageVisible, !feed.pixelsQueued, pixels.inFlight == nil,
               feed.view.historyEpoch == pixels.epoch,
-              let missing = pixels.missing(output: feed.outputEpoch), !missing.range.isEmpty,
               ghostty_surface_is_alternate_screen(feed.view.surface) == pixels.alternate else { return }
-        let request = PixelRequest(token: UUID(), generation: imageGeneration, epoch: pixels.epoch, range: missing.range,
-                                   history: pixels.historyRows, screen: missing.screen, prepended: pixels.prepended)
+        let position = feed.view.scrollPosition(), history = position.retainedHistoryRows
+        let start = max(0, position.offset - position.rows)
+        let wanted = start..<max(start, min(history + position.rows, position.offset + position.rows * 2))
+        guard pixels.retry != .init(outputEpoch: feed.outputEpoch, wanted: wanted) else { return }
+        var missing: (range: Range<Int>, screen: PixelScreen)?
+        for (screen, range) in [(pixels.alternate ? PixelScreen.alternate : .primary, wanted),
+                                (.savedPrimary, history..<(history + position.rows))] {
+            if screen == .savedPrimary && !pixels.alternate { continue }
+            let pending = feed.view.pendingImageRows(start: Int64(range.lowerBound - history), count: range.count, alternate: screen == .alternate)
+            if let first = pending.firstIndex(of: true) {
+                let end = pending[first...].firstIndex(of: false) ?? pending.endIndex
+                missing = ((range.lowerBound + first)..<(range.lowerBound + end), screen)
+                break
+            }
+        }
+        guard let missing else { return }
+        let request = PixelRequest(token: UUID(), generation: imageGeneration, epoch: pixels.epoch, range: missing.range, wanted: wanted,
+                                   history: history, screen: missing.screen,
+                                   fillGeneration: feed.view.resetImageFill())
         pixels.inFlight = request.token
         feed.pixels = pixels
-        feed.view.resetImageFill()
         fetchPixelPage(pane, feed, request, continuation: nil)
     }
 
@@ -633,9 +647,10 @@ final class Connection: @unchecked Sendable {
         let generation: UUID
         let epoch: Int
         let range: Range<Int>
+        let wanted: Range<Int>
         let history: Int
         let screen: PixelScreen
-        let prepended: Int
+        var fillGeneration: UInt64
         var canRestart = true
     }
 
@@ -652,7 +667,7 @@ final class Connection: @unchecked Sendable {
         if request.screen == .savedPrimary { args.append("-a") }
         if let continuation { args += ["-k", continuation] }
         #if KIDO_VISUAL
-        imageCaptures.withLock { $0 += 1 }
+        visualPixels.withLock { [args] probe in probe.requests.append(args) }
         #endif
         images.send([Command(words: ["capture-pane"] + args)]) { [weak self, weak feed] response in
             guard let self, let feed else { return }
@@ -664,10 +679,11 @@ final class Connection: @unchecked Sendable {
             self.client.queue.async { self.gate("pixels") {
                 guard self.validPixels(pane, feed, request) else { return }
                 guard case .success(let lines)? = replies?.first else {
-                    feed.view.resetImageFill()
+                    let fillGeneration = feed.view.resetImageFill()
                     if request.canRestart, case .failure(let error)? = replies?.first, error.contains("image changed") {
                         var restarted = request
                         restarted.canRestart = false
+                        restarted.fillGeneration = fillGeneration
                         return self.fetchPixelPage(pane, feed, restarted, continuation: nil)
                     }
                     feed.pixels?.inFlight = nil
@@ -681,15 +697,9 @@ final class Connection: @unchecked Sendable {
                 images.queue.async {
                     var data = Data(capacity: payload.reduce(0) { $0 + $1.utf8.count })
                     for line in payload { data.append(contentsOf: line.utf8) }
-                    let applied = feed.view.fillImages(data, epoch: request.epoch, alternate: request.screen == .alternate)
-                    var pendingRows = [Bool](repeating: false, count: next == nil ? request.range.count : 0)
-                    if applied, next == nil {
-                        pendingRows.withUnsafeMutableBufferPointer {
-                            ghostty_surface_pending_image_rows(feed.view.surface, Int64(request.range.lowerBound - request.history),
-                                                               request.screen == .alternate, $0.baseAddress, $0.count)
-                        }
-                    }
-                    let complete = IndexSet(pendingRows.enumerated().compactMap { $0.element ? nil : request.range.lowerBound + $0.offset })
+                    let applied = feed.view.fillImages(data, epoch: request.epoch, alternate: request.screen == .alternate, generation: request.fillGeneration, final: next == nil)
+                    let pending = applied && next == nil && feed.view.pendingImageRows(start: Int64(request.range.lowerBound - request.history),
+                        count: request.range.count, alternate: request.screen == .alternate).contains(true)
                     self.client.queue.async {
                         guard self.validPixels(pane, feed, request) else { return }
                         guard applied else {
@@ -699,7 +709,8 @@ final class Connection: @unchecked Sendable {
                         }
                         if let next { return self.fetchPixelPage(pane, feed, request, continuation: next) }
                         feed.view.resetImageFill()
-                        let pending = feed.pixels!.completed(request, rows: complete, output: feed.outputEpoch)
+                        feed.pixels?.inFlight = nil
+                        if pending { feed.pixels?.retry = .init(outputEpoch: feed.outputEpoch, wanted: request.wanted) }
                         #if KIDO_VISUAL
                         self.visualPixels.withLock { $0.finished += 1 }
                         #endif
@@ -843,10 +854,6 @@ final class Connection: @unchecked Sendable {
                 return self.fetch(pane, feed, token: token, chunk: min(capture.history - position.retainedHistoryRows, chunk * 2))
             }
             let added = capture.rows == 0 ? 0 : feed.view.prepend(Data(capture.text.utf8), epoch: epoch)
-            if added > 0, var pixels = feed.pixels, pixels.epoch == epoch {
-                pixels.prepend(added)
-                feed.pixels = pixels
-            }
             guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, !feed.view.frozen else {
                 self.publish(feed, history: feed.sampledTmuxHistoryRows)
                 return
