@@ -177,7 +177,11 @@ extension NSColor {
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
                 let requested = (0..<count).compactMap { mimes?[$0].map { String(cString: $0) } }
                 return MainActor.assumeIsolated {
-                    let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
+                    let view: PaneView
+                    switch SurfaceRef.owner(userdata) {
+                    case .scrollback(let owner): return owner.takeUnretainedValue().readClipboard(state, location: location, list: list)
+                    case .pane(let owner): view = owner.takeUnretainedValue()
+                    }
                     guard view.acceptingInput, let state else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
                     switch ghostty_clipboard_request_kind(state) {
                     case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
@@ -207,7 +211,11 @@ extension NSColor {
                     text = String(decoding: UnsafeRawBufferPointer(start: content.data, count: content.len), as: UTF8.self)
                 }
                 MainActor.assumeIsolated {
-                    let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
+                    let view: PaneView
+                    switch SurfaceRef.owner(userdata) {
+                    case .scrollback(let owner): return owner.takeUnretainedValue().confirmPaste(text, state)
+                    case .pane(let owner): view = owner.takeUnretainedValue()
+                    }
                     if let text { view.confirmPaste(text, state) }
                     else if request == GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ { view.requestClipboard(state, ["text/plain"], list: false, .clipboard) }
                     else { view.deny(state) }
@@ -216,7 +224,10 @@ extension NSColor {
             write_clipboard_cb: { @Sendable userdata, _, content, count, confirm in
                 GhosttyRuntime.writeClipboard(userdata, content, count, confirm)
             },
-            close_surface_cb: { @Sendable userdata, _ in PaneView.onMain(userdata) { $0.onCommand(.close) } })
+            close_surface_cb: { @Sendable userdata, _ in
+                PaneView.onMain(userdata) { $0.onCommand(.close) }
+                ScrollbackView.onMain(userdata) { $0.finish() }
+            })
         guard let new = ghostty_app_new(&runtime, config) else { return nil }
         nonisolated(unsafe) let app = new
         self.app = app
@@ -493,6 +504,7 @@ extension NSColor {
         }
         guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
         let userdata = ghostty_surface_userdata(surface)
+        if case .scrollback = SurfaceRef.owner(userdata) { return scrollbackAction(action, userdata) }
         switch action.tag {
         case GHOSTTY_ACTION_MOUSE_SHAPE:
             let shape = action.action.mouse_shape
@@ -501,7 +513,7 @@ extension NSColor {
         case GHOSTTY_ACTION_OPEN_URL:
             let link = action.action.open_url
             if link.kind != GHOSTTY_ACTION_OPEN_URL_KIND_OSC8,
-               Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.host) == .local { return false }
+               SurfaceRef.pane(userdata)._withUnsafeGuaranteedRef(\.host) == .local { return false }
             guard let bytes = link.url else { return true }
             let text = String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(link.len)), as: UTF8.self)
             PaneView.onMain(userdata) { $0.onURL(text) }
@@ -515,7 +527,7 @@ extension NSColor {
             return true
         case GHOSTTY_ACTION_END_SEARCH:
             let generation = ghostty_surface_search_generation(surface)
-            let view = Unmanaged<PaneView>.fromOpaque(userdata!)
+            let view = SurfaceRef.pane(userdata)
             let find = MainActor.assumeIsolated { view._withUnsafeGuaranteedRef(\.find) }
             PaneView.onMain(userdata) {
                 guard ghostty_surface_search_generation($0.surface) == generation, $0.find === find else { return }
@@ -566,6 +578,19 @@ extension NSColor {
         }
         guard let command = command(action) else { return false }
         PaneView.onMain(userdata) { $0.onCommand(command) }
+        return true
+    }
+
+    nonisolated private static func scrollbackAction(_ action: ghostty_action_s, _ userdata: UnsafeMutableRawPointer?) -> Bool {
+        switch action.tag {
+        case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
+            ScrollbackView.onMain(userdata) { $0.finish() }
+        case GHOSTTY_ACTION_MOUSE_SHAPE:
+            let shape = action.action.mouse_shape
+            ScrollbackView.onMain(userdata) { $0.setMouseShape(shape) }
+        case GHOSTTY_ACTION_SCROLLBAR, GHOSTTY_ACTION_CELL_SIZE: break
+        default: return false
+        }
         return true
     }
 
@@ -665,10 +690,19 @@ extension NSColor {
         }
         nonisolated(unsafe) let userdata = userdata
         return MainActor.assumeIsolated { [items] in
-            let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
-            guard !view.disposed, view.acceptingInput else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
-            let items = view.copyingLines ? items.map { $0.type == .string ? ($0.type, $0.data + Data("\n".utf8)) : $0 } : items
-            let pasteboard = view.runtime.pasteboard, item = NSPasteboardItem()
+            let pasteboard: NSPasteboard, copyingLines: Bool
+            switch SurfaceRef.owner(userdata) {
+            case .pane(let owner):
+                let view = owner.takeUnretainedValue()
+                guard !view.disposed, view.acceptingInput else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
+                (pasteboard, copyingLines) = (view.runtime.pasteboard, view.copyingLines)
+            case .scrollback(let owner):
+                let view = owner.takeUnretainedValue()
+                guard !view.disposed else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
+                (pasteboard, copyingLines) = (view.runtime.pasteboard, false)
+            }
+            let items = copyingLines ? items.map { $0.type == .string ? ($0.type, $0.data + Data("\n".utf8)) : $0 } : items
+            let item = NSPasteboardItem()
             pasteboard.clearContents()
             guard items.allSatisfy({ item.setData($0.data, forType: $0.type) }), pasteboard.writeObjects([item]) else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
             return GHOSTTY_CLIPBOARD_WRITE_OK
