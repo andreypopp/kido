@@ -25,7 +25,7 @@ public struct NoticeTarget: Codable, Equatable, Sendable {
 }
 
 public struct Notice: Equatable, Sendable {
-    public enum Kind: String, Sendable { case waiting, failed }
+    public enum Kind: String, Sendable { case waiting, failed, done }
     public let kind: Kind
     public let key: NoticeKey
     public let target: NoticeTarget
@@ -44,6 +44,7 @@ public struct NotifierEffects: Equatable, Sendable {
 public struct NotifierState: Equatable, Sendable {
     private enum Reason: Equatable, Sendable {
         case waiting
+        case done(OutcomeSource, OutcomeIdentity)
         case failure(OutcomeSource, OutcomeIdentity)
     }
     private enum Entry: Equatable, Sendable {
@@ -78,7 +79,7 @@ public struct NotifierState: Equatable, Sendable {
     }
 
     public mutating func step(owner: String, host: String, snapshot: Snapshot,
-                              fresh: Bool, seen: SidebarSeen, shown: Set<WindowID>, appActive: Bool) -> NotifierEffects {
+                              fresh: Bool, seen: SidebarSeen, shown: Set<WindowID>, appActive: Bool, notifyDone: Bool = false) -> NotifierEffects {
         guard snapshot.error == nil else { return NotifierEffects() }
         let changed = owners[owner]?.instance != snapshot.serverInstance || owners[owner]?.host != host
         var effects = changed ? forget(owner: owner) : NotifierEffects()
@@ -100,6 +101,7 @@ public struct NotifierState: Equatable, Sendable {
             if item.run != nil, nested { reason = nil }
             else if case .live = item.lifecycle {
                 if status == .waiting { reason = .waiting }
+                else if notifyDone, status == .done, item.isAgent, item.run == nil, let outcome = item.indicatedOutcome { reason = .done(outcome.source, outcome.identity) }
                 else if status == .error, let outcome = item.indicatedOutcome {
                     if outcome.source == .command, case .idle(let exit?) = item.shell?.phase, exit.code == 130 { reason = nil }
                     else { reason = .failure(outcome.source, outcome.identity) }
@@ -111,7 +113,8 @@ public struct NotifierState: Equatable, Sendable {
                 state.entries[item.pane] = nil
                 return
             }
-            if baseline || shown.contains(item.window) || (appActive && previous?.reason != reason) {
+            let doneReason: Bool = if case .done = reason { true } else { false }
+            if baseline || shown.contains(item.window) || (appActive && !doneReason && previous?.reason != reason) {
                 if case .posted = previous { effects.withdraw.append(key) }
                 state.entries[item.pane] = .acknowledged(reason)
                 return
@@ -121,6 +124,7 @@ public struct NotifierState: Equatable, Sendable {
             let body: String
             switch reason {
             case .waiting: body = caption.isEmpty ? "Waiting" : "Waiting: " + caption
+            case .done: body = caption.isEmpty ? "Done" : "Done: " + caption
             case .failure(.command, _):
                 if case .idle(let exit?) = item.shell?.phase {
                     body = "Exit \(exit.code): " + exit.command
@@ -130,7 +134,7 @@ public struct NotifierState: Equatable, Sendable {
             var subtitle = session.name
             if host != "local" { subtitle = "\(host.dropFirst(4)) · \(subtitle)" }
             else if case .live(.ssh(let destination, .agent)) = item.lifecycle { subtitle += " · \(destination)" }
-            effects.post.append(Notice(kind: status == .waiting ? .waiting : .failed, key: key, target: NoticeTarget(host: host, instance: snapshot.serverInstance,
+            effects.post.append(Notice(kind: status == .waiting ? .waiting : doneReason ? .done : .failed, key: key, target: NoticeTarget(host: host, instance: snapshot.serverInstance,
                 position: Snapshot.Position(session: session.id, window: item.window, pane: item.pane)),
                 title: item.rowTitle(status: status).title, subtitle: subtitle, body: body))
             state.entries[item.pane] = .posted(reason)

@@ -21,6 +21,7 @@ import UserNotifications
         center.setNotificationCategories([
             UNNotificationCategory(identifier: "waiting", actions: [], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: "Waiting for input", options: []),
             UNNotificationCategory(identifier: "failed", actions: [], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: "Failed", options: []),
+            UNNotificationCategory(identifier: "done", actions: [], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: "Done", options: []),
         ])
     }
 
@@ -80,7 +81,7 @@ import UserNotifications
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([])
+        completionHandler(notification.request.content.categoryIdentifier == Notice.Kind.done.rawValue ? [.banner, .sound] : [])
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
@@ -132,7 +133,7 @@ import UserNotifications
         for owner in windows {
             guard let snapshot = owner.snapshot, !owner.feedFresh || owner === snapshotOwner else { continue }
             let effects = state.step(owner: owner.notificationID, host: host.clipboardKey,
-                snapshot: snapshot, fresh: owner.feedFresh, seen: owner.seen.value, shown: shown, appActive: NSApp.isActive)
+                snapshot: snapshot, fresh: owner.feedFresh, seen: owner.seen.value, shown: shown, appActive: NSApp.isActive, notifyDone: owner.runtime.settings.notifyDone)
             poster.withdraw(effects.withdraw)
             effects.post.forEach { poster.post($0) }
             if snapshot.error == nil { owner.feedFresh = false }

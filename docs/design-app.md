@@ -379,9 +379,9 @@ background, the colour of the terminal host and the margins between the
 pane cards, and the plain colour of the docked sidebar list. No setting
 changes it.
 
-The app has three keys of its own in that file, `kido-unfocused-background-shift`,
-`kido-pane-spacing` and `kido-focus-ring-width`. Ghostty does not know them, and its
-unknown-field diagnostic is hidden only for these three. The app reads them from the same
+The app has four keys of its own in that file, `kido-unfocused-background-shift`,
+`kido-pane-spacing`, `kido-focus-ring-width` and `kido-notify-done`. Ghostty does not know them, and its
+unknown-field diagnostic is hidden only for these four. The app reads them from the same
 files as Ghostty: the main file, then its `config-file` includes in
 Ghostty's breadth-first order, with relative paths, `~/`, optional `?` paths
 and cycles resolved as Ghostty resolves them. The last value wins. An absent
@@ -402,6 +402,11 @@ window (see the layout rules below).
 double quotes. It is the width of the accent ring around the focused pane
 card. The default is 1.5. A reload redraws the ring in every window. The
 edge of an unfocused card stays 0.5pt.
+
+`kido-notify-done = true|false`, optionally in double quotes, turns on the
+done notification for agents (see "Notifications"). The default is false;
+any other value gets a diagnostic and leaves it off. A reload applies on the
+next notifier step.
 
 The sidebar has its own light or dark appearance, from the relative
 luminance L of the canvas: dark (light text) when L < 0.179,
@@ -1736,7 +1741,8 @@ preview, so one place serves them all.
 ## Notifications
 
 Kido.app posts a native notification when a pane starts waiting on the
-user or fails out of sight, and withdraws it when the reason is gone. kido
+user or fails out of sight, and, with `kido-notify-done`, when an agent
+finishes out of sight. It withdraws the notification when the reason is gone. kido
 reports status and retained outcomes; the app decides what the user has
 seen and what deserves a banner. `SidebarFeed/Notifications.swift` is the
 pure step; `App/Notifications.swift` holds the two posters and the
@@ -1751,7 +1757,11 @@ indicator keeps the sidebar's precedence, so a quiet report masks a
 command exit for the banner exactly as for the row. Waiting is one plain
 reason: a changed kind while still waiting does not repost. A
 failure's reason is its outcome source and identity, so a new failure
-reposts. Done, finished runs, successes, running, Ended rows and
+reposts. With `kido-notify-done` on, an agent pane (pi, Claude Code or a
+`kido ssh` remote agent) that is not a run and whose indicator shows an
+unseen done also wants a notification; the reason is its outcome source
+and identity, so each new completion reposts. A shell command, a shell
+report, a run, a success under the setting off, running, Ended rows and
 a command exit of 130 never notify.
 
 **One notifier, entries per window.** Every `WindowOwner` has its own
@@ -1762,10 +1772,13 @@ host's attended windows (app active, key, not miniaturized, visible).
 Per entry the states are absent, posted(reason) and acknowledged(reason).
 On every error-free snapshot of an owner, for each wanting pane:
 
-- a baseline snapshot, a pane whose tmux window is shown, or a reason
-  that starts or changes while Kido.app is active, acknowledges it,
+- a baseline snapshot, a pane whose tmux window is shown, or a waiting
+  or failure reason that starts or changes while Kido.app is active,
+  acknowledges it,
   withdrawing any earlier post: it is on screen, or the user is present
-  and what starts meanwhile counts as noticed;
+  and what starts meanwhile counts as noticed. A done reason ignores the
+  active rule: the user works in Kido and wants to hear of an agent that
+  finished in a window they do not see;
 - otherwise a new or changed reason posts, replacing an earlier post;
 - an unchanged reason does nothing, posted or acknowledged.
 
@@ -1791,15 +1804,16 @@ name; for a remote window `host · session`, with the host as typed
 (`Host.label`); for a `kido ssh` remote agent in a Local
 window, `session · destination`. Body: `Waiting` or
 `Waiting: <caption>`, else `Exit <code>: <command>` for a command, else
-`Failed` or `Failed: <caption>`. Nothing is truncated by the app.
+`Failed` or `Failed: <caption>`; for done, `Done` or `Done: <caption>`. Nothing is truncated by the app.
 Identifier is owner and pane, so a repost replaces; thread identifier is
-the host key; category `waiting` or `failed` supplies the hidden-preview
-placeholders "Waiting for input" and "Failed"; sound is the default; the
+the host key; category `waiting`, `failed` or `done` supplies the hidden-preview
+placeholders "Waiting for input", "Failed" and "Done"; sound is the default; the
 click target (host, server instance, session, window, pane) travels as
 JSON in `userInfo`. Linked panes take the client's session.
 
-**Frontmost and badge.** `willPresent` returns no options: nothing is
-shown while Kido.app is frontmost. The Dock badge, through
+**Frontmost and badge.** `willPresent` returns no options for waiting and
+failed: nothing is shown while Kido.app is frontmost. For the `done`
+category it returns banner and sound. The Dock badge, through
 `setBadgeCount`, is the number of posted entries across all windows, set
 after every step and cleared on quit.
 
@@ -1827,7 +1841,7 @@ importing UserNotifications. Background, visual and stress builds use
 and authorization calls and never touches Notification Center.
 `NotificationsTests` in SidebarFeed cover the step: attendance,
 baselines, suppression and acknowledgement, reposts, every withdrawal,
-exclusions, precedence and content; the hosted `NotificationTests` drive
+exclusions, precedence, content and the opt-in done reason; the hosted `NotificationTests` drive
 two owners, feed restart and `route` against the recording poster.
 
 ## Testing

@@ -120,6 +120,22 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             XCTAssertEqual(lines.contains { $0.contains("not a number of points") }, note != nil, text)
             if let note { XCTAssertTrue(lines.contains { $0.hasSuffix("kido-focus-ring-width: not a number of points from 0.5 to 4: " + note) }, text) }
         }
+
+        for (text, notify, note) in [
+            ("kido-notify-done = true", true, nil),
+            ("kido-notify-done = \"true\"", true, nil),
+            ("kido-notify-done = false", false, nil),
+            ("", false, nil),
+            ("kido-notify-done = true\nkido-notify-done =", false, nil),
+            ("kido-notify-done = yes", false, "yes"),
+            ("kido-notify-done = 1", false, "1"),
+        ] as [(String, Bool, String?)] {
+            let (parsed, lines) = try load(text)
+            XCTAssertEqual(parsed.notifyDone, notify, text)
+            XCTAssertFalse(lines.contains { $0.contains("kido-notify-done: unknown field") }, "\(text): \(lines)")
+            XCTAssertEqual(lines.contains { $0.contains("not true or false") }, note != nil, text)
+            if let note { XCTAssertTrue(lines.contains { $0.hasSuffix("kido-notify-done: not true or false: " + note) }, text) }
+        }
     }
 
     func testLiveConfigFile() async throws {

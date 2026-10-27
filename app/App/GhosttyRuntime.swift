@@ -43,6 +43,7 @@ extension NSColor {
         var unfocusedShift = 0.03
         var paneSpacing: CGFloat = 8
         var focusRingWidth: CGFloat = 1.5
+        var notifyDone = false
     }
     private(set) var settings: KidoSettings
     enum ThemeOverride: Equatable { case none, preview(String), session(String) }
@@ -254,10 +255,11 @@ extension NSColor {
     ]
     private static let spacingKey = "kido-pane-spacing"
     private static let ringKey = "kido-focus-ring-width"
+    private static let notifyKey = "kido-notify-done"
     private static func readDiagnostics(_ config: ghostty_config_t) -> [String] {
         (0..<ghostty_config_diagnostics_count(config)).compactMap { index in
             let message = String(cString: ghostty_config_get_diagnostic(config, index).message)
-            return (settingKeys.keys + [spacingKey, ringKey]).contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) ? nil : message
+            return (settingKeys.keys + [spacingKey, ringKey, notifyKey]).contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) ? nil : message
         }
     }
     static func loadConfig(file: String, home: String, override: String? = nil) -> LoadedConfig? {
@@ -276,7 +278,7 @@ extension NSColor {
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                 guard parts.count == 2 else { continue }
                 var value = parts[1]
-                if keys[parts[0]] != nil || parts[0] == spacingKey || parts[0] == ringKey {
+                if keys[parts[0]] != nil || parts[0] == spacingKey || parts[0] == ringKey || parts[0] == notifyKey {
                     if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
                     value = value.trimmingCharacters(in: .whitespaces)
                     values[parts[0]] = value.isEmpty ? nil : value
@@ -321,6 +323,10 @@ extension NSColor {
         if let value = values[ringKey] {
             if let points = Double(value), (0.5...4).contains(points) { settings.focusRingWidth = points }
             else { note("\(ringKey): not a number of points from 0.5 to 4: \(value)") }
+        }
+        if let value = values[notifyKey] {
+            if let flag = ["true": true, "false": false][value] { settings.notifyDone = flag }
+            else { note("\(notifyKey): not true or false: \(value)") }
         }
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
         ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
