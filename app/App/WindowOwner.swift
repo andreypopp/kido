@@ -653,7 +653,7 @@ private class AlertEscape: NSView {
         pane.paste(text)
     }
 
-    private func notice(_ title: String, _ detail: String) {
+    func notice(_ title: String, _ detail: String) {
         note("\(host.label): \(title): \(detail)")
         guard alive, preparedAlert == nil, window.attachedSheet == nil else { return }
         let alert = NSAlert()
@@ -706,6 +706,7 @@ private class AlertEscape: NSView {
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
         view.canPrompt = { [weak self] in self?.canPrompt == true }
+        view.onNotice = { [weak self] in self?.notice($0, $1) }
         view.onPrompt = { [weak self] pane, quote in
             guard let self else { return }
             (NSApp.delegate as? AppDelegate)?.openPrompt(owner: self, pane: pane, quote: quote)

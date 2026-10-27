@@ -292,6 +292,8 @@ A pane is drawn by a Ghostty surface in manual-IO mode
 `send-keys -H`, and the emulator's own query replies are suppressed
 because tmux answers them. tmux prefix bindings therefore do not fire
 from the app; its menus and Ghostty's split and tab actions stand in.
+The scrollback editor overlay is the one exec-mode surface (see "Scrollback
+in the editor").
 
 Ghostty's configuration is `kido-app.conf` beside `kido.conf`
 (`$XDG_CONFIG_HOME/kido/`, else `~/.config/kido/`), in Ghostty's syntax,
@@ -677,6 +679,62 @@ Shift-press gesture continues. The wheel still scrolls.
 
 The `Feed` has no timeout for a request. Thus, a `prompt` send that blocks
 kido's RPC loop until the inbox times out does not restart the helper.
+
+### Scrollback in the editor
+
+Ghostty holds only the newest rows of a pane. Edit > "Open Scrollback in
+Editor" (Command-Shift-E, also in the palette, scope pane) opens the whole
+history in the user's editor. The editor always runs on the Mac, also for a
+remote host, because the text comes over the control connection.
+
+- **Capture.** `ScrollbackCapture` sends `display-message -p -t %N
+  #{history_size}`, then `capture-pane -p -J -S - -t %N`. `-J` joins wrapped
+  rows. No `-e`: colors would show as garbage. The plain form in the alternate
+  screen returns history plus the alternate screen text. The cap is the
+  constant `ScrollbackCapture.maxRows` (200,000 rows, no setting). Above it,
+  the capture starts at `-S -200000` and a notice says "Showing the newest
+  200000 lines". Trailing blank rows are dropped. The text is a snapshot:
+  the pane keeps changing below the overlay. tmux state does not change.
+- **File.** `NSTemporaryDirectory()/kido-scrollback-<uuid>/pane-<N>.txt`, mode
+  0400 in a 0700 directory, so the editor opens it read-only. The directory
+  holds also a `status` file that the command writes. The directory is
+  removed when the editor exits, when the overlay is disposed and at quit.
+  At launch, `sweepStale` removes `kido-scrollback-*` directories older than
+  one day and keeps fresh ones (a second Kido may use them).
+- **Editor.** `$VISUAL`, then `$EDITOR`, then `vi`, read from the user's
+  login shell (`$SHELL -ilc`, 3 s deadline), together with its `PATH`,
+  because Ghostty's exec mode reads no rc file. The result is cached per
+  `$SHELL` for the app run; a failed or timed-out lookup is not cached. The
+  value may contain arguments. `+` (open at the last line) is added only when
+  the first word's basename is `vi`, `vim`, `nvim` or `view`. The surface
+  runs `/usr/bin/env /bin/sh -c "$KIDO_SCROLLBACK_COMMAND"` in `$HOME`, with
+  `KIDO_SCROLLBACK_FILE`, `KIDO_SCROLLBACK_STATUS` and
+  `KIDO_SCROLLBACK_COMMAND` set. Ghostty runs `exec -l <command>`, so the
+  command is not an `exec` line itself.
+- **Failure.** Ghostty's exit code is not reliable on macOS. The command
+  writes the editor's status to the `status` file. A nonzero status shows the
+  notice "The editor exited with status N" with the screen text. Every other
+  failure shows the notice "Kido could not open the scrollback" and opens
+  nothing: a nil capture reply, an empty capture ("The pane has no text to
+  open."), an unwritable file or a Ghostty start failure. The cap notice has
+  the detail "Older lines of this pane are not in the file."
+- **Surface owner.** Every surface's userdata is a `SurfaceRef`, either
+  `.pane` or `.scrollback`. Callbacks switch on it. `close_surface_cb` runs
+  `kill-pane` only for a pane; for the overlay it runs `finish()`. Ghostty
+  sets `wait-after-command` for any exec command, so Kido handles
+  `SHOW_CHILD_EXITED` (it fires on a normal exit, a quick exit and a start
+  failure), returns true, and closes the overlay itself. Then Ghostty prints
+  no "Process exited" text. The overlay's clipboard writes go to the
+  pasteboard, paste reads it, and an OSC 52 read is unavailable.
+- **Lifetime.** `PaneView.scrollback` is `none`, `loading` or `open`. The menu
+  item is disabled unless `none`. `ScrollbackView` is a subview of the pane's
+  `PaneChrome`, framed at `content`, above the find bar and scroller. The
+  `PaneView` keeps its feed, so closing needs no resync. Focus goes through
+  `focusTarget`. The editor survives a window switch (occlusion is set) and
+  a layout change (the pty resizes). `SessionView.evict` skips a window with
+  an open overlay. A pane closed in tmux disposes its overlay first. Command-W
+  in the editor closes only the overlay.
+- **Limits.** A theme or color-scheme reload does not reach an open overlay.
 
 ### Focus treatment
 
@@ -1401,7 +1459,7 @@ The root list is built from live state, in this order:
   key equivalent: New Session, Rename Session…, Close Session, New Window,
   Close Window, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
   Remote Host…, Hide/Show Sidebar, Focus Sidebar, Enter Full Screen, Find…,
-  Copy Mode, Prompt…, Last Window, Reset Clipboard and Upload Permissions and Theme…. The window
+  Copy Mode, Prompt…, Last Window, Open Scrollback in Editor and Reset Clipboard and Upload Permissions and Theme…. The window
   commands need an anchor. The pane commands need a live focused pane: a
   connected anchor whose saved responder is a visible pane of that window, or
   a view inside one, such as its Find bar. Prompt… also needs an agent in the
@@ -1875,6 +1933,12 @@ Liquid Glass (sidebar and pane toolbar) and animation/scroll smoothness are
 not covered. Re-record with `make visual RECORD=1` after intentional visual
 changes, a macOS update or a different backing scale, and review the images
 and layout diffs. References live in `app/VisualTests/__Snapshots__`.
+
+`ScrollbackTests` runs the overlay against a private tmux socket with a fixture
+`$EDITOR` script: the frame, the file (history, directory), the cleanup,
+focus, window switch, a failing editor and one light and dark image.
+`ScrollbackCaptureTests` and the `ScrollbackUnitTests` cover the commands,
+the editor command, the file mode and the sweep.
 
 `PaletteTests` records one image of the palette's content view for each
 state of the approved mockup, `app/design/palette/` (`mockup.html` with its

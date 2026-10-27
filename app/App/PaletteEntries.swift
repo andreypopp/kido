@@ -130,6 +130,7 @@ struct PaletteEntry {
         case #selector(AppDelegate.showThemes): (17, .always)
         case #selector(SessionMenus.colorItem): (18, .window)
         case #selector(SessionMenus.lastWindow(_:)): (19, .window)
+        case #selector(PaneView.openScrollbackItem(_:)): (20, .pane)
         default: nil
         }
     }

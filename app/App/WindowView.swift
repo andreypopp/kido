@@ -103,6 +103,7 @@ final class WindowView: NSView {
     #endif
 
     var hot: Bool { !panes.isEmpty }
+    var hasScrollback: Bool { panes.contains { $0.scrollbackView != nil } }
 
     private var dividerDrain: UUID?
     var defersRestore: Bool {
@@ -203,9 +204,9 @@ final class WindowView: NSView {
     func focusActive(force: Bool) {
         guard !isHidden, let view = panes.first(where: { $0.pane == active }), let window else { return }
         let focused = window.firstResponder
-        guard force || focused === window || focused == nil || (focused as? PaneView)?.isDescendant(of: session ?? self) == true
-        else { return }
-        window.makeFirstResponder(view)
+        let inSession = (focused as? NSView).map { ($0 is PaneView || $0 is ScrollbackView) && $0.isDescendant(of: session ?? self) } == true
+        guard force || focused === window || focused == nil || inSession else { return }
+        window.makeFirstResponder(view.focusTarget)
     }
 
     func close() {
@@ -366,6 +367,7 @@ final class WindowView: NSView {
         if toolbar?.superview === chrome, toolbar?.frame != chrome.toolbarFrame { toolbar?.frame = chrome.toolbarFrame }
         if view.frame != grid { view.frame = grid }
         chrome.content = grid.offsetBy(dx: -frame.minX, dy: -frame.minY)
+        if let overlay = view.scrollbackView, overlay.frame != chrome.content { overlay.frame = chrome.content }
         chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
         if floating {
             let mask = view.layer?.mask as? CAShapeLayer ?? CAShapeLayer()
@@ -447,7 +449,8 @@ final class WindowView: NSView {
             self?.sendPane([tmux])
         }
         view.onAlternateChange = { [weak self] in self?.place() }
-        view.onFindChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
+        view.onChromeChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
+        view.onNotice = { [weak self] in self?.session?.onNotice($0, $1) }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
         view.onFontChange = { [weak self] in self?.session?.fontChanged($0) }
         view.onResync = { [weak connection] in connection?.syncResize(id) ?? false }

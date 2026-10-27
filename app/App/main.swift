@@ -52,6 +52,7 @@ import SidebarFeed
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         Upload.sweepPromises(launch: true)
+        ScrollbackFile.sweepStale()
         if let notifications = Notifier.shared.poster as? SystemNotifications {
             notifications.click = { [weak self] in self?.route($0) }
             notifications.install()
@@ -254,6 +255,7 @@ import SidebarFeed
         edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
         edit.addItem(item("Prompt with Selection…", #selector(PaneView.promptSelectionItem(_:)), "o", .command))
         edit.addItem(item("Copy Mode", #selector(PaneView.toggleCopyMode(_:)), "c", [.command, .shift]))
+        edit.addItem(item("Open Scrollback in Editor", #selector(PaneView.openScrollbackItem(_:)), "e", [.command, .shift]))
         edit.addItem(item("Reset Clipboard and Upload Permissions", #selector(resetClipboardPermissions), "", []))
         let bar = NSMenu()
         for menu in [app, file, edit, view, menus.window, menus.session] {
@@ -611,6 +613,7 @@ import SidebarFeed
         note("quitting: \(trigger ?? "NSApp.terminate")")
         Notifier.shared.withdrawAll()
         Upload.sweepPromises()
+        ScrollbackFile.removeAll()
         let stopped = DispatchGroup()
         for owner in owners {
             stopped.enter()
