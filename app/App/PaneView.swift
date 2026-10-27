@@ -4,7 +4,7 @@ import GhosttyKit
 import IOSurface
 import TmuxControl
 
-private final class TerminalView: NSView {
+final class TerminalView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
@@ -13,6 +13,8 @@ private final class Overlay: PaneCapsule {
 }
 
 final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValidation {
+    override var mouseDownCanMoveWindow: Bool { false }
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool { acceptsKeyInput && canPerformMenuItem(item) }
 
     func canPerformMenuItem(_ item: NSMenuItem) -> Bool {
@@ -20,6 +22,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         case #selector(promptSelectionItem(_:)): canPrompt()
         case #selector(copySelectionItem(_:)), #selector(NSText.copy(_:)): hasSelection
         case #selector(NSText.selectAll(_:)), #selector(NSText.paste(_:)): copyMode == nil
+        case #selector(openScrollbackItem(_:)): if case .none = scrollback { true } else { false }
         case #selector(runCommand(_:)), #selector(toggleCopyMode(_:)),
              #selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)): true
         default: false
@@ -59,13 +62,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var onLoadMore: () -> Void = {}
     var onScrollTop: () -> Void = {}
     var onCopyCheck: (@escaping @MainActor @Sendable (Bool) -> Void) -> Void = { $0(true) }
-    var onFindChange: () -> Void = {}
+    var onChromeChange: () -> Void = {}
+    var onSend: ([Command], (@MainActor @Sendable ([Reply]?) -> Void)?) -> Void = { _, done in done?(nil) }
+    var onNotice: (String, String) -> Void = { _, _ in }
     let scroller = PaneScroller()
-    var find: PaneFind? { didSet { needsLayout = true; onFindChange() } }
+    var find: PaneFind? { didSet { needsLayout = true; onChromeChange() } }
+    enum Scrollback { case none, loading(UUID), open(ScrollbackView, ScrollbackFile) }
+    private(set) var scrollback = Scrollback.none { didSet { onChromeChange() } }
+    var scrollbackView: ScrollbackView? { if case .open(let view, _) = scrollback { view } else { nil } }
+    var focusTarget: NSView { scrollbackView ?? self }
     var canPrompt: () -> Bool = { false }
     var selectionQuote: String? { hasSelection ? readSelection() : nil }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
-    var chromeViews: [NSView] { [historyLimit, copyLabel] + [find].compactMap { $0 } }
+    var chromeViews: [NSView] { [historyLimit, copyLabel] + [find, scrollbackView].compactMap { $0 } }
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
     private enum MouseDrag {
@@ -111,16 +120,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     enum Freeze { case off, entering, frozen }
     private(set) var alternate = false
     var onAlternateChange: () -> Void = {}
-    var renderInsets = PaneLayout.RenderInsets() {
-        didSet {
-            if renderInsets != oldValue {
-                ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded()), UInt32((renderInsets.bottom * (window?.backingScaleFactor ?? 2)).rounded()))
-                if finalEpoch != nil {
-                    DispatchQueue.main.async { [weak self] in self?.requestFinalRender() }
-                }
-            }
-        }
-    }
     private(set) var mouseShape = GHOSTTY_MOUSE_SHAPE_TEXT
     var mouseCursor: NSCursor {
         switch mouseShape {
@@ -149,9 +148,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     var terminalCursorRects: [CGRect] {
-        CGRect(x: 0, y: renderInsets.bottom, width: bounds.width,
-               height: max(0, bounds.height - renderInsets.top - renderInsets.bottom))
-            .subtracting(subviews.filter { $0 !== terminal && !$0.isHidden && $0.alphaValue > 0 }.map(\.frame))
+        bounds.subtracting(subviews.filter { $0 !== terminal && !$0.isHidden && $0.alphaValue > 0 }.map(\.frame))
     }
 
     private let terminal = TerminalView()
@@ -190,7 +187,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private var finalEpoch: Int?
     private var renderSequence: UInt64 = 0
     private var renderRetry = false
-    private var rendering: (token: UInt64, epoch: Int, pixels: CGSize, inset: PaneLayout.RenderInsets, revision: Int, distance: Double?)?
+    private var rendering: (token: UInt64, epoch: Int, pixels: CGSize, revision: Int, distance: Double?)?
     nonisolated private let anchor = OSAllocatedUnfairLock<ScrollAnchor?>(initialState: nil)
     nonisolated var resizeAnchor: ScrollAnchor? {
         get { anchor.withLock { $0 } }
@@ -369,7 +366,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         renderSequence += 1
         let appliedRevision = scrollPresentation.revision
         guard let revision = scrollIntent.withLock({ $0.replay == nil && $0.revision == appliedRevision ? $0.revision : nil }) else { return }
-        rendering = (renderSequence, epoch, convertToBacking(bounds.size), renderInsets, revision, scrollDistance)
+        rendering = (renderSequence, epoch, convertToBacking(bounds.size), revision, scrollDistance)
         if !ghostty_surface_request_render_with_token(surface, renderSequence) {
             rendering = nil
             debug("resize render-rejected pane=\(pane) epoch=\(epoch)")
@@ -384,7 +381,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         guard let request = rendering, request.token == token else { return }
         rendering = nil
         let geometry = request.epoch == historyEpoch && request.epoch == finalEpoch
-            && request.pixels == convertToBacking(bounds.size) && request.inset == renderInsets
+            && request.pixels == convertToBacking(bounds.size)
             && request.distance == scrollDistance
         let applied = scrollPending == nil && resizeAnchor == nil && scrollPresentation.distance == scrollDistance
             && scrollPresentation.revision == request.revision
@@ -513,7 +510,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         renderSequence += 1
         let token = renderSequence, epoch = historyEpoch
         finalEpoch = epoch
-        rendering = (token, epoch, convertToBacking(bounds.size), renderInsets, scrollRevision, scrollDistance)
+        rendering = (token, epoch, convertToBacking(bounds.size), scrollRevision, scrollDistance)
         let callback = onFinalRender
         finalRenderCount = 0
         onFinalRender = { [weak self] in self?.finalRenderCount += 1 }
@@ -715,7 +712,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         scrollGeometry.position = moved
         scrollPresentation = (moved, 20.25, scrollRevision)
         presentScroll()
-        let point = convert(NSPoint(x: cell.width * 2, y: bounds.height - renderInsets.top - cell.height * 0.9), to: nil)
+        let point = convert(NSPoint(x: cell.width * 2, y: bounds.height - cell.height * 0.9), to: nil)
         let event = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 1,
                                      windowNumber: window!.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 1)!
         for _ in 0..<2 {
@@ -802,19 +799,18 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var resizeDebug: String {
         let size = ghostty_surface_size(surface)
         let io = installedPixels.map { "\(Int($0.width))x\(Int($0.height))" } ?? "none"
-        return "frame=\(frame) grid=\(size.columns)x\(size.rows) inset=\((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded())px visible=\(presented.visible) finalPending=\(finalEpoch != nil) io=\(io)"
+        return "frame=\(frame) grid=\(size.columns)x\(size.rows) visible=\(presented.visible) finalPending=\(finalEpoch != nil) io=\(io)"
     }
 
     #if KIDO_VISUAL || KIDO_STRESS
-    func wheelEvent(y: Int32, x: Int32 = 0, precise: Bool = true, shift: Bool = false, band: Int = 0, momentum: Int64 = 0) -> NSEvent? {
+    func wheelEvent(y: Int32, x: Int32 = 0, precise: Bool = true, shift: Bool = false, momentum: Int64 = 0) -> NSEvent? {
         guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: precise ? .pixel : .line,
                                wheelCount: 2, wheel1: y, wheel2: x, wheel3: 0),
               let initial = NSEvent(cgEvent: cg) else { return nil }
         cg.flags = shift ? .maskShift : []
         cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: precise ? 1 : 0)
         cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
-        let local = NSPoint(x: cell.width / 2, y: band > 0 ? bounds.height - renderInsets.top / 2
-            : band < 0 ? renderInsets.bottom / 2 : bounds.height - renderInsets.top - cell.height / 2)
+        let local = NSPoint(x: cell.width / 2, y: bounds.height - cell.height / 2)
         let point = convert(local, to: nil)
         cg.location = CGPoint(x: cg.location.x + point.x - initial.locationInWindow.x,
                               y: cg.location.y - point.y + initial.locationInWindow.y)
@@ -833,7 +829,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var visualInstalledPixels: CGSize? { installedPixels }
     var visualReady: Bool { !resizeDirty && finalEpoch == nil && restoreRequested == nil && scrollPending == nil && rendering == nil }
     var visualState: String {
-        "insets=\(renderInsets.top),\(renderInsets.bottom) pill=\(!historyLimit.isHidden) find=\(find != nil) alternate=\(alternate) scroll=\(String(describing: scrollDistance))"
+        "pill=\(!historyLimit.isHidden) find=\(find != nil) alternate=\(alternate) scroll=\(String(describing: scrollDistance))"
     }
     func visualScroll(_ distance: Double) { requestScrollDistance { _ in distance } }
     func visualFrame(_ completion: @escaping (ghostty_render_presentation_status_e) -> Void) {
@@ -855,11 +851,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private(set) var acceptingInput = true
     private var acceptsKeyInput: Bool { acceptingInput && (window as? OwnerWindow)?.allowsPaneInput != false }
     private(set) var disposed = false
+    private var surfaceRef: SurfaceRef!
 
     func dispose() {
         vsyncContext?.takeUnretainedValue().close()
         guard !disposed else { return }
         disposed = true
+        closeScrollback()
         _ = (window?.delegate as? WindowOwner)?.cancelUploads(self)
         invalidateClipboard()
         grid.withLock { $0.ready = false; $0.epoch += 1 }
@@ -880,7 +878,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     // Ghostty calls back on its renderer and IO threads too, where a strong
     // reference to the view could be its last.
     nonisolated static func onMain(_ userdata: UnsafeMutableRawPointer?, _ body: @escaping @MainActor (PaneView) -> Void) {
-        Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef { view in
+        guard case .pane(let owner) = SurfaceRef.owner(userdata) else { return }
+        owner._withUnsafeGuaranteedRef { view in
             DispatchQueue.main.async { [weak view] in guard let view, !view.disposed else { return }; body(view) }
         }
     }
@@ -898,7 +897,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         terminal.frame = bounds
         addSubview(terminal)
         var config = ghostty_surface_config_new()
-        let this = Unmanaged.passUnretained(self).toOpaque()
+        let ref = SurfaceRef(.pane(Unmanaged.passUnretained(self)))
+        surfaceRef = ref
+        let this = Unmanaged.passUnretained(ref).toOpaque()
         config.userdata = this
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
         config.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(terminal).toOpaque()))
@@ -1168,6 +1169,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     func setFontSize(_ points: Float) {
+        scrollbackView?.setFontSize(points)
         let action = "set_font_size:\(points)"
         _ = ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
     }
@@ -1219,6 +1221,79 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
               window?.inLiveResize != true, !isHidden, superview?.isHidden != true,
               grid.withLock({ $0.ready }), restoreRequested != historyEpoch else { return }
         if onResync() { restoreRequested = historyEpoch }
+    }
+
+    // MARK: - Scrollback in the editor
+
+    #if KIDO_VISUAL
+    nonisolated(unsafe) static var scrollbackRows = ScrollbackCapture.maxRows
+    #else
+    static let scrollbackRows = ScrollbackCapture.maxRows
+    #endif
+
+    @objc func openScrollbackItem(_ sender: Any? = nil) {
+        guard case .none = scrollback, !disposed else { return }
+        let token = UUID()
+        scrollback = .loading(token)
+        let login = Task { await ScrollbackEditor.login() }
+        onSend([ScrollbackCapture.historyRequest(pane)]) { [weak self] replies in
+            guard let self, isLoading(token) else { return }
+            guard let history = ScrollbackCapture.historySize(replies?.first) else { return failScrollback("Kido could not read the pane history.") }
+            onSend([ScrollbackCapture.capture(pane, history: history, limit: Self.scrollbackRows)]) { [weak self] replies in
+                guard let self, isLoading(token) else { return }
+                guard let text = ScrollbackCapture.text(replies?.first) else { return failScrollback("The pane has no text to open.") }
+                let pane = pane, capped = history > Self.scrollbackRows
+                Task { [weak self] in
+                    let environment = await login.value
+                    let file = await Task.detached(priority: .utility) { try? ScrollbackFile.write(text, pane: pane) }.value
+                    guard let self, isLoading(token) else { return file?.remove() ?? () }
+                    guard let file else { return failScrollback("Kido could not write the scrollback file.") }
+                    showScrollback(file, environment)
+                    if capped { onNotice("Showing the newest \(Self.scrollbackRows) lines", "Older lines of this pane are not in the file.") }
+                }
+            }
+        }
+    }
+
+    private func isLoading(_ token: UUID) -> Bool {
+        if case .loading(let current) = scrollback { current == token } else { false }
+    }
+
+    private func failScrollback(_ detail: String) {
+        closeScrollback()
+        onNotice("Kido could not open the scrollback", detail)
+    }
+
+    private func showScrollback(_ file: ScrollbackFile, _ login: ScrollbackEditor.Login) {
+        var environment = [ScrollbackEditor.fileVariable: file.url.path, ScrollbackEditor.statusVariable: file.statusURL.path,
+                           ScrollbackEditor.commandVariable: ScrollbackEditor.command(login)]
+        if !login.path.isEmpty { environment["PATH"] = login.path }
+        guard let view = ScrollbackView(runtime: runtime, font: font, command: "/usr/bin/env /bin/sh -c \"$\(ScrollbackEditor.commandVariable)\"",
+                                        environment: environment, directory: runtime.home) else {
+            file.remove()
+            return failScrollback("Ghostty could not start a terminal for the editor.")
+        }
+        view.onFinish = { [weak self] screen in self?.closeScrollback(screen: screen) }
+        view.onCommand = { [weak self] in self?.onCommand($0) }
+        view.onSelect = { [weak self] in self?.onSelect() }
+        view.frame = frame
+        scrollback = .open(view, file)
+        window?.makeFirstResponder(view)
+    }
+
+    private func closeScrollback(screen: String = "") {
+        guard case .open(let view, let file) = scrollback else {
+            if case .loading = scrollback { scrollback = .none }
+            return
+        }
+        let focused = window?.firstResponder === view
+        let status = file.exitStatus
+        view.dispose()
+        scrollback = .none
+        view.removeFromSuperview()
+        file.remove()
+        if focused, !disposed { window?.makeFirstResponder(self) }
+        if let status, status != 0 { onNotice("The editor exited with status \(status)", screen) }
     }
 
     // MARK: - Copy mode
@@ -1662,7 +1737,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             guard let self else { return }
             ghostty_surface_set_content_scale(surface, scale, scale)
         }
-        ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * scale).rounded()), UInt32((renderInsets.bottom * scale).rounded()))
     }
 
     override func updateTrackingAreas() {
@@ -1684,12 +1758,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     // MARK: - Mouse
 
-    private func inRenderBand(_ event: NSEvent) -> Bool {
-        let y = convert(event.locationInWindow, from: nil).y
-        return (renderInsets.bottom > 0 && y < renderInsets.bottom)
-            || (renderInsets.top > 0 && bounds.height - y < renderInsets.top)
-    }
-
     private func button(_ event: NSEvent, _ state: ghostty_input_mouse_state_e) -> Bool {
         if copyMode != nil {
             if state == GHOSTTY_MOUSE_PRESS { endCopy() }
@@ -1697,12 +1765,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
         if state == GHOSTTY_MOUSE_PRESS {
             resizeAnchor = nil
-            let strip = inRenderBand(event)
-            if event.buttonNumber == 0 || strip {
+            if event.buttonNumber == 0 {
                 window?.makeFirstResponder(self)
                 onSelect()
             }
-            if strip { position(event); return true }
             snapScroll()
         } else if !pressed.contains(event.buttonNumber) { return true }
         if state == GHOSTTY_MOUSE_PRESS { position(event); pressed.insert(event.buttonNumber) }
@@ -1713,19 +1779,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         case 2: GHOSTTY_MOUSE_MIDDLE
         default: GHOSTTY_MOUSE_UNKNOWN
         }
-        return ghostty_surface_mouse_button(surface, state, button, Self.mods(event.modifierFlags))
+        return ghostty_surface_mouse_button(surface, state, button, SurfaceInput.mods(event.modifierFlags))
     }
 
     private func position(_ event: NSEvent) {
         guard copyMode == nil else { return }
-        if inRenderBand(event) && pressed.isEmpty {
-            ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
-            return
-        }
         guard scrollDistance.map({ $0 == $0.rounded() }) != false else { return }
         let pos = convert(event.locationInWindow, from: nil)
-        let y = bounds.height - pos.y - renderInsets.top
-        ghostty_surface_mouse_pos(surface, pos.x, y, Self.mods(event.modifierFlags))
+        let y = max(0, bounds.height - pos.y)
+        ghostty_surface_mouse_pos(surface, pos.x, y, SurfaceInput.mods(event.modifierFlags))
     }
 
     private func point(_ cell: (x: Int, y: Int)) -> ghostty_point_s {
@@ -1738,7 +1800,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         let size = ghostty_surface_size(surface)
         let columns = max(1, Int(size.columns)), rows = max(1, Int(bar.len))
         let x = min(max(0, Int(floor(point.x / max(1, cell.width)))), columns - 1)
-        let viewportRow = min(max(0, Int(floor((bounds.height - point.y - renderInsets.top) / max(1, cell.height)))), rows - 1)
+        let viewportRow = min(max(0, Int(floor((bounds.height - point.y) / max(1, cell.height)))), rows - 1)
         let y = min(max(0, Int(bar.offset) + viewportRow), max(0, Int(bar.total) - 1))
         return (x, y)
     }
@@ -1811,7 +1873,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     private func edgeOverflow(_ point: NSPoint) -> (above: CGFloat, below: CGFloat) {
-        (point.y - (bounds.height - renderInsets.top), renderInsets.bottom - point.y)
+        (point.y - bounds.height, -point.y)
     }
 
     private func applyDrag(_ cell: (x: Int, y: Int)) {
@@ -2027,7 +2089,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             if !captured {
                 let removed = pressed.remove(event.buttonNumber) ?? pressed.remove(1)
                 if removed != nil {
-                    _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, Self.mods(event.modifierFlags))
+                    _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, SurfaceInput.mods(event.modifierFlags))
                 }
                 if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
             } else if !consumed {
@@ -2088,7 +2150,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     override func mouseExited(with event: NSEvent) {
         guard NSEvent.pressedMouseButtons == 0, copyMode == nil else { return }
-        ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
+        ghostty_surface_mouse_pos(surface, -1, -1, SurfaceInput.mods(event.modifierFlags))
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -2147,14 +2209,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     override func scrollWheel(with event: NSEvent) {
         let time = CACurrentMediaTime()
         debug("wheel pane=\(pane) time=\(time) phase=\(event.phase.rawValue) momentum=\(event.momentumPhase.rawValue) precise=\(event.hasPreciseScrollingDeltas) delta=\(event.scrollingDeltaY) eventTime=\(event.timestamp)")
-        let strip = inRenderBand(event)
-        if strip { position(event) }
         let precise = event.hasPreciseScrollingDeltas
         if event.momentumPhase.isEmpty && event.scrollingDeltaY != 0 { suppressMomentum = false }
         if suppressMomentum && !event.momentumPhase.isEmpty { return }
         for _ in 0..<3 {
-            let intent = copyMode == nil ? ghostty_surface_wheel_intent(surface, strip) : alternate ? GHOSTTY_WHEEL_IGNORE : GHOSTTY_WHEEL_VIEWPORT
-            let accepted = copyMode != nil || intent == GHOSTTY_WHEEL_PROGRAM || ghostty_surface_wheel_input(surface, 0, 0, 0, Self.mods(event.modifierFlags), strip, intent)
+            let intent = copyMode == nil ? ghostty_surface_wheel_intent(surface, false) : alternate ? GHOSTTY_WHEEL_IGNORE : GHOSTTY_WHEEL_VIEWPORT
+            let accepted = copyMode != nil || intent == GHOSTTY_WHEEL_PROGRAM || ghostty_surface_wheel_input(surface, 0, 0, 0, SurfaceInput.mods(event.modifierFlags), false, intent)
             if !accepted { continue }
             if wheelOwner != intent { wheelRemainder = 0; wheelOwner = intent }
             debug("wheel-route pane=\(pane) disposition=\(intent.rawValue)")
@@ -2186,100 +2246,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             }
             scroller.reveal()
             if scrollDistance.map({ $0 != $0.rounded() }) == true { snapScroll() }
-            let momentum: ghostty_input_mouse_momentum_e = switch event.momentumPhase {
-            case .began: GHOSTTY_MOUSE_MOMENTUM_BEGAN
-            case .stationary: GHOSTTY_MOUSE_MOMENTUM_STATIONARY
-            case .changed: GHOSTTY_MOUSE_MOMENTUM_CHANGED
-            case .ended: GHOSTTY_MOUSE_MOMENTUM_ENDED
-            case .cancelled: GHOSTTY_MOUSE_MOMENTUM_CANCELLED
-            case .mayBegin: GHOSTTY_MOUSE_MOMENTUM_MAY_BEGIN
-            default: GHOSTTY_MOUSE_MOMENTUM_NONE
-            }
+            let momentum = SurfaceInput.momentum(event)
             let mods = (precise ? 1 : 0) | Int32(momentum.rawValue) << 1
             if ghostty_surface_wheel_input(surface, event.scrollingDeltaX, event.scrollingDeltaY, mods,
-                                           Self.mods(event.modifierFlags), strip, intent) { return }
+                                           SurfaceInput.mods(event.modifierFlags), false, intent) { return }
         }
     }
 
     // MARK: - Keyboard
-
-    private static func mods(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
-        var mods = GHOSTTY_MODS_NONE.rawValue
-        if flags.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
-        if flags.contains(.control) { mods |= GHOSTTY_MODS_CTRL.rawValue }
-        if flags.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
-        if flags.contains(.command) { mods |= GHOSTTY_MODS_SUPER.rawValue }
-        if flags.contains(.capsLock) { mods |= GHOSTTY_MODS_CAPS.rawValue }
-        let raw = flags.rawValue
-        if raw & UInt(NX_DEVICERSHIFTKEYMASK) != 0 { mods |= GHOSTTY_MODS_SHIFT_RIGHT.rawValue }
-        if raw & UInt(NX_DEVICERCTLKEYMASK) != 0 { mods |= GHOSTTY_MODS_CTRL_RIGHT.rawValue }
-        if raw & UInt(NX_DEVICERALTKEYMASK) != 0 { mods |= GHOSTTY_MODS_ALT_RIGHT.rawValue }
-        if raw & UInt(NX_DEVICERCMDKEYMASK) != 0 { mods |= GHOSTTY_MODS_SUPER_RIGHT.rawValue }
-        return ghostty_input_mods_e(mods)
-    }
-
-    private static func flags(_ mods: ghostty_input_mods_e) -> NSEvent.ModifierFlags {
-        var flags = NSEvent.ModifierFlags()
-        if mods.rawValue & GHOSTTY_MODS_SHIFT.rawValue != 0 { flags.insert(.shift) }
-        if mods.rawValue & GHOSTTY_MODS_CTRL.rawValue != 0 { flags.insert(.control) }
-        if mods.rawValue & GHOSTTY_MODS_ALT.rawValue != 0 { flags.insert(.option) }
-        if mods.rawValue & GHOSTTY_MODS_SUPER.rawValue != 0 { flags.insert(.command) }
-        return flags
-    }
-
-    // Control characters are left to Ghostty's key encoder, and AppKit's
-    // private-use function-key characters are not text.
-    private static func text(_ event: NSEvent) -> String? {
-        guard let characters = event.characters else { return nil }
-        if characters.count == 1, let scalar = characters.unicodeScalars.first {
-            if scalar.value < 0x20 {
-                return event.characters(byApplyingModifiers: event.modifierFlags.subtracting(.control))
-            }
-            if (0xF700...0xF8FF).contains(scalar.value) { return nil }
-        }
-        return characters
-    }
-
-    private static func isComposingControl(_ text: String?, composing: Bool) -> Bool {
-        guard composing, let scalars = text?.unicodeScalars, scalars.count == 1 else { return false }
-        return scalars.first!.value < 0x20
-    }
-
-    @discardableResult
-    private func keyAction(
-        _ action: ghostty_input_action_e,
-        event: NSEvent,
-        translationMods: NSEvent.ModifierFlags? = nil,
-        text: String? = nil,
-        composing: Bool = false
-    ) -> Bool {
-        var key = ghostty_input_key_s()
-        key.action = action
-        key.keycode = UInt32(event.keyCode)
-        key.mods = Self.mods(event.modifierFlags)
-        key.consumed_mods = Self.mods((translationMods ?? event.modifierFlags).subtracting([.control, .command]))
-        key.composing = composing
-        if event.type == .keyDown || event.type == .keyUp,
-           let scalar = event.characters(byApplyingModifiers: [])?.unicodeScalars.first {
-            key.unshifted_codepoint = scalar.value
-        }
-        guard let text, let first = text.utf8.first, first >= 0x20, first != 0x7F else {
-            return ghostty_surface_key(surface, key)
-        }
-        return text.withCString { ptr in
-            key.text = ptr
-            return ghostty_surface_key(surface, key)
-        }
-    }
-
-    private func committedText(_ action: ghostty_input_action_e, _ text: String) {
-        var key = ghostty_input_key_s()
-        key.action = action
-        text.withCString { ptr in
-            key.text = ptr
-            _ = ghostty_surface_key(surface, key)
-        }
-    }
 
     override func keyDown(with event: NSEvent) {
         #if KIDO_VISUAL
@@ -2294,59 +2268,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             if event.modifierFlags.contains(.shift) { find.previous() } else { find.next() }
             return
         }
-        let translated = Self.flags(ghostty_surface_key_translation_mods(surface, Self.mods(event.modifierFlags)))
-        var translationMods = event.modifierFlags
-        for flag in [NSEvent.ModifierFlags.shift, .control, .option, .command] {
-            if translated.contains(flag) { translationMods.insert(flag) } else { translationMods.remove(flag) }
-        }
-        // AppKit IMEs (Korean in particular) need the original event object
-        // whenever the modifiers are unchanged.
-        let translationEvent = translationMods == event.modifierFlags ? event : NSEvent.keyEvent(
-            with: event.type,
-            location: event.locationInWindow,
-            modifierFlags: translationMods,
-            timestamp: event.timestamp,
-            windowNumber: event.windowNumber,
-            context: nil,
-            characters: event.characters(byApplyingModifiers: translationMods) ?? "",
-            charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "",
-            isARepeat: event.isARepeat,
-            keyCode: event.keyCode) ?? event
+        let translationEvent = SurfaceInput.translation(event, surface)
 
-        let action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         keyTextAccumulator = []
         defer { keyTextAccumulator = nil }
         let markedBefore = markedText.length > 0
         lastPerformKeyEvent = nil
         interpretKeyEvents([translationEvent])
         syncPreedit(clearIfNeeded: markedBefore)
-        let composing = markedText.length > 0 || markedBefore
-        let accumulated = keyTextAccumulator ?? []
-
-        if markedBefore, !accumulated.isEmpty {
-            for text in accumulated where !Self.isComposingControl(text, composing: composing) {
-                committedText(action, text)
-            }
-            // Arrows after a commit still move the cursor; a plain left arrow
-            // is already accounted for by the IME.
-            let replay: Bool = switch event.keyCode {
-            case 0x7D, 0x7C, 0x7E: true
-            case 0x7B: !event.modifierFlags.isDisjoint(with: [.shift, .control, .option, .command])
-            default: false
-            }
-            if replay { keyAction(action, event: event, translationMods: translationEvent.modifierFlags) }
-        } else if !accumulated.isEmpty {
-            for text in accumulated where !Self.isComposingControl(text, composing: composing) {
-                keyAction(action, event: event, translationMods: translationEvent.modifierFlags, text: text)
-            }
-        } else if !Self.isComposingControl(event.characters, composing: composing) {
-            keyAction(
-                action,
-                event: event,
-                translationMods: translationEvent.modifierFlags,
-                text: Self.text(translationEvent),
-                composing: composing)
-        }
+        SurfaceInput.deliver(surface, event, translation: translationEvent, accumulated: keyTextAccumulator ?? [],
+                             composing: markedText.length > 0 || markedBefore, markedBefore: markedBefore)
     }
 
     override func keyUp(with event: NSEvent) {
@@ -2354,28 +2285,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         visualKeyUps += 1
         #endif
         guard copyMode == nil else { return }
-        keyAction(GHOSTTY_ACTION_RELEASE, event: event)
+        SurfaceInput.key(surface, GHOSTTY_ACTION_RELEASE, event: event)
     }
 
     override func flagsChanged(with event: NSEvent) {
-        let mod: ghostty_input_mods_e
-        let rightMask: Int32?
-        switch event.keyCode {
-        case 0x39: (mod, rightMask) = (GHOSTTY_MODS_CAPS, nil)
-        case 0x38: (mod, rightMask) = (GHOSTTY_MODS_SHIFT, nil)
-        case 0x3C: (mod, rightMask) = (GHOSTTY_MODS_SHIFT, NX_DEVICERSHIFTKEYMASK)
-        case 0x3B: (mod, rightMask) = (GHOSTTY_MODS_CTRL, nil)
-        case 0x3E: (mod, rightMask) = (GHOSTTY_MODS_CTRL, NX_DEVICERCTLKEYMASK)
-        case 0x3A: (mod, rightMask) = (GHOSTTY_MODS_ALT, nil)
-        case 0x3D: (mod, rightMask) = (GHOSTTY_MODS_ALT, NX_DEVICERALTKEYMASK)
-        case 0x37: (mod, rightMask) = (GHOSTTY_MODS_SUPER, nil)
-        case 0x36: (mod, rightMask) = (GHOSTTY_MODS_SUPER, NX_DEVICERCMDKEYMASK)
-        default: return
-        }
         guard !hasMarkedText(), copyMode == nil else { return }
-        let held = Self.mods(event.modifierFlags).rawValue & mod.rawValue != 0
-        let sidePressed = rightMask.map { event.modifierFlags.rawValue & UInt($0) != 0 } ?? true
-        keyAction(held && sidePressed ? GHOSTTY_ACTION_PRESS : GHOSTTY_ACTION_RELEASE, event: event)
+        SurfaceInput.flagsChanged(surface, event)
     }
 
     // AppKit offers command and control chords here before keyDown and may
@@ -2399,21 +2314,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             return true
         }
 
-        var key = ghostty_input_key_s()
-        key.action = GHOSTTY_ACTION_PRESS
-        key.keycode = UInt32(event.keyCode)
-        key.mods = Self.mods(event.modifierFlags)
-        key.unshifted_codepoint = event.characters(byApplyingModifiers: [])?.unicodeScalars.first?.value ?? 0
         #if KIDO_VISUAL
         visualBindingQueries += 1
         #endif
-        var flags = ghostty_binding_flags_e(0)
-        let isBinding = (event.characters ?? "").withCString { ptr in
-            key.text = ptr
-            return ghostty_surface_key_is_binding(surface, key, &flags)
-        }
-        if isBinding {
-            let flags = flags.rawValue
+        if let flags = SurfaceInput.binding(surface, event) {
             if flags & GHOSTTY_BINDING_FLAGS_CONSUMED.rawValue != 0,
                flags & (GHOSTTY_BINDING_FLAGS_ALL.rawValue | GHOSTTY_BINDING_FLAGS_PERFORMABLE.rawValue) == 0,
                NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
@@ -2517,7 +2421,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         snapScroll()
         var x = 0.0, y = 0.0, width = 0.0, height = 0.0
         ghostty_surface_ime_point(surface, &x, &y, &width, &height)
-        let rect = convert(NSRect(x: x, y: bounds.height - renderInsets.top - y, width: width, height: max(height, cell.height)), to: nil)
+        let rect = convert(NSRect(x: x, y: bounds.height - y, width: width, height: max(height, cell.height)), to: nil)
         return window?.convertToScreen(rect) ?? rect
     }
 
@@ -2540,7 +2444,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         if keyTextAccumulator != nil {
             keyTextAccumulator?.append(chars)
         } else if hadMarkedText, !chars.isEmpty {
-            committedText(GHOSTTY_ACTION_PRESS, chars)
+            SurfaceInput.committedText(surface, GHOSTTY_ACTION_PRESS, chars)
         } else {
             ghostty_surface_text_input(surface, chars, UInt(chars.utf8.count))
         }

@@ -111,6 +111,8 @@ schemes:
         VisualTests: [test]
     test:
       targets: [VisualTests]
+      commandLineArguments:
+        "-NSUserKeyEquivalents {}": true
       environmentVariables:
         KIDO_APP_BACKGROUND: "1"
         DYLD_INSERT_LIBRARIES: "$(SRCROOT)/build/bundle/visual/vsync-cv-count.dylib"

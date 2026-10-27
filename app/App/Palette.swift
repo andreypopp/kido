@@ -3,16 +3,22 @@ import GhosttyKit
 import SidebarFeed
 import TmuxControl
 
+enum ColorTarget: Equatable {
+    case connection(Host), newConnection
+}
+
 enum PaletteMode: Equatable {
     case root, connect
     case theme(ThemeStep)
     case prompt(PromptSource)
+    case color(ColorTarget)
     case rename(WindowOwner, ServerInstance, SessionID, original: String)
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
         case (.root, .root), (.connect, .connect): true
         case let (.prompt(a), .prompt(b)): a == b
         case let (.theme(a), .theme(b)): a == b
+        case let (.color(a), .color(b)): a == b
         case let (.rename(a, ai, asid, an), .rename(b, bi, bsid, bn)): a === b && ai == bi && asid == bsid && an == bn
         default: false
         }
@@ -21,8 +27,8 @@ enum PaletteMode: Equatable {
 
 private final class PaletteChip: NSView {
     var mode: PaletteMode = .root
-    private var title: String { switch mode { case .prompt: "Prompt"; case .connect: "Connect"; case .theme: "Theme"; default: "Rename session" } }
-    private var symbol: String { switch mode { case .prompt: "bubble.left"; case .connect: "globe"; case .theme: "paintpalette"; default: "pencil" } }
+    private var title: String { switch mode { case .prompt: "Prompt"; case .connect: "Connect"; case .theme: "Theme"; case .color: "Color"; default: "Rename session" } }
+    private var symbol: String { switch mode { case .prompt: "bubble.left"; case .connect: "globe"; case .theme: "paintpalette"; case .color: "eyedropper"; default: "pencil" } }
     var width: CGFloat { 33 + (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -34,6 +40,27 @@ private final class PaletteChip: NSView {
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: Chrome.ink]
         let size = (title as NSString).size(withAttributes: attributes)
         (title as NSString).draw(at: NSPoint(x: 25, y: (bounds.height - size.height) / 2), withAttributes: attributes)
+    }
+}
+
+private final class PaletteSwatch: NSView {
+    var color = Chrome.accent { didSet { needsDisplay = true } }
+    var press: () -> Void = {}
+    static let width: CGFloat = 36
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { press() }
+    override func accessibilityPerformPress() -> Bool { press(); return true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            Chrome.modeChipFill.setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+            color.setFill()
+            NSBezierPath(ovalIn: NSRect(x: 7, y: (bounds.height - 12) / 2, width: 12, height: 12)).fill()
+            let chevron = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)!
+                .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold).applying(.init(hierarchicalColor: Chrome.swatchChevron)))!
+            chevron.draw(in: NSRect(x: 23, y: (bounds.height - 8) / 2, width: 8, height: 8), from: .zero, operation: .sourceOver, fraction: 1)
+        }
     }
 }
 
@@ -60,16 +87,24 @@ private final class PaletteFoot: NSView {
             (right as NSString).draw(at: NSPoint(x: bounds.width - 16 - size.width, y: 8), withAttributes: attributes)
             return
         }
-        let session: String? = if case .rename(_, _, _, let original) = mode { original } else { nil }
-        for text in session == nil ? ["↩ connect", "⌫ on empty field back", "esc back"] : ["↩ rename", "esc back"] {
+        let session: String?
+        let hints: [String]
+        switch mode {
+        case .rename(_, _, _, let original): (session, hints) = (original, ["↩ rename", "esc back"])
+        case .color(.connection(let host)): (session, hints) = (host.label, ["↩ choose", "esc back"])
+        case .color(.newConnection): (session, hints) = (nil, ["↩ choose", "esc back"])
+        default: (session, hints) = (nil, ["↩ connect", "⌥⌘C color", "⌫ on empty field back", "esc back"])
+        }
+        let subject: (String, String) = if case .color = mode { ("connection ", "") } else { ("session ", " of the key window") }
+        for text in hints {
             let size = (text as NSString).size(withAttributes: attributes)
             (text as NSString).draw(at: NSPoint(x: x, y: (bounds.height - size.height) / 2), withAttributes: attributes)
             x += size.width + 12
         }
         if let session {
-            let text = NSMutableAttributedString(string: "session ", attributes: attributes)
+            let text = NSMutableAttributedString(string: subject.0, attributes: attributes)
             text.append(NSAttributedString(string: session, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: Chrome.ink]))
-            text.append(NSAttributedString(string: " of the key window", attributes: attributes))
+            text.append(NSAttributedString(string: subject.1, attributes: attributes))
             text.draw(at: NSPoint(x: bounds.width - 16 - text.size().width, y: (bounds.height - text.size().height) / 2))
         }
     }
@@ -139,9 +174,9 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             guard let entry else { return }
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
-            if let status = entry.status { drawStatusMark(status, at: NSPoint(x: 24, y: bounds.midY), flipped: true) }
+            if let status = entry.status { drawStatusMark(status, at: NSPoint(x: 24, y: bounds.midY)) }
             if let symbol = entry.symbol.flatMap({ NSImage(systemSymbolName: $0, accessibilityDescription: nil) }) {
-                let image = symbol.withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: Chrome.inkSecondary))) ?? symbol
+                let image = symbol.withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: entry.tint ?? Chrome.inkSecondary))) ?? symbol
                 image.draw(in: NSRect(x: 24 - image.size.width / 2, y: (bounds.height - image.size.height) / 2, width: image.size.width, height: image.size.height),
                            from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             }
@@ -358,12 +393,18 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     var modeChanged: () -> Void = {}
     var selectedEntry: PaletteEntry? { shown.indices.contains(table.selectedRow) ? shown[table.selectedRow].entry : nil }
     private let chip = PaletteChip()
+    private let swatchButton = PaletteSwatch()
     private let errorLine = PaletteError()
     private let foot = PaletteFoot()
     private let footSeparator = NSBox()
     private(set) var mode: PaletteMode = .root
     private(set) var error: String?
-    var modeEntries: (String, Bool) -> [(entry: PaletteEntry, offsets: [[Int]])] = { _, _ in [] }
+    var modeEntries: (PaletteMode, String, Bool) -> [(entry: PaletteEntry, offsets: [[Int]])] = { _, _, _ in [] }
+    private let accentFor: (String, Accent?) -> Accent
+    private let swatch: (Accent) -> NSColor
+    var connectAccent: Accent? { didSet { refreshSwatch() } }
+    private var stashedText: String?
+    var selectedAccent: Accent { accentFor(stashedText ?? field.stringValue, connectAccent) }
     var rootEntries: () -> [PaletteEntry] = { [] }
     var rename: (String) -> Void = { _ in }
     private let card: PaneCapsule
@@ -380,9 +421,11 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     var chooseEntry: (PaletteEntry) -> Void = { _ in }
     override var isFlipped: Bool { true }
 
-    init(runtime: GhosttyRuntime, entries: [PaletteEntry]) {
+    init(runtime: GhosttyRuntime, entries: [PaletteEntry], accentFor: @escaping (String, Accent?) -> Accent, swatch: @escaping (Accent) -> NSColor) {
         self.entries = entries
         self.runtime = runtime
+        self.accentFor = accentFor
+        self.swatch = swatch
         card = PaneCapsule(runtime: runtime, radius: 12, surface: Chrome.cardSurface, edgeOutset: 0)
         card.shadow = nil
         super.init(frame: .zero)
@@ -412,7 +455,9 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         scroll.autohidesScrollers = true
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentInsets = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
-        for view in [field, separator, scroll, empty, chip, themeChip, errorLine, foot, footSeparator] { card.addSubview(view) }
+        swatchButton.setAccessibilityRole(.button)
+        swatchButton.press = { [weak self] in if self?.mode == .connect { self?.enter(.color(.newConnection)) } }
+        for view in [field, separator, scroll, empty, chip, themeChip, swatchButton, errorLine, foot, footSeparator] { card.addSubview(view) }
         filter()
     }
 
@@ -443,7 +488,11 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         let list = listHeight
         let footer: CGFloat = mode == .root ? 0 : 30
         let errorHeight: CGFloat = error == nil ? 0 : errorLine.height
-        field.frame = NSRect(x: 16 + chipWidth + (chipWidth > 0 ? 8 : 0), y: preferredHeight - (mode == .root ? 34 : 35), width: width - 32 - chipWidth - (chipWidth > 0 ? 8 : 0), height: 22)
+        swatchButton.isHidden = mode != .connect
+        let swatchWidth: CGFloat = mode == .connect ? PaletteSwatch.width + 8 : 0
+        swatchButton.frame = NSRect(x: 16 + chipWidth + 6, y: preferredHeight - 34, width: PaletteSwatch.width, height: 22)
+        let leading = 16 + chipWidth + (chipWidth > 0 ? 8 : 0) + swatchWidth
+        field.frame = NSRect(x: leading, y: preferredHeight - (mode == .root ? 34 : 35), width: width - 16 - leading, height: 22)
         if case .theme(.save(let row)) = mode {
             themeChip.row = row
             themeChip.isHidden = false
@@ -469,6 +518,12 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     }
     var preferredHeight: CGFloat { if let prompt { 47 + prompt.preferredHeight } else { 45 + listHeight + (mode == .root ? 0 : 30) + (error == nil ? 0 : errorLine.height) } }
 
+    private func refreshSwatch() {
+        let accent = selectedAccent
+        swatchButton.color = swatch(accent)
+        swatchButton.setAccessibilityLabel("Connection color: \(accent.name)")
+    }
+
     func enter(_ mode: PaletteMode, prompt prepared: PalettePrompt? = nil) {
         guard mode != self.mode else { return }
         if case .prompt(let source) = mode, prepared == nil { return makePrompt(source) }
@@ -479,6 +534,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         prompt?.targetButton.removeFromSuperview()
         prompt?.removeFromSuperview()
         prompt = nil
+        if mode == .color(.newConnection), self.mode == .connect { stashedText = field.stringValue }
         self.mode = mode
         error = nil
         field.stringValue = ""
@@ -509,12 +565,17 @@ final class PaletteView: NSView, NSTextFieldDelegate {
                 (self?.window as? PalettePanel)?.resizeCard()
             }
         case .root:
+            connectAccent = nil
             entries = rootEntries()
             field.placeholderString = "Search sessions, panes and commands"
             field.setAccessibilityLabel("Command palette")
         case .connect:
             field.placeholderString = "user@hostname or SSH alias"
             field.setAccessibilityLabel("Connect to remote host")
+            if let text = stashedText { field.stringValue = text }
+        case .color:
+            field.placeholderString = "Search colors"
+            field.setAccessibilityLabel("Connection color")
         case .rename(_, _, _, let original):
             field.placeholderString = ""
             field.stringValue = original
@@ -524,6 +585,8 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         foot.mode = mode
         chip.needsDisplay = true
         foot.needsDisplay = true
+        let restored = stashedText != nil && mode == .connect
+        if mode != .color(.newConnection) { stashedText = nil }
         filter()
         if case .theme(let step) = mode {
             select(step == .pick ? theme?.selection ?? 0 : 0, preview: false)
@@ -531,7 +594,10 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         }
         layoutSubtreeIfNeeded()
         window?.makeFirstResponder(prompt?.textView ?? field)
-        if prompt == nil { field.selectText(nil) }
+        if prompt == nil {
+            if restored { (field.currentEditor() as? NSTextView)?.setSelectedRange(NSRange(location: field.stringValue.utf16.count, length: 0)) }
+            else { field.selectText(nil) }
+        }
         if let editor = field.currentEditor() as? NSTextView {
             let saving = if case .theme(.save) = mode { true } else { false }
             editor.insertionPointColor = saving ? .clear : Chrome.insertion
@@ -563,13 +629,14 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     private func filter() {
         switch mode {
         case .root: shown = PaletteEntry.ranked(entries, query: field.stringValue)
-        case .connect:
-            shown = modeEntries(field.stringValue, error != nil)
+        case .connect, .color:
+            shown = modeEntries(mode, field.stringValue, error != nil)
         case .rename, .prompt: shown = []
         case .theme(let step):
             shown = theme?.entries(step) ?? []
         }
         table.reloadData()
+        if mode == .connect { refreshSwatch() }
         empty.text = mode == .connect ? "No recent hosts" : "No matches"
         empty.setAccessibilityElement(true)
         empty.setAccessibilityRole(.staticText)
@@ -641,6 +708,8 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         } else { chooseEntry(entry) }
     }
 
+    private func back() { enter(mode == .color(.newConnection) ? .connect : .root) }
+
     func controlTextDidChange(_ notification: Notification) {
         if case .theme(.save) = mode { field.stringValue = "Use for…"; return }
         error = nil
@@ -658,11 +727,11 @@ final class PaletteView: NSView, NSTextFieldDelegate {
             else { choose(table.selectedRow) }
         case #selector(NSResponder.cancelOperation(_:)):
             if case .theme(.save) = mode { enter(.theme(.pick)) }
-            else if mode == .root { dismiss() } else { enter(.root) }
+            else if mode == .root { dismiss() } else { back() }
         case #selector(NSResponder.deleteBackward(_:)):
             if case .theme(.save) = mode { enter(.theme(.pick)); return true }
             guard mode != .root, field.stringValue.isEmpty else { return false }
-            enter(.root)
+            back()
         case #selector(NSResponder.insertTab(_:)), #selector(NSResponder.insertBacktab(_:)):
             if case .theme = mode { return true }; return false
         default:
@@ -693,6 +762,9 @@ final class PalettePanel: NSPanel {
         }
         if event.charactersIgnoringModifiers?.lowercased() == "k", modifiers == [.command, .shift] {
             connect(); return true
+        }
+        if event.charactersIgnoringModifiers?.lowercased() == "c", modifiers == [.command, .option], palette.mode == .connect {
+            palette.enter(.color(.newConnection)); return true
         }
         return super.performKeyEquivalent(with: event)
     }
@@ -745,4 +817,16 @@ final class PalettePanel: NSPanel {
         closed()
     }
 
+}
+
+extension SidebarRow.Status {
+    var accessibilitySuffix: String {
+        switch self {
+        case .error: " — error"
+        case .waiting: " — waiting"
+        case .running: " — running"
+        case .done: " — done"
+        case .quiet: ""
+        }
+    }
 }

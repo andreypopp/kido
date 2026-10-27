@@ -1,15 +1,7 @@
 import AppKit
 
-final class SidebarSeparator: NSView {
-    var color = Chrome.hairline { didSet { needsDisplay = true } }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override func draw(_ dirtyRect: NSRect) { color.setFill(); bounds.fill() }
-}
-
 final class SidebarShadow: NSView {
-    static let dockedWidth: CGFloat = 48
-    enum Shape: Equatable { case docked, floating(NSRect) }
-    var shape = Shape.docked { didSet { if shape != oldValue { needsDisplay = true } } }
+    var card = NSRect.zero { didSet { if card != oldValue { needsDisplay = true } } }
     override func setFrameSize(_ newSize: NSSize) {
         let previous = bounds.size
         super.setFrameSize(newSize)
@@ -23,67 +15,51 @@ final class SidebarShadow: NSView {
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             bounds.clip()
+            let clip = NSBezierPath(rect: bounds)
+            clip.append(NSBezierPath(roundedRect: card, xRadius: 18, yRadius: 18))
+            clip.windingRule = .evenOdd
+            clip.addClip()
             let shadow = NSShadow()
-            let path: NSBezierPath
-            switch shape {
-            case .docked:
-                shadow.shadowOffset = NSSize(width: 4, height: 0)
-                path = NSBezierPath(rect: NSRect(x: -66, y: 2, width: 64, height: max(0, bounds.height - 4)))
-            case .floating(let rect):
-                let clip = NSBezierPath(rect: bounds)
-                clip.append(NSBezierPath(roundedRect: rect, xRadius: 18, yRadius: 18))
-                clip.windingRule = .evenOdd
-                clip.addClip()
-                shadow.shadowOffset = NSSize(width: 0, height: -4)
-                path = NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 2), xRadius: 16, yRadius: 16)
-            }
+            shadow.shadowOffset = NSSize(width: 0, height: -4)
             let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             let shadowStyle = Chrome.sidebarShadow(dark: dark)
             shadow.shadowBlurRadius = shadowStyle.blur
             shadow.shadowColor = shadowStyle.color
             shadow.set()
             Chrome.shadowMask.setFill()
-            path.fill()
+            NSBezierPath(roundedRect: card.insetBy(dx: 2, dy: 2), xRadius: 16, yRadius: 16).fill()
         }
     }
 }
 
-final class Sidebar: NSSplitViewController, NSToolbarDelegate {
-    private final class ToolbarButtonCell: NSButtonCell {
-        override func hitTest(for event: NSEvent, in cellFrame: NSRect, of controlView: NSView) -> NSCell.HitResult {
-            guard isEnabled, cellFrame.contains(controlView.convert(event.locationInWindow, from: nil)) else { return [] }
-            return [.contentArea, .trackableArea]
-        }
-    }
-
-    private final class ToolbarTabsHost: NSView {
-        override var mouseDownCanMoveWindow: Bool { true }
-        override var intrinsicContentSize: NSSize { NSSize(width: 10000, height: 36) }
-    }
-
+final class Sidebar: NSSplitViewController {
     private let focusEdge = FocusEdge()
     #if KIDO_VISUAL
     var visualFocusEdge: FocusEdge { focusEdge }
-    var visualSeparator: NSView { separator }
+    var visualTitle: NSTextField { titleLabel }
     #endif
-    private let separator = SidebarSeparator()
     private let shadow = SidebarShadow()
-    var separatorColor: NSColor = Chrome.hairline {
-        didSet {
-            separator.color = separatorColor
-            tabs.refreshHeader()
-        }
-    }
     let list = SidebarView()
     let content = NSView()
-    let tabs = WindowTabs()
-    private var lastTabActivity = false
     let terminalHost = NSView()
+    private let slot = NSView()
     private let dock = NSView()
+    lazy var newSessionButton = headerButton("New Session", "plus.square.on.square", #selector(newSession))
+    lazy var toggleButton = headerButton("Toggle Sidebar", "sidebar.left", #selector(NSSplitViewController.toggleSidebar(_:)))
+    private final class Title: NSTextField {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+    private let titleLabel = Title(labelWithString: "")
+    var windowTitle: String {
+        get { titleLabel.stringValue }
+        set { titleLabel.stringValue = newValue; titleLabel.toolTip = newValue }
+    }
+    private var top: NSLayoutConstraint!
+    var margin: CGFloat = 0 { didSet { view.needsLayout = true } }
     private(set) var isFloating = false
     private var leading: NSLayoutConstraint!
     private var dockedGlass: NSGlassEffectView? {
-        var parent = dock.superview
+        var parent = slot.superview
         while let view = parent {
             if let glass = view as? NSGlassEffectView { return glass }
             parent = view.superview
@@ -118,23 +94,29 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     var changed: () -> Void = {}
     var listBackground: NSColor? { didSet { view.needsLayout = true } }
 
-    func updateAppearance(runtime: GhosttyRuntime) {
-        let background = runtime.background
-        tabs.theme = (runtime.unfocusedPaper, NSAppearance(named: background.isDark ? .darkAqua : .aqua))
-        let shade = background.shifted(runtime.settings.sidebarShade)
-        listBackground = shade
-        separatorColor = runtime.sidebarSeparator
-        list.appearance = NSAppearance(named: shade.luminance < 0.179 ? .darkAqua : .aqua)
+    func updateAppearance(runtime: GhosttyRuntime, colors: (text: NSColor, ring: NSColor) = (Chrome.accent, Chrome.accent)) {
+        titleLabel.textColor = colors.text
+        list.accent = colors.text
+        focusEdge.color = colors.ring
+        listBackground = runtime.canvas
+        list.appearance = NSAppearance(named: runtime.canvas.luminance < 0.179 ? .darkAqua : .aqua)
     }
 
     init() {
         super.init(nibName: nil, bundle: nil)
-        tabs.sidebar = self
         splitView.frame = NSRect(x: 0, y: 0, width: 900, height: 560)
         let controller = NSViewController()
+        slot.addSubview(dock)
         dock.addSubview(list)
         list.autoresizingMask = [.width, .height]
-        controller.view = dock
+        titleLabel.font = .titleBarFont(ofSize: 0)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.textColor = Chrome.accent
+        dock.addSubview(titleLabel)
+        dock.addSubview(newSessionButton)
+        dock.addSubview(toggleButton)
+        for header in [titleLabel, newSessionButton, toggleButton] { header.autoresizingMask = [.minYMargin] }
+        controller.view = slot
         list.leave = { [weak self] in
             guard let self else { return }
             dismissFloating()
@@ -152,10 +134,11 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         terminalHost.addSubview(content)
         content.translatesAutoresizingMaskIntoConstraints = false
         leading = content.leadingAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.leadingAnchor)
+        top = content.topAnchor.constraint(equalTo: terminalHost.topAnchor)
         NSLayoutConstraint.activate([
             leading,
+            top,
             content.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor),
-            content.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor),
             content.bottomAnchor.constraint(equalTo: terminalHost.bottomAnchor),
         ])
         terminal.view = terminalHost
@@ -178,39 +161,30 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         super.viewDidAppear()
         view.needsLayout = true
     }
-    var separatorWidth: CGFloat { 1 / (view.window?.backingScaleFactor ?? 2) }
-
-    func headerDivider(in host: NSWindow) -> CGFloat? {
-        guard let window = view.window, !isCollapsed, let glass = dockedGlass else { return nil }
-        let edge = glass.convert(NSPoint(x: glass.bounds.maxX, y: glass.bounds.maxY), to: nil)
-        return host.convertPoint(fromScreen: window.convertPoint(toScreen: edge)).x
-    }
     func updateFocusEdge() {
         focusEdge.isHidden = !list.containsFocus || isCollapsed
     }
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        tabs.refreshHeader()
-        if let root = view.window?.contentView?.superview, let glass = dockedGlass {
+        let root = view.window?.contentView?.superview
+        if let root, let glass = dockedGlass, !isFloating, !isCollapsed {
+            if focusEdge.superview !== root { root.addSubview(focusEdge, positioned: .above, relativeTo: nil) }
+            if dock.superview !== root { root.addSubview(dock, positioned: .above, relativeTo: view.window?.contentView) }
+            dock.frame = glass.convert(glass.bounds, to: root)
+            glass.isHidden = true
+        } else {
+            if dock.superview !== slot { slot.addSubview(dock) }
+            dock.frame = slot.bounds
+            dockedGlass?.isHidden = false
+        }
+        if let root, let glass = dockedGlass {
             if focusEdge.superview !== root { root.addSubview(focusEdge, positioned: .above, relativeTo: nil) }
             focusEdge.frame = glass.convert(glass.bounds, to: root)
-            if separator.superview !== root {
-                root.addSubview(separator, positioned: .above, relativeTo: nil)
-            }
-            separator.frame = NSRect(x: focusEdge.frame.maxX, y: focusEdge.frame.minY,
-                                     width: separatorWidth, height: focusEdge.frame.height)
-            separator.isHidden = isCollapsed || isFloating
             if shadow.superview !== root { root.addSubview(shadow, positioned: .below, relativeTo: focusEdge) }
-            if isFloating {
-                shadow.frame = focusEdge.frame.insetBy(dx: -32, dy: -32).intersection(root.bounds)
-                shadow.shape = .floating(focusEdge.convert(focusEdge.bounds, to: shadow))
-            } else {
-                shadow.frame = NSRect(x: separator.frame.maxX, y: separator.frame.minY,
-                                      width: min(SidebarShadow.dockedWidth, max(0, root.bounds.maxX - separator.frame.maxX)), height: separator.frame.height)
-                shadow.shape = .docked
-            }
-            shadow.isHidden = isCollapsed
+            shadow.frame = focusEdge.frame.insetBy(dx: -32, dy: -32).intersection(root.bounds)
+            shadow.card = focusEdge.convert(focusEdge.bounds, to: shadow)
+            shadow.isHidden = !isFloating
             focusEdge.floating = isFloating
             updateFocusEdge()
         }
@@ -226,15 +200,31 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         if !background, view.window != nil, !isCollapsed, !isFloating, left >= 200 {
             UserDefaults.standard.set(left, forKey: "nativeSidebarWidth")
         }
-        let tabActivity = tabs.showsActivity
-        if tabActivity != lastTabActivity {
-            lastTabActivity = tabActivity
-            tabs.needsDisplay = true
+        let fullScreen = view.window?.styleMask.contains(.fullScreen) == true
+        let titled = (isCollapsed || isFloating) && !fullScreen
+        let inset = titled ? Self.titlebar - margin : 0
+        if top.constant != inset { top.constant = inset }
+        let center = Self.titlebar / 2
+        newSessionButton.isHidden = isCollapsed || isFloating
+        newSessionButton.frame = NSRect(x: dock.bounds.maxX - 72, y: dock.bounds.maxY - center - 14, width: 32, height: 28)
+        toggleButton.frame = NSRect(x: dock.bounds.maxX - 40, y: dock.bounds.maxY - center - 14, width: 32, height: 28)
+        for button in [newSessionButton, toggleButton] { button.appearance = list.appearance }
+        if isCollapsed {
+            if titleLabel.superview !== terminalHost { terminalHost.addSubview(titleLabel) }
+            titleLabel.alignment = .center
+            titleLabel.appearance = nil
+            titleLabel.isHidden = !titled
+            titleLabel.frame = NSRect(x: 80, y: terminalHost.bounds.maxY - center - 8, width: max(0, terminalHost.bounds.width - 160), height: 16)
+        } else {
+            if titleLabel.superview !== dock { dock.addSubview(titleLabel) }
+            titleLabel.alignment = .natural
+            titleLabel.appearance = list.appearance
+            titleLabel.isHidden = false
+            let start: CGFloat = fullScreen ? 20 : 80
+            let end = (newSessionButton.isHidden ? toggleButton : newSessionButton).frame.minX - 4
+            titleLabel.frame = NSRect(x: start, y: dock.bounds.maxY - center - 8, width: max(0, end - start), height: 16)
         }
-        view.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "newSession" }?.isHidden = isCollapsed || isFloating
-        for item in view.window?.toolbar?.items ?? [] where ["newSession", "toggleSidebar"].contains(item.itemIdentifier.rawValue) {
-            item.view?.appearance = !isCollapsed || isFloating ? list.appearance : nil
-        }
+        for view in splitView.subviews where String(describing: type(of: view)).hasSuffix("ShadowView") { view.isHidden = !isFloating }
         dockedGlass?.cornerRadius = isFloating ? 18 : 0
         dockedGlass?.shadow = nil
         dockedGlass?.layer?.shadowOpacity = 0 // chrome-allow: disable the native glass shadow
@@ -247,58 +237,18 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         dockedGlass?.layer?.cornerRadius = isFloating ? list.layer?.cornerRadius ?? 0 : 0
         #endif
     }
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, .init("newSession"), .init("toggleSidebar"), .sidebarTrackingSeparator, .init("windowTabs")] }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        if id.rawValue == "windowTabs" {
-            let item = NSToolbarItem(itemIdentifier: id)
-            item.label = "Windows"
-            item.isBordered = false
-            let host = ToolbarTabsHost()
-            host.setContentHuggingPriority(.init(1), for: .horizontal)
-            host.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-            host.translatesAutoresizingMaskIntoConstraints = false
-            host.addSubview(tabs)
-            tabs.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                host.widthAnchor.constraint(greaterThanOrEqualToConstant: 85),
-                host.widthAnchor.constraint(lessThanOrEqualToConstant: 10000),
-                host.heightAnchor.constraint(equalToConstant: 36),
-                tabs.leadingAnchor.constraint(equalTo: host.leadingAnchor),
-                tabs.trailingAnchor.constraint(equalTo: host.trailingAnchor),
-                tabs.topAnchor.constraint(equalTo: host.topAnchor),
-                tabs.bottomAnchor.constraint(equalTo: host.bottomAnchor),
-            ])
-            item.view = host
-            return item
-        }
-        if id == .sidebarTrackingSeparator { return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitView, dividerIndex: 0) }
-        if id.rawValue == "newSession" || id.rawValue == "toggleSidebar" {
-            let toggle = id.rawValue == "toggleSidebar"
-            let item = NSToolbarItem(itemIdentifier: id)
-            item.label = toggle ? "Toggle Sidebar" : "New Session"
-            item.paletteLabel = item.label
-            item.toolTip = item.label
-            item.isBordered = false
-            let button = MouseButton(frame: .zero)
-            button.cell = ToolbarButtonCell()
-            button.image = NSImage(systemSymbolName: toggle ? "sidebar.left" : "plus.square.on.square", accessibilityDescription: item.label)?
-                .withSymbolConfiguration(IconButton.sidebarSymbols)
-            button.imagePosition = .imageOnly
-            button.target = self
-            button.action = toggle ? #selector(NSSplitViewController.toggleSidebar(_:)) : #selector(newSession)
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.isBordered = false
-            button.toolTip = item.label
-            button.setAccessibilityLabel(item.label)
-            NSLayoutConstraint.activate([
-                button.widthAnchor.constraint(equalToConstant: 32),
-                button.heightAnchor.constraint(equalToConstant: 28),
-            ])
-            item.view = button
-            return item
-        }
-        return nil
+    static let titlebar: CGFloat = 32
+
+    private func headerButton(_ label: String, _ symbol: String, _ action: Selector) -> NSButton {
+        let button = MouseButton(frame: .zero)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?.withSymbolConfiguration(IconButton.sidebarSymbols)
+        button.imagePosition = .imageOnly
+        button.target = self
+        button.action = action
+        button.isBordered = false
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
+        return button
     }
     @objc private func newSession() { list.newSession() }
 

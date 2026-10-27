@@ -114,25 +114,23 @@ func elapsed(_ seconds: Int, _ expected: String) {
 }
 
 @Test func agentWeightAndDisplayOnlyPrefix() throws {
-    let cases: [([Any], String?, String, String, String, Bool)] = [
-        (piAgent(idle()), nil, "Ada", "@Ada", "Ada", true),
-        (["Live", ["Some_agent", ["name": "claude-code", "status": ["since": 1, "msg": null, "state": idle()]]]], nil, "Ada", "Ada", "Ada", true),
-        (agent(), nil, "@Ada", "@Ada", "@Ada", true),
-        (remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]]), nil, "Ada", "Ada", "Ada", true),
-        (terminal(running()), "r-5", "Ada", "Ada", "Ada", false),
-        (["Ended", ["result": "completed"]], "r-6", "Ada", "Ada", "Ada", false),
-        (terminal(["Unknown"]), nil, "zsh", "zsh", "zsh", false),
-        (remote(["Remote_terminal", ["interactive": true, "status": shell()]]), nil, "ssh", "ssh alice@devbox", "ssh alice@devbox", false),
-        (terminal(running()), "r-12", "job", "job", "job", false),
-        (["Ended", ["result": "failed"]], "r-13", "monitor", "monitor", "monitor", false)
+    let cases: [([Any], String?, String, String, Bool)] = [
+        (piAgent(idle()), nil, "Ada", "@Ada", true),
+        (["Live", ["Some_agent", ["name": "claude-code", "status": ["since": 1, "msg": null, "state": idle()]]]], nil, "Ada", "Ada", true),
+        (agent(), nil, "@Ada", "@Ada", true),
+        (remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]]), nil, "Ada", "Ada", true),
+        (terminal(running()), "r-5", "Ada", "Ada", false),
+        (["Ended", ["result": "completed"]], "r-6", "Ada", "Ada", false),
+        (terminal(["Unknown"]), nil, "zsh", "zsh", false),
+        (remote(["Remote_terminal", ["interactive": true, "status": shell()]]), nil, "ssh", "ssh alice@devbox", false),
+        (terminal(running()), "r-12", "job", "job", false),
+        (["Ended", ["result": "failed"]], "r-13", "monitor", "monitor", false)
     ]
-    for (lifecycle, run, title, expected, tab, agent) in cases {
+    for (lifecycle, run, title, expected, agent) in cases {
         let snapshot = try decode(snapshotObject([pane(0, title: title, lifecycle: lifecycle, run: run)]))
         let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
         #expect(row.title == expected)
         #expect(row.agent == agent)
-        #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
-                               activePanes: [WindowID(number: 0): PaneID(number: 0)]).labels[WindowID(number: 0)]?.title == tab)
     }
 }
 
@@ -177,7 +175,6 @@ func elapsed(_ seconds: Int, _ expected: String) {
         #expect(row.indicatorDescription == description)
         #expect(row.tail == tail)
         #expect(row.height == (tail.isEmpty ? 32 : 48))
-        #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == status.mergingTabStatus(.quiet))
     }
 }
 
@@ -263,9 +260,6 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(statuses(visited, seen) == [.error] + raw + [.error])
     seen.observe(visited, attended: true)
     #expect(statuses(visited, seen) == [.quiet] + acknowledged + [.error])
-    let tabs = sidebarWindows(visited, session: SessionID(number: 0), surviving: [WindowID(number: 0), WindowID(number: 5)], seen: seen).statuses
-    #expect(tabs[WindowID(number: 0)] == .quiet && tabs[WindowID(number: 5)] == .error)
-    #expect(sidebarWindows(visited, session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .error)
     #expect(statuses(try snapshot(client: 5), seen) == [.quiet] + acknowledged + [.error])
     #expect(statuses(try snapshot(serial: 8), seen) == [.error] + raw + [.error])
     #expect(statuses(try snapshot(failed: false), seen) == [.quiet] + acknowledged + [.error])

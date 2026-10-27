@@ -1,7 +1,7 @@
 import AppKit
 import SidebarFeed
 
-func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bool) {
+func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint) {
     let color: NSColor = switch status {
     case .quiet: Chrome.statusQuiet
     case .running, .done: Chrome.statusRunning
@@ -9,11 +9,10 @@ func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bo
     case .error: Chrome.statusError
     }
     if status == .done {
-        let direction: CGFloat = flipped ? 1 : -1
         let path = NSBezierPath()
-        path.move(to: NSPoint(x: center.x - 2.8, y: center.y + direction * 0.1))
-        path.line(to: NSPoint(x: center.x - 0.9, y: center.y + direction * 2))
-        path.line(to: NSPoint(x: center.x + 2.8, y: center.y - direction * 2))
+        path.move(to: NSPoint(x: center.x - 2.8, y: center.y + 0.1))
+        path.line(to: NSPoint(x: center.x - 0.9, y: center.y + 2))
+        path.line(to: NSPoint(x: center.x + 2.8, y: center.y - 2))
         path.lineWidth = 2
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
@@ -42,6 +41,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     var beginRename: () -> Void = {}
     var finishRename: (Bool) -> Void = { _ in }
     var renameChanged: () -> Void = {}
+    var accent = Chrome.accent { didSet { if accent != oldValue { needsDisplay = true } } }
 
     override func mouseDown(with event: NSEvent) {
         if case .header = row?.kind, event.clickCount == 2,
@@ -204,7 +204,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             if dirtyRect.intersects(titleRect), !header || nameField.isHidden {
                 (row.title as NSString).draw(in: titleRect,
                                        withAttributes: [.font: header ? fonts.section : row.agent ? fonts.agent : fonts.regular,
-                                                        .foregroundColor: header || row.quietShell ? Chrome.inkSecondary : Chrome.ink,
+                                                        .foregroundColor: header ? accent : row.quietShell ? Chrome.inkSecondary : Chrome.ink,
                                                         .paragraphStyle: paragraph])
             }
             let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - 12), height: 15)
@@ -215,7 +215,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             (clock as NSString).draw(at: NSPoint(x: bounds.width - 12 - clockWidth, y: y + 2),
                                      withAttributes: [.font: fonts.clock, .foregroundColor: Chrome.inkSecondary])
             if pane && close.isHidden {
-                drawStatusMark(row.status, at: NSPoint(x: dotX, y: y + 9), flipped: true)
+                drawStatusMark(row.status, at: NSPoint(x: dotX, y: y + 9))
             }
         }
     }

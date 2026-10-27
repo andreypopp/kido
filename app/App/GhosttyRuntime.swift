@@ -13,6 +13,11 @@ extension NSColor {
 
     var isDark: Bool { luminance < 0.5 }
 
+    func contrast(with other: NSColor) -> Double {
+        let a = luminance, b = other.luminance
+        return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
+
     func shifted(_ amount: Double) -> NSColor {
         return mixed(toward: isDark ? .white : .black, amount: amount) // chrome-allow: theme brightness derivation
     }
@@ -35,8 +40,10 @@ extension NSColor {
     func expand(_ value: String) -> String { value == "~" || value.hasPrefix("~/") ? home + value.dropFirst() : value }
     func abbreviate(_ value: String) -> String { value == home || value.hasPrefix(home + "/") ? "~" + value.dropFirst(home.count) : value }
     struct KidoSettings {
-        var sidebarShade = 0.05
         var unfocusedShift = 0.03
+        var paneSpacing: CGFloat = 8
+        var focusRingWidth: CGFloat = 1.5
+        var notifyDone = false
     }
     private(set) var settings: KidoSettings
     enum ThemeOverride: Equatable { case none, preview(String), session(String) }
@@ -170,7 +177,11 @@ extension NSColor {
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
                 let requested = (0..<count).compactMap { mimes?[$0].map { String(cString: $0) } }
                 return MainActor.assumeIsolated {
-                    let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
+                    let view: PaneView
+                    switch SurfaceRef.owner(userdata) {
+                    case .scrollback(let owner): return owner.takeUnretainedValue().readClipboard(state, location: location, list: list)
+                    case .pane(let owner): view = owner.takeUnretainedValue()
+                    }
                     guard view.acceptingInput, let state else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
                     switch ghostty_clipboard_request_kind(state) {
                     case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
@@ -200,7 +211,11 @@ extension NSColor {
                     text = String(decoding: UnsafeRawBufferPointer(start: content.data, count: content.len), as: UTF8.self)
                 }
                 MainActor.assumeIsolated {
-                    let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
+                    let view: PaneView
+                    switch SurfaceRef.owner(userdata) {
+                    case .scrollback(let owner): return owner.takeUnretainedValue().confirmPaste(text, state)
+                    case .pane(let owner): view = owner.takeUnretainedValue()
+                    }
                     if let text { view.confirmPaste(text, state) }
                     else if request == GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ { view.requestClipboard(state, ["text/plain"], list: false, .clipboard) }
                     else { view.deny(state) }
@@ -209,7 +224,10 @@ extension NSColor {
             write_clipboard_cb: { @Sendable userdata, _, content, count, confirm in
                 GhosttyRuntime.writeClipboard(userdata, content, count, confirm)
             },
-            close_surface_cb: { @Sendable userdata, _ in PaneView.onMain(userdata) { $0.onCommand(.close) } })
+            close_surface_cb: { @Sendable userdata, _ in
+                PaneView.onMain(userdata) { $0.onCommand(.close) }
+                ScrollbackView.onMain(userdata) { $0.finish() }
+            })
         guard let new = ghostty_app_new(&runtime, config) else { return nil }
         nonisolated(unsafe) let app = new
         self.app = app
@@ -244,13 +262,15 @@ extension NSColor {
     }
 
     private static let settingKeys: [String: WritableKeyPath<KidoSettings, Double>] = [
-        "kido-sidebar-shade": \.sidebarShade,
         "kido-unfocused-background-shift": \.unfocusedShift
     ]
+    private static let spacingKey = "kido-pane-spacing"
+    private static let ringKey = "kido-focus-ring-width"
+    private static let notifyKey = "kido-notify-done"
     private static func readDiagnostics(_ config: ghostty_config_t) -> [String] {
         (0..<ghostty_config_diagnostics_count(config)).compactMap { index in
             let message = String(cString: ghostty_config_get_diagnostic(config, index).message)
-            return settingKeys.keys.contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) ? nil : message
+            return (settingKeys.keys + [spacingKey, ringKey, notifyKey]).contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) ? nil : message
         }
     }
     static func loadConfig(file: String, home: String, override: String? = nil) -> LoadedConfig? {
@@ -269,7 +289,7 @@ extension NSColor {
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                 guard parts.count == 2 else { continue }
                 var value = parts[1]
-                if keys[parts[0]] != nil {
+                if keys[parts[0]] != nil || parts[0] == spacingKey || parts[0] == ringKey || parts[0] == notifyKey {
                     if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
                     value = value.trimmingCharacters(in: .whitespaces)
                     values[parts[0]] = value.isEmpty ? nil : value
@@ -306,6 +326,18 @@ extension NSColor {
                   let percent = Double(value.hasSuffix("%") ? String(value.dropLast()) : value), (-100...100).contains(percent)
             else { note("\(key): not a percentage from -100 to 100: \(value)"); continue }
             settings[keyPath: field] = abs(percent) / 100
+        }
+        if let value = values[spacingKey] {
+            if let points = Double(value), (2...32).contains(points) { settings.paneSpacing = points }
+            else { note("\(spacingKey): not a number of points from 2 to 32: \(value)") }
+        }
+        if let value = values[ringKey] {
+            if let points = Double(value), (0.5...4).contains(points) { settings.focusRingWidth = points }
+            else { note("\(ringKey): not a number of points from 0.5 to 4: \(value)") }
+        }
+        if let value = values[notifyKey] {
+            if let flag = ["true": true, "false": false][value] { settings.notifyDone = flag }
+            else { note("\(notifyKey): not true or false: \(value)") }
         }
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
         ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
@@ -418,10 +450,9 @@ extension NSColor {
     }
 
     var background: NSColor { color("background") }
+    var canvas: NSColor { background.mixed(toward: Chrome.pole(dark: false), amount: background.isDark ? 0.35 : 0.06) }
     var foreground: NSColor { color("foreground") }
-    var separator: NSColor { background.mixed(toward: foreground, amount: 0.18) }
     var unfocusedPaper: NSColor { background.shifted(settings.unfocusedShift) }
-    var sidebarSeparator: NSColor { background.isDark ? separator : background.mixed(toward: foreground, amount: 0.28) }
 
     private func color(_ key: String) -> NSColor { Self.color(key, config: config) }
     static func color(_ key: String, config: ghostty_config_t) -> NSColor {
@@ -473,6 +504,7 @@ extension NSColor {
         }
         guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
         let userdata = ghostty_surface_userdata(surface)
+        if case .scrollback = SurfaceRef.owner(userdata) { return scrollbackAction(action, userdata) }
         switch action.tag {
         case GHOSTTY_ACTION_MOUSE_SHAPE:
             let shape = action.action.mouse_shape
@@ -481,7 +513,7 @@ extension NSColor {
         case GHOSTTY_ACTION_OPEN_URL:
             let link = action.action.open_url
             if link.kind != GHOSTTY_ACTION_OPEN_URL_KIND_OSC8,
-               Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.host) == .local { return false }
+               SurfaceRef.pane(userdata)._withUnsafeGuaranteedRef(\.host) == .local { return false }
             guard let bytes = link.url else { return true }
             let text = String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(link.len)), as: UTF8.self)
             PaneView.onMain(userdata) { $0.onURL(text) }
@@ -495,7 +527,7 @@ extension NSColor {
             return true
         case GHOSTTY_ACTION_END_SEARCH:
             let generation = ghostty_surface_search_generation(surface)
-            let view = Unmanaged<PaneView>.fromOpaque(userdata!)
+            let view = SurfaceRef.pane(userdata)
             let find = MainActor.assumeIsolated { view._withUnsafeGuaranteedRef(\.find) }
             PaneView.onMain(userdata) {
                 guard ghostty_surface_search_generation($0.surface) == generation, $0.find === find else { return }
@@ -546,6 +578,21 @@ extension NSColor {
         }
         guard let command = command(action) else { return false }
         PaneView.onMain(userdata) { $0.onCommand(command) }
+        return true
+    }
+
+    nonisolated private static func scrollbackAction(_ action: ghostty_action_s, _ userdata: UnsafeMutableRawPointer?) -> Bool {
+        switch action.tag {
+        case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
+            ScrollbackView.onMain(userdata) { $0.finish() }
+        case GHOSTTY_ACTION_MOUSE_SHAPE:
+            let shape = action.action.mouse_shape
+            ScrollbackView.onMain(userdata) { $0.setMouseShape(shape) }
+        case GHOSTTY_ACTION_SCROLLBAR, GHOSTTY_ACTION_CELL_SIZE: break
+        default:
+            guard let command = command(action) else { return false }
+            ScrollbackView.onMain(userdata) { $0.onCommand(command) }
+        }
         return true
     }
 
@@ -645,10 +692,19 @@ extension NSColor {
         }
         nonisolated(unsafe) let userdata = userdata
         return MainActor.assumeIsolated { [items] in
-            let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
-            guard !view.disposed, view.acceptingInput else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
-            let items = view.copyingLines ? items.map { $0.type == .string ? ($0.type, $0.data + Data("\n".utf8)) : $0 } : items
-            let pasteboard = view.runtime.pasteboard, item = NSPasteboardItem()
+            let pasteboard: NSPasteboard, copyingLines: Bool
+            switch SurfaceRef.owner(userdata) {
+            case .pane(let owner):
+                let view = owner.takeUnretainedValue()
+                guard !view.disposed, view.acceptingInput else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
+                (pasteboard, copyingLines) = (view.runtime.pasteboard, view.copyingLines)
+            case .scrollback(let owner):
+                let view = owner.takeUnretainedValue()
+                guard !view.disposed else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
+                (pasteboard, copyingLines) = (view.runtime.pasteboard, false)
+            }
+            let items = copyingLines ? items.map { $0.type == .string ? ($0.type, $0.data + Data("\n".utf8)) : $0 } : items
+            let item = NSPasteboardItem()
             pasteboard.clearContents()
             guard items.allSatisfy({ item.setData($0.data, forType: $0.type) }), pasteboard.writeObjects([item]) else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
             return GHOSTTY_CLIPBOARD_WRITE_OK

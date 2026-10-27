@@ -10,7 +10,6 @@ public struct SidebarRow: Equatable, Sendable {
     }
     public enum Status: Comparable, Sendable {
         case error, waiting, running, done, quiet
-        func mergingTabStatus(_ other: Self) -> Self { min(self, other) }
     }
     public enum Kind: Equatable, Sendable {
         case header, pane(Snapshot.Position?), gap

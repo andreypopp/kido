@@ -22,7 +22,7 @@ import XCTest
         let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
         let board = NSPasteboard(name: .init("kr-" + UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
         addTeardownBlock { @MainActor in
             owner.close(); board.releaseGlobally()

@@ -3,7 +3,7 @@ import TmuxControl
 import SidebarFeed
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
-    private var runtime: GhosttyRuntime?
+    private(set) var runtime: GhosttyRuntime?
     private(set) var owners: [WindowOwner] = []
     private let menus = SessionMenus()
     private var editMenu: NSMenu?
@@ -52,6 +52,7 @@ import SidebarFeed
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         Upload.sweepPromises(launch: true)
+        ScrollbackFile.sweepStale()
         if let notifications = Notifier.shared.poster as? SystemNotifications {
             notifications.click = { [weak self] in self?.route($0) }
             notifications.install()
@@ -112,7 +113,7 @@ import SidebarFeed
 
     @discardableResult func open(_ host: Host, start: Bool = true, cause: WindowOwner.DialCause = .launch) -> WindowOwner? {
         guard let runtime else { return nil }
-        let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause)
+        let owner = WindowOwner(host: host, runtime: runtime, accents: routes.accents, start: start, cause: cause)
         owners.append(owner)
         owner.snapshotReceived = { [weak self, weak owner] in
             guard let self else { return }
@@ -192,6 +193,7 @@ import SidebarFeed
 
     func mainMenu() -> NSMenu {
         menus.rename = { [weak self] in self?.renameSession() }
+        menus.connectionColor = { [weak self] in self?.connectionColor() }
         menus.close = { [weak self] in self?.closeSession() }
         menus.send = { [weak self] in (self?.paletteFocus?.owner ?? self?.current)?.perform($0) }
         menus.canSend = { [weak self] in (self?.paletteFocus?.owner ?? self?.current) != nil }
@@ -253,6 +255,7 @@ import SidebarFeed
         edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
         edit.addItem(item("Prompt with Selection…", #selector(PaneView.promptSelectionItem(_:)), "o", .command))
         edit.addItem(item("Copy Mode", #selector(PaneView.toggleCopyMode(_:)), "c", [.command, .shift]))
+        edit.addItem(item("Open Scrollback in Editor", #selector(PaneView.openScrollbackItem(_:)), "e", [.command, .shift]))
         edit.addItem(item("Reset Clipboard and Upload Permissions", #selector(resetClipboardPermissions), "", []))
         let bar = NSMenu()
         for menu in [app, file, edit, view, menus.window, menus.session] {
@@ -289,6 +292,49 @@ import SidebarFeed
     @objc func connectRemoteHost() {
         if palettePanel == nil { togglePalette() }
         palettePanel?.palette.enter(.connect)
+    }
+
+    @objc func connectionColor() {
+        guard let owner = paletteFocus?.owner ?? current else { return }
+        if palettePanel == nil { togglePalette() }
+        palettePanel?.palette.enter(.color(.connection(owner.host)))
+    }
+
+    private var customColorTarget: ColorTarget?
+    private var colorPanelClosed: NSObjectProtocol?
+
+    private func currentAccent(_ target: ColorTarget, _ palette: PaletteView) -> Accent {
+        if case .connection(let host) = target { routes.accents.accent(for: host) } else { palette.selectedAccent }
+    }
+
+    private func customColor(_ target: ColorTarget, current: Accent) {
+        customColorTarget = target
+        let panel = NSColorPanel.shared
+        panel.showsAlpha = false
+        panel.color = current.color(dark: runtime?.background.isDark ?? false)
+        panel.setTarget(self)
+        panel.setAction(#selector(colorPanelChanged(_:)))
+        colorPanelClosed = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: panel, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.endCustomColor() }
+        }
+        if !background { panel.orderFront(nil) }
+    }
+
+    private func endCustomColor() {
+        customColorTarget = nil
+        colorPanelClosed.map(NotificationCenter.default.removeObserver)
+        colorPanelClosed = nil
+        NSColorPanel.shared.setTarget(nil)
+        NSColorPanel.shared.setAction(nil)
+    }
+
+    @objc func colorPanelChanged(_ panel: NSColorPanel) {
+        let accent = Accent(panel.color)
+        switch customColorTarget {
+        case .connection(let host): routes.accents.set(accent, for: host)
+        case .newConnection: palettePanel?.palette.connectAccent = accent
+        case nil: break
+        }
     }
 
     @objc func renameSession() {
@@ -366,9 +412,16 @@ import SidebarFeed
         let entries = paletteEntries(owner: current, responder: current?.window.firstResponder)
         guard let runtime = current?.runtime ?? runtime else { return }
         paletteFocus = (prepared?.source.owner ?? current).map { ($0, $0.window.firstResponder) }
-        let panel = PalettePanel(palette: PaletteView(runtime: runtime, entries: entries)) { [weak self] in
+        let palette = PaletteView(runtime: runtime, entries: entries,
+                                  accentFor: { [weak self] text, chosen in self?.effectiveAccent(text, chosen: chosen) ?? .system },
+                                  swatch: { [weak self] in self?.swatch($0) ?? Chrome.accent })
+        let panel = PalettePanel(palette: palette) { [weak self, weak palette] in
             guard let self, !paletteBusy else { return }
-            closePalette(.moved)
+            guard customColorTarget == .newConnection else { return closePalette(.moved) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, palettePanel?.palette === palette, !(NSApp.keyWindow is NSColorPanel) else { return }
+                closePalette(.moved)
+            }
         }
         palettePanel = panel
         panel.toggle = { [weak self] in self?.closePalette() }
@@ -397,7 +450,14 @@ import SidebarFeed
             updateMenu(paletteFocus?.owner, responder: paletteFocus?.responder)
             return paletteEntries(owner: paletteFocus?.owner, responder: paletteFocus?.responder)
         }
-        panel.palette.modeEntries = { [weak self] query, invalid in self?.connectEntries(query: query, invalid: invalid) ?? [] }
+        panel.palette.modeEntries = { [weak self, weak panel] mode, query, invalid in
+            guard let self, let palette = panel?.palette else { return [] }
+            switch mode {
+            case .color(let target):
+                return colorEntries(target, current: currentAccent(target, palette), query: query)
+            default: return connectEntries(query: query, invalid: invalid, chosen: palette.connectAccent)
+            }
+        }
         panel.palette.rename = { [weak self, weak panel] text in
             guard let self, let panel, self.palettePanel === panel,
                   case .rename(let owner, let instance, let id, let original) = panel.palette.mode else { return }
@@ -426,7 +486,7 @@ import SidebarFeed
                 let window = notification.object as? NSWindow
                 MainActor.assumeIsolated {
                     guard let self, self.palettePanel != nil, !self.paletteBusy else { return }
-                    if window !== panel { self.closePalette(.moved) }
+                    if window !== panel, !(window is NSColorPanel) { self.closePalette(.moved) }
                 }
             })
         }
@@ -450,10 +510,21 @@ import SidebarFeed
             case .connectTyped(let text):
                 do throws(Failure) {
                     let host = try Host(text)
+                    let accent = panel.palette.connectAccent
                     closePalette(.choice)
-                    routes.connect(host)
+                    routes.connect(host, accent: accent)
                 } catch { panel.palette.reject(error.message); focusPalette(panel) }
             case .themeChoose, .themeUse: break
+            case .chooseColor(let accent):
+                switch panel.palette.mode {
+                case .color(.connection(let host)): routes.accents.set(accent, for: host); closePalette(.choice)
+                default: panel.palette.connectAccent = accent; panel.palette.enter(.connect); focusPalette(panel)
+                }
+            case .customColor:
+                guard case .color(let target) = panel.palette.mode else { break }
+                let current = currentAccent(target, panel.palette)
+                if case .connection = target { closePalette(.choice) } else { panel.palette.enter(.connect); focusPalette(panel) }
+                customColor(target, current: current)
             case .clearRecent:
                 routes.clearRecent()
                 panel.palette.reloadMode()
@@ -471,6 +542,10 @@ import SidebarFeed
                 prunePromptDrafts(source.owner)
             }
             palettePanel = nil
+            if customColorTarget == .newConnection {
+                endCustomColor()
+                NSColorPanel.shared.orderOut(nil)
+            }
             paletteObservers.forEach { NotificationCenter.default.removeObserver($0) }
             paletteObservers = []
             let focus = paletteFocus
@@ -538,6 +613,7 @@ import SidebarFeed
         note("quitting: \(trigger ?? "NSApp.terminate")")
         Notifier.shared.withdrawAll()
         Upload.sweepPromises()
+        ScrollbackFile.removeAll()
         let stopped = DispatchGroup()
         for owner in owners {
             stopped.enter()

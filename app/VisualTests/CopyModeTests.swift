@@ -403,7 +403,7 @@ extension VisualTests {
         try "copy-on-select = clipboard\n".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
         owner.window.contentView = pane
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
@@ -565,7 +565,7 @@ extension VisualTests {
     func testPendingInputRefusalsAndLateWork() async throws {
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .remote("copy-host"), runtime: runtime, start: false)
+        let owner = WindowOwner(host: .remote("copy-host"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         owner.testUploadBase = "/tmp/kc-" + UUID().uuidString.prefix(8)
         var replies: [Data] = []
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { replies.append($0) })
@@ -1098,13 +1098,13 @@ extension VisualTests {
         let chrome = try XCTUnwrap(terminal?.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane.pane })
         for theme in ["light", "dark"] {
             try await hover(pane, true)
-            XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 547, y: 8, width: 145, height: 32))
+            XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 531, y: 8, width: 145, height: 32))
             try await snapshot("\(theme)-toolbar")
             pane.showFind()
             pane.layoutSubtreeIfNeeded()
             let find = try XCTUnwrap(pane.find)
-            XCTAssertEqual(find.frame, NSRect(x: 272, y: 8, width: 420, height: 32))
-            XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 547, y: 48, width: 145, height: 32), "the toolbar goes below find")
+            XCTAssertEqual(find.frame, NSRect(x: 256, y: 8, width: 420, height: 32))
+            XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 531, y: 48, width: 145, height: 32), "the toolbar goes below find")
             XCTAssertEqual(find.accessibilityLabel(), "Find in Terminal")
             XCTAssertTrue(find.field.nextKeyView?.nextKeyView?.nextKeyView?.nextKeyView === pane, "field, Previous, Next, Done, then the pane")
             try await snapshot("\(theme)-find-empty")
@@ -1136,8 +1136,8 @@ extension VisualTests {
             try await settle()
             try await hover(pane, true)
             try await findThree(pane, "3/12")
-            XCTAssertEqual(pane.find?.frame, NSRect(x: 8, y: 8, width: 284, height: 32))
-            XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 147, y: 48, width: 145, height: 32))
+            XCTAssertEqual(pane.find?.frame, NSRect(x: 8, y: 8, width: 268, height: 32))
+            XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 131, y: 48, width: 145, height: 32))
             try await snapshot("\(theme)-narrow")
             XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(PaneView.toggleCopyMode(_:)), with: nil))
             try await wait("compact loaded count", within: 2) { self.found(pane) == "12 (loaded)" }
@@ -1172,7 +1172,7 @@ extension VisualTests {
         var bar = ghostty_surface_scrollbar_s()
         _ = ghostty_surface_scrollbar(pane.surface, &bar)
         return mouse(pane, type, at: NSPoint(x: (CGFloat(x) + 0.5) * pane.cell.width,
-                                             y: pane.bounds.height - pane.renderInsets.top - (CGFloat(y - Int(bar.offset)) + 0.5) * pane.cell.height),
+                                             y: pane.bounds.height - (CGFloat(y - Int(bar.offset)) + 0.5) * pane.cell.height),
                      clickCount: clickCount, mods: mods)
     }
 

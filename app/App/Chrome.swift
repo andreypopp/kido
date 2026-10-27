@@ -21,16 +21,19 @@ enum Chrome {
     static var closeHover: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
     static var rowSelection: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
     static var iconHover: NSColor { NSColor.labelColor.withAlphaComponent(0.12) }
-    static var tabPill: NSColor { NSColor.labelColor.withAlphaComponent(0.075) }
     static var scrollerKnob: NSColor { NSColor.labelColor.withAlphaComponent(0.3) }
     static var scrollerKnobActive: NSColor { NSColor.labelColor.withAlphaComponent(0.5) }
     static var modeChipFill: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
     static var modeChipInk: NSColor { NSColor.labelColor.withAlphaComponent(0.8) }
     static var disabledFill: NSColor { NSColor.labelColor.withAlphaComponent(0.14) }
     static var floatingListHairline: NSColor { NSColor.labelColor.withAlphaComponent(0.12) }
-    static var focusStroke: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.5) }
     static var dropPreview: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.3) }
     static var capsuleRing: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.4) }
+    static var accent: NSColor { .controlAccentColor }
+    static var swatchChevron: NSColor { NSColor.labelColor.withAlphaComponent(0.6) }
+    static func pole(dark: Bool) -> NSColor { dark ? .white : .black }
+    static func hex(_ value: Int) -> NSColor { rgb(Double((value >> 16) & 255) / 255, Double((value >> 8) & 255) / 255, Double(value & 255) / 255) }
+    static func rgb(_ red: Double, _ green: Double, _ blue: Double) -> NSColor { NSColor(srgbRed: red, green: green, blue: blue, alpha: 1) }
     static var insertion: NSColor { .controlAccentColor }
     static var renameEdge: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.4) }
     static var sendFill: NSColor { .controlAccentColor }
@@ -43,7 +46,6 @@ enum Chrome {
     static var floatShadow: (color: NSColor, blur: CGFloat) { (.black.withAlphaComponent(0.22), 12) }
     static func sidebarShadow(dark: Bool) -> (color: NSColor, blur: CGFloat) { (.black.withAlphaComponent(dark ? 0.4 : 0.18), 14) }
     static var shadowMask: NSColor { .black }
-    static var disconnectedHostAlpha: CGFloat { 0.45 }
     static var disabledIconAlpha: CGFloat { 0.35 }
     static var pickerRing: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.55) }
     static var codeFill: NSColor { NSColor.labelColor.withAlphaComponent(NSColor.labelColor.alphaComponent * 0.08) }

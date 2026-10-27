@@ -161,6 +161,7 @@ final class Connection: @unchecked Sendable {
                 reply()
             }
         }
+        pane.onSend = { [weak self] commands, done in self?.send(commands, then: done) ?? done?(nil) ?? () }
         pane.onScrollTop = { [weak self, id = pane.pane] in self?.load(id, metadataOnly: true) }
         pane.onLoadMore = { [weak self, id = pane.pane] in self?.load(id) }
         pane.onFindCoverage = { [weak self, id = pane.pane] distance, token in
@@ -231,7 +232,7 @@ final class Connection: @unchecked Sendable {
         visualCommands += commands
         #endif
         client.send(commands) { [weak self] replies in
-            if let done { DispatchQueue.main.async { [weak self] in guard self?.active == true else { return }; done(replies) } }
+            if let done { DispatchQueue.main.async { [weak self] in done(self?.active == true ? replies : nil) } }
         }
     }
 

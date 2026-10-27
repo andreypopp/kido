@@ -76,16 +76,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance { super.invokeTest() }
     }
 
-    func headerImage(_ tabs: WindowTabs) throws -> NSImage {
-        let root = try XCTUnwrap(tabs.window?.contentView?.superview)
-        let rect = tabs.convert(tabs.bounds, to: root)
-        let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: rect))
-        root.cacheDisplay(in: rect, to: bitmap)
-        let image = NSImage(size: tabs.bounds.size)
-        image.addRepresentation(bitmap)
-        return image
-    }
-
     func sidebarFixture(_ edit: (inout [String: Any]) -> Void = { _ in }) throws -> Snapshot {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/live-feed.json")
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
@@ -175,11 +165,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         print(report)
     }
 
-    private func updateTabs(_ status: Feed.Status? = nil) {
-        if case .running(let snapshot) = status { tabSnapshot = snapshot }
-        (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(tabSnapshot, activePanes: session.windows.compactMapValues(\.active)).tabs
-    }
-
     override func setUp() async throws {
         try await super.setUp()
         directory = URL(fileURLWithPath: "/tmp/kido-visual-\(UUID().uuidString)")
@@ -251,7 +236,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     private func sidebarOwner() throws -> WindowOwner {
         try loadRuntime()
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         addTeardownBlock { @MainActor in owner.close() }
         return owner
     }
@@ -265,7 +250,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
         runtime.onConfigReload = { [weak self] font in self?.session.reloadConfig(font: font) }
-        session.onPaneChange = { [weak self] in self?.updateTabs() }
         session.frame = NSRect(x: 0, y: 0, width: 700, height: height)
         window.contentView = session
         let tmuxConfig = directory.appendingPathComponent("tmux.conf")
@@ -282,7 +266,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                                     onChange: { [weak self] model in
                                         self?.session.show(model.window)
                                         self?.model = model
-                                        self?.updateTabs()
                                     },
                                     onDiagnostic: { XCTFail($0) }, onClose: { _, _ in })
         try await wait("initial layout") { self.terminal?.panes.isEmpty == false }
@@ -295,7 +278,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 switch step {
                 case .next: rpc?.request(.switchWindow(next: true)) { _ in }
                 case .previous: rpc?.request(.switchWindow(next: false)) { _ in }
-                default: if let request = model.navigation(tabSnapshot).model.select(step) { rpc?.request(request) { _ in } }
+                default: if let request = model.navigation(tabSnapshot).select(step) { rpc?.request(request) { _ in } }
                 }
             case .newWindow: if let window = model.window { rpc?.request(.newWindow(window)) { _ in } }
             default: break
@@ -306,16 +289,20 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         return clipboardMode
     }
 
-    func testSinglePaneHeaderPaper() async throws {
+    func testSinglePaneCardMargins() async throws {
         let config = directory.appendingPathComponent("single-pane-header.conf")
         try "background = #fffaf0\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         defer { owner.close() }
         let content = owner.sidebar.content
         content.addSubview(session)
         session.frame = content.bounds
         session.autoresizingMask = [.width, .height]
+        func rgb(_ color: NSColor) -> [Double] {
+            let color = color.usingColorSpace(.sRGB)!
+            return [color.redComponent, color.greenComponent, color.blueComponent].map { $0 * 255 }
+        }
         for hex in ["fffaf0", "172029"] {
             let changed = expectation(description: "single pane theme")
             runtime.onConfigChange = { owner.updateAppearance(); self.session.updateBackground(); changed.fulfill() }
@@ -332,23 +319,62 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 root.layoutSubtreeIfNeeded()
                 owner.window.display()
                 await mainQueueFence()
+                try await settle()
                 let pane = try XCTUnwrap(terminal?.panes.first)
                 XCTAssertEqual(terminal?.panes.count, 1)
                 XCTAssertEqual(pane.paperColor, runtime.background)
                 let image = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
                 content.cacheDisplay(in: content.bounds, to: image)
                 let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))
-                for point in [(2, 2), (pixels.pixelsWide - 2, pixels.pixelsHigh - 2), (pixels.pixelsWide / 2, pixels.pixelsHigh / 2)] {
-                    try assertPaperPixel(pixels, x: point.0, y: point.1, expected: headerPaperRGB[hex]!, "\(hex) single pane paper and outer padding stay pure")
+                let scale = Double(pixels.pixelsWide) / content.bounds.width
+                let (width, height) = (content.bounds.width, content.bounds.height)
+                let canvas = rgb(runtime.canvas), paper = rgb(runtime.background)
+                for (label, x, y, expected) in [("top-left margin", 3, 3, canvas), ("bottom-right margin", width - 3, height - 3, canvas),
+                                                ("card center", width / 2, height / 2, paper),
+                                                ("left margin ends at the spacing", 7, height / 2, canvas), ("card starts at the spacing", 9, height / 2, paper),
+                                                ("top margin ends at the spacing", width / 2, 7, canvas), ("card starts below the margin", width / 2, 9, paper),
+                                                ("right margin starts at the spacing", width - 7, height / 2, canvas), ("card ends at the spacing", width - 9, height / 2, paper)] {
+                    try assertPaperPixel(pixels, x: Int(x * scale), y: Int(y * scale), expected: expected, "\(hex) collapsed=\(collapsed) \(label)")
                 }
             }
             let split = try await command(["split-window", "-h", "-P", "-F", "#{pane_id}", "exec /bin/cat"])
             try await wait("inactive tiled paper") { self.terminal?.panes.count == 2 }
             let inactive = try XCTUnwrap(terminal?.panes.first { $0.shiftedBackground })
-            XCTAssertEqual(inactive.paperColor, owner.window.backgroundColor)
-            XCTAssertEqual(inactive.paperColor, owner.sidebar.tabs.theme.background)
+            XCTAssertEqual(inactive.paperColor, runtime.unfocusedPaper, "an inactive card keeps the shifted paper")
+            XCTAssertNotEqual(inactive.paperColor, owner.window.backgroundColor, "a card is never the canvas colour")
             _ = try await command(["kill-pane", "-t", split])
             try await wait("single pane restored") { self.terminal?.panes.count == 1 }
+        }
+    }
+
+    func testGhosttySplitBindingsRunTmuxCommands() async throws {
+        let config = directory.appendingPathComponent("split-bindings.conf")
+        try """
+        font-family = Menlo
+        keybind = super+left=unbind
+        keybind = super+alt+left=resize_split:left,8
+        keybind = super+alt+down=resize_split:down,8
+        keybind = super+h=new_split:right
+        keybind = super+ctrl+left=goto_split:left
+        """.write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        _ = try await command(["split-window", "-h", "exec /bin/cat"])
+        try await wait("split pane", within: 5) { self.terminal?.panes.count == 2 }
+        let menu = NSApp.mainMenu
+        NSApp.mainMenu = nil
+        defer { NSApp.mainMenu = menu }
+        let keys: [(UInt16, String, NSEvent.ModifierFlags, String)] = [
+            (123, "\u{F702}", [.command, .option], "resize-pane -L"), (125, "\u{F701}", [.command, .option], "resize-pane -D"),
+            (123, "\u{F702}", [.command, .control], "select-pane -L"), (4, "h", .command, "split-window -h"),
+        ]
+        for (code, key, mods, expected) in keys {
+            let pane = try XCTUnwrap(terminal?.panes.first { $0.pane == self.terminal?.active })
+            window.makeFirstResponder(pane)
+            connection.visualCommands.removeAll()
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code))
+            XCTAssertTrue(pane.performKeyEquivalent(with: event), expected)
+            try await wait(expected, within: 5) { self.connection.visualCommands.contains { $0.line.hasPrefix(expected) } }
         }
     }
 
@@ -402,12 +428,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let pane = try XCTUnwrap(terminal?.panes.first)
         let before = ghostty_surface_size(pane.surface)
         let epoch = pane.historyEpoch
-        let shaded = expectation(description: "shade-only reload")
+        let shaded = expectation(description: "shift-only reload")
         runtime.onConfigChange = { shaded.fulfill() }
-        try "font-family = Menlo\nfont-size = 13\nkido-sidebar-shade = 30%\n".write(to: config, atomically: false, encoding: .utf8)
+        try "font-family = Menlo\nfont-size = 13\nkido-unfocused-background-shift = 30%\n".write(to: config, atomically: false, encoding: .utf8)
         await fulfillment(of: [shaded], timeout: 0.3)
         await mainQueueFence()
-        XCTAssertEqual(pane.historyEpoch, epoch, "shade-only reload must not reflow the pane")
+        XCTAssertEqual(pane.historyEpoch, epoch, "shift-only reload must not reflow the pane")
         let changed = expectation(description: "font config reload")
         runtime.onConfigChange = { changed.fulfill() }
         try "font-family = Menlo\nfont-size = 20\n".write(to: config, atomically: false, encoding: .utf8)
@@ -493,31 +519,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
-    func testWindowTabs() async throws {
+    func testWindowNavigation() async throws {
         try await start()
-        let sidebar = Sidebar()
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.backgroundColor = runtime.background
-        window.contentViewController = sidebar
-        session.frame = sidebar.content.bounds
-        session.autoresizingMask = [.width, .height]
-        sidebar.content.addSubview(session)
-        let toolbar = NSToolbar(identifier: "WindowTabs")
-        toolbar.delegate = sidebar
-        toolbar.displayMode = .iconOnly
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
-        window.setContentSize(NSSize(width: 900, height: 560))
-        sidebar.tabs.theme = (runtime.background, window.appearance)
-        window.display()
-        let root = try XCTUnwrap(window.contentView?.superview)
-        root.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(236, ofDividerAt: 0)
-        sidebar.tabs.select = { [weak self] step in
-            guard let self, let command = model.navigation(tabSnapshot).model.select(step) else { return }
-            rpc?.request(command) { if case .failure(let error) = $0 { XCTFail(error.message) } }
-        }
         _ = try await command(["rename-window", "-t", "visual:0", "Shell"])
         let middle = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Editor", "exec /bin/cat"])
         let last = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Logs", "exec /bin/cat"])
@@ -529,58 +532,32 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let panes = listing.split(separator: "\n").map { $0.split(separator: " ").map(String.init) }
         let shell = try XCTUnwrap(panes.first { $0[0] != middle && $0[0] != last && $0[0] != child })
         let childPane = try XCTUnwrap(panes.first { $0[0] == child })[1]
-        func fixture(_ status: String = "waiting", review: String = "Review changes") throws -> Snapshot {
+        func fixture() throws -> Snapshot {
             func item(_ pane: [String], children: [[String: Any]] = [], status: String = "idle") -> [String: Any] {
                 let state: [Any] = switch status {
                 case "waiting": ["Waiting", ["kind": NSNull(), "progress": NSNull()]]
-                case "failed", "done": ["Idle", ["outcome": ["serial": 1, "result": status == "done" ? "success" : "failure"]]]
                 default: ["Idle", ["outcome": NSNull()]]
                 }
                 return ["kind": "pane", "run": pane[0] == child ? "r-child" as Any : NSNull(), "started": NSNull(), "id": pane[1], "pane": pane[1], "window": pane[0],
-                        "program_status": ["serial": 0, "records": []], "title": pane[0] == middle ? (pane[1] == secondPane ? review : "Agent caption") : pane[0] == last ? "Build output" : "Shell prompt",
+                        "program_status": ["serial": 0, "records": []], "title": pane[0] == middle ? (pane[1] == secondPane ? "Review changes" : "Agent caption") : pane[0] == last ? "Build output" : "Shell prompt",
                         "lifecycle": pane[0] == child ? agentLifecycle(state) : shellLifecycle(), "children": children]
             }
             let nodes: [[String: Any]] = [item(shell),
                 ["kind": "window", "id": middle, "window": middle, "name": "Editor",
                  "children": panes.filter { $0[0] == middle }.enumerated().map { i, pane in
-                     item(pane, children: i == 0 ? [item([child, childPane], status: status)] : [])
+                     item(pane, children: i == 0 ? [item([child, childPane], status: "waiting")] : [])
                  }], item(try XCTUnwrap(panes.first { $0[0] == last }))]
             let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": child, "pane": childPane],
                 "server_instance": ["started_at": 1791000000, "pid": 4242], "sessions": [["id": "$0", "name": "visual", "current": true,
                     "nodes": nodes]]]
             return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
         }
-        updateTabs(.running(try fixture()))
-        XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell prompt", "Review changes", "Build output"])
-        let firstPane = try XCTUnwrap(panes.first { $0[0] == middle && $0[1] != secondPane })[1]
-        let beforePaneChange = model
-        _ = try await command(["select-pane", "-t", firstPane])
-        try await wait("inactive window pane title") { sidebar.tabs.entries[1].name == "Agent caption" }
-        XCTAssertEqual(model, beforePaneChange)
-        _ = try await command(["select-pane", "-t", secondPane])
-        try await wait("inactive window pane restored") { sidebar.tabs.entries[1].name == "Review changes" }
-        updateTabs(.running(try fixture(review: "Review updated")))
-        XCTAssertEqual(sidebar.tabs.entries[1].name, "Review updated")
-        XCTAssertEqual((sidebar.tabs.accessibilityChildren()?[1] as? NSAccessibilityElement)?.accessibilityLabel(), "Window: Review updated — waiting")
-        updateTabs(.running(try fixture()))
-        XCTAssertEqual(sidebar.tabs.entries.map(\.status), [.quiet, .waiting, .quiet])
-        updateTabs(.running(try fixture("failed")))
-        XCTAssertEqual(sidebar.tabs.entries[1].status, .error)
-        updateTabs(.running(try fixture()))
+        tabSnapshot = try fixture()
         connection.send([Command("select-window", "-t", child)])
         try await wait("descendant active") { self.model.window?.description == child }
-        XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id.description, middle)
-        root.layoutSubtreeIfNeeded()
-        sidebar.viewDidLayout()
-        try await wait("native tabs layout") { sidebar.tabs.frame.width > 300 && sidebar.tabs.frame.height == 36 }
-        let point = sidebar.tabs.convert(NSPoint(x: 240, y: 18), to: nil)
-        XCTAssertTrue(root.hitTest(root.convert(point, from: nil)) === sidebar.tabs)
-        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
-        sidebar.tabs.mouseDown(with: event)
-        sidebar.tabs.mouseUp(with: try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [],
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0)))
-        try await wait("middle tab selected") { self.model.window?.description == middle }
+        let selectMiddle = try XCTUnwrap(model.navigation(tabSnapshot).select(.number(2)))
+        rpc?.request(selectMiddle) { if case .failure(let error) = $0 { XCTFail(error.message) } }
+        try await wait("middle window selected") { self.model.window?.description == middle }
         let current = try await command(["display-message", "-p", "-t", "visual", "#{window_id}"])
         XCTAssertEqual(current, middle)
         let restoredPane = try await command(["display-message", "-p", "-t", middle, "#{pane_id}"])
@@ -589,47 +566,25 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("first window selected") { self.model.window?.description == shell[0] }
         let menus = SessionMenus()
         menus.send = { [weak self] request in self?.rpc?.request(request) { if case .failure(let error) = $0 { XCTFail(error.message) } } }
-        menus.update(model.navigation(tabSnapshot).model)
+        menus.update(model.navigation(tabSnapshot))
         let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
             timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "2", charactersIgnoringModifiers: "2", isARepeat: false, keyCode: 19))
         XCTAssertTrue(menus.window.performKeyEquivalent(with: key))
-        try await wait("Cmd-2 selects second tab") { self.model.window?.description == middle }
-        XCTAssertEqual(model.navigation(tabSnapshot).model.select(.number(2)), RPCRequest.selectWindow(SessionID(number: 0), WindowID(middle)!))
+        try await wait("Cmd-2 selects second window") { self.model.window?.description == middle }
+        XCTAssertEqual(model.navigation(tabSnapshot).select(.number(2)), RPCRequest.selectWindow(SessionID(number: 0), WindowID(middle)!))
         XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key.description, middle)
-        let area = sidebar.content.convert(sidebar.content.bounds, to: root)
-        XCTAssertGreaterThan(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).minY, area.maxY)
-        XCTAssertTrue(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "windowTabs" }?.view === sidebar.tabs.superview)
-        XCTAssertEqual(sidebar.tabs.frame.height, 36)
-        let tabs = sidebar.tabs.entries
-        sidebar.tabs.entries = []
-        let empty = root.hitTest(sidebar.tabs.convert(NSPoint(x: sidebar.tabs.bounds.midX, y: 18), to: root))
-        XCTAssertFalse(empty === sidebar.tabs)
-        XCTAssertTrue(empty?.mouseDownCanMoveWindow == true)
-        sidebar.tabs.entries = tabs
         XCTAssertFalse(window.isVisible)
         XCTAssertFalse(window.isKeyWindow)
         XCTAssertFalse(NSApp.isActive)
-        updateTabs(.running(try fixture("done")))
-        XCTAssertEqual(sidebar.tabs.entries[1].status, .done)
-        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "middle", record: record),
-           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
-        sidebar.isCollapsed = true
-        root.layoutSubtreeIfNeeded()
-        sidebar.viewDidLayout()
-        XCTAssertGreaterThanOrEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).minX, 116)
-        await mainQueueFence()
-        if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "collapsed", record: record),
-           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         _ = try await command(["kill-window", "-t", child])
         _ = try await command(["rename-window", "-t", middle, "Renamed"])
-        try await wait("renamed tab") { self.model.windows.map(\.name) == ["Shell", "Renamed", "Logs"] }
+        try await wait("renamed window") { self.model.windows.map(\.name) == ["Shell", "Renamed", "Logs"] }
         _ = try await command(["swap-window", "-d", "-s", middle, "-t", last])
-        try await wait("reordered tabs") { self.model.windows.map(\.name) == ["Shell", "Logs", "Renamed"] }
+        try await wait("reordered windows") { self.model.windows.map(\.name) == ["Shell", "Logs", "Renamed"] }
         _ = try await command(["kill-window", "-t", last])
-        try await wait("closed tab") { self.model.windows.map(\.name) == ["Shell", "Renamed"] }
+        try await wait("closed window") { self.model.windows.map(\.name) == ["Shell", "Renamed"] }
         _ = try await command(["new-session", "-d", "-s", "other", "-n", "Other session", "exec /bin/cat"])
-        let pendingSelection = try XCTUnwrap(model.navigation(tabSnapshot).model.select(.number(2)))
+        let pendingSelection = try XCTUnwrap(model.navigation(tabSnapshot).select(.number(2)))
         connection.visualCommands.removeAll()
         let selected = expectation(description: "pending selection completed")
         _ = try await command(["switch-client", "-t", "other"])
@@ -646,11 +601,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("pending selection returns to its own session") { self.model.session == SessionID(number: 0) && self.model.window?.description == middle }
         XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("switch-client") }.count, 0)
         connection.send([Command("switch-client", "-t", "other")])
-        try await wait("current session tabs only") { self.model.windows.map(\.name) == ["Other session"] }
+        try await wait("current session windows only") { self.model.windows.map(\.name) == ["Other session"] }
         connection.send([Command("switch-client", "-t", "visual")])
         try await wait("session switched back") { self.model.windows.map(\.name) == ["Shell", "Renamed"] }
         _ = try await command(["kill-session", "-t", "other"])
-        sidebar.tabs.removeFromSuperview()
     }
 
     func testPaneDragExcludesReorderGestures() async throws {
@@ -660,13 +614,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let view = try XCTUnwrap(terminal), pane = try XCTUnwrap(view.panes.first?.pane)
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
-        XCTAssertTrue(session.reorder.claim(.tab))
+        XCTAssertTrue(session.reorder.claim(.sidebar))
         view.visualBeginDrag(pane, down)
-        XCTAssertFalse(view.visualPaneDragging, "a tab drag holds the gesture")
-        session.reorder.release(.tab)
+        XCTAssertFalse(view.visualPaneDragging, "a sidebar drag holds the gesture")
+        session.reorder.release(.sidebar)
         view.visualBeginDrag(pane, down)
         XCTAssertTrue(view.visualPaneDragging)
-        XCTAssertFalse(session.reorder.claim(.tab))
         XCTAssertFalse(session.reorder.claim(.sidebar))
         view.cancelDrag()
         XCTAssertFalse(view.visualPaneDragging)
@@ -687,13 +640,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         sidebar.content.addSubview(session)
         sidebar.focusTerminal = { [weak self] in self?.session.focusActive() }
         owner.request = { [weak self] in self?.rpc?.request($0, completed: $1) }
-        let toolbar = NSToolbar(identifier: "FloatingSidebar")
-        toolbar.delegate = sidebar
-        toolbar.displayMode = .iconOnly
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 900, height: 560))
-        sidebar.tabs.theme = (runtime.background, window.appearance)
         window.display()
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
@@ -712,17 +659,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         defer {
             for (item, target) in zip(entries, targets) { item.target = target }
             sidebar.dismissFloating()
-            sidebar.tabs.removeFromSuperview()
         }
         for item in entries { item.target = sidebar }
         try await settle()
         let buttons = try [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].map { try XCTUnwrap(window.standardWindowButton($0)) }
         let parents = buttons.map(\.superview)
         let buttonFrames = buttons.map { $0.convert($0.bounds, to: root) }
-        let tools = toolbar.items.filter { ["newSession", "toggleSidebar"].contains($0.itemIdentifier.rawValue) }
-        let toolViews = try tools.map { try XCTUnwrap($0.view) }
-        let toolParents = toolViews.map(\.superview)
-        let toolFrames = toolViews.map { $0.convert($0.bounds, to: root) }
         func chrome(_ phase: String) {
             XCTAssertEqual(window.titleVisibility, .hidden)
             for (index, button) in buttons.enumerated() {
@@ -730,13 +672,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 XCTAssertTrue(button.superview === parents[index])
                 XCTAssertEqual(button.convert(button.bounds, to: root), buttonFrames[index])
             }
-            for (index, item) in tools.enumerated() {
-                XCTAssertFalse(item.isHidden)
-                XCTAssertFalse(toolViews[index].isHiddenOrHasHiddenAncestor)
-                XCTAssertTrue(toolViews[index].superview === toolParents[index])
-                XCTAssertEqual(toolViews[index].convert(toolViews[index].bounds, to: root), toolFrames[index])
-            }
-            print("native chrome \(phase): buttons=\(buttons.map { $0.convert($0.bounds, to: root) }) toolbar=\(toolViews.map { $0.convert($0.bounds, to: root) }) title=\(window.titleVisibility.rawValue)")
+            print("native chrome \(phase): buttons=\(buttons.map { $0.convert($0.bounds, to: root) }) title=\(window.titleVisibility.rawValue)")
         }
         chrome("initial dock")
         XCTAssertEqual(entries.map(\.keyEquivalent), ["S", "s"])
@@ -755,13 +691,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 XCTAssertFalse(ghostty_surface_key_is_binding(pane.surface, input, &flags))
             }
             let wasFloating = sidebar.isFloating
+            for item in entries { item.target = sidebar }
             XCTAssertTrue(menu.performKeyEquivalent(with: event))
-            let immediateContent = sidebar.content.frame, immediateTabs = sidebar.tabs.frame
+            let immediateContent = sidebar.content.frame, immediateTitle = sidebar.visualTitle.frame
             root.layoutSubtreeIfNeeded()
             sidebar.viewDidLayout()
             if !modifiers.contains(.shift), wasFloating || sidebar.isFloating {
                 XCTAssertEqual(sidebar.content.frame, immediateContent)
-                XCTAssertEqual(sidebar.tabs.frame, immediateTabs)
+                XCTAssertEqual(sidebar.visualTitle.frame, immediateTitle)
                 var view: NSView? = sidebar.list
                 while let current = view {
                     XCTAssertTrue(current.layer?.animationKeys()?.isEmpty ?? true)
@@ -778,11 +715,46 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await settle()
         XCTAssertFalse(sidebar.isCollapsed)
         chrome("plain undock/dock")
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        func shot(_ name: String) async throws {
+            try await paint()
+            CATransaction.flush()
+            if let failure = verifySnapshot(of: root, as: .image, named: name, record: record, testName: "testFloatingSidebar"),
+               !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+        }
+        func titleFrame() -> NSRect { sidebar.visualTitle.convert(sidebar.visualTitle.bounds, to: root) }
+        try await shot("docked")
+        let dockedTitle = titleFrame()
+        XCTAssertFalse(sidebar.windowTitle.isEmpty)
+        XCTAssertEqual(sidebar.windowTitle, owner.window.title)
+        XCTAssertFalse(sidebar.toggleButton.isHidden)
+        XCTAssertLessThan(dockedTitle.maxX, sidebar.toggleButton.convert(sidebar.toggleButton.bounds, to: root).minX)
+        func movesWindow(_ point: NSPoint) -> Bool {
+            XCTAssertLessThanOrEqual(root.bounds.maxY - point.y, Sidebar.titlebar, "the point is in the native title bar band")
+            return root.hitTest(point).map(\.mouseDownCanMoveWindow) ?? true
+        }
+        XCTAssertTrue(movesWindow(NSPoint(x: dockedTitle.midX, y: dockedTitle.midY)), "the docked top row moves the window")
+        let toggle = sidebar.toggleButton.convert(sidebar.toggleButton.bounds, to: root)
+        XCTAssertFalse(movesWindow(NSPoint(x: toggle.midX, y: toggle.midY)), "a button in the top row takes the click")
+        let docked = try XCTUnwrap(terminal)
+        let firstCard = try XCTUnwrap(docked.panes.min { $0.frame.minY < $1.frame.minY })
+        let firstRow = root.convert(NSPoint(x: firstCard.bounds.midX, y: firstCard.bounds.maxY - 6), from: firstCard)
+        let margin = root.convert(NSPoint(x: firstCard.bounds.midX, y: firstCard.bounds.maxY + 1), from: firstCard)
+        XCTAssertFalse(movesWindow(firstRow), "the first terminal row takes the click")
+        XCTAssertFalse(movesWindow(margin), "the margin above the first card takes the click")
         try key([.command, .shift])
         try await settle()
+        try await shot("collapsed")
+        let collapsedTitle = titleFrame()
+        XCTAssertFalse(sidebar.visualTitle.isHidden)
+        XCTAssertEqual(collapsedTitle.midX, sidebar.terminalHost.convert(sidebar.terminalHost.bounds, to: root).midX, accuracy: 0.5, "the collapsed title is centered over the terminal")
+        XCTAssertLessThanOrEqual(root.bounds.maxY - collapsedTitle.midY, Sidebar.titlebar, "the title sits in the top band")
+        XCTAssertTrue(movesWindow(NSPoint(x: collapsedTitle.midX, y: collapsedTitle.midY)), "the collapsed title band moves the window")
+        XCTAssertTrue(movesWindow(NSPoint(x: collapsedTitle.maxX + 20, y: collapsedTitle.midY)), "the whole collapsed band moves the window")
         let terminal = try XCTUnwrap(terminal)
         let frame = terminal.frame
-        let tabFrame = sidebar.tabs.convert(sidebar.tabs.bounds, to: root)
+        let strip = root.convert(terminal.convert(NSPoint(x: terminal.bounds.midX, y: 1), to: nil), from: nil)
+        XCTAssertTrue(root.hitTest(strip) is PaneView, "the top margin above the cards takes the click as a pane")
         let grids = terminal.panes.map { ghostty_surface_size($0.surface) }
         let clientSize = try await command(["list-clients", "-F", "#{client_width}x#{client_height}"])
         connection.visualCommands.removeAll()
@@ -796,19 +768,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertTrue(sidebar.isFloating)
         XCTAssertFalse(sidebar.isCollapsed)
         XCTAssertTrue(sidebar.list === list)
-        XCTAssertTrue(toolbar.items.first { $0.itemIdentifier.rawValue == "windowTabs" }?.view === sidebar.tabs.superview)
         XCTAssertTrue(sidebar.list.superview === listParent)
         XCTAssertEqual(native.convert(native.bounds, to: root), nativeFrame)
         XCTAssertTrue(sidebar.list.containsFocus)
         XCTAssertEqual(terminal.frame, frame)
-        try await wait("floating layout settled") {
-            let floating = sidebar.tabs.convert(sidebar.tabs.bounds, to: root)
-            return floating.minX > tabFrame.minX && floating.minX >= nativeFrame.maxX && floating.maxX == tabFrame.maxX
-        }
-        let floatingTabFrame = sidebar.tabs.convert(sidebar.tabs.bounds, to: root)
-        XCTAssertGreaterThan(floatingTabFrame.minX, tabFrame.minX)
-        XCTAssertGreaterThanOrEqual(floatingTabFrame.minX, nativeFrame.maxX)
-        XCTAssertEqual(floatingTabFrame.maxX, tabFrame.maxX)
+        try await wait("floating layout settled") { nativeFrame.contains(titleFrame()) }
+        let floatingTitle = titleFrame()
+        XCTAssertNotEqual(floatingTitle, collapsedTitle, "the floating card carries the title in its own row")
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
         let floatingSize = try await command(["list-clients", "-F", "#{client_width}x#{client_height}"])
@@ -816,7 +782,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertFalse(connection.visualCommands.contains { $0.line.hasPrefix("refresh-client -C") })
         try key()
         XCTAssertFalse(sidebar.isFloating)
-        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
+        XCTAssertEqual(titleFrame(), collapsedTitle)
         XCTAssertTrue(window.firstResponder is PaneView)
         try key()
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
@@ -836,24 +802,23 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertTrue(sidebar.list.superview === listParent)
         XCTAssertEqual(native.convert(native.bounds, to: root), nativeFrame)
         XCTAssertNotEqual(terminal.frame, frame)
-        XCTAssertNotEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
+        XCTAssertEqual(titleFrame(), dockedTitle)
         XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("refresh-client -C") }.count, 1)
         chrome("shortcut float to dock")
         try key([.command, .shift])
         try key()
-        let toggleButton = try XCTUnwrap(toolViews.last as? NSButton)
-        toggleButton.performClick(nil)
+        sidebar.toggleButton.performClick(nil)
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
         try await settle()
         XCTAssertFalse(sidebar.isFloating)
         XCTAssertFalse(sidebar.isCollapsed)
-        chrome("toolbar float to dock")
+        chrome("toggle button float to dock")
         try key([.command, .shift])
         try await settle()
         try key()
         try await settle()
-        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), floatingTabFrame)
+        XCTAssertEqual(titleFrame(), floatingTitle)
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
         XCTAssertEqual(terminal.frame, frame)
@@ -892,9 +857,87 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             views += view.subviews
         }
         CATransaction.flush()
-        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verifySnapshot(of: root, as: .image, named: "collapsed-floating", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+    }
+
+    func testSpacedSidebarIsCanvas() async throws {
+        let config = directory.appendingPathComponent("spaced.conf")
+        let themes = app.appendingPathComponent("Resources/themes").path
+        try "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = false\n"
+            .write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        window.styleMask.insert([.closable, .miniaturizable])
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        addTeardownBlock { @MainActor in owner.close() }
+        let sidebar = owner.sidebar
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.contentViewController = sidebar
+        session.frame = sidebar.content.bounds
+        session.autoresizingMask = [.width, .height]
+        sidebar.content.addSubview(session)
+        window.setContentSize(NSSize(width: 900, height: 560))
+        func glassAncestor() -> NSGlassEffectView? {
+            var up = sidebar.list.superview
+            while let view = up, !(view is NSGlassEffectView) { up = view.superview }
+            return up as? NSGlassEffectView
+        }
+        func shadowViews() -> [NSView] { sidebar.splitView.subviews.filter { String(describing: type(of: $0)).hasSuffix("ShadowView") } }
+        for dark in [false, true] {
+            if dark { try await darken() }
+            owner.updateAppearance()
+            window.display()
+            let root = try XCTUnwrap(window.contentView?.superview)
+            root.layoutSubtreeIfNeeded()
+            sidebar.splitView.setPosition(292, ofDividerAt: 0)
+            sidebar.viewDidLayout()
+            try await settle()
+            let name = dark ? "dark" : "light"
+            XCTAssertNil(glassAncestor(), "\(name): sidebar content is outside the glass")
+            XCTAssertFalse(shadowViews().isEmpty)
+            XCTAssertTrue(shadowViews().allSatisfy(\.isHidden), "\(name): sidebar edge shadow is hidden")
+            for content in [sidebar.list, sidebar.newSessionButton, sidebar.toggleButton] as [NSView] {
+                XCTAssertNotNil(content.window, "\(name)")
+                XCTAssertTrue(!content.isHiddenOrHasHiddenAncestor && content.alphaValue > 0, "\(name): \(type(of: content)) is visible")
+            }
+            let point = sidebar.list.convert(NSPoint(x: 100, y: 100), to: root)
+            XCTAssertTrue(root.hitTest(point).map { $0.isDescendant(of: sidebar.list) } ?? false, "\(name): click reaches the list")
+            XCTAssertTrue(root.subviews.compactMap { $0 as? SidebarShadow }.allSatisfy(\.isHidden), "\(name): no docked shadow")
+            XCTAssertEqual(sidebar.list.layer?.cornerRadius, 0)
+            XCTAssertEqual(sidebar.list.layer?.borderWidth, 0)
+            let image = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+            root.cacheDisplay(in: root.bounds, to: image)
+            let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))
+            let scale = CGFloat(pixels.pixelsWide) / root.bounds.width
+            let canvas = try XCTUnwrap(runtime.canvas.usingColorSpace(.sRGB))
+            let edge = sidebar.list.convert(sidebar.list.bounds, to: root).maxX
+            for (label, x, y) in [("top row", 150.0, 558.0), ("top left", 4.0, 558.0), ("middle", 150.0, 300.0), ("left edge", 3.0, 300.0), ("near bottom", 150.0, 3.0),
+                                  ("inside edge", edge - 1, 300), ("inside edge top", edge - 1, 558), ("gap right of edge", edge + 3, 300),
+                                  ("gap above cards", edge + 40, 558), ("gap below cards", edge + 40, 3)] {
+                let pixel = try XCTUnwrap(pixels.colorAt(x: Int(x * scale), y: Int((root.bounds.height - y) * scale)))
+                for (channel, value, expected) in [("red", pixel.redComponent, canvas.redComponent), ("green", pixel.greenComponent, canvas.greenComponent), ("blue", pixel.blueComponent, canvas.blueComponent)] {
+                    XCTAssertEqual(value, expected, accuracy: 1.5 / 255, "\(name) \(label) \(channel)")
+                }
+            }
+        }
+        sidebar.isCollapsed = true
+        sidebar.focusSidebar(nil)
+        let root = try XCTUnwrap(window.contentView?.superview)
+        root.layoutSubtreeIfNeeded()
+        sidebar.viewDidLayout()
+        XCTAssertTrue(sidebar.isFloating)
+        XCTAssertNotNil(glassAncestor(), "floating card keeps its glass")
+        XCTAssertEqual(glassAncestor()?.isHidden, false)
+        XCTAssertFalse(root.subviews.compactMap { $0 as? SidebarShadow }.allSatisfy(\.isHidden), "floating card keeps its shadow")
+        sidebar.dismissFloating()
+        sidebar.isCollapsed = false
+        root.layoutSubtreeIfNeeded()
+        sidebar.viewDidLayout()
+        XCTAssertNil(glassAncestor(), "canvas again after floating")
+        sidebar.isCollapsed = true
+        XCTAssertNotNil(glassAncestor(), "collapsed sidebar returns the dock into the glass")
+        XCTAssertEqual(glassAncestor()?.isHidden, false)
     }
 
     func testSingle() async throws {
@@ -970,11 +1013,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         session.frame = sidebar.content.bounds
         session.autoresizingMask = [.width, .height]
         sidebar.content.addSubview(session)
-        let toolbar = NSToolbar(identifier: "PaneFocus")
-        toolbar.delegate = sidebar
-        toolbar.displayMode = .iconOnly
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 1000, height: 640))
         window.display()
         let root = try XCTUnwrap(window.contentView?.superview)
@@ -1008,7 +1046,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             let name = dark ? "dark" : "light"
             let pure = dark ? [23, 23, 23] : [255, 249, 236]
             let shifted = dark ? [30, 30, 30] : [247, 242, 229]
-            let sidebarShifted = dark ? [35, 35, 35] : [242, 237, 224]
+            let sidebarShifted = dark ? [15, 15, 15] : [239, 234, 222]
             sidebar.updateAppearance(runtime: runtime)
             window.backgroundColor = runtime.background
             let terminal = try XCTUnwrap(terminal)
@@ -1084,7 +1122,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                     XCTAssertTrue(ghostty_surface_grid_metrics(pane.surface, &metrics))
                     XCTAssertTrue(metrics.cursor_in_viewport)
                     let cursor = CGPoint(x: (CGFloat(metrics.cursor_column) + 0.5) * pane.cell.width,
-                                         y: pane.bounds.maxY - pane.renderInsets.top - (CGFloat(metrics.cursor_row) + 0.5) * pane.cell.height)
+                                         y: pane.bounds.maxY - (CGFloat(metrics.cursor_row) + 0.5) * pane.cell.height)
                     check(try color(image, pane, cursor), shifted, "inactive cursor centre stays hollow")
                     let border = try color(image, pane, CGPoint(x: CGFloat(metrics.cursor_column) * pane.cell.width + 0.25, y: cursor.y))
                     XCTAssertGreaterThan(abs(border.redComponent * 255 - Double(shifted[0])), 3, "inactive hollow cursor remains visible")
@@ -1097,23 +1135,9 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             try await drain(runtime)
             try await snapshot("sidebar-\(name)", view: root)
             image = try capture()
-            let line = dark ? [55, 55, 55] : [221, 216, 205]
-            for divider in terminal.subviews.compactMap({ $0 as? NSBox }).filter({ $0.bounds.width <= 1 || $0.bounds.height <= 1 }) {
-                check(try color(image, divider, CGPoint(x: divider.bounds.midX, y: divider.bounds.midY)), line, "top line and pane dividers")
-                if divider.bounds.width <= 1 {
-                    check(try color(image, terminal, CGPoint(x: divider.frame.midX, y: terminal.bounds.maxY - 0.25)), line, "vertical divider reaches outer bottom margin")
-                } else if divider.frame.minY > terminal.bounds.minY + 1 {
-                    check(try color(image, terminal, CGPoint(x: terminal.bounds.maxX - 0.25, y: divider.frame.midY)), line, "horizontal divider reaches outer right margin")
-                }
-            }
-            check(try color(image, sidebar.visualFocusEdge, CGPoint(x: sidebar.visualFocusEdge.bounds.maxX + 0.25, y: sidebar.visualFocusEdge.bounds.midY)), dark ? [55, 55, 55] : [202, 198, 188], "full-height sidebar divider")
             let left = try XCTUnwrap(terminal.subviews.compactMap { $0 as? PaneChrome }.filter { !$0.isHidden }.min { $0.frame.minX < $1.frame.minX })
-            let near = try color(image, left, CGPoint(x: 4, y: left.bounds.midY))
-            XCTAssertEqual(near.redComponent * 255, dark ? 25 : 229, accuracy: dark ? 0.75 : 2, "docked shadow strength 4pt from pane edge")
             check(try color(image, sidebar.visualFocusEdge, CGPoint(x: sidebar.visualFocusEdge.bounds.maxX - 4, y: sidebar.visualFocusEdge.bounds.midY)), sidebarShifted, "shadow must not cover sidebar paper")
             check(try color(image, sidebar.visualFocusEdge, CGPoint(x: sidebar.visualFocusEdge.bounds.maxX - 4, y: sidebar.visualFocusEdge.bounds.maxY - 20)), sidebarShifted, "shadow must not cover sidebar toolbar band")
-            let toolbarNear = try color(image, sidebar.visualFocusEdge, CGPoint(x: sidebar.visualFocusEdge.bounds.maxX + 4, y: sidebar.visualFocusEdge.bounds.maxY - 20))
-            XCTAssertLessThan(toolbarNear.redComponent * 255, Double(pure[0]) - 1, "sidebar shadow covers the toolbar band")
             check(try color(image, left, CGPoint(x: 50, y: left.bounds.midY)), shifted, "sidebar shadow ends before distant paper")
             for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ !$0.isHidden }) {
                 let pane = try XCTUnwrap(terminal.panes.first { $0.pane == chrome.pane })
@@ -1126,7 +1150,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                           CGPoint(x: sidebar.visualFocusEdge.bounds.midX, y: 0.25),
                           CGPoint(x: sidebar.visualFocusEdge.bounds.midX, y: sidebar.visualFocusEdge.bounds.maxY - 0.25)] {
                 let edge = try color(image, sidebar.visualFocusEdge, point)
-                XCTAssertGreaterThan(abs(edge.blueComponent * 255 - Double(shifted[2])), 5, "sidebar edge on all four sides")
+                XCTAssertGreaterThan(abs(edge.blueComponent * 255 - Double(sidebarShifted[2])), 5, "sidebar edge on all four sides")
             }
             window.makeFirstResponder(active)
             sidebar.isCollapsed = true
@@ -1147,7 +1171,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                               CGPoint(x: card.bounds.midX, y: 1.25), CGPoint(x: card.bounds.midX, y: card.bounds.maxY - 1.25)] {
                     let edge = try color(floating, card, point)
                     if sidebarFocused {
-                        XCTAssertGreaterThan(abs(edge.blueComponent * 255 - Double(shifted[2])), 3, "floating sidebar focus edge")
+                        XCTAssertGreaterThan(abs(edge.blueComponent * 255 - Double(sidebarShifted[2])), 3, "floating sidebar focus edge")
                     } else { check(edge, sidebarShifted, "unfocused floating sidebar has no accent edge") }
                 }
                 let paper = sidebarFocused || left.pane != active.pane ? shifted : pure
@@ -1172,9 +1196,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 let expanded = try capture()
                 for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ chrome in !chrome.isHidden && terminal.panes.first(where: { $0.pane == chrome.pane })?.shiftedBackground == true }) {
                     for x in [2.0, 4, 6] {
-                        for y in [2.0, chrome.bounds.midY, chrome.bounds.maxY - 2] {
-                            check(try color(expanded, chrome, CGPoint(x: x, y: y)), [30, 30, 30], "expanded inactive left padding is shifted")
-                        }
+                        check(try color(expanded, chrome, CGPoint(x: x, y: chrome.bounds.midY)), [30, 30, 30], "expanded inactive left padding is shifted")
                     }
                 }
             }
@@ -1209,11 +1231,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             sidebar.updateAppearance(runtime: runtime)
             reloaded.fulfill()
         }
-        try ("theme = \(themes)/kido-light\nkido-sidebar-shade = 40%\n" + settings).write(to: config, atomically: false, encoding: .utf8)
+        try ("theme = \(themes)/kido-light\n" + settings).write(to: config, atomically: false, encoding: .utf8)
         await fulfillment(of: [reloaded], timeout: 5)
         try await settle()
         try await drain(runtime)
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.4)
         try await paint(content: "\u{1b}[48;2;255;249;236m" + String(repeating: " ", count: 40) + "\u{1b}[0m")
         let frames = expectation(description: "reloaded paper presented")
         frames.expectedFulfillmentCount = terminal.panes.count
@@ -1221,8 +1242,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         await fulfillment(of: [frames], timeout: 10)
         let image = try capture()
         for pane in terminal.panes {
-            check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), [247, 242, 229], "pane shade ignores sidebar override after reload")
-            check(try color(image, pane, CGPoint(x: 40, y: pane.bounds.maxY - 15)), [255, 249, 236], "explicit default-colour cell background stays opaque")
+            check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), [247, 242, 229], "pane shade stays at the default after reload")
+            check(try color(image, pane, CGPoint(x: 40, y: pane.bounds.maxY - 8)), [255, 249, 236], "explicit default-colour cell background stays opaque")
         }
         for (setting, expected) in [("kido-unfocused-background-shift = 20%\n", [204, 199, 189]), ("", [247, 242, 229]), ("kido-unfocused-background-shift = -20%\n", [204, 199, 189])] {
             let changed = expectation(description: "pane shift reloaded")
@@ -1230,7 +1251,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 self?.session.updateBackground()
                 changed.fulfill()
             }
-            try ("theme = \(themes)/kido-light\nkido-sidebar-shade = 40%\n" + setting + settings).write(to: config, atomically: false, encoding: .utf8)
+            try ("theme = \(themes)/kido-light\n" + setting + settings).write(to: config, atomically: false, encoding: .utf8)
             await fulfillment(of: [changed], timeout: 5)
             try await settle()
             try await drain(runtime)
@@ -1245,8 +1266,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
-    func testSplitZoomFloat() async throws {
-        try await start()
+    func testSpacedSplitZoomFloat() async throws {
+        let config = directory.appendingPathComponent("spaced.conf")
+        let themes = app.appendingPathComponent("Resources/themes").path
+        let base = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = false\n"
+        try base.write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
         _ = try await command(["split-window", "-h", "-t", "visual", "exec /bin/cat"])
         _ = try await command(["split-window", "-v", "-t", "visual:0.0", "exec /bin/cat"])
         _ = try await command(["split-window", "-v", "-t", "visual:0.1", "exec /bin/cat"])
@@ -1264,6 +1289,15 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await settle()
         try await paint()
         try await snapshot("float-top")
+        try await darken()
+        try await paint()
+        try await snapshot("dark")
+        let changed = expectation(description: "spacing reload")
+        runtime.onConfigChange = { [weak self] in self?.session.updateBackground(); changed.fulfill() }
+        let before = terminal?.visualLayout
+        try (base + "kido-pane-spacing = 12\n").write(to: config, atomically: false, encoding: .utf8)
+        await fulfillment(of: [changed], timeout: 2)
+        try await wait("wider gaps after spacing 12") { self.terminal?.visualLayout != before }
     }
 
     func testEmptyPaneWheelDoesNotFloodMetadata() async throws {
@@ -1715,7 +1749,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testSameWindowDeferredPaneFocus() async throws {
         try await start()
         let pane = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "exec /bin/cat"])
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
         defer { owner.close() }
@@ -1742,7 +1776,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await start()
         let other = try await command(["new-session", "-d", "-P", "-F", "#{session_id}", "-s", "other", "exec /bin/cat"])
         let current = try await command(["new-window", "-P", "-F", "#{window_id}", "-t", other, "exec /bin/cat"])
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
         defer { owner.close() }
@@ -1843,7 +1877,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testOSC52ClipboardConsentAndPrivatePaneTransport() async throws {
         let clipboardModeBeforeAttach = try await start()
         XCTAssertNotEqual(runtime.pasteboard.name.rawValue, "NSGeneralPboard")
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         window.contentView = nil
         window.isReleasedWhenClosed = false
         window.close()
@@ -1955,7 +1989,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         func roots() -> [WindowID] { owner.snapshot?.sessions.first { $0.id == alpha }?.nodes.map(\.window) ?? [] }
         func settled(_ order: [WindowID]) async throws {
             try await wait("server order \(order)") { owner.reorder.state.pending == nil && roots() == order }
-            XCTAssertEqual(owner.sidebar.tabs.entries.map(\.id), order, "tabs follow the snapshot")
             XCTAssertEqual(owner.navigation.windows.map(\.id), order)
             let current = try await command(["display-message", "-p", "-t", "alpha:", "#{window_id}"])
             XCTAssertEqual(current, middle.description, "the session's current window is unchanged")
@@ -1973,8 +2006,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         var replied = false
         let request = owner.request
         owner.request = { message, done in request(message) { done($0); replied = true } }
-        owner.sidebar.tabs.move(.window(alpha, middle, relativeTo: last, .after))
-        XCTAssertEqual(owner.sidebar.tabs.entries.map(\.id), [first, last, middle], "the drop shows at once")
+        owner.sidebar.list.move(.window(alpha, middle, relativeTo: last, .after))
+        XCTAssertEqual(owner.navigation.windows.map(\.id), [first, last, middle], "the drop shows at once")
         try await settled([first, last, middle])
         try await wait("reorder reply") { replied }
         try await Task.sleep(for: .milliseconds(300))
@@ -1986,7 +2019,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertEqual(displayed, [first])
         _ = try await command(["select-window", "-t", middle.description])
         try await wait("back to middle") { owner.testSession?.windows[middle]?.isHidden == false }
-        owner.sidebar.tabs.move(.window(alpha, last, relativeTo: first, .before))
+        owner.sidebar.list.move(.window(alpha, last, relativeTo: first, .before))
         try await settled([last, first, middle])
 
         let rejected = expectation(description: "relative-to-itself reply")
@@ -1998,8 +2031,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
         _ = try await command(["new-session", "-d", "-t", "alpha", "-s", "grouped"])
         try await wait("grouped session reported") { owner.snapshot?.sessions.count == 3 }
-        owner.sidebar.tabs.move(.window(alpha, first, relativeTo: middle, .after))
-        XCTAssertEqual(owner.sidebar.tabs.entries.map(\.id), [last, middle, first])
+        owner.sidebar.list.move(.window(alpha, first, relativeTo: middle, .after))
+        XCTAssertEqual(owner.navigation.windows.map(\.id), [last, middle, first])
         try await settled([last, first, middle])
         XCTAssertEqual(owner.sidebar.list.visualDiagnostic, "cannot reorder windows in a grouped session", "the failure reverts and is shown")
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || NSApp.isActive)
@@ -2066,10 +2099,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         _ = try await command(["select-layout", "-t", first, "even-vertical"])
         let heights = try await command(["list-panes", "-t", first, "-F", "#{pane_id} #{pane_height}"])
-        XCTAssertEqual(heights, "\(first) 22\n\(second) 22")
-        try await wait("both even-vertical panes have 22 rendered rows") {
+        XCTAssertEqual(heights, "\(first) 23\n\(second) 23")
+        try await wait("both even-vertical panes have 23 rendered rows") {
             windowView.visualGeometryReady && windowView.panes.allSatisfy {
-                $0.visualReady && ghostty_surface_size($0.surface).rows == 22
+                $0.visualReady && ghostty_surface_size($0.surface).rows == 23
             }
         }
         let previous = NSApp.mainMenu
@@ -2080,7 +2113,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         owner.window.makeFirstResponder(owner.window)
         layoutWindow()
         rootPanel.palette.layoutSubtreeIfNeeded()
-        let frames = [first: NSRect(x: 7.5, y: 0.5, width: 792, height: 338), second: NSRect(x: 7.5, y: 339, width: 792, height: 349)]
+        let frames = [first: NSRect(x: 16, y: 12, width: 776, height: 345), second: NSRect(x: 16, y: 378, width: 776, height: 345)]
         try await wait("complete native pane layout and matching surface sizes") {
             windowView.visualGeometryReady && windowView.panes.allSatisfy { pane in
                 guard let frame = frames[pane.pane.description] else { return false }
@@ -2161,8 +2194,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         func moveCurrent() async throws {
             try await wait("a window is shown") { shown() != nil && shown() == owner.navigation.window }
             let order = owner.navigation.windows.map(\.id), current = try XCTUnwrap(shown())
-            if current != order.last { owner.sidebar.tabs.move(.window(alpha, current, relativeTo: order.last!, .after)) }
-            else { owner.sidebar.tabs.move(.window(alpha, current, relativeTo: order.first!, .before)) }
+            if current != order.last { owner.sidebar.list.move(.window(alpha, current, relativeTo: order.last!, .after)) }
+            else { owner.sidebar.list.move(.window(alpha, current, relativeTo: order.first!, .before)) }
             try await wait("the server moved it") { parked.count == 1 }
         }
         func finish() async throws {
@@ -2218,8 +2251,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             }
         }
         let order = owner.navigation.windows.map(\.id), moved = try XCTUnwrap(shown())
-        if moved != order.last { owner.sidebar.tabs.move(.window(alpha, moved, relativeTo: order.last!, .after)) }
-        else { owner.sidebar.tabs.move(.window(alpha, moved, relativeTo: order.first!, .before)) }
+        if moved != order.last { owner.sidebar.list.move(.window(alpha, moved, relativeTo: order.last!, .after)) }
+        else { owner.sidebar.list.move(.window(alpha, moved, relativeTo: order.first!, .before)) }
         try await wait("reorder settled") { owner.reorder.state.pending == nil }
         try await Task.sleep(for: .milliseconds(500))
         owner.request = request
@@ -2387,7 +2420,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         })
         defer { unstamped.stop() }
         try await wait("unstamped RPC refusal") { refused }
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         let unstampedOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(unstampedOutput.out.utf8)), kido: tools.kido)
         defer { owner.close() }
@@ -2395,11 +2428,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("unstamped local Restart alert") { owner.preparedAlert != nil }
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertTrue(owner.testBanner.isHidden)
-        XCTAssertEqual(owner.sidebar.content.layer?.backgroundColor, runtime.background.cgColor)
-        let background = try XCTUnwrap(owner.window.backgroundColor?.usingColorSpace(.sRGB))
-        for (value, expected) in zip([background.redComponent, background.greenComponent, background.blueComponent], headerPaperRGB["fff9ec-shifted"]!) {
-            XCTAssertEqual(value * 255, expected, accuracy: 0.001)
-        }
+        XCTAssertEqual(owner.sidebar.content.layer?.backgroundColor, runtime.canvas.cgColor)
+        XCTAssertEqual(owner.window.backgroundColor, runtime.canvas)
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verifySnapshot(of: owner.sidebar.content, as: .image, named: "no-terminal", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }

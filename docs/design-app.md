@@ -45,7 +45,7 @@ the same team signing as the release script.
 
 Each native window attaches one control client (`kido-tmux -u -S <socket>
 -N -T hyperlinks -C attach-session -f pause-after=N,new-layouts,no-detach-on-destroy`)
-and behaves like a normal client: all sidebar and tab navigation and shell
+and behaves like a normal client: all sidebar navigation and shell
 creation use correlated `kido rpc` requests, and the app follows tmux's
 notifications. The control client owns terminal I/O and pane mechanics. So the client's current session, window and pane are
 always the ones shown, which kido's `watched`, done-until-visited and
@@ -100,8 +100,10 @@ refreshed by every remote path, palette, URL or intent alike. There is no
 remote restore. Off-screen FileMenuTests create inert window owners without
 starting a server.
 Local keeps `SessionModel.title` (session and current window); remote prefixes
-it with resolved `user@host / `. The original dialing alias is the window
-content's tooltip. Offline titles drop the session/window name.
+it with `Host.label`, the destination as typed (an SSH alias or `user@host`).
+The app does not show the `ssh -G` user and hostname. The notification
+subtitle and the upload sheet use the same name. Offline titles drop the
+session/window name.
 
 `AppDelegate` owns shared Ghostty configuration, app lifecycle and menus.
 Each `WindowOwner` owns its immutable Host, generation, transport, Connection,
@@ -290,6 +292,8 @@ A pane is drawn by a Ghostty surface in manual-IO mode
 `send-keys -H`, and the emulator's own query replies are suppressed
 because tmux answers them. tmux prefix bindings therefore do not fire
 from the app; its menus and Ghostty's split and tab actions stand in.
+The scrollback editor overlay is the one exec-mode surface (see "Scrollback
+in the editor").
 
 Ghostty's configuration is `kido-app.conf` beside `kido.conf`
 (`$XDG_CONFIG_HOME/kido/`, else `~/.config/kido/`), in Ghostty's syntax,
@@ -367,39 +371,53 @@ command, and Ghostty binds Command-K to `clear_screen` by default. That
 action clears only the Ghostty surface. Under `MANUAL_MIRROR` the surface
 then no longer agrees with tmux's grid, so the key does nothing.
 
-The sidebar list's background is a shade of the terminal background.
-The shade mixes the terminal background toward black on a light
-terminal background and toward white on a dark one, with the same light
-or dark decision as the window appearance. The default is 5%.
-Thus the default follows each reload and each live theme switch.
-`kido-sidebar-shade = <percent>` is the app's own key
-in that file. Ghostty does not know it, and its unknown-field
-diagnostic is hidden only for the app's two keys, this one and
-`kido-unfocused-background-shift`. The value is a decimal number from -100
+The canvas is the terminal background mixed toward black: 35% on a dark
+theme and 6% on a light one. Dark means a relative luminance below 0.5,
+the same decision as the window appearance. Thus the canvas follows each
+reload and each live theme switch. The mix is per sRGB component (as CSS
+`color-mix(in srgb, ...)`). `NSColor.blended` is not used: it mixes in
+generic RGB and gives a different colour. The canvas is the window
+background, the colour of the terminal host and the margins between the
+pane cards, and the plain colour of the docked sidebar list. No setting
+changes it.
+
+The app has four keys of its own in that file, `kido-unfocused-background-shift`,
+`kido-pane-spacing`, `kido-focus-ring-width` and `kido-notify-done`. Ghostty does not know them, and its
+unknown-field diagnostic is hidden only for these four. The app reads them from the same
+files as Ghostty: the main file, then its `config-file` includes in
+Ghostty's breadth-first order, with relative paths, `~/`, optional `?` paths
+and cycles resolved as Ghostty resolves them. The last value wins. An absent
+key and an empty value (`kido-pane-spacing =`, Ghostty's reset syntax) give
+the default. An invalid value gives a note on stderr and the default.
+
+`kido-unfocused-background-shift = <percent>` is a decimal number from -100
 to 100 (digits, an optional leading `-` and an optional fraction), with or
 without `%` and optionally in double quotes. The app uses its absolute
-value, and the theme gives the direction. The mix is per sRGB component (as CSS
-`color-mix(in srgb, ...)`).
-`NSColor.blended` is not used: it mixes in generic RGB and gives a
-different colour. An absent key and an empty value (`kido-sidebar-shade =`,
-Ghostty's reset syntax) give the default. An invalid value gives a note
-on stderr and the default. AppKit's sidebar glass is not shown. The
-app reads the key from the same files as Ghostty: the main file, then
-its `config-file` includes in Ghostty's breadth-first order, with
-relative paths, `~/`, optional `?` paths and cycles resolved as Ghostty
-resolves them. The last value wins.
+value, and the theme gives the direction. The default is 3%. 0 turns the
+shift off.
+
+`kido-pane-spacing = <points>` is a number from 2 to 32, optionally in
+double quotes. The default is 8. A reload applies the new spacing to every
+window (see the layout rules below).
+
+`kido-focus-ring-width = <points>` is a number from 0.5 to 4, optionally in
+double quotes. It is the width of the accent ring around the focused pane
+card. The default is 1.5. A reload redraws the ring in every window. The
+edge of an unfocused card stays 0.5pt.
+
+`kido-notify-done = true|false`, optionally in double quotes, turns on the
+done notification for agents (see "Notifications"). The default is false;
+any other value gets a diagnostic and leaves it off. A reload applies on the
+next notifier step.
 
 The sidebar has its own light or dark appearance, from the relative
-luminance L of its shade colour: dark (light text) when L < 0.179,
+luminance L of the canvas: dark (light text) when L < 0.179,
 else light (dark text). At 0.179, white text and black text have the
-same contrast ratio on that colour. Thus every value in the range stays
-readable, also +100% on a dark theme and -100% or -60% on a light
-theme. The appearance applies to the sidebar subtree: the list, its
-rows, marks and focused-row fill, and the sidebar's toolbar controls
-while the sidebar is shown. The rest of the window, and the toolbar
-controls of a collapsed sidebar, follow the terminal background. The sidebar's
-colours resolve at draw time from the sidebar's appearance, so a reload
-that changes the appearance redraws them.
+same contrast ratio on that colour. The appearance applies to the sidebar
+subtree: the list, its rows, marks and focused-row fill, and the header
+buttons and title. The rest of the window follows the terminal
+background. The sidebar's colours resolve at draw time from the sidebar's
+appearance, so a reload that changes the appearance redraws them.
 
 The file reloads live, with no polling. The app watches the file and
 its directory, so a save in place, a save by atomic rename, and the
@@ -417,7 +435,7 @@ Launch and reload build the config in the same way, and a reload prints
 its diagnostics to stderr as at launch. If Ghostty's part of the config
 is different, a reload applies the new config to each live pane inside
 `PaneView.reflow`, so that a font change
-resizes the pane and its tmux grid. A change to only the shade does not
+resizes the pane and its tmux grid. A change to only the shift does not
 reflow the panes, so it does not end copy mode or resync a pane. The
 app gets the config without surface propagation. `PaneView.reflow` can
 delay its change while a pane replays, so the delayed change reads the
@@ -503,7 +521,7 @@ dirty pane repairs it. Possible font/scale/config reflow follows the same
 invalidation and confirmed-grid path; color-only changes remain local.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
-hovering and fading afterwards. The scroller track spans the expanded content while its thumb and targets count whole grid rows. Ghostty's own scrollbar is disabled. The
+hovering and fading afterwards. The scroller track spans the pane's content rect while its thumb and targets count whole grid rows. Ghostty's own scrollbar is disabled. The
 thumb uses the loaded history rows plus the screen, with a native-style
 minimum knob size. The knob is one CALayer: a step moves it, and the scroller
 never redraws a backing store. A hidden or faded scroller, or one in an
@@ -662,25 +680,85 @@ Shift-press gesture continues. The wheel still scrolls.
 The `Feed` has no timeout for a request. Thus, a `prompt` send that blocks
 kido's RPC loop until the inbox times out does not restart the helper.
 
+### Scrollback in the editor
+
+Ghostty holds only the newest rows of a pane. Edit > "Open Scrollback in
+Editor" (Command-Shift-E, also in the palette, scope pane) opens the whole
+history in the user's editor. The editor always runs on the Mac, also for a
+remote host, because the text comes over the control connection.
+
+- **Capture.** `ScrollbackCapture` sends `display-message -p -t %N
+  #{history_size}`, then `capture-pane -p -J -S - -t %N`. `-J` joins wrapped
+  rows. No `-e`: colors would show as garbage. The plain form in the alternate
+  screen returns history plus the alternate screen text. The cap is the
+  constant `ScrollbackCapture.maxRows` (200,000 rows, no setting). Above it,
+  the capture starts at `-S -200000` and a notice says "Showing the newest
+  200000 lines". Trailing spaces and tabs of every row, and trailing blank
+  rows, are dropped. The text is a snapshot: the pane keeps changing below the
+  overlay. tmux state does not change.
+- **File.** `NSTemporaryDirectory()/kido-scrollback-<uuid>/pane-<N>.txt`, mode
+  0400 in a 0700 directory, so the editor opens it read-only. The directory
+  holds also a `status` file that the command writes. The directory is
+  removed when the editor exits, when the overlay is disposed and at quit.
+  At launch, `sweepStale` removes `kido-scrollback-*` directories older than
+  one day and keeps fresh ones (a second Kido may use them).
+- **Editor.** `$VISUAL`, then `$EDITOR`, then `vi`, read from the user's
+  login shell (`$SHELL -ilc`, 3 s deadline), together with its `PATH`,
+  because Ghostty's exec mode reads no rc file. The result is cached per
+  `$SHELL` for the app run; a failed or timed-out lookup is not cached. The
+  value may contain arguments. `+` (open at the last line) is added only when
+  the first word's basename is `vi`, `vim`, `nvim` or `view`. The surface
+  runs `/usr/bin/env /bin/sh -c "$KIDO_SCROLLBACK_COMMAND"` in `$HOME`, with
+  `KIDO_SCROLLBACK_FILE`, `KIDO_SCROLLBACK_STATUS` and
+  `KIDO_SCROLLBACK_COMMAND` set. Ghostty runs `exec -l <command>`, so the
+  command is not an `exec` line itself.
+- **Failure.** Ghostty's exit code is not reliable on macOS. The command
+  writes the editor's status to the `status` file. A nonzero status shows the
+  notice "The editor exited with status N" with the screen text. Every other
+  failure shows the notice "Kido could not open the scrollback" and opens
+  nothing: a nil capture reply, an empty capture ("The pane has no text to
+  open."), an unwritable file or a Ghostty start failure. The cap notice has
+  the detail "Older lines of this pane are not in the file."
+- **Surface owner.** Every surface's userdata is a `SurfaceRef`, either
+  `.pane` or `.scrollback`. Callbacks switch on it. `close_surface_cb` runs
+  `kill-pane` only for a pane; for the overlay it runs `finish()`. Ghostty
+  sets `wait-after-command` for any exec command, so Kido handles
+  `SHOW_CHILD_EXITED` (it fires on a normal exit, a quick exit and a start
+  failure), returns true, and closes the overlay itself. Then Ghostty prints
+  no "Process exited" text. The overlay's clipboard writes go to the
+  pasteboard, paste reads it, and an OSC 52 read is unavailable.
+- **Lifetime.** `PaneView.scrollback` is `none`, `loading` or `open`. The menu
+  item is disabled unless `none`. `ScrollbackView` is a subview of the pane's
+  `PaneChrome`, framed at `content`, above the find bar and scroller. The
+  `PaneView` keeps its feed, so closing needs no resync. Focus goes through
+  `focusTarget`. The editor survives a window switch (occlusion is set) and
+  a layout change (the pty resizes). `SessionView.evict` skips a window with
+  an open overlay. A pane closed in tmux disposes its overlay first. Command-W
+  in the editor closes only the overlay.
+- **Commands.** Ghostty split actions (split, select, resize, zoom, equalize,
+  next/previous pane, window steps) and the Shell menu items apply to the
+  pane under the overlay, through the `PaneView`'s command path. Moving focus
+  to another pane leaves the overlay open, and `focusTarget` returns focus to
+  it. A click in the overlay selects its pane in tmux, as a click in the
+  pane does, so the focus ring follows the click. Close Pane is disabled while
+  the overlay is focused. Other menu items
+  (copy mode, find, prompt, open scrollback) stay disabled.
+- **Limits.** A theme or color-scheme reload does not reach an open overlay.
+
 ### Focus treatment
 
 In a window with two or more visible tiled panes, the focused pane is the
 only one with the pure terminal background. Every other tiled pane gets
-the shifted paper: the terminal background mixed 3% toward black on a light
-background and 3% toward white on a dark one (relative luminance < 0.5), per
-sRGB component. This is the direction rule of the sidebar shade, and one
-helper computes both. The titlebar and toolbar band uses this shifted
-paper in all sidebar modes and in full screen. Thus it matches an inactive
-pane. The pane shift does not follow `kido-sidebar-shade`, so a strong
-sidebar value does not make inactive panes hard to read. Its own
-key, `kido-unfocused-background-shift = <percent>`, has the syntax, range,
-include order and diagnostic rules of `kido-sidebar-shade`, with
-a 3% default, and the same reader reads both keys. A reload that changes only this key repaints the
-panes and the band. The focused pane also gets a 1pt `controlAccentColor`
-stroke at 50% alpha, inside its chrome rect, over the padding and not over
-cells. A single-pane window draws no shift and no edge on its pane, in
-every focus state. Floating panes keep a 45% theme-background overlay when
-they are not active.
+the shifted paper: the terminal background mixed toward black on a light
+background and toward white on a dark one (relative luminance < 0.5), per
+sRGB component, by `kido-unfocused-background-shift` (default 3%; 0 turns
+the shift off). A reload that changes only this key repaints the panes.
+The focused pane also gets a 1.5pt ring in the connection color ([Connection color](#connection-color)) on its card's
+rounded edge, inside its chrome rect, over the padding and not over
+cells. The other tiled cards have a 0.5pt edge (foreground at 12%). A
+window with one visible tiled pane, or a zoomed pane, draws no shift and
+no ring on its pane, in every focus state. Floating panes keep a 45%
+theme-background overlay when they are not active.
 
 A pane has Ghostty surface focus, and a solid cursor, only while it is its
 window's first responder and that window is key, or while no app window is
@@ -711,32 +789,25 @@ active pane's cursor hollow because its surface is unfocused. Each
 focus-treatment update, and each move of a pane view between windows, sets
 every surface's Ghostty focus from the window's actual first responder, so
 a reparented view does not keep a stale solid cursor. The sidebar
-then has the same 1pt accent stroke around its whole column, including the
-band behind the toolbar, also in a single-pane window. The active pane
+then has the same 1pt stroke in the connection color around its whole column, including the
+title row, also in a single-pane window. The active pane
 stays remembered, and focus that returns to the terminal (a click, Escape)
 restores its edge. Only one surface has the edge at a time. A mouse click
-on a sidebar row, a sidebar toolbar button or a pane toolbar button does
+on a sidebar row, a sidebar header button or a pane toolbar button does
 not make that view first responder, so a click that navigates and returns
 focus to a pane does not flash the sidebar edge. The pane grip is the
 exception: it takes first responder for its drag and Escape. Keyboard focus to the sidebar still shows
 it.
 
-The toolbar top line and the pane dividers use the terminal background
-mixed 18% toward the terminal foreground, one device pixel, so they stay
-visible between two shifted surfaces. A pane divider that meets the outer
-edge of the tiled tree is drawn on through the outer margin to the
-terminal area's edge; its hit area and the layout do not change. The sidebar's split divider uses the
-same 18% on a dark background and 28% on a light one. An app-owned
-one-device-pixel line covers AppKit's divider, through the toolbar band.
-The docked sidebar casts a shadow onto the terminal area from its right
-edge: offset 4pt to the right, 14pt blur, spread −2pt, black at 40% on
-a dark background and 18% on a light one. It falls over the paper and the
-toolbar band and never over the sidebar. The floating sidebar card has an
-ambient shadow with the same blur and alpha, offset 4pt down, around its
-18pt corners. AppKit's glass shadow is cleared, so each mode has one
-shadow. When the floating card's list is first responder, its edge is
-the same stroke inset 1pt inside its hairline border, with a 17pt radius.
-The panes then behave as under docked sidebar focus. Accent and
+The docked sidebar is the plain canvas colour. It has no glass, no
+separator line and no shadow: the canvas against the paper of the cards
+separates it from the terminal. The floating sidebar card keeps AppKit's
+glass and has an ambient shadow: 14pt blur, offset 4pt down, black at 40%
+on a dark appearance and 18% on a light one, around its 18pt corners.
+AppKit's glass shadow is cleared, so the card has one shadow. When the
+floating card's list is first responder, its edge is the same stroke inset
+1pt inside its hairline border, with a 17pt radius. The panes then behave
+as under docked sidebar focus. Accent and
 appearance-dependent colours resolve at draw time.
 
 ### Clipboard
@@ -822,7 +893,7 @@ follow the app window's occlusion during resize too. Provisional Ghostty reflow
 remains visible while the authoritative capture is in flight. After replay and
 the successful restored viewport apply, an asynchronous tokened render fences
 completion, not visibility. Its acknowledgement must match the pane's epoch,
-backing dimensions, inset and viewport revision/target. Superseded requests
+backing dimensions and viewport revision/target. Superseded requests
 coalesce. Ghostty discards a tokened presentation when the layer's pixel size
 changes between the draw and the main-queue commit, when a newer surface
 generation commits first, or when the surface is unrealized or zero-sized; a
@@ -831,51 +902,44 @@ failure remains incomplete and diagnostic, without a visibility hold. tmux sends
 so a window that left it is synced again when next shown. Surfaces of closed windows and sessions are freed.
 
 tmux's layout is authoritative: every Ghostty surface is exactly its
-pane's grid, and `PaneLayout` maps cells to points. On each axis a
-pane's two inner paddings sum to one cell minus one device pixel, split
-floor/ceil in physical pixels so surfaces and dividers stay on the pixel
-grid. tmux's border cell between two panes is then exactly their
-paddings plus the one-pixel divider, so any tree, however asymmetric,
-lines up with no surplus. Around the whole terminal area only, the
-horizontal remainder is balanced over a 4pt minimum. Client rows are
-floor((height - separator pixel - 12pt) / cell height), with device-pixel
-rounding, reserving a 12pt bottom grid gap. The terminal area's top follows
-the native safe area; PaneLayout reserves no fixed titlebar height.
-The tiled grid bottom is 12pt above the terminal area bottom, rounded upward
-onto a whole device pixel if necessary: the gap is at least 12pt and less
-than 12pt plus one device pixel. Left, right and bottom edge panes extend their chrome to the terminal
-area bounds, owning the side margins and bottom gap as padding. Background,
-focus treatment and padding input reach those edges; toolbar hot zones and scroller
-strips follow the new pane boundary, with the knob still 4pt inward. The
-content, chrome and divider tops respect the separator's bottom edge.
-Below the separator, the global vertical subcell remainder sits above the
-whole tiled tree. Only outer-top tiled panes expand upward into it, rendering
-the bottom slice of their preceding history row through Ghostty's top render
-inset in backing pixels. Every inner tiled top and bottom expands through its
-vertical padding to the horizontal divider: the top uses the floor half and
-the bottom the ceil half of a cell minus one device pixel. Following rows
-and history are clipped at the divider, not the grid's padding edge; the
-line remains above both panes and its hit/cursor zone wins over band input.
-Outer-bottom tiled panes expand down to the window
-content bottom through the bottom render inset, showing following rows when
-scrolled up, clipped only at the window edge. At the live bottom there are no
-following rows, so the band is plain background below the fully visible last
-row. Empty history shows background. Alternate-screen panes keep their
-unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. Each top band runs from the grid top to the separator or split divider, possibly spanning several history rows. The full-width one-device-pixel separator sits at the supplied terminal-bounds top, rounded upward to a device pixel; outer-top vertical dividers meet its bottom edge. Dividers stay behind tiled panes and floats. During a stale-root shrink, terminal content is clipped below the separator without changing its grid. Committed and free floating chrome frames are bounded below the separator too.
+pane's grid, and `PaneLayout` maps cells to points. Cards are the only
+layout. Each tiled pane is a card: its paper box with a 10pt corner
+radius, on the canvas. The spacing S (`kido-pane-spacing`) is the gap
+between two cards and between a card and each of the four edges of the
+terminal area. The area's top is the top of the terminal host, rounded
+up to a device pixel. The host itself starts below the title band when
+the sidebar is collapsed ([Window chrome](#window-chrome)).
 
-PaneLayout returns the grid, expanded content, clipped chrome and paired render insets
-for each tiled pane. Chrome uses the content rect for hit testing;
-window-edge drops and their previews use the union of the visible tiled chrome.
-Top and bottom band clicks only focus/select the pane once: no terminal mouse press or selection
-starts there. Entering either band clears Ghostty's hover position. Band wheels
-scroll primary history without sending application mouse reports.
-Mouse and IME coordinates use the grid origin below the strip. Render insets
-never enter set_size or set_grid_size, scroll distances, snaps, output pinning
-or resize anchors; the live bottom remains distance zero. Floats stay inset-free
-in the same shifted grid coordinate space, with the point-to-cell inverse and
-pixel-exact free frames unchanged. Floating bounds end at the same pixel-aligned 12pt bottom margin,
-so a float's existing bottom padding remains above that margin. Dividers have
-six-point hit areas; [Focus treatment](#focus-treatment) marks the focused pane; a
+tmux still puts one border cell between two panes. The padding between a
+card edge and its grid is (cell + extra - S) / 2 on each axis. The extra
+is the least whole number of device pixels that makes the horizontal
+padding at least S and the vertical padding at least S / 2. The app adds
+the extra to each divider, and the client is smaller by the extra on the
+widest path across the layout. The client size comes from the full
+layout, also while a pane is zoomed. Rounding the area down to whole cells
+leaves a remainder. The last card of each split stretches over it, so the
+margins stay exactly S. Each grid is centered in its card, on a whole
+device pixel. A split or a close can change the client size, because the
+divider count changes. Thus tmux resizes every pane of the session's
+windows. The size that tmux reports depends on the pane topology, so
+`WindowView.update` sends the client size again after each relayout.
+
+The hit area of a divider is the whole gap between its cards, along the
+full length of the split. Clicks in the top gap of the terminal area, above
+the cards, pass through (`WindowView.hitTest`), so the gap moves the
+window. A `PaneLayout` is equal to another when the client, cell, padding,
+origin and area are equal; the card and gap rects are not compared, because a
+divider resize moves them and must not end the drag.
+
+`PaneLayout` returns the grid and the card (chrome) for each tiled pane.
+Chrome uses the content rect for hit testing; window-edge drops and their
+previews use the union of the visible tiled chrome. A click on the padding
+of a card only focuses the pane. Mouse and IME coordinates use the grid
+origin. Floats are not cards: they keep tmux's whole-cell grid with the
+point-to-cell inverse and pixel-exact free frames in the same coordinate
+space. Floating bounds run from the top of the area to the bottom of the
+tiled area, so a float's bottom padding remains above that margin.
+Dividers have the whole gap as hit area; [Focus treatment](#focus-treatment) marks the focused pane; a
 pane shows the window’s shared glass toolbar only in its top-right hot
 zone: the toolbar frame plus 24pt to its left and below, clipped to the
 pane. It splits, zooms and closes through the same commands as the menus.
@@ -933,11 +997,6 @@ Frame changes place only the shown window; membership and stacking are
 reconciled only when tmux’s topology changes. Hidden windows are placed
 when shown. Terminal focus survives resizing and sidebar collapse;
 showing another window or creating the active pane’s view can move focus.
-
-The standard window buttons are AppKit's: the toolbar re-lays them out
-at will, so nothing moves them. The fixed top clears them and the
-sidebar toggle, which AppKit keeps in the collapsed titlebar,
-so the terminal never moves vertically when the sidebar collapses.
 
 ## Threads
 
@@ -1034,65 +1093,85 @@ windows may appear in several sections.
 
 `Sidebar` is an `NSSplitViewController` with a sidebar item, which
 supplies the floating glass, collapse animation and saved width (236pt,
-200-360pt). The window has an icon-only unified toolbar only because the
-sidebar's glass reaches the top of the window, traffic lights inside it,
-when there is one; without it AppKit adds a plain titlebar strip. The
-chrome follows the Ghostty theme background. The native header band, the
-window background, the terminal host and the tabs' theme use it with the
-inactive-pane shift ([Focus treatment](#focus-treatment)). The terminal
-content view, banners and a single-pane window's paper and padding stay pure.
-Full screen keeps the toolbar visible by removing `.autoHideToolbar` from
-the presentation options. New Session is a standard
-image toolbar item, as is the sidebar toggle, targeting the split view
-controller. Both are borderless and the toolbar is not customizable.
+200-360pt). The window has no toolbar and no tab bar, so that the terminal
+gets the rows that a toolbar would take: the unified toolbar was 52pt high,
+which is 3 rows at Menlo 13 (17pt rows). The window is
+`.fullSizeContentView` with a transparent title bar, a hidden native title
+and no title separator. Its content reaches the top edge, and the standard
+window buttons stay where AppKit puts them. The window appearance follows
+the Ghostty theme background. The window background, the terminal host and
+the content view are the canvas ([Panes](#panes)). `NSWindow.title` stays
+set for the Window menu, Mission Control and the Dock menu. The title is the
+`session — window` of the current window. For a remote host it is
+`host / session — window` with the host as typed (`Host.label`), and the host label alone before the first
+snapshot.
 
-Titlebar tabs and the remote user@host label occupy a flexible native
-`NSToolbarItem` after `sidebarTrackingSeparator`, not a content overlay.
-They follow the native separator when the floating sidebar opens.
-`WindowOwner` computes the background and appearance once and assigns them
-atomically to `WindowTabs.theme`. On theme assignment and
-`viewDidMoveToWindow`, the tabs synchronize their own window's background,
-appearance. Background and titlebar transparency are synchronized only in
-the main window. An app-owned, non-hit-testing `HeaderBackground` is the
-lowest subview of the host's contentView. In full screen the host is the
-separate `NSToolbarFullScreenWindow`: its native right-hand material draws
-white or grey rather than the terminal theme. The backing paints only to
-the right of the live sidebar glass edge in both docked and floating modes,
-leaving AppKit's own sidebar glass uncovered up to the top of the screen.
-The opaque backing covers the main window's sidebar separator and shadow,
-so with the docked sidebar it carries its own `SidebarSeparator` and
-`SidebarShadow` at its left edge, which continue them through the band.
-The main window's full-height sidebar already extends under that host. The docked list adds no rounding or outline to AppKit's
-square sidebar; only the floating list has an 18pt radius and hairline
-border. With the sidebar collapsed, the whole band is themed. No additional glass is installed. AppKit's glass shadow is cleared in both
-modes; the sidebar shadows are the app's own ([Focus treatment](#focus-treatment)).
-WindowTabs paints no background of its own.
+Measured on macOS 27.0.1 with a probe window. The band is the height of the
+title bar area that AppKit reserves:
 
-Tabs project the current session's top-level windows from the
-feed; descendant windows activate their ancestor tab. The control client's
-window list is filtered by the feed: with a snapshot, an unlisted window
-gets a tab only if it is the session's current window, so a new detached run
-window does not flash as a top-level tab before the snapshot nests it under
-its parent. With no snapshot, every window shows. Each title
-is the composed label of that window's active pane, falling back to the
-tmux window name until its feed label arrives. A tab whose active pane is an
-agent is drawn like its sidebar row: semibold, with the display-only
-@ prefix when that row has one; other tabs are regular with no @. WindowView's active
-pane, read from tmux layouts and `%window-pane-changed`, is shared with terminal
-focus. Each tab combines its window and descendants into one status mark,
-ranked error (including unseen failed outcomes, command exits
-too) > waiting > running > done (unseen) > quiet. With the sidebar collapsed
-or floating, tabs use the pane row marks: red dot, orange dot, green running
-dot and green check. Docked tabs show only red and orange; quiet shows nothing.
-Accessibility labels follow the visible mark with " — error", " — waiting",
-" — running" or " — done". The mark is centered 15pt from the tab surface's
-leading edge. The label is inset 26pt on both sides regardless of the
-mark, so nothing shifts. Hovering the mark's own 16pt slot, and only that slot,
-replaces it with a 16pt × close button whose hover brightens it with a 10%
-labelColor, 4pt-radius fill; leaving the slot restores the mark. A 28pt-wide,
-icon-only + at the trailing end of the strip, outside the scrolling tabs,
-creates a window after the current one through the same new-window request as
-Command-T.
+| Title bar | Band | Traffic lights (x, center from top) |
+| --- | --- | --- |
+| `.unified` toolbar | 52pt | 19...79, 26pt |
+| `.unifiedCompact` toolbar | 40pt | 12...72, 20pt |
+| No toolbar | 32pt | 9...69, 16pt |
+| `.expanded` toolbar | 68pt | 9...69, 16pt |
+
+With no toolbar, a click inside the 32pt band goes to the content view
+under it. Thus the terminal can reach into the band and stay usable. A
+view in the band that does not take the mouse (`mouseDownCanMoveWindow` is
+true) drags the window natively, and a double-click on it does the system
+action (zoom or minimize). `NSView` answers `!isOpaque` by default, so
+`PaneView` and `PaneChrome` answer false; else a click on the first rows
+of a terminal inside the band would move or zoom the window. Below the
+band, a view must call `NSWindow.performDrag(with:)` from `mouseDown` and read
+`AppleActionOnDoubleClick` itself. The probe did not measure the height of
+the resize zone at the top edge.
+
+The docked sidebar's top 32pt row (the `titlebar` constant) holds the traffic
+lights, the window title, the New Session button and the Toggle Sidebar
+button. The buttons are
+32 × 28pt, centered in the row, 40pt (toggle) and 72pt (New Session) from the
+right edge. The title is a label in `titleBarFont` and the connection color
+that takes no mouse, truncates at its tail and runs from x=80, past the
+traffic lights, to the buttons. In full screen the traffic lights are
+absent and the title starts at x=20. The buttons take their clicks. The
+rest of the row, including the title, moves the window. The list starts
+below the row, at the top safe-area inset. The header views are pinned to the top edge with
+`.minYMargin` autoresizing, so a full-screen resize keeps them there. The
+floating card has the same row, with the title and the Toggle Sidebar
+button, and hides the New Session button.
+
+With the sidebar collapsed, the native title would be left-aligned on
+macOS 27, so the window title is a centered label of the same font in the
+terminal host's 32pt band, inset 80pt on both sides. There is no toggle in
+the band; Shift-Command-S (and the View menu) shows the sidebar. The title
+takes no mouse, so the band moves the window, except over the
+terminal's top margin. The host's content starts 32pt - S below the top of
+the host (S is `kido-pane-spacing`), so the first row of cards starts at
+32pt and the band overlaps only the top margin. A click in that margin goes
+to the tiled pane below it, as a click on its top row. The margin does not
+move the window or zoom it. With the sidebar docked, and in full screen,
+the terminal has no band: its cards start S below the top. Thus a collapse
+changes the terminal height by 32pt - S, and tmux resizes the panes as for
+any other height change. No per-window status mark exists. Status marks are
+drawn only for pane rows, in the sidebar and in the palette.
+
+On macOS 27, `NSGlassEffectView` shows its content only through portal
+layers in a hosting view, so hiding the glass view hid all its content.
+The docked sidebar therefore draws no glass. `viewDidLayout` of the sidebar controller moves
+the `dock` view (list, title, buttons) out of the glass into the window's
+root view, over the glass frame, and hides the glass. While the sidebar is
+floating or collapsed, `dock` is in the glass's slot. The split view's own
+shadow views are hidden unless the sidebar floats. The docked list is
+square and has no outline, separator line or shadow; only the floating card
+has an 18pt radius and hairline border. The window title, the session names
+in the list, the sidebar focus edge and the pane focus ring use the
+connection color ([Connection color](#connection-color)).
+
+The functions of the former tab strip are in the sidebar: select (row,
+Command-{/}, Command-1...9, the palette), reorder (drag), close (row ×,
+Command-W), new window (the session header plus, Command-T). In the window
+chrome, the remote host appears only in the window title.
 
 `SidebarView` is a reusable `NSTableView` backed by the pure row model in
 `SidebarFeed/Rows.swift`. Sessions have noninteractive 29pt headers with
@@ -1113,7 +1192,7 @@ target, and skipped by arrow navigation.
 Hovering a pane row's status-indicator slot, the 16pt square centered on the
 indicator, replaces the indicator with a 16pt × close button; the rest of the
 row has no hover treatment and records have no close button. Every app-issued
-close goes through one confirmation: the row and tab ×, Close Pane (Command-W)
+close goes through one confirmation: the row ×, Close Pane (Command-W)
 and the menu commands. If the pane, or any pane in the window and its
 descendant windows, is running or waiting, a stock `.warning` NSAlert sheet
 asks `Close “name”?` with "A process is still running in this pane. Closing the
@@ -1175,7 +1254,7 @@ reach of message_agent, which only reaches pi sessions on the same server)
 cannot be messaged, so they keep the semibold title without the @. Idle local shell panes
 (Live Terminal at a known Idle prompt, no run, idle/done/failed indicator) display secondary-colored
 `Terminal`; an Unknown phase, full-screen programs, SSH, and run items keep their labels. Both display
-rules leave raw pane labels and tab/window titles unchanged.
+rules leave raw pane labels and window titles unchanged.
 
 The app composes what kido no longer sends. The label is the wire title,
 except that a local shell without a program report and not in a run shows a
@@ -1196,8 +1275,7 @@ header plus center is 15pt from the right edge. Indicators are 6pt dots:
 idle and quiet gray (secondaryLabelColor at 45%), running/compacting green,
 waiting rows of any kind orange, failures red. Done/completed is
 a plain green checkmark, about 6×4pt at a 2pt stroke, visually centered on
-the dot position. Tabs aggregate the same mapping, with running and done
-marks visible only when the sidebar is collapsed or floating.
+the dot position.
 
 There are no window or child gaps and no divider rows. Each session retains
 its 16pt bottom gap. The header plus is 11pt, matching its label.
@@ -1217,8 +1295,8 @@ diagnostic is available in its tooltip. The sidebar has no filter. Jump
 failures leave focus intact; a successful jump returns focus to the pane.
 External tmux switches update selection without taking keyboard focus.
 
-The toolbar and Shift-Command-S toggle the sidebar; the View menu's
-Show/Hide title follows its collapsed state. Focus Sidebar uses
+The Toggle Sidebar button and Shift-Command-S toggle the sidebar; the View
+menu item is titled Hide Sidebar or Show Sidebar by the collapsed state. Focus Sidebar uses
 Command-S. Control-Command-F enters full screen.
 Command-{/} and Ghostty previous/next tab use RPC switch-window; there are
 no Control-Command-J/K shortcuts. Nested windows step among direct siblings,
@@ -1228,7 +1306,7 @@ across sessions; a sole eligible window can select itself and null is a no-op.
 Option-Command-]/[ switches sessions in the
 sidebar session order, with wraparound and a single-session no-op.
 Session navigation uses RPC switch-session and selects the returned current window.
-Command-N and toolbar plus create a session via new-session. File → New
+Command-N and the New Session button create a session via new-session. File → New
 Session with no key window uses an open local window that is not key, or opens
 a local window. The window that it opens has the dial cause `newSession`: it
 makes a session on its first error-free snapshot, once. The intent belongs to
@@ -1236,8 +1314,25 @@ that window. Closing it before its snapshot drops the intent, and a later
 ordinary open does not make a session. Each session
 header plus creates a window after that session's current window via new-window.
 Command-T sends new-window with the current window id; the server inserts
-immediately after it using its active pane's cwd. Numbered and last tabs use
-select-window; absolute sessions use select-session. In the table, arrows and j/k
+immediately after it using its active pane's cwd.
+Window menu items 1...9 (Command-1...9) and Ghostty's go-to-tab N select the
+Nth window of the sidebar's top-level order through select-window, with N
+clamped to the window count; Ghostty's go-to-last-tab selects the last one.
+Window → Last Window selects the window that this app window showed
+before the current one. It can be in another session. `WindowOwner` stores that
+one (session, window) pair when the shown window changes. Sidebar rows, the
+palette, New Window, Command-{ } and changes made in tmux all use this path.
+`#{window_last_flag}` is not used: it is per session and shared by all app
+windows. `WindowOwner` clears the pair when the control model resets, also on
+reconnect, because tmux can reuse window ids. `SessionModel.navigation` takes the
+pair as an argument and uses it only while that window is in the snapshot. If
+the window is gone, the item is disabled and is not in the palette. When the
+shown window closes, the pair names the closed window, so the item is disabled.
+The Window menu also has the standard Zoom item (`performZoom:`, no key in
+code). A user App Shortcut for the title "Zoom" works on it. Zoom Pane has a
+different title. The Visual test scheme passes `-NSUserKeyEquivalents {}` so
+user App Shortcuts do not change the palette snapshots.
+Absolute sessions use select-session. In the table, arrows and j/k
 move pane-only selection, Return activates with exactly one
 RPC jump, and Escape releases side focus via RPC and returns to the pane.
 Left/Right do nothing; headers do not activate or fold. Only correlated success
@@ -1250,9 +1345,7 @@ topology. Pending requests fail once on disconnect and are never replayed.
 Replies do not synthesize topology.
 
 Pane indicators come from the typed lifecycle, never
-re-derived from raw program records. A tab's mark summarizes its window and
-descendants' row statuses in error > waiting > running > unseen done > quiet
-order; docked tabs show only error and waiting marks.
+re-derived from raw program records.
 
 Kido does not acknowledge anything: the app owns seen. One app-wide record,
 keyed by host, holds per pane and outcome source (agent, program report,
@@ -1263,13 +1356,63 @@ draws a checkmark and an unseen failure red until then. A window is attended
 while the app is active and the window is key, not minimized and visible;
 on every snapshot and whenever it becomes attended, its client's active pane's
 current outcomes are marked seen. Every window of the host redraws its rows
-and tab dots from the shared record. A changed `server_instance` drops the
+from the shared record. A changed `server_instance` drops the
 host's entries; a successful snapshot prunes absent panes, while an error
 snapshot neither prunes nor marks. Outcomes already finished when a host's record
 first observes an error-free snapshot count as seen. Seen is not persisted across launches. Control-mode
 %program-status lines remain unrecognized and unused; Ghostty is unchanged.
 The sidebar is visible by default; it does not automatically collapse
 at narrow widths.
+
+## Connection color
+
+A connection is a `Host`. Its color is app state, not theme configuration:
+`HostAccents` keeps `[Host.clipboardKey: Accent]` as JSON in the UserDefaults
+key `hostAccents` (no store in background runs). `kido-app.conf` has no key for
+it, and the app never writes that file. `AppDelegate` owns the store through
+`WindowRoutes.accents`. A color change posts `HostAccents.changed`; every owner
+of that host redraws, and an owner of another host does not.
+
+`Accent` is `.system`, `.preset(Preset)` or `.custom(red, green, blue)`. The
+eight presets (red, orange, green, teal, blue, indigo, purple, pink) are a
+fixed table in `Preset.values`: one dimmed sRGB value for a light background and
+one for a dark one, chosen by the theme background's `isDark`. System resolves
+to `controlAccentColor`. A color with no stored value is `.preset(.blue)` for
+Local and System for a remote host.
+
+`Accent.legible(on:minimum:)` is the safety net. It mixes a color toward black
+or white in 5% steps until the contrast ratio reaches the minimum: 4.5:1
+for text (window title, session names, against the canvas) and 3:1 for
+strokes (pane ring, sidebar edge, swatches, against the pane background). The
+presets pass both on dark backgrounds, Solarized dark, #1e1e1e and white
+without a change. On the built-in light theme (#FFF9EC) six presets are 4.35 to
+4.41 as text on the canvas and get one step darker; the rest pass. A custom
+color gets the same rule.
+
+Used by the connection color: the window title, the session names, the sidebar
+focus edge and the focused-pane ring. Control states keep the system accent:
+the drop preview, the toolbar capsule, the reorder mark, the rename field,
+the prompt box and icon hover. The ring appears only with two or more tiled
+panes, as in Focus treatment.
+
+**Choosing a color.** Connect mode has a swatch button after the chip. With
+no host typed it shows `HostAccents.suggestion`: the least-used preset (the
+first in table order on a tie), counting each stored preset, and counting blue
+once for Local while Local has no stored color. When the typed text is a known host (one with a stored color), the swatch shows that
+host's color. The selected row does not change it. A click on the swatch enters Color mode for the new connection;
+the choice returns to Connect and is used by the next connect. Option-Command-C in
+Connect mode does the same. A pending Custom color survives the color panel
+becoming key; the palette closes when focus goes elsewhere. Connecting stores the pending color for the host. If the host has
+a stored color, that color stays (a pending color replaces it only when the
+user chose one). A host with no stored color, such as an old recent host or a
+URL or intent connection, gets the suggestion stored at its first connect, so a
+stored value is the only record of the color. The globe of a typed or recent
+remote row in the palette is tinted with the host's color when it has one.
+
+**Changing it later.** Window → Connection Color… opens Color mode for the
+anchor window's host; the choice applies to every window of that host. One
+store and one mode serve both uses; the Connect swatch reuses Color mode with a
+`ColorTarget.newConnection`, so no second picker exists.
 
 ## Command palette
 
@@ -1286,7 +1429,7 @@ acts on windows only through the owner's own methods (`perform`,
 key Kido window's owner when the palette opens.
 
 The card is always 600pt wide. Over a window, it is centred horizontally on
-the content area below the toolbar, also when the window is narrower, and its
+the terminal content area, also when the window is narrower, and its
 top is 20% of that area's height below the area's top. With no window, it is
 centred on the main screen's visible frame, with its top 20% below the top of
 that frame. The frame is then clamped into the screen's visible frame. The
@@ -1325,13 +1468,13 @@ The root list is built from live state, in this order:
   key equivalent: New Session, Rename Session…, Close Session, New Window,
   Close Window, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
   Remote Host…, Hide/Show Sidebar, Focus Sidebar, Enter Full Screen, Find…,
-  Copy Mode, Prompt…, Reset Clipboard and Upload Permissions and Theme…. The window
+  Copy Mode, Prompt…, Last Window, Open Scrollback in Editor and Reset Clipboard and Upload Permissions and Theme…. The window
   commands need an anchor. The pane commands need a live focused pane: a
   connected anchor whose saved responder is a visible pane of that window, or
   a view inside one, such as its Find bar. Prompt… also needs an agent in the
   pane's session, as its menu item does.
-  Navigation items, Select Pane, the numbered lists, Find Next/Previous, Hide,
-  Quit and the palette item are never in the list.
+  Last Window is the only navigation item in the list. Select Pane, the
+  numbered lists, Find Next/Previous, Hide, Quit and the palette item are never in the list.
 
 While the palette is open, each owner snapshot or model change and each window
 close rebuilds the entries from the saved owner and responder. The panel stays
@@ -1356,7 +1499,7 @@ characters gets a fill of the terminal foreground at 14% with a 3pt radius;
 the text keeps its colour and weight. With no match, the list shows "No
 matches".
 
-The palette has four modes besides the root. A mode shows a chip left of the
+The palette has five modes besides the root. A mode shows a chip left of the
 field (22pt, the mode's symbol and name) and a foot that names its keys.
 Entering a mode clears the query and the error. An error is a red line between
 the field and the list; an edit clears it.
@@ -1371,6 +1514,15 @@ the field and the list; an edit clears it.
   shows the validation message as the error, and the typed row is absent until
   the text changes. A valid host or a host row connects through the same
   remote routing as URLs and opens a new window.
+  A color button sits after the chip, before the field. See
+  [Connection color](#connection-color).
+- **Color** (`eyedropper`). Window → Connection Color… and the swatch in
+  Connect mode enter it. Rows: System, the eight presets and Custom…, each
+  with a swatch tinted in its color; the current one shows "Current".
+  Choosing a row for a connection stores it and closes the palette. In the
+  Connect swatch's use, it sets the pending color and returns to Connect.
+  Custom… opens the shared `NSColorPanel` (no alpha); each change of the panel
+  stores the color for the connection, or sets the pending color.
 - **Rename session** (`pencil`). Session → Rename Session… and its root row
   enter it. It targets the anchor's current session, with the current name in
   the field, selected. Return commits through `SessionRename`, the rules of the
@@ -1567,10 +1719,11 @@ unbound Command key to the main menu, which is how Command-P reaches the
 palette.
 
 The field's accessibility label names the mode: "Command palette", "Connect
-to remote host", "Rename session" or "Theme". In Prompt mode, the field is "Prompt",
+to remote host", "Color", "Rename session" or "Theme". The color button's label is
+"Connection color: <name>". In Prompt mode, the field is "Prompt",
 the picker is a pop-up button "Send to @name", and the buttons are "Send
 prompt", "Retry" and "Copy Prompt". Each row's label joins its title, detail
-and shortcut, and adds the status as the tabs do (" — error", " — waiting",
+and shortcut, and adds the status as the sidebar rows do (" — error", " — waiting",
 " — running", " — done"). An error is announced at high priority. The panel's
 subrole is a floating window.
 
@@ -1655,7 +1808,8 @@ preview, so one place serves them all.
 ## Notifications
 
 Kido.app posts a native notification when a pane starts waiting on the
-user or fails out of sight, and withdraws it when the reason is gone. kido
+user or fails out of sight, and, with `kido-notify-done`, when an agent
+finishes out of sight. It withdraws the notification when the reason is gone. kido
 reports status and retained outcomes; the app decides what the user has
 seen and what deserves a banner. `SidebarFeed/Notifications.swift` is the
 pure step; `App/Notifications.swift` holds the two posters and the
@@ -1670,7 +1824,11 @@ indicator keeps the sidebar's precedence, so a quiet report masks a
 command exit for the banner exactly as for the row. Waiting is one plain
 reason: a changed kind while still waiting does not repost. A
 failure's reason is its outcome source and identity, so a new failure
-reposts. Done, finished runs, successes, running, Ended rows and
+reposts. With `kido-notify-done` on, an agent pane (pi, Claude Code or a
+`kido ssh` remote agent) that is not a run and whose indicator shows an
+unseen done also wants a notification; the reason is its outcome source
+and identity, so each new completion reposts. A shell command, a shell
+report, a run, a success under the setting off, running, Ended rows and
 a command exit of 130 never notify.
 
 **One notifier, entries per window.** Every `WindowOwner` has its own
@@ -1681,10 +1839,13 @@ host's attended windows (app active, key, not miniaturized, visible).
 Per entry the states are absent, posted(reason) and acknowledged(reason).
 On every error-free snapshot of an owner, for each wanting pane:
 
-- a baseline snapshot, a pane whose tmux window is shown, or a reason
-  that starts or changes while Kido.app is active, acknowledges it,
+- a baseline snapshot, a pane whose tmux window is shown, or a waiting
+  or failure reason that starts or changes while Kido.app is active,
+  acknowledges it,
   withdrawing any earlier post: it is on screen, or the user is present
-  and what starts meanwhile counts as noticed;
+  and what starts meanwhile counts as noticed. A done reason ignores the
+  active rule: the user works in Kido and wants to hear of an agent that
+  finished in a window they do not see;
 - otherwise a new or changed reason posts, replacing an earlier post;
 - an unchanged reason does nothing, posted or acknowledged.
 
@@ -1706,19 +1867,24 @@ and the notifier's entries with one (no banners). That asymmetry is
 deliberate.
 
 **Content.** Title is the sidebar row's title. Subtitle is the session
-name; for a remote window `user@host · session`, using the resolved
-identity the window title shows; for a `kido ssh` remote agent in a Local
+name; for a remote window `host · session`, with the host as typed
+(`Host.label`); for a `kido ssh` remote agent in a Local
 window, `session · destination`. Body: `Waiting` or
 `Waiting: <caption>`, else `Exit <code>: <command>` for a command, else
-`Failed` or `Failed: <caption>`. Nothing is truncated by the app.
+`Failed` or `Failed: <caption>`; for done, `Done` or `Done: <caption>`. Nothing is truncated by the app.
 Identifier is owner and pane, so a repost replaces; thread identifier is
-the host key; category `waiting` or `failed` supplies the hidden-preview
-placeholders "Waiting for input" and "Failed"; sound is the default; the
+the host key; the attachment `color` is a rounded-square PNG, written fresh
+to the temporary directory for each post, in the host's accent resolved for
+the window's theme (System: the system accent), because a banner cannot
+color text; if the file or attachment fails, the notice posts without it;
+category `waiting`, `failed` or `done` supplies the hidden-preview
+placeholders "Waiting for input", "Failed" and "Done"; sound is the default; the
 click target (host, server instance, session, window, pane) travels as
 JSON in `userInfo`. Linked panes take the client's session.
 
-**Frontmost and badge.** `willPresent` returns no options: nothing is
-shown while Kido.app is frontmost. The Dock badge, through
+**Frontmost and badge.** `willPresent` returns no options for waiting and
+failed: nothing is shown while Kido.app is frontmost. For the `done`
+category it returns banner and sound. The Dock badge, through
 `setBadgeCount`, is the number of posted entries across all windows, set
 after every step and cleared on quit.
 
@@ -1746,7 +1912,7 @@ importing UserNotifications. Background, visual and stress builds use
 and authorization calls and never touches Notification Center.
 `NotificationsTests` in SidebarFeed cover the step: attendance,
 baselines, suppression and acknowledgement, reposts, every withdrawal,
-exclusions, precedence and content; the hosted `NotificationTests` drive
+exclusions, precedence, content and the opt-in done reason; the hosted `NotificationTests` drive
 two owners, feed restart and `route` against the recording poster.
 
 ## Testing
@@ -1777,11 +1943,18 @@ not covered. Re-record with `make visual RECORD=1` after intentional visual
 changes, a macOS update or a different backing scale, and review the images
 and layout diffs. References live in `app/VisualTests/__Snapshots__`.
 
+`ScrollbackTests` runs the overlay against a private tmux socket with a fixture
+`$EDITOR` script: the frame, the file (history, directory), the cleanup,
+focus, window switch, a failing editor and one light and dark image.
+`ScrollbackCaptureTests` and the `ScrollbackUnitTests` cover the commands,
+the editor command, the file mode and the sweep.
+
 `PaletteTests` records one image of the palette's content view for each
 state of the approved mockup, `app/design/palette/` (`mockup.html` with its
 `NOTES.md`), in light and dark: `palette.<theme>-<state>.png` for root,
 filtered, filtered2, nomatch, connect, connect-typing, connect-invalid,
-connect-none, rename, rename-error, rename-error2, nowindow, match-run,
+connect-none, connect-color, connect-known, color, color-custom, rename,
+rename-error, rename-error2, nowindow, match-run,
 theme, theme-filtered, theme-preview, theme-save, theme-save-session,
 theme-err-write and theme-err-file. The theme images are recorded last in the same test. Their
 conf lives in the visual scheme's private `HOME` (`XDG_CONFIG_HOME` is
@@ -1789,6 +1962,11 @@ conf lives in the visual scheme's private `HOME` (`XDG_CONFIG_HOME` is
 `HOME` is that private directory before it writes. theme-err-file removes the
 built app's bundled theme file and restores its bytes in a `defer`.
 `ThemeConfTests` tests the conf text functions and the writer.
+`AccentTests` records the connection color of the mockup
+`app/design/connection-color/mockup.html`: `connection-color.<state>-<red|purple|teal>-<light|dark>.png`
+for the ring, the sidebar edge and the docked, collapsed and sidebar-focused
+title. The same file has behavior tests for the store (two windows of one host,
+another host, a new store from the same suite) and for the contrast rule.
 `palette.light-window-root.png` records the card over a real two-pane window
 at the mockup's 1100x740pt, with the panes' cursors hollow. The fixture
 clears the panes' tmux history after fixed output, because `respawn-pane -k`

@@ -26,8 +26,10 @@ struct RemoteShortcuts: AppShortcutsProvider {
 @MainActor final class WindowRoutes {
     private let preferences: UserDefaults?
     private(set) var recent: RecentHosts
+    let accents: HostAccents
     init(preferences: UserDefaults? = background ? nil : .standard) {
         self.preferences = preferences
+        accents = HostAccents(preferences: preferences)
         recent = preferences?.data(forKey: "recentHosts").flatMap { try? JSONDecoder().decode(RecentHosts.self, from: $0) } ?? RecentHosts()
     }
     func clearRecent() { recent.clear(); saveRecent() }
@@ -35,8 +37,9 @@ struct RemoteShortcuts: AppShortcutsProvider {
     private var queued: [(Host, WindowOwner.DialCause)] = []
     private var open: ((Host, WindowOwner.DialCause) -> Void)?
     private var ordinaryAllowed = true
-    func connect(_ host: Host, cause: WindowOwner.DialCause = .remoteRequest) {
+    func connect(_ host: Host, cause: WindowOwner.DialCause = .remoteRequest, accent: Accent? = nil) {
         if case .remote(let alias) = host { recent.add(alias, at: Date()); saveRecent() }
+        accents.assign(host, chosen: accent)
         if let open {
             ordinaryAllowed = true
             open(host, cause)

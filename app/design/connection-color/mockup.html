@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Kido.app · connection color</title>
+<style>
+:root{color-scheme:light dark}
+body{margin:0;padding:24px;background:#8d8a84;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;color:#111}
+.controls{display:flex;flex-wrap:wrap;gap:12px 18px;align-items:center;margin:0 auto 18px;max-width:1100px;color:#fff}
+.controls label{display:flex;align-items:center;gap:6px}.controls select{font:inherit}.controls p{margin:0;flex-basis:100%;color:#fffc}
+.stage{position:relative;width:560px;height:340px;border-radius:14px;overflow:hidden;box-shadow:0 18px 60px #0003,0 0 0 .5px #0002;--bg:#171717;--fg:#c9c9c9;--muted:#8f8f8f;--canvas:color-mix(in srgb,#171717 65%,#000);--shade:color-mix(in srgb,var(--bg) 97%,#fff);--text:#dddddd;--dimtext:#9a9a9a;--line:color-mix(in srgb,var(--bg) 82%,var(--fg));--sel:#ffffff1a;--running:#30d158;background:var(--canvas);color:var(--text)}
+.stage.light{--bg:#fff9ec;--fg:#424242;--muted:#848484;--canvas:color-mix(in srgb,#fff9ec 94%,#000);--shade:color-mix(in srgb,var(--bg) 95%,#000);--text:#000000d9;--dimtext:#00000080;--sel:#0000001a;--running:#34c759}
+/* text = legible 4.5:1 on the canvas; ring = legible 3:1 on the pane paper */
+.c-red{--t:#dc8c85;--r:#dc8c85}.c-teal{--t:#7abfbf;--r:#7abfbf}.c-purple{--t:#c18ed1;--r:#c18ed1}.c-blue{--t:#61afda;--r:#61afda}
+.light.c-red{--t:#ac4643;--r:#b54a46}.light.c-teal{--t:#007373;--r:#007979}.light.c-purple{--t:#894b9c;--r:#894b9c}.light.c-blue{--t:#006ca0;--r:#0072a8}
+.lights{position:absolute;left:14px;top:10px;display:flex;gap:7px;z-index:3}.lights i{width:11px;height:11px;border-radius:50%;background:#fe5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#2ac840}
+.title{position:absolute;top:8px;height:16px;font:600 13px/16px -apple-system,system-ui,sans-serif;color:var(--t);white-space:nowrap;z-index:3}
+.docked .title{left:70px}.collapsed .title{left:0;right:0;text-align:center}
+.sidebar{position:absolute;left:0;top:0;bottom:0;width:190px;background:var(--shade);padding-top:36px;box-sizing:border-box;font-size:12px}
+.sh{font-size:11px;font-weight:600;color:var(--t);padding:6px 14px 4px}
+.row{display:flex;align-items:center;height:26px;padding:0 10px 0 14px}.row i{width:6px;height:6px;border-radius:50%;background:var(--running);margin-right:10px}.row.idle i{background:var(--dimtext);opacity:.6}
+.row.sel{background:color-mix(in srgb,var(--text) 10%,transparent);border-radius:7px;margin:0 6px;padding-left:8px}
+.edge{position:absolute;pointer-events:none;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--r) 50%,transparent)}
+.docked .edge{left:0;top:0;bottom:0;width:190px}
+.area{position:absolute;top:32px;right:8px;bottom:8px}.docked .area{left:198px}.collapsed .area{left:8px}
+.pane{position:absolute;top:0;bottom:0;width:calc(50% - 4px);border-radius:12px;box-sizing:border-box;padding:10px 12px;font:11px/16px ui-monospace,Menlo,monospace;color:var(--fg);background:var(--shade)}
+.pane:first-child{left:0}.pane:last-child{right:0}
+.pane.focus{background:var(--bg);box-shadow:inset 0 0 0 1.5px var(--r)}.pane:not(.focus){box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--fg) 12%,transparent)}
+.sidefocus .pane.focus{background:var(--shade);box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--fg) 12%,transparent)}
+.m{color:var(--muted)}
+.gallery{max-width:1200px;margin:24px auto 0;display:grid;grid-template-columns:repeat(2,560px);gap:22px 22px;justify-content:center}.cap{color:#fff;font-size:12px;margin-top:6px}
+</style></head><body>
+<div class="controls"><strong>Connection color</strong>
+<label>State <select id="state"><option value="docked">Docked sidebar, pane focus</option><option value="collapsed">Collapsed sidebar, pane focus</option><option value="sidefocus">Docked sidebar, sidebar focus</option></select></label>
+<p>The window title, the session names in the sidebar, the focused-pane ring (two or more tiled panes) and the sidebar focus edge use the connection's color. The title names the connection as typed, such as "devbox". Text must reach 4.5:1 on the canvas and the ring 3:1 on the pane paper. Local is the dimmed blue preset. Preset colors are fixed per theme (a light and a dark value); only custom colors are adjusted until they reach the contrast.</p></div>
+<div class="gallery" id="gallery"></div>
+<script>
+function win(state,color,light){const cls=`stage ${light?'light':''} c-${color} ${state==='collapsed'?'collapsed':'docked'} ${state==='sidefocus'?'sidefocus':''}`;
+const side=state==='collapsed'?'':`<aside class="sidebar"><div class="sh">main</div><div class="row sel"><i></i>@kido-app</div><div class="row"><i></i>make verify</div><div class="row idle"><i></i>zsh</div><div class="sh">visa</div><div class="row idle"><i></i>zsh</div></aside>${state==='sidefocus'?'<div class="edge"></div>':''}`;
+return `<div class="${cls}"><div class="lights"><i></i><i></i><i></i></div><div class="title">${color==='blue'?'Local':color==='red'?'prod-web':color==='teal'?'devbox':'staging'} / main</div>${side}<div class="area"><div class="pane focus"><span class="m">$ make verify</span><br>dune build ... ok</div><div class="pane"><span class="m">~/kido</span><br>$ git status</div></div></div>`}
+function apply(){const s=document.getElementById('state').value,g=document.getElementById('gallery');g.innerHTML='';for(const c of ['teal','red','purple','blue'])for(const light of [true,false]){const d=document.createElement('div');d.innerHTML=win(s,c,light)+`<div class="cap">${c} · ${light?'light':'dark'}</div>`;g.appendChild(d)}}
+const qs=new URLSearchParams(location.search);if(qs.get('state'))document.getElementById('state').value=qs.get('state');
+document.getElementById('state').onchange=apply;apply();
+</script></body></html>

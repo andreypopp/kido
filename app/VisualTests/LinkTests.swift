@@ -12,7 +12,7 @@ import XCTest
         for host in [Host.local, .remote("example")] {
             var opened: [URL] = []
             var handled: [String] = []
-            let owner = WindowOwner(host: host, runtime: runtime, start: false, openBrowser: { opened.append($0) })
+            let owner = WindowOwner(host: host, runtime: runtime, accents: HostAccents(preferences: nil), start: false, openBrowser: { opened.append($0) })
             defer { owner.close() }
             for (text, osc8) in [("https://example.com/osc8?x=1", true), ("file:///tmp/kido-link-test", true), ("https://example.com/regex", false)] {
                 let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: host) { _ in })

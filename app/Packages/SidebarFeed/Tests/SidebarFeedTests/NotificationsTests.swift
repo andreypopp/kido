@@ -10,8 +10,8 @@ private func notifier() throws -> NotifierState {
 }
 
 private func step(_ state: inout NotifierState, _ nodes: [[String: Any]], owner: String = "a", host: String = "local",
-                  identity: String? = nil, fresh: Bool = false, seen: SidebarSeen = SidebarSeen(), shown: Set<WindowID> = [], appActive: Bool = false) throws -> NotifierEffects {
-    state.step(owner: owner, host: host, identity: identity, snapshot: try decode(snapshotObject(nodes)), fresh: fresh, seen: seen, shown: shown, appActive: appActive)
+                  fresh: Bool = false, seen: SidebarSeen = SidebarSeen(), shown: Set<WindowID> = [], appActive: Bool = false, notifyDone: Bool = false) throws -> NotifierEffects {
+    state.step(owner: owner, host: host, snapshot: try decode(snapshotObject(nodes)), fresh: fresh, seen: seen, shown: shown, appActive: appActive, notifyDone: notifyDone)
 }
 
 @Test func notificationBaselines() throws {
@@ -252,8 +252,8 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
     #expect(posts[4].subtitle == "session-0")
     #expect(try JSONDecoder().decode(NoticeTarget.self, from: JSONEncoder().encode(posts[0].target)) == posts[0].target)
     _ = try step(&state, [], owner: "remote", host: "ssh:dev", fresh: true)
-    let remotePosts = try step(&state, nodes, owner: "remote", host: "ssh:dev", identity: "bob@machine").post
-    #expect(remotePosts[0].subtitle == "bob@machine · session-0")
+    let remotePosts = try step(&state, nodes, owner: "remote", host: "ssh:dev").post
+    #expect(remotePosts[0].subtitle == "dev · session-0")
     #expect(remotePosts[0].target.host == "ssh:dev")
 }
 
@@ -282,4 +282,51 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
     #expect(try step(&state, failed).post.count == 1)
     #expect(state.forget(owner: "a").withdraw.count == 1)
     #expect(state.postedCount == 0)
+}
+
+@Test func notificationDoneIsOptInAndAgentsOnly() throws {
+    var state = try notifier()
+    let done = [pane(1, lifecycle: agent(idle(outcome(1, "success"))))]
+    #expect(try step(&state, done).post.isEmpty)
+    var on = try notifier()
+    let working = [pane(1, lifecycle: agent(working()))]
+    #expect(try step(&on, working, notifyDone: true).post.isEmpty)
+    let posts = try step(&on, done, notifyDone: true).post
+    #expect(posts.count == 1 && posts.first?.kind == .done && posts.first?.body == "Done")
+    #expect(try step(&on, done, notifyDone: true).post.isEmpty)
+    let pi = [pane(2, lifecycle: piAgent(idle(outcome(1, "success")), msg: "all green"))]
+    #expect(try step(&on, pi, notifyDone: true).post.first?.body == "Done: all green")
+    let others = [pane(3, lifecycle: terminal(exited(0))), pane(4, lifecycle: terminal(report: report(idle(outcome(1, "success"))))),
+                  pane(5, lifecycle: piAgent(idle(outcome(1, "success"))), run: "r-1")]
+    var fresh = try notifier()
+    #expect(try step(&fresh, others, notifyDone: true).post.isEmpty)
+    let remote = [pane(6, lifecycle: remote(["Remote_agent", ["name": "pi", "status": report(idle(outcome(1, "success")))]]))]
+    #expect(try step(&fresh, remote, notifyDone: true).post.count == 1)
+}
+
+@Test func notificationDonePostsWhileActiveUnlessShown() throws {
+    var state = try notifier()
+    let done = [pane(1, window: 7, lifecycle: agent(idle(outcome(1, "success"))))]
+    #expect(try step(&state, done, appActive: true, notifyDone: true).post.count == 1)
+    #expect(try step(&state, done, shown: [WindowID(number: 7)], appActive: true, notifyDone: true).withdraw.count == 1)
+    #expect(try step(&state, done, notifyDone: true).post.isEmpty)
+    var baseline = NotifierState()
+    #expect(try step(&baseline, done, fresh: true, notifyDone: true).post.isEmpty)
+}
+
+@Test(arguments: ["work", "seen", "disappeared", "setting"])
+func notificationDoneWithdraws(cause: String) throws {
+    var state = try notifier()
+    let done = [pane(1, lifecycle: agent(idle(outcome(1, "success"))))]
+    #expect(try step(&state, done, notifyDone: true).post.count == 1)
+    var seen = SidebarSeen()
+    var next = done
+    var notify = true
+    switch cause {
+    case "work": next = [pane(1, lifecycle: agent(working()))]
+    case "seen": seen.observe(try decode(snapshotObject([])), attended: false); seen.observe(try decode(snapshotObject(done, client: 1)), attended: true)
+    case "disappeared": next = []
+    default: notify = false
+    }
+    #expect(try step(&state, next, seen: seen, notifyDone: notify).withdraw.map(\.pane) == [PaneID(number: 1)])
 }
