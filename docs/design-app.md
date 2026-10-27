@@ -693,8 +693,9 @@ remote host, because the text comes over the control connection.
   screen returns history plus the alternate screen text. The cap is the
   constant `ScrollbackCapture.maxRows` (200,000 rows, no setting). Above it,
   the capture starts at `-S -200000` and a notice says "Showing the newest
-  200000 lines". Trailing blank rows are dropped. The text is a snapshot:
-  the pane keeps changing below the overlay. tmux state does not change.
+  200000 lines". Trailing spaces and tabs of every row, and trailing blank
+  rows, are dropped. The text is a snapshot: the pane keeps changing below the
+  overlay. tmux state does not change.
 - **File.** `NSTemporaryDirectory()/kido-scrollback-<uuid>/pane-<N>.txt`, mode
   0400 in a 0700 directory, so the editor opens it read-only. The directory
   holds also a `status` file that the command writes. The directory is
@@ -734,6 +735,14 @@ remote host, because the text comes over the control connection.
   a layout change (the pty resizes). `SessionView.evict` skips a window with
   an open overlay. A pane closed in tmux disposes its overlay first. Command-W
   in the editor closes only the overlay.
+- **Commands.** Ghostty split actions (split, select, resize, zoom, equalize,
+  next/previous pane, window steps) and the Shell menu items apply to the
+  pane under the overlay, through the `PaneView`'s command path. Moving focus
+  to another pane leaves the overlay open, and `focusTarget` returns focus to
+  it. A click in the overlay selects its pane in tmux, as a click in the
+  pane does, so the focus ring follows the click. Close Pane is disabled while
+  the overlay is focused. Other menu items
+  (copy mode, find, prompt, open scrollback) stay disabled.
 - **Limits.** A theme or color-scheme reload does not reach an open overlay.
 
 ### Focus treatment

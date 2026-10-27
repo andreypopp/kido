@@ -1274,6 +1274,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             return failScrollback("Ghostty could not start a terminal for the editor.")
         }
         view.onFinish = { [weak self] screen in self?.closeScrollback(screen: screen) }
+        view.onCommand = { [weak self] in self?.onCommand($0) }
+        view.onSelect = { [weak self] in self?.onSelect() }
         view.frame = frame
         scrollback = .open(view, file)
         window?.makeFirstResponder(view)

@@ -347,6 +347,37 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
+    func testGhosttySplitBindingsRunTmuxCommands() async throws {
+        let config = directory.appendingPathComponent("split-bindings.conf")
+        try """
+        font-family = Menlo
+        keybind = super+left=unbind
+        keybind = super+alt+left=resize_split:left,8
+        keybind = super+alt+down=resize_split:down,8
+        keybind = super+h=new_split:right
+        keybind = super+ctrl+left=goto_split:left
+        """.write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        _ = try await command(["split-window", "-h", "exec /bin/cat"])
+        try await wait("split pane", within: 5) { self.terminal?.panes.count == 2 }
+        let menu = NSApp.mainMenu
+        NSApp.mainMenu = nil
+        defer { NSApp.mainMenu = menu }
+        let keys: [(UInt16, String, NSEvent.ModifierFlags, String)] = [
+            (123, "\u{F702}", [.command, .option], "resize-pane -L"), (125, "\u{F701}", [.command, .option], "resize-pane -D"),
+            (123, "\u{F702}", [.command, .control], "select-pane -L"), (4, "h", .command, "split-window -h"),
+        ]
+        for (code, key, mods, expected) in keys {
+            let pane = try XCTUnwrap(terminal?.panes.first { $0.pane == self.terminal?.active })
+            window.makeFirstResponder(pane)
+            connection.visualCommands.removeAll()
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code))
+            XCTAssertTrue(pane.performKeyEquivalent(with: event), expected)
+            try await wait(expected, within: 5) { self.connection.visualCommands.contains { $0.line.hasPrefix(expected) } }
+        }
+    }
+
     func testAdjustedFontConfigReload() async throws {
         let config = directory.appendingPathComponent("adjusted-font.conf")
         try "font-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)

@@ -1,7 +1,7 @@
 import AppKit
 import GhosttyKit
 
-final class ScrollbackView: NSView, @preconcurrency NSTextInputClient {
+final class ScrollbackView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValidation {
     let runtime: GhosttyRuntime
     private let canvas = TerminalView()
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
@@ -14,6 +14,8 @@ final class ScrollbackView: NSView, @preconcurrency NSTextInputClient {
     private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?
     var onFinish: (_ screen: String) -> Void = { _ in }
+    var onCommand: (PaneCommand) -> Void = { _ in }
+    var onSelect: () -> Void = {}
 
     nonisolated static func onMain(_ userdata: UnsafeMutableRawPointer?, _ body: @escaping @MainActor (ScrollbackView) -> Void) {
         guard case .scrollback(let owner) = SurfaceRef.owner(userdata) else { return }
@@ -216,7 +218,10 @@ final class ScrollbackView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func button(_ event: NSEvent, _ state: ghostty_input_mouse_state_e) {
-        if state == GHOSTTY_MOUSE_PRESS, event.buttonNumber == 0 { window?.makeFirstResponder(self) }
+        if state == GHOSTTY_MOUSE_PRESS, event.buttonNumber == 0 {
+            window?.makeFirstResponder(self)
+            onSelect()
+        }
         position(event)
         let button = switch event.buttonNumber {
         case 0: GHOSTTY_MOUSE_LEFT
@@ -279,12 +284,28 @@ final class ScrollbackView: NSView, @preconcurrency NSTextInputClient {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard acceptsKeyInput, event.type == .keyDown, window?.firstResponder === self,
               event.modifierFlags.contains(.command) else { return false }
-        guard SurfaceInput.binding(surface, event) != nil else { return false }
+        guard let flags = SurfaceInput.binding(surface, event) else { return false }
+        if flags & GHOSTTY_BINDING_FLAGS_CONSUMED.rawValue != 0,
+           flags & (GHOSTTY_BINDING_FLAGS_ALL.rawValue | GHOSTTY_BINDING_FLAGS_PERFORMABLE.rawValue) == 0,
+           NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
+            return true
+        }
         keyDown(with: event)
         return true
     }
 
     override func doCommand(by selector: Selector) {}
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard acceptsKeyInput, item.action == #selector(runCommand(_:)), let command = item.representedObject as? PaneCommand else { return false }
+        if case .close = command { return false }
+        return true
+    }
+
+    @objc func runCommand(_ sender: NSMenuItem) {
+        guard let command = sender.representedObject as? PaneCommand else { return }
+        onCommand(command)
+    }
 
     private func syncPreedit(clearIfNeeded: Bool = true) {
         if markedText.length > 0 {

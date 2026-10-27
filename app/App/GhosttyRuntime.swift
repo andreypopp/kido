@@ -589,7 +589,9 @@ extension NSColor {
             let shape = action.action.mouse_shape
             ScrollbackView.onMain(userdata) { $0.setMouseShape(shape) }
         case GHOSTTY_ACTION_SCROLLBAR, GHOSTTY_ACTION_CELL_SIZE: break
-        default: return false
+        default:
+            guard let command = command(action) else { return false }
+            ScrollbackView.onMain(userdata) { $0.onCommand(command) }
         }
         return true
     }

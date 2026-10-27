@@ -21,6 +21,11 @@ import Testing
     #expect(ScrollbackCapture.historySize(nil) == nil)
 }
 
+@Test func scrollbackCaptureTextDropsTrailingSpacesAndTabs() {
+    #expect(ScrollbackCapture.text(.success(["a  ", " b \t", "c d\t ", "   ", " e"])) == "a\n b\nc d\n\n e\n")
+    #expect(ScrollbackCapture.text(.success(["a", "  ", "\t"])) == "a\n")
+}
+
 @Test func scrollbackCaptureTextDropsTrailingBlankRows() {
     #expect(ScrollbackCapture.text(.success(["a", "", "b", "", ""])) == "a\n\nb\n")
     #expect(ScrollbackCapture.text(.success(["", ""])) == nil)
