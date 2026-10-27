@@ -1806,7 +1806,11 @@ window, `session · destination`. Body: `Waiting` or
 `Waiting: <caption>`, else `Exit <code>: <command>` for a command, else
 `Failed` or `Failed: <caption>`; for done, `Done` or `Done: <caption>`. Nothing is truncated by the app.
 Identifier is owner and pane, so a repost replaces; thread identifier is
-the host key; category `waiting`, `failed` or `done` supplies the hidden-preview
+the host key; the attachment `color` is a rounded-square PNG, written fresh
+to the temporary directory for each post, in the host's accent resolved for
+the window's theme (System: the system accent), because a banner cannot
+color text; if the file or attachment fails, the notice posts without it;
+category `waiting`, `failed` or `done` supplies the hidden-preview
 placeholders "Waiting for input", "Failed" and "Done"; sound is the default; the
 click target (host, server instance, session, window, pane) travels as
 JSON in `userInfo`. Linked panes take the client's session.

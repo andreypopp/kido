@@ -5,6 +5,16 @@ import XCTest
 @testable import Kido
 
 @MainActor final class NotificationTests: VisualTestCase {
+    func testSwatchIsAPNGInTheAccentColor() throws {
+        let color = try XCTUnwrap(Accent.preset(.teal).color(dark: false).usingColorSpace(.sRGB))
+        let image = try XCTUnwrap(NSBitmapImageRep(data: SystemNotifications.swatch(color)))
+        var pixel: [Int] = [0, 0, 0, 0]
+        image.getPixel(&pixel, atX: image.pixelsWide / 2, y: image.pixelsHigh / 2)
+        XCTAssertEqual(pixel, [color.redComponent, color.greenComponent, color.blueComponent, 1].map { Int(($0 * 255).rounded()) })
+        image.getPixel(&pixel, atX: 0, y: 0)
+        XCTAssertEqual(pixel[3], 0)
+    }
+
     func testPrivateServerNotifications() async throws {
         XCTAssertTrue(background)
         let poster = try XCTUnwrap(Notifier.shared.poster as? RecordedNotifications)
