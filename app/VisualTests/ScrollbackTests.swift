@@ -102,7 +102,7 @@ final class ScrollbackUnitTests: XCTestCase {
     }
 
     // A private owner whose first window is a pane with `seq` output in its history.
-    private func start(editor: String, history: Int = 3000) async throws -> PaneView {
+    private func start(editor: String, history: Int = 3000, config: String? = nil) async throws -> PaneView {
         scratch = "/tmp/ksb-" + UUID().uuidString.prefix(8)
         try FileManager.default.createDirectory(atPath: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let script = scratch + "/editor.sh"
@@ -122,7 +122,9 @@ final class ScrollbackUnitTests: XCTestCase {
         XCTAssertEqual(result.status, 0, result.err)
         server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
         let board = NSPasteboard(name: .init("ksb-" + UUID().uuidString))
-        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let configFile = scratch + "/kido-app.conf"
+        try (config ?? "").write(toFile: configFile, atomically: true, encoding: .utf8)
+        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: configFile, pasteboard: board))
         let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
         self.owner = owner
         owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
@@ -231,6 +233,118 @@ final class ScrollbackUnitTests: XCTestCase {
         _ = try await tmux(["kill-pane", "-t", id])
         try await wait("a pane that closes takes its overlay along") { pane.disposed && overlay.disposed }
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.directory.path))
+    }
+
+    private static let shortcutConfig = """
+        keybind = super+left=unbind
+        keybind = super+right=unbind
+        keybind = super+up=unbind
+        keybind = super+down=unbind
+        keybind = super+ctrl+left=unbind
+        keybind = super+alt+left=resize_split:left,8
+        keybind = super+alt+right=resize_split:right,8
+        keybind = super+alt+up=resize_split:up,8
+        keybind = super+alt+down=resize_split:down,8
+        keybind = super+n=unbind
+        keybind = super+t=new_split:up
+        keybind = super+h=new_split:right
+
+        """
+
+    private func arrow(_ key: Int, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+        let character = String(UnicodeScalar(key)!)
+        return try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags.union([.numericPad, .function]), timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: owner.window.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: [NSLeftArrowFunctionKey: 123, NSRightArrowFunctionKey: 124, NSDownArrowFunctionKey: 125, NSUpArrowFunctionKey: 126][key]!))
+    }
+
+    // The suite's app is never active, so NSApp.sendEvent has no key window to
+    // route a key equivalent through. This is AppKit's own order: the window's
+    // view hierarchy, then the main menu, whose item is validated and sent
+    // along the responder chain from the first responder.
+    private func deliver(_ event: NSEvent) throws {
+        if owner.window.performKeyEquivalent(with: event) { return }
+        let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? []
+        let item = items.first { $0.keyEquivalent == event.charactersIgnoringModifiers && $0.keyEquivalentModifierMask == flags }
+        guard let item, let action = item.action else { return }
+        var responder = owner.window.firstResponder
+        while let current = responder {
+            if current.responds(to: action) {
+                guard (current as? NSMenuItemValidation)?.validateMenuItem(item) ?? true else { return }
+                _ = current.tryToPerform(action, with: item)
+                return
+            }
+            responder = current.nextResponder
+        }
+    }
+
+    private func click(_ view: NSView, at point: CGPoint? = nil) throws {
+        let spot = view.convert(point ?? CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: spot, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: owner.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            owner.window.sendEvent(event)
+        }
+    }
+
+    func testPaneShortcutsActOnThePaneUnderTheOverlay() async throws {
+        let pane = try await start(editor: "", history: 200, config: Self.shortcutConfig)
+        let id = pane.pane.description
+        let other = try await tmux(["split-window", "-d", "-h", "-P", "-F", "#{pane_id}", "-t", id, "exec /bin/cat"])
+        try await wait("two panes") { self.owner.testSession?.windows.values.first?.panes.count == 2 }
+        let overlay = try await open(pane)
+        let connection = try XCTUnwrap(owner.testConnection)
+        let items = NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? []
+        for item in items where item.title.hasPrefix("Select Pane ") {
+            let key = ["Left": NSLeftArrowFunctionKey, "Right": NSRightArrowFunctionKey, "Above": NSUpArrowFunctionKey, "Below": NSDownArrowFunctionKey][String(item.title.dropFirst(12))]!
+            item.keyEquivalent = String(UnicodeScalar(key)!)
+            item.keyEquivalentModifierMask = .command
+        }
+        XCTAssertTrue(owner.window.firstResponder === overlay)
+        let keys: [(Int, NSEvent.ModifierFlags, String)] = [
+            (NSLeftArrowFunctionKey, .command, "select-pane -L -t \(id)"), (NSRightArrowFunctionKey, .command, "select-pane -R -t \(id)"),
+            (NSUpArrowFunctionKey, .command, "select-pane -U -t \(id)"), (NSDownArrowFunctionKey, .command, "select-pane -D -t \(id)"),
+            (NSLeftArrowFunctionKey, [.command, .option], "resize-pane -L -t \(id)"), (NSRightArrowFunctionKey, [.command, .option], "resize-pane -R -t \(id)"),
+            (NSUpArrowFunctionKey, [.command, .option], "resize-pane -U -t \(id)"), (NSDownArrowFunctionKey, [.command, .option], "resize-pane -D -t \(id)"),
+        ]
+        for (key, flags, expected) in keys {
+            connection.visualCommands.removeAll()
+            try deliver(try arrow(key, flags))
+            try await wait(expected, within: 3) { connection.visualCommands.contains { $0.line.hasPrefix(expected) } }
+            if expected.hasPrefix("select-pane -L") || expected.hasPrefix("select-pane -R") {
+                try await wait("the other pane is active") { self.owner.testSession?.windows.values.first?.active?.description == other }
+                XCTAssertTrue(pane.scrollbackView === overlay)
+                _ = try await tmux(["select-pane", "-t", id])
+            }
+            try await wait("focus is on the overlay") { self.owner.window.firstResponder === overlay }
+        }
+    }
+
+    func testClicksMoveTheActivePaneAcrossTheOverlay() async throws {
+        let pane = try await start(editor: "", history: 200)
+        let id = pane.pane.description
+        let other = try await tmux(["split-window", "-d", "-h", "-P", "-F", "#{pane_id}", "-t", id, "exec /bin/cat"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let window = try XCTUnwrap(pane.superview as? WindowView)
+        try await wait("two panes") { window.panes.count == 2 }
+        let overlay = try await open(pane)
+        let otherPane = try XCTUnwrap(window.panes.first { $0.pane.description == other })
+        let card = try chrome(of: pane), otherCard = try chrome(of: otherPane)
+        owner.window.makeKeyAndOrderFront(nil)
+        func active() -> String? { window.active?.description }
+        XCTAssertEqual(active(), id)
+        try click(otherPane)
+        try await wait("tmux activates the other pane") { active() == other }
+        try await wait("the ring moves to the other pane") { otherCard.treatment == .edge && card.treatment == .plain }
+        XCTAssertTrue(owner.window.firstResponder === otherPane)
+        try click(overlay)
+        try await wait("tmux activates the overlay's pane") { active() == id }
+        try await wait("the ring returns to the overlay's pane") { card.treatment == .edge && otherCard.treatment == .plain }
+        XCTAssertTrue(owner.window.firstResponder === overlay)
+        _ = try await tmux(["select-pane", "-t", other])
+        try await wait("the ring follows tmux") { otherCard.treatment == .edge }
+        try click(overlay)
+        try await wait("a click on the overlay while another pane is active") { active() == id }
+        try await wait("the ring is on the overlay's pane") { card.treatment == .edge }
     }
 
     func testMenuItemKeysAndCommandWStayInTheOverlay() async throws {

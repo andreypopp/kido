@@ -15,7 +15,8 @@ public enum ScrollbackCapture {
     }
 
     public static func text(_ reply: Reply?) -> String? {
-        guard case .success(var lines)? = reply else { return nil }
+        guard case .success(let rows)? = reply else { return nil }
+        var lines = rows.map { String($0.reversed().drop { $0 == " " || $0 == "\t" }.reversed()) }
         while lines.last?.isEmpty == true { lines.removeLast() }
         return lines.isEmpty ? nil : lines.joined(separator: "\n") + "\n"
     }
