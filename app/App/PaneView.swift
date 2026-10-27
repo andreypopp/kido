@@ -13,6 +13,8 @@ private final class Overlay: PaneCapsule {
 }
 
 final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValidation {
+    override var mouseDownCanMoveWindow: Bool { false }
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool { acceptsKeyInput && canPerformMenuItem(item) }
 
     func canPerformMenuItem(_ item: NSMenuItem) -> Bool {
@@ -1698,7 +1700,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         guard copyMode == nil else { return }
         guard scrollDistance.map({ $0 == $0.rounded() }) != false else { return }
         let pos = convert(event.locationInWindow, from: nil)
-        let y = bounds.height - pos.y
+        let y = max(0, bounds.height - pos.y)
         ghostty_surface_mouse_pos(surface, pos.x, y, Self.mods(event.modifierFlags))
     }
 

@@ -705,6 +705,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertTrue(movesWindow(NSPoint(x: dockedTitle.midX, y: dockedTitle.midY)), "the docked top row moves the window")
         let toggle = sidebar.toggleButton.convert(sidebar.toggleButton.bounds, to: root)
         XCTAssertFalse(movesWindow(NSPoint(x: toggle.midX, y: toggle.midY)), "a button in the top row takes the click")
+        let docked = try XCTUnwrap(terminal)
+        let firstCard = try XCTUnwrap(docked.panes.min { $0.frame.minY < $1.frame.minY })
+        let firstRow = root.convert(NSPoint(x: firstCard.bounds.midX, y: firstCard.bounds.maxY - 6), from: firstCard)
+        let margin = root.convert(NSPoint(x: firstCard.bounds.midX, y: firstCard.bounds.maxY + 1), from: firstCard)
+        XCTAssertFalse(movesWindow(firstRow), "the first terminal row takes the click")
+        XCTAssertFalse(movesWindow(margin), "the margin above the first card takes the click")
         try key([.command, .shift])
         try await settle()
         try await shot("collapsed")
@@ -716,6 +722,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertTrue(movesWindow(NSPoint(x: collapsedTitle.maxX + 20, y: collapsedTitle.midY)), "the whole collapsed band moves the window")
         let terminal = try XCTUnwrap(terminal)
         let frame = terminal.frame
+        let strip = root.convert(terminal.convert(NSPoint(x: terminal.bounds.midX, y: 1), to: nil), from: nil)
+        XCTAssertTrue(root.hitTest(strip) is PaneView, "the top margin above the cards takes the click as a pane")
         let grids = terminal.panes.map { ghostty_surface_size($0.surface) }
         let clientSize = try await command(["list-clients", "-F", "#{client_width}x#{client_height}"])
         connection.visualCommands.removeAll()

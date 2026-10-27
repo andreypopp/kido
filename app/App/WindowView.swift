@@ -793,7 +793,14 @@ final class WindowView: NSView {
         if let placement, shown?.visible.root.panes.contains(where: { $0.layer != .tiled && floatFrame($0.id, $0.geometry, placement).contains(local) }) == true {
             return super.hitTest(point)
         }
-        if local.y < (placement?.top ?? 0) + spacing { return nil }
+        if local.y < (placement?.top ?? 0) + spacing {
+            guard let placement else { return nil }
+            let below = shown?.visible.root.panes.filter { $0.layer == .tiled }
+                .map { ($0.id, placement.tiled($0.geometry).chrome) }
+                .filter { $0.1.minX <= local.x && local.x < $0.1.maxX }
+                .min { $0.1.minY < $1.1.minY }
+            return panes.first { $0.pane == below?.0 }
+        }
         if let placement, shown?.visible.root.dividers.contains(where: { placement.line($0).contains(local) }) == true { return self }
         return super.hitTest(point)
     }

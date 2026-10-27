@@ -1048,8 +1048,10 @@ With no toolbar, a click inside the 32pt band goes to the content view
 under it. Thus the terminal can reach into the band and stay usable. A
 view in the band that does not take the mouse (`mouseDownCanMoveWindow` is
 true) drags the window natively, and a double-click on it does the system
-action (zoom or minimize). Below the band, a view must call
-`NSWindow.performDrag(with:)` from `mouseDown` and read
+action (zoom or minimize). `NSView` answers `!isOpaque` by default, so
+`PaneView` and `PaneChrome` answer false; else a click on the first rows
+of a terminal inside the band would move or zoom the window. Below the
+band, a view must call `NSWindow.performDrag(with:)` from `mouseDown` and read
 `AppleActionOnDoubleClick` itself. The probe did not measure the height of
 the resize zone at the top edge.
 
@@ -1071,10 +1073,12 @@ With the sidebar collapsed, the native title would be left-aligned on
 macOS 27, so the window title is a centered label of the same font in the
 terminal host's 32pt band, inset 80pt on both sides. There is no toggle in
 the band; Shift-Command-S (and the View menu) shows the sidebar. The title
-takes no mouse, so the band moves the window. The host's
-content starts 32pt - S below the top of the host (S is
-`kido-pane-spacing`), so the first row of cards starts at 32pt and the band
-overlaps only the top margin. With the sidebar docked, and in full screen,
+takes no mouse, so the band moves the window, except over the
+terminal's top margin. The host's content starts 32pt - S below the top of
+the host (S is `kido-pane-spacing`), so the first row of cards starts at
+32pt and the band overlaps only the top margin. A click in that margin goes
+to the tiled pane below it, as a click on its top row. The margin does not
+move the window or zoom it. With the sidebar docked, and in full screen,
 the terminal has no band: its cards start S below the top. Thus a collapse
 changes the terminal height by 32pt - S, and tmux resizes the panes as for
 any other height change. No per-window status mark exists. Status marks are
