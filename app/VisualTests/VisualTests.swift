@@ -778,9 +778,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertEqual(native.convert(native.bounds, to: root), nativeFrame)
         XCTAssertTrue(sidebar.list.containsFocus)
         XCTAssertEqual(terminal.frame, frame)
-        try await wait("floating layout settled") { nativeFrame.contains(titleFrame()) }
+        try await wait("floating layout settled") { nativeFrame.contains(sidebar.toggleButton.convert(sidebar.toggleButton.bounds, to: root)) }
         let floatingTitle = titleFrame()
-        XCTAssertNotEqual(floatingTitle, collapsedTitle, "the floating card carries the title in its own row")
+        XCTAssertFalse(sidebar.visualTitle.isHidden)
+        XCTAssertEqual(floatingTitle.midX, root.bounds.midX, accuracy: 0.5, "the floating title stays centered in the window")
+        XCTAssertEqual(floatingTitle, collapsedTitle, "the floating title stays where the collapsed title was")
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
         let floatingSize = try await command(["list-clients", "-F", "#{client_width}x#{client_height}"])

@@ -210,7 +210,7 @@ final class Sidebar: NSSplitViewController {
         newSessionButton.frame = NSRect(x: dock.bounds.maxX - 72, y: dock.bounds.maxY - center - 14, width: 32, height: 28)
         toggleButton.frame = NSRect(x: dock.bounds.maxX - 40, y: dock.bounds.maxY - center - 14, width: 32, height: 28)
         for button in [newSessionButton, toggleButton] { button.appearance = list.appearance }
-        if isCollapsed {
+        if isCollapsed || isFloating {
             if titleLabel.superview !== terminalHost { terminalHost.addSubview(titleLabel) }
             titleLabel.alignment = .center
             titleLabel.appearance = nil
