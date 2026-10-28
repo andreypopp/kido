@@ -43,10 +43,15 @@ Status: parked; a blanket no-mailbox-waits guarantee is unverified.
 
 ## Inherited Ghostty constructor cleanup leaks
 
-Failed surface construction can retain allocations through stale DerivedConfig
-copies and the renderer's background image (`app/third_party/ghostty/src/Surface.zig`
-and `src/renderer/generic.zig`). These inherited error-path leaks are outside the
-renderer-thread ownership fix. Status: parked by decision; not fixed or covered.
+Failed surface construction can retain the renderer's background image: the
+renderer keeps the image bytes, and its teardown does not release them when
+construction fails before renderer-thread cleanup
+(`app/third_party/ghostty/src/renderer/generic.zig`). Ghostty 1.4.0 frees the
+derived configs, the environment and the font-grid reference when renderer or
+termio initialization fails (`src/Surface.zig`); stale copies after a
+successful initialization are not examined. These inherited error-path leaks
+are outside the renderer-thread ownership fix. Status: parked by decision; not
+fixed or covered.
 
 # Unverified
 
