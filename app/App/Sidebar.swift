@@ -115,7 +115,8 @@ final class Sidebar: NSSplitViewController {
         dock.addSubview(titleLabel)
         dock.addSubview(newSessionButton)
         dock.addSubview(toggleButton)
-        for header in [titleLabel, newSessionButton, toggleButton] { header.autoresizingMask = [.minYMargin] }
+        for header in [newSessionButton, toggleButton] { header.autoresizingMask = [.minYMargin] }
+        titleLabel.autoresizingMask = [.minYMargin, .width]
         controller.view = slot
         list.leave = { [weak self] in
             guard let self else { return }
