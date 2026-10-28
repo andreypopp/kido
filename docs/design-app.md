@@ -967,7 +967,8 @@ If output was dropped while a grid was unconfirmed, incremental feed stays
 suspended until a current reset-and-replay commits; a provisional parse
 cannot clear a newer dirty epoch. Renderer
 callbacks publish asynchronously to main; runtime wakeups coalesce main ticks.
-External pacing is selected before renderer initialization, so app surfaces never
+External pacing is selected during renderer initialization, before any display
+link exists, so app surfaces never
 allocate a CVDisplayLink, including with vsync disabled. Renderer demand and its
 scheduled notification share one mutex; notifications enqueue strongly retained
 driver jobs on main without reentry. Main drains latest demand and publishes tick
