@@ -1765,6 +1765,18 @@ two owners, feed restart and `route` against the recording poster.
 
 ## Testing
 
+`app/Packages/PromptMarkdown/Package.resolved` pins only that package's graph,
+for `swift test`. The project's graph, with SnapshotTesting and its
+dependencies, has its own lock:
+`app/Kido.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
+It is the only tracked file in `app/Kido.xcodeproj`; `xcodegen` does not write
+it, and `make clean` keeps it. XcodeGen 2.46 adds each local package as a folder
+reference. Thus, without the project lock, `xcodebuild
+-resolvePackageDependencies` writes the project's whole graph into
+PromptMarkdown's lock. Xcode 27.1 rejects `-packageResolvedPath`. When a remote
+package version in `project.yml` changes, the next build updates the project
+lock. Commit the lock with that change.
+
 `make visual` runs hosted SnapshotTesting tests against a private tmux
 socket, never activating a window. Clipboard sheets use visible windows placed
 far off screen, as do native-button local-mismatch tests;
