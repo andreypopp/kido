@@ -9,8 +9,8 @@
 #include <stdint.h>
 #include <mach/mach.h>
 
-static _Atomic unsigned long allocations;
-unsigned long kido_cv_allocations(void) { return atomic_load(&allocations); }
+static _Atomic uint64_t display_binding;
+uint64_t kido_cv_display_binding(void) { return atomic_load(&display_binding); }
 
 #define INTERPOSE(replacement, original) \
   __attribute__((used)) static struct { const void *new; const void *old; } \
@@ -18,21 +18,13 @@ unsigned long kido_cv_allocations(void) { return atomic_load(&allocations); }
     (const void *)&replacement, (const void *)&original \
   }
 
-static CVReturn active(CVDisplayLinkRef *result) {
-  atomic_fetch_add(&allocations, 1);
-  return CVDisplayLinkCreateWithActiveCGDisplays(result);
-}
-static CVReturn display(CGDirectDisplayID id, CVDisplayLinkRef *result) {
-  atomic_fetch_add(&allocations, 1);
-  return CVDisplayLinkCreateWithCGDisplay(id, result);
-}
-static CVReturn displays(CGDirectDisplayID *ids, CFIndex count, CVDisplayLinkRef *result) {
-  atomic_fetch_add(&allocations, 1);
-  return CVDisplayLinkCreateWithCGDisplays(ids, count, result);
-}
-static CVReturn mask(CGOpenGLDisplayMask value, CVDisplayLinkRef *result) {
-  atomic_fetch_add(&allocations, 1);
-  return CVDisplayLinkCreateWithOpenGLDisplayMask(value, result);
+static CVReturn bind_display(CVDisplayLinkRef link, CGDirectDisplayID id) {
+  CVReturn result = CVDisplayLinkSetCurrentCGDisplay(link, id);
+  if (result == kCVReturnSuccess) {
+    uint64_t updates = (atomic_load(&display_binding) >> 32) + 1;
+    atomic_store(&display_binding, (updates << 32) | id);
+  }
+  return result;
 }
 static struct { void *pointer; size_t size; } records[8192];
 static atomic_flag allocation_lock = ATOMIC_FLAG_INIT;
@@ -146,7 +138,4 @@ static int create(pthread_t *thread, const pthread_attr_t *attrs,
   return pthread_create(thread, attrs, start, context);
 }
 INTERPOSE(create, pthread_create);
-INTERPOSE(active, CVDisplayLinkCreateWithActiveCGDisplays);
-INTERPOSE(display, CVDisplayLinkCreateWithCGDisplay);
-INTERPOSE(displays, CVDisplayLinkCreateWithCGDisplays);
-INTERPOSE(mask, CVDisplayLinkCreateWithOpenGLDisplayMask);
+INTERPOSE(bind_display, CVDisplayLinkSetCurrentCGDisplay);

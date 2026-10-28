@@ -113,7 +113,7 @@ schemes:
       targets: [VisualTests]
       environmentVariables:
         KIDO_APP_BACKGROUND: "1"
-        DYLD_INSERT_LIBRARIES: "$(SRCROOT)/build/bundle/visual/vsync-cv-count.dylib"
+        DYLD_INSERT_LIBRARIES: "$(SRCROOT)/build/bundle/visual/renderer-probes.dylib"
         KIDO_APP_SERVER: "$(KIDO_VISUAL_SERVER)"
         HOME: "$(SRCROOT)/build/bundle/visual/home"
         XDG_STATE_HOME: "$(SRCROOT)/build/bundle/visual/state"
