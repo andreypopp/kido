@@ -290,6 +290,9 @@ A pane is drawn by a Ghostty surface in manual-IO mode
 `send-keys -H`, and the emulator's own query replies are suppressed
 because tmux answers them. tmux prefix bindings therefore do not fire
 from the app; its menus and Ghostty's split and tab actions stand in.
+In linefeed mode (LNM), Ghostty's termio write path turns each typed `\r`
+into `\r\n` once, with the same routine for the manual and pty backends;
+the app and tmux do not convert again.
 
 Ghostty's configuration is `kido-app.conf` beside `kido.conf`
 (`$XDG_CONFIG_HOME/kido/`, else `~/.config/kido/`), in Ghostty's syntax,
@@ -519,11 +522,8 @@ fractional target, including nonzero ended packets. At most one apply is
 pending on the pane's serial scroll worker; it starts immediately and reads
 the latest output-adjusted target when it runs. Its main callback coalesces
 presentation, then applies a changed target.
-Ghostty schedules rendering; a per-pane NSView CADisplayLink is created on the
-first pacing demand while the view can receive ticks. When demand ends or the
-view becomes unavailable, the link is paused, not invalidated, and the next
-demand resumes it. Disposal invalidates it. Each main-thread
-tick only notifies the renderer's draw async; token presentation remains immediate.
+Ghostty paces rendering with its own CVDisplayLink
+(see [Threads](#threads)); token presentation remains immediate.
 The app adds no deferred packet, easing or momentum filter.
 Ghostty's mouse-scroll-multiplier precision setting remains the user's speed
 override; precision 2 restores the previous speed. Discrete wheel notches
@@ -579,7 +579,9 @@ refusal. Later navigation replaces that goal, including cancellation when
 a loaded match is selected. Query changes, output and resize cancel it;
 a post-restore scan does not automatically reload a canceled old goal. Ghostty
 search supplies the highlights and loaded-match selection; it is restarted
-after prepending history. Each restart ends the previous Ghostty lifetime.
+after prepending history. Ghostty rescans its viewport matches only when the
+render state's rows change (row moves, overscan, prepended history, output,
+selection); a pixel-scroll step within the same rows does not rescan. Each restart ends the previous Ghostty lifetime.
 Ghostty tags totals and selected indices with that lifetime's immutable
 generation and rejects queued events after it ends. The surface's delivery
 epoch advances on each new search and both public stop operations, including
@@ -785,7 +787,10 @@ asked about in a sheet showing its text, and completed exactly once: pasted,
 or refused with an empty completion on Cancel or when its surface is freed.
 
 **Uploads.** File drops prefer existing file URLs. Local panes paste their
-original paths; remote panes copy the files. If no file URLs exist, Kido
+original paths; remote panes copy the files. Dropped paths paste through
+Ghostty's `paste_from_clipboard` binding like Cmd-V, not
+`ghostty_surface_paste_text`, which completes a standard paste directly and
+so skips the mode 5522 paste-event decision. If no file URLs exist, Kido
 receives file promises on a dedicated operation queue into a private per-drop
 directory in its process's private subdirectory of `$TMPDIR/kido-promises`
 (all 0700). The process holds an exclusive flock on its subdirectory's open
@@ -967,21 +972,29 @@ If output was dropped while a grid was unconfirmed, incremental feed stays
 suspended until a current reset-and-replay commits; a provisional parse
 cannot clear a newer dirty epoch. Renderer
 callbacks publish asynchronously to main; runtime wakeups coalesce main ticks.
-External pacing is selected during renderer initialization, before any display
-link exists, so app surfaces never
-allocate a CVDisplayLink, including with vsync disabled. Renderer demand and its
-scheduled notification share one mutex; notifications enqueue strongly retained
-driver jobs on main without reentry. Main drains latest demand and publishes tick
-availability without a mailbox push. Unavailable views render event-driven, without
-a fallback timer. The fork's renderer starts the cursor blink timer only while
+Ghostty paces rendering with one CVDisplayLink for each surface, as
+upstream does. The pane gives its surface the window's screen number
+(`ghostty_surface_set_display_id`) each time it presents, so the link follows
+the window to another display. The render thread creates a surface's CVDisplayLink the first time it
+syncs the link, only if `window-vsync` is enabled. The renderer requests each start, stop and display
+change of the link asynchronously, and the link changes only on main.
+CoreVideo also stops and starts the link on main when a display reconfigures,
+for example at wake. Thus, the two never run concurrently: a concurrent
+`CVDisplayLinkStart` during `CVDisplayLinkStop` can hang the stop forever
+(upstream Ghostty ffaaf5d7a). The link runs while the surface is visible
+and the renderer has rebuilt cells or images or an animation (Kitty or
+custom shader) is pending. Thus, a sparse Kitty animation draws at the
+display's rate, not at its own cadence. The link stops when a frame
+has nothing to redraw. The fork's renderer starts the cursor blink timer only while
 the surface is focused and the terminal's cursor-blinking mode is set, and the
 timer stops at its next tick when either ends. Thus, the default non-blinking
 cursor costs no idle frames. Viewport moves and output do
 not reset an active scrollback compression timer. Its callback samples the
 PageList activity token every 250 ms, so compression normally starts
-250–500 ms after the last activity, once it gets the terminal lock. Disposal terminally closes pacing and invalidates its link before
-parser-quiescent retirement; the driver context survives surface free and renderer
-join. Queued jobs retain only the closed driver, never a pane or live surface.
+250–500 ms after the last activity, once it gets the terminal lock. Surface free joins the renderer and then
+releases its display link on main.
+If `Surface.init` fails after it started the renderer or IO threads, it
+stops and joins them and releases the font grid reference before it returns.
 Ghostty requests IO/process termination, marks search stopping and joins it,
 then joins IO while the renderer still drains. Only after both producers have
 stopped does it stop and join the renderer and release shared resources.
@@ -1876,7 +1889,7 @@ result bundle:
   with no new `GhosttyRuntime.visualWakeups`, not after a fixed time.
   It does not wait for tmux replies or child processes, so it is not a quiet
   window: an absence check uses a fixed, bounded wait.
-  `VsyncTests` keeps its own fixed 200 ms `drainAnimation`, because its
+  `RendererTests` keeps its own fixed 200 ms `drainAnimation`, because its
   idle-CPU windows depend on that settle.
 - A fixed wait remains only where it is the check ("never activates", quiet
   windows) or where no event exists.

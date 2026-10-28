@@ -2,6 +2,10 @@ import AppKit
 import TmuxControl
 import SidebarFeed
 
+extension NSScreen {
+    var displayID: UInt32? { (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value }
+}
+
 class OwnerWindow: NSWindow {
     var allowsPaneInput: Bool { isKeyWindow || (NSApp.delegate as? AppDelegate)?.palettePanel == nil }
     override func sendEvent(_ event: NSEvent) {
