@@ -6,35 +6,18 @@ import TmuxControl
 import XCTest
 @testable import Kido
 
-private final class VsyncGate: @unchecked Sendable {
-    let context: UnsafeMutableRawPointer
-    let armed = DispatchSemaphore(value: 0)
-    let entered = DispatchSemaphore(value: 0)
-    let release = DispatchSemaphore(value: 0)
-    private(set) var timedOut = false
-    init(_ context: UnsafeMutableRawPointer) { self.context = context }
-    func invoke() {
-        if armed.wait(timeout: .now()) == .success {
-            entered.signal()
-            timedOut = release.wait(timeout: .now() + 5) == .timedOut
-        }
-        VsyncDriver.request(context)
-    }
-}
-
-@MainActor final class VsyncTests: VisualTestCase {
+@MainActor final class RendererTests: VisualTestCase {
     private var runtime: GhosttyRuntime!
     private var config: URL!
     private var board: NSPasteboard!
 
     override func setUp() async throws {
         try await super.setUp()
-        config = URL(fileURLWithPath: "/tmp/kido-vsync-\(UUID().uuidString).conf")
+        config = URL(fileURLWithPath: "/tmp/kido-renderer-\(UUID().uuidString).conf")
         try "cursor-style-blink = false\ncustom-shader-animation = false\nwindow-vsync = true\n".write(to: config, atomically: true, encoding: .utf8)
-        board = NSPasteboard(name: .init("kido-vsync-\(UUID().uuidString)"))
+        board = NSPasteboard(name: .init("kido-renderer-\(UUID().uuidString)"))
         runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
         PaneView.renderOffscreen = true
-        XCTAssertEqual(try cvAllocations(), 0)
     }
 
     override func tearDown() async throws {
@@ -42,16 +25,24 @@ private final class VsyncGate: @unchecked Sendable {
         board?.releaseGlobally()
         PaneView.renderOffscreen = false
         try? FileManager.default.removeItem(at: config)
-        XCTAssertEqual(try cvAllocations(), 0)
+    }
+
+    private func probe<F>(_ name: String, _ type: F.Type) throws -> F {
+        unsafeBitCast(try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), name)), to: type)
+    }
+
+    private func makePane(windowed: Bool = false) throws -> (pane: PaneView, window: NSWindow?) {
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
+        let window = windowed ? NSWindow(contentRect: pane.bounds, styleMask: .borderless, backing: .buffered, defer: false) : nil
+        window?.isReleasedWhenClosed = false
+        window?.contentView = pane
+        pane.resize(cols: 80, rows: 24)
+        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+        return (pane, window)
     }
 
     private func drainAnimation(_ runtime: GhosttyRuntime) async throws {
         for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
-    }
-
-    private func cvAllocations() throws -> UInt {
-        let symbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "kido_cv_allocations"))
-        return unsafeBitCast(symbol, to: (@convention(c) () -> UInt).self)()
     }
 
     private func assertIdleCPU(_ ids: Set<UInt64>) async throws {
@@ -101,7 +92,7 @@ private final class VsyncGate: @unchecked Sendable {
 
     private func reload(_ text: String) throws {
         let changed = try XCTUnwrap(ghostty_config_clone(runtime.config))
-        ghostty_config_load_string(changed, text, UInt(text.utf8.count), "/vsync-test")
+        ghostty_config_load_string(changed, text, UInt(text.utf8.count), "/renderer-test")
         ghostty_config_finalize(changed)
         ghostty_app_update_config(runtime.app, changed)
         ghostty_config_free(changed)
@@ -114,18 +105,12 @@ private final class VsyncGate: @unchecked Sendable {
         }
     }
 
-    func testDemandBeforeAttachAndCloseBeforeQueuedApply() async throws {
+    func testFailedSurfaceInitJoinsRendererAndReleasesAllocations() async throws {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-        var driver: VsyncDriver? = VsyncDriver(view: view)
-        weak let weakDriver = driver
-        let context = Unmanaged.passRetained(driver!)
         var options = ghostty_surface_config_new()
         options.platform_tag = GHOSTTY_PLATFORM_MACOS
         options.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(view).toOpaque()))
         options.io_mode = GHOSTTY_SURFACE_IO_MANUAL_MIRROR
-        let gate = VsyncGate(context.toOpaque())
-        options.vsync_request_cb = { Unmanaged<VsyncGate>.fromOpaque($0!).takeUnretainedValue().invoke() }
-        options.vsync_userdata = Unmanaged.passUnretained(gate).toOpaque()
         var callbacks = ghostty_runtime_config_s()
         callbacks.wakeup_cb = { _ in }
         callbacks.action_cb = { _, _, _ in false }
@@ -134,27 +119,19 @@ private final class VsyncGate: @unchecked Sendable {
         callbacks.write_clipboard_cb = { _, _, _, _, _ in GHOSTTY_CLIPBOARD_WRITE_OK }
         let config = try XCTUnwrap(ghostty_config_clone(runtime.config))
         let initial = "cursor-style-blink = true\nfont-size = 6\n"
-        ghostty_config_load_string(config, initial, UInt(initial.utf8.count), "/vsync-test")
+        ghostty_config_load_string(config, initial, UInt(initial.utf8.count), "/renderer-test")
         ghostty_config_finalize(config)
         defer { ghostty_config_free(config) }
         let app = try XCTUnwrap(ghostty_app_new(&callbacks, config))
         defer { ghostty_app_free(app) }
-        var failed: VsyncDriver? = VsyncDriver(view: view)
-        weak let weakFailed = failed
-        let failedContext = Unmanaged.passRetained(failed!)
         var invalid = options
         invalid.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(nsview: nil))
-        invalid.vsync_request_cb = { VsyncDriver.request($0) }
-        invalid.vsync_userdata = failedContext.toOpaque()
         XCTAssertNil(ghostty_surface_new(app, &invalid))
-        let faultSymbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "kido_io_spawn_fault"))
-        let fault = unsafeBitCast(faultSymbol, to: (@convention(c) (Bool) -> UInt).self)
+        let fault = try probe("kido_io_spawn_fault", (@convention(c) (Bool) -> UInt).self)
         invalid.platform = options.platform
         invalid.scale_factor = 0.25
-        let allocationSymbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "kido_renderer_allocation_bytes"))
-        let allocationBytes = unsafeBitCast(allocationSymbol, to: (@convention(c) (Bool) -> UInt).self)
-        let resetSymbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "kido_renderer_allocation_reset"))
-        let resetAllocations = unsafeBitCast(resetSymbol, to: (@convention(c) () -> Void).self)
+        let allocationBytes = try probe("kido_renderer_allocation_bytes", (@convention(c) (Bool) -> UInt).self)
+        let resetAllocations = try probe("kido_renderer_allocation_reset", (@convention(c) () -> Void).self)
         let threadsBeforeFailure = try rendererCPU().count
         let failures = fault(true)
         let rejected = ghostty_surface_new(app, &invalid)
@@ -162,63 +139,27 @@ private final class VsyncGate: @unchecked Sendable {
         XCTAssertNil(rejected)
         XCTAssertEqual(try rendererCPU().count, threadsBeforeFailure, "failed constructor joins renderer before returning")
         if let rejected { ghostty_surface_free(rejected) }
-        failed!.close()
-        failedContext.release()
-        failed = nil
-        await mainQueueFence()
-        XCTAssertNil(weakFailed)
         XCTAssertGreaterThan(allocationBytes(true), 65536, "renderer performed allocating initial work before IO spawn failed")
         try await wait("renderer allocations released after failed constructor") { allocationBytes(false) <= 65536 }
         XCTAssertLessThanOrEqual(allocationBytes(false), 65536, "largest initial renderer allocation freed (64KiB residual allowance)")
         print("renderer fault: largest allocation=\(allocationBytes(true)), residual=\(allocationBytes(false)) bytes")
         resetAllocations()
-        let surface = try XCTUnwrap(ghostty_surface_new(app, &options))
-        ghostty_surface_set_focus(surface, false)
-        let output = "pending before attach\r\n"
-        ghostty_surface_process_output(surface, output, UInt(output.utf8.count))
-        VsyncDriver.request(context.toOpaque())
-        await mainQueueFence()
-        try await wait("pre-attach renderer demand") { ghostty_surface_take_vsync_demand(surface) }
-        XCTAssertEqual(driver?.jobs, 0, "early job must not consume before attach")
-        XCTAssertTrue(ghostty_surface_take_vsync_demand(surface), "early job retains actual demand")
-        driver!.attach(surface)
-        XCTAssertGreaterThan(driver!.jobs, 0, "attach unconditionally replays demand")
-        XCTAssertTrue(ghostty_surface_take_vsync_demand(surface), "attach preserves demanded work while unavailable")
-        ghostty_surface_vsync_tick(surface)
-        try await wait("replayed tick settles renderer demand") { !ghostty_surface_take_vsync_demand(surface) }
-        XCTAssertFalse(ghostty_surface_take_vsync_demand(surface), "replayed tick reaches renderer and settles retained demand")
-        XCTAssertFalse(driver!.hasLink, "unordered NSViews are not tick-capable")
-        gate.armed.signal()
-        ghostty_surface_set_focus(surface, true)
-        XCTAssertEqual(gate.entered.wait(timeout: .now() + 5), .success, "real renderer callback entered")
-        VsyncDriver.request(context.toOpaque())
-        driver!.close()
-        driver!.close()
-        let jobs = driver!.jobs
-        ghostty_surface_set_vsync_state(surface, GHOSTTY_VSYNC_AVAILABLE)
-        XCTAssertFalse(ghostty_surface_take_vsync_demand(surface), "closed cannot reopen")
-        gate.release.signal()
-        let joinStart = Date()
-        ghostty_surface_free(surface)
-        XCTAssertLessThan(Date().timeIntervalSince(joinStart), 5)
-        XCTAssertFalse(gate.timedOut)
-        context.release()
-        driver = nil
-        await mainQueueFence()
-        XCTAssertNil(weakDriver, "queued job cannot resurrect or retain driver after drain")
-        XCTAssertGreaterThan(jobs, 0)
     }
 
-    func testUnavailableOutputHiddenDiscardRecovery() async throws {
-        let threadSymbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "kido_renderer_thread"))
-        let rendererThread = unsafeBitCast(threadSymbol, to: (@convention(c) (Bool) -> UInt64).self)
+    func testWindowDisplayIDReachesNativeLink() async throws {
+        let binding = try probe("kido_cv_display_binding", (@convention(c) () -> UInt64).self)
+        let before = binding() >> 32
+        let (pane, window) = try makePane(windowed: true)
+        defer { pane.dispose(); window?.contentView = nil; window?.close() }
+        let id = try XCTUnwrap(window?.screen?.displayID)
+        try await wait("the window display reaches CoreVideo") { binding() >> 32 > before && UInt32(truncatingIfNeeded: binding()) == id }
+    }
+
+    func testOutputAndHiddenDiscardRecovery() async throws {
+        let rendererThread = try probe("kido_renderer_thread", (@convention(c) (Bool) -> UInt64).self)
         _ = rendererThread(true)
-        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
-        let window = NSWindow(contentRect: pane.bounds, styleMask: .borderless, backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = pane
-        pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+        let (pane, window) = try makePane(windowed: true)
+        defer { pane.dispose(); window?.contentView = nil; window?.close() }
         try await drainAnimation(runtime)
         var frames = 0
         let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { frames += 1 }
@@ -228,7 +169,7 @@ private final class VsyncGate: @unchecked Sendable {
         XCTAssertEqual(activeCPU.count, 1, "sampling this pane's renderer thread")
         try await flow([pane])
         try await drainAnimation(runtime)
-        XCTAssertGreaterThan(frames, 0, "ordinary unavailable output installs IOSurfaces without token requests")
+        XCTAssertGreaterThan(frames, 0, "ordinary output installs IOSurfaces without token requests")
         XCTAssertGreaterThan(try rendererCPU(only: [renderer]).cpu - activeCPU.cpu, 0.003, "active renderer CPU exceeds idle tolerance")
         for enabled in [false, true] {
             try reload("window-vsync = \(enabled)\n")
@@ -236,8 +177,6 @@ private final class VsyncGate: @unchecked Sendable {
             try await flow([pane])
             try await drainAnimation(runtime)
             XCTAssertGreaterThan(frames, before)
-            if !enabled { XCTAssertFalse(ghostty_surface_take_vsync_demand(pane.surface)) }
-            XCTAssertEqual(try cvAllocations(), 0)
         }
         pane.isHidden = true
         let discarded = expectation(description: "hidden final frame discarded")
@@ -248,30 +187,16 @@ private final class VsyncGate: @unchecked Sendable {
         pane.visualFrame { XCTAssertEqual($0, GHOSTTY_RENDER_PRESENTATION_PRESENTED); recovered.fulfill() }
         await fulfillment(of: [recovered], timeout: 5)
         observation.invalidate()
-        XCTAssertEqual(try cvAllocations(), 0)
-        pane.dispose()
-        pane.dispose()
-        window.contentView = nil
-        window.close()
     }
 
-    func testAnimatedShaderManualHostTicksAndFallback() async throws {
+    func testAnimatedShaderKeepsKittyDeadlines() async throws {
         let shader = config.appendingPathExtension("glsl")
         try "void mainImage(out vec4 color, in vec2 position) { color = vec4(texture(iChannel0, position / iResolution.xy).rgb * 0.9 + vec3(0.05 + 0.05 * sin(iTime)), 1.0); }".write(to: shader, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: shader) }
         try reload("custom-shader = \(shader.path)\ncustom-shader-animation = always\n")
-        let threadSymbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "kido_renderer_thread"))
-        let rendererThread = unsafeBitCast(threadSymbol, to: (@convention(c) (Bool) -> UInt64).self)
-        _ = rendererThread(true)
-        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
+        let (pane, _) = try makePane()
         defer { pane.dispose() }
-        ghostty_surface_set_vsync_state(pane.surface, GHOSTTY_VSYNC_AVAILABLE)
-        pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         try await drainAnimation(runtime)
-        let renderer = rendererThread(false)
-        XCTAssertNotEqual(renderer, 0)
-        XCTAssertEqual(try rendererCPU(only: [renderer]).count, 1)
         let packets = ["a=T,i=1,f=24,s=1,v=1,c=8,r=4,q=2;/wAA", "a=f,i=1,f=24,s=1,v=1,z=400,q=2;AAD/", "a=a,i=1,r=1,z=400,s=3,v=1"]
         XCTAssertTrue(pane.feed(Data(("\u{1b}[?25l" + packets.map { "\u{1b}_G\($0)\u{1b}\\" }.joined()).utf8)))
         try await drainAnimation(runtime)
@@ -300,56 +225,16 @@ private final class VsyncGate: @unchecked Sendable {
             }
         }
         defer { observation.invalidate() }
-        ghostty_surface_vsync_tick(pane.surface)
-        try await wait("manual host shader draws") { frames > 0 }
-        let initial = frames
-        let ticks = 12
-        for _ in 0..<ticks {
-            ghostty_surface_vsync_tick(pane.surface)
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        await mainQueueFence()
-        XCTAssertEqual(frames - initial, ticks, "animated shader installs follow manual ticks, not a second draw timer")
-        XCTAssertGreaterThanOrEqual(changes.count, 3, "Kitty changes while available shader draws only on host ticks")
-        // changes[0] is the first draw, not a change; its interval depends on the drain before the first tick.
+        try await wait("animated shader retains Kitty changes") { changes.count >= 4 }
+        XCTAssertGreaterThan(frames, 12, "shader continues drawing between sparse Kitty updates")
         for interval in zip(changes.dropFirst(2), changes.dropFirst()).map({ $0.0.time - $0.1.time }) {
             XCTAssertEqual(interval, 0.4, accuracy: 0.18)
         }
-        XCTAssertTrue(pane.feed(Data("\u{1b}_Ga=a,i=1,s=1\u{1b}\\".utf8)))
-        try await drainAnimation(runtime)
-        let gapFrames = frames
-        let gapCPU = try rendererCPU(only: [renderer]).cpu
-        try await Task.sleep(for: .seconds(3))
-        XCTAssertEqual(frames, gapFrames, "available without host ticks does not draw")
-        XCTAssertLessThanOrEqual(try rendererCPU(only: [renderer]).cpu - gapCPU, 0.00005, "no redundant shader timer (50us renderer CPU tolerance over 3s)")
-        ghostty_surface_set_vsync_state(pane.surface, GHOSTTY_VSYNC_UNAVAILABLE)
-        let fallback = frames
-        try await wait("visible unavailable shader fallback frames") { frames - fallback > 3 }
-        XCTAssertGreaterThan(frames - fallback, 3, "visible unavailable surface retains timer animation fallback")
-        ghostty_surface_set_vsync_state(pane.surface, GHOSTTY_VSYNC_AVAILABLE)
-        XCTAssertTrue(ghostty_surface_take_vsync_demand(pane.surface))
-        try await drainAnimation(runtime)
-        let regained = frames
-        let regainedCPU = try rendererCPU(only: [renderer]).cpu
-        try await Task.sleep(for: .seconds(3))
-        XCTAssertEqual(frames, regained, "availability regain removes fallback draws between host ticks")
-        XCTAssertLessThanOrEqual(try rendererCPU(only: [renderer]).cpu - regainedCPU, 0.00005)
-        pane.isHidden = true
-        ghostty_surface_set_occlusion(pane.surface, false)
-        XCTAssertFalse(pane.visualVsync!.hasLink)
-        ghostty_surface_set_vsync_state(pane.surface, GHOSTTY_VSYNC_UNAVAILABLE)
-        _ = ghostty_surface_set_renderer_realized(pane.surface, false)
-        try await drainAnimation(runtime)
-        let hidden = frames
-        try await Task.sleep(for: .seconds(3))
-        XCTAssertEqual(frames, hidden, "hidden unavailable shader has no frames")
     }
 
     func testIdleFocusedPaneWithoutCursorBlinkDoesNotBlink() async throws {
-        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
+        let (pane, _) = try makePane()
         defer { pane.dispose() }
-        pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         ghostty_surface_set_focus(pane.surface, true)
         XCTAssertTrue(pane.feed(Data("\u{1b}[?25hhonk\r\n".utf8)))
         try await drainAnimation(runtime)
@@ -416,10 +301,8 @@ private final class VsyncGate: @unchecked Sendable {
     }
 
     func testScrollbarActionSkipsRefreshWhileAppOwnsTarget() async throws {
-        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
+        let (pane, _) = try makePane()
         defer { pane.dispose() }
-        pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         let output = (0..<300).map { "line \($0)\r\n" }.joined()
         XCTAssertTrue(pane.feed(Data(output.utf8)))
         try await drain(runtime)
@@ -450,34 +333,9 @@ private final class VsyncGate: @unchecked Sendable {
         await mainQueueFence()
     }
 
-    func testSparseKittyUpdatesWithoutHostTicks() async throws {
-        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
-        defer { pane.dispose() }
-        pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
-        try await drainAnimation(runtime)
-        var times: [Double] = []
-        let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { times.append(CACurrentMediaTime()) }
-        defer { observation.invalidate() }
-        let packets = ["a=T,i=1,f=24,s=1,v=1,q=2;/wAA", "a=f,i=1,f=24,s=1,v=1,z=400,q=2;AAD/", "a=a,i=1,r=1,z=400,s=3,v=1"]
-        XCTAssertTrue(pane.feed(Data(("\u{1b}[?25l" + packets.map { "\u{1b}_G\($0)\u{1b}\\" }.joined()).utf8)))
-        try await drainAnimation(runtime)
-        times.removeAll()
-        try await Task.sleep(for: .seconds(2))
-        XCTAssertGreaterThanOrEqual(times.count, 4, "sparse Kitty updates continue without output or host ticks")
-        XCTAssertLessThanOrEqual(times.count, 6, "Kitty uses sparse update deadlines, not a continuous draw timer")
-        for interval in zip(times.dropFirst(), times).map({ $0.0 - $0.1 }) {
-            XCTAssertEqual(interval, 0.4, accuracy: 0.12)
-        }
-        XCTAssertEqual(pane.visualVsync?.ticks, 0)
-        XCTAssertFalse(pane.visualVsync!.hasLink)
-    }
-
-    func testThirtyTwoOffscreenSurfacesAndChurnNeverAllocateCV() async throws {
-        let symbol = try XCTUnwrap(dlsym(UnsafeMutableRawPointer(bitPattern: -2), "kido_renderer_thread"))
-        let rendererThread = unsafeBitCast(symbol, to: (@convention(c) (Bool) -> UInt64).self)
+    func testThirtyTwoOffscreenSurfacesStayIdleAfterChurn() async throws {
+        let rendererThread = try probe("kido_renderer_thread", (@convention(c) (Bool) -> UInt64).self)
         var fixtures: [(pane: PaneView, renderer: UInt64)] = []
-        var weakDrivers: [() -> VsyncDriver?] = []
         var frames = 0
         var observations: [NSKeyValueObservation] = []
         for index in 0..<40 {
@@ -487,8 +345,6 @@ private final class VsyncGate: @unchecked Sendable {
             pane.resize(cols: 20, rows: 5)
             XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
             XCTAssertTrue(pane.feed(Data("\u{1b}[?25lchurn \(index)\r\n".utf8)))
-            let driver = try XCTUnwrap(pane.visualVsync)
-            weakDrivers.append({ [weak driver] in driver })
             fixtures.append((pane, rendererThread(false)))
             if fixtures.count > 32 { fixtures.removeFirst().pane.dispose() }
         }
@@ -503,24 +359,16 @@ private final class VsyncGate: @unchecked Sendable {
         try await flow(panes)
         try await drainAnimation(runtime)
         XCTAssertGreaterThan(frames, activeFrames)
-        XCTAssertGreaterThan(try rendererCPU(only: ids).cpu - activeCPU.cpu, 0.003)
+        XCTAssertGreaterThan(try rendererCPU(only: ids).cpu - activeCPU.cpu, 0.003, "active renderer CPU exceeds idle tolerance")
         // Ghostty's compression delay is 250ms.
         try await Task.sleep(for: .milliseconds(500))
-        XCTAssertTrue(panes.allSatisfy { $0.visualVsync?.hasLink == false })
-        let ticks = panes.map { $0.visualVsync!.ticks }
-        let creates = panes.map { $0.visualVsync!.creates }
         let idleFrames = frames
         try await assertIdleCPU(ids)
         XCTAssertEqual(frames, idleFrames)
-        XCTAssertEqual(panes.map { $0.visualVsync!.ticks }, ticks)
-        XCTAssertEqual(panes.map { $0.visualVsync!.creates }, creates)
-        XCTAssertTrue(panes.allSatisfy { $0.visualVsync?.hasLink == false })
         observations.forEach { $0.invalidate() }
         for pane in panes { pane.dispose() }
         panes.removeAll()
         fixtures.removeAll()
         await mainQueueFence()
-        XCTAssertTrue(weakDrivers.allSatisfy { $0() == nil })
-        XCTAssertEqual(try cvAllocations(), 0)
     }
 }

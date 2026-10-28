@@ -128,49 +128,18 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         try await wait("private measurement window is unoccluded") { self.window.occlusionState.contains(.visible) }
+        try Data().write(to: URL(fileURLWithPath: "/tmp/kido-vsync-visible-\(getpid())"))
         let pane = try XCTUnwrap(terminal?.panes.first)
-        let driver = try XCTUnwrap(pane.visualVsync)
-        ghostty_surface_set_focus(pane.surface, true)
-        var report = "host pid=\(getpid()), display=\(window.screen?.localizedName ?? "none"), maximum=\(window.screen?.maximumFramesPerSecond ?? 0)Hz\n"
-        func stats(_ name: String, _ values: [Double], period: Double) -> String {
-            let sorted = values.sorted()
-            guard !sorted.isEmpty else { XCTFail("\(name): no measurement samples"); return "\(name): NO SAMPLES\n" }
-            let quantiles = [0.5, 0.95, 0.99].map { sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * $0))] * 1000 }
-            var missed: [Int: Int] = [:]
-            for value in values { let multiple = Int((value / period).rounded()); if multiple > 1 { missed[multiple, default: 0] += 1 } }
-            return "\(name): n=\(values.count) median/p95/p99_ms=\(quantiles), missed multiples=\(missed)\n"
-        }
-        for bursts in [false, true] {
-            var timestamps: [Double] = []
-            var periods: [Double] = []
-            var installations: [Double] = []
-            let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { installations.append(CACurrentMediaTime()) }
-            driver.visualTick = { timestamp, target in
-                timestamps.append(timestamp)
-                periods.append(target - timestamp)
-                if timestamps.count % 10 == 0, let event = pane.wheelEvent(y: timestamps.count % 20 == 0 ? -1 : 1) { pane.scrollWheel(with: event) }
-                if bursts && timestamps.count % 30 == 0 { Thread.sleep(forTimeInterval: [0.002, 0.004, 0.008, 0.016][(timestamps.count / 30) % 4]) }
-            }
-            try await command(["respawn-pane", "-k", "-t", "%0", "python3 -u -c 'import time; end=time.monotonic()+6; print(\"\\033[?25h\"); i=0\nwhile time.monotonic()<end: print(i); i+=1; time.sleep(0.004)\nprint(\"\\033[?25l\"); time.sleep(30)'"])
-            try await Task.sleep(for: .seconds(6.5))
-            driver.visualTick = nil
-            observation.invalidate()
-            XCTAssertGreaterThan(timestamps.count, 30)
-            let period = periods.sorted().dropFirst(periods.count / 2).first ?? 0
-            report += "bursts=\(bursts), actual link period_ms=\(period * 1000), rate=\(period > 0 ? 1 / period : 0)Hz, creates=\(driver.creates), jobs=\(driver.jobs), visible=\(window.isVisible), occlusion=\(window.occlusionState.contains(.visible)), hidden=\(pane.isHiddenOrHasHiddenAncestor)\n"
-            XCTAssertEqual(period, 1 / 120, accuracy: 0.0007, "window's actual link period must confirm 120Hz")
-            report += stats("link intervals", zip(timestamps.dropFirst(), timestamps).map { $0.0 - $0.1 }, period: max(period, 0.001))
-            report += stats("IOSurface contents intervals (NOT physical presentation)", zip(installations.dropFirst(), installations).map { $0.0 - $0.1 }, period: max(period, 0.001))
-        }
-        try await Task.sleep(for: .seconds(1))
-        XCTAssertTrue(driver.hasLink, "an idle link pauses instead of being recreated")
-        let ticks = driver.ticks
-        let creates = driver.creates
-        try await Task.sleep(for: .seconds(3))
-        XCTAssertTrue(driver.hasLink)
-        XCTAssertEqual(driver.ticks, ticks)
-        XCTAssertEqual(driver.creates, creates, "the idle link is not recreated")
-        report += "active→idle: total ticks=\(ticks), settled link=\(driver.hasLink), creates=\(driver.creates), ticks delta=\(driver.ticks - ticks) over 3s\n"
+        var installations: [Double] = []
+        let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { installations.append(CACurrentMediaTime()) }
+        defer { observation.invalidate(); window.orderOut(nil) }
+        let display = window.screen?.displayID ?? 0
+        try await command(["respawn-pane", "-k", "-t", "%0", "python3 -u -c 'import time; end=time.monotonic()+10; print(\"\\033[?25l\"); i=0\nwhile time.monotonic()<end: print(i); i+=1; time.sleep(0.004)\ntime.sleep(30)'"])
+        try await Task.sleep(for: .seconds(10))
+        let sorted = zip(installations.dropFirst(), installations).map { ($0.0 - $0.1) * 1000 }.sorted()
+        XCTAssertGreaterThan(sorted.count, 30)
+        let quantiles = [0.5, 0.95, 0.99].map { sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * $0))] }
+        let report = "host pid=\(getpid()), display_id=\(display), display=\(window.screen?.localizedName ?? "none"), maximum=\(window.screen?.maximumFramesPerSecond ?? 0)Hz, key=\(window.isKeyWindow), first_responder=\(window.firstResponder === pane)\nIOSurface installations (NOT physical presentation): count=\(installations.count), median/p95/p99_ms=\(quantiles)\n"
         try report.write(toFile: "/tmp/kido-vsync-measure-\(getpid()).txt", atomically: true, encoding: .utf8)
         print(report)
     }
@@ -242,8 +211,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         if Self.processRuntime == nil {
             let config = directory.appendingPathComponent("ghostty.conf")
             let theme = ThemeConf.line(.init())
-            let blink = ProcessInfo.processInfo.environment["KIDO_VSYNC_MEASURE"] == "1"
-            try "\(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = \(blink)\nkeybind = super+e=text:X\nkeybind = super+shift+c=text:Y\n".write(to: config, atomically: true, encoding: .utf8)
+            try "\(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = false\nkeybind = super+e=text:X\nkeybind = super+shift+c=text:Y\n".write(to: config, atomically: true, encoding: .utf8)
             Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         }
         runtime = try XCTUnwrap(Self.processRuntime)
