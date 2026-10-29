@@ -115,10 +115,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private func finishRename(_ commit: Bool) {
         guard let edit = editing, !renaming, !rendering else { return }
         guard commit else { endRename(); return }
-        switch SessionRename(edit.cell.nameField.stringValue, session: edit.id.session, original: edit.original, sessions: snapshot?.sessions ?? []) {
+        switch SessionName(edit.cell.nameField.stringValue, operation: .rename(edit.id.session, original: edit.original), sessions: snapshot?.sessions ?? []) {
         case .revert: endRename()
         case .reject(let message): rejectRename(message)
-        case .rename(let name):
+        case .accept(let name):
             renaming = true
             renameSession(edit.id.session, name) { [weak self, weak cell = edit.cell] error in
                 guard let self, editing?.cell === cell else { return }
@@ -424,7 +424,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private func source(_ row: SidebarRow) -> Source? {
         switch row.kind {
         case .header: .session(row.id.session)
-        case .pane(_?) where row.indent == 0: row.root.map { .window(row.id.session, $0) }
+        case .pane where row.topLevel != nil: row.root.map { .window(row.id.session, $0) }
         default: nil
         }
     }
