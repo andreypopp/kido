@@ -38,6 +38,7 @@ public struct SidebarRow: Equatable, Sendable {
     public var leading: Double { 36 + Double(indent) * 15 }
     public var indicatorX: Double { 20 + Double(indent) * 15 }
     public var tailY: Double { 26 }
+    public var topLevel: Snapshot.Position? { indent == 0 ? target : nil }
     public var target: Snapshot.Position? {
         if case .pane(let target) = kind { return target }; return nil
     }

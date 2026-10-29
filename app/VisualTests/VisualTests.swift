@@ -2035,6 +2035,78 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || NSApp.isActive)
     }
 
+    func testPaletteCreatesNamedSessionInAnchorDirectory() async throws {
+        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
+        XCTAssertEqual(output.status, 0, output.err)
+        let server = try JSONDecoder().decode(Server.self, from: Data(output.out.utf8))
+        let working = directory.appendingPathComponent("active pane directory")
+        try FileManager.default.createDirectory(at: working, withIntermediateDirectories: true)
+        let resolved = try XCTUnwrap(realpath(working.path, nil))
+        defer { free(resolved) }
+        let cwd = String(cString: resolved)
+        _ = try await command(["respawn-pane", "-k", "-t", "$0:", "-c", cwd, "exec /bin/cat"])
+        _ = try await command(["rename-session", "-t", "$0", "original"])
+        try loadRuntime()
+        let app = AppDelegate(runtime: runtime)
+        let owner = try XCTUnwrap(app.open(.local, start: false))
+        let previous = NSApp.mainMenu
+        let other = try XCTUnwrap(app.open(.local, start: false))
+        defer { app.closePalette(); owner.close(); other.close(); NSApp.mainMenu = previous }
+        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        other.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        owner.start(); other.start()
+        try await wait("both owners ready") {
+            owner.currentSession?.name == "original" && owner.testConnection != nil
+                && other.currentSession?.name == "original" && other.testConnection != nil
+        }
+        NSApp.mainMenu = app.mainMenu()
+        XCTAssertEqual(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu?.items.first?.title, "New Session")
+        app.togglePalette()
+        let panel = try XCTUnwrap(app.palettePanel)
+        let palette = panel.palette
+        func enter() throws {
+            let entry = try XCTUnwrap(palette.shown.first { $0.entry.title == "New Session…" }?.entry)
+            palette.chooseEntry(entry)
+            XCTAssertEqual(palette.mode, .sessionName(owner, try XCTUnwrap(owner.snapshot).serverInstance, .create))
+        }
+        func submit(_ name: String) {
+            palette.field.stringValue = name
+            palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+            _ = palette.control(palette.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
+        }
+        try enter()
+        submit("")
+        XCTAssertEqual(palette.error, "Enter a session name.")
+        submit("original")
+        XCTAssertEqual(palette.error, "A session named “original” already exists.")
+        submit("bad:name")
+        XCTAssertEqual(palette.error, "Session names can’t contain “:” or “.”.")
+        submit("bad.name")
+        XCTAssertEqual(palette.error, "Session names can’t contain “:” or “.”.")
+        _ = palette.control(palette.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertEqual(palette.mode, .root)
+        try enter()
+        let before = try XCTUnwrap(owner.snapshot)
+        owner.testReceive(try sidebarFixture { $0["server_instance"] = ["started_at": 1, "pid": 77777] })
+        submit("stale-create")
+        XCTAssertEqual(palette.error, "That window is gone")
+        owner.testReceive(before)
+        _ = try await command(["new-session", "-d", "-s", "taken-late"])
+        owner.testReceive(before)
+        submit("taken-late")
+        try await wait("tmux refusal inline") { palette.error == "duplicate session: taken-late" }
+        XCTAssertNotNil(app.palettePanel)
+        let anchorPath = try await command(["display-message", "-p", "-t", "$0:", "#{pane_current_path}"])
+        XCTAssertEqual(anchorPath, cwd)
+        submit("created here")
+        try await wait("created session selected in opening owner") { app.palettePanel == nil && owner.currentSession?.name == "created here" }
+        let created = try XCTUnwrap(owner.currentSession)
+        let facts = try await command(["display-message", "-p", "-t", "\(created.id):", "#{session_name}|#{pane_current_path}"])
+        XCTAssertEqual(facts, "created here|\(cwd)")
+        XCTAssertEqual(owner.navigation.session, created.id)
+        XCTAssertEqual(other.currentSession?.name, "original")
+    }
+
     func testPaletteJumpToAPaneHiddenByZoomShowsAndFocusesIt() async throws {
         let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         XCTAssertEqual(output.status, 0, output.err)
@@ -2062,7 +2134,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         func shown() -> [String] {
             owner.testSession?.windows.values.first { !$0.isHidden }?.panes.filter { !$0.isHidden }.map(\.pane.description) ?? []
         }
-        let rows = { sidebarRows(owner.snapshot, seen: owner.seen.value).filter { $0.kind == .header || $0.target != nil } }
+        let rows = { sidebarRows(owner.snapshot, seen: owner.seen.value).filter { $0.topLevel != nil } }
         try await wait("the zoomed pane alone is shown") {
             owner.testConnection != nil && shown() == [first] && rows().contains { $0.target?.pane.description == second }
         }

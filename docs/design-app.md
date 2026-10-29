@@ -1543,18 +1543,23 @@ open palette draws a hollow cursor ([Focus treatment](#focus-treatment)).
 
 The root list is built from live state, in this order:
 
-- The sessions and panes of every connected owner, in sidebar order. The
-  anchor comes first, then the other owners. A session row has the
-  `square.stack` symbol and selects the session through one RPC. A pane row
-  has its status mark and jumps through one RPC, as a sidebar row does. The
-  row's window comes to the front first. A remote owner's rows start their
-  detail with the host. An owner that is offline or reconnecting adds no rows.
+- The top-level panes of the anchor only, in sidebar order. Thus, the palette
+  never jumps to another owner: not from Local to a remote host, not between
+  hosts, and not to another window of the same host. With no anchor, there are
+  no pane rows. A top-level pane is a sidebar pane row at indent 0
+  (`SidebarRow.topLevel`, which the sidebar's drag source also uses): a child window that the feed hoists under a pane (a subagent or a
+  run) is not in the list, and neither is an OSC 7501 program record row.
+  There are no session rows; the session commands below stay. A pane row has
+  its status mark and jumps through one RPC, as a sidebar row does. The
+  anchor's window comes to the front first. The detail is the session name,
+  after the host for a remote owner. An anchor that is offline or
+  reconnecting adds no rows.
 - Each recent host that has no open Kido window, newest first, with the
   `globe` symbol and the detail "Connect". This holds also when windows are
   open.
 - A fixed list of commands, each read from its menu item (found by action and
   represented object, never by title) for its title, menu path and current
-  key equivalent: New Session, Rename Session…, Close Session, New Window,
+  key equivalent: New Session ("New Session…" with an anchor), Rename Session…, Close Session, New Window,
   Close Window, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
   Local Host, Connect to Remote Host…, Hide/Show Sidebar, Focus Sidebar,
   Enter Full Screen, Find…, Copy Mode, Prompt…, Reset Clipboard and Upload
@@ -1569,8 +1574,8 @@ The root list is built from live state, in this order:
 While the palette is open, each owner snapshot or model change and each window
 close rebuilds the entries from the saved owner and responder. The panel stays
 key. The query is applied again, and the selection is kept by entry identity,
-else row 0. A row is checked again when it runs. A session or pane row needs
-an owner of the same host with the same `server_instance` whose rows still
+else row 0. A row is checked again when it runs. A pane row needs its own
+owner, still navigable, with the same `server_instance`, whose rows still
 contain the target; else the palette shows "That pane is gone" and sends
 nothing. A pane command needs a live focused pane again. Then a command
 updates its menu and runs only if its item is enabled, through
@@ -1606,11 +1611,29 @@ the field and the list; an edit clears it.
   remote routing as URLs and opens a new window.
 - **Rename session** (`pencil`). Session → Rename Session… and its root row
   enter it. It targets the anchor's current session, with the current name in
-  the field, selected. Return commits through `SessionRename`, the rules of the
+  the field, selected. Return commits through `SessionName`, the rules of the
   sidebar's inline rename: an empty or unchanged name closes the palette with
   no change; a name with `:` or `.` or a duplicate name shows the rule's message
   and selects the text again; a tmux refusal shows tmux's message. The sidebar's
   inline rename and this mode call the same `WindowOwner.renameSession`.
+- **New session** (`plus`, "Session name", foot "↩ create"). The anchored root
+  row "New Session…" enters it. With no anchor, the row is "New Session" and
+  runs the menu action. When the anchor has no snapshot yet, the row is "New
+  Session…" and shows "Not available now". File → New Session and Command-N do
+  not enter the mode: they create an unnamed session through kido's
+  `new-session` RPC. The mode has the same field, Return and error behaviour as
+  Rename session, with an empty field. `SessionName` checks the name with the
+  same rules, except that an empty name shows "Enter a session name." When the
+  anchor window closed, is not navigable or its `server_instance` changed, the
+  mode shows "That window is gone". `WindowOwner.createSession` copies kido's
+  RPC `new-session` (lib/sidebar.ml), with a name added, because that RPC takes
+  no name. It reads `#{pane_current_path}` of the anchor's current session,
+  creates the session with one control command `new-session -d -P -F
+  '#{session_id}' -s NAME -c DIR`, and then switches the anchor's window
+  through the `select-session` RPC. A tmux refusal creates nothing. It shows
+  tmux's message and the mode stays open. Success closes the palette when the
+  session exists. A failure of the switch after that does not show in the
+  palette.
 - **Prompt** (`bubble.left`). It sends a prompt to an agent through kido's
   `prompt` RPC ([Prompting an agent](design-rpc.md#prompting-an-agent)). It
   replaces the list with its own view, `PalettePrompt`, described below.
@@ -1630,7 +1653,8 @@ optional preselected agent pane. The entry points are:
   to `AppDelegate.openPrompt`, which opens the palette over the pane's window
   with the pane as the focus to restore.
 - ⌘O in the root list. On a highlighted agent pane row outside a run window,
-  the source is that agent's own pane, preselected, with no quote. On any
+  the source is that agent's own pane, preselected, with no quote, from the
+  anchor, if the row's check still passes. On any
   other row, ⌘O acts as the Prompt… row. Only the highlighted agent row shows "⌘O prompt" in its
   shortcut column. In another mode, ⌘O does nothing.
 - The root row Prompt…: the focused pane, with its current selection.
@@ -1800,7 +1824,7 @@ unbound Command key to the main menu, which is how Command-P reaches the
 palette.
 
 The field's accessibility label names the mode: "Command palette", "Connect
-to remote host", "Rename session" or "Theme". In Prompt mode, the field is "Prompt",
+to remote host", "Rename session", "New session" or "Theme". In Prompt mode, the field is "Prompt",
 the picker is a pop-up button "Send to @name", and the buttons are "Send
 prompt", "Retry" and "Copy Prompt". Each row's label joins its title, detail
 and shortcut, and adds the status as the tabs do (" — error", " — waiting",
