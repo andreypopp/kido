@@ -465,18 +465,47 @@ fed live. The same resync follows a `%pause`.
 Every restore captures the newest 10,000 physical history rows plus
 screen, pending parser bytes and mode state in one command batch, then
 resets and replays the surface. Initial sync, reconnect, resize and showing
-a content-dirty pane share that path. History uses styled `-e -J` and
-plain `-F -L -T -N` companions; a plain screen companion joins the same
-logical rows across the history/screen seam. The oldest partial logical
-line is omitted. A line spanning the entire interval is omitted rather
-than expanding the restore. Extra history loaded earlier is deliberately
-dropped.
+a content-dirty pane share that path. History, screen and the saved main
+screen (`-a`) come from `capture-pane -p -r -G`, tmux's replay stream
+(`share/rpc/contract.md`, "Pane text replay"). The app writes the stream
+unchanged: tmux writes every row separator, so history and screen
+concatenate, and no pen, link or wrap is rebuilt in the app. A stream
+assumes the default pen at its start and ends every row at the default
+pen, so the app writes no `ESC[m` around it: `ESC c` resets the pen
+before the history, and the saved main screen ends at the default pen
+before `ESC[?1049h`.
+
+Each history range starts at a logical line start, so the soft wrap into
+its first row is never lost. Plain `-F -L -T -N` metadata, one row wider
+than the range at its top, tells whether the first row continues a
+wrapped row. A restore or Load more batch is sent with the fixed start.
+Only when that start falls mid-line and tmux has more rows than the
+chunk is the whole batch sent again, once, starting at the next line
+start. The second result is accepted as it is, even if output moved the
+start mid-line again. The oldest partial logical line is thus omitted.
+A line spanning the entire interval is omitted rather than expanding the
+restore. Extra history loaded earlier is deliberately dropped.
+
+While the alternate screen is on, `-r` history ranges and `-a` read a
+copy of the main screen that tmux reflows to the pane's current width,
+as it does when the alternate screen ends. Thus every stream replays at
+the surface's width. The saved main command is `-r -G -a -q -S -10000`:
+one range over the reflowed history and main screen, equal to the
+capture of the same range after the exit; outside the alternate screen
+it is empty. Under the alternate screen the restore writes it instead of
+the history reply, then `ESC[?1049h` and the live alternate screen. Its
+`-S` counts reflowed rows, but `history_size` and the plain metadata
+count the stored rows, so the restore skips the line-start check there
+and accepts the range as it is.
 
 Wheel and thumb cover only Ghostty's retained rows. They never capture
 history or expose unloaded blank space. One native Load more pill appears
 near the loaded top when tmux has older rows. A click loads the next
 10,000-row chunk, aligned to whole logical lines, through the shared
-loader. Explicit loads can expand a chunk for a long line, bounded by
+loader. The chunk ends above the loaded top, so tmux ends its stream
+with a row separator. The app drops that final `CR LF` before the
+prepend, so the scratch terminal has no extra empty row and a full last
+row keeps its pending wrap. Explicit loads can expand a chunk for a long line, bounded by
 tmux's total. Empty or malformed captures stop without pretending to be
 memory pressure. A refused nonempty insertion leaves the same pill;
 another click raises that surface's byte budget and retries. Refusal
