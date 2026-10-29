@@ -2,6 +2,8 @@ import AppKit
 import Darwin
 import GhosttyKit
 import IOSurface
+import SnapshotTesting
+import Synchronization
 import TmuxControl
 import XCTest
 @testable import Kido
@@ -39,6 +41,231 @@ import XCTest
         pane.resize(cols: 80, rows: 24)
         XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         return (pane, window)
+    }
+
+    private func capture(_ client: Client, _ commands: [Command]) async throws -> [Reply] {
+        let done = expectation(description: "capture replies")
+        let result = Mutex<[Reply]?>(nil)
+        client.send(commands) { replies in
+            result.withLock { $0 = replies }
+            done.fulfill()
+        }
+        await fulfillment(of: [done], timeout: 10)
+        return try XCTUnwrap(result.withLock { $0 })
+    }
+
+    private func replay(_ client: Client, _ pane: PaneID, loaded: Int = 0, chunk: Int = historyChunkSize, initial: Bool = false) async throws -> (replies: [Reply], history: HistoryCapture) {
+        let done = expectation(description: "replay captured")
+        let result = Mutex<(replies: [Reply], history: HistoryCapture?)?>(nil)
+        HistoryCapture.capture(client, pane, loaded: loaded, chunk: chunk, initial: initial,
+                               last: initial ? PaneSync.commands(pane, chunk: chunk) : []) { captured in
+            result.withLock { $0 = captured }
+            done.fulfill()
+        }
+        await fulfillment(of: [done], timeout: 10)
+        let captured = try XCTUnwrap(result.withLock { $0 })
+        return (captured.replies, try XCTUnwrap(captured.history))
+    }
+
+    private func sync(_ client: Client, _ pane: PaneID, chunk: Int = historyChunkSize) async throws -> (PaneSync.Snapshot, HistoryCapture) {
+        let captured = try await replay(client, pane, chunk: chunk, initial: true)
+        return (try XCTUnwrap(PaneSync.restore(captured.replies, history: captured.history)), captured.history)
+    }
+
+    private func replayServer(columns: Int, rows: Int) async throws -> (tmux: String, dir: URL, socket: String, client: Client) {
+        let tmux = try XCTUnwrap(serverEnvironment["KIDO_TMUX"])
+        let dir = URL(fileURLWithPath: "/tmp/ka-replay-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let socket = dir.appendingPathComponent("socket").path
+        let started = try await Child.run(tmux, ["-u", "-S", socket, "-f", "/dev/null", "new-session", "-d", "-x", String(columns), "-y", String(rows), "sleep 60"])
+        XCTAssertEqual(started.status, 0, started.err)
+        addTeardownBlock {
+            _ = try await Child.run(tmux, ["-S", socket, "kill-session"])
+            try FileManager.default.removeItem(at: dir)
+        }
+        let client = Client(launch: .attachImages(tmux, socket: socket, session: SessionID(number: 0), imageShm: false))
+        try client.start(onEvent: { _ in }, onClose: { _, _ in })
+        addTeardownBlock { client.close() }
+        return (tmux, dir, socket, client)
+    }
+
+    private func replayPanes(_ fixture: String, snapshot: PaneSync.Snapshot, recent: PaneSync.Snapshot, older: HistoryCapture, columns: Int, rows: Int, windowed: Bool = false) async throws -> [(pane: PaneView, window: NSWindow?)] {
+        let surfaces = try (0..<3).map { _ in try makePane(windowed: windowed) }
+        await mainQueueFence()
+        for (pane, _) in surfaces {
+            pane.resize(cols: columns, rows: rows)
+            pane.frame.size = CGSize(width: pane.cell.width * CGFloat(columns), height: pane.cell.height * CGFloat(rows))
+            XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+        }
+        let panes = surfaces.map(\.pane)
+        XCTAssertTrue(panes[0].feed(Data(fixture.utf8)))
+        XCTAssertTrue(panes[1].feed(snapshot.data, kind: .snapshot))
+        XCTAssertTrue(panes[2].feed(recent.data, kind: .snapshot))
+        XCTAssertTrue(panes[2].commitSnapshot(epoch: panes[2].historyEpoch))
+        if older.rows > 0 { XCTAssertGreaterThan(panes[2].prepend(Data(older.text.utf8), epoch: panes[2].historyEpoch), 0) }
+        return surfaces
+    }
+
+    private func waitAlternate(_ client: Client, active: Bool) async throws {
+        let state = Mutex((pending: false, matched: false))
+        try await wait("alternate \(active)") {
+            let query = state.withLock { state in
+                if state.pending || state.matched { return false }
+                state.pending = true
+                return true
+            }
+            if query {
+                client.send([Command("display-message", "-p", "#{alternate_on}")]) { replies in
+                    state.withLock { $0 = (false, replies?.first == .success([active ? "1" : "0"])) }
+                }
+            }
+            return state.withLock { $0.matched }
+        }
+    }
+
+    private func backgrounds(_ pane: PaneView, columns: Int, rows: Int) async throws -> [NSColor] {
+        let done = expectation(description: "background cells rendered")
+        pane.visualFrame { _ in done.fulfill() }
+        await fulfillment(of: [done], timeout: 10)
+        let bitmap = try XCTUnwrap(pane.bitmapImageRepForCachingDisplay(in: pane.bounds))
+        pane.cacheDisplay(in: pane.bounds, to: bitmap)
+        var result: [NSColor] = []
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let x = min(bitmap.pixelsWide - 1, Int((CGFloat(column) + 0.8) * CGFloat(bitmap.pixelsWide) / CGFloat(columns)))
+                let y = min(bitmap.pixelsHigh - 1, Int((CGFloat(row) + 0.9) * CGFloat(bitmap.pixelsHigh) / CGFloat(rows)))
+                result.append(try XCTUnwrap(bitmap.colorAt(x: x, y: y)))
+            }
+        }
+        return result
+    }
+
+    func testRestoreWideWraps() async throws {
+        let (tmux, dir, socket, client) = try await replayServer(columns: 5, rows: 3)
+        let blank = try makePane().pane
+        blank.frame.size = CGSize(width: blank.cell.width * 5, height: blank.cell.height * 3)
+        let paper = try await backgrounds(blank, columns: 5, rows: 3)[0]
+        for (width, word) in [(5, "abcd界Z"), (2, "a界Z"), (32, String(repeating: "a", count: 31) + "界Z")] {
+            for (prefix, suffix) in [("", ""), ("one\r\ntwo\r\n", ""), (String(repeating: "old\r\n", count: 8), String(repeating: "\r\nend", count: 4))] {
+                for pen in ["", "\u{1B}[48;2;223;231;236m"] {
+                    _ = try await capture(client, [Command("resize-window", "-x", width, "-y", 3), Command("clear-history", "-t", PaneID(number: 0))])
+                    let fixture = "\u{1B}c\u{1B}[?25l" + prefix + pen + word + suffix
+                    let input = dir.appendingPathComponent("fixture")
+                    let ready = dir.appendingPathComponent(UUID().uuidString)
+                    try fixture.write(to: input, atomically: true, encoding: .utf8)
+                    let output = try await Child.run(tmux, ["-S", socket, "respawn-pane", "-k", "cat \(input.path); touch \(ready.path); exec sleep 60"])
+                    XCTAssertEqual(output.status, 0, output.err)
+                    try await wait("wide fixture") { FileManager.default.fileExists(atPath: ready.path) }
+                    let (snapshot, _) = try await sync(client, PaneID(number: 0))
+                    let textReplies = try await capture(client, [Command("capture-pane", "-p", "-J", "-S", "-", "-E", "-", "-t", PaneID(number: 0))])
+                    guard case .success(let textRows)? = textReplies.first else { return XCTFail("tmux text capture failed") }
+                    let expectedText = textRows.joined(separator: "\n").trimmingCharacters(in: .newlines)
+                    let (recent, retained) = try await sync(client, PaneID(number: 0), chunk: 1)
+                    let older = try await replay(client, PaneID(number: 0), loaded: retained.rows).history
+                    let surfaces = try await replayPanes(fixture, snapshot: snapshot, recent: recent, older: older, columns: width, rows: 3)
+                    let panes = surfaces.map(\.pane)
+                    let live = panes[0]
+                    for pane in panes {
+                        XCTAssertEqual(surfaceText(pane).trimmingCharacters(in: .newlines), expectedText, "wide wrap width \(width) prefix \(prefix.debugDescription)")
+                        if suffix.isEmpty && pane !== live {
+                            let actual = try await backgrounds(pane, columns: width, rows: 3)
+                            let row = prefix.isEmpty && width > 2 ? 1 : 2
+                            let used = width == 2 ? 1 : 3
+                            for column in used..<width { XCTAssertEqual(actual[row * width + column], paper, "tmux default tail width \(width), column \(column)") }
+                        }
+                    }
+                    let resized = try await capture(client, [Command("resize-window", "-x", 7, "-y", 3), Command("capture-pane", "-p", "-J", "-S", "-", "-E", "-", "-t", PaneID(number: 0))])
+                    guard case .success(let resizedRows)? = resized.last else { return XCTFail("tmux resized text capture failed") }
+                    let expectedReflow = resizedRows.joined(separator: "\n").trimmingCharacters(in: .newlines)
+                    for pane in panes { pane.resize(cols: 7, rows: 3) }
+                    if pen.isEmpty {
+                        for pane in panes.dropFirst() { XCTAssertEqual(surfaceText(pane), surfaceText(live), "wide wrap reflow width \(width)") }
+                    } else if !suffix.isEmpty {
+                        let reference = surfaceText(live)
+                        let start = try XCTUnwrap(reference.range(of: "end")).lowerBound
+                        for pane in panes.dropFirst() {
+                            let text = surfaceText(pane)
+                            let actual = try XCTUnwrap(text.range(of: "end")).lowerBound
+                            XCTAssertEqual(text[actual...], reference[start...], "coloured erased-tail reflow")
+                        }
+                    }
+                    let (resynced, _) = try await sync(client, PaneID(number: 0))
+                    for pane in panes.dropFirst() {
+                        XCTAssertTrue(pane.feed(resynced.data, kind: .snapshot))
+                        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+                        XCTAssertEqual(surfaceText(pane).trimmingCharacters(in: .newlines), expectedReflow, "tmux resize resync")
+                    }
+                }
+            }
+        }
+    }
+
+    func testRestoreBackgroundCells() async throws {
+        let (tmux, dir, socket, client) = try await replayServer(columns: 12, rows: 6)
+        let fixture = "\u{1B}[?25l\u{1B}[48;2;223;231;236mABCDEFGHIJKLMNOPQRSTUVWX\u{1B}[m\r\n" +
+            "\u{1B}[1;3;7;9;4:3;58;2;255;0;80mreverse\u{1B}[m\r\n" +
+            "\u{1B}]8;id=wrapped;https://example.com/\u{1B}\\界🙂abcdefghijklmnopqrst\u{1B}]8;;\u{1B}\\\r\n" + (0..<12).map { index in
+            "\u{1B}[48;2;223;231;236mBOX\(index)      \u{1B}[m\r\n" +
+            "\u{1B}[48;2;223;231;236m\u{1B}[K\u{1B}[m\r\n" +
+            "\u{1B}[49mtool\u{1B}[m\r\n"
+        }.joined() + "\u{1B}[48;2;223;231;236mabcdefghijklmnopqrstuvwx\u{1B}[m\r\nEND"
+        let input = dir.appendingPathComponent("fixture")
+        try fixture.write(to: input, atomically: true, encoding: .utf8)
+        let started = try await Child.run(tmux, ["-S", socket, "respawn-pane", "-k", "cat \(input.path); touch \(dir.path)/ready; exec sleep 60"])
+        XCTAssertEqual(started.status, 0, started.err)
+        try await wait("background fixture") { FileManager.default.fileExists(atPath: dir.appendingPathComponent("ready").path) }
+        let paneID = PaneID(number: 0)
+        let (snapshot, _) = try await sync(client, paneID)
+        let (recent, retained) = try await sync(client, paneID, chunk: 4)
+        let older = try await replay(client, paneID, loaded: retained.rows).history
+        XCTAssertGreaterThan(older.rows, 0)
+        let surfaces = try await replayPanes(fixture, snapshot: snapshot, recent: recent, older: older, columns: 12, rows: 6, windowed: true)
+        defer { surfaces.forEach { $0.window?.close() } }
+        let panes = surfaces.map(\.pane), live = panes[0], restored = panes[1]
+        for position in ["scroll_to_bottom", "scroll_to_top"] {
+            for pane in panes { XCTAssertTrue(ghostty_surface_binding_action(pane.surface, position, UInt(position.utf8.count))) }
+            try await drain(runtime)
+            for pane in panes { XCTAssertEqual(ghostty_surface_size(pane.surface).columns, 12) }
+            for pane in panes.dropFirst() {
+                XCTAssertEqual(surfaceText(pane), surfaceText(live), position)
+            }
+            let expected = try await backgrounds(live, columns: 12, rows: 6)
+            for pane in panes.dropFirst() {
+                let actual = try await backgrounds(pane, columns: 12, rows: 6)
+                XCTAssertEqual(actual, expected, position)
+            }
+            let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+            if let failure = verifySnapshot(of: restored, as: .image, named: position, record: record) {
+                if !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+            }
+        }
+        for pane in panes { pane.resize(cols: 8, rows: 6); XCTAssertTrue(ghostty_surface_binding_action(pane.surface, "scroll_to_bottom", 16)) }
+        for pane in panes.dropFirst() {
+            XCTAssertEqual(surfaceText(pane), surfaceText(live), "restored soft wraps reflow")
+        }
+    }
+
+    func testRestoreResizedAlternateMain() async throws {
+        let (tmux, _, socket, client) = try await replayServer(columns: 12, rows: 3)
+        let tty = try await Child.run(tmux, ["-S", socket, "display-message", "-p", "#{pane_tty}"])
+        let output = try FileHandle(forWritingTo: URL(fileURLWithPath: tty.out.trimmingCharacters(in: .whitespacesAndNewlines)))
+        defer { try? output.close() }
+        for main in ["hello", "abcdefghijkLmnop\r\nsecond", "abcdefghijkLmnop\r\nsecondlongword\r\nthird\r\nfourth\r\nfifth"] {
+            _ = try await capture(client, [Command("resize-window", "-x", 12, "-y", 3), Command("clear-history", "-t", PaneID(number: 0))])
+            try output.write(contentsOf: Data(("\u{1B}c\u{1B}[?25l" + main + "\u{1B}[?1049hALT").utf8))
+            try await waitAlternate(client, active: true)
+            _ = try await capture(client, [Command("resize-window", "-x", 7, "-y", 3)])
+            let (snapshot, _) = try await sync(client, PaneID(number: 0))
+            let restored = try makePane().pane
+            restored.resize(cols: 7, rows: 3)
+            XCTAssertTrue(restored.feed(snapshot.data, kind: .snapshot))
+            XCTAssertTrue(restored.feed(Data("\u{1B}[?1049l".utf8)))
+            try output.write(contentsOf: Data("\u{1B}[?1049l".utf8))
+            try await waitAlternate(client, active: false)
+            let text = try await capture(client, [Command("capture-pane", "-p", "-J", "-S", "-", "-E", "-")])
+            guard case .success(let rows)? = text.first else { return XCTFail("main capture failed") }
+            XCTAssertEqual(surfaceText(restored).trimmingCharacters(in: .newlines), rows.joined(separator: "\n").trimmingCharacters(in: .newlines), main)
+        }
     }
 
     private func drainAnimation(_ runtime: GhosttyRuntime) async throws {
