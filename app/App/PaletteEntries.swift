@@ -4,7 +4,7 @@ import TmuxControl
 
 struct PaletteEntry {
     enum ID: Equatable {
-        case session(Host, SessionID), pane(Host, Snapshot.Position), host(String), command(Int), connectTyped, clearRecent, theme(String), themeUse(Int)
+        case pane(Snapshot.Position), host(String), command(Int), connectTyped, clearRecent, theme(String), themeUse(Int)
     }
     let id: ID
     var order = 0
@@ -23,32 +23,21 @@ struct PaletteEntry {
     }
     let operation: Operation
 
-    @MainActor static func sessions(_ owner: WindowOwner, app: AppDelegate) -> [PaletteEntry] {
+    @MainActor static func panes(_ owner: WindowOwner) -> [PaletteEntry] {
         guard owner.canNavigate, let snapshot = owner.snapshot else { return [] }
         let instance = snapshot.serverInstance
         let host = if case .remote(let destination) = owner.host { [destination] } else { [String]() }
-        let destination = owner.host
-        let resolve: @MainActor (SidebarRow) -> WindowOwner? = { [weak app] row in
-            app?.owners.first {
-                $0.canNavigate && $0.host == destination && $0.snapshot?.serverInstance == instance
-                    && sidebarRows($0.snapshot).contains { $0.id == row.id }
-            }
-        }
-        func go(_ row: SidebarRow, _ request: RPCRequest) -> @MainActor () -> Void {
-            { let owner = resolve(row); owner?.reveal(); owner?.perform(request) }
-        }
-        func check(_ row: SidebarRow) -> @MainActor () -> String? {
-            { resolve(row) == nil ? "That pane is gone" : nil }
+        let resolve: @MainActor (SidebarRow) -> WindowOwner? = { [weak owner] row in
+            guard let owner, owner.canNavigate, owner.snapshot?.serverInstance == instance,
+                  sidebarRows(owner.snapshot).contains(where: { $0.id == row.id }) else { return nil }
+            return owner
         }
         let reachable = Set(snapshot.promptPanes.filter(\.agent).map(\.pane))
         var session = ""
         return sidebarRows(owner.snapshot, seen: owner.seen.value).compactMap { row in
-            if case .header(let id) = row.id {
-                session = row.title
-                return PaletteEntry(id: .session(owner.host, id), title: row.title, detail: host.joined(), symbol: "square.stack", check: check(row), operation: .run(go(row, .selectSession(id))))
-            }
-            guard let target = row.target else { return nil }
-            return PaletteEntry(id: .pane(owner.host, target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: row.agent, promptable: reachable.contains(target.pane), check: check(row), operation: .run(go(row, .jump(target))))
+            if case .header = row.id { session = row.title }
+            guard let target = row.topLevel else { return nil }
+            return PaletteEntry(id: .pane(target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: row.agent, promptable: reachable.contains(target.pane), check: { resolve(row) == nil ? "That pane is gone" : nil }, operation: .run { let owner = resolve(row); owner?.reveal(); owner?.perform(.jump(target)) })
         }
     }
 
@@ -61,17 +50,24 @@ struct PaletteEntry {
             let available = switch scope { case .always: true; case .window: owner != nil; case .pane: livePane(owner, responder) != nil }
             guard available, enabled(item, responder: responder) else { return [] }
             let operation: Operation
+            var title = item.title
             if action == #selector(AppDelegate.connectRemoteHost) { operation = .enter(.connect) }
+            else if action == #selector(AppDelegate.newSession), let owner {
+                title = "New Session…"
+                if let instance = owner.snapshot?.serverInstance { operation = .enter(.sessionName(owner, instance, .create)) }
+                else { operation = .run {} }
+            }
             else if action == #selector(AppDelegate.showThemes) { operation = .enter(.theme(.pick)) }
             else if action == #selector(SessionMenus.renameItem), let owner, let session = owner.currentSession, let instance = owner.snapshot?.serverInstance {
-                operation = .enter(.rename(owner, instance, session.id, original: session.name))
+                operation = .enter(.sessionName(owner, instance, .rename(session.id, original: session.name)))
             } else if action == #selector(PaneView.promptSelectionItem(_:)), let owner, let pane = livePane(owner, responder),
                       let session = owner.currentSession, let window = pane.windowID,
                       let source = owner.promptSource(session: session.id, window: window, pane: pane.pane, quote: pane.selectionQuote) {
                 operation = .enter(.prompt(source))
             } else { operation = .run { NSApp.sendAction(action, to: item.target, from: item) } }
-            return [PaletteEntry(id: .command(order), order: order, title: item.title, detail: path.joined(separator: " › "), shortcut: shortcut(item),
+            return [PaletteEntry(id: .command(order), order: order, title: title, detail: path.joined(separator: " › "), shortcut: shortcut(item),
                                  check: { [weak owner] in
+                if action == #selector(AppDelegate.newSession), let owner, owner.snapshot == nil { return "Not available now" }
                 if scope == .pane, livePane(owner, owner?.window.firstResponder) == nil { return "Not available now" }
                 return enabled(item, responder: owner?.window.firstResponder) ? nil : "Not available now"
             }, operation: operation)]
@@ -160,7 +156,7 @@ extension AppDelegate {
     func paletteEntries(owner: WindowOwner?, responder: NSResponder?) -> [PaletteEntry] {
         let open = owners.filter(\.alive)
         let hosts = routes.recent.entries.map(\.host).filter { alias in !open.contains { $0.host == .remote(alias) } }
-        return (open.filter { $0 === owner } + open.filter { $0 !== owner }).flatMap { PaletteEntry.sessions($0, app: self) }
+        return (owner.map { PaletteEntry.panes($0) } ?? [])
             + hosts.map { hostEntry($0, detail: "Connect") }
             + (NSApp.mainMenu.map { PaletteEntry.commands($0, owner: owner, responder: responder) } ?? [])
     }

@@ -527,8 +527,8 @@ import TmuxControl
                 (palette.field.currentEditor() as? NSTextView)?.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
             }
             image(palette, "\(theme)-root")
-            query("mwatch"); image(palette, "\(theme)-filtered")
-            query("watch"); image(palette, "\(theme)-match-run")
+            query("kapp"); image(palette, "\(theme)-filtered")
+            query("kido"); image(palette, "\(theme)-match-run")
             query("ren"); image(palette, "\(theme)-filtered2")
             query("zzqq"); image(palette, "\(theme)-nomatch")
             palette.enter(.connect); image(palette, "\(theme)-connect")
@@ -541,10 +541,12 @@ import TmuxControl
             palette.enter(.root); palette.enter(.connect)
             image(palette, "\(theme)-connect-none")
             let session = try XCTUnwrap(owner.snapshot?.sessions.first)
-            palette.enter(.rename(owner, try XCTUnwrap(owner.snapshot).serverInstance, session.id, original: session.name)); image(palette, "\(theme)-rename")
+            palette.enter(.sessionName(owner, try XCTUnwrap(owner.snapshot).serverInstance, .create)); image(palette, "\(theme)-new-session")
+            palette.sessionName(""); image(palette, "\(theme)-new-session-error")
+            palette.enter(.sessionName(owner, try XCTUnwrap(owner.snapshot).serverInstance, .rename(session.id, original: session.name))); image(palette, "\(theme)-rename")
             owner.testReceive(try sidebarFixture())
-            query("visa"); palette.rename("visa"); image(palette, "\(theme)-rename-error")
-            query("main.2"); palette.rename("main.2"); image(palette, "\(theme)-rename-error2")
+            query("visa"); palette.sessionName("visa"); image(palette, "\(theme)-rename-error")
+            query("main.2"); palette.sessionName("main.2"); image(palette, "\(theme)-rename-error2")
             app.routes.connect(.remote("devbox-old"))
             app.routes.connect(.remote("dev@buildbox"))
             app.routes.connect(.remote("devbox"))
@@ -868,7 +870,7 @@ import TmuxControl
         let beforeMonitor = pane.visualKeyUps
         _ = pane.visualKeyUpMonitor?(keyUp)
         XCTAssertEqual(pane.visualKeyUps, beforeMonitor + 1, "the registered monitor works while the palette is closed")
-        for mode in [PaletteMode.root, .connect, .rename(owner, source.instance, session.id, original: session.name), .prompt(source)] {
+        for mode in [PaletteMode.root, .connect, .sessionName(owner, source.instance, .rename(session.id, original: session.name)), .prompt(source)] {
             fixture.app.togglePalette()
             let panel = try XCTUnwrap(fixture.app.palettePanel)
             panel.palette.enter(mode)
@@ -1040,7 +1042,7 @@ import TmuxControl
         owner.request = request
         app.togglePalette()
         let panel = try XCTUnwrap(app.palettePanel)
-        let index = try XCTUnwrap(panel.palette.shown.firstIndex { if case .pane(_, let position) = $0.entry.id { return position.pane == key.pane }; return false })
+        let index = try XCTUnwrap(panel.palette.shown.firstIndex { if case .pane(let position) = $0.entry.id { return position.pane == key.pane }; return false })
         for _ in 0..<index { _ = panel.palette.control(panel.palette.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.moveDown(_:))) }
         try sendKey(panel, "o", code: 31, modifiers: .command)
         try await wait("same target ready") { panel.palette.prompt?.target != nil }
@@ -1113,7 +1115,7 @@ import TmuxControl
         app.togglePalette()
         let panel = try XCTUnwrap(app.palettePanel)
         let palette = panel.palette
-        palette.field.stringValue = try XCTUnwrap(palette.shown.first { if case .pane(_, let position) = $0.entry.id { position.pane == second.pane } else { false } }?.entry.title)
+        palette.field.stringValue = try XCTUnwrap(palette.shown.first { if case .pane(let position) = $0.entry.id { position.pane == second.pane } else { false } }?.entry.title)
         palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
         try sendKey(panel, "o", code: 31, modifiers: .command)
         prompt = try XCTUnwrap(palette.prompt)
@@ -1288,31 +1290,70 @@ import TmuxControl
         XCTAssertFalse(item.isEnabled)
     }
 
-    func testPaletteListsEveryWindowAndUnopenedRecentHosts() throws {
+    func testPaletteListsAnchorPanesAndUnopenedRecentHosts() throws {
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("palette-" + UUID().uuidString))))
         let app = AppDelegate(runtime: runtime)
         let local = try XCTUnwrap(app.open(.local, start: false)), remote = try XCTUnwrap(app.open(.remote("devbox"), start: false))
         let previous = NSApp.mainMenu
         defer { app.closePalette(); local.close(); remote.close(); NSApp.mainMenu = previous }
-        let snapshot = try sidebarFixture()
-        local.testReceive(snapshot); remote.testReceive(snapshot)
         NSApp.mainMenu = app.mainMenu()
+        let connecting = try XCTUnwrap(app.paletteEntries(owner: local, responder: nil).first { $0.title == "New Session…" })
+        XCTAssertEqual(connecting.check(), "Not available now")
+        let snapshot = try sidebarFixture { object in
+            var sessions = object["sessions"] as! [[String: Any]]
+            var nodes = sessions[0]["nodes"] as! [[String: Any]]
+            nodes[0]["program_status"] = ["serial": 1, "records": [
+                ["id": "", "app": "pi", "state": "working"],
+                ["id": "review", "title": "Review palette", "state": "working"]
+            ]]
+            sessions[0]["nodes"] = nodes
+            object["sessions"] = sessions
+        }
+        XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "Review palette" })
+        XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "main-watch" })
+        XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "@sidebar-mockup" })
+        local.testReceive(snapshot)
+        remote.testReceive(try sidebarFixture { object in
+            var sessions = object["sessions"] as! [[String: Any]]
+            sessions[0]["name"] = "remote-main"
+            object["sessions"] = [sessions[0]]
+        })
         app.routes.connect(.remote("devbox")); app.routes.connect(.remote("devbox-old"))
         var requests: [RPCRequest] = []
         remote.request = { request, _ in requests.append(request) }
-        app.togglePalette()
-        let palette = try XCTUnwrap(app.palettePanel?.palette)
-        let entries = palette.shown.map(\.entry)
-        let rows = sidebarRows(snapshot).filter { $0.kind == .header || $0.target != nil }
-        XCTAssertEqual(entries.prefix(rows.count).map(\.title), rows.map(\.title))
-        XCTAssertEqual(entries.dropFirst(rows.count).prefix(rows.count).map(\.title), rows.map(\.title))
+        func panes(_ owner: WindowOwner?) -> [PaletteEntry] {
+            app.paletteEntries(owner: owner, responder: nil).filter { if case .pane = $0.id { true } else { false } }
+        }
+        XCTAssertEqual(panes(local).map(\.title), ["@working-on-kido", "@kido-app", "Terminal", "@pi-ui", "@main", "@main", "@video", "Terminal", "@household"])
+        let entries = app.paletteEntries(owner: remote, responder: nil)
+        XCTAssertEqual(panes(remote).map(\.title), ["@working-on-kido", "@kido-app", "Terminal", "@pi-ui"])
+        XCTAssertEqual(panes(remote).map(\.detail), Array(repeating: "devbox › remote-main", count: 4))
+        XCTAssertEqual(panes(local).first?.detail, "main")
+        XCTAssertEqual(panes(nil).map(\.title), [])
         XCTAssertEqual(entries.filter { $0.symbol == "globe" }.map(\.title), ["devbox-old"])
-        XCTAssertEqual(entries[rows.count * 2].id, .host("devbox-old"))
-        XCTAssertEqual(entries[rows.count * 2 + 1].title, "New Session")
-        let visa = try XCTUnwrap(entries.first { $0.title == "visa" && $0.detail == "devbox" })
-        palette.chooseEntry(visa)
-        XCTAssertEqual(requests, [.selectSession(try XCTUnwrap(snapshot.sessions.first { $0.name == "visa" }?.id))])
-        XCTAssertNil(app.palettePanel)
+        XCTAssertEqual(entries[4].id, .host("devbox-old"))
+        XCTAssertEqual(entries[5].title, "New Session…")
+        XCTAssertTrue(entries.contains { $0.title == "Rename Session…" })
+        XCTAssertTrue(entries.contains { $0.title == "Close Session" })
+        let pane = try XCTUnwrap(panes(remote).first)
+        XCTAssertNil(pane.check())
+        if case .run(let jump) = pane.operation { jump() }
+        XCTAssertEqual(requests.count, 1)
+        if case .pane(let target) = pane.id { XCTAssertEqual(requests, [.jump(target)]) }
+        remote.testReceive(try sidebarFixture { $0["sessions"] = [] })
+        XCTAssertEqual(pane.check(), "That pane is gone")
+        XCTAssertEqual(panes(remote).map(\.title), [])
+
+        let second = try XCTUnwrap(app.open(.local, start: false))
+        defer { second.close() }
+        second.testReceive(snapshot)
+        var firstRequests: [RPCRequest] = [], secondRequests: [RPCRequest] = []
+        local.request = { request, _ in firstRequests.append(request) }
+        second.request = { request, _ in secondRequests.append(request) }
+        let secondPane = try XCTUnwrap(panes(second).first)
+        if case .run(let jump) = secondPane.operation { jump() }
+        XCTAssertTrue(firstRequests.isEmpty)
+        if case .pane(let target) = secondPane.id { XCTAssertEqual(secondRequests, [.jump(target)]) }
     }
 
     func testPaletteKeyTogglesAndRestoresFocus() async throws {
@@ -1388,13 +1429,13 @@ import TmuxControl
         owner.request = { request, _ in requests.append(request) }
         app.togglePalette()
         let palette = try XCTUnwrap(app.palettePanel?.palette)
-        let stale = try XCTUnwrap(palette.shown.first { $0.entry.title == "main-watch" }?.entry)
+        let stale = try XCTUnwrap(palette.shown.first { $0.entry.title == "@kido-app" }?.entry)
         owner.testReceive(try sidebarFixture { $0["server_instance"] = ["started_at": 1791000001, "pid": 4243] })
         XCTAssertEqual(stale.check(), "That pane is gone")
-        let rebuilt = try XCTUnwrap(palette.shown.first { $0.entry.title == "main-watch" }?.entry)
+        let rebuilt = try XCTUnwrap(palette.shown.first { $0.entry.title == "@kido-app" }?.entry)
         XCTAssertNil(rebuilt.check())
         owner.testReceive(try sidebarFixture { $0["sessions"] = [] })
-        XCTAssertFalse(palette.shown.contains { $0.entry.title == "main-watch" })
+        XCTAssertFalse(palette.shown.contains { $0.entry.title == "@kido-app" })
         XCTAssertEqual(stale.check(), "That pane is gone")
         palette.chooseEntry(stale)
         XCTAssertEqual(palette.error, "That pane is gone")
@@ -1534,7 +1575,7 @@ import TmuxControl
         app.renameSession()
         let stalePanel = try XCTUnwrap(app.palettePanel)
         owner.testReceive(try sidebarFixture { $0["server_instance"] = ["started_at": 1, "pid": 77777] })
-        stalePanel.palette.rename("must-not-rename")
+        stalePanel.palette.sessionName("must-not-rename")
         XCTAssertEqual(stalePanel.palette.error, "That session is gone")
         owner.testReceive(originalSnapshot)
         var barrier = false
@@ -1547,7 +1588,7 @@ import TmuxControl
         let latePanel = try XCTUnwrap(app.palettePanel)
         let gate = "palette-" + UUID().uuidString
         owner.send([Command("wait-for", gate)])
-        latePanel.palette.rename("late")
+        latePanel.palette.sessionName("late")
         app.closePalette()
         app.togglePalette()
         let replacement = try XCTUnwrap(app.palettePanel)
