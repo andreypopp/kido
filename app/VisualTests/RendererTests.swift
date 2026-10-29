@@ -189,6 +189,31 @@ import XCTest
         observation.invalidate()
     }
 
+    private func feedKittyAnimation(_ pane: PaneView, z: Int) {
+        let packets = ["a=T,i=1,f=24,s=1,v=1,c=8,r=4,q=2;/wAA", "a=f,i=1,f=24,s=1,v=1,z=\(z),q=2;AAD/", "a=a,i=1,r=1,z=\(z),s=3,v=1"]
+        XCTAssertTrue(pane.feed(Data(("\u{1b}[?25l" + packets.map { "\u{1b}_G\($0)\u{1b}\\" }.joined()).utf8)))
+    }
+
+    private func kittyColour(_ pane: PaneView, layer: CALayer) -> Int? {
+        guard let contents = layer.contents else { return nil }
+        let surface = unsafeBitCast(contents as AnyObject, to: IOSurfaceRef.self)
+        XCTAssertEqual(IOSurfaceGetBytesPerElement(surface), 4)
+        guard IOSurfaceLock(surface, .readOnly, nil) == 0 else { XCTFail("lock image contents"); return nil }
+        defer { _ = IOSurfaceUnlock(surface, .readOnly, nil) }
+        let bytes = IOSurfaceGetBaseAddress(surface).assumingMemoryBound(to: UInt8.self)
+        let grid = ghostty_surface_size(pane.surface)
+        var red = 0
+        var blue = 0
+        for y in stride(from: 0, to: min(IOSurfaceGetHeight(surface), Int(grid.cell_height_px) * 4), by: 8) {
+            for x in stride(from: 0, to: min(IOSurfaceGetWidth(surface), Int(grid.cell_width_px) * 8), by: 8) {
+                let offset = y * IOSurfaceGetBytesPerRow(surface) + x * 4
+                if Int(bytes[offset + 2]) - Int(bytes[offset]) > 100 { red += 1 }
+                if Int(bytes[offset]) - Int(bytes[offset + 2]) > 100 { blue += 1 }
+            }
+        }
+        return red + blue > 0 ? (red > blue ? 1 : -1) : nil
+    }
+
     func testAnimatedShaderKeepsKittyDeadlines() async throws {
         let shader = config.appendingPathExtension("glsl")
         try "void mainImage(out vec4 color, in vec2 position) { color = vec4(texture(iChannel0, position / iResolution.xy).rgb * 0.9 + vec3(0.05 + 0.05 * sin(iTime)), 1.0); }".write(to: shader, atomically: true, encoding: .utf8)
@@ -197,31 +222,15 @@ import XCTest
         let (pane, _) = try makePane()
         defer { pane.dispose() }
         try await drainAnimation(runtime)
-        let packets = ["a=T,i=1,f=24,s=1,v=1,c=8,r=4,q=2;/wAA", "a=f,i=1,f=24,s=1,v=1,z=400,q=2;AAD/", "a=a,i=1,r=1,z=400,s=3,v=1"]
-        XCTAssertTrue(pane.feed(Data(("\u{1b}[?25l" + packets.map { "\u{1b}_G\($0)\u{1b}\\" }.joined()).utf8)))
+        feedKittyAnimation(pane, z: 400)
         try await drainAnimation(runtime)
         var frames = 0
         var changes: [(time: Double, colour: Int)] = []
         let layer = try XCTUnwrap(pane.subviews.first?.layer)
         let observation = observeFrames(layer) {
             frames += 1
-            let surface = unsafeBitCast(layer.contents! as AnyObject, to: IOSurfaceRef.self)
-            XCTAssertEqual(IOSurfaceGetBytesPerElement(surface), 4)
-            guard IOSurfaceLock(surface, .readOnly, nil) == 0 else { XCTFail("lock image contents"); return }
-            defer { _ = IOSurfaceUnlock(surface, .readOnly, nil) }
-            let bytes = IOSurfaceGetBaseAddress(surface).assumingMemoryBound(to: UInt8.self)
-            var red = 0
-            var blue = 0
-            for y in stride(from: 0, to: IOSurfaceGetHeight(surface), by: 8) {
-                for x in stride(from: 0, to: IOSurfaceGetWidth(surface), by: 8) {
-                    let offset = y * IOSurfaceGetBytesPerRow(surface) + x * 4
-                    if Int(bytes[offset + 2]) - Int(bytes[offset]) > 100 { red += 1 }
-                    if Int(bytes[offset]) - Int(bytes[offset + 2]) > 100 { blue += 1 }
-                }
-            }
-            if red + blue > 0 {
-                let colour = red > blue ? 1 : -1
-                if changes.last?.colour != colour { changes.append((CACurrentMediaTime(), colour)) }
+            if let colour = self.kittyColour(pane, layer: layer), changes.last?.colour != colour {
+                changes.append((CACurrentMediaTime(), colour))
             }
         }
         defer { observation.invalidate() }
@@ -229,6 +238,38 @@ import XCTest
         XCTAssertGreaterThan(frames, 12, "shader continues drawing between sparse Kitty updates")
         for interval in zip(changes.dropFirst(2), changes.dropFirst()).map({ $0.0.time - $0.1.time }) {
             XCTAssertEqual(interval, 0.4, accuracy: 0.18)
+        }
+    }
+
+    func testSlowKittyAnimationDrawsOnlyAtDeadlines() async throws {
+        let (pane, window) = try makePane(windowed: true)
+        defer { pane.dispose(); window?.contentView = nil; window?.close() }
+        window?.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window?.orderFront(nil)
+        try await drainAnimation(runtime)
+        let layer = try XCTUnwrap(pane.subviews.first?.layer)
+        var frames = 0
+        var changes: [(time: Double, colour: Int)] = []
+        let observation = observeFrames(layer) {
+            frames += 1
+            if let colour = self.kittyColour(pane, layer: layer), changes.last?.colour != colour {
+                changes.append((CACurrentMediaTime(), colour))
+            }
+        }
+        defer { observation.invalidate() }
+        feedKittyAnimation(pane, z: 250)
+        try await wait("first Kitty frame") { !changes.isEmpty }
+        let start = CACurrentMediaTime()
+        let before = frames
+        let changesBefore = changes.count
+        try await wait("nine Kitty frame changes", within: 5) { changes.count >= changesBefore + 9 }
+        let elapsed = CACurrentMediaTime() - start
+        let draws = frames - before
+        print("250ms Kitty animation: \(draws) draws in \(elapsed)s (\(Double(draws) / elapsed) draws/s)")
+        XCTAssertLessThanOrEqual(draws, changes.count - changesBefore + 3, "no display-rate redraws between Kitty deadlines")
+        let refresh = Double(window?.screen?.maximumFramesPerSecond ?? 60)
+        for (previous, next) in zip(changes, changes.dropFirst()) {
+            XCTAssertEqual(next.time - previous.time, 0.25, accuracy: 2 / refresh)
         }
     }
 

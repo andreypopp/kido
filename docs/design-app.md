@@ -1158,10 +1158,16 @@ CoreVideo also stops and starts the link on main when a display reconfigures,
 for example at wake. Thus, the two never run concurrently: a concurrent
 `CVDisplayLinkStart` during `CVDisplayLinkStop` can hang the stop forever
 (upstream Ghostty ffaaf5d7a). The link runs while the surface is visible
-and the renderer has rebuilt cells or images or an animation (Kitty or
-custom shader) is pending. Thus, a sparse Kitty animation draws at the
-display's rate, not at its own cadence. The link stops when a frame
-has nothing to redraw. The fork's renderer starts the cursor blink timer only while
+and the renderer has rebuilt cells or images or a custom shader animates.
+A Kitty animation does not keep the link running. The render thread's
+animation timer wakes at the next frame's deadline, and the frame update
+rebuilds the images. Thus, without other render work, a Kitty animation
+causes a draw only when a frame is due, at its own cadence. The link stops
+when a frame has nothing to redraw. A Kitty frame's rebuild still starts
+the link once; its next callback finds nothing to redraw and stops it.
+A changed start or stop request always queues a sync on main, also when
+the link's actual state already matches it. Thus, a sync that is
+applying an earlier stop cannot lose a later start. The fork's renderer starts the cursor blink timer only while
 the surface is focused and the terminal's cursor-blinking mode is set, and the
 timer stops at its next tick when either ends. Thus, the default non-blinking
 cursor costs no idle frames. Viewport moves and output do
