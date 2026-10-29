@@ -82,17 +82,6 @@ so the skipped scroller refresh has tests but no measured effect. The 120 Hz
 effect is unmeasured. Measure with the profile recipe on a 120 Hz display (small
 investigation). Status: unverified.
 
-## Kitty animations draw at the display rate
-
-Ghostty's CVDisplayLink runs while any Kitty animation exists on a visible
-surface (`app/third_party/ghostty/src/renderer/generic.zig`,
-`syncDisplayLink`). Thus, an animation that changes every 400 ms draws
-about every 16.7 ms off screen, and possibly at 120 Hz on screen. The
-animation's frames keep their own cadence; the cost is CPU and GPU work for
-frames that do not change. Only panes that show a Kitty animation are
-affected. Stopping the link between animation deadlines is a small Ghostty
-change, which upstream could also take. Status: open, low priority.
-
 ## Stale tiled-content clip on screen
 
 A stale-root shrink could expose terminal pixels above the titlebar separator.
