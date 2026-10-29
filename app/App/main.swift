@@ -190,6 +190,18 @@ import SidebarFeed
         do throws(Failure) { try tools.validate() } catch { owners.forEach { $0.bundleChanged(error) } }
     }
 
+    private static let localConnectTitle = "Connect to Local Host"
+    private static let remoteConnectTitle = "Connect to Remote Host…"
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        for (title, action) in [(Self.localConnectTitle, #selector(connectLocalHost)), (Self.remoteConnectTitle, #selector(connectRemoteHost))] {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+        }
+        return menu
+    }
+
     func mainMenu() -> NSMenu {
         menus.rename = { [weak self] in self?.renameSession() }
         menus.close = { [weak self] in self?.closeSession() }
@@ -227,7 +239,8 @@ import SidebarFeed
         newWindow.representedObject = PaneCommand.newWindow
         file.items = [item("New Session", #selector(newSession), "n", .command), newWindow,
                       item("Close Window", #selector(closeWindow), "", []), .separator(),
-                      item("Connect to Remote Host…", #selector(connectRemoteHost), "K", [.command, .shift])]
+                      item(Self.localConnectTitle, #selector(connectLocalHost), "", []),
+                      item(Self.remoteConnectTitle, #selector(connectRemoteHost), "K", [.command, .shift])]
         for entry in file.items where entry.action != #selector(PaneView.runCommand(_:)) { entry.target = self }
         let find = NSMenu(title: "Find")
         find.items = [
@@ -286,7 +299,12 @@ import SidebarFeed
         WindowOwner.resetClipboardPermissions(owners)
     }
 
+    @objc func connectLocalHost() {
+        routes.connect(.local, cause: .newWindow)
+    }
+
     @objc func connectRemoteHost() {
+        if !background { NSApp.activate(ignoringOtherApps: true) }
         if palettePanel == nil { togglePalette() }
         palettePanel?.palette.enter(.connect)
     }
