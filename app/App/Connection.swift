@@ -514,18 +514,19 @@ final class Connection: @unchecked Sendable {
         restores.withLock { $0 += 1 }
         #endif
         debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-send pane=\(pane) chunk=\(historyChunkSize)")
-        client.send(first + PaneSync.commands(pane)) { [weak self, weak feed] replies in
+        HistoryCapture.capture(client, pane, loaded: 0, initial: true, first: first,
+                               last: PaneSync.commands(pane)) { [weak self, weak feed] result in
             debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-reply pane=\(pane)")
             guard let self, let feed, self.panes?[pane] === feed,
                   case .syncing(let current) = feed.history, current === request else { return request.completions.forEach { $0() } }
             var retry = true
             defer { request.completions.forEach { $0() }; self.drain(pane, feed, retry: retry) }
-            guard feed.view.historyEpoch == epoch, let replies else {
+            guard feed.view.historyEpoch == epoch, let result else {
                 if !feed.view.resizeDirty { feed.view.markContentDirty(preserveAnchor: true) }
                 feed.history = .settled(.older)
                 return
             }
-            if let snapshot = PaneSync.restore(replies.dropFirst(first.count)) {
+            if let capturedHistory = result.history, let snapshot = PaneSync.restore(result.replies, history: capturedHistory) {
                 let (data, history) = (snapshot.data, snapshot.history)
                 debug("resize t=\(ProcessInfo.processInfo.systemUptime) replay-start pane=\(pane) bytes=\(data.count)")
                 guard feed.view.feed(data, kind: .snapshot, epoch: epoch) else {
@@ -556,7 +557,7 @@ final class Connection: @unchecked Sendable {
                 retry = false
                 feed.history = .settled(.older)
                 DispatchQueue.main.async { [weak view = feed.view] in view?.restoreFailed(epoch: epoch) }
-                self.report("could not capture \(pane): \(replies)")
+                self.report("could not capture \(pane): \(result.replies)")
             }
         }
     }
@@ -830,16 +831,17 @@ final class Connection: @unchecked Sendable {
     private func fetch(_ pane: PaneID, _ feed: PaneFeed, token: UUID, chunk: Int = historyChunkSize, retries: Int = 0) {
         let position = feed.view.scrollPosition(), epoch = feed.view.historyEpoch
         debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-send pane=\(pane) loaded=\(position.retainedHistoryRows) chunk=\(chunk)")
-        client.send(HistoryCapture.commands(pane, loaded: position.retainedHistoryRows, chunk: chunk)) { [weak self, weak feed] replies in self?.gate("capture") { [weak self, weak feed] in
+        HistoryCapture.capture(client, pane, loaded: position.retainedHistoryRows, chunk: chunk) { [weak self, weak feed] result in self?.gate("capture") { [weak self, weak feed] in
             guard let self, let feed, self.panes?[pane] === feed,
                   case .fetching(let current) = feed.history, current == token else { return }
             defer { if case .settled = feed.history { self.drain(pane, feed) } }
-            guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, !feed.view.frozen, let replies else {
+            guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, !feed.view.frozen, let result else {
                 self.publish(feed, history: feed.sampledTmuxHistoryRows)
                 return
             }
             let position = feed.view.scrollPosition()
-            guard let capture = HistoryCapture(replies, loaded: position.retainedHistoryRows) else {
+            let replies = result.replies
+            guard let capture = result.history else {
                 self.publish(feed, history: feed.sampledTmuxHistoryRows)
                 self.failGoal(feed)
                 self.report("could not load older history for \(pane)")

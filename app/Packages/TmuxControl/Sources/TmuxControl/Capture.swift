@@ -26,9 +26,9 @@ struct Capture {
         return first.start < 0 ? first.end : first.start - 1
     }
 
-    init?(_ replies: some Collection<Reply>, styled: Bool = false) {
+    init?(_ replies: some Collection<Reply>) {
         let replies = Array(replies)
-        guard replies.count == (styled ? 3 : 2), let state = HistoryMetadata(replies.first),
+        guard replies.count == 2, let state = HistoryMetadata(replies.first),
               case .success(let metadata) = replies.last else { return nil }
         self.state = state
         var start: Int?, body = ""
@@ -37,15 +37,11 @@ struct Capture {
                   let separator = line.utf8[line.utf8.index(after: space)...].firstIndex(of: 32) else { return nil }
             if start == nil { start = row }
             let wrapped = line.utf8[line.utf8.index(after: space)..<separator].contains(87)
-            if !styled { body += line[line.index(after: separator)...] }
+            body += line[line.index(after: separator)...]
             if !wrapped { lines.append((body, start!, row, false)); start = nil; body = "" }
         }
         if let start, let row = metadata.last?.split(separator: " ", maxSplits: 1).first.flatMap({ Int($0) }) {
             lines.append((body, start, row, true))
-        }
-        if styled {
-            guard case .success(let text) = replies[1], text.count == lines.count else { return nil }
-            for index in lines.indices { lines[index].text = text[index] }
         }
     }
 }

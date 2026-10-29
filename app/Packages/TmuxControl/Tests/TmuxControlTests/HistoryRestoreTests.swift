@@ -26,6 +26,7 @@ import Testing
 }
 
 @Test func restoreAlwaysRequestsNewestTenThousand() {
-    let commands = PaneSync.commands(PaneID("%1")!)
-    #expect(commands.contains { $0.line.contains("-S -10001") })
+    let commands = HistoryCapture.commands(PaneID("%1")!, loaded: 0)
+    #expect(commands.contains { $0.line.contains("-r -G -S -10000") })
+    #expect(commands.contains { $0.line.contains("-F -L -T -N -S -10001") })
 }

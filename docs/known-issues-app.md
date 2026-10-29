@@ -3,12 +3,13 @@
 ## Resync loses the pen, charset and pending wrap
 
 A pane can show wrong colours, links or `qqqq` instead of box lines after
-resize, window switching or reconnect. `app/Packages/TmuxControl/Sources/TmuxControl/PaneSync.swift:62-71`
-resets SGR and positions the cursor without restoring the current pen,
-G0/G1 designation, SI/SO selection or pending-wrap latch.
+resize, window switching or reconnect. `app/Packages/TmuxControl/Sources/TmuxControl/PaneSync.swift:59-67`
+replays tmux's cells exactly, then positions the cursor without restoring
+the program's current pen, G0/G1 designation, SI/SO selection or
+pending-wrap latch.
 The pen (fg/bg/attr/us/link) and charset live in tmux's private
 `input_ctx.cell` (`third_party/tmux/input.c:79`); no requested format exposes them.
-Styled capture describes cells, not the current pen or charset; `-P -C`
+The `-r` replay describes cells, not the current pen or charset; `-P -C`
 returns unfinished parser bytes, not that state.
 This is display-only and pane-local, chiefly for incremental curses output
 (htop, vim, mc). It heals when the program restates the missing state;
@@ -63,6 +64,16 @@ see [Stress harness](design-app.md#stress-harness).
 There is no reproduction or proof of this pane-local visual race, nor a
 confirmed healing bound. A bounded GPU-order probe is medium work; fixing
 ordering/fencing depends on its result. Status: unverified.
+
+## Stale row after pi /reload
+
+After `/reload` in pi, a pane showed a stale "Reloading keybindings…"
+row above "Reloaded". tmux's own grid held both rows, so the row came from
+pi's output, not from the app or a restore. A likely cause is pi-plain
+patches that survive `/reload` with stale closures. pi's standard renderer,
+replayed through 18 tmux and 180 Ghostty paths, leaves only "Reloaded".
+The next step is to record real pi with pi-plain through `pipe-pane`
+during `/reload` (small investigation). Status: parked by the user.
 
 ## Never-focused pane frame rate
 
@@ -192,6 +203,18 @@ captures. `make visual` covers a transferred-host stand-in, not AppKit's
 The dark-theme negative control can differ by no more than the 2/255
 pixel tolerance, so it cannot reliably detect a missing background cover.
 Status: accepted coverage limitation.
+
+## Early-wrapped wide glyph under a coloured background
+
+When a wide glyph does not fit in the last column, the terminal wraps it
+early and leaves that column empty. tmux and Ghostty fill that cell
+differently. For `one\r\ntwo\r\nESC[48;2;223;231;236mabcd界Z` at width 5,
+tmux keeps the default background at column 4 of row 1 and columns 3-4
+of row 2. Live Ghostty paints them blue-grey: it fills the spacer head
+with the current background (background colour erase). A restore
+reproduces tmux's cells, so a live pane and a restored pane differ there.
+This is an emulator difference, not a capture defect. Width 1, where no
+wide glyph fits, is out of scope. Status: accepted.
 
 ## Transparent paper changes glyph edges
 
@@ -402,6 +425,25 @@ the old size for its `c=`/`r=` until it restarts. A tty client with a
 larger cell that attaches later changes tmux's window value in the same
 way. Status: accepted.
 
+## An image above the restored history is not shown
+
+A placement is written by the replay range that holds its first row
+(`share/rpc/contract.md`, "Pane text replay"). When a placement starts
+just above the oldest restored row, or on the partial line that a restore
+omits, no range of the restore writes it. Its visible part in the
+retained history then shows the text under it, without the image, until
+Load more reaches its first row. Status: accepted.
+
+## The oldest restored line can be partial on the alternate screen
+
+While the alternate screen is on, a `-r` history range counts the rows
+that tmux reflows to the current width, but `history_size` and the plain
+`-F -L -T` metadata count the stored rows. After a resize the two
+numberings differ, so the restore cannot check that its range starts at
+a line start ([Panes](design-app.md#panes)). The oldest restored line can
+then start mid-line. Exact boundaries need metadata in the `-r` numbering
+from the fork. Status: accepted.
+
 ## Image fetch rows can drift
 
 The app names `-K` rows from its own stream position. Output that tmux
@@ -424,14 +466,16 @@ accepted; it is the program's contract.
 
 ## Restore latency
 
-The reported Release baseline is roughly 20ms for 10k lines, dominated by
-tmux serializing `capture-pane`; current code still uses capture batches
-(`app/Packages/TmuxControl/Sources/TmuxControl/PaneSync.swift:28`).
-That timing is a measurement to recheck, not a code guarantee. Switching or
-repairing panes can expose latency; it ends when replay completes.
-Optimizing capture serialization is medium-to-large fork work. Float-move
-micro-optimizations are not required without profiling evidence (small
-investigation first). Status: accepted cost; current timing unverified.
+Measured in October 2026 (Release, 10,000 hard rows, median of 10): the
+restore batch takes about 7.2 ms to capture plain rows and 9.7 ms for
+coloured rows, against 10.1 ms and 10.6 ms with the earlier `-e -J`
+capture. Encoding takes about 0.2 ms and the Ghostty feed 0.8-1.3 ms.
+The snapshot is about 350 KB plain and 570 KB coloured, against about
+310 KB before: `-r` writes each row's full SGR state
+(`app/Packages/TmuxControl/Sources/TmuxControl/PaneSync.swift:28`). A
+pane whose oldest captured row continues a wrapped line pays one more
+batch. Switching or repairing panes can expose latency; it ends when
+replay completes. Status: accepted cost.
 
 # Dev/tooling
 
