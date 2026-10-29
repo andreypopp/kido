@@ -109,12 +109,19 @@ Host is trimmed and accepts an SSH alias or user@hostname, not options,
 whitespace, controls or shell syntax. Ports and jump hosts belong in SSH
 config. File → **Connect to Remote Host…** (Shift-Command-K) opens the
 [command palette](#command-palette) in its Connect mode. The mode uses the same
-remote routing as URLs and the App Intent. The cold
-remote-launch gate still holds Local requests back. Dock reopen still focuses
-existing windows; with no window it opens a Local window. The app opts out of
-automatic termination at launch: AppKit marks a windowless app as terminated
-by the transparent app lifecycle (TAL), and a Dock reopen then does not reach
-the process. The recent list lives in preferences (`recentHosts`) and is
+remote routing as URLs and the App Intent. File → **Connect to Local Host**,
+directly above it and with no key equivalent, opens a new Local window on each
+request, also when other windows are open. Use it to open Local again after
+you close the Local window while a remote window stays open. The Dock menu has
+the same two items, with the same actions, and the root palette has the same
+two rows. A Dock menu item does not activate the app, so Connect to Remote
+Host… activates it before it opens the palette. The cold remote-launch gate
+still holds back ordinary Local opens (launch, reopen, New Session); Connect
+to Local Host is a new-window request, which the gate does not hold back. Dock
+reopen still focuses existing windows; with no window it opens a Local window.
+The app opts out of automatic termination at launch: AppKit marks a
+windowless app as terminated by the transparent app lifecycle (TAL), and a
+Dock reopen then does not reach the process. The recent list lives in preferences (`recentHosts`) and is
 refreshed by every remote path, palette, URL or intent alike. There is no
 remote restore. Off-screen FileMenuTests create inert window owners without
 starting a server.
@@ -146,8 +153,8 @@ only when no live window exists; reopening with a live window focuses it.
 There is no timer, debounce or compensating close of a Local window. Off-screen
 routing tests prove queued cold and warm behavior. The launch gate requires
 `launchIsDefaultUserInfoKey == true` and an initial `oapp` (if available);
-non-default launches discard queued Local requests and suppress ordinary-open
-until the requested remote arrives. Apple's
+non-default launches discard queued Local requests, except new-window
+requests, and suppress ordinary-open until the requested remote arrives. Apple's
 [launch key](https://developer.apple.com/documentation/appkit/nsapplication/launchisdefaultuserinfokey)
 defines non-default launches as false. URL launch is a non-default `GURL`
 request, handled by
@@ -1549,8 +1556,9 @@ The root list is built from live state, in this order:
   represented object, never by title) for its title, menu path and current
   key equivalent: New Session, Rename Session…, Close Session, New Window,
   Close Window, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
-  Remote Host…, Hide/Show Sidebar, Focus Sidebar, Enter Full Screen, Find…,
-  Copy Mode, Prompt…, Reset Clipboard and Upload Permissions and Theme…. The window
+  Local Host, Connect to Remote Host…, Hide/Show Sidebar, Focus Sidebar,
+  Enter Full Screen, Find…, Copy Mode, Prompt…, Reset Clipboard and Upload
+  Permissions and Theme…. The window
   commands need an anchor. The pane commands need a live focused pane: a
   connected anchor whose saved responder is a visible pane of that window, or
   a view inside one, such as its Find bar. Prompt… also needs an agent in the

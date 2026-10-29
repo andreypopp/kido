@@ -603,7 +603,7 @@ import TmuxControl
             let noWindow = try XCTUnwrap(app.palettePanel)
             XCTAssertEqual(noWindow.palette.shown.compactMap { row -> String? in
                 if case .command = row.entry.id { row.entry.title } else { nil }
-            }, ["New Session", "Connect to Remote Host…", "Theme…"])
+            }, ["New Session", "Connect to Local Host", "Connect to Remote Host…", "Theme…"])
             image(noWindow.palette, "\(theme)-nowindow")
         }
         try await themeSnapshots()
@@ -1126,7 +1126,7 @@ import TmuxControl
         owner.window.makeFirstResponder(pane)
         app.togglePalette()
         let root = try XCTUnwrap(app.palettePanel?.palette)
-        let row = try XCTUnwrap(root.shown.first { $0.entry.id == .command(15) }?.entry)
+        let row = try XCTUnwrap(root.shown.first { $0.entry.id == .command(16) }?.entry)
         XCTAssertFalse(root.selectedEntry?.agent == true)
         try sendKey(app.palettePanel, "o", code: 31, modifiers: .command)
         XCTAssertEqual(app.palettePanel?.palette.prompt?.source.pane, pane.pane, "root ⌘O on a non-agent uses the anchor pane")
@@ -1178,7 +1178,7 @@ import TmuxControl
         XCTAssertNil(app.palettePanel)
         XCTAssertTrue(probe.recorded.isEmpty)
         app.togglePalette()
-        XCTAssertFalse(app.palettePanel?.palette.shown.contains { $0.entry.id == .command(15) } == true)
+        XCTAssertFalse(app.palettePanel?.palette.shown.contains { $0.entry.id == .command(16) } == true)
         let noAgentPanel = try XCTUnwrap(app.palettePanel)
         try sendKey(noAgentPanel, "o", code: 31, modifiers: .command)
         XCTAssertEqual(noAgentPanel.palette.mode, .root)
@@ -1208,7 +1208,7 @@ import TmuxControl
         owner.testReceive(liveSnapshot)
         runPanel.palette.field.stringValue = ""
         runPanel.palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
-        XCTAssertTrue(app.palettePanel?.palette.shown.contains { $0.entry.id == .command(15) } == true)
+        XCTAssertTrue(app.palettePanel?.palette.shown.contains { $0.entry.id == .command(16) } == true)
         app.closePalette()
         pane.endCopy()
         owner.window.makeFirstResponder(pane)
@@ -1451,7 +1451,7 @@ import TmuxControl
         XCTAssertTrue(app.routes.recent.isEmpty)
         clear.sendEvent(try key(clear, "\u{7f}", code: 51))
         XCTAssertEqual(clear.palette.mode, .root)
-        XCTAssertEqual(clear.palette.shown.map(\.entry.title), ["New Session", "Connect to Remote Host…", "Theme…"])
+        XCTAssertEqual(clear.palette.shown.map(\.entry.title), ["New Session", "Connect to Local Host", "Connect to Remote Host…", "Theme…"])
         clear.sendEvent(try key(clear, "\u{1b}", code: 53))
         XCTAssertNil(app.palettePanel)
     }
