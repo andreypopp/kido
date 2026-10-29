@@ -418,6 +418,16 @@ Kido's commit order on master is:
 - Kitty animation (frames, `a=a`, `a=c`, `d=f`) and its restore
   through `-K`, in one commit. It depends on the frame edits commit,
   so it drops with it.
+- `capture-pane -e` opens a link again on the row that continues it,
+  in one commit. It is a candidate for upstream.
+- `capture-pane` keeps main history rows at their stored width while
+  the alternate screen is on, in one commit. It is a candidate for
+  upstream.
+- An erase keeps `GRID_FLAG_CLEARED` on a cell with extended data, in
+  one commit. It is a candidate for upstream.
+- `capture-pane -e` writes overline as SGR 53, not `5:3`, in one
+  commit. It is a candidate for upstream.
+- The `capture-pane -r` replay stream, in one commit.
 
 Before you force-push `fork`, push its previous head as a dated branch
 `fork-YYYY-MM-DD`. This keeps older submodule pins reachable.

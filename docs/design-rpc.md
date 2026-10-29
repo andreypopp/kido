@@ -48,7 +48,7 @@ not a protocol version.
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
 `6.2`. It versions the RPC surface between the binary and its client,
 and the tmux commands and flags that the contract names, such as
-`capture-pane -G` and `-K` and the `image-shm` control flag. A remote kido with an older fork thus fails
+`capture-pane -G`, `-K` and `-r` and the `image-shm` control flag. A remote kido with an older fork thus fails
 the version check, not the first capture. The version describes no tmux
 server state. Thus, changing it never requires a server restart.
 

@@ -1,6 +1,6 @@
 # kido rpc protocol 6.2
 
-fork revision: c3be2327977b157836693b8af202e951aa900729
+fork revision: a020eaf3c42e24bf9e383a080219bd1caa65517e
 
 Protocol.value is the binary's protocol constant. It versions this RPC
 surface and the tmux commands this contract names, such as the "Pane
@@ -545,6 +545,97 @@ are addressable only by session id or id prefix. Generic programs retain
 their OSC record title. A pi message duplicating the session name is
 dropped from `msg`.
 
+## Pane text replay
+
+`capture-pane -p -r` writes the rows of the range (`-S`/`-E`, `-a`, `-M`)
+as one stream for a terminal of the pane's current width. Written into
+such a terminal from column 0 with the default pen, it reproduces
+tmux's cells: text, attributes, background, OSC 8 links, cleared cells
+and soft wraps. Kido.app uses it to restore a pane's screen and history.
+
+Width. While the alternate screen is on, tmux does not reflow the main
+grid: the saved screen and the main history keep the width that they
+had when the alternate screen started, and tmux reflows them when it
+ends. `-r` writes them as that reflow will make them: tmux runs its
+alternate-screen exit on a copy of the main screen and captures the
+copy. Then:
+
+- A range with history rows (`-S`/`-E` below 0) counts rows of the
+  reflowed main grid.
+- `-a` reads the reflowed main screen; without `-S`/`-E` it gives that
+  screen's rows. The reflow can move parts of the old screen into
+  history, as a real exit does.
+- A range of screen rows only (0 and up) without `-a` reads the live
+  alternate screen.
+- A single range that spans history and the alternate screen has no
+  replay guarantee; capture them separately.
+
+So `-r -S - -E -1`, then `-ar`, equals the main capture after the
+alternate screen ends, byte for byte. Kido.app writes these two, then
+`ESC[?1049h` and `-r -S 0 -E -`. The copy costs about 14 ms for a small
+range over 50,000 history rows; a capture of the live alternate screen
+without a range makes no copy.
+
+- No row starts with a reset. Every row ends with the default pen, any
+  OSC 8 link closed and the G0 character set, so nothing carries into
+  the next row; a link that continues on the next row opens again
+  there. Thus a stream starts and ends with the default pen.
+- Text writes only the SGR changes from the previous cell. A run of
+  cleared cells is one SGR to its background (only the changes; when
+  attributes must go, `ESC[0m` and the background), then
+  `CSI n X CSI n C`; it is erased, not written as
+  spaces. At the row end comes `ESC[m` when the pen is not default, then
+  `ESC[K` when the rest of the row is erased with the default
+  background. A full row ends in the last column with no erase, so the
+  cursor keeps its pending wrap.
+- After a hard row end comes `CR LF`. After a soft wrap comes nothing,
+  and the next row's first glyph wraps: a full row, or a row whose last
+  column stays empty because the next row starts with a wide glyph that
+  does not fit (an early wrap). Any other wrapped row (it ends or the
+  next row starts with cleared cells, or it is shorter; a tab counts as
+  single spaces, so it never makes an early wrap) gets the hard
+  separator, so the replay keeps its cells but not its wrap flag.
+- The last row of the range gets its separator by the same rule when
+  the grid has a row after it. Only the grid's last row has none, and
+  `-p` adds no final newline, so the replay of the screen does not
+  scroll. Thus adjacent ranges concatenate: the captures `-S A -E B`
+  and `-S B+1 -E C` together equal the capture `-S A -E C`, with or
+  without `-G`, when the grid does not change between them.
+
+`-r` implies `-e`; `-J`, `-N` and `-T` have no effect. `-C`, `-F`, `-H`,
+`-I`, `-K`, `-L`, `-P` and `-R` with `-r` fail with
+`incompatible capture flags with -r`.
+
+With `-G` (below), `-r` selects placements over the whole grid. A
+placement is written only on its first row that is still in the grid,
+by the range that holds that row, and whole: it is cropped only to the
+grid's rows, never to the range. Each placement is `CSI <col+1> G` and
+its `a=p` line (`C=1`). They never change a row's separator:
+
+- After a hard separator, or on the grid's first row, the row's
+  placements come first, then `CR`, then its text.
+- After a natural soft wrap, the row's first glyph comes first (it
+  makes the wrap), then the placements, then `CSI <w+1> G` back after
+  that glyph (`w` is its width), then the rest of the row. The text
+  keeps its SGR and OSC 8 state across the split. If that glyph fills
+  the row (a pane of one or two columns), `CR` and the whole row follow
+  the placements instead, so the row ends in its pending wrap.
+
+Anonymous image ids (`0x80000000` and up) come from the whole grid's
+selection. A `-K` over another range gives the same ids, except when
+two such ids collide in the low 31 bits, which the selection resolves
+in order. Only a range that includes the grid's last row writes the pending
+upload, after that row, so it appears once in a sequence of ranges.
+
+The fork also fixes four faults of plain capture that the replay needs.
+With `-e`, a link that a row closes at its end opens again on the next
+row, with or without `-J`. While the alternate screen is on, main
+history rows are captured at their stored width, not cut to the pane's
+width. An erase under an RGB or theme background, or over a cell with
+extended data (such as a wide glyph), keeps the cell cleared, as it does
+under a palette background. With `-e`, overline is `ESC[53m`, not the
+colon form `ESC[5:3m`, which tmux itself does not read as overline.
+
 ## Pane images
 
 kido's tmux is built with images (`#{image_support}` is 1). A pane stores
@@ -589,7 +680,7 @@ size and its last cell is not full, that key is 0, so the client draws
 that axis at its own size and does not stretch it to the cell edge. A
 scaled axis whose last cell is not full (the program gave only one of
 `c=` and `r=`) keeps its cell count; the client then stretches it to the
-cell edge, a known limit. `-G` applies with `-e`, `-J` and
+cell edge, a known limit. `-G` applies with `-e`, `-J`, `-r` and
 every range. Without placements its output equals the same capture
 without `-G`. When the capture includes the live screen and the pane's
 program is in the middle of a chunked upload (`m=1`), `-G` writes after
