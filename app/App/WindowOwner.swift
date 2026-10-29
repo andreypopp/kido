@@ -891,11 +891,32 @@ private class AlertEscape: NSView {
         if let session = currentSession { confirmClose(.session(session.id), name: session.name) }
     }
 
-    func renameSession(_ id: SessionID, _ name: String, done: @escaping (String?) -> Void) {
-        send([Command("rename-session", "-t", id, "--", name)]) { replies in
+    private func sessionCommand(_ command: Command, done: @escaping (String?) -> Void, then: @escaping ([String]) -> Void) {
+        send([command]) { replies in
             guard let reply = replies?.first else { return done("The control client is not ready.") }
-            if case .failure(let lines) = reply { done(lines.joined(separator: "\n")) }
-            else { done(nil) }
+            switch reply {
+            case .failure(let lines): done(lines.joined(separator: "\n"))
+            case .success(let lines): then(lines)
+            }
+        }
+    }
+
+    func renameSession(_ id: SessionID, _ name: String, done: @escaping (String?) -> Void) {
+        sessionCommand(Command("rename-session", "-t", id, "--", name), done: done) { _ in done(nil) }
+    }
+
+    func createSession(_ name: String, done: @escaping (String?) -> Void) {
+        guard let session = currentSession else { return done("no such session") }
+        sessionCommand(Command("display-message", "-p", "-t", "\(session.id):", "#{pane_current_path}"), done: done) { [weak self] lines in
+            guard let self else { return done("The control client is not ready.") }
+            let cwd = lines.joined(separator: "\n")
+            guard !cwd.isEmpty else { return done("no such session") }
+            sessionCommand(Command("new-session", "-d", "-P", "-F", "#{session_id}", "-s", name, "-c", cwd), done: done) { [weak self] lines in
+                guard let self else { return done("The control client is not ready.") }
+                guard let id = lines.first.flatMap(SessionID.init) else { return done("The server did not return a session id.") }
+                perform(.selectSession(id))
+                done(nil)
+            }
         }
     }
 

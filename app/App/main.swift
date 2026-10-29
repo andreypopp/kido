@@ -313,7 +313,7 @@ import SidebarFeed
         guard let owner = paletteFocus?.owner ?? current, let session = owner.currentSession,
               let instance = owner.snapshot?.serverInstance else { return }
         if palettePanel == nil { togglePalette() }
-        palettePanel?.palette.enter(.rename(owner, instance, session.id, original: session.name))
+        palettePanel?.palette.enter(.sessionName(owner, instance, .rename(session.id, original: session.name)))
     }
 
     @objc func showThemes() {
@@ -393,8 +393,8 @@ import SidebarFeed
         panel.connect = { [weak self] in self?.connectRemoteHost() }
         panel.prompt = { [weak self, weak panel] in
             guard let self, let panel else { return }
-            if let entry = panel.palette.selectedEntry, entry.promptable, case .pane(let host, let position) = entry.id,
-               let owner = owners.first(where: { $0.host == host && $0.alive }),
+            if let entry = panel.palette.selectedEntry, entry.promptable, entry.check() == nil, case .pane(let position) = entry.id,
+               let owner = paletteFocus?.owner,
                let source = owner.promptSource(session: position.session, window: position.window, pane: position.pane, quote: nil, preselect: position.pane) {
                 panel.palette.enter(.prompt(source))
             } else if let pane = PaneView.owner(paletteFocus?.responder) {
@@ -416,23 +416,27 @@ import SidebarFeed
             return paletteEntries(owner: paletteFocus?.owner, responder: paletteFocus?.responder)
         }
         panel.palette.modeEntries = { [weak self] query, invalid in self?.connectEntries(query: query, invalid: invalid) ?? [] }
-        panel.palette.rename = { [weak self, weak panel] text in
+        panel.palette.sessionName = { [weak self, weak panel] text in
             guard let self, let panel, self.palettePanel === panel,
-                  case .rename(let owner, let instance, let id, let original) = panel.palette.mode else { return }
+                  case .sessionName(let owner, let instance, let operation) = panel.palette.mode else { return }
             let mode = panel.palette.mode
             guard owner.alive, owner.canNavigate, let snapshot = owner.snapshot, snapshot.serverInstance == instance,
-                  snapshot.sessions.contains(where: { $0.id == id }) else {
-                panel.palette.reject("That session is gone")
+                  operation.session.map({ id in snapshot.sessions.contains { $0.id == id } }) ?? true else {
+                panel.palette.reject(operation == .create ? "That window is gone" : "That session is gone")
                 return
             }
-            switch SessionRename(text, session: id, original: original, sessions: snapshot.sessions) {
+            switch SessionName(text, operation: operation, sessions: snapshot.sessions) {
             case .revert: closePalette()
             case .reject(let message): panel.palette.reject(message)
-            case .rename(let name):
-                owner.renameSession(id, name) { [weak self, weak panel] error in
+            case .accept(let name):
+                let done: (String?) -> Void = { [weak self, weak panel] error in
                     guard let self, let panel, self.palettePanel === panel, panel.palette.mode == mode else { return }
                     if let error { panel.palette.reject(error) }
                     else { self.closePalette() }
+                }
+                switch operation {
+                case .create: owner.createSession(name, done: done)
+                case .rename(let id, _): owner.renameSession(id, name, done: done)
                 }
             }
         }

@@ -7,13 +7,13 @@ enum PaletteMode: Equatable {
     case root, connect
     case theme(ThemeStep)
     case prompt(PromptSource)
-    case rename(WindowOwner, ServerInstance, SessionID, original: String)
+    case sessionName(WindowOwner, ServerInstance, SessionName.Operation)
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
         case (.root, .root), (.connect, .connect): true
         case let (.prompt(a), .prompt(b)): a == b
         case let (.theme(a), .theme(b)): a == b
-        case let (.rename(a, ai, asid, an), .rename(b, bi, bsid, bn)): a === b && ai == bi && asid == bsid && an == bn
+        case let (.sessionName(a, ai, action), .sessionName(b, bi, other)): a === b && ai == bi && action == other
         default: false
         }
     }
@@ -21,8 +21,8 @@ enum PaletteMode: Equatable {
 
 private final class PaletteChip: NSView {
     var mode: PaletteMode = .root
-    private var title: String { switch mode { case .prompt: "Prompt"; case .connect: "Connect"; case .theme: "Theme"; default: "Rename session" } }
-    private var symbol: String { switch mode { case .prompt: "bubble.left"; case .connect: "globe"; case .theme: "paintpalette"; default: "pencil" } }
+    var title: String { switch mode { case .prompt: "Prompt"; case .connect: "Connect"; case .theme: "Theme"; case .sessionName(_, _, .create): "New session"; default: "Rename session" } }
+    private var symbol: String { switch mode { case .prompt: "bubble.left"; case .connect: "globe"; case .theme: "paintpalette"; case .sessionName(_, _, .create): "plus"; default: "pencil" } }
     var width: CGFloat { 33 + (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -60,8 +60,12 @@ private final class PaletteFoot: NSView {
             (right as NSString).draw(at: NSPoint(x: bounds.width - 16 - size.width, y: 8), withAttributes: attributes)
             return
         }
-        let session: String? = if case .rename(_, _, _, let original) = mode { original } else { nil }
-        for text in session == nil ? ["↩ connect", "⌫ on empty field back", "esc back"] : ["↩ rename", "esc back"] {
+        let (keys, session): ([String], String?) = switch mode {
+        case .sessionName(_, _, .create): (["↩ create", "esc back"], nil)
+        case .sessionName(_, _, .rename(_, let original)): (["↩ rename", "esc back"], original)
+        default: (["↩ connect", "⌫ on empty field back", "esc back"], nil)
+        }
+        for text in keys {
             let size = (text as NSString).size(withAttributes: attributes)
             (text as NSString).draw(at: NSPoint(x: x, y: (bounds.height - size.height) / 2), withAttributes: attributes)
             x += size.width + 12
@@ -365,7 +369,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     private(set) var error: String?
     var modeEntries: (String, Bool) -> [(entry: PaletteEntry, offsets: [[Int]])] = { _, _ in [] }
     var rootEntries: () -> [PaletteEntry] = { [] }
-    var rename: (String) -> Void = { _ in }
+    var sessionName: (String) -> Void = { _ in }
     private let card: PaneCapsule
     private let separator = NSBox()
     private let scroll = NSScrollView()
@@ -394,7 +398,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: 16)
-        field.placeholderString = "Search sessions, panes and commands"
+        field.placeholderString = "Search panes and commands"
         field.cell?.isScrollable = true
         field.delegate = self
         field.setAccessibilityLabel("Command palette")
@@ -463,7 +467,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     }
 
     private var listHeight: CGFloat {
-        if case .rename = mode { return 0 }
+        if case .sessionName = mode { return 0 }
         if mode == .connect, shown.isEmpty { return field.stringValue.isEmpty ? 42 : 8 }
         return shown.isEmpty ? PaletteList.entryHeight : CGFloat(min(shown.count, 12)) * PaletteList.entryHeight + 8 - (shown.prefix(12).contains { $0.entry.id == .clearRecent } ? 6 : 0)
     }
@@ -510,17 +514,19 @@ final class PaletteView: NSView, NSTextFieldDelegate {
             }
         case .root:
             entries = rootEntries()
-            field.placeholderString = "Search sessions, panes and commands"
+            field.placeholderString = "Search panes and commands"
             field.setAccessibilityLabel("Command palette")
         case .connect:
             field.placeholderString = "user@hostname or SSH alias"
             field.setAccessibilityLabel("Connect to remote host")
-        case .rename(_, _, _, let original):
+        case .sessionName(_, _, .create):
+            field.placeholderString = "Session name"
+        case .sessionName(_, _, .rename(_, let original)):
             field.placeholderString = ""
             field.stringValue = original
-            field.setAccessibilityLabel("Rename session")
         }
         chip.mode = mode
+        if case .sessionName = mode { field.setAccessibilityLabel(chip.title) }
         foot.mode = mode
         chip.needsDisplay = true
         foot.needsDisplay = true
@@ -548,7 +554,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         errorLine.needsDisplay = true
         NSAccessibility.post(element: errorLine, notification: .announcementRequested, userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
         filter()
-        if case .rename = mode { field.selectText(nil) }
+        if case .sessionName = mode { field.selectText(nil) }
     }
 
     func refresh(_ entries: [PaletteEntry]) {
@@ -565,7 +571,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         case .root: shown = PaletteEntry.ranked(entries, query: field.stringValue)
         case .connect:
             shown = modeEntries(field.stringValue, error != nil)
-        case .rename, .prompt: shown = []
+        case .sessionName, .prompt: shown = []
         case .theme(let step):
             shown = theme?.entries(step) ?? []
         }
@@ -576,7 +582,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         empty.setAccessibilityLabel(empty.text)
         empty.needsDisplay = true
         if prompt != nil { empty.isHidden = true }
-        else if case .rename = mode { empty.isHidden = true }
+        else if case .sessionName = mode { empty.isHidden = true }
         else { empty.isHidden = !shown.isEmpty || (mode == .connect && !field.stringValue.isEmpty) }
         scroll.isHidden = shown.isEmpty
         if case .theme = mode { table.selectRowIndexes([], byExtendingSelection: false) }
@@ -654,7 +660,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         case #selector(NSResponder.moveUp(_:)): select(table.selectedRow - 1)
         case #selector(NSResponder.moveDown(_:)): select(table.selectedRow + 1)
         case #selector(NSResponder.insertNewline(_:)):
-            if case .rename = mode { rename(field.stringValue) }
+            if case .sessionName = mode { sessionName(field.stringValue) }
             else { choose(table.selectedRow) }
         case #selector(NSResponder.cancelOperation(_:)):
             if case .theme(.save) = mode { enter(.theme(.pick)) }
