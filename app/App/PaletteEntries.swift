@@ -117,15 +117,16 @@ struct PaletteEntry {
             case .zoom: (8, .pane)
             default: nil
             }
-        case #selector(AppDelegate.connectRemoteHost): (9, .always)
-        case #selector(Sidebar.toggleSidebar(_:)): (10, .window)
-        case #selector(Sidebar.focusSidebar(_:)): (11, .window)
-        case NSSelectorFromString("toggleFullScreen:"): (12, .window)
-        case #selector(PaneView.showFind(_:)): (13, .pane)
-        case #selector(PaneView.toggleCopyMode(_:)): (14, .pane)
-        case #selector(PaneView.promptSelectionItem(_:)): (15, .pane)
-        case #selector(AppDelegate.resetClipboardPermissions): (16, .window)
-        case #selector(AppDelegate.showThemes): (17, .always)
+        case #selector(AppDelegate.connectLocalHost): (9, .always)
+        case #selector(AppDelegate.connectRemoteHost): (10, .always)
+        case #selector(Sidebar.toggleSidebar(_:)): (11, .window)
+        case #selector(Sidebar.focusSidebar(_:)): (12, .window)
+        case NSSelectorFromString("toggleFullScreen:"): (13, .window)
+        case #selector(PaneView.showFind(_:)): (14, .pane)
+        case #selector(PaneView.toggleCopyMode(_:)): (15, .pane)
+        case #selector(PaneView.promptSelectionItem(_:)): (16, .pane)
+        case #selector(AppDelegate.resetClipboardPermissions): (17, .window)
+        case #selector(AppDelegate.showThemes): (18, .always)
         default: nil
         }
     }

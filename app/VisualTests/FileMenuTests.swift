@@ -3,6 +3,54 @@ import XCTest
 @testable import Kido
 
 @MainActor final class FileMenuTests: VisualTestCase {
+    func testConnectMenusAndPalette() throws {
+        let app = AppDelegate()
+        let menu = app.mainMenu()
+        let file = try XCTUnwrap(menu.items.first { $0.title == "File" }?.submenu)
+        let dock = try XCTUnwrap(app.applicationDockMenu(NSApp))
+        let local = try XCTUnwrap(file.items.first { $0.action == #selector(AppDelegate.connectLocalHost) })
+        let remote = try XCTUnwrap(file.items.first { $0.action == #selector(AppDelegate.connectRemoteHost) })
+        XCTAssertEqual(file.index(of: remote), file.index(of: local) + 1)
+        XCTAssertTrue(file.items[file.index(of: local) - 1].isSeparatorItem)
+        XCTAssertEqual(local.keyEquivalent, "")
+        XCTAssertEqual(local.keyEquivalentModifierMask, [])
+        XCTAssertEqual(dock.items.map(\.title), [local.title, remote.title])
+        for (item, source) in zip(dock.items, [local, remote]) {
+            XCTAssertEqual(item.action, source.action)
+            XCTAssertTrue(item.target === app)
+            XCTAssertTrue(source.target === app)
+        }
+        let entries = PaletteEntry.commands(menu, owner: nil, responder: nil)
+        var opened: [Kido.Host] = []
+        app.routes.ready(isDefaultLaunch: false) { host, cause in
+            opened.append(host)
+            XCTAssertEqual(cause.label, "new window")
+        }
+        let entry = try XCTUnwrap(entries.first { $0.title == local.title })
+        guard case .run(let run) = entry.operation else { return XCTFail("Local must run the shared action") }
+        run()
+        app.connectLocalHost()
+        XCTAssertEqual(opened, [.local, .local])
+    }
+
+    func testLocalConnectCreatesNewOwners() throws {
+        let board = NSPasteboard(name: .init("local-connect-" + UUID().uuidString))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let app = AppDelegate(runtime: runtime)
+        defer {
+            app.owners.forEach { $0.close() }
+            board.releaseGlobally()
+        }
+        app.connectLocalHost()
+        app.routes.ready(isDefaultLaunch: false) { host, cause in _ = app.open(host, start: false, cause: cause) }
+        XCTAssertEqual(app.owners.map(\.host), [.local])
+        app.owners.forEach { $0.close() }
+        _ = app.open(.remote("alias"), start: false)
+        app.connectLocalHost()
+        app.connectLocalHost()
+        XCTAssertEqual(app.owners.filter(\.alive).map(\.host), [.remote("alias"), .local, .local])
+    }
+
     func testLocalMenuRespectsColdRemoteGate() {
         let app = AppDelegate()
         var opened: [Kido.Host] = []
