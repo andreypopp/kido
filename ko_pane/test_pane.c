@@ -1,6 +1,7 @@
 #define _DARWIN_C_SOURCE
 #define _GNU_SOURCE
 #include "protocol.h"
+#include "ring.h"
 #include <ghostty/vt.h>
 #include <sys/socket.h>
 #include <sys/mman.h>
@@ -50,11 +51,10 @@ static void row_text(GhosttyTerminal vt,uint32_t row,char *out,size_t cap){
 }
 int main(int argc,char **argv){
   assert(argc==2);signal(SIGPIPE,SIG_IGN);alarm(30);
-  char name[64];snprintf(name,sizeof(name),"/ko-pane-test-%d",getpid());
-  int fd=shm_open(name,O_CREAT|O_EXCL|O_RDWR,0600);assert(fd>=0);assert(!shm_unlink(name));
-  size_t capacity=4096,size=sizeof(struct ko_ring)+capacity;assert(!ftruncate(fd,size));
-  struct ko_ring *ring=mmap(NULL,size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);assert(ring!=MAP_FAILED);
-  ring->capacity=capacity;atomic_init(&ring->head,0);atomic_init(&ring->tail,0);
+  size_t capacity=4096,size=sizeof(struct ko_ring)+capacity;
+  struct ko_ring *ring=NULL;
+  int fd=ko_ring_create(capacity,&ring);
+  if(fd<0)return 2;
   int sockets[2];assert(!socketpair(AF_UNIX,SOCK_STREAM,0,sockets));
   pid_t child=fork();assert(child>=0);
   if(!child){assert(dup2(sockets[1],0)>=0);assert(dup2(sockets[1],1)>=0);assert(dup2(fd,3)>=0);assert(!fcntl(3,F_SETFD,0));
@@ -65,7 +65,7 @@ int main(int argc,char **argv){
   str(&d,"/");num(&d,3,4);str(&d,"/bin/sh");str(&d,"-c");
   str(&d,"printf '\033]2;ko test\007\033]7;file://localhost/tmp\007\033]133;A\007\033]133;C;cmdline_url=echo\007\033]133;D;7\007\033]7501;state=working:app=ko\007\033[?2026h'; i=0; while [ $i -lt 200 ]; do printf '\033]8;;https://example.org\033\\line %s\033]8;;\033\\\r\n' $i; i=$((i+1)); done");
   num(&d,1,4);str(&d,"TERM=xterm-ghostty");str(&d,"pane_1");frame(control,KO_INIT,d.b,d.n);
-  uint64_t tail=0,offset=0;int ready=0,dead=0,title=0,pwd=0,prompt=0,record=0,snapshot_done=0,markers=0,fulls=0;
+  uint64_t tail=0,offset=0;int ready=0,dead=0,title=0,pwd=0,snapshot_done=0,markers=0,fulls=0;
   uint8_t *snapshot=NULL;size_t snapshot_len=0,marker_cols=0,marker_rows=0;
   while(!snapshot_done){unsigned kind=receive(control,&d);
     int drain=kind==KO_FULL||kind==KO_DEAD||kind==KO_SNAPSHOT_DONE;
@@ -74,20 +74,18 @@ int main(int argc,char **argv){
       while(tail<head){size_t pos=tail%capacity;assert(capacity-pos>=KO_HEADER);uint8_t *b=ring->data+pos;
         size_t len=ko_get(b+1,4);assert(len+KO_HEADER<=capacity-pos);assert(ko_get(b+5,8)==offset);
         if(b[0]==KO_BYTES)offset+=len;
-        else if(b[0]==KO_MARKER){assert(len==8);markers++;marker_cols=ko_get(b+KO_HEADER,2);marker_rows=ko_get(b+KO_HEADER+2,2);}
+        else if(b[0]==KO_MARKER){if(b[KO_HEADER]==1){assert(len==9);markers++;marker_cols=ko_get(b+KO_HEADER+1,2);marker_rows=ko_get(b+KO_HEADER+3,2);}else assert(b[KO_HEADER]==2&&len==17);}
         else if(b[0]==KO_SNAPSHOT_SLICE){assert(len>=2);size_t n=len-2;void *p=realloc(snapshot,snapshot_len+n);assert(p||!n);snapshot=p;memcpy(snapshot+snapshot_len,b+KO_HEADER+2,n);snapshot_len+=n;}
         else assert(b[0]==KO_PAD);
         tail+=KO_HEADER+len;
       }
-      atomic_store(&ring->tail,tail);
+      atomic_store(&ring->tail,tail);atomic_store(&ring->read,tail);
     }
     if(kind==KO_READY){ready++;assert(d.n==4);}
     else if(kind==KO_HEAD)assert(d.n==8);
     else if(kind==KO_FULL){fulls++;assert(d.n==8);uint8_t b[8];ko_put(b,tail,8);frame(control,KO_TAIL,b,8);}
     else if(kind==KO_TITLE)title++;
     else if(kind==KO_PWD)pwd++;
-    else if(kind==KO_PROMPT)prompt++;
-    else if(kind==KO_RECORD)record++;
     else if(kind==KO_DEAD){dead++;assert(d.n==8&&ko_get(d.b,8)==0);
       uint8_t resize[8];ko_put(resize,40,2);ko_put(resize+2,20,2);ko_put(resize+4,8,2);ko_put(resize+6,16,2);frame(control,KO_RESIZE,resize,8);
       uint8_t request[10]={0};ko_put(request,1,4);request[4]=1;frame(control,KO_SNAPSHOT,request,10);
@@ -95,7 +93,7 @@ int main(int argc,char **argv){
     else if(kind==KO_SNAPSHOT_DONE)snapshot_done++;
     else assert(!"unexpected frame");
   }
-  assert(ready==1&&dead==1&&title==1&&pwd==1&&prompt==3&&record==1&&markers==1&&fulls>0&&offset>8000&&snapshot_len>10);
+  assert(ready==1&&dead==1&&title==1&&pwd==1&&markers==1&&fulls>0&&offset>8000&&snapshot_len>10);
   assert(marker_cols==40&&marker_rows==20);
   GhosttySnapshotDecoder decoder=NULL;GhosttyTerminal vt=NULL;
   assert(ghostty_snapshot_decoder_new_buf(NULL,&decoder,snapshot,snapshot_len)==GHOSTTY_SUCCESS);

@@ -9,10 +9,10 @@ repetitions=${REPETITIONS:-500}
 deadline() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 results() { grep -E '^ *(Only ASCII|Unicode chars|Unique multi|CSI codes|Long escape|Images).*: ' || true; }
 cd "$root"
-dune build spikes/coordinator.exe ko_pane/ko-pane bench/drain.exe
+dune build bench/coordinator.exe ko_pane/ko-pane bench/drain.exe
 
 echo "== ko-pane"
-deadline 900 ./_build/default/spikes/coordinator.exe run writev "$kitten" __benchmark__ --repetitions "$repetitions" 2>/dev/null | results
+deadline 900 ./_build/default/bench/coordinator.exe run writev "$kitten" __benchmark__ --repetitions "$repetitions" 2>/dev/null | results
 
 echo "== tmux $("$tmux" -V)"
 dir=$(mktemp -d /tmp/ko-tmux-XXXXXX)

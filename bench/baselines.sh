@@ -7,7 +7,7 @@ bytes=${BYTES:-1073741824}
 kitty=${KITTY:-/opt/homebrew/bin/kitty}
 tmux=${TMUX_BIN:-/opt/homebrew/bin/tmux}
 cd "$root"
-dune build ko_pane/ko-pane spikes/coordinator.exe bench/produce.exe bench/drain.exe bench/pty_read.exe bench/acker.exe
+dune build ko_pane/ko-pane bench/coordinator.exe bench/produce.exe bench/drain.exe bench/pty_read.exe bench/acker.exe
 build=$root/_build/default
 s=$root/bench/streams
 streams="$s/text.vt $s/ls.vt $s/gitlog.vt $s/yes.vt $s/tui.vt $s/osc8.vt $s/shell.vt"
@@ -24,7 +24,7 @@ run ./bench/pty_read.exe parse ./bench/drain.exe "$produce" "$bytes" $streams
 echo "== 3. ko-pane + ring, C tail-acker"
 run ./bench/acker.exe "$build/ko_pane/ko-pane" callbacks "$produce" "$bytes" $streams
 echo "== 4. ko-pane + ring + coordinator (writev, 2 ms) + view socket + drain"
-run ./spikes/coordinator.exe throughput writev "$bytes" callbacks 2 $streams
+run ./bench/coordinator.exe throughput writev "$bytes" callbacks 2 $streams
 echo "== 5. control: pty -> copier -> socketpair -> drain"
 run ./bench/pty_read.exe socket ./bench/drain.exe "$produce" "$bytes" $streams
 

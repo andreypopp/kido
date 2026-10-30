@@ -31,11 +31,12 @@ install:
 # the OCaml tests above never gain a node dependency of their own.
 test:
 	dune test --force
+	go test ./test_e2e_ko/ -count=1
 	./scripts/test-ts.sh
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: pinned-fork verify flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: e2e-ko pinned-fork verify flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -67,6 +68,9 @@ website:
 
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
 # names another (CI, with its cached build); it never skips
+e2e-ko:
+	go test ./test_e2e_ko/ -count=$(or $(COUNT),1) -run='$(or $(E2E_KO),.)' -v
+
 e2e: $(if $(KIDO_TMUX),,pinned-fork)
 	KIDO_TMUX=$${KIDO_TMUX:-$(CURDIR)/$(TMUX_FORK)/bin/kido-tmux} KIDO_E2E_REQUIRED=1 go test ./test_e2e/ -count=$(or $(COUNT),1) -run='$(or $(E2E),.)' -v
 

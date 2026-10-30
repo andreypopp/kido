@@ -51,7 +51,7 @@ CAMLprim value ko_vt_resize(value v,value cols,value rows) {
   check(ghostty_terminal_resize(T(v),Long_val(cols),Long_val(rows),8,16)); CAMLreturn(Val_unit);
 }
 static bool append(void *ud,const uint8_t *data,size_t len) { return !ko_append(ud,data,len); }
-CAMLprim value ko_vt_dump(value v,value format) {
+static value dump(value v,value format,int history) {
   CAMLparam2(v,format); int vt_format=Int_val(format)==1; CAMLlocal1(result); GhosttyFormatter f=NULL;
   GhosttyFormatterTerminalOptions options={.size=sizeof(options),
     .emit=vt_format?GHOSTTY_FORMATTER_FORMAT_VT:GHOSTTY_FORMATTER_FORMAT_PLAIN,.trim=false};
@@ -61,12 +61,13 @@ CAMLprim value ko_vt_dump(value v,value format) {
   options.extra.screen=(GhosttyFormatterScreenExtra){.size=sizeof(GhosttyFormatterScreenExtra),
     .cursor=true,.style=true,.hyperlink=true,.protection=true,.kitty_keyboard=true,.charsets=true};
   }
-  GhosttyTerminal vt=T(v);uint16_t cols=0,rows=0;
+  GhosttyTerminal vt=T(v);uint16_t cols=0,rows=0;size_t total=0;
   GhosttySelection selection={.size=sizeof(selection)};
   GhosttyResult r=ghostty_terminal_get(vt,GHOSTTY_TERMINAL_DATA_COLS,&cols);
   if(r==GHOSTTY_SUCCESS)r=ghostty_terminal_get(vt,GHOSTTY_TERMINAL_DATA_ROWS,&rows);
-  GhosttyPoint start={.tag=GHOSTTY_POINT_TAG_ACTIVE,.value.coordinate={0,0}};
-  GhosttyPoint end={.tag=GHOSTTY_POINT_TAG_ACTIVE,.value.coordinate={cols-1,rows-1}};
+  if(history&&r==GHOSTTY_SUCCESS)r=ghostty_terminal_get(vt,GHOSTTY_TERMINAL_DATA_TOTAL_ROWS,&total);
+  GhosttyPoint start={.tag=history?GHOSTTY_POINT_TAG_SCREEN:GHOSTTY_POINT_TAG_ACTIVE,.value.coordinate={0,0}};
+  GhosttyPoint end={.tag=history?GHOSTTY_POINT_TAG_SCREEN:GHOSTTY_POINT_TAG_ACTIVE,.value.coordinate={cols-1,history?total-1:rows-1}};
   if(r==GHOSTTY_SUCCESS)r=ghostty_terminal_grid_ref(vt,start,&selection.start);
   if(r==GHOSTTY_SUCCESS)r=ghostty_terminal_grid_ref(vt,end,&selection.end);
   options.selection=&selection;
@@ -77,6 +78,8 @@ CAMLprim value ko_vt_dump(value v,value format) {
   if(r!=GHOSTTY_SUCCESS) { free(b.p); check(r); }
   result=caml_alloc_initialized_string(b.n,(char *)b.p); free(b.p); CAMLreturn(result);
 }
+CAMLprim value ko_vt_dump(value v,value format) {return dump(v,format,0);}
+CAMLprim value ko_vt_dump_history(value v,value format) {return dump(v,format,1);}
 static int emit(void *ud,const uint8_t *b,size_t n) { return ko_append(ud,b,n); }
 CAMLprim value ko_vt_snapshot(value v,value screen,value images) {
   CAMLparam3(v,screen,images); CAMLlocal1(result);

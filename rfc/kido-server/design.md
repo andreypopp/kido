@@ -232,8 +232,9 @@ and `Sidebar` are deleted at stage 4.
 | `Http` | httpun and httpun-ws on luv: routing, JSON bodies, WebSocket streams, version headers |
 | `Loop` | the luv loop, timers, the tick, the SIGCHLD watcher |
 
-The coordinator's only C stubs are the peer-uid `getsockopt` and
-`shm_open` for `Images`. The libghostty-vt binding `ko_vt/` serves the
+The coordinator's C stubs are the peer-uid `getsockopt`, the ring
+mapping and `ko-pane` spawn, the view `writev` (4.6), and `shm_open`
+for `Images`. The libghostty-vt binding `ko_vt/` serves the
 terminal client's mirror only: terminal, snapshot decoder, render
 state, scroll, and the formatter. Its stubs are hand-written, not
 ctypes, about 30 functions; callbacks from `vt_write` into OCaml run
@@ -315,9 +316,10 @@ Output handling, in `ko-pane`, per wakeup of the pty:
    scrollback with no abort).
 3. Commit the record: its header carries the pane's **output sequence
    number**. Send the queued event frames, and a `head` frame only if
-   the coordinator is idle (the tail in the mapping equals the head
-   before this commit); a busy coordinator reads the head from the
-   mapping after each tail store.
+   the coordinator is idle (its `read` index in the mapping equals the
+   head before this commit); a busy coordinator reads the head from
+   the mapping on its 2 ms timer, which runs only while output
+   continues.
 
 In the coordinator, per head advance: for each attached view, a
 non-blocking `writev` of a WebSocket header and the ring region itself
@@ -523,8 +525,11 @@ multiplexed binary connection:
   place. The coordinator maps it as a `Bigarray` and writes a view's
   payload with a small non-blocking `writev` stub on the view socket's
   fd, the WebSocket header as a separate small iovec, and waits for
-  writability with `Luv.Poll`. No pending write ever references the
-  ring: on `EAGAIN` the view keeps only its ring offset. P1.0 measured
+  writability with `Luv.Poll` on a `dup` of that fd (a `Luv.Poll` on
+  the fd that luv reads gets a synchronous error, p1-mvp.md 6.3). No
+  pending write ever references the ring: on `EAGAIN` the view keeps
+  only its ring offset, and a partial write copies the rest of its
+  frame. P1.0 measured
   why: with `Luv.Stream.write` by reference, an in-flight write pins the
   ring until the kernel takes it, and a reader that stalls 300 ms
   blocked the pane for 283 ms even with a 1 MiB `SO_SNDBUF`. The

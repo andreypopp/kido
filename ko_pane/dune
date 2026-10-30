@@ -1,32 +1,91 @@
+(install
+ (section bin)
+ (files ko-pane))
+
 (rule
  (targets fuzz-frame)
  (deps fuzz_frame.c protocol.h)
  (action
-  (run cc -std=c11 -g -O1 -fsanitize=address,undefined -Wall -Wextra -Werror fuzz_frame.c -o fuzz-frame)))
+  (run
+   cc
+   -std=c11
+   -g
+   -O1
+   -fsanitize=address,undefined
+   -Wall
+   -Wextra
+   -Werror
+   fuzz_frame.c
+   -o
+   fuzz-frame)))
 
 (rule
  (alias runtest)
- (action (run ./fuzz-frame)))
+ (action
+  (run ./fuzz-frame)))
 
 (rule
  (targets ko-pane)
- (deps pane.c protocol.h buffer.h snapshot_cut.h ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (deps
+  build.sh
+  ../ko_vt/cxx.sh
+  pane.c
+  protocol.h
+  ring.h
+  buffer.h
+  snapshot_cut.h
+  ../ko_vt/libghostty-vt.a
+  (source_tree ../third_party/ghostty/include))
  (action
-  (run cc -std=c11 -O3 -Wall -Wextra -Werror -I../third_party/ghostty/include pane.c ../ko_vt/libghostty-vt.a -lc++ -o ko-pane)))
+  (run sh build.sh ko-pane pane.c -O3)))
 
 (rule
  (targets test-pane)
- (deps test_pane.c protocol.h ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (deps
+  build.sh
+  ../ko_vt/cxx.sh
+  test_pane.c
+  protocol.h
+  ring.h
+  ../ko_vt/libghostty-vt.a
+  (source_tree ../third_party/ghostty/include))
  (action
-  (run cc -std=c11 -g -O1 -fsanitize=address,undefined -Wall -Wextra -Werror -I../third_party/ghostty/include test_pane.c ../ko_vt/libghostty-vt.a -lc++ -o test-pane)))
+  (run sh build.sh test-pane test_pane.c -g -O1 -fsanitize=address,undefined)))
+
+(rule
+ (targets ko-pane-asan)
+ (deps
+  build.sh
+  ../ko_vt/cxx.sh
+  pane.c
+  protocol.h
+  ring.h
+  buffer.h
+  snapshot_cut.h
+  ../ko_vt/libghostty-vt.a
+  (source_tree ../third_party/ghostty/include))
+ (action
+  (run sh build.sh ko-pane-asan pane.c -g -O1 -fsanitize=address,undefined)))
 
 (rule
  (alias runtest)
  (deps test-pane ko-pane-asan)
- (action (run ./test-pane ./ko-pane-asan)))
+ (action
+  (run ./test-pane ./ko-pane-asan)))
 
 (rule
- (targets ko-pane-asan)
- (deps pane.c protocol.h buffer.h snapshot_cut.h ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (targets fuzz-frame-libfuzzer)
+ (enabled_if
+  (= %{profile} fuzz))
+ (deps fuzz_frame.c protocol.h)
  (action
-  (run cc -std=c11 -g -O1 -fsanitize=address,undefined -Wall -Wextra -Werror -I../third_party/ghostty/include pane.c ../ko_vt/libghostty-vt.a -lc++ -o ko-pane-asan)))
+  (run
+   %{env:KO_FUZZ_CC=clang}
+   -std=c11
+   -g
+   -O1
+   -DKO_LIBFUZZER
+   -fsanitize=fuzzer,address,undefined
+   fuzz_frame.c
+   -o
+   fuzz-frame-libfuzzer)))

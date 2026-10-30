@@ -1,0 +1,49 @@
+(rule
+ (targets vt_revision.ml)
+ (deps
+  (universe)
+  (sandbox none))
+ (action
+  (with-stdout-to
+   vt_revision.ml
+   (run
+    sh
+    -c
+    "root=$(git -C %{workspace_root} rev-parse --show-toplevel); revision=$(git -C \"$root\" ls-files -s third_party/ghostty | cut -d' ' -f2); test ${#revision} -eq 40 || exit 1; printf 'let value = \"%s\"\\n' \"$revision\""))))
+
+(library
+ (name ko_server)
+ (flags
+  (:standard
+   -open
+   Containers
+   -open
+   Ppx_compare_lib.Builtin
+   -open
+   Ppx_yojson_conv_lib.Yojson_conv.Primitives))
+ (libraries
+  containers
+  kido_fs
+  unix
+  luv
+  ctypes
+  httpun
+  httpun-ws
+  gluten
+  faraday
+  bigstringaf
+  yojson
+  base64)
+ (foreign_stubs
+  (language c)
+  (names native_stubs)
+  (flags
+   (:standard -I../third_party/ghostty/include))
+  (extra_deps
+   ../ko_pane/protocol.h
+   ../ko_pane/ring.h
+   ../ko_pane/now.h
+   (source_tree ../third_party/ghostty/include)))
+ (inline_tests)
+ (preprocess
+  (pps ppx_expect ppx_compare ppx_yojson_conv)))

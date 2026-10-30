@@ -31,11 +31,12 @@ case ${1:-verify} in
     E2E=$RUN COUNT=${COUNT:-20} stage e2e e2e
     ;;
   verify)
-    for name in ${STAGES:-build unit e2e ts}; do
+    for name in ${STAGES:-build unit e2e e2e-ko ts}; do
       case $name in
         build) stage build dune build ;;
         unit) stage unit dune test --force ;;
         e2e) stage e2e e2e ;;
+        e2e-ko) stage e2e-ko make e2e-ko ;;
         ts) stage ts ./scripts/test-ts.sh ;;
         *) echo "Unknown stage: $name" >&2; status=1 ;;
       esac

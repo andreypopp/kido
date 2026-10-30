@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 /* User plus system seconds of a live process, or -1. proc_pid_rusage reports
-   mach ticks on Apple Silicon, not nanoseconds; spikes/coordinator.exe cpu-check
+   mach ticks on Apple Silicon, not nanoseconds; bench/coordinator.exe cpu-check
    compares this against getrusage. */
 static inline double ko_cpu_seconds(pid_t pid) {
 #ifdef __APPLE__

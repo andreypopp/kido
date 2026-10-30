@@ -43,9 +43,9 @@ Authentication is the socket's mode (0700 directory) and the peer uid
 check on accept. Forwarded connections arrive from sshd as the user, so
 they pass. There is no token and no TLS.
 
-A WebSocket upgrade that carries an `Origin` header is refused unless
-the origin is the server's own. No native client sends one; a browser
-always does. This closes cross-site WebSocket hijacking before any TCP
+A request that carries an `Origin` header is refused (409, `refused`).
+A unix-socket server has no origin of its own. No native client sends
+one; a browser always does. This closes cross-site WebSocket hijacking before any TCP
 listener exists.
 
 Encoding: control bodies are JSON. Streams are WebSocket messages
@@ -74,9 +74,11 @@ these options to every mirror before it opens a view. The shape of
 `/version` is frozen across minors, because it is what a client reads
 before it knows the server's version.
 
-Every request carries `Ko-Protocol: 1.0` and `Ko-Vt: <revision>`. A
-major mismatch is `426 Upgrade Required` with the server's values in
-the body; a `vt` mismatch is `409 Conflict`. The minor of the server may
+Every request except `GET /version` carries `Ko-Protocol: 1.0` and
+`Ko-Vt: <revision>`; a request without them is refused as a mismatch.
+A major mismatch is `426 Upgrade Required`, a `vt` mismatch is
+`409 Conflict`, both with the body `{kind: refused, message, protocol,
+vt}`. The minor of the server may
 be higher: it appends fields and resources and never removes them. The
 launcher and Kido.app discovery compare these three values instead of
 the server stamp.
@@ -293,14 +295,18 @@ An input event is a JSON object, sent as a text message on the pane's
 view WebSocket, or as the body of `POST /panes/pane_N/input` when the
 sender has no view open (the CLI's prompt delivery):
 
-      {key: {action, key, mods, text, composing}}
+      {key: {action, key, mods, unshifted_codepoint, text, composing}}
       {text: "<bytes base64>"}
       {paste: {text, check_safe, id?}}
       {mouse: {action, button, col, row, mods}}
       {focus: true|false}
 
 `key` and `mods` are libghostty-vt's values, which the app's surface
-produces. The server encodes with the pane's current modes and writes
+produces. `unshifted_codepoint` is required (0 when the key has none):
+libghostty-vt's encoder finds the kitty keyboard code of a printable
+key only through it, and without it `Ctrl+A` encodes as plain `a`
+instead of `CSI 97;5u` (P1.1, `src/input/key_encode.zig`). The server
+does not guess it from a keyboard layout. The server encodes with the pane's current modes and writes
 the pty. Events from one connection are applied in order. A `paste`
 with an `id` gets a text message back on the view, `{paste: {id,
 pasted, unsafe}}`; the `POST` form gets it as the response body.
@@ -376,20 +382,32 @@ stderr goes to the coordinator's log. The mapping is fd 3. The mapping is a ring
 records, written only by `ko-pane` and read only by the coordinator:
 
     ring header   u64 capacity; u64 head (written by ko-pane);
-                  u64 tail (written by the coordinator); sequentially
-                  consistent atomics, because each side stores its own
-                  index and then loads the other's to decide on a wakeup
-    record        kind u8 (bytes | marker | snapshot | pad), len u32,
-                  offset u64, payload; a record never wraps: a
-                  `pad` record fills the end of the ring instead
+                  u64 tail (written by the coordinator: the oldest
+                  record a view may still need); u64 read (written by
+                  the coordinator: the end of what it has scanned);
+                  sequentially consistent atomics, because each side
+                  stores its own index and then loads the other's to
+                  decide on a wakeup
+    record        kind u8 (bytes 1 | marker 2 | snapshot 3 | pad 4),
+                  len u32, offset u64, payload; a record never wraps:
+                  a `pad` record fills the end of the ring instead
+    marker        u8 1 (resize) and cols, rows, cell_w_px, cell_h_px u16;
+                  or u8 2 (dead) and status i32, signal i32, at u64
+                  (monotonic ns)
+    snapshot      flag u8 (1 first, 2 last, 0 between), kind u8 (0 full,
+                  1 screen), then the encoder's bytes
 
 `ko-pane` reads the pty straight into the free space at `head`, parses
 it in place, then publishes the record. It blocks when `head - tail`
 would exceed the capacity, with no deadline. The coordinator writes
 views from the mapping with non-blocking `writev` and never leaves a
 pending write that references the ring; it moves `tail` past regions
-that no view can resume from. A `head` frame goes only to an idle
-coordinator (tail equal to the head before the commit); a blocked
+that no view can resume from or still has to send, snapshot slices
+included. A `head` frame goes only to an idle coordinator (`read`
+equal to the head before the commit), which scans and writes the views
+at once; while output continues, the coordinator scans on its 2 ms
+timer. `tail` cannot mark idleness, because it stays behind the head
+by the bytes that views may resume (P1.1). A blocked
 `ko-pane` sends `full {tail}` and the coordinator answers with a
 `tail` frame once the tail moved past it. Otherwise both sides read
 and store the indices in the mapping. Snapshot slices and markers are ring records, so one
@@ -401,7 +419,8 @@ The control socket carries control frames in both directions:
     kind  u8
     body
 
-Little-endian. Strings are `u32 len, bytes`. The first frame from the
+Little-endian. Strings are `u32 len, bytes`. The `kind` numbers are in
+`ko_pane/protocol.h`. The first frame from the
 coordinator is `init`; `ko-pane` answers `ready` or exits with status 2
 and a message on stderr, which the coordinator logs.
 
@@ -414,7 +433,8 @@ Coordinator to `ko-pane`:
                pane_id string}
     tail      {offset u64}                       acknowledgement
     resize    {cols, rows, cell_w_px, cell_h_px}
-    key       {action u8, key u16, mods u16, text string, composing u8}
+    key       {action u8, key u16, mods u16, unshifted_codepoint u32,
+               text string, composing u8}
     text      {bytes}
     paste     {id u32, text, check_safe u8}
     mouse     {action, button u8, col, row u16, mods u16}

@@ -13,6 +13,7 @@ external create :
 external write : t -> string -> unit = "ko_vt_write"
 external resize : t -> cols:int -> rows:int -> unit = "ko_vt_resize"
 external dump : t -> format -> string = "ko_vt_dump"
+external dump_history : t -> format -> string = "ko_vt_dump_history"
 external snapshot : t -> screen:bool -> images:bool -> string = "ko_vt_snapshot"
 external decode : (int -> string) -> full:bool -> t = "ko_vt_decode"
 external cursor : t -> int * int * bool = "ko_vt_cursor"

@@ -1,4 +1,30 @@
 (executable
+ (name coordinator)
+ (modules coordinator)
+ (flags
+  (:standard -open Containers))
+ (libraries containers unix luv ko_vt ko_server bigstringaf)
+ (foreign_stubs
+  (language c)
+  (names measure_stubs)
+  (extra_deps ../ko_pane/now.h cpu.h)))
+
+(rule
+ (targets wait_master.exe)
+ (deps wait_master.c)
+ (action
+  (run
+   cc
+   -std=c11
+   -O2
+   -Wall
+   -Wextra
+   -Werror
+   wait_master.c
+   -o
+   wait_master.exe)))
+
+(executable
  (name mirror)
  (modules mirror)
  (flags
@@ -19,18 +45,28 @@
 
 (rule
  (targets pty_read.exe)
- (deps pty_read.c ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (deps
+  ../ko_pane/build.sh
+  ../ko_vt/cxx.sh
+  pty_read.c
+  ../ko_vt/libghostty-vt.a
+  (source_tree ../third_party/ghostty/include))
  (action
-  (run cc -std=c11 -O2 -Wall -Wextra -Werror -I../third_party/ghostty/include pty_read.c ../ko_vt/libghostty-vt.a -lc++ -o pty_read.exe)))
+  (run sh ../ko_pane/build.sh pty_read.exe pty_read.c -O2)))
 
 (rule
  (targets acker.exe)
- (deps acker.c cpu.h ../ko_pane/protocol.h)
+ (deps acker.c cpu.h ../ko_pane/protocol.h ../ko_pane/ring.h)
  (action
   (run cc -std=c11 -O2 -Wall -Wextra -Werror acker.c -o acker.exe)))
 
 (rule
  (targets parse.exe)
- (deps parse.c ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (deps
+  ../ko_pane/build.sh
+  ../ko_vt/cxx.sh
+  parse.c
+  ../ko_vt/libghostty-vt.a
+  (source_tree ../third_party/ghostty/include))
  (action
-  (run cc -std=c11 -O2 -Wall -Wextra -Werror -I../third_party/ghostty/include parse.c ../ko_vt/libghostty-vt.a -lc++ -o parse.exe)))
+  (run sh ../ko_pane/build.sh parse.exe parse.c -O2)))

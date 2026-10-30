@@ -13,6 +13,7 @@ val create :
 val write : t -> string -> unit
 val resize : t -> cols:int -> rows:int -> unit
 val dump : t -> format -> string
+val dump_history : t -> format -> string
 val snapshot : t -> screen:bool -> images:bool -> string
 val decode : (int -> string) -> full:bool -> t
 val cursor : t -> int * int * bool

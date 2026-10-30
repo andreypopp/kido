@@ -1,6 +1,7 @@
 #define _DARWIN_C_SOURCE
 #define _DEFAULT_SOURCE
 #include "../ko_pane/protocol.h"
+#include "../ko_pane/ring.h"
 #include "cpu.h"
 #include <sys/socket.h>
 #include <sys/mman.h>
@@ -47,17 +48,10 @@ int main(int argc, char **argv) {
     return 2;
   }
   signal(SIGPIPE, SIG_IGN);
-  char name[64];
-  snprintf(name, sizeof(name), "/ko-acker-%d", getpid());
-  int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
-  if (fd < 0 || shm_unlink(name)) return 2;
-  size_t capacity = 1 << 20, size = sizeof(struct ko_ring) + capacity;
-  if (ftruncate(fd, (off_t)size)) return 2;
-  struct ko_ring *ring = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (ring == MAP_FAILED) return 2;
-  ring->capacity = capacity;
-  atomic_init(&ring->head, 0);
-  atomic_init(&ring->tail, 0);
+  size_t capacity=1 << 20;
+  struct ko_ring *ring=NULL;
+  int fd=ko_ring_create(capacity,&ring);
+  if(fd<0)return 2;
   int sockets[2];
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets)) return 2;
   struct timespec start, end;
@@ -113,6 +107,7 @@ int main(int argc, char **argv) {
         tail += KO_HEADER + len;
       }
       atomic_store(&ring->tail, tail);
+      atomic_store(&ring->read, tail);
     }
     if (full) {
       uint8_t b[8];

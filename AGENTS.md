@@ -302,6 +302,14 @@ Conventions:
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     test_e2e/          tests driving kido inside a real tmux server, in Go
 
+**ko**, the terminal server that replaces tmux, is in development on
+the `ko` branch. rfc/kido-server/p1-mvp.md is its plan and layout:
+`ko_pane/` (the C pane process), `ko_vt/` (libghostty-vt, built by
+zig from PATH out of `third_party/ghostty`, and the binding),
+`ko_server/` (the coordinator), `bin/ko.ml`, `bench/` and
+`test_e2e_ko/` (its Go protocol suite, `make e2e-ko`, a stage of
+`make verify`). Nothing in `lib/` depends on them.
+
 Before you change `lib_tmux/`, read `lib_tmux/AGENTS.md`. pi does not
 load it for an agent that starts at the repo root.
 

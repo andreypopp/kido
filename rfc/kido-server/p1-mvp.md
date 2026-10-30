@@ -43,7 +43,10 @@ Out, until later stages:
                   terminal, snapshot decoder, render state, scroll,
                   formatter
     ko_server/    the coordinator library: Loop, Pane_proc, Pane, Panes,
-                  Client, View, Input, Http, Config
+                  Client, View, Input, Http (the router), Connection
+                  (the socket and its queued `writev` output), State
+                  (the registry of clients and views), Protocol (the
+                  wire JSON types), Uv (luv and OS conversions), Config
     ko_tui/       the thin terminal client library, in Mosaic
     bin/ko.ml     the entry point: `ko` (attach or start and attach),
                   `ko server` (foreground), `ko kill-server`,
@@ -51,7 +54,9 @@ Out, until later stages:
     third_party/ghostty   submodule, built by zig into libghostty-vt.a
                   through a dune rule; the terminfo for xterm-ghostty
                   installed beside the binary
-    bench/        the benchmark scripts and their recorded streams
+    bench/        the benchmark scripts and their recorded streams, and
+                  the P1.0 probes `coordinator.exe` and `wait_master.exe`
+    test_e2e_ko/  the Go protocol suite of section 7
 
 The code rules of AGENTS.md apply: `.mli` for every module, inline
 ppx_expect tests, `-open Containers`, library code returns and the
@@ -434,9 +439,70 @@ a wakeup or its writer differs. Neither is explained yet.
 
 To run them again: `bench/run.sh`, `bench/baselines.sh` and
 `bench/kitten.sh` (the kitty rows open windows);
-`_build/default/spikes/coordinator.exe throughput|latency|snapshot|pty-pipe|allocation`;
-`python3 spikes/mosaic/bench.py _build/default/spikes/mosaic/main.exe direct|matrix|mosaic 200 60 8`;
-`spikes/http/bench.sh --chunk 16384|262144 [--sndbuf 0] -- -duration 10s`.
+`_build/default/bench/coordinator.exe throughput|latency|snapshot|pty-pipe|allocation`;
+`_build/default/bench/wait_master.exe`;
+`python3 spikes/mosaic/bench.py _build/default/spikes/mosaic/main.exe direct|matrix|mosaic 200 60 8`.
+The spike 4 driver (`spikes/http/`) was removed with the spike server
+in P1.1; P1.3 measures the same table against `ko server`. Since P1.1
+`bench/coordinator.exe` runs the production `Pane_proc` and
+`Connection` with 2 ms coalescing only; the `Luv.Stream.write` and
+zero-coalescing comparison rows are gone, and its callback rows count
+only the title and pwd callbacks that P1 registers.
+
+### 6.3 What P1.1 settled
+
+The server of P1.1 follows sections 3 and 4 and protocol.md. These
+points were open or wrong in the plan:
+
+- **Key events carry `unshifted_codepoint`** (protocol.md 8 and 14).
+  libghostty-vt's encoder finds the kitty keyboard code of a printable
+  key only through it.
+- **The view's writer uses a duplicate of the connection's fd.** A
+  `Luv.Poll` on the same fd that `Luv.Pipe.read_start` watches gets a
+  synchronous error callback, which re-entered the writer. The
+  coordinator `dup`s the accepted fd for `Luv.Poll` and `writev`, and
+  luv reads the original.
+- **The ring header has a `read` index** (protocol.md 14). The plan
+  woke an idle coordinator when `tail` equalled the head, but `tail`
+  stays behind by the bytes that views may resume, so after the first
+  output no `head` frame was sent and every echo waited for the timer
+  (p50 1.29 ms in review). The coordinator stores `read` after each
+  scan; a `head` frame scans and writes the views at once. The 2 ms
+  timer runs only while output continues, and the coordinator reaps
+  `ko-pane` from a SIGCHLD watcher, not from the timer.
+- **A snapshot is never restarted or downgraded** from full to screen
+  because the view's socket blocked. Slices that the socket does not
+  take at once are copied into the view's own queue and sent on
+  writable, so a snapshot never holds the ring's tail and a stalled
+  view never blocks the pane. The copy is bounded by the snapshot's
+  size (6 MB for 100k lines in P1.0).
+- **A partial `writev` copies the rest of its frame** out of the ring,
+  so no pending write references the ring (design.md 4.6).
+- **`GET /version` needs no version headers**, because a client reads
+  it before it knows the server's version. Every other request without
+  `Ko-Protocol` and `Ko-Vt` is refused as a mismatch. A refusal body is
+  `{kind: refused, message, protocol, vt}`.
+- **Every `Origin` header is refused.** A unix-socket server has no
+  origin of its own.
+- **`pwd` events carry the terminal's raw value**, which is an OSC 7
+  `file://` URI when the shell sends one.
+- **Terminal defaults**: scrollback 32 MiB (`--scrollback` takes K, M
+  and G suffixes), APC and continuation limits 65 MiB, kitty image
+  storage 10,000,000 bytes, every kitty medium off.
+- **The libghostty-vt revision** in `/version` and `Ko-Vt` is the
+  `third_party/ghostty` submodule pin, read by a dune rule.
+- **SHA-1** for the WebSocket handshake stays the spike's own module
+  with the FIPS test vectors, not a new locked package.
+- **Terminfo**: a dune rule generates `xterm-ghostty` from Ghostty's
+  Zig source, compiles it with `tic` and installs it as
+  `share/ko/terminfo/x/xterm-ghostty`. A pane gets `TERMINFO_DIRS`
+  with that directory first.
+- **Build**: zig from `PATH` (CI installs Zig 0.17.0) builds
+  `libghostty-vt.a` in `ReleaseFast`. The libFuzzer target of
+  `ko-pane`'s frame parser builds only under `--profile fuzz`
+  (`KO_FUZZ_CC` names the compiler), because Apple's clang ships no
+  `libclang_rt.fuzzer_osx.a`. The sanitizer driver of the same parser
+  runs in `dune test`.
 
 ## 7. Tests
 
@@ -467,7 +533,9 @@ To run them again: `bench/run.sh`, `bench/baselines.sh` and
   and `CSI = 3;1 u` set before the first view opens are in the mirror
   after it opens; and the outer terminal's modes restored exactly
   after detach.
-- `make verify` runs all of them; `bench/` runs on demand.
+- `make verify` runs all of them, the Go suite as its stage `e2e-ko`
+  (`make e2e-ko`, `E2E_KO=TestFoo` to limit it); `bench/` runs on
+  demand.
 
 ## 8. Order of work and effort
 
