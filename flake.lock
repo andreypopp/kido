@@ -1,0 +1,63 @@
+{
+  "nodes": {
+    "mosaic": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787319266,
+        "narHash": "sha256-mPN2EJeQbCh2dv8/5/+cY12JouVjQlq53MULBtOFxvU=",
+        "owner": "invariant-hq",
+        "repo": "mosaic",
+        "rev": "0ef02a5690365f8f7518c54755287f905814529f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "invariant-hq",
+        "repo": "mosaic",
+        "rev": "0ef02a5690365f8f7518c54755287f905814529f",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1793110635,
+        "narHash": "sha256-dhoW6VgFWlaodSY5jrBn+CF2FLmaUvDVgM7+C7T2+NM=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "31ecbaca1bdefa45dffc409f0250bd8039ea0010",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "mosaic": "mosaic",
+        "nixpkgs": "nixpkgs",
+        "tmux-fork": "tmux-fork"
+      }
+    },
+    "tmux-fork": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793281911,
+        "narHash": "sha256-c/oEtx9LBIVlueVNroaLodHQvAvRCNPBVTGixaK7rQE=",
+        "owner": "andreypopp",
+        "repo": "tmux",
+        "rev": "a020eaf3c42e24bf9e383a080219bd1caa65517e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "andreypopp",
+        "repo": "tmux",
+        "rev": "a020eaf3c42e24bf9e383a080219bd1caa65517e",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
