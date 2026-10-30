@@ -2,6 +2,28 @@ type row = { pane : string; text : string; selected : bool }
 
 let width = 24
 let visible ~cols = cols >= 100
+let pane_x ~cols = min (width + 1) (max 0 (cols - 1))
+
+let dead_line (d : Ko_server.Protocol.dead) =
+  let name =
+    List.assoc_opt ~eq:Int.equal d.signal
+      [
+        (1, "SIGHUP");
+        (2, "SIGINT");
+        (3, "SIGQUIT");
+        (6, "SIGABRT");
+        (9, "SIGKILL");
+        (11, "SIGSEGV");
+        (13, "SIGPIPE");
+        (14, "SIGALRM");
+        (15, "SIGTERM");
+      ]
+  in
+  Printf.sprintf "[%s — Ctrl+D to remove]"
+    (if d.signal = 0 then Printf.sprintf "exited %d" d.status
+     else
+       Printf.sprintf "killed by %s"
+         (Option.value name ~default:(Printf.sprintf "signal %d" d.signal)))
 
 let rows ~selected panes =
   List.mapi
@@ -30,10 +52,14 @@ let%test_module "Tests" =
         [ pane; { pane with id = "pane_2"; title = "build"; dead = Some dead } ]
       |> List.iter (fun r -> Printf.printf "%s %b %s\n" r.pane r.selected r.text);
       Printf.printf "width %d visible %b %b\n" width (visible ~cols:99) (visible ~cols:100);
+      List.iter (fun signal -> print_endline (dead_line { dead with signal })) [ 0; 15; 99 ];
       [%expect
         {|
-      pane_1 false 1 sh
-      pane_2 true 2 build †7
-      width 24 visible false true
-    |}]
+        pane_1 false 1 sh
+        pane_2 true 2 build †7
+        width 24 visible false true
+        [exited 7 — Ctrl+D to remove]
+        [killed by SIGTERM — Ctrl+D to remove]
+        [killed by signal 99 — Ctrl+D to remove]
+        |}]
   end)

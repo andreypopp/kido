@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"io"
@@ -21,6 +22,15 @@ import (
 	"testing"
 	"time"
 )
+
+const paneX = 25
+
+func paneText(line string) string {
+	if cells := []rune(line); len(cells) > paneX {
+		return string(cells[paneX:])
+	}
+	return ""
+}
 
 type control struct {
 	cmd   *exec.Cmd
@@ -534,6 +544,10 @@ func TestClientAttachOrStartAndWarning(t *testing.T) {
 	}
 }
 
+func click(col int) string {
+	return hex.EncodeToString([]byte(fmt.Sprintf("\x1b[<0;%d;5M", col)))
+}
+
 func TestClientModesBeforeAttachAndUnattachedDA1(t *testing.T) {
 	t.Parallel()
 	s := start(t)
@@ -553,7 +567,12 @@ func TestClientModesBeforeAttachAndUnattachedDA1(t *testing.T) {
 	o.raw("\x1b[A")
 	o.contains("INPUT:1b5b313b313a3141")
 	o.raw("\x1b[<0;40;5M")
-	o.contains("1b5b3c303b31363b354d")
+	o.contains(click(40 - paneX))
+	o.raw(fmt.Sprintf("\x1b[<0;%d;5M\x1b[<0;%d;5M", paneX, paneX+1))
+	o.contains(click(1))
+	if strings.Contains(o.screen(), click(0)) {
+		t.Fatal("a click on the bar reached the pane")
+	}
 	o.raw("\x1b[200~abc\x1b[201~")
 	o.contains("INPUT:1b5b3230307e6162631b5b3230317e")
 	o.detach()
@@ -604,7 +623,7 @@ func TestClientOutputWithoutOuterInput(t *testing.T) {
 	o.tmux("send-keys", "-t", "outer:0.0", "Enter")
 	o.wait(func() bool {
 		for _, line := range strings.Split(o.screen(), "\n") {
-			if len(line) >= 24 && strings.TrimSpace(line[24:]) == "abc" {
+			if strings.TrimSpace(paneText(line)) == "abc" {
 				return true
 			}
 		}
@@ -644,8 +663,8 @@ func TestClientInitialCursorAndSynchronizedOutput(t *testing.T) {
 		t.Fatal("first pane frame leaves its cursor hidden")
 	}
 	o.wait(func() bool {
-		return strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{cursor_flag}:#{cursor_x}:#{cursor_y}")) == "1:28:0"
-	}, "visible initial pane cursor at 28,0")
+		return strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{cursor_flag}:#{cursor_x}:#{cursor_y}")) == fmt.Sprintf("1:%d:0", paneX+4)
+	}, "visible initial pane cursor at pane column 4")
 	s.text(pane, "h")
 	deadline := time.NewTimer(400 * time.Millisecond)
 	defer deadline.Stop()
@@ -667,6 +686,11 @@ func TestClientSidebarOwnership(t *testing.T) {
 	o := newTerminal(t, s.dir, true)
 	o.attach("cat")
 	o.contains("BASE")
+	for y, line := range strings.Split(o.screen(), "\n")[:29] {
+		if cells := []rune(line); len(cells) < paneX || cells[paneX-1] != '│' {
+			t.Fatalf("no bar left of the pane in row %d: %q", y, line)
+		}
+	}
 	o.chord(115)
 	s.text(pane, "f")
 	o.wait(func() bool {
@@ -674,6 +698,9 @@ func TestClientSidebarOwnership(t *testing.T) {
 		lines := strings.Split(o.screen(), "\n")
 		return len(lines) > 3 && strings.HasPrefix(lines[3], strings.Repeat("P", 24))
 	}, "pane draws across the hidden sidebar")
+	if strings.Contains(o.screen(), "│") {
+		t.Fatal("bar drawn while the sidebar is hidden")
+	}
 	o.chord(115)
 	o.contains("1 fixture")
 	for y, line := range strings.Split(o.screen(), "\n") {
@@ -961,9 +988,41 @@ func TestClientSnapshotInterruption(t *testing.T) {
 		o.contains("BASE")
 		if marker {
 			o.wait(func() bool {
-				return strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{cursor_x}")) == "60"
+				return strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{cursor_x}")) == strconv.Itoa(paneX+36)
 			}, "queued resize applies before following output")
 		}
 		o.detach()
 	}
+}
+
+func TestClientDeadPaneLine(t *testing.T) {
+	t.Parallel()
+	s := start(t)
+	fill := "yes '' | head -40; printf last; "
+	s.pane(fill + "exit 3")
+	s.pane(fill + "kill -TERM $$")
+	s.pane("printf 'live\\n'; exec cat")
+	o := newTerminal(t, s.dir, true)
+	o.attach("cat")
+	line := func(text string) {
+		o.wait(func() bool {
+			lines := strings.Split(o.screen(), "\n")
+			for y, l := range lines {
+				if strings.HasPrefix(paneText(l), text) {
+					if y == 0 || !strings.HasPrefix(paneText(lines[y-1]), "last") {
+						t.Fatalf("no program output directly above the line:\n%s", strings.Join(lines, "\n"))
+					}
+					return true
+				}
+			}
+			return false
+		}, text)
+	}
+	line("[exited 3 \u2014 Ctrl+D to remove]")
+	o.raw("\x1b[<0;3;2M\x1b[<0;3;2m")
+	line("[killed by SIGTERM \u2014 Ctrl+D to remove]")
+	o.raw("\x1b[<0;3;3M\x1b[<0;3;3m")
+	o.contains("live")
+	o.wait(func() bool { return !strings.Contains(o.screen(), "Ctrl+D") }, "dead line gone after switching away")
+	o.detach()
 }

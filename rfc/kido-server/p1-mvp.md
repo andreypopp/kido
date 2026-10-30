@@ -100,7 +100,11 @@ depends on the new directories.
   screen. P1.0 verified on macOS: the program is reaped with the master
   open, and the dead pane still snapshots; a writer blocked on a full
   pty is not reaped until the master is read, so `ko-pane` reads the
-  master to EOF before it sends `dead`.
+  master to EOF before it sends `dead`. The status travels in the
+  ring's dead marker and the `dead` frame on the control socket, two
+  channels; the server makes the pane dead (row and event) only on the
+  control frame, so a client always sees the pane's last title and
+  pwd before `dead`.
 
 ### 3.2 Panes
 
@@ -208,6 +212,14 @@ in its grid, but writes nothing to the tty (6.2, 6.4).
   region. The mirror's viewport is what scrolls: the wheel moves it
   with libghostty-vt's scroll API, 3 rows a notch, and any output or
   key returns it to the bottom, as a terminal does.
+- **A dead pane.** While the shown pane is dead, the bottom row of the
+  pane region shows `[exited N — Ctrl+D to remove]`, or
+  `[killed by SIGNAME — Ctrl+D to remove]` for a signal (`signal N`
+  for a number without a name), in reverse video across the pane
+  width. The mirror's rows are drawn one row up, its top row hidden,
+  so its last row stays visible above the line; no resize goes to the
+  server. The cursor is hidden. The wheel still scrolls. The line goes
+  when the pane is removed or another pane is shown.
 - **Frames.** Input that changes the screen (a key, a click, a wheel, a switch)
   draws the next frame at once; continuous output is drawn at most
   once per 8 ms. Each frame is one `write`, bracketed by
@@ -216,10 +228,15 @@ in its grid, but writes nothing to the tty (6.2, 6.4).
   frame is held, for at most 150 ms.
 - **The sidebar.** One row per pane: `N title`, and ` †status` for a
   dead pane; an empty title falls back to the command's basename,
-  then to the pane id. The current pane is highlighted across the
-  full width. Up and Down move, Enter switches, a click switches;
+  then to the pane id. It has no colours or styles; the current pane's
+  row is in reverse video across the full width, and while Up and
+  Down choose, the reverse row follows the choice. A `│` in the
+  terminal's default colour fills one column between the sidebar and
+  the pane on every row of the pane region; the pane region, and the
+  size sent to the server, exclude it, and a click on it does nothing.
+  The warning row is reverse video too, with no colour. Up and Down move, Enter switches, a click switches;
   key releases do not move. `Ctrl+Shift+S` toggles it. Width is
-  fixed at 24 columns in P1. It is hidden by default when the
+  fixed at 24 columns in P1, and the pane starts at column 25. It is hidden by default when the
   terminal is narrower than 100 columns, and always shown while the
   warning row is shown.
 - **Keys.** Every key goes to the pane as a `key` message on its view

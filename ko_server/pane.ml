@@ -42,6 +42,7 @@ let create config ~id ~cwd ~command ~env ~notify =
       offset = 0;
     }
   in
+  let marker = ref None in
   Pane_proc.listen proc (function
     | Ready_pid pid -> t.pid <- pid
     | Title_changed title ->
@@ -53,11 +54,25 @@ let create config ~id ~cwd ~command ~env ~notify =
     | Record record -> (
         match record.data with
         | Bytes -> t.offset <- record.offset + record.len
-        | Dead_marker dead ->
-            t.dead <- Some dead;
-            notify t (Dead dead)
+        | Dead_marker dead -> marker := Some dead
         | _ -> ())
     | Published -> notify t Output
+    | Exited -> (
+        match !marker with
+        | Some dead ->
+            t.dead <- Some dead;
+            notify t (Dead dead)
+        | None ->
+            let dead =
+              {
+                Protocol.status = 2;
+                signal = 0;
+                at = Uv.now ();
+                error = Some "pane exited without a marker";
+              }
+            in
+            t.dead <- Some dead;
+            notify t (Failed dead))
     | Failed dead ->
         t.dead <- Some dead;
         notify t (Failed dead));

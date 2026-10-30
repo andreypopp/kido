@@ -4,6 +4,7 @@ type layout = {
   pane_x : int;
   pane_rows : int;
   warning : bool;
+  dead : string option;
   sidebar : (string * bool) list;
   choosing : int option;
 }

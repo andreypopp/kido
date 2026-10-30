@@ -4,6 +4,7 @@ type layout = {
   pane_x : int;
   pane_rows : int;
   warning : bool;
+  dead : string option;
   sidebar : (string * bool) list;
   choosing : int option;
 }
@@ -26,27 +27,34 @@ let invalidate t =
   t.layout <- None;
   t.cursor <- None
 
+let style ~inverse = Ansi.Style.make ~fg:Ansi.Color.default ~bg:Ansi.Color.default ~inverse ()
+
+let draw_line grid ~x ~y ~width ~inverse text =
+  let width = max 0 width and style = style ~inverse in
+  let p = Matrix.Text.find_wrap_pos ~width_method:`Unicode ~tab_width:8 text ~max_columns:width in
+  Matrix.Grid.draw_text grid ~x ~y ~style ~text:(String.make width ' ');
+  Matrix.Grid.draw_text grid ~x ~y ~style ~text:(String.sub text 0 p.byte_offset)
+
 let draw_ui l grid =
   Matrix.Grid.clear grid;
+  if l.pane_x > 0 then
+    for y = 0 to l.pane_rows - 1 do
+      draw_line grid ~x:0 ~y ~width:(l.pane_x - 1) ~inverse:false "";
+      Matrix.Grid.draw_text grid ~x:(l.pane_x - 1) ~y ~style:(style ~inverse:false) ~text:"\u{2502}"
+    done;
   List.iteri
     (fun y (text, selected) ->
-      if y < l.pane_rows then (
-        let bg =
-          Ansi.Color.indexed
-            (if Option.equal Int.equal l.choosing (Some y) then 6 else if selected then 4 else 0)
-        in
-        Matrix.Grid.fill_rect grid ~x:0 ~y ~width:l.pane_x ~height:1 ~color:bg;
-        let p =
-          Matrix.Text.find_wrap_pos ~width_method:`Unicode ~tab_width:8 text ~max_columns:l.pane_x
-        in
-        Matrix.Grid.draw_text grid ~x:0 ~y
-          ~style:(Ansi.Style.make ~fg:(Ansi.Color.indexed 15) ~bg ())
-          ~text:(String.sub text 0 p.byte_offset)))
+      if y < l.pane_rows then
+        draw_line grid ~x:0 ~y ~width:(l.pane_x - 1)
+          ~inverse:(match l.choosing with Some i -> i = y | None -> selected)
+          text)
     l.sidebar;
+  Option.iter
+    (draw_line grid ~x:l.pane_x ~y:(l.pane_rows - 1) ~width:(l.cols - l.pane_x) ~inverse:true)
+    l.dead;
   if l.warning then
-    Matrix.Grid.draw_text grid ~x:0 ~y:(l.rows - 1)
-      ~style:(Ansi.Style.make ~fg:(Ansi.Color.indexed 3) ~bg:(Ansi.Color.indexed 0) ())
-      ~text:"ko: extended keys were not confirmed; use sidebar mouse switching"
+    draw_line grid ~x:0 ~y:(l.rows - 1) ~width:l.cols ~inverse:true
+      "ko: extended keys were not confirmed; use sidebar mouse switching"
 
 let native_style (c : Ko_vt.cell) =
   let colour = function
@@ -62,6 +70,8 @@ let native_style (c : Ko_vt.cell) =
 let paint t ~modes ~layout:l ~frame grid =
   let ui_changed = not (Option.exists (equal_layout l) t.layout) in
   if ui_changed || not (Stdlib.( == ) t.frame frame) then (
+    let shift = if Option.is_some l.dead then 1 else 0 in
+    let live = max 0 (l.pane_rows - shift) in
     t.layout <- Some l;
     t.frame <- frame;
     (if ui_changed then
@@ -69,7 +79,7 @@ let paint t ~modes ~layout:l ~frame grid =
        t.ui <-
          Array.init (l.cols * l.rows) (fun i ->
              let x = i mod l.cols and y = i / l.cols in
-             if x >= l.pane_x && y < l.pane_rows then blank
+             if x >= l.pane_x && y < live then blank
              else
                let cell = Matrix.Grid.get_cell grid i in
                {
@@ -99,9 +109,9 @@ let paint t ~modes ~layout:l ~frame grid =
     let cells = Array.copy t.ui in
     Option.iter
       (fun (f : Ko_vt.frame) ->
-        for y = 0 to min l.pane_rows f.rows - 1 do
+        for y = 0 to min live (f.rows - shift) - 1 do
           for x = 0 to min (l.cols - l.pane_x) f.cols - 1 do
-            let c = f.cells.((y * f.cols) + x) in
+            let c = f.cells.(((y + shift) * f.cols) + x) in
             let clipped = c.width = 2 && x + l.pane_x = l.cols - 1 in
             cells.((y * l.cols) + x + l.pane_x) <-
               {
@@ -118,8 +128,10 @@ let paint t ~modes ~layout:l ~frame grid =
     Buffer.add_string b output;
     let cursor =
       match frame with
-      | Some f when f.cursor_visible && f.cursor_x < l.cols - l.pane_x && f.cursor_y < l.pane_rows
-        ->
+      | Some f
+        when Option.is_none l.dead && f.cursor_visible
+             && f.cursor_x < l.cols - l.pane_x
+             && f.cursor_y < l.pane_rows ->
           Visible (l.pane_x + f.cursor_x, f.cursor_y, f.cursor_shape)
       | _ -> Hidden
     in
@@ -148,35 +160,47 @@ let paint t ~modes ~layout:l ~frame grid =
 
 let%test_module "Tests" =
   (module struct
-    let%expect_test "sidebar highlight fills its columns" =
+    let%expect_test "only the highlighted row is reversed and the bar sits left of the pane" =
       let grid = Matrix.Grid.create ~width:30 ~height:2 () in
       draw_ui
         {
           cols = 30;
           rows = 2;
-          pane_x = 24;
+          pane_x = 25;
           pane_rows = 2;
           warning = false;
+          dead = None;
           sidebar = [ ("1 界", true); ("2 /tmp", false) ];
           choosing = Some 1;
         }
         grid;
-      List.iteri
-        (fun y colour ->
-          let count =
-            List.init 24 (fun x -> Matrix.Grid.get_bg grid ((y * 30) + x))
-            |> List.filter (fun c -> Ansi.Color.equal c (Ansi.Color.indexed colour))
-            |> List.length
-          in
-          Printf.printf "row %d: %d highlighted; pane untouched=%b\n" y count
-            (not
-               (Ansi.Color.equal
-                  (Matrix.Grid.get_bg grid ((y * 30) + 24))
-                  (Ansi.Color.indexed colour))))
-        [ 4; 6 ];
-      [%expect
-        {|
-        row 0: 24 highlighted; pane untouched=true
-        row 1: 24 highlighted; pane untouched=true
+      let inverse i = Ansi.Attr.mem Inverse (Ansi.Attr.unpack (Matrix.Grid.get_attrs grid i)) in
+      for y = 0 to 1 do
+        let count =
+          List.length (List.filter (fun x -> inverse ((y * 30) + x)) (List.init 30 Fun.id))
+        in
+        Printf.printf "row %d: %d reversed; bar=%s\n" y count
+          (Matrix.Grid.get_text grid ((y * 30) + 24))
+      done;
+      [%expect {|
+        row 0: 0 reversed; bar=│
+        row 1: 24 reversed; bar=│
       |}]
+
+    let%expect_test "a one-column terminal draws no negative width" =
+      let grid = Matrix.Grid.create ~width:1 ~height:1 () in
+      draw_ui
+        {
+          cols = 1;
+          rows = 1;
+          pane_x = Sidebar.pane_x ~cols:1;
+          pane_rows = 1;
+          warning = true;
+          dead = Some "[exited 1]";
+          sidebar = [ ("1 sh", true) ];
+          choosing = None;
+        }
+        grid;
+      print_string (Matrix.Grid.get_text grid 0);
+      [%expect {| k |}]
   end)

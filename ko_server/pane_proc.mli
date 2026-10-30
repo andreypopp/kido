@@ -37,6 +37,7 @@ type event =
   | Pwd_changed of string
   | Record of record
   | Published
+  | Exited
   | Failed of Protocol.dead
 
 type t

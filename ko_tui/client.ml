@@ -41,9 +41,8 @@ type t = {
 let rows t = Mutex.protect t.lock (fun () -> t.panes)
 let pane t = match t.view with No_view -> None | Showing v -> Some v.pane
 let mirror t = match t.view with No_view -> None | Showing v -> Some v.mirror
-
-let pane_x t =
-  match t.sidebar with Hidden -> 0 | _ -> min Sidebar.width (max 0 (fst t.geometry - 1))
+let sidebar_x sidebar ~cols = match sidebar with Hidden -> 0 | _ -> Sidebar.pane_x ~cols
+let pane_x t = sidebar_x t.sidebar ~cols:(fst t.geometry)
 
 let size t =
   let cols, rows = t.geometry in
@@ -54,6 +53,14 @@ let size t =
     cell_h_px = 0;
   }
 
+let dead t =
+  match t.view with
+  | No_view -> None
+  | Showing v ->
+      List.find_map
+        (fun (p : Ko_server.Protocol.row) -> if String.equal p.id v.pane then p.dead else None)
+        (rows t)
+
 let layout t =
   let cols, height = t.geometry in
   {
@@ -62,6 +69,7 @@ let layout t =
     pane_x = pane_x t;
     pane_rows = max 0 (height - if t.warning then 1 else 0);
     warning = t.warning;
+    dead = Option.map Sidebar.dead_line (dead t);
     choosing = (match t.sidebar with Choosing i -> Some i | _ -> None);
     sidebar =
       (match t.sidebar with
@@ -157,7 +165,7 @@ let create ~wire ~socket ~matrix ~modes ~limits ~pager =
   let geometry = Matrix.size matrix and warning = not (Matrix.capabilities matrix).kitty_keyboard in
   let sidebar = if warning || Sidebar.visible ~cols:(fst geometry) then Visible else Hidden in
   let cols, rows = geometry in
-  let x = match sidebar with Hidden -> 0 | _ -> min Sidebar.width (max 0 (cols - 1)) in
+  let x = sidebar_x sidebar ~cols in
   Wire.upgrade wire ~path:"/client" ();
   Wire.send wire
     (Ko_server.Protocol.yojson_of_hello_message
@@ -268,15 +276,7 @@ let update t message =
   | Key k -> (
       t.immediate <- true;
       Option.iter Mirror.bottom (mirror t);
-      let dead =
-        match t.view with
-        | No_view -> false
-        | Showing v ->
-            List.exists
-              (fun (p : Ko_server.Protocol.row) ->
-                String.equal p.id v.pane && Option.is_some p.dead)
-              (rows t)
-      in
+      let dead = Option.is_some (dead t) in
       let effective event =
         match Input.command event with Some Remove when not dead -> None | c -> c
       in
@@ -367,7 +367,7 @@ let update t message =
       if x >= 0 && x < l.cols && y >= 0 && y < l.pane_rows then
         if x < l.pane_x then
           match M.kind event with
-          | Down _ ->
+          | Down _ when x < l.pane_x - 1 ->
               Option.iter
                 (fun r -> switch t r.Sidebar.pane)
                 (List.nth_opt (Sidebar.rows ~selected:(pane t) (rows t)) y)

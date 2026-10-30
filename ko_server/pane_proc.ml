@@ -137,6 +137,7 @@ type event =
   | Pwd_changed of string
   | Record of record
   | Published
+  | Exited
   | Failed of Protocol.dead
 
 type node = { pos : int; record : record option; mutable next_node : node option }
@@ -355,6 +356,7 @@ let on_frame t kind body =
   | Title -> t.notify (Title_changed (string_at body 0))
   | Pwd -> t.notify (Pwd_changed (string_at body 0))
   | Head -> t.notify Published
+  | Dead -> t.notify Exited
   | Full ->
       let b = Buffer.create 8 in
       Buffer.add_int64_le b (Int64.of_int t.tail);
