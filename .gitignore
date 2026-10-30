@@ -3,3 +3,4 @@ share/pi/.copy-*/
 /build/
 _build/
 _build-ci-like/
+/result

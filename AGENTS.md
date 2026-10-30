@@ -435,8 +435,9 @@ Before you force-push `fork`, push its previous head as a dated branch
 A PR into it has the wrong target.
 Push over SSH (`git@github.com:andreypopp/tmux.git`).
 
-A fork change updates kido's submodule pin and the `fork revision:`
-line in `share/rpc/contract.md`. lint checks their agreement.
+A fork change updates kido's submodule pin, the `fork revision:`
+line in `share/rpc/contract.md` and the `tmux-fork` input in
+`flake.nix`. lint checks their agreement.
 Only when the wire format or a tmux command or flag that
 `share/rpc/contract.md` names changes, bump the protocol version.
 The server stamp follows the pin automatically.
@@ -728,6 +729,13 @@ It reuses the e2e fork cache under `build/tmux-fork/`, keyed by the
 build key.
 `SELF_CONTAINED=1` passes `--self-contained` to the fork installer.
 It uses a separate `<key>-self-contained` cache entry.
+
+`flake.nix` builds kido with nixpkgs' OCaml packages, not `dune.lock`.
+It removes `dune-workspace` and replaces the build key and the version
+in the sources, because the sandbox has no git metadata.
+It builds `kido-tmux` through `scripts/install-tmux-fork.sh`
+and puts it beside `kido`. Its Mosaic input pins the same commit
+as `dune-project`, and lint checks their agreement.
 
 kido uses the dune **3.24.2** binary distribution for builds.
 Package management is on (`dune-workspace`).
