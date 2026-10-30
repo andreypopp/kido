@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -66,7 +68,7 @@ func TestUnsafePasteIsNotWritten(t *testing.T) {
 func TestSIGTERMKillsPrograms(t *testing.T) {
 	t.Parallel()
 	s := start(t)
-	p := s.pane("trap '' HUP; printf READY; while :; do read x; done")
+	p := s.pane("trap '' HUP; printf READY; while read x; do :; done")
 	v := s.dialWS("/panes/"+p+"/view", nil, 101)
 	s.ready(v, "READY")
 	var panes []struct {
@@ -77,20 +79,7 @@ func TestSIGTERMKillsPrograms(t *testing.T) {
 		t.Fatalf("program pid: %+v", panes)
 	}
 	s.stop()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		if err := syscall.Kill(panes[0].PID, 0); err == syscall.ESRCH {
-			break
-		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("program %d survived shutdown", panes[0].PID)
-		case <-tick.C:
-		}
-	}
+	waitGone(t, panes[0].PID, "shutdown")
 }
 func TestClientCloseClosesItsViews(t *testing.T) {
 	t.Parallel()
@@ -114,4 +103,60 @@ func TestClientCloseClosesItsViews(t *testing.T) {
 	req := s.headers()
 	req.Set("Ko-Client", id)
 	s.dialWS("/panes/"+p+"/view", req, 410)
+}
+
+func TestScrollbackLinesLimit(t *testing.T) {
+	t.Parallel()
+	s := start(t, "--scrollback-lines", "100")
+	p := s.pane("i=0; while [ $i -lt 3000 ]; do printf 'history-%s\\r\\n' $i; i=$((i+1)); done; printf 'LIMITREADY'; IFS= read -r done")
+	v := s.dialWS("/panes/"+p+"/view", nil, 101)
+	s.ready(v, "LIMITREADY")
+	history := s.request("GET", "/panes/"+p+"/screen?history=all", nil, 200, nil)
+	if !strings.Contains(history, "history-2999") || strings.Contains(history, "history-0\n") || strings.Contains(history, "history-0\r") {
+		t.Fatalf("lines limit kept %d bytes of history", len(history))
+	}
+}
+
+func TestPaneProcessCrashKillsProgram(t *testing.T) {
+	t.Parallel()
+	s := start(t)
+	p := s.pane("trap '' HUP; printf READY; exec sleep 3000")
+	v := s.dialWS("/panes/"+p+"/view", nil, 101)
+	s.ready(v, "READY")
+	var panes []struct {
+		PID int `json:"pid"`
+	}
+	s.request("GET", "/panes", nil, 200, &panes)
+	if len(panes) != 1 || panes[0].PID <= 0 {
+		t.Fatalf("program pid: %+v", panes)
+	}
+	program := panes[0].PID
+	t.Cleanup(func() { syscall.Kill(program, syscall.SIGKILL) })
+	parent, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(program)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pane, err := strconv.Atoi(strings.TrimSpace(string(parent)))
+	if err != nil || pane <= 1 {
+		t.Fatalf("pane process: %q", parent)
+	}
+	if err := syscall.Kill(pane, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	waitGone(t, program, "its pane process")
+}
+
+func waitGone(t *testing.T, pid int, what string) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for syscall.Kill(pid, 0) != syscall.ESRCH {
+		select {
+		case <-deadline.C:
+			t.Fatalf("program %d survived %s", pid, what)
+		case <-tick.C:
+		}
+	}
 }

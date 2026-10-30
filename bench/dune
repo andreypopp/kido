@@ -1,9 +1,16 @@
+(library
+ (name bench_terminal)
+ (modules bench_terminal)
+ (flags
+  (:standard -open Containers))
+ (libraries containers ko_vt ko_server))
+
 (executable
  (name coordinator)
  (modules coordinator)
  (flags
   (:standard -open Containers))
- (libraries containers unix luv ko_vt ko_server bigstringaf)
+ (libraries containers unix luv ko_vt ko_server bigstringaf bench_terminal)
  (foreign_stubs
   (language c)
   (names measure_stubs)
@@ -29,7 +36,14 @@
  (modules mirror)
  (flags
   (:standard -open Containers))
- (libraries containers unix ko_vt))
+ (libraries containers unix ko_vt bench_terminal))
+
+(executable
+ (name usage)
+ (modules usage)
+ (flags
+  (:standard -open Containers))
+ (libraries containers unix ko_vt bench_terminal))
 
 (rule
  (targets produce.exe)

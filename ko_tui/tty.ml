@@ -84,7 +84,7 @@ let create ~paint ~notify =
         ~signal_handlers:false ~kitty_keyboard:`Disabled ~start_idle:true ~cursor_visible:false
         ~mouse_enabled:false ~resize_debounce:None ()
     in
-    ignore (Matrix.Screen.post_process (fun grid ~delta:_ -> paint grid) (Matrix.screen app));
+    ignore (Matrix.Screen.post_process (fun _ ~delta:_ -> paint ()) (Matrix.screen app));
     app
   with e ->
     set_raw_mode false;

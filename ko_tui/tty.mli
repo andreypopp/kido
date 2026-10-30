@@ -1,1 +1,1 @@
-val create : paint:(Matrix.Grid.t -> unit) -> notify:(unit -> unit) -> Matrix.app
+val create : paint:(unit -> unit) -> notify:(unit -> unit) -> Matrix.app

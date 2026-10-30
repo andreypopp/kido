@@ -2,6 +2,7 @@ type size = { cols : int; rows : int; cell_w_px : int; cell_h_px : int } [@@deri
 
 type limits = {
   scrollback_max_bytes : int;
+  scrollback_max_lines : int option;
   apc_max_bytes : int;
   kitty_image_storage_limit : int;
   media : string list;
@@ -29,7 +30,8 @@ val major : string
 val vt : string
 val build : string
 val default_size : size
-val limits : int -> limits
+val default_scrollback_bytes : int
+val limits : ?scrollback_max_bytes:int -> ?scrollback_max_lines:int -> unit -> limits
 val valid_size : size -> bool
 val default_dir : state:string option -> xdg:string option -> home:string -> string
 val socket : create:bool -> string -> (string, string) result

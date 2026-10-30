@@ -11,15 +11,16 @@ import (
 
 func TestDefaultsAndPaneEnvironment(t *testing.T) {
 	t.Parallel()
-	s := start(t, "--scrollback", "80M")
+	s := start(t, "--scrollback-bytes", "80M", "--scrollback-lines", "5000")
 	var version struct {
 		Terminal struct {
-			Scrollback   int `json:"scrollback_max_bytes"`
-			Continuation int `json:"continuation_max_bytes"`
+			Scrollback   int  `json:"scrollback_max_bytes"`
+			Lines        *int `json:"scrollback_max_lines"`
+			Continuation int  `json:"continuation_max_bytes"`
 		}
 	}
 	s.request("GET", "/version", nil, 200, &version)
-	if version.Terminal.Scrollback != 80*1024*1024 || version.Terminal.Continuation != 65*1024*1024 {
+	if version.Terminal.Scrollback != 80*1024*1024 || version.Terminal.Lines == nil || *version.Terminal.Lines != 5000 || version.Terminal.Continuation != 65*1024*1024 {
 		t.Fatalf("terminal contract: %+v", version)
 	}
 	output, err := exec.Command(koBin, "version").Output()

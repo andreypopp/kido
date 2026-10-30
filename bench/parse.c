@@ -27,7 +27,7 @@ int main(int argc, char **argv) {
   for (int callbacks = 0; callbacks < 2; callbacks++) {
     GhosttyTerminal vt;
     if (ghostty_terminal_new(NULL, &vt, 80, 24) != GHOSTTY_SUCCESS) return 1;
-    size_t scrollback = 32 << 20;
+    size_t scrollback = 50000000;
     ghostty_terminal_set(vt, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &scrollback);
     ghostty_terminal_set(vt, GHOSTTY_TERMINAL_OPT_WRITE_PTY, reply);
     if (callbacks) {

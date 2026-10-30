@@ -43,6 +43,7 @@ val create :
   cols:int ->
   rows:int ->
   scrollback_max_bytes:int ->
+  scrollback_max_lines:int option ->
   apc_max_bytes:int ->
   kitty_image_storage_limit:int ->
   continuation_max_bytes:int ->
@@ -51,11 +52,18 @@ val create :
 val configure :
   t ->
   scrollback_max_bytes:int ->
+  scrollback_max_lines:int option ->
   apc_max_bytes:int ->
   kitty_image_storage_limit:int ->
   continuation_max_bytes:int ->
   unit
 
+val now_ns : unit -> int
+val compress_tick : t -> now_ns:int -> int
+
+type memory = { pages : int; compressed_pages : int; resident_bytes : int }
+
+val memory : t -> memory
 val write : t -> ?off:int -> ?len:int -> string -> unit
 val resize : t -> cols:int -> rows:int -> unit
 val dump : t -> format -> string

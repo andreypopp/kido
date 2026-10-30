@@ -4,7 +4,7 @@ set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 kitten=${KITTEN:-/opt/homebrew/bin/kitten}
 kitty=${KITTY:-/opt/homebrew/bin/kitty}
-tmux=${TMUX_BIN:-/opt/homebrew/bin/tmux}
+tmux=${KIDO_TMUX:?set KIDO_TMUX or run bench/table.sh}
 repetitions=${REPETITIONS:-500}
 deadline() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 results() { grep -E '^ *(Only ASCII|Unicode chars|Unique multi|CSI codes|Long escape|Images).*: ' || true; }

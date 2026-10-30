@@ -79,7 +79,11 @@
  (foreign_stubs
   (language c)
   (names ko_vt_stubs)
-  (extra_deps ../ko_pane/snapshot_cut.h ../ko_pane/buffer.h)
+  (extra_deps
+   ../ko_pane/snapshot_cut.h
+   ../ko_pane/buffer.h
+   ../ko_pane/compress.h
+   ../ko_pane/now.h)
   (flags
    (:standard -I../third_party/ghostty/include -I../ko_pane)))
  (c_library_flags

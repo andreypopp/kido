@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <errno.h>
+#include <poll.h>
 #include <string.h>
 #include <time.h>
 #include "../ko_pane/now.h"
@@ -20,9 +21,37 @@ static void output(const void *ptr, size_t n) {
   }
 }
 
+static int await_reply(void) {
+  struct termios term;
+  if (tcgetattr(0, &term)) return 2;
+  term.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+  term.c_cc[VMIN] = 1;
+  term.c_cc[VTIME] = 0;
+  if (tcsetattr(0, TCSAFLUSH, &term)) return 2;
+  output("\033\\\033[c", 5);
+  char reply[4096];
+  size_t have = 0;
+  for (int waited = 0; waited < 600 && have < sizeof(reply) - 1; waited++) {
+    struct pollfd f = {0, POLLIN, 0};
+    if (poll(&f, 1, 100) > 0) {
+      ssize_t n = read(0, reply + have, sizeof(reply) - 1 - have);
+      if (n > 0) have += (size_t)n;
+      reply[have] = 0;
+      char *start = strstr(reply, "\033[?");
+      if (start && strchr(start, 'c')) return 0;
+    }
+  }
+  return 1;
+}
+
 int main(int argc, char **argv) {
+  int query = argc > 1 && !strcmp(argv[1], "--query");
+  if (query) {
+    argv++;
+    argc--;
+  }
   if (argc < 3) {
-    fprintf(stderr, "usage: produce BYTES FILE... | --latency COUNT | --lines COUNT\n");
+    fprintf(stderr, "usage: produce [--query] BYTES FILE... | --latency COUNT | --lines COUNT\n");
     return 2;
   }
   struct termios term;
@@ -70,5 +99,5 @@ int main(int argc, char **argv) {
     output(data[i], n);
     remaining -= n;
   }
-  return 0;
+  return query ? await_reply() : 0;
 }

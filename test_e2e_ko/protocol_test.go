@@ -422,16 +422,37 @@ func TestViewResumeResizeAndInput(t *testing.T) {
 func TestKillServer(t *testing.T) {
 	t.Parallel()
 	s := start(t)
-	s.pane("trap '' HUP; while :; do read x; done")
+	p := s.pane("trap '' HUP; printf READY; while read x; do :; done")
+	v := s.dialWS("/panes/"+p+"/view", nil, 101)
+	s.ready(v, "READY")
+	var panes []struct {
+		PID int `json:"pid"`
+	}
+	s.request("GET", "/panes", nil, 200, &panes)
+	if len(panes) != 1 || panes[0].PID <= 0 {
+		t.Fatalf("program pid: %+v", panes)
+	}
+	t.Cleanup(func() { syscall.Kill(panes[0].PID, syscall.SIGKILL) })
 	cmd := exec.Command(koBin, "kill-server", "--server", s.dir)
 	if b, e := cmd.CombinedOutput(); e != nil {
 		t.Fatalf("kill: %v %s", e, b)
 	}
 	s.stop()
+	waitGone(t, panes[0].PID, "kill-server")
 }
 func TestVersionAndOrigin(t *testing.T) {
 	t.Parallel()
 	s := start(t)
+	var version struct {
+		Terminal struct {
+			Bytes int  `json:"scrollback_max_bytes"`
+			Lines *int `json:"scrollback_max_lines"`
+		}
+	}
+	s.request("GET", "/version", nil, 200, &version)
+	if version.Terminal.Bytes != 50_000_000 || version.Terminal.Lines != nil {
+		t.Fatalf("default scrollback limits: %+v", version.Terminal)
+	}
 	vt := s.vt
 	s.vt = "wrong"
 	s.request("GET", "/panes", nil, 409, nil)

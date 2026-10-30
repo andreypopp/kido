@@ -11,6 +11,9 @@ type t = {
   mutable error : string option;
   mutable closed : bool;
   mutable thread : Thread.t option;
+  wake : Condition.t;
+  nudge : Unix.file_descr * Unix.file_descr;
+  mutable compressor : Thread.t option;
 }
 
 exception Restart of string
@@ -27,12 +30,17 @@ let to_bottom t =
       moved || delta <> 0
   | _ -> moved
 
-let bottom t = Mutex.protect t.lock (fun () -> if to_bottom t then t.generation <- t.generation + 1)
+let bottom t =
+  Mutex.protect t.lock (fun () ->
+      if to_bottom t then (
+        t.generation <- t.generation + 1;
+        Condition.broadcast t.wake))
 
 let scroll t delta =
   let resync =
     Mutex.protect t.lock (fun () ->
         t.generation <- t.generation + 1;
+        Condition.broadcast t.wake;
         match t.surface with
         | Empty -> false
         | Full vt ->
@@ -76,10 +84,42 @@ let frame t =
             t.drawn <- next;
             Some (Ko_vt.render vt)))
 
+let compress_loop t =
+  Mutex.protect t.lock (fun () ->
+      while not t.closed do
+        match terminal t.surface with
+        | None -> Condition.wait t.wake t.lock
+        | Some vt ->
+            let began = Ko_vt.now_ns () in
+            let rec burst () =
+              let now = Ko_vt.now_ns () in
+              let next = Ko_vt.compress_tick vt ~now_ns:now in
+              if next = 0 && now - began < 1_000_000 then burst () else next
+            in
+            let next = burst () in
+            if next < 0 then Condition.wait t.wake t.lock
+            else (
+              Mutex.unlock t.lock;
+              (try
+                 ignore
+                   (Unix.select
+                      [ fst t.nudge ]
+                      [] []
+                      (if next = 0 then 0.0005 else float_of_int next /. 1000.))
+               with Unix.Unix_error (Unix.EINTR, _, _) -> ());
+              Mutex.lock t.lock)
+      done)
+
 let close t =
-  t.closed <- true;
+  Mutex.protect t.lock (fun () ->
+      t.closed <- true;
+      Condition.broadcast t.wake);
+  ignore (Unix.write_substring (snd t.nudge) "x" 0 1);
   Wire.close t.wire;
   Option.iter Thread.join t.thread;
+  Option.iter Thread.join t.compressor;
+  Unix.close (fst t.nudge);
+  Unix.close (snd t.nudge);
   Mutex.protect t.lock (fun () ->
       Option.iter Ko_vt.close (terminal t.surface);
       t.surface <- Empty)
@@ -98,12 +138,16 @@ let open_view ~socket ~client ~pane ~(limits : Ko_server.Config.limits) ~notify 
         error = None;
         closed = false;
         thread = None;
+        wake = Condition.create ();
+        nudge = Unix.pipe ~cloexec:true ();
+        compressor = None;
       }
     in
     let update f =
       Mutex.protect t.lock (fun () ->
           f ();
-          t.generation <- t.generation + 1);
+          t.generation <- t.generation + 1;
+          Condition.broadcast t.wake);
       notify ()
     in
     let window = ref (Unix.gettimeofday ()) and work = ref 0. in
@@ -191,7 +235,7 @@ let open_view ~socket ~client ~pane ~(limits : Ko_server.Config.limits) ~notify 
           ~finally:(fun () -> if !owned then Ko_vt.close vt)
           (fun () ->
             Ko_vt.configure vt ~scrollback_max_bytes:limits.scrollback_max_bytes
-              ~apc_max_bytes:limits.apc_max_bytes
+              ~scrollback_max_lines:limits.scrollback_max_lines ~apc_max_bytes:limits.apc_max_bytes
               ~kitty_image_storage_limit:limits.kitty_image_storage_limit
               ~continuation_max_bytes:limits.continuation_max_bytes;
             while (not !last) || !pos < String.length !piece do
@@ -247,6 +291,7 @@ let open_view ~socket ~client ~pane ~(limits : Ko_server.Config.limits) ~notify 
              with e ->
                if not t.closed then update (fun () -> t.error <- Some (Printexc.to_string e)))
            ());
+    t.compressor <- Some (Thread.create compress_loop t);
     t
   with e ->
     Wire.close wire;

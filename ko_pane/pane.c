@@ -1,6 +1,7 @@
 #define _DARWIN_C_SOURCE
 #define _GNU_SOURCE
 #include "buffer.h"
+#include "compress.h"
 #include "now.h"
 #include "protocol.h"
 #include "snapshot_cut.h"
@@ -32,6 +33,7 @@ struct pane {
   int master, alive, stopping, eof, callbacks, reaped, status, full, depth;
   pid_t pid;
   struct ko_buffer input, output, pty_input, events, deferred;
+  struct ko_compress compress;
 };
 static int sigchld[2] = {-1, -1};
 static volatile sig_atomic_t shutdown_requested;
@@ -235,7 +237,8 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
   unsigned version = number(&c, 2);
   uint16_t cols = number(&c, 2), rows = number(&c, 2), cw = number(&c, 2),
            ch = number(&c, 2);
-  size_t scrollback = number(&c, 8), apc = number(&c, 8);
+  size_t scrollback = number(&c, 8), lines = number(&c, 8),
+         apc = number(&c, 8);
   uint64_t kitty = number(&c, 8);
   unsigned media = number(&c, 1);
   size_t continuation = number(&c, 8);
@@ -247,7 +250,7 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
                          .ws_col = cols,
                          .ws_xpixel = cols * cw,
                          .ws_ypixel = rows * ch};
-  if (c.error || c.n || version != 1 || !cols || !rows || !argv || !argv[0] ||
+  if (c.error || c.n || version != 2 || !cols || !rows || !argv || !argv[0] ||
       argv[0][0] != '/') {
     goto done;
   }
@@ -257,6 +260,8 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
   ghostty_terminal_resize(p->vt, cols, rows, cw, ch);
   ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
                        &scrollback);
+  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
+                       lines ? &lines : NULL);
   ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, &apc);
   ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
                        &kitty);
@@ -306,6 +311,7 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
   fcntl(p->master, F_SETFL, O_NONBLOCK);
   fcntl(p->master, F_SETFD, FD_CLOEXEC);
   p->alive = 1;
+  ko_compress_init(&p->compress, ko_now_ns());
   uint8_t pid[4];
   ko_put(pid, p->pid, 4);
   frame(&p->output, KO_READY, pid, 4);
@@ -795,11 +801,11 @@ static int control(struct pane *p, int snapshots) {
   }
   return 0;
 }
-static void read_pty(struct pane *p) {
+static int read_pty(struct pane *p) {
   size_t room = available(p), used = 0;
   if (!room) {
     announce_full(p);
-    return;
+    return 0;
   }
   uint8_t *dst = at_head(p) + KO_HEADER;
   while (used < room) {
@@ -819,6 +825,7 @@ static void read_pty(struct pane *p) {
     ghostty_terminal_vt_write(p->vt, dst, used);
     commit(p, KO_BYTES, used);
   }
+  return used > 0;
 }
 int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
@@ -852,15 +859,16 @@ int main(int argc, char **argv) {
   fcntl(1, F_SETFL, O_NONBLOCK);
   signal(SIGHUP, on_shutdown);
   signal(SIGTERM, on_shutdown);
-  int failure = 0;
+  int failure = 0, timeout = -1;
   while (!p.stopping && !shutdown_requested) {
-    int reading = p.vt && !p.eof && !p.full;
+    int reading = p.vt && !p.eof && !p.full, committed = 0;
     struct pollfd f[3] = {
         {0, POLLIN | (p.output.n ? POLLOUT : 0), 0},
         {reading || p.pty_input.n ? p.master : -1,
          (reading ? POLLIN : 0) | (p.pty_input.n ? POLLOUT : 0), 0},
         {sigchld[0], POLLIN, 0}};
-    if (poll(f, 3, -1) < 0) {
+    int ready = poll(f, 3, timeout);
+    if (ready < 0) {
       if (errno == EINTR) {
         continue;
       }
@@ -885,7 +893,7 @@ int main(int argc, char **argv) {
     }
     if (p.vt && !p.eof &&
         (f[1].revents & (POLLIN | POLLHUP | POLLERR) || p.reaped)) {
-      read_pty(&p);
+      committed = read_pty(&p);
     }
     if (p.reaped && p.eof) {
       uint8_t b[8];
@@ -908,6 +916,9 @@ int main(int argc, char **argv) {
       failure = 1;
       break;
     }
+    timeout = p.vt && (ready == 0 || committed || f[0].revents || p.compress.pending)
+                  ? ko_compress_tick(&p.compress, p.vt, ko_now_ns())
+                  : -1;
   }
   if (p.pid > 0) {
     kill(-p.pid, SIGHUP);
@@ -923,7 +934,7 @@ int main(int argc, char **argv) {
       clock_gettime(CLOCK_MONOTONIC, &now);
       if ((now.tv_sec - start.tv_sec) * 1000000000L + now.tv_nsec -
               start.tv_nsec >=
-          500000000L) {
+          250000000L) {
         kill(-p.pid, SIGKILL);
         if (!p.reaped) {
           waitpid(p.pid, NULL, 0);

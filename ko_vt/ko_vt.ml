@@ -57,6 +57,7 @@ external create :
   cols:int ->
   rows:int ->
   scrollback_max_bytes:int ->
+  scrollback_max_lines:int option ->
   apc_max_bytes:int ->
   kitty_image_storage_limit:int ->
   continuation_max_bytes:int ->
@@ -65,11 +66,18 @@ external create :
 external configure :
   t ->
   scrollback_max_bytes:int ->
+  scrollback_max_lines:int option ->
   apc_max_bytes:int ->
   kitty_image_storage_limit:int ->
   continuation_max_bytes:int ->
-  unit = "ko_vt_configure"
+  unit = "ko_vt_configure_bytecode" "ko_vt_configure"
 
+external now_ns : unit -> int = "ko_vt_now_ns"
+external compress_tick : t -> now_ns:int -> int = "ko_vt_compress_tick"
+
+type memory = { pages : int; compressed_pages : int; resident_bytes : int }
+
+external memory : t -> memory = "ko_vt_memory"
 external write : t -> ?off:int -> ?len:int -> string -> unit = "ko_vt_write"
 external resize : t -> cols:int -> rows:int -> unit = "ko_vt_resize"
 external dump : t -> format -> string = "ko_vt_dump"
@@ -92,9 +100,8 @@ let decode_string ?ready ~full bytes = decode ?ready ~full (string_reader bytes)
 
 let%test_module "Tests" =
   (module struct
-    let create ~cols ~rows =
-      create ~cols ~rows
-        ~scrollback_max_bytes:(32 * 1024 * 1024)
+    let make ~cols ~rows =
+      create ~cols ~rows ~scrollback_max_bytes:50_000_000 ~scrollback_max_lines:None
         ~apc_max_bytes:(65 * 1024 * 1024)
         ~kitty_image_storage_limit:10_000_000
         ~continuation_max_bytes:(65 * 1024 * 1024)
@@ -115,7 +122,7 @@ let%test_module "Tests" =
       go 10 []
 
     let%expect_test "kitty payload filtered, screen cut at READY, mode 2026 cleared" =
-      let server = create ~cols:20 ~rows:5 in
+      let server = make ~cols:20 ~rows:5 in
       write server "\027_Ga=T,f=32,s=1,v=1,i=1;AQIDBA==\027\\\027[?2026himage";
       let print_tags label bytes =
         Printf.printf "%s: %s\n" label (String.concat " " (List.map string_of_int (tags bytes)))
@@ -147,7 +154,7 @@ let%test_module "Tests" =
       in
       List.iter
         (fun (label, before, after) ->
-          let server = create ~cols:30 ~rows:6 in
+          let server = make ~cols:30 ~rows:6 in
           write server before;
           let screen =
             decode ~full:false (string_reader (snapshot server ~screen:true ~images:false))
@@ -183,8 +190,8 @@ let%test_module "Tests" =
         |}]
 
     let%expect_test "full mirror applies resizes, partial mirror decodes a screen" =
-      let server = create ~cols:20 ~rows:5 in
-      let mirror = create ~cols:20 ~rows:5 in
+      let server = make ~cols:20 ~rows:5 in
+      let mirror = make ~cols:20 ~rows:5 in
       for i = 0 to 99 do
         let bytes =
           Printf.sprintf "\027]8;;https://example.org/%d\027\\line %d\027]8;;\027\\\r\n" i i
@@ -211,7 +218,7 @@ let%test_module "Tests" =
         |}]
 
     let%expect_test "READY publishes a screen before full history" =
-      let server = create ~cols:16 ~rows:2 in
+      let server = make ~cols:16 ~rows:2 in
       for i = 0 to 9999 do
         write server (Printf.sprintf "line%05d\r\n" i)
       done;
@@ -233,7 +240,7 @@ let%test_module "Tests" =
       [%expect {| callbacks=1 ready_has_less_history=true full_rows=10001 |}]
 
     let%expect_test "synchronized output keeps the frame at the start of the hold" =
-      let vt = create ~cols:8 ~rows:2 in
+      let vt = make ~cols:8 ~rows:2 in
       write vt "old\027[?2026h\rnew";
       Printf.printf "%s\n" (render vt).cells.(0).text;
       write vt "\027[?2026l";
@@ -244,7 +251,7 @@ let%test_module "Tests" =
       |}]
 
     let%expect_test "render keeps palette indices, RGB overrides, wide tails and viewport modes" =
-      let server = create ~cols:8 ~rows:2 in
+      let server = make ~cols:8 ~rows:2 in
       write server
         "first\r\n\
          second\r\n\
@@ -288,5 +295,46 @@ let%test_module "Tests" =
         scrolled="f"
         bottom="s"
         closed terminal
+        |}]
+
+    let%expect_test
+        "idle compression frees history, a decoded snapshot starts compressed, the line limit \
+         prunes" =
+      let fill vt =
+        write vt (String.concat "" (List.init 20000 (Printf.sprintf "compressible line %d\r\n")))
+      in
+      let server = make ~cols:80 ~rows:24 in
+      fill server;
+      let before = memory server and start = 1_000_000_000 in
+      Printf.printf "waits for idle=%b\n" (compress_tick server ~now_ns:start > 0);
+      let now = start + 250_000_000 in
+      while compress_tick server ~now_ns:now = 0 do
+        ()
+      done;
+      let after = memory server in
+      Printf.printf "pages compressed before=%b after=%b\n" (before.compressed_pages > 0)
+        (after.compressed_pages > 0);
+      Printf.printf "resident shrank at least tenfold=%b\n"
+        (after.resident_bytes * 10 < before.resident_bytes);
+      write server "x\r\n";
+      Printf.printf "scrolling restarts the wait=%b\n" (compress_tick server ~now_ns:now > 0);
+      let restored = decode_string ~full:true (snapshot server ~screen:false ~images:false) in
+      let decoded = memory restored in
+      Printf.printf "decoded compressed=%b same rows=%b\n" (decoded.compressed_pages > 0)
+        (total_rows restored = total_rows server);
+      let limited =
+        create ~cols:80 ~rows:24 ~scrollback_max_bytes:50_000_000 ~scrollback_max_lines:(Some 1000)
+          ~apc_max_bytes:0 ~kitty_image_storage_limit:0 ~continuation_max_bytes:0
+      in
+      fill limited;
+      Printf.printf "lines limit prunes=%b\n" (total_rows limited < 3000);
+      [%expect
+        {|
+        waits for idle=true
+        pages compressed before=false after=true
+        resident shrank at least tenfold=true
+        scrolling restarts the wait=true
+        decoded compressed=true same rows=true
+        lines limit prunes=true
         |}]
   end)

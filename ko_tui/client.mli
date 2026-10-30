@@ -19,8 +19,7 @@ val create :
 
 val close : t -> unit
 val notify : t -> unit
-val paint : t -> Matrix.Grid.t -> unit
-val layout : t -> Renderer.layout
+val paint : t -> unit
 val update : t -> message -> unit * message Mosaic.Cmd.t
 val start : t -> (message -> unit) -> Matrix_input.t list -> unit
 val subscriptions : t -> message Mosaic.Sub.t

@@ -5,7 +5,7 @@ set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 bytes=${BYTES:-1073741824}
 kitty=${KITTY:-/opt/homebrew/bin/kitty}
-tmux=${TMUX_BIN:-/opt/homebrew/bin/tmux}
+tmux=${KIDO_TMUX:?set KIDO_TMUX or run bench/table.sh}
 cd "$root"
 dune build ko_pane/ko-pane bench/coordinator.exe bench/produce.exe bench/drain.exe bench/pty_read.exe bench/acker.exe
 build=$root/_build/default
@@ -31,7 +31,7 @@ run ./bench/pty_read.exe socket ./bench/drain.exe "$produce" "$bytes" $streams
 echo "== 6. tmux $("$tmux" -V), detached private server"
 dir=$(mktemp -d /tmp/ko-tmux-XXXXXX)
 "$tmux" -S "$dir/socket" -f /dev/null new-session -d -x 80 -y 24 \
-  "sleep 0.5; /usr/bin/time -p $produce $bytes $streams 2>$dir/time; $tmux -S $dir/socket wait-for -S done; sleep 60"
+  "sleep 0.5; /usr/bin/time -p $produce --query $bytes $streams 2>$dir/time; $tmux -S $dir/socket wait-for -S done; sleep 60"
 server=$("$tmux" -S "$dir/socket" display -p '#{pid}')
 before=$(ps -o cputime= -p "$server" | seconds)
 deadline 900 "$tmux" -S "$dir/socket" wait-for done || echo "tmux run missed its deadline"
@@ -46,7 +46,7 @@ for options in "" "-o input_delay=0 -o repaint_delay=2 -o sync_to_monitor=no"; d
   dir=$(mktemp -d /tmp/ko-kitty-XXXXXX)
   # shellcheck disable=SC2086
   deadline 900 /usr/bin/time -l "$kitty" --config NONE -o macos_quit_when_last_window_closed=yes $options \
-    sh -c "/usr/bin/time -p $produce $bytes $streams 2>$dir/time" 2>"$dir/kitty" >/dev/null || true
+    sh -c "/usr/bin/time -p $produce --query $bytes $streams 2>$dir/time" 2>"$dir/kitty" >/dev/null || true
   awk -v b="$bytes" '
     FNR == NR && /^real/ { real = $2 } FNR == NR && /^(user|sys)/ { producer += $2 }
     FNR != NR && / real .* user .* sys/ { total = $3 + $5 }

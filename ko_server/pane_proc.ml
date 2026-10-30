@@ -98,12 +98,17 @@ let frame kind body =
 
 let init (config : Config.t) ~id ~cwd ~argv ~env ~size:dimensions =
   let b = Buffer.create 512 in
-  Buffer.add_uint16_le b 1;
+  Buffer.add_uint16_le b 2;
   size b dimensions;
   let limits = config.terminal in
   List.iter
     (fun n -> Buffer.add_int64_le b (Int64.of_int n))
-    [ limits.scrollback_max_bytes; limits.apc_max_bytes; limits.kitty_image_storage_limit ];
+    [
+      limits.scrollback_max_bytes;
+      Option.value ~default:0 limits.scrollback_max_lines;
+      limits.apc_max_bytes;
+      limits.kitty_image_storage_limit;
+    ];
   let media =
     List.fold_left
       (fun bits medium ->

@@ -6,13 +6,7 @@ let reader bytes =
     offset := !offset + len;
     chunk
 
-let create ~cols ~rows =
-  Ko_vt.create ~cols ~rows
-    ~scrollback_max_bytes:(32 * 1024 * 1024)
-    ~apc_max_bytes:(65 * 1024 * 1024)
-    ~kitty_image_storage_limit:10_000_000
-    ~continuation_max_bytes:(65 * 1024 * 1024)
-
+let create ~cols ~rows = Bench_terminal.create ~cols ~rows ()
 let modes = [ 1; 6; 7; 25; 47; 1000; 1002; 1003; 1004; 1006; 1049; 2004; 2026 ]
 
 type mirror = { name : string; mutable terminal : Ko_vt.t; divergences : (string, int) Hashtbl.t }

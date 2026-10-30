@@ -9,13 +9,14 @@
 #include <ghostty/vt.h>
 #include "snapshot_cut.h"
 #include "buffer.h"
+#include "compress.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 struct terminal { GhosttyTerminal vt; GhosttyRenderState render;
   GhosttyRenderStateRowIterator rows; GhosttyRenderStateRowCells cells;
-  bool held; double hold_started; uintnat hold_id; GhosttyResult render_error; };
+  struct ko_compress compress; bool held; double hold_started; uintnat hold_id; GhosttyResult render_error; };
 #define S(v) (*(struct terminal **)Data_custom_val(v))
 static struct terminal *live(value v) {
   if(!S(v)) caml_invalid_argument("closed terminal");return S(v);
@@ -54,6 +55,7 @@ static value wrap(GhosttyTerminal vt) {
   S(v)=calloc(1,sizeof(struct terminal));
   if(!S(v)) { ghostty_terminal_free(vt); caml_raise_out_of_memory(); }
   T(v)=vt;
+  ko_compress_init(&S(v)->compress,ko_now_ns());
   check(ghostty_terminal_set(vt,GHOSTTY_TERMINAL_OPT_USERDATA,S(v)));
   check(ghostty_terminal_set(vt,GHOSTTY_TERMINAL_OPT_RENDER_HOLD,render_hold));
   return v;
@@ -62,31 +64,57 @@ static void check_size(value cols,value rows) {
   if(Long_val(cols)<1 || Long_val(cols)>65535 || Long_val(rows)<1 || Long_val(rows)>65535)
     caml_invalid_argument("terminal dimensions");
 }
-static void limits(GhosttyTerminal vt,value scrollback,value apc,value kitty,value continuation) {
-  if(Long_val(scrollback)<0 || Long_val(apc)<0 || Long_val(kitty)<0 || Long_val(continuation)<0)
+static void limits(GhosttyTerminal vt,value scrollback,value lines,value apc,value kitty,value continuation) {
+  if(Long_val(scrollback)<0 || Long_val(apc)<0 || Long_val(kitty)<0 || Long_val(continuation)<0 ||
+     (Is_block(lines) && Long_val(Field(lines,0))<1))
     caml_invalid_argument("terminal limits");
   size_t scrollback_bytes=Long_val(scrollback),apc_bytes=Long_val(apc),continuation_bytes=Long_val(continuation);
+  size_t scrollback_lines=Is_block(lines)?Long_val(Field(lines,0)):0;
   uint64_t kitty_bytes=Long_val(kitty);
   check(ghostty_terminal_set(vt,GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,&scrollback_bytes));
+  check(ghostty_terminal_set(vt,GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,Is_block(lines)?&scrollback_lines:NULL));
   check(ghostty_terminal_set(vt,GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES,&apc_bytes));
   check(ghostty_terminal_set(vt,GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,&kitty_bytes));
   check(ghostty_terminal_set(vt,GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES,&continuation_bytes));
 }
-CAMLprim value ko_vt_configure(value v,value scrollback,value apc,value kitty,value continuation) {
-  CAMLparam5(v,scrollback,apc,kitty,continuation);
-  limits(T(v),scrollback,apc,kitty,continuation);CAMLreturn(Val_unit);
+CAMLprim value ko_vt_configure(value v,value scrollback,value lines,value apc,value kitty,value continuation) {
+  CAMLparam5(v,scrollback,lines,apc,kitty); CAMLxparam1(continuation);
+  limits(T(v),scrollback,lines,apc,kitty,continuation);CAMLreturn(Val_unit);
 }
-CAMLprim value ko_vt_create(value cols,value rows,value scrollback,value apc,value kitty,value continuation) {
-  CAMLparam5(cols,rows,scrollback,apc,kitty); CAMLxparam1(continuation); CAMLlocal1(v);
+CAMLprim value ko_vt_configure_bytecode(value *argv,int argc) {
+  (void)argc; return ko_vt_configure(argv[0],argv[1],argv[2],argv[3],argv[4],argv[5]);
+}
+CAMLprim value ko_vt_create(value cols,value rows,value scrollback,value lines,value apc,value kitty,value continuation) {
+  CAMLparam5(cols,rows,scrollback,lines,apc); CAMLxparam2(kitty,continuation); CAMLlocal1(v);
   check_size(cols,rows);
   GhosttyTerminal vt=NULL;
   check(ghostty_terminal_new(NULL,&vt,Long_val(cols),Long_val(rows)));
   v=wrap(vt);
-  limits(vt,scrollback,apc,kitty,continuation);
+  limits(vt,scrollback,lines,apc,kitty,continuation);
   CAMLreturn(v);
 }
 CAMLprim value ko_vt_create_bytecode(value *argv,int argc) {
-  (void)argc; return ko_vt_create(argv[0],argv[1],argv[2],argv[3],argv[4],argv[5]);
+  (void)argc; return ko_vt_create(argv[0],argv[1],argv[2],argv[3],argv[4],argv[5],argv[6]);
+}
+CAMLprim value ko_vt_now_ns(value unit) {
+  (void)unit; return Val_long(ko_now_ns());
+}
+CAMLprim value ko_vt_compress_tick(value v,value now) {
+  CAMLparam2(v,now); struct terminal *s=live(v); int next;
+  caml_enter_blocking_section();
+  next=ko_compress_tick(&s->compress,s->vt,Long_val(now));
+  caml_leave_blocking_section();
+  CAMLreturn(Val_int(next));
+}
+CAMLprim value ko_vt_memory(value v) {
+  CAMLparam1(v); CAMLlocal1(result);
+  GhosttyTerminalMemoryUsage usage=GHOSTTY_INIT_SIZED(GhosttyTerminalMemoryUsage);
+  check(ghostty_terminal_get(T(v),GHOSTTY_TERMINAL_DATA_MEMORY_USAGE,&usage));
+  result=caml_alloc_tuple(3);
+  Store_field(result,0,Val_long(usage.primary_pages+usage.alternate_pages));
+  Store_field(result,1,Val_long(usage.primary_compressed_pages+usage.alternate_compressed_pages));
+  Store_field(result,2,Val_long(usage.primary_resident_bytes+usage.alternate_resident_bytes));
+  CAMLreturn(result);
 }
 CAMLprim value ko_vt_write(value v,value off,value len,value bytes) {
   CAMLparam4(v,off,len,bytes);

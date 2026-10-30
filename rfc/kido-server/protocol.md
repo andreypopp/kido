@@ -66,8 +66,11 @@ nanoseconds where a wall time is needed.
     GET /version
       {protocol: "1.0", vt: "<libghostty-vt revision>",
        server: {started_at, pid, build},
-       terminal: {scrollback_max_bytes, apc_max_bytes, kitty_image_storage_limit,
-                  media: [...], continuation_max_bytes}}
+       terminal: {scrollback_max_bytes, scrollback_max_lines, apc_max_bytes,
+                  kitty_image_storage_limit, media: [...],
+                  continuation_max_bytes}}
+
+`scrollback_max_lines` is null when the line count is unlimited.
 
 `terminal` is the mirror contract (design.md 4.3): a client applies
 these options to every mirror before it opens a view. The shape of
@@ -426,8 +429,9 @@ and a message on stderr, which the coordinator logs.
 
 Coordinator to `ko-pane`:
 
-    init      {version u16; cols, rows, cell_w_px, cell_h_px u16;
-               options: scrollback_max_bytes u64, apc_max_bytes u64,
+    init      {version u16 (2); cols, rows, cell_w_px, cell_h_px u16;
+               options: scrollback_max_bytes u64,
+               scrollback_max_lines u64 (0 for unlimited), apc_max_bytes u64,
                kitty_image_storage_limit u64, media u8 bits,
                continuation_max_bytes u64; cwd, argv[], env[] strings;
                pane_id string}

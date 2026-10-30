@@ -34,6 +34,8 @@
   ring.h
   buffer.h
   snapshot_cut.h
+  compress.h
+  now.h
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -62,10 +64,38 @@
   ring.h
   buffer.h
   snapshot_cut.h
+  compress.h
+  now.h
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
   (run sh build.sh ko-pane-asan pane.c -g -O1 -fsanitize=address,undefined)))
+
+(rule
+ (targets test-compress)
+ (deps
+  build.sh
+  ../ko_vt/cxx.sh
+  test_compress.c
+  compress.h
+  now.h
+  ../ko_vt/libghostty-vt.a
+  (source_tree ../third_party/ghostty/include))
+ (action
+  (run
+   sh
+   build.sh
+   test-compress
+   test_compress.c
+   -g
+   -O1
+   -fsanitize=address,undefined)))
+
+(rule
+ (alias runtest)
+ (deps test-compress)
+ (action
+  (run ./test-compress)))
 
 (rule
  (alias runtest)

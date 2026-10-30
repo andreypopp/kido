@@ -267,8 +267,12 @@ options set (the values come from the coordinator in the first frame):
 - `CLIPBOARD_WRITE`, `CLIPBOARD_READ`: routed to a client (section 4.8).
 - `BELL`, `DESKTOP_NOTIFICATION`, `PROGRESS_REPORT`: events.
 - `RESIZE_WINDOW`: ignored, as tmux ignores it.
-- `SCROLLBACK_MAX_BYTES`, `KITTY_IMAGE_STORAGE_LIMIT`, media options:
-  from `ko.conf`. Shared memory is accepted on the local server. A
+- `SCROLLBACK_MAX_BYTES`, `SCROLLBACK_MAX_LINES`,
+  `KITTY_IMAGE_STORAGE_LIMIT`, media options: from `ko.conf`.
+  Scrollback compression is always on: after an idle period with an
+  unchanged `ghostty_terminal_compression_activity` token, `ko-pane`
+  runs one incremental `ghostty_terminal_compress` step per loop turn
+  until it completes (p1-mvp.md 3.2). Shared memory is accepted on the local server. A
   remote client never opens an object that a program named; it gets
   pixels from the server.
 - `UNKNOWN_SEQUENCE`: records DCS passthrough and other unknown OSC
@@ -699,9 +703,10 @@ pane's terminal) keep their design.
 `ko` with no arguments is the terminal client, an OCaml program
 (p1-mvp.md sections 5 and 6.4). It is a client like any other: it opens
 views for the panes it shows and mirrors them in libghostty-vt. Mosaic
-parses its input and lays out its own rows; a direct cell differ writes
-the whole screen, the mirror's render-state cells and Mosaic's grid
-together. It draws the
+parses its input and runs its loop, and draws nothing; a direct cell
+differ writes the whole screen, the mirror's render-state cells and the
+client's own sidebar cells together. The mirror compresses its
+scrollback when idle, as the pane does (4.3). It draws the
 sidebar itself from the feed event, with the rows of `Kido_sidebar`
 today. Its keys are Ctrl+Shift chords under the kitty keyboard
 protocol, as p1-mvp.md lists them; there is no prefix key and no

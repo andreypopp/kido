@@ -136,7 +136,7 @@ let choose t delta =
   let i = selected_index t all in
   if n > 0 then switch t (List.nth all ((i + delta + n) mod n)).id
 
-let paint t grid =
+let paint t =
   let now = Unix.gettimeofday () in
   if t.immediate || Float.(now -. t.last_paint >= 0.008) then (
     let fresh =
@@ -150,8 +150,7 @@ let paint t grid =
               true)
     in
     let frame = match t.view with No_view -> None | Showing v -> v.latest in
-    if Renderer.paint t.renderer ~modes:t.modes ~layout:(layout t) ~frame grid then
-      t.last_paint <- now;
+    if Renderer.paint t.renderer ~modes:t.modes ~layout:(layout t) ~frame then t.last_paint <- now;
     if fresh then t.immediate <- false)
 
 let close t =

@@ -67,32 +67,34 @@ let native_style (c : Ko_vt.cell) =
     ~underline:(has Underline) ~inverse:(has Inverse) ~dim:(has Dim) ~blink:(has Blink)
     ~hidden:(has Hidden) ~strikethrough:(has Strikethrough) ~overline:(has Overline) ()
 
-let paint t ~modes ~layout:l ~frame grid =
+let paint t ~modes ~layout:l ~frame =
   let ui_changed = not (Option.exists (equal_layout l) t.layout) in
   if ui_changed || not (Stdlib.( == ) t.frame frame) then (
     let shift = if Option.is_some l.dead then 1 else 0 in
     let live = max 0 (l.pane_rows - shift) in
     t.layout <- Some l;
     t.frame <- frame;
-    (if ui_changed then
-       let blank = { Differ.text = ""; width = 1; style = Ansi.Style.default } in
-       t.ui <-
-         Array.init (l.cols * l.rows) (fun i ->
-             let x = i mod l.cols and y = i / l.cols in
-             if x >= l.pane_x && y < live then blank
-             else
-               let cell = Matrix.Grid.get_cell grid i in
-               {
-                 Differ.text = Matrix.Grid.get_text grid i;
-                 width =
-                   (if Matrix.Grid.Cell.is_continuation cell then 0
-                    else max 1 (Matrix.Grid.Cell.grapheme_width cell));
-                 style =
-                   Ansi.Style.with_attrs
-                     (Ansi.Attr.unpack (Matrix.Grid.get_attrs grid i))
-                     (Ansi.Style.make ~fg:(Matrix.Grid.get_fg grid i)
-                        ~bg:(Matrix.Grid.get_bg grid i) ());
-               }));
+    if ui_changed then (
+      let grid = Matrix.Grid.create ~width:l.cols ~height:l.rows () in
+      draw_ui l grid;
+      let blank = { Differ.text = ""; width = 1; style = Ansi.Style.default } in
+      t.ui <-
+        Array.init (l.cols * l.rows) (fun i ->
+            let x = i mod l.cols and y = i / l.cols in
+            if x >= l.pane_x && y < live then blank
+            else
+              let cell = Matrix.Grid.get_cell grid i in
+              {
+                Differ.text = Matrix.Grid.get_text grid i;
+                width =
+                  (if Matrix.Grid.Cell.is_continuation cell then 0
+                   else max 1 (Matrix.Grid.Cell.grapheme_width cell));
+                style =
+                  Ansi.Style.with_attrs
+                    (Ansi.Attr.unpack (Matrix.Grid.get_attrs grid i))
+                    (Ansi.Style.make ~fg:(Matrix.Grid.get_fg grid i) ~bg:(Matrix.Grid.get_bg grid i)
+                       ());
+              }));
     let previous = ref None in
     let style (c : Ko_vt.cell) =
       match !previous with

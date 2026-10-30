@@ -35,9 +35,7 @@ let run ~dir ~executable ~pager =
                   (fun () -> Modes.restore modes))
               (fun () ->
                 let matrix =
-                  Tty.create
-                    ~paint:(fun grid -> Option.iter (fun t -> Client.paint t grid) !client)
-                    ~notify
+                  Tty.create ~paint:(fun () -> Option.iter Client.paint !client) ~notify
                 in
                 Fun.protect
                   ~finally:(fun () ->
@@ -61,12 +59,7 @@ let run ~dir ~executable ~pager =
                         update =
                           (fun message () ->
                             if Atomic.get stopped then ((), Cmd.quit) else Client.update t message);
-                        view =
-                          (fun () ->
-                            canvas
-                              ~size:{ width = pct 100; height = pct 100 }
-                              (fun c ~delta:_ ->
-                                Renderer.draw_ui (Client.layout t) (Mosaic.Canvas.grid c)));
+                        view = (fun () -> empty);
                         subscriptions = (fun () -> Client.subscriptions t);
                       };
                     Ok ())))

@@ -2,6 +2,7 @@ type size = { cols : int; rows : int; cell_w_px : int; cell_h_px : int } [@@deri
 
 type limits = {
   scrollback_max_bytes : int;
+  scrollback_max_lines : int option;
   apc_max_bytes : int;
   kitty_image_storage_limit : int;
   media : string list;
@@ -34,10 +35,12 @@ let build =
   | None -> "unknown"
 
 let default_size = { cols = 80; rows = 24; cell_w_px = 8; cell_h_px = 16 }
+let default_scrollback_bytes = 50_000_000
 
-let limits scrollback_max_bytes =
+let limits ?(scrollback_max_bytes = default_scrollback_bytes) ?scrollback_max_lines () =
   {
     scrollback_max_bytes;
+    scrollback_max_lines;
     apc_max_bytes = 65 lsl 20;
     kitty_image_storage_limit = 10_000_000;
     media = [];

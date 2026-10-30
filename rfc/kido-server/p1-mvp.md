@@ -95,7 +95,13 @@ depends on the new directories.
   `/panes/ID/view`) with exit 2.
 - `SIGTERM` to the server sends `SIGHUP` to every pane process, waits
   500 ms, sends `SIGKILL` to the survivors (shells ignore `SIGTERM`),
-  and exits. `ko-pane` reaps its program with `WNOHANG` from a
+  and exits. `ko-pane` itself, on shutdown or on EOF of its control
+  socket, sends `SIGHUP` to its program's process group and `SIGKILL`
+  after 250 ms, ahead of the coordinator's 500 ms. The coordinator
+  also kills the program's group when a pane process fails or exits
+  without its dead marker, so a program that ignores `SIGHUP` outlives
+  neither a crashed `ko-pane` nor a crashed coordinator. Only both
+  dying at once leaves it. `ko-pane` reaps its program with `WNOHANG` from a
   `SIGCHLD` self-pipe and keeps the master of a dead pane open for its
   screen. P1.0 verified on macOS: the program is reaped with the master
   open, and the dead pane still snapshots; a writer blocked on a full
@@ -113,7 +119,17 @@ socket (its stdio), holding the pty, the program and the libghostty-vt
 terminal, as design.md 4.1 and 4.3
 describe, with these options active: `WRITE_PTY`,
 `CONTINUATION_MAX_BYTES`, `TITLE_CHANGED`, `PWD_CHANGED`,
-`SCROLLBACK_MAX_BYTES`. The rest is left at defaults in P1.
+`SCROLLBACK_MAX_BYTES`, `SCROLLBACK_MAX_LINES`. The rest is left at
+defaults in P1.
+
+Scrollback compression is always on; no option turns it off (decided
+2026-10-30). After writes, `ko-pane` reads
+`ghostty_terminal_compression_activity`; when the token stays
+unchanged for an idle period, it calls
+`ghostty_terminal_compress(..., INCREMENTAL)` from its poll loop until
+the call returns `COMPLETE`. The client mirror runs the same idle
+steps, and its snapshot decoder compresses history pages while it
+restores them (section 5).
 
 A pane's size is set by its sizing client, as design.md 4.4 defines:
 the client whose focus is on the pane, or the one that last switched
@@ -151,11 +167,24 @@ first view opens are in the first snapshot (zmx #246, #264).
 
 ### 3.4 Config
 
-No config file is read in P1. The server takes `--scrollback BYTES`
-(default 32 MiB per pane, which keeps about 47k rows at 80 columns,
-about 708 bytes per row in P1.0) and `--shell PATH` on its command
-line. The 100k-line rows of section 6 run with `--scrollback 80M`. The
-launcher passes nothing. `ko.conf` arrives in a later stage.
+No config file is read in P1. The server takes these options on its
+command line, with Ghostty 1.4's names and defaults (decided
+2026-10-30):
+
+- `--scrollback-bytes BYTES`, default 50 MB (50_000_000), mapped to
+  `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES`. At about 708 bytes per
+  row at 80 columns (P1.0) this keeps about 70k rows.
+- `--scrollback-lines N`, default unlimited, mapped to
+  `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES`.
+- `--shell PATH`.
+
+The first scrollback limit reached applies. The byte limit counts
+uncompressed pages, so compression lowers resident memory, not the
+history kept. The client mirror uses the same limits as the server's
+terminal, which `/version` reports (the mirrored-terminal contract).
+The 100k-line rows of section 6 run with a byte limit large enough to
+keep all 100k lines. The launcher passes nothing. `ko.conf` arrives in
+a later stage.
 
 ## 4. Protocol subset
 
@@ -199,8 +228,9 @@ and the client applies them to its mirror.
 The client draws two regions, the pane and the sidebar, and one
 optional warning row at the bottom. One writer draws the screen: a
 direct cell differ writes the composed cells of both regions. Mosaic
-parses the input, runs the loop and lays out the sidebar and warning
-in its grid, but writes nothing to the tty (6.2, 6.4).
+parses the input and runs the loop, and draws nothing; the client
+draws the sidebar and warning into its own cells only when the layout
+changes (6.2, 6.4, 6.5).
 
 - **The pane.** A libghostty-vt mirror of the shown pane, opened with
   `history=all` so the wheel can scroll, fed by the view stream on a
@@ -244,8 +274,7 @@ in its grid, but writes nothing to the tty (6.2, 6.4).
   which the client takes first:
   - `Ctrl+Shift+S`: toggle the sidebar.
   - `Ctrl+Shift+E`: fetch `/screen?history=all`, stream it to a 0600
-    file under `$TMPDIR` (as large as the pane's scrollback, 32 MiB at
-    most by default), suspend Mosaic (`Matrix.suspend`), run `$PAGER`
+    file under `$TMPDIR` (as large as the pane's scrollback), suspend Mosaic (`Matrix.suspend`), run `$PAGER`
     (default `less -R +G -+F`) on the tty, unlink the file, resume and
     redraw. `+G` starts at the end; `-+F` keeps less open when the
     scrollback fits one screen, which a user's `LESS=-F` would
@@ -336,7 +365,8 @@ throughput is not first. kitty's defaults add `input_delay` 3 ms and a
 repaint delay to save CPU; its low-latency settings are `input_delay 0`,
 `repaint_delay 2`, `sync_to_monitor no`.
 
-Targets on an M-series Mac and a Linux box, local only, measured by
+Targets on an M-series Mac and a Linux box (Linux is not measured in
+P1; decided 2026-10-30), local only, measured by
 `bench/` scripts that start a private server on a scratch socket and
 print one table:
 
@@ -557,7 +587,8 @@ points were open or wrong in the plan:
 - **`pwd` events carry the terminal's raw value**, which is an OSC 7
   `file://` URI when the shell sends one.
 - **Terminal defaults**: scrollback 32 MiB (`--scrollback` takes K, M
-  and G suffixes), APC and continuation limits 65 MiB, kitty image
+  and G suffixes; replaced in P1.3 by `--scrollback-bytes` and
+  `--scrollback-lines`, 3.4), APC and continuation limits 65 MiB, kitty image
   storage 10,000,000 bytes, every kitty medium off.
 - **The libghostty-vt revision** in `/version` and `Ko-Vt` is the
   `third_party/ghostty` submodule pin, read by a dune rule.
@@ -647,8 +678,83 @@ Measured on an M5 Max, 120x30, private pty (`bench/client.py`): key
 to frame in a quiet pane p50 0.94 ms, p99 1.31 ms (200 samples); `yes`
 shown for 5 s, client CPU 0.80 core, RSS 25 MiB; with a 100k-line
 mirror, RSS 87 MiB, against the 40 MiB target of section 6. The mirror
-holds the full history eagerly; memory is P1.3 work. The `test_e2e_ko` suite, 33
+holds the full history eagerly; P1.3 measured it again with
+compression (6.5). The `test_e2e_ko` suite, 33
 tests: 5.4 s wall, 4.7 s user and 7.1 s system CPU.
+
+### 6.5 What P1.3 settled
+
+Measured 2026-10-30 on an M5 Max under macOS, load average 3 to 5
+(other agents at work), with compression on. Linux is not measured.
+`sh bench/table.sh` prints every row; `python3 bench/client.py
+latency|yes|attach|resize|memory|scroll` prints one. tmux is the
+pinned fork `kido-tmux` on a private socket, kitty 0.49.2. Both sides
+run the same producer, pane size (95x30; ko's outer terminal is 120x30
+with the sidebar), 100k lines and a warm server.
+Memory is RSS and macOS `phys_footprint`.
+
+| metric | target | ko | tmux | kitty | met |
+|---|---|---|---|---|---|
+| ingest, 1 GiB mixed stream, timed to the last byte parsed | within 10 percent of row 2 (84.2 MB/s); under 1.3 cores | 79.1 MB/s, 1.17 cores (`ko-pane` and ring alone 78.7 MB/s, 0.97 core) | 28.3 MB/s, 1.0 core | 48.8 (defaults), 52.2 (low latency), first run, timed to the producer's exit | yes |
+| `kitten __benchmark__` mean | none | 226.9 MB/s | 46.0 | 180.9, 194.0 | – |
+| `yes` 5 s, shown | client under 1 core, ring at 1 MiB | client 0.71, `ko-pane` 1.00, coordinator 0.24 core | server 1.00 core | | yes |
+| key to frame, quiet pane, p50 / p99 | under 1 / 3 ms added over a raw pty (0.02 / 0.04) | 0.41 / 1.09 ms through the client; 0.09 / 0.17 ms view only | 0.06 / 0.16 ms | | yes |
+| attach, 100k lines | screen under 50 ms, history under 500 ms | screen 14 ms, history in the mirror 39 ms (the last slice at 6 ms) | screen 10 ms, then `capture-pane -S -` 58 ms | | yes |
+| resize, 100k lines, to READY | under 100 ms | 5.7 ms (p99 6.8) | 14 ms | | yes |
+| coordinator, idle, no panes | under 15 MiB | RSS 13.7, footprint 8.5 MiB | | | yes |
+| `ko-pane`, idle | under 2 MiB | RSS 2.3, footprint 1.5 MiB | | | footprint only |
+| `ko-pane`, 100k lines | none | after 3 s idle RSS 83.6, footprint 4.4 MiB (77.9 before compression) | server RSS 61.2, footprint 60.1 MiB | | – |
+| client, 100k-line mirror | under 40 MiB | RSS 102, footprint 18.0 MiB (91.7 without compression) | client RSS 3.5, footprint 2.2 MiB | | footprint only |
+| wheel scroll, one notch, to first output | none | p50 0.24 / p99 0.84 ms; 240 notches/s give 240 frames/s at 0.11 core | copy mode 1.25 / 5.3 ms, server 0.27 core | | – |
+
+These points were open or wrong in the plan:
+
+- **Compression** is always on in `ko-pane` and the mirror
+  (3.2). One state machine, `ko_pane/compress.h`, serves both: the
+  idle period is 250 ms after the last change of the activity token,
+  well above the 2 ms coalescing and short enough that memory comes
+  back at once. Output that changes no history (a spinner, a progress
+  bar on one line) does not change the token and does not delay
+  compression. `ko-pane` ticks it when poll times out, after a read or
+  a control frame, and while work is pending, one incremental step per
+  poll turn, so pty input and control frames are served between steps.
+  The mirror runs it on a thread of its own: steps for about 1 ms per
+  hold of the mirror lock while work is pending, else it waits on a
+  condition that new bytes, scrolling and close signal. 100k lines took 225 steps, the slowest
+  0.10 ms; libghostty-vt's resident figure fell from 78.5 to 1.8 MiB
+  (200 of 201 pages). Throughput (77.7 against 77.3 MB/s) and echo
+  (0.39 against 0.41 ms) are the same with compression off. The
+  compressing decode adds about 13 ms to a 100k-line attach.
+- **macOS RSS does not show compression.** libghostty-vt frees
+  compressed pages to the OS, which takes them back lazily, so RSS stays
+  at its peak while `phys_footprint` (Activity Monitor's figure) falls.
+  The memory rows are met by footprint and missed by RSS.
+- **The lazy history and bigarray cells** deferred from P1.2 are not
+  needed: with compression the client's 100k-line footprint is 18 MiB,
+  and an empty client is 12 MiB.
+- **Mosaic draws nothing.** Its render pass took about 600 us of each
+  1 ms echo. The client now draws the sidebar and warning into its own
+  cells only when the layout changes, and Mosaic's view is empty. Echo
+  p50 fell from 1.06 to 0.40 ms, wheel scroll first output from 0.74 to
+  0.24 ms and scroll CPU from 0.18 to 0.10 core.
+- **Key to frame is 6 times tmux's**, inside the target: 0.08 ms is
+  the server path, the rest is the client's frame.
+- **Screen visible at attach is 73 ms** on an outer terminal that
+  does not answer Matrix's explicit-width (OSC 66) probe, such as
+  tmux, because Matrix waits a 50 ms grace period. The 17 ms row is
+  for a terminal that answers.
+- **The `ko-pane` init frame is version 2** (it gained
+  `scrollback_max_lines`, protocol.md 14). A server older than its
+  `ko-pane` fails to start panes and must restart.
+- **Benchmark fairness.** Both servers write the 100k-line history at
+  the same 95x30 pane size, checked with `stty size`; tmux and kitty
+  throughput stop at a DA1 reply after the stream (an ST first, since
+  the stream ends inside a string), the ko rows when `ko-pane` has
+  parsed the stream; history-loaded is the time an older line shows
+  after a wheel event, read from a rebuilt outer screen.
+- **Coordinator allocation** is 124 words per ring record (57 without
+  the title and pwd callbacks), against 6.9 in the P1.0 spike. A record
+  is one 1 KiB pty read, so nothing is allocated per byte.
 
 ## 7. Tests
 

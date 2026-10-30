@@ -26,6 +26,12 @@ let sizer t = t.sizer
 let row t : Protocol.row =
   { id = t.id; pid = t.pid; command = t.command; cwd = t.cwd; title = t.title; dead = t.dead }
 
+let killpg t =
+  if t.pid > 0 then
+    (* macOS can return EPERM for a process group with only zombies or exiting processes. *)
+    try Unix.kill (-t.pid) Sys.sigkill
+    with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ()
+
 let create config ~id ~cwd ~command ~env ~notify =
   let proc = Pane_proc.create config ~id ~cwd ~argv:command ~env in
   let t =
@@ -63,6 +69,7 @@ let create config ~id ~cwd ~command ~env ~notify =
             t.dead <- Some dead;
             notify t (Dead dead)
         | None ->
+            killpg t;
             let dead =
               {
                 Protocol.status = 2;
@@ -74,6 +81,7 @@ let create config ~id ~cwd ~command ~env ~notify =
             t.dead <- Some dead;
             notify t (Failed dead))
     | Failed dead ->
+        killpg t;
         t.dead <- Some dead;
         notify t (Failed dead));
   t
@@ -94,7 +102,4 @@ let shutdown t = Pane_proc.shutdown t.proc
 
 let kill t =
   Pane_proc.kill t.proc;
-  if t.pid > 0 then
-    (* macOS can return EPERM for a process group with only zombies or exiting processes. *)
-    try Unix.kill (-t.pid) Sys.sigkill
-    with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ()
+  killpg t

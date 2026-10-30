@@ -39,7 +39,7 @@ let start ~pane_exe ~callbacks ~argv ~transcript ~latency =
       pane_exe;
       terminfo = "/tmp";
       shell = "/bin/sh";
-      terminal = Config.limits (32 lsl 20);
+      terminal = Config.limits ();
       env = [];
       cwd = "/";
     }
@@ -201,10 +201,7 @@ let latency ~pane_exe ~produce ~count =
 let run_program ~pane_exe ~argv =
   let p = start ~pane_exe ~callbacks:true ~argv ~transcript:true ~latency:false in
   run_until ~timeout:900. (fun () -> p.dead && drained p) (fun () -> flush p);
-  let vt =
-    Ko_vt.create ~cols:120 ~rows:60 ~scrollback_max_bytes:(1 lsl 20) ~apc_max_bytes:(65 lsl 20)
-      ~kitty_image_storage_limit:10_000_000 ~continuation_max_bytes:(65 lsl 20)
-  in
+  let vt = Bench_terminal.create ~scrollback_max_bytes:(1 lsl 20) ~cols:120 ~rows:60 () in
   Option.iter (fun b -> Ko_vt.write vt (Buffer.contents b)) p.transcript;
   print_endline (Ko_vt.dump vt Plain);
   finish p
