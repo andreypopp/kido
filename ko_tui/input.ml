@@ -27,39 +27,27 @@ let command (event : Matrix_input.Key.event) =
     | _, Down -> Some Next
     | _ -> None
 
+let us_pairs = "1!2@3#4$5%6^7&8*9(0)-_=+[{]}\\|;:'\",<.>/?`~"
+
+let flip ~up c =
+  let ascii = if up then c >= 97 && c <= 122 else c >= 65 && c <= 90 in
+  let latin = if up then c >= 0xe0 && c <= 0xfe else c >= 0xc0 && c <= 0xde in
+  if ascii || (latin && c <> 0xd7 && c <> 0xf7) then if up then c - 32 else c + 32
+  else if c > 127 then c
+  else
+    match String.index_opt us_pairs (Char.chr c) with
+    | Some i when i land 1 = if up then 0 else 1 -> Char.code us_pairs.[if up then i + 1 else i - 1]
+    | _ -> c
+
+let utf8 c =
+  let b = Buffer.create 4 in
+  Buffer.add_utf_8_uchar b (Uchar.of_int c);
+  Buffer.contents b
+
 let key (event : Matrix_input.Key.event) =
   let open Matrix_input.Key in
-  let unshifted_codepoint =
-    match event.key with
-    | Char u -> (
-        let c = Uchar.to_int u in
-        if c >= 65 && c <= 90 then c + 32
-        else
-          match Char.chr (min c 255) with
-          | '!' -> 49
-          | '@' -> 50
-          | '#' -> 51
-          | '$' -> 52
-          | '%' -> 53
-          | '^' -> 54
-          | '&' -> 55
-          | '*' -> 56
-          | '(' -> 57
-          | ')' -> 48
-          | '_' -> 45
-          | '+' -> 61
-          | '{' -> 91
-          | '}' -> 93
-          | '|' -> 92
-          | ':' -> 59
-          | '"' -> 39
-          | '<' -> 44
-          | '>' -> 46
-          | '?' -> 47
-          | '~' -> 96
-          | _ -> if c < 128 then c else 0)
-    | _ -> 0
-  in
+  let typed = match event.key with Char u -> Uchar.to_int u | _ -> 0 in
+  let unshifted_codepoint = flip ~up:false typed in
   let key =
     match event.key with
     | Char _ -> (
@@ -149,19 +137,24 @@ let key (event : Matrix_input.Key.event) =
     | Volume_up -> 171
     | _ -> 0
   in
-  let shifted =
+  let m = event.modifier in
+  let mods = mods { m with shift = m.shift || typed <> unshifted_codepoint } in
+  let text =
     match event.key with
-    | Char u -> unshifted_codepoint <> 0 && Uchar.to_int u <> unshifted_codepoint
-    | _ -> false
+    | Char _
+      when m.shift && typed = unshifted_codepoint && Option.is_none event.shifted_key
+           && (not (m.ctrl || m.super || m.hyper))
+           && String.equal event.associated_text (utf8 typed) ->
+        utf8 (flip ~up:true typed)
+    | _ -> event.associated_text
   in
-  let mods = mods { event.modifier with shift = event.modifier.shift || shifted } in
   {
     Ko_server.Protocol.action =
       (match event.event_type with Release -> 0 | Press -> 1 | Repeat -> 2);
     key;
     mods;
     unshifted_codepoint;
-    text = event.associated_text;
+    text;
     composing = false;
   }
 
@@ -209,6 +202,54 @@ let%test_module "Tests" =
         reads;
       Matrix_input.Parser.drain p ~now:10. ~on_event ~on_response;
       (List.rev !events, !responses)
+
+    let%expect_test "shifted printable keys carry their text" =
+      List.iter
+        (fun s ->
+          List.iter
+            (function
+              | Matrix_input.Key k ->
+                  Printf.printf "%S %s\n" s
+                    (Yojson.Safe.to_string (Ko_server.Protocol.yojson_of_key (key k)))
+              | _ -> ())
+            (fst (parse [ s ])))
+        [
+          "A";
+          "!";
+          "@";
+          "\xc3\x89";
+          "\027[97;2u";
+          "\027[97;2;65u";
+          "\027[49;2u";
+          "\027[49:33;2u";
+          "\027[233:201;2u";
+          "\027[233:201;2;201u";
+          "\027[97;1:3u";
+          "\027[97;2;937u";
+          "\027[97;4u";
+          "\027[97;6u";
+          "\027[32;2u";
+          "\027[13;2u";
+        ];
+      [%expect
+        {|
+        "A" {"action":1,"key":20,"mods":1,"unshifted_codepoint":97,"text":"A","composing":false}
+        "!" {"action":1,"key":7,"mods":1,"unshifted_codepoint":49,"text":"!","composing":false}
+        "@" {"action":1,"key":8,"mods":1,"unshifted_codepoint":50,"text":"@","composing":false}
+        "\195\137" {"action":1,"key":0,"mods":1,"unshifted_codepoint":233,"text":"É","composing":false}
+        "\027[97;2u" {"action":1,"key":20,"mods":1,"unshifted_codepoint":97,"text":"A","composing":false}
+        "\027[97;2;65u" {"action":1,"key":20,"mods":1,"unshifted_codepoint":97,"text":"A","composing":false}
+        "\027[49;2u" {"action":1,"key":7,"mods":1,"unshifted_codepoint":49,"text":"!","composing":false}
+        "\027[49:33;2u" {"action":1,"key":7,"mods":1,"unshifted_codepoint":49,"text":"!","composing":false}
+        "\027[233:201;2u" {"action":1,"key":0,"mods":1,"unshifted_codepoint":233,"text":"É","composing":false}
+        "\027[233:201;2;201u" {"action":1,"key":0,"mods":1,"unshifted_codepoint":233,"text":"É","composing":false}
+        "\027[97;1:3u" {"action":0,"key":20,"mods":0,"unshifted_codepoint":97,"text":"a","composing":false}
+        "\027[97;2;937u" {"action":1,"key":20,"mods":1,"unshifted_codepoint":97,"text":"Ω","composing":false}
+        "\027[97;4u" {"action":1,"key":20,"mods":5,"unshifted_codepoint":97,"text":"A","composing":false}
+        "\027[97;6u" {"action":1,"key":20,"mods":3,"unshifted_codepoint":97,"text":"a","composing":false}
+        "\027[32;2u" {"action":1,"key":63,"mods":1,"unshifted_codepoint":32,"text":" ","composing":false}
+        "\027[13;2u" {"action":1,"key":58,"mods":1,"unshifted_codepoint":0,"text":"","composing":false}
+        |}]
 
     let%expect_test "Ctrl+D, legacy or CSI u, is Remove; Ctrl+Shift+W is no command" =
       List.iter

@@ -309,9 +309,14 @@ changes (6.2, 6.4, 6.5).
   encoder, not a decoder: Mosaic decodes the outer terminal's CSI u
   and legacy sequences into key events, and the client encodes them
   again for the pane through the server. `unshifted_codepoint` is the
-  key's base character: lowercase for a letter, and the US base key
-  for shifted legacy punctuation where it is unambiguous, else 0. The
-  e2e tests under an outer tmux send the CSI u byte sequences with
+  key's base character: lowercase for an ASCII or Latin-1 letter, the
+  US base key for shifted punctuation, else the character itself; 0
+  for a key with no character. A shifted key carries its shifted text:
+  the outer terminal's associated text if it sent one, else its
+  shifted key, else the US or Latin-1 shifted form; this applies with
+  Alt too, not with Ctrl or Super. A terminal under flag 1 sends a
+  shifted printable key as plain text (`A`, `:`); the client still
+  accepts the CSI u forms (`CSI 97;2u`). The e2e tests under an outer tmux send the CSI u byte sequences with
   `send-keys -l`. A terminal without extended keys gets no prefix
   fallback (section 10).
 - **Replies from the outer terminal.** The client queries its outer
@@ -682,6 +687,12 @@ in the plan:
   private socket, resolved through the fork's build key as kido's
   e2e does. They poll the outer screen through persistent control
   clients.
+- **Shifted keys into a kitty pane.** P1.2 tested a shifted key only
+  in a pane at kitty flags 31, where the encoder never takes its
+  plain-text path, so it missed that a pane at flags 1 or 3 got `:`
+  as `CSI 59;2u` and nvim's normal mode ignored it (protocol.md 8).
+  The test now reads the pane's bytes at flags 3, as nvim pushes, and
+  at 31.
 
 Measured on an M5 Max, 120x30, private pty (`bench/client.py`): key
 to frame in a quiet pane p50 0.94 ms, p99 1.31 ms (200 samples); `yes`

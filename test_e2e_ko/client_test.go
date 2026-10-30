@@ -843,18 +843,6 @@ func TestClientDifferentSizesAndSignalCleanup(t *testing.T) {
 	}
 }
 
-func TestClientLegacyShiftedKey(t *testing.T) {
-	t.Parallel()
-	s := start(t)
-	program := "import os,tty\ntty.setraw(0)\nos.write(1,b'\\x1b[=31uKEY-READY')\nwhile True:\n b=os.read(0,4096)\n os.write(1,('\\r\\nKEY:'+b.hex()+'\\r\\n').encode())"
-	s.pane("exec python3 -u -c " + quote(program))
-	o := newTerminal(t, s.dir, true)
-	o.attach("cat")
-	o.contains("KEY-READY")
-	o.raw("A")
-	o.wait(func() bool { return regexp.MustCompile(`KEY:1b5b3937(3a[0-9a-f]+)?3b32`).MatchString(o.screen()) }, "uppercase A with unshifted codepoint 97 and Shift")
-	o.detach()
-}
 func TestClientSidebarRelease(t *testing.T) {
 	t.Parallel()
 	s := start(t)
@@ -1024,5 +1012,83 @@ func TestClientDeadPaneLine(t *testing.T) {
 	o.raw("\x1b[<0;3;3M\x1b[<0;3;3m")
 	o.contains("live")
 	o.wait(func() bool { return !strings.Contains(o.screen(), "Ctrl+D") }, "dead line gone after switching away")
+	o.detach()
+}
+
+func TestClientLegacyShiftedKey(t *testing.T) {
+	t.Parallel()
+	hx := func(s string) string { return hex.EncodeToString([]byte(s)) }
+	cases := []struct {
+		name  string
+		flags int
+		typed string
+		want  string
+	}{
+		{"flags 3, plain colon", 3, ":", hx(":")},
+		{"flags 3, plain A", 3, "A", hx("A")},
+		{"flags 3, plain É", 3, "É", hx("É")},
+		{"flags 3, CSI u colon without text", 3, "\x1b[59;2u", hx(":")},
+		{"flags 3, CSI u A without text", 3, "\x1b[97;2u", hx("A")},
+		{"flags 3, CSI u ! without text", 3, "\x1b[49;2u", hx("!")},
+		{"flags 3, CSI u é without text", 3, "\x1b[233;2u", hx("É")},
+		{"flags 3, CSI u with explicit text", 3, "\x1b[97;2;937u", hx("Ω")},
+		{"flags 3, Shift+Space", 3, "\x1b[32;2u", hx("\x1b[32;2u")},
+		{"flags 3, Shift+Enter", 3, "\x1b[13;2u", hx("\x1b[13;2u")},
+		{"flags 3, Alt+Shift+A", 3, "\x1b[97;4u", hx("\x1b[97;4u")},
+		{"flags 31, plain colon", 31, ":", hx("\x1b[59:58;2;58u")},
+		{"flags 31, plain A", 31, "A", hx("\x1b[97:65;2;65u")},
+		{"flags 31, CSI u A without text", 31, "\x1b[97;2u", hx("\x1b[97:65;2;65u")},
+		{"legacy pane, plain A", 0, "A", hx("A")},
+		{"legacy pane, CSI u A without text", 0, "\x1b[97;2u", hx("A")},
+		{"legacy pane, Alt+Shift+A", 0, "\x1b[97;4u", hx("\x1bA")},
+		{"legacy pane, Alt+b", 0, "\x1b[98;3u", hx("\x1bb")},
+	}
+	plan := make([]string, len(cases))
+	for i, c := range cases {
+		plan[i] = strconv.Itoa(c.flags)
+	}
+	s := start(t)
+	program := "import os,tty\ntty.setraw(0)\nf=[" + strings.Join(plan, ",") + `]
+os.write(1,b'\x1b[>%du'%f[0]+b'KEY-READY')
+n=0
+while True:
+ b=os.read(0,4096)
+ n+=1
+ nxt=b'\x1b[=%d;1u'%f[n] if n<len(f) else b''
+ os.write(1,nxt+('\r\nKEY%d:'%n+b.hex()+'\r\n').encode())`
+	s.pane("exec python3 -u -c " + quote(program))
+	o := newTerminal(t, s.dir, true)
+	o.attach("cat")
+	o.contains("KEY-READY")
+	for i, c := range cases {
+		o.raw(c.typed)
+		o.contains(fmt.Sprintf("KEY%d:%s\n", i+1, c.want))
+	}
+	o.detach()
+}
+
+func TestClientNvimNormalModeShiftedKeys(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("nvim"); err != nil {
+		t.Skip("nvim missing")
+	}
+	s := start(t)
+	file := filepath.Join(s.dir, "typed")
+	s.pane("exec nvim -u NONE -i NONE -n " + quote(file))
+	o := newTerminal(t, s.dir, true)
+	o.attach("cat")
+	o.contains("typed")
+	insert := func(append, text string) {
+		o.raw(append)
+		o.contains("-- INSERT --")
+		o.raw(text + "\x1b")
+		o.wait(func() bool { return !strings.Contains(o.screen(), "-- INSERT --") }, "normal mode")
+	}
+	insert("A", "x")
+	o.raw(":w\r")
+	o.wait(func() bool { data, _ := os.ReadFile(file); return string(data) == "x\n" }, "A, x, Esc, :w to write x")
+	insert("\x1b[97;2u", "y")
+	o.raw("\x1b[59;2uwq\r")
+	o.wait(func() bool { data, _ := os.ReadFile(file); return string(data) == "xy\n" }, "CSI u A, y, Esc, CSI u colon, wq to write xy")
 	o.detach()
 }

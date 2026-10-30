@@ -410,6 +410,24 @@ static int snapshot(struct pane *p, const uint8_t *b, size_t n) {
   ko_put(q, req, 4);
   return frame(&p->output, KO_SNAPSHOT_DONE, q, 4);
 }
+static int shift_made_text(unsigned mods, unsigned unshifted,
+                           const char *text, size_t n) {
+  if (!(mods & GHOSTTY_MODS_SHIFT) ||
+      (mods & (GHOSTTY_MODS_CTRL | GHOSTTY_MODS_ALT | GHOSTTY_MODS_SUPER)) ||
+      !n) {
+    return 0;
+  }
+  unsigned char c = (unsigned char)text[0];
+  size_t len = c < 0x80 ? 1 : c < 0xe0 ? 2 : c < 0xf0 ? 3 : 4;
+  if (len != n) {
+    return 0;
+  }
+  unsigned cp = len == 1 ? c : c & (0xff >> (len + 1));
+  for (size_t i = 1; i < len; i++) {
+    cp = cp << 6 | ((unsigned char)text[i] & 0x3f);
+  }
+  return cp != unshifted && cp >= 0x20 && cp != 0x7f;
+}
 static int encoded_input(struct pane *p, unsigned kind, const uint8_t *b,
                          size_t n) {
   struct cursor c = {b, n, 0};
@@ -436,9 +454,16 @@ static int encoded_input(struct pane *p, unsigned kind, const uint8_t *b,
     }
     if (r == GHOSTTY_SUCCESS) {
       ghostty_key_encoder_setopt_from_terminal(encoder, p->vt);
+      GhosttyOptionAsAlt option_as_alt = GHOSTTY_OPTION_AS_ALT_TRUE;
+      ghostty_key_encoder_setopt(
+          encoder, GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, &option_as_alt);
       ghostty_key_event_set_action(event, action);
       ghostty_key_event_set_key(event, key);
       ghostty_key_event_set_mods(event, mods);
+      ghostty_key_event_set_consumed_mods(
+          event, shift_made_text(mods, codepoint, text, text_len)
+                     ? GHOSTTY_MODS_SHIFT
+                     : 0);
       ghostty_key_event_set_unshifted_codepoint(event, codepoint);
       ghostty_key_event_set_utf8(event, text, text_len);
       ghostty_key_event_set_composing(event, composing);

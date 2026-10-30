@@ -309,7 +309,15 @@ produces. `unshifted_codepoint` is required (0 when the key has none):
 libghostty-vt's encoder finds the kitty keyboard code of a printable
 key only through it, and without it `Ctrl+A` encodes as plain `a`
 instead of `CSI 97;5u` (P1.1, `src/input/key_encode.zig`). The server
-does not guess it from a keyboard layout. The server encodes with the pane's current modes and writes
+does not guess it from a keyboard layout. The event carries no
+consumed modifiers: the server treats Shift as consumed when `text`
+is one character other than `unshifted_codepoint` and no Ctrl, Alt or
+Super is held. Without that, a pane under kitty flags 1 or 3 (nvim
+pushes 3) gets `:` as `CSI 59;2u`, which nvim's normal mode does not
+map; with it, the pane gets `:`, and Shift+Space stays `CSI 32;2u`.
+The encoder treats macOS Option as Alt: the client's terminal
+already decided what Option means, so an Alt in `mods` is Alt.
+The server encodes with the pane's current modes and writes
 the pty. Events from one connection are applied in order. A `paste`
 with an `id` gets a text message back on the view, `{paste: {id,
 pasted, unsafe}}`; the `POST` form gets it as the response body.
