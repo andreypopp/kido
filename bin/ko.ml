@@ -1,19 +1,21 @@
 open Ko_server
 
-let report name f =
-  try
-    match f () with
-    | Ok () -> 0
-    | Error message ->
-        Printf.eprintf "ko %s: %s\n%!" name message;
-        1
-  with
+let run name f =
+  try f () with
   | Unix.Unix_error (e, call, path) ->
       Printf.eprintf "ko %s: %s\n%!" name (Fs.unix_message e call path);
       1
   | Failure message | Sys_error message | Invalid_argument message | Yojson.Json_error message ->
       Printf.eprintf "ko %s: %s\n%!" name message;
       1
+
+let report name f =
+  run name (fun () ->
+      match f () with
+      | Ok () -> 0
+      | Error message ->
+          Printf.eprintf "ko %s: %s\n%!" name message;
+          1)
 
 let dir override =
   match override with
@@ -57,6 +59,49 @@ let attach override =
       Ko_tui.run ~dir:(dir override) ~executable:(Lazy.force Fs.self) ~pager)
 
 let kill override = report "kill-server" (fun () -> Server_stop.stop ~dir:(dir override))
+
+let api override meth input include_headers path =
+  run "api" (fun () ->
+      let body =
+        match input with
+        | None -> ""
+        | Some "-" -> IO.read_all stdin
+        | Some file -> IO.File.read_exn file
+      in
+      let meth =
+        String.uppercase_ascii
+          (match (meth, input) with Some m, _ -> m | None, Some _ -> "POST" | None, None -> "GET")
+      in
+      if not (String.starts_with ~prefix:"/" path) then (
+        prerr_endline "ko api: path must start with /";
+        1)
+      else
+        let dir = dir override in
+        match Ko_tui.Api.request ~dir ~meth ~path body with
+        | Error Websocket ->
+            Printf.eprintf
+              "ko api: %s is a WebSocket endpoint; ko api sends one request and prints one response\n\
+               %!"
+              path;
+            2
+        | Error No_server ->
+            Printf.eprintf "ko api: no server at %s\n%!" dir;
+            1
+        | Error (Failed message) ->
+            Printf.eprintf "ko api: %s\n%!" message;
+            1
+        | Ok (status, fields, response) ->
+            if include_headers then
+              print_string
+                (String.concat "\r\n"
+                   (status :: List.map (fun (name, value) -> name ^ ": " ^ value) fields)
+                ^ "\r\n\r\n");
+            print_string response;
+            flush stdout;
+            if String.starts_with ~prefix:"HTTP/1.1 2" status then 0
+            else (
+              Printf.eprintf "ko api: HTTP %s\n%!" (List.nth (String.split_on_char ' ' status) 1);
+              1))
 
 let version () =
   print_endline
@@ -111,8 +156,38 @@ let () =
       (Cmd.info "version" ~doc:"Print the build, protocol and terminal revisions.")
       Term.(const version $ const ())
   in
+  let api =
+    Cmd.v
+      (Cmd.info "api" ~doc:"Send one HTTP request to the ko server and print the response."
+         ~man:
+           [
+             `S Manpage.s_description;
+             `P
+               "Sends $(b,PATH), which starts with $(b,/), to the ko server and prints the \
+                response body. Query strings pass through. The command never starts a server. It \
+                exits 0 on a 2xx status. On any other status it still prints the body, writes \
+                $(b,ko api: HTTP) and the status to stderr and exits 1. It refuses a WebSocket \
+                endpoint ($(b,/client) and $(b,/panes/ID/view)) and exits 2.";
+           ])
+      Term.(
+        const api $ directory
+        $ Arg.(
+            value
+            & opt (some string) None
+            & info [ "method"; "X" ] ~docv:"METHOD"
+                ~doc:"The HTTP method. The default is GET, or POST with $(b,--input).")
+        $ Arg.(
+            value
+            & opt (some string) None
+            & info [ "input" ] ~docv:"FILE"
+                ~doc:"Send the file as the request body. $(b,-) reads standard input.")
+        $ Arg.(
+            value & flag
+            & info [ "include"; "i" ] ~doc:"Print the status line and headers before the body.")
+        $ Arg.(required & pos 0 (some string) None & info [] ~docv:"PATH"))
+  in
   exit
     (Cmd.eval'
        (Cmd.group
           ~default:Term.(const attach $ directory)
-          (Cmd.info "ko") [ server; kill; version ]))
+          (Cmd.info "ko") [ server; kill; version; api ]))

@@ -67,7 +67,7 @@ func newTerminal(t *testing.T, state string, extended bool) *terminal {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := &terminal{t: t, bin: path, dir: dir, socket: filepath.Join(dir, "tmux"), state: state, pidfile: filepath.Join(dir, "pid"), executable: filepath.Join(root, "_build/install/default/bin/ko")}
+	o := &terminal{t: t, bin: path, dir: dir, socket: filepath.Join(dir, "tmux"), state: state, pidfile: filepath.Join(dir, "pid"), executable: koBin}
 	o.env = append(testEnv(dir), "SHELL=/bin/sh", "TERM=xterm-256color")
 	o.tmux("-f", "/dev/null", "new-session", "-d", "-s", "outer", "-x", "120", "-y", "30", "/bin/sh")
 	o.tmux("pipe-pane", "-t", "outer:0.0", "cat > "+quote(filepath.Join(dir, "output")))
@@ -308,11 +308,9 @@ func TestClientLifecycle(t *testing.T) {
 		s.request("GET", "/panes", nil, 200, &rows)
 		return len(rows) == 3
 	}, "new pane")
-	var all []struct{ ID string }
-	s.request("GET", "/panes", nil, 200, &all)
-	s.text(all[2].ID, "exit 0\n")
-	o.contains("†0")
-	o.chord(119)
+	o.raw("\x1b[100;5u")
+	o.contains("†")
+	o.raw("\x1b[100;5u")
 	o.wait(func() bool {
 		var rows []map[string]any
 		s.request("GET", "/panes", nil, 200, &rows)
@@ -337,7 +335,7 @@ func TestClientLifecycle(t *testing.T) {
 func TestClientHistoryAndTop(t *testing.T) {
 	t.Parallel()
 	s := start(t)
-	historyPane := s.pane("seq 300; printf '\033]0;history\007HISTORY-READY\\n'; exec /bin/sh")
+	historyPane := s.pane("seq 300; printf '\033]0;history\007HISTORY-READY\\n'; exec cat")
 	o := newTerminal(t, s.dir, true)
 	pager, record := pagerFixture(t, o.dir)
 	o.attach(pager)
@@ -499,7 +497,7 @@ func TestClientAttachOrStartAndWarning(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, filepath.Join(root, "_build/install/default/bin/ko"), "kill-server", "--server", dir)
+		cmd := exec.CommandContext(ctx, koBin, "kill-server", "--server", dir)
 		cmd.Env = o.env
 		_ = cmd.Run()
 	})
@@ -529,7 +527,7 @@ func TestClientAttachOrStartAndWarning(t *testing.T) {
 	o.contains("KO-DETACHED")
 	peer.chord(113)
 	peer.contains("KO-DETACHED")
-	cmd := exec.CommandContext(ctx, filepath.Join(root, "_build/install/default/bin/ko"), "kill-server", "--server", dir)
+	cmd := exec.CommandContext(ctx, koBin, "kill-server", "--server", dir)
 	cmd.Env = o.env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("kill autostarted server: %v %s", err, out)
@@ -756,7 +754,7 @@ finally:
 		t.Fatal(err)
 	}
 	o.executable = proxy
-	o.arguments = []string{filepath.Join(root, "_build/install/default/bin/ko")}
+	o.arguments = []string{koBin}
 	o.attach("cat")
 	o.contains("BASE")
 	o.detach()

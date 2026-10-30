@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	"kido/internal/e2eenv"
 )
 
 var (
@@ -131,13 +132,8 @@ func buildPrefix(dir string, fresh bool, tmuxBin string) (nodeBin string, err er
 }
 
 func setup(m *testing.M) (int, error) {
-	for _, kv := range os.Environ() {
-		key, _, _ := strings.Cut(kv, "=")
-		if key == "ZDOTDIR" || key == "ENV" || key == "BASH_ENV" || strings.HasPrefix(key, "KIDO_ORIG_") || strings.HasPrefix(key, "BASH_FUNC_") {
-			if err := os.Unsetenv(key); err != nil {
-				return 0, err
-			}
-		}
+	if err := e2eenv.UnsetHooks(); err != nil {
+		return 0, err
 	}
 	if bin := os.Getenv("KIDO_TMUX"); bin != "" {
 		cmd := exec.Command("bash", "scripts/install-tmux-fork.sh", "--print-build-key")
@@ -182,35 +178,11 @@ func setup(m *testing.M) (int, error) {
 	if nodeBin, err = buildPrefix(dir, fresh, tmuxBin); err != nil {
 		return 0, err
 	}
-	home, err := os.MkdirTemp("/tmp", "kido-e2e-home-")
+	home, err := e2eenv.Private()
 	if err != nil {
 		return 0, err
 	}
 	defer os.RemoveAll(home)
-	goenv, err := exec.Command("go", "env", "-json", "GOCACHE", "GOPATH").Output()
-	if err != nil {
-		return 0, err
-	}
-	var caches map[string]string
-	if err := json.Unmarshal(goenv, &caches); err != nil {
-		return 0, err
-	}
-	for key, value := range caches {
-		if err := os.Setenv(key, value); err != nil {
-			return 0, err
-		}
-	}
-	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"} {
-		if err := os.Setenv(key, filepath.Join(home, key)); err != nil {
-			return 0, err
-		}
-		if err := os.MkdirAll(os.Getenv(key), 0700); err != nil {
-			return 0, err
-		}
-	}
-	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".zshrc"), nil, 0600); err != nil {
-		return 0, err
-	}
 	if tmuxBin != "" {
 		serverPathPrefix = filepath.Dir(kidoBin) + string(os.PathListSeparator) + tmuxDir
 		if err := startWatchdog(); err != nil {

@@ -5,6 +5,15 @@ type t
 val of_fd : Unix.file_descr -> t
 val close : t -> unit
 
+val exchange :
+  socket:string ->
+  ?client:string ->
+  ?consume:(string -> unit) ->
+  meth:string ->
+  path:string ->
+  string ->
+  string * (string * string) list * string
+
 val request :
   socket:string ->
   ?client:string ->

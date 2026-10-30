@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -23,7 +22,7 @@ func TestDefaultsAndPaneEnvironment(t *testing.T) {
 	if version.Terminal.Scrollback != 80*1024*1024 || version.Terminal.Continuation != 65*1024*1024 {
 		t.Fatalf("terminal contract: %+v", version)
 	}
-	output, err := exec.Command(filepath.Join(root, "_build/install/default/bin/ko"), "version").Output()
+	output, err := exec.Command(koBin, "version").Output()
 	if err != nil {
 		t.Fatal(err)
 	}

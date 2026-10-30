@@ -84,7 +84,7 @@ let head ?client meth path extra =
     (match client with None -> "" | Some c -> "Ko-Client: " ^ c ^ "\r\n")
     extra
 
-let request ~socket ?client ?consume ~meth ~path body =
+let exchange ~socket ?client ?consume ~meth ~path body =
   let t = of_fd (Ko_server.Socket.connect ~socket ~deadline:(Unix.gettimeofday () +. 5.)) in
   Fun.protect
     ~finally:(fun () -> close t)
@@ -127,10 +127,13 @@ let request ~socket ?client ?consume ~meth ~path body =
                   consume (read t 1)
                 done
               with End_of_file -> ())));
-      let body = Buffer.contents b in
-      if not (String.starts_with ~prefix:"HTTP/1.1 200 " status) then
-        raise (Error (status ^ ": " ^ body));
-      body)
+      (status, List.rev fields, Buffer.contents b))
+
+let request ~socket ?client ?consume ~meth ~path body =
+  let status, _, body = exchange ~socket ?client ?consume ~meth ~path body in
+  if not (String.starts_with ~prefix:"HTTP/1.1 200 " status) then
+    raise (Error (status ^ ": " ^ body));
+  body
 
 let upgrade t ?client ~path () =
   let key =

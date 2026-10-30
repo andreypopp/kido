@@ -51,7 +51,8 @@ Out, until later stages:
                   sidebar and input, a direct cell differ for the screen
     bin/ko.ml     the entry point: `ko` (attach or start and attach),
                   `ko server` (foreground), `ko kill-server`,
-                  `ko version`; `ko-pane` is found beside the executable
+                  `ko version`, `ko api`; `ko-pane` is found beside
+                  the executable
     third_party/ghostty   submodule, built by zig into libghostty-vt.a
                   through a dune rule; the terminfo for xterm-ghostty
                   installed beside the binary
@@ -81,6 +82,17 @@ depends on the new directories.
   socket with a deadline of 5 s, then connects.
 - The server runs until `ko kill-server`. The last pane exiting does
   not stop it. A client detaching does not stop it.
+- `ko api [--server DIR] [--method M | -X M] [--input FILE]
+  [--include | -i] PATH` sends one HTTP request to the server, as
+  `gh api` does. `PATH` starts with `/`; a query string passes
+  through. The method is GET, or POST with `--input`, which sends the
+  file (`-` for stdin) as the body. It prints the body unchanged, and
+  with `--include` the status line and headers first. It exits 0 on a
+  2xx status; on another status it prints the body, writes
+  `ko api: HTTP <code>` to stderr and exits 1. With no server it
+  writes `ko api: no server at DIR` and exits 1; it never starts one.
+  It refuses the WebSocket endpoints (`/client`,
+  `/panes/ID/view`) with exit 2.
 - `SIGTERM` to the server sends `SIGHUP` to every pane process, waits
   500 ms, sends `SIGKILL` to the survivors (shells ignore `SIGTERM`),
   and exits. `ko-pane` reaps its program with `WNOHANG` from a
@@ -196,7 +208,7 @@ in its grid, but writes nothing to the tty (6.2, 6.4).
   region. The mirror's viewport is what scrolls: the wheel moves it
   with libghostty-vt's scroll API, 3 rows a notch, and any output or
   key returns it to the bottom, as a terminal does.
-- **Frames.** Input that changes the screen (a key, a click, a switch)
+- **Frames.** Input that changes the screen (a key, a click, a wheel, a switch)
   draws the next frame at once; continuous output is drawn at most
   once per 8 ms. Each frame is one `write`, bracketed by
   `CSI ? 2026 h` and `l`, with the modes, the changed cells and the
@@ -222,7 +234,11 @@ in its grid, but writes nothing to the tty (6.2, 6.4).
     scrollback fits one screen, which a user's `LESS=-F` would
     otherwise end at once. The user's other `LESS` flags stay. A set
     `$PAGER` is used as is.
-  - `Ctrl+Shift+N`: new pane. `Ctrl+Shift+W`: remove a dead pane.
+  - `Ctrl+Shift+N`: new pane.
+  - `Ctrl+D` (legacy `0x04` or CSI u) on a dead pane removes it, then
+    switches to the first remaining pane, or creates a new pane if
+    none remain. On a live pane `Ctrl+D` goes to the pane. Other keys
+    on a dead pane do what they did before.
   - `Ctrl+Shift+Up`, `Ctrl+Shift+Down`: previous and next pane.
   - `Ctrl+Shift+Q`: detach.
 

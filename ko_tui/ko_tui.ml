@@ -1,3 +1,5 @@
+module Api = Api
+
 let run ~dir ~executable ~pager =
   try
     match Launch.attach ~dir ~executable with

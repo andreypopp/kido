@@ -10,16 +10,17 @@ type command = Toggle_sidebar | Pager | New | Remove | Previous | Next | Detach
 
 let command (event : Matrix_input.Key.event) =
   let m = event.modifier in
-  if (not (m.ctrl && m.shift)) || m.alt || m.super || m.hyper || m.meta then None
+  if (not m.ctrl) || m.alt || m.super || m.hyper || m.meta then None
   else
     match (event.event_type, event.key) with
     | Release, _ -> None
+    | _, Char u when (not m.shift) && Uchar.to_int u = 100 -> Some Remove
+    | _ when not m.shift -> None
     | _, Char u -> (
         match Uchar.to_int u with
         | 115 | 83 -> Some Toggle_sidebar
         | 101 | 69 -> Some Pager
         | 110 | 78 -> Some New
-        | 119 | 87 -> Some Remove
         | 113 | 81 -> Some Detach
         | _ -> None)
     | _, Up -> Some Previous
@@ -186,7 +187,7 @@ let mouse ~pane_x event =
 
 let%test_module "Tests" =
   (module struct
-    let%expect_test "Ctrl+Shift commands do not consume ordinary control keys" =
+    let%expect_test "Ctrl+Shift commands do not consume Ctrl keys" =
       let encode = key in
       let open Matrix_input in
       let k = Key.of_char ~modifier:{ Modifier.none with ctrl = true; shift = true } 's' in
@@ -197,19 +198,39 @@ let%test_module "Tests" =
       [%expect
         {|{"action":1,"key":38,"mods":3,"unshifted_codepoint":115,"text":"s","composing":false}|}]
 
+    let parse reads =
+      let p = Matrix_input.Parser.create () in
+      let events = ref [] and responses = ref 0 in
+      let on_event e = events := e :: !events and on_response _ = incr responses in
+      List.iter
+        (fun s ->
+          Matrix_input.Parser.feed p (Bytes.of_string s) 0 (String.length s) ~now:0. ~on_event
+            ~on_response)
+        reads;
+      Matrix_input.Parser.drain p ~now:10. ~on_event ~on_response;
+      (List.rev !events, !responses)
+
+    let%expect_test "Ctrl+D, legacy or CSI u, is Remove; Ctrl+Shift+W is no command" =
+      List.iter
+        (fun s ->
+          List.iter
+            (function
+              | Matrix_input.Key k ->
+                  print_endline (match command k with Some Remove -> "remove" | _ -> "none")
+              | _ -> ())
+            (fst (parse [ s ])))
+        [ "\004"; "\027[100;5u"; "\027[119;6u" ];
+      [%expect {|
+        remove
+        remove
+        none
+      |}]
+
     let%expect_test "replies together or split across reads are not keys" =
       List.iter
         (fun reads ->
-          let p = Matrix_input.Parser.create () in
-          let events = ref 0 and responses = ref 0 in
-          let on_event _ = incr events and on_response _ = incr responses in
-          List.iter
-            (fun s ->
-              Matrix_input.Parser.feed p (Bytes.of_string s) 0 (String.length s) ~now:0. ~on_event
-                ~on_response)
-            reads;
-          Matrix_input.Parser.drain p ~now:10. ~on_event ~on_response;
-          Printf.printf "keys %d replies %d\n" !events !responses)
+          let events, responses = parse reads in
+          Printf.printf "keys %d replies %d\n" (List.length events) responses)
         [
           [ "\027P>|kitty(0.35.2)\027\\\027[?1u\027[?62;22c\027_Gi=1;OK\027\\" ];
           [ "\027P>|kit"; "ty(0.35.2)\027\\\027[?"; "1u\027[?62;22c\027_Gi=1;OK\027\\" ];

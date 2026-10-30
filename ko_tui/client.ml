@@ -268,14 +268,26 @@ let update t message =
   | Key k -> (
       t.immediate <- true;
       Option.iter Mirror.bottom (mirror t);
-      let action = Input.command k in
+      let dead =
+        match t.view with
+        | No_view -> false
+        | Showing v ->
+            List.exists
+              (fun (p : Ko_server.Protocol.row) ->
+                String.equal p.id v.pane && Option.is_some p.dead)
+              (rows t)
+      in
+      let effective event =
+        match Input.command event with Some Remove when not dead -> None | c -> c
+      in
+      let action = effective k in
       if t.warning && k.modifier.ctrl && k.modifier.shift then (
         t.warning <- false;
         match action with Some Toggle_sidebar | Some Detach -> () | _ -> resize t);
       let release = match k.event_type with Release -> true | _ -> false in
       if
         release
-        && (Option.is_some (Input.command { k with event_type = Press })
+        && (Option.is_some (effective { k with event_type = Press })
            || match t.sidebar with Choosing _ -> true | _ -> false)
       then ()
       else
@@ -322,23 +334,15 @@ let update t message =
             match t.view with
             | No_view -> ()
             | Showing v -> (
-                match
-                  List.find_opt
-                    (fun (p : Ko_server.Protocol.row) -> String.equal p.id v.pane)
-                    (rows t)
-                with
-                | Some { dead = Some _; _ } -> (
-                    Mirror.close v.mirror;
-                    t.view <- No_view;
-                    ignore (request t "DELETE" ("/panes/" ^ v.pane) "");
-                    let all =
-                      request t "GET" "/panes" "" |> Yojson.Safe.from_string
-                      |> Yojson.Safe.Util.to_list
-                      |> List.map Ko_server.Protocol.row_of_yojson
-                    in
-                    Mutex.protect t.lock (fun () -> t.panes <- all);
-                    match all with [] -> create_pane t | p :: _ -> switch t p.id)
-                | _ -> ()))
+                Mirror.close v.mirror;
+                t.view <- No_view;
+                ignore (request t "DELETE" ("/panes/" ^ v.pane) "");
+                let all =
+                  request t "GET" "/panes" "" |> Yojson.Safe.from_string |> Yojson.Safe.Util.to_list
+                  |> List.map Ko_server.Protocol.row_of_yojson
+                in
+                Mutex.protect t.lock (fun () -> t.panes <- all);
+                match all with [] -> create_pane t | p :: _ -> switch t p.id))
         | Some Previous -> choose t (-1)
         | Some Next -> choose t 1
         | None -> (
@@ -382,6 +386,7 @@ let update t message =
                   else
                     match M.kind event with
                     | Scroll { direction; delta } ->
+                        t.immediate <- true;
                         Mirror.scroll v.mirror
                           (if M.equal_scroll_direction direction Scroll_up then -3 * delta
                            else 3 * delta)

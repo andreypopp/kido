@@ -19,16 +19,23 @@ import (
 	"testing"
 	"time"
 
+	"kido/internal/e2eenv"
+
 	"github.com/gorilla/websocket"
 )
 
-var root string
+var root, koBin string
 
 func TestMain(m *testing.M) {
 	var err error
 	root, err = filepath.Abs("..")
 	if err != nil {
 		panic(err)
+	}
+	koBin = filepath.Join(root, "_build/install/default/bin/ko")
+	if err := e2eenv.UnsetHooks(); err != nil {
+		fmt.Fprintln(os.Stderr, "e2e setup:", err)
+		os.Exit(1)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -39,7 +46,14 @@ func TestMain(m *testing.M) {
 	if err := cmd.Run(); err != nil {
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	home, err := e2eenv.Private()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "e2e setup:", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
 }
 
 type server struct {
@@ -71,7 +85,7 @@ func start(t *testing.T, args ...string) *server {
 		t.Fatal(err)
 	}
 	s := &server{t: t, dir: dir, wait: make(chan error, 1)}
-	s.cmd = exec.Command(filepath.Join(root, "_build/install/default/bin/ko"), append([]string{"server", "--server", dir, "--shell", "/bin/sh"}, args...)...)
+	s.cmd = exec.Command(koBin, append([]string{"server", "--server", dir, "--shell", "/bin/sh"}, args...)...)
 	s.cmd.Env = testEnv(dir)
 	s.cmd.Stdout = &s.log
 	s.cmd.Stderr = &s.log
@@ -409,7 +423,7 @@ func TestKillServer(t *testing.T) {
 	t.Parallel()
 	s := start(t)
 	s.pane("trap '' HUP; while :; do read x; done")
-	cmd := exec.Command(filepath.Join(root, "_build/install/default/bin/ko"), "kill-server", "--server", s.dir)
+	cmd := exec.Command(koBin, "kill-server", "--server", s.dir)
 	if b, e := cmd.CombinedOutput(); e != nil {
 		t.Fatalf("kill: %v %s", e, b)
 	}
@@ -435,4 +449,67 @@ func TestVersionAndOrigin(t *testing.T) {
 	h.Set("Origin", "https://evil.example")
 	h.Set("Ko-Vt", vt)
 	s.dialWS("/client", h, 409)
+}
+
+func TestApi(t *testing.T) {
+	t.Parallel()
+	s := start(t)
+	ko := func(dir, stdin string, args ...string) (string, string, int) {
+		cmd := exec.Command(koBin, append([]string{"api", "--server", dir}, args...)...)
+		cmd.Env = testEnv(dir)
+		cmd.Stdin = strings.NewReader(stdin)
+		var out, errs bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &errs
+		err := cmd.Run()
+		code := 0
+		if exit, ok := err.(*exec.ExitError); ok {
+			code = exit.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return out.String(), errs.String(), code
+	}
+	var version struct{ Protocol string }
+	if out, _, code := ko(s.dir, "", "/version"); code != 0 || json.Unmarshal([]byte(out), &version) != nil || version.Protocol == "" {
+		t.Fatalf("/version: %d %q", code, out)
+	}
+	if out, _, code := ko(s.dir, "", "-i", "/version"); code != 0 || !strings.HasPrefix(out, "HTTP/1.1 200 OK\r\n") {
+		t.Fatalf("--include: %d %q", code, out)
+	}
+	var created struct{ Pane string }
+	if out, _, code := ko(s.dir, `{"command":"exec cat"}`, "--input", "-", "/panes"); code != 0 || json.Unmarshal([]byte(out), &created) != nil || created.Pane == "" {
+		t.Fatalf("POST via stdin: %d %q", code, out)
+	}
+	file := filepath.Join(s.dir, "body.json")
+	if err := os.WriteFile(file, []byte(`{"command":"exec cat"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := ko(s.dir, "", "-X", "POST", "--input", file, "/panes"); code != 0 {
+		t.Fatalf("POST via file: %d", code)
+	}
+	var rows []struct{ ID string }
+	if out, _, code := ko(s.dir, "", "/panes"); code != 0 || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 2 || rows[0].ID != created.Pane {
+		t.Fatalf("/panes: %d %q", code, out)
+	}
+	if out, errs, code := ko(s.dir, "", "/nope"); code != 1 || errs != "ko api: HTTP 404\n" || !strings.Contains(out, "not_found") {
+		t.Fatalf("404: %d %q %q", code, out, errs)
+	}
+	for _, path := range []string{"/client", "/panes/" + created.Pane + "/view?history=all"} {
+		if out, errs, code := ko(s.dir, "", path); code != 2 || out != "" || !strings.Contains(errs, "is a WebSocket endpoint") {
+			t.Fatalf("%s: %d %q %q", path, code, out, errs)
+		}
+	}
+	empty, err := os.MkdirTemp("/tmp", "ko-api-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(empty)
+	for _, dir := range []string{empty, filepath.Join(empty, "absent")} {
+		if out, errs, code := ko(dir, "", "/version"); code != 1 || out != "" || errs != "ko api: no server at "+dir+"\n" {
+			t.Fatalf("no server: %d %q %q", code, out, errs)
+		}
+	}
+	if entries, _ := os.ReadDir(empty); len(entries) != 0 {
+		t.Fatalf("ko api created %v", entries)
+	}
 }
