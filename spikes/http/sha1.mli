@@ -1,0 +1,1 @@
+val digest : string -> string

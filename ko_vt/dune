@@ -1,0 +1,24 @@
+(rule
+ (targets libghostty-vt.a)
+ (deps (source_tree ../third_party/ghostty))
+ (action
+  (setenv
+   ZIG_GLOBAL_CACHE_DIR
+   .zig-global-cache
+  (progn
+   (run /opt/homebrew/bin/zig build --build-file ../third_party/ghostty/build.zig -Demit-lib-vt -Demit-xcframework=false -Doptimize=ReleaseFast --cache-dir .zig-cache --prefix zig-out)
+   (run cp zig-out/lib/libghostty-vt.a libghostty-vt.a)))))
+
+(library
+ (name ko_vt)
+ (flags (:standard -open Containers))
+ (libraries containers)
+ (foreign_stubs
+  (language c)
+  (names ko_vt_stubs)
+  (extra_deps ../ko_pane/snapshot_cut.h ../ko_pane/buffer.h)
+  (flags (:standard -I../third_party/ghostty/include -I../ko_pane)))
+ (c_library_flags (:standard -lc++))
+ (foreign_archives ghostty-vt)
+ (inline_tests)
+ (preprocess (pps ppx_expect)))

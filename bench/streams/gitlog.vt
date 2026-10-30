@@ -1,0 +1,992 @@
+[32mbfb25234[m [34m2026-10-29[m Restore pane text through a replay stream from tmux [34mAndre Popp[m[31m (HEAD -> ko, origin/main, origin/HEAD, replay, main)[m
+ AGENTS.md             | 10 [32m++++++[m
+ docs/design-rpc.md    |  2 [32m+[m[31m-[m
+ share/rpc/contract.md | 95 [32m+++++++++++++++++++++++++++++++++++++++++++++++++[m[31m--[m
+ third_party/tmux      |  2 [32m+[m[31m-[m
+ 4 files changed, 105 insertions(+), 4 deletions(-)
+
+[32m8b217647[m [34m2026-10-26[m Restore kitty animations with their frames and playback state [34mAndre Popp[m[31m (images)[m
+ AGENTS.md                      |  5 [32m++[m[31m-[m
+ share/rpc/contract.md          | 71 [32m+++++++++++++++++++++++++++++++++++++++[m[31m---[m
+ test_e2e/image_capture_test.go | 18 [32m+++++++++++[m
+ third_party/tmux               |  2 [32m+[m[31m-[m
+ 4 files changed, 89 insertions(+), 7 deletions(-)
+
+[32m4ac5ef91[m [34m2026-10-26[m Restore kitty images after a frame edit [34mAndre Popp[m[31m[m
+ AGENTS.md                      |  6 [32m++++[m[31m--[m
+ share/rpc/contract.md          | 43 [32m++++++++++++++++++++++++++++++++++++[m[31m------[m
+ test_e2e/image_capture_test.go | 11 [32m+++++++++++[m
+ third_party/tmux               |  2 [32m+[m[31m-[m
+ 4 files changed, 53 insertions(+), 9 deletions(-)
+
+[32m983a1f9c[m [34m2026-10-26[m Keep kitty shared-memory images without a pixel copy [34mAndre Popp[m[31m[m
+ AGENTS.md                      |  6 [32m++[m[31m-[m
+ docs/design-rpc.md             |  4 [32m+[m[31m-[m
+ lib/launch.ml                  |  6 [32m+[m[31m--[m
+ lib/protocol.ml                | 10 [32m++[m[31m---[m
+ share/rpc/contract.md          | 79 [32m++++++++++++++++++++++++++++++++[m[31m-----[m
+ test_e2e/image_capture_test.go | 89 [32m++++++++++++++++++++++++++++++++++++++++++[m
+ test_e2e/rpc_requests_test.go  |  6 [32m+[m[31m--[m
+ test_e2e/rpc_test.go           |  2 [32m+[m[31m-[m
+ test_e2e/server_test.go        |  6 [32m+[m[31m--[m
+ third_party/tmux               |  2 [32m+[m[31m-[m
+ 10 files changed, 182 insertions(+), 28 deletions(-)
+
+[32m9e16bc0a[m [34m2026-10-26[m Restore kitty images sent without an id, with their layer [34mAndre Popp[m[31m[m
+ AGENTS.md                       |  2 [32m++[m
+ share/rpc/contract.md           | 38 [32m+++++++++++++++++++++++++++++++[m[31m-------[m
+ test_e2e/image_capture_test.go  | 18 [32m+++++++++++[m[31m-------[m
+ test_e2e/terminal_probe_test.go |  2 [32m+[m[31m-[m
+ third_party/tmux                |  2 [32m+[m[31m-[m
+ 5 files changed, 46 insertions(+), 16 deletions(-)
+
+[32m68f7de1c[m [34m2026-10-26[m Protocol 6.1: the app depends on the fork's image capture flags [34mAndre Popp[m[31m[m
+ AGENTS.md                     |  3 [32m++[m[31m-[m
+ docs/design-rpc.md            |  8 [32m+++++[m[31m---[m
+ lib/launch.ml                 |  6 [32m+++[m[31m---[m
+ lib/protocol.ml               | 10 [32m+++++[m[31m-----[m
+ share/rpc/contract.md         | 15 [32m++++++++[m[31m-------[m
+ test_e2e/rpc_requests_test.go |  6 [32m+++[m[31m---[m
+ test_e2e/rpc_test.go          |  2 [32m+[m[31m-[m
+ test_e2e/server_test.go       |  6 [32m+++[m[31m---[m
+ 8 files changed, 30 insertions(+), 26 deletions(-)
+
+[32m1962cea9[m [34m2026-10-26[m Build kido's tmux with kitty images, and let a capture restore them [34mAndre Popp[m[31m[m
+ .github/workflows/ci.yml        |  18 [32m+[m[31m-[m
+ AGENTS.md                       |  51 [32m+++[m[31m--[m
+ Makefile                        |   9 [32m+[m[31m-[m
+ README.md                       |   3 [32m+[m[31m-[m
+ docs/design-program-status.md   |   2 [32m+[m[31m-[m
+ docs/design-rpc.md              |  10 [32m+[m[31m-[m
+ docs/design.md                  |  17 [32m+[m[31m-[m
+ lib/dune                        |   4 [32m+[m[31m-[m
+ lib/launch.ml                   |  16 [32m+[m[31m-[m
+ scripts/ci-like.sh              |   6 [32m+[m[31m-[m
+ scripts/ci-like/Dockerfile      |   8 [32m+[m[31m-[m
+ scripts/install-tmux-fork.sh    |  28 [32m++[m[31m-[m
+ share/bin/kido-pi               |   2 [32m+[m
+ share/rpc/contract.md           | 103 [32m+++++++++[m[31m-[m
+ test_e2e/focus_test.go          |  66 [32m+++++++[m
+ test_e2e/harness_test.go        |  20 [32m+[m[31m-[m
+ test_e2e/image_capture_test.go  | 413 [32m++++++++++++++++++++++++++++++++++++++++[m
+ test_e2e/terminal_probe_test.go |   7 [32m+[m[31m-[m
+ third_party/tmux                |   2 [32m+[m[31m-[m
+ 19 files changed, 700 insertions(+), 85 deletions(-)
+
+[32ma18c2d99[m [34m2026-10-26[m An interrupt message starts its turn after the aborted run ends [34mAndre Popp[m[31m[m
+ docs/design-subagents.md         | 17 [32m+++++++++[m[31m-------[m
+ share/pi/kido-pi-control.test.ts | 43 [32m+++++[m[31m-----------------------------------[m
+ share/pi/kido-pi-ending.test.ts  | 23 [32m+++++++[m[31m--------------[m
+ share/pi/kido-pi.ts              | 14 [32m++++++++++[m[31m---[m
+ 4 files changed, 33 insertions(+), 64 deletions(-)
+
+[32m4ce3b0cf[m [34m2026-10-26[m A spawned agent in a worktree of a trusted repo does not stop at pi's trust question [34mAndre Popp[m[31m[m
+ docs/design-subagents.md       | 41 [32m++++++++++++++++++++++[m[31m---[m
+ docs/design.md                 | 10 [32m++++++[m
+ share/pi/kido-pi-fixture.ts    |  1 [32m+[m
+ share/pi/kido-pi-trust.test.ts | 69 [32m++++++++++++++++++++++++++++++++++++++++++[m
+ share/pi/kido-pi.ts            | 27 [32m++++++++++++++[m[31m---[m
+ 5 files changed, 138 insertions(+), 10 deletions(-)
+
+[32m2f414acc[m [34m2026-10-25[m Build and test the pi extension against pi 1.4.0 [34mAndre Popp[m[31m[m
+ docs/design-program-status.md |   2 [32m+[m[31m-[m
+ docs/design.md                |   2 [32m+[m[31m-[m
+ share/pi/README.md            |   2 [32m+[m[31m-[m
+ share/pi/package-lock.json    | 294 [32m++++++++++++++++++++++[m[31m--------------------[m
+ share/pi/package.json         |   4 [32m+[m[31m-[m
+ share/rpc/contract.md         |   2 [32m+[m[31m-[m
+ 6 files changed, 160 insertions(+), 146 deletions(-)
+
+[32maa251caf[m [34m2026-10-25[m stop_run reports an ended run as ended, not as one that needs force [34mAndre Popp[m[31m[m
+ share/pi/kido-pi-spawn.test.ts | 21 [32m+++++++++++++++++++++[m
+ share/pi/kido-pi.ts            |  1 [32m+[m
+ 2 files changed, 22 insertions(+)
+
+[32m92ab2576[m [34m2026-10-25[m stop_run takes one address or a list [34mAndre Popp[m[31m[m
+ docs/design-subagents.md       |  2 [32m+[m[31m-[m
+ scripts/dump-prompts.ts        |  8 [32m++++++[m[31m--[m
+ share/pi/kido-pi-spawn.test.ts |  3 [32m+++[m
+ share/pi/kido-pi.ts            | 21 [32m+++++++++++[m[31m----------[m
+ share/pi/testdata/prompts.txt  |  8 [32m++++[m[31m----[m
+ 5 files changed, 25 insertions(+), 17 deletions(-)
+
+[32m7e63b8e6[m [34m2026-10-25[m Discovery follows the agent tree, and stop_run takes several runs [34mAndre Popp[m[31m[m
+ docs/design-subagents.md                 |  64 [32m++++++++++[m[31m-------[m
+ docs/design.md                           |   8 [32m++[m[31m-[m
+ share/pi/README.md                       |  14 [32m++[m[31m--[m
+ share/pi/kido-pi-addressing.test.ts      |   6 [32m+[m[31m-[m
+ share/pi/kido-pi-list.test.ts            | 100 [32m+++++++++++++++++++[m[31m-------[m
+ share/pi/kido-pi-notify.test.ts          |   4 [32m+[m[31m-[m
+ share/pi/kido-pi-spawn-options.test.ts   |   4 [32m+[m[31m-[m
+ share/pi/kido-pi-spawn.test.ts           |  53 [32m+++++++++[m[31m-----[m
+ share/pi/kido-pi.ts                      | 116 [32m++++++++++++++++++[m[31m-------------[m
+ share/pi/testdata/fake_kido/fake_kido.ml |  35 [32m++++++[m[31m----[m
+ share/pi/testdata/prompts.txt            |  10 [32m+[m[31m--[m
+ 11 files changed, 263 insertions(+), 151 deletions(-)
+
+[32m87c7b30d[m [34m2026-10-25[m Tests check the intended behaviour, without negative controls [34mAndre Popp[m[31m[m
+ AGENTS.md | 14 [32m++++++[m[31m--------[m
+ 1 file changed, 6 insertions(+), 8 deletions(-)
+
+[32m8ee0a63c[m [34m2026-10-24[m An identical program status report wakes no client [34mAndre Popp[m[31m[m
+ docs/design-program-status.md   | 4 [32m++++[m
+ share/rpc/contract.md           | 2 [32m+[m[31m-[m
+ test_e2e/program_status_test.go | 6 [32m+++[m[31m---[m
+ third_party/tmux                | 2 [32m+[m[31m-[m
+ 4 files changed, 9 insertions(+), 5 deletions(-)
+
+[32m3733bedc[m [34m2026-10-24[m Fix the CI sshd setup on macOS and zsh in an empty test HOME [34mAndre Popp[m[31m[m
+ .github/workflows/ci.yml | 42 [32m++++++++++++++++++++++++++++++++++++++[m[31m----[m
+ AGENTS.md                | 15 [32m++++++++++++++[m[31m-[m
+ test_e2e/harness_test.go |  3 [32m+++[m
+ 3 files changed, 55 insertions(+), 5 deletions(-)
+
+[32m90a6a214[m [34m2026-10-24[m CI runs the ssh tests against the runner's own sshd [34mAndre Popp[m[31m[m
+ .github/workflows/ci.yml    | 30 [32m+++++++++++++++++++++++++++[m[31m---[m
+ AGENTS.md                   | 14 [32m++++++++++++[m[31m--[m
+ test_e2e/ssh_prime_test.go  | 15 [32m+++++[m[31m----------[m
+ test_e2e/ssh_remote_test.go | 21 [32m+++++++++[m[31m------------[m
+ 4 files changed, 53 insertions(+), 27 deletions(-)
+
+[32m8a905888[m [34m2026-10-24[m Tests never read the developer's dotfiles [34mAndre Popp[m[31m[m
+ AGENTS.md                   | 10 [32m++++++++[m
+ test_e2e/dotfiles_test.go   | 61 [32m+++++++++++++++++++++++++++++++++++++++++++++[m
+ test_e2e/harness_test.go    | 34 [32m+++++++++++++++++++++++++[m
+ test_e2e/ssh_remote_test.go |  3 [32m+++[m
+ 4 files changed, 108 insertions(+)
+
+[32mcceeee2a[m [34m2026-10-24[m Route every framed terminal query reply to its owner [34mAndre Popp[m[31m[m
+ AGENTS.md             | 4 [32m++++[m
+ share/rpc/contract.md | 2 [32m+[m[31m-[m
+ third_party/tmux      | 2 [32m+[m[31m-[m
+ 3 files changed, 6 insertions(+), 2 deletions(-)
+
+[32m70e81cde[m [34m2026-10-24[m An @ mention names the agent and its run or session id [34mAndre Popp[m[31m[m
+ docs/design-subagents.md            |   4 [32m+[m[31m-[m
+ docs/design.md                      |  45 [32m++++++++++[m[31m----[m
+ share/pi/README.md                  |   3 [32m+[m
+ share/pi/kido-pi-addressing.test.ts |  44 [32m++++++++++++[m[31m--[m
+ share/pi/kido-pi-list.test.ts       |  76 [32m++++++++++++++++++++++[m[31m--[m
+ share/pi/kido-pi-spawn.test.ts      |   2 [32m+[m[31m-[m
+ share/pi/kido-pi.ts                 | 114 [32m++++++++++++++++++++++[m[31m--------------[m
+ share/pi/testdata/prompts.txt       |   4 [32m+[m[31m-[m
+ 8 files changed, 219 insertions(+), 73 deletions(-)
+
+[32m1752adca[m [34m2026-10-24[m Spawned agents start in the user's login-shell environment [34mAndre Popp[m[31m[m
+ AGENTS.md                              |  3 [32m+[m[31m-[m
+ bin/main.ml                            | 17 [32m++++++++[m[31m--[m
+ docs/design-subagents.md               | 18 [32m++++++[m[31m----[m
+ docs/design.md                         | 54 [32m++++++++++++++++++++++++++++[m[31m--[m
+ lib/shell.ml                           | 37 [32m+++++++++++++[m[31m--------[m
+ lib/shell.mli                          |  2 [32m+[m[31m-[m
+ share/pi/README.md                     |  3 [32m+[m[31m-[m
+ share/pi/kido-pi-restart.test.ts       |  2 [32m+[m[31m-[m
+ share/pi/kido-pi-spawn-options.test.ts |  1 [32m+[m
+ share/pi/kido-pi-spawn.test.ts         |  2 [32m+[m[31m-[m
+ share/pi/kido-pi.ts                    |  4 [32m+[m[31m--[m
+ test_e2e/login_command_test.go         | 60 [32m++++++++++++++++++++++++++++++++++[m
+ 12 files changed, 170 insertions(+), 33 deletions(-)
+
+[32m496df5aa[m [34m2026-10-24[m spawn_agent starts a child or a top-level agent, new or resumed [34mAndre Popp[m[31m[m
+ AGENTS.md                                |   2 [32m+[m[31m-[m
+ docs/design-subagents.md                 | 172 [32m+++++++++++++[m[31m----[m
+ docs/design.md                           |  29 [32m+[m[31m--[m
+ scripts/dump-prompts.ts                  |   3 [32m+[m[31m-[m
+ share/pi/README.md                       |   9 [32m+[m[31m-[m
+ share/pi/kido-pi-ending.test.ts          |   6 [32m+[m[31m-[m
+ share/pi/kido-pi-fixture.ts              |  30 [32m++[m[31m-[m
+ share/pi/kido-pi-restart.test.ts         |  32 [32m++[m[31m--[m
+ share/pi/kido-pi-spawn-options.test.ts   | 229 [32m++++++++++++++++++++++[m
+ share/pi/kido-pi-spawn.test.ts           |  72 [32m+++[m[31m----[m
+ share/pi/kido-pi.ts                      | 316 [32m++++++++++++++++++++[m[31m-----------[m
+ share/pi/testdata/fake_kido/fake_kido.ml |   4 [32m+[m[31m-[m
+ share/pi/testdata/prompts.txt            |  25 [32m+[m[31m--[m
+ website/demo/scenarios/subagents.py      |   2 [32m+[m[31m-[m
+ 14 files changed, 697 insertions(+), 234 deletions(-)
+
+[32ma2e92c1f[m [34m2026-10-24[m Six agent tools: a turn's last message is the report, and message_agent has modes [34mAndre Popp[m[31m[m
+ .pi/prompts/release.md              |   2 [32m+[m[31m-[m
+ AGENTS.md                           |  12 [32m+[m[31m-[m
+ docs/design-program-status.md       |   4 [32m+[m[31m-[m
+ docs/design-subagents.md            | 333 [32m++++++++++++[m[31m-----------[m
+ docs/design.md                      | 263 [32m++++[m[31m--------------[m
+ lib/msg.ml                          |  21 [32m+[m[31m-[m
+ lib/msg.mli                         |   2 [32m+[m[31m-[m
+ lib/prompt.ml                       |   1 [31m-[m
+ scripts/dump-prompts.ts             |  20 [32m+[m[31m-[m
+ share/pi/README.md                  |  34 [32m++[m[31m-[m
+ share/pi/kido-pi-addressing.test.ts |  81 [32m++[m[31m----[m
+ share/pi/kido-pi-ask.test.ts        | 439 [31m------------------------------[m
+ share/pi/kido-pi-control.test.ts    |  32 [32m++[m[31m-[m
+ share/pi/kido-pi-ending.test.ts     | 240 [32m+++++++[m[31m---------[m
+ share/pi/kido-pi-fixture.ts         |  40 [32m++[m[31m-[m
+ share/pi/kido-pi-identity.test.ts   |   8 [32m+[m[31m-[m
+ share/pi/kido-pi-inbound.test.ts    |  62 [32m+[m[31m----[m
+ share/pi/kido-pi-list.test.ts       |   2 [32m+[m[31m-[m
+ share/pi/kido-pi-load.test.ts       |   4 [32m+[m[31m-[m
+ share/pi/kido-pi-notify.test.ts     | 247 [32m+++++++++++[m[31m------[m
+ share/pi/kido-pi-restart.test.ts    |  76 [32m+[m[31m-----[m
+ share/pi/kido-pi-spawn.test.ts      |  18 [32m+[m[31m-[m
+ share/pi/kido-pi.ts                 | 527 [32m++++++++[m[31m----------------------------[m
+ share/pi/testdata/prompts.txt       | 135 [32m++[m[31m-------[m
+ website/demo/README.md              |   2 [32m+[m[31m-[m
+ website/demo/scenarios/subagents.py |  21 [32m+[m[31m-[m
+ 26 files changed, 799 insertions(+), 1827 deletions(-)
+
+[32mab6265ea[m [34m2026-10-24[m Follow upstream tmux master now that it has side status [34mAndre Popp[m[31m[m
+ AGENTS.md                   | 52 [32m+++++++++++++++++++++++++++++[m[31m----------------[m
+ lib/prime.ml                |  5 [32m+++[m[31m--[m
+ lib/sh.ml                   |  2 [32m+[m[31m-[m
+ lib/shell.ml                |  2 [32m+[m[31m-[m
+ share/bash/integration.bash |  7 [32m++++[m[31m--[m
+ share/rpc/contract.md       |  2 [32m+[m[31m-[m
+ share/tmux/kido-tmux.conf   |  4 [32m++++[m
+ share/zsh/integration.zsh   |  7 [32m++++[m[31m--[m
+ test_e2e/harness_test.go    |  7 [32m++++++[m
+ test_e2e/mouse_test.go      | 34 [32m+++++++++++++++++++++++++++++[m
+ test_e2e/render_test.go     |  2 [32m+[m[31m-[m
+ test_e2e/ssh_mark_test.go   |  4 [32m++[m[31m--[m
+ third_party/tmux            |  2 [32m+[m[31m-[m
+ 13 files changed, 99 insertions(+), 31 deletions(-)
+
+[32macd17d58[m [34m2026-10-22[m Check the async_bash guideline by its new text [34mAndre Popp[m[31m[m
+ share/pi/kido-pi-spawn.test.ts | 2 [32m+[m[31m-[m
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+[32md3ad8344[m [34m2026-10-22[m Say when to use async_bash, and not to start background jobs in bash [34mAndre Popp[m[31m[m
+ share/pi/kido-pi.ts           | 3 [32m++[m[31m-[m
+ share/pi/testdata/prompts.txt | 3 [32m++[m[31m-[m
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+[32m1684e8ec[m [34m2026-10-20[m Fix the notice bugs that a review of the notify logic found [34mAndre Popp[m[31m[m
+ docs/design-subagents.md                 |  69 [32m++++++[m[31m--[m
+ docs/design.md                           |   5 [32m+[m[31m-[m
+ share/pi/kido-pi-control.test.ts         |   7 [32m+[m[31m-[m
+ share/pi/kido-pi-ending.test.ts          | 290 [32m++++++++++++++++++++++++++++++[m[31m-[m
+ share/pi/kido-pi-notify.test.ts          |  19 [32m+[m[31m-[m
+ share/pi/kido-pi-restart.test.ts         |  63 [32m++++++[m[31m-[m
+ share/pi/kido-pi.ts                      | 111 [32m++++++++[m[31m----[m
+ share/pi/testdata/fake_kido/fake_kido.ml |   5 [32m+[m
+ 8 files changed, 501 insertions(+), 68 deletions(-)
+
+[32m773db9fd[m [34m2026-10-20[m Only the parent's work makes a child owe a report [34mAndre Popp[m[31m[m
+ docs/design-subagents.md         |  37 [32m++++++[m[31m----[m
+ docs/design.md                   |   3 [32m+[m[31m-[m
+ share/pi/kido-pi-ending.test.ts  | 142 [32m++++++++++++++++++++++++++++++++[m[31m-------[m
+ share/pi/kido-pi-restart.test.ts |  27 [32m++++++++[m
+ share/pi/kido-pi.ts              |  26 [32m++++[m[31m---[m
+ 5 files changed, 185 insertions(+), 50 deletions(-)
+
+[32m883af016[m [34m2026-10-19[m Add /release, the release sequence for an agent [34mAndre Popp[m[31m[m
+ .pi/prompts/release.md | 55 [32m++++++++++++++++++++++++++++++++++++++++++++++++++[m
+ AGENTS.md              |  6 [32m+++++[m[31m-[m
+ 2 files changed, 60 insertions(+), 1 deletion(-)
+
+[32ma85ec76b[m [34m2026-10-19[m A report from earlier work does not hold a manager's notice back [34mAndre Popp[m[31m[m
+ docs/design-subagents.md         | 29 [32m+++++++++++++[m[31m-----[m
+ docs/design.md                   |  2 [32m+[m[31m-[m
+ share/pi/README.md               |  4 [32m+[m[31m--[m
+ share/pi/kido-pi-ending.test.ts  | 65 [32m+++++++++++++++++++++++++++++++++++++++[m[31m-[m
+ share/pi/kido-pi-restart.test.ts | 10 [32m++++++[m[31m-[m
+ share/pi/kido-pi-spawn.test.ts   | 50 [32m+++++++++++++++++++++++++[m[31m------[m
+ share/pi/kido-pi.ts              | 54 [32m+++++++++++++++++++++++++[m[31m--------[m
+ 7 files changed, 179 insertions(+), 35 deletions(-)
+
+[32me551a430[m [34m2026-10-19[m Give an ask that expects a reply a timeout of seconds in its test [34mAndre Popp[m[31m[m
+ AGENTS.md                    | 4 [32m++++[m
+ share/pi/kido-pi-ask.test.ts | 6 [32m+++[m[31m---[m
+ 2 files changed, 7 insertions(+), 3 deletions(-)
+
+[32m39a41387[m [34m2026-10-19[m kido runs lists live runs, and --all lists every run [34mAndre Popp[m[31m[m
+ bin/main.ml                              |  7 [32m+++[m[31m---[m
+ docs/design-subagents.md                 |  2 [32m+[m[31m-[m
+ docs/design.md                           | 17 [32m++++++++[m[31m-----[m
+ lib/run_history.ml                       |  5 [32m++[m[31m--[m
+ lib/run_history.mli                      |  2 [32m+[m[31m-[m
+ share/pi/kido-pi.ts                      |  2 [32m+[m[31m-[m
+ share/pi/testdata/fake_kido/fake_kido.ml |  8 [32m+++++[m[31m-[m
+ test_e2e/refusal_test.go                 |  2 [32m+[m[31m-[m
+ test_e2e/run_commands_test.go            | 43 [32m++++++++++++++++[m[31m----------------[m
+ test_e2e/runs_test.go                    | 18 [32m++++++++++[m[31m---[m
+ 10 files changed, 66 insertions(+), 40 deletions(-)
+
+[32mf15fde3c[m [34m2026-10-19[m An ask or a report survives a pi in its editor [34mAndre Popp[m[31m[m
+ docs/design-program-status.md            |  4 [32m++[m[31m-[m
+ docs/design-subagents.md                 |  4 [32m+[m[31m--[m
+ docs/design.md                           | 32 [32m++++++++++++++[m[31m-----[m
+ share/pi/README.md                       |  2 [32m+[m[31m-[m
+ share/pi/kido-pi-ask.test.ts             | 53 [32m++++++++++++++++++++++++++++++[m[31m--[m
+ share/pi/kido-pi-fixture.ts              |  2 [32m+[m[31m-[m
+ share/pi/kido-pi-notify.test.ts          | 26 [32m++++++++++++++++[m
+ share/pi/kido-pi.ts                      | 40 [32m+++++++++++[m[31m-------------[m
+ share/pi/testdata/fake_tmux/fake_tmux.ml |  3 [32m+[m[31m-[m
+ 9 files changed, 128 insertions(+), 38 deletions(-)
+
+[32m7d975119[m [34m2026-10-19[m Wait for the raw title once a pi's identity is cleared [34mAndre Popp[m[31m[m
+ test_e2e/agent_test.go | 7 [32m++[m[31m-----[m
+ 1 file changed, 2 insertions(+), 5 deletions(-)
+
+[32ma2117ac7[m [34m2026-10-19[m Feed waits skip a line with no session [34mAndre Popp[m[31m[m
+ test_e2e/child_program_status_test.go | 2 [32m+[m[31m-[m
+ test_e2e/rpc_test.go                  | 9 [32m+++++++++[m
+ test_e2e/ssh_mark_test.go             | 6 [32m+++[m[31m---[m
+ test_e2e/subagent_elapsed_test.go     | 7 [32m++[m[31m-----[m
+ 4 files changed, 15 insertions(+), 9 deletions(-)
+
+[32md9991144[m [34m2026-10-19[m A child waiting on its own runs sends no idle notice [34mAndre Popp[m[31m[m
+ docs/design-subagents.md        |  13 [32m+++[m[31m-[m
+ docs/design.md                  |   6 [32m+[m[31m-[m
+ share/pi/kido-pi-ending.test.ts | 135 [32m+++++++++++++++++++++++++++++++++++++++[m[31m-[m
+ share/pi/kido-pi.ts             |  45 [32m++++++++[m[31m------[m
+ 4 files changed, 176 insertions(+), 23 deletions(-)
+
+[32m566163d0[m [34m2026-10-19[m New servers turn on tmux's extended keys in csi-u format [34mAndre Popp[m[31m[m
+ AGENTS.md                           | 13 [32m+++++++++[m[31m----[m
+ docs/design-rpc.md                  |  3 [32m++[m[31m-[m
+ docs/design.md                      | 17 [32m++++++++++++++[m[31m---[m
+ lib/dune                            |  3 [32m+++[m
+ lib/launch.ml                       | 37 [32m+++++++++++++++++++++++++[m[31m------------[m
+ share/tmux/kido-tmux-unstamped.conf |  2 [32m++[m
+ test_e2e/launch_test.go             |  6 [32m++++++[m
+ 7 files changed, 61 insertions(+), 20 deletions(-)
+
+[32ma238ee30[m [34m2026-10-19[m A pi in its editor or suspended is not an ended parent [34mAndre Popp[m[31m[m
+ AGENTS.md                       |  4 [32m+++[m[31m-[m
+ bin/main.ml                     | 23 [32m++++++++++++++[m[31m-----[m
+ docs/design-subagents.md        | 16 [32m++++++++[m[31m-----[m
+ docs/design.md                  | 51 [32m++++++++++++++++++++++++++++++[m[31m-----------[m
+ lib/reap.ml                     | 11 [32m++++++[m[31m---[m
+ lib/state.ml                    |  4 [32m++[m[31m--[m
+ share/pi/kido-pi-ending.test.ts | 30 [32m++++++++++++++++++++++++[m
+ share/pi/kido-pi-load.test.ts   | 44 [32m+++++++++++++++++++++++++++++++++++[m
+ share/pi/kido-pi.ts             | 49 [32m++++++++++++++++++++++++++++[m[31m-----------[m
+ test_e2e/reap_test.go           | 43 [32m++++++++++++++++++++++++[m[31m----------[m
+ test_e2e/run_commands_test.go   |  1 [32m+[m
+ 11 files changed, 219 insertions(+), 57 deletions(-)
+
+[32ma4b4aa64[m [34m2026-10-19[m Wait for the run's output, and keep the sweep away, in two run tests [34mAndre Popp[m[31m[m
+ test_e2e/async_bash_test.go   | 3 [32m+++[m
+ test_e2e/reap_test.go         | 4 [32m+++[m[31m-[m
+ test_e2e/run_commands_test.go | 2 [32m++[m
+ 3 files changed, 8 insertions(+), 1 deletion(-)
+
+[32m7d5d8499[m [34m2026-10-19[m Name a Linux pane's death signal, which tmux prints as a number [34mAndre Popp[m[31m[m
+ docs/design.md |  5 [32m+++[m[31m--[m
+ lib/state.ml   | 16 [32m+++++++++++++++[m[31m-[m
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+[32mf5989422[m [34m2026-10-19[m Read the server dir's own tmux, and send no notice for a stopped turn [34mAndre Popp[m[31m[m
+ bin/main.ml                              |  15 [32m+++[m[31m--[m
+ docs/design-subagents.md                 |   6 [32m+[m[31m-[m
+ docs/design.md                           |   6 [32m++[m
+ lib/prompt.ml                            |   2 [32m+[m[31m-[m
+ lib/run.ml                               |   5 [32m+[m[31m-[m
+ lib/run_stop.ml                          |  77 [32m++++++++++++[m[31m------------[m
+ lib/run_wait.ml                          |   7 [32m++[m[31m-[m
+ lib/run_window.ml                        |   2 [32m+[m[31m-[m
+ lib/server_dir.ml                        |   2 [32m+[m
+ lib/server_dir.mli                       |   1 [32m+[m
+ share/pi/kido-pi-ending.test.ts          | 100 [32m+++++++++++++++++++++++++++++++[m
+ share/pi/kido-pi.ts                      |  34 [32m++++++++[m[31m---[m
+ share/pi/testdata/fake_kido/fake_kido.ml |  28 [32m++++++[m[31m---[m
+ test_e2e/runs_test.go                    |  18 [32m++++++[m
+ 14 files changed, 234 insertions(+), 69 deletions(-)
+
+[32m85a64663[m [34m2026-10-19[m Simplify the harness split as one change, and fix what a whole review found [34mAndre Popp[m[31m[m
+ AGENTS.md                                    |   7 [32m+[m[31m-[m
+ bin/kido_sidebar.ml                          |  14 [32m+[m[31m-[m
+ bin/main.ml                                  | 220 [32m++++++[m[31m-------[m
+ docs/design-rpc.md                           |   5 [32m+[m[31m-[m
+ docs/design-subagents.md                     |  10 [32m+[m[31m-[m
+ docs/design.md                               |  56 [32m++[m[31m--[m
+ lib/pane_kind.ml                             |   5 [32m+[m[31m-[m
+ lib/prompt.ml                                |  40 [32m+[m[31m--[m
+ lib/protocol.ml                              |  15 [32m+[m[31m-[m
+ lib/reap.ml                                  |  21 [32m+[m[31m-[m
+ lib/run.ml                                   |  51 [32m+[m[31m--[m
+ lib/run.mli                                  |   6 [32m+[m[31m-[m
+ lib/run_history.ml                           |   2 [32m+[m[31m-[m
+ lib/run_stop.ml                              |  45 [32m+[m[31m--[m
+ lib/run_stop.mli                             |   3 [31m-[m
+ lib/run_wait.ml                              |   6 [32m+[m[31m-[m
+ lib/run_window.ml                            |   4 [32m+[m[31m-[m
+ lib/run_window.mli                           |   2 [32m+[m[31m-[m
+ lib/sidebar.ml                               |  29 [32m+[m[31m-[m
+ lib/sidebar.mli                              |   3 [32m+[m[31m-[m
+ lib/state.ml                                 |  15 [32m+[m[31m-[m
+ lib/state.mli                                |   2 [32m+[m
+ lib/text.ml                                  |   3 [31m-[m
+ lib/text.mli                                 |   1 [31m-[m
+ scripts/dump-prompts.ts                      |  38 [32m+[m[31m--[m
+ share/pi/kido-pi-addressing.test.ts          |   2 [32m+[m[31m-[m
+ share/pi/kido-pi-ending.test.ts              |  34 [32m+[m[31m-[m
+ share/pi/kido-pi-fixture.ts                  |  30 [32m+[m[31m-[m
+ share/pi/kido-pi-list.test.ts                |  16 [32m+[m[31m-[m
+ share/pi/kido-pi-restart.test.ts             |  25 [32m+[m[31m-[m
+ share/pi/kido-pi-spawn.test.ts               | 149 [32m+++++++[m[31m--[m
+ share/pi/kido-pi.ts                          | 476 [32m+++++++++++++[m[31m--------------[m
+ share/pi/testdata/fake_common/fake_common.ml |   3 [32m+[m[31m-[m
+ share/pi/testdata/fake_kido/fake_kido.ml     |  62 [32m++[m[31m--[m
+ share/pi/testdata/fake_tmux/fake_tmux.ml     |   6 [32m+[m[31m-[m
+ share/pi/testdata/prompts.txt                |   2 [32m+[m[31m-[m
+ test_e2e/async_bash_test.go                  |   4 [32m+[m[31m-[m
+ test_e2e/harness_test.go                     |   6 [32m+[m[31m-[m
+ test_e2e/linked_window_test.go               |  62 [32m++++[m
+ test_e2e/reap_test.go                        |   8 [32m+[m[31m-[m
+ test_e2e/refusal_test.go                     |   2 [32m+[m[31m-[m
+ test_e2e/run_commands_test.go                |  54 [32m+[m[31m--[m
+ test_e2e/runs_test.go                        |   8 [32m+[m[31m-[m
+ test_e2e/spawn_model_test.go                 |   2 [32m+[m[31m-[m
+ 44 files changed, 840 insertions(+), 714 deletions(-)
+
+[32m5211870a[m [34m2026-10-19[m Fix the harness bugs that the correctness reviews found [34mAndre Popp[m[31m[m
+ bin/main.ml                              |  76 [32m++++[m[31m--[m
+ docs/design-subagents.md                 |  48 [32m+++[m[31m-[m
+ docs/design.md                           |  69 [32m+++++[m[31m-[m
+ lib/run_stop.ml                          |  51 [32m++[m[31m--[m
+ lib/run_stop.mli                         |   2 [32m+[m
+ lib/run_wait.ml                          |   7 [32m+[m[31m-[m
+ lib/state.ml                             |   7 [32m+[m
+ lib/state.mli                            |   1 [32m+[m
+ share/pi/kido-pi-ask.test.ts             |  31 [32m++[m[31m-[m
+ share/pi/kido-pi-list.test.ts            |  22 [32m++[m
+ share/pi/kido-pi-load.test.ts            |  99 [32m+++++++[m[31m-[m
+ share/pi/kido-pi-restart.test.ts         |  71 [32m++++++[m
+ share/pi/kido-pi-spawn.test.ts           | 136 [32m+++++++++[m[31m-[m
+ share/pi/kido-pi.ts                      | 412 [32m++++++++++++++++++++++[m[31m---------[m
+ share/pi/testdata/fake_kido/fake_kido.ml | 157 [32m++++++++++[m[31m--[m
+ share/pi/testdata/fake_tmux/fake_tmux.ml |   9 [32m+[m[31m-[m
+ test_e2e/run_commands_test.go            |  41 [32m+++[m
+ 17 files changed, 1018 insertions(+), 221 deletions(-)
+
+[32m0a3e85de[m [34m2026-10-18[m kido-pi is the only harness [34mAndre Popp[m[31m[m
+ AGENTS.md                                    |  127 [32m+[m[31m-[m
+ Makefile                                     |   14 [32m+[m[31m-[m
+ README.md                                    |   12 [32m+[m[31m-[m
+ bin/kido_sidebar.ml                          |   24 [32m+[m[31m-[m
+ bin/main.ml                                  |  411 [32m+[m[31m------[m
+ docs/design-program-status.md                |   42 [32m+[m[31m-[m
+ docs/design-subagents.md                     | 1332 [32m++++++[m[31m---------------[m
+ docs/design.md                               | 1646 [32m++++++++[m[31m------------------[m
+ docs/prompts.md                              |  364 [31m------[m
+ lib/async_bash.ml                            |   78 [31m--[m
+ lib/async_bash.mli                           |   12 [31m-[m
+ lib/async_stream.ml                          |  382 [31m------[m
+ lib/async_stream.mli                         |   20 [31m-[m
+ lib/bin_dir.ml                               |   59 [32m+[m[31m-[m
+ lib/control.ml                               |   85 [31m--[m
+ lib/control.mli                              |   22 [31m-[m
+ lib/dune                                     |    3 [32m+[m[31m-[m
+ lib/launch.ml                                |    6 [32m+[m[31m-[m
+ lib/list_runs.ml                             |  175 [31m---[m
+ lib/list_runs.mli                            |   37 [31m-[m
+ lib/message_agent.ml                         |  228 [31m----[m
+ lib/message_agent.mli                        |   54 [31m-[m
+ lib/msg.ml                                   |  176 [31m---[m
+ lib/msg.mli                                  |   31 [31m-[m
+ lib/pane_kind.ml                             |    6 [31m-[m
+ lib/pane_kind.mli                            |    3 [31m-[m
+ lib/prompt.ml                                |   19 [32m+[m[31m-[m
+ lib/prompt.mli                               |   12 [31m-[m
+ lib/protocol.ml                              |   30 [32m+[m[31m-[m
+ lib/reap.ml                                  |  141 [32m+[m[31m--[m
+ lib/reap.mli                                 |    3 [31m-[m
+ lib/reporting.ml                             |  100 [31m--[m
+ lib/reporting.mli                            |   19 [31m-[m
+ lib/run.ml                                   |  310 [32m+[m[31m----[m
+ lib/run.mli                                  |   66 [32m+[m[31m-[m
+ lib/run_ending.ml                            |  358 [31m------[m
+ lib/run_ending.mli                           |   22 [31m-[m
+ lib/run_history.ml                           |   31 [32m+[m[31m-[m
+ lib/run_history.mli                          |    9 [32m+[m[31m-[m
+ lib/run_stop.ml                              |   13 [32m+[m[31m-[m
+ lib/run_stop.mli                             |    8 [32m+[m[31m-[m
+ lib/run_wait.ml                              |   71 [32m+[m[31m-[m
+ lib/run_wait.mli                             |    9 [32m+[m[31m-[m
+ lib/run_window.ml                            |   76 [32m+[m[31m-[m
+ lib/run_window.mli                           |   12 [31m-[m
+ lib/sidebar.ml                               |  147 [32m+[m[31m--[m
+ lib/sidebar.mli                              |    5 [32m+[m[31m-[m
+ lib/spawn_subagent.ml                        |  288 [31m-----[m
+ lib/spawn_subagent.mli                       |   23 [31m-[m
+ lib/state.ml                                 |   56 [32m+[m[31m-[m
+ lib/state.mli                                |    7 [32m+[m[31m-[m
+ lib/state_fixture.ml                         |   17 [32m+[m[31m-[m
+ lib/test/dune                                |    2 [32m+[m[31m-[m
+ lib/test/test_tool_parity.ml                 |   57 [31m-[m
+ lib/test/test_tool_parity.mli                |    0
+ lib/test_fixture.ml                          |   24 [32m+[m[31m-[m
+ lib/test_support.ml                          |   20 [31m-[m
+ lib/view_fixture.ml                          |   36 [32m+[m[31m-[m
+ scripts/dump-prompts.ts                      |  141 [32m++[m[31m-[m
+ scripts/lint.sh                              |    6 [32m+[m[31m-[m
+ scripts/release.sh                           |   14 [32m+[m[31m-[m
+ scripts/test-ts.sh                           |    4 [32m+[m[31m-[m
+ scripts/verify.sh                            |    2 [32m+[m[31m-[m
+ share/bin/pi                                 |   14 [31m-[m
+ share/dune                                   |    2 [32m+[m[31m-[m
+ share/pi/README.md                           |  391 [32m++[m[31m----[m
+ share/pi/kido-agents.ts                      | 1310 [31m--------------------[m
+ share/pi/kido-fixture.ts                     |  542 [31m---------[m
+ share/pi/kido-pi-control.test.ts             |   37 [32m+[m[31m-[m
+ share/pi/kido-pi-inbound.test.ts             |    9 [32m+[m[31m-[m
+ share/pi/kido-pi.ts                          |   90 [32m+[m[31m-[m
+ share/pi/kido-status-completion.test.ts      |  504 [31m--------[m
+ share/pi/kido-status-control.test.ts         |  497 [31m--------[m
+ share/pi/kido-status-identity.test.ts        |  379 [31m------[m
+ share/pi/kido-status-inbound.test.ts         |  298 [31m-----[m
+ share/pi/kido-status-load.test.ts            |  390 [31m------[m
+ share/pi/kido-status-stream.test.ts          |  428 [31m-------[m
+ share/pi/kido-status-tools.test.ts           |  439 [31m-------[m
+ share/pi/kido-status.ts                      |  521 [31m--------[m
+ share/pi/package-lock.json                   |    4 [32m+[m[31m-[m
+ share/pi/package.json                        |    2 [32m+[m[31m-[m
+ share/pi/testdata/fake_common/fake_common.ml |   15 [32m+[m
+ share/pi/testdata/fake_kido/fake_kido.ml     |  228 [32m+[m[31m---[m
+ share/pi/testdata/fake_tmux/fake_tmux.ml     |   36 [32m+[m[31m-[m
+ share/pi/testdata/prompts.txt                |  129 [32m+[m[31m-[m
+ share/pi/testdata/tools.json                 |   12 [31m-[m
+ share/pi/tsconfig.json                       |   10 [32m+[m[31m-[m
+ test_e2e/agent_test.go                       |  167 [32m+[m[31m--[m
+ test_e2e/async_bash_test.go                  |  271 [32m+[m[31m----[m
+ test_e2e/async_ending_test.go                |   59 [31m-[m
+ test_e2e/bindir_test.go                      |   88 [32m+[m[31m-[m
+ test_e2e/bundle_test.go                      |   19 [32m+[m[31m-[m
+ test_e2e/claude_program_status_test.go       |   17 [32m+[m[31m-[m
+ test_e2e/control_test.go                     |  363 [31m------[m
+ test_e2e/harness_test.go                     |  237 [32m++[m[31m--[m
+ test_e2e/inbox_test.go                       |   24 [31m-[m
+ test_e2e/launch_test.go                      |    1 [31m-[m
+ test_e2e/list_runs_test.go                   |  230 [31m----[m
+ test_e2e/msg_test.go                         |  613 [32m+[m[31m---------[m
+ test_e2e/notice_test.go                      |   66 [31m--[m
+ test_e2e/parent_ends_test.go                 |   93 [31m--[m
+ test_e2e/pi_coordination_status_test.go      |   32 [31m-[m
+ test_e2e/pi_name_ending_test.go              |   61 [32m+[m[31m-[m
+ test_e2e/pi_name_test.go                     |   85 [31m--[m
+ test_e2e/program_status_test.go              |    6 [32m+[m[31m-[m
+ test_e2e/prompt_test.go                      |   32 [32m+[m[31m-[m
+ test_e2e/reap_test.go                        |  113 [32m+[m[31m-[m
+ test_e2e/refusal_test.go                     |    6 [31m-[m
+ test_e2e/render_test.go                      |    2 [32m+[m[31m-[m
+ test_e2e/rpc_prompt_test.go                  |    2 [32m+[m[31m-[m
+ test_e2e/rpc_test.go                         |   34 [32m+[m[31m-[m
+ test_e2e/run_commands_test.go                |   14 [32m+[m[31m-[m
+ test_e2e/run_creation_test.go                |   38 [32m+[m[31m-[m
+ test_e2e/runs_test.go                        |  118 [32m+[m[31m-[m
+ test_e2e/server_dir_test.go                  |   55 [31m-[m
+ test_e2e/session_claim_test.go               |   81 [31m--[m
+ test_e2e/shell_caller_test.go                |  134 [31m---[m
+ test_e2e/spawn_fork_test.go                  |   44 [31m-[m
+ test_e2e/spawn_model_test.go                 |  232 [32m+[m[31m---[m
+ test_e2e/spawn_test.go                       |  473 [31m--------[m
+ test_e2e/spawn_tools_test.go                 |   46 [31m-[m
+ test_e2e/split_pane_test.go                  |    7 [32m+[m[31m-[m
+ test_e2e/state_test.go                       |   48 [31m-[m
+ test_e2e/stream_test.go                      |  133 [31m---[m
+ test_e2e/subagent_elapsed_test.go            |    8 [32m+[m[31m-[m
+ 125 files changed, 1940 insertions(+), 15906 deletions(-)
+
+[32m440a6de7[m [34m2026-10-18[m The harness in one extension, kido-pi, beside the old pair [34mAndre Popp[m[31m[m
+ AGENTS.md                                    |   10 [32m+[m[31m-[m
+ bin/main.ml                                  |    8 [32m+[m[31m-[m
+ docs/design-subagents.md                     |  114 [32m++[m
+ docs/design.md                               |   84 [32m+[m[31m-[m
+ scripts/test-ts.sh                           |    6 [32m+[m[31m-[m
+ share/bin/kido-pi                            |    8 [32m+[m
+ share/dune                                   |    2 [32m+[m[31m-[m
+ share/pi/kido-pi-addressing.test.ts          |  192 [32m++[m
+ share/pi/kido-pi-ask.test.ts                 |  361 [32m++++[m
+ share/pi/kido-pi-control.test.ts             |  147 [32m++[m
+ share/pi/kido-pi-ending.test.ts              |  289 [32m+++[m
+ share/pi/kido-pi-fixture.ts                  |  614 [32m+++++++[m
+ share/pi/kido-pi-identity.test.ts            |  171 [32m++[m
+ share/pi/kido-pi-inbound.test.ts             |  327 [32m++++[m
+ share/pi/kido-pi-list.test.ts                |  268 [32m+++[m
+ share/pi/kido-pi-load.test.ts                |  133 [32m++[m
+ share/pi/kido-pi-notify.test.ts              |   86 [32m+[m
+ share/pi/kido-pi-restart.test.ts             |  252 [32m+++[m
+ share/pi/kido-pi-spawn.test.ts               |  433 [32m+++++[m
+ share/pi/kido-pi-status.test.ts              |   80 [32m+[m
+ share/pi/kido-pi.ts                          | 2441 [32m++++++++++++++++++++++++++[m
+ share/pi/testdata/fake_common/dune           |    5 [32m+[m
+ share/pi/testdata/fake_common/fake_common.ml |   19 [32m+[m
+ share/pi/testdata/fake_kido/dune             |    2 [32m+[m[31m-[m
+ share/pi/testdata/fake_kido/fake_kido.ml     |   86 [32m+[m[31m-[m
+ share/pi/testdata/fake_tmux/dune             |   11 [32m+[m
+ share/pi/testdata/fake_tmux/fake_tmux.ml     |  101 [32m++[m
+ share/pi/tsconfig.json                       |    5 [32m+[m[31m-[m
+ 28 files changed, 6238 insertions(+), 17 deletions(-)
+
+[32m5f8ac7ec[m [34m2026-10-18[m kido owns generic runs, and the harness marks its panes with options [34mAndre Popp[m[31m[m
+ AGENTS.md                               |  65 [32m+++[m[31m--[m
+ bin/kido_sidebar.ml                     |   8 [32m+[m[31m-[m
+ bin/main.ml                             | 492 [32m++++++++++++++++++++++++[m[31m--------[m
+ docs/design-program-status.md           |  33 [32m++[m[31m-[m
+ docs/design-rpc.md                      |  42 [32m++[m[31m-[m
+ docs/design-subagents.md                | 171 [32m+++++[m[31m------[m
+ docs/design.md                          | 247 [32m+++++++++++[m[31m-----[m
+ lib/async_bash.ml                       |  66 [32m+++[m[31m--[m
+ lib/async_bash.mli                      |   6 [32m+[m[31m-[m
+ lib/async_run.ml                        | 281 [31m------------------[m
+ lib/async_run.mli                       |   8 [31m-[m
+ lib/async_stream.ml                     |  14 [32m+[m[31m-[m
+ lib/async_stream.mli                    |   2 [32m+[m
+ lib/control.ml                          |  85 [32m++[m[31m----[m
+ lib/control.mli                         |  10 [32m+[m[31m-[m
+ lib/launch.ml                           |   6 [32m+[m[31m-[m
+ lib/list_runs.ml                        |  25 [32m+[m[31m-[m
+ lib/message_agent.ml                    |  18 [32m+[m[31m-[m
+ lib/pane_kind.ml                        |  58 [32m+[m[31m---[m
+ lib/pane_kind.mli                       |   7 [32m+[m[31m-[m
+ lib/pane_status.ml                      |  24 [32m+[m[31m-[m
+ lib/pane_status.mli                     |   2 [32m+[m[31m-[m
+ lib/prompt.ml                           |  11 [32m+[m[31m-[m
+ lib/protocol.ml                         |  62 [32m++[m[31m--[m
+ lib/reap.ml                             | 178 [32m++++++++++[m[31m--[m
+ lib/reap.mli                            |   3 [32m+[m
+ lib/reporting.ml                        |  50 [32m+++[m[31m-[m
+ lib/reporting.mli                       |   7 [32m+[m[31m-[m
+ lib/run.ml                              | 157 [32m++++[m[31m------[m
+ lib/run.mli                             |  19 [32m+[m[31m-[m
+ lib/run_ending.ml                       |  49 [32m+++[m[31m-[m
+ lib/run_ending.mli                      |   2 [32m+[m[31m-[m
+ lib/run_history.ml                      |  51 [32m++[m[31m--[m
+ lib/run_history.mli                     |   7 [32m+[m[31m-[m
+ lib/run_stop.ml                         |  78 [32m+++++[m
+ lib/run_stop.mli                        |  15 [32m+[m
+ lib/run_wait.ml                         |  72 [32m+++++[m
+ lib/run_wait.mli                        |   7 [32m+[m
+ lib/run_window.ml                       |  66 [32m+++[m[31m--[m
+ lib/run_window.mli                      |  21 [32m+[m[31m-[m
+ lib/sidebar.ml                          | 150 [32m++++++[m[31m----[m
+ lib/sidebar.mli                         |  10 [32m+[m[31m-[m
+ lib/spawn_subagent.ml                   |  25 [32m+[m[31m-[m
+ lib/spawn_subagent.mli                  |   2 [32m+[m[31m-[m
+ lib/state.ml                            | 157 [32m++++++++[m[31m--[m
+ lib/state.mli                           |  16 [32m+[m[31m-[m
+ lib/state_fixture.ml                    |  36 [32m++[m[31m-[m
+ lib/test_fixture.ml                     |   2 [32m+[m[31m-[m
+ lib/tmux_vars.ml                        |   4 [32m+[m
+ lib/view_fixture.ml                     |  21 [32m+[m[31m-[m
+ scripts/lint.sh                         |   2 [32m+[m[31m-[m
+ share/rpc/contract.md                   |  62 [32m++[m[31m--[m
+ test_e2e/async_bash_test.go             |  44 [32m+[m[31m--[m
+ test_e2e/async_ending_test.go           | 139 [32m+[m[31m--------[m
+ test_e2e/control_test.go                |  28 [32m+[m[31m-[m
+ test_e2e/feed_status_test.go            |   4 [32m+[m[31m-[m
+ test_e2e/harness_test.go                |  16 [32m+[m[31m-[m
+ test_e2e/list_runs_test.go              |  18 [32m+[m[31m-[m
+ test_e2e/pi_coordination_status_test.go | 144 [32m+++++[m[31m-----[m
+ test_e2e/pi_name_ending_test.go         |   2 [32m+[m[31m-[m
+ test_e2e/prompt_test.go                 |  21 [32m+[m[31m-[m
+ test_e2e/reap_test.go                   |  17 [32m+[m[31m-[m
+ test_e2e/refusal_test.go                |   6 [32m+[m[31m-[m
+ test_e2e/rpc_prompt_test.go             |   4 [32m+[m[31m-[m
+ test_e2e/rpc_requests_test.go           |   6 [32m+[m[31m-[m
+ test_e2e/rpc_status_test.go             |  13 [32m+[m[31m-[m
+ test_e2e/rpc_test.go                    |  35 [32m+[m[31m--[m
+ test_e2e/run_commands_test.go           | 230 [32m+++++++++++++++[m
+ test_e2e/runs_test.go                   |  31 [32m+[m[31m-[m
+ test_e2e/server_test.go                 |   6 [32m+[m[31m-[m
+ test_e2e/spawn_resume_test.go           | 363 [31m-----------------------[m
+ test_e2e/spawn_test.go                  |   1 [31m-[m
+ test_e2e/stream_test.go                 |  20 [32m+[m[31m-[m
+ 73 files changed, 2278 insertions(+), 1882 deletions(-)
+
+[32m2cbcc774[m [34m2026-10-18[m An RPC client can prompt an agent near a pane [34mAndre Popp[m[31m[m
+ AGENTS.md                   |   4 [32m+[m[31m-[m
+ docs/design-rpc.md          |  28 [32m+++++++++[m
+ lib/message_agent.ml        |  12 [32m++[m[31m--[m
+ lib/message_agent.mli       |   2 [32m+[m[31m-[m
+ lib/prompt.ml               | 141 [32m+++++++++++++++++++++++++++++++++[m[31m-----------[m
+ lib/prompt.mli              |  26 [32m++++++[m[31m--[m
+ lib/protocol.ml             | 116 [32m+++++++++++++++++++++++++++++++++++[m[31m-[m
+ lib/sidebar.ml              |   4 [32m++[m
+ lib/sidebar.mli             |   4 [32m++[m
+ share/rpc/contract.md       |  31 [32m++++++++++[m
+ test_e2e/rpc_prompt_test.go |  55 [32m+++++++++++++++++[m
+ 11 files changed, 376 insertions(+), 47 deletions(-)
+
+[32mb30c30de[m [34m2026-10-18[m lib_tmux is only a typed tmux API [34mAndre Popp[m[31m[m
+ AGENTS.md          | 3 [32m+++[m
+ lib_tmux/AGENTS.md | 9 [32m+++++++[m[31m--[m
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+[32me524b0b5[m [34m2026-10-18[m Drop mtime, which nothing uses since stall detection went [34mAndre Popp[m[31m[m
+ AGENTS.md                 |  6 [32m++++++[m
+ dune-project              |  2 [31m--[m
+ dune-workspace            |  4 [32m++[m[31m--[m
+ dune.lock/lock.dune       |  2 [32m+[m[31m-[m
+ dune.lock/mtime.2.2.0.pkg | 15 [31m---------------[m
+ 5 files changed, 9 insertions(+), 20 deletions(-)
+
+[32m5ee17cbf[m [34m2026-10-18[m Remove stall detection [34mAndre Popp[m[31m[m
+ AGENTS.md                             |  25 [32m++++[m[31m----[m
+ README.md                             |   2 [32m+[m[31m-[m
+ bin/kido_sidebar.ml                   |  56 [32m++[m[31m---------------[m
+ bin/main.ml                           |  17 [32m+++[m[31m---[m
+ bin/sidebar_theme.ml                  |  17 [32m++[m[31m----[m
+ bin/sidebar_theme.mli                 |   4 [32m+[m[31m-[m
+ docs/design-program-status.md         |  12 [32m++[m[31m--[m
+ docs/design-rpc.md                    |  16 [32m++[m[31m---[m
+ docs/design-subagents.md              |  11 [32m++[m[31m--[m
+ docs/design.md                        |  87 [32m++[m[31m-------------------------[m
+ lib/dune                              |   2 [31m-[m
+ lib/list_runs.ml                      |  17 [32m+++[m[31m---[m
+ lib/list_runs.mli                     |   4 [31m--[m
+ lib/pane_status.ml                    | 107 [32m++++++++++[m[31m-----------------------[m
+ lib/pane_status.mli                   |  13 [32m+[m[31m---[m
+ lib/protocol.ml                       |  22 [32m+[m[31m------[m
+ lib/sidebar.ml                        | 109 [32m+++++[m[31m-----------------------------[m
+ lib/sidebar.mli                       |  12 [32m+[m[31m---[m
+ lib/stall.ml                          |  37 [31m------------[m
+ lib/stall.mli                         |  10 [31m----[m
+ lib/tmux_vars.ml                      |   1 [31m-[m
+ share/pi/README.md                    |  13 [32m++[m[31m--[m
+ share/pi/kido-agents.ts               |   6 [31m--[m
+ share/pi/kido-status-control.test.ts  |  39 [32m++++[m[31m--------[m
+ share/pi/kido-status-identity.test.ts |  69 [32m++[m[31m-------------------[m
+ share/pi/kido-status.ts               |  47 [32m+++[m[31m------------[m
+ share/rpc/contract.md                 |  16 [32m++[m[31m---[m
+ test_e2e/feed_status_test.go          |  11 [32m+[m[31m---[m
+ test_e2e/harness_test.go              |  12 [32m++[m[31m--[m
+ test_e2e/list_runs_test.go            |   2 [32m+[m[31m-[m
+ test_e2e/msg_test.go                  |   4 [32m+[m[31m-[m
+ test_e2e/notice_test.go               |   6 [32m+[m[31m-[m
+ test_e2e/rpc_test.go                  |   2 [32m+[m[31m-[m
+ 33 files changed, 166 insertions(+), 642 deletions(-)
+
+[32mc608474a[m [34m2026-10-18[m Count the launcher test's one remaining sleep in lint's table [34mAndre Popp[m[31m[m
+ scripts/lint.sh | 2 [32m+[m[31m-[m
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+[32m87167928[m [34m2026-10-18[m Wait for the new command line in the launcher test [34mAndre Popp[m[31m[m
+ test_e2e/launch_test.go | 16 [32m+++++[m[31m-----------[m
+ 1 file changed, 5 insertions(+), 11 deletions(-)
+
+[32mf247b746[m [34m2026-10-18[m Remove asks [34mAndre Popp[m[31m[m
+ bin/kido_sidebar.ml                      |  87 [32m++[m[31m----[m
+ bin/main.ml                              |  57 [31m----[m
+ docs/design-program-status.md            |   9 [32m+[m[31m-[m
+ docs/design-rpc.md                       |  52 [32m+[m[31m--[m
+ docs/design.md                           |  87 [32m+[m[31m-----[m
+ docs/prompts.md                          |  41 [32m+[m[31m--[m
+ lib/ask.ml                               | 174 [31m-----------[m
+ lib/ask.mli                              |  28 [31m--[m
+ lib/launch.ml                            |   6 [32m+[m[31m-[m
+ lib/msg.ml                               |   3 [32m+[m[31m-[m
+ lib/msg.mli                              |   2 [32m+[m[31m-[m
+ lib/pane_status.ml                       | 154 [32m++++[m[31m-----[m
+ lib/pane_status.mli                      |  15 [32m+[m[31m-[m
+ lib/protocol.ml                          |  82 [32m++[m[31m---[m
+ lib/run.ml                               |   1 [31m-[m
+ lib/run.mli                              |   1 [31m-[m
+ lib/sidebar.ml                           |  93 [32m+[m[31m-----[m
+ lib/sidebar.mli                          |   8 [31m-[m
+ lib/state.ml                             |   2 [32m+[m[31m-[m
+ lib/test/test_tool_parity.ml             |   2 [32m+[m[31m-[m
+ lib_tmux/tmux.ml                         |  21 [32m+[m[31m-[m
+ lib_tmux/tmux.mli                        |   2 [32m+[m[31m-[m
+ share/pi/kido-agents.ts                  | 220 [32m+[m[31m------------[m
+ share/pi/kido-fixture.ts                 |   6 [32m+[m[31m-[m
+ share/pi/kido-status-asks.test.ts        | 522 [31m-------------------------------[m
+ share/pi/kido-status-load.test.ts        |   5 [31m-[m
+ share/pi/kido-status.ts                  |  18 [32m+[m[31m-[m
+ share/pi/testdata/discriminator.json     |   2 [31m-[m
+ share/pi/testdata/fake_kido/fake_kido.ml |  83 [31m-----[m
+ share/pi/testdata/prompts.txt            |  27 [31m--[m
+ share/pi/testdata/tools.json             |   1 [31m-[m
+ share/rpc/contract.md                    |  63 [32m++[m[31m--[m
+ test_e2e/asks_revive_test.go             | 103 [31m------[m
+ test_e2e/asks_sidebar_test.go            | 116 [31m-------[m
+ test_e2e/asks_test.go                    | 231 [31m--------------[m
+ test_e2e/claude_program_status_test.go   |   2 [32m+[m[31m-[m
+ test_e2e/feed_status_test.go             |  26 [32m+[m[31m-[m
+ test_e2e/pi_name_test.go                 |  13 [31m-[m
+ test_e2e/rpc_actions_test.go             | 103 [32m+[m[31m-----[m
+ test_e2e/rpc_requests_test.go            |   6 [32m+[m[31m-[m
+ test_e2e/rpc_test.go                     |  43 [32m+[m[31m--[m
+ test_e2e/server_test.go                  |   6 [32m+[m[31m-[m
+ 42 files changed, 193 insertions(+), 2330 deletions(-)
+
+[32m68d84e13[m [34m2026-10-18[m Make the test suites fast [34mAndre Popp[m[31m[m
+ .pi/tests/no-git-writes.test.ts          |    4 [32m+[m[31m-[m
+ AGENTS.md                                |   42 [32m+[m[31m-[m
+ lib/async_stream.ml                      |   36 [31m-[m
+ scripts/dump-prompts.ts                  |   10 [32m+[m
+ scripts/lint.sh                          |   14 [32m+[m[31m-[m
+ scripts/test-ts.sh                       |    6 [32m+[m[31m-[m
+ scripts/verify.sh                        |   10 [32m+[m[31m-[m
+ share/pi/kido-fixture.ts                 |  546 [32m++++[m
+ share/pi/kido-status-asks.test.ts        |  522 [32m++++[m
+ share/pi/kido-status-completion.test.ts  |  504 [32m++++[m
+ share/pi/kido-status-control.test.ts     |  516 [32m++++[m
+ share/pi/kido-status-identity.test.ts    |  438 [32m+++[m
+ share/pi/kido-status-inbound.test.ts     |  298 [32m++[m
+ share/pi/kido-status-load.test.ts        |  395 [32m+++[m
+ share/pi/kido-status-stream.test.ts      |  428 [32m+++[m
+ share/pi/kido-status-tools.test.ts       |  439 [32m+++[m
+ share/pi/kido-status.test.ts             | 4697 [31m------------------------------[m
+ share/pi/testdata/fake_kido/dune         |   11 [32m+[m
+ share/pi/testdata/fake_kido/fake_kido.ml |  269 [32m++[m
+ share/pi/testdata/prompts.txt            |   14 [32m+[m
+ share/pi/tsconfig.json                   |    8 [32m+[m[31m-[m
+ test_e2e/asks_test.go                    |   33 [32m+[m[31m-[m
+ test_e2e/async_ending_test.go            |    2 [31m-[m
+ test_e2e/conn_test.go                    |    4 [32m+[m
+ test_e2e/control_test.go                 |   12 [32m+[m[31m-[m
+ test_e2e/harness_test.go                 |  137 [32m+[m[31m-[m
+ test_e2e/inbox_test.go                   |   19 [31m-[m
+ test_e2e/keys_test.go                    |  166 [32m+[m[31m-[m
+ test_e2e/launch_test.go                  |  116 [32m+[m[31m-[m
+ test_e2e/leak_check_test.go              |    3 [32m+[m
+ test_e2e/locale_test.go                  |    2 [32m+[m
+ test_e2e/mouse_test.go                   |    8 [31m-[m
+ test_e2e/msg_test.go                     |   15 [32m+[m[31m-[m
+ test_e2e/parent_ends_test.go             |   88 [32m+[m[31m-[m
+ test_e2e/pi_program_status_test.go       |  109 [31m-[m
+ test_e2e/prompt_test.go                  |    5 [32m+[m[31m-[m
+ test_e2e/reap_test.go                    |   66 [32m+[m[31m-[m
+ test_e2e/render_test.go                  |   25 [32m+[m[31m-[m
+ test_e2e/rpc_test.go                     |   25 [32m+[m[31m-[m
+ test_e2e/run_creation_test.go            |   54 [32m+[m[31m-[m
+ test_e2e/runs_test.go                    |   52 [32m+[m[31m-[m
+ test_e2e/search_test.go                  |   15 [32m+[m[31m-[m
+ test_e2e/server_dir_test.go              |   23 [32m+[m[31m-[m
+ test_e2e/server_test.go                  |   14 [32m+[m[31m-[m
+ test_e2e/shell_caller_test.go            |    7 [32m+[m[31m-[m
+ test_e2e/spawn_test.go                   |    2 [32m+[m[31m-[m
+ test_e2e/spawn_tools_test.go             |   52 [32m+[m[31m-[m
+ test_e2e/ssh_command_line_test.go        |   21 [31m-[m
+ test_e2e/ssh_mark_test.go                |    2 [32m+[m[31m-[m
+ test_e2e/ssh_prime_test.go               |   12 [32m+[m[31m-[m
+ test_e2e/stall_test.go                   |   95 [31m-[m
+ test_e2e/standalone_test.go              |   23 [32m+[m[31m-[m
+ test_e2e/stream_test.go                  |    2 [32m+[m[31m-[m
+ test_e2e/switch_session_test.go          |   61 [31m-[m
+ test_e2e/switch_window_test.go           |  230 [32m+[m[31m-[m
+ test_e2e/terminal_probe_test.go          |    6 [32m+[m[31m-[m
+ test_e2e/watchdog_test.go                |  164 [32m+[m[31m-[m
+ test_e2e/window_name_test.go             |   54 [31m-[m
+ 58 files changed, 4939 insertions(+), 5992 deletions(-)
+
+[32mbf0f75e5[m [34m2026-10-17[m Give the parent its inbox before the child that reports to it starts [34mAndre Popp[m[31m[m
+ test_e2e/runs_test.go | 8 [32m++++[m[31m----[m
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+[32m27196d72[m [34m2026-10-17[m The parent alone ends a child [34mAndre Popp[m[31m[m
+ AGENTS.md                                          |   4 [32m+[m[31m-[m
+ bin/kido_sidebar.ml                                |   3 [32m+[m[31m-[m
+ bin/main.ml                                        |  71 [32m+[m[31m---[m
+ docs/design-subagents.md                           | 156 [32m++++[m[31m----[m
+ docs/design.md                                     | 195 [32m+++++[m[31m-----[m
+ docs/prompts.md                                    | 123 [32m+++++[m[31m--[m
+ lib/async_bash.ml                                  |   1 [31m-[m
+ lib/async_stream.ml                                |   1 [31m-[m
+ lib/control.ml                                     |  12 [32m+[m[31m-[m
+ lib/message_agent.ml                               |  51 [32m++[m[31m-[m
+ lib/message_agent.mli                              |   3 [32m+[m
+ lib/reporting.ml                                   |   1 [31m-[m
+ lib/run.ml                                         |  33 [32m+[m[31m-[m
+ lib/run.mli                                        |  10 [32m+[m[31m-[m
+ lib/run_ending.ml                                  |  26 [32m+[m[31m-[m
+ lib/run_ending.mli                                 |   5 [32m+[m[31m-[m
+ lib/spawn_subagent.ml                              |  14 [32m+[m[31m-[m
+ lib/spawn_subagent.mli                             |   1 [31m-[m
+ lib/test/test_tool_parity.ml                       |   2 [32m+[m[31m-[m
+ lib/test_fixture.ml                                |   1 [31m-[m
+ lib/view_fixture.ml                                |   1 [31m-[m
+ scripts/dump-prompts.ts                            |   8 [32m+[m[31m-[m
+ share/pi/README.md                                 |  42 [32m++[m[31m-[m
+ share/pi/kido-agents.ts                            | 129 [32m+++[m[31m----[m
+ share/pi/kido-status.test.ts                       | 407 [32m++++[m[31m-----------------[m
+ share/pi/kido-status.ts                            |   7 [32m+[m[31m-[m
+ share/pi/testdata/prompts.txt                      |  27 [32m+[m[31m-[m
+ test_e2e/agent_test.go                             |  29 [32m+[m[31m-[m
+ test_e2e/control_test.go                           |   4 [32m+[m[31m-[m
+ test_e2e/msg_test.go                               |  44 [32m++[m[31m-[m
+ test_e2e/parent_ends_test.go                       | 115 [32m++++++[m
+ test_e2e/pi_name_ending_test.go                    |   2 [32m+[m[31m-[m
+ test_e2e/pi_name_test.go                           |   6 [32m+[m[31m-[m
+ test_e2e/reap_test.go                              |   4 [32m+[m[31m-[m
+ test_e2e/refusal_test.go                           |   4 [32m+[m[31m-[m
+ test_e2e/runs_test.go                              |  50 [32m+[m[31m--[m
+ test_e2e/spawn_model_test.go                       |   6 [32m+[m[31m-[m
+ .../{idle_exit_test.go => spawn_resume_test.go}    | 281 [32m+[m[31m-------------[m
+ website/demo/scenarios/subagents.py                |   2 [32m+[m[31m-[m
+ 39 files changed, 733 insertions(+), 1148 deletions(-)
+
+[32m717f77d7[m [34m2026-10-17[m Plans replace RFCs, and one manager runs each unit of work [34mAndre Popp[m[31m[m
+ AGENTS.md | 26 [32m+++++++++++++++++++[m[31m-------[m
+ 1 file changed, 19 insertions(+), 7 deletions(-)
+
+[32m5cd504f4[m [34m2026-10-17[m The sweep alone closes the windows of dead runs [34mAndre Popp[m[31m[m
+ AGENTS.md                    |   6 [32m+[m[31m--[m
+ bin/main.ml                  |  20 [31m---------[m
+ docs/design-subagents.md     |  17 [32m+++[m[31m----[m
+ docs/design.md               |  73 [32m++++++++++++[m[31m------------------[m
+ lib/reap.ml                  |  44 [32m+++++++[m[31m-----------[m
+ lib/reap.mli                 |   4 [32m+[m[31m-[m
+ lib/spawn_subagent.ml        |   2 [32m+[m[31m-[m
+ share/pi/README.md           |   4 [32m+[m[31m-[m
+ share/pi/kido-agents.ts      |  26 [32m+++[m[31m--------[m
+ share/pi/kido-status.test.ts | 103 [32m+[m[31m------------------------------------------[m
+ share/pi/kido-status.ts      |   4 [31m--[m
+ test_e2e/reap_test.go        |  84 [32m++++++++++++[m[31m-----------------------[m
+ test_e2e/spawn_model_test.go |   7 [32m++[m[31m-[m
+ 13 files changed, 96 insertions(+), 298 deletions(-)
+
+[32m09bdbf6b[m [34m2026-10-17[m Name State.display_name run_display_name [34mAndre Popp[m[31m[m
+ lib/ask.ml           |  2 [32m+[m[31m-[m
+ lib/control.ml       |  4 [32m++[m[31m--[m
+ lib/list_runs.ml     |  2 [32m+[m[31m-[m
+ lib/message_agent.ml | 15 [32m++++++++[m[31m-------[m
+ lib/pane_kind.ml     |  2 [32m+[m[31m-[m
+ lib/prompt.ml        |  2 [32m+[m[31m-[m
+ lib/sidebar.ml       |  2 [32m+[m[31m-[m
+ lib/state.ml         |  2 [32m+[m[31m-[m
+ lib/state.mli        |  2 [32m+[m[31m-[m
+ 9 files changed, 17 insertions(+), 16 deletions(-)
+
+[32m63603604[m [34m2026-10-17[m Remove kido snapshot [34mAndre Popp[m[31m[m
+ AGENTS.md                               |   6 [32m+[m[31m-[m
+ bin/main.ml                             |  59 [31m-------------[m
+ docs/design-subagents.md                |   2 [32m+[m[31m-[m
+ scripts/lint.sh                         |   1 [31m-[m
+ test_e2e/pi_coordination_status_test.go |   6 [32m+[m[31m-[m
+ test_e2e/procs_test.go                  |  35 [31m--------[m
+ test_e2e/snapshot_test.go               | 150 [31m--------------------------------[m
+ 7 files changed, 7 insertions(+), 252 deletions(-)
+
+[32me6180371[m [34m2026-10-17[m Match on an option instead of Option.map_or [34mAndre Popp[m[31m[m
+ AGENTS.md                  |   4 [32m++[m
+ bin/kido_sidebar.ml        |  27 [32m+++++[m[31m----[m
+ bin/main.ml                |  41 [32m+++++++[m[31m------[m
+ bin/sidebar_theme.ml       |   2 [32m+[m[31m-[m
+ lib/ask.ml                 |  15 [32m++[m[31m---[m
+ lib/bin_dir.ml             |   6 [32m+[m[31m-[m
+ lib/build_id.ml            |   4 [32m+[m[31m-[m
+ lib/list_runs.ml           |  18 [32m+++[m[31m---[m
+ lib/message_agent.ml       |   8 [32m++[m[31m-[m
+ lib/pane_status.ml         |  31 [32m+++++[m[31m-----[m
+ lib/prime.ml               |   4 [32m+[m[31m-[m
+ lib/prompt.ml              |  11 [32m++[m[31m--[m
+ lib/protocol.ml            |  29 [32m+++++[m[31m----[m
+ lib/reap.ml                |   8 [32m+[m[31m--[m
+ lib/run.ml                 |  34 [32m+++++[m[31m------[m
+ lib/run_ending.ml          |   7 [32m++[m[31m-[m
+ lib/run_history.ml         |  12 [32m++[m[31m--[m
+ lib/run_window.ml          |   7 [32m++[m[31m-[m
+ lib/server_dir.ml          |   6 [32m+[m[31m-[m
+ lib/shell.ml               |   2 [32m+[m[31m-[m
+ lib/sidebar.ml             | 144 [32m+++++++++++++++++++++++[m[31m----------------------[m
+ lib/spawn_subagent.ml      |  10 [32m++[m[31m--[m
+ lib/stall.ml               |   4 [32m+[m[31m-[m
+ lib/state.ml               |  24 [32m++++[m[31m----[m
+ lib/timestamp.ml           |   4 [32m+[m[31m-[m
+ lib_tmux/program_status.ml |   2 [32m+[m[31m-[m
+ lib_tmux/tmux.ml           |   4 [32m+[m[31m-[m
+ 27 files changed, 252 insertions(+), 216 deletions(-)
+
+[32m1885f6fb[m [34m2026-10-17[m Read the server once into State, whic

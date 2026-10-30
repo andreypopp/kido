@@ -2,3 +2,6 @@
 	path = third_party/tmux
 	url = https://github.com/andreypopp/tmux.git
 	branch = fork
+[submodule "third_party/ghostty"]
+	path = third_party/ghostty
+	url = https://github.com/andreypopp/ghostty.git

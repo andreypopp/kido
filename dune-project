@@ -48,6 +48,9 @@
   (ppx_string_conv
    (>= v0.17))
   mosaic
+  luv
+  httpun
+  httpun-ws
   dune-build-info
   (ppx_expect :with-test)
   (ocamlformat :with-dev-setup)))

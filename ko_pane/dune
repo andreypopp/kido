@@ -1,0 +1,32 @@
+(rule
+ (targets fuzz-frame)
+ (deps fuzz_frame.c protocol.h)
+ (action
+  (run cc -std=c11 -g -O1 -fsanitize=address,undefined -Wall -Wextra -Werror fuzz_frame.c -o fuzz-frame)))
+
+(rule
+ (alias runtest)
+ (action (run ./fuzz-frame)))
+
+(rule
+ (targets ko-pane)
+ (deps pane.c protocol.h buffer.h snapshot_cut.h ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (action
+  (run cc -std=c11 -O3 -Wall -Wextra -Werror -I../third_party/ghostty/include pane.c ../ko_vt/libghostty-vt.a -lc++ -o ko-pane)))
+
+(rule
+ (targets test-pane)
+ (deps test_pane.c protocol.h ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (action
+  (run cc -std=c11 -g -O1 -fsanitize=address,undefined -Wall -Wextra -Werror -I../third_party/ghostty/include test_pane.c ../ko_vt/libghostty-vt.a -lc++ -o test-pane)))
+
+(rule
+ (alias runtest)
+ (deps test-pane ko-pane-asan)
+ (action (run ./test-pane ./ko-pane-asan)))
+
+(rule
+ (targets ko-pane-asan)
+ (deps pane.c protocol.h buffer.h snapshot_cut.h ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (action
+  (run cc -std=c11 -g -O1 -fsanitize=address,undefined -Wall -Wextra -Werror -I../third_party/ghostty/include pane.c ../ko_vt/libghostty-vt.a -lc++ -o ko-pane-asan)))

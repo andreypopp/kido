@@ -1,0 +1,16 @@
+(library
+ (name input_check)
+ (modules input_check)
+ (libraries containers matrix.input)
+ (flags
+  (:standard -open Containers))
+ (inline_tests)
+ (preprocess
+  (pps ppx_expect)))
+
+(executable
+ (name main)
+ (modules main)
+ (libraries containers mosaic unix)
+ (flags
+  (:standard -open Containers)))

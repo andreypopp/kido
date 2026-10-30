@@ -1,0 +1,16 @@
+(executable
+ (name coordinator)
+ (modules coordinator)
+ (flags
+  (:standard -open Containers))
+ (libraries containers unix luv ko_vt)
+ (foreign_stubs
+  (language c)
+  (names pane_io_stubs)
+  (extra_deps ../ko_pane/protocol.h ../ko_pane/now.h ../bench/cpu.h)))
+
+(rule
+ (targets wait_master.exe)
+ (deps wait_master.c)
+ (action
+  (run cc -std=c11 -O2 -Wall -Wextra -Werror wait_master.c -o wait_master.exe)))

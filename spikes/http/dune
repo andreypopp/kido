@@ -1,0 +1,28 @@
+(library
+ (name http_spike)
+ (modules sha1 peer)
+ (libraries containers luv ctypes unix)
+ (foreign_stubs
+  (language c)
+  (names peer_stubs))
+ (flags
+  (:standard -open Containers))
+ (inline_tests)
+ (preprocess
+  (pps ppx_expect)))
+
+(executable
+ (name server)
+ (modules server)
+ (libraries
+  containers
+  luv
+  httpun
+  httpun-ws
+  gluten
+  bigstringaf
+  faraday
+  http_spike
+  unix)
+ (flags
+  (:standard -open Containers)))

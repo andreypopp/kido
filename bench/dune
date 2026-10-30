@@ -1,0 +1,36 @@
+(executable
+ (name mirror)
+ (modules mirror)
+ (flags
+  (:standard -open Containers))
+ (libraries containers unix ko_vt))
+
+(rule
+ (targets produce.exe)
+ (deps produce.c ../ko_pane/now.h)
+ (action
+  (run cc -std=c11 -O2 -Wall -Wextra -Werror produce.c -o produce.exe)))
+
+(rule
+ (targets drain.exe)
+ (deps drain.c)
+ (action
+  (run cc -std=c11 -O2 -Wall -Wextra -Werror drain.c -o drain.exe)))
+
+(rule
+ (targets pty_read.exe)
+ (deps pty_read.c ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (action
+  (run cc -std=c11 -O2 -Wall -Wextra -Werror -I../third_party/ghostty/include pty_read.c ../ko_vt/libghostty-vt.a -lc++ -o pty_read.exe)))
+
+(rule
+ (targets acker.exe)
+ (deps acker.c cpu.h ../ko_pane/protocol.h)
+ (action
+  (run cc -std=c11 -O2 -Wall -Wextra -Werror acker.c -o acker.exe)))
+
+(rule
+ (targets parse.exe)
+ (deps parse.c ../ko_vt/libghostty-vt.a (source_tree ../third_party/ghostty/include))
+ (action
+  (run cc -std=c11 -O2 -Wall -Wextra -Werror -I../third_party/ghostty/include parse.c ../ko_vt/libghostty-vt.a -lc++ -o parse.exe)))
