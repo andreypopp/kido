@@ -81,7 +81,13 @@ depends on the new directories.
   `ko server` detached (`setsid`, stdio to `DIR/log`), waits for the
   socket with a deadline of 5 s, then connects.
 - The server runs until `ko kill-server`. The last pane exiting does
-  not stop it. A client detaching does not stop it.
+  not stop it. `ko kill-server` sends no HTTP request: it connects to
+  the socket, reads the server's pid and uid from the peer credentials
+  (`LOCAL_PEERPID` on macOS, `SO_PEERCRED` on Linux), refuses a uid
+  other than its own (`server belongs to another user`), sends
+  `SIGTERM` and waits 5 s for the process to exit and the socket to go
+  (`server did not stop within 5 s`). Errors exit 1. So it stops a
+  server of any build, even one whose HTTP side does not answer. A client detaching does not stop it.
 - `ko api [--server DIR] [--method M | -X M] [--input FILE]
   [--include | -i] PATH` sends one HTTP request to the server, as
   `gh api` does. `PATH` starts with `/`; a query string passes
@@ -127,8 +133,11 @@ Scrollback compression is always on; no option turns it off (decided
 `ghostty_terminal_compression_activity`; when the token stays
 unchanged for an idle period, it calls
 `ghostty_terminal_compress(..., INCREMENTAL)` from its poll loop until
-the call returns `COMPLETE`. The client mirror runs the same idle
-steps, and its snapshot decoder compresses history pages while it
+the call returns `COMPLETE`. After 2 s of continuous activity with no
+idle period, it runs one incremental step every 10 ms until an idle
+period returns, so output that changes the history more often than the
+idle period (a busy `tail -f`) still gets compressed (decided
+2026-10-30). The client mirror runs the same steps, and its snapshot decoder compresses history pages while it
 restores them (section 5).
 
 A pane's size is set by its sizing client, as design.md 4.4 defines:
@@ -687,7 +696,8 @@ tests: 5.4 s wall, 4.7 s user and 7.1 s system CPU.
 Measured 2026-10-30 on an M5 Max under macOS, load average 3 to 5
 (other agents at work), with compression on. Linux is not measured.
 `sh bench/table.sh` prints every row; `python3 bench/client.py
-latency|yes|attach|resize|memory|scroll` prints one. tmux is the
+latency|busy|yes|attach|resize|memory|scroll` prints one, with
+`$KIDO_TMUX` naming the fork that `table.sh` resolves. tmux is the
 pinned fork `kido-tmux` on a private socket, kitty 0.49.2. Both sides
 run the same producer, pane size (95x30; ko's outer terminal is 120x30
 with the sidebar), 100k lines and a warm server.
@@ -702,9 +712,9 @@ Memory is RSS and macOS `phys_footprint`.
 | attach, 100k lines | screen under 50 ms, history under 500 ms | screen 14 ms, history in the mirror 39 ms (the last slice at 6 ms) | screen 10 ms, then `capture-pane -S -` 58 ms | | yes |
 | resize, 100k lines, to READY | under 100 ms | 5.7 ms (p99 6.8) | 14 ms | | yes |
 | coordinator, idle, no panes | under 15 MiB | RSS 13.7, footprint 8.5 MiB | | | yes |
-| `ko-pane`, idle | under 2 MiB | RSS 2.3, footprint 1.5 MiB | | | footprint only |
+| `ko-pane`, idle | under 2 MiB | RSS 2.3, footprint 1.5 MiB | | | yes (footprint) |
 | `ko-pane`, 100k lines | none | after 3 s idle RSS 83.6, footprint 4.4 MiB (77.9 before compression) | server RSS 61.2, footprint 60.1 MiB | | – |
-| client, 100k-line mirror | under 40 MiB | RSS 102, footprint 18.0 MiB (91.7 without compression) | client RSS 3.5, footprint 2.2 MiB | | footprint only |
+| client, 100k-line mirror | under 40 MiB | RSS 102, footprint 18.0 MiB (91.7 without compression) | client RSS 3.5, footprint 2.2 MiB | | yes (footprint) |
 | wheel scroll, one notch, to first output | none | p50 0.24 / p99 0.84 ms; 240 notches/s give 240 frames/s at 0.11 core | copy mode 1.25 / 5.3 ms, server 0.27 core | | – |
 
 These points were open or wrong in the plan:
@@ -720,7 +730,17 @@ These points were open or wrong in the plan:
   poll turn, so pty input and control frames are served between steps.
   The mirror runs it on a thread of its own: steps for about 1 ms per
   hold of the mirror lock while work is pending, else it waits on a
-  condition that new bytes, scrolling and close signal. 100k lines took 225 steps, the slowest
+  condition that new bytes, scrolling and close signal. Under history
+  that changes more often than the idle period, the limit of 3.2 (one
+  step every 10 ms after 2 s) compresses anyway: a pane that adds a
+  line every 100 ms falls from 13.9 MB to 0.71 MB resident in the
+  library's figure, and its footprint after 5 s is 4.7 MiB, the same as
+  a quiet pane. Echo under that load is unchanged (`client.py busy`,
+  on battery: p50 0.91 / p99 3.33 ms loaded, 1.28 / 3.38 ms quiet).
+- **On battery the latency row is about 2.5 times slower for all
+  three:** raw pty 0.05 / 0.10 ms, tmux 0.15 / 0.27 ms, ko 0.96 /
+  3.14 ms, which is 3.04 ms added at p99, just over the target. The
+  table's run had a raw pty at 0.02 / 0.04 ms. 100k lines took 225 steps, the slowest
   0.10 ms; libghostty-vt's resident figure fell from 78.5 to 1.8 MiB
   (200 of 201 pages). Throughput (77.7 against 77.3 MB/s) and echo
   (0.39 against 0.41 ms) are the same with compression off. The
@@ -728,7 +748,8 @@ These points were open or wrong in the plan:
 - **macOS RSS does not show compression.** libghostty-vt frees
   compressed pages to the OS, which takes them back lazily, so RSS stays
   at its peak while `phys_footprint` (Activity Monitor's figure) falls.
-  The memory rows are met by footprint and missed by RSS.
+  The memory rows are met by footprint and missed by RSS. On macOS the
+  memory targets are judged by footprint (decided 2026-10-30).
 - **The lazy history and bigarray cells** deferred from P1.2 are not
   needed: with compression the client's 100k-line footprint is 18 MiB,
   and an empty client is 12 MiB.
@@ -742,7 +763,8 @@ These points were open or wrong in the plan:
 - **Screen visible at attach is 73 ms** on an outer terminal that
   does not answer Matrix's explicit-width (OSC 66) probe, such as
   tmux, because Matrix waits a 50 ms grace period. The 17 ms row is
-  for a terminal that answers.
+  for a terminal that answers. Matrix's probe stays (decided
+  2026-10-30).
 - **The `ko-pane` init frame is version 2** (it gained
   `scrollback_max_lines`, protocol.md 14). A server older than its
   `ko-pane` fails to start panes and must restart.
@@ -754,7 +776,8 @@ These points were open or wrong in the plan:
   after a wheel event, read from a rebuilt outer screen.
 - **Coordinator allocation** is 124 words per ring record (57 without
   the title and pwd callbacks), against 6.9 in the P1.0 spike. A record
-  is one 1 KiB pty read, so nothing is allocated per byte.
+  is one 1 KiB pty read, so nothing is allocated per byte. A record
+  stays one read (decided 2026-10-30).
 
 ## 7. Tests
 

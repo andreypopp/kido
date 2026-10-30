@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""usage: KIDO_TMUX=path/to/kido-tmux bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll]"""
+"""usage: KIDO_TMUX=path/to/kido-tmux bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll] [busy]"""
 import base64
 import fcntl
 import http.client
@@ -19,6 +19,25 @@ import termios
 import time
 
 ROWS, PANE_COLS, SIDEBAR = 30, 95, 25
+BUSY = (
+    "import os,sys,threading,time,tty\n"
+    "os.write(1,b''.join(b'line %06d the quick brown fox jumps over the lazy dog 0123456789\\r\\n'%i for i in range(100000)))\n"
+    "tty.setraw(0)\n"
+    "def writer():\n"
+    " n=0\n"
+    " while True:\n"
+    "  time.sleep(0.1)\n"
+    "  if os.path.exists(sys.argv[1]):\n"
+    "   n+=1\n"
+    "   os.write(1,b'\\r\\n%d'%n)\n"
+    "threading.Thread(target=writer,daemon=True).start()\n"
+    "os.write(1,b'BENCH-READY')\n"
+    "n=0\n"
+    "while True:\n"
+    " os.read(0,1)\n"
+    " n+=1\n"
+    " os.write(1,chr(0x4e00+n).encode())"
+)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ECHO = "import os,tty\ntty.setraw(0)\nos.write(1,b'BENCH-READY')\nn=0\nwhile True:\n os.read(0,1)\n n+=1\n os.write(1,b'<%04d>'%n)"
 HISTORY_LINES = 100000
@@ -444,6 +463,33 @@ def latency(count=500):
             target.close()
 
 
+def busy_row(count=300):
+    print(f"== keystroke echo in a 100k-line pane, quiet and with a line every 100 ms from the start ({load()})", flush=True)
+    for name, loaded in (("quiet", False), ("a line every 100 ms", True)):
+        ko = Ko()
+        try:
+            gate = ko.dir + "/load"
+            if loaded:
+                open(gate, "w").close()
+            ko.pane(f"exec python3 -c {shlex.quote(BUSY)} {gate}")
+            c = ko.attach()
+            began = c.wait(rb"BENCH-READY", 60)
+            kid = children(ko.server.pid)[0]
+            time.sleep(max(0, 5 - (time.monotonic() - began)))
+            footprint_5s = footprint(kid)
+            samples = []
+            for n in range(1, count + 1):
+                time.sleep(0.01)
+                while readable(c.fd, 0):
+                    c.feed()
+                sent = time.monotonic()
+                os.write(c.fd, b"x")
+                samples.append((c.wait(chr(0x4e00 + n).encode(), 2) - sent) * 1000)
+            print(f"ko, {name}: key to frame {stats(samples)}; ko-pane footprint {footprint_5s:.1f} MiB after 5 s, {footprint(kid):.1f} MiB at the end", flush=True)
+        finally:
+            ko.close()
+
+
 def yes_row():
     print(f"== yes for 5 s in a shown pane ({load()})", flush=True)
     for name, make in (("tmux", Tmux), ("ko", Ko)):
@@ -630,7 +676,7 @@ def scroll_row():
             target.close()
 
 
-ROWS_BY_NAME = {"latency": latency, "yes": yes_row, "attach": attach_row, "resize": resize_row, "memory": memory_row, "scroll": scroll_row}
+ROWS_BY_NAME = {"latency": latency, "yes": yes_row, "attach": attach_row, "resize": resize_row, "memory": memory_row, "scroll": scroll_row, "busy": busy_row}
 
 if __name__ == "__main__":
     names = sys.argv[1:] or list(ROWS_BY_NAME)

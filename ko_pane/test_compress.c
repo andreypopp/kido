@@ -51,5 +51,34 @@ int main(void) {
          (unsigned long long)after.primary_compressed_pages, (unsigned long long)after.primary_pages,
          (unsigned long long)before.primary_resident_bytes, (unsigned long long)after.primary_resident_bytes, steps);
   ghostty_terminal_free(vt);
+
+  assert(ghostty_terminal_new(NULL, &vt, 80, 24) == GHOSTTY_SUCCESS);
+  ghostty_terminal_set(vt, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &limit);
+  lines(vt, 20000);
+  before = usage(vt);
+  ko_compress_init(&c, start);
+  uint64_t t = start;
+  int steps_busy = 0;
+  for (int i = 1; i <= 800; i++) {
+    t = start + (uint64_t)i * KO_COMPRESS_STEP_NS;
+    if (i % 10 == 0) {
+      lines(vt, 1);
+    }
+    uint64_t pages = usage(vt).primary_compressed_pages;
+    int next = ko_compress_tick(&c, vt, t);
+    assert(next != 0 && next <= 250);
+    if (t - start < KO_COMPRESS_BUSY_NS) {
+      assert(pages == 0);
+    } else if (usage(vt).primary_compressed_pages > pages) {
+      steps_busy++;
+    }
+  }
+  after = usage(vt);
+  assert(steps_busy > 0 && after.primary_compressed_pages > 0);
+  assert(after.primary_resident_bytes < before.primary_resident_bytes / 2);
+  printf("PASS busy compression: %llu of %llu pages, resident %llu to %llu bytes\n",
+         (unsigned long long)after.primary_compressed_pages, (unsigned long long)after.primary_pages,
+         (unsigned long long)before.primary_resident_bytes, (unsigned long long)after.primary_resident_bytes);
+  ghostty_terminal_free(vt);
   return 0;
 }

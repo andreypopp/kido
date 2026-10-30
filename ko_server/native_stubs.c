@@ -184,6 +184,24 @@ CAMLprim value ko_peer_uid(value descriptor) {
   return Val_int(cr.uid);
 #endif
 }
+CAMLprim value ko_peer_pid(value descriptor) {
+  int fd = Int_val(descriptor);
+#ifdef __APPLE__
+  pid_t pid;
+  socklen_t len = sizeof(pid);
+  if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len)) {
+    caml_uerror("getsockopt", Nothing);
+  }
+  return Val_int(pid);
+#else
+  struct ucred cr;
+  socklen_t len = sizeof(cr);
+  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &len)) {
+    caml_uerror("getsockopt", Nothing);
+  }
+  return Val_int(cr.pid);
+#endif
+}
 CAMLprim value ko_sigchld(value unit) {
   (void)unit;
   return Val_int(SIGCHLD);

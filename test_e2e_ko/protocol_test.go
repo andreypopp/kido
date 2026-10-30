@@ -437,8 +437,65 @@ func TestKillServer(t *testing.T) {
 	if b, e := cmd.CombinedOutput(); e != nil {
 		t.Fatalf("kill: %v %s", e, b)
 	}
-	s.stop()
+	if _, e := os.Stat(s.dir + "/socket"); !os.IsNotExist(e) {
+		t.Fatalf("socket after kill-server: %v", e)
+	}
 	waitGone(t, panes[0].PID, "kill-server")
+	s.stop()
+}
+func TestKillServerSignalsByPeerPID(t *testing.T) {
+	t.Parallel()
+	dir, err := os.MkdirTemp("/tmp", "ko-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := dir + "/socket"
+	script := `import os,signal,socket,sys
+s=socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+s.listen()
+def stop(*a):
+    os.unlink(sys.argv[1])
+    os._exit(0)
+signal.signal(signal.SIGTERM,stop)
+held=[]
+while True:
+    held.append(s.accept()[0])
+`
+	cmd := exec.Command("python3", "-I", "-c", script, socket)
+	if err = cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() { cmd.Wait(); close(exited) }()
+	t.Cleanup(func() { cmd.Process.Kill(); <-exited })
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if c, e := net.Dial("unix", socket); e == nil {
+			c.Close()
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("stand-in server never listened")
+		case <-tick.C:
+		}
+	}
+	if b, e := exec.Command(koBin, "kill-server", "--server", dir).CombinedOutput(); e != nil {
+		t.Fatalf("kill: %v %s", e, b)
+	}
+	select {
+	case <-exited:
+	default:
+		t.Fatal("stand-in server survived kill-server")
+	}
+	if _, e := os.Stat(socket); !os.IsNotExist(e) {
+		t.Fatalf("socket after kill-server: %v", e)
+	}
 }
 func TestVersionAndOrigin(t *testing.T) {
 	t.Parallel()

@@ -272,7 +272,8 @@ options set (the values come from the coordinator in the first frame):
   Scrollback compression is always on: after an idle period with an
   unchanged `ghostty_terminal_compression_activity` token, `ko-pane`
   runs one incremental `ghostty_terminal_compress` step per loop turn
-  until it completes (p1-mvp.md 3.2). Shared memory is accepted on the local server. A
+  until it completes; after 2 s of continuous activity it runs one
+  step every 10 ms (p1-mvp.md 3.2). Shared memory is accepted on the local server. A
   remote client never opens an object that a program named; it gets
   pixels from the server.
 - `UNKNOWN_SEQUENCE`: records DCS passthrough and other unknown OSC
