@@ -312,7 +312,8 @@ let runs =
            | _ :: extra :: _ ->
                error ~name:"runs"
                  (Printf.sprintf
-                    "unknown argument %S\nusage: kido runs [--json] [--all] [--parent P] [<run-id>]" extra);
+                    "unknown argument %S\nusage: kido runs [--json] [--all] [--parent P] [<run-id>]"
+                    extra);
                1)
 
 let run_outcome =

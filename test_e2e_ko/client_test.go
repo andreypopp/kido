@@ -220,11 +220,15 @@ func (o *terminal) raw(text string) { o.tmux("send-keys", "-t", "outer:0.0", "-l
 func (o *terminal) chord(code int)  { o.raw(fmt.Sprintf("\x1b[%d;6u", code)) }
 func (o *terminal) attach(pager string) {
 	o.t.Helper()
+	pagerEnv := "PAGER=" + quote(pager)
+	if pager == "" {
+		pagerEnv = "-u PAGER LESS=-RiF"
+	}
 	program := quote(o.executable)
 	for _, arg := range o.arguments {
 		program += " " + quote(arg)
 	}
-	command := fmt.Sprintf("/bin/sh -c %s; printf '\\nKO-DETACHED\\n'", quote(fmt.Sprintf("echo $$ > %s; exec env PAGER=%s %s --server %s", quote(o.pidfile), quote(pager), program, quote(o.state))))
+	command := fmt.Sprintf("/bin/sh -c %s; printf '\\nKO-DETACHED\\n'", quote(fmt.Sprintf("echo $$ > %s; exec env %s %s --server %s", quote(o.pidfile), pagerEnv, program, quote(o.state))))
 	o.raw(command)
 	o.tmux("send-keys", "-t", "outer:0.0", "Enter")
 }
@@ -269,6 +273,9 @@ func TestClientLifecycle(t *testing.T) {
 	pager, record := pagerFixture(t, o.dir)
 	o.attach(pager)
 	o.contains("pane-one")
+	o.wait(func() bool {
+		return strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{mouse_standard_flag},#{mouse_sgr_flag}")) == "1,1"
+	}, "outer mouse reporting on")
 	o.contains("1 one")
 	o.chord(115)
 	o.wait(func() bool { return !strings.Contains(o.screen(), "1 one") }, "sidebar hidden")
@@ -313,8 +320,14 @@ func TestClientLifecycle(t *testing.T) {
 	}, "remove dead pane")
 	o.detach()
 	s.text(p1, "printf 'AFTER-DETACH\\n'\n")
-	o.attach(pager)
+	o.attach("")
 	o.contains("AFTER-DETACH")
+	o.chord(101)
+	o.contains("(END)")
+	o.raw("q")
+	o.wait(func() bool {
+		return strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{mouse_standard_flag},#{mouse_sgr_flag}")) == "1,1"
+	}, "outer mouse reporting on")
 	if err := o.process().Signal(syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}

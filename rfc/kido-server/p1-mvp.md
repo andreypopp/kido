@@ -217,7 +217,11 @@ in its grid, but writes nothing to the tty (6.2, 6.4).
   - `Ctrl+Shift+E`: fetch `/screen?history=all`, stream it to a 0600
     file under `$TMPDIR` (as large as the pane's scrollback, 32 MiB at
     most by default), suspend Mosaic (`Matrix.suspend`), run `$PAGER`
-    (default `less -R`) on the tty, unlink the file, resume and redraw.
+    (default `less -R +G -+F`) on the tty, unlink the file, resume and
+    redraw. `+G` starts at the end; `-+F` keeps less open when the
+    scrollback fits one screen, which a user's `LESS=-F` would
+    otherwise end at once. The user's other `LESS` flags stay. A set
+    `$PAGER` is used as is.
   - `Ctrl+Shift+N`: new pane. `Ctrl+Shift+W`: remove a dead pane.
   - `Ctrl+Shift+Up`, `Ctrl+Shift+Down`: previous and next pane.
   - `Ctrl+Shift+Q`: detach.
@@ -251,9 +255,14 @@ in its grid, but writes nothing to the tty (6.2, 6.4).
   deadline). While a pane frame is shown, it keeps mouse 1000 with
   1006, focus 1004, bracketed paste 2004 and kitty flag 1 on, because
   it needs the wheel, sidebar clicks, focus and the chords; the pane's
-  requests extend them (1002, 1003, more kitty flags). On detach,
+  requests extend them (1002, 1003, more kitty flags). It sets one of
+  1000, 1002 and 1003 with `h`, and resets a different one with `l`
+  only if it was on, and before the `h`: Ghostty turns all mouse
+  reporting off on a reset of any of the three, and tmux on 1002 or
+  1003 reset, so a reset after the set leaves no mouse. On detach,
   SIGHUP, SIGTERM and before the pager it undoes them: it restores
-  each mode it read, a mode with no answer to off and cursor
+  each mode it read (resets before sets, by the same rule), a mode
+  with no answer to off and cursor
   visibility (25) to on, pops each kitty keyboard flag it pushed with
   `CSI < u`, sends `DECSCUSR 0`, and never sends RIS or clears the
   screen (zmx #26, #157, #168, #222, #263). Mosaic's own signal

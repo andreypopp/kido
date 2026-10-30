@@ -78,23 +78,19 @@ let reset t =
 let apply t (f : Ko_vt.frame) =
   let b = Buffer.create 100 in
   if not (Option.equal Ko_vt.equal_mouse_tracking t.mouse (Some f.mouse)) then (
-    let target =
-      match f.mouse with
-      | Ko_vt.Button -> Ansi.Mouse_button_tracking
-      | Any -> Mouse_motion
-      | _ -> Mouse_tracking
+    let tracking = function Ko_vt.Button -> 1002 | Any -> 1003 | Off | Press -> 1000 in
+    let wanted = tracking f.mouse in
+    let previous =
+      match t.mouse with
+      | Some m -> [ tracking m ]
+      | None ->
+          List.filter
+            (fun n -> List.exists (fun (k, on) -> k = n && on) t.saved)
+            [ 1000; 1002; 1003 ]
     in
-    List.iter
-      (fun m ->
-        Buffer.add_string b
-          (set m
-             (match (m, target) with
-             | Ansi.Mouse_tracking, Mouse_tracking
-             | Mouse_button_tracking, Mouse_button_tracking
-             | Mouse_motion, Mouse_motion ->
-                 true
-             | _ -> false)))
-      [ Ansi.Mouse_tracking; Mouse_button_tracking; Mouse_motion ];
+    let emit n on = Buffer.add_string b (set (List.assoc ~eq:Int.equal n numbers) on) in
+    List.iter (fun n -> if n <> wanted then emit n false) previous;
+    emit wanted true;
     List.iter
       (fun m -> Buffer.add_string b (set m true))
       [ Ansi.Mouse_sgr; Focus_tracking; Bracketed_paste ];
@@ -107,10 +103,14 @@ let apply t (f : Ko_vt.frame) =
   Buffer.contents b
 
 let restore t =
+  let off, on =
+    List.partition
+      (fun (_, on) -> not on)
+      (List.map
+         (fun (n, m) ->
+           (m, Option.value ~default:(n = 25) (List.assoc_opt ~eq:Int.equal n t.saved)))
+         numbers)
+  in
   output
-    (String.concat ""
-       (List.map
-          (fun (n, m) ->
-            set m (Option.value ~default:(n = 25) (List.assoc_opt ~eq:Int.equal n t.saved)))
-          numbers)
+    (String.concat "" (List.map (fun (m, on) -> set m on) (off @ on))
     ^ Ansi.to_string (Ansi.cursor_style ~shape:`Default))

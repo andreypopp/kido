@@ -52,7 +52,7 @@ let attach override =
       let pager =
         Sys.getenv_opt "PAGER"
         |> Option.filter (fun p -> not (String.is_empty p))
-        |> Option.value ~default:"less -R"
+        |> Option.value ~default:"less -R +G -+F"
       in
       Ko_tui.run ~dir:(dir override) ~executable:(Lazy.force Fs.self) ~pager)
 
