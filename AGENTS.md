@@ -306,9 +306,10 @@ Conventions:
 the `ko` branch. rfc/kido-server/p1-mvp.md is its plan and layout:
 `ko_pane/` (the C pane process), `ko_vt/` (libghostty-vt, built by
 zig from PATH out of `third_party/ghostty`, and the binding),
-`ko_server/` (the coordinator), `bin/ko.ml`, `bench/` and
-`test_e2e_ko/` (its Go protocol suite, `make e2e-ko`, a stage of
-`make verify`). Nothing in `lib/` depends on them.
+`ko_server/` (the coordinator), `ko_tui/` (the terminal client),
+`bin/ko.ml`, `bench/` and `test_e2e_ko/` (its Go protocol and client
+suite, `make e2e-ko`, a stage of `make verify`; the client tests run
+`ko` under an outer kido-tmux on a private socket). Nothing in `lib/` depends on them.
 
 Before you change `lib_tmux/`, read `lib_tmux/AGENTS.md`. pi does not
 load it for an agent that starts at the repo root.

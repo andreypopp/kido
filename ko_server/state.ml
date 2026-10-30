@@ -76,6 +76,6 @@ let version t : Config.version =
   {
     protocol = Config.protocol;
     vt = Config.vt;
-    server = { started_at = t.started_at; pid = Unix.getpid (); build = "unknown" };
+    server = { started_at = t.started_at; pid = Unix.getpid (); build = Config.build };
     terminal = t.config.terminal;
   }

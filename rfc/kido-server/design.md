@@ -696,10 +696,12 @@ pane's terminal) keep their design.
 
 ### 4.11 The terminal client
 
-`ko` with no arguments is the terminal client, an OCaml program in
-Mosaic (p1-mvp.md section 5). It is a client like any other: it opens
-views for the panes it shows, mirrors them in libghostty-vt, and draws
-them from the render-state API into Mosaic's canvas. It draws the
+`ko` with no arguments is the terminal client, an OCaml program
+(p1-mvp.md sections 5 and 6.4). It is a client like any other: it opens
+views for the panes it shows and mirrors them in libghostty-vt. Mosaic
+parses its input and lays out its own rows; a direct cell differ writes
+the whole screen, the mirror's render-state cells and Mosaic's grid
+together. It draws the
 sidebar itself from the feed event, with the rows of `Kido_sidebar`
 today. Its keys are Ctrl+Shift chords under the kitty keyboard
 protocol, as p1-mvp.md lists them; there is no prefix key and no

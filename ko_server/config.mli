@@ -27,6 +27,7 @@ type t = {
 val protocol : string
 val major : string
 val vt : string
+val build : string
 val default_size : size
 val limits : int -> limits
 val valid_size : size -> bool

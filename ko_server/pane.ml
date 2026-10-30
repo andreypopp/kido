@@ -80,4 +80,6 @@ let shutdown t = Pane_proc.shutdown t.proc
 let kill t =
   Pane_proc.kill t.proc;
   if t.pid > 0 then
-    try Unix.kill (-t.pid) Sys.sigkill with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+    (* macOS can return EPERM for a process group with only zombies or exiting processes. *)
+    try Unix.kill (-t.pid) Sys.sigkill
+    with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ()

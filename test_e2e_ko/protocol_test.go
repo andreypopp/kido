@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "dune", "build", "bin/ko.exe", "bin/ko-pane", "ko_vt/decode.exe", "ko_vt/xterm-ghostty")
+	cmd := exec.CommandContext(ctx, "dune", "build", "@install", "ko_vt/decode.exe")
 	cmd.Dir = root
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -53,6 +53,17 @@ type server struct {
 	once sync.Once
 }
 
+func testEnv(dir string) []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if name == "TERM_PROGRAM" || name == "TERM_PROGRAM_VERSION" || name == "HOME" || strings.HasPrefix(name, "XDG_") || strings.HasPrefix(name, "KO_") || strings.HasPrefix(name, "KIDO_") || strings.HasPrefix(name, "TMUX") || strings.HasPrefix(name, "BASH_FUNC_") || name == "ZDOTDIR" || name == "ENV" || name == "BASH_ENV" {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, "HOME="+dir, "XDG_CONFIG_HOME="+dir, "XDG_STATE_HOME="+dir, "TERM_PROGRAM=Apple_Terminal", "TERM_PROGRAM_VERSION=999")
+}
 func start(t *testing.T, args ...string) *server {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "ko-")
@@ -60,16 +71,8 @@ func start(t *testing.T, args ...string) *server {
 		t.Fatal(err)
 	}
 	s := &server{t: t, dir: dir, wait: make(chan error, 1)}
-	s.cmd = exec.Command(filepath.Join(root, "_build/default/bin/ko.exe"), append([]string{"server", "--server", dir, "--shell", "/bin/sh"}, args...)...)
-	// Keep this list in step with cleanEnv in test_e2e/harness_test.go.
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		if name == "HOME" || strings.HasPrefix(name, "XDG_") || strings.HasPrefix(name, "KO_") || strings.HasPrefix(name, "KIDO_") || strings.HasPrefix(name, "TMUX") || strings.HasPrefix(name, "BASH_FUNC_") || name == "ZDOTDIR" || name == "ENV" || name == "BASH_ENV" {
-			continue
-		}
-		s.cmd.Env = append(s.cmd.Env, entry)
-	}
-	s.cmd.Env = append(s.cmd.Env, "HOME="+dir, "XDG_CONFIG_HOME="+dir, "XDG_STATE_HOME="+dir)
+	s.cmd = exec.Command(filepath.Join(root, "_build/install/default/bin/ko"), append([]string{"server", "--server", dir, "--shell", "/bin/sh"}, args...)...)
+	s.cmd.Env = testEnv(dir)
 	s.cmd.Stdout = &s.log
 	s.cmd.Stderr = &s.log
 	if err = s.cmd.Start(); err != nil {
@@ -77,7 +80,14 @@ func start(t *testing.T, args ...string) *server {
 	}
 	go func() { s.wait <- s.cmd.Wait() }()
 	s.http = &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DialContext: s.dial}}
-	t.Cleanup(func() { s.stop(); s.http.CloseIdleConnections(); os.RemoveAll(dir) })
+	t.Cleanup(func() {
+		s.stop()
+		if t.Failed() {
+			t.Logf("server log: %s", s.log.String())
+		}
+		s.http.CloseIdleConnections()
+		os.RemoveAll(dir)
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var conn net.Conn
@@ -399,7 +409,7 @@ func TestKillServer(t *testing.T) {
 	t.Parallel()
 	s := start(t)
 	s.pane("trap '' HUP; while :; do read x; done")
-	cmd := exec.Command(filepath.Join(root, "_build/default/bin/ko.exe"), "kill-server", "--server", s.dir)
+	cmd := exec.Command(filepath.Join(root, "_build/install/default/bin/ko"), "kill-server", "--server", s.dir)
 	if b, e := cmd.CombinedOutput(); e != nil {
 		t.Fatalf("kill: %v %s", e, b)
 	}

@@ -47,7 +47,8 @@ Out, until later stages:
                   (the socket and its queued `writev` output), State
                   (the registry of clients and views), Protocol (the
                   wire JSON types), Uv (luv and OS conversions), Config
-    ko_tui/       the thin terminal client library, in Mosaic
+    ko_tui/       the thin terminal client library: Mosaic for the
+                  sidebar and input, a direct cell differ for the screen
     bin/ko.ml     the entry point: `ko` (attach or start and attach),
                   `ko server` (foreground), `ko kill-server`,
                   `ko version`; `ko-pane` is found beside the executable
@@ -112,9 +113,11 @@ when it dies keeps showing it, with the exit status in the sidebar row
 and the pane's last screen; it switches nothing on its own.
 
 The default command is the user's login shell from `$SHELL`, as a
-login shell, in the client's cwd at creation. `TERM=xterm-ghostty`
-and `KO_SOCKET`, `KO_PANE` (the pane's id, `pane_N`) are set in the
-pane's environment.
+login shell, in the client's cwd at creation. `TERM=xterm-ghostty`,
+`TERM_PROGRAM=ko`, `TERM_PROGRAM_VERSION` (the build id that
+`ko version` prints as `build`), `KO_SOCKET` and `KO_PANE` (the pane's
+id, `pane_N`) are set in the pane's environment, over any inherited
+value, as tmux does: a pane must not claim the launcher's terminal.
 
 ### 3.3 Streams and backpressure
 
@@ -177,23 +180,36 @@ and the client applies them to its mirror.
 
 ## 5. The client in P1, `ko_tui`
 
-Mosaic draws two regions: the pane and the sidebar.
+The client draws two regions, the pane and the sidebar, and one
+optional warning row at the bottom. One writer draws the screen: a
+direct cell differ writes the composed cells of both regions. Mosaic
+parses the input, runs the loop and lays out the sidebar and warning
+in its grid, but writes nothing to the tty (6.2, 6.4).
 
 - **The pane.** A libghostty-vt mirror of the shown pane, opened with
   `history=all` so the wheel can scroll, fed by the view stream on a
-  background thread that also runs the snapshot decoder and hands
-  records to the Mosaic loop. The client's receive buffer is consumed
-  by offset, never by erasing its front (zmx #273 spent minutes at
-  full CPU on that). Each frame reads the render state rows and writes
-  cells, styles and the cursor into a Mosaic canvas element. The
-  mirror's viewport is what scrolls: the wheel moves it with
-  libghostty-vt's scroll API, and any output or key returns it to the
-  bottom, as a terminal does.
-- **The sidebar.** One row per pane: index, title, a glyph for dead.
-  The current pane is highlighted. Up and Down move, Enter switches,
-  a click switches. `Ctrl+Shift+S` toggles it. Width is fixed at 24
-  columns in P1. It is hidden by default when the terminal is
-  narrower than 100 columns.
+  background thread that also runs the snapshot decoder. The client's
+  receive buffer is consumed by offset, never by erasing its front
+  (zmx #273 spent minutes at full CPU on that). Each frame reads the
+  render state's cells and cursor. A pane frame of another size (a
+  pane sized by another client) is clipped or padded to the local
+  region. The mirror's viewport is what scrolls: the wheel moves it
+  with libghostty-vt's scroll API, 3 rows a notch, and any output or
+  key returns it to the bottom, as a terminal does.
+- **Frames.** Input that changes the screen (a key, a click, a switch)
+  draws the next frame at once; continuous output is drawn at most
+  once per 8 ms. Each frame is one `write`, bracketed by
+  `CSI ? 2026 h` and `l`, with the modes, the changed cells and the
+  cursor. While the pane holds synchronized output (mode 2026) the
+  frame is held, for at most 150 ms.
+- **The sidebar.** One row per pane: `N title`, and ` †status` for a
+  dead pane; an empty title falls back to the command's basename,
+  then to the pane id. The current pane is highlighted across the
+  full width. Up and Down move, Enter switches, a click switches;
+  key releases do not move. `Ctrl+Shift+S` toggles it. Width is
+  fixed at 24 columns in P1. It is hidden by default when the
+  terminal is narrower than 100 columns, and always shown while the
+  warning row is shown.
 - **Keys.** Every key goes to the pane as a `key` message on its view
   except these,
   which the client takes first:
@@ -208,57 +224,67 @@ Mosaic draws two regions: the pane and the sidebar.
 
   Ctrl+Shift chords exist only under the kitty keyboard protocol or
   xterm's `modifyOtherKeys`; a legacy terminal reports `Ctrl+Shift+E`
-  as `Ctrl+E`. The client enables the kitty keyboard protocol on the
-  outer terminal at start (Mosaic's `kitty_keyboard Auto`), and prints
-  a one-line warning and uses no chords if the terminal does not answer
-  the capability query. Ghostty, kitty, WezTerm, foot and Kido.app
-  answer it; Terminal.app does not. libghostty-vt ships a key encoder,
-  not a decoder: Mosaic decodes the outer terminal's CSI u and legacy
-  sequences into key events, and the client encodes them again for the
-  pane through the server. The e2e tests under an outer tmux send the
-  CSI u byte sequences with `send-keys -l`. A terminal without
-  extended keys gets no prefix fallback (section 10).
+  as `Ctrl+E`. The client pushes kitty keyboard flag 1 on the outer
+  terminal itself (Mosaic's own push is off) and queries the
+  capability. Until the reply or the first Ctrl+Shift chord arrives,
+  it shows a one-line warning and the sidebar for mouse switching.
+  Ghostty, kitty, WezTerm, foot and Kido.app answer the query;
+  Terminal.app does not, and tmux does not even with `extended-keys
+  on`, though it passes the chords (6.4). libghostty-vt ships a key
+  encoder, not a decoder: Mosaic decodes the outer terminal's CSI u
+  and legacy sequences into key events, and the client encodes them
+  again for the pane through the server. `unshifted_codepoint` is the
+  key's base character: lowercase for a letter, and the US base key
+  for shifted legacy punctuation where it is unambiguous, else 0. The
+  e2e tests under an outer tmux send the CSI u byte sequences with
+  `send-keys -l`. A terminal without extended keys gets no prefix
+  fallback (section 10).
 - **Replies from the outer terminal.** The client queries its outer
-  terminal (kitty keyboard, later images), so replies arrive on its
-  stdin among keystrokes, possibly split across reads. The input
+  terminal (modes, kitty keyboard, later images), so replies arrive on
+  its stdin among keystrokes, possibly split across reads. The input
   decoder swallows every private-marker CSI (`?`, `>`, `=`, `<`), APC
   `_G` replies and focus events as non-keys, and passes focus and
   bracketed paste on as typed events. A test feeds XTVERSION, kitty
   flags and DA1 in one read and asserts no key event (zmx #266, #291).
-- **Outer terminal modes.** When the mirror's modes change, the client
-  sets exactly these on the outer terminal: mouse 1000/1002/1003 with
-  1006, focus 1004, bracketed paste 2004, and the kitty keyboard flags
-  the pane asked for. On detach and on a switch it undoes exactly
-  those, pops its kitty keyboard flags with `CSI < u`, sends
-  `DECSCUSR 0`, and never sends RIS or clears the screen (zmx #26,
-  #157, #168, #222, #263).
+- **Outer terminal modes.** At start the client reads the outer
+  terminal's modes with DECRQM, ended by a DA1 reply (150 ms
+  deadline). While a pane frame is shown, it keeps mouse 1000 with
+  1006, focus 1004, bracketed paste 2004 and kitty flag 1 on, because
+  it needs the wheel, sidebar clicks, focus and the chords; the pane's
+  requests extend them (1002, 1003, more kitty flags). On detach,
+  SIGHUP, SIGTERM and before the pager it undoes them: it restores
+  each mode it read, a mode with no answer to off and cursor
+  visibility (25) to on, pops each kitty keyboard flag it pushed with
+  `CSI < u`, sends `DECSCUSR 0`, and never sends RIS or clears the
+  screen (zmx #26, #157, #168, #222, #263). Mosaic's own signal
+  handlers are off; the client's cleanup runs on every exit path.
 - **Colours.** The client emits indexed SGR for indexed cells and RGB
   only for cells whose colour is an RGB override, so the outer
   terminal's own palette applies (zmx #7).
 - **Mouse.** Wheel over the pane scrolls the mirror. Click, drag and
   wheel inside a program that tracks the mouse go to the pane as
-  `mouse` messages. The client decides from the mirror's mouse tracking
-  mode, which the render state reports, and it enables the outer
-  terminal's mouse reporting only while the mirror tracks (above).
+  `mouse` messages, in pane coordinates. The client decides from the
+  mirror's mouse tracking mode, which the render state reports. Events
+  on the warning row and outside the pane and sidebar rectangles go
+  nowhere.
 - **Resize.** On `SIGWINCH` the client computes the pane region and
   sends `{size}` on `/client`. The server resizes the pane
   and the view stream carries the marker; the full mirror applies it
-  itself and needs no snapshot. A snapshot that is decoding when a
-  marker arrives is abandoned and the next one decoded.
-- **Attach.** Open `/client` with a hello; the `welcome` and the first
-  `topology` follow. If the list is empty, `POST /panes`; send
-  `{select}` for the first pane and open its view. Switching a pane is
-  `{select}` and a new view. Detach, closing the outer window and a
-  crash all close `/client`; the server then deletes the client and
-  closes its views. A reconnect is a new hello with the pane, size and
-  focus the client shows, and the views reopen with their last
-  offsets.
-
-Mosaic's fitness for a full-screen terminal at high output rates is a
-P1 spike (6.1). If its diff and flush cannot sustain the target, the
-pane region is drawn by a direct cell differ that writes to the tty
-between Mosaic frames, and Mosaic keeps the sidebar and input. The
-decision is made from numbers, not in advance.
+  itself and needs no snapshot. A marker or bytes that arrive while a
+  snapshot decodes are queued and applied after it; a new first slice
+  abandons the old decoder.
+- **Attach.** `ko` connects to `DIR/socket`; on no socket or
+  `ECONNREFUSED` it takes `DIR/launch.lock`, checks again, removes a
+  refused socket, starts `ko server --server DIR` under `setsid` with
+  stdio to `DIR/log` (0600) and waits for the socket for 5 s. Two `ko`
+  started at once start one server. It opens `/client` with a hello;
+  the `welcome` and the first `topology` follow. If the list is empty,
+  `POST /panes`; send `{select}` for the first pane and open its view.
+  Switching a pane is `{select}` and a new view. Detach, closing the
+  outer window and a crash all close `/client`; the server then
+  deletes the client and closes its views. A new `ko` is a new hello:
+  it selects the first pane and opens its view with a full snapshot;
+  P1 keeps no selection or offsets across processes.
 
 ## 6. Performance
 
@@ -325,7 +351,8 @@ Before the server and client are written in full:
 
 Measured 2026-10-30 on an M5 Max under macOS, with other load on the
 machine (load average about 4). Linux is not measured yet. The spike
-code is in `ko_pane/`, `ko_vt/`, `spikes/` and `bench/`.
+code is in `ko_pane/`, `ko_vt/` and `bench/`; `spikes/` was removed
+when production code replaced it.
 
 Throughput, the 1 GiB mixed stream of `bench/streams/` (build log, text,
 `ls`, `git log`, `yes`, a TUI, dense OSC 8, a shell with OSC 133),
@@ -441,7 +468,8 @@ To run them again: `bench/run.sh`, `bench/baselines.sh` and
 `bench/kitten.sh` (the kitty rows open windows);
 `_build/default/bench/coordinator.exe throughput|latency|snapshot|pty-pipe|allocation`;
 `_build/default/bench/wait_master.exe`;
-`python3 spikes/mosaic/bench.py _build/default/spikes/mosaic/main.exe direct|matrix|mosaic 200 60 8`.
+`python3 bench/client.py` for the client's key-to-frame latency and CPU
+(6.4). The spike 3 driver was removed with `spikes/mosaic/` in P1.2.
 The spike 4 driver (`spikes/http/`) was removed with the spike server
 in P1.1; P1.3 measures the same table against `ko server`. Since P1.1
 `bench/coordinator.exe` runs the production `Pane_proc` and
@@ -503,6 +531,82 @@ points were open or wrong in the plan:
   (`KO_FUZZ_CC` names the compiler), because Apple's clang ships no
   `libclang_rt.fuzzer_osx.a`. The sanitizer driver of the same parser
   runs in `dune test`.
+
+### 6.4 What P1.2 settled
+
+The client of P1.2 follows section 5. These points were open or wrong
+in the plan:
+
+- **One writer for the screen.** The plan drew the pane with a differ
+  "between Mosaic frames". Two writers each kept their own idea of the
+  cells, so a sidebar toggle left one region's old cells in the
+  other's columns. A custom Matrix backend (`ko_tui/tty.ml`) now keeps
+  Mosaic's parser, loop and grid and discards its output;
+  `ko_tui/renderer.ml` composes the grid and the mirror into one cell
+  array for the differ, and caches the unchanged sidebar cells.
+- **Output wakes the loop, input skips the pacing.** The reader
+  threads set an atomic flag and wake the loop through the backend's
+  self-pipe; `Matrix.request_redraw` from another thread does not wake
+  a loop that waits for input. Matrix's 60 fps pacing is off: with it,
+  an echo that arrived just after the key's own frame waited for the
+  next 16.6 ms slot (review measured p50 21.6 ms).
+- **Server: queued WebSocket frames.** httpun-ws can complete frames
+  that are already buffered inside `next_read_operation` without
+  reading new bytes. `Connection.consume` continued only when it read
+  bytes, so the second and later input frames of one socket read waited
+  for the next read: a typed line stopped after a few characters until
+  the next key. The reader now continues while a frame completes, and
+  consumes its buffer by offset. `TestViewInputFramesInOneWrite` and
+  `TestViewInputFrameSplitAcrossWrites` cover it.
+- **The parse releases the runtime.** `Ko_vt.write` copies the bytes
+  out and runs `ghostty_terminal_vt_write` outside the OCaml runtime
+  lock, in chunks of at most 16 KiB, within a budget of 4 ms of
+  parsing per 8 ms. Holding the runtime starved the main thread during
+  a flood (a `sample` of `yes`: the main thread waited for the runtime
+  in 1815 of 1860 samples).
+- **tmux and the kitty query.** tmux (the pinned fork, `next-3.9`)
+  with `extended-keys on` answers XTVERSION and DA1 but not
+  `CSI ? u`, so a client inside tmux starts with the warning and the
+  sidebar and removes the warning at the first chord (section 5,
+  Keys). Accepted by the user on 2026-10-30.
+- **Outer mouse reporting stays on** while a pane frame is shown, not
+  only while the mirror tracks: the wheel and the sidebar need it.
+  Selecting text in the outer terminal therefore needs its override
+  modifier (Shift in most terminals), as with tmux's `mouse on`.
+  Accepted by the user on 2026-10-30.
+- **`TERM_PROGRAM`.** Panes inherited the launcher's `TERM_PROGRAM`.
+  ko now sets `TERM_PROGRAM=ko` and `TERM_PROGRAM_VERSION` in every
+  pane (section 3.2). `ko version` prints the build id as `build`
+  (dune-build-info, `unknown` in an unstamped build). The `-ne` that a
+  `/bin/sh` pane printed at each prompt was not from `TERM_PROGRAM`:
+  the launcher's environment exported
+  `PROMPT_COMMAND=echo -ne "\033]0;$PWD\007"`, and macOS `/bin/sh`
+  (bash in POSIX mode) prints `-ne` literally. Panes inherit the
+  launcher's environment in P1.
+- **Snapshots.** FINISH can arrive before a separate empty last slice,
+  so the decoder drains to the last slice. At READY the client shows a
+  screen terminal decoded from the bytes so far while the full decode
+  continues. After a `skipped` the mirror stays partial; the first
+  wheel scroll sends `{resync: {history: all}}` and applies the
+  pending scroll when the full snapshot is in.
+- **`Ko_vt` exposes typed values** (colour, attributes, cursor shape,
+  mouse tracking), and the differ uses Mosaic's `Ansi.Style`.
+- **Install.** `ko-pane` installs into `bin` beside `ko`. macOS's
+  system ncurses looks up terminfo in hexadecimal directories, so
+  `xterm-ghostty` installs as both `x/` and `78/`. The terminfo is
+  found only in the installed layout, so the tests and
+  `bench/client.py` run `_build/install/default/bin/ko`.
+- **Tests.** The client tests run `ko` under an outer kido-tmux on a
+  private socket, resolved through the fork's build key as kido's
+  e2e does. They poll the outer screen through persistent control
+  clients.
+
+Measured on an M5 Max, 120x30, private pty (`bench/client.py`): key
+to frame in a quiet pane p50 0.94 ms, p99 1.31 ms (200 samples); `yes`
+shown for 5 s, client CPU 0.80 core, RSS 25 MiB; with a 100k-line
+mirror, RSS 87 MiB, against the 40 MiB target of section 6. The mirror
+holds the full history eagerly; memory is P1.3 work. The `test_e2e_ko` suite, 33
+tests: 5.4 s wall, 4.7 s user and 7.1 s system CPU.
 
 ## 7. Tests
 

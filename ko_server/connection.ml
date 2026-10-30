@@ -25,6 +25,8 @@ type t = {
   mutable on_writable : unit -> unit;
   read_buf : Bigstringaf.t;
   mutable read_len : int;
+  mutable read_pos : int;
+  mutable read_progress : bool;
   fragments : Buffer.t;
   mutable last_activity : float;
   mutable ping : float option;
@@ -192,16 +194,23 @@ let rec write_runtime t =
     | `Close _ -> close t
 
 let rec consume t =
-  if not t.closed then
+  if not t.closed then begin
+    t.read_progress <- false;
     match Gluten.Server.next_read_operation (runtime t) with
-    | `Read when t.read_len > 0 ->
-        let n = Gluten.Server.read (runtime t) t.read_buf ~off:0 ~len:t.read_len in
-        Bigstringaf.blit t.read_buf ~src_off:n t.read_buf ~dst_off:0 ~len:(t.read_len - n);
-        t.read_len <- t.read_len - n;
-        if n > 0 then consume t
-    | `Read -> ()
+    | `Read ->
+        let n =
+          if t.read_len = t.read_pos then 0
+          else
+            Gluten.Server.read (runtime t) t.read_buf ~off:t.read_pos ~len:(t.read_len - t.read_pos)
+        in
+        t.read_pos <- t.read_pos + n;
+        if t.read_pos = t.read_len then (
+          t.read_pos <- 0;
+          t.read_len <- 0);
+        if n > 0 || t.read_progress then consume t
     | `Yield -> Gluten.Server.yield_reader (runtime t) (fun () -> consume t)
     | `Close -> close t
+  end
 
 let upgrade t reqd upgrade ~on_text ~on_close ~on_writable =
   t.on_text <- on_text;
@@ -225,6 +234,8 @@ let upgrade t reqd upgrade ~on_text ~on_close ~on_writable =
                             Buffer.add_string text (Bigstringaf.substring bs ~off ~len);
                             read ()))
                         ~on_eof:(fun () ->
+                          (* httpun-ws can complete queued frames in next_read_operation without reading bytes. *)
+                          t.read_progress <- true;
                           t.last_activity <- Unix.gettimeofday ();
                           let s = Buffer.contents text in
                           match opcode with
@@ -313,6 +324,8 @@ let create stream ~on_dispose =
       on_writable = ignore;
       read_buf = Bigstringaf.create 16384;
       read_len = 0;
+      read_pos = 0;
+      read_progress = false;
       fragments = Buffer.create 64;
       last_activity = Unix.gettimeofday ();
       ping = None;
@@ -338,6 +351,11 @@ let accept stream ~on_dispose handler =
          (handler t));
   Luv.Stream.read_start stream
     ~allocate:(fun _ ->
+      if t.read_pos > 0 && Bigstringaf.length t.read_buf - t.read_len < 4096 then (
+        Bigstringaf.blit t.read_buf ~src_off:t.read_pos t.read_buf ~dst_off:0
+          ~len:(t.read_len - t.read_pos);
+        t.read_len <- t.read_len - t.read_pos;
+        t.read_pos <- 0);
       Bigstringaf.sub t.read_buf ~off:t.read_len ~len:(Bigstringaf.length t.read_buf - t.read_len))
     (function
       | Ok b ->

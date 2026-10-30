@@ -47,12 +47,26 @@ let server override scrollback shell =
                 cwd = Sys.getcwd ();
               })
 
+let attach override =
+  report "attach" (fun () ->
+      let pager =
+        Sys.getenv_opt "PAGER"
+        |> Option.filter (fun p -> not (String.is_empty p))
+        |> Option.value ~default:"less -R"
+      in
+      Ko_tui.run ~dir:(dir override) ~executable:(Lazy.force Fs.self) ~pager)
+
 let kill override = report "kill-server" (fun () -> Server_stop.stop ~dir:(dir override))
 
 let version () =
   print_endline
     (Yojson.Safe.to_string
-       (`Assoc [ ("protocol", `String Config.protocol); ("vt", `String Config.vt) ]));
+       (`Assoc
+          [
+            ("protocol", `String Config.protocol);
+            ("vt", `String Config.vt);
+            ("build", `String Config.build);
+          ]));
   0
 
 let () =
@@ -94,7 +108,11 @@ let () =
   in
   let version =
     Cmd.v
-      (Cmd.info "version" ~doc:"Print the protocol and terminal revisions.")
+      (Cmd.info "version" ~doc:"Print the build, protocol and terminal revisions.")
       Term.(const version $ const ())
   in
-  exit (Cmd.eval' (Cmd.group (Cmd.info "ko") [ server; kill; version ]))
+  exit
+    (Cmd.eval'
+       (Cmd.group
+          ~default:Term.(const attach $ directory)
+          (Cmd.info "ko") [ server; kill; version ]))

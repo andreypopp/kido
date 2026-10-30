@@ -107,6 +107,13 @@ type title_event = { pane : string; title : string } [@@deriving yojson]
 type pwd_event = { pane : string; pwd : string } [@@deriving yojson]
 type dead_event = { pane : string; dead : dead } [@@deriving yojson]
 
+type client_event =
+  | Topology of topology_data
+  | Title of title_event
+  | Pwd of pwd_event
+  | Dead of dead_event
+[@@deriving of_yojson]
+
 type paste_result = {
   id : json option; [@default None] [@yojson_drop_if Option.is_none]
   pasted : bool;
@@ -115,10 +122,7 @@ type paste_result = {
 [@@deriving yojson]
 
 type pasted = { paste : paste_result } [@@deriving yojson]
-type marker = Resize of Config.size | Dead of dead
-
-val yojson_of_marker : marker -> Yojson.Safe.t
-
-type marked = { offset : int; marker : marker } [@@deriving yojson_of]
+type marker = Resize of Config.size | Dead of dead [@@deriving yojson]
+type marked = { offset : int; marker : marker } [@@deriving yojson]
 type skipped_range = { from : int; to_ : int [@key "to"] } [@@deriving yojson]
 type skipped = { offset : int; skipped : skipped_range } [@@deriving yojson]

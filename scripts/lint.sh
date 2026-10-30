@@ -113,7 +113,7 @@ sleeps = {
     'test_e2e/switch_session_test.go': {'time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)) + 50*time.Millisecond)': 1},
     'test_e2e/watchdog_test.go': {'time.Sleep(110 * time.Second)': 1, 'time.Sleep(200 * time.Millisecond)': 2},
 }
-for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go')):
+for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go') + glob.glob('test_e2e_ko/*.go')):
     if path == 'test_e2e/harness_test.go':
         continue
     text = pathlib.Path(path).read_text()

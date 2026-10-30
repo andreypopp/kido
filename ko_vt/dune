@@ -37,7 +37,8 @@
 (install
  (section share_root)
  (files
-  (xterm-ghostty as ko/terminfo/x/xterm-ghostty)))
+  (xterm-ghostty as ko/terminfo/x/xterm-ghostty)
+  (xterm-ghostty as ko/terminfo/78/xterm-ghostty)))
 
 (rule
  (targets libghostty-vt.a)
@@ -73,7 +74,7 @@
  (name ko_vt)
  (modules ko_vt)
  (flags
-  (:standard -open Containers))
+  (:standard -open Containers -open Ppx_compare_lib.Builtin))
  (libraries containers)
  (foreign_stubs
   (language c)
@@ -87,4 +88,4 @@
  (foreign_archives ghostty-vt)
  (inline_tests)
  (preprocess
-  (pps ppx_expect)))
+  (pps ppx_expect ppx_compare)))

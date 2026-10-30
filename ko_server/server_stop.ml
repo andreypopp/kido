@@ -2,18 +2,10 @@ let stop ~dir =
   match Config.socket ~create:false dir with
   | Error message -> Error message
   | Ok socket ->
-      let fd = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+      let fd = Socket.connect ~socket ~deadline:(Unix.gettimeofday () +. 5.) in
       Fun.protect
         ~finally:(fun () -> Unix.close fd)
         (fun () ->
-          Unix.set_nonblock fd;
-          (try Unix.connect fd (Unix.ADDR_UNIX socket)
-           with Unix.Unix_error (Unix.EINPROGRESS, _, _) -> (
-             let _, w, _ = Unix.select [] [ fd ] [] 5. in
-             if List.is_empty w then raise (Unix.Unix_error (Unix.ETIMEDOUT, "connect", socket));
-             match Unix.getsockopt_error fd with
-             | None -> ()
-             | Some error -> raise (Unix.Unix_error (error, "connect", socket))));
           Fs.write_all fd "GET /version HTTP/1.1\r\nHost: ko\r\nConnection: close\r\n\r\n";
           let deadline = Unix.gettimeofday () +. 5. in
           let buffer = Buffer.create 512 and bytes = Bytes.create 4096 in

@@ -4,7 +4,7 @@
  (public_name ko)
  (flags
   (:standard -open Containers))
- (libraries ko_server kido_fs containers cmdliner unix yojson))
+ (libraries ko_server ko_tui kido_fs containers cmdliner unix yojson))
 
 (rule
  (targets ko-pane)

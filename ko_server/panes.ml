@@ -44,6 +44,8 @@ let add t (request : Protocol.create) ~notify =
     let forced =
       [
         ("TERM", "xterm-ghostty");
+        ("TERM_PROGRAM", "ko");
+        ("TERM_PROGRAM_VERSION", Config.build);
         ("TERMINFO_DIRS", t.config.terminfo ^ ":");
         ("KO_SOCKET", socket);
         ("KO_PANE", id);

@@ -136,6 +136,23 @@ type title_event = { pane : string; title : string } [@@deriving yojson]
 type pwd_event = { pane : string; pwd : string } [@@deriving yojson]
 type dead_event = { pane : string; dead : dead } [@@deriving yojson]
 
+type client_event =
+  | Topology of topology_data
+  | Title of title_event
+  | Pwd of pwd_event
+  | Dead of dead_event
+
+let client_event_of_yojson json =
+  match json with
+  | `Assoc [ ("topology", _) ] -> Topology (topology_of_yojson json).topology
+  | `Assoc fields when List.mem_assoc ~eq:String.equal "title" fields ->
+      Title (title_event_of_yojson json)
+  | `Assoc fields when List.mem_assoc ~eq:String.equal "pwd" fields ->
+      Pwd (pwd_event_of_yojson json)
+  | `Assoc fields when List.mem_assoc ~eq:String.equal "dead" fields ->
+      Dead (dead_event_of_yojson json)
+  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid client event" json
+
 type paste_result = {
   id : json option; [@default None] [@yojson_drop_if Option.is_none]
   pasted : bool;
@@ -150,6 +167,12 @@ let yojson_of_marker = function
   | Resize size -> `Assoc [ ("resize", Config.yojson_of_size size) ]
   | Dead dead -> `Assoc [ ("dead", yojson_of_dead dead) ]
 
-type marked = { offset : int; marker : marker } [@@deriving yojson_of]
+let marker_of_yojson json =
+  match json with
+  | `Assoc [ ("resize", size) ] -> Resize (Config.size_of_yojson size)
+  | `Assoc [ ("dead", dead) ] -> Dead (dead_of_yojson dead)
+  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid marker" json
+
+type marked = { offset : int; marker : marker } [@@deriving yojson]
 type skipped_range = { from : int; to_ : int [@key "to"] } [@@deriving yojson]
 type skipped = { offset : int; skipped : skipped_range } [@@deriving yojson]

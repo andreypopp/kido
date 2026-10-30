@@ -23,6 +23,7 @@
    Ppx_yojson_conv_lib.Yojson_conv.Primitives))
  (libraries
   containers
+  dune-build-info
   kido_fs
   unix
   luv

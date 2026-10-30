@@ -1,0 +1,6 @@
+(library
+ (name ko_tui)
+ (libraries containers kido_fs ko_server ko_vt mosaic matrix matrix.text matrix.input unix threads.posix yojson base64)
+ (flags (:standard -open Containers -open Ppx_compare_lib.Builtin))
+ (inline_tests)
+ (preprocess (pps ppx_expect ppx_compare)))

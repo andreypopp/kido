@@ -27,6 +27,12 @@ type t = {
 let protocol = "1.0"
 let major = List.hd (String.split_on_char '.' protocol)
 let vt = Vt_revision.value
+
+let build =
+  match Build_info.V1.version () with
+  | Some v -> Build_info.V1.Version.to_string v
+  | None -> "unknown"
+
 let default_size = { cols = 80; rows = 24; cell_w_px = 8; cell_h_px = 16 }
 
 let limits scrollback_max_bytes =
