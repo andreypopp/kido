@@ -269,7 +269,7 @@ let pty_pipe () =
       match Luv.Pipe.open_ pipe (Uv.file master) with
       | Error e -> ending := "Pipe.open_: " ^ Luv.Error.strerror e
       | Ok () ->
-          Luv.Stream.read_start pipe (function
+          Uv.read_start pipe (function
             | Ok buffer -> sizes := Luv.Buffer.size buffer :: !sizes
             | Error e ->
                 ending := Luv.Error.err_name e;

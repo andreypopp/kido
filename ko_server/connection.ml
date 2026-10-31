@@ -388,7 +388,7 @@ let accept stream ~on_dispose handler =
          ~protocol:(module Httpun.Server_connection)
          ~create:(fun h -> Httpun.Server_connection.create h)
          (handler t));
-  Luv.Stream.read_start stream
+  Uv.read_start stream
     ~allocate:(fun _ ->
       if t.read_pos > 0 && Bigstringaf.length t.read_buf - t.read_len < 4096 then (
         Bigstringaf.blit t.read_buf ~src_off:t.read_pos t.read_buf ~dst_off:0

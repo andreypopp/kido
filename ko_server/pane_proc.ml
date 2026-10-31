@@ -434,7 +434,7 @@ let create config ~id ~cwd ~argv ~env ~notify =
     if t.filled = 0 then t.input
     else Bigstringaf.sub t.input ~off:t.filled ~len:(Bigstringaf.length t.input - t.filled)
   in
-  Luv.Stream.read_start ~allocate control (function
+  Uv.read_start ~allocate control (function
     | Ok chunk -> (
         t.filled <- t.filled + Bigstringaf.length chunk;
         try consume t with Invalid_argument message -> failure t message)
