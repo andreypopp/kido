@@ -92,36 +92,36 @@ let request t meth path body = Wire.request ~socket:t.socket ~client:t.id ~meth 
 
 let resize t =
   t.geometry <- Matrix.size t.matrix;
-  Wire.send t.wire (Ko_server.Protocol.client_input_to_json (Size (size t)))
+  Wire.send t.wire (Ko_server.Protocol.Request.client_to_json (Size (size t)))
 
 let switch t pane =
   Option.iter
     (fun m ->
-      Mirror.send m (Ko_server.Protocol.view_message_to_json (Input (Focus false)));
+      Mirror.send m (Ko_server.Protocol.Request.view_to_json (Input (Focus false)));
       Mirror.close m)
     (mirror t);
   t.view <- No_view;
   (match t.sidebar with Choosing _ -> t.sidebar <- Visible | _ -> ());
   Modes.reset t.modes;
   Renderer.invalidate t.renderer;
-  Wire.send t.wire (Ko_server.Protocol.client_input_to_json (Select pane));
+  Wire.send t.wire (Ko_server.Protocol.Request.client_to_json (Select pane));
   let m =
     Mirror.open_view ~socket:t.socket ~client:t.id ~pane ~limits:t.limits ~notify:(fun () ->
         notify t)
   in
   t.view <- Showing { pane; mirror = m; latest = None };
-  send t (Ko_server.Protocol.view_message_to_json (Input (Focus t.focused)));
+  send t (Ko_server.Protocol.Request.view_to_json (Input (Focus t.focused)));
   t.delay <- None;
   t.immediate <- true
 
 let create_pane t =
   let body =
-    Ko_server.Protocol.create_to_json { cwd = Some (Sys.getcwd ()); command = None; env = [] }
+    Ko_server.Protocol.Request.create_pane_to_json
+      { cwd = Some (Sys.getcwd ()); command = None; env = [] }
     |> Yojson.Basic.to_string
   in
   let p =
-    request t "POST" "/panes" body |> Yojson.Basic.from_string
-    |> Ko_server.Protocol.created_of_json
+    request t "POST" "/panes" body |> Yojson.Basic.from_string |> Ko_server.Protocol.created_of_json
   in
   switch t p.pane
 
@@ -165,14 +165,14 @@ let close t =
   Option.iter Thread.join t.thread;
   t.view <- No_view
 
-let create ~wire ~socket ~matrix ~modes ~limits ~pager =
+let create ~wire ~socket ~matrix ~modes ~pager =
   let geometry = Matrix.size matrix and warning = not (Matrix.capabilities matrix).kitty_keyboard in
   let sidebar = if warning || Sidebar.visible ~cols:(fst geometry) then Visible else Hidden in
   let cols, rows = geometry in
   let x = sidebar_x sidebar ~cols in
   Wire.upgrade wire ~path:"/client" ();
   Wire.send wire
-    (Ko_server.Protocol.client_input_to_json
+    (Ko_server.Protocol.Request.client_to_json
        (Hello
           {
             kind = Terminal;
@@ -192,13 +192,13 @@ let create ~wire ~socket ~matrix ~modes ~limits ~pager =
     | `Text s -> Yojson.Basic.from_string s
     | _ -> raise (Wire.Error "client event missing")
   in
-  let id =
-    match Ko_server.Protocol.client_event_of_json (text ()) with
-    | Welcome id -> id
+  let id, limits =
+    match Ko_server.Protocol.Event.client_of_json (text ()) with
+    | Welcome { client; limits } -> (client, limits)
     | _ -> raise (Wire.Error "welcome missing")
   in
   let panes =
-    match Ko_server.Protocol.client_event_of_json (text ()) with
+    match Ko_server.Protocol.Event.client_of_json (text ()) with
     | Topology panes -> panes
     | _ -> raise (Wire.Error "topology missing")
   in
@@ -238,7 +238,7 @@ let create ~wire ~socket ~matrix ~modes ~limits ~pager =
              while not t.closed do
                let event =
                  match Wire.receive wire with
-                 | `Text s -> Ko_server.Protocol.client_event_of_json (Yojson.Basic.from_string s)
+                 | `Text s -> Ko_server.Protocol.Event.client_of_json (Yojson.Basic.from_string s)
                  | _ -> raise (Wire.Error "server closed the client")
                in
                Mutex.protect t.lock (fun () ->
@@ -276,12 +276,12 @@ let update t message =
       t.immediate <- true
   | Focus focused ->
       t.focused <- focused;
-      Wire.send t.wire (Ko_server.Protocol.client_input_to_json (Focused focused));
-      send t (Ko_server.Protocol.view_message_to_json (Input (Focus focused)))
+      Wire.send t.wire (Ko_server.Protocol.Request.client_to_json (Focused focused));
+      send t (Ko_server.Protocol.Request.view_to_json (Input (Focus focused)))
   | Paste text ->
       t.immediate <- true;
       send t
-        (Ko_server.Protocol.view_message_to_json
+        (Ko_server.Protocol.Request.view_to_json
            (Input (Paste { text; check_safe = false; id = None })))
   | Key k -> (
       t.immediate <- true;
@@ -351,7 +351,8 @@ let update t message =
                 t.view <- No_view;
                 ignore (request t "DELETE" ("/panes/" ^ Ko_server.Ids.Pane_id.to_string v.pane) "");
                 let all =
-                  request t "GET" "/panes" "" |> Yojson.Basic.from_string |> Yojson.Basic.Util.to_list
+                  request t "GET" "/panes" "" |> Yojson.Basic.from_string
+                  |> Yojson.Basic.Util.to_list
                   |> List.map Ko_server.Protocol.row_of_json
                 in
                 Mutex.protect t.lock (fun () -> t.panes <- all);
@@ -372,7 +373,7 @@ let update t message =
             | Choosing _, Escape -> t.sidebar <- Visible
             | _ ->
                 (match t.sidebar with Choosing _ -> t.sidebar <- Visible | _ -> ());
-                send t (Ko_server.Protocol.view_message_to_json (Input (Key (Input.key k))))))
+                send t (Ko_server.Protocol.Request.view_to_json (Input (Key (Input.key k))))))
   | Mouse event -> (
       let module M = Mosaic.Event.Mouse in
       let x = M.x event and y = M.y event in
@@ -394,7 +395,7 @@ let update t message =
               | Some f -> (
                   if not (Ko_vt.equal_mouse_tracking f.mouse Ko_vt.Off) then
                     send t
-                      (Ko_server.Protocol.view_message_to_json
+                      (Ko_server.Protocol.Request.view_to_json
                          (Input (Mouse (Input.mouse ~pane_x:l.pane_x event))))
                   else
                     match M.kind event with

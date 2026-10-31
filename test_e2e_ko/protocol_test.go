@@ -57,14 +57,15 @@ func TestMain(m *testing.M) {
 }
 
 type server struct {
-	t    *testing.T
-	dir  string
-	cmd  *exec.Cmd
-	http *http.Client
-	vt   string
-	log  bytes.Buffer
-	wait chan error
-	once sync.Once
+	t      *testing.T
+	dir    string
+	cmd    *exec.Cmd
+	http   *http.Client
+	vt     string
+	limits json.RawMessage
+	log    bytes.Buffer
+	wait   chan error
+	once   sync.Once
 }
 
 func testEnv(dir string) []string {
@@ -258,7 +259,10 @@ func (s *server) client(pane string) (*websocket.Conn, string) {
 		h["pane"] = pane
 	}
 	send(s.t, c, []any{"hello", h})
-	var identity string
+	var identity struct {
+		Client string
+		Limits json.RawMessage
+	}
 	for _, key := range []string{"welcome", "topology"} {
 		_, data := read(s.t, c)
 		tag, payload := tagged(data)
@@ -271,7 +275,8 @@ func (s *server) client(pane string) (*websocket.Conn, string) {
 			}
 		}
 	}
-	return c, identity
+	s.limits = identity.Limits
+	return c, identity.Client
 }
 func (s *server) pane(command string) string {
 	var response struct {
@@ -509,14 +514,13 @@ while True:
 func TestVersionAndOrigin(t *testing.T) {
 	t.Parallel()
 	s := start(t)
-	var version struct {
-		Limits struct {
-			Scrollback [2]json.RawMessage
-		}
+	s.client("")
+	var limits struct{ Scrollback [2]json.RawMessage }
+	if err := json.Unmarshal(s.limits, &limits); err != nil {
+		t.Fatal(err)
 	}
-	s.request("GET", "/version", nil, 200, &version)
-	if string(version.Limits.Scrollback[0]) != `"scrollback"` || string(version.Limits.Scrollback[1]) != `{"max_bytes":50000000}` {
-		t.Fatalf("default scrollback limits: %+v", version.Limits)
+	if string(limits.Scrollback[0]) != `"scrollback"` || string(limits.Scrollback[1]) != `{"max_bytes":50000000}` {
+		t.Fatalf("default scrollback limits: %s", s.limits)
 	}
 	vt := s.vt
 	s.vt = "wrong"

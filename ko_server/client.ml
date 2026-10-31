@@ -31,10 +31,10 @@ let claim panes clients t active =
         Option.iter (fun p -> Pane.claim p ~client:t.id ~size:active.size) (Panes.find panes id))
       active.pane
 
-let receive panes ~clients t input =
+let receive panes ~limits ~clients t input =
   try
     (match (t.state, input) with
-    | None, Protocol.Hello hello ->
+    | None, Protocol.Request.Hello hello ->
         if not (Protocol.valid_size hello.size) then invalid_arg "invalid size";
         let active =
           {
@@ -46,8 +46,9 @@ let receive panes ~clients t input =
         in
         t.state <- Some active;
         claim panes clients t active;
-        Connection.json t.connection (Protocol.client_event_to_json (Welcome t.id));
-        Connection.json t.connection (Protocol.client_event_to_json (Topology (Panes.rows panes)))
+        Connection.json t.connection
+          (Protocol.Event.client_to_json (Welcome { client = t.id; limits }));
+        Connection.json t.connection (Protocol.Event.client_to_json (Topology (Panes.rows panes)))
     | None, _ -> invalid_arg "hello must be first"
     | Some active, Select id ->
         if Option.is_none (Panes.find panes id) then invalid_arg "pane not found";

@@ -80,7 +80,7 @@ let headers t =
 
 let head ?client meth path extra =
   Printf.sprintf "%s %s HTTP/1.1\r\nHost: localhost\r\nKo-Protocol: %s\r\nKo-Vt: %s\r\n%s%s\r\n"
-    meth path Ko_server.Protocol.version_number Ko_server.Protocol.vt_revision
+    meth path Ko_server.Protocol.version.protocol Ko_server.Protocol.version.vt
     (match client with
     | None -> ""
     | Some c -> "Ko-Client: " ^ Ko_server.Ids.Client_id.to_string c ^ "\r\n")

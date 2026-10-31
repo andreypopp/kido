@@ -67,8 +67,8 @@ val snapshot :
 
 val screen :
   t ->
-  format:Protocol.screen_format ->
-  history:Protocol.screen_history ->
+  format:Protocol.Request.screen_format ->
+  history:Protocol.Request.screen_history ->
   chunk:(string -> last:bool -> unit) ->
   done_:((unit, string) result -> unit) ->
   unit

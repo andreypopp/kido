@@ -10,7 +10,7 @@ let find t id = List.find_opt (fun p -> Ids.Pane_id.equal (Pane.id p) id) t.pane
 let rows t = List.map Pane.row t.panes
 let iter t f = List.iter f t.panes
 
-let add t (request : Protocol.create) ~notify =
+let add t (request : Protocol.Request.create_pane) ~notify =
   try
     let id = Ids.Pane_id.make t.next in
     let cwd = Option.value ~default:t.config.cwd request.cwd in
@@ -48,8 +48,7 @@ let add t (request : Protocol.create) ~notify =
       ]
     in
     let overrides =
-      forced
-      @ List.filter (fun (k, _) -> not (List.mem_assoc ~eq:String.equal k forced)) requested
+      forced @ List.filter (fun (k, _) -> not (List.mem_assoc ~eq:String.equal k forced)) requested
     in
     let inherited =
       List.filter

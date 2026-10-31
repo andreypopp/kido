@@ -80,10 +80,12 @@ where a wall time is needed.
 
 `GET /version` is the one request without version headers, because a
 client reads it before it knows the server's version. Its shape is
-frozen across minors. It carries the protocol version, the
-libghostty-vt revision, the server's identity (start time, pid, build)
-and the terminal limits that form the mirror contract (design.md 4.3):
-a client applies them to every mirror before it opens a view.
+frozen across minors. It carries only the protocol version, the
+libghostty-vt revision and the build (decided 2026-10-31). The
+terminal limits that form the mirror contract (design.md 4.3) arrive
+with the `Welcome` event on `/client`; a client applies them to every
+mirror before it opens a view. The server instance identity is not
+in P1; S5 adds it to `Welcome` (migration.md S5).
 
 Every other request carries the `Ko-Protocol` and `Ko-Vt` headers; a
 request without them is refused as a mismatch. A major mismatch is
@@ -103,9 +105,10 @@ happened, do not retry). The error type is `Protocol.error`.
 `GET /client` upgrades to the client connection, one per native window
 or terminal client process. The client's first message is its hello:
 kind, name, what it currently shows, focus, size and
-whether it takes part in sizing. The server answers with the client's
-id, then the full layout document (section 7), then events (section
-6). Later the client sends a selection, a relative switch, a size, a
+whether it takes part in sizing. The server answers with the
+`Welcome` event, which carries the client's id and the terminal
+limits, then the full layout document (section 7), then events
+(section 6). Later the client sends a selection, a relative switch, a size, a
 focus change or a clipboard answer, all on this connection.
 
 The client exists from the hello to the close. There is no
@@ -357,7 +360,10 @@ rules).
    to the body and `PUT` again.
 6. On reconnect, send a new hello, read `/layout`, `/panes` and
    `/runs` again, and reopen the views with the last offset seen:
-   bytes and markers resume if inside the ring, else a snapshot.
+   bytes and markers resume if inside the ring, else a snapshot. An
+   offset is reused only when the `Welcome`'s instance equals the one
+   the client saw before (S5); a new server restarts pane ids at
+   `pane_1`, so an old offset would resume on an unrelated pane.
 
 ## 13. Versioning rules
 

@@ -273,9 +273,17 @@ let respond reqd status body =
        status)
     body
 
-let error reqd status kind message =
-  respond reqd status
-    (Yojson.Basic.to_string (Protocol.error_to_json { kind; message; protocol = None; vt = None }))
+let error reqd kind message =
+  respond reqd
+    (match (kind : Protocol.error_kind) with
+    | Invalid -> `Bad_request
+    | Refused -> `Conflict
+    | Gone -> `Gone
+    | Io -> `Internal_server_error
+    | Missing -> `Not_found
+    | Protocol_mismatch _ -> `Upgrade_required
+    | Vt_mismatch _ -> `Conflict)
+    (Yojson.Basic.to_string (Protocol.error_to_json { kind; message }))
 
 let body reqd callback =
   let b = Buffer.create 256 in
@@ -285,14 +293,14 @@ let body reqd callback =
       ~on_read:(fun bs ~off ~len ->
         if Buffer.length b + len > 1 lsl 20 then (
           Httpun.Body.Reader.close reader;
-          error reqd `Bad_request Invalid "body exceeds 1 MiB")
+          error reqd Invalid "body exceeds 1 MiB")
         else (
           Buffer.add_string b (Bigstringaf.substring bs ~off ~len);
           read ()))
       ~on_eof:(fun () ->
         match Yojson.Basic.from_string (Buffer.contents b) with
         | json -> callback json
-        | exception Yojson.Json_error message -> error reqd `Bad_request Invalid message)
+        | exception Yojson.Json_error message -> error reqd Invalid message)
   in
   read ()
 

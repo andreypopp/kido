@@ -55,7 +55,7 @@ let scroll t delta =
   in
   if resync then
     Wire.send t.wire
-      (Ko_server.Protocol.view_message_to_json
+      (Ko_server.Protocol.Request.view_to_json
          (Resync { history = History_all; images = Images_none }))
 
 let delay t =
@@ -171,7 +171,7 @@ let open_view ~socket ~client ~(pane : Ko_server.Ids.Pane_id.t) ~(limits : Ko_se
       if String.length s < 9 then raise (Wire.Error "short view record") else Char.code s.[0]
     in
     let marker text =
-      match Ko_server.Protocol.view_event_of_json (Yojson.Basic.from_string text) with
+      match Ko_server.Protocol.Event.view_of_json (Yojson.Basic.from_string text) with
       | Marked { marker; _ } -> Some marker
       | Skipped _ | Pasted _ -> None
     in

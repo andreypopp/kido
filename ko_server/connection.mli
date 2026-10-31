@@ -21,7 +21,7 @@ val upgrade :
   (unit, string) result
 
 val respond : Httpun.Reqd.t -> Httpun.Status.t -> string -> unit
-val error : Httpun.Reqd.t -> Httpun.Status.t -> Protocol.error_kind -> string -> unit
+val error : Httpun.Reqd.t -> Protocol.error_kind -> string -> unit
 val body : Httpun.Reqd.t -> (Yojson.Basic.t -> unit) -> unit
 val writer : Unix.file_descr -> t
 val accept : Luv.Pipe.t -> on_dispose:(t -> unit) -> (t -> Httpun.Reqd.t Gluten.reqd -> unit) -> t

@@ -344,11 +344,11 @@ let snapshot t ~full ~consume ~done_ =
 
 let screen t ~format ~history ~chunk ~done_ =
   let b = Buffer.create 5 in
-  Buffer.add_char b (match format with Protocol.Plain -> '\000' | Ansi -> '\001');
+  Buffer.add_char b (match format with Protocol.Request.Plain -> '\000' | Ansi -> '\001');
   Buffer.add_int32_le b
     (Int32.of_int
        (match history with
-       | Protocol.Visible_only -> 0
+       | Protocol.Request.Visible_only -> 0
        | Full_history -> 0xffffffff
        | Last_rows n -> n));
   request t Screen (Buffer.contents b) (Screen_reply (chunk, done_))

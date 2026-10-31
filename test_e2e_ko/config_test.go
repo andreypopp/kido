@@ -12,19 +12,20 @@ import (
 func TestDefaultsAndPaneEnvironment(t *testing.T) {
 	t.Parallel()
 	s := start(t, "--scrollback-bytes", "80M", "--scrollback-lines", "5000")
-	var version struct {
-		Limits struct {
-			Scrollback   [2]json.RawMessage
-			Continuation int `json:"continuation_max_bytes"`
-		}
+	c, _ := s.client("")
+	var limits struct {
+		Scrollback   [2]json.RawMessage
+		Continuation int `json:"continuation_max_bytes"`
 	}
-	s.request("GET", "/version", nil, 200, &version)
-	var scrollback map[string]int
-	if err := json.Unmarshal(version.Limits.Scrollback[1], &scrollback); err != nil {
+	if err := json.Unmarshal(s.limits, &limits); err != nil {
 		t.Fatal(err)
 	}
-	if string(version.Limits.Scrollback[0]) != `"scrollback"` || scrollback["max_bytes"] != 80*1024*1024 || scrollback["max_lines"] != 5000 || version.Limits.Continuation != 65*1024*1024 {
-		t.Fatalf("terminal contract: %+v", version)
+	var scrollback map[string]int
+	if err := json.Unmarshal(limits.Scrollback[1], &scrollback); err != nil {
+		t.Fatal(err)
+	}
+	if string(limits.Scrollback[0]) != `"scrollback"` || scrollback["max_bytes"] != 80*1024*1024 || scrollback["max_lines"] != 5000 || limits.Continuation != 65*1024*1024 {
+		t.Fatalf("terminal contract: %s", s.limits)
 	}
 	output, err := exec.Command(koBin, "version").Output()
 	if err != nil {
@@ -35,7 +36,6 @@ func TestDefaultsAndPaneEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("ko version: %s", output)
-	c, _ := s.client("")
 	var created struct{ Pane string }
 	s.request("POST", "/panes", map[string]any{"cwd": "/tmp", "env": []map[string]string{{"name": "X", "value": "custom"}, {"name": "TERM", "value": "wrong"}, {"name": "KO_PANE", "value": "wrong"}}}, 200, &created)
 	view := s.dialWS("/panes/"+created.Pane+"/view", nil, 101)

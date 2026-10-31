@@ -442,6 +442,13 @@ step can start at once.
    events, `/panes`, `/layout` with the read-edit-`PUT`-retry loop,
    views with the decoder thread, input events, `/runs`, `/prompt`,
    `/search`. Generated from the same fixtures as the Go client.
+   The server adds an `instance` field to the `Welcome` event: the
+   identity of this server process, which survives an in-place
+   upgrade. The app reuses a view offset on reconnect only when the
+   instance equals the one it saw before, because a new server
+   restarts pane ids at `pane_1` and an old offset would resume on an
+   unrelated pane. P1 has no such identity; kido's `server_instance`
+   served the same purpose.
    The sidebar model moves from replacing a snapshot to applying
    events: `layout`, `status`, `var` and `run`
    update one tree that the app builds from the document, the panes
@@ -529,7 +536,8 @@ Depends on S5 for the app; the terminal client part on P1.
 - Kido.app: the same forward on the master it already owns
   (design-app.md, "Transport and discovery"); discovery reads
   `/version` through the forward instead of running `kido server`.
-- Reconnect by offset, `deflate` on history and image bodies,
+- Reconnect by offset, gated on the `Welcome`'s instance (S5),
+  `deflate` on history and image bodies,
   `permessage-deflate` on `/client`.
 - Measured: attach, 100k-line restore and echo at 50, 150 and 300 ms
   RTT, with a throttled link.

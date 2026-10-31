@@ -9,10 +9,6 @@ let run ~dir ~executable ~pager =
         Fun.protect
           ~finally:(fun () -> Wire.close wire)
           (fun () ->
-            let version =
-              Wire.request ~socket ~meth:"GET" ~path:"/version" ""
-              |> Yojson.Basic.from_string |> Ko_server.Protocol.version_of_json
-            in
             let modes, startup = Modes.save ()
             and client = ref None
             and stopped = Atomic.make false in
@@ -46,9 +42,7 @@ let run ~dir ~executable ~pager =
                           ~finally:(fun () -> Modes.reset modes)
                           (fun () -> Option.iter Client.close !client)))
                   (fun () ->
-                    let t =
-                      Client.create ~wire ~socket ~matrix ~modes ~limits:version.limits ~pager
-                    in
+                    let t = Client.create ~wire ~socket ~matrix ~modes ~pager in
                     client := Some t;
                     let open Mosaic in
                     run ~matrix

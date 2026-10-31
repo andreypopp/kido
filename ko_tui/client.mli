@@ -8,15 +8,7 @@ type message =
   | Size
   | Focus of bool
 
-val create :
-  wire:Wire.t ->
-  socket:string ->
-  matrix:Matrix.app ->
-  modes:Modes.t ->
-  limits:Ko_server.Config.limits ->
-  pager:string ->
-  t
-
+val create : wire:Wire.t -> socket:string -> matrix:Matrix.app -> modes:Modes.t -> pager:string -> t
 val close : t -> unit
 val notify : t -> unit
 val paint : t -> unit

@@ -6,7 +6,7 @@ let encode input =
   in
   let kind =
     match input with
-    | Protocol.Key key ->
+    | Protocol.Request.Key key ->
         if key.key > Pane_proc.max_key then invalid_arg "invalid key";
         if
           key.unshifted_codepoint > 0x10ffff
@@ -59,7 +59,7 @@ let send pane input reply =
   try
     let kind, body = encode input in
     (match input with
-    | Protocol.Paste paste ->
+    | Protocol.Request.Paste paste ->
         Pane_proc.paste (Pane.proc pane) body (function
           | Error message -> reply (Error message)
           | Ok (pasted, unsafe) -> reply (Ok (Some { Protocol.id = paste.id; pasted; unsafe })))
@@ -74,15 +74,15 @@ let send pane input reply =
 let%test_module "Tests" =
   (module struct
     let%expect_test "typed input stays binary" =
-      let kind, body = encode (Protocol.Text "AAo=") in
+      let kind, body = encode (Protocol.Request.Text "AAo=") in
       assert (Pane_proc.equal_kind kind Text);
       Printf.printf "%d %d %d\n" (String.length body) (Char.code body.[0]) (Char.code body.[1]);
-      let kind, body = encode (Protocol.Focus true) in
+      let kind, body = encode (Protocol.Request.Focus true) in
       assert (Pane_proc.equal_kind kind Focus);
       Printf.printf "%d\n" (Char.code body.[0]);
       let kind, body =
         encode
-          (Protocol.Key
+          (Protocol.Request.Key
              {
                action = Key_press;
                key = 20;

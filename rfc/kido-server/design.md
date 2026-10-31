@@ -306,8 +306,8 @@ media options and `CONTINUATION_MAX_BYTES`, because eviction and
 refusal decisions depend on them and a snapshot does not carry them
 (the decoder has its own limit option, set to the same value). A mirror
 sets no `WRITE_PTY` and no `OPT_SIZE`. The server sends its option
-values in `GET /version`, and a client applies them before it opens a
-view. Kitty media need care: upstream libghostty-vt refuses a `t=s`,
+values as the limits of the `Welcome` event on `/client`, and a client
+applies them before it opens a view. Kitty media need care: upstream libghostty-vt refuses a `t=s`,
 `t=f` or `t=t` upload when the medium is disabled and stores nothing,
 so later placements would fail on a mirror that cannot open the
 program's object while the server shows them. The app's fork keeps a
@@ -726,9 +726,12 @@ with the nesting of kido's `Tree`. Compared with kido's feed:
   reconnects, because there is one tracker. The "feed restart can lose
   or re-arm outcomes" and "concurrent feeds give different serials"
   limits go away.
-- `server.started_at` and `pid` of `/version` replace
-  `server_instance`, and survive an in-place upgrade (the pid does
-  not change).
+- The server instance identity that replaces `server_instance` is
+  not in P1. S5 adds it as an `instance` field of the `Welcome`
+  event (migration.md S5): a client that reconnects must tell the
+  same server from a new one, because pane ids restart at `pane_1`
+  and an old view offset must not resume on a new server's pane. It
+  survives an in-place upgrade.
 
 Seen state stays in the client, as today.
 
@@ -774,7 +777,8 @@ differs from the running coordinator, or by the app's Restart) does:
 2. It writes `<dir>/upgrade/state.json`: the layout document and its
    revision, panes with their ring and control fd numbers, ring tails
    and `ko-pane` pids, their variables, run links, OSC 7501 records,
-   OSC 133 phases, the start time (so `server_instance` survives) and
+   OSC 133 phases, the instance identity (so a client's reconnect
+   sees the same server) and
    the shared-memory name counter (the pid stays, so names would
    collide).
    The ring is not written; views reopen with a snapshot.
@@ -821,9 +825,10 @@ shapes are `ko_server/protocol.ml`, `ko_pane/protocol.h` and
   `curl --unix-socket` reads every plain resource; `websocat --unix`
   reads a stream.
 - `GET /version` and the headers `Ko-Protocol` and `Ko-Vt` carry the
-  protocol version `MAJOR.MINOR` and the libghostty-vt revision. The
-  server refuses a different major (426) or revision (409). Minor
-  appends fields and resources.
+  protocol version `MAJOR.MINOR`, the libghostty-vt revision and the
+  build. The server refuses a different major (426) or revision
+  (409). Minor appends fields and resources. The terminal limits come
+  with the `Welcome` event on `/client`.
 - `GET /client` is a WebSocket, one per native window or terminal
   client, and the client is that connection. Its hello carries kind,
   name, current session, window or pane, size and focus; the server

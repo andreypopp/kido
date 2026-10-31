@@ -206,7 +206,7 @@ let%test_module "Tests" =
       assert (Option.is_none (command { k with modifier = { k.modifier with shift = false } }));
       assert (Option.is_none (command { k with event_type = Release }));
       print_endline
-        (Yojson.Basic.to_string (Ko_server.Protocol.view_message_to_json (Input (Key (encode k)))));
+        (Yojson.Basic.to_string (Ko_server.Protocol.Request.view_to_json (Input (Key (encode k)))));
       [%expect
         {| ["input",["key",{"action":"press","key":38,"mods":3,"unshifted_codepoint":115,"text":"s","composing":false}]] |}]
 
@@ -230,7 +230,7 @@ let%test_module "Tests" =
               | Matrix_input.Key k ->
                   Printf.printf "%S %s\n" s
                     (Yojson.Basic.to_string
-                       (Ko_server.Protocol.view_message_to_json (Input (Key (key k)))))
+                       (Ko_server.Protocol.Request.view_to_json (Input (Key (key k)))))
               | _ -> ())
             (fst (parse [ s ])))
         [

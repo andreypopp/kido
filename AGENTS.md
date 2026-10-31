@@ -130,8 +130,9 @@ belongs in `docs/`, not comments. Keep only these comments:
 - A doc comment in an `.mli` that the user explicitly requested.
 
 An interface explains itself through descriptive names, not doc
-comments. A name tells what the value is without its module: a
-protocol's major version is `version_major`, not `major`.
+comments. A name tells what the value is, read with its module: the
+major part of a protocol version is `major` in a module of versions,
+but `protocol_major` in a module of settings.
 
 Build, compiler and formatter directives are not comments. If a
 diagnostic suppression hides a correctness failure, fix the cause.

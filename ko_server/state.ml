@@ -4,7 +4,6 @@ type t = {
   mutable clients : Client.t list;
   mutable views : View.t list;
   mutable next_client : int;
-  started_at : int;
   mutable activity : unit -> unit;
 }
 
@@ -15,7 +14,6 @@ let create config =
     clients = [];
     views = [];
     next_client = 1;
-    started_at = Int64.of_float (Unix.gettimeofday () *. 1e9) |> Int64.to_int;
     activity = ignore;
   }
 
@@ -28,7 +26,7 @@ let broadcast t json =
     (fun c -> if Client.registered c then Connection.json (Client.connection c) json)
     t.clients
 
-let topology t = broadcast t (Protocol.client_event_to_json (Topology (Panes.rows t.panes)))
+let topology t = broadcast t (Protocol.Event.client_to_json (Topology (Panes.rows t.panes)))
 let pump t = List.iter View.pump t.views
 let waiting t = List.exists View.waiting t.views
 
@@ -39,11 +37,11 @@ let close_views t pane =
 
 let event t pane = function
   | Pane.Title title ->
-      broadcast t (Protocol.client_event_to_json (Title { pane = Pane.id pane; title }))
-  | Pwd pwd -> broadcast t (Protocol.client_event_to_json (Pwd { pane = Pane.id pane; pwd }))
-  | Dead dead -> broadcast t (Protocol.client_event_to_json (Dead { pane = Pane.id pane; dead }))
+      broadcast t (Protocol.Event.client_to_json (Title { pane = Pane.id pane; title }))
+  | Pwd pwd -> broadcast t (Protocol.Event.client_to_json (Pwd { pane = Pane.id pane; pwd }))
+  | Dead dead -> broadcast t (Protocol.Event.client_to_json (Dead { pane = Pane.id pane; dead }))
   | Failed dead ->
-      broadcast t (Protocol.client_event_to_json (Dead { pane = Pane.id pane; dead }));
+      broadcast t (Protocol.Event.client_to_json (Dead { pane = Pane.id pane; dead }));
       close_views t pane
   | Output ->
       List.iter
@@ -73,11 +71,4 @@ let add_view t view =
   t.activity ()
 
 let remove_view t view = t.views <- List.filter (fun v -> not Stdlib.(v == view)) t.views
-
-let version t : Protocol.version =
-  {
-    protocol = Protocol.version_number;
-    vt = Protocol.vt_revision;
-    server = { started_at = t.started_at; pid = Unix.getpid (); build = Config.build };
-    limits = t.config.limits;
-  }
+let limits t = t.config.limits

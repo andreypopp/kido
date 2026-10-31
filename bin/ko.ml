@@ -97,14 +97,7 @@ let api override meth input include_headers path =
               1))
 
 let version () =
-  print_endline
-    (Yojson.Basic.to_string
-       (`Assoc
-          [
-            ("protocol", `String Protocol.version_number);
-            ("vt", `String Protocol.vt_revision);
-            ("build", `String Config.build);
-          ]));
+  print_endline (Yojson.Basic.to_string (Protocol.version_to_json Protocol.version));
   0
 
 let () =

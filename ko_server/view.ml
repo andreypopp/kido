@@ -91,7 +91,7 @@ and pump t =
         with
         | Skip ->
             Connection.json t.connection
-              (Protocol.view_event_to_json
+              (Protocol.Event.view_to_json
                  (Skipped
                     { offset = Pane.offset t.pane; from = cursor.offset; to_ = Pane.offset t.pane }));
             cursor.blocked <- false;
@@ -135,13 +135,13 @@ and pump t =
                           false)
                   | Resize_marker size ->
                       Connection.json t.connection
-                        (Protocol.view_event_to_json
+                        (Protocol.Event.view_to_json
                            (Marked { offset = record.offset; marker = Resize size }));
                       cursor.pos <- record.next;
                       true
                   | Dead_marker dead ->
                       Connection.json t.connection
-                        (Protocol.view_event_to_json
+                        (Protocol.Event.view_to_json
                            (Marked { offset = record.offset; marker = Dead dead }));
                       cursor.pos <- record.next;
                       true)
@@ -165,7 +165,7 @@ let create pane connection ~client ~offset ~full =
 
 let receive t text =
   try
-    match Protocol.view_message_of_json (Yojson.Basic.from_string text) with
+    match Protocol.Request.view_of_json (Yojson.Basic.from_string text) with
     | Resync options -> request_snapshot t (Protocol.full options)
     | Input input -> (
         match
@@ -173,12 +173,11 @@ let receive t text =
             | Error _ -> Connection.reject t.connection Io
             | Ok None -> ()
             | Ok (Some reply) ->
-                Connection.json t.connection (Protocol.view_event_to_json (Pasted reply)))
+                Connection.json t.connection (Protocol.Event.view_to_json (Pasted reply)))
         with
         | Ok () -> ()
         | Error _ -> Connection.reject t.connection Invalid)
-  with
-  | Yojson.Json_error _ | Invalid_argument _ | Jsonkit.Of_json_error _ ->
+  with Yojson.Json_error _ | Invalid_argument _ | Jsonkit.Of_json_error _ ->
     Connection.reject t.connection Invalid
 
 let%test_module "Tests" =
