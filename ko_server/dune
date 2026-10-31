@@ -27,8 +27,7 @@
   kido_fs
   ko_vt
   unix
-  luv
-  ctypes
+  iomux
   httpun
   httpun-ws
   gluten

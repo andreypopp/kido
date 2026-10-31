@@ -401,7 +401,7 @@ let flush_feed h =
 let tick h =
   let { Fuzz_server.state; pane; _ } = h.server in
   ignore (State.tick state : bool);
-  ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+  Event_loop.step Peek;
   flush_feed h;
   ignore (State.tick state : bool);
   Panes.reap (State.panes state);
@@ -804,7 +804,7 @@ let%test_module "Tests" =
           Pane_proc.screen proc ~format:Plain ~history:Full_history
             ~chunk:(fun chunk ~last:_ -> Buffer.add_string text chunk)
             ~done_:(fun r -> result := Some r);
-          ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+          Event_loop.step Peek;
           (* ko-pane does not report that it is blocked in screen_chunk's poll(POLLOUT) *)
           Unix.sleepf 0.1;
           step h Eof;

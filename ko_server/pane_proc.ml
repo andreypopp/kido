@@ -58,8 +58,8 @@ let () = List.iter (fun (kind, code) -> by_code.(code) <- Some kind) wire
 let of_int code =
   match by_code.(code) with Some kind -> kind | None -> invalid_arg "unknown pane frame"
 
-external spawn : string -> Luv.Buffer.t * Unix.file_descr * int = "ko_pane_start"
-external unmap : Luv.Buffer.t -> unit = "ko_pane_unmap"
+external spawn : string -> Bigstringaf.t * Unix.file_descr * int = "ko_pane_start"
+external unmap : Bigstringaf.t -> unit = "ko_pane_unmap"
 
 type claim = Awaiting | Reported of Pid.Group.t option
 
@@ -138,7 +138,8 @@ type reply =
 
 type t = {
   ring : Ring.t;
-  control : Luv.Pipe.t;
+  control : Event_loop.watch;
+  outbox : Outbox.t;
   pid : Pid.t;
   notify : event -> unit;
   mutable life : life;
@@ -173,10 +174,6 @@ let ring t = t.ring
 let busy t = t.busy
 let life t = t.life
 
-let send t kind body =
-  if is_open t then
-    Luv.Stream.write t.control [ Luv.Buffer.from_string (frame kind body) ] (fun _ _ -> ())
-
 let fail_pending t message =
   let pending = Hashtbl.to_seq_values t.pending |> List.of_seq in
   Hashtbl.clear t.pending;
@@ -198,12 +195,28 @@ let die t (dead : Protocol.dead) =
   t.dead <- Some dead;
   t.notify (Dead dead)
 
+let close_control t = Event_loop.close t.control
+
 let failure t message =
   if is_open t then begin
     t.life <- Closed;
-    Luv.Handle.close t.control ignore;
+    close_control t;
     fail_pending t message;
-    die t { at = Uv.now (); cause = Failed message }
+    die t { at = Native.now (); cause = Failed message }
+  end
+
+let flush_control t =
+  if is_open t then
+    match Outbox.flush t.outbox (Event_loop.fd t.control) with
+    | Done -> Event_loop.interest t.control Read
+    | Blocked -> Event_loop.interest t.control Read_write
+    | Failed -> failure t "pane control socket closed"
+
+let send t kind body =
+  if is_open t then begin
+    let idle = Outbox.is_empty t.outbox in
+    Outbox.add t.outbox (frame kind body);
+    if idle then flush_control t
   end
 
 let deliver t ~upto:upper =
@@ -400,12 +413,12 @@ let create config ~id ~cwd ~argv ~env ~notify =
         ignore (Unix.waitpid [] pid : int * Unix.process_status);
         invalid_arg "pane pid"
   in
-  let control = Uv.ok (Luv.Pipe.init ()) in
-  Uv.ok (Luv.Pipe.open_ control (Uv.file fd));
+  Unix.set_nonblock fd;
   let t =
     {
       ring = Ring.create buffer;
-      control;
+      control = Event_loop.watch fd;
+      outbox = Outbox.create ();
       pid;
       notify;
       life = Open;
@@ -424,21 +437,33 @@ let create config ~id ~cwd ~argv ~env ~notify =
       finished = Queue.create ();
     }
   in
-  let allocate _ =
+  let window = { Event_loop.buffer = t.input; off = 0; len = Bigstringaf.length t.input } in
+  let refresh () =
     if t.filled = Bigstringaf.length t.input then begin
       if t.filled >= layout.max_frame + 4 then invalid_arg "control frame too large";
       let input = Bigstringaf.create (min (layout.max_frame + 4) (2 * t.filled)) in
       Bigstringaf.blit t.input ~src_off:0 input ~dst_off:0 ~len:t.filled;
       t.input <- input
     end;
-    if t.filled = 0 then t.input
-    else Bigstringaf.sub t.input ~off:t.filled ~len:(Bigstringaf.length t.input - t.filled)
+    window.buffer <- t.input;
+    window.off <- t.filled;
+    window.len <- Bigstringaf.length t.input - t.filled
   in
-  Uv.read_start ~allocate control (function
-    | Ok chunk -> (
-        t.filled <- t.filled + Bigstringaf.length chunk;
-        try consume t with Invalid_argument message -> failure t message)
-    | Error _ -> failure t "pane control socket closed");
+  Event_loop.handle t.control
+    (Stream
+       {
+         window;
+         on_data =
+           (fun n ->
+             try
+               t.filled <- t.filled + n;
+               consume t;
+               if is_open t then refresh ()
+             with Invalid_argument message -> failure t message);
+         on_end = (fun () -> failure t "pane control socket closed");
+       })
+    ~on_writable:(fun () -> flush_control t);
+  Event_loop.interest t.control Read;
   send t Init (init config ~id ~cwd ~argv ~env ~size:Protocol.default_size);
   t
 
@@ -447,7 +472,7 @@ let shutdown t =
     send t Exit "";
     t.life <- Closed;
     fail_pending t "pane removed";
-    Luv.Handle.close t.control ignore)
+    close_control t)
 
 let release t =
   if not (is_reaped t) then (
@@ -463,7 +488,7 @@ let reap t =
           (match status with
           | Unix.WEXITED n -> Printf.sprintf "pane process exited unexpectedly with status %d" n
           | Unix.WSIGNALED n | Unix.WSTOPPED n ->
-              Printf.sprintf "pane process ended unexpectedly by signal %d" (Uv.native_signal n));
+              Printf.sprintf "pane process ended unexpectedly by signal %d" (Native.native_signal n));
         release t
     | exception Unix.Unix_error (Unix.ECHILD, _, _) -> release t
 
@@ -556,16 +581,16 @@ let input t input reply =
 
 let%test_module "Tests" =
   (module struct
+    let bigstring s = Bigstringaf.of_string ~off:0 ~len:(String.length s) s
+
     let%expect_test "fragmented and multiple control frames" =
       let f = frame Text "abc" in
       let partial = String.sub f 0 6 in
-      Printf.printf "%d %d\n"
-        (frame_size (Luv.Buffer.from_string partial) ~filled:6 0)
-        (String.length partial);
-      let input = Luv.Buffer.from_string (f ^ frame Exit "") in
+      Printf.printf "%d %d\n" (frame_size (bigstring partial) ~filled:6 0) (String.length partial);
+      let input = bigstring (f ^ frame Exit "") in
       let pos = ref 0 and frames = ref [] in
-      while !pos < Luv.Buffer.size input do
-        let size = frame_size input ~filled:(Luv.Buffer.size input) !pos in
+      while !pos < Bigstringaf.length input do
+        let size = frame_size input ~filled:(Bigstringaf.length input) !pos in
         frames :=
           Printf.sprintf "%d:%s"
             (to_int (of_int (Char.code input.{!pos + 4})))
@@ -574,7 +599,7 @@ let%test_module "Tests" =
         pos := !pos + size
       done;
       Printf.printf "%s 0\n" (String.concat "," (List.rev !frames));
-      (try ignore (frame_size (Luv.Buffer.from_string "\000\000\000\000") ~filled:4 0)
+      (try ignore (frame_size (bigstring "\000\000\000\000") ~filled:4 0)
        with Invalid_argument message -> print_endline message);
       [%expect {|
  0 6
@@ -610,7 +635,7 @@ let%test_module "Tests" =
  |}]
 
     let small_ring () =
-      let buffer = Luv.Buffer.create 64 in
+      let buffer = Bigstringaf.create 64 in
       Bigstringaf.set_int64_le buffer 0 64L;
       Ring.create buffer
 
@@ -620,9 +645,11 @@ let%test_module "Tests" =
       Option.get (Pid.of_int child)
 
     let fake ?(notify = ignore) ?(ring = small_ring ()) () =
+      let null = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
       {
         ring;
-        control = Uv.ok (Luv.Pipe.init ());
+        control = Event_loop.watch null;
+        outbox = Outbox.create ();
         pid = unsignalled_pid;
         notify;
         life = Open;
@@ -708,7 +735,7 @@ let%test_module "Tests" =
 
     let%expect_test "the tail never passes snapshot slices that were not delivered" =
       let capacity = 2048 in
-      let buffer = Luv.Buffer.create (data_offset + capacity) in
+      let buffer = Bigstringaf.create (data_offset + capacity) in
       Bigarray.Array1.fill buffer '\000';
       Bigstringaf.set_int64_le buffer 0 (Int64.of_int capacity);
       let count = 15 in
@@ -746,7 +773,7 @@ let%test_module "Tests" =
 
     let%expect_test "a finished snapshot keeps its cursor in the ring until its snapshot_done" =
       let capacity = 2048 in
-      let buffer = Luv.Buffer.create (data_offset + capacity) in
+      let buffer = Bigstringaf.create (data_offset + capacity) in
       Bigarray.Array1.fill buffer '\000';
       Bigstringaf.set_int64_le buffer 0 (Int64.of_int capacity);
       let t = fake ~ring:(Ring.create buffer) () in
@@ -810,6 +837,7 @@ let%test_module "Tests" =
           None
         with Invalid_argument message -> Some message
       in
+      if is_open t then close_control t;
       ( raised,
         List.rev !log,
         title t,

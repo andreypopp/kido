@@ -44,10 +44,14 @@ Out, until later stages:
                   formatter
     ko_server/    the coordinator library: Loop, Pane_proc, Pane, Panes,
                   Client, View, Input, Http (the router), Connection
-                  (the socket and its queued `writev` output), State
+                  (the socket and its queued `writev` output), Outbox
+                  (the queued strings that Connection and Pane_proc
+                  write), State
                   (the registry of clients and views), Protocol (the
-                  wire JSON types), Ws (WebSocket frames), Uv (luv and
-                  OS conversions), Pid (the only signal calls), Config
+                  wire JSON types), Ws (WebSocket frames), Event_loop
+                  (the poll(2) loop), Native (peer credentials, the
+                  monotonic clock, signal numbers), Pid (the only
+                  signal calls), Config
     ko_server/fuzz/  the QCheck2 fuzz properties, a test-only library
     ko_tui/       the thin terminal client library: Mosaic for the
                   sidebar and input, a direct cell differ for the screen
@@ -549,12 +553,14 @@ Decisions the numbers force:
   after a blocked write.** A single 2 ms record reaches 64 KiB above
   32 MB/s a pane, so a threshold on every record would skip a live view.
   With 1 MiB `SO_SNDBUF`, live views never skipped.
-- **The view write is a non-blocking `writev` stub with `Luv.Poll`**,
-  never `Luv.Stream.write` on the ring (design.md 4.6). The stub path is
-  as fast and allocates 22 times less.
-- **The coordinator has no luv handle for the pty**: `ko-pane` reads it
-  in C. For the record, `Luv.Pipe.open_` works on a macOS pty master and
-  also gets 1 KiB a read.
+- **The view write is a non-blocking `writev` stub that waits for
+  writability**, never a library write by reference on the ring
+  (design.md 4.6). The stub path is as fast as `Luv.Stream.write` and
+  allocates 22 times less.
+- **The coordinator never watches a pty**: `ko-pane` reads it in C.
+  For the record, `Luv.Pipe.open_` works on a macOS pty master and
+  also gets 1 KiB a read. This is why the coordinator's loop can use
+  poll(2), which cannot watch a pty on macOS (design.md 4.1).
 - **Snapshots go over the socket.** 6 MB of history encodes in 1.65 ms
   and decodes in 6.7 ms; `snapshot_file` is not needed in P1.
 - **Throughput is judged against the parser, tmux and kitty**, not 400
@@ -569,7 +575,7 @@ a wakeup or its writer differs. Neither is explained yet.
 
 To run them again: `bench/run.sh`, `bench/baselines.sh` and
 `bench/kitten.sh` (the kitty rows open windows);
-`_build/default/bench/coordinator.exe throughput|latency|snapshot|pty-pipe|allocation`;
+`_build/default/bench/coordinator.exe throughput|flood|latency|snapshot|cpu-check`;
 `_build/default/bench/wait_master.exe`;
 `python3 bench/client.py` for the client's key-to-frame latency and CPU
 (6.4). The spike 3 driver was removed with `spikes/mosaic/` in P1.2.
@@ -577,7 +583,8 @@ The spike 4 driver (`spikes/http/`) was removed with the spike server
 in P1.1; P1.3 measures the same table against `ko server`. Since P1.1
 `bench/coordinator.exe` runs the production `Pane_proc` and
 `Connection` with 2 ms coalescing only; the `Luv.Stream.write` and
-zero-coalescing comparison rows are gone, and its callback rows
+zero-coalescing comparison rows are gone, the `pty-pipe` and
+`allocation` probes went with luv, and its callback rows
 counted only the title and pwd callbacks that P1 registered (the
 `--no-callbacks` switch that produced the without-callbacks row was
 removed after the measurement).
@@ -590,11 +597,11 @@ points were open or wrong in the plan:
 - **Key events carry `unshifted_codepoint`** (protocol.md 8 and 14).
   libghostty-vt's encoder finds the kitty keyboard code of a printable
   key only through it.
-- **The view's writer uses a duplicate of the connection's fd.** A
-  `Luv.Poll` on the same fd that `Luv.Pipe.read_start` watches gets a
-  synchronous error callback, which re-entered the writer. The
-  coordinator `dup`s the accepted fd for `Luv.Poll` and `writev`, and
-  luv reads the original.
+- **The view's writer and the connection's reads share one fd.** Under
+  luv, a `Luv.Poll` on the fd that `Luv.Pipe.read_start` watched got a
+  synchronous error callback that re-entered the writer, so P1.1 used a
+  `dup`. The poll(2) loop (design.md 4.1) keeps one read and one write
+  interest per fd, so the `dup` is gone.
 - **The ring header has a `read` index** (protocol.md 14). The plan
   woke an idle coordinator when `tail` equalled the head, but `tail`
   stays behind by the bytes that views may resume, so after the first
@@ -879,7 +886,7 @@ the spike numbers in the P1.0 report deciding the P1.2 drawing path.
 ## 9. What P1 proves, and what it does not
 
 Proves: the binding, the mirror and snapshot design, the view stream
-and its backpressure, the HTTP transport on luv, the client as a
+and its backpressure, the HTTP transport, the client as a
 mirror, and the performance envelope, all with real shells and real
 programs.
 

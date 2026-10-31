@@ -27,10 +27,10 @@ let with_server ~command ~activity f =
       Panes.reap panes;
       Panes.reaped panes
     in
-    ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+    Event_loop.step Peek;
     while Float.(Unix.gettimeofday () < deadline) && not (finished ()) do
       Panes.kill panes;
-      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Event_loop.step Peek;
       Unix.sleepf 0.002
     done;
     Array.iter (fun name -> Sys.remove (Filename.concat dir name)) (Sys.readdir dir);

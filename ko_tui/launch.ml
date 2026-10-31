@@ -113,10 +113,10 @@ let stop ~dir =
         Fun.protect
           ~finally:(fun () -> Unix.close fd)
           (fun () ->
-            if Ko_server.Uv.peer_uid fd <> Unix.getuid () then
+            if Ko_server.Native.peer_uid fd <> Unix.getuid () then
               Error "server belongs to another user"
             else
-              match Ko_server.Pid.of_int (Ko_server.Uv.peer_pid fd) with
+              match Ko_server.Pid.of_int (Ko_server.Native.peer_pid fd) with
               | None -> Error "invalid server pid"
               | Some pid -> (
                   match Ko_server.Pid.signal pid Sys.sigterm with

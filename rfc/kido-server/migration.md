@@ -749,7 +749,7 @@ The `.pi/extensions/no-git-writes` guard reads `KO_AGENT_PARENT_SESSION`.
 
 | document | fate |
 |---|---|
-| `AGENTS.md` | rewritten: ko's layout, build (zig, luv, httpun), the mirror contract, the pane protocol, the layout document, the test rules; the fork, OSC 133 format-string and tmux gotcha sections go |
+| `AGENTS.md` | rewritten: ko's layout, build (zig, iomux, httpun), the mirror contract, the pane protocol, the layout document, the test rules; the fork, OSC 133 format-string and tmux gotcha sections go |
 | `docs/design.md` | rewritten from `rfc/kido-server/design.md`, with these kido sections kept and edited: who is authoritative for what (variables instead of options), the pi extension, identity, the inbox, addressing, spawning, the login environment, run outcomes, notifying the parent, the sidebar tree, priming a local shell, the bin directory, knobs, known limits |
 | `docs/design-subagents.md` | kept; "tmux session" becomes "session", `move-window` becomes `move_window`, the `remain-on-exit` limit goes |
 | `docs/design-rpc.md` | deleted; `docs/protocol.md` from `rfc/kido-server/protocol.md` |

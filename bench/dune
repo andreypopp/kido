@@ -13,7 +13,6 @@
  (libraries
   containers
   unix
-  luv
   ko_vt
   ko_server
   bigstringaf

@@ -11,14 +11,14 @@ external layout : unit -> layout = "ko_ring_layout"
 
 let layout = layout ()
 
-external head_of : Luv.Buffer.t -> int = "ko_pane_ring_head" [@@noalloc]
-external set_tail : Luv.Buffer.t -> int -> unit = "ko_pane_ring_set_tail" [@@noalloc]
-external set_read : Luv.Buffer.t -> int -> unit = "ko_pane_ring_set_read" [@@noalloc]
+external head_of : Bigstringaf.t -> int = "ko_pane_ring_head" [@@noalloc]
+external set_tail : Bigstringaf.t -> int -> unit = "ko_pane_ring_set_tail" [@@noalloc]
+external set_read : Bigstringaf.t -> int -> unit = "ko_pane_ring_set_read" [@@noalloc]
 
 type kind = Bytes | Marker | Slice | Pad
 
 type t = {
-  buffer : Luv.Buffer.t;
+  buffer : Bigstringaf.t;
   capacity : int;
   mutable tail : int;
   mutable evicted_data : int;

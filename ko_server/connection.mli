@@ -14,7 +14,7 @@ val record :
   queue:bool ->
   kind:Protocol.Record.kind ->
   offset:int ->
-  Luv.Buffer.t ->
+  Bigstringaf.t ->
   at:int ->
   len:int ->
   written
@@ -23,7 +23,7 @@ val batch_count : t -> int
 val batch_capacity : int
 val batch_full : t -> bool
 val batch_add : t -> offset:int -> at:int -> len:int -> unit
-val batch_send : t -> Luv.Buffer.t -> int
+val batch_send : t -> Bigstringaf.t -> int
 
 val upgrade :
   t ->
@@ -35,5 +35,8 @@ val upgrade :
   (unit, string) result
 
 val writer : Unix.file_descr -> t
-val accept : Luv.Pipe.t -> on_dispose:(t -> unit) -> (t -> Httpun.Reqd.t Gluten.reqd -> unit) -> t
+
+val accept :
+  Unix.file_descr -> on_dispose:(t -> unit) -> (t -> Httpun.Reqd.t Gluten.reqd -> unit) -> t
+
 val tick : t -> float -> unit

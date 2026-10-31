@@ -183,13 +183,44 @@ churn, which zmx did eight times in eleven months; the C API is the
 stable surface. A coordinator crash still kills the panes, as a tmux
 crash does today.
 
-The coordinator is single-threaded over libuv through the opam package
-`luv`. luv vendors libuv and dune builds it, so it locks into
-`dune.lock` with no system library; it brings `ctypes` and `integers`
-with it. The loop, timers, the SIGCHLD watcher, the unix socket
-listener, the client connections and the pane control sockets are luv
-handles. OCaml 5 domains are not used; parallelism is the pane
-processes. Backpressure toward a program is the ring: if the
+The coordinator is single-threaded over its own poll(2) loop,
+`Event_loop` in `ko_server/`, on the opam package `iomux` (decided
+2026-10-31). Every fd that the loop watches is a socket or a pipe:
+the unix socket listener, the client connections, the pane control
+sockets and the signal self-pipe. The ptys stay inside `ko-pane`, so
+macOS poll, which cannot watch a pty, is enough. luv was replaced
+because its stream reads needed a workaround for an empty read after
+a full buffer, its pipe and poll handles could not share one fd, and
+it brought `ctypes`, `integers` and `stdlib-shims` into the lock; the
+loop measured the same throughput and latency with less allocation.
+These are the loop's rules:
+
+- A read goes into a window that its owner supplies and reports only
+  a byte count, so a read allocates nothing. One wakeup reads a
+  stream until a short read, with a bound (`Event_loop.max_reads`), so
+  that one fast peer cannot starve the others. The listener's accepts
+  in a wakeup are bounded too, and when the process runs out of
+  descriptors or buffers, `Loop` stops watching the listener for a
+  short time instead of spinning.
+- Back-pressure toward a client is the read interest: an owner that
+  stops reading sets its interest so that the loop does not poll the
+  fd for input.
+- Timers use the monotonic nanosecond clock. A repeating timer is
+  scheduled from its due time, not from the time it fired. Linux
+  waits with `ppoll` and a nanosecond timeout. macOS has no `ppoll`,
+  so the timeout rounds up to whole milliseconds, which is late at
+  most by the rounding and never early.
+- Signals: a C handler, installed with `SA_RESTART`, sets a pending
+  flag for its signal and writes one byte to a self-pipe that the
+  loop watches, so other system calls do not see `EINTR`. The byte
+  only wakes the loop; the flag is the signal. A full pipe still
+  wakes the loop, so no signal is lost. A wakeup runs each pending
+  signal's callback once, however many times it arrived, so a
+  callback must not count signals: SIGCHLD reaps every exited child.
+- A `Wait` step with no timer and no fd interest returns at once, and
+  `run` ends, so the loop never blocks on nothing.
+
+OCaml 5 domains are not used; parallelism is the pane processes. Backpressure toward a program is the ring: if the
 coordinator falls a whole ring behind, `ko-pane` blocks, stops reading
 the pty, and the program blocks, as under tmux.
 
@@ -203,7 +234,7 @@ design.md keep working unchanged.
 
 The protocol is HTTP/1.1 over the unix socket, with WebSocket for the
 long-lived streams (decided 2026-10-29), served by `httpun` and
-`httpun-ws`, whose state machines the luv reads and writes drive. Each
+`httpun-ws`, whose state machines the loop's reads and writes drive. Each
 stream is its own connection: the client connection, one per
 open view (which
 also carries that pane's input), one per image fetch, and a pool of
@@ -211,7 +242,7 @@ keep-alive connections for control requests. A remote client reaches
 the same socket through a unix socket forward on its SSH
 ControlMaster. The coordinator checks the peer uid on every accepted
 connection (`LOCAL_PEERCRED` on macOS, `SO_PEERCRED` on Linux) with one
-`getsockopt` stub on the fd that `Luv.Handle.fileno` returns. There is
+`getsockopt` stub on the accepted fd. There is
 no other authentication.
 
 ### 4.2 Modules, in OCaml
@@ -240,8 +271,9 @@ at the cut-over (migration.md S8).
 | `Model` | `Pane_status` over panes, once: each pane's `status` field and its `status` event; no tree, no snapshot |
 | `Upgrade` | write state, exec the new binary with the pane rings and control sockets, read state |
 | `Config` | `ko.conf`: default shell, scrollback and image limits, the environment |
-| `Http` | httpun and httpun-ws on luv: routing, JSON bodies, WebSocket streams, version headers |
-| `Loop` | the luv loop, timers, the tick, the SIGCHLD watcher |
+| `Http` | httpun and httpun-ws over `Connection`: routing, JSON bodies, WebSocket streams, version headers |
+| `Event_loop` | the poll(2) loop: fd interest, reads into owner windows, timers, signals through a self-pipe |
+| `Loop` | the server on `Event_loop`: the listener and its accept limit, the tick, the ping, SIGCHLD and SIGTERM |
 
 The coordinator's C stubs are the peer-uid `getsockopt`, the ring
 mapping and `ko-pane` spawn, the view `writev` (4.6), and `shm_open`
@@ -342,8 +374,9 @@ non-blocking `writev` of a WebSocket header and the ring region itself
 (section 4.6); mark the pane dirty for the model tick. The coordinator
 copies nothing. Its allocation is bounded per write call, not per byte:
 P1.0 measured 6.9 minor words per record with the `writev` stub and 2 ms
-coalescing, the rest from luv's reads of event frames, and 0.4 without
-events; `Luv.Stream.write` costs about 150 words per call.
+coalescing, the rest from the reads of event frames, and 0.4 without
+events; a library stream write (P1.0 measured `Luv.Stream.write`)
+costs about 150 words per call.
 
 A resize, a reset and a terminal option change are **stream markers**:
 the server applies them to its own terminal at a byte offset and sends
@@ -543,7 +576,8 @@ multiplexed binary connection:
   is microseconds.
 - Writes scale with visible panes: one `write` per busy pane per
   flush instead of one for all. Twenty busy panes are ten thousand
-  writes a second, which is far below what luv and the kernel handle.
+  writes a second, which is far below what the loop and the kernel
+  handle.
 - Between `ko-pane` and the coordinator there is no copy (decided
   2026-10-30). One anonymous shared mapping per pane, `memfd_create`
   on Linux and `shm_open` with an immediate `shm_unlink` on macOS,
@@ -553,12 +587,12 @@ multiplexed binary connection:
   place. The coordinator maps it as a `Bigarray` and writes a view's
   payload with a small non-blocking `writev` stub on the view socket's
   fd, the WebSocket header as a separate small iovec, and waits for
-  writability with `Luv.Poll` on a `dup` of that fd (a `Luv.Poll` on
-  the fd that luv reads gets a synchronous error, p1-mvp.md 6.3). No
+  writability through the loop's write interest on the same fd. No
   pending write ever references the ring: on `EAGAIN` the view keeps
   only its ring offset, and a partial write copies the rest of its
   frame. P1.0 measured
-  why: with `Luv.Stream.write` by reference, an in-flight write pins the
+  why: with a library write by reference (`Luv.Stream.write` in
+  P1.0), an in-flight write pins the
   ring until the kernel takes it, and a reader that stalls 300 ms
   blocked the pane for 283 ms even with a 1 MiB `SO_SNDBUF`. The
   control socket carries `head` wakeups for an idle coordinator, `full`
@@ -961,7 +995,7 @@ Each spike is bounded and produces numbers or a go/no-go.
    `SCM_RIGHTS`. 1 agent-day, low risk.
 5. **Shared-memory images by name.** The server copies a `t=s` upload
    into its own 0600 object; Swift maps it by name and renders without
-   a copy. Also: `httpun` on luv with 50 concurrent streaming
+   a copy. Also: `httpun` with 50 concurrent streaming
    responses, and a Swift HTTP/1.1 client over `NWConnection` on a
    unix socket and on an SSH unix forward. 2 agent-days, low risk; the
    image part runs in migration.md S6, the transport part ran in P1.0.

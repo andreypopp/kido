@@ -1,32 +1,26 @@
-external writev : Unix.file_descr -> bytes -> int -> Luv.Buffer.t -> int -> int -> int
+external writev : Unix.file_descr -> bytes -> int -> Bigstringaf.t -> int -> int -> int
   = "ko_writev_bytecode" "ko_writev"
 [@@noalloc]
 
-external writev_batch : Unix.file_descr -> bytes -> int array -> int -> Luv.Buffer.t -> int
+external writev_batch : Unix.file_descr -> bytes -> int array -> int -> Bigstringaf.t -> int
   = "ko_writev_batch"
-[@@noalloc]
-
-external write_strings : Unix.file_descr -> string array -> int -> int -> int = "ko_write_strings"
 [@@noalloc]
 
 type phase = Head | Body of { mutable left : int }
 type ending = Open | Reject | Flushing
 
 type t = {
-  stream : Luv.Pipe.t;
-  fd : Unix.file_descr;
-  poll : Luv.Poll.t;
+  watch : Event_loop.watch;
+  window : Event_loop.window;
+  mutable reading : bool;
   mutable runtime : Gluten.Server.t option;
   mutable closed : bool;
   mutable waiting : bool;
-  pending : string Queue.t;
-  mutable sent : int;
+  pending : Outbox.t;
   batch_headers : bytes;
   batch_spans : int array;
   mutable batch_count : int;
-  mutable pending_bytes : int;
   headers : bytes;
-  strings : string array;
   mutable websocket : bool;
   mutable ready : bool;
   mutable yielded : bool;
@@ -43,13 +37,14 @@ type t = {
   mutable head_bytes : int;
   mutable head_crlf : int;
   mutable head_scanned : int;
-  mutable resume_read : unit -> unit;
+  mutable resume_write : unit -> unit;
   fragments : Buffer.t;
   mutable last_activity : float;
   mutable ping : float option;
 }
 
 let runtime t = Option.get t.runtime
+let fd t = Event_loop.fd t.watch
 let max_message = 1 lsl 20
 let max_head = 16384
 let batch_capacity = 64
@@ -59,19 +54,37 @@ let max_queued = 64 lsl 20
 let close t =
   if not t.closed then begin
     t.closed <- true;
-    Luv.Handle.close t.poll (fun () -> Unix.close t.fd);
-    Luv.Handle.close t.stream ignore;
+    Event_loop.close t.watch;
     t.on_close ();
     t.on_dispose t
   end
 
+let update_interest t =
+  Event_loop.interest t.watch (Event_loop.interest_of ~read:t.reading ~write:t.waiting)
+
 let when_writable t resume =
   if (not t.closed) && not t.waiting then begin
     t.waiting <- true;
-    Luv.Poll.start t.poll [ `WRITABLE ] (fun result ->
-        ignore (Luv.Poll.stop t.poll);
-        t.waiting <- false;
-        match result with Error _ -> close t | Ok _ -> resume ())
+    t.resume_write <- resume;
+    update_interest t
+  end
+
+let writable t =
+  t.waiting <- false;
+  update_interest t;
+  t.resume_write ()
+
+let refresh_window t =
+  if not t.closed then begin
+    let capacity = Bigstringaf.length t.read_buf in
+    if t.read_pos > 0 && capacity - t.read_len < 4096 then (
+      Bigstringaf.blit t.read_buf ~src_off:t.read_pos t.read_buf ~dst_off:0
+        ~len:(t.read_len - t.read_pos);
+      t.read_len <- t.read_len - t.read_pos;
+      t.read_pos <- 0);
+    t.window.off <- t.read_len;
+    t.window.len <- capacity - t.read_len;
+    if t.window.len = 0 && t.reading then close t
   end
 
 let rec wait t =
@@ -81,35 +94,10 @@ let rec wait t =
 
 and flush t =
   if not t.closed then
-    if Queue.is_empty t.pending then match t.ending with Flushing -> close t | Open | Reject -> ()
-    else begin
-      let rec fill i seq =
-        if i = Array.length t.strings then i
-        else
-          match seq () with
-          | Seq.Nil -> i
-          | Seq.Cons (s, rest) ->
-              t.strings.(i) <- s;
-              fill (i + 1) rest
-      in
-      let count = fill 0 (Queue.to_seq t.pending) in
-      let n = write_strings t.fd t.strings count t.sent in
-      Array.fill t.strings 0 count "";
-      if n < 0 then close t
-      else if n = 0 then wait t
-      else begin
-        t.pending_bytes <- t.pending_bytes - n;
-        let left = ref (n + t.sent) in
-        while
-          match Queue.peek_opt t.pending with Some s -> !left >= String.length s | None -> false
-        do
-          let s = Queue.take t.pending in
-          left := !left - String.length s
-        done;
-        t.sent <- !left;
-        flush t
-      end
-    end
+    match Outbox.flush t.pending (fd t) with
+    | Done -> ( match t.ending with Flushing -> close t | Open | Reject -> ())
+    | Blocked -> wait t
+    | Failed -> close t
 
 let header bytes base opcode len =
   Bytes.set bytes base (Char.chr (128 lor opcode));
@@ -130,22 +118,21 @@ let send t opcode text =
     if String.length text > max_message then close t
     else begin
       let len = header t.headers 0 opcode (String.length text) in
-      Queue.add (Bytes.sub_string t.headers 0 len) t.pending;
-      Queue.add text t.pending;
-      t.pending_bytes <- t.pending_bytes + len + String.length text;
+      Outbox.add t.pending (Bytes.sub_string t.headers 0 len);
+      Outbox.add t.pending text;
       if t.ready then flush t
     end
 
 let json t value = send t 1 (Yojson.Basic.to_string value)
 
 let reject t kind =
-  if t.ready && (not t.waiting) && Queue.is_empty t.pending then
+  if t.ready && (not t.waiting) && Outbox.is_empty t.pending then
     send t 8 ("\003\240" ^ Jsonkit.Of_json.string (Protocol.error_kind_to_json kind));
   close t
 
 let is_closed t = t.closed
-let available t = t.ready && (not t.closed) && (not t.waiting) && Queue.is_empty t.pending
-let waiting t = t.waiting || not (Queue.is_empty t.pending)
+let available t = t.ready && (not t.closed) && (not t.waiting) && Outbox.is_empty t.pending
+let waiting t = t.waiting || not (Outbox.is_empty t.pending)
 
 type written = Accepted | Queued | Blocked | Closed
 
@@ -158,21 +145,20 @@ let record t ~queue ~kind ~offset ring ~at ~len =
   if t.closed then Closed
   else begin
     let h = record_header t.headers ~kind ~offset ~len in
-    let n = if available t then writev t.fd t.headers h ring at len else 0 in
+    let n = if available t then writev (fd t) t.headers h ring at len else 0 in
     if n < 0 then (
       close t;
       Closed)
     else if n = h + len then Accepted
     else if n > 0 || queue then
-      if t.pending_bytes + (h + len - n) > max_queued then (
+      if Outbox.bytes t.pending + (h + len - n) > max_queued then (
         close t;
         Closed)
       else begin
-        if n < h then Queue.add (Bytes.sub_string t.headers n (h - n)) t.pending;
+        if n < h then Outbox.add t.pending (Bytes.sub_string t.headers n (h - n));
         let skip = max 0 (n - h) in
         if skip < len then
-          Queue.add (Bigstringaf.substring ring ~off:(at + skip) ~len:(len - skip)) t.pending;
-        t.pending_bytes <- t.pending_bytes + (h + len - n);
+          Outbox.add t.pending (Bigstringaf.substring ring ~off:(at + skip) ~len:(len - skip));
         if t.ready then wait t;
         Queued
       end
@@ -201,7 +187,9 @@ let batch_send t ring =
   t.batch_count <- 0;
   if t.closed then -1
   else begin
-    let n = if available t then writev_batch t.fd t.batch_headers t.batch_spans count ring else 0 in
+    let n =
+      if available t then writev_batch (fd t) t.batch_headers t.batch_spans count ring else 0
+    in
     if n < 0 then (
       close t;
       -1)
@@ -220,21 +208,19 @@ let batch_send t ring =
           stop := true;
           if !remaining > 0 then begin
             if !remaining < hl then
-              Queue.add
-                (Bytes.sub_string t.batch_headers (base + !remaining) (hl - !remaining))
-                t.pending;
+              Outbox.add t.pending
+                (Bytes.sub_string t.batch_headers (base + !remaining) (hl - !remaining));
             let skip = max 0 (!remaining - hl) in
-            Queue.add (Bigstringaf.substring ring ~off:(at + skip) ~len:(len - skip)) t.pending;
-            t.pending_bytes <- t.pending_bytes + (hl + len - !remaining);
+            Outbox.add t.pending (Bigstringaf.substring ring ~off:(at + skip) ~len:(len - skip));
             incr accepted
           end
         end
       done;
-      if t.pending_bytes > max_queued then (
+      if Outbox.bytes t.pending > max_queued then (
         close t;
         -1)
       else (
-        if (!accepted < count || not (Queue.is_empty t.pending)) && t.ready then wait t;
+        if (!accepted < count || not (Outbox.is_empty t.pending)) && t.ready then wait t;
         !accepted)
     end
   end
@@ -244,8 +230,7 @@ let head_too_large =
 
 let send_head_too_large t =
   t.ending <- Flushing;
-  Queue.add head_too_large t.pending;
-  t.pending_bytes <- t.pending_bytes + String.length head_too_large;
+  Outbox.add t.pending head_too_large;
   flush t
 
 let rec write_runtime t =
@@ -258,7 +243,7 @@ let rec write_runtime t =
             if (not !blocked) && not t.closed then
               try
                 let text = Bigstringaf.substring buffer ~off ~len in
-                let n = Unix.single_write_substring t.fd text 0 len in
+                let n = Unix.single_write_substring (fd t) text 0 len in
                 wrote := !wrote + n;
                 if n < len then blocked := true
               with
@@ -289,7 +274,8 @@ let rec write_runtime t =
 
 let reject_head t =
   t.ending <- Reject;
-  ignore (Luv.Stream.read_stop t.stream : _ result);
+  t.reading <- false;
+  update_interest t;
   if t.yielded then send_head_too_large t else write_runtime t
 
 let head_ended = 4
@@ -353,10 +339,18 @@ let rec consume t =
           if n > 0 || t.read_progress then consume t
         end
     | `Yield ->
-        ignore (Luv.Stream.read_stop t.stream : _ result);
+        t.reading <- false;
+        update_interest t;
         Gluten.Server.yield_reader (runtime t) (fun () ->
-            t.resume_read ();
-            consume t)
+            (match t.ending with
+            | Open ->
+                if not t.closed then begin
+                  t.reading <- true;
+                  update_interest t
+                end
+            | Reject | Flushing -> ());
+            consume t;
+            refresh_window t)
     | `Close -> close t
   end
 
@@ -409,38 +403,30 @@ let upgrade t reqd upgrade ~on_text ~on_close ~on_writable =
                 in
                 { Httpun_ws.Websocket_connection.frame; eof = (fun ?error:_ () -> close t) }))))
 
-let create stream ~on_dispose =
-  let descriptor =
-    Unix.dup ~cloexec:true
-      (match Uv.fd stream with
-      | Ok fd -> fd
-      | Error message -> raise (Unix.Unix_error (Unix.EIO, message, "")))
-  in
-  Unix.set_nonblock descriptor;
+let create fd ~on_dispose =
+  Unix.set_nonblock fd;
+  let read_buf = Bigstringaf.create max_head in
   let t =
     {
-      stream;
-      fd = descriptor;
-      poll = Uv.ok (Luv.Poll.init (Obj.magic descriptor));
+      watch = Event_loop.watch fd;
+      window = { buffer = read_buf; off = 0; len = max_head };
+      reading = false;
       runtime = None;
       closed = false;
       waiting = false;
-      pending = Queue.create ();
+      pending = Outbox.create ();
       headers = Bytes.create 20;
-      strings = Array.make 64 "";
       on_dispose;
-      sent = 0;
       batch_headers = Bytes.create (batch_capacity * batch_stride);
       batch_spans = Array.make (4 * batch_capacity) 0;
       batch_count = 0;
-      pending_bytes = 0;
       websocket = false;
       ready = false;
       yielded = false;
       on_text = ignore;
       on_close = ignore;
       on_writable = ignore;
-      read_buf = Bigstringaf.create max_head;
+      read_buf;
       read_len = 0;
       read_pos = 0;
       read_progress = false;
@@ -449,18 +435,29 @@ let create stream ~on_dispose =
       head_bytes = 0;
       head_crlf = 0;
       head_scanned = 0;
-      resume_read = ignore;
+      resume_write = ignore;
       fragments = Buffer.create 64;
       last_activity = Unix.gettimeofday ();
       ping = None;
     }
   in
+  Event_loop.handle t.watch
+    (Stream
+       {
+         window = t.window;
+         on_data =
+           (fun n ->
+             t.read_len <- t.read_len + n;
+             consume t;
+             write_runtime t;
+             refresh_window t);
+         on_end = (fun () -> close t);
+       })
+    ~on_writable:(fun () -> writable t);
   t
 
 let writer fd =
-  let stream = Uv.ok (Luv.Pipe.init ()) in
-  Uv.ok (Luv.Pipe.open_ stream (Uv.file fd));
-  let t = create stream ~on_dispose:ignore in
+  let t = create fd ~on_dispose:ignore in
   t.ready <- true;
   t.websocket <- true;
   t
@@ -478,34 +475,16 @@ let on_request t handler ({ Gluten.reqd; _ } as request) =
            `Length_required)
         ""
 
-let accept stream ~on_dispose handler =
-  let t = create stream ~on_dispose in
+let accept fd ~on_dispose handler =
+  let t = create fd ~on_dispose in
   t.runtime <-
     Some
       (Gluten.Server.create_upgradable
          ~protocol:(module Httpun.Server_connection)
          ~create:(fun h -> Httpun.Server_connection.create h)
          (on_request t (handler t)));
-  let start_read () =
-    Uv.read_start stream
-      ~allocate:(fun _ ->
-        if t.read_pos > 0 && Bigstringaf.length t.read_buf - t.read_len < 4096 then (
-          Bigstringaf.blit t.read_buf ~src_off:t.read_pos t.read_buf ~dst_off:0
-            ~len:(t.read_len - t.read_pos);
-          t.read_len <- t.read_len - t.read_pos;
-          t.read_pos <- 0);
-        Bigstringaf.sub t.read_buf ~off:t.read_len ~len:(Bigstringaf.length t.read_buf - t.read_len))
-      (function
-        | Ok b ->
-            t.read_len <- t.read_len + Bigstringaf.length b;
-            consume t;
-            write_runtime t
-        | Error _ -> close t)
-  in
-  t.resume_read <-
-    (fun () ->
-      match t.ending with Open -> if not t.closed then start_read () | Reject | Flushing -> ());
-  start_read ();
+  t.reading <- true;
+  update_interest t;
   write_runtime t;
   t
 
@@ -542,7 +521,7 @@ let%test_module "Tests" =
     let%expect_test "a view that never reads is closed before its queue grows without bound" =
       let read_end, write_end = Unix.pipe () in
       let view = writer write_end in
-      let ring = Luv.Buffer.create (1 lsl 20) in
+      let ring = Bigstringaf.create (1 lsl 20) in
       let closed_at = ref None in
       for i = 1 to 80 do
         if Option.is_none !closed_at then
@@ -561,7 +540,7 @@ let%test_module "Tests" =
       Unix.set_nonblock reader_end;
       let view = writer writer_end in
       let sizes = [ 100; 150_000 ] in
-      let ring = Luv.Buffer.create (List.fold_left ( + ) 0 sizes) in
+      let ring = Bigstringaf.create (List.fold_left ( + ) 0 sizes) in
       let at = ref 0 in
       List.iter
         (fun len ->
@@ -580,12 +559,12 @@ let%test_module "Tests" =
         (match Unix.read reader_end chunk 0 (Bytes.length chunk) with
         | n -> received := !received + n
         | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> ());
-        ignore (Luv.Loop.run ~mode:`ONCE () : bool);
+        Event_loop.step Peek;
         incr rounds
       done;
       Printf.printf "everything arrived: %b\n" (!received = !expected);
       close view;
-      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Event_loop.step Peek;
       Unix.close reader_end;
       [%expect {|
         accepted 2 of 2
@@ -595,10 +574,8 @@ let%test_module "Tests" =
     let connect handler =
       Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
       let client, server = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-      let stream = Uv.ok (Luv.Pipe.init ()) in
-      Uv.ok (Luv.Pipe.open_ stream (Uv.file server));
       Unix.set_nonblock client;
-      (client, accept stream ~on_dispose:ignore handler)
+      (client, accept server ~on_dispose:ignore handler)
 
     let feeder client request =
       let sent = ref 0 in
@@ -606,7 +583,7 @@ let%test_module "Tests" =
         (match Unix.write_substring client request !sent (String.length request - !sent) with
         | n -> sent := !sent + n
         | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> ());
-        ignore (Luv.Loop.run ~mode:`NOWAIT () : bool)
+        Event_loop.step Peek
 
     let repeat n f =
       for _ = 1 to n do
@@ -641,7 +618,7 @@ let%test_module "Tests" =
       Printf.printf "received %d of %d, closed %b\n" !received (String.length body)
         (is_closed connection);
       close connection;
-      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Event_loop.step Peek;
       Unix.close client;
       [%expect
         {|
@@ -666,11 +643,11 @@ let%test_module "Tests" =
           match Unix.write_substring client chunk off (String.length chunk - off) with
           | n -> write chunk (off + n)
           | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) ->
-              ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+              Event_loop.step Peek;
               write chunk off
           | exception Unix.Unix_error _ -> ()
         end
-        else ignore (Luv.Loop.run ~mode:`NOWAIT () : bool)
+        else Event_loop.step Peek
       in
       List.iter
         (fun chunk ->
@@ -680,7 +657,7 @@ let%test_module "Tests" =
       let reply = Buffer.create 256 and chunk = Bytes.create 4096 in
       let eof = ref false in
       repeat 50 (fun () ->
-          ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+          Event_loop.step Peek;
           try
             while not !eof do
               match Unix.read client chunk 0 4096 with
@@ -696,7 +673,7 @@ let%test_module "Tests" =
       let buffered = connection.read_len - connection.read_pos in
       let closed = is_closed connection in
       close connection;
-      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Event_loop.step Peek;
       Unix.close client;
       (statuses, closed, buffered)
 
@@ -789,7 +766,7 @@ let%test_module "Tests" =
             sent := !sent + n;
             idle := 0
         | exception Unix.Unix_error _ -> incr idle);
-        ignore (Luv.Loop.run ~mode:`NOWAIT () : bool)
+        Event_loop.step Peek
       done;
       Gc.full_major ();
       let grown = (Gc.stat ()).live_words - before in
@@ -799,7 +776,7 @@ let%test_module "Tests" =
         (!sent < 1 lsl 20)
         (grown * 8 < 1 lsl 20);
       close connection;
-      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Event_loop.step Peek;
       Unix.close client;
       [%expect {| closed true, client sent < 1 MiB: true, heap grew < 1 MiB: true |}]
 
@@ -822,12 +799,12 @@ let%test_module "Tests" =
           (match Unix.write_substring client data !sent (String.length data - !sent) with
           | n -> sent := !sent + n
           | exception Unix.Unix_error _ -> ());
-          ignore (Luv.Loop.run ~mode:`NOWAIT () : bool));
+          Event_loop.step Peek);
       let reply = Buffer.create (size + 1024) and chunk = Bytes.create 65536 in
       let eof = ref false and rounds = ref 0 in
       while (not !eof) && !rounds < 20000 do
         incr rounds;
-        ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+        Event_loop.step Peek;
         match Unix.read client chunk 0 65536 with
         | 0 -> eof := true
         | n -> Buffer.add_subbytes reply chunk 0 n
@@ -843,7 +820,7 @@ let%test_module "Tests" =
         (tail >= 0
         && String.equal (String.sub reply tail (String.length head_too_large)) head_too_large);
       close connection;
-      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Event_loop.step Peek;
       Unix.close client;
       [%expect
         {| eof true, starts with 200 true, body bytes 3000000 of 3000000, ends with whole 431 true |}]

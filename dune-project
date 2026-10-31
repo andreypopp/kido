@@ -50,7 +50,7 @@
   (ppx_string_conv
    (>= v0.17))
   mosaic
-  luv
+  iomux
   httpun
   httpun-ws
   dune-build-info

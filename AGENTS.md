@@ -938,7 +938,7 @@ libghostty-vt upstream. `scripts/fuzz.sh` names the targets:
   `ko_pane/fuzz/`. They build under `--profile fuzz` with an LLVM
   clang (`KO_FUZZ_CC`, else one found under Homebrew's `llvm`).
   Apple's clang has no libFuzzer, so the target prints SKIP.
-- `ring`, `view` and `http`: QCheck2 properties in the test-only
+- `ring`, `view`, `http` and `loop`: QCheck2 properties in the test-only
   library `ko_server/fuzz/`, so `ko` links no QCheck.
   `scripts/lint.sh` refuses a dune file elsewhere in ko that names
   QCheck or `ko_server_fuzz`. QCheck2 shrinks each failing case
@@ -949,7 +949,14 @@ libghostty-vt upstream. `scripts/fuzz.sh` names the targets:
   `view` drives a real `ko-pane` through the view protocol and
   compares every view's mirror, and a fresh snapshot, with the pane's
   terminal. `http` sends requests, bodies and WebSocket messages to
-  an in-process server.
+  an in-process server. `loop` drives `Event_loop` over socketpairs
+  and a pipe with interest changes, sends, full buffers, peer closes,
+  timers and signals, and compares each step with a model: the read
+  count, every byte once and in order, no callback after unwatch or
+  cancel, timers never early and in deadline order, one callback per
+  pending signal. It simulates a signal through the stub
+  `ko_signal_deliver`, which runs the C handler's body and sends no
+  signal.
 - `test_e2e_ko/hostile_test.go` is the only Go part: hostile input
   against a real `ko server`, with other clients unaffected.
 

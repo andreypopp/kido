@@ -2,7 +2,7 @@
 # Usage: scripts/fuzz.sh [--merge] TARGET SECONDS
 set -uo pipefail
 cd "$(dirname "$0")/.."
-targets='frame control ring pane-proc view http'
+targets='frame control ring pane-proc view http loop'
 merge=
 if [[ ${1:-} == --merge ]]; then
   merge=1
@@ -134,6 +134,7 @@ case $target in
       ring) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_ring.ml ;;
       view) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_view.ml ;;
       http) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_http.ml ;;
+      loop) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_loop.ml ;;
       pane-proc) library=ko_server dir=ko_server root=.. file=ko_server/pane_proc.ml ;;
     esac
     props=$(grep -cE '(Fuzz_check\.check|^ +soak) ' "$file")

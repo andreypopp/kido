@@ -5,11 +5,9 @@ let fail fmt = Printf.ksprintf failwith fmt
 let exchange (server : Fuzz_server.server) data =
   let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
   Unix.set_nonblock b;
-  let stream = Uv.ok (Luv.Pipe.init ()) in
-  Uv.ok (Luv.Pipe.open_ stream (Uv.file a));
-  ignore (Connection.accept stream ~on_dispose:ignore (Http.request server.state) : Connection.t);
-  let wake = Uv.ok (Luv.Timer.init ()) in
-  Uv.ok (Luv.Timer.start ~repeat:20 wake 20 ignore);
+  ignore (Connection.accept a ~on_dispose:ignore (Http.request server.state) : Connection.t);
+  let wake = Event_loop.timer ignore in
+  Event_loop.start_timer wake ~after:20 ~repeat:(Some 20);
   let deadline = Unix.gettimeofday () +. 5. in
   let sent = ref 0 and shut = ref false and eof = ref false in
   let out = Buffer.create 256 and chunk = Bytes.create 65536 in
@@ -34,11 +32,11 @@ let exchange (server : Fuzz_server.server) data =
         Buffer.add_subbytes out chunk 0 n
     | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> ()
     | exception Unix.Unix_error (Unix.ECONNRESET, _, _) -> eof := true);
-    ignore (Luv.Loop.run ~mode:(if !progress || !eof then `NOWAIT else `ONCE) () : bool)
+    Event_loop.step (if !progress || !eof then Peek else Wait)
   done;
-  Luv.Handle.close wake ignore;
+  Event_loop.stop_timer wake;
   Unix.close b;
-  ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+  Event_loop.step Peek;
   Buffer.contents out
 
 let ko_headers =

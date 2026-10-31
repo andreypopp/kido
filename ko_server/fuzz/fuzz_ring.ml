@@ -11,7 +11,7 @@ let%test_module "Tests" =
       | Resume of int
 
     type model = {
-      buffer : Luv.Buffer.t;
+      buffer : Bigstringaf.t;
       ring : t;
       capacity : int;
       mutable head : int;
@@ -20,7 +20,7 @@ let%test_module "Tests" =
     }
 
     let make capacity =
-      let buffer = Luv.Buffer.create (data_offset + capacity) in
+      let buffer = Bigstringaf.create (data_offset + capacity) in
       Bigarray.Array1.fill buffer '\000';
       Bigstringaf.set_int64_le buffer 0 (Int64.of_int capacity);
       { buffer; ring = create buffer; capacity; head = 0; offset = 0; records = [] }

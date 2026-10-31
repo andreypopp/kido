@@ -28,6 +28,4 @@ echo "== snapshots in process, mirror determinism"
 deadline 600 ./bench/mirror.exe 2000 $streams
 echo "== macOS pty probes"
 ./bench/wait_master.exe
-run ./bench/coordinator.exe pty-pipe
-run ./bench/coordinator.exe allocation
 run ./bench/coordinator.exe cpu-check

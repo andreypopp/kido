@@ -1,74 +1,95 @@
+let listen path =
+  let server = Unix.socket ~cloexec:true Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  match
+    Unix.bind server (Unix.ADDR_UNIX path);
+    Unix.listen server 256;
+    Unix.set_nonblock server
+  with
+  | () -> Ok server
+  | exception Unix.Unix_error (error, _, _) ->
+      Unix.close server;
+      Error (Unix.error_message error)
+
+let accept_burst = 16
+let accept_retry_ms = 100
+
 let run config =
   let socket = config.Config.socket in
-  let server = Uv.ok (Luv.Pipe.init ()) in
-  match Luv.Pipe.bind server socket with
-  | Error error ->
-      Luv.Handle.close server ignore;
-      Error (Luv.Error.strerror error)
-  | Ok () ->
+  match listen socket with
+  | Error _ as error -> error
+  | Ok server ->
       let connections = ref [] in
-      let timer = Uv.ok (Luv.Timer.init ()) and ping = Uv.ok (Luv.Timer.init ()) in
-      let term = Uv.ok (Luv.Signal.init ()) and chld = Uv.ok (Luv.Signal.init ()) in
       let rec state = lazy (State.create config ~activity)
+      and ticker = lazy (Event_loop.timer tick)
       and activity () =
-        (not (Luv.Handle.is_active timer))
+        let ticker = Lazy.force ticker in
+        (not (Event_loop.is_active ticker))
         && begin
-          Uv.ok (Luv.Timer.start ~repeat:2 timer 2 tick);
+          Event_loop.start_timer ticker ~after:2 ~repeat:(Some 2);
           true
         end
       and tick () =
         let state = Lazy.force state in
-        if (not (State.tick state)) && not (State.waiting state) then Uv.ok (Luv.Timer.stop timer)
+        if (not (State.tick state)) && not (State.waiting state) then
+          Event_loop.stop_timer (Lazy.force ticker)
       in
       let state = Lazy.force state in
-      Uv.ok (Luv.Signal.start chld (Uv.sigchld ()) (fun () -> Panes.reap (State.panes state)));
-      Uv.ok
-        (Luv.Timer.start ~repeat:1000 ping 1000 (fun () ->
-             let now = Unix.gettimeofday () in
-             List.iter (fun c -> Connection.tick c now) !connections));
+      Event_loop.on_signal Sys.sigchld (fun () -> Panes.reap (State.panes state));
+      let ping =
+        Event_loop.timer (fun () ->
+            let now = Unix.gettimeofday () in
+            List.iter (fun c -> Connection.tick c now) !connections)
+      in
+      Event_loop.start_timer ping ~after:1000 ~repeat:(Some 1000);
+      let listener = Event_loop.watch server in
+      let resume = Event_loop.timer (fun () -> Event_loop.interest listener Read) in
+      let admit fd =
+        let accepted = try Native.peer_uid fd = Unix.getuid () with Unix.Unix_error _ -> false in
+        if not accepted then Unix.close fd
+        else
+          match Unix.setsockopt_int fd Unix.SO_SNDBUF (1 lsl 20) with
+          | exception Unix.Unix_error _ -> Unix.close fd
+          | () ->
+              let connection =
+                Connection.accept fd
+                  ~on_dispose:(fun closed ->
+                    connections := List.filter (fun c -> not Stdlib.(c == closed)) !connections)
+                  (Http.request state)
+              in
+              if not (Connection.is_closed connection) then
+                connections := connection :: !connections
+      in
+      let rec accept remaining =
+        if remaining > 0 then
+          match Unix.accept ~cloexec:true server with
+          | fd, _ ->
+              admit fd;
+              accept (remaining - 1)
+          | exception Unix.Unix_error (Unix.ECONNABORTED, _, _) -> accept (remaining - 1)
+          | exception
+              Unix.Unix_error ((Unix.EMFILE | Unix.ENFILE | Unix.ENOBUFS | Unix.ENOMEM), _, _) ->
+              Event_loop.interest listener Idle;
+              Event_loop.start_timer resume ~after:accept_retry_ms ~repeat:None
+          | exception Unix.Unix_error _ -> ()
+      in
+      Event_loop.handle listener (Ready (fun () -> accept accept_burst)) ~on_writable:ignore;
+      Event_loop.interest listener Read;
       let stopping = ref false in
-      Uv.ok
-        (Luv.Signal.start term Luv.Signal.sigterm (fun () ->
-             if not !stopping then begin
-               stopping := true;
-               Luv.Handle.close server ignore;
-               List.iter Connection.close !connections;
-               Panes.shutdown (State.panes state);
-               Uv.ok (Luv.Timer.stop timer);
-               Uv.ok
-                 (Luv.Timer.start timer 500 (fun () ->
-                      Panes.kill (State.panes state);
-                      Panes.reap (State.panes state);
-                      List.iter (fun handle -> Luv.Handle.close handle ignore) [ term; chld ];
-                      Luv.Handle.close ping ignore;
-                      Luv.Handle.close timer ignore;
-                      Luv.Loop.stop (Luv.Loop.default ())))
-             end));
-      Luv.Stream.listen ~backlog:256 server (function
-        | Error _ -> ()
-        | Ok () -> (
-            let stream = Uv.ok (Luv.Pipe.init ()) in
-            Uv.ok (Luv.Stream.accept ~server ~client:stream);
-            let accepted =
-              try
-                match Uv.fd stream with
-                | Ok fd -> Uv.peer_uid fd = Unix.getuid ()
-                | Error _ -> false
-              with Unix.Unix_error _ -> false
-            in
-            if not accepted then Luv.Handle.close stream ignore
-            else
-              match Luv.Handle.set_send_buffer_size stream (1 lsl 20) with
-              | Error _ -> Luv.Handle.close stream ignore
-              | Ok () ->
-                  let connection =
-                    Connection.accept stream
-                      ~on_dispose:(fun closed ->
-                        connections := List.filter (fun c -> not Stdlib.(c == closed)) !connections)
-                      (Http.request state)
-                  in
-                  if not (Connection.is_closed connection) then
-                    connections := connection :: !connections));
-      ignore (Luv.Loop.run () : bool);
+      Event_loop.on_signal Sys.sigterm (fun () ->
+          if not !stopping then begin
+            stopping := true;
+            Event_loop.close listener;
+            Event_loop.stop_timer resume;
+            List.iter Connection.close !connections;
+            Panes.shutdown (State.panes state);
+            Event_loop.stop_timer (Lazy.force ticker);
+            Event_loop.start_timer
+              (Event_loop.timer (fun () ->
+                   Panes.kill (State.panes state);
+                   Panes.reap (State.panes state);
+                   Event_loop.stop ()))
+              ~after:500 ~repeat:None
+          end);
+      Event_loop.run ();
       (try Unix.unlink socket with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
       Ok ()

@@ -1,6 +1,5 @@
 open Ko_server
 
-external openpty : unit -> Unix.file_descr * Unix.file_descr = "ko_spike_pty"
 external cpu_seconds : int -> float * float = "ko_spike_cpu_seconds"
 
 let drain_exe () = Filename.concat (Filename.dirname Sys.executable_name) "drain.exe"
@@ -10,15 +9,16 @@ let cpu_self () =
   t.Unix.tms_utime +. t.tms_stime
 
 let run_until ~timeout condition work =
-  let timer = Uv.ok (Luv.Timer.init ()) in
   let deadline = Unix.gettimeofday () +. timeout in
-  Uv.ok
-    (Luv.Timer.start ~repeat:2 timer 0 (fun () ->
-         work ();
-         if condition () then Luv.Loop.stop (Luv.Loop.default ())
-         else if Float.(Unix.gettimeofday () > deadline) then failwith "benchmark deadline"));
-  ignore (Luv.Loop.run () : bool);
-  Luv.Handle.close timer ignore
+  let timer =
+    Event_loop.timer (fun () ->
+        work ();
+        if condition () then Event_loop.stop ()
+        else if Float.(Unix.gettimeofday () > deadline) then failwith "benchmark deadline")
+  in
+  Event_loop.start_timer timer ~after:0 ~repeat:(Some 2);
+  Event_loop.run ();
+  Event_loop.stop_timer timer
 
 type pane = {
   proc : Pane_proc.t;
@@ -95,7 +95,7 @@ let count p =
       (match p.samples with
       | None -> ()
       | Some samples ->
-          let now = Uv.now () in
+          let now = Native.now () in
           let found = ref samples in
           let text = Bigstringaf.substring (Ring.buffer ring) ~off:at ~len in
           for i = 0 to String.length text - 21 do
@@ -153,7 +153,7 @@ let finish p =
   run_until ~timeout:5.
     (fun () -> match Pane_proc.life p.proc with Reaped -> true | Open | Closed -> false)
     (fun () -> Pane_proc.reap p.proc);
-  ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+  Event_loop.step Peek;
   match Unix.waitpid [] p.drain with _, Unix.WEXITED 0 -> () | _ -> failwith "drain failed"
 
 let throughput ~pane_exe ~produce ~bytes ~coalesce_ms ~streams =
@@ -253,76 +253,6 @@ let cpu_check () =
      %!"
     raw converted children
 
-let pty_pipe () =
-  let master, slave = openpty () in
-  let child =
-    Unix.create_process "/bin/sh"
-      [| "sh"; "-c"; "head -c 1000000 /dev/zero | tr '\\0' x; sleep 0.2" |]
-      slave slave Unix.stderr
-  in
-  Unix.close slave;
-  let sizes = ref [] and ending = ref "none" in
-  let started = Unix.gettimeofday () in
-  (match Luv.Pipe.init () with
-  | Error e -> ending := "Pipe.init: " ^ Luv.Error.strerror e
-  | Ok pipe -> (
-      match Luv.Pipe.open_ pipe (Uv.file master) with
-      | Error e -> ending := "Pipe.open_: " ^ Luv.Error.strerror e
-      | Ok () ->
-          Uv.read_start pipe (function
-            | Ok buffer -> sizes := Luv.Buffer.size buffer :: !sizes
-            | Error e ->
-                ending := Luv.Error.err_name e;
-                Luv.Handle.close pipe ignore);
-          let timer = Uv.ok (Luv.Timer.init ()) in
-          Uv.ok
-            (Luv.Timer.start timer 5000 (fun () ->
-                 ending := !ending ^ " (deadline)";
-                 Luv.Handle.close pipe ignore));
-          Luv.Handle.unref timer;
-          ignore (Luv.Loop.run () : bool);
-          Luv.Handle.close timer ignore;
-          ignore (Luv.Loop.run () : bool)));
-  ignore (Unix.waitpid [] child);
-  let sizes = List.rev !sizes in
-  Printf.printf
-    "pty master as Luv.Pipe: reads=%d bytes=%d max_read=%d first_reads=[%s] end=%s seconds=%.3f\n%!"
-    (List.length sizes) (List.fold_left ( + ) 0 sizes) (List.fold_left max 0 sizes)
-    (String.concat ";" (List.map string_of_int (List.filteri (fun i _ -> i < 8) sizes)))
-    !ending
-    (Unix.gettimeofday () -. started)
-
-let allocation () =
-  let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-  Unix.setsockopt_int a Unix.SO_SNDBUF (1 lsl 20);
-  Unix.set_close_on_exec a;
-  let drain = Unix.create_process (drain_exe ()) [| "drain" |] b Unix.stdout Unix.stderr in
-  Unix.close b;
-  let view = Uv.ok (Luv.Pipe.init ()) in
-  Uv.ok (Luv.Pipe.open_ view (Uv.file a));
-  let buffer = Luv.Buffer.create 4096 and count = 20000 in
-  let measure label f =
-    let before = Gc.minor_words () in
-    for _ = 1 to count do
-      f ()
-    done;
-    ignore (Luv.Loop.run () : bool);
-    Printf.printf "%s minor_words/call=%.1f\n%!" label
-      ((Gc.minor_words () -. before) /. float_of_int count)
-  in
-  let written _ _ = () in
-  let list = [ buffer ] in
-  measure "Luv.Buffer.sub" (fun () ->
-      ignore (Sys.opaque_identity (Luv.Buffer.sub buffer ~offset:13 ~length:64)));
-  measure "Luv.Stream.write [sub]" (fun () ->
-      Luv.Stream.write view [ Luv.Buffer.sub buffer ~offset:13 ~length:64 ] written);
-  measure "Luv.Stream.write preallocated list" (fun () -> Luv.Stream.write view list written);
-  measure "Luv.Stream.try_write preallocated list" (fun () ->
-      ignore (Luv.Stream.try_write view list));
-  Luv.Handle.close view ignore;
-  ignore (Luv.Loop.run () : bool);
-  ignore (Unix.waitpid [] drain)
-
 let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
   let config =
     {
@@ -337,15 +267,15 @@ let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
     }
   in
   let here = Filename.dirname Sys.executable_name in
-  let timer = Uv.ok (Luv.Timer.init ()) in
   let tick = ref ignore in
+  let timer = Event_loop.timer (fun () -> !tick ()) in
   let finished = ref false in
   let state =
     State.create config ~activity:(fun () ->
         (not !finished)
-        && (not (Luv.Handle.is_active timer))
+        && (not (Event_loop.is_active timer))
         && begin
-          Uv.ok (Luv.Timer.start ~repeat:window timer window (fun () -> !tick ()));
+          Event_loop.start_timer timer ~after:window ~repeat:(Some window);
           true
         end)
   in
@@ -410,26 +340,27 @@ let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
       counters;
     State.pump state;
     let idle = (not !produced) && not (State.waiting state) in
-    if idle then Uv.ok (Luv.Timer.stop timer);
+    if idle then Event_loop.stop_timer timer;
     if
       idle
       && List.for_all (fun pane -> Option.is_some (Pane_proc.dead (Pane.proc pane))) flood_panes
     then (
       finished := true;
-      Luv.Loop.stop (Luv.Loop.default ()))
+      Event_loop.stop ())
   in
   tick := tick_body;
-  let echo = Uv.ok (Luv.Timer.init ()) in
   let quiet_pane, _ = quiet in
-  Uv.ok
-    (Luv.Timer.start ~repeat:10 echo 10 (fun () ->
-         if not !finished then
-           ignore
-             (Pane_proc.input (Pane.proc quiet_pane)
-                (Text (Base64.encode_exn (Printf.sprintf "T%020d\n" (Uv.now ()))))
-                ignore)));
-  let watchdog = Uv.ok (Luv.Timer.init ()) in
-  Uv.ok (Luv.Timer.start watchdog 120_000 (fun () -> failwith "benchmark deadline"));
+  let echo =
+    Event_loop.timer (fun () ->
+        if not !finished then
+          ignore
+            (Pane_proc.input (Pane.proc quiet_pane)
+               (Text (Base64.encode_exn (Printf.sprintf "T%020d\n" (Native.now ()))))
+               ignore))
+  in
+  Event_loop.start_timer echo ~after:10 ~repeat:(Some 10);
+  let watchdog = Event_loop.timer (fun () -> failwith "benchmark deadline") in
+  Event_loop.start_timer watchdog ~after:120_000 ~repeat:None;
   Runtime_events.start ();
   let cursor = Runtime_events.create_cursor None in
   let gc_ns = ref 0L and begun = Hashtbl.create 4 in
@@ -454,14 +385,14 @@ let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
           (phase_key phase))
       ()
   in
-  let poll = Uv.ok (Luv.Timer.init ()) in
-  Uv.ok
-    (Luv.Timer.start ~repeat:50 poll 50 (fun () ->
-         ignore (Runtime_events.read_poll cursor callbacks None : int)));
+  let poll =
+    Event_loop.timer (fun () -> ignore (Runtime_events.read_poll cursor callbacks None : int))
+  in
+  Event_loop.start_timer poll ~after:50 ~repeat:(Some 50);
   started := Unix.gettimeofday ();
   let cpu = cpu_self () and words = Gc.minor_words () in
   tick_body ();
-  ignore (Luv.Loop.run () : bool);
+  Event_loop.run ();
   let elapsed = Unix.gettimeofday () -. !started and used = cpu_self () -. cpu in
   let words = Gc.minor_words () -. words in
   ignore (Runtime_events.read_poll cursor callbacks None : int);
@@ -493,11 +424,11 @@ let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
     lowest highest (used /. elapsed) records
     (words /. float (max 1 records))
     (Int64.to_float !gc_ns /. 1e9 /. used *. 100.);
-  List.iter (fun handle -> Luv.Handle.close handle ignore) [ echo; poll; watchdog; timer ];
+  List.iter Event_loop.stop_timer [ echo; poll; watchdog; timer ];
   let wired = List.filter_map snd (quiet :: flooded) in
   List.iter (fun (connection, _) -> Connection.close connection) wired;
   for _ = 1 to 3 do
-    ignore (Luv.Loop.run ~mode:`NOWAIT () : bool)
+    Event_loop.step Peek
   done;
   List.iter (fun (_, reader) -> ignore (Unix.waitpid [] reader)) wired;
   Panes.shutdown set;
@@ -523,12 +454,8 @@ let () =
         ~bytes:(int_of_string bytes) ~window:(int_of_string window) ~streams
   | [ "latency"; "writev"; count; "2" ] -> latency ~pane_exe ~produce ~count:(int_of_string count)
   | [ "snapshot"; "writev"; lines ] -> snapshots ~pane_exe ~produce ~lines:(int_of_string lines)
-  | [ "pty-pipe" ] -> pty_pipe ()
-  | [ "allocation" ] -> allocation ()
   | [ "cpu-check" ] -> cpu_check ()
   | "run" :: "writev" :: argv -> run_program ~pane_exe ~argv
   | _ ->
-      prerr_endline
-        "usage: coordinator throughput|latency|snapshot|run writev ... | \
-         pty-pipe|allocation|cpu-check";
+      prerr_endline "usage: coordinator throughput|latency|snapshot|run writev ... | cpu-check";
       exit 2

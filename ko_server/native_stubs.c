@@ -8,6 +8,7 @@
 #include <caml/signals.h>
 #include <caml/unixsupport.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <libproc.h>
@@ -245,10 +246,6 @@ CAMLprim value ko_peer_pid(value descriptor) {
   return Val_int(cr.pid);
 #endif
 }
-CAMLprim value ko_sigchld(value unit) {
-  (void)unit;
-  return Val_int(SIGCHLD);
-}
 CAMLprim value ko_now(value unit) {
   (void)unit;
   return Val_long(ko_now_ns());
@@ -303,4 +300,51 @@ CAMLprim value ko_process_identity(value vpid) {
   Store_field(tuple, 3, Val_long(began));
   some = caml_alloc_some(tuple);
   CAMLreturn(some);
+}
+CAMLprim value ko_read(value fd, value buffer, value offset, value length) {
+  ssize_t n;
+  do {
+    n = read(Int_val(fd), (char *)Caml_ba_data_val(buffer) + Long_val(offset),
+             Long_val(length));
+  } while (n < 0 && errno == EINTR);
+  if (n >= 0) {
+    return Val_long(n);
+  }
+  return Val_long(errno == EAGAIN || errno == EWOULDBLOCK ? -1 : -2);
+}
+static int signal_write_fd = -1;
+static _Atomic int signal_pending[NSIG];
+static void signal_to_pipe(int signo) {
+  int saved = errno;
+  unsigned char byte = (unsigned char)signo;
+  if (signo > 0 && signo < NSIG) {
+    atomic_store(&signal_pending[signo], 1);
+  }
+  if (signal_write_fd >= 0) {
+    (void)!write(signal_write_fd, &byte, 1);
+  }
+  errno = saved;
+}
+CAMLprim value ko_signal_pipe(value fd) {
+  signal_write_fd = Int_val(fd);
+  return Val_unit;
+}
+CAMLprim value ko_signal_install(value signo) {
+  struct sigaction action;
+  memset(&action, 0, sizeof action);
+  action.sa_handler = signal_to_pipe;
+  sigemptyset(&action.sa_mask);
+  action.sa_flags = SA_RESTART;
+  if (sigaction(Int_val(signo), &action, NULL)) {
+    caml_uerror("sigaction", Nothing);
+  }
+  return Val_unit;
+}
+CAMLprim value ko_signal_take(value signo) {
+  int n = Int_val(signo);
+  return Val_bool(n > 0 && n < NSIG && atomic_exchange(&signal_pending[n], 0));
+}
+CAMLprim value ko_signal_deliver(value signo) {
+  signal_to_pipe(Int_val(signo));
+  return Val_unit;
 }

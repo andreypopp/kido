@@ -1,8 +1,8 @@
 type kind = Bytes | Marker | Slice | Pad
 type t
 
-val create : Luv.Buffer.t -> t
-val buffer : t -> Luv.Buffer.t
+val create : Bigstringaf.t -> t
+val buffer : t -> Bigstringaf.t
 val head : t -> int
 val tail : t -> int
 val reachable : t -> int -> int option
