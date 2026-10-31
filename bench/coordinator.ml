@@ -55,7 +55,7 @@ let start ~pane_exe ~argv ~transcript ~latency =
     Pane_proc.create config ~id:(Ids.Pane_id.make 1) ~cwd:"/" ~argv ~env:[ "TERM=xterm-ghostty" ]
       ~notify:(function
       | Dead { cause = Failed message; _ } -> failwith message
-      | Title _ | Pwd _ | Output | Dead _ -> ())
+      | Title | Pwd | Output | Dead _ -> ())
   in
   let p =
     {
@@ -72,61 +72,80 @@ let start ~pane_exe ~argv ~transcript ~latency =
   in
   p
 
+let lost = ref 0
+
+let count_records ring counted ~on_bytes =
+  let upper = Ring.head ring in
+  if !counted < Ring.tail ring then (
+    incr lost;
+    counted := Ring.tail ring);
+  while !counted < upper do
+    let pos = !counted in
+    (match Ring.kind ring pos with Bytes -> on_bytes pos | Marker | Slice | Pad -> ());
+    counted := Ring.next ring pos
+  done
+
 let count p =
   let ring = Pane_proc.ring p.proc in
-  Ring.iter_from ring p.counted (fun record ->
-      p.counted <- record.next;
-      (match record.data with
-      | Bytes ->
-          p.bytes <- p.bytes + record.len;
-          p.records <- p.records + 1;
-          (match p.samples with
-          | None -> ()
-          | Some samples ->
-              let now = Uv.now () in
-              let found = ref samples in
-              let text = Bigstringaf.substring (Ring.buffer ring) ~off:record.at ~len:record.len in
-              for i = 0 to String.length text - 21 do
-                if Char.equal text.[i] 'T' then
-                  match int_of_string_opt (String.sub text (i + 1) 20) with
-                  | Some ts -> found := (float (now - ts) /. 1e3) :: !found
-                  | None -> ()
-              done;
-              p.samples <- Some !found);
-          Option.iter
-            (fun b ->
-              Buffer.add_string b
-                (Bigstringaf.substring (Ring.buffer ring) ~off:record.at ~len:record.len))
-            p.transcript
-      | Resize_marker _ | Dead_marker _ | Slice _ -> ());
-      true)
+  let counted = ref p.counted in
+  count_records ring counted ~on_bytes:(fun pos ->
+      let at = Ring.at ring pos and len = Ring.length ring pos in
+      p.bytes <- p.bytes + len;
+      p.records <- p.records + 1;
+      (match p.samples with
+      | None -> ()
+      | Some samples ->
+          let now = Uv.now () in
+          let found = ref samples in
+          let text = Bigstringaf.substring (Ring.buffer ring) ~off:at ~len in
+          for i = 0 to String.length text - 21 do
+            if Char.equal text.[i] 'T' then
+              match int_of_string_opt (String.sub text (i + 1) 20) with
+              | Some ts -> found := (float (now - ts) /. 1e3) :: !found
+              | None -> ()
+          done;
+          p.samples <- Some !found);
+      match p.transcript with
+      | None -> ()
+      | Some b -> Buffer.add_string b (Bigstringaf.substring (Ring.buffer ring) ~off:at ~len));
+  p.counted <- !counted
+
+let nexts = Array.make Connection.batch_capacity 0
 
 let flush p =
   ignore (Pane_proc.scan p.proc : bool);
   count p;
-  if Connection.available p.view then
-    Ring.iter_from (Pane_proc.ring p.proc) p.pos (fun record ->
-        match record.data with
-        | Bytes -> (
-            match
-              Connection.record p.view ~queue:false ~kind:Output ~offset:record.offset
-                (Ring.buffer (Pane_proc.ring p.proc))
-                ~at:record.at ~len:record.len
-            with
-            | Accepted ->
-                p.pos <- record.next;
-                true
-            | Queued ->
-                p.pos <- record.next;
-                false
-            | Blocked -> false
-            | Closed -> failwith "view closed")
-        | _ ->
-            p.pos <- record.next;
-            true)
+  let ring = Pane_proc.ring p.proc in
+  let upper = Ring.head ring in
+  if p.pos < Ring.tail ring then failwith "the benchmark view fell behind the ring";
+  let send () =
+    let count = Connection.batch_count p.view in
+    if count = 0 then true
+    else
+      let accepted = Connection.batch_send p.view (Ring.buffer ring) in
+      if accepted < 0 then failwith "view closed";
+      if accepted > 0 then p.pos <- nexts.(accepted - 1);
+      accepted = count
+  in
+  if Connection.available p.view then begin
+    let pos = ref p.pos and go = ref true in
+    while !go && !pos < upper do
+      let here = !pos in
+      let next = Ring.next ring here in
+      (match Ring.kind ring here with
+      | Bytes ->
+          nexts.(Connection.batch_count p.view) <- next;
+          Connection.batch_add p.view ~offset:(Ring.offset ring here) ~at:(Ring.at ring here)
+            ~len:(Ring.length ring here);
+          if Connection.batch_full p.view then go := send ()
+      | Marker | Slice | Pad -> if Connection.batch_count p.view = 0 then p.pos <- next);
+      pos := next
+    done;
+    if !go && send () then p.pos <- upper
+  end
 
 let dead p = Option.is_some (Pane_proc.dead p.proc)
-let drained p = Connection.available p.view && p.pos >= Ring.position (Pane_proc.ring p.proc)
+let drained p = Connection.available p.view && p.pos >= Ring.head (Pane_proc.ring p.proc)
 
 let finish p =
   Connection.close p.view;
@@ -159,7 +178,7 @@ let throughput ~pane_exe ~produce ~bytes ~coalesce_ms ~streams =
     pane_cpu used
     ((pane_cpu +. used) /. elapsed);
   finish p;
-  if p.bytes <> bytes then failwith "byte count mismatch"
+  if !lost > 0 || p.bytes <> bytes then failwith "byte count mismatch"
 
 let snapshots ~pane_exe ~produce ~lines =
   let p =
@@ -173,12 +192,12 @@ let snapshots ~pane_exe ~produce ~lines =
     let finished = ref false and total = ref 0 in
     let started = Unix.gettimeofday () in
     Pane_proc.snapshot p.proc ~history
-      ~consume:(fun record ->
-        total := !total + record.len - Protocol.Record.slice_size;
+      ~consume:(fun pos ->
+        let ring = Pane_proc.ring p.proc in
+        total := !total + Ring.length ring pos - Protocol.Record.slice_size;
         ignore
-          (Connection.record p.view ~queue:true ~kind:Snapshot ~offset:record.offset
-             (Ring.buffer (Pane_proc.ring p.proc))
-             ~at:record.at ~len:record.len))
+          (Connection.record p.view ~queue:true ~kind:Snapshot ~offset:(Ring.offset ring pos)
+             (Ring.buffer ring) ~at:(Ring.at ring pos) ~len:(Ring.length ring pos)))
       ~done_:(function Ok () -> finished := true | Error message -> failwith message);
     run_until ~timeout:120. (fun () -> !finished && Connection.available p.view) (fun () -> flush p);
     Printf.printf "snapshot view=writev lines=%d kind=%s bytes=%d ms=%.2f\n%!" lines label !total
@@ -323,8 +342,12 @@ let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
   let finished = ref false in
   let state =
     State.create config ~activity:(fun () ->
-        if (not !finished) && not (Luv.Handle.is_active timer) then
-          Uv.ok (Luv.Timer.start ~repeat:window timer window (fun () -> !tick ())))
+        (not !finished)
+        && (not (Luv.Handle.is_active timer))
+        && begin
+          Uv.ok (Luv.Timer.start ~repeat:window timer window (fun () -> !tick ()));
+          true
+        end)
   in
   let set = State.panes state in
   let null = Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0 in
@@ -339,7 +362,7 @@ let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
             match event with
             | Dead _ ->
                 Hashtbl.replace deaths (Ids.Pane_id.to_string id) (Unix.gettimeofday () -. !started)
-            | Title _ | Pwd _ | Output -> ())
+            | Title | Pwd | Output -> ())
       with
       | Ok pane -> pane
       | Error message -> failwith message
@@ -383,15 +406,7 @@ let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
     Panes.iter set (fun pane -> if Pane_proc.scan (Pane.proc pane) then produced := true);
     List.iter
       (fun (pane, counted, records) ->
-        Ring.iter_from
-          (Pane_proc.ring (Pane.proc pane))
-          !counted
-          (fun record ->
-            counted := record.next;
-            (match record.data with
-            | Bytes -> incr records
-            | Resize_marker _ | Dead_marker _ | Slice _ -> ());
-            true))
+        count_records (Pane_proc.ring (Pane.proc pane)) counted ~on_bytes:(fun _ -> incr records))
       counters;
     State.pump state;
     let idle = (not !produced) && not (State.waiting state) in
@@ -452,7 +467,7 @@ let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
   ignore (Runtime_events.read_poll cursor callbacks None : int);
   let total =
     List.fold_left
-      (fun sum (pane, _, _) -> sum + Ring.offset (Pane_proc.ring (Pane.proc pane)))
+      (fun sum (pane, _, _) -> sum + Ring.end_offset (Pane_proc.ring (Pane.proc pane)))
       0 counters
   in
   let records = List.fold_left (fun sum (_, _, records) -> sum + !records) 0 counters in
@@ -460,13 +475,14 @@ let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
     List.map
       (fun (pane, _, _) ->
         let id = Ids.Pane_id.to_string (Pane.id pane) in
-        float (Ring.offset (Pane_proc.ring (Pane.proc pane)))
+        float (Ring.end_offset (Pane_proc.ring (Pane.proc pane)))
         /. Option.value ~default:elapsed (Hashtbl.find_opt deaths id)
         /. 1e6)
       counters
   in
   let lowest = List.fold_left Float.min infinity rates
   and highest = List.fold_left Float.max 0. rates in
+  if !lost > 0 then failwith "the benchmark counter fell behind the ring";
   Printf.printf
     "flood panes=%d views=%d window_ms=%d bytes_per_pane=%d seconds=%.2f total_MBps=%.1f \
      pane_MBps_min=%.1f pane_MBps_max=%.1f coordinator_cores=%.2f records=%d \

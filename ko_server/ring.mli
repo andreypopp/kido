@@ -1,20 +1,18 @@
-type data =
-  | Bytes
-  | Resize_marker of Protocol.size
-  | Dead_marker of Protocol.dead
-  | Slice of Protocol.Record.slice
-
-type record = private { pos : int; next : int; offset : int; at : int; len : int; data : data }
+type kind = Bytes | Marker | Slice | Pad
 type t
 
 val create : Luv.Buffer.t -> t
 val buffer : t -> Luv.Buffer.t
-val position : t -> int
+val head : t -> int
 val tail : t -> int
-val offset : t -> int
-val oldest : t -> int
-val dead : t -> Protocol.dead option
-val pending : t -> bool
-val scan : t -> (record -> unit) -> (bool, string) result
-val iter_from : t -> int -> (record -> bool) -> unit
+val advance : t -> head:int -> keep:int -> (unit, string) result
+val kind : t -> int -> kind
+val next : t -> int -> int
+val offset : t -> int -> int
+val length : t -> int -> int
+val at : t -> int -> int
+val slice : t -> int -> Protocol.Record.slice
+val marker : t -> int -> Protocol.marker
+val end_offset : t -> int
+val oldest_offset : t -> int
 val resume : t -> int -> int

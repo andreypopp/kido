@@ -562,8 +562,10 @@ The spike 4 driver (`spikes/http/`) was removed with the spike server
 in P1.1; P1.3 measures the same table against `ko server`. Since P1.1
 `bench/coordinator.exe` runs the production `Pane_proc` and
 `Connection` with 2 ms coalescing only; the `Luv.Stream.write` and
-zero-coalescing comparison rows are gone, and its callback rows count
-only the title and pwd callbacks that P1 registers.
+zero-coalescing comparison rows are gone, and its callback rows
+counted only the title and pwd callbacks that P1 registered (the
+`--no-callbacks` switch that produced the without-callbacks row was
+removed after the measurement).
 
 ### 6.3 What P1.1 settled
 
@@ -787,8 +789,9 @@ These points were open or wrong in the plan:
   the stream ends inside a string), the ko rows when `ko-pane` has
   parsed the stream; history-loaded is the time an older line shows
   after a wheel event, read from a rebuilt outer screen.
-- **Coordinator allocation** is 124 words per ring record (57 without
-  the title and pwd callbacks), against 6.9 in the P1.0 spike. A record
+- **Coordinator allocation** is 124 words per ring record (57
+  measured with the title and pwd callbacks off, a switch since
+  removed), against 6.9 in the P1.0 spike. A record
   is one 1 KiB pty read, so nothing is allocated per byte. A record
   stays one read (decided 2026-10-30).
 

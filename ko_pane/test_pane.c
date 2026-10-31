@@ -87,7 +87,7 @@ int main(int argc,char **argv){
     else if(kind==KO_FULL){fulls++;assert(d.n==8);uint8_t b[8];ko_put(b,tail,8);frame(control,KO_TAIL,b,8);}
     else if(kind==KO_TITLE)title++;
     else if(kind==KO_PWD)pwd++;
-    else if(kind==KO_DEAD){dead++;assert(d.n==8&&ko_get(d.b,8)==0);
+    else if(kind==KO_DEAD){dead++;assert(d.n==16&&ko_get(d.b,8)==0&&ko_get(d.b+8,8)>0);
       uint8_t resize[8];ko_put(resize,40,2);ko_put(resize+2,20,2);ko_put(resize+4,8,2);ko_put(resize+6,16,2);frame(control,KO_RESIZE,resize,8);
       uint8_t request[10]={0};ko_put(request,1,4);request[4]=1;frame(control,KO_SNAPSHOT,request,10);
     }

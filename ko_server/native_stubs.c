@@ -160,6 +160,26 @@ CAMLprim value ko_writev_bytecode(value *argv, int argc) {
   (void)argc;
   return ko_writev(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
 }
+CAMLprim value ko_writev_batch(value fd, value headers, value spans,
+                               value count, value mapping) {
+  struct iovec iov[128];
+  int records = Int_val(count);
+  for (int i = 0; i < records; i++) {
+    iov[2 * i] = (struct iovec){
+        (char *)Bytes_val(headers) + Long_val(Field(spans, 4 * i)),
+        Long_val(Field(spans, 4 * i + 1))};
+    iov[2 * i + 1] =
+        (struct iovec){(char *)Caml_ba_data_val(mapping) +
+                           Long_val(Field(spans, 4 * i + 2)),
+                       Long_val(Field(spans, 4 * i + 3))};
+  }
+  ssize_t n;
+  do {
+    n = writev(Int_val(fd), iov, 2 * records);
+  } while (n < 0 && errno == EINTR);
+  return Val_long(n < 0 ? (errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -errno)
+                        : n);
+}
 CAMLprim value ko_write_strings(value fd, value strings, value count,
                                 value offset) {
   struct iovec iov[64];

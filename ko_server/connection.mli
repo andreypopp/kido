@@ -19,6 +19,12 @@ val record :
   len:int ->
   written
 
+val batch_count : t -> int
+val batch_capacity : int
+val batch_full : t -> bool
+val batch_add : t -> offset:int -> at:int -> len:int -> unit
+val batch_send : t -> Luv.Buffer.t -> int
+
 val upgrade :
   t ->
   Httpun.Reqd.t ->

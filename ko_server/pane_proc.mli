@@ -1,5 +1,5 @@
 type life = Open | Closed | Reaped
-type event = Title of string | Pwd of string | Output | Dead of Protocol.dead
+type event = Title | Pwd | Output | Dead of Protocol.dead
 type t
 
 val create :
@@ -18,6 +18,7 @@ val child_pid : t -> int
 val title : t -> string
 val cwd : t -> string
 val dead : t -> Protocol.dead option
+val busy : t -> bool
 val scan : t -> bool
 val resize : t -> Protocol.size -> unit
 
@@ -30,7 +31,7 @@ val input :
 val snapshot :
   t ->
   history:Protocol.history ->
-  consume:(Ring.record -> unit) ->
+  consume:(int -> unit) ->
   done_:((unit, string) result -> unit) ->
   unit
 

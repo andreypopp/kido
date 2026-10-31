@@ -11,7 +11,11 @@ let run config =
       let term = Uv.ok (Luv.Signal.init ()) and chld = Uv.ok (Luv.Signal.init ()) in
       let rec state = lazy (State.create config ~activity)
       and activity () =
-        if not (Luv.Handle.is_active timer) then Uv.ok (Luv.Timer.start ~repeat:2 timer 2 tick)
+        (not (Luv.Handle.is_active timer))
+        && begin
+          Uv.ok (Luv.Timer.start ~repeat:2 timer 2 tick);
+          true
+        end
       and tick () =
         let state = Lazy.force state in
         let produced = ref false in

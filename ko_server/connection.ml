@@ -2,6 +2,10 @@ external writev : Unix.file_descr -> bytes -> int -> Luv.Buffer.t -> int -> int 
   = "ko_writev_bytecode" "ko_writev"
 [@@noalloc]
 
+external writev_batch : Unix.file_descr -> bytes -> int array -> int -> Luv.Buffer.t -> int
+  = "ko_writev_batch"
+[@@noalloc]
+
 external write_strings : Unix.file_descr -> string array -> int -> int -> int = "ko_write_strings"
 [@@noalloc]
 
@@ -14,6 +18,9 @@ type t = {
   mutable waiting : bool;
   pending : string Queue.t;
   mutable sent : int;
+  batch_headers : bytes;
+  batch_spans : int array;
+  mutable batch_count : int;
   mutable pending_bytes : int;
   headers : bytes;
   strings : string array;
@@ -35,6 +42,8 @@ type t = {
 
 let runtime t = Option.get t.runtime
 let max_message = 1 lsl 20
+let batch_capacity = 64
+let batch_stride = 24
 let max_queued = 64 lsl 20
 
 let close t =
@@ -90,25 +99,25 @@ and flush t =
     end
   end
 
-let header bytes opcode len =
-  Bytes.set bytes 0 (Char.chr (128 lor opcode));
+let header bytes base opcode len =
+  Bytes.set bytes base (Char.chr (128 lor opcode));
   if len < 126 then (
-    Bytes.set bytes 1 (Char.chr len);
+    Bytes.set bytes (base + 1) (Char.chr len);
     2)
   else if len < 65536 then (
-    Bytes.set bytes 1 '\126';
-    Bytes.set_uint16_be bytes 2 len;
+    Bytes.set bytes (base + 1) '\126';
+    Bytes.set_uint16_be bytes (base + 2) len;
     4)
   else (
-    Bytes.set bytes 1 '\127';
-    Bytes.set_int64_be bytes 2 (Int64.of_int len);
+    Bytes.set bytes (base + 1) '\127';
+    Bytes.set_int64_be bytes (base + 2) (Int64.of_int len);
     10)
 
 let send t opcode text =
   if not t.closed then
     if String.length text > max_message then close t
     else begin
-      let len = header t.headers opcode (String.length text) in
+      let len = header t.headers 0 opcode (String.length text) in
       Queue.add (Bytes.sub_string t.headers 0 len) t.pending;
       Queue.add text t.pending;
       t.pending_bytes <- t.pending_bytes + len + String.length text;
@@ -129,7 +138,7 @@ let waiting t = t.waiting || not (Queue.is_empty t.pending)
 type written = Accepted | Queued | Blocked | Closed
 
 let record_header bytes ~kind ~offset ~len =
-  let at = header bytes 2 (len + Protocol.Record.header_size) in
+  let at = header bytes 0 2 (len + Protocol.Record.header_size) in
   Protocol.Record.encode_header bytes at kind ~offset;
   at + Protocol.Record.header_size
 
@@ -158,6 +167,64 @@ let record t ~queue ~kind ~offset ring ~at ~len =
     else (
       if t.ready then wait t;
       Blocked)
+  end
+
+let batch_count t = t.batch_count
+let batch_full t = t.batch_count = batch_capacity
+
+let batch_add t ~offset ~at ~len =
+  let i = t.batch_count in
+  let base = i * batch_stride in
+  let wire = header t.batch_headers base 2 (len + Protocol.Record.header_size) in
+  Protocol.Record.encode_header t.batch_headers (base + wire) Output ~offset;
+  let spans = t.batch_spans in
+  spans.(4 * i) <- base;
+  spans.((4 * i) + 1) <- wire + Protocol.Record.header_size;
+  spans.((4 * i) + 2) <- at;
+  spans.((4 * i) + 3) <- len;
+  t.batch_count <- i + 1
+
+let batch_send t ring =
+  let count = t.batch_count in
+  t.batch_count <- 0;
+  if t.closed then -1
+  else begin
+    let n = if available t then writev_batch t.fd t.batch_headers t.batch_spans count ring else 0 in
+    if n < 0 then (
+      close t;
+      -1)
+    else begin
+      let remaining = ref n and accepted = ref 0 and stop = ref false in
+      while (not !stop) && !accepted < count do
+        let i = !accepted in
+        let base = t.batch_spans.(4 * i)
+        and hl = t.batch_spans.((4 * i) + 1)
+        and at = t.batch_spans.((4 * i) + 2)
+        and len = t.batch_spans.((4 * i) + 3) in
+        if !remaining >= hl + len then (
+          remaining := !remaining - (hl + len);
+          incr accepted)
+        else begin
+          stop := true;
+          if !remaining > 0 then begin
+            if !remaining < hl then
+              Queue.add
+                (Bytes.sub_string t.batch_headers (base + !remaining) (hl - !remaining))
+                t.pending;
+            let skip = max 0 (!remaining - hl) in
+            Queue.add (Bigstringaf.substring ring ~off:(at + skip) ~len:(len - skip)) t.pending;
+            t.pending_bytes <- t.pending_bytes + (hl + len - !remaining);
+            incr accepted
+          end
+        end
+      done;
+      if t.pending_bytes > max_queued then (
+        close t;
+        -1)
+      else (
+        if (!accepted < count || not (Queue.is_empty t.pending)) && t.ready then wait t;
+        !accepted)
+    end
   end
 
 let rec write_runtime t =
@@ -284,6 +351,9 @@ let create stream ~on_dispose =
       strings = Array.make 64 "";
       on_dispose;
       sent = 0;
+      batch_headers = Bytes.create (batch_capacity * batch_stride);
+      batch_spans = Array.make (4 * batch_capacity) 0;
+      batch_count = 0;
       pending_bytes = 0;
       websocket = false;
       ready = false;
@@ -351,7 +421,7 @@ let%test_module "Tests" =
       let bytes = Bytes.create 20 in
       List.iter
         (fun size ->
-          let len = header bytes 2 size in
+          let len = header bytes 0 2 size in
           print_endline
             (String.concat " "
                (List.init len (fun i -> Printf.sprintf "%02x" (Char.code (Bytes.get bytes i))))))
@@ -379,4 +449,42 @@ let%test_module "Tests" =
       Printf.printf "closed within 80 MiB: %b\n" (Option.is_some !closed_at);
       Unix.close read_end;
       [%expect {| closed within 80 MiB: true |}]
+
+    let%expect_test "a partial write inside the last batch record is flushed once the reader drains"
+        =
+      let writer_end, reader_end = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+      Unix.setsockopt_int writer_end Unix.SO_SNDBUF 4096;
+      Unix.set_nonblock reader_end;
+      let view = writer writer_end in
+      let sizes = [ 100; 150_000 ] in
+      let ring = Luv.Buffer.create (List.fold_left ( + ) 0 sizes) in
+      let at = ref 0 in
+      List.iter
+        (fun len ->
+          batch_add view ~offset:!at ~at:!at ~len;
+          at := !at + len)
+        sizes;
+      let expected = ref 0 in
+      for i = 0 to 1 do
+        expected := !expected + view.batch_spans.((4 * i) + 1) + view.batch_spans.((4 * i) + 3)
+      done;
+      let accepted = batch_send view ring in
+      Printf.printf "accepted %d of %d\n" accepted (List.length sizes);
+      let received = ref 0 and chunk = Bytes.create 65536 in
+      let rounds = ref 0 in
+      while !received < !expected && !rounds < 1000 do
+        (match Unix.read reader_end chunk 0 (Bytes.length chunk) with
+        | n -> received := !received + n
+        | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> ());
+        ignore (Luv.Loop.run ~mode:`ONCE () : bool);
+        incr rounds
+      done;
+      Printf.printf "everything arrived: %b\n" (!received = !expected);
+      close view;
+      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Unix.close reader_end;
+      [%expect {|
+        accepted 2 of 2
+        everything arrived: true
+      |}]
   end)

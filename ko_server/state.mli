@@ -1,6 +1,6 @@
 type t
 
-val create : Config.t -> activity:(unit -> unit) -> t
+val create : Config.t -> activity:(unit -> bool) -> t
 val panes : t -> Panes.t
 val clients : t -> Client.t list
 val topology : t -> unit

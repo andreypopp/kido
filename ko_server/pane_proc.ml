@@ -52,11 +52,11 @@ let kind_of_name = function
 
 let wire = Array.to_list (Array.map (fun (name, code) -> (kind_of_name name, code)) layout.frames)
 let to_int kind = List.assoc ~eq:equal_kind kind wire
+let by_code = Array.make 256 None
+let () = List.iter (fun (kind, code) -> by_code.(code) <- Some kind) wire
 
 let of_int code =
-  match List.find_opt (fun (_, n) -> n = code) wire with
-  | Some (kind, _) -> kind
-  | None -> invalid_arg "unknown pane frame"
+  match by_code.(code) with Some kind -> kind | None -> invalid_arg "unknown pane frame"
 
 external spawn : string -> Luv.Buffer.t * Unix.file_descr * int = "ko_pane_start"
 external unmap : Luv.Buffer.t -> unit = "ko_pane_unmap"
@@ -119,11 +119,16 @@ let init (config : Config.t) ~id ~cwd ~argv ~env ~size:dimensions =
   Buffer.contents b
 
 type life = Open | Closed | Reaped
-type event = Title of string | Pwd of string | Output | Dead of Protocol.dead
+type event = Title | Pwd | Output | Dead of Protocol.dead
+type text = { mutable bytes : Bytes.t; mutable length : int }
+
+let text_of_string s = { bytes = Bytes.of_string s; length = String.length s }
+let text_get text = Bytes.sub_string text.bytes 0 text.length
+
 type paste = { pasted : bool; unsafe : bool }
 
 type reply =
-  | Snapshot_reply of (Ring.record -> unit) * ((unit, string) result -> unit)
+  | Snapshot_reply of (int -> unit) * ((unit, string) result -> unit)
   | Screen_reply of (string -> last:bool -> unit) * ((unit, string) result -> unit)
   | Paste_reply of ((paste, string) result -> unit)
 
@@ -134,9 +139,12 @@ type t = {
   notify : event -> unit;
   mutable life : life;
   mutable child : int;
-  mutable title : string;
-  mutable cwd : string;
+  title : text;
+  cwd : text;
   mutable dead : Protocol.dead option;
+  mutable delivered : int;
+  mutable observed : int;
+  mutable busy : bool;
   mutable input : Bigstringaf.t;
   mutable filled : int;
   mutable next_req : int;
@@ -148,10 +156,11 @@ let is_open t = match t.life with Open -> true | Closed | Reaped -> false
 let is_reaped t = match t.life with Reaped -> true | Open | Closed -> false
 let pid t = t.pid
 let child_pid t = t.child
-let title t = t.title
-let cwd t = t.cwd
+let title t = text_get t.title
+let cwd t = text_get t.cwd
 let dead t = t.dead
 let ring t = t.ring
+let busy t = t.busy
 let life t = t.life
 
 let send t kind body =
@@ -187,24 +196,37 @@ let failure t message =
     die t { at = Uv.now (); cause = Failed message }
   end
 
+let deliver t ~upto:upper =
+  if not (Queue.is_empty t.snapshots) then
+    while t.delivered < upper do
+      let pos = t.delivered in
+      t.delivered <- Ring.next t.ring pos;
+      match Ring.kind t.ring pos with
+      | Slice -> (
+          match Queue.peek_opt t.snapshots with
+          | None -> ()
+          | Some req ->
+              (match Hashtbl.find_opt t.pending req with
+              | Some (Snapshot_reply (consume, _)) -> consume pos
+              | _ -> ());
+              if (Ring.slice t.ring pos).last then ignore (Queue.take t.snapshots : int))
+      | Bytes | Marker | Pad -> ()
+    done
+
 let scan t =
   if not (is_open t) then false
   else
+    let head = Ring.head t.ring in
     match
-      Ring.scan t.ring (fun record ->
-          match record.data with
-          | Slice slice -> (
-              match Queue.peek_opt t.snapshots with
-              | None -> ()
-              | Some req ->
-                  (match Hashtbl.find_opt t.pending req with
-                  | Some (Snapshot_reply (consume, _)) -> consume record
-                  | _ -> ());
-                  if slice.last then ignore (Queue.take t.snapshots : int))
-          | Bytes | Resize_marker _ | Dead_marker _ -> ())
+      try
+        deliver t ~upto:head;
+        Ring.advance t.ring ~head ~keep:(if Queue.is_empty t.snapshots then head else t.delivered)
+      with Invalid_argument message -> Stdlib.Error message
     with
-    | Ok changed ->
-        if Ring.pending t.ring then t.notify Output;
+    | Ok () ->
+        let changed = head <> t.observed in
+        t.observed <- head;
+        t.busy <- changed;
         changed
     | Stdlib.Error message ->
         failure t message;
@@ -220,7 +242,9 @@ let request t kind body reply =
     let req = t.next_req in
     t.next_req <- req + 1;
     Hashtbl.add t.pending req reply;
-    if equal_kind kind Snapshot then Queue.add req t.snapshots;
+    if equal_kind kind Snapshot then (
+      if Queue.is_empty t.snapshots then t.delivered <- Ring.head t.ring;
+      Queue.add req t.snapshots);
     let b = Buffer.create (String.length body + 4) in
     Buffer.add_int32_le b (Int32.of_int req);
     Buffer.add_string b body;
@@ -244,62 +268,98 @@ let screen t ~format ~history ~chunk ~done_ =
        | Last_rows n -> n));
   request t Screen (Buffer.contents b) (Screen_reply (chunk, done_))
 
-let string_at buffer at =
-  let len = Int32.to_int (Bigstringaf.get_int32_le buffer at) in
-  if len < 0 || at + 4 + len > Bigstringaf.length buffer then invalid_arg "invalid pane string";
-  Bigstringaf.substring buffer ~off:(at + 4) ~len
+let int32_at = Mem.int32
+let need len size = if len < size then invalid_arg "short pane frame"
 
-let on_frame t kind body =
-  ignore (scan t : bool);
+let string_at buffer ~off ~len at =
+  need len (at + 4);
+  let slen = int32_at buffer (off + at) in
+  if slen < 0 || at + 4 + slen > len then invalid_arg "invalid pane string";
+  Bigstringaf.substring buffer ~off:(off + at + 4) ~len:slen
+
+let store text buffer ~off ~len at =
+  need len (at + 4);
+  let slen = int32_at buffer (off + at) in
+  if slen < 0 || at + 4 + slen > len then invalid_arg "invalid pane string";
+  let source = off + at + 4 in
+  let same = ref (slen = text.length) and i = ref 0 in
+  while !same && !i < slen do
+    if Char.equal (Bigstringaf.get buffer (source + !i)) (Bytes.unsafe_get text.bytes !i) then
+      incr i
+    else same := false
+  done;
+  if !same then false
+  else begin
+    if Bytes.length text.bytes < slen then
+      text.bytes <- Bytes.create (max slen (2 * Bytes.length text.bytes));
+    Bigstringaf.blit_to_bytes buffer ~src_off:source text.bytes ~dst_off:0 ~len:slen;
+    text.length <- slen;
+    true
+  end
+
+let on_frame t kind ~off ~len =
+  let body = t.input in
   match kind with
-  | Ready ->
-      if Bigstringaf.length body <> 4 then invalid_arg "invalid ready"
-      else t.child <- Int32.to_int (Bigstringaf.get_int32_le body 0)
-  | Title ->
-      t.title <- string_at body 0;
-      t.notify (Title t.title)
-  | Pwd ->
-      t.cwd <- string_at body 0;
-      t.notify (Pwd t.cwd)
+  | Ready -> if len <> 4 then invalid_arg "invalid ready" else t.child <- int32_at body off
+  | Title -> if store t.title body ~off ~len 0 then t.notify Title
+  | Pwd -> if store t.cwd body ~off ~len 0 then t.notify Pwd
   | Head -> t.notify Output
   | Dead ->
+      if len <> 16 then invalid_arg "invalid dead";
+      let status = int32_at body off and signal = int32_at body (off + 4) in
       die t
-        (match Ring.dead t.ring with
-        | Some dead -> dead
-        | None -> { at = Uv.now (); cause = Failed "pane exited without a marker" })
+        {
+          at = Mem.int64 body (off + 8);
+          cause = (if signal = 0 then Exited status else Signaled signal);
+        }
   | Full ->
+      ignore (scan t : bool);
       let b = Buffer.create 8 in
       Buffer.add_int64_le b (Int64.of_int (Ring.tail t.ring));
       send t Tail (Buffer.contents b);
       t.notify Output
   | Snapshot_done | Paste_done | Screen -> (
-      let req = Int32.to_int (Bigstringaf.get_int32_le body 0) in
+      need len (match kind with Snapshot_done -> 4 | Paste_done -> 6 | _ -> 9);
+      deliver t ~upto:(Ring.head t.ring);
+      let req = int32_at body off in
       match Hashtbl.find_opt t.pending req with
       | Some (Snapshot_reply (_, done_)) when equal_kind kind Snapshot_done ->
           Hashtbl.remove t.pending req;
           done_ (Ok ())
       | Some (Paste_reply done_) when equal_kind kind Paste_done ->
           Hashtbl.remove t.pending req;
-          done_ (Ok { pasted = Char.code body.{4} = 1; unsafe = Char.code body.{5} = 1 })
+          done_
+            (Ok { pasted = Char.code body.{off + 4} = 1; unsafe = Char.code body.{off + 5} = 1 })
       | Some (Screen_reply (chunk, done_)) when equal_kind kind Screen ->
-          let last = Char.code body.{4} = 1 in
-          chunk (string_at body 5) ~last;
+          let last = Char.code body.{off + 4} = 1 in
+          chunk (string_at body ~off ~len 5) ~last;
           if last then (
             Hashtbl.remove t.pending req;
             done_ (Ok ()))
       | _ -> ())
-  | Error -> failure t (string_at body 0)
+  | Error -> failure t (string_at body ~off ~len 0)
   | _ -> ()
 
-let frame_at input ~filled pos =
-  if filled - pos < 4 then None
+let frame_size input ~filled pos =
+  if filled - pos < 4 then 0
   else
-    let len = Int32.to_int (Bigstringaf.get_int32_le input pos) in
+    let len = int32_at input pos in
     if len < 1 || len > layout.max_frame then invalid_arg "invalid control frame length";
-    if len + 4 > filled - pos then None
-    else
-      let kind = of_int (Char.code input.{pos + 4}) in
-      Some (kind, Bigstringaf.sub input ~off:(pos + 5) ~len:(len - 1), pos + 4 + len)
+    if len + 4 > filled - pos then 0 else len + 4
+
+let consume t =
+  let pos = ref 0 and running = ref true in
+  while !running && is_open t do
+    let size = frame_size t.input ~filled:t.filled !pos in
+    if size = 0 then running := false
+    else begin
+      let at = !pos in
+      pos := at + size;
+      on_frame t (of_int (Char.code t.input.{at + 4})) ~off:(at + 5) ~len:(size - 5)
+    end
+  done;
+  Bigstringaf.blit t.input ~src_off:!pos t.input ~dst_off:0 ~len:(t.filled - !pos);
+  t.filled <- t.filled - !pos
 
 let create config ~id ~cwd ~argv ~env ~notify =
   let buffer, fd, pid = spawn config.Config.pane_exe in
@@ -313,9 +373,12 @@ let create config ~id ~cwd ~argv ~env ~notify =
       notify;
       life = Open;
       child = 0;
-      title = "";
-      cwd;
+      title = text_of_string "";
+      cwd = text_of_string cwd;
       dead = None;
+      delivered = 0;
+      observed = 0;
+      busy = false;
       input = Bigstringaf.create 65536;
       filled = 0;
       next_req = 1;
@@ -330,24 +393,13 @@ let create config ~id ~cwd ~argv ~env ~notify =
       Bigstringaf.blit t.input ~src_off:0 input ~dst_off:0 ~len:t.filled;
       t.input <- input
     end;
-    Bigstringaf.sub t.input ~off:t.filled ~len:(Bigstringaf.length t.input - t.filled)
+    if t.filled = 0 then t.input
+    else Bigstringaf.sub t.input ~off:t.filled ~len:(Bigstringaf.length t.input - t.filled)
   in
   Luv.Stream.read_start ~allocate control (function
     | Ok chunk -> (
         t.filled <- t.filled + Bigstringaf.length chunk;
-        try
-          let pos = ref 0 in
-          let running = ref true in
-          while !running && is_open t do
-            match frame_at t.input ~filled:t.filled !pos with
-            | None -> running := false
-            | Some (kind, body, next) ->
-                pos := next;
-                on_frame t kind body
-          done;
-          Bigstringaf.blit t.input ~src_off:!pos t.input ~dst_off:0 ~len:(t.filled - !pos);
-          t.filled <- t.filled - !pos
-        with Invalid_argument message -> failure t message)
+        try consume t with Invalid_argument message -> failure t message)
     | Error _ -> failure t "pane control socket closed");
   send t Init (init config ~id ~cwd ~argv ~env ~size:Protocol.default_size);
   t
@@ -467,21 +519,22 @@ let%test_module "Tests" =
     let%expect_test "fragmented and multiple control frames" =
       let f = frame Text "abc" in
       let partial = String.sub f 0 6 in
-      let input = Luv.Buffer.from_string partial in
       Printf.printf "%d %d\n"
-        (match frame_at input ~filled:6 0 with None -> 0 | Some _ -> 1)
+        (frame_size (Luv.Buffer.from_string partial) ~filled:6 0)
         (String.length partial);
       let input = Luv.Buffer.from_string (f ^ frame Exit "") in
       let pos = ref 0 and frames = ref [] in
       while !pos < Luv.Buffer.size input do
-        match frame_at input ~filled:(Luv.Buffer.size input) !pos with
-        | Some (kind, body, next) ->
-            frames := Printf.sprintf "%d:%s" (to_int kind) (Bigstringaf.to_string body) :: !frames;
-            pos := next
-        | None -> pos := Luv.Buffer.size input
+        let size = frame_size input ~filled:(Luv.Buffer.size input) !pos in
+        frames :=
+          Printf.sprintf "%d:%s"
+            (to_int (of_int (Char.code input.{!pos + 4})))
+            (Bigstringaf.substring input ~off:(!pos + 5) ~len:(size - 5))
+          :: !frames;
+        pos := !pos + size
       done;
       Printf.printf "%s 0\n" (String.concat "," (List.rev !frames));
-      (try ignore (frame_at (Luv.Buffer.from_string "\000\000\000\000") ~filled:4 0)
+      (try ignore (frame_size (Luv.Buffer.from_string "\000\000\000\000") ~filled:4 0)
        with Invalid_argument message -> print_endline message);
       [%expect {|
  0 6
@@ -515,4 +568,132 @@ let%test_module "Tests" =
  1
  15 97
  |}]
+
+    let fake ?(notify = ignore) ring =
+      {
+        ring;
+        control = Uv.ok (Luv.Pipe.init ());
+        pid = 0;
+        notify;
+        life = Open;
+        child = 0;
+        title = text_of_string "";
+        cwd = text_of_string "";
+        dead = None;
+        delivered = 0;
+        observed = 0;
+        busy = false;
+        input = Bigstringaf.create 4096;
+        filled = 0;
+        next_req = 1;
+        pending = Hashtbl.create 1;
+        snapshots = Queue.create ();
+      }
+
+    let feed t data =
+      Bigstringaf.blit_from_string data ~src_off:0 t.input ~dst_off:t.filled
+        ~len:(String.length data);
+      t.filled <- t.filled + String.length data;
+      consume t
+
+    let title_frame text =
+      let b = Buffer.create 16 in
+      string b text;
+      frame Title (Buffer.contents b)
+
+    let%expect_test "events fire once per change of the stored title" =
+      let buffer = Luv.Buffer.create 64 in
+      Bigstringaf.set_int64_le buffer 0 64L;
+      let events = ref 0 in
+      let t = fake ~notify:(fun _ -> incr events) (Ring.create buffer) in
+      let report label =
+        Printf.printf "%s: %d events, title %S\n" label !events (title t);
+        events := 0
+      in
+      feed t (String.concat "" (List.map title_frame [ "A"; "B"; "A" ]));
+      report "A B A in one read";
+      feed t (String.concat "" (List.map title_frame [ "A"; "A"; "A" ]));
+      report "A A A after A";
+      let frame_text = title_frame "split title" in
+      feed t (String.sub frame_text 0 7);
+      report "first part of a split frame";
+      feed t (String.sub frame_text 7 (String.length frame_text - 7));
+      report "rest of the frame";
+      [%expect
+        {|
+        A B A in one read: 3 events, title "A"
+        A A A after A: 0 events, title "A"
+        first part of a split frame: 0 events, title "A"
+        rest of the frame: 1 events, title "split title"
+      |}]
+
+    let%expect_test "a frame body shorter than its fields fails instead of reading the next frame" =
+      let buffer = Luv.Buffer.create 64 in
+      Bigstringaf.set_int64_le buffer 0 64L;
+      let t = fake (Ring.create buffer) in
+      let fails kind body =
+        t.filled <- 0;
+        match feed t (frame kind body ^ frame Head "\000\000\000\000\000\000\000\000") with
+        | () -> Printf.printf "accepted a short body\n"
+        | exception Invalid_argument message -> print_endline message
+      in
+      fails Snapshot_done "\001\000";
+      fails Paste_done "\001\000\000\000\001";
+      fails Title "\005";
+      [%expect
+        {|
+        short pane frame
+        short pane frame
+        short pane frame
+      |}]
+
+    let data_offset = 32
+    and record_header = 13
+    and slice_tag = 3
+
+    let slice_record buffer ~pos ~first ~last =
+      let base = data_offset + pos in
+      buffer.{base} <- Char.chr slice_tag;
+      Bigstringaf.set_int32_le buffer (base + 1) 100l;
+      Bigstringaf.set_int64_le buffer (base + 5) 0L;
+      buffer.{base + record_header} <- Char.chr ((if first then 1 else 0) lor if last then 2 else 0);
+      pos + record_header + 100
+
+    let%expect_test "the tail never passes snapshot slices that were not delivered" =
+      let capacity = 2048 in
+      let buffer = Luv.Buffer.create (data_offset + capacity) in
+      Bigarray.Array1.fill buffer '\000';
+      Bigstringaf.set_int64_le buffer 0 (Int64.of_int capacity);
+      let count = 15 in
+      let ends = Array.make count 0 in
+      let pos = ref 0 in
+      for i = 0 to count - 1 do
+        pos := slice_record buffer ~pos:!pos ~first:(i = 0) ~last:(i = count - 1);
+        ends.(i) <- !pos
+      done;
+      let set_head head = Bigstringaf.set_int64_le buffer 8 (Int64.of_int head) in
+      set_head ends.(2);
+      let ring = Ring.create buffer in
+      let delivered = ref [] in
+      let t = fake ring in
+      Hashtbl.add t.pending 1
+        (Snapshot_reply
+           ( (fun pos ->
+               delivered := pos :: !delivered;
+               set_head ends.(count - 1)),
+             ignore ));
+      Queue.add 1 t.snapshots;
+      ignore (scan t : bool);
+      Printf.printf "delivered %d, tail passed the undelivered slices: %b\n"
+        (List.length !delivered)
+        (Ring.tail ring > ends.(2));
+      ignore (scan t : bool);
+      Printf.printf "delivered %d in order: %b\n" (List.length !delivered)
+        (List.equal Int.equal (List.rev !delivered)
+           (0 :: List.init (count - 1) (fun i -> ends.(i))));
+      [%expect
+        {|
+        delivered 3, tail passed the undelivered slices: false
+        delivered 15 in order: true
+      |}]
   end)

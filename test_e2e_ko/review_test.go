@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -218,5 +219,38 @@ func TestResumeSkipsResizeMarkersBeforeTheOffset(t *testing.T) {
 		default:
 			t.Fatalf("unexpected record on resume: %q", data)
 		}
+	}
+}
+
+func TestDeathHasOneTimestamp(t *testing.T) {
+	t.Parallel()
+	s := start(t)
+	c, _ := s.client("")
+	p := s.pane("printf READY; IFS= read -r go; exit 7")
+	v := s.dialWS("/panes/"+p+"/view?history=all", nil, 101)
+	s.ready(v, "READY")
+	s.request("POST", "/panes/"+p+"/input", []any{"text", base64.StdEncoding.EncodeToString([]byte("\n"))}, 200, nil)
+	var notice struct {
+		Dead struct{ At int64 }
+	}
+	if err := json.Unmarshal(event(t, c, "dead"), &notice); err != nil {
+		t.Fatal(err)
+	}
+	var marked struct {
+		Marker [2]json.RawMessage
+	}
+	if err := json.Unmarshal(event(t, v, "marked"), &marked); err != nil {
+		t.Fatal(err)
+	}
+	var marker struct{ At int64 }
+	if err := json.Unmarshal(marked.Marker[1], &marker); err != nil {
+		t.Fatal(err)
+	}
+	var rows []struct {
+		Dead struct{ At int64 }
+	}
+	s.request("GET", "/panes", nil, 200, &rows)
+	if notice.Dead.At == 0 || notice.Dead.At != marker.At || notice.Dead.At != rows[0].Dead.At {
+		t.Fatalf("death times differ: event %d, view marker %d, row %d", notice.Dead.At, marker.At, rows[0].Dead.At)
 	}
 }

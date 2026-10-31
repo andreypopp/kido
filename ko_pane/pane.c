@@ -915,21 +915,21 @@ int main(void) {
       committed = read_pty(&p);
     }
     if (p.reaped && p.eof) {
-      uint8_t b[8];
+      uint8_t b[16];
       ko_put(b, WIFEXITED(p.status) ? WEXITSTATUS(p.status) : 0, 4);
       ko_put(b + 4, WIFSIGNALED(p.status) ? WTERMSIG(p.status) : 0, 4);
+      ko_put(b + 8, ko_now_ns(), 8);
       if (wait_space(&p, 17)) {
         failure = 1;
         break;
       }
       uint8_t *marker = at_head(&p) + KO_HEADER;
       marker[0] = 2;
-      memcpy(marker + 1, b, 8);
-      ko_put(marker + 9, ko_now_ns(), 8);
+      memcpy(marker + 1, b, 16);
       commit(&p, KO_MARKER, 17);
       p.alive = 0;
       p.reaped = 0;
-      frame(&p.output, KO_DEAD, b, 8);
+      frame(&p.output, KO_DEAD, b, 16);
     }
     if (flush(1, &p.output)) {
       failure = 1;

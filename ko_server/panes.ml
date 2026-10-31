@@ -6,7 +6,12 @@ type t = {
 }
 
 let create config = { config; next = 1; panes = []; removed = [] }
-let find t id = List.find_opt (fun p -> Ids.Pane_id.equal (Pane.id p) id) t.panes
+
+let rec find_in id = function
+  | [] -> None
+  | pane :: rest -> if Ids.Pane_id.equal (Pane.id pane) id then Some pane else find_in id rest
+
+let find t id = find_in id t.panes
 let rows t = List.map Pane.row t.panes
 let iter t f = List.iter f t.panes
 

@@ -17,6 +17,8 @@ type t = {
   client : Ids.Client_id.t option;
   mutable state : state;
   mutable wanted : Protocol.history option;
+  nexts : int array;
+  ends : int array;
 }
 
 let client t = t.client
@@ -36,26 +38,93 @@ let waiting t =
   | Snapshotting _ -> true
   | Live _ -> Connection.waiting t.connection
 
+let resize_pending ring cursor =
+  let upper = Ring.head ring in
+  let pos = ref cursor.pos and found = ref false in
+  while (not !found) && !pos < upper do
+    (match Ring.kind ring !pos with
+    | Marker -> (
+        match Ring.marker ring !pos with
+        | Resize _ -> if Ring.offset ring !pos >= cursor.offset then found := true
+        | Dead _ -> ())
+    | Bytes | Slice | Pad -> ());
+    pos := Ring.next ring !pos
+  done;
+  !found
+
+let flush_batch t cursor ring =
+  let count = Connection.batch_count t.connection in
+  if count = 0 then true
+  else
+    let accepted = Connection.batch_send t.connection (Ring.buffer ring) in
+    if accepted < 0 then (
+      close t;
+      false)
+    else begin
+      if accepted > 0 then (
+        cursor.pos <- t.nexts.(accepted - 1);
+        cursor.offset <- t.ends.(accepted - 1));
+      if accepted < count || Connection.waiting t.connection then (
+        cursor.blocked <- true;
+        false)
+      else true
+    end
+
+let resume t cursor ring =
+  let upper = Ring.head ring in
+  let pos = ref cursor.pos and continue = ref true in
+  while !continue && !pos < upper do
+    let here = !pos in
+    let next = Ring.next ring here in
+    match Ring.kind ring here with
+    | Slice | Pad -> pos := next
+    | Bytes ->
+        let start = Ring.offset ring here and len = Ring.length ring here in
+        if start + len <= cursor.offset && Connection.batch_count t.connection = 0 then pos := next
+        else begin
+          let skip =
+            if Connection.batch_count t.connection = 0 then max 0 (cursor.offset - start) else 0
+          in
+          let i = Connection.batch_count t.connection in
+          Connection.batch_add t.connection ~offset:(start + skip)
+            ~at:(Ring.at ring here + skip)
+            ~len:(len - skip);
+          t.nexts.(i) <- next;
+          t.ends.(i) <- start + len;
+          pos := next;
+          if Connection.batch_full t.connection then continue := flush_batch t cursor ring
+        end
+    | Marker ->
+        if flush_batch t cursor ring then (
+          Connection.json t.connection
+            (Protocol.Event.view_to_json
+               (Marked { offset = Ring.offset ring here; marker = Ring.marker ring here }));
+          cursor.pos <- next;
+          pos := next)
+        else continue := false
+  done;
+  if !continue && flush_batch t cursor ring && cursor.pos < upper && !pos >= upper then
+    cursor.pos <- !pos
+
 let rec start_snapshot t cursor history =
   let snapshot = { cursor; history } in
   t.state <- Snapshotting snapshot;
   Pane_proc.snapshot (Pane.proc t.pane) ~history
-    ~consume:(fun record ->
+    ~consume:(fun pos ->
       match t.state with
       | Snapshotting current when Stdlib.(current == snapshot) -> (
-          let cursor = current.cursor in
+          let cursor = current.cursor and ring = ring t in
           match
-            Connection.record t.connection ~queue:true ~kind:Snapshot ~offset:record.offset
-              (Ring.buffer (ring t))
-              ~at:record.at ~len:record.len
+            Connection.record t.connection ~queue:true ~kind:Snapshot ~offset:(Ring.offset ring pos)
+              (Ring.buffer ring) ~at:(Ring.at ring pos) ~len:(Ring.length ring pos)
           with
           | Closed -> close t
           | Accepted ->
-              cursor.pos <- record.next;
-              cursor.offset <- record.offset
+              cursor.pos <- Ring.next ring pos;
+              cursor.offset <- Ring.offset ring pos
           | Queued | Blocked ->
-              cursor.pos <- record.next;
-              cursor.offset <- record.offset;
+              cursor.pos <- Ring.next ring pos;
+              cursor.offset <- Ring.offset ring pos;
               cursor.blocked <- true)
       | _ -> ())
     ~done_:(function
@@ -80,82 +149,37 @@ and pump t =
   flush_wanted t;
   match t.state with
   | Closed | Snapshotting _ -> ()
-  | Live (cursor, history) ->
+  | Live (cursor, history) -> (
       let ring = ring t in
-      if cursor.pos <> Ring.position ring && Connection.available t.connection then begin
-        let resize = ref false in
-        if match history with History_none -> true | History_all -> false then
-          Ring.iter_from ring cursor.pos (fun record ->
-              match record.data with
-              | Resize_marker _ when record.offset >= cursor.offset ->
-                  resize := true;
-                  false
-              | _ -> true);
-        match
-          decide
-            ~behind:(cursor.pos < Ring.tail ring)
-            ~offset:cursor.offset ~head:(Ring.offset ring) ~history ~resize:!resize
-            ~blocked:cursor.blocked
-        with
-        | Skip ->
-            Connection.json t.connection
-              (Protocol.Event.view_to_json
-                 (Skipped
-                    { offset = Ring.offset ring; from = cursor.offset; to_ = Ring.offset ring }));
-            cursor.blocked <- false;
-            request_snapshot t Protocol.History_none
-        | Snapshot history ->
-            cursor.blocked <- false;
-            request_snapshot t history
-        | Resume ->
-            cursor.blocked <- false;
-            Ring.iter_from ring cursor.pos (fun record ->
-                if not (Connection.available t.connection) then (
-                  cursor.blocked <- true;
-                  false)
-                else
-                  match record.data with
-                  | Slice _ ->
-                      cursor.pos <- record.next;
-                      true
-                  | Bytes when record.offset + record.len <= cursor.offset ->
-                      cursor.pos <- record.next;
-                      true
-                  | Bytes -> (
-                      let skip = max 0 (cursor.offset - record.offset) in
-                      match
-                        Connection.record t.connection ~queue:false ~kind:Output
-                          ~offset:(record.offset + skip) (Ring.buffer ring) ~at:(record.at + skip)
-                          ~len:(record.len - skip)
-                      with
-                      | Closed ->
-                          close t;
-                          false
-                      | Accepted ->
-                          cursor.pos <- record.next;
-                          cursor.offset <- record.offset + record.len;
-                          true
-                      | Queued ->
-                          cursor.pos <- record.next;
-                          cursor.offset <- record.offset + record.len;
-                          cursor.blocked <- true;
-                          false
-                      | Blocked ->
-                          cursor.blocked <- true;
-                          false)
-                  | Resize_marker size ->
-                      Connection.json t.connection
-                        (Protocol.Event.view_to_json
-                           (Marked { offset = record.offset; marker = Resize size }));
-                      cursor.pos <- record.next;
-                      true
-                  | Dead_marker dead ->
-                      Connection.json t.connection
-                        (Protocol.Event.view_to_json
-                           (Marked { offset = record.offset; marker = Dead dead }));
-                      cursor.pos <- record.next;
-                      true)
-      end
+      try
+        if cursor.pos < Ring.head ring && Connection.available t.connection then begin
+          let behind = cursor.pos < Ring.tail ring in
+          let resize =
+            (not behind)
+            && (match history with History_none -> true | History_all -> false)
+            && resize_pending ring cursor
+          in
+          match
+            decide ~behind ~offset:cursor.offset ~head:(Ring.end_offset ring) ~history ~resize
+              ~blocked:cursor.blocked
+          with
+          | Skip ->
+              let head = Ring.end_offset ring in
+              Connection.json t.connection
+                (Protocol.Event.view_to_json
+                   (Skipped { offset = head; from = cursor.offset; to_ = head }));
+              cursor.blocked <- false;
+              request_snapshot t Protocol.History_none
+          | Snapshot history ->
+              cursor.blocked <- false;
+              request_snapshot t history
+          | Resume ->
+              cursor.blocked <- false;
+              resume t cursor ring
+        end
+      with Invalid_argument _ ->
+        Connection.reject t.connection Io;
+        close t)
 
 and request_snapshot t history =
   t.wanted <- Some history;
@@ -163,14 +187,27 @@ and request_snapshot t history =
 
 let create pane connection ~client ~offset ~history =
   let ring = Pane_proc.ring (Pane.proc pane) in
-  let cursor = { pos = 0; offset = Ring.offset ring; blocked = false } in
-  let t = { pane; connection; client; state = Live (cursor, history); wanted = None } in
-  (match offset with
-  | Some value when value >= Ring.oldest ring && value <= Ring.offset ring ->
-      cursor.pos <- Ring.resume ring value;
-      cursor.offset <- value;
-      pump t
-  | Some _ | None -> request_snapshot t history);
+  let cursor = { pos = 0; offset = 0; blocked = false } in
+  let t =
+    {
+      pane;
+      connection;
+      client;
+      state = Live (cursor, history);
+      wanted = None;
+      nexts = Array.make Connection.batch_capacity 0;
+      ends = Array.make Connection.batch_capacity 0;
+    }
+  in
+  (try
+     cursor.offset <- Ring.end_offset ring;
+     match offset with
+     | Some value when value >= Ring.oldest_offset ring && value <= cursor.offset ->
+         cursor.pos <- Ring.resume ring value;
+         cursor.offset <- value;
+         pump t
+     | Some _ | None -> request_snapshot t history
+   with Invalid_argument _ -> request_snapshot t history);
   t
 
 let receive t text =
