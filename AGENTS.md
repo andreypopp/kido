@@ -381,6 +381,7 @@ the `ko` branch. rfc/kido-server/p1-mvp.md is its plan and layout:
 `ko_pane/` (the C pane process), `ko_vt/` (libghostty-vt, built by
 zig from PATH out of `third_party/ghostty`, and the binding),
 `ko_server/` (the coordinator), `ko_tui/` (the terminal client),
+`ko_proofs/` (the F*/Pulse proofs, "Proved modules (ko)" below),
 `bin/ko.ml`, `bench/` and `test_e2e_ko/` (its Go protocol and client
 suite, `make e2e-ko`, a stage of `make verify`; the client tests run
 `ko` under an outer kido-tmux on a private socket). Nothing in `lib/` depends on them.
@@ -863,6 +864,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
     make fuzz TARGET=view TIME=600  one time-boxed ko fuzz run, for CI or the user; no TARGET lists the targets
+    make proofs  re-verify ko_proofs/ and diff its extraction against the committed files; WRITE=1 replaces them
     make clean-forks  remove fork builds other than the pin
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
     make website the website's dev server at http://localhost:4321 (website/README.md)
@@ -1199,6 +1201,64 @@ its comment.
   It refuses `'`, `"`, `$`, `#`, `\`, a backtick, a newline
   or a carriage return.
   It quotes a space.
+
+## Proved modules (ko)
+
+The ring, `Pane_core` and `View_core` are proved in F* with Pulse, in
+`ko_proofs/`. The specifications are the `.fsti` and `.fst` files
+there. Extraction generates three committed files:
+
+- `ko_proofs/ko_ring_proved.h`: the ring writer and reader, in C,
+  through Karamel. `ko_pane/pane.c` and the coordinator's ring
+  stubs call it.
+- `ko_server/pane_core.ml` and `ko_server/view_core.ml`: the
+  coordinator's pane and view logic, in OCaml.
+
+Never edit a generated file. Change the F* source, then run
+`make proofs WRITE=1`. `make proofs` installs the pinned F* release
+(it includes Pulse, Karamel and Z3) through `scripts/install-fstar.sh`
+into `build/fstar/<key>`, and keeps the `.checked` files in
+`build/fstar-checked/<key>`. Then `ko_proofs/extract.sh` verifies
+every module, extracts, and compares the output with the committed
+files. As a smoke test of extraction, it also checks that the OCaml
+has as many call sites of each effectful extern as the F*. This check
+does not see order or control flow. `dune build`, `make verify` and `make verify-ko` need
+no F*. CI runs `make proofs` in its `proofs` job on Linux x86_64 and
+macOS arm64.
+
+The proofs trust the interfaces that the cores call:
+`Ring.fsti` (the OCaml reader in `ko_server/ring.ml`),
+`Connection.fsti`, `Delivery_io.fsti`, `Oint.fsti` and
+`KoAtomic.fsti` (`ko_proofs/ko_atomic.h`). Their assumed `val`s and
+`custard_extern` attributes are the trusted base. A reviewer reads
+these contracts and compares each one with the real OCaml or C. The
+proofs of the cores do not need review.
+
+- An assumed `val` never has an unconditional `ensures` that the real
+  code cannot guarantee. If a call can change state that the contract
+  describes, the contract says so.
+- `Ring_proof.fst` proves each `Ring.fsti` contract against the
+  proved model. Only the correspondence of `ring.ml` with that model
+  is trusted.
+- When `KO_CHECK_CONTRACTS=true` at build time, `Ring`, `Connection`
+  and `Delivery_io` check the postconditions that their run-time
+  state can show, and a broken contract fails with "broken
+  contract". Ghost-state properties, such as the data-loss predicate
+  of `reachable`, and the functions without a check still need the
+  comparison with the code. The unit stages of `scripts/verify.sh`,
+  `scripts/fuzz.sh` and CI's unit tests set the variable, so the
+  fuzzers test these contracts. Without it, the checks fold away and
+  cost nothing.
+
+**The ring indices are sequentially consistent.** The wakeup
+handshake between `head` and `read` is a store-buffering pattern:
+each side stores its index, then loads the other's. Under
+acquire/release, both loads can read the old values, and a wakeup is
+lost. The proof assumes one interleaving, which only `seq_cst` gives.
+C and OCaml access the indices only through the proved functions and
+the `ko_atomic.h` stubs. `ko_pane/genmc/` holds GenMC models of the
+extracted code (`ko_pane/genmc/run.sh sc|acqrel ring|wakeup`, GenMC
+0.19): `sc` passes both, and `acqrel wakeup` finds the lost wakeup.
 
 ## Review
 

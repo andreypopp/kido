@@ -141,19 +141,84 @@ CAMLprim value ko_pane_unmap(value mapping) {
   munmap(Caml_ba_data_val(mapping), Caml_ba_array_val(mapping)->dim[0]);
   return Val_unit;
 }
-CAMLprim value ko_pane_ring_head(value mapping) {
-  struct ko_ring *ring = Caml_ba_data_val(mapping);
-  return Val_long(atomic_load(&ring->head));
+struct ko_reader {
+  KoRing_Inv_ring ring;
+  KoRing_Inv_rstate state;
+};
+CAMLprim value ko_ring_reader_size(value unit) {
+  (void)unit;
+  return Val_int(sizeof(struct ko_reader));
 }
-CAMLprim value ko_pane_ring_set_tail(value mapping, value tail) {
-  struct ko_ring *ring = Caml_ba_data_val(mapping);
-  atomic_store(&ring->tail, Long_val(tail));
-  return Val_unit;
+static struct ko_reader *reader(value reader) {
+  return Caml_ba_data_val(reader);
 }
-CAMLprim value ko_pane_ring_set_read(value mapping, value read) {
-  struct ko_ring *ring = Caml_ba_data_val(mapping);
-  atomic_store(&ring->read, Long_val(read));
-  return Val_unit;
+intnat ko_ring_attach_reader(value mapping, value r) {
+  if (ko_ring_attach(Caml_ba_data_val(mapping), Caml_ba_array_val(mapping)->dim[0],
+                     &reader(r)->ring)) {
+    return -1;
+  }
+  return (intnat)reader(r)->ring.cap;
+}
+CAMLprim value ko_ring_attach_reader_byte(value mapping, value r) {
+  return Val_long(ko_ring_attach_reader(mapping, r));
+}
+intnat ko_ring_head(value r) {
+  return (intnat)KoRing_Reader_observe(reader(r)->ring, &reader(r)->state).seen;
+}
+CAMLprim value ko_ring_head_byte(value r) {
+  return Val_long(ko_ring_head(r));
+}
+intnat ko_ring_tail(value r) {
+  return (intnat)reader(r)->state.rtail;
+}
+CAMLprim value ko_ring_tail_byte(value r) {
+  return Val_long(ko_ring_tail(r));
+}
+intnat ko_ring_seen(value r) {
+  return (intnat)reader(r)->state.seen;
+}
+CAMLprim value ko_ring_seen_byte(value r) {
+  return Val_long(ko_ring_seen(r));
+}
+intnat ko_ring_header(value r, intnat pos, value fields) {
+  KoRing_Reader_hdr_view h =
+      KoRing_Reader_header(reader(r)->ring, &reader(r)->state, (uint64_t)pos);
+  int64_t *out = Caml_ba_data_val(fields);
+  out[0] = (int64_t)h.hlen;
+  out[1] = (int64_t)h.hoff;
+  return h.ok ? h.htag : 0;
+}
+CAMLprim value ko_ring_header_byte(value r, value pos, value fields) {
+  return Val_long(ko_ring_header(r, Long_val(pos), fields));
+}
+intnat ko_ring_advance(value r, intnat upper, intnat keep) {
+  return KoRing_Walk_advance(reader(r)->ring, &reader(r)->state, (uint64_t)upper,
+                             (uint64_t)keep);
+}
+CAMLprim value ko_ring_advance_byte(value r, value upper, value keep) {
+  return Val_long(ko_ring_advance(r, Long_val(upper), Long_val(keep)));
+}
+intnat ko_ring_reachable(value r, intnat pos) {
+  KoRing_Walk_answer a = KoRing_Walk_reachable(&reader(r)->state, (uint64_t)pos);
+  return a.found ? (intnat)a.value : -1;
+}
+CAMLprim value ko_ring_reachable_byte(value r, value pos) {
+  return Val_long(ko_ring_reachable(r, Long_val(pos)));
+}
+intnat ko_ring_end_offset(value r) {
+  KoRing_Walk_answer a = KoRing_Walk_end_offset(reader(r)->ring, &reader(r)->state);
+  return a.found ? (intnat)a.value : -1;
+}
+CAMLprim value ko_ring_end_offset_byte(value r) {
+  return Val_long(ko_ring_end_offset(r));
+}
+intnat ko_ring_resume(value r, intnat target) {
+  KoRing_Walk_answer a =
+      KoRing_Walk_resume(reader(r)->ring, &reader(r)->state, (uint64_t)target);
+  return a.found ? (intnat)a.value : -1;
+}
+CAMLprim value ko_ring_resume_byte(value r, value target) {
+  return Val_long(ko_ring_resume(r, Long_val(target)));
 }
 CAMLprim value ko_writev(value fd, value header, value header_len,
                          value mapping, value offset, value length) {

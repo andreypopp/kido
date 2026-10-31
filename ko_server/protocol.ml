@@ -216,12 +216,11 @@ module Record = struct
       | '\002' -> Snapshot
       | _ -> invalid_arg "unknown view record"
 
-  let slice_of_string s at =
-    {
-      first = Char.code s.[at] land 1 <> 0;
-      last = Char.code s.[at] land 2 <> 0;
-      screen = Char.code s.[at + 1] = 1;
-    }
+  let slice flags screen =
+    { first = flags land 1 <> 0; last = flags land 2 <> 0; screen = screen = 1 }
+
+  let slice_of_string s at = slice (Char.code s.[at]) (Char.code s.[at + 1])
+  let slice_of_bigstring b at = slice (Char.code b.{at}) (Char.code b.{at + 1})
 end
 
 module Route = struct

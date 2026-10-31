@@ -46,8 +46,32 @@
   (extra_deps
    ../ko_pane/protocol.h
    ../ko_pane/ring.h
+   ../ko_proofs/ko_ring_proved.h
+   ../ko_proofs/ko_atomic.h
    ../ko_pane/now.h
    (source_tree ../third_party/ghostty/include)))
  (inline_tests)
  (preprocess
   (pps ppx_expect ppx_compare jsonkit.ppx ppx_deriving_qcheck)))
+
+; KO_CHECK_CONTRACTS=true at build time makes the trusted modules (Ring,
+; Connection, Delivery_io) assert what ko_proofs/ assumes of them. Off, [on]
+; is a primitive the compiler folds to false in every module that reads it,
+; -opaque or not (ko runs only on Unix), so the checks compile away.
+
+(rule
+ (targets contract.ml contract.mli)
+ (action
+  (progn
+   (with-stdout-to
+    contract.mli
+    (run
+     sh
+     -c
+     "case %{env:KO_CHECK_CONTRACTS=false} in true) echo 'val on : unit -> bool' ;; *) echo 'external on : unit -> bool = \"%ostype_win32\"' ;; esac; echo 'val check : bool -> string -> unit'"))
+   (with-stdout-to
+    contract.ml
+    (run
+     sh
+     -c
+     "case %{env:KO_CHECK_CONTRACTS=false} in true) echo 'let on () = true' ;; *) echo 'external on : unit -> bool = \"%ostype_win32\"' ;; esac; echo 'let check ok what = if not ok then failwith (\"broken contract: \" ^ what)'")))))

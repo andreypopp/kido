@@ -99,15 +99,15 @@ int main(int argc, char **argv) {
     }
     memmove(input, input + pos, filled - pos);
     filled -= pos;
-    for (uint64_t head = atomic_load(&ring->head); tail < head; head = atomic_load(&ring->head)) {
+    for (uint64_t head = ko_atomic_load((uint64_t *)&ring->head); tail < head; head = ko_atomic_load((uint64_t *)&ring->head)) {
       while (tail < head) {
         uint8_t *record = ring->data + tail % capacity;
         size_t len = ko_get(record + 1, 4);
         if (record[0] == KO_BYTES) payload += len;
         tail += KO_HEADER + len;
       }
-      atomic_store(&ring->tail, tail);
-      atomic_store(&ring->read, tail);
+      ko_atomic_store((uint64_t *)&ring->tail, tail);
+      ko_atomic_store((uint64_t *)&ring->read, tail);
     }
     if (full) {
       uint8_t b[8];

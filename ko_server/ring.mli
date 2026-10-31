@@ -17,7 +17,7 @@ val buffer : t -> Bigstringaf.t
 val head : t -> int
 val tail : t -> int
 val reachable : t -> int -> int option
-val advance : t -> head:int -> keep:int -> (unit, string) result
+val advance : t -> head:int -> keep:int -> unit
 val kind : t -> int -> kind
 val next : t -> int -> int
 val offset : t -> int -> int

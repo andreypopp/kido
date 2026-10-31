@@ -33,7 +33,7 @@ val snapshot :
   history:Protocol.history ->
   consume:(int -> unit) ->
   done_:((unit, string) result -> unit) ->
-  unit
+  bool
 
 val screen :
   t ->

@@ -134,7 +134,7 @@ let%test_module "Tests" =
         go from
 
       let boundaries t = positions t (tail t.ring) @ [ head t.ring ]
-      let advance t keep = assert (Result.is_ok (advance t.ring ~head:(head t.ring) ~keep))
+      let advance t keep = advance t.ring ~head:(head t.ring) ~keep
       let advance_boundary t i = advance t (List.nth (boundaries t) i)
 
       let resume t target =

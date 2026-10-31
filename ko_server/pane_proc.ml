@@ -132,12 +132,11 @@ let text_get text = Bytes.sub_string text.bytes 0 text.length
 type paste = { pasted : bool; unsafe : bool }
 
 type reply =
-  | Snapshot_reply of (int -> unit) * ((unit, string) result -> unit)
   | Screen_reply of (string -> last:bool -> unit) * ((unit, string) result -> unit)
   | Paste_reply of ((paste, string) result -> unit)
 
 type t = {
-  ring : Ring.t;
+  core : Pane_core.pane;
   control : Event_loop.watch;
   outbox : Outbox.t;
   pid : Pid.t;
@@ -147,15 +146,11 @@ type t = {
   title : text;
   cwd : text;
   mutable dead : Protocol.dead option;
-  mutable delivered : int;
-  mutable observed : int;
-  mutable busy : bool;
   mutable input : Bigstringaf.t;
   mutable filled : int;
   mutable next_req : int;
   pending : (int, reply) Hashtbl.t;
-  snapshots : int Queue.t;
-  finished : (int * int) Queue.t;
+  finishing : (unit -> unit) Queue.t;
 }
 
 let is_open t = match t.life with Open -> true | Closed | Reaped -> false
@@ -170,18 +165,23 @@ let child_pid t =
 let title t = text_get t.title
 let cwd t = text_get t.cwd
 let dead t = t.dead
-let ring t = t.ring
-let busy t = t.busy
+let ring t = Pane_core.ring t.core
+let busy t = Pane_core.busy t.core
 let life t = t.life
+
+let run_finishing t =
+  while not (Queue.is_empty t.finishing) do
+    (Queue.take t.finishing) ()
+  done
 
 let fail_pending t message =
   let pending = Hashtbl.to_seq_values t.pending |> List.of_seq in
   Hashtbl.clear t.pending;
-  Queue.clear t.snapshots;
-  Queue.clear t.finished;
+  Pane_core.fail_requests t.core;
+  run_finishing t;
   List.iter
     (function
-      | Snapshot_reply (_, done_) | Screen_reply (_, done_) -> done_ (Stdlib.Error message)
+      | Screen_reply (_, done_) -> done_ (Stdlib.Error message)
       | Paste_reply done_ -> done_ (Stdlib.Error message))
     pending
 
@@ -219,73 +219,54 @@ let send t kind body =
     if idle then flush_control t
   end
 
-let deliver t ~upto:upper =
-  if not (Queue.is_empty t.snapshots) then
-    while t.delivered < upper do
-      let pos = t.delivered in
-      t.delivered <- Ring.next t.ring pos;
-      match Ring.kind t.ring pos with
-      | Slice -> (
-          match Queue.peek_opt t.snapshots with
-          | None -> ()
-          | Some req ->
-              (match Hashtbl.find_opt t.pending req with
-              | Some (Snapshot_reply (consume, _)) -> consume pos
-              | _ -> ());
-              if (Ring.slice t.ring pos).last then
-                Queue.add (Queue.take t.snapshots, t.delivered) t.finished)
-      | Bytes | Marker | Pad -> ()
-    done
+let early_slice = "ko-pane wrote a slice before its request"
+let deliver t = if not (Pane_core.deliver t.core (Ring.head (ring t))) then invalid_arg early_slice
 
 let scan t =
-  if not (is_open t) then false
-  else
-    let head = Ring.head t.ring in
-    match
-      try
-        deliver t ~upto:head;
-        let keep =
-          let unfinished = if Queue.is_empty t.snapshots then head else t.delivered in
-          match Queue.peek_opt t.finished with
-          | Some (_, cursor) -> min cursor unfinished
-          | None -> unfinished
-        in
-        Ring.advance t.ring ~head ~keep
-      with Invalid_argument message -> Stdlib.Error message
-    with
-    | Ok () ->
-        let changed = head <> t.observed in
-        t.observed <- head;
-        t.busy <- changed;
-        changed
-    | Stdlib.Error message ->
-        failure t message;
-        false
+  match Pane_core.scan t.core (is_open t) with
+  | Changed -> true
+  | Unchanged -> false
+  | Aborted ->
+      failure t early_slice;
+      false
+  | exception Invalid_argument message ->
+      failure t message;
+      false
+
+let ended = "pane process ended"
+
+let request_with t kind body register =
+  let req = t.next_req in
+  t.next_req <- req + 1;
+  register req;
+  let b = Buffer.create (String.length body + 4) in
+  Buffer.add_int32_le b (Int32.of_int req);
+  Buffer.add_string b body;
+  send t kind (Buffer.contents b)
 
 let request t kind body reply =
   if not (is_open t) then
     match reply with
-    | Snapshot_reply (_, done_) | Screen_reply (_, done_) ->
-        done_ (Stdlib.Error "pane process ended")
-    | Paste_reply done_ -> done_ (Stdlib.Error "pane process ended")
-  else begin
-    let req = t.next_req in
-    t.next_req <- req + 1;
-    Hashtbl.add t.pending req reply;
-    if equal_kind kind Snapshot then (
-      if Queue.is_empty t.snapshots then t.delivered <- Ring.head t.ring;
-      Queue.add req t.snapshots);
-    let b = Buffer.create (String.length body + 4) in
-    Buffer.add_int32_le b (Int32.of_int req);
-    Buffer.add_string b body;
-    send t kind (Buffer.contents b)
-  end
+    | Screen_reply (_, done_) -> done_ (Stdlib.Error ended)
+    | Paste_reply done_ -> done_ (Stdlib.Error ended)
+  else request_with t kind body (fun req -> Hashtbl.add t.pending req reply)
 
 let snapshot t ~history ~consume ~done_ =
-  request t Snapshot
+  is_open t
+  &&
+  let sent = ref false in
+  let finish ok =
+    if !sent then
+      Queue.add
+        (fun () -> done_ (if ok then Ok () else Stdlib.Error "snapshot did not complete"))
+        t.finishing
+  in
+  request_with t Snapshot
     ((match history with Protocol.History_all -> "\000" | History_none -> "\001")
     ^ "\000\000\000\000\000")
-    (Snapshot_reply (consume, done_))
+    (fun req -> Pane_core.note_snapshot t.core { req; consume; finish });
+  sent := is_open t;
+  !sent
 
 let screen t ~format ~history ~chunk ~done_ =
   let b = Buffer.create 5 in
@@ -353,20 +334,17 @@ let on_frame t kind ~off ~len =
   | Full ->
       ignore (scan t : bool);
       let b = Buffer.create 8 in
-      Buffer.add_int64_le b (Int64.of_int (Ring.tail t.ring));
+      Buffer.add_int64_le b (Int64.of_int (Ring.tail (ring t)));
       send t Tail (Buffer.contents b);
       t.notify Output
   | Snapshot_done | Paste_done | Screen -> (
       need len (match kind with Snapshot_done -> 4 | Paste_done -> 6 | _ -> 9);
-      deliver t ~upto:(Ring.head t.ring);
+      deliver t;
       let req = int32_at body off in
-      (match Queue.peek_opt t.finished with
-      | Some (first, _) when Int.equal first req -> ignore (Queue.take t.finished : int * int)
-      | Some _ | None -> ());
+      if equal_kind kind Snapshot_done then (
+        Pane_core.snapshot_done t.core req;
+        run_finishing t);
       match Hashtbl.find_opt t.pending req with
-      | Some (Snapshot_reply (_, done_)) when equal_kind kind Snapshot_done ->
-          Hashtbl.remove t.pending req;
-          done_ (Ok ())
       | Some (Paste_reply done_) when equal_kind kind Paste_done ->
           Hashtbl.remove t.pending req;
           done_
@@ -416,7 +394,7 @@ let create config ~id ~cwd ~argv ~env ~notify =
   Unix.set_nonblock fd;
   let t =
     {
-      ring = Ring.create buffer;
+      core = Pane_core.make (Ring.create buffer) (Delivery_io.pane_io_create ());
       control = Event_loop.watch fd;
       outbox = Outbox.create ();
       pid;
@@ -426,15 +404,11 @@ let create config ~id ~cwd ~argv ~env ~notify =
       title = text_of_string "";
       cwd = text_of_string cwd;
       dead = None;
-      delivered = 0;
-      observed = 0;
-      busy = false;
       input = Bigstringaf.create 65536;
       filled = 0;
       next_req = 1;
       pending = Hashtbl.create 8;
-      snapshots = Queue.create ();
-      finished = Queue.create ();
+      finishing = Queue.create ();
     }
   in
   let window = { Event_loop.buffer = t.input; off = 0; len = Bigstringaf.length t.input } in
@@ -476,7 +450,7 @@ let shutdown t =
 
 let release t =
   if not (is_reaped t) then (
-    unmap (Ring.buffer t.ring);
+    unmap (Ring.buffer (ring t));
     t.life <- Reaped)
 
 let reap t =
@@ -635,7 +609,8 @@ let%test_module "Tests" =
  |}]
 
     let small_ring () =
-      let buffer = Bigstringaf.create 64 in
+      let buffer = Bigstringaf.create (Ring.layout.data_offset + 64) in
+      Bigarray.Array1.fill buffer '\000';
       Bigstringaf.set_int64_le buffer 0 64L;
       Ring.create buffer
 
@@ -644,11 +619,11 @@ let%test_module "Tests" =
       ignore (Unix.waitpid [] child);
       Option.get (Pid.of_int child)
 
-    let fake ?(notify = ignore) ?(ring = small_ring ()) () =
-      let null = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
+    let fake ?(notify = ignore) ?(ring = small_ring ())
+        ?(control = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0) () =
       {
-        ring;
-        control = Event_loop.watch null;
+        core = Pane_core.make ring (Delivery_io.pane_io_create ());
+        control = Event_loop.watch control;
         outbox = Outbox.create ();
         pid = unsignalled_pid;
         notify;
@@ -657,15 +632,11 @@ let%test_module "Tests" =
         title = text_of_string "";
         cwd = text_of_string "";
         dead = None;
-        delivered = 0;
-        observed = 0;
-        busy = false;
         input = Bigstringaf.create 4096;
         filled = 0;
         next_req = 1;
         pending = Hashtbl.create 1;
-        snapshots = Queue.create ();
-        finished = Queue.create ();
+        finishing = Queue.create ();
       }
 
     let feed t data =
@@ -746,17 +717,19 @@ let%test_module "Tests" =
         ends.(i) <- !pos
       done;
       let set_head head = Bigstringaf.set_int64_le buffer 8 (Int64.of_int head) in
-      set_head ends.(2);
       let ring = Ring.create buffer in
       let delivered = ref [] in
       let t = fake ~ring () in
-      Hashtbl.add t.pending 1
-        (Snapshot_reply
-           ( (fun pos ->
-               delivered := pos :: !delivered;
-               set_head ends.(count - 1)),
-             ignore ));
-      Queue.add 1 t.snapshots;
+      Pane_core.note_snapshot t.core
+        {
+          req = 1;
+          consume =
+            (fun pos ->
+              delivered := pos :: !delivered;
+              set_head ends.(count - 1));
+          finish = ignore;
+        };
+      set_head ends.(2);
       ignore (scan t : bool);
       Printf.printf "delivered %d, tail passed the undelivered slices: %b\n"
         (List.length !delivered)
@@ -780,14 +753,17 @@ let%test_module "Tests" =
       let ring = ring t in
       let cursor = ref 0 in
       let report = ref "" in
-      snapshot t ~history:History_none
-        ~consume:(fun pos -> cursor := Ring.next ring pos)
-        ~done_:(fun _ ->
-          report :=
-            Printf.sprintf "A done: cursor %d, tail %d, cursor still in the ring: %b" !cursor
-              (Ring.tail ring)
-              (Ring.tail ring <= !cursor));
-      snapshot t ~history:History_none ~consume:ignore ~done_:ignore;
+      let asked =
+        snapshot t ~history:History_none
+          ~consume:(fun pos -> cursor := Ring.next ring pos)
+          ~done_:(fun _ ->
+            report :=
+              Printf.sprintf "A done: cursor %d, tail %d, cursor still in the ring: %b" !cursor
+                (Ring.tail ring)
+                (Ring.tail ring <= !cursor))
+        && snapshot t ~history:History_none ~consume:ignore ~done_:ignore
+      in
+      assert asked;
       let pos = ref 0 in
       for i = 0 to 2 do
         pos := slice_record buffer ~pos:!pos ~first:(i = 0) ~last:(i = 2)
@@ -806,6 +782,54 @@ let%test_module "Tests" =
       print_endline !report;
       [%expect {| A done: cursor 339, tail 339, cursor still in the ring: true |}]
 
+    let%expect_test "a snapshot asked for from a snapshot's done callback gets the slices after it"
+        =
+      let capacity = 2048 in
+      let buffer = Bigstringaf.create (data_offset + capacity) in
+      Bigarray.Array1.fill buffer '\000';
+      Bigstringaf.set_int64_le buffer 0 (Int64.of_int capacity);
+      let t = fake ~ring:(Ring.create buffer) () in
+      let result = function Ok () -> "ok" | Stdlib.Error message -> message in
+      let write slices =
+        let pos = ref (Ring.head (ring t)) in
+        for i = 0 to slices - 1 do
+          pos := slice_record buffer ~pos:!pos ~first:(i = 0) ~last:(i = slices - 1)
+        done;
+        Bigstringaf.set_int64_le buffer 8 (Int64.of_int !pos);
+        ignore (scan t : bool)
+      in
+      let asked =
+        snapshot t ~history:History_none ~consume:(Printf.printf "A slice %d\n") ~done_:(fun r ->
+            Printf.printf "A %s\n" (result r);
+            assert (
+              snapshot t ~history:History_none ~consume:(Printf.printf "B slice %d\n")
+                ~done_:(fun r -> Printf.printf "B %s\n" (result r))))
+      in
+      assert asked;
+      write 2;
+      feed t (frame Snapshot_done "\001\000\000\000");
+      write 2;
+      feed t (frame Snapshot_done "\002\000\000\000");
+      [%expect
+        {|
+        A slice 0
+        A slice 113
+        A ok
+        B slice 226
+        B slice 339
+        B ok
+        |}]
+
+    let%expect_test "a snapshot request that cannot be sent is refused, and its callback never runs"
+        =
+      let t = fake ~control:(Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0) () in
+      let asked =
+        snapshot t ~history:History_none ~consume:ignore ~done_:(fun r ->
+            Printf.printf "done: %s\n" (match r with Ok () -> "ok" | Stdlib.Error m -> m))
+      in
+      Printf.printf "asked %b, pane open: %b\n" asked (is_open t);
+      [%expect {| asked false, pane open: false |}]
+
     let opened = ref []
 
     let watched () =
@@ -823,8 +847,12 @@ let%test_module "Tests" =
               | Dead _ -> "dead"))
           ()
       in
-      Hashtbl.add t.pending 1
-        (Snapshot_reply ((fun pos -> add "slice %d" pos), fun r -> add "snapshot %s" (result r)));
+      Pane_core.note_snapshot t.core
+        {
+          req = 1;
+          consume = (fun pos -> add "slice %d" pos);
+          finish = (fun ok -> add "snapshot %s" (result (if ok then Ok () else Stdlib.Error ended)));
+        };
       Hashtbl.add t.pending 2
         (Paste_reply
            (function

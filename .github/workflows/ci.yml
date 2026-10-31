@@ -101,7 +101,7 @@ jobs:
         run: make install PREFIX=$HOME/tmux-side && $HOME/tmux-side/bin/kido --version && test -x $HOME/tmux-side/share/kido/bin/tmux
 
       - name: Unit tests
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test --force
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KO_CHECK_CONTRACTS=true dune test --force
 
       # "fork failed: Device not configured" from tmux on macOS runners reads as
       # pty exhaustion; this records the limit next to any such failure.
@@ -173,3 +173,35 @@ jobs:
 
       - name: TypeScript tests
         run: KIDO_TS_TEST_REQUIRED=1 ./scripts/test-ts.sh
+
+  # Re-verifies ko_proofs/ and diffs its extraction against the committed C
+  # and OCaml, on the F* release's Linux x86_64 and Darwin arm64 binaries.
+  proofs:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve F* key
+        id: fstar
+        run: echo "key=$(./scripts/install-fstar.sh --print-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache F*
+        uses: actions/cache@v4
+        with:
+          path: build/fstar/${{ steps.fstar.outputs.key }}
+          key: fstar-${{ runner.os }}-${{ steps.fstar.outputs.key }}
+
+      - name: Cache checked files
+        uses: actions/cache@v4
+        with:
+          path: build/fstar-checked/${{ steps.fstar.outputs.key }}
+          key: fstar-checked-${{ runner.os }}-${{ steps.fstar.outputs.key }}-${{ hashFiles('ko_proofs/*.fst', 'ko_proofs/*.fsti') }}
+          restore-keys: fstar-checked-${{ runner.os }}-${{ steps.fstar.outputs.key }}-
+
+      - name: Proofs
+        run: make proofs

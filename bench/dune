@@ -93,7 +93,13 @@
 
 (rule
  (targets acker.exe)
- (deps acker.c cpu.h ../ko_pane/protocol.h ../ko_pane/ring.h)
+ (deps
+  acker.c
+  cpu.h
+  ../ko_pane/protocol.h
+  ../ko_pane/ring.h
+  ../ko_proofs/ko_ring_proved.h
+  ../ko_proofs/ko_atomic.h)
  (action
   (run cc -std=c11 -O2 -Wall -Wextra -Werror acker.c -o acker.exe)))
 

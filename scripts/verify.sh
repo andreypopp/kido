@@ -36,9 +36,9 @@ case ${1:-verify} in
     for name in ${STAGES:-$default}; do
       case $name in
         build) stage build dune build ;;
-        unit) stage unit dune test --force ;;
+        unit) stage unit env KO_CHECK_CONTRACTS=true dune test --force ;;
         e2e) stage e2e e2e ;;
-        unit-ko) stage unit-ko dune test --force ko_server ko_server/fuzz ko_tui ko_vt ko_pane ;;
+        unit-ko) stage unit-ko env KO_CHECK_CONTRACTS=true dune test --force ko_server ko_server/fuzz ko_tui ko_vt ko_pane ;;
         lint) stage lint ./scripts/test-ts.sh lint ;;
         e2e-ko) stage e2e-ko make e2e-ko ;;
         ts) stage ts ./scripts/test-ts.sh ;;

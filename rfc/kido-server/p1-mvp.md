@@ -38,7 +38,8 @@ Out, until later stages:
                   the frame codec of protocol.md section 14; built by a
                   dune rule with the same flags as the library, with
                   `-fsanitize=address,undefined` in the test build and
-                  libFuzzer targets for frame sizes and frame bodies
+                  libFuzzer targets for frame sizes and frame bodies;
+                  genmc/ the GenMC models of the ring's atomics
     ko_vt/        the libghostty-vt binding for the client's mirror:
                   terminal, snapshot decoder, render state, scroll,
                   formatter
@@ -51,7 +52,12 @@ Out, until later stages:
                   wire JSON types), Ws (WebSocket frames), Event_loop
                   (the poll(2) loop), Native (peer credentials, the
                   monotonic clock, signal numbers), Pid (the only
-                  signal calls), Config
+                  signal calls), Config, Ring (the mapped ring's
+                  reader), Pane_core and View_core (generated from
+                  ko_proofs/), Delivery_io (their I/O)
+    ko_proofs/    the F*/Pulse proofs of the ring, Pane_core and
+                  View_core, their trusted interfaces, extract.sh, and
+                  the generated ring header ko_ring_proved.h
     ko_server/fuzz/  the fuzz properties (QCheck2 and Monolith), a test-only library
     ko_tui/       the thin terminal client library: Mosaic for the
                   sidebar and input, a direct cell differ for the screen
@@ -836,6 +842,11 @@ These points were open or wrong in the plan:
   program of operations; the mirror, HTTP and loop properties use
   QCheck2, so a failure shrinks through its generator. The HTTP
   requests come from generators derived on the protocol types.
+  The ring, `Pane_core` and `View_core` are also proved in F*/Pulse
+  (design.md 4.6); `make proofs` re-verifies them and its CI job runs
+  on Linux and macOS. The unit and fuzz builds set
+  `KO_CHECK_CONTRACTS`, so the fuzzers also check the executable
+  part of the contracts that the proofs trust.
   `dune test` replays fixed seeds and one explicit regression case
   for each bug that a fuzzer found; `make fuzz` runs one target for
   a fixed time, only in CI. The `-afl` targets run the same tests

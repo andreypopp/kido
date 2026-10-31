@@ -2,6 +2,8 @@
 # Usage: scripts/fuzz.sh [--merge] TARGET SECONDS
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# the trusted Ring, Connection and Delivery_io assert what ko_proofs/ assumes of them
+export KO_CHECK_CONTRACTS=true
 targets='frame control ring pane-proc view http loop ring-afl pane-proc-afl http-afl'
 merge=
 if [[ ${1:-} == --merge ]]; then

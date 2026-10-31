@@ -264,6 +264,7 @@ at the cut-over (migration.md S8).
 | `Layout` | the one layout document: sessions, windows, split trees, floats, zoom, active panes, names, order, session and window variables; its validation, normalization, revision and events (4.5) |
 | `Client` | a connected client: its `/client` WebSocket, current session, window and pane, size, focus, sizing flag |
 | `View` | one streaming response of one pane: sync state, unsent count, pending snapshot |
+| `Pane_core`, `View_core` | the pane's delivery of ring records to its views and each view's stream decisions, generated from proved F*/Pulse (4.6) |
 | `Input` | typed events validated and forwarded to the pane process, which encodes them |
 | `Clipboard` | the OSC 52 and 5522 request routing |
 | `Images` | image resources: server-owned shm copies locally, pixel bodies remotely |
@@ -602,6 +603,21 @@ multiplexed binary connection:
   resume from; a view whose unsent bytes passed `resume_threshold`
   gets a snapshot anyway, so it never holds the writer. This mapping is the pane's ring of this
   section; there is no second one.
+- The ring's writer and reader, and the coordinator's logic that
+  delivers records to views, are proved in F* with Pulse
+  (`ko_proofs/`, AGENTS.md "Proved modules (ko)"). The writer and
+  reader are extracted to C for `ko-pane` and the coordinator's ring
+  stubs; `Pane_core` and `View_core` are extracted to OCaml. The
+  proofs cover the ring's layout and wrap, that a resume or
+  `reachable` loses no data record, the tail held at a finished
+  snapshot until `snapshot_done`, each view's stream position, at most
+  one snapshot in flight per view, and the flush rule. The proofs
+  trust the contracts of the OCaml ring reader, the connection and the
+  delivery I/O; test and fuzz builds check the parts of those
+  contracts that the run-time state can show. The ring's `head`, `tail` and `read` indices are sequentially
+  consistent atomics: the idle wakeup is a store-buffering handshake,
+  which acquire/release would let lose a wakeup (a GenMC model shows
+  it).
 - Socket buffers decide when backpressure engages. On macOS a
   non-blocking writer on a unix stream socket accepts exactly its own
   `SO_SNDBUF` before `EAGAIN`, whatever the reader's `SO_RCVBUF`

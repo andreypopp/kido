@@ -36,7 +36,7 @@ test:
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: fuzz e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: fuzz proofs e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -47,6 +47,15 @@ verify:
 
 verify-ko:
 	STAGES='$(STAGES)' bash scripts/verify.sh verify-ko
+
+# re-verifies ko_proofs/ and diffs its extraction against the committed C
+# and OCaml; WRITE=1 replaces them instead. Only this target needs F*.
+FSTAR_KEY := $(shell ./scripts/install-fstar.sh --print-key)
+FSTAR := build/fstar/$(FSTAR_KEY)
+proofs:
+	@test -x $(FSTAR)/bin/fstar.exe || ./scripts/install-fstar.sh $(CURDIR)/$(FSTAR)
+	PATH="$(CURDIR)/$(FSTAR)/bin:$$PATH" KO_FSTAR_CACHE=$(CURDIR)/build/fstar-checked/$(FSTAR_KEY) \
+		sh ko_proofs/extract.sh $(if $(filter 1,$(WRITE)),--write)
 
 fuzz:
 	bash scripts/fuzz.sh $(if $(MERGE),--merge) '$(TARGET)' '$(TIME)'

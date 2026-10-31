@@ -5,6 +5,7 @@
 #include "now.h"
 #include "pixels.h"
 #include "protocol.h"
+#include "ring.h"
 #include "snapshot_cut.h"
 #include <ghostty/vt.h>
 #include <sys/ioctl.h>
@@ -41,7 +42,8 @@ static int group_signal(struct group group, int signo) {
 
 struct pane {
   struct ko_ring *ring;
-  uint64_t head, offset;
+  KoRing_Inv_ring view;
+  KoRing_Inv_wstate writer;
   GhosttyTerminal vt;
   int master, alive, stopping, eof, reaped, code, termsig, full, depth;
   pid_t pid;
@@ -87,48 +89,21 @@ static int flush(int fd, struct ko_buffer *b) {
   return 0;
 }
 static uint8_t *at_head(struct pane *p) {
-  return p->ring->data + p->head % p->ring->capacity;
+  return p->view.data + p->writer.whead % p->view.cap;
 }
-static void put_record(struct pane *p, unsigned kind, size_t n) {
-  uint64_t before = p->head;
-  uint8_t *b = at_head(p);
-  b[0] = kind;
-  ko_put(b + 1, n, 4);
-  ko_put(b + 5, p->offset, 8);
-  p->head += KO_HEADER + n;
-  if (kind == KO_BYTES) {
-    p->offset += n;
-  }
-  atomic_store(&p->ring->head, p->head);
-  if (atomic_load(&p->ring->read) == before) {
-    uint8_t h[8];
-    ko_put(h, p->head, 8);
-    if (frame(&p->output, KO_HEAD, h, 8)) {
-      p->stopping = 1;
-    }
+static void announce_head(struct pane *p) {
+  uint8_t h[8];
+  ko_put(h, p->writer.whead, 8);
+  if (frame(&p->output, KO_HEAD, h, 8)) {
+    p->stopping = 1;
   }
 }
 static size_t available(struct pane *p) {
-  uint64_t tail = atomic_load(&p->ring->tail);
-  if (tail > p->head || p->head - tail > p->ring->capacity) {
-    p->stopping = 1;
-    return 0;
+  KoRing_Writer_avail a = KoRing_Writer_available(p->view, &p->writer);
+  if (a.idle) {
+    announce_head(p);
   }
-  uint64_t free = p->ring->capacity - (p->head - tail);
-  size_t end = p->ring->capacity - p->head % p->ring->capacity;
-  if (end <= 2 * KO_HEADER) {
-    if (free < end) {
-      return 0;
-    }
-    put_record(p, KO_PAD, end - KO_HEADER);
-    free -= end;
-    end = p->ring->capacity;
-  }
-  size_t n = free < end ? free : end;
-  if (n <= 2 * KO_HEADER) {
-    return 0;
-  }
-  return n - 2 * KO_HEADER;
+  return a.room;
 }
 static void announce_full(struct pane *p) {
   if (p->full) {
@@ -136,13 +111,20 @@ static void announce_full(struct pane *p) {
   }
   p->full = 1;
   uint8_t b[8];
-  ko_put(b, atomic_load(&p->ring->tail), 8);
+  ko_put(b, p->writer.wtail, 8);
   if (frame(&p->output, KO_FULL, b, 8)) {
     p->stopping = 1;
   }
 }
 static void commit(struct pane *p, unsigned kind, size_t n) {
-  put_record(p, kind, n);
+  switch (KoRing_Writer_put_record(p->view, &p->writer, kind, n)) {
+  case KoRing_Writer_Refused:
+    p->stopping = 1;
+    return;
+  case KoRing_Writer_Idle:
+    announce_head(p);
+    break;
+  }
   if (p->events.n) {
     if (ko_append(&p->output, p->events.p, p->events.n)) {
       p->stopping = 1;
@@ -888,14 +870,12 @@ static int read_pty(struct pane *p) {
 int main(void) {
   signal(SIGPIPE, SIG_IGN);
   struct stat st;
-  if (fstat(3, &st) || st.st_size < (off_t)(sizeof(struct ko_ring) + 64)) {
+  if (fstat(3, &st) || st.st_size <= 0) {
     return 2;
   }
   struct pane p = {.master = -1};
   p.ring = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, 3, 0);
-  if (p.ring == MAP_FAILED ||
-      p.ring->capacity > (uint64_t)st.st_size - sizeof(struct ko_ring) ||
-      p.ring->capacity < 64) {
+  if (p.ring == MAP_FAILED || ko_ring_attach(p.ring, st.st_size, &p.view)) {
     return 2;
   }
   if (pipe(sigchld)) {

@@ -77,8 +77,8 @@ int main(int argc,char **argv){
   uint8_t *snapshot=NULL;size_t snapshot_len=0,marker_cols=0,marker_rows=0;
   while(!snapshot_done){unsigned kind=receive(control,&d);
     int drain=kind==KO_FULL||kind==KO_DEAD||kind==KO_SNAPSHOT_DONE;
-    for(uint64_t head;drain;drain=atomic_load(&ring->head)!=head){
-      head=atomic_load(&ring->head);
+    for(uint64_t head;drain;drain=ko_atomic_load((uint64_t *)&ring->head)!=head){
+      head=ko_atomic_load((uint64_t *)&ring->head);
       while(tail<head){size_t pos=tail%capacity;assert(capacity-pos>=KO_HEADER);uint8_t *b=ring->data+pos;
         size_t len=ko_get(b+1,4);assert(len+KO_HEADER<=capacity-pos);assert(ko_get(b+5,8)==offset);
         if(b[0]==KO_BYTES)offset+=len;
@@ -87,7 +87,7 @@ int main(int argc,char **argv){
         else assert(b[0]==KO_PAD);
         tail+=KO_HEADER+len;
       }
-      atomic_store(&ring->tail,tail);atomic_store(&ring->read,tail);
+      ko_atomic_store((uint64_t *)&ring->tail,tail);ko_atomic_store((uint64_t *)&ring->read,tail);
     }
     if(kind==KO_READY){ready++;assert(d.n==4);}
     else if(kind==KO_HEAD)assert(d.n==8);

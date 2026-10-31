@@ -191,14 +191,17 @@ let snapshots ~pane_exe ~produce ~lines =
     before ();
     let finished = ref false and total = ref 0 in
     let started = Unix.gettimeofday () in
-    Pane_proc.snapshot p.proc ~history
-      ~consume:(fun pos ->
-        let ring = Pane_proc.ring p.proc in
-        total := !total + Ring.length ring pos - Protocol.Record.slice_size;
-        ignore
-          (Connection.record p.view ~queue:true ~kind:Snapshot ~offset:(Ring.offset ring pos)
-             (Ring.buffer ring) ~at:(Ring.at ring pos) ~len:(Ring.length ring pos)))
-      ~done_:(function Ok () -> finished := true | Error message -> failwith message);
+    if
+      not
+        (Pane_proc.snapshot p.proc ~history
+           ~consume:(fun pos ->
+             let ring = Pane_proc.ring p.proc in
+             total := !total + Ring.length ring pos - Protocol.Record.slice_size;
+             ignore
+               (Connection.record p.view ~queue:true ~kind:Snapshot ~offset:(Ring.offset ring pos)
+                  (Ring.buffer ring) ~at:(Ring.at ring pos) ~len:(Ring.length ring pos)))
+           ~done_:(function Ok () -> finished := true | Error message -> failwith message))
+    then failwith "snapshot refused";
     run_until ~timeout:120. (fun () -> !finished && Connection.available p.view) (fun () -> flush p);
     Printf.printf "snapshot view=writev lines=%d kind=%s bytes=%d ms=%.2f\n%!" lines label !total
       ((Unix.gettimeofday () -. started) *. 1e3)

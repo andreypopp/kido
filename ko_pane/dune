@@ -6,7 +6,8 @@
  (targets fuzz-frame)
  (deps
   fuzz_frame.c
-  (glob_files *.h))
+  (glob_files *.h)
+  (glob_files ../ko_proofs/*.h))
  (action
   (run
    cc
@@ -33,6 +34,7 @@
   ../ko_vt/cxx.sh
   pane.c
   (glob_files *.h)
+  (glob_files ../ko_proofs/*.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -45,6 +47,7 @@
   ../ko_vt/cxx.sh
   test_pane.c
   (glob_files *.h)
+  (glob_files ../ko_proofs/*.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -57,6 +60,7 @@
   ../ko_vt/cxx.sh
   pane.c
   (glob_files *.h)
+  (glob_files ../ko_proofs/*.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -69,6 +73,7 @@
   ../ko_vt/cxx.sh
   test_compress.c
   (glob_files *.h)
+  (glob_files ../ko_proofs/*.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -99,7 +104,8 @@
   (= %{profile} fuzz))
  (deps
   fuzz_frame.c
-  (glob_files *.h))
+  (glob_files *.h)
+  (glob_files ../ko_proofs/*.h))
  (action
   (run
    %{env:KO_FUZZ_CC=clang}
@@ -120,6 +126,7 @@
   fuzz_control.c
   pane.c
   (glob_files *.h)
+  (glob_files ../ko_proofs/*.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -150,6 +157,7 @@
   fuzz_control.c
   pane.c
   (glob_files *.h)
+  (glob_files ../ko_proofs/*.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action

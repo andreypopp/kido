@@ -134,6 +134,7 @@ module Record : sig
   val offset_of_string : string -> int
   val kind_of_string : string -> kind
   val slice_of_string : string -> int -> slice
+  val slice_of_bigstring : Bigstringaf.t -> int -> slice
 end
 
 module Route : sig

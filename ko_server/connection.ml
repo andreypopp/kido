@@ -57,7 +57,8 @@ let close t =
     Event_loop.close t.watch;
     t.on_close ();
     t.on_dispose t
-  end
+  end;
+  if Contract.on () then Contract.check t.closed "Connection.close"
 
 let update_interest t =
   Event_loop.interest t.watch (Event_loop.interest_of ~read:t.reading ~write:t.waiting)
@@ -131,8 +132,13 @@ let reject t kind =
   close t
 
 let is_closed t = t.closed
-let available t = t.ready && (not t.closed) && (not t.waiting) && Outbox.is_empty t.pending
 let waiting t = t.waiting || not (Outbox.is_empty t.pending)
+
+let available t =
+  let ready = t.ready && (not t.closed) && (not t.waiting) && Outbox.is_empty t.pending in
+  if Contract.on () then
+    Contract.check ((not ready) || ((not t.closed) && not (waiting t))) "Connection.available";
+  ready
 
 type written = Accepted | Queued | Blocked | Closed
 
@@ -182,7 +188,7 @@ let batch_add t ~offset ~at ~len =
   spans.((4 * i) + 3) <- len;
   t.batch_count <- i + 1
 
-let batch_send t ring =
+let send_batch t ring =
   let count = t.batch_count in
   t.batch_count <- 0;
   if t.closed then -1
@@ -224,6 +230,19 @@ let batch_send t ring =
         !accepted)
     end
   end
+
+let batch_send t ring =
+  if Contract.on () then begin
+    let count = t.batch_count and closed = t.closed in
+    let n = send_batch t ring in
+    Contract.check
+      (-1 <= n && n <= count && t.batch_count = 0
+      && (n >= 0 || t.closed)
+      && ((not closed) || t.closed))
+      "Connection.batch_send";
+    n
+  end
+  else send_batch t ring
 
 let head_too_large =
   "HTTP/1.1 431 Request Header Fields Too Large\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"

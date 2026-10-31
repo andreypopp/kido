@@ -75,6 +75,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   memset(ring, 0, sizeof(struct ko_ring));
   ring->capacity = CAPACITY;
   struct pane p = {.master = -1, .ring = ring};
+  if (ko_ring_attach(ring, sizeof(struct ko_ring) + CAPACITY, &p.view)) {
+    abort();
+  }
   if (mode & 1) {
     if (ghostty_terminal_new(NULL, &p.vt, 80, 24) != GHOSTTY_SUCCESS) {
       abort();
@@ -97,8 +100,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
       }
       uint8_t *body = malloc(frame_len - 5 ? frame_len - 5 : 1);
       memcpy(body, data + pos + 5, frame_len - 5);
-      atomic_store(&ring->tail, p.head);
-      atomic_store(&ring->read, p.head);
+      ko_atomic_store((uint64_t *)&ring->tail, p.writer.whead);
+      ko_atomic_store((uint64_t *)&ring->read, p.writer.whead);
       int failed = dispatch(&p, data[pos + 4], body, frame_len - 5, 1);
       free(body);
       refused = failed;
