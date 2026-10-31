@@ -170,42 +170,25 @@ let upgrade t ?client ~route () =
 
 let frame t opcode payload =
   Mutex.protect t.write_lock (fun () ->
-      let n = String.length payload in
-      let ext = if n < 126 then 0 else if n <= 65535 then 2 else 8 in
-      let b = Bytes.create (2 + ext + 4 + n) in
-      Bytes.set b 0 (Char.chr (128 lor opcode));
-      Bytes.set b 1 (Char.chr (128 lor if ext = 0 then n else if ext = 2 then 126 else 127));
-      for i = 0 to ext - 1 do
-        Bytes.set b (2 + i) (Char.chr ((n lsr (8 * (ext - 1 - i))) land 255))
-      done;
       let mask = String.init 4 (fun _ -> Char.chr (Random.State.int t.random 256)) in
-      Bytes.blit_string mask 0 b (2 + ext) 4;
-      String.iteri
-        (fun i c ->
-          Bytes.set b (6 + ext + i) (Char.chr (Char.code c lxor Char.code mask.[i mod 4])))
-        payload;
-      write t (Bytes.unsafe_to_string b))
+      write t (Ko_server.Ws.encode ~mask ~opcode payload))
 
 let send t json = frame t 1 (Yojson.Basic.to_string json)
 
 let receive t =
   let buffer = ref None in
   let rec go kind =
-    let h = read t 2 in
-    let op = Char.code h.[0] land 15 and final = Char.code h.[0] land 128 <> 0 in
-    let n = Char.code h.[1] land 127 in
-    if Char.code h.[1] land 128 <> 0 then raise (Error "masked server frame");
-    let n =
-      if n < 126 then n
-      else
-        let s = read t (if n = 126 then 2 else 8) in
-        String.fold_left
-          (fun n c ->
-            if n > max_int lsr 8 then raise (Error "WebSocket frame too large");
-            (n lsl 8) lor Char.code c)
-          0 s
+    let first = read t 2 in
+    if Char.code first.[1] land 128 <> 0 then raise (Error "masked server frame");
+    let header =
+      match
+        Ko_server.Ws.parse (first ^ read t (Ko_server.Ws.extension (Char.code first.[1]))) 0
+      with
+      | Some header -> header
+      | None -> raise (Error "invalid WebSocket header")
     in
-    if n > 128 lsl 20 then raise (Error "WebSocket frame too large");
+    let op = header.opcode and final = header.fin and n = header.length in
+    if n < 0 || n > 128 lsl 20 then raise (Error "WebSocket frame too large");
     let payload = read t n in
     match op with
     | 8 -> `Close

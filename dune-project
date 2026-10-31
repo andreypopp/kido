@@ -55,4 +55,5 @@
   httpun-ws
   dune-build-info
   (ppx_expect :with-test)
+  (qcheck-core :with-test)
   (ocamlformat :with-dev-setup)))

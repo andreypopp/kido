@@ -110,6 +110,10 @@ whether it takes part in sizing. The server answers with the
 limits, then the full layout document (section 7), then events
 (section 6). Later the client sends a selection, a relative switch, a size, a
 focus change or a clipboard answer, all on this connection.
+A size has at least one column and row and at most
+`KO_MAX_DIMENSION` (`ko_pane/protocol.h`) of each; the server refuses
+a hello or a size outside that range. A larger grid is never useful,
+and one 65535x65535 grid takes gigabytes.
 
 The client exists from the hello to the close. There is no
 registration request, no linger and no delete: detach is a close, and
@@ -426,7 +430,15 @@ The control socket carries length-prefixed frames in both directions;
 the kinds are `ko_pane/protocol.h`, the codec `Pane_proc`. The first
 frame from the coordinator is `init`; `ko-pane` answers `ready` or
 exits with status 2 and a message on stderr, which the coordinator
-logs. A `version` the coordinator does not know is a refusal at
+logs. The `ready` pid is a claim, not a fact: the coordinator
+signals no pid that it takes from another process without proof. It
+accepts the pid only if the OS reports that the process is a child of
+the `ko-pane` that the coordinator spawned and leads its own process
+group and session, and it is not 0, 1, the coordinator's pid or its
+group. It records the start time of the process. A pid that fails
+this check fails the pane as an invalid frame. A pid with no process
+(the program exited and `ko-pane` reaped it) records no child and is
+not an error. A second `ready` is invalid. A `version` the coordinator does not know is a refusal at
 `init`; the coordinator then restarts the pane with a snapshot as in
 design.md 4.12.
 
@@ -450,7 +462,12 @@ position. Input frames are applied in arrival order and written to
 the pty at once, queued on `EAGAIN`, never dropped. `ko-pane` reaps
 its program on `SIGCHLD`, sends `dead`, keeps the terminal and the pty
 master, and answers `snapshot` and `screen` for a dead pane. On EOF
-or an error on stdin it sends `SIGHUP` to the program, waits 500 ms,
-sends `SIGKILL`, and exits. The foreground check runs only on events
+or an error on stdin it sends `SIGHUP` to the program's group, waits
+250 ms, sends `SIGKILL`, and exits. `ko-pane` sends `ready` only after
+the program has called `setsid` and `exec` (a close-on-exec pipe), and
+not if it already exited. It collects the program's status with
+`WNOWAIT` and keeps the zombie until its final group kill, so the pid
+and group id cannot be reused while `ko-pane` lives; if the program
+is already a zombie, it sends `SIGKILL` to the group at once. The foreground check runs only on events
 (s1.md 4): after OSC 133 `C` and `D` and on pty output at most once
 per 100 ms, never on a timer.

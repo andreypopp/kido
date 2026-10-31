@@ -1,0 +1,17 @@
+(library
+ (name ko_server_fuzz)
+ (flags
+  (:standard
+   -open
+   Containers
+   -open
+   Ppx_compare_lib.Builtin
+   -open
+   Jsonkit.Primitives))
+ (libraries containers unix luv yojson jsonkit qcheck-core ko_vt ko_server)
+ (inline_tests
+  (deps
+   ../../ko_pane/ko-pane
+   (glob_files ../../bench/streams/*.vt)))
+ (preprocess
+  (pps ppx_expect ppx_compare jsonkit.ppx)))

@@ -31,9 +31,10 @@ let add t (request : Protocol.Request.create_pane) ~notify =
     if Filename.is_relative cwd then invalid_arg "cwd must be absolute";
     if String.contains cwd '\000' || List.exists (fun s -> String.contains s '\000') command then
       invalid_arg "NUL in pane request";
-    (match (Unix.stat cwd).st_kind with
-    | Unix.S_DIR -> ()
-    | _ -> invalid_arg "cwd must be a directory");
+    (match Unix.stat cwd with
+    | { st_kind = Unix.S_DIR; _ } -> ()
+    | _ | (exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR | Unix.EACCES), _, _)) ->
+        invalid_arg "cwd must be a directory");
     let requested = List.map (fun (v : Protocol.variable) -> (v.name, v.value)) request.env in
     List.iter
       (fun (k, v) ->
@@ -76,6 +77,11 @@ let remove t pane =
 
 let shutdown t = List.iter (fun p -> Pane_proc.shutdown (Pane.proc p)) (t.panes @ t.removed)
 let kill t = List.iter (fun p -> Pane_proc.kill (Pane.proc p)) (t.panes @ t.removed)
+
+let reaped t =
+  List.for_all
+    (fun p -> match Pane_proc.life (Pane.proc p) with Reaped -> true | Open | Closed -> false)
+    (t.panes @ t.removed)
 
 let reap t =
   List.iter (fun p -> Pane_proc.reap (Pane.proc p)) (t.panes @ t.removed);

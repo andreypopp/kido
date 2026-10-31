@@ -29,6 +29,13 @@ let topology t =
   broadcast t (fun () -> Protocol.Event.client_to_json (Topology (Panes.rows t.panes)))
 
 let pump t = List.iter View.pump t.views
+
+let tick t =
+  let produced = ref false in
+  Panes.iter t.panes (fun pane -> if Pane_proc.scan (Pane.proc pane) then produced := true);
+  pump t;
+  !produced
+
 let waiting t = List.exists View.waiting t.views
 
 let close_views t id =

@@ -243,6 +243,14 @@ func (o *terminal) attach(pager string) {
 	o.tmux("send-keys", "-t", "outer:0.0", "Enter")
 }
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+func (o *terminal) owned(pid int) int {
+	o.t.Helper()
+	server, err := strconv.Atoi(strings.TrimSpace(o.tmux("display-message", "-p", "#{pid}")))
+	if err != nil {
+		o.t.Fatal(err)
+	}
+	return owned(o.t, pid, server)
+}
 func (o *terminal) process() *os.Process {
 	o.t.Helper()
 	data, err := os.ReadFile(o.pidfile)
@@ -253,7 +261,7 @@ func (o *terminal) process() *os.Process {
 	if err != nil {
 		o.t.Fatal(err)
 	}
-	p, err := os.FindProcess(pid)
+	p, err := os.FindProcess(o.owned(pid))
 	if err != nil {
 		o.t.Fatal(err)
 	}
@@ -406,7 +414,7 @@ func TestClientHistoryAndTop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shell, err := os.FindProcess(shellPID)
+	shell, err := os.FindProcess(o.owned(shellPID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,8 +830,11 @@ func TestClientDifferentSizesAndSignalCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err := syscall.Kill(pid, sig); err != nil {
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Kill(o.owned(pid), sig); err != nil {
 			t.Fatal(err)
 		}
 		o.contains("KO-DETACHED")

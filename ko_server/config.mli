@@ -51,6 +51,9 @@ val default_scrollback : scrollback
 val default_limits : limits
 (** The terminal limits of a server, with the default scrollback. *)
 
+val scrollback_limits : int -> limits
+(** The default limits, with a scrollback of this many bytes. *)
+
 val dir : dir:string option -> string
 (** The state directory: the given path, else KO_STATE_DIR, else XDG_STATE_HOME/ko, else
     HOME/.local/state/ko. *)

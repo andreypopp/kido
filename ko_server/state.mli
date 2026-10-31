@@ -5,6 +5,7 @@ val panes : t -> Panes.t
 val clients : t -> Client.t list
 val topology : t -> unit
 val pump : t -> unit
+val tick : t -> bool
 val waiting : t -> bool
 val close_views : t -> Ids.Pane_id.t -> unit
 val event : t -> Ids.Pane_id.t -> Pane_proc.event -> unit

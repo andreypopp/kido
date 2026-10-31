@@ -443,10 +443,9 @@ func TestKillServer(t *testing.T) {
 		PID int `json:"pid"`
 	}
 	s.request("GET", "/panes", nil, 200, &panes)
-	if len(panes) != 1 || panes[0].PID <= 0 {
+	if len(panes) != 1 || panes[0].PID <= 1 {
 		t.Fatalf("program pid: %+v", panes)
 	}
-	t.Cleanup(func() { syscall.Kill(panes[0].PID, syscall.SIGKILL) })
 	cmd := exec.Command(koBin, "kill-server", "--server", s.dir)
 	if b, e := cmd.CombinedOutput(); e != nil {
 		t.Fatalf("kill: %v %s", e, b)

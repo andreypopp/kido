@@ -37,8 +37,8 @@ Out, until later stages:
     ko_pane/      the pane process `ko-pane`, in C: pty, libghostty-vt,
                   the frame codec of protocol.md section 14; built by a
                   dune rule with the same flags as the library, with
-                  `-fsanitize=address,undefined` in the test build and a
-                  fuzz target for the frame parser
+                  `-fsanitize=address,undefined` in the test build and
+                  libFuzzer targets for frame sizes and frame bodies
     ko_vt/        the libghostty-vt binding for the client's mirror:
                   terminal, snapshot decoder, render state, scroll,
                   formatter
@@ -46,7 +46,9 @@ Out, until later stages:
                   Client, View, Input, Http (the router), Connection
                   (the socket and its queued `writev` output), State
                   (the registry of clients and views), Protocol (the
-                  wire JSON types), Uv (luv and OS conversions), Config
+                  wire JSON types), Ws (WebSocket frames), Uv (luv and
+                  OS conversions), Config
+    ko_server/fuzz/  the QCheck fuzz properties, a test-only library
     ko_tui/       the thin terminal client library: Mosaic for the
                   sidebar and input, a direct cell differ for the screen
     bin/ko.ml     the entry point: `ko` (attach or start and attach),
@@ -103,11 +105,21 @@ depends on the new directories.
   500 ms, sends `SIGKILL` to the survivors (shells ignore `SIGTERM`),
   and exits. `ko-pane` itself, on shutdown or on EOF of its control
   socket, sends `SIGHUP` to its program's process group and `SIGKILL`
-  after 250 ms, ahead of the coordinator's 500 ms. The coordinator
-  also kills the program's group when a pane process fails or exits
-  without its dead marker, so a program that ignores `SIGHUP` outlives
-  neither a crashed `ko-pane` nor a crashed coordinator. Only both
-  dying at once leaves it. `ko-pane` reaps its program with `WNOHANG` from a
+  after 250 ms, ahead of the coordinator's 500 ms. `ko-pane` owns
+  the program's group: it forked the program and knows its pid. The
+  coordinator signals `ko-pane` only through the pid of its own
+  spawn. When a pane process fails or exits without its dead marker,
+  the coordinator also kills the program's group, so a program that
+  ignores `SIGHUP` outlives neither a crashed `ko-pane` nor a crashed
+  coordinator. It does this only for the child that it verified at
+  `ready` (protocol.md section 14), and only if the process still has
+  the recorded start time and leads its group. While `ko-pane` lives,
+  it keeps its reaped program as a zombie until its own final group
+  kill, so the pid and group id cannot be reused under either signal.
+  After `ko-pane` died, a small race remains between the coordinator's
+  check and its signal; the pid would have to exit, be reused and lead
+  a new group in that interval. If the leader has exited, the
+  coordinator does not kill the rest of its group. Only both dying at once leaves the program. `ko-pane` reaps its program with `WNOHANG` from a
   `SIGCHLD` self-pipe and keeps the master of a dead pane open for its
   screen. P1.0 verified on macOS: the program is reaped with the master
   open, and the dead pane still snapshots; a writer blocked on a full
@@ -617,11 +629,11 @@ points were open or wrong in the plan:
   `share/ko/terminfo/x/xterm-ghostty`. A pane gets `TERMINFO_DIRS`
   with that directory first.
 - **Build**: zig from `PATH` (CI installs Zig 0.17.0) builds
-  `libghostty-vt.a` in `ReleaseFast`. The libFuzzer target of
-  `ko-pane`'s frame parser builds only under `--profile fuzz`
-  (`KO_FUZZ_CC` names the compiler), because Apple's clang ships no
-  `libclang_rt.fuzzer_osx.a`. The sanitizer driver of the same parser
-  runs in `dune test`.
+  `libghostty-vt.a` in `ReleaseFast`. The libFuzzer targets of
+  `ko-pane` build only under `--profile fuzz` (`KO_FUZZ_CC` names the
+  compiler), because Apple's clang ships no
+  `libclang_rt.fuzzer_osx.a`. Their sanitizer drivers run in
+  `dune test`.
 
 ### 6.4 What P1.2 settled
 
@@ -801,7 +813,16 @@ These points were open or wrong in the plan:
   resume decisions, record encoding, the sidebar's rows, key
   translation. For `ko-pane`: a C test binary that drives it over a
   stdio and ring with recorded streams and asserts the frames, run under
-  the sanitizers; a libFuzzer target on the frame parser.
+  the sanitizers.
+- Fuzzing (AGENTS.md, "Fuzzing ko"). Four invariants: a mirror fed
+  through the view protocol equals the pane's terminal (screen,
+  history, modes) under resizes, snapshots, resumes and reconnects;
+  each view gets the exact byte sequence, or a snapshot or skip by
+  the contract, and no view blocks `ko-pane`; a bad control frame on
+  either side fails the pane and reads nothing outside the frame;
+  any client input gets a status or a close, and other clients are
+  unaffected. `dune test` replays fixed seeds; `make fuzz` runs one
+  target for a fixed time.
 - A Go e2e suite in `test_e2e_ko/` that starts `ko server` on a
   scratch socket and drives the protocol with `net/http` and a
   WebSocket package over a unix dialer: pane creation and exit, view open with snapshot, resume by

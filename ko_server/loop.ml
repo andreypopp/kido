@@ -18,11 +18,7 @@ let run config =
         end
       and tick () =
         let state = Lazy.force state in
-        let produced = ref false in
-        Panes.iter (State.panes state) (fun pane ->
-            if Pane_proc.scan (Pane.proc pane) then produced := true);
-        State.pump state;
-        if (not !produced) && not (State.waiting state) then Uv.ok (Luv.Timer.stop timer)
+        if (not (State.tick state)) && not (State.waiting state) then Uv.ok (Luv.Timer.stop timer)
       in
       let state = Lazy.force state in
       Uv.ok (Luv.Signal.start chld (Uv.sigchld ()) (fun () -> Panes.reap (State.panes state)));

@@ -52,6 +52,16 @@ let default_limits =
     media = [];
   }
 
+let scrollback_limits max_bytes =
+  {
+    default_limits with
+    terminal =
+      {
+        default_limits.terminal with
+        scrollback = Scrollback { max_bytes = Some max_bytes; max_lines = None };
+      };
+  }
+
 let dir ~dir:override =
   let env name = Sys.getenv_opt name |> Option.filter (fun s -> not (String.is_empty s)) in
   match (override, env "KO_STATE_DIR", env "XDG_STATE_HOME") with

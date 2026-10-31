@@ -5,9 +5,12 @@ type size = { cols : int; rows : int; cell_px : cell_px option [@json.option] [@
 
 let default_size = { cols = 80; rows = 24; cell_px = Some { width = 8; height = 16 } }
 
+external max_dimension : unit -> int = "ko_pane_max_dimension" [@@noalloc]
+
 let valid_size s =
   let in_range n = n > 0 && n <= 65535 in
-  in_range s.cols && in_range s.rows
+  let in_grid n = n > 0 && n <= max_dimension () in
+  in_grid s.cols && in_grid s.rows
   && match s.cell_px with None -> true | Some c -> in_range c.width && in_range c.height
 
 type cause =
@@ -187,6 +190,8 @@ module Record = struct
     Bytes.set bytes at (match kind with Output -> '\001' | Snapshot -> '\002');
     Bytes.set_int64_le bytes (at + 1) (Int64.of_int offset)
 
+  let offset_of_string s = Int64.to_int (String.get_int64_le s 1)
+
   let kind_of_string s =
     if String.length s < header_size then invalid_arg "short view record"
     else
@@ -322,3 +327,12 @@ let check_version ~protocol ~vt =
   else if not (Option.exists (String.equal version.vt) vt) then
     refuse (Vt_mismatch version) "terminal revision mismatch"
   else Ok ()
+
+let%test_module "Tests" =
+  (module struct
+    let%expect_test "a grid is limited to the pane's dimension, a cell to 65535 pixels" =
+      let ok cols rows px = valid_size { cols; rows; cell_px = Some { width = px; height = px } } in
+      Printf.printf "%b %b %b %b %b\n" (ok 4096 4096 65535) (ok 4097 24 8) (ok 80 4097 8)
+        (ok 80 24 65536) (ok 0 24 8);
+      [%expect {| true false false false false |}]
+  end)

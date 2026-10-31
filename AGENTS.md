@@ -846,6 +846,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
+    make fuzz TARGET=view TIME=600  one time-boxed ko fuzz run; no TARGET lists the targets
     make clean-forks  remove fork builds other than the pin
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
     make website the website's dev server at http://localhost:4321 (website/README.md)
@@ -901,6 +902,39 @@ Unit tests check pure library logic that e2e cannot reach or test
 precisely: parsers, formats and ordering. Layout above specifies their
 location.
 Do not write a unit test that execs the binary.
+
+**Fuzzing ko.** ko has no VT-parser target: Ghostty fuzzes
+libghostty-vt upstream. `scripts/fuzz.sh` names the targets:
+
+- `frame` and `control`: libFuzzer targets of `ko-pane`'s frame
+  sizes and frame bodies, with dictionaries and options in
+  `ko_pane/fuzz/`. They build under `--profile fuzz` with an LLVM
+  clang (`KO_FUZZ_CC`, else one found under Homebrew's `llvm`).
+  Apple's clang has no libFuzzer, so the target prints SKIP.
+- `ring`, `view` and `http`: QCheck properties in the test-only
+  library `ko_server/fuzz/`, so `ko` links no QCheck. `pane-proc`
+  stays inline in `ko_server/pane_proc.ml`, because it needs the
+  module's internals. `Fuzz_server` is the in-process server.
+  `view` drives a real `ko-pane` through the view protocol and
+  compares every view's mirror, and a fresh snapshot, with the pane's
+  terminal. `http` sends requests, bodies and WebSocket messages to
+  an in-process server.
+- `test_e2e_ko/hostile_test.go` is the only Go part: hostile input
+  against a real `ko server`, with other clients unaffected.
+
+`dune test` replays each target's fixed seeds and the `control`
+corpus in a few seconds. `make fuzz` uses random seeds for TIME
+seconds. Each run has its own process group and scratch directory,
+and the script kills and removes both on every exit.
+A libFuzzer run restarts every 24000 inputs, because ASan on macOS
+keeps libghostty-vt's freed memory, about 100 KiB per input. The test
+entry reads `KO_FUZZ_SECONDS` (set by the script) and `KO_FUZZ_SEED`.
+A failure prints its seed or artifact; `KO_FUZZ_SEED` replays a seed.
+The `view` scenarios run a real `ko-pane`, so pty read boundaries and
+timing differ between runs of one seed.
+A bug that a fuzzer finds gets a regression test with that case.
+A test that pins a libghostty-vt bug fails when the bug is fixed, so
+the workaround for it can be removed.
 
 `make e2e` builds the fork into `build/tmux-fork/<key>/`.
 It rebuilds only on a submodule bump or an installer change.

@@ -31,7 +31,7 @@ struct pane {
   struct ko_ring *ring;
   uint64_t head, offset;
   GhosttyTerminal vt;
-  int master, alive, stopping, eof, reaped, status, full, depth;
+  int master, alive, stopping, eof, reaped, held, code, termsig, full, depth;
   pid_t pid;
   struct ko_buffer input, output, pty_input, events, deferred;
   struct ko_compress compress;
@@ -233,6 +233,12 @@ static void free_strings(char **v) {
     free(v);
   }
 }
+static void wire_vt(struct pane *p) {
+  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_USERDATA, p);
+  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_WRITE_PTY, reply);
+  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, title);
+  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, pwd);
+}
 static int init(struct pane *p, const uint8_t *b, size_t n) {
   struct cursor c = {b, n, 0};
   unsigned version = number(&c, 2);
@@ -254,7 +260,8 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
                          .ws_xpixel = ko_pixels(cols, cw),
                          .ws_ypixel = ko_pixels(rows, ch)};
   if (c.error || c.n || version != 3 || has_scrollback > 1 || has_lines > 1 || !cols || !rows || !argv || !argv[0] ||
-      argv[0][0] != '/') {
+      argv[0][0] != '/' ||
+      cols > KO_MAX_DIMENSION || rows > KO_MAX_DIMENSION) {
     goto done;
   }
   if (ghostty_terminal_new(NULL, &p->vt, cols, rows) != GHOSTTY_SUCCESS) {
@@ -283,13 +290,16 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
   enabled = (media & 4) != 0;
   ghostty_terminal_set(
       p->vt, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM, &enabled);
-  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_USERDATA, p);
-  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_WRITE_PTY, reply);
-  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, title);
-  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, pwd);
+  wire_vt(p);
   if (openpty(&p->master, &slave, NULL, NULL, &size) < 0) {
     goto done;
   }
+  int started[2];
+  if (pipe(started) < 0) {
+    goto done;
+  }
+  fcntl(started[0], F_SETFD, FD_CLOEXEC);
+  fcntl(started[1], F_SETFD, FD_CLOEXEC);
   p->pid = fork();
   if (p->pid == 0) {
     if (setsid() < 0 || ioctl(slave, TIOCSCTTY, 0) < 0 || dup2(slave, 0) < 0 ||
@@ -306,16 +316,26 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
     execve(argv[0], argv, env);
     _exit(127);
   }
+  close(started[1]);
   if (p->pid < 0) {
+    close(started[0]);
     goto done;
   }
+  char byte;
+  while (read(started[0], &byte, 1) < 0 && errno == EINTR) {
+  }
+  close(started[0]);
   fcntl(p->master, F_SETFL, O_NONBLOCK);
   fcntl(p->master, F_SETFD, FD_CLOEXEC);
   p->alive = 1;
   ko_compress_init(&p->compress, ko_now_ns());
-  uint8_t pid[4];
-  ko_put(pid, p->pid, 4);
-  frame(&p->output, KO_READY, pid, 4);
+  siginfo_t exited = {0};
+  if (waitid(P_PID, p->pid, &exited, WEXITED | WNOHANG | WNOWAIT) < 0 ||
+      exited.si_pid != p->pid) {
+    uint8_t pid[4];
+    ko_put(pid, p->pid, 4);
+    frame(&p->output, KO_READY, pid, 4);
+  }
   result = 0;
 done:
   if (slave >= 0) {
@@ -566,7 +586,11 @@ static int screen_chunk(struct screen_output *s, int last) {
     }
     if (p->output.n) {
       struct pollfd f = {1, POLLOUT, 0};
-      if (poll(&f, 1, 5000) <= 0) {
+      int ready = poll(&f, 1, 5000);
+      if (ready < 0 && errno == EINTR) {
+        continue;
+      }
+      if (ready <= 0) {
         return -1;
       }
     }
@@ -707,7 +731,8 @@ static int dispatch(struct pane *p, unsigned kind, const uint8_t *b, size_t n,
   case KO_SCREEN:
     return screen(p, b, n);
   case KO_RESIZE: {
-    if (n != 8 || !ko_get(b, 2) || !ko_get(b + 2, 2)) {
+    if (n != 8 || !ko_get(b, 2) || !ko_get(b + 2, 2) ||
+        ko_get(b, 2) > KO_MAX_DIMENSION || ko_get(b + 2, 2) > KO_MAX_DIMENSION) {
       return -1;
     }
     uint16_t cols = ko_get(b, 2), rows = ko_get(b + 2, 2),
@@ -906,8 +931,13 @@ int main(void) {
       char drain[64];
       while (read(sigchld[0], drain, sizeof(drain)) > 0) {
       }
-      if (p.alive && !p.reaped && waitpid(p.pid, &p.status, WNOHANG) == p.pid) {
-        p.reaped = 1;
+      siginfo_t info = {0};
+      if (p.alive && !p.reaped &&
+          waitid(P_PID, p.pid, &info, WEXITED | WNOHANG | WNOWAIT) == 0 &&
+          info.si_pid == p.pid) {
+        p.reaped = p.held = 1;
+        p.code = info.si_code == CLD_EXITED ? info.si_status : 0;
+        p.termsig = info.si_code == CLD_EXITED ? 0 : info.si_status;
       }
     }
     if (p.vt && !p.eof &&
@@ -916,8 +946,8 @@ int main(void) {
     }
     if (p.reaped && p.eof) {
       uint8_t b[16];
-      ko_put(b, WIFEXITED(p.status) ? WEXITSTATUS(p.status) : 0, 4);
-      ko_put(b + 4, WIFSIGNALED(p.status) ? WTERMSIG(p.status) : 0, 4);
+      ko_put(b, p.code, 4);
+      ko_put(b + 4, p.termsig, 4);
       ko_put(b + 8, ko_now_ns(), 8);
       if (wait_space(&p, 17)) {
         failure = 1;
@@ -939,28 +969,33 @@ int main(void) {
                   ? ko_compress_tick(&p.compress, p.vt, ko_now_ns())
                   : -1;
   }
-  if (p.pid > 0) {
-    kill(-p.pid, SIGHUP);
-    struct timespec start, now;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for (;;) {
-      if (!p.reaped && waitpid(p.pid, NULL, WNOHANG) == p.pid) {
-        p.reaped = 1;
-      }
-      if (kill(-p.pid, 0) < 0 && errno == ESRCH) {
-        break;
-      }
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      if ((now.tv_sec - start.tv_sec) * 1000000000L + now.tv_nsec -
-              start.tv_nsec >=
-          250000000L) {
-        kill(-p.pid, SIGKILL);
-        if (!p.reaped) {
-          waitpid(p.pid, NULL, 0);
+  if (p.pid > 1) {
+    int collected = 0;
+    if (p.held) {
+      kill(-p.pid, SIGKILL);
+    } else {
+      kill(-p.pid, SIGHUP);
+      struct timespec start, now;
+      clock_gettime(CLOCK_MONOTONIC, &start);
+      for (;;) {
+        if (!collected && waitpid(p.pid, NULL, WNOHANG) == p.pid) {
+          collected = 1;
         }
-        break;
+        if (kill(-p.pid, 0) < 0 && errno == ESRCH) {
+          break;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if ((now.tv_sec - start.tv_sec) * 1000000000L + now.tv_nsec -
+                start.tv_nsec >=
+            250000000L) {
+          kill(-p.pid, SIGKILL);
+          break;
+        }
+        poll(NULL, 0, 5);
       }
-      poll(NULL, 0, 5);
+    }
+    if (!collected) {
+      waitpid(p.pid, NULL, 0);
     }
   }
   if (p.master >= 0) {

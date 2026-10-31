@@ -14,4 +14,11 @@ external peer_uid : Unix.file_descr -> int = "ko_peer_uid"
 external peer_pid : Unix.file_descr -> int = "ko_peer_pid"
 external now : unit -> int = "ko_now" [@@noalloc]
 external sigchld : unit -> int = "ko_sigchld" [@@noalloc]
+
+type identity = { ppid : int; pgid : int; sid : int; start : int }
+
+external identity : int -> identity option = "ko_process_identity"
+
+let signalable pid = pid > 1 && pid <> Unix.getpid ()
+
 external native_signal : int -> int = "ko_native_signal" [@@noalloc]

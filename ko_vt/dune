@@ -82,6 +82,7 @@
   (extra_deps
    ../ko_pane/snapshot_cut.h
    ../ko_pane/buffer.h
+   ../ko_pane/protocol.h
    ../ko_pane/compress.h
    ../ko_pane/now.h)
   (flags

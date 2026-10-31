@@ -115,7 +115,7 @@ let stop ~dir =
           (fun () -> (Ko_server.Uv.peer_uid fd, Ko_server.Uv.peer_pid fd))
       in
       if uid <> Unix.getuid () then Error "server belongs to another user"
-      else if pid <= 0 then Error "invalid server pid"
+      else if not (Ko_server.Uv.signalable pid) then Error "invalid server pid"
       else (
         Unix.kill pid Sys.sigterm;
         let deadline = Unix.gettimeofday () +. 5. in

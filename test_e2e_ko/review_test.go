@@ -128,11 +128,11 @@ func TestPaneProcessFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	parentPID, err := strconv.Atoi(strings.TrimSpace(string(parent)))
-	if err != nil || parentPID <= 1 {
+	if err != nil || parentPID <= 1 || pid <= 1 {
 		t.Fatalf("parent pid: %s %v", parent, err)
 	}
 	send(t, v, []any{"resync", map[string]any{"history": "all", "images": "none"}})
-	if err = syscall.Kill(parentPID, syscall.SIGKILL); err != nil {
+	if err = syscall.Kill(owned(t, parentPID, s.cmd.Process.Pid), syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	dead := event(t, c, "dead")

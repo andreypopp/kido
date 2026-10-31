@@ -8,6 +8,12 @@
 #include <caml/signals.h>
 #include <caml/unixsupport.h>
 #include <signal.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <libproc.h>
+#else
+#include <stdio.h>
+#endif
 extern int caml_convert_signal_number(int);
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -33,6 +39,10 @@ CAMLprim value ko_ring_layout(value unit) {
   Store_field(result, 4, Val_int(KO_SNAPSHOT_SLICE));
   Store_field(result, 5, Val_int(KO_PAD));
   CAMLreturn(result);
+}
+CAMLprim value ko_pane_max_dimension(value unit) {
+  (void)unit;
+  return Val_int(KO_MAX_DIMENSION);
 }
 CAMLprim value ko_pane_layout(value unit) {
   CAMLparam1(unit);
@@ -245,4 +255,52 @@ CAMLprim value ko_now(value unit) {
 }
 CAMLprim value ko_native_signal(value signo) {
   return Val_int(caml_convert_signal_number(Int_val(signo)));
+}
+
+CAMLprim value ko_process_identity(value vpid) {
+  CAMLparam1(vpid);
+  CAMLlocal2(tuple, some);
+  long pid = Long_val(vpid);
+  long ppid, pgid;
+  long long began;
+  if (pid <= 0 || pid > 0x7fffffff) {
+    CAMLreturn(Val_none);
+  }
+#ifdef __APPLE__
+  struct proc_bsdinfo info;
+  if (proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, sizeof info) !=
+      (int)sizeof info) {
+    CAMLreturn(Val_none);
+  }
+  ppid = info.pbi_ppid;
+  pgid = info.pbi_pgid;
+  began = (long long)info.pbi_start_tvsec * 1000000 + (long long)info.pbi_start_tvusec;
+#else
+  char path[64], line[1024];
+  snprintf(path, sizeof path, "/proc/%ld/stat", pid);
+  FILE *f = fopen(path, "r");
+  if (!f) {
+    CAMLreturn(Val_none);
+  }
+  char *got = fgets(line, sizeof line, f);
+  fclose(f);
+  char *after = got ? strrchr(line, ')') : NULL;
+  if (!after || sscanf(after + 1,
+                       " %*c %ld %ld %*ld %*d %*d %*u %*u %*u %*u %*u %*u %*u "
+                       "%*d %*d %*d %*d %*d %*d %lld",
+                       &ppid, &pgid, &began) != 3) {
+    CAMLreturn(Val_none);
+  }
+#endif
+  pid_t sid = getsid((pid_t)pid);
+  if (sid < 0) {
+    CAMLreturn(Val_none);
+  }
+  tuple = caml_alloc_tuple(4);
+  Store_field(tuple, 0, Val_long(ppid));
+  Store_field(tuple, 1, Val_long(pgid));
+  Store_field(tuple, 2, Val_long(sid));
+  Store_field(tuple, 3, Val_long(began));
+  some = caml_alloc_some(tuple);
+  CAMLreturn(some);
 }

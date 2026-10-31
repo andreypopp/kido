@@ -52,15 +52,22 @@ static void row_text(GhosttyTerminal vt,uint32_t row,char *out,size_t cap){
 }
 int main(int argc,char **argv){
   assert(argc==2);signal(SIGPIPE,SIG_IGN);alarm(30);
+  {pid_t held=fork();assert(held>=0);if(!held)_exit(7);
+    siginfo_t info={0};
+    for(int i=0;i<5000&&info.si_pid!=held;i++){assert(waitid(P_PID,held,&info,WEXITED|WNOHANG|WNOWAIT)==0);if(info.si_pid!=held)usleep(1000);}
+    assert(info.si_pid==held&&info.si_code==CLD_EXITED&&info.si_status==7);
+    siginfo_t again={0};assert(waitid(P_PID,held,&again,WEXITED|WNOHANG|WNOWAIT)==0&&again.si_pid==held&&kill(held,0)==0);
+    int code;assert(waitpid(held,&code,0)==held&&WIFEXITED(code)&&WEXITSTATUS(code)==7);}
   size_t capacity=4096,size=sizeof(struct ko_ring)+capacity;
   struct ko_ring *ring=NULL;
   int fd=ko_ring_create(capacity,&ring);
   if(fd<0)return 2;
   int sockets[2];assert(!socketpair(AF_UNIX,SOCK_STREAM,0,sockets));
+  int small=1024;assert(!setsockopt(sockets[1],SOL_SOCKET,SO_SNDBUF,&small,sizeof(small)));
   pid_t child=fork();assert(child>=0);
   if(!child){assert(dup2(sockets[1],0)>=0);assert(dup2(sockets[1],1)>=0);assert(dup2(fd,3)>=0);assert(!fcntl(3,F_SETFD,0));
     for(int i=4;i<32;i++)close(i);execl(argv[1],argv[1],NULL);perror("exec pane");_exit(127);}
-  close(sockets[1]);close(fd);int control=sockets[0];fcntl(control,F_SETFL,O_NONBLOCK);
+  assert(child>1);close(sockets[1]);close(fd);int control=sockets[0];fcntl(control,F_SETFL,O_NONBLOCK);
   struct data d={0};num(&d,3,2);num(&d,80,2);num(&d,24,2);num(&d,8,2);num(&d,16,2);
   num(&d,1,1);num(&d,32*1024*1024,8);num(&d,0,1);num(&d,0,8);num(&d,65*1024*1024,8);num(&d,32*1024*1024,8);num(&d,0,1);num(&d,65*1024*1024,8);
   str(&d,"/");num(&d,3,4);str(&d,"/bin/sh");str(&d,"-c");
@@ -107,6 +114,13 @@ int main(int argc,char **argv){
   char last[64];row_text(vt,18,last,sizeof(last));assert(!strcmp(last,"line 199"));
   row_text(vt,0,last,sizeof(last));assert(!strcmp(last,"line 181"));
   ghostty_snapshot_decoder_free(decoder);ghostty_terminal_free(vt);free(snapshot);
+  {uint8_t request[9]={0};request[4]=1;ko_put(request+5,0xffffffff,4);
+    for(unsigned id=7;id<16;id++){ko_put(request,id,4);frame(control,KO_SCREEN,request,9);}
+    for(int i=0;i<20;i++){kill(child,SIGCHLD);usleep(500);}
+    size_t screen_bytes=0;int last=0;
+    while(last<9){unsigned kind=receive(control,&d);
+      if(kind==KO_SCREEN){assert(d.n>=9);screen_bytes+=d.n-9;last+=d.b[4];}else assert(kind==KO_HEAD||kind==KO_FULL);}
+    assert(screen_bytes>50000);}
   frame(control,KO_EXIT,NULL,0);close(control);int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
   munmap(ring,size);
   assert(ko_pixels(65535, 65535) == 65535 && ko_pixels(80, 8) == 640 && ko_pixels(0, 8) == 0);

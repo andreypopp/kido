@@ -15,3 +15,4 @@ val remove : t -> Pane.t -> unit
 val shutdown : t -> unit
 val kill : t -> unit
 val reap : t -> unit
+val reaped : t -> bool

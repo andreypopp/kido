@@ -7,23 +7,8 @@ let reader bytes =
     chunk
 
 let create ~cols ~rows = Bench_terminal.create ~cols ~rows ()
-let modes = [ 1; 6; 7; 25; 47; 1000; 1002; 1003; 1004; 1006; 1049; 2004; 2026 ]
 
 type mirror = { name : string; mutable terminal : Ko_vt.t; divergences : (string, int) Hashtbl.t }
-
-let differences server terminal =
-  List.concat
-    [
-      (if String.equal (Ko_vt.dump server Plain) (Ko_vt.dump terminal Plain) then []
-       else [ "plain text" ]);
-      (if String.equal (Ko_vt.dump server Vt) (Ko_vt.dump terminal Vt) then [] else [ "vt dump" ]);
-      (if Stdlib.( = ) (Ko_vt.cursor server) (Ko_vt.cursor terminal) then [] else [ "cursor" ]);
-      List.filter_map
-        (fun mode ->
-          if Bool.equal (Ko_vt.mode server mode) (Ko_vt.mode terminal mode) then None
-          else Some (Printf.sprintf "mode %d" mode))
-        modes;
-    ]
 
 let screen_snapshot server =
   Ko_vt.decode (reader (Ko_vt.snapshot server ~screen:true ~images:false)) ~full:false
@@ -47,7 +32,7 @@ let determinism ~iterations ~streams =
         if count = 0 then
           Printf.printf "first divergence marker=%d mirror=%s %s\n%!" marker m.name key;
         Hashtbl.replace m.divergences key (count + 1))
-      (differences server m.terminal)
+      (Ko_vt.differences server m.terminal)
   in
   let offset = ref 0 in
   for marker = 1 to iterations do

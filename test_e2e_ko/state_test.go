@@ -73,7 +73,7 @@ func TestSIGTERMKillsPrograms(t *testing.T) {
 		PID int `json:"pid"`
 	}
 	s.request("GET", "/panes", nil, 200, &panes)
-	if len(panes) != 1 || panes[0].PID <= 0 {
+	if len(panes) != 1 || panes[0].PID <= 1 {
 		t.Fatalf("program pid: %+v", panes)
 	}
 	s.stop()
@@ -125,11 +125,10 @@ func TestPaneProcessCrashKillsProgram(t *testing.T) {
 		PID int `json:"pid"`
 	}
 	s.request("GET", "/panes", nil, 200, &panes)
-	if len(panes) != 1 || panes[0].PID <= 0 {
+	if len(panes) != 1 || panes[0].PID <= 1 {
 		t.Fatalf("program pid: %+v", panes)
 	}
 	program := panes[0].PID
-	t.Cleanup(func() { syscall.Kill(program, syscall.SIGKILL) })
 	parent, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(program)).Output()
 	if err != nil {
 		t.Fatal(err)
@@ -138,10 +137,31 @@ func TestPaneProcessCrashKillsProgram(t *testing.T) {
 	if err != nil || pane <= 1 {
 		t.Fatalf("pane process: %q", parent)
 	}
-	if err := syscall.Kill(pane, syscall.SIGKILL); err != nil {
+	if err := syscall.Kill(owned(t, pane, s.cmd.Process.Pid), syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	waitGone(t, program, "its pane process")
+}
+
+func owned(t testing.TB, pid, root int) int {
+	t.Helper()
+	if pid <= 1 || pid == os.Getpid() || root <= 1 || root == os.Getpid() {
+		t.Fatalf("refusing to signal pid %d under %d", pid, root)
+	}
+	for at, hops := pid, 0; hops < 64; hops++ {
+		if at == root {
+			return pid
+		}
+		out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(at)).Output()
+		if err != nil {
+			break
+		}
+		if at, err = strconv.Atoi(strings.TrimSpace(string(out))); err != nil || at <= 1 {
+			break
+		}
+	}
+	t.Fatalf("pid %d is not a descendant of %d: refusing to signal it", pid, root)
+	return 0
 }
 
 func waitGone(t *testing.T, pid int, what string) {

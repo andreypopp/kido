@@ -13,7 +13,7 @@ let sizer t = t.sizer
 let row t : Protocol.row =
   {
     id = t.id;
-    pid = Pane_proc.child_pid t.proc;
+    pid = Option.value ~default:0 (Pane_proc.child_pid t.proc);
     command = t.command;
     cwd = Pane_proc.cwd t.proc;
     title = Pane_proc.title t.proc;

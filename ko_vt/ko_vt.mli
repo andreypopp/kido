@@ -68,3 +68,7 @@ val decode_string : ?ready:(string -> unit) -> full:bool -> string -> t
 val cursor : t -> int * int * bool
 val mode : t -> int -> bool
 val total_rows : t -> int
+
+val differences : ?history:bool -> ?strip:(string -> string) -> t -> t -> string list
+(** The ways in which two terminals differ: plain text, the VT dump, the cursor, the modes that
+    clients track, and with [history] the scrollback. [strip] cleans each VT dump first. *)

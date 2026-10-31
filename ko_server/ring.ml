@@ -21,12 +21,20 @@ type t = {
   buffer : Luv.Buffer.t;
   capacity : int;
   mutable tail : int;
+  mutable evicted_data : int;
   mutable settled : int;
   mutable settled_offset : int;
 }
 
 let create buffer =
-  { buffer; capacity = Mem.int64 buffer 0; tail = 0; settled = 0; settled_offset = 0 }
+  {
+    buffer;
+    capacity = Mem.int64 buffer 0;
+    tail = 0;
+    evicted_data = 0;
+    settled = 0;
+    settled_offset = 0;
+  }
 
 let buffer t = t.buffer
 let head t = head_of t.buffer
@@ -87,16 +95,22 @@ let advance t ~head:upper ~keep =
   try
     if upper < t.tail || upper - t.tail > t.capacity then invalid_arg "invalid ring head";
     let retain = min (upper - (t.capacity / 2)) keep in
-    let tail = ref t.tail and last_end = ref 0 in
+    let tail = ref t.tail and last_end = ref 0 and evicted_data = ref t.evicted_data in
     while !tail < retain do
       (match kind t !tail with
-      | Bytes -> last_end := offset t !tail + length t !tail
-      | Marker | Slice -> last_end := offset t !tail
+      | Bytes ->
+          last_end := offset t !tail + length t !tail;
+          evicted_data := next t !tail
+      | Marker ->
+          last_end := offset t !tail;
+          evicted_data := next t !tail
+      | Slice -> last_end := offset t !tail
       | Pad -> ());
       tail := next t !tail
     done;
     if !tail > t.tail then (
       t.tail <- !tail;
+      t.evicted_data <- !evicted_data;
       set_tail t.buffer !tail;
       if t.settled < !tail then
         if !tail < upper then (
@@ -108,6 +122,8 @@ let advance t ~head:upper ~keep =
     set_read t.buffer upper;
     Ok ()
   with Invalid_argument message -> Error message
+
+let reachable t pos = if pos < t.evicted_data then None else Some (max pos t.tail)
 
 let end_offset t =
   let upper = head t in

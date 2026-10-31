@@ -4,7 +4,9 @@
 
 (rule
  (targets fuzz-frame)
- (deps fuzz_frame.c protocol.h)
+ (deps
+  fuzz_frame.c
+  (glob_files *.h))
  (action
   (run
    cc
@@ -30,13 +32,7 @@
   build.sh
   ../ko_vt/cxx.sh
   pane.c
-  pixels.h
-  protocol.h
-  ring.h
-  buffer.h
-  snapshot_cut.h
-  compress.h
-  now.h
+  (glob_files *.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -48,9 +44,7 @@
   build.sh
   ../ko_vt/cxx.sh
   test_pane.c
-  pixels.h
-  protocol.h
-  ring.h
+  (glob_files *.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -62,13 +56,7 @@
   build.sh
   ../ko_vt/cxx.sh
   pane.c
-  pixels.h
-  protocol.h
-  ring.h
-  buffer.h
-  snapshot_cut.h
-  compress.h
-  now.h
+  (glob_files *.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -80,8 +68,7 @@
   build.sh
   ../ko_vt/cxx.sh
   test_compress.c
-  compress.h
-  now.h
+  (glob_files *.h)
   ../ko_vt/libghostty-vt.a
   (source_tree ../third_party/ghostty/include))
  (action
@@ -110,7 +97,9 @@
  (targets fuzz-frame-libfuzzer)
  (enabled_if
   (= %{profile} fuzz))
- (deps fuzz_frame.c protocol.h)
+ (deps
+  fuzz_frame.c
+  (glob_files *.h))
  (action
   (run
    %{env:KO_FUZZ_CC=clang}
@@ -122,3 +111,57 @@
    fuzz_frame.c
    -o
    fuzz-frame-libfuzzer)))
+
+(rule
+ (targets fuzz-control)
+ (deps
+  build.sh
+  ../ko_vt/cxx.sh
+  fuzz_control.c
+  pane.c
+  (glob_files *.h)
+  ../ko_vt/libghostty-vt.a
+  (source_tree ../third_party/ghostty/include))
+ (action
+  (run
+   sh
+   build.sh
+   fuzz-control
+   fuzz_control.c
+   -g
+   -O1
+   -fsanitize=address,undefined)))
+
+(rule
+ (alias runtest)
+ (deps
+  fuzz-control
+  (source_tree fuzz/control))
+ (action
+  (run ./fuzz-control fuzz/control)))
+
+(rule
+ (targets fuzz-control-libfuzzer)
+ (enabled_if
+  (= %{profile} fuzz))
+ (deps
+  build.sh
+  ../ko_vt/cxx.sh
+  fuzz_control.c
+  pane.c
+  (glob_files *.h)
+  ../ko_vt/libghostty-vt.a
+  (source_tree ../third_party/ghostty/include))
+ (action
+  (setenv
+   KO_CC
+   %{env:KO_FUZZ_CC=clang}
+   (run
+    sh
+    build.sh
+    fuzz-control-libfuzzer
+    fuzz_control.c
+    -g
+    -O1
+    -DKO_LIBFUZZER
+    -fsanitize=fuzzer,address,undefined))))

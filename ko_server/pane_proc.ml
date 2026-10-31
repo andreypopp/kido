@@ -61,6 +61,24 @@ let of_int code =
 external spawn : string -> Luv.Buffer.t * Unix.file_descr * int = "ko_pane_start"
 external unmap : Luv.Buffer.t -> unit = "ko_pane_unmap"
 
+type child = { leader : int; start : int }
+type claim = Awaiting | Gone | Child of child | Foreign
+
+let verify_child ~pane ~own_pid ~own_pgid ~pid (found : Uv.identity option) =
+  if pane <= 1 || pid <= 1 || pid = own_pid || pid = own_pgid then Foreign
+  else
+    match found with
+    | None -> Gone
+    | Some i when i.ppid = pane && i.pgid = pid && i.sid = pid ->
+        Child { leader = pid; start = i.start }
+    | Some _ -> Foreign
+
+let read_child ~pane pid =
+  let own_pid = Unix.getpid () in
+  match Uv.identity own_pid with
+  | None -> Foreign
+  | Some own -> verify_child ~pane ~own_pid ~own_pgid:own.pgid ~pid (Uv.identity pid)
+
 let number buffer value = function
   | 1 -> Buffer.add_char buffer (Char.chr value)
   | 2 -> Buffer.add_uint16_le buffer value
@@ -76,12 +94,14 @@ let size b (s : Protocol.size) =
   let cell = Option.value ~default:{ Protocol.width = 0; height = 0 } s.cell_px in
   List.iter (Buffer.add_uint16_le b) [ s.cols; s.rows; cell.width; cell.height ]
 
-let frame kind body =
+let frame_code code body =
   let b = Buffer.create (String.length body + 5) in
   Buffer.add_int32_le b (Int32.of_int (String.length body + 1));
-  Buffer.add_char b (Char.chr (to_int kind));
+  Buffer.add_char b (Char.chr code);
   Buffer.add_string b body;
   Buffer.contents b
+
+let frame kind body = frame_code (to_int kind) body
 
 let init (config : Config.t) ~id ~cwd ~argv ~env ~size:dimensions =
   let b = Buffer.create 512 in
@@ -138,7 +158,7 @@ type t = {
   pid : int;
   notify : event -> unit;
   mutable life : life;
-  mutable child : int;
+  mutable child : claim;
   title : text;
   cwd : text;
   mutable dead : Protocol.dead option;
@@ -150,12 +170,16 @@ type t = {
   mutable next_req : int;
   pending : (int, reply) Hashtbl.t;
   snapshots : int Queue.t;
+  finished : (int * int) Queue.t;
 }
 
 let is_open t = match t.life with Open -> true | Closed | Reaped -> false
 let is_reaped t = match t.life with Reaped -> true | Open | Closed -> false
 let pid t = t.pid
-let child_pid t = t.child
+
+let child_pid t =
+  match t.child with Child child -> Some child.leader | Awaiting | Gone | Foreign -> None
+
 let title t = text_get t.title
 let cwd t = text_get t.cwd
 let dead t = t.dead
@@ -171,6 +195,7 @@ let fail_pending t message =
   let pending = Hashtbl.to_seq_values t.pending |> List.of_seq in
   Hashtbl.clear t.pending;
   Queue.clear t.snapshots;
+  Queue.clear t.finished;
   List.iter
     (function
       | Snapshot_reply (_, done_) | Screen_reply (_, done_) -> done_ (Stdlib.Error message)
@@ -178,10 +203,15 @@ let fail_pending t message =
     pending
 
 let killpg t =
-  if t.child > 0 then
-    (* macOS can return EPERM for a process group with only zombies or exiting processes. *)
-    try Unix.kill (-t.child) Sys.sigkill
-    with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ()
+  match t.child with
+  | Child { leader; start } -> (
+      match Uv.identity leader with
+      | Some i when i.start = start && i.pgid = leader && Uv.signalable leader -> (
+          (* macOS can return EPERM for a process group with only zombies or exiting processes. *)
+          try Unix.kill (-leader) Sys.sigkill
+          with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ())
+      | Some _ | None -> ())
+  | Awaiting | Gone | Foreign -> ()
 
 let die t (dead : Protocol.dead) =
   (match dead.cause with Failed _ -> killpg t | Exited _ | Signaled _ -> ());
@@ -209,7 +239,8 @@ let deliver t ~upto:upper =
               (match Hashtbl.find_opt t.pending req with
               | Some (Snapshot_reply (consume, _)) -> consume pos
               | _ -> ());
-              if (Ring.slice t.ring pos).last then ignore (Queue.take t.snapshots : int))
+              if (Ring.slice t.ring pos).last then
+                Queue.add (Queue.take t.snapshots, t.delivered) t.finished)
       | Bytes | Marker | Pad -> ()
     done
 
@@ -220,7 +251,13 @@ let scan t =
     match
       try
         deliver t ~upto:head;
-        Ring.advance t.ring ~head ~keep:(if Queue.is_empty t.snapshots then head else t.delivered)
+        let keep =
+          let unfinished = if Queue.is_empty t.snapshots then head else t.delivered in
+          match Queue.peek_opt t.finished with
+          | Some (_, cursor) -> min cursor unfinished
+          | None -> unfinished
+        in
+        Ring.advance t.ring ~head ~keep
       with Invalid_argument message -> Stdlib.Error message
     with
     | Ok () ->
@@ -300,7 +337,14 @@ let store text buffer ~off ~len at =
 let on_frame t kind ~off ~len =
   let body = t.input in
   match kind with
-  | Ready -> if len <> 4 then invalid_arg "invalid ready" else t.child <- int32_at body off
+  | Ready -> (
+      if len <> 4 then invalid_arg "invalid ready";
+      match t.child with
+      | Awaiting -> (
+          match read_child ~pane:t.pid (int32_at body off) with
+          | Foreign -> invalid_arg "invalid ready"
+          | claim -> t.child <- claim)
+      | Gone | Child _ | Foreign -> invalid_arg "invalid ready")
   | Title -> if store t.title body ~off ~len 0 then t.notify Title
   | Pwd -> if store t.cwd body ~off ~len 0 then t.notify Pwd
   | Head -> t.notify Output
@@ -322,6 +366,9 @@ let on_frame t kind ~off ~len =
       need len (match kind with Snapshot_done -> 4 | Paste_done -> 6 | _ -> 9);
       deliver t ~upto:(Ring.head t.ring);
       let req = int32_at body off in
+      (match Queue.peek_opt t.finished with
+      | Some (first, _) when Int.equal first req -> ignore (Queue.take t.finished : int * int)
+      | Some _ | None -> ());
       match Hashtbl.find_opt t.pending req with
       | Some (Snapshot_reply (_, done_)) when equal_kind kind Snapshot_done ->
           Hashtbl.remove t.pending req;
@@ -372,7 +419,7 @@ let create config ~id ~cwd ~argv ~env ~notify =
       pid;
       notify;
       life = Open;
-      child = 0;
+      child = Awaiting;
       title = text_of_string "";
       cwd = text_of_string cwd;
       dead = None;
@@ -384,6 +431,7 @@ let create config ~id ~cwd ~argv ~env ~notify =
       next_req = 1;
       pending = Hashtbl.create 8;
       snapshots = Queue.create ();
+      finished = Queue.create ();
     }
   in
   let allocate _ =
@@ -430,7 +478,7 @@ let reap t =
     | exception Unix.Unix_error (Unix.ECHILD, _, _) -> release t
 
 let kill t =
-  (if not (is_reaped t) then
+  (if (not (is_reaped t)) && Uv.signalable t.pid then
      try Unix.kill t.pid Sys.sigkill with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
   killpg t
 
@@ -569,14 +617,19 @@ let%test_module "Tests" =
  15 97
  |}]
 
-    let fake ?(notify = ignore) ring =
+    let small_ring () =
+      let buffer = Luv.Buffer.create 64 in
+      Bigstringaf.set_int64_le buffer 0 64L;
+      Ring.create buffer
+
+    let fake ?(notify = ignore) ?(ring = small_ring ()) () =
       {
         ring;
         control = Uv.ok (Luv.Pipe.init ());
         pid = 0;
         notify;
         life = Open;
-        child = 0;
+        child = Awaiting;
         title = text_of_string "";
         cwd = text_of_string "";
         dead = None;
@@ -588,6 +641,7 @@ let%test_module "Tests" =
         next_req = 1;
         pending = Hashtbl.create 1;
         snapshots = Queue.create ();
+        finished = Queue.create ();
       }
 
     let feed t data =
@@ -602,10 +656,8 @@ let%test_module "Tests" =
       frame Title (Buffer.contents b)
 
     let%expect_test "events fire once per change of the stored title" =
-      let buffer = Luv.Buffer.create 64 in
-      Bigstringaf.set_int64_le buffer 0 64L;
       let events = ref 0 in
-      let t = fake ~notify:(fun _ -> incr events) (Ring.create buffer) in
+      let t = fake ~notify:(fun _ -> incr events) () in
       let report label =
         Printf.printf "%s: %d events, title %S\n" label !events (title t);
         events := 0
@@ -628,9 +680,7 @@ let%test_module "Tests" =
       |}]
 
     let%expect_test "a frame body shorter than its fields fails instead of reading the next frame" =
-      let buffer = Luv.Buffer.create 64 in
-      Bigstringaf.set_int64_le buffer 0 64L;
-      let t = fake (Ring.create buffer) in
+      let t = fake () in
       let fails kind body =
         t.filled <- 0;
         match feed t (frame kind body ^ frame Head "\000\000\000\000\000\000\000\000") with
@@ -675,7 +725,7 @@ let%test_module "Tests" =
       set_head ends.(2);
       let ring = Ring.create buffer in
       let delivered = ref [] in
-      let t = fake ring in
+      let t = fake ~ring () in
       Hashtbl.add t.pending 1
         (Snapshot_reply
            ( (fun pos ->
@@ -696,4 +746,277 @@ let%test_module "Tests" =
         delivered 3, tail passed the undelivered slices: false
         delivered 15 in order: true
       |}]
+
+    let%expect_test "a finished snapshot keeps its cursor in the ring until its snapshot_done" =
+      let capacity = 2048 in
+      let buffer = Luv.Buffer.create (data_offset + capacity) in
+      Bigarray.Array1.fill buffer '\000';
+      Bigstringaf.set_int64_le buffer 0 (Int64.of_int capacity);
+      let t = fake ~ring:(Ring.create buffer) () in
+      let ring = ring t in
+      let cursor = ref 0 in
+      let report = ref "" in
+      snapshot t ~history:History_none
+        ~consume:(fun pos -> cursor := Ring.next ring pos)
+        ~done_:(fun _ ->
+          report :=
+            Printf.sprintf "A done: cursor %d, tail %d, cursor still in the ring: %b" !cursor
+              (Ring.tail ring)
+              (Ring.tail ring <= !cursor));
+      snapshot t ~history:History_none ~consume:ignore ~done_:ignore;
+      let pos = ref 0 in
+      for i = 0 to 2 do
+        pos := slice_record buffer ~pos:!pos ~first:(i = 0) ~last:(i = 2)
+      done;
+      let base = data_offset + !pos in
+      buffer.{base} <- '\001';
+      Bigstringaf.set_int32_le buffer (base + 1) 100l;
+      Bigstringaf.set_int64_le buffer (base + 5) 0L;
+      pos := !pos + record_header + 100;
+      for i = 0 to 13 do
+        pos := slice_record buffer ~pos:!pos ~first:(i = 0) ~last:false
+      done;
+      Bigstringaf.set_int64_le buffer 8 (Int64.of_int !pos);
+      ignore (scan t : bool);
+      feed t (frame Snapshot_done "\001\000\000\000");
+      print_endline !report;
+      [%expect {| A done: cursor 339, tail 339, cursor still in the ring: true |}]
+
+    let outcome stream_chunks =
+      let log = ref [] in
+      let add fmt = Printf.ksprintf (fun line -> log := line :: !log) fmt in
+      let result = function Ok () -> "ok" | Stdlib.Error message -> message in
+      let t =
+        fake
+          ~notify:(fun event ->
+            add "%s"
+              (match event with
+              | Title -> "title"
+              | Pwd -> "pwd"
+              | Output -> "output"
+              | Dead _ -> "dead"))
+          ()
+      in
+      Hashtbl.add t.pending 1
+        (Snapshot_reply ((fun pos -> add "slice %d" pos), fun r -> add "snapshot %s" (result r)));
+      Hashtbl.add t.pending 2
+        (Paste_reply
+           (function
+           | Ok { pasted; unsafe } -> add "paste %b %b" pasted unsafe
+           | Stdlib.Error message -> add "paste %s" message));
+      Hashtbl.add t.pending 3
+        (Screen_reply
+           ((fun text ~last -> add "chunk %S %b" text last), fun r -> add "screen %s" (result r)));
+      let raised =
+        try
+          List.iter (feed t) stream_chunks;
+          None
+        with Invalid_argument message -> Some message
+      in
+      ( raised,
+        List.rev !log,
+        title t,
+        cwd t,
+        Option.map (fun (d : Protocol.dead) -> d.cause) t.dead,
+        child_pid t )
+
+    let own_pid = Unix.getpid ()
+    let own_pgid = (Option.get (Uv.identity own_pid)).pgid
+
+    let%expect_test "a Ready pid that is not the pane's own child is refused and never signalled" =
+      let pane = 4242 in
+      let found = Some { Uv.ppid = pane; pgid = 900; sid = 900; start = 7 } in
+      let show label = function
+        | Child { leader; start } -> Printf.printf "%s: child %d at %d\n" label leader start
+        | Gone -> Printf.printf "%s: gone\n" label
+        | Foreign -> Printf.printf "%s: refused\n" label
+        | Awaiting -> Printf.printf "%s: awaiting\n" label
+      in
+      let verdict ?(pane = pane) ?(found = found) label pid =
+        show label (verify_child ~pane ~own_pid ~own_pgid ~pid found)
+      in
+      verdict "1" 1;
+      verdict "0" 0;
+      verdict "-1" (-1);
+      verdict "own pid" own_pid;
+      verdict "own pgid" own_pgid;
+      verdict "pane pid 0" ~pane:0 900;
+      verdict "other parent" ~found:(Some { Uv.ppid = 1; pgid = 900; sid = 900; start = 7 }) 900;
+      verdict "not group leader"
+        ~found:(Some { Uv.ppid = pane; pgid = 1; sid = 900; start = 7 })
+        900;
+      verdict "not session leader"
+        ~found:(Some { Uv.ppid = pane; pgid = 900; sid = 1; start = 7 })
+        900;
+      verdict "own child" 900;
+      verdict "gone" ~found:None 900;
+      [%expect
+        {|
+        1: refused
+        0: refused
+        -1: refused
+        own pid: refused
+        own pgid: refused
+        pane pid 0: refused
+        other parent: refused
+        not group leader: refused
+        not session leader: refused
+        own child: child 900 at 7
+        gone: gone
+      |}]
+
+    let ready_frame pid =
+      let b = Buffer.create 4 in
+      Buffer.add_int32_le b (Int32.of_int pid);
+      frame Ready (Buffer.contents b)
+
+    let%expect_test "a Ready frame with a foreign pid fails the pane and records no child" =
+      List.iter
+        (fun (label, pid, child) ->
+          let t = fake () in
+          t.child <- child;
+          (try feed t (ready_frame pid)
+           with Invalid_argument message -> Printf.printf "%s: %s, " label message);
+          failure t "invalid ready";
+          Printf.printf "child %b, dead %b\n" (Option.is_some (child_pid t)) (Option.is_some t.dead))
+        [
+          ("1", 1, Awaiting);
+          ("parent", Unix.getppid (), Awaiting);
+          ("after gone", Unix.getppid (), Gone);
+        ];
+      [%expect
+        {|
+        1: invalid ready, child false, dead true
+        parent: invalid ready, child false, dead true
+        after gone: invalid ready, child false, dead true
+      |}]
+
+    let%expect_test "only a child that matches its recorded start is killed" =
+      let out, in_ = Unix.pipe () in
+      let program = "use POSIX; $|=1; POSIX::setsid(); print qq(up\\n); exec q(sleep), q(30)" in
+      let child =
+        Unix.create_process "perl" [| "perl"; "-e"; program |] Unix.stdin in_ Unix.stderr
+      in
+      Unix.close in_;
+      (match Unix.select [ out ] [] [] 10. with
+      | [], _, _ -> print_endline "child did not start"
+      | _ -> ignore (Unix.read out (Bytes.create 3) 0 3 : int));
+      Unix.close out;
+      let t = fake () in
+      let alive () = fst (Unix.waitpid [ Unix.WNOHANG ] child) = 0 in
+      (match read_child ~pane:own_pid child with
+      | Child verified ->
+          Printf.printf "verified own child: %b\n" (verified.leader = child);
+          t.child <- Child { verified with start = verified.start + 1 };
+          killpg t;
+          Printf.printf "tampered start skipped: %b\n" (alive ());
+          t.child <- Child verified;
+          killpg t
+      | Awaiting | Gone | Foreign ->
+          Unix.kill child Sys.sigkill;
+          print_endline "child not verified");
+      let deadline = Unix.gettimeofday () +. 10. in
+      let rec reaped () =
+        match Unix.waitpid [ Unix.WNOHANG ] child with
+        | 0, _ when Float.(Unix.gettimeofday () < deadline) ->
+            Unix.sleepf 0.005;
+            reaped ()
+        | 0, _ -> None
+        | _, status -> Some status
+      in
+      (match reaped () with
+      | Some (Unix.WSIGNALED n) -> Printf.printf "killed by SIGKILL: %b\n" (n = Sys.sigkill)
+      | Some _ | None -> print_endline "not killed");
+      [%expect
+        {|
+        verified own child: true
+        tampered start skipped: true
+        killed by SIGKILL: true
+      |}]
+
+    let seed = Option.map int_of_string (Sys.getenv_opt "KO_FUZZ_SEED")
+    and seconds = Option.map float_of_string (Sys.getenv_opt "KO_FUZZ_SECONDS")
+
+    let soak ~count ~name property =
+      let case n =
+        try if not (property (Random.State.make [| n |])) then failwith "property false"
+        with e ->
+          Printf.eprintf "%s: failed on case seed %d\n%!" name n;
+          raise e
+      in
+      let first = Option.value ~default:0 seed in
+      match seconds with
+      | None ->
+          for n = first to first + count - 1 do
+            case n
+          done
+      | Some budget ->
+          let deadline = Unix.gettimeofday () +. budget and n = ref first in
+          while Float.(Unix.gettimeofday () < deadline) do
+            case !n;
+            incr n
+          done;
+          Printf.printf "%s: %d cases in %.0fs\n%!" name (!n - first) budget
+
+    let pick rand list = List.nth list (Random.State.int rand (List.length list))
+
+    let byte rand =
+      match Random.State.int rand 11 with
+      | 0 | 1 | 2 | 3 | 4 | 5 -> '\000'
+      | 6 | 7 -> '\001'
+      | 8 -> '\004'
+      | _ -> Char.chr (Random.State.int rand 256)
+
+    let frame_of rand =
+      let id = pick rand [ ""; "\001\000\000\000"; "\002\000\000\000"; "\003\000\000\000" ] in
+      let body = id ^ String.init (Random.State.int rand 21) (fun _ -> byte rand) in
+      if Random.State.int rand 10 = 0 then
+        frame_code (pick rand (List.init 7 Fun.id @ List.init 248 (fun i -> i + 8))) body
+      else
+        frame
+          (pick rand
+             (List.filter_map (fun (k, _) -> match k with Ready -> None | k -> Some k) wire))
+          body
+
+    let tail_of rand =
+      let flag () =
+        match Random.State.int rand 3 with
+        | 0 -> '\000'
+        | 1 -> '\001'
+        | _ -> Char.chr (Random.State.int rand 256)
+      in
+      Printf.sprintf "%c%c%c\000%s" (flag ()) (flag ())
+        (Char.chr (1 + Random.State.int rand 255))
+        (String.init (4 + Random.State.int rand 27) (fun _ -> Char.chr (Random.State.int rand 256)))
+
+    let%test "a frame never reads the bytes after it" =
+      soak ~count:300 ~name:"frame bounds" (fun rand ->
+          let f = frame_of rand in
+          let a = tail_of rand in
+          let b = tail_of rand in
+          let ((raised, _, _, _, _, _) as first) = outcome [ f ^ a ] in
+          Stdlib.( = ) first (outcome [ f ^ b ])
+          && not (Option.equal String.equal raised (Some "index out of bounds")));
+      true
+
+    let%test "frames split anywhere give the same effects" =
+      soak ~count:300 ~name:"frame fragmentation" (fun rand ->
+          let stream =
+            String.concat "" (List.init (1 + Random.State.int rand 5) (fun _ -> frame_of rand))
+          in
+          let cuts =
+            List.sort_uniq ~cmp:Int.compare
+              (List.filter
+                 (fun c -> c < String.length stream)
+                 (List.init (Random.State.int rand 5) (fun _ -> Random.State.int rand 121)))
+          in
+          let pieces =
+            let rec go from = function
+              | [] -> [ String.sub stream from (String.length stream - from) ]
+              | cut :: rest -> String.sub stream from (cut - from) :: go cut rest
+            in
+            go 0 cuts
+          in
+          Stdlib.( = ) (outcome [ stream ]) (outcome pieces));
+      true
   end)

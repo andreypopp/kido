@@ -82,6 +82,28 @@ external cursor : t -> int * int * bool = "ko_vt_cursor"
 external mode : t -> int -> bool = "ko_vt_mode"
 external total_rows : t -> int = "ko_vt_total_rows"
 
+let modes = [ 1; 6; 7; 25; 47; 1000; 1002; 1003; 1004; 1006; 1049; 2004; 2026 ]
+
+let differences ?(history = false) ?(strip = Fun.id) a b =
+  List.concat
+    [
+      (if String.equal (dump a Plain) (dump b Plain) then [] else [ "plain text" ]);
+      (if String.equal (strip (dump a Vt)) (strip (dump b Vt)) then [] else [ "vt dump" ]);
+      (if Stdlib.( = ) (cursor a) (cursor b) then [] else [ "cursor" ]);
+      List.filter_map
+        (fun number ->
+          if Bool.equal (mode a number) (mode b number) then None
+          else Some (Printf.sprintf "mode %d" number))
+        modes;
+      (if
+         history
+         && not
+              (Int.equal (total_rows a) (total_rows b)
+              && String.equal (strip (dump_history a Vt)) (strip (dump_history b Vt)))
+       then [ "history" ]
+       else []);
+    ]
+
 let string_reader ?(chunk = max_int) bytes =
   let offset = ref 0 in
   fun capacity ->

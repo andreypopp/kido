@@ -127,6 +127,7 @@ module Record : sig
   val header_size : int
   val slice_size : int
   val encode_header : Bytes.t -> int -> kind -> offset:int -> unit
+  val offset_of_string : string -> int
   val kind_of_string : string -> kind
   val slice_of_string : string -> int -> slice
 end

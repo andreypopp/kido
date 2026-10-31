@@ -5,6 +5,7 @@
 #include <stdatomic.h>
 #define KO_HEADER 13
 #define KO_MAX_FRAME (16u*1024u*1024u)
+#define KO_MAX_DIMENSION 4096u
 enum ko_frame {
   KO_INIT = 1, KO_TAIL = 2, KO_RESIZE = 3, KO_TEXT = 4, KO_SNAPSHOT = 5, KO_EXIT = 6,
   KO_READY = 7, KO_HEAD = 8, KO_TITLE = 9, KO_PWD = 10, KO_PROMPT = 11, KO_RECORD = 12,

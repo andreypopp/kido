@@ -9,6 +9,7 @@
 #include <ghostty/vt.h>
 #include "snapshot_cut.h"
 #include "buffer.h"
+#include "protocol.h"
 #include "compress.h"
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,9 @@ static struct custom_operations ops = { .identifier="ko.vt", .finalize=finalize,
   .compare=custom_compare_default, .hash=custom_hash_default,
   .serialize=custom_serialize_default, .deserialize=custom_deserialize_default,
   .compare_ext=custom_compare_ext_default, .fixed_length=custom_fixed_length_default };
-static void check(GhosttyResult r) { if(r != GHOSTTY_SUCCESS) caml_failwith("libghostty-vt operation failed"); }
+static void check(GhosttyResult r) {
+  if(r != GHOSTTY_SUCCESS) { char message[64]; snprintf(message,sizeof message,"libghostty-vt operation failed (%d)",(int)r); caml_failwith(message); }
+}
 static double monotonic(void) {
   struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;
 }
@@ -61,7 +64,7 @@ static value wrap(GhosttyTerminal vt) {
   return v;
 }
 static void check_size(value cols,value rows) {
-  if(Long_val(cols)<1 || Long_val(cols)>65535 || Long_val(rows)<1 || Long_val(rows)>65535)
+  if(Long_val(cols)<1 || Long_val(cols)>KO_MAX_DIMENSION || Long_val(rows)<1 || Long_val(rows)>KO_MAX_DIMENSION)
     caml_invalid_argument("terminal dimensions");
 }
 static void limits(GhosttyTerminal vt,value limits) {

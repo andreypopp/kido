@@ -153,7 +153,13 @@ and pump t =
       let ring = ring t in
       try
         if cursor.pos < Ring.head ring && Connection.available t.connection then begin
-          let behind = cursor.pos < Ring.tail ring in
+          let behind =
+            match Ring.reachable ring cursor.pos with
+            | None -> true
+            | Some pos ->
+                cursor.pos <- pos;
+                false
+          in
           let resize =
             (not behind)
             && (match history with History_none -> true | History_all -> false)

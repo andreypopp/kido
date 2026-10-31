@@ -37,9 +37,10 @@ let body reqd callback =
           Buffer.add_string b (Bigstringaf.substring bs ~off ~len);
           read ()))
       ~on_eof:(fun () ->
-        match Yojson.Basic.from_string (Buffer.contents b) with
-        | json -> callback json
-        | exception Yojson.Json_error message -> error reqd Invalid message)
+        if Option.is_none (Httpun.Reqd.error_code reqd) then
+          match Yojson.Basic.from_string (Buffer.contents b) with
+          | json -> callback json
+          | exception Yojson.Json_error message -> error reqd Invalid message)
   in
   read ()
 
