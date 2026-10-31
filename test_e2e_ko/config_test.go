@@ -69,3 +69,12 @@ func TestDefaultsAndPaneEnvironment(t *testing.T) {
 	s.request("POST", "/panes", map[string]any{"cwd": "relative"}, 400, nil)
 	s.request("POST", "/panes", []string{"invalid"}, 400, nil)
 }
+
+func TestFuzzVariablesDoNotReachTheBinary(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(koBin, "version")
+	cmd.Env = append(os.Environ(), "KO_FUZZ_SECONDS=abc", "KO_FUZZ_SEED=abc", "KO_AFL_SOURCE=/nonexistent")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ko version with fuzz variables set: %v: %s", err, output)
+	}
+}

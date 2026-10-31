@@ -442,7 +442,7 @@ let%test_module "Tests" =
               check (c.ended <= 1) "channel %d: ended %d times" i c.ended)
             channels)
 
-    let seed, seconds = Fuzz_check.budget ()
+    let seed, seconds = Ko_server.Fuzz_run.budget ()
 
     let%test "the event loop delivers each readable byte once, fires timers and signals as modelled"
         =

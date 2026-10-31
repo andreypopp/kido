@@ -2,6 +2,7 @@ module type S = sig
   type t [@@deriving equal, compare, json]
 
   val make : int -> t
+  val gen : t QCheck2.Gen.t
   val of_string : string -> t
   val to_string : t -> string
 end
@@ -14,6 +15,7 @@ end) : S = struct
   let equal = String.equal
   let compare = String.compare
   let make n = P.prefix ^ string_of_int n
+  let gen = QCheck2.Gen.(map make (oneof_weighted [ (8, 1 -- 2); (1, return 99); (1, nat) ]))
 
   let of_string s =
     let n = String.length P.prefix in

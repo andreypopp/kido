@@ -132,8 +132,8 @@ let scalar =
                "left";
                "all";
                "none";
-               "%1";
-               "%99";
+               "pane_1";
+               "pane_99";
                "/tmp";
                "/nonexistent";
                "/bin/sh";
@@ -149,7 +149,8 @@ let scalar =
     ]
 
 let json =
-  sized_size (0 -- 3)
+  map (fun v -> (v :> Yojson.Basic.t))
+  @@ sized_size (0 -- 3)
   @@ fix (fun self n ->
       if n = 0 then scalar
       else
@@ -160,75 +161,22 @@ let json =
             (4, map (fun l -> `Assoc l) (list_size (0 -- 5) (pair key (self (n - 1)))));
           ])
 
-let size_json cols rows =
-  `Assoc
-    [
-      ("cols", `Int cols);
-      ("rows", `Int rows);
-      ("cell_px", `Assoc [ ("width", `Int 8); ("height", `Int 16) ]);
-    ]
-
 let message =
   let tagged tag payload = `List [ `String tag; payload ] in
   oneof_weighted
     [
       ( 4,
-        oneof_list
+        oneof
           [
-            tagged "hello"
-              (`Assoc
-                 [
-                   ("kind", `String "terminal");
-                   ("name", `String "t");
-                   ("focused", `Bool true);
-                   ("size", size_json 80 24);
-                 ]);
-            tagged "select" (`String "%1");
-            tagged "size" (size_json 100 30);
-            tagged "focused" (`Bool false);
-            tagged "resync" (`Assoc [ ("history", `String "all"); ("images", `String "none") ]);
-            tagged "input" (`List [ `String "text"; `String "aGk=" ]);
-            tagged "input" (`List [ `String "focus"; `Bool true ]);
-            tagged "input"
-              (`List
-                 [
-                   `String "key";
-                   `Assoc
-                     [
-                       ("action", `String "press");
-                       ("key", `Int 20);
-                       ("mods", `Int 2);
-                       ("unshifted_codepoint", `Int 97);
-                       ("text", `String "a");
-                       ("composing", `Bool false);
-                     ];
-                 ]);
-            tagged "input"
-              (`List
-                 [
-                   `String "mouse";
-                   `Assoc
-                     [
-                       ("action", `String "press");
-                       ("button", `String "left");
-                       ("col", `Int 1);
-                       ("row", `Int 1);
-                       ("mods", `Int 0);
-                     ];
-                 ]);
-            tagged "input"
-              (`List
-                 [
-                   `String "paste";
-                   `Assoc [ ("text", `String "x"); ("check_safe", `Bool true); ("id", `Int 1) ];
-                 ]);
+            map Protocol.Request.client_to_json Protocol.Request.gen_client;
+            map Protocol.Request.view_to_json Protocol.Request.gen_view;
           ] );
       (3, map2 tagged (oneof_list [ "hello"; "select"; "size"; "focused"; "resync"; "input" ]) json);
       (1, json);
     ]
 
 let text_of value =
-  let text = Yojson.Basic.to_string (value :> Yojson.Basic.t) in
+  let text = Yojson.Basic.to_string value in
   oneof_weighted
     [
       (6, return text);
@@ -243,7 +191,13 @@ let json_text = json >>= text_of
 let message_text = message >>= text_of
 
 let id =
-  oneof_list [ "%1"; "%1"; "%2"; "%99"; "%0"; "%"; "1"; "%-1"; "%abc"; "%99999999999999999999" ]
+  oneof_weighted
+    [
+      (6, map Ids.Pane_id.to_string Ids.Pane_id.gen);
+      ( 1,
+        oneof_list
+          [ "pane_"; "1"; "%1"; "pane_-1"; "pane_abc"; "pane_99999999999999999999"; "client_1" ] );
+    ]
 
 let query =
   oneof_weighted
@@ -261,11 +215,10 @@ let query =
 let target =
   oneof_weighted
     [
-      (2, oneof_list [ "/version"; "/panes"; "/client" ]);
+      (6, map (fun route -> snd (Protocol.Route.to_request route)) Protocol.Route.gen);
       (3, map2 (fun i q -> "/panes/" ^ i ^ "/view" ^ q) id query);
       (3, map2 (fun i q -> "/panes/" ^ i ^ "/screen" ^ q) id query);
-      (3, map (fun i -> "/panes/" ^ i ^ "/input") id);
-      (2, map (fun i -> "/panes/" ^ i) (oneof_list [ "%2"; "%99"; "%0"; "%"; "1"; "%abc" ]));
+      (2, map (fun i -> "/panes/" ^ i) id);
       (1, map (fun s -> "/" ^ s) junk);
     ]
 
@@ -345,13 +298,13 @@ let http_request =
       oneof_weighted
         [
           (1, return "/client");
-          (2, map (fun q -> "/panes/%1/view" ^ q) query);
+          (2, map (fun q -> "/panes/pane_1/view" ^ q) query);
           ( 2,
             oneof_list
               [
-                "/panes/%1/view?history=all";
-                "/panes/%1/view?history=none&offset=0";
-                "/panes/%1/view?history=all&offset=99999999999";
+                "/panes/pane_1/view?history=all";
+                "/panes/pane_1/view?history=none&offset=0";
+                "/panes/pane_1/view?history=all&offset=99999999999";
               ] );
         ]
     in
@@ -364,7 +317,7 @@ let http_request =
 
 let%test_module "Tests" =
   (module struct
-    let seed, seconds = Fuzz_check.budget ()
+    let seed, seconds = Ko_server.Fuzz_run.budget ()
 
     let tolerated f =
       match f () with
@@ -404,27 +357,38 @@ let%test_module "Tests" =
           | exception Invalid_argument _ -> true);
       true
 
-    let%test "bad bodies are answered with 400 or 411, not a crash or a 500" =
+    let with_cat_server f =
       Fuzz_server.with_server
-        ~command:(fun _ -> "exec cat")
+        ~command:(fun _ -> "stty raw -echo; exec cat")
         ~activity:(fun () -> false)
-        (fun server ->
+        f
+
+    let answer server request = check_reply request (exchange server request)
+
+    let%test "bad bodies are answered with 400 or 411, not a crash or a 500" =
+      with_cat_server (fun server ->
           let chunked = status server "POST /panes" "Transfer-Encoding: chunked\r\n\r\n{}" in
           let cwd =
             status server "POST /panes" "Content-Length: 23\r\n\r\n{\"cwd\":\"/nonexistent\"}   "
           in
           String.equal chunked "HTTP/1.1 411" && String.equal cwd "HTTP/1.1 400")
 
+    let%test "AFL bytes are answered with a status or a close" =
+      match Ko_server.Fuzz_run.afl_source () with
+      | None -> true
+      | Some path ->
+          with_cat_server (fun server ->
+              AflPersistent.run (fun () ->
+                  answer server (In_channel.with_open_bin path In_channel.input_all));
+              true)
+
     let%test "the server answers any request with a status or a close, and stays healthy" =
       Fuzz_check.check ?seed ?seconds ~count:40 ~name:"http"
         ~print:(fun requests -> String.concat "\n" (List.map String.escaped requests))
         QCheck2.Gen.(list_size (1 -- 6) http_request)
         (fun requests ->
-          Fuzz_server.with_server
-            ~command:(fun _ -> "stty raw -echo; exec cat")
-            ~activity:(fun () -> false)
-            (fun server ->
-              List.iter (fun request -> check_reply request (exchange server request)) requests;
+          with_cat_server (fun server ->
+              List.iter (answer server) requests;
               healthy server;
               true));
       true

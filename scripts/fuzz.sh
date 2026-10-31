@@ -2,7 +2,7 @@
 # Usage: scripts/fuzz.sh [--merge] TARGET SECONDS
 set -uo pipefail
 cd "$(dirname "$0")/.."
-targets='frame control ring pane-proc view http loop'
+targets='frame control ring pane-proc view http loop ring-afl pane-proc-afl http-afl'
 merge=
 if [[ ${1:-} == --merge ]]; then
   merge=1
@@ -92,6 +92,10 @@ case $target in
     while ((SECONDS < end)); do
       boxed $((end - SECONDS + 30)) _build/default/ko_pane/fuzz-"$target"-libfuzzer -runs=24000 -max_total_time=$((end - SECONDS)) "${options[@]}" "$corpus" >"$scratch/log" 2>&1
       status=$?
+      if [[ ! -f $scratch/out/default/fuzzer_stats ]]; then
+        cat "$scratch/log"
+        exit $((status == 0 ? 1 : status))
+      fi
       if ((status != 0)); then
         cat "$scratch/log"
         exit $status
@@ -131,22 +135,70 @@ case $target in
     ;;
   *)
     case $target in
-      ring) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_ring.ml ;;
+      ring | ring-afl) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_ring.ml ;;
       view) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_view.ml ;;
-      http) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_http.ml ;;
+      http | http-afl) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_http.ml ;;
       loop) library=ko_server_fuzz dir=ko_server/fuzz root=../.. file=ko_server/fuzz/fuzz_loop.ml ;;
-      pane-proc) library=ko_server dir=ko_server root=.. file=ko_server/pane_proc.ml ;;
+      pane-proc | pane-proc-afl) library=ko_server dir=ko_server root=.. file=ko_server/pane_proc.ml ;;
     esac
-    props=$(grep -cE '(Fuzz_check\.check|^ +soak) ' "$file")
+    props=$(grep -cE '(Fuzz_check\.check|Fuzz_run\.monolith) ' "$file")
     if ((seconds < props)); then
       echo "fuzz.sh: $target has $props properties and needs TIME of at least $props" >&2
       exit 1
     fi
-    build "$dir/.$library.inline-tests/inline-test-runner.exe" ko_pane/ko-pane || exit 1
+    runner=".$library.inline-tests/inline-test-runner.exe"
+    only=$file
+    case $target in
+      http-afl) only=$file:$(grep -n 'let%test "AFL bytes' "$file" | cut -d: -f1) ;;
+      pane-proc-afl) only=$file:$(grep -n 'let%test "control frames' "$file" | cut -d: -f1) ;;
+    esac
+    run_args=(inline-test-runner "$library" -source-tree-root "$root" -diff-cmd - -only-test "$only")
+    if [[ $target == *-afl ]]; then
+      afl_fuzz=${KO_AFL_FUZZ:-$(command -v afl-fuzz || true)}
+      if [[ -z $afl_fuzz ]]; then
+        echo "SKIP $target: no afl-fuzz found; install AFL++ or set KO_AFL_FUZZ" >&2
+        exit 0
+      fi
+      # dune-workspace.afl locks an OCaml compiler with ocaml-option-afl, so the dependencies are
+      # instrumented too; its own build directory keeps the plain build in _build.
+      afl_build() { build --workspace dune-workspace.afl --build-dir _build_afl "$@"; }
+      targets_to_build=("$dir/$runner")
+      [[ $target == http-afl ]] && targets_to_build+=(ko_pane/ko-pane)
+      afl_build "${targets_to_build[@]}" || exit 1
+      mkdir "$scratch/in" || exit 1
+      if [[ $target == http-afl ]]; then
+        printf 'GET /version HTTP/1.1\r\nHost: ko\r\nKo-Protocol: 1.0\r\n\r\n' >"$scratch/in/seed"
+      else
+        head -c 256 /dev/urandom >"$scratch/in/seed"
+      fi
+      # AFL_MAP_SIZE and AFL_SKIP_BIN_CHECK: the OCaml runtime's fork server does not report a map
+      # size, and afl-fuzz then asks for an 8 MiB map, which macOS refuses (kern.sysv.shmmax is 4 MiB).
+      # __AFL_PERSISTENT: afl-fuzz sets it only after its binary check, which AFL_SKIP_BIN_CHECK skips.
+      cd "_build_afl/default/$dir" || exit 1
+      KO_AFL_SOURCE=$scratch/input __AFL_PERSISTENT=1 AFL_MAP_SIZE=65536 AFL_SKIP_BIN_CHECK=1 \
+        AFL_NO_UI=1 AFL_SKIP_CPUFREQ=1 AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
+        boxed $((seconds + 60)) "$afl_fuzz" -V "$seconds" -i "$scratch/in" -o "$scratch/out" \
+        -f "$scratch/input" -- "./$runner" "${run_args[@]}" >"$scratch/log" 2>&1
+      status=$?
+      grep -E 'Statistics|execs_per_sec' "$scratch/log" | tail -1
+      grep -E '^(execs_done|execs_per_sec|edges_found|total_edges)' "$scratch/out/default/fuzzer_stats" | tr -s ' \n' ' '
+      echo
+      crash=$(ls "$scratch"/out/default/crashes/id* 2>/dev/null | head -1)
+      if [[ -n $crash ]]; then
+        echo "fuzz.sh: $target found $(ls "$scratch"/out/default/crashes/id* | wc -l) crashing inputs; the first one runs as:"
+        KO_AFL_SOURCE=$crash boxed 60 "./$runner" "${run_args[@]}" >"$scratch/replay" 2>&1
+        head -60 "$scratch/replay"
+        exit 1
+      fi
+      if ((status != 0)); then
+        cat "$scratch/log"
+        exit $status
+      fi
+      exit 0
+    fi
+    build "$dir/$runner" ko_pane/ko-pane || exit 1
     cd "_build/default/$dir" || exit 1
-    KO_FUZZ_SECONDS=$((seconds / props)) boxed $((seconds + 60)) \
-      "./.$library.inline-tests/inline-test-runner.exe" inline-test-runner "$library" \
-      -source-tree-root "$root" -diff-cmd - -only-test "$file"
+    KO_FUZZ_SECONDS=$((seconds / props)) boxed $((seconds + 60)) "./$runner" "${run_args[@]}"
     exit $?
     ;;
 esac

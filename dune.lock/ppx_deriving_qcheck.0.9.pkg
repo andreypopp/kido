@@ -1,0 +1,14 @@
+(version 0.9)
+
+(build
+ (all_platforms ((action (run dune build -p %{pkg-self:name} -j %{jobs})))))
+
+(depends
+ (all_platforms
+  (dune ocaml qcheck-core ppxlib ppx_deriving)))
+
+(source
+ (fetch
+  (url https://github.com/c-cube/qcheck/archive/v0.90.tar.gz)
+  (checksum
+   sha512=552871a95bcf27a81cd518a4aefc60ac0f08ef73c8e115f199952707b88ab20f7ecb762abb835a196c1adb7b948447e487daa0efbf6a39ee64bfcee0264f189f)))

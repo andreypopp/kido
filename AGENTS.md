@@ -228,7 +228,9 @@ Conventions:
   Write the others manually under the derived name. Examples are numeric
   `Tmux.compare_pane_id` and validating `Tmux.pane_id_of_string`.
   For derived and manually written functions, use `[@@deriving ...]`
-  in the `.mli`, not explicit `val` declarations.
+  in the `.mli`, not explicit `val` declarations. The exception is
+  `ppx_deriving_qcheck`, which has no signature deriver: the `.mli`
+  declares each exported generator as a `val`.
 
   A validating `_of_string` raises `Invalid_argument` that names
   the bad value. A caller maps it over an absent value (an unset or empty
@@ -860,7 +862,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
-    make fuzz TARGET=view TIME=600  one time-boxed ko fuzz run, for CI only; no TARGET lists the targets
+    make fuzz TARGET=view TIME=600  one time-boxed ko fuzz run, for CI or the user; no TARGET lists the targets
     make clean-forks  remove fork builds other than the pin
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
     make website the website's dev server at http://localhost:4321 (website/README.md)
@@ -879,7 +881,8 @@ also touches a file that kido shares with ko: the Makefile, `scripts/`,
 CI, `dune-project`, `dune.lock`, a shared library such as `kido_fs`,
 or kido's code.
 
-Agents never run `make fuzz`. Long fuzz runs occur only in CI.
+Agents run `make fuzz` only when the user asks. Long fuzz runs occur
+only in CI and never in verify.
 `dune test` replays the fixed seeds and the corpus, so a bug fix adds
 its regression case to that fast path.
 
@@ -938,14 +941,28 @@ libghostty-vt upstream. `scripts/fuzz.sh` names the targets:
   `ko_pane/fuzz/`. They build under `--profile fuzz` with an LLVM
   clang (`KO_FUZZ_CC`, else one found under Homebrew's `llvm`).
   Apple's clang has no libFuzzer, so the target prints SKIP.
-- `ring`, `view`, `http` and `loop`: QCheck2 properties in the test-only
-  library `ko_server/fuzz/`, so `ko` links no QCheck.
-  `scripts/lint.sh` refuses a dune file elsewhere in ko that names
-  QCheck or `ko_server_fuzz`. QCheck2 shrinks each failing case
-  through its generator, so the properties have no shrinkers.
-  `pane-proc` is a `Random.State` soak, not QCheck. It stays inline
-  in `ko_server/pane_proc.ml`, because it needs the module's
-  internals. `Fuzz_server` is the in-process server.
+- `ring` and `pane-proc`: Monolith specifications. Each compares the
+  candidate with a reference after every operation, and a failure
+  prints a short program of operations. `ring` is in
+  `ko_server/fuzz/fuzz_ring.ml`, with a pure model of the ring and
+  of ko-pane's room rule. `pane-proc` tests the frame parser and
+  stays inline in `ko_server/pane_proc.ml`, because it needs the
+  module's internals. `Monolith.run` is global and calls `exit`, so
+  `Fuzz_run.monolith` is the one entry, and each test runner holds
+  at most one Monolith test. It runs the engine in a forked child,
+  except under AFL, whose fork server needs the process. Under
+  `dune test`, it runs 200 scenarios, each from a byte file that a
+  fixed seed generates; a failure prints its seed, and
+  `KO_FUZZ_SEED` replays that scenario. `KO_FUZZ_SECONDS` selects
+  Monolith's random mode, which shortens a failing program.
+- `view`, `http` and `loop`: QCheck2 properties in the library
+  `ko_server/fuzz/`. QCheck2 shrinks each failing case through its
+  generator, so the properties have no shrinkers. `http` draws its
+  requests from generators that `ppx_deriving_qcheck` derives on the
+  `Protocol` types, with `[@gen]` on fields that need a valid range.
+  The ppx has no signature deriver, so `protocol.mli` declares the
+  generators that `fuzz_http.ml` uses as `val`s.
+  `Fuzz_server` is the in-process server.
   `view` drives a real `ko-pane` through the view protocol and
   compares every view's mirror, and a fresh snapshot, with the pane's
   terminal. `http` sends requests, bodies and WebSocket messages to
@@ -960,9 +977,31 @@ libghostty-vt upstream. `scripts/fuzz.sh` names the targets:
 - `test_e2e_ko/hostile_test.go` is the only Go part: hostile input
   against a real `ko server`, with other clients unaffected.
 
+- `ring-afl`, `pane-proc-afl` and `http-afl`: the same tests under
+  AFL++ (`afl-fuzz` on PATH or `KO_AFL_FUZZ`, else SKIP). They build
+  under `dune-workspace.afl`, with its own lock `dune.afl.lock` and
+  the build directory `_build_afl`. That lock selects
+  `ocaml-option-afl`, so the compiler instruments every dependency
+  too (httpun, angstrom, Monolith). Plain `dune build`, `dune test`
+  and verify never read that workspace. A re-lock of `dune.lock`
+  re-locks `dune.afl.lock` with the same pinned repositories, which
+  `dune-workspace.afl` names. On macOS, the script sets
+  `AFL_MAP_SIZE=65536` and `AFL_SKIP_BIN_CHECK=1`, because the OCaml
+  fork server reports no map size and the default 8 MiB map is over
+  `kern.sysv.shmmax`, and `__AFL_PERSISTENT=1`, because afl-fuzz
+  sets it only in the binary check that it skips. A crash replays
+  through `KO_AFL_SOURCE`.
+
+Test code in ko is acceptable: `ko_server` links Monolith, QCheck2
+and the derived generators. The fuzz entry reads its environment
+only when a test calls it: `scripts/lint.sh` permits `KO_FUZZ_*` and
+`KO_AFL_*` only in `ko_server/fuzz_run.ml`, and
+`TestFuzzVariablesDoNotReachTheBinary` runs `ko` with them set to
+junk.
+
 `dune test` replays each target's fixed seeds and the `control`
 corpus in a few seconds. `make fuzz` uses random seeds for TIME
-seconds. Only CI runs it ("Which verification" above). Each run has its own process group and scratch directory,
+seconds, in CI or when the user asks ("Which verification" above). Each run has its own process group and scratch directory,
 and the script kills and removes both on every exit.
 A libFuzzer run restarts every 24000 inputs, because ASan on macOS
 keeps libghostty-vt's freed memory, about 100 KiB per input. The test
@@ -1261,7 +1300,7 @@ A brief does not repeat them.
   one signal module of its language ("Signals" under "OCaml").
   Its types refuse such pids. A test checks the validation. It never
   sends a signal to prove it.
-  Agents do not run `make fuzz`. When you change a fuzz target or a
+  Agents run `make fuzz` only when the user asks. When you change a fuzz target or a
   kill path, use grep to examine the kill paths.
   Each fuzz run has a deadline, its own process group, and a scratch
   directory that it removes on every exit.

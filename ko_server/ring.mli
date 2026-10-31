@@ -1,3 +1,14 @@
+type layout = {
+  data_offset : int;
+  record_header : int;
+  bytes_tag : int;
+  marker_tag : int;
+  slice_tag : int;
+  pad_tag : int;
+}
+
+val layout : layout
+
 type kind = Bytes | Marker | Slice | Pad
 type t
 

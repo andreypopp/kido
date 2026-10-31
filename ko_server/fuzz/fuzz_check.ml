@@ -1,7 +1,3 @@
-let budget () =
-  ( Option.map int_of_string (Sys.getenv_opt "KO_FUZZ_SEED"),
-    Option.map float_of_string (Sys.getenv_opt "KO_FUZZ_SECONDS") )
-
 let check ?(seed = 0) ?seconds ~count ~name ~print gen law =
   let run seed n =
     try

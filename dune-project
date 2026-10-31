@@ -55,5 +55,8 @@
   httpun-ws
   dune-build-info
   (ppx_expect :with-test)
-  (qcheck-core :with-test)
+  qcheck-core
+  ppx_deriving_qcheck
+  monolith
+  (afl-persistent :with-test)
   (ocamlformat :with-dev-setup)))

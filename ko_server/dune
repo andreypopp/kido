@@ -35,7 +35,9 @@
   bigstringaf
   yojson
   jsonkit
-  base64)
+  base64
+  monolith
+  qcheck-core)
  (foreign_stubs
   (language c)
   (names native_stubs)
@@ -48,4 +50,4 @@
    (source_tree ../third_party/ghostty/include)))
  (inline_tests)
  (preprocess
-  (pps ppx_expect ppx_compare jsonkit.ppx)))
+  (pps ppx_expect ppx_compare jsonkit.ppx ppx_deriving_qcheck)))

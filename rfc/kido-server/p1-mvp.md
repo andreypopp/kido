@@ -52,7 +52,7 @@ Out, until later stages:
                   (the poll(2) loop), Native (peer credentials, the
                   monotonic clock, signal numbers), Pid (the only
                   signal calls), Config
-    ko_server/fuzz/  the QCheck2 fuzz properties, a test-only library
+    ko_server/fuzz/  the fuzz properties (QCheck2 and Monolith), a test-only library
     ko_tui/       the thin terminal client library: Mosaic for the
                   sidebar and input, a direct cell differ for the screen
     bin/ko.ml     the entry point: `ko` (attach or start and attach),
@@ -831,10 +831,16 @@ These points were open or wrong in the plan:
   the contract, and no view blocks `ko-pane`; a bad control frame on
   either side fails the pane and reads nothing outside the frame;
   any client input gets a status or a close, and other clients are
-  unaffected. The properties use QCheck2, so a failure shrinks
-  through its generator. `dune test` replays fixed seeds and one
-  explicit regression case for each bug that a fuzzer found;
-  `make fuzz` runs one target for a fixed time, only in CI.
+  unaffected. The ring and the frame parser are Monolith
+  specifications against a reference, so a failure is a short
+  program of operations; the mirror, HTTP and loop properties use
+  QCheck2, so a failure shrinks through its generator. The HTTP
+  requests come from generators derived on the protocol types.
+  `dune test` replays fixed seeds and one explicit regression case
+  for each bug that a fuzzer found; `make fuzz` runs one target for
+  a fixed time, only in CI. The `-afl` targets run the same tests
+  under AFL++ in a separate dune workspace whose compiler
+  instruments the dependencies too.
 - A Go e2e suite in `test_e2e_ko/` that starts `ko server` on a
   scratch socket and drives the protocol with `net/http` and a
   WebSocket package over a unix dialer: pane creation and exit, view open with snapshot, resume by

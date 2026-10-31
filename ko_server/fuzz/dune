@@ -8,7 +8,15 @@
    Ppx_compare_lib.Builtin
    -open
    Jsonkit.Primitives))
- (libraries containers unix yojson jsonkit qcheck-core ko_vt ko_server)
+ (libraries
+  containers
+  unix
+  yojson
+  jsonkit
+  qcheck-core
+  afl-persistent
+  ko_vt
+  ko_server)
  (inline_tests
   (deps
    ../../ko_pane/ko-pane

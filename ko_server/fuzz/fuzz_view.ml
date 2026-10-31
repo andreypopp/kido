@@ -781,7 +781,7 @@ let print_op =
 
 let%test_module "Tests" =
   (module struct
-    let seed, seconds = Fuzz_check.budget ()
+    let seed, seconds = Ko_server.Fuzz_run.budget ()
 
     let%test "two views with a large history do not snapshot each other forever" =
       run ~seed:0

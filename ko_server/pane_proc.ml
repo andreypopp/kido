@@ -721,8 +721,8 @@ let%test_module "Tests" =
         short pane frame
       |}]
 
-    let data_offset = 32
-    and record_header = 13
+    let data_offset = Ring.layout.data_offset
+    and record_header = Ring.layout.record_header
     and slice_tag = 3
 
     let slice_record buffer ~pos ~first ~last =
@@ -793,7 +793,7 @@ let%test_module "Tests" =
         pos := slice_record buffer ~pos:!pos ~first:(i = 0) ~last:(i = 2)
       done;
       let base = data_offset + !pos in
-      buffer.{base} <- '\001';
+      buffer.{base} <- Char.chr Ring.layout.bytes_tag;
       Bigstringaf.set_int32_le buffer (base + 1) 100l;
       Bigstringaf.set_int64_le buffer (base + 5) 0L;
       pos := !pos + record_header + 100;
@@ -806,7 +806,9 @@ let%test_module "Tests" =
       print_endline !report;
       [%expect {| A done: cursor 339, tail 339, cursor still in the ring: true |}]
 
-    let outcome stream_chunks =
+    let opened = ref []
+
+    let watched () =
       let log = ref [] in
       let add fmt = Printf.ksprintf (fun line -> log := line :: !log) fmt in
       let result = function Ok () -> "ok" | Stdlib.Error message -> message in
@@ -831,19 +833,36 @@ let%test_module "Tests" =
       Hashtbl.add t.pending 3
         (Screen_reply
            ((fun text ~last -> add "chunk %S %b" text last), fun r -> add "screen %s" (result r)));
+      opened := t :: !opened;
+      ( t,
+        fun () ->
+          ( List.rev !log,
+            title t,
+            cwd t,
+            Option.map (fun (d : Protocol.dead) -> d.cause) t.dead,
+            child_pid t ) )
+
+    let release () =
+      List.iter (fun t -> if is_open t then close_control t) !opened;
+      opened := []
+
+    let drive ~fill (t, observe) chunks =
       let raised =
         try
-          List.iter (feed t) stream_chunks;
+          List.iter
+            (fun data ->
+              let after = t.filled + String.length data in
+              Bigarray.Array1.fill
+                (Bigarray.Array1.sub t.input after (Bigstringaf.length t.input - after))
+                fill;
+              feed t data)
+            chunks;
           None
-        with Invalid_argument message -> Some message
+        with Invalid_argument message ->
+          failure t message;
+          Some message
       in
-      if is_open t then close_control t;
-      ( raised,
-        List.rev !log,
-        title t,
-        cwd t,
-        Option.map (fun (d : Protocol.dead) -> d.cause) t.dead,
-        child_pid t )
+      (raised, observe ())
 
     let ready_frame pid =
       let b = Buffer.create 4 in
@@ -871,89 +890,59 @@ let%test_module "Tests" =
         after gone: invalid ready, child false, dead true
       |}]
 
-    let seed = Option.map int_of_string (Sys.getenv_opt "KO_FUZZ_SEED")
-    and seconds = Option.map float_of_string (Sys.getenv_opt "KO_FUZZ_SECONDS")
-
-    let soak ~count ~name property =
-      let case n =
-        try if not (property (Random.State.make [| n |])) then failwith "property false"
-        with e ->
-          Printf.eprintf "%s: failed on case seed %d\n%!" name n;
-          raise e
+    let%test "control frames give the documented effects and read only their own bytes" =
+      let documented =
+        [
+          "short pane frame";
+          "invalid pane string";
+          "invalid dead";
+          "invalid control frame length";
+          "unknown pane frame";
+        ]
       in
-      let first = Option.value ~default:0 seed in
-      match seconds with
-      | None ->
-          for n = first to first + count - 1 do
-            case n
-          done
-      | Some budget ->
-          let deadline = Unix.gettimeofday () +. budget and n = ref first in
-          while Float.(Unix.gettimeofday () < deadline) do
-            case !n;
-            incr n
-          done;
-          Printf.printf "%s: %d cases in %.0fs\n%!" name (!n - first) budget
-
-    let pick rand list = List.nth list (Random.State.int rand (List.length list))
-
-    let byte rand =
-      match Random.State.int rand 11 with
-      | 0 | 1 | 2 | 3 | 4 | 5 -> '\000'
-      | 6 | 7 -> '\001'
-      | 8 -> '\004'
-      | _ -> Char.chr (Random.State.int rand 256)
-
-    let frame_of rand =
-      let id = pick rand [ ""; "\001\000\000\000"; "\002\000\000\000"; "\003\000\000\000" ] in
-      let body = id ^ String.init (Random.State.int rand 21) (fun _ -> byte rand) in
-      if Random.State.int rand 10 = 0 then
-        frame_code (pick rand (List.init 7 Fun.id @ List.init 248 (fun i -> i + 8))) body
-      else
-        frame
-          (pick rand
-             (List.filter_map (fun (k, _) -> match k with Ready -> None | k -> Some k) wire))
-          body
-
-    let tail_of rand =
-      let flag () =
-        match Random.State.int rand 3 with
-        | 0 -> '\000'
-        | 1 -> '\001'
-        | _ -> Char.chr (Random.State.int rand 256)
+      let ids = [| ""; "\001\000\000\000"; "\002\000\000\000"; "\003\000\000\000" |] in
+      let bytes l = String.of_list (List.map Char.chr l) in
+      let wire_frame code id body =
+        frame_code (if code = to_int Ready then to_int Head else code) (ids.(id) ^ bytes body)
       in
-      Printf.sprintf "%c%c%c\000%s" (flag ()) (flag ())
-        (Char.chr (1 + Random.State.int rand 255))
-        (String.init (4 + Random.State.int rand 27) (fun _ -> Char.chr (Random.State.int rand 256)))
-
-    let%test "a frame never reads the bytes after it" =
-      soak ~count:300 ~name:"frame bounds" (fun rand ->
-          let f = frame_of rand in
-          let a = tail_of rand in
-          let b = tail_of rand in
-          let ((raised, _, _, _, _, _) as first) = outcome [ f ^ a ] in
-          Stdlib.( = ) first (outcome [ f ^ b ])
-          && not (Option.equal String.equal raised (Some "index out of bounds")));
-      true
-
-    let%test "frames split anywhere give the same effects" =
-      soak ~count:300 ~name:"frame fragmentation" (fun rand ->
-          let stream =
-            String.concat "" (List.init (1 + Random.State.int rand 5) (fun _ -> frame_of rand))
+      let open Monolith in
+      let pane = declare_abstract_type () in
+      let body = list (closed_interval 0 255) in
+      declare "create" (unit ^> pane) ignore (fun () -> (watched (), watched ()));
+      declare "feed_frame"
+        (pane ^> closed_interval 0 255 ^> closed_interval 0 3 ^> body ^> closed_interval 0 40
+       ^!?> unit)
+        (fun () _ _ _ _ result ->
+          match result with
+          | Ok () -> Valid (Ok ())
+          | Error (Invalid_argument message as e) when List.mem ~eq:String.equal message documented
+            ->
+              Valid (Error e)
+          | Error _ -> Invalid (fun _ -> Print.comment (PPrint.string "undocumented exception")))
+        (fun (whole, split) code id body cut ->
+          let data = wire_frame code id body in
+          let cut = min cut (String.length data) in
+          let a = drive ~fill:'\000' whole [ data ]
+          and b =
+            drive ~fill:'\255' split
+              [ String.sub data 0 cut; String.sub data cut (String.length data - cut) ]
           in
-          let cuts =
-            List.sort_uniq ~cmp:Int.compare
-              (List.filter
-                 (fun c -> c < String.length stream)
-                 (List.init (Random.State.int rand 5) (fun _ -> Random.State.int rand 121)))
+          if Stdlib.( <> ) a b then
+            failwith "a split frame or the bytes after it change the effects";
+          match fst a with Some message -> invalid_arg message | None -> ());
+      let tail =
+        pair (triple (closed_interval 0 255) (closed_interval 0 255) (closed_interval 1 255)) body
+      in
+      declare "tails"
+        (closed_interval 0 255 ^> closed_interval 0 3 ^> body ^> tail ^> tail ^> unit)
+        (fun _ _ _ _ _ -> ())
+        (fun code id body a b ->
+          let after ((x, y, z), rest) = bytes ([ x; y; z; 0 ] @ rest) in
+          let outcome tail =
+            drive ~fill:'\000' (watched ()) [ wire_frame code id body ^ after tail ]
           in
-          let pieces =
-            let rec go from = function
-              | [] -> [ String.sub stream from (String.length stream - from) ]
-              | cut :: rest -> String.sub stream from (cut - from) :: go cut rest
-            in
-            go 0 cuts
-          in
-          Stdlib.( = ) (outcome [ stream ]) (outcome pieces));
-      true
+          let ((raised, _) as first) = outcome a in
+          assert (Stdlib.( = ) first (outcome b));
+          assert (not (Option.equal String.equal raised (Some "index out of bounds"))));
+      Fuzz_run.monolith ~prologue:release ~fuel:40 ()
   end)

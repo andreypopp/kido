@@ -100,6 +100,10 @@ module Request : sig
   [@@deriving json]
 
   type view = Resync of view_options | Input of input [@@deriving json]
+
+  val gen_client : client QCheck2.Gen.t
+  val gen_view : view QCheck2.Gen.t
+
   type screen_format = Plain | Ansi
   type screen_history = Visible_only | Full_history | Last_rows of int
 end
@@ -146,6 +150,7 @@ module Route : sig
   val websocket : t -> bool
   val to_request : t -> string * string
   val of_request : meth:string -> string -> t option
+  val gen : t QCheck2.Gen.t
 end
 
 val version : version
