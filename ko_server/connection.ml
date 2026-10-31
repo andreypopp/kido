@@ -35,6 +35,7 @@ type t = {
   mutable read_len : int;
   mutable read_pos : int;
   mutable read_progress : bool;
+  mutable resume_read : unit -> unit;
   fragments : Buffer.t;
   mutable last_activity : float;
   mutable ping : float option;
@@ -277,7 +278,11 @@ let rec consume t =
           t.read_pos <- 0;
           t.read_len <- 0);
         if n > 0 || t.read_progress then consume t
-    | `Yield -> Gluten.Server.yield_reader (runtime t) (fun () -> consume t)
+    | `Yield ->
+        ignore (Luv.Stream.read_stop t.stream : _ result);
+        Gluten.Server.yield_reader (runtime t) (fun () ->
+            t.resume_read ();
+            consume t)
     | `Close -> close t
   end
 
@@ -365,6 +370,7 @@ let create stream ~on_dispose =
       read_len = 0;
       read_pos = 0;
       read_progress = false;
+      resume_read = ignore;
       fragments = Buffer.create 64;
       last_activity = Unix.gettimeofday ();
       ping = None;
@@ -388,20 +394,24 @@ let accept stream ~on_dispose handler =
          ~protocol:(module Httpun.Server_connection)
          ~create:(fun h -> Httpun.Server_connection.create h)
          (handler t));
-  Uv.read_start stream
-    ~allocate:(fun _ ->
-      if t.read_pos > 0 && Bigstringaf.length t.read_buf - t.read_len < 4096 then (
-        Bigstringaf.blit t.read_buf ~src_off:t.read_pos t.read_buf ~dst_off:0
-          ~len:(t.read_len - t.read_pos);
-        t.read_len <- t.read_len - t.read_pos;
-        t.read_pos <- 0);
-      Bigstringaf.sub t.read_buf ~off:t.read_len ~len:(Bigstringaf.length t.read_buf - t.read_len))
-    (function
-      | Ok b ->
-          t.read_len <- t.read_len + Bigstringaf.length b;
-          consume t;
-          write_runtime t
-      | Error _ -> close t);
+  let start_read () =
+    Uv.read_start stream
+      ~allocate:(fun _ ->
+        if t.read_pos > 0 && Bigstringaf.length t.read_buf - t.read_len < 4096 then (
+          Bigstringaf.blit t.read_buf ~src_off:t.read_pos t.read_buf ~dst_off:0
+            ~len:(t.read_len - t.read_pos);
+          t.read_len <- t.read_len - t.read_pos;
+          t.read_pos <- 0);
+        Bigstringaf.sub t.read_buf ~off:t.read_len ~len:(Bigstringaf.length t.read_buf - t.read_len))
+      (function
+        | Ok b ->
+            t.read_len <- t.read_len + Bigstringaf.length b;
+            consume t;
+            write_runtime t
+        | Error _ -> close t)
+  in
+  t.resume_read <- (fun () -> if not t.closed then start_read ());
+  start_read ();
   write_runtime t;
   t
 
@@ -487,4 +497,87 @@ let%test_module "Tests" =
         accepted 2 of 2
         everything arrived: true
       |}]
+
+    let connect handler =
+      let client, server = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+      let stream = Uv.ok (Luv.Pipe.init ()) in
+      Uv.ok (Luv.Pipe.open_ stream (Uv.file server));
+      Unix.set_nonblock client;
+      (client, accept stream ~on_dispose:ignore handler)
+
+    let feeder client request =
+      let sent = ref 0 in
+      fun () ->
+        (match Unix.write_substring client request !sent (String.length request - !sent) with
+        | n -> sent := !sent + n
+        | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> ());
+        ignore (Luv.Loop.run ~mode:`NOWAIT () : bool)
+
+    let repeat n f =
+      for _ = 1 to n do
+        f ()
+      done
+
+    let%expect_test "bytes that arrive while the runtime yields reading are kept until it asks" =
+      let pending = ref None in
+      let client, connection = connect (fun _ { Gluten.reqd; _ } -> pending := Some reqd) in
+      let body = String.make 100_000 'x' in
+      let feed =
+        feeder client
+          (Printf.sprintf "POST / HTTP/1.1\r\nHost: ko\r\nContent-Length: %d\r\n\r\n%s"
+             (String.length body) body)
+      in
+      let received = ref 0 in
+      let rec read ~again reqd =
+        Httpun.Body.Reader.schedule_read (Httpun.Reqd.request_body reqd)
+          ~on_read:(fun _ ~off:_ ~len ->
+            received := !received + len;
+            if again then read ~again reqd)
+          ~on_eof:ignore
+      in
+      repeat 100 feed;
+      Printf.printf "yielding: closed %b\n" (is_closed connection);
+      Option.iter (read ~again:false) !pending;
+      repeat 100 feed;
+      Printf.printf "after one read: closed %b, received some %b\n" (is_closed connection)
+        (!received > 0);
+      Option.iter (read ~again:true) !pending;
+      repeat 200 feed;
+      Printf.printf "received %d of %d, closed %b\n" !received (String.length body)
+        (is_closed connection);
+      close connection;
+      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Unix.close client;
+      [%expect {|
+        yielding: closed false
+        after one read: closed false, received some true
+        received 100000 of 100000, closed false
+        |}]
+
+    let%expect_test "a request head longer than the read buffer is served" =
+      List.iter
+        (fun head_size ->
+          let prefix = "GET / HTTP/1.1\r\nHost: ko\r\nX: " in
+          let head = prefix ^ String.make (head_size - String.length prefix - 4) 'a' ^ "\r\n\r\n" in
+          let client, connection =
+            connect (fun _ { Gluten.reqd; _ } ->
+                Httpun.Reqd.respond_with_string reqd
+                  (Httpun.Response.create
+                     ~headers:(Httpun.Headers.of_list [ ("content-length", "2") ])
+                     `OK)
+                  "ok")
+          in
+          repeat 50 (feeder client head);
+          let reply = Bytes.create 4096 in
+          let got = try Unix.read client reply 0 4096 with Unix.Unix_error _ -> 0 in
+          Printf.printf "%d: reply %d, closed %b\n" head_size got (is_closed connection);
+          close connection;
+          ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+          Unix.close client)
+        [ 16383; 16384; 16385 ];
+      [%expect {|
+        16383: reply 40, closed false
+        16384: reply 40, closed false
+        16385: reply 40, closed false
+        |}]
   end)

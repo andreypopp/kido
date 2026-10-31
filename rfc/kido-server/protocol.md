@@ -44,7 +44,10 @@ its reason.
 
 Backpressure is the connection's own: the server writes with
 non-blocking writes and never blocks on a client. A stream that cannot
-be written is handled per resource (section 4 for views).
+be written is handled per resource (section 4 for views). The server
+stops reading a connection while its HTTP or WebSocket runtime cannot
+take more bytes, and reads again when the runtime asks for them; the
+client's unread bytes wait in the socket.
 
 Remote: the client asks its SSH ControlMaster for a unix socket
 forward, `ssh -O forward -L <local>:<dir>/socket host`, and connects to
