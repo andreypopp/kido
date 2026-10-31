@@ -5,9 +5,4 @@ val peer_uid : Unix.file_descr -> int
 val peer_pid : Unix.file_descr -> int
 val now : unit -> int
 val sigchld : unit -> int
-
-type identity = { ppid : int; pgid : int; sid : int; start : int }
-
-val identity : int -> identity option
-val signalable : int -> bool
 val native_signal : int -> int

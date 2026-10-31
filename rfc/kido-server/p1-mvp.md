@@ -47,7 +47,7 @@ Out, until later stages:
                   (the socket and its queued `writev` output), State
                   (the registry of clients and views), Protocol (the
                   wire JSON types), Ws (WebSocket frames), Uv (luv and
-                  OS conversions), Config
+                  OS conversions), Pid (the only signal calls), Config
     ko_server/fuzz/  the QCheck fuzz properties, a test-only library
     ko_tui/       the thin terminal client library: Mosaic for the
                   sidebar and input, a direct cell differ for the screen
@@ -105,10 +105,13 @@ depends on the new directories.
   500 ms, sends `SIGKILL` to the survivors (shells ignore `SIGTERM`),
   and exits. `ko-pane` itself, on shutdown or on EOF of its control
   socket, sends `SIGHUP` to its program's process group and `SIGKILL`
-  after 250 ms, ahead of the coordinator's 500 ms. `ko-pane` owns
+  when the program exits or after 250 ms, ahead of the coordinator's
+  500 ms. `ko-pane` owns
   the program's group: it forked the program and knows its pid. The
   coordinator signals `ko-pane` only through the pid of its own
-  spawn. When a pane process fails or exits without its dead marker,
+  spawn. Every signal goes through `Pid`: its pid type cannot hold
+  1 or less, the coordinator's pid or its group, and its group type
+  exists only for a verified child. When a pane process fails or exits without its dead marker,
   the coordinator also kills the program's group, so a program that
   ignores `SIGHUP` outlives neither a crashed `ko-pane` nor a crashed
   coordinator. It does this only for the child that it verified at

@@ -85,10 +85,10 @@ func (h *harness) killPane(paneID string) {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := signalPID(pid, syscall.SIGKILL); err != nil {
 		h.t.Fatal(err)
 	}
-	h.waitFor(func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH }, settle,
+	h.waitFor(func() bool { return gone(pid) }, settle,
 		msgf("pid %d to exit", pid))
 }
 

@@ -13,8 +13,8 @@ val create :
 
 val ring : t -> Ring.t
 val life : t -> life
-val pid : t -> int
-val child_pid : t -> int option
+val pid : t -> Pid.t
+val child_pid : t -> Pid.t option
 val title : t -> string
 val cwd : t -> string
 val dead : t -> Protocol.dead option

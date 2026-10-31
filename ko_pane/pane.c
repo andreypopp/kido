@@ -17,6 +17,7 @@
 #else
 #include <pty.h>
 #endif
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -27,11 +28,22 @@
 #include <time.h>
 #include <unistd.h>
 
+struct group {
+  pid_t leader;
+};
+static struct group group_of(pid_t child) {
+  assert(child > 1);
+  return (struct group){child};
+}
+static int group_signal(struct group group, int signo) {
+  return kill(-group.leader, signo);
+}
+
 struct pane {
   struct ko_ring *ring;
   uint64_t head, offset;
   GhosttyTerminal vt;
-  int master, alive, stopping, eof, reaped, held, code, termsig, full, depth;
+  int master, alive, stopping, eof, reaped, code, termsig, full, depth;
   pid_t pid;
   struct ko_buffer input, output, pty_input, events, deferred;
   struct ko_compress compress;
@@ -935,7 +947,7 @@ int main(void) {
       if (p.alive && !p.reaped &&
           waitid(P_PID, p.pid, &info, WEXITED | WNOHANG | WNOWAIT) == 0 &&
           info.si_pid == p.pid) {
-        p.reaped = p.held = 1;
+        p.reaped = 1;
         p.code = info.si_code == CLD_EXITED ? info.si_status : 0;
         p.termsig = info.si_code == CLD_EXITED ? 0 : info.si_status;
       }
@@ -970,33 +982,28 @@ int main(void) {
                   : -1;
   }
   if (p.pid > 1) {
-    int collected = 0;
-    if (p.held) {
-      kill(-p.pid, SIGKILL);
-    } else {
-      kill(-p.pid, SIGHUP);
+    struct group group = group_of(p.pid);
+    if (p.alive && !p.reaped) {
+      group_signal(group, SIGHUP);
       struct timespec start, now;
       clock_gettime(CLOCK_MONOTONIC, &start);
       for (;;) {
-        if (!collected && waitpid(p.pid, NULL, WNOHANG) == p.pid) {
-          collected = 1;
-        }
-        if (kill(-p.pid, 0) < 0 && errno == ESRCH) {
+        siginfo_t info = {0};
+        if (waitid(P_PID, p.pid, &info, WEXITED | WNOHANG | WNOWAIT) == 0 &&
+            info.si_pid == p.pid) {
           break;
         }
         clock_gettime(CLOCK_MONOTONIC, &now);
         if ((now.tv_sec - start.tv_sec) * 1000000000L + now.tv_nsec -
                 start.tv_nsec >=
             250000000L) {
-          kill(-p.pid, SIGKILL);
           break;
         }
         poll(NULL, 0, 5);
       }
     }
-    if (!collected) {
-      waitpid(p.pid, NULL, 0);
-    }
+    group_signal(group, SIGKILL);
+    waitpid(p.pid, NULL, 0);
   }
   if (p.master >= 0) {
     close(p.master);

@@ -61,6 +61,11 @@ def stats(samples):
     return f"p50 {pct(samples, 50):.2f} / p99 {pct(samples, 99):.2f} ms (n={len(samples)})"
 
 
+def signal_child(pid, sig):
+    assert 1 < pid <= 0x7FFFFFFF and pid not in (os.getpid(), os.getpgrp())
+    os.kill(pid, sig)
+
+
 def cpu(pid):
     total = 0.0
     for part in subprocess.check_output(["ps", "-o", "time=", "-p", str(pid)], text=True).strip().split(":"):
@@ -212,7 +217,7 @@ class Outer:
 
     def close(self):
         try:
-            os.kill(self.pid, signal.SIGHUP)
+            signal_child(self.pid, signal.SIGHUP)
         except ProcessLookupError:
             pass
         end = time.monotonic() + 3
@@ -225,7 +230,7 @@ class Outer:
                 except OSError:
                     pass
         else:
-            os.kill(self.pid, signal.SIGKILL)
+            signal_child(self.pid, signal.SIGKILL)
             os.waitpid(self.pid, 0)
         os.close(self.fd)
 
@@ -422,7 +427,7 @@ def raw_latency(count):
                 buffer += os.read(fd, 4096)
             samples.append((time.monotonic() - began) * 1000)
     finally:
-        os.kill(pid, signal.SIGKILL)
+        signal_child(pid, signal.SIGKILL)
         os.waitpid(pid, 0)
         os.close(fd)
     return samples

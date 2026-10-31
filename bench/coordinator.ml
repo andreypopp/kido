@@ -166,7 +166,7 @@ let throughput ~pane_exe ~produce ~bytes ~coalesce_ms ~streams =
   let started = Unix.gettimeofday () and cpu = cpu_self () and words = Gc.minor_words () in
   run_until ~timeout:120. (fun () -> dead p && drained p) (fun () -> flush p);
   let elapsed = Unix.gettimeofday () -. started and used = cpu_self () -. cpu in
-  let pane_cpu = snd (cpu_seconds (Pane_proc.pid p.proc)) in
+  let pane_cpu = snd (cpu_seconds (Pid.to_int (Pane_proc.pid p.proc))) in
   Printf.printf
     "ko view=writev coalesce_ms=%d bytes=%d seconds=%.3f MB/s=%.1f records=%d \
      minor_words/record=%.2f pane_cpu=%.3f coordinator_cpu=%.3f cores=%.2f\n\
@@ -240,7 +240,7 @@ let cpu_check () =
   let child = Unix.create_process "/usr/bin/yes" [| "yes" |] Unix.stdin null Unix.stderr in
   Unix.sleepf 1.0;
   let raw, converted = cpu_seconds child in
-  Unix.kill child Sys.sigkill;
+  ignore (Pid.signal (Option.get (Pid.of_int child)) Sys.sigkill : (unit, Unix.error) result);
   ignore (Unix.waitpid [] child);
   let after = Unix.times () in
   let children =

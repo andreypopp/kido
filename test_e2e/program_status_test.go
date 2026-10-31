@@ -145,7 +145,7 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := syscall.Kill(n, syscall.SIGKILL); err != nil {
+		if err := signalPID(n, syscall.SIGKILL); err != nil {
 			t.Fatal(err)
 		}
 		killed = pid

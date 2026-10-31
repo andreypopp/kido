@@ -155,11 +155,10 @@ func TestServersDieWithTheTestProcess(t *testing.T) {
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
-	group := child.Process.Pid
 	killed := false
 	defer func() {
 		if !killed {
-			syscall.Kill(-group, syscall.SIGKILL)
+			signalGroup(child, syscall.SIGKILL)
 			child.Wait()
 		}
 	}()
@@ -185,7 +184,7 @@ func TestServersDieWithTheTestProcess(t *testing.T) {
 		}
 	}
 
-	if err := syscall.Kill(-group, syscall.SIGKILL); err != nil {
+	if err := signalGroup(child, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	killed = true

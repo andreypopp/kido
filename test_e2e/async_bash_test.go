@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -53,7 +52,7 @@ func TestRunChildEndsWhenItsParentPaneQuits(t *testing.T) {
 	}
 	h.killPane(parent)
 	h.waitFor(func() bool {
-		return syscall.Kill(childPID, 0) == syscall.ESRCH && !h.paneExists(r.paneID())
+		return gone(childPID) && !h.paneExists(r.paneID())
 	}, settle, msgf("the orphan command to exit after its parent quits"))
 	info := h.waitOutcome(r.ID)
 	if info.Outcome != "failed" || info.OutcomeText != "its parent ended" {

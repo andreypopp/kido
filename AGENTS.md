@@ -280,6 +280,19 @@ Conventions:
   `Tmux.Client.t` has no mutex. Only the sidebar's single tick may
   access it. `Tmux.binary` is the accepted exception for lazy
   environment lookup.
+- **Signals (ko).** ko sends a signal only through `Pid` in
+  `ko_server/`. `Pid.t` cannot be 1 or less, the coordinator's pid or
+  its process group, and it fits in a C `int`. A `Pid.Group.t`
+  exists only after the OS verified the pane's child, and its signal
+  checks the recorded start time and group again. No API takes a
+  negative pid. In C, `ko-pane` signals its child's group only
+  through `group_signal`. In Python, `bench/client.py` signals only
+  through `signal_child`. Each Go test package signals only through
+  its `signal_test.go`, which applies the same refusals.
+  `scripts/lint.sh` refuses the other signal calls in ko, `bench/`
+  and the e2e suites: `Unix.kill`, `UnixLabels.kill`, `killpg`, a C
+  `kill(-`, `syscall.Kill`, `unix.Kill`, `os.FindProcess` and
+  Python `os.kill`.
 - **Mosaic (`bin/kido_sidebar.ml`).** The grid's default foreground
   is truecolor white. Thus, every style sets `fg` explicitly.
   A lone Escape arrives about 0.5s late.
@@ -353,7 +366,7 @@ Conventions:
     scripts/           install-tmux-fork.sh, the fork build;
                        verify.sh, scrubbed verification and flake runs;
                        release.sh, the Homebrew tap release;
-                       lint.sh, code hygiene, doc references and prompt snapshots;
+                       lint.sh, code hygiene, signal calls, doc references and prompt snapshots;
                        main-watch.sh, CI for each observed main head;
                        ci-website-watch.sh, deploys for observed heads touching the website;
                        ci-like.sh and ci-like/Dockerfile, the Linux reproduction;
@@ -1210,6 +1223,18 @@ A brief does not repeat them.
   Do not poll without a deadline in code or your shell.
   macOS has no `timeout` command.
   Give the wait its deadline another way.
+- **No signal to a pid from untrusted input.**
+  No code, test, fuzzer or script gives a pid from fuzzed, synthetic
+  or untrusted input to a signal call. A signal goes only through the
+  one signal module of its language ("Signals" under "OCaml").
+  Its types refuse such pids. A test checks the validation. It never
+  sends a signal to prove it.
+  Before a fuzz run, use grep to examine the kill paths.
+  Each run has a deadline, its own process group, and a scratch
+  directory that it removes on every exit.
+- **Do not block on `sleep`.**
+  While a background run works, end your turn.
+  Continue when its notice arrives.
 - **Verify what you touched; CI runs the whole.**
   If a bug's cause is not clear from the code, write the test first.
   This includes a race, a flake, or an incorrect assumption about

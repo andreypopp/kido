@@ -435,7 +435,9 @@ signals no pid that it takes from another process without proof. It
 accepts the pid only if the OS reports that the process is a child of
 the `ko-pane` that the coordinator spawned and leads its own process
 group and session, and it is not 0, 1, the coordinator's pid or its
-group. It records the start time of the process. A pid that fails
+group. It records the start time of the process. `Pid.Group.verify`
+is this check and the only constructor of the group that the
+coordinator can signal. A pid that fails
 this check fails the pane as an invalid frame. A pid with no process
 (the program exited and `ko-pane` reaped it) records no child and is
 not an error. A second `ready` is invalid. A `version` the coordinator does not know is a refusal at
@@ -463,7 +465,8 @@ the pty at once, queued on `EAGAIN`, never dropped. `ko-pane` reaps
 its program on `SIGCHLD`, sends `dead`, keeps the terminal and the pty
 master, and answers `snapshot` and `screen` for a dead pane. On EOF
 or an error on stdin it sends `SIGHUP` to the program's group, waits
-250 ms, sends `SIGKILL`, and exits. `ko-pane` sends `ready` only after
+for the program to exit for at most 250 ms, sends `SIGKILL` to the
+group, and exits. `ko-pane` sends `ready` only after
 the program has called `setsid` and `exec` (a close-on-exec pipe), and
 not if it already exited. It collects the program's status with
 `WNOWAIT` and keeps the zombie until its final group kill, so the pid

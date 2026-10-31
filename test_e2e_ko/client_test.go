@@ -243,15 +243,15 @@ func (o *terminal) attach(pager string) {
 	o.tmux("send-keys", "-t", "outer:0.0", "Enter")
 }
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
-func (o *terminal) owned(pid int) int {
+func (o *terminal) serverPID() int {
 	o.t.Helper()
 	server, err := strconv.Atoi(strings.TrimSpace(o.tmux("display-message", "-p", "#{pid}")))
 	if err != nil {
 		o.t.Fatal(err)
 	}
-	return owned(o.t, pid, server)
+	return server
 }
-func (o *terminal) process() *os.Process {
+func (o *terminal) clientPID() int {
 	o.t.Helper()
 	data, err := os.ReadFile(o.pidfile)
 	if err != nil {
@@ -261,11 +261,7 @@ func (o *terminal) process() *os.Process {
 	if err != nil {
 		o.t.Fatal(err)
 	}
-	p, err := os.FindProcess(o.owned(pid))
-	if err != nil {
-		o.t.Fatal(err)
-	}
-	return p
+	return pid
 }
 func (o *terminal) detach() { o.t.Helper(); o.chord(113); o.contains("KO-DETACHED") }
 func (s *server) text(pane, text string) {
@@ -344,9 +340,7 @@ func TestClientLifecycle(t *testing.T) {
 	o.wait(func() bool {
 		return strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{mouse_standard_flag},#{mouse_sgr_flag}")) == "1,1"
 	}, "outer mouse reporting on")
-	if err := o.process().Signal(syscall.SIGHUP); err != nil {
-		t.Fatal(err)
-	}
+	signalOwned(t, o.serverPID(), syscall.SIGHUP, o.clientPID())
 	o.contains("KO-DETACHED")
 }
 
@@ -409,41 +403,30 @@ func TestClientHistoryAndTop(t *testing.T) {
 	o.raw("done")
 	o.tmux("send-keys", "-t", "outer:0.0", "Enter")
 	o.contains("AFTER-TOP")
-	process := o.process()
+	client, server := o.clientPID(), o.serverPID()
 	shellPID, err := strconv.Atoi(strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{pane_pid}")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	shell, err := os.FindProcess(o.owned(shellPID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	shellStopped, clientStopped := false, false
 	t.Cleanup(func() {
 		if clientStopped {
-			_ = process.Signal(syscall.SIGCONT)
+			signalOwned(t, server, syscall.SIGCONT, client)
 		}
 		if shellStopped {
-			_ = shell.Signal(syscall.SIGCONT)
+			signalOwned(t, server, syscall.SIGCONT, shellPID)
 		}
 	})
 	// An interactive shell takes the tty back when its child stops.
-	if err = shell.Signal(syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
+	signalOwned(t, server, syscall.SIGSTOP, shellPID, client)
 	shellStopped = true
-	if err := process.Signal(syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
 	clientStopped = true
 	producer := "for i in range(100000): print('H%05d'%i+'x'*70)"
 	s.text(topPane, "python3 -c "+quote(producer)+"; printf 'FLOOD-%s\\n' DONE\n")
 	o.wait(func() bool {
 		return strings.Contains(s.request("GET", "/panes/"+topPane+"/screen?format=plain", nil, 200, nil), "FLOOD-DONE")
 	}, "output while client is stopped")
-	if err := process.Signal(syscall.SIGCONT); err != nil {
-		t.Fatal(err)
-	}
+	signalOwned(t, server, syscall.SIGCONT, client)
 	clientStopped = false
 	o.contains("FLOOD-DONE")
 	o.raw("\x1b[<64;40;5M")
@@ -452,12 +435,10 @@ func TestClientHistoryAndTop(t *testing.T) {
 	o.wait(func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "ps", "-o", "stat=", "-p", strconv.Itoa(process.Pid)).Output()
+		out, err := exec.CommandContext(ctx, "ps", "-o", "stat=", "-p", strconv.Itoa(client)).Output()
 		return err != nil || strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
 	}, "client exits before its shell resumes")
-	if err = shell.Signal(syscall.SIGCONT); err != nil {
-		t.Fatal(err)
-	}
+	signalOwned(t, server, syscall.SIGCONT, shellPID)
 	shellStopped = false
 	o.contains("KO-DETACHED")
 }
@@ -834,9 +815,7 @@ func TestClientDifferentSizesAndSignalCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := syscall.Kill(o.owned(pid), sig); err != nil {
-			t.Fatal(err)
-		}
+		signalOwned(t, o.serverPID(), sig, pid)
 		o.contains("KO-DETACHED")
 		after := o.tmux("display-message", "-p", "-t", "outer:0.0", "#{pane_private_modes}")
 		if before != after {

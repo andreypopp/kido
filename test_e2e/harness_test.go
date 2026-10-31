@@ -576,7 +576,7 @@ func descendants(socket string) []process {
 func processGone(pid string, budget time.Duration) bool {
 	deadline := time.Now().Add(budget)
 	for {
-		if exec.Command("kill", "-0", pid).Run() != nil {
+		if n, err := strconv.Atoi(pid); err != nil || gone(n) {
 			return true
 		}
 		if time.Now().After(deadline) {

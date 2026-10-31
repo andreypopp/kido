@@ -107,31 +107,39 @@ let attach ~dir ~executable =
 let stop ~dir =
   match Ko_server.Config.socket ~create:false ~dir with
   | Error message -> Error message
-  | Ok socket ->
+  | Ok socket -> (
       let fd = connect ~socket ~deadline:(Unix.gettimeofday () +. 5.) in
-      let uid, pid =
+      let terminated =
         Fun.protect
           ~finally:(fun () -> Unix.close fd)
-          (fun () -> (Ko_server.Uv.peer_uid fd, Ko_server.Uv.peer_pid fd))
+          (fun () ->
+            if Ko_server.Uv.peer_uid fd <> Unix.getuid () then
+              Error "server belongs to another user"
+            else
+              match Ko_server.Pid.of_int (Ko_server.Uv.peer_pid fd) with
+              | None -> Error "invalid server pid"
+              | Some pid -> (
+                  match Ko_server.Pid.signal pid Sys.sigterm with
+                  | Ok () -> Ok pid
+                  | Error error -> Error (Unix.error_message error)))
       in
-      if uid <> Unix.getuid () then Error "server belongs to another user"
-      else if not (Ko_server.Uv.signalable pid) then Error "invalid server pid"
-      else (
-        Unix.kill pid Sys.sigterm;
-        let deadline = Unix.gettimeofday () +. 5. in
-        let alive () =
-          Sys.file_exists socket
-          ||
-          match Unix.kill pid 0 with
-          | () -> true
-          | exception Unix.Unix_error (Unix.ESRCH, _, _) -> false
-        in
-        let rec wait () =
-          if not (alive ()) then Ok ()
-          else if Float.(Unix.gettimeofday () >= deadline) then
-            Error "server did not stop within 5 s"
-          else (
-            ignore (Unix.select [] [] [] 0.01);
-            wait ())
-        in
-        wait ())
+      match terminated with
+      | Error message -> Error message
+      | Ok pid ->
+          let deadline = Unix.gettimeofday () +. 5. in
+          let alive () =
+            Sys.file_exists socket
+            ||
+            match Ko_server.Pid.signal pid 0 with
+            | Ok () | Error Unix.EPERM -> true
+            | Error _ -> false
+          in
+          let rec wait () =
+            if not (alive ()) then Ok ()
+            else if Float.(Unix.gettimeofday () >= deadline) then
+              Error "server did not stop within 5 s"
+            else (
+              ignore (Unix.select [] [] [] 0.01);
+              wait ())
+          in
+          wait ())

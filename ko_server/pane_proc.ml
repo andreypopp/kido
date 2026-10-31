@@ -61,23 +61,7 @@ let of_int code =
 external spawn : string -> Luv.Buffer.t * Unix.file_descr * int = "ko_pane_start"
 external unmap : Luv.Buffer.t -> unit = "ko_pane_unmap"
 
-type child = { leader : int; start : int }
-type claim = Awaiting | Gone | Child of child | Foreign
-
-let verify_child ~pane ~own_pid ~own_pgid ~pid (found : Uv.identity option) =
-  if pane <= 1 || pid <= 1 || pid = own_pid || pid = own_pgid then Foreign
-  else
-    match found with
-    | None -> Gone
-    | Some i when i.ppid = pane && i.pgid = pid && i.sid = pid ->
-        Child { leader = pid; start = i.start }
-    | Some _ -> Foreign
-
-let read_child ~pane pid =
-  let own_pid = Unix.getpid () in
-  match Uv.identity own_pid with
-  | None -> Foreign
-  | Some own -> verify_child ~pane ~own_pid ~own_pgid:own.pgid ~pid (Uv.identity pid)
+type claim = Awaiting | Reported of Pid.Group.t option
 
 let number buffer value = function
   | 1 -> Buffer.add_char buffer (Char.chr value)
@@ -155,7 +139,7 @@ type reply =
 type t = {
   ring : Ring.t;
   control : Luv.Pipe.t;
-  pid : int;
+  pid : Pid.t;
   notify : event -> unit;
   mutable life : life;
   mutable child : claim;
@@ -178,7 +162,9 @@ let is_reaped t = match t.life with Reaped -> true | Open | Closed -> false
 let pid t = t.pid
 
 let child_pid t =
-  match t.child with Child child -> Some child.leader | Awaiting | Gone | Foreign -> None
+  match t.child with
+  | Reported (Some group) -> Some (Pid.Group.leader group)
+  | Awaiting | Reported None -> None
 
 let title t = text_get t.title
 let cwd t = text_get t.cwd
@@ -202,19 +188,13 @@ let fail_pending t message =
       | Paste_reply done_ -> done_ (Stdlib.Error message))
     pending
 
-let killpg t =
+let kill_group t =
   match t.child with
-  | Child { leader; start } -> (
-      match Uv.identity leader with
-      | Some i when i.start = start && i.pgid = leader && Uv.signalable leader -> (
-          (* macOS can return EPERM for a process group with only zombies or exiting processes. *)
-          try Unix.kill (-leader) Sys.sigkill
-          with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ())
-      | Some _ | None -> ())
-  | Awaiting | Gone | Foreign -> ()
+  | Reported (Some group) -> Pid.Group.signal group Sys.sigkill
+  | Awaiting | Reported None -> ()
 
 let die t (dead : Protocol.dead) =
-  (match dead.cause with Failed _ -> killpg t | Exited _ | Signaled _ -> ());
+  (match dead.cause with Failed _ -> kill_group t | Exited _ | Signaled _ -> ());
   t.dead <- Some dead;
   t.notify (Dead dead)
 
@@ -341,10 +321,11 @@ let on_frame t kind ~off ~len =
       if len <> 4 then invalid_arg "invalid ready";
       match t.child with
       | Awaiting -> (
-          match read_child ~pane:t.pid (int32_at body off) with
+          match Pid.Group.verify ~parent:t.pid (int32_at body off) with
           | Foreign -> invalid_arg "invalid ready"
-          | claim -> t.child <- claim)
-      | Gone | Child _ | Foreign -> invalid_arg "invalid ready")
+          | Gone -> t.child <- Reported None
+          | Child group -> t.child <- Reported (Some group))
+      | Reported _ -> invalid_arg "invalid ready")
   | Title -> if store t.title body ~off ~len 0 then t.notify Title
   | Pwd -> if store t.cwd body ~off ~len 0 then t.notify Pwd
   | Head -> t.notify Output
@@ -410,6 +391,15 @@ let consume t =
 
 let create config ~id ~cwd ~argv ~env ~notify =
   let buffer, fd, pid = spawn config.Config.pane_exe in
+  let pid =
+    match Pid.of_int pid with
+    | Some pid -> pid
+    | None ->
+        Unix.close fd;
+        unmap buffer;
+        ignore (Unix.waitpid [] pid : int * Unix.process_status);
+        invalid_arg "pane pid"
+  in
   let control = Uv.ok (Luv.Pipe.init ()) in
   Uv.ok (Luv.Pipe.open_ control (Uv.file fd));
   let t =
@@ -466,7 +456,7 @@ let release t =
 
 let reap t =
   if not (is_reaped t) then
-    match Unix.waitpid [ Unix.WNOHANG ] t.pid with
+    match Unix.waitpid [ Unix.WNOHANG ] (Pid.to_int t.pid) with
     | 0, _ -> ()
     | _, status ->
         failure t
@@ -478,9 +468,11 @@ let reap t =
     | exception Unix.Unix_error (Unix.ECHILD, _, _) -> release t
 
 let kill t =
-  (if (not (is_reaped t)) && Uv.signalable t.pid then
-     try Unix.kill t.pid Sys.sigkill with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
-  killpg t
+  (if not (is_reaped t) then
+     match Pid.signal t.pid Sys.sigkill with
+     | Ok () | Error Unix.ESRCH -> ()
+     | Error error -> raise (Unix.Unix_error (error, "kill", "")));
+  kill_group t
 
 let resize t dimensions =
   let b = Buffer.create 8 in
@@ -622,11 +614,16 @@ let%test_module "Tests" =
       Bigstringaf.set_int64_le buffer 0 64L;
       Ring.create buffer
 
+    let unsignalled_pid =
+      let child = Unix.create_process "true" [| "true" |] Unix.stdin Unix.stdout Unix.stderr in
+      ignore (Unix.waitpid [] child);
+      Option.get (Pid.of_int child)
+
     let fake ?(notify = ignore) ?(ring = small_ring ()) () =
       {
         ring;
         control = Uv.ok (Luv.Pipe.init ());
-        pid = 0;
+        pid = unsignalled_pid;
         notify;
         life = Open;
         child = Awaiting;
@@ -820,51 +817,6 @@ let%test_module "Tests" =
         Option.map (fun (d : Protocol.dead) -> d.cause) t.dead,
         child_pid t )
 
-    let own_pid = Unix.getpid ()
-    let own_pgid = (Option.get (Uv.identity own_pid)).pgid
-
-    let%expect_test "a Ready pid that is not the pane's own child is refused and never signalled" =
-      let pane = 4242 in
-      let found = Some { Uv.ppid = pane; pgid = 900; sid = 900; start = 7 } in
-      let show label = function
-        | Child { leader; start } -> Printf.printf "%s: child %d at %d\n" label leader start
-        | Gone -> Printf.printf "%s: gone\n" label
-        | Foreign -> Printf.printf "%s: refused\n" label
-        | Awaiting -> Printf.printf "%s: awaiting\n" label
-      in
-      let verdict ?(pane = pane) ?(found = found) label pid =
-        show label (verify_child ~pane ~own_pid ~own_pgid ~pid found)
-      in
-      verdict "1" 1;
-      verdict "0" 0;
-      verdict "-1" (-1);
-      verdict "own pid" own_pid;
-      verdict "own pgid" own_pgid;
-      verdict "pane pid 0" ~pane:0 900;
-      verdict "other parent" ~found:(Some { Uv.ppid = 1; pgid = 900; sid = 900; start = 7 }) 900;
-      verdict "not group leader"
-        ~found:(Some { Uv.ppid = pane; pgid = 1; sid = 900; start = 7 })
-        900;
-      verdict "not session leader"
-        ~found:(Some { Uv.ppid = pane; pgid = 900; sid = 1; start = 7 })
-        900;
-      verdict "own child" 900;
-      verdict "gone" ~found:None 900;
-      [%expect
-        {|
-        1: refused
-        0: refused
-        -1: refused
-        own pid: refused
-        own pgid: refused
-        pane pid 0: refused
-        other parent: refused
-        not group leader: refused
-        not session leader: refused
-        own child: child 900 at 7
-        gone: gone
-      |}]
-
     let ready_frame pid =
       let b = Buffer.create 4 in
       Buffer.add_int32_le b (Int32.of_int pid);
@@ -882,56 +834,13 @@ let%test_module "Tests" =
         [
           ("1", 1, Awaiting);
           ("parent", Unix.getppid (), Awaiting);
-          ("after gone", Unix.getppid (), Gone);
+          ("after gone", Unix.getppid (), Reported None);
         ];
       [%expect
         {|
         1: invalid ready, child false, dead true
         parent: invalid ready, child false, dead true
         after gone: invalid ready, child false, dead true
-      |}]
-
-    let%expect_test "only a child that matches its recorded start is killed" =
-      let out, in_ = Unix.pipe () in
-      let program = "use POSIX; $|=1; POSIX::setsid(); print qq(up\\n); exec q(sleep), q(30)" in
-      let child =
-        Unix.create_process "perl" [| "perl"; "-e"; program |] Unix.stdin in_ Unix.stderr
-      in
-      Unix.close in_;
-      (match Unix.select [ out ] [] [] 10. with
-      | [], _, _ -> print_endline "child did not start"
-      | _ -> ignore (Unix.read out (Bytes.create 3) 0 3 : int));
-      Unix.close out;
-      let t = fake () in
-      let alive () = fst (Unix.waitpid [ Unix.WNOHANG ] child) = 0 in
-      (match read_child ~pane:own_pid child with
-      | Child verified ->
-          Printf.printf "verified own child: %b\n" (verified.leader = child);
-          t.child <- Child { verified with start = verified.start + 1 };
-          killpg t;
-          Printf.printf "tampered start skipped: %b\n" (alive ());
-          t.child <- Child verified;
-          killpg t
-      | Awaiting | Gone | Foreign ->
-          Unix.kill child Sys.sigkill;
-          print_endline "child not verified");
-      let deadline = Unix.gettimeofday () +. 10. in
-      let rec reaped () =
-        match Unix.waitpid [ Unix.WNOHANG ] child with
-        | 0, _ when Float.(Unix.gettimeofday () < deadline) ->
-            Unix.sleepf 0.005;
-            reaped ()
-        | 0, _ -> None
-        | _, status -> Some status
-      in
-      (match reaped () with
-      | Some (Unix.WSIGNALED n) -> Printf.printf "killed by SIGKILL: %b\n" (n = Sys.sigkill)
-      | Some _ | None -> print_endline "not killed");
-      [%expect
-        {|
-        verified own child: true
-        tampered start skipped: true
-        killed by SIGKILL: true
       |}]
 
     let seed = Option.map int_of_string (Sys.getenv_opt "KO_FUZZ_SEED")

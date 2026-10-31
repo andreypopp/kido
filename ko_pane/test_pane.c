@@ -52,7 +52,7 @@ static void row_text(GhosttyTerminal vt,uint32_t row,char *out,size_t cap){
 }
 int main(int argc,char **argv){
   assert(argc==2);signal(SIGPIPE,SIG_IGN);alarm(30);
-  {pid_t held=fork();assert(held>=0);if(!held)_exit(7);
+  {pid_t held=fork();assert(held>=0);if(held)assert(held>1);if(!held)_exit(7);
     siginfo_t info={0};
     for(int i=0;i<5000&&info.si_pid!=held;i++){assert(waitid(P_PID,held,&info,WEXITED|WNOHANG|WNOWAIT)==0);if(info.si_pid!=held)usleep(1000);}
     assert(info.si_pid==held&&info.si_code==CLD_EXITED&&info.si_status==7);

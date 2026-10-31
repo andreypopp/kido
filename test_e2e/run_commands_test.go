@@ -103,7 +103,7 @@ func TestRunEndingsAndRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := signalPID(pid, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	h.waitFor(func() bool { return h.paneDead(signalled.paneID()) }, settle,
@@ -121,7 +121,7 @@ func TestRunEndingsAndRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = syscall.Kill(hupPID, syscall.SIGKILL) }()
+	defer func() { _ = signalPID(hupPID, syscall.SIGKILL) }()
 
 	h.in("kill-pane", "-t", hup.paneID())
 	h.waitFor(func() bool { return !h.paneExists(hup.paneID()) }, settle, msgf("the HUP run's pane to close"))

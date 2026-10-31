@@ -8,6 +8,22 @@ esac
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 failed=0
+# A negative pid or a process group reaches kill(2) only through Pid, group_signal, signal_child and the Go signal helpers.
+signal_pattern='\bUnix(Labels)?\.kill\b|\bkillpg\b|\bkill[[:space:]]*\([[:space:]]*-|syscall\.Kill|unix\.Kill|os\.FindProcess'
+signals=$( {
+  grep -rnE "$signal_pattern" ko_server ko_tui bin/ko.ml bench ko_pane test_e2e test_e2e_ko \
+      --include='*.ml' --include='*.mli' --include='*.c' --include='*.h' --include='*.go' --include='*.py' \
+      --exclude=pane.c \
+    | grep -vE '^(ko_server/pid\.ml|test_e2e/signal_test\.go|test_e2e_ko/signal_test\.go):'
+  grep -rnE '\bos\.kill' bench --include='*.py' \
+    | grep -vE '^bench/client\.py:[0-9]+:    os\.kill\(pid, sig\)$'
+  pattern='killpg|kill[[:space:]]*\([[:space:]]*-' awk '/^static int group_signal\(/ { inside = 1 } /^}/ { inside = 0 }
+    !inside && $0 ~ ENVIRON["pattern"] { print FILENAME ":" FNR ":" $0 }' ko_pane/pane.c
+} || true)
+if [[ -n "$signals" ]]; then
+  echo "$signals" | sed 's/$/: signals must go through Pid, group_signal, signal_child or the signal_test.go helpers/'
+  failed=1
+fi
 python3 - <<'PY' || failed=1
 import glob
 import pathlib

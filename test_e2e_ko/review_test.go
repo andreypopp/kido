@@ -132,9 +132,7 @@ func TestPaneProcessFailure(t *testing.T) {
 		t.Fatalf("parent pid: %s %v", parent, err)
 	}
 	send(t, v, []any{"resync", map[string]any{"history": "all", "images": "none"}})
-	if err = syscall.Kill(owned(t, parentPID, s.cmd.Process.Pid), syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
+	signalOwned(t, s.cmd.Process.Pid, syscall.SIGKILL, parentPID)
 	dead := event(t, c, "dead")
 	if !bytes.Contains(dead, []byte(`"cause":["failed",`)) {
 		t.Fatalf("failed pane: %s", dead)

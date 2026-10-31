@@ -137,31 +137,8 @@ func TestPaneProcessCrashKillsProgram(t *testing.T) {
 	if err != nil || pane <= 1 {
 		t.Fatalf("pane process: %q", parent)
 	}
-	if err := syscall.Kill(owned(t, pane, s.cmd.Process.Pid), syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
+	signalOwned(t, s.cmd.Process.Pid, syscall.SIGKILL, pane)
 	waitGone(t, program, "its pane process")
-}
-
-func owned(t testing.TB, pid, root int) int {
-	t.Helper()
-	if pid <= 1 || pid == os.Getpid() || root <= 1 || root == os.Getpid() {
-		t.Fatalf("refusing to signal pid %d under %d", pid, root)
-	}
-	for at, hops := pid, 0; hops < 64; hops++ {
-		if at == root {
-			return pid
-		}
-		out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(at)).Output()
-		if err != nil {
-			break
-		}
-		if at, err = strconv.Atoi(strings.TrimSpace(string(out))); err != nil || at <= 1 {
-			break
-		}
-	}
-	t.Fatalf("pid %d is not a descendant of %d: refusing to signal it", pid, root)
-	return 0
 }
 
 func waitGone(t *testing.T, pid int, what string) {
@@ -170,7 +147,7 @@ func waitGone(t *testing.T, pid int, what string) {
 	defer deadline.Stop()
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
-	for syscall.Kill(pid, 0) != syscall.ESRCH {
+	for !gone(pid) {
 		select {
 		case <-deadline.C:
 			t.Fatalf("program %d survived %s", pid, what)
