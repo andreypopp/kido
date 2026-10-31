@@ -49,6 +49,16 @@ stops reading a connection while its HTTP or WebSocket runtime cannot
 take more bytes, and reads again when the runtime asks for them; the
 client's unread bytes wait in the socket.
 
+A request head (the request line, the headers and the empty line) is
+at most 16 KiB, the size of the connection's read buffer and Node's
+default. This one limit also bounds the URI, the query and the header
+count. A longer head gets `431 Request Header Fields Too Large` and
+the connection closes. Each request on a keep-alive connection gets
+the full limit; bodies and WebSocket frames do not count. A body needs
+`Content-Length`: a chunked request gets `411 Length Required` and the
+connection closes. Without the limit, httpun keeps every header line
+it has parsed until the head ends, so an endless head grows memory.
+
 Remote: the client asks its SSH ControlMaster for a unix socket
 forward, `ssh -O forward -L <local>:<dir>/socket host`, and connects to
 `<local>` as if the server were local. Each connection is one

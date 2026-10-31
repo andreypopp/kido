@@ -406,7 +406,7 @@ let%test_module "Tests" =
           | exception Invalid_argument _ -> true);
       true
 
-    let%test "bad bodies are answered with 400, not a crash or a 500" =
+    let%test "bad bodies are answered with 400 or 411, not a crash or a 500" =
       Fuzz_server.with_server
         ~command:(fun _ -> "exec cat")
         ~activity:(fun () -> false)
@@ -415,7 +415,7 @@ let%test_module "Tests" =
           let cwd =
             status server "POST /panes" "Content-Length: 23\r\n\r\n{\"cwd\":\"/nonexistent\"}   "
           in
-          String.equal chunked "HTTP/1.1 400" && String.equal cwd "HTTP/1.1 400")
+          String.equal chunked "HTTP/1.1 411" && String.equal cwd "HTTP/1.1 400")
 
     let%test "the server answers any request with a status or a close, and stays healthy" =
       Fuzz_check.check ?seed ?seconds ~count:40 ~name:"http"

@@ -9,6 +9,9 @@ external writev_batch : Unix.file_descr -> bytes -> int array -> int -> Luv.Buff
 external write_strings : Unix.file_descr -> string array -> int -> int -> int = "ko_write_strings"
 [@@noalloc]
 
+type phase = Head | Body of { mutable left : int }
+type ending = Open | Reject | Flushing
+
 type t = {
   stream : Luv.Pipe.t;
   fd : Unix.file_descr;
@@ -35,6 +38,11 @@ type t = {
   mutable read_len : int;
   mutable read_pos : int;
   mutable read_progress : bool;
+  mutable phase : phase;
+  mutable ending : ending;
+  mutable head_bytes : int;
+  mutable head_crlf : int;
+  mutable head_scanned : int;
   mutable resume_read : unit -> unit;
   fragments : Buffer.t;
   mutable last_activity : float;
@@ -43,6 +51,7 @@ type t = {
 
 let runtime t = Option.get t.runtime
 let max_message = 1 lsl 20
+let max_head = 16384
 let batch_capacity = 64
 let batch_stride = 24
 let max_queued = 64 lsl 20
@@ -71,34 +80,36 @@ let rec wait t =
       if (not t.closed) && not t.waiting then t.on_writable ())
 
 and flush t =
-  if (not t.closed) && not (Queue.is_empty t.pending) then begin
-    let rec fill i seq =
-      if i = Array.length t.strings then i
-      else
-        match seq () with
-        | Seq.Nil -> i
-        | Seq.Cons (s, rest) ->
-            t.strings.(i) <- s;
-            fill (i + 1) rest
-    in
-    let count = fill 0 (Queue.to_seq t.pending) in
-    let n = write_strings t.fd t.strings count t.sent in
-    Array.fill t.strings 0 count "";
-    if n < 0 then close t
-    else if n = 0 then wait t
+  if not t.closed then
+    if Queue.is_empty t.pending then match t.ending with Flushing -> close t | Open | Reject -> ()
     else begin
-      t.pending_bytes <- t.pending_bytes - n;
-      let left = ref (n + t.sent) in
-      while
-        match Queue.peek_opt t.pending with Some s -> !left >= String.length s | None -> false
-      do
-        let s = Queue.take t.pending in
-        left := !left - String.length s
-      done;
-      t.sent <- !left;
-      flush t
+      let rec fill i seq =
+        if i = Array.length t.strings then i
+        else
+          match seq () with
+          | Seq.Nil -> i
+          | Seq.Cons (s, rest) ->
+              t.strings.(i) <- s;
+              fill (i + 1) rest
+      in
+      let count = fill 0 (Queue.to_seq t.pending) in
+      let n = write_strings t.fd t.strings count t.sent in
+      Array.fill t.strings 0 count "";
+      if n < 0 then close t
+      else if n = 0 then wait t
+      else begin
+        t.pending_bytes <- t.pending_bytes - n;
+        let left = ref (n + t.sent) in
+        while
+          match Queue.peek_opt t.pending with Some s -> !left >= String.length s | None -> false
+        do
+          let s = Queue.take t.pending in
+          left := !left - String.length s
+        done;
+        t.sent <- !left;
+        flush t
+      end
     end
-  end
 
 let header bytes base opcode len =
   Bytes.set bytes base (Char.chr (128 lor opcode));
@@ -228,6 +239,15 @@ let batch_send t ring =
     end
   end
 
+let head_too_large =
+  "HTTP/1.1 431 Request Header Fields Too Large\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"
+
+let send_head_too_large t =
+  t.ending <- Flushing;
+  Queue.add head_too_large t.pending;
+  t.pending_bytes <- t.pending_bytes + String.length head_too_large;
+  flush t
+
 let rec write_runtime t =
   if (not t.closed) && not t.yielded then
     match Gluten.Server.next_write_operation (runtime t) with
@@ -251,33 +271,87 @@ let rec write_runtime t =
           Gluten.Server.report_write_result (runtime t) (`Ok !wrote);
           if !blocked then when_writable t (fun () -> write_runtime t) else write_runtime t
         end
-    | `Yield ->
-        if t.websocket then begin
-          t.ready <- true;
-          flush t;
-          t.on_writable ()
-        end;
-        t.yielded <- true;
-        Gluten.Server.yield_writer (runtime t) (fun () ->
-            t.yielded <- false;
-            write_runtime t)
+    | `Yield -> (
+        match t.ending with
+        | Reject -> send_head_too_large t
+        | Flushing -> ()
+        | Open ->
+            if t.websocket then begin
+              t.ready <- true;
+              flush t;
+              t.on_writable ()
+            end;
+            t.yielded <- true;
+            Gluten.Server.yield_writer (runtime t) (fun () ->
+                t.yielded <- false;
+                write_runtime t))
     | `Close _ -> close t
 
+let reject_head t =
+  t.ending <- Reject;
+  ignore (Luv.Stream.read_stop t.stream : _ result);
+  if t.yielded then send_head_too_large t else write_runtime t
+
+let head_ended = 4
+
+let reset_head t =
+  t.head_bytes <- 0;
+  t.head_crlf <- 0;
+  t.head_scanned <- 0
+
+let scan_head t avail =
+  if t.head_crlf <> head_ended then begin
+    let i = ref t.head_scanned in
+    while t.head_crlf <> head_ended && t.head_bytes <= max_head && !i < avail do
+      let c = Bigstringaf.get t.read_buf (t.read_pos + !i) in
+      t.head_crlf <-
+        (match (t.head_crlf, c) with
+        | (0 | 2), '\r' -> t.head_crlf + 1
+        | (1 | 3), '\n' -> t.head_crlf + 1
+        | _, '\r' -> 1
+        | _ -> 0);
+      t.head_bytes <- t.head_bytes + 1;
+      incr i
+    done;
+    t.head_scanned <- !i
+  end;
+  if t.head_bytes <= max_head then t.head_scanned else -1
+
 let rec consume t =
-  if not t.closed then begin
+  if (not t.closed) && match t.ending with Open -> true | Reject | Flushing -> false then begin
     t.read_progress <- false;
     match Gluten.Server.next_read_operation (runtime t) with
     | `Read ->
-        let n =
-          if t.read_len = t.read_pos then 0
-          else
-            Gluten.Server.read (runtime t) t.read_buf ~off:t.read_pos ~len:(t.read_len - t.read_pos)
+        let avail = t.read_len - t.read_pos in
+        let phase = t.phase in
+        let len =
+          if t.websocket || avail = 0 then avail
+          else match phase with Head -> scan_head t avail | Body b -> min avail b.left
         in
-        t.read_pos <- t.read_pos + n;
-        if t.read_pos = t.read_len then (
-          t.read_pos <- 0;
-          t.read_len <- 0);
-        if n > 0 || t.read_progress then consume t
+        if len < 0 then reject_head t
+        else begin
+          let n =
+            if len = 0 then 0 else Gluten.Server.read (runtime t) t.read_buf ~off:t.read_pos ~len
+          in
+          t.read_pos <- t.read_pos + n;
+          let pending = t.read_len - t.read_pos in
+          if pending = 0 then (
+            t.read_pos <- 0;
+            t.read_len <- 0);
+          if not t.websocket then
+            begin match phase with
+            | Body b ->
+                b.left <- b.left - n;
+                if b.left = 0 then (
+                  reset_head t;
+                  t.phase <- Head)
+            | Head ->
+                t.head_scanned <- t.head_scanned - n;
+                if t.head_crlf = head_ended then (if t.head_scanned = 0 then reset_head t)
+                else if pending = Bigstringaf.length t.read_buf then reject_head t
+            end;
+          if n > 0 || t.read_progress then consume t
+        end
     | `Yield ->
         ignore (Luv.Stream.read_stop t.stream : _ result);
         Gluten.Server.yield_reader (runtime t) (fun () ->
@@ -366,10 +440,15 @@ let create stream ~on_dispose =
       on_text = ignore;
       on_close = ignore;
       on_writable = ignore;
-      read_buf = Bigstringaf.create 16384;
+      read_buf = Bigstringaf.create max_head;
       read_len = 0;
       read_pos = 0;
       read_progress = false;
+      phase = Head;
+      ending = Open;
+      head_bytes = 0;
+      head_crlf = 0;
+      head_scanned = 0;
       resume_read = ignore;
       fragments = Buffer.create 64;
       last_activity = Unix.gettimeofday ();
@@ -386,6 +465,19 @@ let writer fd =
   t.websocket <- true;
   t
 
+let on_request t handler ({ Gluten.reqd; _ } as request) =
+  match Httpun.Request.body_length (Httpun.Reqd.request reqd) with
+  | `Fixed 0L | `Error _ -> handler request
+  | `Fixed n ->
+      t.phase <- Body { left = Int64.to_int (Int64.min n (Int64.of_int max_int)) };
+      handler request
+  | `Chunked ->
+      Httpun.Reqd.respond_with_string reqd
+        (Httpun.Response.create
+           ~headers:(Httpun.Headers.of_list [ ("connection", "close"); ("content-length", "0") ])
+           `Length_required)
+        ""
+
 let accept stream ~on_dispose handler =
   let t = create stream ~on_dispose in
   t.runtime <-
@@ -393,7 +485,7 @@ let accept stream ~on_dispose handler =
       (Gluten.Server.create_upgradable
          ~protocol:(module Httpun.Server_connection)
          ~create:(fun h -> Httpun.Server_connection.create h)
-         (handler t));
+         (on_request t (handler t)));
   let start_read () =
     Uv.read_start stream
       ~allocate:(fun _ ->
@@ -410,7 +502,9 @@ let accept stream ~on_dispose handler =
             write_runtime t
         | Error _ -> close t)
   in
-  t.resume_read <- (fun () -> if not t.closed then start_read ());
+  t.resume_read <-
+    (fun () ->
+      match t.ending with Open -> if not t.closed then start_read () | Reject | Flushing -> ());
   start_read ();
   write_runtime t;
   t
@@ -499,6 +593,7 @@ let%test_module "Tests" =
       |}]
 
     let connect handler =
+      Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
       let client, server = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
       let stream = Uv.ok (Luv.Pipe.init ()) in
       Uv.ok (Luv.Pipe.open_ stream (Uv.file server));
@@ -548,36 +643,208 @@ let%test_module "Tests" =
       close connection;
       ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
       Unix.close client;
-      [%expect {|
+      [%expect
+        {|
         yielding: closed false
         after one read: closed false, received some true
         received 100000 of 100000, closed false
         |}]
 
-    let%expect_test "a request head longer than the read buffer is served" =
+    let respond_ok reqd =
+      Httpun.Reqd.respond_with_string reqd
+        (Httpun.Response.create ~headers:(Httpun.Headers.of_list [ ("content-length", "2") ]) `OK)
+        "ok"
+
+    let line prefix size = prefix ^ String.make (size - String.length prefix - 4) 'a' ^ "\r\n\r\n"
+
+    let exchange ?(handler = fun _ { Gluten.reqd; _ } -> respond_ok reqd) writes =
+      let client, connection = connect handler in
+      let rounds = ref 0 in
+      let rec write chunk off =
+        if off < String.length chunk && !rounds < 2000 then begin
+          incr rounds;
+          match Unix.write_substring client chunk off (String.length chunk - off) with
+          | n -> write chunk (off + n)
+          | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) ->
+              ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+              write chunk off
+          | exception Unix.Unix_error _ -> ()
+        end
+        else ignore (Luv.Loop.run ~mode:`NOWAIT () : bool)
+      in
       List.iter
-        (fun head_size ->
-          let prefix = "GET / HTTP/1.1\r\nHost: ko\r\nX: " in
-          let head = prefix ^ String.make (head_size - String.length prefix - 4) 'a' ^ "\r\n\r\n" in
-          let client, connection =
-            connect (fun _ { Gluten.reqd; _ } ->
-                Httpun.Reqd.respond_with_string reqd
-                  (Httpun.Response.create
-                     ~headers:(Httpun.Headers.of_list [ ("content-length", "2") ])
-                     `OK)
-                  "ok")
-          in
-          repeat 50 (feeder client head);
-          let reply = Bytes.create 4096 in
-          let got = try Unix.read client reply 0 4096 with Unix.Unix_error _ -> 0 in
-          Printf.printf "%d: reply %d, closed %b\n" head_size got (is_closed connection);
-          close connection;
+        (fun chunk ->
+          rounds := 0;
+          write chunk 0)
+        writes;
+      let reply = Buffer.create 256 and chunk = Bytes.create 4096 in
+      let eof = ref false in
+      repeat 50 (fun () ->
           ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
-          Unix.close client)
-        [ 16383; 16384; 16385 ];
-      [%expect {|
-        16383: reply 40, closed false
-        16384: reply 40, closed false
-        16385: reply 40, closed false
+          try
+            while not !eof do
+              match Unix.read client chunk 0 4096 with
+              | 0 -> eof := true
+              | n -> Buffer.add_subbytes reply chunk 0 n
+            done
+          with Unix.Unix_error _ -> ());
+      let statuses =
+        match String.split ~by:"HTTP/1.1 " (Buffer.contents reply) with
+        | _ :: replies -> List.map (fun r -> String.sub r 0 3) replies
+        | [] -> []
+      in
+      let buffered = connection.read_len - connection.read_pos in
+      let closed = is_closed connection in
+      close connection;
+      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Unix.close client;
+      (statuses, closed, buffered)
+
+    let%expect_test "a request head is limited as a whole, however it arrives" =
+      let prefix = "GET / HTTP/1.1\r\nHost: ko\r\nX: " in
+      let show name (statuses, closed, buffered) =
+        Printf.printf "%s: %s closed %b bounded %b\n" name (String.concat "," statuses) closed
+          (buffered <= max_head)
+      in
+      List.iter
+        (fun size -> show (string_of_int size) (exchange [ line prefix size ]))
+        [ max_head - 1; max_head; max_head + 1 ];
+      let split = line prefix (max_head + 1) in
+      show "split limit"
+        (exchange
+           (List.init (max_head / 7) (fun i -> String.sub split (i * 7) 7)
+           @ [ String.sub split (max_head / 7 * 7) (String.length split - (max_head / 7 * 7)) ]));
+      List.iter
+        (fun size ->
+          show (Printf.sprintf "line %d" size)
+            (exchange [ "GET /" ^ String.make (size - 18) 'a' ^ " HTTP/1.1\r\n\r\n" ]))
+        [
+          max_head - 1;
+          max_head;
+          max_head + 1;
+          max_head + 2;
+          max_head + 100;
+          max_head + 4000;
+          4 * max_head;
+        ];
+      let many =
+        "GET / HTTP/1.1\r\nHost: ko\r\n" ^ String.concat "" (List.init 4000 (fun _ -> "A: b\r\n"))
+      in
+      show "many headers" (exchange [ many ^ "\r\n" ]);
+      let small = "GET / HTTP/1.1\r\nHost: ko\r\nX: " ^ String.make 9000 'a' ^ "\r\n\r\n" in
+      show "two pipelined" (exchange [ small ^ small ]);
+      let reached = ref false in
+      let upgrade =
+        "GET /client HTTP/1.1\r\n\
+         Host: ko\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         X: "
+      in
+      show "oversized upgrade"
+        (exchange ~handler:(fun _ _ -> reached := true) [ line upgrade (max_head + 1) ]);
+      Printf.printf "upgrade handler reached: %b\n" !reached;
+      let body = String.make 40_000 'b' in
+      show "head then 40000 body bytes then head"
+        (exchange
+           [
+             Printf.sprintf "POST / HTTP/1.1\r\nHost: ko\r\nContent-Length: %d\r\n\r\n%s"
+               (String.length body) body
+             ^ small;
+           ]);
+      [%expect
+        {|
+        16383: 200 closed false bounded true
+        16384: 200 closed false bounded true
+        16385: 431 closed true bounded true
+        split limit: 431 closed true bounded true
+        line 16383: 200 closed false bounded true
+        line 16384: 200 closed false bounded true
+        line 16385: 431 closed true bounded true
+        line 16386: 431 closed true bounded true
+        line 16484: 431 closed true bounded true
+        line 20384: 431 closed true bounded true
+        line 65536: 431 closed true bounded true
+        many headers: 431 closed true bounded true
+        two pipelined: 200,200 closed false bounded true
+        oversized upgrade: 431 closed true bounded true
+        upgrade handler reached: false
+        head then 40000 body bytes then head: 200,200 closed false bounded true
         |}]
+
+    let%expect_test "a request head that never ends does not grow the heap" =
+      let client, connection = connect (fun _ { Gluten.reqd; _ } -> respond_ok reqd) in
+      let data =
+        "GET / HTTP/1.1\r\nHost: ko\r\n"
+        ^ String.concat "" (List.init 700_000 (fun _ -> "A: b\r\n"))
+      in
+      Gc.full_major ();
+      let before = (Gc.stat ()).live_words in
+      let sent = ref 0 and idle = ref 0 in
+      while !sent < String.length data && !idle < 200 do
+        (match Unix.write_substring client data !sent (String.length data - !sent) with
+        | n ->
+            sent := !sent + n;
+            idle := 0
+        | exception Unix.Unix_error _ -> incr idle);
+        ignore (Luv.Loop.run ~mode:`NOWAIT () : bool)
+      done;
+      Gc.full_major ();
+      let grown = (Gc.stat ()).live_words - before in
+      ignore (Sys.opaque_identity data);
+      Printf.printf "closed %b, client sent < 1 MiB: %b, heap grew < 1 MiB: %b\n"
+        (is_closed connection)
+        (!sent < 1 lsl 20)
+        (grown * 8 < 1 lsl 20);
+      close connection;
+      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Unix.close client;
+      [%expect {| closed true, client sent < 1 MiB: true, heap grew < 1 MiB: true |}]
+
+    let%expect_test
+        "an oversized head after a pipelined request is answered after the full first response" =
+      let size = 3_000_000 in
+      let client, connection =
+        connect (fun _ { Gluten.reqd; _ } ->
+            Httpun.Reqd.respond_with_string reqd
+              (Httpun.Response.create
+                 ~headers:(Httpun.Headers.of_list [ ("content-length", string_of_int size) ])
+                 `OK)
+              (String.make size 'x'))
+      in
+      let data =
+        "GET / HTTP/1.1\r\nHost: ko\r\n\r\n" ^ line "GET / HTTP/1.1\r\nX: " (max_head + 1)
+      in
+      let sent = ref 0 in
+      repeat 200 (fun () ->
+          (match Unix.write_substring client data !sent (String.length data - !sent) with
+          | n -> sent := !sent + n
+          | exception Unix.Unix_error _ -> ());
+          ignore (Luv.Loop.run ~mode:`NOWAIT () : bool));
+      let reply = Buffer.create (size + 1024) and chunk = Bytes.create 65536 in
+      let eof = ref false and rounds = ref 0 in
+      while (not !eof) && !rounds < 20000 do
+        incr rounds;
+        ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+        match Unix.read client chunk 0 65536 with
+        | 0 -> eof := true
+        | n -> Buffer.add_subbytes reply chunk 0 n
+        | exception Unix.Unix_error _ -> ()
+      done;
+      let reply = Buffer.contents reply in
+      let first = "HTTP/1.1 200 OK" in
+      let tail = String.length reply - String.length head_too_large in
+      let xs = String.fold (fun n c -> if Char.equal c 'x' then n + 1 else n) 0 reply in
+      Printf.printf "eof %b, starts with 200 %b, body bytes %d of %d, ends with whole 431 %b\n" !eof
+        (String.starts_with ~prefix:first reply)
+        xs size
+        (tail >= 0
+        && String.equal (String.sub reply tail (String.length head_too_large)) head_too_large);
+      close connection;
+      ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+      Unix.close client;
+      [%expect
+        {| eof true, starts with 200 true, body bytes 3000000 of 3000000, ends with whole 431 true |}]
   end)
