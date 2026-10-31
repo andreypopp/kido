@@ -376,10 +376,11 @@ let read_view view =
         view.alive <- false
   done
 
+let unsent h = String.length h.queued - h.sent
+
 let flush_feed h =
-  let unsent () = String.length h.queued - h.sent in
   (match h.feed with
-  | None when (not h.eof) || unsent () > 0 -> (
+  | None when (not h.eof) || unsent h > 0 -> (
       match Unix.openfile (h.server.dir ^ "/in") [ Unix.O_WRONLY; Unix.O_NONBLOCK ] 0 with
       | fd -> h.feed <- Some fd
       | exception Unix.Unix_error ((Unix.ENXIO | Unix.EINTR), _, _) -> ())
@@ -387,12 +388,12 @@ let flush_feed h =
   match h.feed with
   | None -> ()
   | Some fd ->
-      (if unsent () > 0 then
-         match Unix.single_write_substring fd h.queued h.sent (unsent ()) with
+      (if unsent h > 0 then
+         match Unix.single_write_substring fd h.queued h.sent (unsent h) with
          | n -> h.sent <- h.sent + n
          | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK | Unix.EINTR), _, _) -> ()
          | exception Unix.Unix_error (Unix.EPIPE, _, _) -> h.sent <- String.length h.queued);
-      if h.eof && unsent () = 0 then begin
+      if h.eof && unsent h = 0 then begin
         Unix.close fd;
         h.feed <- None
       end
@@ -416,16 +417,18 @@ let tick h =
     h.stable <- 0);
   Unix.sleepf 0.0002
 
+let pane_state h =
+  match Pane_proc.dead (Pane.proc h.server.pane) with
+  | Some { cause = Failed message; _ } -> "failed: " ^ message
+  | Some _ -> "exited"
+  | None -> "running"
+
 let until h what cond =
   let deadline = Unix.gettimeofday () +. 10. in
   while not (cond ()) do
     if Float.(Unix.gettimeofday () > deadline) then
-      fail "timed out waiting for %s (fed %d, queued %d, pane %s, views: %s)" what h.fed
-        (String.length h.queued - h.sent)
-        (match Pane_proc.dead (Pane.proc h.server.pane) with
-        | Some { cause = Failed message; _ } -> "failed: " ^ message
-        | Some _ -> "exited"
-        | None -> "running")
+      fail "timed out waiting for %s (fed %d, queued %d, pane %s, views: %s)" what h.fed (unsent h)
+        (pane_state h)
         (String.concat "; "
            (List.map
               (fun v ->
@@ -552,7 +555,7 @@ let check h =
   else begin
     let r = List.hd h.views in
     until h "the recorder to see every byte while other views stall" (fun () ->
-        Int.equal (String.length h.queued - h.sent) 0 && converged h r);
+        Int.equal (unsent h) 0 && converged h r);
     let pane_screen = barrier h in
     List.iter (fun v -> v.speed <- Fast) h.views;
     until h "every view to catch up" (fun () ->
@@ -560,11 +563,7 @@ let check h =
     List.iter
       (fun v ->
         if v.server_closed && not v.expected_close then
-          fail "the server closed a healthy view: %S, pane %s" v.reason
-            (match Pane_proc.dead (Pane.proc h.server.pane) with
-            | Some { cause = Failed message; _ } -> "failed: " ^ message
-            | Some _ -> "exited"
-            | None -> "running");
+          fail "the server closed a healthy view: %S, pane %s" v.reason (pane_state h);
         if (not v.server_closed) && not Stdlib.(v == r) then compare_with r.mirror "view" v.mirror)
       h.views;
     let rows text =
@@ -660,7 +659,7 @@ let step h op =
       done
   | Check -> check h
 
-let run_exn ~seed ops =
+let with_harness ~seed f =
   let rand = Random.State.make [| seed |] in
   Fuzz_server.with_server
     ~command:(fun dir -> "stty raw -echo; exec cat " ^ dir ^ "/in")
@@ -689,18 +688,21 @@ let run_exn ~seed ops =
           Option.iter Unix.close h.feed;
           List.iter (fun v -> Option.iter Ko_vt.close v.mirror.term) h.views;
           List.iter (fun m -> Option.iter Ko_vt.close m.term) h.retired)
-        (fun () ->
-          ignore
-            (open_view h ~history:History_all ~speed:Fast ~small:false ~offset:None
-               ~mirror:(fresh_mirror ())
-              : view);
-          List.iter (step h) ops;
-          step h Check))
+        (fun () -> f h))
 
-let run ~seed ops = try run_exn ~seed ops with Libghostty_decode -> QCheck.assume_fail ()
+let run_exn ~seed ops =
+  with_harness ~seed (fun h ->
+      ignore
+        (open_view h ~history:History_all ~speed:Fast ~small:false ~offset:None
+           ~mirror:(fresh_mirror ())
+          : view);
+      List.iter (step h) ops;
+      step h Check)
+
+let run ~seed ops = try run_exn ~seed ops with Libghostty_decode -> QCheck2.assume_fail ()
 
 let source_gen =
-  let open QCheck.Gen in
+  let open QCheck2.Gen in
   oneof_weighted
     [
       (3, return Lines);
@@ -714,18 +716,18 @@ let source_gen =
     ]
 
 let reader_gen =
-  let open QCheck.Gen in
+  let open QCheck2.Gen in
   oneof_weighted
     [ (4, return Fast); (2, map (fun n -> Slow (512 + (n * 512))) (0 -- 100)); (2, return Stalled) ]
 
-let history_gen = QCheck.Gen.oneof_list [ Protocol.History_none; History_all ]
+let history_gen = QCheck2.Gen.oneof_list [ Protocol.History_none; History_all ]
 
 let op_gen =
-  let open QCheck.Gen in
+  let open QCheck2.Gen in
   let size = oneof_weighted [ (6, 1 -- 2000); (3, 2000 -- 60000); (1, 200_000 -- 700_000) ] in
   oneof_weighted
     [
-      (10, map3 (fun source size seed -> Feed (source, size, seed)) source_gen size nat);
+      (10, map3 (fun source size seed -> Feed (source, size, seed)) source_gen size (no_shrink nat));
       ( 3,
         map2
           (fun c r -> if c = 1 && r = 1 then Resize (2, 1) else Resize (c, r))
@@ -793,6 +795,31 @@ let%test_module "Tests" =
         ];
       true
 
+    let%test "a signal while a screen reply waits for its pipe does not fail the pane" =
+      with_harness ~seed:0 (fun h ->
+          step h (Feed (Lines, 300_000, 1));
+          let proc = Pane.proc h.server.pane and text = Buffer.create 65536 and result = ref None in
+          until h "the pane to consume the feed" (fun () ->
+              Int.equal (Ring.end_offset (Pane_proc.ring proc)) h.fed);
+          Pane_proc.screen proc ~format:Plain ~history:Full_history
+            ~chunk:(fun chunk ~last:_ -> Buffer.add_string text chunk)
+            ~done_:(fun r -> result := Some r);
+          ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
+          (* ko-pane does not report that it is blocked in screen_chunk's poll(POLLOUT) *)
+          Unix.sleepf 0.1;
+          step h Eof;
+          flush_feed h;
+          until h "the screen reply" (fun () -> Option.is_some !result);
+          match Option.get !result with
+          | Ok ()
+            when Buffer.length text > 200_000
+                 && not (String.starts_with ~prefix:"failed" (pane_state h)) ->
+              true
+          | result ->
+              fail "screen %s, %d bytes, pane %s"
+                (match result with Ok () -> "ok" | Error message -> message)
+                (Buffer.length text) (pane_state h))
+
     let%test "libghostty-vt still cannot decode a snapshot of this stream" =
       match
         run_exn ~seed:969
@@ -838,15 +865,11 @@ let%test_module "Tests" =
       diverges (1, 1) && not (List.exists diverges [ (2, 2); (1, 24); (80, 1); (1, 2) ])
 
     let%test "views and mirrors stay equal to the pane under random operations" =
-      let arb =
-        QCheck.make
-          ~shrink:(fun (seed, ops) ->
-            QCheck.Iter.map (fun ops -> (seed, ops)) (QCheck.Shrink.list ops))
-          ~print:(fun (seed, ops) ->
-            Printf.sprintf "seed %d: %s" seed (String.concat "; " (List.map print_op ops)))
-          QCheck.Gen.(pair nat (list_size (3 -- 25) op_gen))
-      in
-      Fuzz_check.check ?seed ?seconds ~count:3 ~name:"views" arb (fun (seed, ops) ->
+      Fuzz_check.check ?seed ?seconds ~count:3 ~name:"views"
+        ~print:(fun (seed, ops) ->
+          Printf.sprintf "seed %d: %s" seed (String.concat "; " (List.map print_op ops)))
+        QCheck2.Gen.(pair (no_shrink nat) (list_size (3 -- 25) op_gen))
+        (fun (seed, ops) ->
           run ~seed ops;
           true);
       true

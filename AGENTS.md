@@ -924,10 +924,14 @@ libghostty-vt upstream. `scripts/fuzz.sh` names the targets:
   `ko_pane/fuzz/`. They build under `--profile fuzz` with an LLVM
   clang (`KO_FUZZ_CC`, else one found under Homebrew's `llvm`).
   Apple's clang has no libFuzzer, so the target prints SKIP.
-- `ring`, `view` and `http`: QCheck properties in the test-only
-  library `ko_server/fuzz/`, so `ko` links no QCheck. `pane-proc`
-  stays inline in `ko_server/pane_proc.ml`, because it needs the
-  module's internals. `Fuzz_server` is the in-process server.
+- `ring`, `view` and `http`: QCheck2 properties in the test-only
+  library `ko_server/fuzz/`, so `ko` links no QCheck.
+  `scripts/lint.sh` refuses a dune file elsewhere in ko that names
+  QCheck or `ko_server_fuzz`. QCheck2 shrinks each failing case
+  through its generator, so the properties have no shrinkers.
+  `pane-proc` is a `Random.State` soak, not QCheck. It stays inline
+  in `ko_server/pane_proc.ml`, because it needs the module's
+  internals. `Fuzz_server` is the in-process server.
   `view` drives a real `ko-pane` through the view protocol and
   compares every view's mirror, and a fresh snapshot, with the pane's
   terminal. `http` sends requests, bodies and WebSocket messages to
@@ -945,7 +949,14 @@ entry reads `KO_FUZZ_SECONDS` (set by the script) and `KO_FUZZ_SEED`.
 A failure prints its seed or artifact; `KO_FUZZ_SEED` replays a seed.
 The `view` scenarios run a real `ko-pane`, so pty read boundaries and
 timing differ between runs of one seed.
-A bug that a fuzzer finds gets a regression test with that case.
+A bug that a fuzzer finds gets a regression test with that case:
+the explicit input or command list, not a seed, because a seed
+generates a different case when a generator changes.
+`ko_pane/fuzz/control/` is the libFuzzer corpus of `control`, files
+named by SHA-1, that `dune test` replays under ASan and UBSan; only
+`make fuzz MERGE=1` (`scripts/fuzz.sh --merge`) changes it, with a
+`-merge=1` into a minimal set, and only with a code change that needs
+the new inputs.
 A test that pins a libghostty-vt bug fails when the bug is fixed, so
 the workaround for it can be removed.
 

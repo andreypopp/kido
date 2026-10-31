@@ -58,7 +58,7 @@ let check_reply request reply =
   if String.starts_with ~prefix:"HTTP/1.1 5" reply then
     fail "server error for %S: %S" (String.escaped request) (String.escaped reply)
 
-open QCheck.Gen
+open QCheck2.Gen
 
 let word =
   oneof_list
@@ -374,8 +374,8 @@ let%test_module "Tests" =
       | exception (Invalid_argument _ | Yojson.Json_error _ | Jsonkit.Of_json_error _) -> true
 
     let%test "request decoders raise only the errors their callers catch" =
-      Fuzz_check.check ?seed ?seconds ~count:300 ~name:"decoders"
-        (QCheck.make ~print:Fun.id json_text) (fun text ->
+      Fuzz_check.check ?seed ?seconds ~count:300 ~name:"decoders" ~print:Fun.id json_text
+        (fun text ->
           match Yojson.Basic.from_string text with
           | exception Yojson.Json_error _ -> true
           | value ->
@@ -398,7 +398,8 @@ let%test_module "Tests" =
           ]
       in
       Fuzz_check.check ?seed ?seconds ~count:300 ~name:"routes"
-        (QCheck.make ~print:(fun (m, t) -> m ^ " " ^ t) path)
+        ~print:(fun (m, t) -> m ^ " " ^ t)
+        path
         (fun (meth, target) ->
           match Protocol.Route.of_request ~meth target with
           | _ -> true
@@ -417,17 +418,16 @@ let%test_module "Tests" =
           String.equal chunked "HTTP/1.1 400" && String.equal cwd "HTTP/1.1 400")
 
     let%test "the server answers any request with a status or a close, and stays healthy" =
-      Fuzz_server.with_server
-        ~command:(fun _ -> "stty raw -echo; exec cat")
-        ~activity:(fun () -> false)
-        (fun server ->
-          let served = ref 0 in
-          Fuzz_check.check ?seed ?seconds ~count:40 ~name:"http"
-            (QCheck.make ~print:String.escaped http_request) (fun request ->
-              check_reply request (exchange server request);
-              incr served;
-              if !served mod 8 = 0 then healthy server;
-              true);
-          healthy server);
+      Fuzz_check.check ?seed ?seconds ~count:40 ~name:"http"
+        ~print:(fun requests -> String.concat "\n" (List.map String.escaped requests))
+        QCheck2.Gen.(list_size (1 -- 6) http_request)
+        (fun requests ->
+          Fuzz_server.with_server
+            ~command:(fun _ -> "stty raw -echo; exec cat")
+            ~activity:(fun () -> false)
+            (fun server ->
+              List.iter (fun request -> check_reply request (exchange server request)) requests;
+              healthy server;
+              true));
       true
   end)

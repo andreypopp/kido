@@ -144,7 +144,7 @@ let%test_module "Tests" =
         (m.head :: boundaries m)
 
     let op_gen capacity =
-      let open QCheck.Gen in
+      let open QCheck2.Gen in
       oneof_weighted
         [
           (6, map (fun n -> Write (Bytes, n)) (1 -- (capacity / 3)));
@@ -159,28 +159,24 @@ let%test_module "Tests" =
     let seed, seconds = Fuzz_check.budget ()
 
     let%test "the ring keeps its contract under random writes, advances and resumes" =
-      let arb =
-        QCheck.make
-          ~shrink:(fun (capacity, ops) ->
-            QCheck.Iter.map (fun ops -> (capacity, ops)) (QCheck.Shrink.list ops))
-          ~print:(fun (capacity, ops) ->
-            let op = function
-              | Write (Bytes, n) -> Printf.sprintf "bytes %d" n
-              | Write (Marker, n) -> Printf.sprintf "marker %d" n
-              | Write (Slice, n) -> Printf.sprintf "slice %d" n
-              | Write (Pad, n) -> Printf.sprintf "pad %d" n
-              | Advance `Head -> "advance head"
-              | Advance `Tail -> "advance tail"
-              | Advance (`Boundary i) -> Printf.sprintf "advance boundary %d" i
-              | Resume n -> Printf.sprintf "resume %d" n
-            in
-            Printf.sprintf "capacity %d: %s" capacity (String.concat "; " (List.map op ops)))
-          QCheck.Gen.(
-            let* capacity = 64 -- 600 in
-            let+ ops = list_size (1 -- 80) (op_gen capacity) in
-            (capacity, ops))
+      let print_op = function
+        | Write (Bytes, n) -> Printf.sprintf "bytes %d" n
+        | Write (Marker, n) -> Printf.sprintf "marker %d" n
+        | Write (Slice, n) -> Printf.sprintf "slice %d" n
+        | Write (Pad, n) -> Printf.sprintf "pad %d" n
+        | Advance `Head -> "advance head"
+        | Advance `Tail -> "advance tail"
+        | Advance (`Boundary i) -> Printf.sprintf "advance boundary %d" i
+        | Resume n -> Printf.sprintf "resume %d" n
       in
-      Fuzz_check.check ?seed ?seconds ~count:100 ~name:"ring" arb (fun (capacity, ops) ->
+      Fuzz_check.check ?seed ?seconds ~count:100 ~name:"ring"
+        ~print:(fun (capacity, ops) ->
+          Printf.sprintf "capacity %d: %s" capacity (String.concat "; " (List.map print_op ops)))
+        QCheck2.Gen.(
+          let* capacity = no_shrink (64 -- 600) in
+          let+ ops = list_size (1 -- 80) (op_gen capacity) in
+          (capacity, ops))
+        (fun (capacity, ops) ->
           let m = make capacity in
           List.iter
             (fun op ->

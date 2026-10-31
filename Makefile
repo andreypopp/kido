@@ -46,7 +46,7 @@ verify:
 	E2E='$(E2E)' STAGES='$(STAGES)' bash scripts/verify.sh
 
 fuzz:
-	bash scripts/fuzz.sh '$(TARGET)' '$(TIME)'
+	bash scripts/fuzz.sh $(if $(MERGE),--merge) '$(TARGET)' '$(TIME)'
 
 flake:
 	RUN='$(RUN)' COUNT='$(or $(COUNT),20)' bash scripts/verify.sh flake

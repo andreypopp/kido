@@ -80,6 +80,12 @@ text = pathlib.Path('lib/dune').read_text()
 for match in re.finditer(r'\b(?:mosaic|matrix(?:\.text)?)\b', text):
     report('lib/dune', text, match.start(), 'TUI library dependency')
 
+for path in sum((glob.glob(f'{d}/**/dune', recursive=True) for d in ['ko_server', 'ko_tui', 'ko_vt', 'ko_pane', 'bench', 'bin']), []):
+    if path != 'ko_server/fuzz/dune':
+        text = pathlib.Path(path).read_text()
+        for match in re.finditer(r'qcheck|ko_server_fuzz', text, re.I):
+            report(path, text, match.start(), 'QCheck belongs to ko_server/fuzz only, so that ko does not link it')
+
 history = r'\b(previously|no longer|(?<!be )used to|formerly|as of now|since this fix)\b'
 for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', sources):
     text = pathlib.Path(path).read_text()

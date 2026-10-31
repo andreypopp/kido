@@ -6,6 +6,7 @@ val check :
   ?seconds:float ->
   count:int ->
   name:string ->
-  'a QCheck.arbitrary ->
+  print:'a QCheck2.Print.t ->
+  'a QCheck2.Gen.t ->
   ('a -> bool) ->
   unit

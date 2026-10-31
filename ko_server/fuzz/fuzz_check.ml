@@ -2,11 +2,11 @@ let budget () =
   ( Option.map int_of_string (Sys.getenv_opt "KO_FUZZ_SEED"),
     Option.map float_of_string (Sys.getenv_opt "KO_FUZZ_SECONDS") )
 
-let check ?(seed = 0) ?seconds ~count ~name arb law =
+let check ?(seed = 0) ?seconds ~count ~name ~print gen law =
   let run seed n =
     try
-      QCheck.Test.check_exn ~rand:(Random.State.make [| seed |])
-        (QCheck.Test.make ~count:n ~name arb law)
+      QCheck2.Test.check_exn ~rand:(Random.State.make [| seed |])
+        (QCheck2.Test.make ~count:n ~name ~print gen law)
     with e ->
       Printf.eprintf "%s: failed with seed %d\n%!" name seed;
       raise e

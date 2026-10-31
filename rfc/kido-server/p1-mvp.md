@@ -48,7 +48,7 @@ Out, until later stages:
                   (the registry of clients and views), Protocol (the
                   wire JSON types), Ws (WebSocket frames), Uv (luv and
                   OS conversions), Pid (the only signal calls), Config
-    ko_server/fuzz/  the QCheck fuzz properties, a test-only library
+    ko_server/fuzz/  the QCheck2 fuzz properties, a test-only library
     ko_tui/       the thin terminal client library: Mosaic for the
                   sidebar and input, a direct cell differ for the screen
     bin/ko.ml     the entry point: `ko` (attach or start and attach),
@@ -824,8 +824,10 @@ These points were open or wrong in the plan:
   the contract, and no view blocks `ko-pane`; a bad control frame on
   either side fails the pane and reads nothing outside the frame;
   any client input gets a status or a close, and other clients are
-  unaffected. `dune test` replays fixed seeds; `make fuzz` runs one
-  target for a fixed time.
+  unaffected. The properties use QCheck2, so a failure shrinks
+  through its generator. `dune test` replays fixed seeds and one
+  explicit regression case for each bug that a fuzzer found;
+  `make fuzz` runs one target for a fixed time.
 - A Go e2e suite in `test_e2e_ko/` that starts `ko server` on a
   scratch socket and drives the protocol with `net/http` and a
   WebSocket package over a unix dialer: pane creation and exit, view open with snapshot, resume by

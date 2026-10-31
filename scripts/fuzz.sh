@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
-# Usage: scripts/fuzz.sh TARGET SECONDS
+# Usage: scripts/fuzz.sh [--merge] TARGET SECONDS
 set -uo pipefail
 cd "$(dirname "$0")/.."
 targets='frame control ring pane-proc view http'
+merge=
+if [[ ${1:-} == --merge ]]; then
+  merge=1
+  shift
+fi
 target=${1:-}
 seconds=${2:-}
 if [[ -z $target || -z $seconds ]] || ! grep -qw -- "$target" <<<"$targets" || [[ ! $seconds =~ ^[1-9][0-9]*$ ]]; then
-  echo "usage: make fuzz TARGET=<$(tr ' ' '|' <<<"$targets")> TIME=<seconds>" >&2
+  echo "usage: make fuzz TARGET=<$(tr ' ' '|' <<<"$targets")> TIME=<seconds> [MERGE=1]" >&2
+  echo "       MERGE=1 fuzzes TIME seconds, then replaces ko_pane/fuzz/TARGET/ with the minimal set" >&2
+  echo "       of the checked-in inputs and the new ones; only a plain run never writes there" >&2
+  exit 1
+fi
+if [[ -n $merge && ! -d ko_pane/fuzz/$target ]]; then
+  echo "fuzz.sh: $target has no checked-in corpus in ko_pane/fuzz/$target" >&2
   exit 1
 fi
 scratch=$(mktemp -d /tmp/kofuzz-XXXXXX)
@@ -89,6 +100,34 @@ case $target in
     done
     tail -3 "$scratch/log"
     echo "fuzz.sh: $target ran ${total} inputs in ${seconds}s, corpus $(ls "$corpus" | wc -l) inputs"
+    if [[ -n $merge ]]; then
+      destination=ko_pane/fuzz/$target
+      staging=ko_pane/fuzz/.$target.new
+      mkdir "$scratch/merged" || exit 1
+      boxed 300 _build/default/ko_pane/fuzz-"$target"-libfuzzer -merge=1 "${options[@]}" "$scratch/merged" "$corpus" >"$scratch/log" 2>&1 || { cat "$scratch/log"; exit 1; }
+      if [[ -z $(ls -A "$scratch/merged") ]]; then
+        echo "fuzz.sh: the merge produced no inputs; $destination is unchanged" >&2
+        exit 1
+      fi
+      rm -rf "$staging"
+      if ! { mkdir "$staging" && cp "$scratch"/merged/* "$staging"/; }; then
+        rm -rf "$staging"
+        echo "fuzz.sh: could not stage the merged corpus; $destination is unchanged" >&2
+        exit 1
+      fi
+      if ! mv "$destination" "$scratch/old"; then
+        rm -rf "$staging"
+        echo "fuzz.sh: could not move $destination away; it is unchanged" >&2
+        exit 1
+      fi
+      if ! mv "$staging" "$destination"; then
+        mv "$scratch/old" "$destination"
+        rm -rf "$staging"
+        echo "fuzz.sh: could not install the merged corpus; $destination is restored" >&2
+        exit 1
+      fi
+      echo "fuzz.sh: $destination now has $(ls "$destination" | wc -l) inputs"
+    fi
     ;;
   *)
     case $target in
