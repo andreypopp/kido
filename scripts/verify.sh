@@ -30,12 +30,16 @@ case ${1:-verify} in
     [[ -n ${RUN:-} && ${COUNT:-20} =~ ^[1-9][0-9]*$ ]] || { echo 'flake requires RUN and a positive COUNT' >&2; exit 1; }
     E2E=$RUN COUNT=${COUNT:-20} stage e2e e2e
     ;;
-  verify)
-    for name in ${STAGES:-build unit e2e e2e-ko ts}; do
+  verify|verify-ko)
+    default='build unit e2e e2e-ko ts'
+    [[ ${1:-} == verify-ko ]] && default='build unit-ko e2e-ko lint'
+    for name in ${STAGES:-$default}; do
       case $name in
         build) stage build dune build ;;
         unit) stage unit dune test --force ;;
         e2e) stage e2e e2e ;;
+        unit-ko) stage unit-ko dune test --force ko_server ko_server/fuzz ko_tui ko_vt ko_pane ;;
+        lint) stage lint ./scripts/test-ts.sh lint ;;
         e2e-ko) stage e2e-ko make e2e-ko ;;
         ts) stage ts ./scripts/test-ts.sh ;;
         *) echo "Unknown stage: $name" >&2; status=1 ;;

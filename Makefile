@@ -36,7 +36,7 @@ test:
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: fuzz e2e-ko pinned-fork verify flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: fuzz e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -44,6 +44,9 @@ pinned-fork:
 
 verify:
 	E2E='$(E2E)' STAGES='$(STAGES)' bash scripts/verify.sh
+
+verify-ko:
+	STAGES='$(STAGES)' bash scripts/verify.sh verify-ko
 
 fuzz:
 	bash scripts/fuzz.sh $(if $(MERGE),--merge) '$(TARGET)' '$(TIME)'

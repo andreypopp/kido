@@ -41,6 +41,9 @@ if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
 	npm install --silent
 	touch node_modules
 fi
+if [ "${1:-}" = lint ]; then
+	exec ../../scripts/lint.sh
+fi
 ../../scripts/lint.sh
 ./node_modules/.bin/tsc -p .
 ./node_modules/.bin/tsc --strict --noEmit --module NodeNext --moduleResolution NodeNext \

@@ -827,7 +827,7 @@ These points were open or wrong in the plan:
   unaffected. The properties use QCheck2, so a failure shrinks
   through its generator. `dune test` replays fixed seeds and one
   explicit regression case for each bug that a fuzzer found;
-  `make fuzz` runs one target for a fixed time.
+  `make fuzz` runs one target for a fixed time, only in CI.
 - A Go e2e suite in `test_e2e_ko/` that starts `ko server` on a
   scratch socket and drives the protocol with `net/http` and a
   WebSocket package over a unix dialer: pane creation and exit, view open with snapshot, resume by
@@ -851,8 +851,9 @@ These points were open or wrong in the plan:
   after it opens; and the outer terminal's modes restored exactly
   after detach.
 - `make verify` runs all of them, the Go suite as its stage `e2e-ko`
-  (`make e2e-ko`, `E2E_KO=TestFoo` to limit it); `bench/` runs on
-  demand.
+  (`make e2e-ko`, `E2E_KO=TestFoo` to limit it). `make verify-ko`
+  runs only ko's stages; it is the full verification of ko work.
+  `bench/` runs on demand.
 
 ## 8. Order of work and effort
 

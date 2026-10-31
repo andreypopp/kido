@@ -855,11 +855,12 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
 ## Tests
 
     make verify  scrubbed dune build, dune test --force, full e2e and TypeScript tests
+    make verify-ko  scrubbed dune build, ko's unit tests, ko's e2e and scripts/lint.sh
     make test    dune test --force and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
-    make fuzz TARGET=view TIME=600  one time-boxed ko fuzz run; no TARGET lists the targets
+    make fuzz TARGET=view TIME=600  one time-boxed ko fuzz run, for CI only; no TARGET lists the targets
     make clean-forks  remove fork builds other than the pin
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
     make website the website's dev server at http://localhost:4321 (website/README.md)
@@ -867,7 +868,20 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
 `make verify E2E=TestFoo` limits e2e.
 `STAGES=e2e` selects only that stage.
 Every selected stage runs even after a failure and prints PASS/FAIL.
+`make verify-ko` uses the same script, environment and output, with
+ko's stages only. `E2E_KO=TestFoo` limits its e2e. Its lint stage
+uses the TypeScript suite's setup, so it also needs Node 24 or newer.
 Before a release, validation uses `make verify` in full.
+
+**Which verification.** For ko work, the full verification is
+`make verify-ko`. Use the whole `make verify` only when the change
+also touches a file that kido shares with ko: the Makefile, `scripts/`,
+CI, `dune-project`, `dune.lock`, a shared library such as `kido_fs`,
+or kido's code.
+
+Agents never run `make fuzz`. Long fuzz runs occur only in CI.
+`dune test` replays the fixed seeds and the corpus, so a bug fix adds
+its regression case to that fast path.
 
 CI runs on Ubuntu and macOS on every push and PR.
 `scripts/main-watch.sh` watches main and reports each observed head's CI.
@@ -941,7 +955,7 @@ libghostty-vt upstream. `scripts/fuzz.sh` names the targets:
 
 `dune test` replays each target's fixed seeds and the `control`
 corpus in a few seconds. `make fuzz` uses random seeds for TIME
-seconds. Each run has its own process group and scratch directory,
+seconds. Only CI runs it ("Which verification" above). Each run has its own process group and scratch directory,
 and the script kills and removes both on every exit.
 A libFuzzer run restarts every 24000 inputs, because ASan on macOS
 keeps libghostty-vt's freed memory, about 100 KiB per input. The test
@@ -1240,8 +1254,9 @@ A brief does not repeat them.
   one signal module of its language ("Signals" under "OCaml").
   Its types refuse such pids. A test checks the validation. It never
   sends a signal to prove it.
-  Before a fuzz run, use grep to examine the kill paths.
-  Each run has a deadline, its own process group, and a scratch
+  Agents do not run `make fuzz`. When you change a fuzz target or a
+  kill path, use grep to examine the kill paths.
+  Each fuzz run has a deadline, its own process group, and a scratch
   directory that it removes on every exit.
 - **Do not block on `sleep`.**
   While a background run works, end your turn.
@@ -1265,11 +1280,13 @@ A brief does not repeat them.
   that a defect would change. Do not break the code to prove that a
   test can fail.
 
-  After the last edit, run `make verify` once.
-  Use `E2E=TestFoo` to limit e2e to the changed behaviour.
+  After the last edit, run the verification once: `make verify-ko`
+  for ko work, else `make verify` ("Which verification" under
+  "Tests"). For `make verify`, use `E2E=TestFoo` to limit e2e to the
+  changed behaviour.
   It controls environment scrubbing and pinned-fork selection.
   This replaces the separate build/test recipes.
-  Do not also run `make test` or `make e2e`.
+  Do not also run `make test`, `make e2e` or `make e2e-ko`.
 
   Unless the brief requests `make flake`, do not use loops or a
   second tmux build.
