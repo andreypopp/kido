@@ -1,7 +1,12 @@
 type t
 
 val create :
-  Pane.t -> Connection.t -> client:Ids.Client_id.t option -> offset:int option -> full:bool -> t
+  Pane.t ->
+  Connection.t ->
+  client:Ids.Client_id.t option ->
+  offset:int option ->
+  history:Protocol.history ->
+  t
 
 val client : t -> Ids.Client_id.t option
 val pane : t -> Pane.t

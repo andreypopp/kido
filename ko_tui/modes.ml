@@ -1,5 +1,3 @@
-let output = Fs.write_all Unix.stdout
-
 let numbers =
   [
     (1000, Ansi.Mouse_tracking);
@@ -38,7 +36,7 @@ let save () =
           c_vmin = 1;
           c_vtime = 0;
         };
-      output
+      Fs.write_all Unix.stdout
         (String.concat "" (List.map (fun (n, _) -> Printf.sprintf "\027[?%d$p" n) numbers)
         ^ Ansi.to_string (Ansi.query Device_attributes));
       let deadline = Unix.gettimeofday () +. 0.15 and buf = Bytes.create 4096 in
@@ -67,7 +65,7 @@ let save () =
   ({ saved = !saved; mouse = None; keyboard = None }, List.rev !events)
 
 let reset t =
-  output
+  Fs.write_all Unix.stdout
     (String.concat ""
        (List.filter_map (fun (n, m) -> if n = 25 then None else Some (set m false)) numbers)
     ^ (match t.keyboard with None -> "" | Some _ -> Ansi.to_string Ansi.csi_u_pop)
@@ -111,6 +109,6 @@ let restore t =
            (m, Option.value ~default:(n = 25) (List.assoc_opt ~eq:Int.equal n t.saved)))
          numbers)
   in
-  output
+  Fs.write_all Unix.stdout
     (String.concat "" (List.map (fun (m, on) -> set m on) (off @ on))
     ^ Ansi.to_string (Ansi.cursor_style ~shape:`Default))

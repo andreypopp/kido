@@ -24,29 +24,27 @@ extern int caml_convert_signal_number(int);
 
 CAMLprim value ko_pane_layout(value unit) {
   CAMLparam1(unit);
-  CAMLlocal3(result, kinds, records);
+  CAMLlocal2(result, kinds);
   int frames[] = {KO_INIT,  KO_TAIL,          KO_RESIZE, KO_TEXT,  KO_SNAPSHOT,
                   KO_EXIT,  KO_READY,         KO_HEAD,   KO_TITLE, KO_PWD,
                   KO_DEAD,  KO_SNAPSHOT_DONE, KO_ERROR,  KO_FULL,  KO_KEY,
                   KO_PASTE, KO_PASTE_DONE,    KO_MOUSE,  KO_FOCUS, KO_SCREEN,
                   KO_SIGNAL};
-  int tags[] = {KO_BYTES, KO_MARKER, KO_SNAPSHOT_SLICE, KO_PAD};
   size_t count = sizeof(frames) / sizeof(frames[0]);
   kinds = caml_alloc(count, 0);
   for (size_t i = 0; i < count; i++) {
     Store_field(kinds, i, Val_int(frames[i]));
   }
-  records = caml_alloc(4, 0);
-  for (size_t i = 0; i < 4; i++) {
-    Store_field(records, i, Val_int(tags[i]));
-  }
-  result = caml_alloc_tuple(6);
+  result = caml_alloc_tuple(9);
   Store_field(result, 0, Val_int(offsetof(struct ko_ring, data)));
   Store_field(result, 1, Val_int(KO_HEADER));
   Store_field(result, 2, Val_int(KO_MAX_FRAME));
   Store_field(result, 3, Val_int(GHOSTTY_KEY_PASTE));
   Store_field(result, 4, kinds);
-  Store_field(result, 5, records);
+  Store_field(result, 5, Val_int(KO_BYTES));
+  Store_field(result, 6, Val_int(KO_MARKER));
+  Store_field(result, 7, Val_int(KO_SNAPSHOT_SLICE));
+  Store_field(result, 8, Val_int(KO_PAD));
   CAMLreturn(result);
 }
 CAMLprim value ko_pane_start(value path, value callbacks) {

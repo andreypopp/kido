@@ -47,14 +47,16 @@ let pane t = match t.view with No_view -> None | Showing v -> Some v.pane
 let mirror t = match t.view with No_view -> None | Showing v -> Some v.mirror
 let sidebar_x sidebar ~cols = match sidebar with Hidden -> 0 | _ -> Sidebar.pane_x ~cols
 let pane_x t = sidebar_x t.sidebar ~cols:(fst t.geometry)
+let warning_rows warning = if warning then 1 else 0
 
-let size t =
-  let cols, rows = t.geometry in
+let pane_size ~geometry:(cols, rows) ~sidebar ~warning =
   {
-    Ko_server.Protocol.cols = max 1 (cols - pane_x t);
-    rows = max 1 (rows - if t.warning then 1 else 0);
+    Ko_server.Protocol.cols = max 1 (cols - sidebar_x sidebar ~cols);
+    rows = max 1 (rows - warning_rows warning);
     cell_px = None;
   }
+
+let size t = pane_size ~geometry:t.geometry ~sidebar:t.sidebar ~warning:t.warning
 
 let dead t =
   match t.view with
@@ -71,16 +73,11 @@ let layout t =
     Renderer.cols;
     rows = height;
     pane_x = pane_x t;
-    pane_rows = max 0 (height - if t.warning then 1 else 0);
+    pane_rows = max 0 (height - warning_rows t.warning);
     warning = t.warning;
     dead = Option.map Sidebar.dead_line (dead t);
     choosing = (match t.sidebar with Choosing i -> Some i | _ -> None);
-    sidebar =
-      (match t.sidebar with
-      | Hidden -> []
-      | _ ->
-          Sidebar.rows ~selected:(pane t) (rows t)
-          |> List.map (fun r -> (r.Sidebar.text, r.selected)));
+    sidebar = (match t.sidebar with Hidden -> [] | _ -> Sidebar.rows ~selected:(pane t) (rows t));
   }
 
 let notify t =
@@ -88,7 +85,7 @@ let notify t =
     Option.iter (fun f -> f Tick) t.dispatch
 
 let send t json = Option.iter (fun m -> Mirror.send m json) (mirror t)
-let request t meth path body = Wire.request ~socket:t.socket ~client:t.id ~meth ~path body
+let request ?consume t route body = Wire.request ~socket:t.socket ~client:t.id ?consume ~route body
 
 let resize t =
   t.geometry <- Matrix.size t.matrix;
@@ -121,7 +118,7 @@ let create_pane t =
     |> Yojson.Basic.to_string
   in
   let p =
-    request t "POST" "/panes" body |> Yojson.Basic.from_string |> Ko_server.Protocol.created_of_json
+    request t Create_pane body |> Yojson.Basic.from_string |> Ko_server.Protocol.created_of_json
   in
   switch t p.pane
 
@@ -168,9 +165,7 @@ let close t =
 let create ~wire ~socket ~matrix ~modes ~pager =
   let geometry = Matrix.size matrix and warning = not (Matrix.capabilities matrix).kitty_keyboard in
   let sidebar = if warning || Sidebar.visible ~cols:(fst geometry) then Visible else Hidden in
-  let cols, rows = geometry in
-  let x = sidebar_x sidebar ~cols in
-  Wire.upgrade wire ~path:"/client" ();
+  Wire.upgrade wire ~route:Client ();
   Wire.send wire
     (Ko_server.Protocol.Request.client_to_json
        (Hello
@@ -179,12 +174,7 @@ let create ~wire ~socket ~matrix ~modes ~pager =
             name = "ko";
             pane = None;
             focused = true;
-            size =
-              {
-                cols = max 1 (cols - x);
-                rows = max 1 (rows - if warning then 1 else 0);
-                cell_px = None;
-              };
+            size = pane_size ~geometry ~sidebar ~warning;
             ignore_size = false;
           }));
   let text () =
@@ -320,13 +310,7 @@ let update t message =
                     Sys.remove path)
                   (fun () ->
                     ignore
-                      (Wire.request ~socket:t.socket ~client:t.id ~consume:(output_string oc)
-                         ~meth:"GET"
-                         ~path:
-                           ("/panes/"
-                           ^ Ko_server.Ids.Pane_id.to_string pane
-                           ^ "/screen?format=ansi&history=all")
-                         "");
+                      (request ~consume:(output_string oc) t (Screen (pane, Ansi, Full_history)) "");
                     close_out oc;
                     Modes.reset t.modes;
                     Matrix.suspend t.matrix;
@@ -349,10 +333,9 @@ let update t message =
             | Showing v -> (
                 Mirror.close v.mirror;
                 t.view <- No_view;
-                ignore (request t "DELETE" ("/panes/" ^ Ko_server.Ids.Pane_id.to_string v.pane) "");
+                ignore (request t (Delete_pane v.pane) "");
                 let all =
-                  request t "GET" "/panes" "" |> Yojson.Basic.from_string
-                  |> Yojson.Basic.Util.to_list
+                  request t List_panes "" |> Yojson.Basic.from_string |> Yojson.Basic.Util.to_list
                   |> List.map Ko_server.Protocol.row_of_json
                 in
                 Mutex.protect t.lock (fun () -> t.panes <- all);
@@ -382,9 +365,7 @@ let update t message =
         if x < l.pane_x then
           match M.kind event with
           | Down _ when x < l.pane_x - 1 ->
-              Option.iter
-                (fun r -> switch t r.Sidebar.pane)
-                (List.nth_opt (Sidebar.rows ~selected:(pane t) (rows t)) y)
+              Option.iter (fun r -> switch t r.Sidebar.pane) (List.nth_opt l.sidebar y)
           | _ -> ()
         else
           match t.view with

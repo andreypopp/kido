@@ -1,12 +1,10 @@
 type error = Websocket | No_server | Failed of string
 
-let websocket path =
-  let path = List.hd (String.split_on_char '?' path) in
-  String.equal path "/client"
-  || match String.split_on_char '/' path with [ ""; "panes"; _; "view" ] -> true | _ -> false
-
 let request ~dir ~meth ~path body =
-  if websocket path then Error Websocket
+  let route =
+    try Ko_server.Protocol.Route.of_request ~meth path with Invalid_argument _ -> None
+  in
+  if Option.exists Ko_server.Protocol.Route.websocket route then Error Websocket
   else
     try
       match Ko_server.Config.socket ~create:false ~dir with

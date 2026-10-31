@@ -1,34 +1,9 @@
-type kind =
-  | Init
-  | Tail
-  | Resize
-  | Text
-  | Snapshot
-  | Exit
-  | Ready
-  | Head
-  | Title
-  | Pwd
-  | Dead
-  | Snapshot_done
-  | Error
-  | Full
-  | Key
-  | Paste
-  | Paste_done
-  | Mouse
-  | Focus
-  | Screen
-  | Signal
-[@@deriving equal]
+type data =
+  | Bytes
+  | Resize_marker of Protocol.size
+  | Dead_marker of Protocol.dead
+  | Slice of Protocol.Record.slice
 
-val max_key : int
-val number : Buffer.t -> int -> int -> unit
-val string : Buffer.t -> string -> unit
-val size : Buffer.t -> Protocol.size -> unit
-
-type slice = { first : bool; last : bool; screen : bool }
-type data = Bytes | Resize_marker of Protocol.size | Dead_marker of Protocol.dead | Slice of slice
 type record = private { pos : int; next : int; offset : int; at : int; len : int; data : data }
 
 type event =
@@ -52,18 +27,27 @@ val create :
   t
 
 val listen : t -> (event -> unit) -> unit
-val child_pid : t -> int
+val pid : t -> int
 val buffer : t -> Luv.Buffer.t
 val position : t -> int
 val oldest : t -> int option
 val alive : t -> bool
 val scan : t -> bool
 val iter_from : t -> int -> (record -> bool) -> unit
-val send : t -> kind -> string -> unit
-val paste : t -> string -> ((bool * bool, string) result -> unit) -> unit
+val resize : t -> Protocol.size -> unit
+
+val input :
+  t ->
+  Protocol.Request.input ->
+  ((Protocol.paste_result option, string) result -> unit) ->
+  (unit, string) result
 
 val snapshot :
-  t -> full:bool -> consume:(record -> unit) -> done_:((unit, string) result -> unit) -> unit
+  t ->
+  history:Protocol.history ->
+  consume:(record -> unit) ->
+  done_:((unit, string) result -> unit) ->
+  unit
 
 val screen :
   t ->

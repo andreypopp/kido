@@ -43,23 +43,15 @@ type scrollback =
   | Scrollback_disabled
   | Scrollback of { max_bytes : int option; max_lines : int option }
 
-val create :
-  cols:int ->
-  rows:int ->
-  scrollback:scrollback ->
-  apc_max_bytes:int ->
-  kitty_images_max_bytes:int ->
-  continuation_max_bytes:int ->
-  t
+type limits = {
+  scrollback : scrollback;
+  apc_max_bytes : int;
+  kitty_images_max_bytes : int;
+  continuation_max_bytes : int;
+}
 
-val configure :
-  t ->
-  scrollback:scrollback ->
-  apc_max_bytes:int ->
-  kitty_images_max_bytes:int ->
-  continuation_max_bytes:int ->
-  unit
-
+val create : cols:int -> rows:int -> limits:limits -> t
+val configure : t -> limits:limits -> unit
 val now_ns : unit -> int
 val compress_tick : t -> now_ns:int -> int
 

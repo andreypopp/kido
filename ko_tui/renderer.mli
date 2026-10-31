@@ -5,7 +5,7 @@ type layout = {
   pane_rows : int;
   warning : bool;
   dead : string option;
-  sidebar : (string * bool) list;
+  sidebar : Sidebar.row list;
   choosing : int option;
 }
 [@@deriving equal]

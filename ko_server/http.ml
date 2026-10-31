@@ -1,42 +1,52 @@
-let query target =
-  match String.split_on_char '?' target with
-  | [ path ] -> (path, [])
-  | [ path; query ] ->
-      ( path,
-        List.map
-          (fun pair ->
-            match String.split_on_char '=' pair with
-            | [ k; v ] -> (k, v)
-            | _ -> invalid_arg "invalid query")
-          (String.split_on_char '&' query) )
-  | _ -> invalid_arg "invalid target"
-
-let natural ~max value =
-  if String.is_empty value || not (String.for_all (fun c -> Char.(c >= '0' && c <= '9')) value) then
-    invalid_arg "invalid number";
-  match int_of_string_opt value with
-  | Some n when n >= 0 && n <= max -> n
-  | _ -> invalid_arg "invalid number"
-
-let options args : Protocol.view_options =
-  {
-    history =
-      (match List.assoc_opt ~eq:String.equal "history" args with
-      | None | Some "none" -> History_none
-      | Some "all" -> History_all
-      | Some _ -> invalid_arg "invalid history");
-    images =
-      (match List.assoc_opt ~eq:String.equal "images" args with
-      | None | Some "none" -> Images_none
-      | Some _ -> invalid_arg "P1 supports images=none only");
-  }
-
 let id of_string text = try Some (of_string text) with Invalid_argument _ -> None
+
+let respond reqd status body =
+  Httpun.Reqd.respond_with_string reqd
+    (Httpun.Response.create
+       ~headers:
+         (Httpun.Headers.of_list
+            [
+              ("content-type", "application/json");
+              ("content-length", string_of_int (String.length body));
+            ])
+       status)
+    body
+
+let error reqd kind message =
+  respond reqd
+    (match (kind : Protocol.error_kind) with
+    | Invalid -> `Bad_request
+    | Refused -> `Conflict
+    | Gone -> `Gone
+    | Io -> `Internal_server_error
+    | Missing -> `Not_found
+    | Protocol_mismatch _ -> `Upgrade_required
+    | Vt_mismatch _ -> `Conflict)
+    (Yojson.Basic.to_string (Protocol.error_to_json { kind; message }))
+
+let body reqd callback =
+  let b = Buffer.create 256 in
+  let reader = Httpun.Reqd.request_body reqd in
+  let rec read () =
+    Httpun.Body.Reader.schedule_read reader
+      ~on_read:(fun bs ~off ~len ->
+        if Buffer.length b + len > Connection.max_message then (
+          Httpun.Body.Reader.close reader;
+          error reqd Invalid "body exceeds 1 MiB")
+        else (
+          Buffer.add_string b (Bigstringaf.substring bs ~off ~len);
+          read ()))
+      ~on_eof:(fun () ->
+        match Yojson.Basic.from_string (Buffer.contents b) with
+        | json -> callback json
+        | exception Yojson.Json_error message -> error reqd Invalid message)
+  in
+  read ()
 
 let request state conn { Gluten.reqd; upgrade } =
   let request = Httpun.Reqd.request reqd in
-  let respond value = Connection.respond reqd `OK (Yojson.Basic.to_string value) in
-  let error kind message = Connection.error reqd kind message in
+  let respond value = respond reqd `OK (Yojson.Basic.to_string value) in
+  let error kind message = error reqd kind message in
   let invalid message = error Invalid message in
   let guarded callback =
     try callback () with
@@ -46,10 +56,12 @@ let request state conn { Gluten.reqd; upgrade } =
     | Sys_error message -> error Io message
   in
   guarded (fun () ->
-      let path, args = query request.target in
+      let route =
+        Protocol.Route.of_request ~meth:(Httpun.Method.to_string request.meth) request.target
+      in
       let header name = Httpun.Headers.get request.headers name in
       let client = Option.flat_map (id Ids.Client_id.of_string) (header "ko-client") in
-      let discovery = String.equal path "/version" in
+      let discovery = match route with Some Version -> true | _ -> false in
       let sent name ours =
         match header name with None when discovery -> Some ours | value -> value
       in
@@ -64,13 +76,7 @@ let request state conn { Gluten.reqd; upgrade } =
             error Refused "Origin is not permitted on this unix server"
           else if
             Option.is_some (header "ko-client")
-            && not
-                 (Option.exists
-                    (fun id ->
-                      List.exists
-                        (fun c -> Ids.Client_id.equal (Client.id c) id && Client.registered c)
-                        (State.clients state))
-                    client)
+            && not (Option.exists (State.registered state) client)
           then error Gone "client is closed"
           else
             let panes = State.panes state in
@@ -79,12 +85,17 @@ let request state conn { Gluten.reqd; upgrade } =
               | Ok () -> ()
               | Error message -> invalid message
             in
-            match (request.meth, String.split_on_char '/' path) with
-            | `GET, [ ""; "version" ] -> respond (Protocol.version_to_json Protocol.version)
-            | `GET, [ ""; "panes" ] ->
-                respond (list_to_json Protocol.row_to_json (Panes.rows panes))
-            | `POST, [ ""; "panes" ] ->
-                Connection.body reqd (fun json ->
+            let with_pane id f =
+              match Panes.find panes id with
+              | None -> error Missing "pane not found"
+              | Some pane -> f pane
+            in
+            match route with
+            | None -> error Missing "resource not found"
+            | Some Version -> respond (Protocol.version_to_json Protocol.version)
+            | Some List_panes -> respond (list_to_json Protocol.row_to_json (Panes.rows panes))
+            | Some Create_pane ->
+                body reqd (fun json ->
                     guarded (fun () ->
                         match
                           Panes.add panes
@@ -95,111 +106,82 @@ let request state conn { Gluten.reqd; upgrade } =
                         | Ok pane ->
                             respond (Protocol.created_to_json { pane = Pane.id pane });
                             State.topology state))
-            | `GET, [ ""; "client" ] ->
+            | Some Client ->
                 let c = State.add_client state conn in
                 websocket
-                  ~on_text:(fun text ->
-                    try
-                      let input = Protocol.Request.client_of_json (Yojson.Basic.from_string text) in
-                      match
-                        Client.receive panes ~limits:(State.limits state)
-                          ~clients:(State.clients state) c input
-                      with
-                      | Ok () -> ()
-                      | Error _ -> Connection.reject conn Invalid
-                    with Yojson.Json_error _ | Invalid_argument _ | Jsonkit.Of_json_error _ ->
-                      Connection.reject conn Invalid)
+                  ~on_text:
+                    (Client.receive panes ~limits:(State.limits state)
+                       ~clients:(State.clients state) c)
                   ~on_close:(fun () -> State.remove_client state c)
                   ~on_writable:ignore
-            | meth, "" :: "panes" :: pane_id :: rest -> (
-                match Option.flat_map (Panes.find panes) (id Ids.Pane_id.of_string pane_id) with
-                | None -> error Missing "pane not found"
-                | Some pane -> (
-                    match (meth, rest) with
-                    | `DELETE, [] ->
-                        State.close_views state pane;
-                        Panes.remove panes pane;
-                        State.topology state;
-                        respond (`Assoc [])
-                    | `POST, [ "input" ] ->
-                        Connection.body reqd (fun json ->
-                            guarded (fun () ->
-                                let input = Protocol.Request.input_of_json json in
-                                match
-                                  Input.send pane input (function
-                                    | Error message -> error Io message
-                                    | Ok None -> respond (`Assoc [])
-                                    | Ok (Some reply) ->
-                                        respond (Protocol.paste_result_to_json reply))
-                                with
-                                | Ok () -> ()
-                                | Error message -> invalid message))
-                    | `GET, [ "screen" ] ->
-                        let format : Protocol.Request.screen_format =
-                          match List.assoc_opt ~eq:String.equal "format" args with
-                          | None | Some "plain" -> Plain
-                          | Some "ansi" -> Ansi
-                          | _ -> invalid_arg "invalid format"
-                        in
-                        let history : Protocol.Request.screen_history =
-                          match List.assoc_opt ~eq:String.equal "history" args with
-                          | None | Some "none" -> Visible_only
-                          | Some "all" -> Full_history
-                          | Some n -> Last_rows (natural ~max:0xffffffff n)
-                        in
-                        let writer = ref None in
-                        Pane_proc.screen (Pane.proc pane) ~format ~history
-                          ~chunk:(fun text ~last ->
-                            let output =
-                              match !writer with
-                              | Some w -> w
-                              | None ->
-                                  let w =
-                                    Httpun.Reqd.respond_with_streaming reqd
-                                      (Httpun.Response.create
-                                         ~headers:
-                                           (Httpun.Headers.of_list
-                                              [
-                                                ("content-type", "text/plain; charset=utf-8");
-                                                ("transfer-encoding", "chunked");
-                                              ])
-                                         `OK)
-                                  in
-                                  writer := Some w;
-                                  w
-                            in
-                            if not (Httpun.Body.Writer.is_closed output) then begin
-                              Httpun.Body.Writer.write_string output text;
-                              if last then Httpun.Body.Writer.close output
-                              else Httpun.Body.Writer.flush output ignore
-                            end)
-                          ~done_:(function
+            | Some (Delete_pane id) ->
+                with_pane id (fun pane ->
+                    State.close_views state pane;
+                    Panes.remove panes pane;
+                    State.topology state;
+                    respond (`Assoc []))
+            | Some (Input id) ->
+                with_pane id (fun pane ->
+                    body reqd (fun json ->
+                        guarded (fun () ->
+                            match
+                              Pane_proc.input (Pane.proc pane) (Protocol.Request.input_of_json json)
+                                (function
+                                | Error message -> error Io message
+                                | Ok None -> respond (`Assoc [])
+                                | Ok (Some reply) -> respond (Protocol.paste_result_to_json reply))
+                            with
                             | Ok () -> ()
-                            | Error message -> (
-                                match !writer with
-                                | None -> error Io message
-                                | Some _ -> Connection.close conn))
-                    | `GET, [ "view" ] ->
-                        let full = Protocol.full (options args) in
-                        let offset =
-                          Option.map (natural ~max:max_int)
-                            (List.assoc_opt ~eq:String.equal "offset" args)
+                            | Error message -> invalid message)))
+            | Some (Screen (id, format, history)) ->
+                with_pane id (fun pane ->
+                    let writer = ref None in
+                    Pane_proc.screen (Pane.proc pane) ~format ~history
+                      ~chunk:(fun text ~last ->
+                        let output =
+                          match !writer with
+                          | Some w -> w
+                          | None ->
+                              let w =
+                                Httpun.Reqd.respond_with_streaming reqd
+                                  (Httpun.Response.create
+                                     ~headers:
+                                       (Httpun.Headers.of_list
+                                          [
+                                            ("content-type", "text/plain; charset=utf-8");
+                                            ("transfer-encoding", "chunked");
+                                          ])
+                                     `OK)
+                              in
+                              writer := Some w;
+                              w
                         in
-                        if not (Pane_proc.alive (Pane.proc pane)) then error Io "pane process ended"
-                        else begin
-                          let view = ref None in
-                          websocket
-                            ~on_text:(fun text -> Option.iter (fun v -> View.receive v text) !view)
-                            ~on_close:(fun () ->
-                              Option.iter
-                                (fun v ->
-                                  View.close v;
-                                  State.remove_view state v)
-                                !view)
-                            ~on_writable:(fun () -> Option.iter View.pump !view);
-                          let v = View.create pane conn ~client ~offset ~full in
-                          view := Some v;
-                          if not (Connection.is_closed conn) then State.add_view state v
-                        end
-                    | _ -> error Missing "resource not found"))
-            | _ -> error Missing "resource not found"))
+                        if not (Httpun.Body.Writer.is_closed output) then begin
+                          Httpun.Body.Writer.write_string output text;
+                          if last then Httpun.Body.Writer.close output
+                          else Httpun.Body.Writer.flush output ignore
+                        end)
+                      ~done_:(function
+                        | Ok () -> ()
+                        | Error message -> (
+                            match !writer with
+                            | None -> error Io message
+                            | Some _ -> Connection.close conn)))
+            | Some (View (id, options, offset)) ->
+                with_pane id (fun pane ->
+                    if not (Pane_proc.alive (Pane.proc pane)) then error Io "pane process ended"
+                    else begin
+                      let view = ref None in
+                      websocket
+                        ~on_text:(fun text -> Option.iter (fun v -> View.receive v text) !view)
+                        ~on_close:(fun () ->
+                          Option.iter
+                            (fun v ->
+                              View.close v;
+                              State.remove_view state v)
+                            !view)
+                        ~on_writable:(fun () -> Option.iter View.pump !view);
+                      let v = View.create pane conn ~client ~offset ~history:options.history in
+                      view := Some v;
+                      if not (Connection.is_closed conn) then State.add_view state v
+                    end)))

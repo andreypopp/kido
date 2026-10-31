@@ -72,3 +72,6 @@ let add_view t view =
 
 let remove_view t view = t.views <- List.filter (fun v -> not Stdlib.(v == view)) t.views
 let limits t = t.config.limits
+
+let registered t id =
+  List.exists (fun c -> Ids.Client_id.equal (Client.id c) id && Client.registered c) t.clients

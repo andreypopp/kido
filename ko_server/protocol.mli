@@ -74,9 +74,6 @@ type variable = { name : string; value : string }
 type history = History_none | History_all
 type images = Images_none
 type view_options = { history : history; images : images }
-
-val full : view_options -> bool
-
 type marker = Resize of size | Dead of dead
 type created = { pane : Ids.Pane_id.t } [@@deriving json]
 type paste_result = { id : int option; pasted : bool; unsafe : bool } [@@deriving json]
@@ -121,6 +118,33 @@ module Event : sig
     | Skipped of { offset : int; from : int; to_ : int }
     | Pasted of paste_result
   [@@deriving json]
+end
+
+module Record : sig
+  type kind = Output | Snapshot
+  type slice = { first : bool; last : bool; screen : bool }
+
+  val header_size : int
+  val slice_size : int
+  val encode_header : Bytes.t -> int -> kind -> offset:int -> unit
+  val kind_of_string : string -> kind
+  val slice_of_string : string -> int -> slice
+end
+
+module Route : sig
+  type t =
+    | Version
+    | List_panes
+    | Create_pane
+    | Client
+    | Delete_pane of Ids.Pane_id.t
+    | Input of Ids.Pane_id.t
+    | Screen of Ids.Pane_id.t * Request.screen_format * Request.screen_history
+    | View of Ids.Pane_id.t * view_options * int option
+
+  val websocket : t -> bool
+  val to_request : t -> string * string
+  val of_request : meth:string -> string -> t option
 end
 
 val version : version

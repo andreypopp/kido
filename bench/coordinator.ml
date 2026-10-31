@@ -108,15 +108,16 @@ let flush p =
         match record.data with
         | Bytes -> (
             match
-              Connection.record p.view ~queue:false ~kind:1 ~offset:record.offset
+              Connection.record p.view ~queue:false ~kind:Output ~offset:record.offset
                 (Pane_proc.buffer p.proc) ~at:record.at ~len:record.len
             with
             | Accepted ->
                 p.pos <- record.next;
                 true
-            | Blocked accepted ->
-                if accepted then p.pos <- record.next;
+            | Queued ->
+                p.pos <- record.next;
                 false
+            | Blocked -> false
             | Closed -> failwith "view closed")
         | _ ->
             p.pos <- record.next;
@@ -141,7 +142,7 @@ let throughput ~pane_exe ~produce ~bytes ~callbacks ~coalesce_ms ~streams =
   let started = Unix.gettimeofday () and cpu = cpu_self () and words = Gc.minor_words () in
   run_until ~timeout:120. (fun () -> p.dead && drained p) (fun () -> flush p);
   let elapsed = Unix.gettimeofday () -. started and used = cpu_self () -. cpu in
-  let pane_cpu = snd (cpu_seconds (Pane_proc.child_pid p.proc)) in
+  let pane_cpu = snd (cpu_seconds (Pane_proc.pid p.proc)) in
   Printf.printf
     "ko view=writev callbacks=%b coalesce_ms=%d bytes=%d seconds=%.3f MB/s=%.1f records=%d \
      minor_words/record=%.2f pane_cpu=%.3f coordinator_cpu=%.3f cores=%.2f\n\
@@ -162,27 +163,26 @@ let snapshots ~pane_exe ~produce ~lines =
       ~transcript:false ~latency:false
   in
   run_until ~timeout:120. (fun () -> p.dead && drained p) (fun () -> flush p);
-  let request label full before =
+  let request label history before =
     before ();
     let finished = ref false and total = ref 0 in
     let started = Unix.gettimeofday () in
-    Pane_proc.snapshot p.proc ~full
+    Pane_proc.snapshot p.proc ~history
       ~consume:(fun record ->
-        total := !total + record.len - 2;
+        total := !total + record.len - Protocol.Record.slice_size;
         ignore
-          (Connection.record p.view ~queue:true ~kind:2 ~offset:record.offset
+          (Connection.record p.view ~queue:true ~kind:Snapshot ~offset:record.offset
              (Pane_proc.buffer p.proc) ~at:record.at ~len:record.len))
       ~done_:(function Ok () -> finished := true | Error message -> failwith message);
     run_until ~timeout:120. (fun () -> !finished && Connection.available p.view) (fun () -> flush p);
     Printf.printf "snapshot view=writev lines=%d kind=%s bytes=%d ms=%.2f\n%!" lines label !total
       ((Unix.gettimeofday () -. started) *. 1e3)
   in
-  request "full" true ignore;
-  request "screen" false ignore;
-  request "resize+screen" false (fun () ->
-      let b = Buffer.create 8 in
-      Pane_proc.size b { Protocol.cols = 100; rows = 30; cell_px = Some { width = 8; height = 16 } };
-      Pane_proc.send p.proc Resize (Buffer.contents b));
+  request "full" History_all ignore;
+  request "screen" History_none ignore;
+  request "resize+screen" History_none (fun () ->
+      Pane_proc.resize p.proc
+        { Protocol.cols = 100; rows = 30; cell_px = Some { width = 8; height = 16 } });
   finish p
 
 let latency ~pane_exe ~produce ~count =

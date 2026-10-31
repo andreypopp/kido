@@ -1,4 +1,4 @@
-type row = { pane : Ko_server.Ids.Pane_id.t; text : string; selected : bool }
+type row = { pane : Ko_server.Ids.Pane_id.t; text : string; selected : bool } [@@deriving equal]
 
 let width = 24
 let visible ~cols = cols >= 100

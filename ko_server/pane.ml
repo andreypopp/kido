@@ -22,6 +22,7 @@ let id t = t.id
 let proc t = t.proc
 let offset t = t.offset
 let sizer t = t.sizer
+let oldest t = Option.value ~default:t.offset (Pane_proc.oldest t.proc)
 
 let row t : Protocol.row =
   { id = t.id; pid = t.pid; command = t.command; cwd = t.cwd; title = t.title; dead = t.dead }
@@ -82,9 +83,7 @@ let create config ~id ~cwd ~command ~env ~notify =
 let resize t size =
   if not (Protocol.equal_size t.size size) then begin
     t.size <- size;
-    let b = Buffer.create 8 in
-    Pane_proc.size b size;
-    Pane_proc.send t.proc Resize (Buffer.contents b)
+    Pane_proc.resize t.proc size
   end
 
 let claim t ~client ~size =

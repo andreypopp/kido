@@ -515,11 +515,13 @@ func TestVersionAndOrigin(t *testing.T) {
 	t.Parallel()
 	s := start(t)
 	s.client("")
-	var limits struct{ Scrollback [2]json.RawMessage }
+	var limits struct {
+		Terminal struct{ Scrollback [2]json.RawMessage }
+	}
 	if err := json.Unmarshal(s.limits, &limits); err != nil {
 		t.Fatal(err)
 	}
-	if string(limits.Scrollback[0]) != `"scrollback"` || string(limits.Scrollback[1]) != `{"max_bytes":50000000}` {
+	if string(limits.Terminal.Scrollback[0]) != `"scrollback"` || string(limits.Terminal.Scrollback[1]) != `{"max_bytes":50000000}` {
 		t.Fatalf("default scrollback limits: %s", s.limits)
 	}
 	vt := s.vt

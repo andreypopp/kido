@@ -62,11 +62,20 @@ let line t =
   in
   go ()
 
+type response = { status : int; reason : string; headers : (string * string) list; body : string }
+
 let headers t =
-  let status = line t in
+  let status, reason =
+    match String.split_on_char ' ' (line t) with
+    | version :: code :: reason when String.equal version "HTTP/1.1" -> (
+        match int_of_string_opt code with
+        | Some status -> (status, String.concat " " reason)
+        | None -> raise (Error "invalid HTTP status"))
+    | _ -> raise (Error "invalid HTTP status")
+  in
   let rec go fields =
     match line t with
-    | "" -> (status, fields)
+    | "" -> (status, reason, fields)
     | s -> (
         match String.index_opt s ':' with
         | None -> raise (Error "invalid HTTP header")
@@ -87,7 +96,7 @@ let head ?client meth path extra =
     extra
 
 let exchange ~socket ?client ?consume ~meth ~path body =
-  let t = of_fd (Ko_server.Socket.connect ~socket ~deadline:(Unix.gettimeofday () +. 5.)) in
+  let t = of_fd (Launch.connect ~socket ~deadline:(Unix.gettimeofday () +. 5.)) in
   Fun.protect
     ~finally:(fun () -> close t)
     (fun () ->
@@ -95,11 +104,10 @@ let exchange ~socket ?client ?consume ~meth ~path body =
         (head ?client meth path
            (Printf.sprintf "Content-Length: %d\r\nConnection: keep-alive\r\n" (String.length body))
         ^ body);
-      let status, fields = headers t in
+      let status, reason, fields = headers t in
       let b = Buffer.create 4096 in
       let consume =
-        if String.starts_with ~prefix:"HTTP/1.1 200 " status then
-          Option.value ~default:(Buffer.add_string b) consume
+        if status = 200 then Option.value ~default:(Buffer.add_string b) consume
         else Buffer.add_string b
       in
       let rec body_bytes n =
@@ -129,34 +137,36 @@ let exchange ~socket ?client ?consume ~meth ~path body =
                   consume (read t 1)
                 done
               with End_of_file -> ())));
-      (status, List.rev fields, Buffer.contents b))
+      { status; reason; headers = List.rev fields; body = Buffer.contents b })
 
-let request ~socket ?client ?consume ~meth ~path body =
-  let status, _, body = exchange ~socket ?client ?consume ~meth ~path body in
-  if not (String.starts_with ~prefix:"HTTP/1.1 200 " status) then
-    raise (Error (status ^ ": " ^ body));
-  body
+let request ~socket ?client ?consume ~route body =
+  let meth, path = Ko_server.Protocol.Route.to_request route in
+  let response = exchange ~socket ?client ?consume ~meth ~path body in
+  if response.status <> 200 then
+    raise (Error (Printf.sprintf "%d %s: %s" response.status response.reason response.body));
+  response.body
 
-let upgrade t ?client ~path () =
+let upgrade t ?client ~route () =
+  let meth, path = Ko_server.Protocol.Route.to_request route in
   let key =
     Base64.encode_exn (String.init 16 (fun _ -> Char.chr (Random.State.int t.random 256)))
   in
   write t
-    (head ?client "GET" path
+    (head ?client meth path
        ("Upgrade: websocket\r\n\
          Connection: Upgrade\r\n\
          Sec-WebSocket-Version: 13\r\n\
          Sec-WebSocket-Key: " ^ key ^ "\r\n"));
-  let status, fields = headers t in
+  let status, reason, fields = headers t in
   let expected =
     Base64.encode_exn (Ko_server.Sha1.digest (key ^ "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
   in
   if
-    (not (String.starts_with ~prefix:"HTTP/1.1 101 " status))
+    status <> 101
     || not
          (Option.exists (String.equal expected)
             (List.assoc_opt ~eq:String.equal "sec-websocket-accept" fields))
-  then raise (Error ("WebSocket upgrade failed: " ^ status))
+  then raise (Error (Printf.sprintf "WebSocket upgrade failed: %d %s" status reason))
 
 let frame t opcode payload =
   Mutex.protect t.write_lock (fun () ->

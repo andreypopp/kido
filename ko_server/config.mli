@@ -7,18 +7,23 @@ type scrollback = Ko_vt.scrollback =
 (** A way to transmit a Kitty image other than inline data. *)
 type medium = File | Temp_file | Shared_mem [@@deriving json]
 
-type limits = {
+type terminal = Ko_vt.limits = {
   scrollback : scrollback;
   apc_max_bytes : int;
       (** Maximum number of bytes that the APC handler buffers, for all protocols. *)
   kitty_images_max_bytes : int;
-  media : medium list;
-      (** The media from which the terminal loads Kitty images. The empty list enables none of them.
-      *)
   continuation_max_bytes : int;
       (** Maximum number of bytes that the terminal keeps to rebuild an escape sequence or UTF-8
           codepoint that was unfinished at the end of the last write. Snapshots carry these bytes,
           so a decoded mirror can continue the sequence. *)
+}
+[@@deriving json]
+
+type limits = {
+  terminal : terminal;
+  media : medium list;
+      (** The media from which the terminal loads Kitty images. The empty list enables none of them.
+      *)
 }
 [@@deriving json]
 

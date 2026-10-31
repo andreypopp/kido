@@ -5,7 +5,7 @@ type layout = {
   pane_rows : int;
   warning : bool;
   dead : string option;
-  sidebar : (string * bool) list;
+  sidebar : Sidebar.row list;
   choosing : int option;
 }
 [@@deriving equal]
@@ -43,11 +43,11 @@ let draw_ui l grid =
       Matrix.Grid.draw_text grid ~x:(l.pane_x - 1) ~y ~style:(style ~inverse:false) ~text:"\u{2502}"
     done;
   List.iteri
-    (fun y (text, selected) ->
+    (fun y (row : Sidebar.row) ->
       if y < l.pane_rows then
         draw_line grid ~x:0 ~y ~width:(l.pane_x - 1)
-          ~inverse:(match l.choosing with Some i -> i = y | None -> selected)
-          text)
+          ~inverse:(match l.choosing with Some i -> i = y | None -> row.selected)
+          row.text)
     l.sidebar;
   Option.iter
     (draw_line grid ~x:l.pane_x ~y:(l.pane_rows - 1) ~width:(l.cols - l.pane_x) ~inverse:true)
@@ -153,7 +153,7 @@ let paint t ~modes ~layout:l ~frame =
           Buffer.add_string b (Ansi.to_string (Ansi.enable Cursor_visible)));
       t.cursor <- Some cursor);
     if Buffer.length b > 0 then
-      Modes.output
+      Fs.write_all Unix.stdout
         (Ansi.to_string (Ansi.enable Sync_output)
         ^ Buffer.contents b
         ^ Ansi.to_string (Ansi.disable Sync_output));
@@ -172,7 +172,11 @@ let%test_module "Tests" =
           pane_rows = 2;
           warning = false;
           dead = None;
-          sidebar = [ ("1 界", true); ("2 /tmp", false) ];
+          sidebar =
+            [
+              { pane = Ko_server.Ids.Pane_id.make 1; text = "1 界"; selected = true };
+              { pane = Ko_server.Ids.Pane_id.make 2; text = "2 /tmp"; selected = false };
+            ];
           choosing = Some 1;
         }
         grid;
@@ -199,7 +203,7 @@ let%test_module "Tests" =
           pane_rows = 1;
           warning = true;
           dead = Some "[exited 1]";
-          sidebar = [ ("1 sh", true) ];
+          sidebar = [ { pane = Ko_server.Ids.Pane_id.make 1; text = "1 sh"; selected = true } ];
           choosing = None;
         }
         grid;

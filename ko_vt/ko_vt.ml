@@ -57,23 +57,15 @@ type scrollback =
   | Scrollback_disabled
   | Scrollback of { max_bytes : int option; max_lines : int option }
 
-external create :
-  cols:int ->
-  rows:int ->
-  scrollback:scrollback ->
-  apc_max_bytes:int ->
-  kitty_images_max_bytes:int ->
-  continuation_max_bytes:int ->
-  t = "ko_vt_create_bytecode" "ko_vt_create"
+type limits = {
+  scrollback : scrollback;
+  apc_max_bytes : int;
+  kitty_images_max_bytes : int;
+  continuation_max_bytes : int;
+}
 
-external configure :
-  t ->
-  scrollback:scrollback ->
-  apc_max_bytes:int ->
-  kitty_images_max_bytes:int ->
-  continuation_max_bytes:int ->
-  unit = "ko_vt_configure"
-
+external create : cols:int -> rows:int -> limits:limits -> t = "ko_vt_create"
+external configure : t -> limits:limits -> unit = "ko_vt_configure"
 external now_ns : unit -> int = "ko_vt_now_ns"
 external compress_tick : t -> now_ns:int -> int = "ko_vt_compress_tick"
 
@@ -104,10 +96,13 @@ let%test_module "Tests" =
   (module struct
     let make ~cols ~rows =
       create ~cols ~rows
-        ~scrollback:(Scrollback { max_bytes = Some 50_000_000; max_lines = None })
-        ~apc_max_bytes:(65 * 1024 * 1024)
-        ~kitty_images_max_bytes:10_000_000
-        ~continuation_max_bytes:(65 * 1024 * 1024)
+        ~limits:
+          {
+            scrollback = Scrollback { max_bytes = Some 50_000_000; max_lines = None };
+            apc_max_bytes = 65 * 1024 * 1024;
+            kitty_images_max_bytes = 10_000_000;
+            continuation_max_bytes = 65 * 1024 * 1024;
+          }
 
     let tags bytes =
       let rec go pos acc =
@@ -327,8 +322,13 @@ let%test_module "Tests" =
         (total_rows restored = total_rows server);
       let limited =
         create ~cols:80 ~rows:24
-          ~scrollback:(Scrollback { max_bytes = Some 50_000_000; max_lines = Some 1000 })
-          ~apc_max_bytes:0 ~kitty_images_max_bytes:0 ~continuation_max_bytes:0
+          ~limits:
+            {
+              scrollback = Scrollback { max_bytes = Some 50_000_000; max_lines = Some 1000 };
+              apc_max_bytes = 0;
+              kitty_images_max_bytes = 0;
+              continuation_max_bytes = 0;
+            }
       in
       fill limited;
       Printf.printf "lines limit prunes=%b\n" (total_rows limited < 3000);

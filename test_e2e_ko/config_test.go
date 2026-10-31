@@ -14,17 +14,19 @@ func TestDefaultsAndPaneEnvironment(t *testing.T) {
 	s := start(t, "--scrollback-bytes", "80M", "--scrollback-lines", "5000")
 	c, _ := s.client("")
 	var limits struct {
-		Scrollback   [2]json.RawMessage
-		Continuation int `json:"continuation_max_bytes"`
+		Terminal struct {
+			Scrollback   [2]json.RawMessage
+			Continuation int `json:"continuation_max_bytes"`
+		}
 	}
 	if err := json.Unmarshal(s.limits, &limits); err != nil {
 		t.Fatal(err)
 	}
 	var scrollback map[string]int
-	if err := json.Unmarshal(limits.Scrollback[1], &scrollback); err != nil {
+	if err := json.Unmarshal(limits.Terminal.Scrollback[1], &scrollback); err != nil {
 		t.Fatal(err)
 	}
-	if string(limits.Scrollback[0]) != `"scrollback"` || scrollback["max_bytes"] != 80*1024*1024 || scrollback["max_lines"] != 5000 || limits.Continuation != 65*1024*1024 {
+	if string(limits.Terminal.Scrollback[0]) != `"scrollback"` || scrollback["max_bytes"] != 80*1024*1024 || scrollback["max_lines"] != 5000 || limits.Terminal.Continuation != 65*1024*1024 {
 		t.Fatalf("terminal contract: %s", s.limits)
 	}
 	output, err := exec.Command(koBin, "version").Output()

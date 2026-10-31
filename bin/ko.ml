@@ -51,7 +51,7 @@ let attach override =
       Ko_tui.run ~dir:(Config.dir ~dir:override) ~executable:(Lazy.force Fs.self) ~pager)
 
 let kill override =
-  report "kill-server" (fun () -> Server_stop.stop ~dir:(Config.dir ~dir:override))
+  report "kill-server" (fun () -> Ko_tui.Launch.stop ~dir:(Config.dir ~dir:override))
 
 let api override meth input include_headers path =
   run "api" (fun () ->
@@ -83,17 +83,18 @@ let api override meth input include_headers path =
         | Error (Failed message) ->
             Printf.eprintf "ko api: %s\n%!" message;
             1
-        | Ok (status, fields, response) ->
+        | Ok { status; reason; headers; body } ->
             if include_headers then
               print_string
                 (String.concat "\r\n"
-                   (status :: List.map (fun (name, value) -> name ^ ": " ^ value) fields)
+                   (Printf.sprintf "HTTP/1.1 %d %s" status reason
+                   :: List.map (fun (name, value) -> name ^ ": " ^ value) headers)
                 ^ "\r\n\r\n");
-            print_string response;
+            print_string body;
             flush stdout;
-            if String.starts_with ~prefix:"HTTP/1.1 2" status then 0
+            if status / 100 = 2 then 0
             else (
-              Printf.eprintf "ko api: HTTP %s\n%!" (List.nth (String.split_on_char ' ' status) 1);
+              Printf.eprintf "ko api: HTTP %d\n%!" status;
               1))
 
 let version () =

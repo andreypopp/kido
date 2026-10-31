@@ -28,13 +28,15 @@ type layout = {
   max_frame : int;
   max_key : int;
   kinds : int array;
-  tags : int array;
+  bytes_tag : int;
+  marker_tag : int;
+  slice_tag : int;
+  pad_tag : int;
 }
 
 external layout : unit -> layout = "ko_pane_layout"
 
 let layout = layout ()
-let max_key = layout.max_key
 
 let kinds =
   [|
@@ -101,7 +103,7 @@ let init (config : Config.t) ~id ~cwd ~argv ~env ~size:dimensions =
   let b = Buffer.create 512 in
   Buffer.add_uint16_le b 3;
   size b dimensions;
-  let limits = config.limits in
+  let limits = config.limits.terminal in
   let max_bytes, max_lines =
     match limits.scrollback with
     | Scrollback_disabled -> (Some 0, None)
@@ -119,7 +121,7 @@ let init (config : Config.t) ~id ~cwd ~argv ~env ~size:dimensions =
     List.fold_left
       (fun bits medium ->
         bits lor match medium with Config.File -> 1 | Temp_file -> 2 | Shared_mem -> 4)
-      0 limits.media
+      0 config.limits.media
   in
   Buffer.add_char b (Char.chr media);
   Buffer.add_int64_le b (Int64.of_int limits.continuation_max_bytes);
@@ -132,8 +134,12 @@ let init (config : Config.t) ~id ~cwd ~argv ~env ~size:dimensions =
   string b (Ids.Pane_id.to_string id);
   Buffer.contents b
 
-type slice = { first : bool; last : bool; screen : bool }
-type data = Bytes | Resize_marker of Protocol.size | Dead_marker of Protocol.dead | Slice of slice
+type data =
+  | Bytes
+  | Resize_marker of Protocol.size
+  | Dead_marker of Protocol.dead
+  | Slice of Protocol.Record.slice
+
 type record = { pos : int; next : int; offset : int; at : int; len : int; data : data }
 
 type event =
@@ -174,7 +180,7 @@ type t = {
   mutable notify : event -> unit;
 }
 
-let child_pid t = t.pid
+let pid t = t.pid
 let buffer t = t.ring
 let position t = t.scanned
 let alive t = not t.closed
@@ -213,11 +219,11 @@ let read_record ring capacity pos =
   let at = base + layout.record_header in
   let offset = Int64.to_int (Bigstringaf.get_int64_le ring (base + 5)) in
   let next = pos + layout.record_header + len in
-  if kind = layout.tags.(3) then (None, next)
+  if kind = layout.pad_tag then (None, next)
   else
     let data =
-      if kind = layout.tags.(0) then Bytes
-      else if kind = layout.tags.(1) then
+      if kind = layout.bytes_tag then Bytes
+      else if kind = layout.marker_tag then
         begin if len = 9 && Char.code ring.{at} = 1 then
           Resize_marker
             {
@@ -239,13 +245,11 @@ let read_record ring capacity pos =
             }
         else invalid_arg "invalid ring marker"
         end
-      else if kind = layout.tags.(2) && len >= 2 then
+      else if kind = layout.slice_tag && len >= Protocol.Record.slice_size then
         Slice
-          {
-            first = Char.code ring.{at} land 1 <> 0;
-            last = Char.code ring.{at} land 2 <> 0;
-            screen = Char.code ring.{at + 1} = 1;
-          }
+          (Protocol.Record.slice_of_string
+             (Bigstringaf.substring ring ~off:at ~len:Protocol.Record.slice_size)
+             0)
       else invalid_arg "invalid ring record kind"
     in
     (Some { pos; next; offset; at; len; data }, next)
@@ -337,9 +341,10 @@ let request t kind body reply =
     send t kind (Buffer.contents b)
   end
 
-let snapshot t ~full ~consume ~done_ =
+let snapshot t ~history ~consume ~done_ =
   request t Snapshot
-    ((if full then "\000" else "\001") ^ "\000\000\000\000\000")
+    ((match history with Protocol.History_all -> "\000" | History_none -> "\001")
+    ^ "\000\000\000\000\000")
     (Snapshot_reply (consume, done_))
 
 let screen t ~format ~history ~chunk ~done_ =
@@ -352,8 +357,6 @@ let screen t ~format ~history ~chunk ~done_ =
        | Full_history -> 0xffffffff
        | Last_rows n -> n));
   request t Screen (Buffer.contents b) (Screen_reply (chunk, done_))
-
-let paste t body done_ = request t Paste body (Paste_reply done_)
 
 let string_at buffer at =
   let len = Int32.to_int (Bigstringaf.get_int32_le buffer at) in
@@ -492,6 +495,86 @@ let kill t =
   if not t.reaped then
     try Unix.kill t.pid Sys.sigkill with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
 
+let resize t dimensions =
+  let b = Buffer.create 8 in
+  size b dimensions;
+  send t Resize (Buffer.contents b)
+
+let encode_input input =
+  let b = Buffer.create 64 in
+  let num n width =
+    if n < 0 || (width < 8 && n >= 1 lsl (8 * width)) then invalid_arg "input value out of range";
+    number b n width
+  in
+  let kind =
+    match input with
+    | Protocol.Request.Key key ->
+        if key.key > layout.max_key then invalid_arg "invalid key";
+        if
+          key.unshifted_codepoint > 0x10ffff
+          || (key.unshifted_codepoint >= 0xd800 && key.unshifted_codepoint <= 0xdfff)
+        then invalid_arg "invalid codepoint";
+        num (match key.action with Key_release -> 0 | Key_press -> 1 | Key_repeat -> 2) 1;
+        num key.key 2;
+        num key.mods 2;
+        num key.unshifted_codepoint 4;
+        string b key.text;
+        num (if key.composing then 1 else 0) 1;
+        Key
+    | Mouse mouse ->
+        num (match mouse.action with Mouse_press -> 0 | Mouse_release -> 1 | Mouse_motion -> 2) 1;
+        num
+          (match mouse.button with
+          | Button_unknown -> 0
+          | Button_left -> 1
+          | Button_right -> 2
+          | Button_middle -> 3
+          | Button_four -> 4
+          | Button_five -> 5
+          | Button_six -> 6
+          | Button_seven -> 7
+          | Button_eight -> 8
+          | Button_nine -> 9
+          | Button_ten -> 10
+          | Button_eleven -> 11)
+          1;
+        num mouse.col 2;
+        num mouse.row 2;
+        num mouse.mods 2;
+        Mouse
+    | Paste paste ->
+        string b paste.text;
+        num (if paste.check_safe then 1 else 0) 1;
+        Paste
+    | Text encoded ->
+        (match Base64.decode encoded with
+        | Ok text -> Buffer.add_string b text
+        | Error (`Msg message) -> invalid_arg message);
+        Text
+    | Focus focused ->
+        num (if focused then 1 else 0) 1;
+        Focus
+  in
+  (kind, Buffer.contents b)
+
+let input t input reply =
+  try
+    let kind, body = encode_input input in
+    (match input with
+    | Protocol.Request.Paste paste ->
+        request t Paste body
+          (Paste_reply
+             (function
+             | Stdlib.Error message -> reply (Stdlib.Error message)
+             | Ok (pasted, unsafe) -> reply (Ok (Some { Protocol.id = paste.id; pasted; unsafe }))))
+    | _ ->
+        if t.closed then reply (Stdlib.Error "pane process ended")
+        else (
+          send t kind body;
+          reply (Ok None)));
+    Ok ()
+  with Invalid_argument message -> Stdlib.Error message
+
 let%test_module "Tests" =
   (module struct
     let%expect_test "fragmented and multiple control frames" =
@@ -519,11 +602,38 @@ let%test_module "Tests" =
  invalid control frame length
  |}]
 
+    let%expect_test "typed input stays binary" =
+      let kind, body = encode_input (Protocol.Request.Text "AAo=") in
+      assert (equal_kind kind Text);
+      Printf.printf "%d %d %d\n" (String.length body) (Char.code body.[0]) (Char.code body.[1]);
+      let kind, body = encode_input (Protocol.Request.Focus true) in
+      assert (equal_kind kind Focus);
+      Printf.printf "%d\n" (Char.code body.[0]);
+      let kind, body =
+        encode_input
+          (Protocol.Request.Key
+             {
+               action = Key_press;
+               key = 20;
+               mods = 2;
+               unshifted_codepoint = 97;
+               text = "a";
+               composing = false;
+             })
+      in
+      assert (equal_kind kind Key);
+      Printf.printf "%d %ld\n" (String.length body) (String.get_int32_le body 5);
+      [%expect {|
+ 2 0 10
+ 1
+ 15 97
+ |}]
+
     let%expect_test "ring layout and offsets" =
       let ring = Luv.Buffer.create (layout.data_offset + 64) in
       Bigarray.Array1.fill ring '\000';
       let base = layout.data_offset in
-      ring.{base} <- Char.chr layout.tags.(0);
+      ring.{base} <- Char.chr layout.bytes_tag;
       Bigstringaf.set_int32_le ring (base + 1) 3l;
       Bigstringaf.set_int64_le ring (base + 5) 42L;
       let record, _ = read_record ring 64 0 in

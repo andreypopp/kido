@@ -12,14 +12,15 @@ type medium =
   | Shared_mem [@json.name "shared_mem"]
 [@@deriving json] [@@json.compact_variants]
 
-type limits = {
+type terminal = Ko_vt.limits = {
   scrollback : scrollback;
   apc_max_bytes : int;
   kitty_images_max_bytes : int;
-  media : medium list;
   continuation_max_bytes : int;
 }
 [@@deriving json]
+
+type limits = { terminal : terminal; media : medium list } [@@deriving json]
 
 type t = {
   dir : string;
@@ -41,11 +42,14 @@ let default_scrollback = Scrollback { max_bytes = Some 50_000_000; max_lines = N
 
 let default_limits =
   {
-    scrollback = default_scrollback;
-    apc_max_bytes = 65 lsl 20;
-    kitty_images_max_bytes = 10_000_000;
+    terminal =
+      {
+        scrollback = default_scrollback;
+        apc_max_bytes = 65 lsl 20;
+        kitty_images_max_bytes = 10_000_000;
+        continuation_max_bytes = 65 lsl 20;
+      };
     media = [];
-    continuation_max_bytes = 65 lsl 20;
   }
 
 let dir ~dir:override =
@@ -62,7 +66,8 @@ let dir ~dir:override =
 let socket ~create ~dir =
   let socket = Filename.concat dir "socket" in
   if String.contains dir ',' then Error "server directory contains a comma"
-  else if String.length socket > Fs.sun_path_max then Error "server socket path exceeds 103 bytes"
+  else if String.length socket > Fs.sun_path_max then
+    Error (Printf.sprintf "server socket path exceeds %d bytes" Fs.sun_path_max)
   else begin
     if create then Fs.mkdir_p ~perm:0o700 dir;
     let st = Unix.lstat dir in
@@ -118,7 +123,7 @@ let create ~dir:override ~shell ~scrollback =
     pane_exe;
     terminfo;
     shell;
-    limits = { default_limits with scrollback };
+    limits = { default_limits with terminal = { default_limits.terminal with scrollback } };
     env = Array.to_list (Unix.environment ());
     cwd = Sys.getcwd ();
   }

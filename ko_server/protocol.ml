@@ -105,8 +105,6 @@ type view_options = {
 }
 [@@deriving json]
 
-let full options = match options.history with History_all -> true | History_none -> false
-
 type marker = Resize of size [@json.name "resize"] | Dead of dead [@json.name "dead"]
 [@@deriving json] [@@json.compact_variants]
 
@@ -176,6 +174,136 @@ module Event = struct
     | Skipped of { offset : int; from : int; to_ : int [@json.key "to"] } [@json.name "skipped"]
     | Pasted of paste_result [@json.name "pasted"]
   [@@deriving json] [@@json.compact_variants]
+end
+
+module Record = struct
+  type kind = Output | Snapshot
+  type slice = { first : bool; last : bool; screen : bool }
+
+  let header_size = 9
+  let slice_size = 2
+
+  let encode_header bytes at kind ~offset =
+    Bytes.set bytes at (match kind with Output -> '\001' | Snapshot -> '\002');
+    Bytes.set_int64_le bytes (at + 1) (Int64.of_int offset)
+
+  let kind_of_string s =
+    if String.length s < header_size then invalid_arg "short view record"
+    else
+      match s.[0] with
+      | '\001' -> Output
+      | '\002' -> Snapshot
+      | _ -> invalid_arg "unknown view record"
+
+  let slice_of_string s at =
+    {
+      first = Char.code s.[at] land 1 <> 0;
+      last = Char.code s.[at] land 2 <> 0;
+      screen = Char.code s.[at + 1] = 1;
+    }
+end
+
+module Route = struct
+  type t =
+    | Version
+    | List_panes
+    | Create_pane
+    | Client
+    | Delete_pane of Ids.Pane_id.t
+    | Input of Ids.Pane_id.t
+    | Screen of Ids.Pane_id.t * Request.screen_format * Request.screen_history
+    | View of Ids.Pane_id.t * view_options * int option
+
+  let websocket = function Client | View _ -> true | _ -> false
+  let history_name = function History_none -> "none" | History_all -> "all"
+
+  let to_request route =
+    let pane id = "/panes/" ^ Ids.Pane_id.to_string id in
+    match route with
+    | Version -> ("GET", "/version")
+    | List_panes -> ("GET", "/panes")
+    | Create_pane -> ("POST", "/panes")
+    | Client -> ("GET", "/client")
+    | Delete_pane id -> ("DELETE", pane id)
+    | Input id -> ("POST", pane id ^ "/input")
+    | Screen (id, format, history) ->
+        ( "GET",
+          Printf.sprintf "%s/screen?format=%s&history=%s" (pane id)
+            (match format with Plain -> "plain" | Ansi -> "ansi")
+            (match history with
+            | Visible_only -> "none"
+            | Full_history -> "all"
+            | Last_rows n -> string_of_int n) )
+    | View (id, { history; images = Images_none }, offset) ->
+        ( "GET",
+          Printf.sprintf "%s/view?history=%s&images=none%s" (pane id) (history_name history)
+            (match offset with Some n -> "&offset=" ^ string_of_int n | None -> "") )
+
+  let query target =
+    match String.split_on_char '?' target with
+    | [ path ] -> (path, [])
+    | [ path; query ] ->
+        ( path,
+          List.map
+            (fun pair ->
+              match String.split_on_char '=' pair with
+              | [ k; v ] -> (k, v)
+              | _ -> invalid_arg "invalid query")
+            (String.split_on_char '&' query) )
+    | _ -> invalid_arg "invalid target"
+
+  let natural ~max value =
+    if String.is_empty value || not (String.for_all (fun c -> Char.(c >= '0' && c <= '9')) value)
+    then invalid_arg "invalid number";
+    match int_of_string_opt value with
+    | Some n when n >= 0 && n <= max -> n
+    | _ -> invalid_arg "invalid number"
+
+  let of_request ~meth target =
+    let path, args = query target in
+    let arg name = List.assoc_opt ~eq:String.equal name args in
+    match (meth, String.split_on_char '/' path) with
+    | "GET", [ ""; "version" ] -> Some Version
+    | "GET", [ ""; "panes" ] -> Some List_panes
+    | "POST", [ ""; "panes" ] -> Some Create_pane
+    | "GET", [ ""; "client" ] -> Some Client
+    | _, "" :: "panes" :: id :: rest -> (
+        match Ids.Pane_id.of_string id with
+        | exception Invalid_argument _ -> None
+        | id -> (
+            match (meth, rest) with
+            | "DELETE", [] -> Some (Delete_pane id)
+            | "POST", [ "input" ] -> Some (Input id)
+            | "GET", [ "screen" ] ->
+                let format : Request.screen_format =
+                  match arg "format" with
+                  | None | Some "plain" -> Plain
+                  | Some "ansi" -> Ansi
+                  | Some _ -> invalid_arg "invalid format"
+                in
+                let history : Request.screen_history =
+                  match arg "history" with
+                  | None | Some "none" -> Visible_only
+                  | Some "all" -> Full_history
+                  | Some n -> Last_rows (natural ~max:0xffffffff n)
+                in
+                Some (Screen (id, format, history))
+            | "GET", [ "view" ] ->
+                let history =
+                  match arg "history" with
+                  | None | Some "none" -> History_none
+                  | Some "all" -> History_all
+                  | Some _ -> invalid_arg "invalid history"
+                in
+                let images =
+                  match arg "images" with
+                  | None | Some "none" -> Images_none
+                  | Some _ -> invalid_arg "P1 supports images=none only"
+                in
+                Some
+                  (View (id, { history; images }, Option.map (natural ~max:max_int) (arg "offset")))
+            | _ -> None))
+    | _ -> None
 end
 
 let protocol_number = "1.0"

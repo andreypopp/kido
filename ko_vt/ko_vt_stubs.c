@@ -64,7 +64,8 @@ static void check_size(value cols,value rows) {
   if(Long_val(cols)<1 || Long_val(cols)>65535 || Long_val(rows)<1 || Long_val(rows)>65535)
     caml_invalid_argument("terminal dimensions");
 }
-static void limits(GhosttyTerminal vt,value scrollback,value apc,value kitty,value continuation) {
+static void limits(GhosttyTerminal vt,value limits) {
+  value scrollback=Field(limits,0);
   long bytes=0,lines=0;
   int has_bytes=1,has_lines=0;
   if(Is_block(scrollback)) {
@@ -73,6 +74,7 @@ static void limits(GhosttyTerminal vt,value scrollback,value apc,value kitty,val
     if(has_bytes) bytes=Long_val(Field(max_bytes,0));
     if(has_lines) lines=Long_val(Field(max_lines,0));
   }
+  value apc=Field(limits,1),kitty=Field(limits,2),continuation=Field(limits,3);
   if(bytes<0 || (has_lines && lines<1) || Long_val(apc)<0 || Long_val(kitty)<0 || Long_val(continuation)<0)
     caml_invalid_argument("terminal limits");
   size_t scrollback_bytes=bytes,scrollback_lines=lines,apc_bytes=Long_val(apc),continuation_bytes=Long_val(continuation);
@@ -83,21 +85,18 @@ static void limits(GhosttyTerminal vt,value scrollback,value apc,value kitty,val
   check(ghostty_terminal_set(vt,GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,&kitty_bytes));
   check(ghostty_terminal_set(vt,GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES,&continuation_bytes));
 }
-CAMLprim value ko_vt_configure(value v,value scrollback,value apc,value kitty,value continuation) {
-  CAMLparam5(v,scrollback,apc,kitty,continuation);
-  limits(T(v),scrollback,apc,kitty,continuation);CAMLreturn(Val_unit);
+CAMLprim value ko_vt_configure(value v,value lim) {
+  CAMLparam2(v,lim);
+  limits(T(v),lim);CAMLreturn(Val_unit);
 }
-CAMLprim value ko_vt_create(value cols,value rows,value scrollback,value apc,value kitty,value continuation) {
-  CAMLparam5(cols,rows,scrollback,apc,kitty); CAMLxparam1(continuation); CAMLlocal1(v);
+CAMLprim value ko_vt_create(value cols,value rows,value lim) {
+  CAMLparam3(cols,rows,lim); CAMLlocal1(v);
   check_size(cols,rows);
   GhosttyTerminal vt=NULL;
   check(ghostty_terminal_new(NULL,&vt,Long_val(cols),Long_val(rows)));
   v=wrap(vt);
-  limits(vt,scrollback,apc,kitty,continuation);
+  limits(vt,lim);
   CAMLreturn(v);
-}
-CAMLprim value ko_vt_create_bytecode(value *argv,int argc) {
-  (void)argc; return ko_vt_create(argv[0],argv[1],argv[2],argv[3],argv[4],argv[5]);
 }
 CAMLprim value ko_vt_now_ns(value unit) {
   (void)unit; return Val_long(ko_now_ns());

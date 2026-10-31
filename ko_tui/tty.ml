@@ -9,7 +9,7 @@ let create ~paint ~notify =
   in
   let previous_winch = Sys.signal Sys.sigwinch (Sys.Signal_handle (fun _ -> wake ())) in
   let parser = Matrix.Input.Parser.create () in
-  let terminal = Matrix.Terminal.make ~output:Modes.output () in
+  let terminal = Matrix.Terminal.make ~output:(Fs.write_all Unix.stdout) () in
   let dimensions = ref (Matrix.Terminal.size Unix.stdout) in
   let raw = ref None and cleaned = ref false in
   let set_raw_mode enabled =

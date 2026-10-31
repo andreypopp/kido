@@ -1,3 +1,4 @@
+module Launch = Launch
 module Api = Api
 
 let run ~dir ~executable ~pager =

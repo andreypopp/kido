@@ -127,10 +127,10 @@ let close t =
 
 let open_view ~socket ~client ~(pane : Ko_server.Ids.Pane_id.t) ~(limits : Ko_server.Config.limits)
     ~notify =
-  let wire = Wire.of_fd (Ko_server.Socket.connect ~socket ~deadline:(Unix.gettimeofday () +. 5.)) in
+  let wire = Wire.of_fd (Launch.connect ~socket ~deadline:(Unix.gettimeofday () +. 5.)) in
   try
     Wire.upgrade wire ~client
-      ~path:("/panes/" ^ Ko_server.Ids.Pane_id.to_string pane ^ "/view?history=all&images=none")
+      ~route:(View (pane, { history = History_all; images = Images_none }, None))
       ();
     let t =
       {
@@ -167,8 +167,14 @@ let open_view ~socket ~client ~(pane : Ko_server.Ids.Pane_id.t) ~(limits : Ko_se
         window := Unix.gettimeofday ();
         work := 0.)
     in
-    let binary s =
-      if String.length s < 9 then raise (Wire.Error "short view record") else Char.code s.[0]
+    let kind s =
+      try Ko_server.Protocol.Record.kind_of_string s
+      with Invalid_argument message -> raise (Wire.Error message)
+    in
+    let data_start = Ko_server.Protocol.Record.(header_size + slice_size) in
+    let slice s =
+      if String.length s < data_start then raise (Wire.Error "short snapshot slice")
+      else Ko_server.Protocol.Record.slice_of_string s Ko_server.Protocol.Record.header_size
     in
     let marker text =
       match Ko_server.Protocol.Event.view_of_json (Yojson.Basic.from_string text) with
@@ -187,16 +193,13 @@ let open_view ~socket ~client ~(pane : Ko_server.Ids.Pane_id.t) ~(limits : Ko_se
           budget (Unix.gettimeofday () -. began);
           loop (off + len))
       in
-      loop 9
+      loop Ko_server.Protocol.Record.header_size
     in
     let rec snapshot s =
-      if String.length s < 11 || Char.code s.[9] land 1 = 0 then
-        raise (Wire.Error "snapshot missing first slice");
-      let full = Char.code s.[10] = 0 in
-      let piece = ref s
-      and pos = ref 11
-      and last = ref (Char.code s.[9] land 2 <> 0)
-      and following = ref [] in
+      let first = slice s in
+      if not first.first then raise (Wire.Error "snapshot missing first slice");
+      let full = not first.screen in
+      let piece = ref s and pos = ref data_start and last = ref first.last and following = ref [] in
       let rec read capacity =
         let count = min capacity (String.length !piece - !pos) in
         if count > 0 then (
@@ -206,19 +209,22 @@ let open_view ~socket ~client ~(pane : Ko_server.Ids.Pane_id.t) ~(limits : Ko_se
         else if !last || t.closed then ""
         else
           match Wire.receive wire with
-          | `Binary next when binary next = 2 && String.length next >= 11 ->
-              if Char.code next.[9] land 1 <> 0 then raise (Restart next);
-              piece := next;
-              pos := 11;
-              last := Char.code next.[9] land 2 <> 0;
-              read capacity
+          | `Binary next -> (
+              match kind next with
+              | Snapshot ->
+                  let continuation = slice next in
+                  if continuation.first then raise (Restart next);
+                  piece := next;
+                  pos := data_start;
+                  last := continuation.last;
+                  read capacity
+              | Output ->
+                  following := Bytes next :: !following;
+                  bottom t;
+                  notify ();
+                  read capacity)
           | `Text text ->
               Option.iter (fun m -> following := Marker m :: !following) (marker text);
-              read capacity
-          | `Binary next when binary next = 1 ->
-              following := Bytes next :: !following;
-              bottom t;
-              notify ();
               read capacity
           | _ -> raise (Wire.Error "snapshot interrupted")
       in
@@ -236,9 +242,7 @@ let open_view ~socket ~client ~(pane : Ko_server.Ids.Pane_id.t) ~(limits : Ko_se
         Fun.protect
           ~finally:(fun () -> if !owned then Ko_vt.close vt)
           (fun () ->
-            Ko_vt.configure vt ~scrollback:limits.scrollback ~apc_max_bytes:limits.apc_max_bytes
-              ~kitty_images_max_bytes:limits.kitty_images_max_bytes
-              ~continuation_max_bytes:limits.continuation_max_bytes;
+            Ko_vt.configure vt ~limits:limits.terminal;
             while (not !last) || !pos < String.length !piece do
               ignore (read 65536)
             done;
@@ -274,14 +278,13 @@ let open_view ~socket ~client ~(pane : Ko_server.Ids.Pane_id.t) ~(limits : Ko_se
             (marker text);
           run ()
       | `Binary s ->
-          (match binary s with
-          | 1 ->
+          (match kind s with
+          | Ko_server.Protocol.Record.Output ->
               feed s (fun off len ->
                   update (fun () ->
                       ignore (to_bottom t);
                       Option.iter (fun vt -> Ko_vt.write vt ~off ~len s) (terminal t.surface)))
-          | 2 -> snapshot s
-          | _ -> raise (Wire.Error "unknown view record"));
+          | Snapshot -> snapshot s);
           run ()
     in
     t.thread <-

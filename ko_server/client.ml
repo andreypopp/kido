@@ -31,8 +31,9 @@ let claim panes clients t active =
         Option.iter (fun p -> Pane.claim p ~client:t.id ~size:active.size) (Panes.find panes id))
       active.pane
 
-let receive panes ~limits ~clients t input =
+let receive panes ~limits ~clients t text =
   try
+    let input = Protocol.Request.client_of_json (Yojson.Basic.from_string text) in
     (match (t.state, input) with
     | None, Protocol.Request.Hello hello ->
         if not (Protocol.valid_size hello.size) then invalid_arg "invalid size";
@@ -69,5 +70,6 @@ let receive panes ~limits ~clients t input =
         active.focused <- focused;
         if focused then claim panes clients t active
     | Some _, Hello _ -> invalid_arg "hello already received");
-    Ok ()
-  with Invalid_argument message -> Error message
+    ()
+  with Invalid_argument _ | Yojson.Json_error _ | Jsonkit.Of_json_error _ ->
+    Connection.reject t.connection Invalid

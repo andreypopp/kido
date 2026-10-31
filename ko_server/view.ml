@@ -1,14 +1,21 @@
-type decision = Resume | Snapshot of bool | Skip
+type decision = Resume | Snapshot of Protocol.history | Skip
 
-let decide ~oldest ~offset ~head ~full ~resize ~blocked =
+let decide ~oldest ~offset ~head ~history ~resize ~blocked =
   if blocked && head - offset >= 65536 then Skip
-  else if offset < oldest || offset > head then Snapshot full
-  else if resize && not full then Snapshot false
+  else if offset < oldest || offset > head then Snapshot history
+  else if resize && match history with History_none -> true | History_all -> false then
+    Snapshot History_none
   else Resume
 
 type cursor = { mutable pos : int; mutable offset : int; mutable blocked : bool }
-type snapshot = { cursor : cursor; full : bool; mutable resync : bool option }
-type state = Live of cursor * bool | Snapshotting of snapshot | Closed
+
+type snapshot = {
+  cursor : cursor;
+  history : Protocol.history;
+  mutable resync : Protocol.history option;
+}
+
+type state = Live of cursor * Protocol.history | Snapshotting of snapshot | Closed
 
 type t = {
   pane : Pane.t;
@@ -33,20 +40,20 @@ let waiting t =
   | Snapshotting _ -> true
   | Live _ -> Connection.waiting t.connection
 
-let rec request_snapshot t full =
+let rec request_snapshot t history =
   match t.state with
   | Closed -> ()
-  | Snapshotting snapshot -> snapshot.resync <- Some full
+  | Snapshotting snapshot -> snapshot.resync <- Some history
   | Live (cursor, _) ->
-      let snapshot = { cursor; full; resync = None } in
+      let snapshot = { cursor; history; resync = None } in
       t.state <- Snapshotting snapshot;
-      Pane_proc.snapshot (Pane.proc t.pane) ~full
+      Pane_proc.snapshot (Pane.proc t.pane) ~history
         ~consume:(fun record ->
           match t.state with
           | Snapshotting current when Stdlib.(current == snapshot) -> (
               let cursor = current.cursor in
               match
-                Connection.record t.connection ~queue:true ~kind:2 ~offset:record.offset
+                Connection.record t.connection ~queue:true ~kind:Snapshot ~offset:record.offset
                   (Pane_proc.buffer (Pane.proc t.pane))
                   ~at:record.at ~len:record.len
               with
@@ -54,7 +61,7 @@ let rec request_snapshot t full =
               | Accepted ->
                   cursor.pos <- record.next;
                   cursor.offset <- record.offset
-              | Blocked _ ->
+              | Queued | Blocked ->
                   cursor.pos <- record.next;
                   cursor.offset <- record.offset;
                   cursor.blocked <- true)
@@ -66,19 +73,21 @@ let rec request_snapshot t full =
           | Ok () -> (
               match t.state with
               | Snapshotting current when Stdlib.(current == snapshot) -> (
-                  t.state <- Live (current.cursor, current.full);
-                  match snapshot.resync with Some full -> request_snapshot t full | None -> pump t)
+                  t.state <- Live (current.cursor, current.history);
+                  match snapshot.resync with
+                  | Some history -> request_snapshot t history
+                  | None -> pump t)
               | _ -> ()))
 
 and pump t =
   match t.state with
   | Closed | Snapshotting _ -> ()
-  | Live (cursor, full) ->
+  | Live (cursor, history) ->
       let proc = Pane.proc t.pane in
       if cursor.pos <> Pane_proc.position proc && Connection.available t.connection then begin
-        let oldest = match Pane_proc.oldest proc with Some n -> n | None -> Pane.offset t.pane in
+        let oldest = Pane.oldest t.pane in
         let resize = ref false in
-        if not full then
+        if match history with History_none -> true | History_all -> false then
           Pane_proc.iter_from proc cursor.pos (fun record ->
               match record.data with
               | Resize_marker _ when record.offset >= cursor.offset ->
@@ -86,7 +95,7 @@ and pump t =
                   false
               | _ -> true);
         match
-          decide ~oldest ~offset:cursor.offset ~head:(Pane.offset t.pane) ~full ~resize:!resize
+          decide ~oldest ~offset:cursor.offset ~head:(Pane.offset t.pane) ~history ~resize:!resize
             ~blocked:cursor.blocked
         with
         | Skip ->
@@ -95,10 +104,10 @@ and pump t =
                  (Skipped
                     { offset = Pane.offset t.pane; from = cursor.offset; to_ = Pane.offset t.pane }));
             cursor.blocked <- false;
-            request_snapshot t false
-        | Snapshot full ->
+            request_snapshot t History_none
+        | Snapshot history ->
             cursor.blocked <- false;
-            request_snapshot t full
+            request_snapshot t history
         | Resume ->
             cursor.blocked <- false;
             Pane_proc.iter_from proc cursor.pos (fun record ->
@@ -116,7 +125,7 @@ and pump t =
                   | Bytes -> (
                       let skip = max 0 (cursor.offset - record.offset) in
                       match
-                        Connection.record t.connection ~queue:false ~kind:1
+                        Connection.record t.connection ~queue:false ~kind:Output
                           ~offset:(record.offset + skip) (Pane_proc.buffer proc)
                           ~at:(record.at + skip) ~len:(record.len - skip)
                       with
@@ -127,10 +136,12 @@ and pump t =
                           cursor.pos <- record.next;
                           cursor.offset <- record.offset + record.len;
                           true
-                      | Blocked accepted ->
-                          if accepted then (
-                            cursor.pos <- record.next;
-                            cursor.offset <- record.offset + record.len);
+                      | Queued ->
+                          cursor.pos <- record.next;
+                          cursor.offset <- record.offset + record.len;
+                          cursor.blocked <- true;
+                          false
+                      | Blocked ->
                           cursor.blocked <- true;
                           false)
                   | Resize_marker size ->
@@ -147,29 +158,29 @@ and pump t =
                       true)
       end
 
-let create pane connection ~client ~offset ~full =
+let create pane connection ~client ~offset ~history =
   let cursor =
     { pos = 0; offset = Option.value ~default:(Pane.offset pane) offset; blocked = false }
   in
-  let t = { pane; connection; client; state = Live (cursor, full) } in
+  let t = { pane; connection; client; state = Live (cursor, history) } in
   (match offset with
-  | None -> request_snapshot t full
+  | None -> request_snapshot t history
   | Some value -> (
-      let oldest = Option.value ~default:(Pane.offset pane) (Pane_proc.oldest (Pane.proc pane)) in
+      let oldest = Pane.oldest pane in
       match
-        decide ~oldest ~offset:value ~head:(Pane.offset pane) ~full ~resize:false ~blocked:false
+        decide ~oldest ~offset:value ~head:(Pane.offset pane) ~history ~resize:false ~blocked:false
       with
-      | Snapshot full -> request_snapshot t full
+      | Snapshot history -> request_snapshot t history
       | Resume | Skip -> pump t));
   t
 
 let receive t text =
   try
     match Protocol.Request.view_of_json (Yojson.Basic.from_string text) with
-    | Resync options -> request_snapshot t (Protocol.full options)
+    | Resync options -> request_snapshot t options.history
     | Input input -> (
         match
-          Input.send t.pane input (function
+          Pane_proc.input (Pane.proc t.pane) input (function
             | Error _ -> Connection.reject t.connection Io
             | Ok None -> ()
             | Ok (Some reply) ->
@@ -186,10 +197,14 @@ let%test_module "Tests" =
       List.iter
         (fun (offset, full, resize, blocked) ->
           print_endline
-            (match decide ~oldest:10 ~offset ~head:100000 ~full ~resize ~blocked with
+            (match
+               decide ~oldest:10 ~offset ~head:100000
+                 ~history:(if full then History_all else History_none)
+                 ~resize ~blocked
+             with
             | Resume -> "resume"
-            | Snapshot true -> "full"
-            | Snapshot false -> "screen"
+            | Snapshot History_all -> "full"
+            | Snapshot History_none -> "screen"
             | Skip -> "skip"))
         [
           (10, true, false, false);

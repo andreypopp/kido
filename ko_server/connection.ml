@@ -33,8 +33,9 @@ type t = {
 }
 
 let runtime t = Option.get t.runtime
+let max_message = 1 lsl 20
 
-let rec close t =
+let close t =
   if not t.closed then begin
     t.closed <- true;
     Luv.Handle.close t.poll (fun () -> Unix.close t.fd);
@@ -43,18 +44,19 @@ let rec close t =
     t.on_dispose t
   end
 
-and wait t =
+let when_writable t resume =
   if (not t.closed) && not t.waiting then begin
     t.waiting <- true;
     Luv.Poll.start t.poll [ `WRITABLE ] (fun result ->
         ignore (Luv.Poll.stop t.poll);
         t.waiting <- false;
-        match result with
-        | Error _ -> close t
-        | Ok _ ->
-            flush t;
-            if (not t.closed) && not t.waiting then t.on_writable ())
+        match result with Error _ -> close t | Ok _ -> resume ())
   end
+
+let rec wait t =
+  when_writable t (fun () ->
+      flush t;
+      if (not t.closed) && not t.waiting then t.on_writable ())
 
 and flush t =
   if (not t.closed) && not (Queue.is_empty t.pending) then begin
@@ -101,7 +103,7 @@ let header bytes opcode len =
 
 let send t opcode text =
   if not t.closed then
-    if String.length text > 1 lsl 20 then close t
+    if String.length text > max_message then close t
     else begin
       let len = header t.headers opcode (String.length text) in
       Queue.add (Bytes.sub_string t.headers 0 len) t.pending;
@@ -120,13 +122,12 @@ let is_closed t = t.closed
 let available t = t.ready && (not t.closed) && (not t.waiting) && Queue.is_empty t.pending
 let waiting t = t.waiting || not (Queue.is_empty t.pending)
 
-type written = Accepted | Blocked of bool | Closed
+type written = Accepted | Queued | Blocked | Closed
 
 let record_header bytes ~kind ~offset ~len =
-  let at = header bytes 2 (len + 9) in
-  Bytes.set bytes at (Char.chr kind);
-  Bytes.set_int64_le bytes (at + 1) (Int64.of_int offset);
-  at + 9
+  let at = header bytes 2 (len + Protocol.Record.header_size) in
+  Protocol.Record.encode_header bytes at kind ~offset;
+  at + Protocol.Record.header_size
 
 let record t ~queue ~kind ~offset ring ~at ~len =
   if t.closed then Closed
@@ -143,11 +144,11 @@ let record t ~queue ~kind ~offset ring ~at ~len =
       if skip < len then
         Queue.add (Bigstringaf.substring ring ~off:(at + skip) ~len:(len - skip)) t.pending;
       if t.ready then wait t;
-      Blocked true
+      Queued
     end
     else (
       if t.ready then wait t;
-      Blocked false)
+      Blocked)
   end
 
 let rec write_runtime t =
@@ -171,16 +172,7 @@ let rec write_runtime t =
         if t.closed then Gluten.Server.report_write_result (runtime t) `Closed
         else begin
           Gluten.Server.report_write_result (runtime t) (`Ok !wrote);
-          if !blocked then
-            begin if not t.waiting then begin
-              t.waiting <- true;
-              Luv.Poll.start t.poll [ `WRITABLE ] (fun result ->
-                  ignore (Luv.Poll.stop t.poll);
-                  t.waiting <- false;
-                  match result with Error _ -> close t | Ok _ -> write_runtime t)
-            end
-            end
-          else write_runtime t
+          if !blocked then when_writable t (fun () -> write_runtime t) else write_runtime t
         end
     | `Yield ->
         if t.websocket then begin
@@ -224,13 +216,13 @@ let upgrade t reqd upgrade ~on_text ~on_close ~on_writable =
            (module Httpun_ws.Server_connection)
            (Httpun_ws.Server_connection.create_websocket (fun _wsd ->
                 let frame ~opcode ~is_fin ~len payload =
-                  if len > 1 lsl 20 then close t
+                  if len > max_message then close t
                   else begin
                     let text = Buffer.create 64 in
                     let rec read () =
                       Httpun_ws.Payload.schedule_read payload
                         ~on_read:(fun bs ~off ~len ->
-                          if Buffer.length text + len > 1 lsl 20 then close t
+                          if Buffer.length text + len > max_message then close t
                           else (
                             Buffer.add_string text (Bigstringaf.substring bs ~off ~len);
                             read ()))
@@ -241,7 +233,8 @@ let upgrade t reqd upgrade ~on_text ~on_close ~on_writable =
                           let s = Buffer.contents text in
                           match opcode with
                           | `Text | `Continuation ->
-                              if Buffer.length t.fragments + String.length s > 1 lsl 20 then close t
+                              if Buffer.length t.fragments + String.length s > max_message then
+                                close t
                               else begin
                                 Buffer.add_string t.fragments s;
                                 if is_fin then begin
@@ -260,49 +253,6 @@ let upgrade t reqd upgrade ~on_text ~on_close ~on_writable =
                   end
                 in
                 { Httpun_ws.Websocket_connection.frame; eof = (fun ?error:_ () -> close t) }))))
-
-let respond reqd status body =
-  Httpun.Reqd.respond_with_string reqd
-    (Httpun.Response.create
-       ~headers:
-         (Httpun.Headers.of_list
-            [
-              ("content-type", "application/json");
-              ("content-length", string_of_int (String.length body));
-            ])
-       status)
-    body
-
-let error reqd kind message =
-  respond reqd
-    (match (kind : Protocol.error_kind) with
-    | Invalid -> `Bad_request
-    | Refused -> `Conflict
-    | Gone -> `Gone
-    | Io -> `Internal_server_error
-    | Missing -> `Not_found
-    | Protocol_mismatch _ -> `Upgrade_required
-    | Vt_mismatch _ -> `Conflict)
-    (Yojson.Basic.to_string (Protocol.error_to_json { kind; message }))
-
-let body reqd callback =
-  let b = Buffer.create 256 in
-  let reader = Httpun.Reqd.request_body reqd in
-  let rec read () =
-    Httpun.Body.Reader.schedule_read reader
-      ~on_read:(fun bs ~off ~len ->
-        if Buffer.length b + len > 1 lsl 20 then (
-          Httpun.Body.Reader.close reader;
-          error reqd Invalid "body exceeds 1 MiB")
-        else (
-          Buffer.add_string b (Bigstringaf.substring bs ~off ~len);
-          read ()))
-      ~on_eof:(fun () ->
-        match Yojson.Basic.from_string (Buffer.contents b) with
-        | json -> callback json
-        | exception Yojson.Json_error message -> error reqd Invalid message)
-  in
-  read ()
 
 let create stream ~on_dispose =
   let descriptor =
@@ -396,7 +346,7 @@ let%test_module "Tests" =
             (String.concat " "
                (List.init len (fun i -> Printf.sprintf "%02x" (Char.code (Bytes.get bytes i))))))
         [ 9; 126; 65536 ];
-      let len = record_header bytes ~kind:1 ~offset:0x0102030405060708 ~len:3 in
+      let len = record_header bytes ~kind:Output ~offset:0x0102030405060708 ~len:3 in
       Printf.printf "%d %d %Lx\n" len (Char.code (Bytes.get bytes 2)) (Bytes.get_int64_le bytes 3);
       [%expect {|
  82 09
