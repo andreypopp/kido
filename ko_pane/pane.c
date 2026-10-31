@@ -3,6 +3,7 @@
 #include "buffer.h"
 #include "compress.h"
 #include "now.h"
+#include "pixels.h"
 #include "protocol.h"
 #include "snapshot_cut.h"
 #include <ghostty/vt.h>
@@ -30,7 +31,7 @@ struct pane {
   struct ko_ring *ring;
   uint64_t head, offset;
   GhosttyTerminal vt;
-  int master, alive, stopping, eof, callbacks, reaped, status, full, depth;
+  int master, alive, stopping, eof, reaped, status, full, depth;
   pid_t pid;
   struct ko_buffer input, output, pty_input, events, deferred;
   struct ko_compress compress;
@@ -250,8 +251,8 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
   int result = -1, slave = -1;
   struct winsize size = {.ws_row = rows,
                          .ws_col = cols,
-                         .ws_xpixel = (cols * cw > 65535 ? 65535 : cols * cw),
-                         .ws_ypixel = (rows * ch > 65535 ? 65535 : rows * ch)};
+                         .ws_xpixel = ko_pixels(cols, cw),
+                         .ws_ypixel = ko_pixels(rows, ch)};
   if (c.error || c.n || version != 3 || has_scrollback > 1 || has_lines > 1 || !cols || !rows || !argv || !argv[0] ||
       argv[0][0] != '/') {
     goto done;
@@ -284,10 +285,8 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
       p->vt, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM, &enabled);
   ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_USERDATA, p);
   ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_WRITE_PTY, reply);
-  if (p->callbacks) {
-    ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, title);
-    ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, pwd);
-  }
+  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, title);
+  ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, pwd);
   if (openpty(&p->master, &slave, NULL, NULL, &size) < 0) {
     goto done;
   }
@@ -707,11 +706,6 @@ static int dispatch(struct pane *p, unsigned kind, const uint8_t *b, size_t n,
   }
   case KO_SCREEN:
     return screen(p, b, n);
-  case KO_SIGNAL:
-    if (n != 1 || !b[0] || b[0] >= NSIG) {
-      return -1;
-    }
-    return p->alive ? kill(-p->pid, b[0]) : 0;
   case KO_RESIZE: {
     if (n != 8 || !ko_get(b, 2) || !ko_get(b + 2, 2)) {
       return -1;
@@ -726,8 +720,8 @@ static int dispatch(struct pane *p, unsigned kind, const uint8_t *b, size_t n,
     }
     struct winsize size = {.ws_row = rows,
                            .ws_col = cols,
-                           .ws_xpixel = (cols * cw > 65535 ? 65535 : cols * cw),
-                           .ws_ypixel = (rows * ch > 65535 ? 65535 : rows * ch)};
+                           .ws_xpixel = ko_pixels(cols, cw),
+                           .ws_ypixel = ko_pixels(rows, ch)};
     ioctl(p->master, TIOCSWINSZ, &size);
     uint8_t *marker = at_head(p) + KO_HEADER;
     marker[0] = 1;
@@ -854,15 +848,13 @@ static int read_pty(struct pane *p) {
   }
   return used > 0;
 }
-int main(int argc, char **argv) {
+int main(void) {
   signal(SIGPIPE, SIG_IGN);
   struct stat st;
   if (fstat(3, &st) || st.st_size < (off_t)(sizeof(struct ko_ring) + 64)) {
     return 2;
   }
-  struct pane p = {.master = -1,
-                   .callbacks =
-                       !(argc == 2 && !strcmp(argv[1], "--no-callbacks"))};
+  struct pane p = {.master = -1};
   p.ring = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, 3, 0);
   if (p.ring == MAP_FAILED ||
       p.ring->capacity > (uint64_t)st.st_size - sizeof(struct ko_ring) ||

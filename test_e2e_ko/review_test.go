@@ -164,3 +164,59 @@ func TestUnfocusedFirstClientSizesPane(t *testing.T) {
 		t.Fatalf("unfocused sizing: rows=%d", terminal.Rows)
 	}
 }
+
+// A view with a snapshot still queued cannot read the resize marker that arrives after it. Another
+// view's snapshot then pushes that marker out of the ring. The stalled view must still learn the new size.
+func TestStalledViewLearnsResizeAfterRingRetention(t *testing.T) {
+	t.Parallel()
+	s := start(t)
+	c, _ := s.client("")
+	p := s.pane(historyProgram("/dev/null"))
+	event(t, c, "title")
+	sizer, _ := s.client(p)
+	stalled := s.dialWS("/panes/"+p+"/view?history=all", nil, 101)
+	reader := s.dialWS("/panes/"+p+"/view?history=all", nil, 101)
+	snapshot(t, reader)
+	send(t, sizer, []any{"size", map[string]any{"cols": 61, "rows": 21, "cell_px": map[string]int{"width": 8, "height": 16}}})
+	event(t, reader, "marked")
+	flood := s.dialWS("/panes/"+p+"/view?history=all", nil, 101)
+	snapshot(t, flood)
+	snapshot(t, stalled)
+	stalled.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		kind, data := read(t, stalled)
+		if kind == websocket.BinaryMessage && len(data) >= 11 && data[0] == 2 && data[9]&1 != 0 {
+			return
+		}
+		if tag, payload := tagged(data); kind == websocket.TextMessage && tag == "marked" && bytes.Contains(payload, []byte(`"cols":61`)) {
+			return
+		}
+	}
+}
+
+func TestResumeSkipsResizeMarkersBeforeTheOffset(t *testing.T) {
+	t.Parallel()
+	s := start(t)
+	p := s.pane("stty -echo -icanon min 1 time 0; printf READY; cat -v")
+	c, _ := s.client(p)
+	v := s.dialWS("/panes/"+p+"/view?history=all", nil, 101)
+	s.ready(v, "READY")
+	send(t, c, []any{"size", map[string]any{"cols": 62, "rows": 22, "cell_px": map[string]int{"width": 8, "height": 16}}})
+	event(t, v, "marked")
+	s.typeText(v, "later\n")
+	offset := output(t, v, "later")
+	v.Close()
+	v = s.dialWS(fmt.Sprintf("/panes/%s/view?history=all&offset=%d", p, offset), nil, 101)
+	s.typeText(v, "after\n")
+	for text := ""; !strings.Contains(text, "after"); {
+		kind, data := read(t, v)
+		switch {
+		case kind == websocket.BinaryMessage && len(data) >= 9 && data[0] == 1:
+			text += string(data[9:])
+		case kind == websocket.TextMessage:
+			t.Fatalf("resume replayed a message from before its offset: %s", data)
+		default:
+			t.Fatalf("unexpected record on resume: %q", data)
+		}
+	}
+}

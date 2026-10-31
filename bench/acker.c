@@ -43,8 +43,8 @@ static void frame(int fd, unsigned kind, const void *b, size_t n) {
 }
 
 int main(int argc, char **argv) {
-  if (argc < 4) {
-    fprintf(stderr, "usage: acker KO_PANE callbacks|no-callbacks PRODUCER ARGS...\n");
+  if (argc < 3) {
+    fprintf(stderr, "usage: acker KO_PANE PRODUCER ARGS...\n");
     return 2;
   }
   signal(SIGPIPE, SIG_IGN);
@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
   if (pane == 0) {
     if (dup2(sockets[1], 0) < 0 || dup2(sockets[1], 1) < 0 || dup2(fd, 3) < 0 || fcntl(3, F_SETFD, 0) < 0) _exit(126);
     for (int i = 4; i < 64; i++) close(i);
-    char *args[] = {argv[1], strcmp(argv[2], "callbacks") ? "--no-callbacks" : NULL, NULL};
+    char *args[] = {argv[1], NULL};
     execv(argv[1], args);
     _exit(127);
   }
@@ -71,8 +71,8 @@ int main(int argc, char **argv) {
   num(&d, 3, 2); num(&d, 80, 2); num(&d, 24, 2); num(&d, 8, 2); num(&d, 16, 2);
   num(&d, 1, 1); num(&d, 50000000, 8); num(&d, 0, 1); num(&d, 0, 8); num(&d, 65u << 20, 8); num(&d, 10000000, 8); num(&d, 0, 1); num(&d, 65u << 20, 8);
   str(&d, "/");
-  num(&d, (uint64_t)(argc - 3), 4);
-  for (int i = 3; i < argc; i++) str(&d, argv[i]);
+  num(&d, (uint64_t)(argc - 2), 4);
+  for (int i = 2; i < argc; i++) str(&d, argv[i]);
   num(&d, 1, 4); str(&d, "TERM=xterm-ghostty");
   str(&d, "pane_1");
   frame(control, KO_INIT, d.b, d.n);
@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
   frame(control, KO_EXIT, NULL, 0);
   waitpid(pane, NULL, 0);
   double elapsed = (double)(end.tv_sec - start.tv_sec) + (double)(end.tv_nsec - start.tv_nsec) / 1e9;
-  fprintf(stderr, "acker %s bytes=%llu seconds=%.3f MB/s=%.1f frames=%llu pane_cpu=%.3f cores=%.2f\n", argv[2],
+  fprintf(stderr, "acker bytes=%llu seconds=%.3f MB/s=%.1f frames=%llu pane_cpu=%.3f cores=%.2f\n",
           (unsigned long long)payload, elapsed, (double)payload / elapsed / 1e6, (unsigned long long)frames,
           pane_cpu, pane_cpu / elapsed);
   return 0;

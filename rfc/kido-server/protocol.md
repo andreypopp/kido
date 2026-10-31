@@ -231,7 +231,17 @@ no second socket.
 
 Animation frames and playback state are part of the mirror's own
 kitty state, delivered inside the view stream as the program sends
-them or in the snapshot. Frame pixels are images with their own ids.
+them or in the snapshot. In kitty's protocol a frame is a number
+inside one image, not an image with its own id: the snapshot numbers
+payloads 1 for the image and 2 and up for its frames, and the
+pinned libghostty-vt exposes only the current frame's pixels through
+its image API and has no call that attaches fetched pixels to a
+pending frame. So the pixel resource needs a frame number, and
+whether a mirror opened with `images=none` can play an animation from
+fetched frames at all depends on the fork; migration.md S6 opens with
+that check and fixes the resource's shape and the shm objects'
+naming and lifetime (per image, frame and generation) from its
+result.
 
 ## 6. Events
 

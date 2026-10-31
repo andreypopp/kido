@@ -50,8 +50,13 @@ int main(int argc, char **argv) {
     argv++;
     argc--;
   }
+  int stamped = argc > 1 && !strcmp(argv[1], "--stamped");
+  if (stamped) {
+    argv++;
+    argc--;
+  }
   if (argc < 3) {
-    fprintf(stderr, "usage: produce [--query] BYTES FILE... | --latency COUNT | --lines COUNT\n");
+    fprintf(stderr, "usage: produce [--query|--stamped] BYTES FILE... | --latency COUNT | --lines COUNT\n");
     return 2;
   }
   struct termios term;
@@ -98,6 +103,11 @@ int main(int argc, char **argv) {
     size_t n = remaining < sizes[i] ? (size_t)remaining : sizes[i];
     output(data[i], n);
     remaining -= n;
+    if (stamped) {
+      char line[32];
+      int len = snprintf(line, sizeof(line), "T%020llu\r\n", (unsigned long long)ko_now_ns());
+      output(line, (size_t)len);
+    }
   }
   return query ? await_reply() : 0;
 }

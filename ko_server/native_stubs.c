@@ -22,33 +22,49 @@ extern int caml_convert_signal_number(int);
 #include <stdlib.h>
 #include <string.h>
 
-CAMLprim value ko_pane_layout(value unit) {
+CAMLprim value ko_ring_layout(value unit) {
   CAMLparam1(unit);
-  CAMLlocal2(result, kinds);
-  int frames[] = {KO_INIT,  KO_TAIL,          KO_RESIZE, KO_TEXT,  KO_SNAPSHOT,
-                  KO_EXIT,  KO_READY,         KO_HEAD,   KO_TITLE, KO_PWD,
-                  KO_DEAD,  KO_SNAPSHOT_DONE, KO_ERROR,  KO_FULL,  KO_KEY,
-                  KO_PASTE, KO_PASTE_DONE,    KO_MOUSE,  KO_FOCUS, KO_SCREEN,
-                  KO_SIGNAL};
-  size_t count = sizeof(frames) / sizeof(frames[0]);
-  kinds = caml_alloc(count, 0);
-  for (size_t i = 0; i < count; i++) {
-    Store_field(kinds, i, Val_int(frames[i]));
-  }
-  result = caml_alloc_tuple(9);
+  CAMLlocal1(result);
+  result = caml_alloc_tuple(6);
   Store_field(result, 0, Val_int(offsetof(struct ko_ring, data)));
   Store_field(result, 1, Val_int(KO_HEADER));
-  Store_field(result, 2, Val_int(KO_MAX_FRAME));
-  Store_field(result, 3, Val_int(GHOSTTY_KEY_PASTE));
-  Store_field(result, 4, kinds);
-  Store_field(result, 5, Val_int(KO_BYTES));
-  Store_field(result, 6, Val_int(KO_MARKER));
-  Store_field(result, 7, Val_int(KO_SNAPSHOT_SLICE));
-  Store_field(result, 8, Val_int(KO_PAD));
+  Store_field(result, 2, Val_int(KO_BYTES));
+  Store_field(result, 3, Val_int(KO_MARKER));
+  Store_field(result, 4, Val_int(KO_SNAPSHOT_SLICE));
+  Store_field(result, 5, Val_int(KO_PAD));
   CAMLreturn(result);
 }
-CAMLprim value ko_pane_start(value path, value callbacks) {
-  CAMLparam2(path, callbacks);
+CAMLprim value ko_pane_layout(value unit) {
+  CAMLparam1(unit);
+  CAMLlocal3(result, frames, entry);
+  static const struct {
+    const char *name;
+    int code;
+  } table[] = {
+      {"init", KO_INIT},         {"tail", KO_TAIL},   {"resize", KO_RESIZE},
+      {"text", KO_TEXT},         {"snapshot", KO_SNAPSHOT},
+      {"exit", KO_EXIT},         {"ready", KO_READY}, {"head", KO_HEAD},
+      {"title", KO_TITLE},       {"pwd", KO_PWD},     {"dead", KO_DEAD},
+      {"snapshot_done", KO_SNAPSHOT_DONE},            {"error", KO_ERROR},
+      {"full", KO_FULL},         {"key", KO_KEY},     {"paste", KO_PASTE},
+      {"paste_done", KO_PASTE_DONE},                  {"mouse", KO_MOUSE},
+      {"focus", KO_FOCUS},       {"screen", KO_SCREEN}};
+  size_t count = sizeof(table) / sizeof(table[0]);
+  frames = caml_alloc(count, 0);
+  for (size_t i = 0; i < count; i++) {
+    entry = caml_alloc_tuple(2);
+    Store_field(entry, 0, caml_copy_string(table[i].name));
+    Store_field(entry, 1, Val_int(table[i].code));
+    Store_field(frames, i, entry);
+  }
+  result = caml_alloc_tuple(3);
+  Store_field(result, 0, Val_int(KO_MAX_FRAME));
+  Store_field(result, 1, Val_int(GHOSTTY_KEY_PASTE));
+  Store_field(result, 2, frames);
+  CAMLreturn(result);
+}
+CAMLprim value ko_pane_start(value path) {
+  CAMLparam1(path);
   CAMLlocal2(result, mapping);
   size_t capacity = 1024 * 1024, size = sizeof(struct ko_ring) + capacity;
   struct ko_ring *ring = NULL;
@@ -86,8 +102,7 @@ CAMLprim value ko_pane_start(value path, value callbacks) {
     for (int i = 4; i < 256; i++) {
       close(i);
     }
-    char *args[] = {program, Bool_val(callbacks) ? NULL : "--no-callbacks",
-                    NULL};
+    char *args[] = {program, NULL};
     extern char **environ;
     execve(program, args, environ);
     _exit(127);

@@ -1,6 +1,7 @@
 #define _DARWIN_C_SOURCE
 #define _GNU_SOURCE
 #include "protocol.h"
+#include "pixels.h"
 #include "ring.h"
 #include <ghostty/vt.h>
 #include <sys/socket.h>
@@ -108,5 +109,6 @@ int main(int argc,char **argv){
   ghostty_snapshot_decoder_free(decoder);ghostty_terminal_free(vt);free(snapshot);
   frame(control,KO_EXIT,NULL,0);close(control);int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
   munmap(ring,size);
+  assert(ko_pixels(65535, 65535) == 65535 && ko_pixels(80, 8) == 640 && ko_pixels(0, 8) == 0);
   puts("PASS ring full and wrap, callbacks, 40x20 resize marker and screen, dead master snapshot, mode 2026 cleared");return 0;
 }

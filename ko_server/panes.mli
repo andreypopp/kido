@@ -8,7 +8,7 @@ val iter : t -> (Pane.t -> unit) -> unit
 val add :
   t ->
   Protocol.Request.create_pane ->
-  notify:(Pane.t -> Pane.event -> unit) ->
+  notify:(Ids.Pane_id.t -> Pane_proc.event -> unit) ->
   (Pane.t, string) result
 
 val remove : t -> Pane.t -> unit

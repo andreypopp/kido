@@ -22,9 +22,9 @@ run ./bench/pty_read.exe discard ./bench/drain.exe "$produce" "$bytes" $streams
 echo "== 2. pty + vt_write in the reader"
 run ./bench/pty_read.exe parse ./bench/drain.exe "$produce" "$bytes" $streams
 echo "== 3. ko-pane + ring, C tail-acker"
-run ./bench/acker.exe "$build/ko_pane/ko-pane" callbacks "$produce" "$bytes" $streams
+run ./bench/acker.exe "$build/ko_pane/ko-pane" "$produce" "$bytes" $streams
 echo "== 4. ko-pane + ring + coordinator (writev, 2 ms) + view socket + drain"
-run ./bench/coordinator.exe throughput writev "$bytes" callbacks 2 $streams
+run ./bench/coordinator.exe throughput writev "$bytes" 2 $streams
 echo "== 5. control: pty -> copier -> socketpair -> drain"
 run ./bench/pty_read.exe socket ./bench/drain.exe "$produce" "$bytes" $streams
 

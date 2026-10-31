@@ -65,13 +65,16 @@ let add t (request : Protocol.Request.create_pane) ~notify =
   with Invalid_argument message -> Error message
 
 let remove t pane =
-  Pane.shutdown pane;
+  Pane_proc.shutdown (Pane.proc pane);
   t.panes <- List.filter (fun p -> not (Ids.Pane_id.equal (Pane.id p) (Pane.id pane))) t.panes;
   t.removed <- pane :: t.removed
 
-let shutdown t = List.iter Pane.shutdown (t.panes @ t.removed)
-let kill t = List.iter Pane.kill (t.panes @ t.removed)
+let shutdown t = List.iter (fun p -> Pane_proc.shutdown (Pane.proc p)) (t.panes @ t.removed)
+let kill t = List.iter (fun p -> Pane_proc.kill (Pane.proc p)) (t.panes @ t.removed)
 
 let reap t =
   List.iter (fun p -> Pane_proc.reap (Pane.proc p)) (t.panes @ t.removed);
-  t.removed <- List.filter (fun p -> not (Pane_proc.finished (Pane.proc p))) t.removed
+  t.removed <-
+    List.filter
+      (fun p -> match Pane_proc.life (Pane.proc p) with Reaped -> false | Open | Closed -> true)
+      t.removed

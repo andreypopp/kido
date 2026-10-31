@@ -19,51 +19,38 @@ type kind =
   | Mouse
   | Focus
   | Screen
-  | Signal
 [@@deriving equal]
 
-type layout = {
-  data_offset : int;
-  record_header : int;
-  max_frame : int;
-  max_key : int;
-  kinds : int array;
-  bytes_tag : int;
-  marker_tag : int;
-  slice_tag : int;
-  pad_tag : int;
-}
+type layout = { max_frame : int; max_key : int; frames : (string * int) array }
 
 external layout : unit -> layout = "ko_pane_layout"
 
 let layout = layout ()
 
-let kinds =
-  [|
-    Init;
-    Tail;
-    Resize;
-    Text;
-    Snapshot;
-    Exit;
-    Ready;
-    Head;
-    Title;
-    Pwd;
-    Dead;
-    Snapshot_done;
-    Error;
-    Full;
-    Key;
-    Paste;
-    Paste_done;
-    Mouse;
-    Focus;
-    Screen;
-    Signal;
-  |]
+let kind_of_name = function
+  | "init" -> Init
+  | "tail" -> Tail
+  | "resize" -> Resize
+  | "text" -> Text
+  | "snapshot" -> Snapshot
+  | "exit" -> Exit
+  | "ready" -> Ready
+  | "head" -> Head
+  | "title" -> Title
+  | "pwd" -> Pwd
+  | "dead" -> Dead
+  | "snapshot_done" -> Snapshot_done
+  | "error" -> Error
+  | "full" -> Full
+  | "key" -> Key
+  | "paste" -> Paste
+  | "paste_done" -> Paste_done
+  | "mouse" -> Mouse
+  | "focus" -> Focus
+  | "screen" -> Screen
+  | name -> invalid_arg ("unknown pane frame " ^ name)
 
-let wire = Array.to_list (Array.mapi (fun i code -> (kinds.(i), code)) layout.kinds)
+let wire = Array.to_list (Array.map (fun (name, code) -> (kind_of_name name, code)) layout.frames)
 let to_int kind = List.assoc ~eq:equal_kind kind wire
 
 let of_int code =
@@ -71,11 +58,8 @@ let of_int code =
   | Some (kind, _) -> kind
   | None -> invalid_arg "unknown pane frame"
 
-external spawn : string -> bool -> Luv.Buffer.t * Unix.file_descr * int = "ko_pane_start"
+external spawn : string -> Luv.Buffer.t * Unix.file_descr * int = "ko_pane_start"
 external unmap : Luv.Buffer.t -> unit = "ko_pane_unmap"
-external head : Luv.Buffer.t -> int = "ko_pane_ring_head" [@@noalloc]
-external set_tail : Luv.Buffer.t -> int -> unit = "ko_pane_ring_set_tail" [@@noalloc]
-external set_read : Luv.Buffer.t -> int -> unit = "ko_pane_ring_set_read" [@@noalloc]
 
 let number buffer value = function
   | 1 -> Buffer.add_char buffer (Char.chr value)
@@ -134,59 +118,44 @@ let init (config : Config.t) ~id ~cwd ~argv ~env ~size:dimensions =
   string b (Ids.Pane_id.to_string id);
   Buffer.contents b
 
-type data =
-  | Bytes
-  | Resize_marker of Protocol.size
-  | Dead_marker of Protocol.dead
-  | Slice of Protocol.Record.slice
-
-type record = { pos : int; next : int; offset : int; at : int; len : int; data : data }
-
-type event =
-  | Ready_pid of int
-  | Title_changed of string
-  | Pwd_changed of string
-  | Record of record
-  | Published
-  | Exited
-  | Failed of Protocol.dead
-
-type node = { pos : int; record : record option; mutable next_node : node option }
+type life = Open | Closed | Reaped
+type event = Title of string | Pwd of string | Output | Dead of Protocol.dead
+type paste = { pasted : bool; unsafe : bool }
 
 type reply =
-  | Snapshot_reply of (record -> unit) * ((unit, string) result -> unit)
+  | Snapshot_reply of (Ring.record -> unit) * ((unit, string) result -> unit)
   | Screen_reply of (string -> last:bool -> unit) * ((unit, string) result -> unit)
-  | Paste_reply of ((bool * bool, string) result -> unit)
+  | Paste_reply of ((paste, string) result -> unit)
 
 type t = {
-  ring : Luv.Buffer.t;
+  ring : Ring.t;
   control : Luv.Pipe.t;
   pid : int;
-  capacity : int;
-  mutable scanned : int;
-  mutable tail : int;
-  records : node Queue.t;
-  index : (int, node) Hashtbl.t;
-  mutable last : node option;
+  notify : event -> unit;
+  mutable life : life;
+  mutable child : int;
+  mutable title : string;
+  mutable cwd : string;
+  mutable dead : Protocol.dead option;
   mutable input : Bigstringaf.t;
   mutable filled : int;
-  mutable closed : bool;
-  mutable reaped : bool;
-  mutable mapped : bool;
-  mutable failure : bool;
   mutable next_req : int;
   pending : (int, reply) Hashtbl.t;
   snapshots : int Queue.t;
-  mutable notify : event -> unit;
 }
 
+let is_open t = match t.life with Open -> true | Closed | Reaped -> false
+let is_reaped t = match t.life with Reaped -> true | Open | Closed -> false
 let pid t = t.pid
-let buffer t = t.ring
-let position t = t.scanned
-let alive t = not t.closed
+let child_pid t = t.child
+let title t = t.title
+let cwd t = t.cwd
+let dead t = t.dead
+let ring t = t.ring
+let life t = t.life
 
 let send t kind body =
-  if not t.closed then
+  if is_open t then
     Luv.Stream.write t.control [ Luv.Buffer.from_string (frame kind body) ] (fun _ _ -> ())
 
 let fail_pending t message =
@@ -195,141 +164,58 @@ let fail_pending t message =
   Queue.clear t.snapshots;
   List.iter
     (function
-      | Snapshot_reply (_, done_) | Screen_reply (_, done_) -> done_ (Error message)
-      | Paste_reply done_ -> done_ (Error message))
+      | Snapshot_reply (_, done_) | Screen_reply (_, done_) -> done_ (Stdlib.Error message)
+      | Paste_reply done_ -> done_ (Stdlib.Error message))
     pending
 
+let killpg t =
+  if t.child > 0 then
+    (* macOS can return EPERM for a process group with only zombies or exiting processes. *)
+    try Unix.kill (-t.child) Sys.sigkill
+    with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ()
+
+let die t (dead : Protocol.dead) =
+  (match dead.cause with Failed _ -> killpg t | Exited _ | Signaled _ -> ());
+  t.dead <- Some dead;
+  t.notify (Dead dead)
+
 let failure t message =
-  if not t.failure then begin
-    t.failure <- true;
-    if not t.closed then Luv.Handle.close t.control ignore;
-    t.closed <- true;
+  if is_open t then begin
+    t.life <- Closed;
+    Luv.Handle.close t.control ignore;
     fail_pending t message;
-    t.notify (Failed { Protocol.at = Uv.now (); cause = Failed message })
+    die t { at = Uv.now (); cause = Failed message }
   end
 
-let u16 ring at = Bigstringaf.get_int16_le ring at land 0xffff
-
-let read_record ring capacity pos =
-  let base = layout.data_offset + (pos mod capacity) in
-  let kind = Char.code ring.{base}
-  and len = Int32.to_int (Bigstringaf.get_int32_le ring (base + 1)) in
-  if len < 0 || len + layout.record_header > capacity - (pos mod capacity) then
-    invalid_arg "invalid ring record length";
-  let at = base + layout.record_header in
-  let offset = Int64.to_int (Bigstringaf.get_int64_le ring (base + 5)) in
-  let next = pos + layout.record_header + len in
-  if kind = layout.pad_tag then (None, next)
-  else
-    let data =
-      if kind = layout.bytes_tag then Bytes
-      else if kind = layout.marker_tag then
-        begin if len = 9 && Char.code ring.{at} = 1 then
-          Resize_marker
-            {
-              Protocol.cols = u16 ring (at + 1);
-              rows = u16 ring (at + 3);
-              cell_px =
-                (match (u16 ring (at + 5), u16 ring (at + 7)) with
-                | 0, 0 -> None
-                | width, height -> Some { width; height });
-            }
-        else if len = 17 && Char.code ring.{at} = 2 then
-          Dead_marker
-            {
-              Protocol.at = Int64.to_int (Bigstringaf.get_int64_le ring (at + 9));
-              cause =
-                (match Int32.to_int (Bigstringaf.get_int32_le ring (at + 5)) with
-                | 0 -> Exited (Int32.to_int (Bigstringaf.get_int32_le ring (at + 1)))
-                | signal -> Signaled signal);
-            }
-        else invalid_arg "invalid ring marker"
-        end
-      else if kind = layout.slice_tag && len >= Protocol.Record.slice_size then
-        Slice
-          (Protocol.Record.slice_of_string
-             (Bigstringaf.substring ring ~off:at ~len:Protocol.Record.slice_size)
-             0)
-      else invalid_arg "invalid ring record kind"
-    in
-    (Some { pos; next; offset; at; len; data }, next)
-
 let scan t =
-  if t.closed then false
+  if not (is_open t) then false
   else
-    try
-      let upper = head t.ring in
-      if upper < t.scanned || upper - t.tail > t.capacity then invalid_arg "invalid ring head";
-      let changed = upper > t.scanned in
-      while t.scanned < upper do
-        let record, next_pos = read_record t.ring t.capacity t.scanned in
-        let node = { pos = t.scanned; record; next_node = None } in
-        Option.iter (fun last -> last.next_node <- Some node) t.last;
-        t.last <- Some node;
-        Queue.add node t.records;
-        Hashtbl.add t.index node.pos node;
-        t.scanned <- next_pos;
-        Option.iter
-          (fun record ->
-            match record.data with
-            | Slice slice -> (
-                match Queue.peek_opt t.snapshots with
-                | None -> ()
-                | Some req ->
-                    (match Hashtbl.find_opt t.pending req with
-                    | Some (Snapshot_reply (consume, _)) -> consume record
-                    | _ -> ());
-                    if slice.last then ignore (Queue.take t.snapshots : int))
-            | _ -> t.notify (Record record))
-          record
-      done;
-      set_read t.ring t.scanned;
-      let retain = upper - (t.capacity / 2) in
-      while match Queue.peek_opt t.records with Some n -> n.pos < retain | None -> false do
-        let node = Queue.take t.records in
-        Hashtbl.remove t.index node.pos
-      done;
-      let tail = match Queue.peek_opt t.records with Some node -> node.pos | None -> upper in
-      if tail > t.tail then (
-        t.tail <- tail;
-        set_tail t.ring tail);
-      let more = head t.ring > t.scanned in
-      if more then t.notify Published;
-      changed || more
-    with Invalid_argument message ->
-      failure t message;
-      false
-
-let oldest t =
-  let rec first = function
-    | None -> None
-    | Some node -> (
-        match node.record with Some record -> Some record.offset | None -> first node.next_node)
-  in
-  first (Queue.peek_opt t.records)
-
-let iter_from t pos f =
-  let start =
-    match Hashtbl.find_opt t.index pos with
-    | Some node -> Some node
-    | None when pos < t.scanned -> Queue.peek_opt t.records
-    | None -> None
-  in
-  let rec loop = function
-    | None -> ()
-    | Some node ->
-        if node.pos < pos then loop node.next_node
-        else
-          let continue = match node.record with None -> true | Some record -> f record in
-          if continue then loop node.next_node
-  in
-  loop start
+    match
+      Ring.scan t.ring (fun record ->
+          match record.data with
+          | Slice slice -> (
+              match Queue.peek_opt t.snapshots with
+              | None -> ()
+              | Some req ->
+                  (match Hashtbl.find_opt t.pending req with
+                  | Some (Snapshot_reply (consume, _)) -> consume record
+                  | _ -> ());
+                  if slice.last then ignore (Queue.take t.snapshots : int))
+          | Bytes | Resize_marker _ | Dead_marker _ -> ())
+    with
+    | Ok changed ->
+        if Ring.pending t.ring then t.notify Output;
+        changed
+    | Stdlib.Error message ->
+        failure t message;
+        false
 
 let request t kind body reply =
-  if t.closed then
+  if not (is_open t) then
     match reply with
-    | Snapshot_reply (_, done_) | Screen_reply (_, done_) -> done_ (Error "pane process ended")
-    | Paste_reply done_ -> done_ (Error "pane process ended")
+    | Snapshot_reply (_, done_) | Screen_reply (_, done_) ->
+        done_ (Stdlib.Error "pane process ended")
+    | Paste_reply done_ -> done_ (Stdlib.Error "pane process ended")
   else begin
     let req = t.next_req in
     t.next_req <- req + 1;
@@ -368,16 +254,24 @@ let on_frame t kind body =
   match kind with
   | Ready ->
       if Bigstringaf.length body <> 4 then invalid_arg "invalid ready"
-      else t.notify (Ready_pid (Int32.to_int (Bigstringaf.get_int32_le body 0)))
-  | Title -> t.notify (Title_changed (string_at body 0))
-  | Pwd -> t.notify (Pwd_changed (string_at body 0))
-  | Head -> t.notify Published
-  | Dead -> t.notify Exited
+      else t.child <- Int32.to_int (Bigstringaf.get_int32_le body 0)
+  | Title ->
+      t.title <- string_at body 0;
+      t.notify (Title t.title)
+  | Pwd ->
+      t.cwd <- string_at body 0;
+      t.notify (Pwd t.cwd)
+  | Head -> t.notify Output
+  | Dead ->
+      die t
+        (match Ring.dead t.ring with
+        | Some dead -> dead
+        | None -> { at = Uv.now (); cause = Failed "pane exited without a marker" })
   | Full ->
       let b = Buffer.create 8 in
-      Buffer.add_int64_le b (Int64.of_int t.tail);
+      Buffer.add_int64_le b (Int64.of_int (Ring.tail t.ring));
       send t Tail (Buffer.contents b);
-      t.notify Published
+      t.notify Output
   | Snapshot_done | Paste_done | Screen -> (
       let req = Int32.to_int (Bigstringaf.get_int32_le body 0) in
       match Hashtbl.find_opt t.pending req with
@@ -386,7 +280,7 @@ let on_frame t kind body =
           done_ (Ok ())
       | Some (Paste_reply done_) when equal_kind kind Paste_done ->
           Hashtbl.remove t.pending req;
-          done_ (Ok (Char.code body.{4} = 1, Char.code body.{5} = 1))
+          done_ (Ok { pasted = Char.code body.{4} = 1; unsafe = Char.code body.{5} = 1 })
       | Some (Screen_reply (chunk, done_)) when equal_kind kind Screen ->
           let last = Char.code body.{4} = 1 in
           chunk (string_at body 5) ~last;
@@ -407,31 +301,26 @@ let frame_at input ~filled pos =
       let kind = of_int (Char.code input.{pos + 4}) in
       Some (kind, Bigstringaf.sub input ~off:(pos + 5) ~len:(len - 1), pos + 4 + len)
 
-let create ?(callbacks = true) config ~id ~cwd ~argv ~env =
-  let ring, fd, pid = spawn config.Config.pane_exe callbacks in
+let create config ~id ~cwd ~argv ~env ~notify =
+  let buffer, fd, pid = spawn config.Config.pane_exe in
   let control = Uv.ok (Luv.Pipe.init ()) in
   Uv.ok (Luv.Pipe.open_ control (Uv.file fd));
   let t =
     {
-      ring;
+      ring = Ring.create buffer;
       control;
       pid;
-      capacity = Int64.to_int (Bigstringaf.get_int64_le ring 0);
-      scanned = 0;
-      tail = 0;
-      records = Queue.create ();
-      index = Hashtbl.create 256;
-      last = None;
+      notify;
+      life = Open;
+      child = 0;
+      title = "";
+      cwd;
+      dead = None;
       input = Bigstringaf.create 65536;
       filled = 0;
-      closed = false;
-      reaped = false;
-      mapped = true;
-      failure = false;
       next_req = 1;
       pending = Hashtbl.create 8;
       snapshots = Queue.create ();
-      notify = ignore;
     }
   in
   let allocate _ =
@@ -449,7 +338,7 @@ let create ?(callbacks = true) config ~id ~cwd ~argv ~env =
         try
           let pos = ref 0 in
           let running = ref true in
-          while !running do
+          while !running && is_open t do
             match frame_at t.input ~filled:t.filled !pos with
             | None -> running := false
             | Some (kind, body, next) ->
@@ -459,41 +348,39 @@ let create ?(callbacks = true) config ~id ~cwd ~argv ~env =
           Bigstringaf.blit t.input ~src_off:!pos t.input ~dst_off:0 ~len:(t.filled - !pos);
           t.filled <- t.filled - !pos
         with Invalid_argument message -> failure t message)
-    | Error _ -> if not t.closed then failure t "pane control socket closed");
+    | Error _ -> failure t "pane control socket closed");
   send t Init (init config ~id ~cwd ~argv ~env ~size:Protocol.default_size);
   t
 
-let listen t callback = t.notify <- callback
-
 let shutdown t =
-  if not t.closed then (
+  if is_open t then (
     send t Exit "";
-    t.closed <- true;
+    t.life <- Closed;
     fail_pending t "pane removed";
     Luv.Handle.close t.control ignore)
 
+let release t =
+  if not (is_reaped t) then (
+    unmap (Ring.buffer t.ring);
+    t.life <- Reaped)
+
 let reap t =
-  if not t.reaped then
+  if not (is_reaped t) then
     match Unix.waitpid [ Unix.WNOHANG ] t.pid with
     | 0, _ -> ()
     | _, status ->
-        t.reaped <- true;
-        if not t.closed then
-          failure t
-            (match status with
-            | Unix.WEXITED n -> Printf.sprintf "pane process exited unexpectedly with status %d" n
-            | Unix.WSIGNALED n | Unix.WSTOPPED n ->
-                Printf.sprintf "pane process ended unexpectedly by signal %d" (Uv.native_signal n));
-        if t.mapped then (
-          unmap t.ring;
-          t.mapped <- false)
-    | exception Unix.Unix_error (Unix.ECHILD, _, _) -> t.reaped <- true
-
-let finished t = t.reaped
+        failure t
+          (match status with
+          | Unix.WEXITED n -> Printf.sprintf "pane process exited unexpectedly with status %d" n
+          | Unix.WSIGNALED n | Unix.WSTOPPED n ->
+              Printf.sprintf "pane process ended unexpectedly by signal %d" (Uv.native_signal n));
+        release t
+    | exception Unix.Unix_error (Unix.ECHILD, _, _) -> release t
 
 let kill t =
-  if not t.reaped then
-    try Unix.kill t.pid Sys.sigkill with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+  (if not (is_reaped t) then
+     try Unix.kill t.pid Sys.sigkill with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
+  killpg t
 
 let resize t dimensions =
   let b = Buffer.create 8 in
@@ -566,9 +453,9 @@ let input t input reply =
           (Paste_reply
              (function
              | Stdlib.Error message -> reply (Stdlib.Error message)
-             | Ok (pasted, unsafe) -> reply (Ok (Some { Protocol.id = paste.id; pasted; unsafe }))))
+             | Ok { pasted; unsafe } -> reply (Ok (Some { Protocol.id = paste.id; pasted; unsafe }))))
     | _ ->
-        if t.closed then reply (Stdlib.Error "pane process ended")
+        if not (is_open t) then reply (Stdlib.Error "pane process ended")
         else (
           send t kind body;
           reply (Ok None)));
@@ -627,21 +514,5 @@ let%test_module "Tests" =
  2 0 10
  1
  15 97
- |}]
-
-    let%expect_test "ring layout and offsets" =
-      let ring = Luv.Buffer.create (layout.data_offset + 64) in
-      Bigarray.Array1.fill ring '\000';
-      let base = layout.data_offset in
-      ring.{base} <- Char.chr layout.bytes_tag;
-      Bigstringaf.set_int32_le ring (base + 1) 3l;
-      Bigstringaf.set_int64_le ring (base + 5) 42L;
-      let record, _ = read_record ring 64 0 in
-      Option.iter (fun r -> Printf.printf "%d %d %d\n" r.len r.offset r.at) record;
-      Bigstringaf.set_int32_le ring (base + 1) 127l;
-      (try ignore (read_record ring 64 0) with Invalid_argument message -> print_endline message);
-      [%expect {|
- 3 42 45
- invalid ring record length
  |}]
   end)

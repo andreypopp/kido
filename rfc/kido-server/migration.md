@@ -488,21 +488,57 @@ P1 did not run.
 
 The terminal client part depends only on P1; the app part on S5.
 
+**First task: animation frames in the pinned libghostty-vt.** In
+kitty's protocol a frame is a number inside one image, not an image
+with its own id. A check of `third_party/ghostty/include/ghostty/vt/`
+(the app's fork revision) on 2026-10-31 found:
+
+- The public image API reads only the **current** frame's pixels:
+  `GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR` with a `GENERATION` that changes
+  on every frame change (`kitty_graphics.h`). There is no accessor
+  for frame `n` of an image.
+- The only path that carries every frame's pixels is the snapshot
+  stream: a `KITTY_IMAGE_PAYLOAD` record per image or frame, numbered
+  as kitty numbers them, 1 for the image and 2 and up for its frames
+  (`snapshot.h`, `PROGRESS_IMAGE_FRAME`); only the snapshot decoder
+  consumes them, into an image it restored as pending.
+- There is no API to attach fetched pixels to a pending image outside
+  the decoder. So a mirror opened with `images=none` cannot take a
+  frame's pixels from a separate resource as the headers stand, and a
+  mirror opened with `images=all` gets every frame in the snapshot and
+  plays the animation itself with `ghostty_kitty_graphics_animation_tick`,
+  since the control sequences travel in the view bytes.
+
+S6 therefore starts by settling, against the fork and not the
+headers alone: (1) whether the fork has or gains an "attach pixels to
+pending image frame `n`" call (the fork already keeps a pending image
+for a refused medium, design.md 4.3); (2) whether `ko-pane` can read
+frame `n` other than through `ghostty_snapshot_encode` filtered to
+that image's payload records. If neither exists, the pixel resource
+is a snapshot-side feature: a client that wants images takes
+`images=all`, and the shm path serves only the current frame of a
+still image for the app's zero-copy case. Otherwise the resource
+takes a frame number, `/panes/pane_N/images/<id>/frames/<n>` with the
+`generation` query, and the shm objects are per image, frame and
+generation. The rest of this stage is written for the second case
+and is adjusted to the finding.
+
 - `ko-pane`: `KITTY_IMAGE_PAYLOAD` filtering for `images=none`; the
-  `snapshot` frame's `images` field; the `image` frame that copies an
-  image's pixels once into a per-image shm object `/ko-<pid>-<n>`
+  `snapshot` frame's `images` field; the `image` frame that copies
+  one frame's pixels once into a per-frame shm object `/ko-<pid>-<n>`
   (0600, under 31 bytes) and answers with its name and geometry, or
   `not found`; `image_gone` when it unlinks one on eviction, a new
-  generation or exit; the clipboard callbacks as `clipboard_write`
-  and `clipboard_read` frames. Pixels never go through the ring: an
-  image can exceed its 1 MiB, every attaching client reads the same
-  pixels again, and a local client maps the object directly.
-- `Images` in the coordinator: `GET /panes/pane_N/images/<id>`; the
-  name to a local client with `Ko-Accept-Shm`, else the pixels
-  streamed from the coordinator's own mapping; the `<dir>/shm` leak
-  record kept by the coordinator from `ko-pane`'s replies and
-  `image_gone`, cleaned at start and after a `ko-pane` crash
-  (protocol.md 5, 14).
+  generation, a frame removed by the program (`a=d`) or exit; the
+  clipboard callbacks as `clipboard_write` and `clipboard_read`
+  frames. Pixels never go through the ring: an image can exceed its
+  1 MiB, every attaching client reads the same pixels again, and a
+  local client maps the object directly.
+- `Images` in the coordinator: the pixel resource of protocol.md 5
+  with the frame number; the name to a local client with
+  `Ko-Accept-Shm`, else the pixels streamed from the coordinator's
+  own mapping; the `<dir>/shm` leak record kept by the coordinator
+  from `ko-pane`'s replies and `image_gone`, cleaned at start and
+  after a `ko-pane` crash (protocol.md 5, 14).
 - `Clipboard` in the coordinator: one answerer by focus, the 8 s
   deadline, `clipboard_answer` on `/client` (protocol.md 9).
 - `ko_tui`: kitty passthrough of placements to an outer terminal that
@@ -514,14 +550,17 @@ The terminal client part depends only on P1; the app part on S5.
 
 Tests that close it: an image uploaded with `t=s` is shown by the
 app without a copy and fetched as a body by a remote client; a
-placement survives detach and reattach; an evicted image is 404 and
-its object is gone; a killed `ko-pane` leaves no object after the
+placement survives detach and reattach; a two-frame animation plays
+in the app and in a mirror after reattach; an evicted image or
+frame is 404 and its object is gone; a killed `ko-pane` leaves no object after the
 coordinator's cleanup, and a killed coordinator none after the next
 start; one
 clipboard read gets exactly one answer with two clients attached; an
 OSC 52 write reaches the outer terminal from the terminal client.
 
-Risk: medium. Shared memory by name is spike 5, not yet run.
+Risk: medium. Shared memory by name is spike 5, not yet run, and
+the frame question above can move pixel delivery into the snapshot
+path.
 
 ### S7. Remote over SSH (6 to 10 agent-days)
 

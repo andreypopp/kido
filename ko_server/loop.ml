@@ -6,19 +6,21 @@ let run config =
       Luv.Handle.close server ignore;
       Error (Luv.Error.strerror error)
   | Ok () ->
-      let state = State.create config in
       let connections = ref [] in
       let timer = Uv.ok (Luv.Timer.init ()) and ping = Uv.ok (Luv.Timer.init ()) in
       let term = Uv.ok (Luv.Signal.init ()) and chld = Uv.ok (Luv.Signal.init ()) in
-      let tick () =
+      let rec state = lazy (State.create config ~activity)
+      and activity () =
+        if not (Luv.Handle.is_active timer) then Uv.ok (Luv.Timer.start ~repeat:2 timer 2 tick)
+      and tick () =
+        let state = Lazy.force state in
         let produced = ref false in
         Panes.iter (State.panes state) (fun pane ->
             if Pane_proc.scan (Pane.proc pane) then produced := true);
         State.pump state;
         if (not !produced) && not (State.waiting state) then Uv.ok (Luv.Timer.stop timer)
       in
-      State.on_activity state (fun () ->
-          if not (Luv.Handle.is_active timer) then Uv.ok (Luv.Timer.start ~repeat:2 timer 2 tick));
+      let state = Lazy.force state in
       Uv.ok (Luv.Signal.start chld (Uv.sigchld ()) (fun () -> Panes.reap (State.panes state)));
       Uv.ok
         (Luv.Timer.start ~repeat:1000 ping 1000 (fun () ->

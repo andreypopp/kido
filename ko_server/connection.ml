@@ -14,6 +14,7 @@ type t = {
   mutable waiting : bool;
   pending : string Queue.t;
   mutable sent : int;
+  mutable pending_bytes : int;
   headers : bytes;
   strings : string array;
   mutable websocket : bool;
@@ -34,6 +35,7 @@ type t = {
 
 let runtime t = Option.get t.runtime
 let max_message = 1 lsl 20
+let max_queued = 64 lsl 20
 
 let close t =
   if not t.closed then begin
@@ -75,6 +77,7 @@ and flush t =
     if n < 0 then close t
     else if n = 0 then wait t
     else begin
+      t.pending_bytes <- t.pending_bytes - n;
       let left = ref (n + t.sent) in
       while
         match Queue.peek_opt t.pending with Some s -> !left >= String.length s | None -> false
@@ -108,6 +111,7 @@ let send t opcode text =
       let len = header t.headers opcode (String.length text) in
       Queue.add (Bytes.sub_string t.headers 0 len) t.pending;
       Queue.add text t.pending;
+      t.pending_bytes <- t.pending_bytes + len + String.length text;
       if t.ready then flush t
     end
 
@@ -138,14 +142,19 @@ let record t ~queue ~kind ~offset ring ~at ~len =
       close t;
       Closed)
     else if n = h + len then Accepted
-    else if n > 0 || queue then begin
-      if n < h then Queue.add (Bytes.sub_string t.headers n (h - n)) t.pending;
-      let skip = max 0 (n - h) in
-      if skip < len then
-        Queue.add (Bigstringaf.substring ring ~off:(at + skip) ~len:(len - skip)) t.pending;
-      if t.ready then wait t;
-      Queued
-    end
+    else if n > 0 || queue then
+      if t.pending_bytes + (h + len - n) > max_queued then (
+        close t;
+        Closed)
+      else begin
+        if n < h then Queue.add (Bytes.sub_string t.headers n (h - n)) t.pending;
+        let skip = max 0 (n - h) in
+        if skip < len then
+          Queue.add (Bigstringaf.substring ring ~off:(at + skip) ~len:(len - skip)) t.pending;
+        t.pending_bytes <- t.pending_bytes + (h + len - n);
+        if t.ready then wait t;
+        Queued
+      end
     else (
       if t.ready then wait t;
       Blocked)
@@ -275,6 +284,7 @@ let create stream ~on_dispose =
       strings = Array.make 64 "";
       on_dispose;
       sent = 0;
+      pending_bytes = 0;
       websocket = false;
       ready = false;
       yielded = false;
@@ -354,4 +364,19 @@ let%test_module "Tests" =
  82 7f 00 00 00 00 00 01 00 00
  11 1 102030405060708
  |}]
+
+    let%expect_test "a view that never reads is closed before its queue grows without bound" =
+      let read_end, write_end = Unix.pipe () in
+      let view = writer write_end in
+      let ring = Luv.Buffer.create (1 lsl 20) in
+      let closed_at = ref None in
+      for i = 1 to 80 do
+        if Option.is_none !closed_at then
+          match record view ~queue:true ~kind:Snapshot ~offset:0 ring ~at:0 ~len:(1 lsl 20) with
+          | Closed -> closed_at := Some i
+          | Accepted | Queued | Blocked -> ()
+      done;
+      Printf.printf "closed within 80 MiB: %b\n" (Option.is_some !closed_at);
+      Unix.close read_end;
+      [%expect {| closed within 80 MiB: true |}]
   end)

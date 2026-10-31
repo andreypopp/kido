@@ -1,84 +1,33 @@
-type event =
-  | Title of string
-  | Pwd of string
-  | Dead of Protocol.dead
-  | Failed of Protocol.dead
-  | Output
-
 type t = {
   id : Ids.Pane_id.t;
   proc : Pane_proc.t;
   command : string list;
-  mutable cwd : string;
-  mutable title : string;
-  mutable pid : int;
-  mutable dead : Protocol.dead option;
   mutable size : Protocol.size;
   mutable sizer : Ids.Client_id.t option;
-  mutable offset : int;
 }
 
 let id t = t.id
 let proc t = t.proc
-let offset t = t.offset
 let sizer t = t.sizer
-let oldest t = Option.value ~default:t.offset (Pane_proc.oldest t.proc)
 
 let row t : Protocol.row =
-  { id = t.id; pid = t.pid; command = t.command; cwd = t.cwd; title = t.title; dead = t.dead }
-
-let killpg t =
-  if t.pid > 0 then
-    (* macOS can return EPERM for a process group with only zombies or exiting processes. *)
-    try Unix.kill (-t.pid) Sys.sigkill
-    with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ()
+  {
+    id = t.id;
+    pid = Pane_proc.child_pid t.proc;
+    command = t.command;
+    cwd = Pane_proc.cwd t.proc;
+    title = Pane_proc.title t.proc;
+    dead = Pane_proc.dead t.proc;
+  }
 
 let create config ~id ~cwd ~command ~env ~notify =
-  let proc = Pane_proc.create config ~id ~cwd ~argv:command ~env in
-  let t =
-    {
-      id;
-      proc;
-      command;
-      cwd;
-      title = "";
-      pid = 0;
-      dead = None;
-      size = Protocol.default_size;
-      sizer = None;
-      offset = 0;
-    }
-  in
-  let marker = ref None in
-  Pane_proc.listen proc (function
-    | Ready_pid pid -> t.pid <- pid
-    | Title_changed title ->
-        t.title <- title;
-        notify t (Title title)
-    | Pwd_changed pwd ->
-        t.cwd <- pwd;
-        notify t (Pwd pwd)
-    | Record record -> (
-        match record.data with
-        | Bytes -> t.offset <- record.offset + record.len
-        | Dead_marker dead -> marker := Some dead
-        | _ -> ())
-    | Published -> notify t Output
-    | Exited -> (
-        match !marker with
-        | Some dead ->
-            t.dead <- Some dead;
-            notify t (Dead dead)
-        | None ->
-            killpg t;
-            let dead = { Protocol.at = Uv.now (); cause = Failed "pane exited without a marker" } in
-            t.dead <- Some dead;
-            notify t (Failed dead))
-    | Failed dead ->
-        killpg t;
-        t.dead <- Some dead;
-        notify t (Failed dead));
-  t
+  {
+    id;
+    proc = Pane_proc.create config ~id ~cwd ~argv:command ~env ~notify:(notify id);
+    command;
+    size = Protocol.default_size;
+    sizer = None;
+  }
 
 let resize t size =
   if not (Protocol.equal_size t.size size) then begin
@@ -89,9 +38,3 @@ let resize t size =
 let claim t ~client ~size =
   t.sizer <- Some client;
   resize t size
-
-let shutdown t = Pane_proc.shutdown t.proc
-
-let kill t =
-  Pane_proc.kill t.proc;
-  killpg t

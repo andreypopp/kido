@@ -1,39 +1,24 @@
-type data =
-  | Bytes
-  | Resize_marker of Protocol.size
-  | Dead_marker of Protocol.dead
-  | Slice of Protocol.Record.slice
-
-type record = private { pos : int; next : int; offset : int; at : int; len : int; data : data }
-
-type event =
-  | Ready_pid of int
-  | Title_changed of string
-  | Pwd_changed of string
-  | Record of record
-  | Published
-  | Exited
-  | Failed of Protocol.dead
-
+type life = Open | Closed | Reaped
+type event = Title of string | Pwd of string | Output | Dead of Protocol.dead
 type t
 
 val create :
-  ?callbacks:bool ->
   Config.t ->
   id:Ids.Pane_id.t ->
   cwd:string ->
   argv:string list ->
   env:string list ->
+  notify:(event -> unit) ->
   t
 
-val listen : t -> (event -> unit) -> unit
+val ring : t -> Ring.t
+val life : t -> life
 val pid : t -> int
-val buffer : t -> Luv.Buffer.t
-val position : t -> int
-val oldest : t -> int option
-val alive : t -> bool
+val child_pid : t -> int
+val title : t -> string
+val cwd : t -> string
+val dead : t -> Protocol.dead option
 val scan : t -> bool
-val iter_from : t -> int -> (record -> bool) -> unit
 val resize : t -> Protocol.size -> unit
 
 val input :
@@ -45,7 +30,7 @@ val input :
 val snapshot :
   t ->
   history:Protocol.history ->
-  consume:(record -> unit) ->
+  consume:(Ring.record -> unit) ->
   done_:((unit, string) result -> unit) ->
   unit
 
@@ -59,5 +44,4 @@ val screen :
 
 val shutdown : t -> unit
 val reap : t -> unit
-val finished : t -> bool
 val kill : t -> unit

@@ -10,7 +10,16 @@
  (modules coordinator)
  (flags
   (:standard -open Containers))
- (libraries containers unix luv ko_vt ko_server bigstringaf bench_terminal)
+ (libraries
+  containers
+  unix
+  luv
+  ko_vt
+  ko_server
+  bigstringaf
+  bench_terminal
+  runtime_events
+  base64)
  (foreign_stubs
   (language c)
   (names measure_stubs)
@@ -50,6 +59,21 @@
  (deps produce.c ../ko_pane/now.h)
  (action
   (run cc -std=c11 -O2 -Wall -Wextra -Werror produce.c -o produce.exe)))
+
+(rule
+ (targets latency_drain.exe)
+ (deps latency_drain.c ../ko_pane/now.h)
+ (action
+  (run
+   cc
+   -std=c11
+   -O2
+   -Wall
+   -Wextra
+   -Werror
+   latency_drain.c
+   -o
+   latency_drain.exe)))
 
 (rule
  (targets drain.exe)

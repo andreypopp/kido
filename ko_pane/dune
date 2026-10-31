@@ -30,6 +30,7 @@
   build.sh
   ../ko_vt/cxx.sh
   pane.c
+  pixels.h
   protocol.h
   ring.h
   buffer.h
@@ -47,6 +48,7 @@
   build.sh
   ../ko_vt/cxx.sh
   test_pane.c
+  pixels.h
   protocol.h
   ring.h
   ../ko_vt/libghostty-vt.a
@@ -60,6 +62,7 @@
   build.sh
   ../ko_vt/cxx.sh
   pane.c
+  pixels.h
   protocol.h
   ring.h
   buffer.h

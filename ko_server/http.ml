@@ -116,7 +116,7 @@ let request state conn { Gluten.reqd; upgrade } =
                   ~on_writable:ignore
             | Some (Delete_pane id) ->
                 with_pane id (fun pane ->
-                    State.close_views state pane;
+                    State.close_views state (Pane.id pane);
                     Panes.remove panes pane;
                     State.topology state;
                     respond (`Assoc []))
@@ -169,19 +169,19 @@ let request state conn { Gluten.reqd; upgrade } =
                             | Some _ -> Connection.close conn)))
             | Some (View (id, options, offset)) ->
                 with_pane id (fun pane ->
-                    if not (Pane_proc.alive (Pane.proc pane)) then error Io "pane process ended"
-                    else begin
-                      let view = ref None in
-                      websocket
-                        ~on_text:(fun text -> Option.iter (fun v -> View.receive v text) !view)
-                        ~on_close:(fun () ->
-                          Option.iter
-                            (fun v ->
-                              View.close v;
-                              State.remove_view state v)
-                            !view)
-                        ~on_writable:(fun () -> Option.iter View.pump !view);
-                      let v = View.create pane conn ~client ~offset ~history:options.history in
-                      view := Some v;
-                      if not (Connection.is_closed conn) then State.add_view state v
-                    end)))
+                    match Pane_proc.life (Pane.proc pane) with
+                    | Closed | Reaped -> error Io "pane process ended"
+                    | Open ->
+                        let view = ref None in
+                        websocket
+                          ~on_text:(fun text -> Option.iter (fun v -> View.receive v text) !view)
+                          ~on_close:(fun () ->
+                            Option.iter
+                              (fun v ->
+                                View.close v;
+                                State.remove_view state v)
+                              !view)
+                          ~on_writable:(fun () -> Option.iter View.pump !view);
+                        let v = View.create pane conn ~client ~offset ~history:options.history in
+                        view := Some v;
+                        if not (Connection.is_closed conn) then State.add_view state v)))

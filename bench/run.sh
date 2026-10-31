@@ -15,8 +15,7 @@ cd "$build"
 echo "== control: pty -> plain copier -> socketpair -> drain"
 run ./bench/pty_read.exe socket ./bench/drain.exe "$build/bench/produce.exe" "$bytes" $streams
 echo "== ko-pane ring -> coordinator view write -> socketpair -> drain"
-run ./bench/coordinator.exe throughput writev "$bytes" callbacks 2 $streams
-run ./bench/coordinator.exe throughput writev "$bytes" no-callbacks 2 $streams
+run ./bench/coordinator.exe throughput writev "$bytes" 2 $streams
 echo "== vt_write in process, mixed corpus and each stream"
 ./bench/parse.exe 268435456 65536 $streams
 for f in $streams; do ./bench/parse.exe 67108864 65536 "$f" | tail -1 | sed "s|^|$(basename "$f") |"; done

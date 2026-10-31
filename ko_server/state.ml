@@ -4,22 +4,14 @@ type t = {
   mutable clients : Client.t list;
   mutable views : View.t list;
   mutable next_client : int;
-  mutable activity : unit -> unit;
+  activity : unit -> unit;
 }
 
-let create config =
-  {
-    config;
-    panes = Panes.create config;
-    clients = [];
-    views = [];
-    next_client = 1;
-    activity = ignore;
-  }
+let create config ~activity =
+  { config; panes = Panes.create config; clients = []; views = []; next_client = 1; activity }
 
 let panes t = t.panes
 let clients t = t.clients
-let on_activity t callback = t.activity <- callback
 
 let broadcast t json =
   List.iter
@@ -30,23 +22,19 @@ let topology t = broadcast t (Protocol.Event.client_to_json (Topology (Panes.row
 let pump t = List.iter View.pump t.views
 let waiting t = List.exists View.waiting t.views
 
-let close_views t pane =
-  List.iter
-    (fun v -> if Ids.Pane_id.equal (Pane.id (View.pane v)) (Pane.id pane) then View.close v)
-    t.views
+let close_views t id =
+  List.iter (fun v -> if Ids.Pane_id.equal (Pane.id (View.pane v)) id then View.close v) t.views
 
-let event t pane = function
-  | Pane.Title title ->
-      broadcast t (Protocol.Event.client_to_json (Title { pane = Pane.id pane; title }))
-  | Pwd pwd -> broadcast t (Protocol.Event.client_to_json (Pwd { pane = Pane.id pane; pwd }))
-  | Dead dead -> broadcast t (Protocol.Event.client_to_json (Dead { pane = Pane.id pane; dead }))
-  | Failed dead ->
-      broadcast t (Protocol.Event.client_to_json (Dead { pane = Pane.id pane; dead }));
-      close_views t pane
+let event t id (event : Pane_proc.event) =
+  match event with
+  | Title title -> broadcast t (Protocol.Event.client_to_json (Title { pane = id; title }))
+  | Pwd pwd -> broadcast t (Protocol.Event.client_to_json (Pwd { pane = id; pwd }))
+  | Dead dead -> (
+      broadcast t (Protocol.Event.client_to_json (Dead { pane = id; dead }));
+      match dead.cause with Failed _ -> close_views t id | Exited _ | Signaled _ -> ())
   | Output ->
       List.iter
-        (fun view ->
-          if Ids.Pane_id.equal (Pane.id (View.pane view)) (Pane.id pane) then View.pump view)
+        (fun view -> if Ids.Pane_id.equal (Pane.id (View.pane view)) id then View.pump view)
         t.views;
       t.activity ()
 

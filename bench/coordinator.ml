@@ -25,14 +25,14 @@ type pane = {
   view : Connection.t;
   drain : int;
   mutable pos : int;
+  mutable counted : int;
   mutable bytes : int;
   mutable records : int;
-  mutable dead : bool;
   mutable samples : float list option;
   transcript : Buffer.t option;
 }
 
-let start ~pane_exe ~callbacks ~argv ~transcript ~latency =
+let start ~pane_exe ~argv ~transcript ~latency =
   let config =
     {
       Config.dir = "/tmp";
@@ -52,8 +52,10 @@ let start ~pane_exe ~callbacks ~argv ~transcript ~latency =
   let drain = Unix.create_process (drain_exe ()) [| "drain" |] other Unix.stdout Unix.stderr in
   Unix.close other;
   let proc =
-    Pane_proc.create ~callbacks config ~id:(Ids.Pane_id.make 1) ~cwd:"/" ~argv
-      ~env:[ "TERM=xterm-ghostty" ]
+    Pane_proc.create config ~id:(Ids.Pane_id.make 1) ~cwd:"/" ~argv ~env:[ "TERM=xterm-ghostty" ]
+      ~notify:(function
+      | Dead { cause = Failed message; _ } -> failwith message
+      | Title _ | Pwd _ | Output | Dead _ -> ())
   in
   let p =
     {
@@ -61,55 +63,55 @@ let start ~pane_exe ~callbacks ~argv ~transcript ~latency =
       view = Connection.writer fd;
       drain;
       pos = 0;
+      counted = 0;
       bytes = 0;
       records = 0;
-      dead = false;
       samples = (if latency then Some [] else None);
       transcript = (if transcript then Some (Buffer.create 4096) else None);
     }
   in
-  Pane_proc.listen proc (function
-    | Record record -> (
-        match record.data with
-        | Bytes ->
-            p.bytes <- p.bytes + record.len;
-            p.records <- p.records + 1;
-            (match p.samples with
-            | None -> ()
-            | Some samples ->
-                let now = Uv.now () in
-                let found = ref samples in
-                let text =
-                  Bigstringaf.substring (Pane_proc.buffer proc) ~off:record.at ~len:record.len
-                in
-                for i = 0 to String.length text - 21 do
-                  if Char.equal text.[i] 'T' then
-                    match int_of_string_opt (String.sub text (i + 1) 20) with
-                    | Some ts -> found := (float (now - ts) /. 1e3) :: !found
-                    | None -> ()
-                done;
-                p.samples <- Some !found);
-            Option.iter
-              (fun b ->
-                Buffer.add_string b
-                  (Bigstringaf.substring (Pane_proc.buffer proc) ~off:record.at ~len:record.len))
-              p.transcript
-        | Dead_marker _ -> p.dead <- true
-        | _ -> ())
-    | Failed { cause = Failed message; _ } -> failwith message
-    | Failed _ -> failwith "pane failed"
-    | _ -> ());
   p
+
+let count p =
+  let ring = Pane_proc.ring p.proc in
+  Ring.iter_from ring p.counted (fun record ->
+      p.counted <- record.next;
+      (match record.data with
+      | Bytes ->
+          p.bytes <- p.bytes + record.len;
+          p.records <- p.records + 1;
+          (match p.samples with
+          | None -> ()
+          | Some samples ->
+              let now = Uv.now () in
+              let found = ref samples in
+              let text = Bigstringaf.substring (Ring.buffer ring) ~off:record.at ~len:record.len in
+              for i = 0 to String.length text - 21 do
+                if Char.equal text.[i] 'T' then
+                  match int_of_string_opt (String.sub text (i + 1) 20) with
+                  | Some ts -> found := (float (now - ts) /. 1e3) :: !found
+                  | None -> ()
+              done;
+              p.samples <- Some !found);
+          Option.iter
+            (fun b ->
+              Buffer.add_string b
+                (Bigstringaf.substring (Ring.buffer ring) ~off:record.at ~len:record.len))
+            p.transcript
+      | Resize_marker _ | Dead_marker _ | Slice _ -> ());
+      true)
 
 let flush p =
   ignore (Pane_proc.scan p.proc : bool);
+  count p;
   if Connection.available p.view then
-    Pane_proc.iter_from p.proc p.pos (fun record ->
+    Ring.iter_from (Pane_proc.ring p.proc) p.pos (fun record ->
         match record.data with
         | Bytes -> (
             match
               Connection.record p.view ~queue:false ~kind:Output ~offset:record.offset
-                (Pane_proc.buffer p.proc) ~at:record.at ~len:record.len
+                (Ring.buffer (Pane_proc.ring p.proc))
+                ~at:record.at ~len:record.len
             with
             | Accepted ->
                 p.pos <- record.next;
@@ -123,31 +125,34 @@ let flush p =
             p.pos <- record.next;
             true)
 
-let drained p = Connection.available p.view && p.pos >= Pane_proc.position p.proc
+let dead p = Option.is_some (Pane_proc.dead p.proc)
+let drained p = Connection.available p.view && p.pos >= Ring.position (Pane_proc.ring p.proc)
 
 let finish p =
   Connection.close p.view;
   Pane_proc.shutdown p.proc;
-  run_until ~timeout:5. (fun () -> Pane_proc.finished p.proc) (fun () -> Pane_proc.reap p.proc);
+  run_until ~timeout:5.
+    (fun () -> match Pane_proc.life p.proc with Reaped -> true | Open | Closed -> false)
+    (fun () -> Pane_proc.reap p.proc);
   ignore (Luv.Loop.run ~mode:`NOWAIT () : bool);
   match Unix.waitpid [] p.drain with _, Unix.WEXITED 0 -> () | _ -> failwith "drain failed"
 
-let throughput ~pane_exe ~produce ~bytes ~callbacks ~coalesce_ms ~streams =
+let throughput ~pane_exe ~produce ~bytes ~coalesce_ms ~streams =
   if coalesce_ms <> 2 then invalid_arg "production coalescing is 2 ms";
   let p =
-    start ~pane_exe ~callbacks
+    start ~pane_exe
       ~argv:(produce :: string_of_int bytes :: streams)
       ~transcript:false ~latency:false
   in
   let started = Unix.gettimeofday () and cpu = cpu_self () and words = Gc.minor_words () in
-  run_until ~timeout:120. (fun () -> p.dead && drained p) (fun () -> flush p);
+  run_until ~timeout:120. (fun () -> dead p && drained p) (fun () -> flush p);
   let elapsed = Unix.gettimeofday () -. started and used = cpu_self () -. cpu in
   let pane_cpu = snd (cpu_seconds (Pane_proc.pid p.proc)) in
   Printf.printf
-    "ko view=writev callbacks=%b coalesce_ms=%d bytes=%d seconds=%.3f MB/s=%.1f records=%d \
+    "ko view=writev coalesce_ms=%d bytes=%d seconds=%.3f MB/s=%.1f records=%d \
      minor_words/record=%.2f pane_cpu=%.3f coordinator_cpu=%.3f cores=%.2f\n\
      %!"
-    callbacks coalesce_ms p.bytes elapsed
+    coalesce_ms p.bytes elapsed
     (float p.bytes /. elapsed /. 1e6)
     p.records
     ((Gc.minor_words () -. words) /. float (max 1 p.records))
@@ -158,11 +163,11 @@ let throughput ~pane_exe ~produce ~bytes ~callbacks ~coalesce_ms ~streams =
 
 let snapshots ~pane_exe ~produce ~lines =
   let p =
-    start ~pane_exe ~callbacks:true
+    start ~pane_exe
       ~argv:[ produce; "--lines"; string_of_int lines ]
       ~transcript:false ~latency:false
   in
-  run_until ~timeout:120. (fun () -> p.dead && drained p) (fun () -> flush p);
+  run_until ~timeout:120. (fun () -> dead p && drained p) (fun () -> flush p);
   let request label history before =
     before ();
     let finished = ref false and total = ref 0 in
@@ -172,7 +177,8 @@ let snapshots ~pane_exe ~produce ~lines =
         total := !total + record.len - Protocol.Record.slice_size;
         ignore
           (Connection.record p.view ~queue:true ~kind:Snapshot ~offset:record.offset
-             (Pane_proc.buffer p.proc) ~at:record.at ~len:record.len))
+             (Ring.buffer (Pane_proc.ring p.proc))
+             ~at:record.at ~len:record.len))
       ~done_:(function Ok () -> finished := true | Error message -> failwith message);
     run_until ~timeout:120. (fun () -> !finished && Connection.available p.view) (fun () -> flush p);
     Printf.printf "snapshot view=writev lines=%d kind=%s bytes=%d ms=%.2f\n%!" lines label !total
@@ -187,11 +193,11 @@ let snapshots ~pane_exe ~produce ~lines =
 
 let latency ~pane_exe ~produce ~count =
   let p =
-    start ~pane_exe ~callbacks:true
+    start ~pane_exe
       ~argv:[ produce; "--latency"; string_of_int count ]
       ~transcript:true ~latency:true
   in
-  run_until ~timeout:120. (fun () -> p.dead && drained p) (fun () -> flush p);
+  run_until ~timeout:120. (fun () -> dead p && drained p) (fun () -> flush p);
   let a = Array.of_list (List.sort Float.compare (Option.value ~default:[] p.samples)) in
   if Array.length a > 0 then
     Printf.printf "hop latency view=writev samples=%d p50_us=%.1f p99_us=%.1f max_us=%.1f\n%!"
@@ -202,8 +208,8 @@ let latency ~pane_exe ~produce ~count =
   finish p
 
 let run_program ~pane_exe ~argv =
-  let p = start ~pane_exe ~callbacks:true ~argv ~transcript:true ~latency:false in
-  run_until ~timeout:900. (fun () -> p.dead && drained p) (fun () -> flush p);
+  let p = start ~pane_exe ~argv ~transcript:true ~latency:false in
+  run_until ~timeout:900. (fun () -> dead p && drained p) (fun () -> flush p);
   let vt = Bench_terminal.create ~scrollback_max_bytes:(1 lsl 20) ~cols:120 ~rows:60 () in
   Option.iter (fun b -> Ko_vt.write vt (Buffer.contents b)) p.transcript;
   print_endline (Ko_vt.dump vt Plain);
@@ -298,15 +304,207 @@ let allocation () =
   ignore (Luv.Loop.run () : bool);
   ignore (Unix.waitpid [] drain)
 
+let flood ~pane_exe ~produce ~panes ~views ~bytes ~window ~streams =
+  let config =
+    {
+      Config.dir = "/tmp";
+      socket = "/tmp/socket";
+      pane_exe;
+      terminfo = "/tmp";
+      shell = "/bin/sh";
+      limits = Config.default_limits;
+      env = [];
+      cwd = "/";
+    }
+  in
+  let here = Filename.dirname Sys.executable_name in
+  let timer = Uv.ok (Luv.Timer.init ()) in
+  let tick = ref ignore in
+  let finished = ref false in
+  let state =
+    State.create config ~activity:(fun () ->
+        if (not !finished) && not (Luv.Handle.is_active timer) then
+          Uv.ok (Luv.Timer.start ~repeat:window timer window (fun () -> !tick ())))
+  in
+  let set = State.panes state in
+  let null = Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0 in
+  let deaths = Hashtbl.create 32 in
+  let started = ref 0. in
+  let spawn ~label ~command ~view =
+    let pane =
+      match
+        Panes.add set { Protocol.Request.cwd = Some "/"; command = Some (Argv command); env = [] }
+          ~notify:(fun id event ->
+            State.event state id event;
+            match event with
+            | Dead _ ->
+                Hashtbl.replace deaths (Ids.Pane_id.to_string id) (Unix.gettimeofday () -. !started)
+            | Title _ | Pwd _ | Output -> ())
+      with
+      | Ok pane -> pane
+      | Error message -> failwith message
+    in
+    ( pane,
+      if view then begin
+        let fd, other = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+        Unix.setsockopt_int fd Unix.SO_SNDBUF (1 lsl 20);
+        Unix.setsockopt_int other Unix.SO_RCVBUF (1 lsl 20);
+        Unix.set_close_on_exec fd;
+        let reader =
+          match label with
+          | Some label ->
+              let exe = Filename.concat here "latency_drain.exe" in
+              Unix.create_process exe [| exe; label |] other Unix.stdout Unix.stderr
+          | None -> Unix.create_process (drain_exe ()) [| "drain" |] other Unix.stdout null
+        in
+        Unix.close other;
+        let connection = Connection.writer fd in
+        State.add_view state
+          (View.create pane connection ~client:None ~offset:None ~history:History_none);
+        Some (connection, reader)
+      end
+      else None )
+  in
+  let streams_command stamped =
+    (produce :: (if stamped then [ "--stamped" ] else [])) @ (string_of_int bytes :: streams)
+  in
+  let flooded =
+    List.init panes (fun i ->
+        spawn
+          ~label:(if i = 0 then Some "flood" else None)
+          ~command:(streams_command (i = 0))
+          ~view:(i < views))
+  in
+  let quiet = spawn ~label:(Some "echo") ~command:[ "/bin/cat" ] ~view:true in
+  let flood_panes = List.map fst flooded in
+  let counters = List.map (fun pane -> (pane, ref 0, ref 0)) flood_panes in
+  let tick_body () =
+    let produced = ref false in
+    Panes.iter set (fun pane -> if Pane_proc.scan (Pane.proc pane) then produced := true);
+    List.iter
+      (fun (pane, counted, records) ->
+        Ring.iter_from
+          (Pane_proc.ring (Pane.proc pane))
+          !counted
+          (fun record ->
+            counted := record.next;
+            (match record.data with
+            | Bytes -> incr records
+            | Resize_marker _ | Dead_marker _ | Slice _ -> ());
+            true))
+      counters;
+    State.pump state;
+    let idle = (not !produced) && not (State.waiting state) in
+    if idle then Uv.ok (Luv.Timer.stop timer);
+    if
+      idle
+      && List.for_all (fun pane -> Option.is_some (Pane_proc.dead (Pane.proc pane))) flood_panes
+    then (
+      finished := true;
+      Luv.Loop.stop (Luv.Loop.default ()))
+  in
+  tick := tick_body;
+  let echo = Uv.ok (Luv.Timer.init ()) in
+  let quiet_pane, _ = quiet in
+  Uv.ok
+    (Luv.Timer.start ~repeat:10 echo 10 (fun () ->
+         if not !finished then
+           ignore
+             (Pane_proc.input (Pane.proc quiet_pane)
+                (Text (Base64.encode_exn (Printf.sprintf "T%020d\n" (Uv.now ()))))
+                ignore)));
+  let watchdog = Uv.ok (Luv.Timer.init ()) in
+  Uv.ok (Luv.Timer.start watchdog 120_000 (fun () -> failwith "benchmark deadline"));
+  Runtime_events.start ();
+  let cursor = Runtime_events.create_cursor None in
+  let gc_ns = ref 0L and begun = Hashtbl.create 4 in
+  let phase_key = function
+    | Runtime_events.EV_MINOR -> Some 0
+    | EV_MAJOR_SLICE -> Some 1
+    | _ -> None
+  in
+  let callbacks =
+    Runtime_events.Callbacks.create
+      ~runtime_begin:(fun _ ts phase ->
+        Option.iter
+          (fun key -> Hashtbl.replace begun key (Runtime_events.Timestamp.to_int64 ts))
+          (phase_key phase))
+      ~runtime_end:(fun _ ts phase ->
+        Option.iter
+          (fun key ->
+            Option.iter
+              (fun start ->
+                gc_ns := Int64.add !gc_ns (Int64.sub (Runtime_events.Timestamp.to_int64 ts) start))
+              (Hashtbl.find_opt begun key))
+          (phase_key phase))
+      ()
+  in
+  let poll = Uv.ok (Luv.Timer.init ()) in
+  Uv.ok
+    (Luv.Timer.start ~repeat:50 poll 50 (fun () ->
+         ignore (Runtime_events.read_poll cursor callbacks None : int)));
+  started := Unix.gettimeofday ();
+  let cpu = cpu_self () and words = Gc.minor_words () in
+  tick_body ();
+  ignore (Luv.Loop.run () : bool);
+  let elapsed = Unix.gettimeofday () -. !started and used = cpu_self () -. cpu in
+  let words = Gc.minor_words () -. words in
+  ignore (Runtime_events.read_poll cursor callbacks None : int);
+  let total =
+    List.fold_left
+      (fun sum (pane, _, _) -> sum + Ring.offset (Pane_proc.ring (Pane.proc pane)))
+      0 counters
+  in
+  let records = List.fold_left (fun sum (_, _, records) -> sum + !records) 0 counters in
+  let rates =
+    List.map
+      (fun (pane, _, _) ->
+        let id = Ids.Pane_id.to_string (Pane.id pane) in
+        float (Ring.offset (Pane_proc.ring (Pane.proc pane)))
+        /. Option.value ~default:elapsed (Hashtbl.find_opt deaths id)
+        /. 1e6)
+      counters
+  in
+  let lowest = List.fold_left Float.min infinity rates
+  and highest = List.fold_left Float.max 0. rates in
+  Printf.printf
+    "flood panes=%d views=%d window_ms=%d bytes_per_pane=%d seconds=%.2f total_MBps=%.1f \
+     pane_MBps_min=%.1f pane_MBps_max=%.1f coordinator_cores=%.2f records=%d \
+     minor_words_per_record=%.2f gc_pct_of_cpu=%.1f\n\
+     %!"
+    panes views window bytes elapsed
+    (float total /. elapsed /. 1e6)
+    lowest highest (used /. elapsed) records
+    (words /. float (max 1 records))
+    (Int64.to_float !gc_ns /. 1e9 /. used *. 100.);
+  List.iter (fun handle -> Luv.Handle.close handle ignore) [ echo; poll; watchdog; timer ];
+  let wired = List.filter_map snd (quiet :: flooded) in
+  List.iter (fun (connection, _) -> Connection.close connection) wired;
+  for _ = 1 to 3 do
+    ignore (Luv.Loop.run ~mode:`NOWAIT () : bool)
+  done;
+  List.iter (fun (_, reader) -> ignore (Unix.waitpid [] reader)) wired;
+  Panes.shutdown set;
+  run_until ~timeout:10.
+    (fun () ->
+      Panes.reap set;
+      List.for_all
+        (fun (pane, _) ->
+          match Pane_proc.life (Pane.proc pane) with Reaped -> true | Open | Closed -> false)
+        (quiet :: flooded))
+    ignore
+
 let () =
   let here = Filename.dirname (Unix.realpath Sys.executable_name) in
   let pane_exe = Filename.concat here "../ko_pane/ko-pane"
   and produce = Filename.concat here "produce.exe" in
   match Array.to_list Sys.argv |> List.tl with
-  | "throughput" :: "writev" :: bytes :: callbacks :: coalesce_ms :: streams ->
+  | "throughput" :: "writev" :: bytes :: coalesce_ms :: streams ->
       throughput ~pane_exe ~produce ~bytes:(int_of_string bytes)
-        ~callbacks:(String.equal callbacks "callbacks")
         ~coalesce_ms:(int_of_string coalesce_ms) ~streams
+  | "flood" :: panes :: views :: bytes :: window :: streams ->
+      flood ~pane_exe ~produce ~panes:(int_of_string panes) ~views:(int_of_string views)
+        ~bytes:(int_of_string bytes) ~window:(int_of_string window) ~streams
   | [ "latency"; "writev"; count; "2" ] -> latency ~pane_exe ~produce ~count:(int_of_string count)
   | [ "snapshot"; "writev"; lines ] -> snapshots ~pane_exe ~produce ~lines:(int_of_string lines)
   | [ "pty-pipe" ] -> pty_pipe ()
