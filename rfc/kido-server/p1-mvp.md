@@ -180,11 +180,13 @@ No config file is read in P1. The server takes these options on its
 command line, with Ghostty 1.4's names and defaults (decided
 2026-10-30):
 
-- `--scrollback-bytes BYTES`, default 50 MB (50_000_000), mapped to
-  `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES`. At about 708 bytes per
+- `--scrollback-bytes BYTES|unlimited`, default 50 MB (50_000_000), mapped to
+  `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES` (`unlimited` passes NULL). At about 708 bytes per
   row at 80 columns (P1.0) this keeps about 70k rows.
-- `--scrollback-lines N`, default unlimited, mapped to
-  `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES`.
+- `--scrollback-lines N|unlimited`, default unlimited, mapped to
+  `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES`. Both take positive values only.
+- `--no-scrollback`, which keeps no scrollback (bytes 0). It conflicts with
+  the two options above.
 - `--shell PATH`.
 
 The first scrollback limit reached applies. The byte limit counts
@@ -229,7 +231,7 @@ From [protocol.md](protocol.md), with sessions and windows removed:
 `images` on a view is fixed to `none` in P1: the mirror still stores
 inline kitty payloads that arrive in the bytes, and the client draws
 nothing for them. The view's snapshot carries no pixel payload records.
-`GET /version` includes the `terminal` options of the mirror contract,
+`GET /version` includes the `limits` options of the mirror contract,
 and the client applies them to its mirror.
 
 ## 5. The client in P1, `ko_tui`
@@ -776,8 +778,8 @@ These points were open or wrong in the plan:
   tmux, because Matrix waits a 50 ms grace period. The 17 ms row is
   for a terminal that answers. Matrix's probe stays (decided
   2026-10-30).
-- **The `ko-pane` init frame is version 2** (it gained
-  `scrollback_max_lines`, protocol.md 14). A server older than its
+- **The `ko-pane` init frame is version 3** (each scrollback limit has a
+  present flag, protocol.md 14). A server older than its
   `ko-pane` fails to start panes and must restart.
 - **Benchmark fairness.** Both servers write the 100k-line history at
   the same 95x30 pane size, checked with `stty size`; tmux and kitty

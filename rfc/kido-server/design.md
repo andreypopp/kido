@@ -1,11 +1,23 @@
 # ko: a terminal server for kido and Kido.app
 
-Status: design, 2026-10-29. Untracked RFC. No code exists.
-The executable is `ko` (decided 2026-10-29); the RFC directory keeps
-its name.
+Status: design, 2026-10-29, updated 2026-10-30 after P1 landed on
+the `ko` branch. The executable is `ko` (decided 2026-10-29); the RFC
+directory keeps its name.
 Appendices: [protocol.md](protocol.md), [p1-mvp.md](p1-mvp.md) (the
-MVP: server and thin terminal client, flat panes, no kido features),
-[migration.md](migration.md), [00-reading-notes.md](00-reading-notes.md).
+MVP as built: server and thin terminal client, flat panes, no kido
+features), [migration.md](migration.md) (the stages from P1 to `ko`
+replacing kido, the layout document and pane variables),
+[s1.md](s1.md) (the specification of stage S1),
+[00-reading-notes.md](00-reading-notes.md).
+
+Decisions the user made on 2026-10-30: kido as a product ends and
+`ko` replaces it; the terminal client shows one pane at a time from a
+list grouped by session, never splits, tabs or windows; Kido.app
+keeps sessions, windows, splits, floats, zoom and its sidebar; the
+layout is one server-validated JSON document, changed by
+whole-document `PUT` with a revision check; panes carry arbitrary
+client-set JSON variables in place of tmux user options. migration.md
+lists them.
 
 Decisions the user made on 2026-10-29:
 
@@ -50,13 +62,13 @@ Goals, in priority order:
    topology arrive as events with the server's clock. The sidebar model
    that `lib/` computes today runs once, in the server.
 4. **Several clients that do not fight**: each client has its own
-   current session and window. Two viewers of one window still share
-   its size, because a pty has one size.
+   current session, window and pane. Two viewers of one window still
+   share its size, because a pty has one size.
 5. **Upgrade without losing panes.** A new server binary takes over the
    running ptys and the terminal state.
 6. **Remote** over SSH with the same protocol, with reconnect.
-7. **A thin terminal client** for a plain terminal and for the kido side
-   column.
+7. **A thin terminal client** for a plain terminal: one pane at a
+   time, a sidebar grouped by session.
 
 Non-goals:
 
@@ -64,15 +76,15 @@ Non-goals:
   plugins, `run-shell` bindings, hooks, key tables.
 - Linked and grouped sessions.
 - Copy mode in the terminal client, in the first version.
-- Scripting the server from the shell beyond what the `kido` CLI
-  exposes through the protocol.
+- Scripting the server from the shell beyond what the `ko` CLI and
+  `ko api` expose through the protocol.
 - Surviving a reboot.
-- Replacing `kido ssh` priming, the pi inbox or the agent map. They
-  stay as they are. Only their tmux calls change.
+- Replacing `kido ssh` priming (kept as `ko ssh`), the pi inbox or
+  the agent map. They stay as they are. Only their tmux calls change.
+- Splits, tabs or windows in the terminal client.
 
-Users served: Kido.app first; the `kido` CLI and the pi extension
-second; a plain terminal third; an iOS client later, on the same
-protocol.
+Users served: Kido.app and the `ko` terminal client; the `ko` CLI and
+the pi harness; an iOS client later, on the same protocol.
 
 ## 3. The one decision that shapes everything: how a client gets content
 
@@ -143,7 +155,7 @@ The server is two programs (decided 2026-10-30):
 - **`ko`, the coordinator**, in OCaml. One per state directory, as
   today. The socket is `<dir>/socket`. The directory rules of
   `Server_dir` stay (0700, owner, no comma, 103-byte path). It owns
-  the topology, clients, the HTTP and WebSocket protocol, the ring and
+  the layout document, clients, the HTTP and WebSocket protocol, the ring and
   fan-out to views, skips and snapshots, sizing and focus, the
   clipboard answerer, the model, runs and config. It never calls
   libghostty-vt.
@@ -192,7 +204,7 @@ design.md keep working unchanged.
 The protocol is HTTP/1.1 over the unix socket, with WebSocket for the
 long-lived streams (decided 2026-10-29), served by `httpun` and
 `httpun-ws`, whose state machines the luv reads and writes drive. Each
-stream is its own connection: the client connection, feed, one per
+stream is its own connection: the client connection, one per
 open view (which
 also carries that pane's input), one per image fetch, and a pool of
 keep-alive connections for control requests. A remote client reaches
@@ -204,29 +216,28 @@ no other authentication.
 
 ### 4.2 Modules, in OCaml
 
-The server is a new library in the kido repo. Of `lib/` it reuses only
-what has no tmux in its types: `Tree`, `Timestamp`, `Fs`. The rules of
-`Pane_status`, `Program_status`, `Run`, `Reap`, `Prompt` and `Reap`
-move into the server's modules with new inputs (events with nanosecond
-times instead of tmux formats; the server's pane instead of
+The server is the library `ko_server` in the kido repo. Of `lib/` it
+reuses only what has no tmux in its types: `Tree`, `Timestamp`, `Fs`.
+The rules of `Pane_status`, `Program_status`, `Run`, `Reap` and
+`Prompt` move into the server's modules with new inputs (events with
+nanosecond times instead of tmux formats; the server's pane instead of
 `Tmux.pane_id`; input messages instead of `load-buffer`). Their e2e
-tests move with them. `lib_tmux/` and the tmux-reading parts of `State`
-and `Sidebar` are deleted at stage 4.
+tests move with them. `lib_tmux/`, `State` and `Sidebar` are deleted
+at the cut-over (migration.md S8).
 
 | module | owns |
 |---|---|
 | `Pane_proc` | one `ko-pane` child: the ring mapping, the control socket, the frame codec, requests and their replies, events |
-| `Pane` | one pane: its `Pane_proc`, title, pwd, OSC 133 phase, OSC 7501 records, meta fields, output sequence number, ring, dead state |
-| `Window` | panes, layout tree, floats, zoom, active pane, size and cell pixel size |
-| `Session` | windows, order rank, name, environment |
-| `Topology` | sessions, ids, the walk, events |
-| `Client` | a connected client: its `/client` WebSocket, current session and window, size, focus, sizing flag |
+| `Pane` | one pane: its `Pane_proc`, title, pwd, OSC 133 phase, OSC 7501 records, foreground command, variables, output sequence number, ring, dead state |
+| `Panes` | the live panes by id |
+| `Layout` | the one layout document: sessions, windows, split trees, floats, zoom, active panes, names, order, session and window variables; its validation, normalization, revision and events (4.5) |
+| `Client` | a connected client: its `/client` WebSocket, current session, window and pane, size, focus, sizing flag |
 | `View` | one streaming response of one pane: sync state, unsent count, pending snapshot |
 | `Input` | typed events validated and forwarded to the pane process, which encodes them |
 | `Clipboard` | the OSC 52 and 5522 request routing |
 | `Images` | image resources: server-owned shm copies locally, pixel bodies remotely |
 | `Runs` | run records, outcomes, the sweep, output tailing |
-| `Model` | the typed sidebar model: `Pane_status` over panes, the tree, snapshots on change |
+| `Model` | `Pane_status` over panes, once: each pane's `status` field and its `status` event; no tree, no snapshot |
 | `Upgrade` | write state, exec the new binary with the pane rings and control sockets, read state |
 | `Config` | `ko.conf`: default shell, scrollback and image limits, the environment |
 | `Http` | httpun and httpun-ws on luv: routing, JSON bodies, WebSocket streams, version headers |
@@ -415,20 +426,32 @@ guarantee". Both sides therefore pin one libghostty-vt revision, and the
 protocol version includes it (section 5). A mismatch is refused at
 the first request, as the server stamp is today.
 
-### 4.5 Sessions, windows, panes, clients
+### 4.5 The layout document, panes, clients
 
-The model keeps tmux's shape because kido and the app are built on it:
+The model keeps tmux's shape because Kido.app is built on it, but it
+is held as **one JSON document** in the coordinator (decided
+2026-10-30; migration.md 3 gives the schema and the `PUT` protocol):
 
-- A **session** has an ordered list of windows, a name, a rank for the
-  sidebar order, and an environment. Ids are `session_N`, `window_N`,
-  `pane_N` and `client_N` (decided 2026-10-29), allocated once per
-  server life, never reused. kido's run records and the app's keys
-  take the new spelling; nothing translates `pane_N`.
-- A **window** has a layout tree of tiled panes, floating panes with
-  position, size, border and z-order, an active pane, a zoom state,
-  a size in cells and a cell size in pixels, and a name.
-- A **pane** has a process, a terminal, meta fields (4.9), and a dead
-  state after exit.
+- The **document** lists sessions in display order; each session has
+  a name, variables and windows in display order; each window has a
+  name, variables, a size in cells and a cell size in pixels, a split
+  tree of leaves with cell geometry, floating panes with position,
+  size, border, title and z-order, an active pane and a zoom state.
+  Ids are `session_N`, `window_N`, `pane_N` and `client_N` (decided
+  2026-10-29), allocated once per server life, never reused. kido's
+  run records and the app's keys take the new spelling; nothing
+  translates `pane_N`.
+- The server validates the document's structure and normalizes its
+  geometry; it updates the document itself when a pane is created
+  inside a `PUT`, removed, or dies, and when the sizing client resizes
+  a window. A client changes it by `PUT /layout` with the revision it
+  read; a stale revision gets `409` with the current document, and
+  the client reapplies its edit and retries. Every change bumps the
+  revision and goes to every `/client` as a `layout` event.
+- A **pane** has a process, a terminal, server fields (title, pwd,
+  phases, records, dead state) and client-set variables (4.9).
+- The terminal client ignores the geometry: it lists panes grouped by
+  session and shows one at a time (4.11).
 - A **client** is one open `/client` WebSocket (decided 2026-10-30):
   it exists from the hello to the close, with no linger and no
   orphans. It has a current session, a current window, a size in cells
@@ -437,8 +460,8 @@ The model keeps tmux's shape because kido and the app are built on it:
   the socket is open. When the socket closes, the server deletes the
   client and closes its views. The client, not the server, owns what
   it shows: a reconnect is a new client whose hello carries its
-  current window, pane and size again. The feed and one-shot CLI
-  requests are not clients.
+  current window, pane and size again. One-shot CLI requests are not
+  clients.
 
 Window size: a window is sized by the clients that show it and take
 part in sizing. The sizing client is the one whose **input focus** is
@@ -455,12 +478,12 @@ session are coupled" limit shrinks to size only; the current window is
 per client. A client can opt out of sizing (`ignore_size`). There is no manual window size.
 
 Linked windows and grouped sessions are gone. Per-client current window
-is what grouped sessions were for. A window moves between sessions with
-the window move request; it has one position.
+is what grouped sessions were for. A window moves between sessions by
+an edit of the document; it has one position.
 
 Modal popups (`display-popup`, `display-menu`) are gone. A floating
-pane is a pane. The one-shot picker that `C-s` opens today becomes a
-terminal-client feature, drawn by the client (section 4.11).
+pane is a pane. The one-shot picker that `C-s` opens today is the
+terminal client's sidebar (section 4.11).
 
 ### 4.6 Views and flow control
 
@@ -496,7 +519,7 @@ pane for a slow client beyond a bounded ring buffer per pane (default
 local connection rarely skips; over a slow link, a flood becomes a
 snapshot per screen, which is the right behaviour.
 
-Because each view, the client connection, the feed and input are
+Because each view, the client connection and input are
 separate connections, a flood in one pane never delays a control reply or
 another pane. There is no multiplexer, no credit messages and no
 priority rule to get right.
@@ -562,8 +585,8 @@ multiplexed binary connection:
   echo is one round trip, as today, and nothing waits for a reply.
 - Opening a view costs a connection: negligible locally; two round
   trips remotely (channel open, request), paid once per view and in
-  parallel for a window switch, so a window of eight panes shows after
-  two round trips, not sixteen. A small pool of pre-opened idle
+  parallel for a window switch in the app, so a window of eight panes
+  shows after two round trips, not sixteen. A small pool of pre-opened idle
   connections removes one of them if measured to matter.
 - Images skip the socket on a local server (shared memory by name) and
   are fetched in parallel remotely, which is better than pixels inside
@@ -656,60 +679,81 @@ Clipboard is the exception, because the answer lives in a client:
 - Consent, grants and "always allow" stay in the client. The server
   never decides.
 
-### 4.9 Metadata: what replaces pane options
+### 4.9 Pane variables: what replaces pane options
 
-tmux user options were the only typed channel kido had. The server has
-fields:
+tmux user options were the only typed channel kido had. Every pane
+carries arbitrary client-set JSON variables (decided 2026-10-30):
+`GET /panes/pane_N/vars`, `PUT` and `DELETE /panes/pane_N/vars/<name>`,
+announced as `var` events on `/client`, with the limits of
+migration.md 3.3 (1 MiB a value, 8 MiB a pane). They live with their
+pane: an in-place upgrade keeps them, `kill-server` removes them,
+nothing persists to disk. Session and window variables live inside
+the layout document. The server stores and announces variables and
+reads only these names, under kido's trust rules:
 
-| today | server field | writer | trust rule |
+| today | variable | writer | trust rule |
 |---|---|---|---|
-| `@kido_run` | `pane.run : run id option` | `pane.create` from `kido run` | set at creation, never changes |
-| `@kido_session` `@kido_name` `@kido_inbox` `@kido_activity` | `pane.agent : {session; name; inbox; activity}` | `kido pane set-agent` from the pi extension | believed only while the root OSC 7501 app is `pi`, as today |
-| `@kido_ssh` `@kido_ssh_args` | `pane.ssh : {dest; args}` | `kido ssh` before exec | believed only while the foreground command is `ssh` |
-| session `@kido-order` | `session.rank` | the reorder request | none |
-| `remain-on-exit` | always on for run panes, off otherwise | `pane.create` | |
+| `@kido_run` | `ko.run` | `ko run` with the pane's creation | the sweep checks the run's meta names the pane |
+| `@kido_session` `@kido_name` `@kido_inbox` `@kido_activity` | `pi.session` `pi.name` `pi.inbox` `pi.activity` | the pi harness through `ko api` | believed only while the root OSC 7501 app is `pi`, as today |
+| `@kido_ssh` `@kido_ssh_args` | `ssh.dest` `ssh.args` | `ko ssh` before it execs ssh | believed only while the pane's foreground process is `ssh`, as today |
+| session `@kido-order` | the document's order | a `PUT /layout` | none |
+| `remain-on-exit` | every pane stays dead until removed | | |
 
-The foreground command (`pane_current_command`) is read from the
-process group of the pty (`tcgetpgrp` and the process name) as tmux
-does. `alternate_on` is `ACTIVE_SCREEN` of the terminal.
+The foreground command (`pane_current_command`) comes from `ko-pane`,
+which holds the pty master: it reads `tcgetpgrp` only on events, after
+every OSC 133 `C` and `D` and on pty output at most once per 100 ms,
+never on a timer, resolves the process name, and sends a `foreground
+{pid, name}` frame when the pair changed (protocol.md 14). An idle
+pane never wakes for it. A program that starts with no output under a
+shell without integration is seen at its first output; `ko ssh` is
+unaffected, because the integrated local shell sends `C` when ssh
+starts. `alternate_on` is `ACTIVE_SCREEN` of the terminal.
 
 ### 4.10 Status, runs and the model
 
-`Model` is today's `Sidebar.step` and `Pane_status.observe` without the
-poll. It runs when an event marks a pane or the topology dirty, at most
-once per 16 ms, and emits a typed snapshot to every `feed` subscriber
-when the snapshot differs. The snapshot is the RPC v2 shape of
-`share/rpc/contract.md`, as a protocol event, with these changes:
+`Model` is today's `Pane_status.observe` without the poll (decided
+2026-10-30: no `/feed`, no tree snapshot). It runs when an event marks
+a pane dirty, at most once per 16 ms, and writes the pane's `status`
+field: the typed `lifecycle` of `Pane_status`, the raw
+`program_status`, message, progress and `since`. `GET /panes` rows
+carry it; a change goes to every `/client` as a `status` event for
+that pane only. The server builds no tree: a client builds its own
+from the layout document, the panes and the runs (`run` events),
+with the nesting of kido's `Tree`. Compared with kido's feed:
 
 - Times are the server's clock in nanoseconds, not whole seconds.
 - Outcome serials are server-wide and stable across clients and
   reconnects, because there is one tracker. The "feed restart can lose
   or re-arm outcomes" and "concurrent feeds give different serials"
   limits go away.
-- `server_instance` is the server's start time and pid, and survives an
-  in-place upgrade (the pid does not change).
+- `server.started_at` and `pid` of `/version` replace
+  `server_instance`, and survive an in-place upgrade (the pid does
+  not change).
 
 Seen state stays in the client, as today.
 
 Runs move into the server: `Runs` writes `runs/<id>/` as `Run` does
 today, the sweep runs in the server's tick once, not once per sidebar,
-and `run-wait` is a subscription instead of a poll. The run commands
-of the CLI become requests with the same exit codes and JSON.
-`kido run-child`'s parent rule, the orphan rule, first-write-wins
+and `run-wait` is a long poll instead of a poll. The run commands
+of the CLI become requests with the same exit codes and JSON. A run's
+window is a server-made change of the layout document.
+`ko run-child`'s parent rule, the orphan rule, first-write-wins
 outcomes and the screen capture (now `ghostty_formatter` over the dead
 pane's terminal) keep their design.
 
 ### 4.11 The terminal client
 
 `ko` with no arguments is the terminal client, an OCaml program
-(p1-mvp.md sections 5 and 6.4). It is a client like any other: it opens
-views for the panes it shows and mirrors them in libghostty-vt. Mosaic
+(p1-mvp.md sections 5 and 6.4). It shows one pane at a time and lists
+every pane in a sidebar grouped by session; it never shows splits,
+tabs or windows (decided 2026-10-30). It is a client like any other:
+it opens a view for the pane it shows and mirrors it in libghostty-vt. Mosaic
 parses its input and runs its loop, and draws nothing; a direct cell
 differ writes the whole screen, the mirror's render-state cells and the
 client's own sidebar cells together. The mirror compresses its
 scrollback when idle, as the pane does (4.3). It draws the
-sidebar itself from the feed event, with the rows of `Kido_sidebar`
-today. Its keys are Ctrl+Shift chords under the kitty keyboard
+sidebar itself from the layout, the panes' `status` and the runs,
+with the rows of `Kido_sidebar` today. Its keys are Ctrl+Shift chords under the kitty keyboard
 protocol, as p1-mvp.md lists them; there is no prefix key and no
 separate picker, the sidebar is the picker. Copy mode is not in the
 first version; the wheel scrolls the pane's mirror. It passes through
@@ -727,12 +771,12 @@ differs from the running coordinator, or by the app's Restart) does:
 
 1. The coordinator stops accepting clients and stops reading the pane
    control sockets.
-2. It writes `<dir>/upgrade/state.json`: sessions, windows, layouts,
-   panes with their ring and control fd numbers, ring tails and
-   `ko-pane` pids, meta
-   fields, run links, OSC 7501 records, OSC 133 phases, the start
-   time (so `server_instance` survives) and the
-   shared-memory name counter (the pid stays, so names would collide).
+2. It writes `<dir>/upgrade/state.json`: the layout document and its
+   revision, panes with their ring and control fd numbers, ring tails
+   and `ko-pane` pids, their variables, run links, OSC 7501 records,
+   OSC 133 phases, the start time (so `server_instance` survives) and
+   the shared-memory name counter (the pid stays, so names would
+   collide).
    The ring is not written; views reopen with a snapshot.
 3. It clears `CLOEXEC` on the rings, the control sockets and the
    listening socket and
@@ -765,11 +809,13 @@ it (2026-10-30). A crash of one `ko-pane` kills one pane.
 
 ## 5. Protocol summary
 
-[protocol.md](protocol.md) specifies the wire. The shape:
+[protocol.md](protocol.md) gives the routes and rules; the message
+shapes are `ko_server/protocol.ml`, `ko_pane/protocol.h` and
+`ko_server/pane_proc.ml`. The shape:
 
 - HTTP/1.1 over the unix socket, keep-alive, one connection per
   stream. Control bodies are JSON. Long-lived streams are WebSockets:
-  the client connection, feed, search, and views, whose messages are
+  the client connection, search, and views, whose messages are
   binary records
   server to client and JSON input events client to server.
   `curl --unix-socket` reads every plain resource; `websocat --unix`
@@ -780,15 +826,16 @@ it (2026-10-30). A crash of one `ko-pane` kills one pane.
   appends fields and resources.
 - `GET /client` is a WebSocket, one per native window or terminal
   client, and the client is that connection. Its hello carries kind,
-  name, current window or pane, size and focus; the server answers
-  with `client_N`, then sends topology (one full tree on change; it is
-  small), pane events (title, pwd, prompt, records, dead, bell),
-  clipboard requests, and this client's state changes. The client sends
-  `select`, `switch`, `size`, `focused` and clipboard answers on it.
-  `Ko-Client` on other requests names it and is valid only while it is
-  open. Detach is closing it. `GET /feed`: the
-  typed model snapshots, kept separate so a busy pane's events never
-  sit between two model snapshots.
+  name, current session, window or pane, size and focus; the server
+  answers with `client_N`, then sends the layout document (whole, on
+  every change, with its revision; it is small), pane events (title,
+  pwd, prompt, records, status, variables, dead, bell), run events,
+  clipboard requests, and this client's state changes. The client sends `select`,
+  `switch`, `size`, `focused` and clipboard answers on it. `Ko-Client`
+  on other requests names it and is valid only while it is open.
+  Detach is closing it. There is no feed and no snapshot: `GET
+  /panes` carries each pane's `status`, and a client builds its
+  sidebar tree itself.
 - `GET /panes/pane_N/view?offset=&history=&images=`: the record stream
   of bytes, markers, snapshot slices and skips. An `offset` inside the
   ring resumes bytes and markers; otherwise the view opens with a full
@@ -800,9 +847,12 @@ it (2026-10-30). A crash of one `ko-pane` kills one pane.
 - Input: key, text, paste, mouse, focus as text messages on the pane's
   view, in order; `POST /panes/pane_N/input` for a sender with no view
   open, such as the CLI.
-- Topology writes as REST on `/sessions`, `/windows`, `/panes`,
-  `/clients/<id>/select`: the current RPC requests plus split, float,
-  move, swap, zoom, resize, kill, rename, with the same validation.
+- The layout as one document: `GET /layout`, `PUT /layout` with the
+  revision read, `409` with the current document on a mismatch. A
+  split, float, move, swap, zoom, resize, rename or reorder is an edit
+  of the document; a new pane is a leaf or float with `{new: ...}`
+  in the `PUT`; `DELETE /panes/pane_N` removes one. Pane variables
+  under `/panes/pane_N/vars`.
 - Runs under `/runs`; `GET /runs/<id>/wait` is a long poll.
 - `GET /panes/pane_N/search` is a WebSocket that streams matches from the server's terminal
   for a client that has not loaded the history. A client that has the
@@ -824,21 +874,22 @@ not block the forward. No tmux and no `kido rpc` process on the
 remote.
 
 Reconnect: the client opens `/client` again with a hello that carries
-its current window, pane, size and focus, gets a new id, reopens
-`/feed`, and reopens each visible view with the last offset it saw.
+its current window, pane, size and focus, gets a new id, reads
+`/layout` and `/panes`, and reopens each visible view with the last
+offset it saw.
 The WebSocket ping of protocol.md section 1 closes a half-open
 connection after sleep within 40 s, so a dead client does not stay
 registered. A view inside the ring
 resumes with bytes; otherwise it opens with a snapshot. There is no
 event replay: every event kind is a state that the next snapshot or
-topology carries.
+layout event carries.
 
 Latency: keystroke echo is one round trip, as with tmux. Connection
 setup is one round trip for the channel open plus the WebSocket
 handshake; views are long-lived, so this is paid on attach, not per
 key. A snapshot READY prefix for an 80x50 pane is about 20 KiB before
-compression. History and images negotiate `deflate`, events and feed
-`permessage-deflate`; live view streams never compress. Measured numbers are a spike
+compression. History and images negotiate `deflate`, the client
+connection `permessage-deflate`; live view streams never compress. Measured numbers are a spike
 deliverable.
 
 ### 6.1 Web clients
@@ -868,8 +919,10 @@ limits parallel image fetches and nothing else.
 | coordinator throughput on floods | the OCaml side must issue one `writev` per view per record without allocating | `writev` straight from the mapped ring; 2 ms coalescing; a slow coordinator blocks the program through the ring's tail, never drops; spike 1 measures MB/s and the allocation rate |
 | the Ghostty fork needs a restore-from-snapshot surface API | this is the app's side of C | the fork already has restore and prepend machinery to delete; the decoder returns a `Terminal` of the same Zig type; spike 2 |
 | per-client current window changes kido's `watched` and reap semantics | rules that read "the client's current window" | the server knows every client's current window; the rules read the set, not one client |
+| the layout engine is new code | the app expects tmux's split, resize and scale arithmetic | the server normalizes geometry once; the app's recorded layout trees are its fixtures (migration.md S2) |
+| whole-document `PUT` races a server-made change | a `409` during a drag gesture | the client retries on the current document; one round trip; gestures are coalesced as today |
 | upgrade in place with inherited fds | fd numbering, `CLOEXEC`, the pid staying the same | spike 4; a failure falls back to a normal restart, which kills the panes |
-| the terminal client is a new program | side column, keys, differ | it is in P1; tmux stays for kido's terminals until stage 4 |
+| the terminal client is a new program | keys, differ, the outer terminal's modes | built in P1 and measured (p1-mvp.md 6.4, 6.5) |
 | the hot path is in C | memory and framing bugs in `ko-pane` | no policy in it, fixed framing, `-fsanitize` in tests, a fuzzer on the frame parser and the pty path, two thousand lines |
 | losing tmux features people rely on silently | `run-shell` bindings, `.tmux.conf`, copy mode | explicit non-goals; the terminal client ships copy mode only if asked for |
 
@@ -906,31 +959,18 @@ Each spike is bounded and produces numbers or a go/no-go.
    a copy. Also: `httpun` on luv with 50 concurrent streaming
    responses, and a Swift HTTP/1.1 client over `NWConnection` on a
    unix socket and on an SSH unix forward. 2 agent-days, low risk; the
-   image part runs in stage 3, the transport part in P1.0.
+   image part runs in migration.md S6, the transport part ran in P1.0.
 
-Spikes 1 and 3 and the transport parts run inside P1.0 (p1-mvp.md
-section 6.1); spikes 2 and 4 run in stage 0, in parallel.
+Spikes 1 and 3 and the transport part of 5 ran inside P1.0 (p1-mvp.md
+section 6.2). Spike 2 is the first step of migration.md S5, spike 5's
+image part is in S6, and spike 4 opens S9.
 
 ## 9. Effort by stage
 
-[migration.md](migration.md) gives the stages in detail and the changes
-to kido, the app, the pi extension and e2e. The summary, in agent-days
-with risk:
-
-| stage | delivers | agent-days | risk |
-|---|---|---|---|
-| P1 | the MVP of p1-mvp.md: `ko` server and terminal client, flat panes, one on screen, sidebar, benchmarks; includes spikes 1, 3 and the transport and Mosaic spikes | 20 to 30 | medium |
-| 0 | spikes 2 and 4, in parallel with P1 | 3 to 4 | medium |
-| 1 | server core: ptys, terminals, topology, views, snapshots, input, local socket; Kido.app on it for one local window, text only | 25 to 35 | medium |
-| 2 | `kido` CLI, runs, model and feed in the server; pi extension on the protocol; e2e on the protocol | 15 to 25 | medium |
-| 3 | image resources with shm by name, clipboard routing, the SSH unix forward and reconnect, deflate | 12 to 18 | medium |
-| 4 | terminal client with side column and picker; tmux fork retired; launcher simplified | 15 to 25 | medium |
-| 5 | coordinator upgrade in place and per-pane `ko-pane` upgrade; iOS client as a libghostty-vt mirror | 6 to 10, then separate | low to medium |
-
-Total to retire the tmux fork: the rows sum to 96 to 147 agent-days of
-implementation plus review and verification. The first user-visible
-milestone is P1, 20 to 30 agent-days; stage 1 builds on its code.
-
-These are estimates of agent time with the usual manager, implementer
-and reviewer structure. They assume frequent on-screen checks by the
-user for the app stages.
+P1 is built (p1-mvp.md). [migration.md](migration.md) section 5 gives
+the stages from P1 to the cut-over, their dependencies, tests, risks
+and estimates: 67 to 103 agent-days of implementation to the
+cut-over, plus review and verification, with the app stage on the
+critical path. These are estimates of agent time with the usual
+manager, implementer and reviewer structure. They assume frequent
+on-screen checks by the user for the app stages.

@@ -1,22 +1,37 @@
 # ko protocol (appendix to design.md)
 
-Status: design, 2026-10-29. HTTP/1.1 over a unix socket, with
-WebSocket (RFC 6455) for the long-lived streams. Resource and
-field lists are the intent, not a frozen schema. The first
-implementation writes the OpenAPI-style schema and the recorded
-request and response fixtures that the OCaml server, the Swift client
-and the Go e2e client are tested against.
+Status: design, 2026-10-29, updated 2026-10-31. HTTP/1.1 over a unix
+socket, with WebSocket (RFC 6455) for the long-lived streams.
 
-## 1. Transport
+**The code is the source of truth for every message shape** (decided
+2026-10-31):
 
-The server listens on `<dir>/socket`. Every connection is HTTP/1.1 with
-keep-alive. The long-lived streams upgrade to WebSocket: `/client`,
-`/feed`, `/panes/pane_N/view` and `/panes/pane_N/search`. Everything
+- `ko_server/protocol.ml` and `protocol.mli`: the HTTP and WebSocket
+  JSON types and their codecs, request and response bodies, events,
+  input events, markers, ids.
+- `ko_pane/protocol.h`: the frame kinds and the ring record layout
+  between the coordinator and `ko-pane`.
+- `ko_server/pane_proc.ml`: the OCaml codec of those frames.
+
+This document gives only what the code cannot say: the routes and what
+each does, the ordering, flow control, resume, snapshot, reconnect
+and security rules, the rationale, and the decisions. It repeats no
+field list, JSON example, byte layout or enum table. A message that a
+later stage adds is specified in that stage's plan ([s1.md](s1.md),
+[migration.md](migration.md) 3) until its code exists, then the code
+is the reference. The section numbers below are stable; other
+documents cite them.
+
+## 1. Transport and security
+
+The server listens on `<dir>/socket`. Every connection is HTTP/1.1
+with keep-alive. The long-lived streams upgrade to WebSocket: the
+client connection, a pane's view, a pane's search. Everything
 request-shaped stays plain HTTP. A client opens as many connections as
-it has concurrent streams: typically one for `/client`, one for
-`/feed`, one per open view, a pool for control requests, and one per
-image fetch in flight. There is no multiplexing of streams inside one
-connection, so a flood on one never delays another.
+it has concurrent streams: one for `/client`, one per open view, a
+pool for control requests, one per image fetch in flight. There is no
+multiplexing of streams inside one connection, so a flood on one never
+delays another.
 
 WebSocket rules: binary messages carry bytes and snapshot slices, text
 messages carry JSON. One message is one record; nothing is split
@@ -24,8 +39,8 @@ across messages, and a message is at most 1 MiB. Client to server
 frames are masked, as the RFC requires; it costs an XOR over input
 bytes and buys standard tooling (`websocat --unix`). The server pings
 every 30 s on idle streams and closes a connection without a pong
-after 10 s more. Close frames carry the error kinds of section 2 as
-their reason.
+after 10 s more. A close frame carries the error kind of section 2 as
+its reason.
 
 Backpressure is the connection's own: the server writes with
 non-blocking writes and never blocks on a client. A stream that cannot
@@ -40,334 +55,309 @@ remote backpressure. These channels are not sessions, so sshd's
 side differs from local: no `attach-stdio`, no stdio bridge.
 
 Authentication is the socket's mode (0700 directory) and the peer uid
-check on accept. Forwarded connections arrive from sshd as the user, so
-they pass. There is no token and no TLS.
+check on accept. Forwarded connections arrive from sshd as the user,
+so they pass. There is no token and no TLS.
 
-A request that carries an `Origin` header is refused (409, `refused`).
-A unix-socket server has no origin of its own. No native client sends
-one; a browser always does. This closes cross-site WebSocket hijacking before any TCP
-listener exists.
+A request that carries an `Origin` header is refused (`refused`). A
+unix-socket server has no origin of its own. No native client sends
+one; a browser always does. This closes cross-site WebSocket
+hijacking before any TCP listener exists.
 
-Encoding: control bodies are JSON. Streams are WebSocket messages
-(section 4 for views, section 6 for events). `Content-Encoding:
-deflate` is negotiated with `Accept-Encoding` on history and image
-responses; the `permessage-deflate` extension is negotiated on
-`/client`, `/feed` and `/search`, never on views, because their
-latency matters and the bytes compress poorly.
+Encoding: control bodies are JSON. `Content-Encoding: deflate` is
+negotiated with `Accept-Encoding` on history and image responses; the
+`permessage-deflate` extension is negotiated on `/client` and
+`/search`, never on views, because their latency matters and the
+bytes compress poorly.
 
-Ids are `session_N`, `window_N`, `pane_N` and `client_N` in paths
-and bodies: a lowercase kind, an underscore and a decimal, so a path
-needs no encoding and a log line shows the kind. Times are
-integer nanoseconds of the server's monotonic clock, plus unix
-nanoseconds where a wall time is needed.
+Ids are a lowercase kind, an underscore and a decimal (`pane_N`,
+`client_N`), so a path needs no encoding and a log line shows the
+kind. Sessions and windows exist only inside the layout document
+(section 7); only panes and clients have paths. Times are integer
+nanoseconds of the server's monotonic clock, plus unix nanoseconds
+where a wall time is needed.
 
-## 2. Versions
+## 2. Versions and errors
 
-    GET /version
-      {protocol: "1.0", vt: "<libghostty-vt revision>",
-       server: {started_at, pid, build},
-       terminal: {scrollback_max_bytes, scrollback_max_lines, apc_max_bytes,
-                  kitty_image_storage_limit, media: [...],
-                  continuation_max_bytes}}
+`GET /version` is the one request without version headers, because a
+client reads it before it knows the server's version. Its shape is
+frozen across minors. It carries the protocol version, the
+libghostty-vt revision, the server's identity (start time, pid, build)
+and the terminal limits that form the mirror contract (design.md 4.3):
+a client applies them to every mirror before it opens a view.
 
-`scrollback_max_lines` is null when the line count is unlimited.
+Every other request carries the `Ko-Protocol` and `Ko-Vt` headers; a
+request without them is refused as a mismatch. A major mismatch is
+`426 Upgrade Required`, a `vt` mismatch is `409 Conflict`, both with
+a `refused` body that names the server's values. The minor of the
+server may be higher: it appends fields and resources and never
+removes them. The launcher and Kido.app discovery compare these
+values instead of a server stamp.
 
-`terminal` is the mirror contract (design.md 4.3): a client applies
-these options to every mirror before it opens a view. The shape of
-`/version` is frozen across minors, because it is what a client reads
-before it knows the server's version.
-
-Every request except `GET /version` carries `Ko-Protocol: 1.0` and
-`Ko-Vt: <revision>`; a request without them is refused as a mismatch.
-A major mismatch is `426 Upgrade Required`, a `vt` mismatch is
-`409 Conflict`, both with the body `{kind: refused, message, protocol,
-vt}`. The minor of the server may
-be higher: it appends fields and resources and never removes them. The
-launcher and Kido.app discovery compare these three values instead of
-the server stamp.
-
-Errors are `{kind, message}` with kinds `invalid` (400), `not_found`
+Error kinds and their status codes: `invalid` (400), `not_found`
 (404), `refused` (409), `gone` (410, a closed client), `busy` (503),
-`io` (500), `unknown` (502, the
-prompt case: the effect may have happened, do not retry).
+`io` (500), `unknown` (502, the prompt case: the effect may have
+happened, do not retry). The error type is `Protocol.error`.
 
 ## 3. Clients
 
-A client is one open WebSocket, one per native window or terminal
-client process:
-
-    GET /client   Upgrade: websocket
-
-    client -> server, first message:
-      {hello: {kind: app|terminal, name, features: [...],
-               session?, window?, pane?, focused,
-               size: {cols, rows, cell_w_px, cell_h_px},
-               ignore_size?}}
-    server -> client:
-      {welcome: {client: "client_17"}}, then {topology}, then events
-      (section 6)
-
-    client -> server, later:
-      {select: {session?, window?, pane?}}      jump
-      {switch: "next" | "prev"}
-      {size: {cols, rows, cell_w_px, cell_h_px}}
-      {focused: true | false}
-      {clipboard_answer: ...}                    section 9
+`GET /client` upgrades to the client connection, one per native window
+or terminal client process. The client's first message is its hello:
+kind, name, what it currently shows, focus, size and
+whether it takes part in sizing. The server answers with the client's
+id, then the full layout document (section 7), then events (section
+6). Later the client sends a selection, a relative switch, a size, a
+focus change or a clipboard answer, all on this connection.
 
 The client exists from the hello to the close. There is no
 registration request, no linger and no delete: detach is a close, and
-a crash, a network loss or a ping timeout (section 1) is a close too.
-On close the server deletes the client and closes its views; a view or
-request that names a closed client gets `gone` (410). The server keeps
-the client's current session, window, size, focus and sizing flag, and
-prompt scope uses them. A reconnecting client sends a new hello with
-the state it shows and gets a new id; the client owns that state, not
-the server. Messages on one client connection are applied in order.
+a crash, a network loss or a ping timeout is a close too. On close the
+server deletes the client and closes its views; a view or request that
+names a closed client gets `gone`. The server keeps the client's
+current session, window, pane, size, focus and sizing flag, and prompt
+scope uses them. A reconnecting client sends a new hello with the
+state it shows and gets a new id; the client owns that state, not the
+server. Messages on one client connection are applied in order.
 
-Requests that act as a client send `Ko-Client: client_17`. The CLI uses
-no client id for a one-shot read; for a write that needs scope (`prompt`), it passes the
-pane it runs in with `Ko-Pane`, as `kido prompt` does with `TMUX_PANE`
-today.
+Requests that act as a client send `Ko-Client`. The CLI uses no client
+id for a one-shot read; for a write that needs scope (`prompt`), it
+passes the pane it runs in with `Ko-Pane`.
 
-## 4. Views: terminal content
+## 4. Views: terminal content, resume, backpressure
 
-    GET /panes/pane_N/view?offset=&history=none|all&images=none|all
-      Upgrade: websocket
+`GET /panes/pane_N/view` upgrades to a view, with the query parameters
+`offset`, `history` (`none` or `all`) and `images` (`none` or `all`).
+Server to client, each message is one record: a binary `bytes` or
+`snapshot` record with its offset, or a text message with a marker, a
+skip or a paste result.
 
-A view is one WebSocket. Server to client, each message is one record:
-
-    binary  kind u8 (1 bytes, 2 snapshot), offset u64, payload
-    text    JSON {offset, marker: {...}} | {offset, skipped: {from, to}}
-            | {paste: {id, pasted, unsafe}}
-
-- `bytes`: raw pty bytes. Consecutive records have consecutive offsets.
-- `marker`: `{resize: {cols, rows, cell_w_px, cell_h_px}} | {reset}
-  | {option: {name, value}} | {dead: {status, signal, at}}`, applied to
-  the mirror at that offset.
-- `snapshot`: a slice of a libghostty-vt snapshot stream. The first
-  slice of a snapshot has flag byte 1 as the first payload byte, the
-  last slice flag byte 2, and a `kind` byte after the flag: `full`
+- `bytes` are raw pty bytes. Consecutive records have consecutive
+  offsets.
+- A marker (a resize, a reset, a terminal option change, the pane's
+  death) is applied to the mirror at its offset.
+- A snapshot is a slice of a libghostty-vt snapshot stream; the
+  first and last slices are flagged, and the snapshot is `full`
   (records to FINISH) or `screen` (records to READY only). The client
   feeds slices to one decoder on a thread whose reader blocks on the
   WebSocket (the decoder pulls and treats a zero-byte read as EOF),
   calls `ready` once READY is in, swaps the surface's terminal to the
-  decoded one, and keeps reading until the last slice. Bytes after the
-  snapshot's offset apply to the decoded terminal. A new snapshot that
-  begins while one is decoding abandons the old decoder. A local client
-  may instead receive `{offset, snapshot_file: {path, kind}}` naming a
-  server-written 0600 file, which it decodes with a file reader and
-  unlinks.
-- `skipped`: always followed by a snapshot.
+  decoded one, and keeps reading until the last slice. Bytes after
+  the snapshot's offset apply to the decoded terminal. A new snapshot
+  that begins while one is decoding abandons the old decoder. A
+  local client may instead receive the path of a server-written 0600
+  snapshot file, which it decodes with a file reader and unlinks.
+- A skip is always followed by a snapshot.
 
 Client to server, each text message is one input event of section 8,
-applied in order, or a request:
+applied in order, or a resync request for a new snapshot of the given
+kinds. Input for the shown pane therefore travels on its view with no
+request overhead; `POST /panes/pane_N/input` exists for a pane with no
+view open.
 
-    {resync: {history: none|all, images: none|all}}   a new snapshot
-
-Input for the shown pane therefore travels on its view with no request
-overhead; `POST /input` exists for a pane with no view open.
-
-A view is **full** after a `history=all` snapshot and until a `skipped`;
+A view is **full** after a `history=all` snapshot and until a skip;
 otherwise **partial**. A full mirror holds the server's history and
-applies resize markers itself. A partial mirror gets a `screen` snapshot
-after every resize, because reflow depends on the history each side
-holds. There is no history paging: a partial mirror that wants history
-sends `resync {history: all}` and swaps terminals.
+applies resize markers itself. A partial mirror gets a `screen`
+snapshot after every resize, because reflow depends on the history
+each side holds. There is no history paging: a partial mirror that
+wants history resyncs with `history=all` and swaps terminals.
 
-Opening: without `offset`, or with an `offset` outside the pane's ring,
-the view begins with a snapshot of the requested kinds (`history`
-default `none`, `images` default `none`: placements and metadata are in
-the records either way, `images=all` adds the pixel payload records).
-With an `offset` inside the ring, and either a full mirror or no resize
-marker in the range, the view begins with the bytes and markers since
-that offset and no snapshot. This is the reconnect path and costs
-nothing.
+Opening: without `offset`, or with an `offset` outside the pane's
+ring, the view begins with a snapshot of the requested kinds
+(`history` and `images` default to `none`; placements and metadata are
+in the records either way, `images=all` adds the pixel payload
+records). With an `offset` inside the ring, and either a full mirror
+or no resize marker in the range, the view begins with the bytes and
+markers since that offset and no snapshot. This is the reconnect path
+and costs nothing.
 
-Backpressure: when a view's write would block, the server stops writing
-it and counts. When the connection drains, if the unsent bytes are below
-`resume_threshold` (64 KiB) it writes them and their markers from the
-ring, under the same resize rule as opening; otherwise it writes
-`skipped` and a `screen` snapshot at the current offset. The ring is
-1 MiB per pane and stores markers at their offsets. The server
-coalesces a pane's output into one record per 2 ms while output
-continues. The client sets `SO_RCVBUF` and the server `SO_SNDBUF` to
-1 MiB on a view connection; on macOS the sender's buffer is the one
-that counts (measured in P1.0). The record's `offset` is
-little-endian, as everywhere in this protocol.
+Backpressure: when a view's write would block, the server stops
+writing it and counts. When the connection drains, if the unsent
+bytes are below `resume_threshold` (64 KiB) it writes them and their
+markers from the ring, under the same resize rule as opening;
+otherwise it writes a skip and a `screen` snapshot at the current
+offset. The ring is 1 MiB per pane and stores markers at their
+offsets. The server coalesces a pane's output into one record per
+2 ms while output continues. The client sets `SO_RCVBUF` and the
+server `SO_SNDBUF` to 1 MiB on a view connection; on macOS the
+sender's buffer is the one that counts (measured in P1.0).
 
-    GET /panes/pane_N/screen?format=plain|ansi&history=<rows>
-      text from the server's formatter, for the CLI's `runs` screen
-      capture and tests
+`GET /panes/pane_N/screen` returns text from the server's formatter
+(`format` plain or ansi, `history` rows), for the CLI's `runs` screen
+capture and for tests.
 
 ## 5. Images
 
 Placements and image metadata live inside the mirror. Pixels are
-resources:
-
-    GET /panes/pane_N/images/<image_id>?generation=<g>
-      200  Content-Type: image/x-ko-pixels; headers Ko-Format,
-           Ko-Width, Ko-Height, Ko-Generation; body: the pixels,
-           deflate-negotiable
-      200  Content-Type: application/json {shm: "<name>", offset, length,
-           format, width, height}   when the client sent
-           Ko-Accept-Shm: 1 and the server is local
-      404  the image was evicted or the generation moved on
+resources: `GET /panes/pane_N/images/<image_id>` with a `generation`
+query. The response is the pixels as a body with their format and
+size in headers, deflate-negotiable; or, when the client sent
+`Ko-Accept-Shm: 1` and the server is local, a JSON body that names a
+shared-memory object and the pixels' offset, length, format and size.
+An evicted image or a moved generation is `not_found`.
 
 A client requests the images that have placements on screen, one
 connection each, in parallel, and caches by `(pane, image_id,
 generation)`. A placement that appears live names an image the mirror
 already stores if the program sent pixels inline; the client fetches
 only when its store lacks the pixels (`t=s`, a snapshot with
-`images=meta`, or a remote client).
+`images=none`, or a remote client).
 
-Shared memory on the local server: a `t=s` upload is mapped by the
-server and copied once into a server-owned object `/ko-<pid>-<n>`
-(under 31 bytes, the macOS limit) with
-mode 0600. The response names it; the client maps it and unlinks
-nothing. The server unlinks it on eviction, records every live name in
-`<dir>/shm` and unlinks the names it finds there at start, because
-macOS cannot enumerate POSIX shared-memory objects and a crash would
-leak them until reboot. This removes descriptor passing entirely; there
-is no second socket.
+Pixels come from `ko-pane` through per-image shared-memory objects
+(decided 2026-10-30), never through the ring: an image can be larger
+than the 1 MiB ring, the same pixels are read again by every client
+that attaches, and a local client maps the object directly. On a
+request the coordinator sends an `image` frame (section 14).
+`ko-pane` copies the pixels once out of its terminal's storage into a
+POSIX object `/ko-<pid>-<n>` (under 31 bytes, the macOS limit;
+`<pid>` is `ko-pane`'s) with mode 0600, or answers from the object it
+already made for that id and generation, and replies with the name and
+geometry, or not found. `ko-pane` owns the objects' lifetime: it
+unlinks one when the image is evicted, when its generation moves on,
+and all of them when it exits. A local client that sent
+`Ko-Accept-Shm: 1` gets the name; it maps the object and unlinks
+nothing. For any other client the coordinator maps the object itself,
+streams the pixels as the body, and unmaps.
 
-Animation frames and playback state are part of the mirror's own kitty
-state, delivered inside the view stream as the program sends them or
-in the snapshot. Frame pixels are images with their own ids.
+The leak record stays with the coordinator, because it is the one
+process that outlives a pane: it appends every name that `ko-pane`
+reports to `<dir>/shm`, removes the entry on `ko-pane`'s `image_gone`
+frame or the pane's exit, unlinks a crashed `ko-pane`'s names itself,
+and unlinks every name it finds in the file at start, because macOS
+cannot enumerate POSIX shared-memory objects and a crash would leak
+them until reboot. This removes descriptor passing entirely; there is
+no second socket.
+
+Animation frames and playback state are part of the mirror's own
+kitty state, delivered inside the view stream as the program sends
+them or in the snapshot. Frame pixels are images with their own ids.
 
 ## 6. Events
 
-Events arrive on the client connection (section 3), one text message
-per event:
+Events arrive on the client connection, one text message per event,
+in the order the server produced them. The kinds, as `Protocol`'s
+client event type defines them: the whole layout document on every
+change (section 7); a pane's title, pwd, prompt step, OSC 7501 records,
+status, variable, death, bell, notification, progress, clipboard
+write and clipboard read; a run's start or end; and this client's
+own state when another connection moved it.
 
-    {topology: {...}}                      the full tree, on every change
-    {pane: "pane_N", title: "..."}
-    {pane, pwd}
-    {pane, prompt: {step: prompt_start|input_start|output_start|command_end,
-                    exit?, command?, at}}
-    {pane, records: {serial, records: [...]}}     OSC 7501
-    {pane, dead: {status, signal, at}}
-    {pane, bell} | {pane, notify: {title, body}} | {pane, progress: {...}}
-    {pane, clipboard_write: {selector, mime, data_base64}}
-    {pane, clipboard_read: {request, selector, mimes, kind}}
-    {client: {session, window, size}}      this client's state changed
-                                           (another connection moved it)
+The first message after the welcome is the full layout. There is no
+event replay; a client that reconnects reads `/layout`, `/panes` and
+`/runs` and reopens its views.
 
-The first message after `welcome` is a full `topology`. There is no
-event replay; a client that reconnects reads the current state and
-reopens its views.
+There is no feed and no tree snapshot (decided 2026-10-30). The server
+computes one `status` per pane and announces a change for that pane
+only; a client builds its sidebar tree from the layout document, the
+panes and the runs. s1.md 6.4 specifies `status` until its code
+exists; its typed `kind` keeps the shape of kido's `Pane_status.kind`.
 
-    GET /feed     Upgrade: websocket; one text message per typed model
-                  snapshot of share/rpc/contract.md, with nanosecond
-                  times and server-wide serials; the first at once
+## 7. The layout document and pane variables
 
-`/feed` is separate from `/client` so that the app's sidebar and the
-CLI's `kido rpc` replacement read one thing, and an event flood in a
-busy pane does not sit between two model snapshots.
+The layout is one JSON document for the whole server (decided
+2026-10-30). migration.md 3 gives its schema and invariants until the
+`Layout` module exists; then `ko_server/layout.mli` is the reference.
 
-## 7. Topology
+- `GET /layout` returns the document and its revision.
+- `PUT /layout` takes the document with the revision the client read.
+  The server refuses a broken structure (`invalid`), fills and
+  rescales geometry it can repair, starts every pane marked as new,
+  and answers with the normalized document and the new revision. A
+  stale revision is `409` with the current document; the client
+  reapplies its edit and retries.
+- Every change bumps the revision and is sent as a layout event on
+  every `/client`, whether a client sent it or the server made it: a
+  new pane, a `DELETE`, a pane's death, a size from the window's
+  sizing client.
+- `DELETE /panes/pane_N` removes the pane from its window; an empty
+  window or session goes with it. There is no `POST /panes`: a pane is
+  created inside a `PUT /layout`.
+- `POST /clients/client_N/select` moves another connected client; the
+  client itself sends its selection on its own connection.
 
-    GET  /topology                      {sessions: [...], clients: [...]}
-    POST /sessions {name?, cwd?, env?}  -> {session, window, pane}
-    PATCH /sessions/session_N {name?, rank?: {relative_to, before|after}}
-    DELETE /sessions/session_N
-    POST /sessions/session_N/windows {after, cwd?, command?, env?, detached?,
-                               run?: {id, name, parent?, output}}
-                                        -> {window, pane}
-    PATCH /windows/window_N {name?, session?: {to, after}, after?, zoom?}
-    DELETE /windows/window_N
-    POST /panes/pane_N/split {dir, before?, size?, cwd?, command?, env?}
-    POST /windows/window_N/floats {x, y, cols, rows, cwd?, command?, env?,
-                             border?, title?}
-    PATCH /panes/pane_N {move?: {target, dir} | {swap} | {float: {x, y}},
-                     size?: {cols, rows}, place?: {x, y, z},
-                     agent?: {session, name, inbox, activity},
-                     ssh?: {dest, args}}
-    POST /panes/pane_N/respawn {command, env?}
-    DELETE /panes/pane_N
-    POST /clients/client_17/select {session?, window?, pane?}
-                  for another process that moves a connected client;
-                  the client itself sends `select` on its connection
-
-Shapes of `session`, `window`, `layout`, `float`, `pane` and
-`client_info` are design.md's, as JSON. Validation rules are the RPC
-contract's where one exists today.
+Session and window variables are the `vars` objects inside the
+document. Pane variables are resources under `/panes/pane_N/vars`:
+`GET` the set or one name, `PUT` one name with one JSON value,
+`DELETE` one name. A value is any JSON, at most 1 MiB; one pane holds
+at most 8 MiB and 1,024 names; a name is UTF-8 without control
+characters, at most 256 bytes. The server stores and announces
+variables and reads only the `pi.*` and `ssh.*` names under kido's
+trust rules (s1.md 6.1). `ko ssh` sets `ssh.dest` and `ssh.args`
+before it execs ssh, and the model believes them only while the
+pane's foreground process is `ssh`.
 
 ## 8. Input
 
-An input event is a JSON object, sent as a text message on the pane's
-view WebSocket, or as the body of `POST /panes/pane_N/input` when the
-sender has no view open (the CLI's prompt delivery):
+An input event is one JSON message, as `Protocol.input` defines
+it: a key, already-encoded text, a paste, a mouse event or a focus
+change. It is sent as a text message on the pane's view, or as the
+body of `POST /panes/pane_N/input` when the sender has no view open
+(the CLI's prompt delivery).
 
-      {key: {action, key, mods, unshifted_codepoint, text, composing}}
-      {text: "<bytes base64>"}
-      {paste: {text, check_safe, id?}}
-      {mouse: {action, button, col, row, mods}}
-      {focus: true|false}
-
-`key` and `mods` are libghostty-vt's values, which the app's surface
-produces. `unshifted_codepoint` is required (0 when the key has none):
-libghostty-vt's encoder finds the kitty keyboard code of a printable
-key only through it, and without it `Ctrl+A` encodes as plain `a`
-instead of `CSI 97;5u` (P1.1, `src/input/key_encode.zig`). The server
-does not guess it from a keyboard layout. The event carries no
-consumed modifiers: the server treats Shift as consumed when `text`
-is one character other than `unshifted_codepoint` and no Ctrl, Alt or
-Super is held. Without that, a pane under kitty flags 1 or 3 (nvim
-pushes 3) gets `:` as `CSI 59;2u`, which nvim's normal mode does not
-map; with it, the pane gets `:`, and Shift+Space stays `CSI 32;2u`.
-The encoder treats macOS Option as Alt: the client's terminal
-already decided what Option means, so an Alt in `mods` is Alt.
-The server encodes with the pane's current modes and writes
-the pty. Events from one connection are applied in order. A `paste`
-with an `id` gets a text message back on the view, `{paste: {id,
-pasted, unsafe}}`; the `POST` form gets it as the response body.
+Keys and modifiers are libghostty-vt's values, which the app's surface
+produces. `unshifted_codepoint` is required (0 when the key has
+none): libghostty-vt's encoder finds the kitty keyboard code of a
+printable key only through it, and without it `Ctrl+A` encodes as
+plain `a` instead of `CSI 97;5u` (P1.1, `src/input/key_encode.zig`).
+The server does not guess it from a keyboard layout. The event carries
+no consumed modifiers: the server treats Shift as consumed when the
+text is one character other than the unshifted codepoint and no Ctrl,
+Alt or Super is held. Without that, a pane under kitty flags 1 or 3
+(nvim pushes 3) gets `:` as `CSI 59;2u`, which nvim's normal mode does
+not map; with it, the pane gets `:`, and Shift+Space stays
+`CSI 32;2u`. The encoder treats macOS Option as Alt: the client's
+terminal already decided what Option means, so an Alt in the
+modifiers is Alt. The server encodes with the pane's current modes and
+writes the pty. Events from one connection are applied in order. A
+paste with an id is answered after the pty accepted every byte, as a
+text message on the view, or as the response body of the `POST` form.
 
 ## 9. Clipboard
 
-The server sends `clipboard_read` on `/client` to one client
+The server sends a clipboard read request on `/client` to one client
 (design.md 4.8) and waits 8 s. The client answers on the same
-WebSocket:
-
-    {clipboard_answer: {request, data: [{mime, base64}]}}
-    {clipboard_answer: {request, refused: true}}
+WebSocket with data or a refusal.
 
 ## 10. Runs
 
-    POST /runs {name, cwd, session, env, command, parent?}
-                            -> {id, window, pane, output}
-    GET  /runs?all=&parent= -> [run_row]
-    GET  /runs/<id>         -> run_row + screen (with ?screen=1)
-    POST /runs/<id>/outcome {result, text}   -> {recorded}
-    GET  /runs/<id>/wait    a long poll: the response body arrives when
-                            the run ends
-    POST /runs/<id>/stop {wait_s, result}    -> {result}
-
-The CLI maps error kinds to its exit codes as today (2, 3, 4, 5).
+Under `/runs`: create a run (the server adds its window to the layout
+document itself, detached), list runs (all, or by parent), read one
+with its captured screen, record an outcome (first write wins), wait
+for its end as a long poll whose body arrives when the run ends, and
+stop it. The CLI maps error kinds to its exit codes as kido does
+today (2, 3, 4, 5). migration.md S3 specifies the bodies until the
+code exists.
 
 ## 11. Search and prompting
 
-    GET /panes/pane_N/search?needle=&max=
-      Upgrade: websocket; text messages {matches: [{row, col, len, text}]}
-      then {done}; closing cancels. `row` counts from the top of the
-      history at the time of the search, for display only; a client
-      jumps to a match by taking a full snapshot and searching its
-      mirror, since server rows move with output.
-    GET  /prompt/resolve?pane=pane_N        -> candidates, as the RPC contract
-    POST /prompt {pane, target, text}   -> {via: inbox|paste}
+`GET /panes/pane_N/search` upgrades to a stream of matches for a
+needle, then a done message; closing cancels. A match's row counts
+from the top of the history at the time of the search, for display
+only; a client jumps to a match by taking a full snapshot and
+searching its mirror, since server rows move with output.
+
+`GET /prompt/resolve` lists the candidate agent panes for a caller's
+pane: the caller's window first, then its session, from the layout.
+`POST /prompt` sends text to one candidate and reports whether it went
+over the inbox or as a paste (design.md 4.10; kido's
+docs/design-rpc.md, "Prompting an agent", for the scope and error
+rules).
 
 ## 12. Flow of an app window
 
-    GET /client  hello {window, size, focused}     the client, a WebSocket
-    GET /feed                                      a WebSocket
-    for each visible pane:
-        GET /panes/pane_N/view?history=all&images=none   WebSocket
-        GET /panes/pane_N/images/<id>  for each placement on screen, parallel
-    input events as text messages on the focused pane's view
-    on window switch: close the old views, open the new ones
-    on window switch or resize: {select} or {size} on /client
-    on reconnect: a new /client hello, reopen /feed, reopen views with
-                  ?offset=<last seen>; bytes and markers resume if
-                  inside the ring, else a snapshot
+1. Open `/client` with a hello that carries the window, size and
+   focus. Read `/layout`, `/panes` and `/runs` once; they are the
+   tree's inputs.
+2. For each visible pane, open a view with `history=all` and
+   `images=none`, and fetch the images with placements on screen in
+   parallel.
+3. Send input events as text messages on the focused pane's view.
+4. On a window switch, close the old views and open the new ones, and
+   send the selection on `/client`. On a resize, send the size.
+5. On a split, close, drag, zoom or rename, edit the last layout
+   received and `PUT` it with its revision; on `409` reapply the edit
+   to the body and `PUT` again.
+6. On reconnect, send a new hello, read `/layout`, `/panes` and
+   `/runs` again, and reopen the views with the last offset seen:
+   bytes and markers resume if inside the ring, else a snapshot.
 
 ## 13. Versioning rules
 
@@ -378,9 +368,10 @@ The CLI maps error kinds to its exit codes as today (2, 3, 4, 5).
 - `vt`: the libghostty-vt revision; any change is a refusal. kido and
   Kido.app bump it together.
 
-Recorded fixtures under `rfc/kido-server/fixtures/` (later
-`share/protocol/`) hold request and response pairs and view message
-sequences. Each implementation replays them.
+Recorded fixtures under `share/protocol/` will hold request and
+response pairs and view message sequences; each implementation
+replays them. Until then `test_e2e_ko/` is the only cross-language
+check.
 
 ## 14. The pane protocol: coordinator to `ko-pane`
 
@@ -389,24 +380,15 @@ created by the coordinator before it forks `ko-pane`. The control
 socket is `ko-pane`'s stdin and stdout: one end of a `socketpair`,
 dup'd onto fd 0 and fd 1, because a pipe cannot carry a descriptor
 and the per-pane upgrade passes the pty master with `SCM_RIGHTS`.
-stderr goes to the coordinator's log. The mapping is fd 3. The mapping is a ring of
-records, written only by `ko-pane` and read only by the coordinator:
+stderr goes to the coordinator's log. The mapping is fd 3.
 
-    ring header   u64 capacity; u64 head (written by ko-pane);
-                  u64 tail (written by the coordinator: the oldest
-                  record a view may still need); u64 read (written by
-                  the coordinator: the end of what it has scanned);
-                  sequentially consistent atomics, because each side
-                  stores its own index and then loads the other's to
-                  decide on a wakeup
-    record        kind u8 (bytes 1 | marker 2 | snapshot 3 | pad 4),
-                  len u32, offset u64, payload; a record never wraps:
-                  a `pad` record fills the end of the ring instead
-    marker        u8 1 (resize) and cols, rows, cell_w_px, cell_h_px u16;
-                  or u8 2 (dead) and status i32, signal i32, at u64
-                  (monotonic ns)
-    snapshot      flag u8 (1 first, 2 last, 0 between), kind u8 (0 full,
-                  1 screen), then the encoder's bytes
+The mapping is a ring of records, written only by `ko-pane` and read
+only by the coordinator. Its header, the record kinds and the marker
+and snapshot slice layouts are `ko_pane/protocol.h` and
+`Pane_proc.record`. The header's indices are sequentially consistent
+atomics, because each side stores its own index and then loads the
+other's to decide on a wakeup. A record never wraps: a `pad` record
+fills the end of the ring instead.
 
 `ko-pane` reads the pty straight into the free space at `head`, parses
 it in place, then publishes the record. It blocks when `head - tail`
@@ -418,77 +400,41 @@ included. A `head` frame goes only to an idle coordinator (`read`
 equal to the head before the commit), which scans and writes the views
 at once; while output continues, the coordinator scans on its 2 ms
 timer. `tail` cannot mark idleness, because it stays behind the head
-by the bytes that views may resume (P1.1). A blocked
-`ko-pane` sends `full {tail}` and the coordinator answers with a
-`tail` frame once the tail moved past it. Otherwise both sides read
-and store the indices in the mapping. Snapshot slices and markers are ring records, so one
-offset order covers everything.
+by the bytes that views may resume (P1.1). A blocked `ko-pane` sends
+`full` and the coordinator answers with `tail` once the tail moved
+past it. Otherwise both sides read and store the indices in the
+mapping. Snapshot slices and markers are ring records, so one offset
+order covers everything.
 
-The control socket carries control frames in both directions:
+The control socket carries length-prefixed frames in both directions;
+the kinds are `ko_pane/protocol.h`, the codec `Pane_proc`. The first
+frame from the coordinator is `init`; `ko-pane` answers `ready` or
+exits with status 2 and a message on stderr, which the coordinator
+logs. A `version` the coordinator does not know is a refusal at
+`init`; the coordinator then restarts the pane with a snapshot as in
+design.md 4.12.
 
-    len   u32   length of what follows
-    kind  u8
-    body
+Frames the coordinator sends: `init`, `tail`, `resize`, the input
+frames (`key`, `text`, `paste`, `mouse`, `focus`), `snapshot`, `screen`,
+`signal`, `exit`. Later stages add `image` (section 5), `search` and
+`search_cancel` (section 11), `clipboard_answer` (section 9), `option`
+(a terminal option change) and `master` (the pty master over
+`SCM_RIGHTS`, for the per-pane upgrade).
 
-Little-endian. Strings are `u32 len, bytes`. The `kind` numbers are in
-`ko_pane/protocol.h`. The first frame from the
-coordinator is `init`; `ko-pane` answers `ready` or exits with status 2
-and a message on stderr, which the coordinator logs.
+Frames `ko-pane` sends: `ready`, `head`, `full`, `title`, `pwd`, `dead`,
+`snapshot_done`, `screen`, `paste_done`, `error`. Later stages add
+`prompt`, `record`, `foreground` and `alternate` (s1.md 4),
+`image` and `image_gone` (section 5), `search`, `bell`, `notify`,
+`progress`, `clipboard_write`, `clipboard_read` and `snapshot_file`.
 
-Coordinator to `ko-pane`:
-
-    init      {version u16 (2); cols, rows, cell_w_px, cell_h_px u16;
-               options: scrollback_max_bytes u64,
-               scrollback_max_lines u64 (0 for unlimited), apc_max_bytes u64,
-               kitty_image_storage_limit u64, media u8 bits,
-               continuation_max_bytes u64; cwd, argv[], env[] strings;
-               pane_id string}
-    tail      {offset u64}                       acknowledgement
-    resize    {cols, rows, cell_w_px, cell_h_px}
-    key       {action u8, key u16, mods u16, unshifted_codepoint u32,
-               text string, composing u8}
-    text      {bytes}
-    paste     {id u32, text, check_safe u8}
-    mouse     {action, button u8, col, row u16, mods u16}
-    focus     {focused u8}
-    snapshot  {req u32, kind u8 full|screen, images u8 none|all,
-               to_file string (empty: into the ring)}
-    screen    {req, format u8 plain|ansi, history u32}
-    search    {req, needle string, max u32}; search_cancel {req}
-    clipboard_answer {req, refused u8, mimes[] {mime, bytes}}
-    option    {name string, value string}        a terminal option change
-    signal    {signo u8}                         to the program
-    master    {}  -> ko-pane sends its pty master fd with SCM_RIGHTS
-                     (used only by the per-pane upgrade)
-    exit      {}
-
-`ko-pane` to coordinator:
-
-    ready     {pid u32 of the program}
-    head      {offset u64}                       records published, to an idle coordinator
-    full      {tail u64}                         ring full; wake me when tail moves past this
-    title     {string}; pwd {string}
-    prompt    {step u8, has_exit u8, exit i32, command string}
-    record    {serial u32, record bytes}          OSC 7501, parsed shape
-    bell      {}; notify {title, body}; progress {state u8, value u8}
-    clipboard_write {selector u8, mime, bytes}
-    clipboard_read  {req u32, selector u8, kind u8, mimes[]}
-    dead      {status i32, signal i32}
-    snapshot_done {req}        the slices are in the ring, in order
-    snapshot_file {req, path}
-    screen    {req, last u8, text}
-    search    {req, done u8, matches[] {row u32, col, len u16, text}}
-    paste_done {id, pasted u8, unsafe u8}
-    error     {message}                           a failure that ko-pane survives
-
-Rules: `bytes` offsets are consecutive from zero; a `resize` is applied
-by `ko-pane` between two `bytes` records and written as a `marker`
-record at that offset, so the coordinator never infers a position. Input frames are
-applied in arrival order and written to the pty at once, queued on
-`EAGAIN`, never dropped. `ko-pane` reaps its program on `SIGCHLD`,
-sends `dead`, keeps the terminal and the pty master, and answers
-`snapshot` and `screen` for a dead pane. On EOF or an error on stdin
-it sends `SIGHUP` to the program, waits 500 ms, sends `SIGKILL`, and
-exits. A `version` the coordinator does not know is a
-refusal at `init`; the coordinator then restarts the pane with a
-snapshot as in design.md 4.12.
+Rules: `bytes` offsets are consecutive from zero; a `resize` is
+applied by `ko-pane` between two `bytes` records and written as a
+marker record at that offset, so the coordinator never infers a
+position. Input frames are applied in arrival order and written to
+the pty at once, queued on `EAGAIN`, never dropped. `ko-pane` reaps
+its program on `SIGCHLD`, sends `dead`, keeps the terminal and the pty
+master, and answers `snapshot` and `screen` for a dead pane. On EOF
+or an error on stdin it sends `SIGHUP` to the program, waits 500 ms,
+sends `SIGKILL`, and exits. The foreground check runs only on events
+(s1.md 4): after OSC 133 `C` and `D` and on pty output at most once
+per 100 ms, never on a timer.
