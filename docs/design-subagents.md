@@ -387,17 +387,32 @@ task, so it can receive questions during its first turn. It reads
 
 Every turn's system prompt then contains these standing instructions:
 
-- You were spawned.
-- The last message of a turn that ends with no async run of your own
-  running and no subagent of your own still owing a report is your
-  report, once for each piece of work from your parent.
-  It must stand on its own.
+- While an async run of your own is running or a subagent of your own
+  still owes a report, ending your turn sends nothing to your parent.
+- You were spawned. Your report is the last message of a turn that
+  ends after all of them finish, once for each piece of work from
+  your parent. It must stand on its own.
 - If you stop to wait for another agent or the user, say so; when the
   work completes later, tell your parent with `message_agent`.
+
+The first instruction comes first, so that a child ends its turn and
+does not sleep to keep its report back.
 
 The system prompt contains the instructions instead of the task because
 the task arrives only once. Otherwise, a restart or a follow-up message
 from the parent would not include the instructions.
+
+A subagent caller gets the same fact in a tool result. These results
+add that ending the turn now sends no report, and that the report is
+the last message of a turn that ends when no run of its own is running
+and no subagent of its own owes a report:
+
+- The `async_bash` start result.
+- The `spawn_agent` result, except for an independent peer and for a
+  `resume_from` with an empty task, which owes no report.
+- The `message_agent` result that restarts an ended child.
+
+A top-level caller does not get this clause.
 
 **Watching the parent.** The child's pi is a child of the tmux server.
 Thus, no signal tells it that its parent has ended. Every

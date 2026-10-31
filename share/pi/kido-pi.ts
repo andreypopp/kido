@@ -393,8 +393,11 @@ const NOT_THE_USER_RULE =
 export const SPAWN_RESULT_RULE =
   "its result arrives as a notice when it ends a turn with nothing of its own still running - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id";
 
+export const SUBAGENT_RESULT_RULE =
+  "; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no run of yours is running and no subagent of yours owes you a report";
+
 const SUBAGENT_INSTRUCTION =
-  "You were spawned as a subagent. When a turn of yours ends with no async run of yours running and no subagent of yours still owing you a report, your last message of that turn goes to your parent as your report, once for each piece of work the parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
+  "While an async run of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish, once for each piece of work your parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
   "If you must stop to wait for another agent or for the user, say so in that message; when the work completes later, tell your parent with message_agent. " +
   "Reporting does not end this session: it stays alive until your parent ends it with stop_run, and the parent can continue it with message_agent.";
 
@@ -663,6 +666,7 @@ export default function (pi: ExtensionAPI) {
   let session: ExtensionContext | null = null;
   let ownSessionId: string | null = null;
   let edge: ParentEdge | null = null;
+  const liveRunRule = (rule: string): string => rule + (edge ? SUBAGENT_RESULT_RULE : "");
   let pane: string | null = null;
   let dir: string | null = null;
   let active = false;
@@ -1680,7 +1684,7 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const restartedReply = (name: string, run: string): string => `restarted ${name} as run ${run}; ${SPAWN_RESULT_RULE}`;
+  const restartedReply = (name: string, run: string): string => `restarted ${name} as run ${run}; ${liveRunRule(SPAWN_RESULT_RULE)}`;
 
   const validateModel = async (model: string | undefined): Promise<string | null> => {
     if (!model) return null;
@@ -1971,7 +1975,7 @@ export default function (pi: ExtensionAPI) {
         : await sendEnvelope(target.inbox, kind, params.message);
       const sent = sendText(target, kind, result, prep.snapshot.entries);
       if (!sent.ok) return reply(`could not message ${params.to}: ${sent.text}`);
-      return reply(prep.created ? `restarted ${name} as run ${prep.created.run.id} and ${sent.text}` : sent.text);
+      return reply(prep.created ? `restarted ${name} as run ${prep.created.run.id} and ${sent.text}; ${liveRunRule(SPAWN_RESULT_RULE)}` : sent.text);
     },
   });
 
@@ -2143,7 +2147,7 @@ export default function (pi: ExtensionAPI) {
             }
           }
           return reply(
-            `spawned ${name} (session ${childSession}, window ${created.window}, pane ${created.pane}, run ${created.id})${session.kind === "copy" ? `, forked from session ${source?.id ?? parentSession}` : ""}; session id is what resume_from takes later; ${target === "toplevel" ? "independent peer; no report or ending notice" : SPAWN_RESULT_RULE}${deliveryError}`,
+            `spawned ${name} (session ${childSession}, window ${created.window}, pane ${created.pane}, run ${created.id})${session.kind === "copy" ? `, forked from session ${source?.id ?? parentSession}` : ""}; session id is what resume_from takes later; ${target === "toplevel" ? "independent peer; no report or ending notice" : owesWork(task) ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}${deliveryError}`,
             { session: childSession, name, window: created.window, pane: created.pane, run: created.id, fork: session.kind === "copy" },
           );
         } finally { releaseName(name); }
@@ -2204,7 +2208,7 @@ export default function (pi: ExtensionAPI) {
       return reply(
         `started run ${created.id}${params.name ? ` (${params.name})` : ""} in window ${created.window}; list_runs lists it and stop_run(["${created.id}"]) stops it; ` +
           `a notice with its exit status and a tail of its output arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ` +
-          (params.stream
+          liveRunRule(params.stream
             ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${created.output}`
             : `read ${created.output} with the read tool to check on it meanwhile`),
         { name: params.name, window: created.window, pane: created.pane, run: created.id, output: created.output, stream: !!params.stream },

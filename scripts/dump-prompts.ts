@@ -43,7 +43,7 @@ process.env.KIDO_RUN_ID = "dump-run";
 process.env.KIDO_PI_STATE_DIR = join(agentDir, "state");
 delete process.env.TMUX_PANE;
 
-const { default: kidoPi, MESSAGE_RELATION, senderHeader, noticeHeader, PARENT_GUIDANCE, SPAWN_RESULT_RULE } = await import("../share/pi/kido-pi.ts");
+const { default: kidoPi, MESSAGE_RELATION, senderHeader, noticeHeader, PARENT_GUIDANCE, SPAWN_RESULT_RULE, SUBAGENT_RESULT_RULE } = await import("../share/pi/kido-pi.ts");
 kidoPi(pi as never);
 for (const tool of registered.values()) tools.push(tool as Tool);
 await emit("session_start", { type: "session_start" }, { hasUI: false, sessionManager: { getSessionId: () => "dump-run", getSessionFile: () => undefined } });
@@ -91,6 +91,7 @@ const injected: Array<[string, string, string]> = [
   ["a child's report (agent_settled)", `${noticeHeader("<from>")}\n<its last assistant message's text, then the guidance below>`, "steer"],
   ["a child's empty report (agent_settled)", `${noticeHeader("<from>")}\nsubagent "<name>" ended its turn with no message<the guidance below>`, "steer"],
   ["a turn that ended on an error (agent_settled)", "subagent stopped on an error: <text>\nrun: <run id>\nmessage it to retry, or stop_run to end it", "steer"],
+  ["a live run's result suffix for a subagent caller", SUBAGENT_RESULT_RULE, "tool result"],
   ["a spawn's result (spawn_agent)", `spawned <name> (session <pi session id>, window <window id>, pane <pane id>, run <run id>); session id is what resume_from takes later; ${SPAWN_RESULT_RULE}. A fork adds \", forked from session <source session id>\" before the semicolon. Toplevel instead ends with \"independent peer; no report or ending notice\".`, "tool result"],
   ["a restart's result (message_agent)", "restarted <name> as run <run id>; the same result rule as a spawn follows", "tool result"],
 ];

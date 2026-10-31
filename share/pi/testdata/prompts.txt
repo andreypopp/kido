@@ -225,6 +225,13 @@ message it to retry, or stop_run to end it
 ```
 delivered as: steer
 
+### a live run's result suffix for a subagent caller
+
+```
+; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no run of yours is running and no subagent of yours owes you a report
+```
+delivered as: tool result
+
 ### a spawn's result (spawn_agent)
 
 ```
