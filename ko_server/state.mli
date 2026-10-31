@@ -13,4 +13,4 @@ val add_client : t -> Connection.t -> Client.t
 val remove_client : t -> Client.t -> unit
 val add_view : t -> View.t -> unit
 val remove_view : t -> View.t -> unit
-val version : t -> Config.version
+val version : t -> Protocol.version

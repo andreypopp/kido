@@ -9,7 +9,13 @@ let decide ~oldest ~offset ~head ~full ~resize ~blocked =
 type cursor = { mutable pos : int; mutable offset : int; mutable blocked : bool }
 type snapshot = { cursor : cursor; full : bool; mutable resync : bool option }
 type state = Live of cursor * bool | Snapshotting of snapshot | Closed
-type t = { pane : Pane.t; connection : Connection.t; client : string option; mutable state : state }
+
+type t = {
+  pane : Pane.t;
+  connection : Connection.t;
+  client : Ids.Client_id.t option;
+  mutable state : state;
+}
 
 let client t = t.client
 let pane t = t.pane
@@ -55,7 +61,7 @@ let rec request_snapshot t full =
           | _ -> ())
         ~done_:(function
           | Error _ ->
-              Connection.reject t.connection "io";
+              Connection.reject t.connection Io;
               close t
           | Ok () -> (
               match t.state with
@@ -85,11 +91,9 @@ and pump t =
         with
         | Skip ->
             Connection.json t.connection
-              (Protocol.yojson_of_skipped
-                 {
-                   offset = Pane.offset t.pane;
-                   skipped = { from = cursor.offset; to_ = Pane.offset t.pane };
-                 });
+              (Protocol.view_event_to_json
+                 (Skipped
+                    { offset = Pane.offset t.pane; from = cursor.offset; to_ = Pane.offset t.pane }));
             cursor.blocked <- false;
             request_snapshot t false
         | Snapshot full ->
@@ -131,12 +135,14 @@ and pump t =
                           false)
                   | Resize_marker size ->
                       Connection.json t.connection
-                        (Protocol.yojson_of_marked { offset = record.offset; marker = Resize size });
+                        (Protocol.view_event_to_json
+                           (Marked { offset = record.offset; marker = Resize size }));
                       cursor.pos <- record.next;
                       true
                   | Dead_marker dead ->
                       Connection.json t.connection
-                        (Protocol.yojson_of_marked { offset = record.offset; marker = Dead dead });
+                        (Protocol.view_event_to_json
+                           (Marked { offset = record.offset; marker = Dead dead }));
                       cursor.pos <- record.next;
                       true)
       end
@@ -159,24 +165,21 @@ let create pane connection ~client ~offset ~full =
 
 let receive t text =
   try
-    let json = Yojson.Safe.from_string text in
-    match json with
-    | `Assoc [ ("resync", _) ] ->
-        let request = Protocol.resync_of_yojson json in
-        request_snapshot t (Protocol.full request.resync)
-    | _ -> (
-        let input = Protocol.input_of_yojson json in
+    match Protocol.view_message_of_json (Yojson.Basic.from_string text) with
+    | Resync options -> request_snapshot t (Protocol.full options)
+    | Input input -> (
         match
           Input.send t.pane input (function
-            | Error _ -> Connection.reject t.connection "io"
+            | Error _ -> Connection.reject t.connection Io
             | Ok None -> ()
-            | Ok (Some reply) -> Connection.json t.connection (Protocol.yojson_of_pasted reply))
+            | Ok (Some reply) ->
+                Connection.json t.connection (Protocol.view_event_to_json (Pasted reply)))
         with
         | Ok () -> ()
-        | Error _ -> Connection.reject t.connection "invalid")
+        | Error _ -> Connection.reject t.connection Invalid)
   with
-  | Yojson.Json_error _ | Invalid_argument _ | Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error _ ->
-    Connection.reject t.connection "invalid"
+  | Yojson.Json_error _ | Invalid_argument _ | Jsonkit.Of_json_error _ ->
+    Connection.reject t.connection Invalid
 
 let%test_module "Tests" =
   (module struct

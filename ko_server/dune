@@ -20,11 +20,12 @@
    -open
    Ppx_compare_lib.Builtin
    -open
-   Ppx_yojson_conv_lib.Yojson_conv.Primitives))
+   Jsonkit.Primitives))
  (libraries
   containers
   dune-build-info
   kido_fs
+  ko_vt
   unix
   luv
   ctypes
@@ -34,6 +35,7 @@
   faraday
   bigstringaf
   yojson
+  jsonkit
   base64)
  (foreign_stubs
   (language c)
@@ -47,4 +49,4 @@
    (source_tree ../third_party/ghostty/include)))
  (inline_tests)
  (preprocess
-  (pps ppx_expect ppx_compare ppx_yojson_conv)))
+  (pps ppx_expect ppx_compare jsonkit.ppx)))

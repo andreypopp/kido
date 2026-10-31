@@ -150,7 +150,10 @@ let key (event : Matrix_input.Key.event) =
   in
   {
     Ko_server.Protocol.action =
-      (match event.event_type with Release -> 0 | Press -> 1 | Repeat -> 2);
+      (match event.event_type with
+      | Release -> Key_release
+      | Press -> Key_press
+      | Repeat -> Key_repeat);
     key;
     mods;
     unshifted_codepoint;
@@ -160,15 +163,30 @@ let key (event : Matrix_input.Key.event) =
 
 let mouse ~pane_x event =
   let module M = Mosaic.Event.Mouse in
-  let button = function M.Left -> 1 | Right -> 2 | Middle -> 3 | Button n -> n in
+  let button : _ -> Ko_server.Protocol.mouse_button = function
+    | M.Left -> Button_left
+    | Right -> Button_right
+    | Middle -> Button_middle
+    | Button 4 -> Button_four
+    | Button 5 -> Button_five
+    | Button 6 -> Button_six
+    | Button 7 -> Button_seven
+    | Button 8 -> Button_eight
+    | Button 9 -> Button_nine
+    | Button 10 -> Button_ten
+    | Button 11 -> Button_eleven
+    | Button _ -> Button_unknown
+  in
   let action, button =
     match M.kind event with
-    | Down { button = b } -> (0, button b)
-    | Up { button = b; _ } -> (1, button b)
-    | Drag { button = b; _ } -> (2, button b)
-    | Move -> (2, 0)
-    | Scroll { direction; _ } -> (0, if M.equal_scroll_direction direction Scroll_up then 4 else 5)
-    | _ -> (2, 0)
+    | Down { button = b } -> (Ko_server.Protocol.Mouse_press, button b)
+    | Up { button = b; _ } -> (Mouse_release, button b)
+    | Drag { button = b; _ } -> (Mouse_motion, button b)
+    | Move -> (Mouse_motion, Button_unknown)
+    | Scroll { direction; _ } ->
+        ( Mouse_press,
+          if M.equal_scroll_direction direction Scroll_up then Button_four else Button_five )
+    | _ -> (Mouse_motion, Button_unknown)
   in
   {
     Ko_server.Protocol.action;
@@ -187,9 +205,10 @@ let%test_module "Tests" =
       assert (Option.is_some (command k));
       assert (Option.is_none (command { k with modifier = { k.modifier with shift = false } }));
       assert (Option.is_none (command { k with event_type = Release }));
-      print_endline (Yojson.Safe.to_string (Ko_server.Protocol.yojson_of_key (encode k)));
+      print_endline
+        (Yojson.Basic.to_string (Ko_server.Protocol.view_message_to_json (Input (Key (encode k)))));
       [%expect
-        {|{"action":1,"key":38,"mods":3,"unshifted_codepoint":115,"text":"s","composing":false}|}]
+        {| ["input",["key",{"action":"press","key":38,"mods":3,"unshifted_codepoint":115,"text":"s","composing":false}]] |}]
 
     let parse reads =
       let p = Matrix_input.Parser.create () in
@@ -210,7 +229,8 @@ let%test_module "Tests" =
             (function
               | Matrix_input.Key k ->
                   Printf.printf "%S %s\n" s
-                    (Yojson.Safe.to_string (Ko_server.Protocol.yojson_of_key (key k)))
+                    (Yojson.Basic.to_string
+                       (Ko_server.Protocol.view_message_to_json (Input (Key (key k)))))
               | _ -> ())
             (fst (parse [ s ])))
         [
@@ -233,22 +253,22 @@ let%test_module "Tests" =
         ];
       [%expect
         {|
-        "A" {"action":1,"key":20,"mods":1,"unshifted_codepoint":97,"text":"A","composing":false}
-        "!" {"action":1,"key":7,"mods":1,"unshifted_codepoint":49,"text":"!","composing":false}
-        "@" {"action":1,"key":8,"mods":1,"unshifted_codepoint":50,"text":"@","composing":false}
-        "\195\137" {"action":1,"key":0,"mods":1,"unshifted_codepoint":233,"text":"É","composing":false}
-        "\027[97;2u" {"action":1,"key":20,"mods":1,"unshifted_codepoint":97,"text":"A","composing":false}
-        "\027[97;2;65u" {"action":1,"key":20,"mods":1,"unshifted_codepoint":97,"text":"A","composing":false}
-        "\027[49;2u" {"action":1,"key":7,"mods":1,"unshifted_codepoint":49,"text":"!","composing":false}
-        "\027[49:33;2u" {"action":1,"key":7,"mods":1,"unshifted_codepoint":49,"text":"!","composing":false}
-        "\027[233:201;2u" {"action":1,"key":0,"mods":1,"unshifted_codepoint":233,"text":"É","composing":false}
-        "\027[233:201;2;201u" {"action":1,"key":0,"mods":1,"unshifted_codepoint":233,"text":"É","composing":false}
-        "\027[97;1:3u" {"action":0,"key":20,"mods":0,"unshifted_codepoint":97,"text":"a","composing":false}
-        "\027[97;2;937u" {"action":1,"key":20,"mods":1,"unshifted_codepoint":97,"text":"Ω","composing":false}
-        "\027[97;4u" {"action":1,"key":20,"mods":5,"unshifted_codepoint":97,"text":"A","composing":false}
-        "\027[97;6u" {"action":1,"key":20,"mods":3,"unshifted_codepoint":97,"text":"a","composing":false}
-        "\027[32;2u" {"action":1,"key":63,"mods":1,"unshifted_codepoint":32,"text":" ","composing":false}
-        "\027[13;2u" {"action":1,"key":58,"mods":1,"unshifted_codepoint":0,"text":"","composing":false}
+        "A" ["input",["key",{"action":"press","key":20,"mods":1,"unshifted_codepoint":97,"text":"A","composing":false}]]
+        "!" ["input",["key",{"action":"press","key":7,"mods":1,"unshifted_codepoint":49,"text":"!","composing":false}]]
+        "@" ["input",["key",{"action":"press","key":8,"mods":1,"unshifted_codepoint":50,"text":"@","composing":false}]]
+        "\195\137" ["input",["key",{"action":"press","key":0,"mods":1,"unshifted_codepoint":233,"text":"É","composing":false}]]
+        "\027[97;2u" ["input",["key",{"action":"press","key":20,"mods":1,"unshifted_codepoint":97,"text":"A","composing":false}]]
+        "\027[97;2;65u" ["input",["key",{"action":"press","key":20,"mods":1,"unshifted_codepoint":97,"text":"A","composing":false}]]
+        "\027[49;2u" ["input",["key",{"action":"press","key":7,"mods":1,"unshifted_codepoint":49,"text":"!","composing":false}]]
+        "\027[49:33;2u" ["input",["key",{"action":"press","key":7,"mods":1,"unshifted_codepoint":49,"text":"!","composing":false}]]
+        "\027[233:201;2u" ["input",["key",{"action":"press","key":0,"mods":1,"unshifted_codepoint":233,"text":"É","composing":false}]]
+        "\027[233:201;2;201u" ["input",["key",{"action":"press","key":0,"mods":1,"unshifted_codepoint":233,"text":"É","composing":false}]]
+        "\027[97;1:3u" ["input",["key",{"action":"release","key":20,"mods":0,"unshifted_codepoint":97,"text":"a","composing":false}]]
+        "\027[97;2;937u" ["input",["key",{"action":"press","key":20,"mods":1,"unshifted_codepoint":97,"text":"Ω","composing":false}]]
+        "\027[97;4u" ["input",["key",{"action":"press","key":20,"mods":5,"unshifted_codepoint":97,"text":"A","composing":false}]]
+        "\027[97;6u" ["input",["key",{"action":"press","key":20,"mods":3,"unshifted_codepoint":97,"text":"a","composing":false}]]
+        "\027[32;2u" ["input",["key",{"action":"press","key":63,"mods":1,"unshifted_codepoint":32,"text":" ","composing":false}]]
+        "\027[13;2u" ["input",["key",{"action":"press","key":58,"mods":1,"unshifted_codepoint":0,"text":"","composing":false}]]
         |}]
 
     let%expect_test "Ctrl+D, legacy or CSI u, is Remove; Ctrl+Shift+W is no command" =

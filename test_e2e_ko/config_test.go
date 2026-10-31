@@ -13,14 +13,17 @@ func TestDefaultsAndPaneEnvironment(t *testing.T) {
 	t.Parallel()
 	s := start(t, "--scrollback-bytes", "80M", "--scrollback-lines", "5000")
 	var version struct {
-		Terminal struct {
-			Scrollback   int  `json:"scrollback_max_bytes"`
-			Lines        *int `json:"scrollback_max_lines"`
-			Continuation int  `json:"continuation_max_bytes"`
+		Limits struct {
+			Scrollback   [2]json.RawMessage
+			Continuation int `json:"continuation_max_bytes"`
 		}
 	}
 	s.request("GET", "/version", nil, 200, &version)
-	if version.Terminal.Scrollback != 80*1024*1024 || version.Terminal.Lines == nil || *version.Terminal.Lines != 5000 || version.Terminal.Continuation != 65*1024*1024 {
+	var scrollback map[string]int
+	if err := json.Unmarshal(version.Limits.Scrollback[1], &scrollback); err != nil {
+		t.Fatal(err)
+	}
+	if string(version.Limits.Scrollback[0]) != `"scrollback"` || scrollback["max_bytes"] != 80*1024*1024 || scrollback["max_lines"] != 5000 || version.Limits.Continuation != 65*1024*1024 {
 		t.Fatalf("terminal contract: %+v", version)
 	}
 	output, err := exec.Command(koBin, "version").Output()
@@ -34,7 +37,7 @@ func TestDefaultsAndPaneEnvironment(t *testing.T) {
 	t.Logf("ko version: %s", output)
 	c, _ := s.client("")
 	var created struct{ Pane string }
-	s.request("POST", "/panes", map[string]any{"cwd": "/tmp", "env": map[string]string{"X": "custom", "TERM": "wrong", "KO_PANE": "wrong"}}, 200, &created)
+	s.request("POST", "/panes", map[string]any{"cwd": "/tmp", "env": []map[string]string{{"name": "X", "value": "custom"}, {"name": "TERM", "value": "wrong"}, {"name": "KO_PANE", "value": "wrong"}}}, 200, &created)
 	view := s.dialWS("/panes/"+created.Pane+"/view", nil, 101)
 	defer view.Close()
 	promptEnd := "$ "
@@ -51,7 +54,7 @@ func TestDefaultsAndPaneEnvironment(t *testing.T) {
 	}
 
 	command := "printf '%s|%s|%s|%s|%s|%s\\n' \"$TERM\" \"$KO_PANE\" \"$KO_SOCKET\" \"$X\" \"$TERM_PROGRAM\" \"$TERM_PROGRAM_VERSION\"; pwd; exit\n"
-	s.request("POST", "/panes/"+created.Pane+"/input", map[string]any{"text": base64.StdEncoding.EncodeToString([]byte(command))}, 200, nil)
+	s.request("POST", "/panes/"+created.Pane+"/input", []any{"text", base64.StdEncoding.EncodeToString([]byte(command))}, 200, nil)
 	event(t, c, "dead")
 	screen := s.request("GET", "/panes/"+created.Pane+"/screen?history=all", nil, 200, nil)
 	expected := "xterm-ghostty|" + created.Pane + "|" + s.dir + "/socket|custom|ko|" + cli.Build

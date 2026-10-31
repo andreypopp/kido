@@ -12,6 +12,7 @@
   unix
   threads.posix
   yojson
+  jsonkit
   base64)
  (flags
   (:standard -open Containers -open Ppx_compare_lib.Builtin))

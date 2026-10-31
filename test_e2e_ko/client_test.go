@@ -261,7 +261,7 @@ func (o *terminal) process() *os.Process {
 }
 func (o *terminal) detach() { o.t.Helper(); o.chord(113); o.contains("KO-DETACHED") }
 func (s *server) text(pane, text string) {
-	s.request("POST", "/panes/"+pane+"/input", map[string]any{"text": base64.StdEncoding.EncodeToString([]byte(text))}, 200, nil)
+	s.request("POST", "/panes/"+pane+"/input", []any{"text", base64.StdEncoding.EncodeToString([]byte(text))}, 200, nil)
 }
 func pagerFixture(t *testing.T, dir string) (string, string) {
 	t.Helper()
@@ -944,7 +944,7 @@ func TestClientSnapshotInterruption(t *testing.T) {
 						return
 					}
 					if marker {
-						if front.WriteMessage(websocket.TextMessage, []byte(`{"offset":0,"marker":{"resize":{"cols":37,"rows":9,"cell_w_px":0,"cell_h_px":0}}}`)) != nil {
+						if front.WriteMessage(websocket.TextMessage, []byte(`["marked",{"offset":0,"marker":["resize",{"cols":37,"rows":9}]}]`)) != nil {
 							return
 						}
 					}

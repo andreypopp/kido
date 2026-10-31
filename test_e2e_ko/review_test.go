@@ -63,9 +63,9 @@ func TestPasteThenEnterDuringSnapshot(t *testing.T) {
 	v := s.dialWS("/panes/"+p+"/view?history=none", nil, 101)
 	s.ready(v, "READY")
 	messages := []any{
-		map[string]any{"resync": map[string]any{"history": "all", "images": "none"}},
-		map[string]any{"paste": map[string]any{"id": 77, "text": "PASTE", "check_safe": false}},
-		map[string]any{"key": map[string]any{"action": 1, "key": 58, "mods": 0, "unshifted_codepoint": 0, "text": "", "composing": false}},
+		[]any{"resync", map[string]any{"history": "all", "images": "none"}},
+		[]any{"input", []any{"paste", map[string]any{"id": 77, "text": "PASTE", "check_safe": false}}},
+		[]any{"input", []any{"key", map[string]any{"action": "press", "key": 58, "mods": 0, "unshifted_codepoint": 0, "text": "", "composing": false}}},
 	}
 	var batch bytes.Buffer
 	for _, message := range messages {
@@ -130,17 +130,16 @@ func TestPaneProcessFailure(t *testing.T) {
 	if err != nil || parentPID <= 1 {
 		t.Fatalf("parent pid: %s %v", parent, err)
 	}
-	send(t, v, map[string]any{"resync": map[string]any{"history": "all", "images": "none"}})
+	send(t, v, []any{"resync", map[string]any{"history": "all", "images": "none"}})
 	if err = syscall.Kill(parentPID, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	dead := event(t, c, "dead")
-	var state struct{ Error string }
-	if err = json.Unmarshal(dead["dead"], &state); err != nil || state.Error == "" {
-		t.Fatalf("failed pane: %s %v", dead["dead"], err)
+	if !bytes.Contains(dead, []byte(`"cause":["failed",`)) {
+		t.Fatalf("failed pane: %s", dead)
 	}
 	s.request("GET", "/panes/"+p+"/screen", nil, 500, nil)
-	s.request("POST", "/panes/"+p+"/input", map[string]any{"paste": map[string]any{"text": "x", "check_safe": false}}, 500, nil)
+	s.request("POST", "/panes/"+p+"/input", []any{"paste", map[string]any{"text": "x", "check_safe": false}}, 500, nil)
 	v.SetReadDeadline(time.Now().Add(5 * time.Second))
 	for {
 		if _, _, err = v.ReadMessage(); err != nil {
@@ -156,7 +155,7 @@ func TestUnfocusedFirstClientSizesPane(t *testing.T) {
 	s := start(t)
 	p := s.pane("printf READY; cat")
 	c := s.dialWS("/client", nil, 101)
-	send(t, c, map[string]any{"hello": map[string]any{"kind": "terminal", "name": "unfocused", "focused": false, "pane": p, "size": map[string]int{"cols": 51, "rows": 13, "cell_w_px": 8, "cell_h_px": 16}}})
+	send(t, c, []any{"hello", map[string]any{"kind": "terminal", "name": "unfocused", "focused": false, "pane": p, "size": map[string]any{"cols": 51, "rows": 13, "cell_px": map[string]int{"width": 8, "height": 16}}}})
 	event(t, c, "welcome")
 	event(t, c, "topology")
 	v := s.dialWS("/panes/"+p+"/view", nil, 101)

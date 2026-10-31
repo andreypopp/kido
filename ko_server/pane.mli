@@ -9,19 +9,19 @@ type event =
 
 val create :
   Config.t ->
-  id:string ->
+  id:Ids.Pane_id.t ->
   cwd:string ->
   command:string list ->
   env:string list ->
   notify:(t -> event -> unit) ->
   t
 
-val id : t -> string
+val id : t -> Ids.Pane_id.t
 val proc : t -> Pane_proc.t
 val row : t -> Protocol.row
 val offset : t -> int
-val sizer : t -> string option
-val resize : t -> Config.size -> unit
-val claim : t -> client:string -> size:Config.size -> unit
+val sizer : t -> Ids.Client_id.t option
+val resize : t -> Protocol.size -> unit
+val claim : t -> client:Ids.Client_id.t -> size:Protocol.size -> unit
 val shutdown : t -> unit
 val kill : t -> unit

@@ -39,22 +39,24 @@ val render : t -> frame
 val scroll : t -> int -> unit
 val bottom : t -> bool
 
+type scrollback =
+  | Scrollback_disabled
+  | Scrollback of { max_bytes : int option; max_lines : int option }
+
 val create :
   cols:int ->
   rows:int ->
-  scrollback_max_bytes:int ->
-  scrollback_max_lines:int option ->
+  scrollback:scrollback ->
   apc_max_bytes:int ->
-  kitty_image_storage_limit:int ->
+  kitty_images_max_bytes:int ->
   continuation_max_bytes:int ->
   t
 
 val configure :
   t ->
-  scrollback_max_bytes:int ->
-  scrollback_max_lines:int option ->
+  scrollback:scrollback ->
   apc_max_bytes:int ->
-  kitty_image_storage_limit:int ->
+  kitty_images_max_bytes:int ->
   continuation_max_bytes:int ->
   unit
 

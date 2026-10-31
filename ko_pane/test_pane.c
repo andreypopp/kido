@@ -60,8 +60,8 @@ int main(int argc,char **argv){
   if(!child){assert(dup2(sockets[1],0)>=0);assert(dup2(sockets[1],1)>=0);assert(dup2(fd,3)>=0);assert(!fcntl(3,F_SETFD,0));
     for(int i=4;i<32;i++)close(i);execl(argv[1],argv[1],NULL);perror("exec pane");_exit(127);}
   close(sockets[1]);close(fd);int control=sockets[0];fcntl(control,F_SETFL,O_NONBLOCK);
-  struct data d={0};num(&d,2,2);num(&d,80,2);num(&d,24,2);num(&d,8,2);num(&d,16,2);
-  num(&d,32*1024*1024,8);num(&d,0,8);num(&d,65*1024*1024,8);num(&d,32*1024*1024,8);num(&d,0,1);num(&d,65*1024*1024,8);
+  struct data d={0};num(&d,3,2);num(&d,80,2);num(&d,24,2);num(&d,8,2);num(&d,16,2);
+  num(&d,1,1);num(&d,32*1024*1024,8);num(&d,0,1);num(&d,0,8);num(&d,65*1024*1024,8);num(&d,32*1024*1024,8);num(&d,0,1);num(&d,65*1024*1024,8);
   str(&d,"/");num(&d,3,4);str(&d,"/bin/sh");str(&d,"-c");
   str(&d,"printf '\033]2;ko test\007\033]7;file://localhost/tmp\007\033]133;A\007\033]133;C;cmdline_url=echo\007\033]133;D;7\007\033]7501;state=working:app=ko\007\033[?2026h'; i=0; while [ $i -lt 200 ]; do printf '\033]8;;https://example.org\033\\line %s\033]8;;\033\\\r\n' $i; i=$((i+1)); done");
   num(&d,1,4);str(&d,"TERM=xterm-ghostty");str(&d,"pane_1");frame(control,KO_INIT,d.b,d.n);

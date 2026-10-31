@@ -90,6 +90,9 @@ for path in ['AGENTS.md', *glob.glob('docs/*.md'), 'share/pi/README.md']:
         elif parts[0] == 'Kido_sidebar':
             module = 'bin/kido_sidebar.ml'
             symbols = parts[1:]
+        elif parts[0] == 'Ko_server':
+            module = 'ko_server/' + parts[1].lower() + '.ml'
+            symbols = parts[2:]
         else:
             module = 'lib/' + parts[0].lower() + '.ml'
             symbols = parts[1:]

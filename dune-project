@@ -43,6 +43,8 @@
    (>= 3.0))
   (ppx_yojson_conv
    (>= v0.17))
+  (jsonkit
+   (>= 1.1.0))
   (ppx_compare
    (>= v0.17))
   (ppx_string_conv

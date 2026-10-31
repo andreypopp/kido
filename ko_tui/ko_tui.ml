@@ -11,7 +11,7 @@ let run ~dir ~executable ~pager =
           (fun () ->
             let version =
               Wire.request ~socket ~meth:"GET" ~path:"/version" ""
-              |> Yojson.Safe.from_string |> Ko_server.Config.version_of_yojson
+              |> Yojson.Basic.from_string |> Ko_server.Protocol.version_of_json
             in
             let modes, startup = Modes.save ()
             and client = ref None
@@ -47,7 +47,7 @@ let run ~dir ~executable ~pager =
                           (fun () -> Option.iter Client.close !client)))
                   (fun () ->
                     let t =
-                      Client.create ~wire ~socket ~matrix ~modes ~limits:version.terminal ~pager
+                      Client.create ~wire ~socket ~matrix ~modes ~limits:version.limits ~pager
                     in
                     client := Some t;
                     let open Mosaic in
@@ -66,5 +66,5 @@ let run ~dir ~executable ~pager =
   with
   | Wire.Error message | Failure message -> Error message
   | End_of_file -> Error "server closed the connection"
-  | Yojson.Json_error message | Yojson.Safe.Util.Type_error (message, _) -> Error message
-  | Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error _ -> Error "invalid server message"
+  | Yojson.Json_error message | Yojson.Basic.Util.Type_error (message, _) -> Error message
+  | Jsonkit.Of_json_error _ -> Error "invalid server message"

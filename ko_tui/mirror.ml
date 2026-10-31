@@ -55,7 +55,8 @@ let scroll t delta =
   in
   if resync then
     Wire.send t.wire
-      (Ko_server.Protocol.yojson_of_resync { resync = { history = "all"; images = "none" } })
+      (Ko_server.Protocol.view_message_to_json
+         (Resync { history = History_all; images = Images_none }))
 
 let delay t =
   Mutex.protect t.lock (fun () ->
@@ -124,10 +125,13 @@ let close t =
       Option.iter Ko_vt.close (terminal t.surface);
       t.surface <- Empty)
 
-let open_view ~socket ~client ~pane ~(limits : Ko_server.Config.limits) ~notify =
+let open_view ~socket ~client ~(pane : Ko_server.Ids.Pane_id.t) ~(limits : Ko_server.Config.limits)
+    ~notify =
   let wire = Wire.of_fd (Ko_server.Socket.connect ~socket ~deadline:(Unix.gettimeofday () +. 5.)) in
   try
-    Wire.upgrade wire ~client ~path:("/panes/" ^ pane ^ "/view?history=all&images=none") ();
+    Wire.upgrade wire ~client
+      ~path:("/panes/" ^ Ko_server.Ids.Pane_id.to_string pane ^ "/view?history=all&images=none")
+      ();
     let t =
       {
         wire;
@@ -167,11 +171,9 @@ let open_view ~socket ~client ~pane ~(limits : Ko_server.Config.limits) ~notify 
       if String.length s < 9 then raise (Wire.Error "short view record") else Char.code s.[0]
     in
     let marker text =
-      let json = Yojson.Safe.from_string text in
-      match json with
-      | `Assoc fields when List.mem_assoc ~eq:String.equal "marker" fields ->
-          Some (Ko_server.Protocol.marked_of_yojson json).marker
-      | _ -> None
+      match Ko_server.Protocol.view_event_of_json (Yojson.Basic.from_string text) with
+      | Marked { marker; _ } -> Some marker
+      | Skipped _ | Pasted _ -> None
     in
     let apply vt = function
       | Ko_server.Protocol.Resize size -> Ko_vt.resize vt ~cols:size.cols ~rows:size.rows
@@ -234,9 +236,8 @@ let open_view ~socket ~client ~pane ~(limits : Ko_server.Config.limits) ~notify 
         Fun.protect
           ~finally:(fun () -> if !owned then Ko_vt.close vt)
           (fun () ->
-            Ko_vt.configure vt ~scrollback_max_bytes:limits.scrollback_max_bytes
-              ~scrollback_max_lines:limits.scrollback_max_lines ~apc_max_bytes:limits.apc_max_bytes
-              ~kitty_image_storage_limit:limits.kitty_image_storage_limit
+            Ko_vt.configure vt ~scrollback:limits.scrollback ~apc_max_bytes:limits.apc_max_bytes
+              ~kitty_images_max_bytes:limits.kitty_images_max_bytes
               ~continuation_max_bytes:limits.continuation_max_bytes;
             while (not !last) || !pos < String.length !piece do
               ignore (read 65536)

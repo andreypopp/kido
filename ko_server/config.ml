@@ -1,63 +1,65 @@
-type size = { cols : int; rows : int; cell_w_px : int; cell_h_px : int } [@@deriving equal, yojson]
+type scrollback = Ko_vt.scrollback =
+  | Scrollback_disabled [@json.name "disabled"]
+  | Scrollback of {
+      max_bytes : int option; [@json.option] [@json.drop_default]
+      max_lines : int option; [@json.option] [@json.drop_default]
+    } [@json.name "scrollback"]
+[@@deriving json] [@@json.compact_variants]
+
+type medium =
+  | File [@json.name "file"]
+  | Temp_file [@json.name "temp_file"]
+  | Shared_mem [@json.name "shared_mem"]
+[@@deriving json] [@@json.compact_variants]
 
 type limits = {
-  scrollback_max_bytes : int;
-  scrollback_max_lines : int option;
+  scrollback : scrollback;
   apc_max_bytes : int;
-  kitty_image_storage_limit : int;
-  media : string list;
+  kitty_images_max_bytes : int;
+  media : medium list;
   continuation_max_bytes : int;
 }
-[@@deriving yojson]
-
-type server = { started_at : int; pid : int; build : string } [@@deriving yojson]
-
-type version = { protocol : string; vt : string; server : server; terminal : limits }
-[@@deriving yojson]
+[@@deriving json]
 
 type t = {
   dir : string;
+  socket : string;
   pane_exe : string;
   terminfo : string;
   shell : string;
-  terminal : limits;
+  limits : limits;
   env : string list;
   cwd : string;
 }
-
-let protocol = "1.0"
-let major = List.hd (String.split_on_char '.' protocol)
-let vt = Vt_revision.value
 
 let build =
   match Build_info.V1.version () with
   | Some v -> Build_info.V1.Version.to_string v
   | None -> "unknown"
 
-let default_size = { cols = 80; rows = 24; cell_w_px = 8; cell_h_px = 16 }
-let default_scrollback_bytes = 50_000_000
+let default_scrollback = Scrollback { max_bytes = Some 50_000_000; max_lines = None }
 
-let limits ?(scrollback_max_bytes = default_scrollback_bytes) ?scrollback_max_lines () =
+let default_limits =
   {
-    scrollback_max_bytes;
-    scrollback_max_lines;
+    scrollback = default_scrollback;
     apc_max_bytes = 65 lsl 20;
-    kitty_image_storage_limit = 10_000_000;
+    kitty_images_max_bytes = 10_000_000;
     media = [];
     continuation_max_bytes = 65 lsl 20;
   }
 
-let valid_size s =
-  s.cols > 0 && s.rows > 0
-  && List.for_all (fun n -> n >= 0 && n <= 65535) [ s.cols; s.rows; s.cell_w_px; s.cell_h_px ]
+let dir ~dir:override =
+  let env name = Sys.getenv_opt name |> Option.filter (fun s -> not (String.is_empty s)) in
+  match (override, env "KO_STATE_DIR", env "XDG_STATE_HOME") with
+  | Some path, _, _ | None, Some path, _ -> path
+  | None, None, Some xdg -> Filename.concat xdg "ko"
+  | None, None, None ->
+      let home =
+        match env "HOME" with Some h -> h | None -> (Unix.getpwuid (Unix.getuid ())).pw_dir
+      in
+      Filename.concat home ".local/state/ko"
 
-let default_dir ~state ~xdg ~home =
-  match (state, xdg) with
-  | Some s, _ -> s
-  | None, Some s -> Filename.concat s "ko"
-  | None, None -> Filename.concat home ".local/state/ko"
-
-let socket ~create dir =
+let socket ~create ~dir =
   let socket = Filename.concat dir "socket" in
   if String.contains dir ',' then Error "server directory contains a comma"
   else if String.length socket > Fs.sun_path_max then Error "server socket path exceeds 103 bytes"
@@ -96,13 +98,27 @@ let shipped () =
             ~default:(Filename.concat (Filename.dirname pane_exe) "../share/ko/terminfo")
             terminfo )
 
-let%test_module "Tests" =
-  (module struct
-    let%expect_test "directory precedence and size bounds" =
-      print_endline (default_dir ~state:None ~xdg:(Some "/state") ~home:"/home");
-      Printf.printf "%b %b\n" (valid_size default_size) (valid_size { default_size with cols = 0 });
-      [%expect {|
-        /state/ko
-        true false
-        |}]
-  end)
+let create ~dir:override ~shell ~scrollback =
+  let open Result.Infix in
+  let shell =
+    match shell with
+    | Some s -> s
+    | None -> (
+        match Sys.getenv_opt "SHELL" with
+        | Some s when not (String.is_empty s) -> s
+        | _ -> "/bin/sh")
+  in
+  let* pane_exe, terminfo = shipped () in
+  let* () = if Filename.is_relative shell then Error "shell must be an absolute path" else Ok () in
+  let dir = dir ~dir:override in
+  let+ socket = socket ~create:true ~dir in
+  {
+    dir;
+    socket;
+    pane_exe;
+    terminfo;
+    shell;
+    limits = { default_limits with scrollback };
+    env = Array.to_list (Unix.environment ());
+    cwd = Sys.getcwd ();
+  }

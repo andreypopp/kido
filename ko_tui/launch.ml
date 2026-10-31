@@ -1,5 +1,5 @@
 let attach ~dir ~executable =
-  match Ko_server.Config.socket ~create:true dir with
+  match Ko_server.Config.socket ~create:true ~dir with
   | Error message -> Error message
   | Ok socket -> (
       let deadline = Unix.gettimeofday () +. 5. in

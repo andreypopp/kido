@@ -36,10 +36,11 @@ let start ~pane_exe ~callbacks ~argv ~transcript ~latency =
   let config =
     {
       Config.dir = "/tmp";
+      socket = "/tmp/socket";
       pane_exe;
       terminfo = "/tmp";
       shell = "/bin/sh";
-      terminal = Config.limits ();
+      limits = Config.default_limits;
       env = [];
       cwd = "/";
     }
@@ -51,7 +52,8 @@ let start ~pane_exe ~callbacks ~argv ~transcript ~latency =
   let drain = Unix.create_process (drain_exe ()) [| "drain" |] other Unix.stdout Unix.stderr in
   Unix.close other;
   let proc =
-    Pane_proc.create ~callbacks config ~id:"pane_1" ~cwd:"/" ~argv ~env:[ "TERM=xterm-ghostty" ]
+    Pane_proc.create ~callbacks config ~id:(Ids.Pane_id.make 1) ~cwd:"/" ~argv
+      ~env:[ "TERM=xterm-ghostty" ]
   in
   let p =
     {
@@ -94,7 +96,8 @@ let start ~pane_exe ~callbacks ~argv ~transcript ~latency =
               p.transcript
         | Dead_marker _ -> p.dead <- true
         | _ -> ())
-    | Failed dead -> failwith (Option.value ~default:"pane failed" dead.error)
+    | Failed { cause = Failed message; _ } -> failwith message
+    | Failed _ -> failwith "pane failed"
     | _ -> ());
   p
 
@@ -178,7 +181,7 @@ let snapshots ~pane_exe ~produce ~lines =
   request "screen" false ignore;
   request "resize+screen" false (fun () ->
       let b = Buffer.create 8 in
-      Pane_proc.size b { Config.cols = 100; rows = 30; cell_w_px = 8; cell_h_px = 16 };
+      Pane_proc.size b { Protocol.cols = 100; rows = 30; cell_px = Some { width = 8; height = 16 } };
       Pane_proc.send p.proc Resize (Buffer.contents b));
   finish p
 

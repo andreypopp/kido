@@ -109,10 +109,11 @@ let send t opcode text =
       if t.ready then flush t
     end
 
-let json t value = send t 1 (Yojson.Safe.to_string value)
+let json t value = send t 1 (Yojson.Basic.to_string value)
 
 let reject t kind =
-  if t.ready && (not t.waiting) && Queue.is_empty t.pending then send t 8 ("\003\240" ^ kind);
+  if t.ready && (not t.waiting) && Queue.is_empty t.pending then
+    send t 8 ("\003\240" ^ Jsonkit.Of_json.string (Protocol.error_kind_to_json kind));
   close t
 
 let is_closed t = t.closed
@@ -274,7 +275,7 @@ let respond reqd status body =
 
 let error reqd status kind message =
   respond reqd status
-    (Yojson.Safe.to_string (Protocol.yojson_of_error { kind; message; protocol = None; vt = None }))
+    (Yojson.Basic.to_string (Protocol.error_to_json { kind; message; protocol = None; vt = None }))
 
 let body reqd callback =
   let b = Buffer.create 256 in
@@ -284,14 +285,14 @@ let body reqd callback =
       ~on_read:(fun bs ~off ~len ->
         if Buffer.length b + len > 1 lsl 20 then (
           Httpun.Body.Reader.close reader;
-          error reqd `Bad_request "invalid" "body exceeds 1 MiB")
+          error reqd `Bad_request Invalid "body exceeds 1 MiB")
         else (
           Buffer.add_string b (Bigstringaf.substring bs ~off ~len);
           read ()))
       ~on_eof:(fun () ->
-        match Yojson.Safe.from_string (Buffer.contents b) with
+        match Yojson.Basic.from_string (Buffer.contents b) with
         | json -> callback json
-        | exception Yojson.Json_error message -> error reqd `Bad_request "invalid" message)
+        | exception Yojson.Json_error message -> error reqd `Bad_request Invalid message)
   in
   read ()
 
@@ -369,7 +370,7 @@ let accept stream ~on_dispose handler =
 let tick t now =
   if t.websocket && not t.closed then
     match t.ping with
-    | Some sent when Float.(now -. sent > 10.) -> reject t "gone"
+    | Some sent when Float.(now -. sent > 10.) -> reject t Gone
     | Some _ -> ()
     | None when Float.(now -. t.last_activity > 30.) ->
         t.ping <- Some now;

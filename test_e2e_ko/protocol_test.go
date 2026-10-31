@@ -211,7 +211,7 @@ func (s *server) ready(v *websocket.Conn, needle string) {
 	}
 }
 func (s *server) typeText(v *websocket.Conn, text string) {
-	send(s.t, v, map[string]any{"text": base64.StdEncoding.EncodeToString([]byte(text))})
+	send(s.t, v, []any{"input", []any{"text", base64.StdEncoding.EncodeToString([]byte(text))}})
 }
 func send(t *testing.T, c *websocket.Conn, value any) {
 	t.Helper()
@@ -228,21 +228,28 @@ func read(t *testing.T, c *websocket.Conn) (int, []byte) {
 	}
 	return k, b
 }
-func event(t *testing.T, c *websocket.Conn, key string) map[string]json.RawMessage {
+func tagged(b []byte) (string, json.RawMessage) {
+	var m []json.RawMessage
+	var tag string
+	if json.Unmarshal(b, &m) != nil || len(m) != 2 || json.Unmarshal(m[0], &tag) != nil {
+		return "", nil
+	}
+	return tag, m[1]
+}
+func event(t *testing.T, c *websocket.Conn, key string) json.RawMessage {
 	t.Helper()
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	for i := 0; i < 10000; i++ {
 		_, b := read(t, c)
-		var m map[string]json.RawMessage
-		if json.Unmarshal(b, &m) == nil && m[key] != nil {
-			return m
+		if tag, payload := tagged(b); tag == key {
+			return payload
 		}
 	}
 	t.Fatalf("no %s", key)
 	return nil
 }
 
-var size = map[string]int{"cols": 80, "rows": 24, "cell_w_px": 8, "cell_h_px": 16}
+var size = map[string]any{"cols": 80, "rows": 24, "cell_px": map[string]int{"width": 8, "height": 16}}
 
 func (s *server) client(pane string) (*websocket.Conn, string) {
 	c := s.dialWS("/client", nil, 101)
@@ -250,27 +257,27 @@ func (s *server) client(pane string) (*websocket.Conn, string) {
 	if pane != "" {
 		h["pane"] = pane
 	}
-	send(s.t, c, map[string]any{"hello": h})
-	var identity struct{ Client string }
+	send(s.t, c, []any{"hello", h})
+	var identity string
 	for _, key := range []string{"welcome", "topology"} {
 		_, data := read(s.t, c)
-		var message map[string]json.RawMessage
-		if json.Unmarshal(data, &message) != nil || message[key] == nil {
+		tag, payload := tagged(data)
+		if tag != key {
 			s.t.Fatalf("expected %s, got %s", key, data)
 		}
 		if key == "welcome" {
-			if e := json.Unmarshal(message[key], &identity); e != nil {
+			if e := json.Unmarshal(payload, &identity); e != nil {
 				s.t.Fatal(e)
 			}
 		}
 	}
-	return c, identity.Client
+	return c, identity
 }
 func (s *server) pane(command string) string {
 	var response struct {
 		Pane string `json:"pane"`
 	}
-	s.request("POST", "/panes", map[string]any{"command": []string{"/bin/sh", "-c", command}, "cwd": "/tmp"}, 200, &response)
+	s.request("POST", "/panes", map[string]any{"command": []any{"argv", []string{"/bin/sh", "-c", command}}, "cwd": "/tmp"}, 200, &response)
 	return response.Pane
 }
 func snapshot(t *testing.T, c *websocket.Conn) ([]byte, uint64) {
@@ -348,20 +355,22 @@ func TestPaneDeadSnapshot(t *testing.T) {
 	seenTitle, seenPwd := false, false
 	for {
 		_, data := read(t, c)
-		var message map[string]json.RawMessage
-		if json.Unmarshal(data, &message) != nil {
-			t.Fatalf("event: %s", data)
-		}
-		if value := message["title"]; value != nil {
-			seenTitle = string(value) == `"dead title"`
-		}
-		if value := message["pwd"]; value != nil {
-			seenPwd = string(value) == `"file://localhost/tmp"`
-		}
-		if value := message["dead"]; value != nil {
-			if !bytes.Contains(value, []byte(`"status":7`)) {
+		tag, value := tagged(data)
+		switch tag {
+		case "title":
+			seenTitle = bytes.Contains(value, []byte(`"title":"dead title"`))
+		case "pwd":
+			seenPwd = bytes.Contains(value, []byte(`"pwd":"file://localhost/tmp"`))
+		case "dead":
+			if !bytes.Contains(value, []byte(`"cause":["exited",7]`)) {
 				t.Fatalf("dead: %s", value)
 			}
+		default:
+			if tag == "" {
+				t.Fatalf("event: %s", data)
+			}
+		}
+		if tag == "dead" {
 			break
 		}
 	}
@@ -391,10 +400,10 @@ func TestViewResumeResizeAndInput(t *testing.T) {
 	if !strings.Contains(decode(t, data).Screen, "READY") {
 		output(t, v, "READY")
 	}
-	send(t, v, map[string]any{"paste": map[string]any{"id": 23, "text": "hello\n", "check_safe": false}})
-	reply := event(t, v, "paste")
-	if !bytes.Contains(reply["paste"], []byte(`"pasted":true`)) {
-		t.Fatalf("paste: %s", reply["paste"])
+	send(t, v, []any{"input", []any{"paste", map[string]any{"id": 23, "text": "hello\n", "check_safe": false}}})
+	reply := event(t, v, "pasted")
+	if !bytes.Contains(reply, []byte(`"pasted":true`)) {
+		t.Fatalf("paste: %s", reply)
 	}
 	offset = output(t, v, "^[[201~")
 	v.Close()
@@ -408,12 +417,12 @@ func TestViewResumeResizeAndInput(t *testing.T) {
 		}
 		resumed += string(data[9:])
 	}
-	send(t, c, map[string]any{"size": map[string]int{"cols": 60, "rows": 20, "cell_w_px": 8, "cell_h_px": 16}})
-	marker := event(t, v, "marker")
-	if !bytes.Contains(marker["marker"], []byte(`"cols":60`)) {
-		t.Fatalf("marker: %s", marker["marker"])
+	send(t, c, []any{"size", map[string]any{"cols": 60, "rows": 20, "cell_px": map[string]int{"width": 8, "height": 16}}})
+	marker := event(t, v, "marked")
+	if !bytes.Contains(marker, []byte(`"cols":60`)) {
+		t.Fatalf("marker: %s", marker)
 	}
-	send(t, v, map[string]any{"resync": map[string]any{"history": "none", "images": "none"}})
+	send(t, v, []any{"resync", map[string]any{"history": "none", "images": "none"}})
 	data, _ = snapshot(t, v)
 	if decode(t, data).Sync {
 		t.Fatal("sync set")
@@ -501,14 +510,13 @@ func TestVersionAndOrigin(t *testing.T) {
 	t.Parallel()
 	s := start(t)
 	var version struct {
-		Terminal struct {
-			Bytes int  `json:"scrollback_max_bytes"`
-			Lines *int `json:"scrollback_max_lines"`
+		Limits struct {
+			Scrollback [2]json.RawMessage
 		}
 	}
 	s.request("GET", "/version", nil, 200, &version)
-	if version.Terminal.Bytes != 50_000_000 || version.Terminal.Lines != nil {
-		t.Fatalf("default scrollback limits: %+v", version.Terminal)
+	if string(version.Limits.Scrollback[0]) != `"scrollback"` || string(version.Limits.Scrollback[1]) != `{"max_bytes":50000000}` {
+		t.Fatalf("default scrollback limits: %+v", version.Limits)
 	}
 	vt := s.vt
 	s.vt = "wrong"
@@ -555,11 +563,11 @@ func TestApi(t *testing.T) {
 		t.Fatalf("--include: %d %q", code, out)
 	}
 	var created struct{ Pane string }
-	if out, _, code := ko(s.dir, `{"command":"exec cat"}`, "--input", "-", "/panes"); code != 0 || json.Unmarshal([]byte(out), &created) != nil || created.Pane == "" {
+	if out, _, code := ko(s.dir, `{"command":["shell","exec cat"]}`, "--input", "-", "/panes"); code != 0 || json.Unmarshal([]byte(out), &created) != nil || created.Pane == "" {
 		t.Fatalf("POST via stdin: %d %q", code, out)
 	}
 	file := filepath.Join(s.dir, "body.json")
-	if err := os.WriteFile(file, []byte(`{"command":"exec cat"}`), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(`{"command":["shell","exec cat"]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, code := ko(s.dir, "", "-X", "POST", "--input", file, "/panes"); code != 0 {

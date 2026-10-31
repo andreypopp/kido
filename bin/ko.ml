@@ -17,37 +17,29 @@ let report name f =
           Printf.eprintf "ko %s: %s\n%!" name message;
           1)
 
-let dir override =
-  match override with
-  | Some path -> path
-  | None ->
-      let env name = Sys.getenv_opt name |> Option.filter (fun s -> not (String.is_empty s)) in
-      Config.default_dir ~state:(env "KO_STATE_DIR") ~xdg:(env "XDG_STATE_HOME")
-        ~home:(Sys.getenv "HOME")
+let default_bytes, default_lines =
+  match Config.default_scrollback with
+  | Scrollback { max_bytes; max_lines } -> (max_bytes, max_lines)
+  | Scrollback_disabled -> (None, None)
 
-let server override scrollback lines shell =
+let show_limit = function Some n -> string_of_int n | None -> "unlimited"
+
+let scrollback bytes lines disabled =
+  match (disabled, bytes, lines) with
+  | true, None, None -> Ok Config.Scrollback_disabled
+  | true, _, _ ->
+      Error (`Msg "--no-scrollback conflicts with --scrollback-bytes and --scrollback-lines")
+  | false, _, _ ->
+      Ok
+        (Config.Scrollback
+           {
+             max_bytes = Option.value ~default:default_bytes bytes;
+             max_lines = Option.value ~default:default_lines lines;
+           })
+
+let server override scrollback shell =
   report "server" (fun () ->
-      let shell =
-        match shell with
-        | Some s -> s
-        | None -> Option.value ~default:"/bin/sh" (Sys.getenv_opt "SHELL")
-      in
-      match Config.shipped () with
-      | Error message -> Error message
-      | Ok (pane_exe, terminfo) ->
-          if Filename.is_relative shell then Error "shell must be an absolute path"
-          else
-            Loop.run
-              {
-                Config.dir = dir override;
-                pane_exe;
-                shell;
-                terminfo;
-                terminal =
-                  Config.limits ~scrollback_max_bytes:scrollback ?scrollback_max_lines:lines ();
-                env = Array.to_list (Unix.environment ());
-                cwd = Sys.getcwd ();
-              })
+      Result.flat_map Loop.run (Config.create ~dir:override ~shell ~scrollback))
 
 let attach override =
   report "attach" (fun () ->
@@ -56,9 +48,10 @@ let attach override =
         |> Option.filter (fun p -> not (String.is_empty p))
         |> Option.value ~default:"less -R +G -+F"
       in
-      Ko_tui.run ~dir:(dir override) ~executable:(Lazy.force Fs.self) ~pager)
+      Ko_tui.run ~dir:(Config.dir ~dir:override) ~executable:(Lazy.force Fs.self) ~pager)
 
-let kill override = report "kill-server" (fun () -> Server_stop.stop ~dir:(dir override))
+let kill override =
+  report "kill-server" (fun () -> Server_stop.stop ~dir:(Config.dir ~dir:override))
 
 let api override meth input include_headers path =
   run "api" (fun () ->
@@ -76,7 +69,7 @@ let api override meth input include_headers path =
         prerr_endline "ko api: path must start with /";
         1)
       else
-        let dir = dir override in
+        let dir = Config.dir ~dir:override in
         match Ko_tui.Api.request ~dir ~meth ~path body with
         | Error Websocket ->
             Printf.eprintf
@@ -105,11 +98,11 @@ let api override meth input include_headers path =
 
 let version () =
   print_endline
-    (Yojson.Safe.to_string
+    (Yojson.Basic.to_string
        (`Assoc
           [
-            ("protocol", `String Config.protocol);
-            ("vt", `String Config.vt);
+            ("protocol", `String Protocol.version_number);
+            ("vt", `String Protocol.vt_revision);
             ("build", `String Config.build);
           ]));
   0
@@ -117,6 +110,14 @@ let version () =
 let () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let open Cmdliner in
+  let unlimited convert =
+    Arg.conv
+      ( (fun value ->
+          if String.equal value "unlimited" then Ok None
+          else Result.map Option.some (Arg.conv_parser convert value)),
+        fun ppf -> function
+          | None -> Format.pp_print_string ppf "unlimited" | Some n -> Format.pp_print_int ppf n )
+  in
   let bytes =
     Arg.conv
       ( (fun value ->
@@ -133,7 +134,7 @@ let () =
             in
             let n = Stdlib.Int64.of_string digits in
             if
-              Int64.compare n 0L < 0 || Int64.compare n (Int64.div (Int64.of_int max_int) scale) > 0
+              Int64.compare n 1L < 0 || Int64.compare n (Int64.div (Int64.of_int max_int) scale) > 0
             then Error (`Msg "invalid byte count")
             else Ok (Int64.to_int (Int64.mul n scale))
           with Failure _ -> Error (`Msg "invalid byte count")),
@@ -153,11 +154,26 @@ let () =
       (Cmd.info "server" ~doc:"Run the ko server in the foreground.")
       Term.(
         const server $ directory
-        $ Arg.(
-            value
-            & opt bytes Config.default_scrollback_bytes
-            & info [ "scrollback-bytes" ] ~docv:"BYTES")
-        $ Arg.(value & opt (some positive) None & info [ "scrollback-lines" ] ~docv:"N")
+        $ term_result
+            (const scrollback
+            $ Arg.(
+                value
+                & opt (some (unlimited bytes)) None
+                & info [ "scrollback-bytes" ] ~docv:"BYTES|unlimited"
+                    ~doc:
+                      (Printf.sprintf "Scrollback limit in bytes. The default is %s."
+                         (show_limit default_bytes)))
+            $ Arg.(
+                value
+                & opt (some (unlimited positive)) None
+                & info [ "scrollback-lines" ] ~docv:"N|unlimited"
+                    ~doc:
+                      (Printf.sprintf "Scrollback limit in lines. The default is %s."
+                         (show_limit default_lines)))
+            $ Arg.(
+                value & flag
+                & info [ "no-scrollback" ]
+                    ~doc:"Keep no scrollback. This conflicts with the two scrollback limits."))
         $ Arg.(value & opt (some string) None & info [ "shell" ] ~docv:"PATH"))
   in
   let kill =

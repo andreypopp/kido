@@ -237,8 +237,10 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
   unsigned version = number(&c, 2);
   uint16_t cols = number(&c, 2), rows = number(&c, 2), cw = number(&c, 2),
            ch = number(&c, 2);
-  size_t scrollback = number(&c, 8), lines = number(&c, 8),
-         apc = number(&c, 8);
+  unsigned has_scrollback = number(&c, 1);
+  size_t scrollback = number(&c, 8);
+  unsigned has_lines = number(&c, 1);
+  size_t lines = number(&c, 8), apc = number(&c, 8);
   uint64_t kitty = number(&c, 8);
   unsigned media = number(&c, 1);
   size_t continuation = number(&c, 8);
@@ -248,9 +250,9 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
   int result = -1, slave = -1;
   struct winsize size = {.ws_row = rows,
                          .ws_col = cols,
-                         .ws_xpixel = cols * cw,
-                         .ws_ypixel = rows * ch};
-  if (c.error || c.n || version != 2 || !cols || !rows || !argv || !argv[0] ||
+                         .ws_xpixel = (cols * cw > 65535 ? 65535 : cols * cw),
+                         .ws_ypixel = (rows * ch > 65535 ? 65535 : rows * ch)};
+  if (c.error || c.n || version != 3 || has_scrollback > 1 || has_lines > 1 || !cols || !rows || !argv || !argv[0] ||
       argv[0][0] != '/') {
     goto done;
   }
@@ -259,9 +261,9 @@ static int init(struct pane *p, const uint8_t *b, size_t n) {
   }
   ghostty_terminal_resize(p->vt, cols, rows, cw, ch);
   ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
-                       &scrollback);
+                       has_scrollback ? &scrollback : NULL);
   ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
-                       lines ? &lines : NULL);
+                       has_lines ? &lines : NULL);
   ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, &apc);
   ghostty_terminal_set(p->vt, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
                        &kitty);
@@ -724,8 +726,8 @@ static int dispatch(struct pane *p, unsigned kind, const uint8_t *b, size_t n,
     }
     struct winsize size = {.ws_row = rows,
                            .ws_col = cols,
-                           .ws_xpixel = cols * cw,
-                           .ws_ypixel = rows * ch};
+                           .ws_xpixel = (cols * cw > 65535 ? 65535 : cols * cw),
+                           .ws_ypixel = (rows * ch > 65535 ? 65535 : rows * ch)};
     ioctl(p->master, TIOCSWINSZ, &size);
     uint8_t *marker = at_head(p) + KO_HEADER;
     marker[0] = 1;

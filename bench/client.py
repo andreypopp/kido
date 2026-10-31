@@ -316,7 +316,7 @@ class Ko:
         return data
 
     def pane(self, command):
-        return json.loads(self.request("POST", "/panes", {"command": ["/bin/sh", "-c", command], "cwd": self.dir}))["pane"]
+        return json.loads(self.request("POST", "/panes", {"command": ["argv", ["/bin/sh", "-c", command]], "cwd": self.dir}))["pane"]
 
     def screen(self, pane):
         return self.request("GET", f"/panes/{pane}/screen?history=none").decode(errors="replace")
@@ -328,7 +328,7 @@ class Ko:
 
     def claim(self, pane):
         self.sizing = WebSocket(self.dir, self.vt, "/client")
-        self.sizing.send({"hello": {"kind": "terminal", "name": "bench", "pane": pane, "focused": True, "size": {"cols": PANE_COLS, "rows": ROWS, "cell_w_px": 8, "cell_h_px": 16}}})
+        self.sizing.send(["hello", {"kind": "terminal", "name": "bench", "pane": pane, "focused": True, "size": {"cols": PANE_COLS, "rows": ROWS, "cell_px": {"width": 8, "height": 16}}}])
         self.sizing.receive()
         self.sizing.receive()
 
@@ -452,7 +452,7 @@ def latency(count=500):
                 for n in range(count + 1, 2 * count + 1):
                     time.sleep(0.01)
                     began = time.monotonic()
-                    view.send({"text": base64.b64encode(b"x").decode()})
+                    view.send(["input", ["text", base64.b64encode(b"x").decode()]])
                     while True:
                         opcode, data = view.receive()
                         if opcode == 2 and data[0] == 1 and b"<%04d>" % n in data[9:]:
@@ -579,13 +579,13 @@ def resize_row():
             for n in range(20):
                 cols = 60 if n % 2 == 0 else PANE_COLS
                 began = time.monotonic()
-                ko.sizing.send({"size": {"cols": cols, "rows": ROWS, "cell_w_px": 8, "cell_h_px": 16}})
+                ko.sizing.send(["size", {"cols": cols, "rows": ROWS, "cell_px": {"width": 8, "height": 16}}])
                 if history == "none":
                     view.snapshot()
                 else:
                     while True:
                         opcode, data = view.receive()
-                        if opcode == 1 and b'"marker"' in data:
+                        if opcode == 1 and b'"marked"' in data:
                             break
                 samples.append((time.monotonic() - began) * 1000)
             print(f"ko: size sent to the {name}: {stats(samples)}", flush=True)

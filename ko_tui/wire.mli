@@ -7,7 +7,7 @@ val close : t -> unit
 
 val exchange :
   socket:string ->
-  ?client:string ->
+  ?client:Ko_server.Ids.Client_id.t ->
   ?consume:(string -> unit) ->
   meth:string ->
   path:string ->
@@ -16,13 +16,13 @@ val exchange :
 
 val request :
   socket:string ->
-  ?client:string ->
+  ?client:Ko_server.Ids.Client_id.t ->
   ?consume:(string -> unit) ->
   meth:string ->
   path:string ->
   string ->
   string
 
-val upgrade : t -> ?client:string -> path:string -> unit -> unit
-val send : t -> Yojson.Safe.t -> unit
+val upgrade : t -> ?client:Ko_server.Ids.Client_id.t -> path:string -> unit -> unit
+val send : t -> Yojson.Basic.t -> unit
 val receive : t -> [ `Text of string | `Binary of string | `Close ]

@@ -24,7 +24,7 @@ func checkInputFrames(t *testing.T, split bool) {
 			codepoint = 0
 			text = ""
 		}
-		payload, err := json.Marshal(map[string]any{"key": map[string]any{"action": 1, "key": key, "mods": 0, "unshifted_codepoint": codepoint, "text": text, "composing": false}})
+		payload, err := json.Marshal([]any{"input", []any{"key", map[string]any{"action": "press", "key": key, "mods": 0, "unshifted_codepoint": codepoint, "text": text, "composing": false}}})
 		if err != nil {
 			t.Fatal(err)
 		}

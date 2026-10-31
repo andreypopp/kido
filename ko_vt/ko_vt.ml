@@ -53,24 +53,26 @@ external render : t -> frame = "ko_vt_render"
 external scroll : t -> int -> unit = "ko_vt_scroll"
 external bottom : t -> bool = "ko_vt_bottom"
 
+type scrollback =
+  | Scrollback_disabled
+  | Scrollback of { max_bytes : int option; max_lines : int option }
+
 external create :
   cols:int ->
   rows:int ->
-  scrollback_max_bytes:int ->
-  scrollback_max_lines:int option ->
+  scrollback:scrollback ->
   apc_max_bytes:int ->
-  kitty_image_storage_limit:int ->
+  kitty_images_max_bytes:int ->
   continuation_max_bytes:int ->
   t = "ko_vt_create_bytecode" "ko_vt_create"
 
 external configure :
   t ->
-  scrollback_max_bytes:int ->
-  scrollback_max_lines:int option ->
+  scrollback:scrollback ->
   apc_max_bytes:int ->
-  kitty_image_storage_limit:int ->
+  kitty_images_max_bytes:int ->
   continuation_max_bytes:int ->
-  unit = "ko_vt_configure_bytecode" "ko_vt_configure"
+  unit = "ko_vt_configure"
 
 external now_ns : unit -> int = "ko_vt_now_ns"
 external compress_tick : t -> now_ns:int -> int = "ko_vt_compress_tick"
@@ -101,9 +103,10 @@ let decode_string ?ready ~full bytes = decode ?ready ~full (string_reader bytes)
 let%test_module "Tests" =
   (module struct
     let make ~cols ~rows =
-      create ~cols ~rows ~scrollback_max_bytes:50_000_000 ~scrollback_max_lines:None
+      create ~cols ~rows
+        ~scrollback:(Scrollback { max_bytes = Some 50_000_000; max_lines = None })
         ~apc_max_bytes:(65 * 1024 * 1024)
-        ~kitty_image_storage_limit:10_000_000
+        ~kitty_images_max_bytes:10_000_000
         ~continuation_max_bytes:(65 * 1024 * 1024)
 
     let tags bytes =
@@ -323,8 +326,9 @@ let%test_module "Tests" =
       Printf.printf "decoded compressed=%b same rows=%b\n" (decoded.compressed_pages > 0)
         (total_rows restored = total_rows server);
       let limited =
-        create ~cols:80 ~rows:24 ~scrollback_max_bytes:50_000_000 ~scrollback_max_lines:(Some 1000)
-          ~apc_max_bytes:0 ~kitty_image_storage_limit:0 ~continuation_max_bytes:0
+        create ~cols:80 ~rows:24
+          ~scrollback:(Scrollback { max_bytes = Some 50_000_000; max_lines = Some 1000 })
+          ~apc_max_bytes:0 ~kitty_images_max_bytes:0 ~continuation_max_bytes:0
       in
       fill limited;
       Printf.printf "lines limit prunes=%b\n" (total_rows limited < 3000);

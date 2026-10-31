@@ -7,12 +7,12 @@ let encode input =
   let kind =
     match input with
     | Protocol.Key key ->
-        if key.action > 2 || key.key > Pane_proc.max_key then invalid_arg "invalid key";
+        if key.key > Pane_proc.max_key then invalid_arg "invalid key";
         if
           key.unshifted_codepoint > 0x10ffff
           || (key.unshifted_codepoint >= 0xd800 && key.unshifted_codepoint <= 0xdfff)
         then invalid_arg "invalid codepoint";
-        num key.action 1;
+        num (match key.action with Key_release -> 0 | Key_press -> 1 | Key_repeat -> 2) 1;
         num key.key 2;
         num key.mods 2;
         num key.unshifted_codepoint 4;
@@ -20,9 +20,22 @@ let encode input =
         num (if key.composing then 1 else 0) 1;
         Pane_proc.Key
     | Mouse mouse ->
-        if mouse.action > 2 || mouse.button > 11 then invalid_arg "invalid mouse event";
-        num mouse.action 1;
-        num mouse.button 1;
+        num (match mouse.action with Mouse_press -> 0 | Mouse_release -> 1 | Mouse_motion -> 2) 1;
+        num
+          (match mouse.button with
+          | Button_unknown -> 0
+          | Button_left -> 1
+          | Button_right -> 2
+          | Button_middle -> 3
+          | Button_four -> 4
+          | Button_five -> 5
+          | Button_six -> 6
+          | Button_seven -> 7
+          | Button_eight -> 8
+          | Button_nine -> 9
+          | Button_ten -> 10
+          | Button_eleven -> 11)
+          1;
         num mouse.col 2;
         num mouse.row 2;
         num mouse.mods 2;
@@ -49,8 +62,7 @@ let send pane input reply =
     | Protocol.Paste paste ->
         Pane_proc.paste (Pane.proc pane) body (function
           | Error message -> reply (Error message)
-          | Ok (pasted, unsafe) ->
-              reply (Ok (Some { Protocol.paste = { id = paste.id; pasted; unsafe } })))
+          | Ok (pasted, unsafe) -> reply (Ok (Some { Protocol.id = paste.id; pasted; unsafe })))
     | _ ->
         if not (Pane_proc.alive (Pane.proc pane)) then reply (Error "pane process ended")
         else (
@@ -72,7 +84,7 @@ let%test_module "Tests" =
         encode
           (Protocol.Key
              {
-               action = 1;
+               action = Key_press;
                key = 20;
                mods = 2;
                unshifted_codepoint = 97;

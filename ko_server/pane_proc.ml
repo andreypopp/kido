@@ -86,8 +86,9 @@ let string b s =
   Buffer.add_int32_le b (Int32.of_int (String.length s));
   Buffer.add_string b s
 
-let size b (s : Config.size) =
-  List.iter (Buffer.add_uint16_le b) [ s.cols; s.rows; s.cell_w_px; s.cell_h_px ]
+let size b (s : Protocol.size) =
+  let cell = Option.value ~default:{ Protocol.width = 0; height = 0 } s.cell_px in
+  List.iter (Buffer.add_uint16_le b) [ s.cols; s.rows; cell.width; cell.height ]
 
 let frame kind body =
   let b = Buffer.create (String.length body + 5) in
@@ -98,27 +99,26 @@ let frame kind body =
 
 let init (config : Config.t) ~id ~cwd ~argv ~env ~size:dimensions =
   let b = Buffer.create 512 in
-  Buffer.add_uint16_le b 2;
+  Buffer.add_uint16_le b 3;
   size b dimensions;
-  let limits = config.terminal in
+  let limits = config.limits in
+  let max_bytes, max_lines =
+    match limits.scrollback with
+    | Scrollback_disabled -> (Some 0, None)
+    | Scrollback { max_bytes; max_lines } -> (max_bytes, max_lines)
+  in
+  List.iter
+    (fun limit ->
+      Buffer.add_uint8 b (if Option.is_some limit then 1 else 0);
+      Buffer.add_int64_le b (Int64.of_int (Option.value ~default:0 limit)))
+    [ max_bytes; max_lines ];
   List.iter
     (fun n -> Buffer.add_int64_le b (Int64.of_int n))
-    [
-      limits.scrollback_max_bytes;
-      Option.value ~default:0 limits.scrollback_max_lines;
-      limits.apc_max_bytes;
-      limits.kitty_image_storage_limit;
-    ];
+    [ limits.apc_max_bytes; limits.kitty_images_max_bytes ];
   let media =
     List.fold_left
       (fun bits medium ->
-        bits
-        lor
-        match medium with
-        | "file" -> 1
-        | "temp_file" -> 2
-        | "shared_mem" -> 4
-        | _ -> invalid_arg "invalid kitty medium")
+        bits lor match medium with Config.File -> 1 | Temp_file -> 2 | Shared_mem -> 4)
       0 limits.media
   in
   Buffer.add_char b (Char.chr media);
@@ -129,11 +129,11 @@ let init (config : Config.t) ~id ~cwd ~argv ~env ~size:dimensions =
       Buffer.add_int32_le b (Int32.of_int (List.length values));
       List.iter (string b) values)
     [ argv; env ];
-  string b id;
+  string b (Ids.Pane_id.to_string id);
   Buffer.contents b
 
 type slice = { first : bool; last : bool; screen : bool }
-type data = Bytes | Resize_marker of Config.size | Dead_marker of Protocol.dead | Slice of slice
+type data = Bytes | Resize_marker of Protocol.size | Dead_marker of Protocol.dead | Slice of slice
 type record = { pos : int; next : int; offset : int; at : int; len : int; data : data }
 
 type event =
@@ -193,13 +193,13 @@ let fail_pending t message =
       | Paste_reply done_ -> done_ (Error message))
     pending
 
-let failure t ~status ~signal message =
+let failure t message =
   if not t.failure then begin
     t.failure <- true;
     if not t.closed then Luv.Handle.close t.control ignore;
     t.closed <- true;
     fail_pending t message;
-    t.notify (Failed { Protocol.status; signal; at = Uv.now (); error = Some message })
+    t.notify (Failed { Protocol.at = Uv.now (); cause = Failed message })
   end
 
 let u16 ring at = Bigstringaf.get_int16_le ring at land 0xffff
@@ -221,18 +221,21 @@ let read_record ring capacity pos =
         begin if len = 9 && Char.code ring.{at} = 1 then
           Resize_marker
             {
-              Config.cols = u16 ring (at + 1);
+              Protocol.cols = u16 ring (at + 1);
               rows = u16 ring (at + 3);
-              cell_w_px = u16 ring (at + 5);
-              cell_h_px = u16 ring (at + 7);
+              cell_px =
+                (match (u16 ring (at + 5), u16 ring (at + 7)) with
+                | 0, 0 -> None
+                | width, height -> Some { width; height });
             }
         else if len = 17 && Char.code ring.{at} = 2 then
           Dead_marker
             {
-              Protocol.status = Int32.to_int (Bigstringaf.get_int32_le ring (at + 1));
-              signal = Int32.to_int (Bigstringaf.get_int32_le ring (at + 5));
-              at = Int64.to_int (Bigstringaf.get_int64_le ring (at + 9));
-              error = None;
+              Protocol.at = Int64.to_int (Bigstringaf.get_int64_le ring (at + 9));
+              cause =
+                (match Int32.to_int (Bigstringaf.get_int32_le ring (at + 5)) with
+                | 0 -> Exited (Int32.to_int (Bigstringaf.get_int32_le ring (at + 1)))
+                | signal -> Signaled signal);
             }
         else invalid_arg "invalid ring marker"
         end
@@ -290,7 +293,7 @@ let scan t =
       if more then t.notify Published;
       changed || more
     with Invalid_argument message ->
-      failure t ~status:2 ~signal:0 message;
+      failure t message;
       false
 
 let oldest t =
@@ -339,10 +342,15 @@ let snapshot t ~full ~consume ~done_ =
     ((if full then "\000" else "\001") ^ "\000\000\000\000\000")
     (Snapshot_reply (consume, done_))
 
-let screen t ~ansi ~history ~chunk ~done_ =
+let screen t ~format ~history ~chunk ~done_ =
   let b = Buffer.create 5 in
-  Buffer.add_char b (if ansi then '\001' else '\000');
-  Buffer.add_int32_le b (Int32.of_int history);
+  Buffer.add_char b (match format with Protocol.Plain -> '\000' | Ansi -> '\001');
+  Buffer.add_int32_le b
+    (Int32.of_int
+       (match history with
+       | Protocol.Visible_only -> 0
+       | Full_history -> 0xffffffff
+       | Last_rows n -> n));
   request t Screen (Buffer.contents b) (Screen_reply (chunk, done_))
 
 let paste t body done_ = request t Paste body (Paste_reply done_)
@@ -383,7 +391,7 @@ let on_frame t kind body =
             Hashtbl.remove t.pending req;
             done_ (Ok ()))
       | _ -> ())
-  | Error -> failure t ~status:2 ~signal:0 (string_at body 0)
+  | Error -> failure t (string_at body 0)
   | _ -> ()
 
 let frame_at input ~filled pos =
@@ -447,9 +455,9 @@ let create ?(callbacks = true) config ~id ~cwd ~argv ~env =
           done;
           Bigstringaf.blit t.input ~src_off:!pos t.input ~dst_off:0 ~len:(t.filled - !pos);
           t.filled <- t.filled - !pos
-        with Invalid_argument message -> failure t ~status:2 ~signal:0 message)
-    | Error _ -> if not t.closed then failure t ~status:2 ~signal:0 "pane control socket closed");
-  send t Init (init config ~id ~cwd ~argv ~env ~size:Config.default_size);
+        with Invalid_argument message -> failure t message)
+    | Error _ -> if not t.closed then failure t "pane control socket closed");
+  send t Init (init config ~id ~cwd ~argv ~env ~size:Protocol.default_size);
   t
 
 let listen t callback = t.notify <- callback
@@ -467,14 +475,12 @@ let reap t =
     | 0, _ -> ()
     | _, status ->
         t.reaped <- true;
-        (if not t.closed then
-           let status, signal =
-             match status with
-             | Unix.WEXITED n -> (n, 0)
-             | Unix.WSIGNALED n -> (0, Uv.native_signal n)
-             | Unix.WSTOPPED n -> (0, Uv.native_signal n)
-           in
-           failure t ~status ~signal "pane process ended unexpectedly");
+        if not t.closed then
+          failure t
+            (match status with
+            | Unix.WEXITED n -> Printf.sprintf "pane process exited unexpectedly with status %d" n
+            | Unix.WSIGNALED n | Unix.WSTOPPED n ->
+                Printf.sprintf "pane process ended unexpectedly by signal %d" (Uv.native_signal n));
         if t.mapped then (
           unmap t.ring;
           t.mapped <- false)

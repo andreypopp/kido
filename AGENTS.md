@@ -51,7 +51,18 @@ states unrepresentable.
   Do not use a record of options or a combination of bools.
 - Give a value with its own rules its own type, abstract in the `.mli`.
   Parse it once at the edge. Do not check a string in several places.
+- Do not use strings for typed values. A closed set of names is a
+  variant, even in a record that only goes to JSON. Only the codec
+  knows the strings.
+- Do not give a number a special meaning. "Unknown" is `None`, not
+  `0`. "Disabled" is its own case of a variant, not `0`. The magic
+  value exists only in the codec at the edge: a C API, a frame or a
+  flag.
+- One `None` has one meaning in a record. Do not use `None` for
+  "no limit" in one field and for "disabled" in the next.
 - Use one record for parallel fields or maps that describe one thing.
+  Fields that are known or unknown together are one option of a
+  record, not two fields.
 
 **Minimal line count.** Do not abstract something with one use. Inline a
 function, type, interface, constant, option struct or test helper with
@@ -66,6 +77,12 @@ module with its `.mli`, or a TS module. Use its exported surface.
 `bin/main.ml` connects subcommands to `lib/` modules. It contains
 commands too small for library code. Domain logic belongs in the module
 that owns the domain.
+
+A type that exists only for the wire and a protocol constant belong to
+the protocol module, not to the settings module. A setting that the
+protocol reports stays with the settings.
+A type whose module cannot construct it is probably in the wrong
+module.
 
 **Library code returns, the CLI reports.** A `lib/` function returns
 its result: a value, an `option` or a `result`. It does not print, call
@@ -87,8 +104,18 @@ fact in two stores:
 - A run record and a tmux option.
 - An OCaml record and a TS copy.
 - A file and an in-memory mirror.
+- A doc and the code.
+
+Docs do not repeat what the code defines: field lists, JSON examples,
+byte layouts, enum values or flag tables. They name the file that
+defines it and give only what the code cannot say: semantics,
+ordering, rationale and decisions. A plan for code that does not exist
+yet can give shapes, until the code exists.
 
 Do not store a fact that you can derive. Compute it when necessary.
+The exception is a value that needs validation or I/O to resolve,
+such as a checked path. Resolve it once at the edge and store it in
+the record that every caller reads.
 Read and write each piece of state through its owner module only.
 
 **No comments unless absolutely necessary.** Code should explain itself.
@@ -100,11 +127,22 @@ belongs in `docs/`, not comments. Keep only these comments:
   a tmux, pi, Claude Code or OS quirk.
 - The reason for a workaround, while that workaround exists.
 - A link to the issue for either case.
+- A doc comment in an `.mli` that the user explicitly requested.
+
+An interface explains itself through descriptive names, not doc
+comments. A name tells what the value is without its module: a
+protocol's major version is `version_major`, not `major`.
 
 Build, compiler and formatter directives are not comments. If a
 diagnostic suppression hides a correctness failure, fix the cause.
 A stale comment is worse than no comment because readers trust it.
 When a mechanism changes, use grep to find prose that describes it.
+
+OCaml attaches a doc comment that follows an item with no empty line
+to that item. After `dune fmt`, make sure that each doc comment is on
+the item that it describes. Check each statement in a comment against
+its source: a header, the code or a test. Do not write a fact that you
+did not read.
 
 ## Communication
 
@@ -137,7 +175,8 @@ These requirements are fixed:
   `State_fixture` have no `.mli`.
   Only `tmux.mli` exposes `lib_tmux/program_status.ml`.
 
-  JSON uses yojson with ppx_yojson_conv. Equality and comparison use
+  kido's JSON uses yojson with ppx_yojson_conv. ko's JSON uses jsonkit
+  ("JSON in ko" below). Equality and comparison use
   ppx_compare. String conversion uses ppx_string_conv.
   `lib/` and `lib_tmux/` also open their runtime primitives:
   `Ppx_compare_lib.Builtin` and
@@ -169,6 +208,9 @@ Conventions:
   stderr in order.
 - **Environment.** Read the environment at the edge. Pass its values
   to functions through `~dir`, `~threshold` and `~now`.
+  A function that only resolves a default can read a variable that
+  does not change while the program runs, such as `HOME` or
+  `XDG_STATE_HOME`.
   Tests pass a temporary directory. No test sets an environment
   variable or swaps a global.
 - **Time** uses `Timestamp.t`: unix seconds as a float, and RFC 3339
@@ -203,6 +245,22 @@ Conventions:
   because `[@yojson.option]` rejects an explicit `null`.
 
   A bare option field encodes `None` as `null`.
+- **JSON in ko.** ko code (`ko_server/`, `ko_tui/`, `bin/ko.ml`,
+  `bench/`) derives its codecs with jsonkit (`jsonkit.ppx`) on
+  `Yojson.Basic`, with `open Jsonkit.Primitives`. kido code stays on
+  ppx_yojson_conv until the cut-over.
+  - Derive every codec with `[@@deriving json]`. Do not write a codec
+    by hand. The exception is a codec that validates its value, such as
+    an id.
+  - A variant uses `[@@json.compact_variants]` with a lowercase
+    `[@json.name]` on each constructor. A constructor without arguments
+    encodes as a string, and one with arguments as an array.
+  - An option field uses `[@json.option] [@json.drop_default]`, so
+    `None` is omitted. jsonkit ignores unknown fields.
+  - Decoding raises `Jsonkit.Of_json_error`. Catch it only at an
+    untrusted-input edge: an HTTP body or a WebSocket message.
+  - A query string is not JSON. Parse it into its variant with a
+    plain `match`.
 - **Cmdliner docs.** A bare `$` is markup.
   It produces "unescaped $" on `--help`.
   Write environment variables as `$(b,NAME)`.
@@ -827,7 +885,8 @@ a stage slower needs a reason.
   not a delay that the test waits out. A test that reads only the
   registered tools needs no fixture.
 - A test earns its time. Do not keep a test that repeats another test,
-  the prompt snapshot or the compiler.
+  the prompt snapshot or the compiler. Do not keep a test that only
+  repeats a constant or a one-line function.
 
 To find slow tests:
 
@@ -1022,6 +1081,42 @@ its comment.
   or a carriage return.
   It quotes a space.
 
+## Review
+
+A reviewer checks the change against "Code rules", "OCaml" and
+"Tests" above. Read each rule and look for its fault in the diff: a
+rule alone does not find a fault.
+
+**Simplify reviewers** use the `simplify` skill
+(`~/.pi/agent/skills/simplify/SKILL.md`). Each reviewer takes one
+angle of its Phase 1: reuse, simplification, efficiency or altitude.
+A reviewer does only Phase 1 and reports its findings. It does not
+apply them: the manager decides which to apply, and the implementer
+applies them.
+
+**The correctness reviewer** looks for bugs, not style:
+
+- It traces each user action and each input end to end, with real
+  event sequences: keys, mouse, resize, attach, detach and reconnect.
+- It checks each conversion of coordinates and units: cells and pixels,
+  bytes and lines, offsets, seconds and nanoseconds, 0-based and 1-based.
+- It checks that each test can fail. A test must not copy the
+  production formula, and a fake must not accept every input.
+- It compares each use of a protocol with its contract: the RFC, the
+  header of a C API, `share/rpc/contract.md`.
+
+**The OCaml modules reviewer** checks each module that the change
+touches:
+
+- The `.mli` exports only what code outside the module uses.
+- The module is self-contained and consistent. If it exports a type,
+  it also exports the functions that construct and use values of that
+  type. A module that is only a set of types is the exception.
+- The module has one purpose. A second purpose needs a clear reason.
+
+A reviewer reports each finding with the file and line, the fault,
+and a fix. It does not edit files.
+
 ## Working here as a spawned agent
 
 These rules apply to every agent that kido spawns into this repo.
@@ -1035,8 +1130,9 @@ A brief does not repeat them.
      change needs itself, in `docs/`, this file and READMEs. The
      implementer reports the facts.
   3. The manager spawns the four read-only reviewers of a simplify pass,
-     one angle each, so that review has fresh context. They review the
-     code and the docs.
+     one angle each, one correctness reviewer and one OCaml modules
+     reviewer, so that review has fresh context. They review the code
+     and the docs ("Review" above).
   4. The manager merges their findings and decides which to apply. It
      changes the docs that the findings affect.
   5. It gives the findings to apply to the same implementer with

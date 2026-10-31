@@ -1,178 +1,193 @@
-type json = Yojson.Safe.t
+type cell_px = { width : int; height : int } [@@deriving equal, json]
 
-let json_of_yojson value = value
-let yojson_of_json value = value
-
-type dead = {
-  status : int;
-  signal : int;
-  at : int;
-  error : string option; [@default None] [@yojson_drop_if Option.is_none]
+type size = {
+  cols : int;
+  rows : int;
+  cell_px : cell_px option; [@json.option] [@json.drop_default]
 }
-[@@deriving yojson]
+[@@deriving equal, json]
+
+let default_size = { cols = 80; rows = 24; cell_px = Some { width = 8; height = 16 } }
+
+let valid_size s =
+  let in_range n = n > 0 && n <= 65535 in
+  in_range s.cols && in_range s.rows
+  && match s.cell_px with None -> true | Some c -> in_range c.width && in_range c.height
+
+type cause =
+  | Exited of int [@json.name "exited"]
+  | Signaled of int [@json.name "signaled"]
+  | Failed of string [@json.name "failed"]
+[@@deriving json] [@@json.compact_variants]
+
+type dead = { at : int; cause : cause } [@@deriving json]
 
 type row = {
-  id : string;
+  id : Ids.Pane_id.t;
   pid : int;
   command : string list;
   cwd : string;
   title : string;
   dead : dead option;
 }
-[@@deriving yojson]
+[@@deriving json]
+
+type error_kind =
+  | Invalid [@json.name "invalid"]
+  | Refused [@json.name "refused"]
+  | Gone [@json.name "gone"]
+  | Io [@json.name "io"]
+  | Missing [@json.name "not_found"]
+[@@deriving json] [@@json.compact_variants]
 
 type error = {
-  kind : string;
+  kind : error_kind;
   message : string;
-  protocol : string option; [@default None] [@yojson_drop_if Option.is_none]
-  vt : string option; [@default None] [@yojson_drop_if Option.is_none]
+  protocol : string option; [@json.option] [@json.drop_default]
+  vt : string option; [@json.option] [@json.drop_default]
 }
-[@@deriving yojson]
+[@@deriving json]
+
+type key_action =
+  | Key_release [@json.name "release"]
+  | Key_press [@json.name "press"]
+  | Key_repeat [@json.name "repeat"]
+[@@deriving json] [@@json.compact_variants]
 
 type key = {
-  action : int;
+  action : key_action;
   key : int;
   mods : int;
   unshifted_codepoint : int;
   text : string;
   composing : bool;
 }
-[@@deriving yojson]
+[@@deriving json]
 
-type mouse = { action : int; button : int; col : int; row : int; mods : int } [@@deriving yojson]
+type mouse_action =
+  | Mouse_press [@json.name "press"]
+  | Mouse_release [@json.name "release"]
+  | Mouse_motion [@json.name "motion"]
+[@@deriving json] [@@json.compact_variants]
+
+type mouse_button =
+  | Button_unknown [@json.name "unknown"]
+  | Button_left [@json.name "left"]
+  | Button_right [@json.name "right"]
+  | Button_middle [@json.name "middle"]
+  | Button_four [@json.name "four"]
+  | Button_five [@json.name "five"]
+  | Button_six [@json.name "six"]
+  | Button_seven [@json.name "seven"]
+  | Button_eight [@json.name "eight"]
+  | Button_nine [@json.name "nine"]
+  | Button_ten [@json.name "ten"]
+  | Button_eleven [@json.name "eleven"]
+[@@deriving json] [@@json.compact_variants]
+
+type mouse = { action : mouse_action; button : mouse_button; col : int; row : int; mods : int }
+[@@deriving json]
 
 type paste = {
   text : string;
   check_safe : bool;
-  id : json option; [@default None] [@yojson_drop_if Option.is_none]
+  id : int option; [@json.option] [@json.drop_default]
 }
-[@@deriving yojson]
+[@@deriving json]
 
-type key_input = { key : key } [@@deriving yojson]
-type mouse_input = { mouse : mouse } [@@deriving yojson]
-type paste_input = { paste : paste } [@@deriving yojson]
-type text_input = { text : string } [@@deriving yojson]
-type focus_input = { focus : bool } [@@deriving yojson]
-type input = Key of key | Mouse of mouse | Paste of paste | Text of string | Focus of bool
+type input =
+  | Key of key [@json.name "key"]
+  | Mouse of mouse [@json.name "mouse"]
+  | Paste of paste [@json.name "paste"]
+  | Text of string [@json.name "text"]
+  | Focus of bool [@json.name "focus"]
+[@@deriving json] [@@json.compact_variants]
 
-let input_of_yojson json =
-  match json with
-  | `Assoc [ ("key", _) ] -> Key (key_input_of_yojson json).key
-  | `Assoc [ ("mouse", _) ] -> Mouse (mouse_input_of_yojson json).mouse
-  | `Assoc [ ("paste", _) ] -> Paste (paste_input_of_yojson json).paste
-  | `Assoc [ ("text", _) ] -> Text (text_input_of_yojson json).text
-  | `Assoc [ ("focus", _) ] -> Focus (focus_input_of_yojson json).focus
-  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid input event" json
+type client_kind = Terminal [@json.name "terminal"] | App [@json.name "app"]
+[@@deriving json] [@@json.compact_variants]
 
 type hello = {
-  kind : string;
+  kind : client_kind;
   name : string;
-  pane : string option; [@default None] [@yojson_drop_if Option.is_none]
+  pane : Ids.Pane_id.t option; [@json.option] [@json.drop_default]
   focused : bool;
-  size : Config.size;
-  features : string list; [@default []]
-  ignore_size : bool; [@default false]
+  size : size;
+  ignore_size : bool; [@json.default false]
 }
-[@@deriving yojson]
+[@@deriving json]
 
-type hello_message = { hello : hello } [@@deriving yojson]
-type selection = { pane : string } [@@deriving yojson]
-type select_message = { select : selection } [@@deriving yojson]
-type size_message = { size : Config.size } [@@deriving yojson]
-type focused_message = { focused : bool } [@@deriving yojson]
-type client_input = Hello of hello | Select of string | Size of Config.size | Focused of bool
+type client_input =
+  | Hello of hello [@json.name "hello"]
+  | Select of Ids.Pane_id.t [@json.name "select"]
+  | Size of size [@json.name "size"]
+  | Focused of bool [@json.name "focused"]
+[@@deriving json] [@@json.compact_variants]
 
-let client_input_of_yojson json =
-  match json with
-  | `Assoc [ ("hello", _) ] -> Hello (hello_message_of_yojson json).hello
-  | `Assoc [ ("select", _) ] -> Select (select_message_of_yojson json).select.pane
-  | `Assoc [ ("size", _) ] -> Size (size_message_of_yojson json).size
-  | `Assoc [ ("focused", _) ] -> Focused (focused_message_of_yojson json).focused
-  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid client message" json
+type command = Argv of string list [@json.name "argv"] | Shell of string [@json.name "shell"]
+[@@deriving json] [@@json.compact_variants]
 
-type command = Argv of string list | Shell of string
-
-let command_of_yojson json =
-  match json with
-  | `String s -> Shell s
-  | `List _ -> Argv (list_of_yojson string_of_yojson json)
-  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid command" json
-
-let yojson_of_command = function
-  | Shell s -> `String s
-  | Argv args -> yojson_of_list yojson_of_string args
-
-type environment = (string * string) list
-
-let environment_of_yojson json =
-  match json with
-  | `Assoc fields -> List.map (fun (k, v) -> (k, string_of_yojson v)) fields
-  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "env must be an object" json
-
-let yojson_of_environment env = `Assoc (List.map (fun (k, v) -> (k, yojson_of_string v)) env)
+type variable = { name : string; value : string } [@@deriving json]
 
 type create = {
-  cwd : string option; [@default None] [@yojson_drop_if Option.is_none]
-  command : command option; [@default None] [@yojson_drop_if Option.is_none]
-  env : environment; [@default []]
+  cwd : string option; [@json.option] [@json.drop_default]
+  command : command option; [@json.option] [@json.drop_default]
+  env : variable list; [@json.default []]
 }
-[@@deriving yojson]
+[@@deriving json]
 
-type view_options = { history : string; [@default "none"] images : string [@default "none"] }
-[@@deriving yojson]
+type history = History_none [@json.name "none"] | History_all [@json.name "all"]
+[@@deriving json] [@@json.compact_variants]
 
-type resync = { resync : view_options } [@@deriving yojson]
+type images = Images_none [@json.name "none"] [@@deriving json] [@@json.compact_variants]
 
-let full (options : view_options) =
-  if not (String.equal options.images "none") then invalid_arg "P1 supports images=none only";
-  match options.history with "none" -> false | "all" -> true | _ -> invalid_arg "invalid history"
+type view_options = {
+  history : history; [@json.default History_none]
+  images : images; [@json.default Images_none]
+}
+[@@deriving json]
 
-type welcome_id = { client : string } [@@deriving yojson]
-type welcome = { welcome : welcome_id } [@@deriving yojson]
-type topology_data = { panes : row list } [@@deriving yojson]
-type topology = { topology : topology_data } [@@deriving yojson]
-type created = { pane : string } [@@deriving yojson]
-type title_event = { pane : string; title : string } [@@deriving yojson]
-type pwd_event = { pane : string; pwd : string } [@@deriving yojson]
-type dead_event = { pane : string; dead : dead } [@@deriving yojson]
+let full options = match options.history with History_all -> true | History_none -> false
+
+type view_message =
+  | Resync of view_options [@json.name "resync"]
+  | Input of input [@json.name "input"]
+[@@deriving json] [@@json.compact_variants]
 
 type client_event =
-  | Topology of topology_data
-  | Title of title_event
-  | Pwd of pwd_event
-  | Dead of dead_event
+  | Welcome of Ids.Client_id.t [@json.name "welcome"]
+  | Topology of row list [@json.name "topology"]
+  | Title of { pane : Ids.Pane_id.t; title : string } [@json.name "title"]
+  | Pwd of { pane : Ids.Pane_id.t; pwd : string } [@json.name "pwd"]
+  | Dead of { pane : Ids.Pane_id.t; dead : dead } [@json.name "dead"]
+[@@deriving json] [@@json.compact_variants]
 
-let client_event_of_yojson json =
-  match json with
-  | `Assoc [ ("topology", _) ] -> Topology (topology_of_yojson json).topology
-  | `Assoc fields when List.mem_assoc ~eq:String.equal "title" fields ->
-      Title (title_event_of_yojson json)
-  | `Assoc fields when List.mem_assoc ~eq:String.equal "pwd" fields ->
-      Pwd (pwd_event_of_yojson json)
-  | `Assoc fields when List.mem_assoc ~eq:String.equal "dead" fields ->
-      Dead (dead_event_of_yojson json)
-  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid client event" json
+type screen_format = Plain | Ansi
+type screen_history = Visible_only | Full_history | Last_rows of int
+type created = { pane : Ids.Pane_id.t } [@@deriving json]
 
 type paste_result = {
-  id : json option; [@default None] [@yojson_drop_if Option.is_none]
+  id : int option; [@json.option] [@json.drop_default]
   pasted : bool;
   unsafe : bool;
 }
-[@@deriving yojson]
+[@@deriving json]
 
-type pasted = { paste : paste_result } [@@deriving yojson]
-type marker = Resize of Config.size | Dead of dead
+type marker =
+  | Resize of size [@json.name "resize"]
+  | Dead of dead [@json.name "dead"]
+[@@deriving json] [@@json.compact_variants]
 
-let yojson_of_marker = function
-  | Resize size -> `Assoc [ ("resize", Config.yojson_of_size size) ]
-  | Dead dead -> `Assoc [ ("dead", yojson_of_dead dead) ]
+type view_event =
+  | Marked of { offset : int; marker : marker } [@json.name "marked"]
+  | Skipped of { offset : int; from : int; to_ : int [@json.key "to"] } [@json.name "skipped"]
+  | Pasted of paste_result [@json.name "pasted"]
+[@@deriving json] [@@json.compact_variants]
 
-let marker_of_yojson json =
-  match json with
-  | `Assoc [ ("resize", size) ] -> Resize (Config.size_of_yojson size)
-  | `Assoc [ ("dead", dead) ] -> Dead (dead_of_yojson dead)
-  | _ -> Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error "invalid marker" json
+type server = { started_at : int; pid : int; build : string } [@@deriving json]
 
-type marked = { offset : int; marker : marker } [@@deriving yojson]
-type skipped_range = { from : int; to_ : int [@key "to"] } [@@deriving yojson]
-type skipped = { offset : int; skipped : skipped_range } [@@deriving yojson]
+type version = { protocol : string; vt : string; server : server; limits : Config.limits }
+[@@deriving json]
+
+let version_number = "1.0"
+let version_major = List.hd (String.split_on_char '.' version_number)
+let vt_revision = Vt_revision.value

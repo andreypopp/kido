@@ -22,7 +22,7 @@ func TestLiveSynchronizedSnapshotAndHistory(t *testing.T) {
 	terminal := decode(t, data)
 	if !strings.Contains(terminal.Screen, "SYNCREADY") {
 		output(t, v, "SYNCREADY")
-		send(t, v, map[string]any{"resync": map[string]any{"history": "all", "images": "none"}})
+		send(t, v, []any{"resync", map[string]any{"history": "all", "images": "none"}})
 		data, _ = snapshot(t, v)
 		terminal = decode(t, data)
 	}
@@ -46,13 +46,11 @@ func TestUnsafePasteIsNotWritten(t *testing.T) {
 	v := s.dialWS("/panes/"+p+"/view", nil, 101)
 	s.ready(v, "READY")
 	var response struct {
-		Paste struct {
-			Pasted bool
-			Unsafe bool
-		}
+		Pasted bool
+		Unsafe bool
 	}
-	s.request("POST", "/panes/"+p+"/input", map[string]any{"paste": map[string]any{"id": 41, "text": "unsafe\n", "check_safe": true}}, 200, &response)
-	if response.Paste.Pasted || !response.Paste.Unsafe {
+	s.request("POST", "/panes/"+p+"/input", []any{"paste", map[string]any{"id": 41, "text": "unsafe\n", "check_safe": true}}, 200, &response)
+	if response.Pasted || !response.Unsafe {
 		t.Fatalf("unsafe response: %+v", response)
 	}
 	s.typeText(v, "BARRIER")

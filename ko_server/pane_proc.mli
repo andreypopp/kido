@@ -25,10 +25,10 @@ type kind =
 val max_key : int
 val number : Buffer.t -> int -> int -> unit
 val string : Buffer.t -> string -> unit
-val size : Buffer.t -> Config.size -> unit
+val size : Buffer.t -> Protocol.size -> unit
 
 type slice = { first : bool; last : bool; screen : bool }
-type data = Bytes | Resize_marker of Config.size | Dead_marker of Protocol.dead | Slice of slice
+type data = Bytes | Resize_marker of Protocol.size | Dead_marker of Protocol.dead | Slice of slice
 type record = private { pos : int; next : int; offset : int; at : int; len : int; data : data }
 
 type event =
@@ -43,7 +43,13 @@ type event =
 type t
 
 val create :
-  ?callbacks:bool -> Config.t -> id:string -> cwd:string -> argv:string list -> env:string list -> t
+  ?callbacks:bool ->
+  Config.t ->
+  id:Ids.Pane_id.t ->
+  cwd:string ->
+  argv:string list ->
+  env:string list ->
+  t
 
 val listen : t -> (event -> unit) -> unit
 val child_pid : t -> int
@@ -61,8 +67,8 @@ val snapshot :
 
 val screen :
   t ->
-  ansi:bool ->
-  history:int ->
+  format:Protocol.screen_format ->
+  history:Protocol.screen_history ->
   chunk:(string -> last:bool -> unit) ->
   done_:((unit, string) result -> unit) ->
   unit

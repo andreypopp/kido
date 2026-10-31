@@ -17,7 +17,7 @@ func TestStalledViewSkips(t *testing.T) {
 	p := s.pane("printf READY; IFS= read -r start; head -c 8388608 /dev/zero | tr '\\000' x; printf LAST")
 	v := s.dialWS("/panes/"+p+"/view", nil, 101)
 	s.ready(v, "READY")
-	s.request("POST", "/panes/"+p+"/input", map[string]any{"text": base64.StdEncoding.EncodeToString([]byte("\n"))}, 200, nil)
+	s.request("POST", "/panes/"+p+"/input", []any{"text", base64.StdEncoding.EncodeToString([]byte("\n"))}, 200, nil)
 	event(t, c, "dead")
 	event(t, v, "skipped")
 	data, _ := snapshot(t, v)
@@ -33,7 +33,7 @@ func TestDetachKeepsKittyInput(t *testing.T) {
 	c, _ := s.client(p)
 	v := s.dialWS("/panes/"+p+"/view?history=all", nil, 101)
 	s.ready(v, "READY")
-	key := map[string]any{"key": map[string]any{"action": 1, "key": 20, "mods": 2, "unshifted_codepoint": 97, "text": "a", "composing": false}}
+	key := []any{"input", []any{"key", map[string]any{"action": "press", "key": 20, "mods": 2, "unshifted_codepoint": 97, "text": "a", "composing": false}}}
 	send(t, v, key)
 	s.typeText(v, "FIRST")
 	output(t, v, "FIRST")
@@ -62,7 +62,7 @@ func TestPartialResizeSnapshot(t *testing.T) {
 	c, _ := s.client(p)
 	v := s.dialWS("/panes/"+p+"/view?history=none", nil, 101)
 	snapshot(t, v)
-	send(t, c, map[string]any{"size": map[string]int{"cols": 51, "rows": 13, "cell_w_px": 8, "cell_h_px": 16}})
+	send(t, c, []any{"size", map[string]any{"cols": 51, "rows": 13, "cell_px": map[string]int{"width": 8, "height": 16}}})
 	data, _ := snapshot(t, v)
 	terminal := decode(t, data)
 	if terminal.Rows != 13 {

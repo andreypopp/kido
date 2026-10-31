@@ -6,13 +6,13 @@ type t = {
 }
 
 let create config = { config; next = 1; panes = []; removed = [] }
-let find t id = List.find_opt (fun p -> String.equal (Pane.id p) id) t.panes
+let find t id = List.find_opt (fun p -> Ids.Pane_id.equal (Pane.id p) id) t.panes
 let rows t = List.map Pane.row t.panes
 let iter t f = List.iter f t.panes
 
 let add t (request : Protocol.create) ~notify =
   try
-    let id = "pane_" ^ string_of_int t.next in
+    let id = Ids.Pane_id.make t.next in
     let cwd = Option.value ~default:t.config.cwd request.cwd in
     let command =
       match request.command with
@@ -29,31 +29,27 @@ let add t (request : Protocol.create) ~notify =
     (match (Unix.stat cwd).st_kind with
     | Unix.S_DIR -> ()
     | _ -> invalid_arg "cwd must be a directory");
+    let requested = List.map (fun (v : Protocol.variable) -> (v.name, v.value)) request.env in
     List.iter
       (fun (k, v) ->
         if
           String.is_empty k || String.contains k '=' || String.contains k '\000'
           || String.contains v '\000'
         then invalid_arg "invalid environment")
-      request.env;
-    let socket =
-      match Config.socket ~create:false t.config.dir with
-      | Ok socket -> socket
-      | Error message -> invalid_arg message
-    in
+      requested;
     let forced =
       [
         ("TERM", "xterm-ghostty");
         ("TERM_PROGRAM", "ko");
         ("TERM_PROGRAM_VERSION", Config.build);
         ("TERMINFO_DIRS", t.config.terminfo ^ ":");
-        ("KO_SOCKET", socket);
-        ("KO_PANE", id);
+        ("KO_SOCKET", t.config.socket);
+        ("KO_PANE", Ids.Pane_id.to_string id);
       ]
     in
     let overrides =
       forced
-      @ List.filter (fun (k, _) -> not (List.mem_assoc ~eq:String.equal k forced)) request.env
+      @ List.filter (fun (k, _) -> not (List.mem_assoc ~eq:String.equal k forced)) requested
     in
     let inherited =
       List.filter
@@ -71,7 +67,7 @@ let add t (request : Protocol.create) ~notify =
 
 let remove t pane =
   Pane.shutdown pane;
-  t.panes <- List.filter (fun p -> not (String.equal (Pane.id p) (Pane.id pane))) t.panes;
+  t.panes <- List.filter (fun p -> not (Ids.Pane_id.equal (Pane.id p) (Pane.id pane))) t.panes;
   t.removed <- pane :: t.removed
 
 let shutdown t = List.iter Pane.shutdown (t.panes @ t.removed)

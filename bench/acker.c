@@ -68,8 +68,8 @@ int main(int argc, char **argv) {
   close(fd);
   int control = sockets[0];
   struct data d = {0};
-  num(&d, 2, 2); num(&d, 80, 2); num(&d, 24, 2); num(&d, 8, 2); num(&d, 16, 2);
-  num(&d, 50000000, 8); num(&d, 0, 8); num(&d, 65u << 20, 8); num(&d, 10000000, 8); num(&d, 0, 1); num(&d, 65u << 20, 8);
+  num(&d, 3, 2); num(&d, 80, 2); num(&d, 24, 2); num(&d, 8, 2); num(&d, 16, 2);
+  num(&d, 1, 1); num(&d, 50000000, 8); num(&d, 0, 1); num(&d, 0, 8); num(&d, 65u << 20, 8); num(&d, 10000000, 8); num(&d, 0, 1); num(&d, 65u << 20, 8);
   str(&d, "/");
   num(&d, (uint64_t)(argc - 3), 4);
   for (int i = 3; i < argc; i++) str(&d, argv[i]);

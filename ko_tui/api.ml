@@ -9,7 +9,7 @@ let request ~dir ~meth ~path body =
   if websocket path then Error Websocket
   else
     try
-      match Ko_server.Config.socket ~create:false dir with
+      match Ko_server.Config.socket ~create:false ~dir with
       | Error message -> Error (Failed message)
       | Ok socket -> Ok (Wire.exchange ~socket ~meth ~path body)
     with

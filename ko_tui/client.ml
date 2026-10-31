@@ -10,12 +10,16 @@ type sidebar = Hidden | Visible | Choosing of int
 
 type view =
   | No_view
-  | Showing of { pane : string; mirror : Mirror.t; mutable latest : Ko_vt.frame option }
+  | Showing of {
+      pane : Ko_server.Ids.Pane_id.t;
+      mirror : Mirror.t;
+      mutable latest : Ko_vt.frame option;
+    }
 
 type t = {
   wire : Wire.t;
   socket : string;
-  id : string;
+  id : Ko_server.Ids.Client_id.t;
   matrix : Matrix.app;
   modes : Modes.t;
   renderer : Renderer.t;
@@ -47,10 +51,9 @@ let pane_x t = sidebar_x t.sidebar ~cols:(fst t.geometry)
 let size t =
   let cols, rows = t.geometry in
   {
-    Ko_server.Config.cols = max 1 (cols - pane_x t);
+    Ko_server.Protocol.cols = max 1 (cols - pane_x t);
     rows = max 1 (rows - if t.warning then 1 else 0);
-    cell_w_px = 0;
-    cell_h_px = 0;
+    cell_px = None;
   }
 
 let dead t =
@@ -58,7 +61,8 @@ let dead t =
   | No_view -> None
   | Showing v ->
       List.find_map
-        (fun (p : Ko_server.Protocol.row) -> if String.equal p.id v.pane then p.dead else None)
+        (fun (p : Ko_server.Protocol.row) ->
+          if Ko_server.Ids.Pane_id.equal p.id v.pane then p.dead else None)
         (rows t)
 
 let layout t =
@@ -88,43 +92,44 @@ let request t meth path body = Wire.request ~socket:t.socket ~client:t.id ~meth 
 
 let resize t =
   t.geometry <- Matrix.size t.matrix;
-  Wire.send t.wire (Ko_server.Protocol.yojson_of_size_message { size = size t })
+  Wire.send t.wire (Ko_server.Protocol.client_input_to_json (Size (size t)))
 
 let switch t pane =
   Option.iter
     (fun m ->
-      Mirror.send m (Ko_server.Protocol.yojson_of_focus_input { focus = false });
+      Mirror.send m (Ko_server.Protocol.view_message_to_json (Input (Focus false)));
       Mirror.close m)
     (mirror t);
   t.view <- No_view;
   (match t.sidebar with Choosing _ -> t.sidebar <- Visible | _ -> ());
   Modes.reset t.modes;
   Renderer.invalidate t.renderer;
-  Wire.send t.wire (Ko_server.Protocol.yojson_of_select_message { select = { pane } });
+  Wire.send t.wire (Ko_server.Protocol.client_input_to_json (Select pane));
   let m =
     Mirror.open_view ~socket:t.socket ~client:t.id ~pane ~limits:t.limits ~notify:(fun () ->
         notify t)
   in
   t.view <- Showing { pane; mirror = m; latest = None };
-  send t (Ko_server.Protocol.yojson_of_focus_input { focus = t.focused });
+  send t (Ko_server.Protocol.view_message_to_json (Input (Focus t.focused)));
   t.delay <- None;
   t.immediate <- true
 
 let create_pane t =
   let body =
-    Ko_server.Protocol.yojson_of_create { cwd = Some (Sys.getcwd ()); command = None; env = [] }
-    |> Yojson.Safe.to_string
+    Ko_server.Protocol.create_to_json { cwd = Some (Sys.getcwd ()); command = None; env = [] }
+    |> Yojson.Basic.to_string
   in
   let p =
-    request t "POST" "/panes" body |> Yojson.Safe.from_string
-    |> Ko_server.Protocol.created_of_yojson
+    request t "POST" "/panes" body |> Yojson.Basic.from_string
+    |> Ko_server.Protocol.created_of_json
   in
   switch t p.pane
 
 let selected_index t all =
   match
     List.find_idx
-      (fun (p : Ko_server.Protocol.row) -> Option.exists (String.equal p.id) (pane t))
+      (fun (p : Ko_server.Protocol.row) ->
+        Option.exists (Ko_server.Ids.Pane_id.equal p.id) (pane t))
       all
   with
   | Some (i, _) -> i
@@ -167,32 +172,36 @@ let create ~wire ~socket ~matrix ~modes ~limits ~pager =
   let x = sidebar_x sidebar ~cols in
   Wire.upgrade wire ~path:"/client" ();
   Wire.send wire
-    (Ko_server.Protocol.yojson_of_hello_message
-       {
-         hello =
-           {
-             kind = "terminal";
-             name = "ko";
-             pane = None;
-             focused = true;
-             size =
-               {
-                 cols = max 1 (cols - x);
-                 rows = max 1 (rows - if warning then 1 else 0);
-                 cell_w_px = 0;
-                 cell_h_px = 0;
-               };
-             features = [];
-             ignore_size = false;
-           };
-       });
+    (Ko_server.Protocol.client_input_to_json
+       (Hello
+          {
+            kind = Terminal;
+            name = "ko";
+            pane = None;
+            focused = true;
+            size =
+              {
+                cols = max 1 (cols - x);
+                rows = max 1 (rows - if warning then 1 else 0);
+                cell_px = None;
+              };
+            ignore_size = false;
+          }));
   let text () =
     match Wire.receive wire with
-    | `Text s -> Yojson.Safe.from_string s
+    | `Text s -> Yojson.Basic.from_string s
     | _ -> raise (Wire.Error "client event missing")
   in
-  let id = (Ko_server.Protocol.welcome_of_yojson (text ())).welcome.client in
-  let panes = (Ko_server.Protocol.topology_of_yojson (text ())).topology.panes in
+  let id =
+    match Ko_server.Protocol.client_event_of_json (text ()) with
+    | Welcome id -> id
+    | _ -> raise (Wire.Error "welcome missing")
+  in
+  let panes =
+    match Ko_server.Protocol.client_event_of_json (text ()) with
+    | Topology panes -> panes
+    | _ -> raise (Wire.Error "topology missing")
+  in
   let t =
     {
       wire;
@@ -229,25 +238,27 @@ let create ~wire ~socket ~matrix ~modes ~limits ~pager =
              while not t.closed do
                let event =
                  match Wire.receive wire with
-                 | `Text s -> Ko_server.Protocol.client_event_of_yojson (Yojson.Safe.from_string s)
+                 | `Text s -> Ko_server.Protocol.client_event_of_json (Yojson.Basic.from_string s)
                  | _ -> raise (Wire.Error "server closed the client")
                in
                Mutex.protect t.lock (fun () ->
                    match event with
-                   | Topology data -> t.panes <- data.panes
-                   | Title e ->
+                   | Topology panes -> t.panes <- panes
+                   | Title { pane; title } ->
                        t.panes <-
                          List.map
                            (fun (p : Ko_server.Protocol.row) ->
-                             if String.equal p.id e.pane then { p with title = e.title } else p)
+                             if Ko_server.Ids.Pane_id.equal p.id pane then { p with title } else p)
                            t.panes
-                   | Dead e ->
+                   | Dead { pane; dead } ->
                        t.panes <-
                          List.map
                            (fun (p : Ko_server.Protocol.row) ->
-                             if String.equal p.id e.pane then { p with dead = Some e.dead } else p)
+                             if Ko_server.Ids.Pane_id.equal p.id pane then
+                               { p with dead = Some dead }
+                             else p)
                            t.panes
-                   | Pwd _ -> ());
+                   | Welcome _ | Pwd _ -> ());
                notify t
              done
            with e ->
@@ -265,13 +276,13 @@ let update t message =
       t.immediate <- true
   | Focus focused ->
       t.focused <- focused;
-      Wire.send t.wire (Ko_server.Protocol.yojson_of_focused_message { focused });
-      send t (Ko_server.Protocol.yojson_of_focus_input { focus = focused })
+      Wire.send t.wire (Ko_server.Protocol.client_input_to_json (Focused focused));
+      send t (Ko_server.Protocol.view_message_to_json (Input (Focus focused)))
   | Paste text ->
       t.immediate <- true;
       send t
-        (Ko_server.Protocol.yojson_of_paste_input
-           { paste = { text; check_safe = false; id = None } })
+        (Ko_server.Protocol.view_message_to_json
+           (Input (Paste { text; check_safe = false; id = None })))
   | Key k -> (
       t.immediate <- true;
       Option.iter Mirror.bottom (mirror t);
@@ -311,7 +322,10 @@ let update t message =
                     ignore
                       (Wire.request ~socket:t.socket ~client:t.id ~consume:(output_string oc)
                          ~meth:"GET"
-                         ~path:("/panes/" ^ pane ^ "/screen?format=ansi&history=all")
+                         ~path:
+                           ("/panes/"
+                           ^ Ko_server.Ids.Pane_id.to_string pane
+                           ^ "/screen?format=ansi&history=all")
                          "");
                     close_out oc;
                     Modes.reset t.modes;
@@ -335,10 +349,10 @@ let update t message =
             | Showing v -> (
                 Mirror.close v.mirror;
                 t.view <- No_view;
-                ignore (request t "DELETE" ("/panes/" ^ v.pane) "");
+                ignore (request t "DELETE" ("/panes/" ^ Ko_server.Ids.Pane_id.to_string v.pane) "");
                 let all =
-                  request t "GET" "/panes" "" |> Yojson.Safe.from_string |> Yojson.Safe.Util.to_list
-                  |> List.map Ko_server.Protocol.row_of_yojson
+                  request t "GET" "/panes" "" |> Yojson.Basic.from_string |> Yojson.Basic.Util.to_list
+                  |> List.map Ko_server.Protocol.row_of_json
                 in
                 Mutex.protect t.lock (fun () -> t.panes <- all);
                 match all with [] -> create_pane t | p :: _ -> switch t p.id))
@@ -358,7 +372,7 @@ let update t message =
             | Choosing _, Escape -> t.sidebar <- Visible
             | _ ->
                 (match t.sidebar with Choosing _ -> t.sidebar <- Visible | _ -> ());
-                send t (Ko_server.Protocol.yojson_of_key_input { key = Input.key k })))
+                send t (Ko_server.Protocol.view_message_to_json (Input (Key (Input.key k))))))
   | Mouse event -> (
       let module M = Mosaic.Event.Mouse in
       let x = M.x event and y = M.y event in
@@ -380,8 +394,8 @@ let update t message =
               | Some f -> (
                   if not (Ko_vt.equal_mouse_tracking f.mouse Ko_vt.Off) then
                     send t
-                      (Ko_server.Protocol.yojson_of_mouse_input
-                         { mouse = Input.mouse ~pane_x:l.pane_x event })
+                      (Ko_server.Protocol.view_message_to_json
+                         (Input (Mouse (Input.mouse ~pane_x:l.pane_x event))))
                   else
                     match M.kind event with
                     | Scroll { direction; delta } ->

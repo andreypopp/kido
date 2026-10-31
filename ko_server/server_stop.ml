@@ -1,5 +1,5 @@
 let stop ~dir =
-  match Config.socket ~create:false dir with
+  match Config.socket ~create:false ~dir with
   | Error message -> Error message
   | Ok socket ->
       let fd = Socket.connect ~socket ~deadline:(Unix.gettimeofday () +. 5.) in

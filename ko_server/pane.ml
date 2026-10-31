@@ -6,15 +6,15 @@ type event =
   | Output
 
 type t = {
-  id : string;
+  id : Ids.Pane_id.t;
   proc : Pane_proc.t;
   command : string list;
   mutable cwd : string;
   mutable title : string;
   mutable pid : int;
   mutable dead : Protocol.dead option;
-  mutable size : Config.size;
-  mutable sizer : string option;
+  mutable size : Protocol.size;
+  mutable sizer : Ids.Client_id.t option;
   mutable offset : int;
 }
 
@@ -43,7 +43,7 @@ let create config ~id ~cwd ~command ~env ~notify =
       title = "";
       pid = 0;
       dead = None;
-      size = Config.default_size;
+      size = Protocol.default_size;
       sizer = None;
       offset = 0;
     }
@@ -70,14 +70,7 @@ let create config ~id ~cwd ~command ~env ~notify =
             notify t (Dead dead)
         | None ->
             killpg t;
-            let dead =
-              {
-                Protocol.status = 2;
-                signal = 0;
-                at = Uv.now ();
-                error = Some "pane exited without a marker";
-              }
-            in
+            let dead = { Protocol.at = Uv.now (); cause = Failed "pane exited without a marker" } in
             t.dead <- Some dead;
             notify t (Failed dead))
     | Failed dead ->
@@ -87,7 +80,7 @@ let create config ~id ~cwd ~command ~env ~notify =
   t
 
 let resize t size =
-  if not (Config.equal_size t.size size) then begin
+  if not (Protocol.equal_size t.size size) then begin
     t.size <- size;
     let b = Buffer.create 8 in
     Pane_proc.size b size;
