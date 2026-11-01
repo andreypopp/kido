@@ -8,10 +8,7 @@ use std::path::{Path, PathBuf};
 
 use ko_pane_wire::frame::{Limits, Medium, Scrollback};
 
-pub(crate) const BUILD: &str = match option_env!("KO_BUILD_ID") {
-    Some(build) => build,
-    None => "unknown",
-};
+pub(crate) const BUILD: &str = env!("KO_BUILD");
 
 const SUN_PATH_MAX: usize = 103;
 
@@ -60,7 +57,13 @@ pub fn dir(chosen: Option<PathBuf>) -> PathBuf {
     home.join(".local/state/ko")
 }
 
-pub fn socket(create: bool, dir: &Path) -> Result<PathBuf, String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    Create,
+    Existing,
+}
+
+pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
     let socket = dir.join("socket");
     if dir.as_os_str().as_encoded_bytes().contains(&b',') {
         return Err("server directory contains a comma".to_owned());
@@ -68,7 +71,7 @@ pub fn socket(create: bool, dir: &Path) -> Result<PathBuf, String> {
     if socket.as_os_str().len() > SUN_PATH_MAX {
         return Err(format!("server socket path exceeds {SUN_PATH_MAX} bytes"));
     }
-    if create {
+    if mode == Dir::Create {
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -127,7 +130,7 @@ impl Config {
             return Err("shell must be an absolute path".to_owned());
         }
         let dir = dir(chosen);
-        let socket = socket(true, &dir)?;
+        let socket = socket(Dir::Create, &dir)?;
         let cwd = env::current_dir().map_err(|error: io::Error| error.to_string())?;
         Ok(Config {
             dir,
@@ -156,18 +159,18 @@ mod tests {
     fn a_server_directory_must_be_private_and_short() {
         let scratch = tempdir();
         let dir = scratch.join("state");
-        assert_eq!(socket(true, &dir), Ok(dir.join("socket")));
+        assert_eq!(socket(Dir::Create, &dir), Ok(dir.join("socket")));
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
-            socket(false, &dir),
+            socket(Dir::Existing, &dir),
             Err("server directory is accessible to other users".to_owned())
         );
         assert_eq!(
-            socket(false, &scratch.join("a,b")),
+            socket(Dir::Existing, &scratch.join("a,b")),
             Err("server directory contains a comma".to_owned())
         );
         assert_eq!(
-            socket(false, &scratch.join("x".repeat(100))),
+            socket(Dir::Existing, &scratch.join("x".repeat(100))),
             Err("server socket path exceeds 103 bytes".to_owned())
         );
         fs::remove_dir_all(scratch).unwrap();

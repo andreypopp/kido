@@ -32,19 +32,19 @@ pub(crate) enum Life {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Cause {
+pub(crate) enum Cause {
     Exit(Exit),
     Failed(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Death {
-    pub at: Mono,
-    pub cause: Cause,
+pub(crate) struct Death {
+    pub(crate) at: Mono,
+    pub(crate) cause: Cause,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event {
+pub(crate) enum Event {
     Title,
     Pwd,
     Output,
@@ -70,7 +70,7 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Input<'a> {
+pub(crate) enum Input<'a> {
     Key(&'a Key),
     Mouse(Mouse),
     Paste { text: &'a str, check_safe: bool },
@@ -79,7 +79,7 @@ pub enum Input<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
+pub(crate) enum Refusal {
     Ended,
     TooLarge(Oversize),
 }
@@ -137,18 +137,14 @@ impl From<Malformed> for Fault {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delivery {
-    Slice { req: Req, at: Pos },
-    Scanned,
-}
+pub(crate) type Sink<'a> = &'a mut dyn FnMut(&Reader, Req, Pos);
 
-pub type Sink<'a> = &'a mut dyn FnMut(&Reader, Delivery);
+pub(crate) fn discard(_: &Reader, _: Req, _: Pos) {}
 
-pub struct Io<'a> {
+pub(crate) struct Io<'a> {
     pub(crate) poll: &'a mut Poll,
     pub(crate) events: &'a mut Vec<Event>,
-    pub(crate) sink: Option<Sink<'a>>,
+    pub(crate) sink: Sink<'a>,
 }
 
 impl fmt::Debug for Io<'_> {
@@ -192,7 +188,7 @@ struct Waiting {
 }
 
 #[derive(Debug)]
-pub struct PaneProc {
+pub(crate) struct PaneProc {
     stage: Stage,
     out: Vec<u8>,
     sent: usize,
@@ -309,25 +305,29 @@ impl PaneProc {
         }
     }
 
-    fn ring_mut(&mut self) -> Option<&mut Reader> {
+    pub(crate) fn ring_mut(&mut self) -> Option<&mut Reader> {
         match &mut self.stage {
             Stage::Open { ring, .. } | Stage::Closed { ring } => Some(ring),
             Stage::Reaped => None,
         }
     }
 
-    pub fn child_pid(&self) -> Option<Pid> {
+    pub(crate) fn child_pid(&self) -> Option<Pid> {
         match self.child {
             Claim::Reported(Some(group)) => Some(group.leader()),
             Claim::Awaiting | Claim::Reported(None) => None,
         }
     }
 
-    pub fn title(&self) -> &[u8] {
+    pub(crate) fn title(&self) -> &[u8] {
         &self.title
     }
 
-    pub fn dead(&self) -> Option<&Death> {
+    pub(crate) fn cwd(&self) -> &[u8] {
+        &self.cwd
+    }
+
+    pub(crate) fn dead(&self) -> Option<&Death> {
         self.dead.as_ref()
     }
 
@@ -455,9 +455,7 @@ impl PaneProc {
                 match requests.peek().copied() {
                     None => {}
                     Some(front) if front.at <= at => {
-                        if let Some(sink) = io.sink.as_mut() {
-                            sink(ring, Delivery::Slice { req: front.req, at });
-                        }
+                        (io.sink)(ring, front.req, at);
                         if ring.slice(at)?.last {
                             requests.next();
                             done.push(record.next);
@@ -504,9 +502,6 @@ impl PaneProc {
         if let Some(ring) = self.ring_mut() {
             ring.advance(head, keep)?;
         }
-        if let (Some(ring), Some(sink)) = (self.ring(), io.sink.as_mut()) {
-            sink(ring, Delivery::Scanned);
-        }
         let changed = head != self.observed;
         self.observed = head;
         self.busy = changed;
@@ -536,7 +531,7 @@ impl PaneProc {
             .extend(event.map(|complete| Event::Snapshot { req, complete }));
     }
 
-    pub fn snapshot(&mut self, history: History, io: &mut Io<'_>) -> Option<Req> {
+    pub(crate) fn snapshot(&mut self, history: History, io: &mut Io<'_>) -> Option<Req> {
         if !self.is_open() {
             return None;
         }
@@ -553,7 +548,12 @@ impl PaneProc {
         Some(req)
     }
 
-    pub fn screen(&mut self, format: ScreenFormat, rows: ScreenRows, io: &mut Io<'_>) -> Req {
+    pub(crate) fn screen(
+        &mut self,
+        format: ScreenFormat,
+        rows: ScreenRows,
+        io: &mut Io<'_>,
+    ) -> Req {
         let req = self.next_req();
         if self.is_open() {
             self.pending.insert(req, Reply::Screen);
@@ -567,7 +567,11 @@ impl PaneProc {
         req
     }
 
-    pub fn input(&mut self, input: Input<'_>, io: &mut Io<'_>) -> Result<Option<Req>, Refusal> {
+    pub(crate) fn input(
+        &mut self,
+        input: Input<'_>,
+        io: &mut Io<'_>,
+    ) -> Result<Option<Req>, Refusal> {
         if !self.is_open() {
             return Err(Refusal::Ended);
         }
@@ -596,7 +600,7 @@ impl PaneProc {
         Ok(req)
     }
 
-    pub fn resize(&mut self, size: Size, io: &mut Io<'_>) {
+    pub(crate) fn resize(&mut self, size: Size, io: &mut Io<'_>) {
         let _ = self.send(&ToPane::Resize(size), io);
     }
 
@@ -797,9 +801,9 @@ mod tests {
     fn unsignalled_pid() -> Pid {
         static PID: OnceLock<Pid> = OnceLock::new();
         *PID.get_or_init(|| {
-            let mut child = std::process::Command::new("true").spawn().unwrap();
+            let child = ko_sys::spawn::program(Path::new("/usr/bin/true"), &[], &[]).unwrap();
             child.wait().unwrap();
-            Pid::new(i64::from(child.id())).unwrap()
+            child
         })
     }
 
@@ -834,15 +838,11 @@ mod tests {
     impl Fake {
         fn with<R>(&mut self, f: impl FnOnce(&mut PaneProc, &mut Io<'_>) -> R) -> R {
             let slices = &mut self.slices;
-            let mut slice = |_: &Reader, delivery| {
-                if let Delivery::Slice { req, at } = delivery {
-                    slices.push((req, at.get()));
-                }
-            };
+            let mut slice = |_: &Reader, req, at: Pos| slices.push((req, at.get()));
             let mut io = Io {
                 poll: &mut self.poll,
                 events: &mut self.events,
-                sink: Some(&mut slice),
+                sink: &mut slice,
             };
             f(&mut self.proc, &mut io)
         }
@@ -938,10 +938,7 @@ mod tests {
             slices,
             ..
         } = &mut fake;
-        let mut slice = |_: &Reader, delivery| {
-            let Delivery::Slice { req, at } = delivery else {
-                return;
-            };
+        let mut slice = |_: &Reader, req, at: Pos| {
             if slices.is_empty() {
                 for i in 3..15 {
                     let mut body = vec![0; 100];
@@ -955,7 +952,7 @@ mod tests {
         let mut io = Io {
             poll,
             events,
-            sink: Some(&mut slice),
+            sink: &mut slice,
         };
         proc.scan(&mut io);
         let tail = proc.ring().unwrap().tail().get();

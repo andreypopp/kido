@@ -1,6 +1,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidId(String);
 
@@ -20,51 +22,50 @@ fn parse(prefix: &str, text: &str) -> Result<u64, InvalidId> {
         .ok_or_else(|| InvalidId(text.to_owned()))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PaneId(u64);
+macro_rules! id {
+    ($vis:vis $name:ident, $prefix:literal) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+        #[serde(try_from = "String", into = "String")]
+        $vis struct $name(u64);
 
-impl PaneId {
-    pub fn new(number: u64) -> PaneId {
-        PaneId(number)
-    }
+        impl $name {
+            pub(crate) fn new(number: u64) -> $name {
+                $name(number)
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, concat!($prefix, "{}"), self.0)
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = InvalidId;
+
+            fn from_str(text: &str) -> Result<$name, InvalidId> {
+                parse($prefix, text).map($name)
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = InvalidId;
+
+            fn try_from(text: String) -> Result<$name, InvalidId> {
+                text.parse()
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(id: $name) -> String {
+                id.to_string()
+            }
+        }
+    };
 }
 
-impl fmt::Display for PaneId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "pane_{}", self.0)
-    }
-}
-
-impl FromStr for PaneId {
-    type Err = InvalidId;
-
-    fn from_str(text: &str) -> Result<PaneId, InvalidId> {
-        parse("pane_", text).map(PaneId)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ClientId(u64);
-
-impl ClientId {
-    pub fn new(number: u64) -> ClientId {
-        ClientId(number)
-    }
-}
-
-impl fmt::Display for ClientId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "client_{}", self.0)
-    }
-}
-
-impl FromStr for ClientId {
-    type Err = InvalidId;
-
-    fn from_str(text: &str) -> Result<ClientId, InvalidId> {
-        parse("client_", text).map(ClientId)
-    }
-}
+id!(pub PaneId, "pane_");
+id!(pub(crate) ClientId, "client_");
 
 #[cfg(test)]
 mod tests {

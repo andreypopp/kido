@@ -157,7 +157,8 @@ impl Drop for Signals {
 mod tests {
     use super::*;
     use crate::event::{Events, Interest, Mode, Poll};
-    use std::process::Command;
+    use crate::spawn;
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -195,7 +196,7 @@ mod tests {
         assert_eq!(users(&pending), []);
         let deadline = poll.timer();
         poll.start(deadline, Duration::from_secs(5), None).unwrap();
-        let mut child = Command::new("/usr/bin/true").spawn().unwrap();
+        let child = spawn::program(Path::new("/usr/bin/true"), &[], &[]).unwrap();
         let start = Instant::now();
         while !pending.contains(&Signal::Child) && poll.is_active(deadline) {
             turn(&mut poll, Mode::Wait, &mut pending);

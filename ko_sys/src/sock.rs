@@ -24,10 +24,6 @@ pub fn set_send_buffer(fd: BorrowedFd<'_>, bytes: usize) -> io::Result<()> {
     set(fd, libc::SO_SNDBUF, bytes)
 }
 
-pub fn set_receive_buffer(fd: BorrowedFd<'_>, bytes: usize) -> io::Result<()> {
-    set(fd, libc::SO_RCVBUF, bytes)
-}
-
 fn get<T>(fd: BorrowedFd<'_>, option: libc::c_int, value: &mut T) -> io::Result<()> {
     let mut len = libc::socklen_t::try_from(size_of::<T>())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "socket option too large"))?;
@@ -77,6 +73,5 @@ mod tests {
         assert_eq!(peer_uid(a.as_fd()).unwrap(), uid());
         assert_eq!(peer_pid(a.as_fd()).unwrap(), None);
         set_send_buffer(a.as_fd(), 1 << 20).unwrap();
-        set_receive_buffer(a.as_fd(), 1 << 20).unwrap();
     }
 }

@@ -33,6 +33,10 @@ impl Pid {
         (pid != own && pid != group).then_some(Pid(pid))
     }
 
+    pub fn get(self) -> i32 {
+        self.0
+    }
+
     pub fn signal(self, signal: Signal) -> io::Result<()> {
         // SAFETY: Pid holds a positive pid other than this process and its group.
         match check(unsafe { libc::kill(self.0, signal.number()) }) {
@@ -42,10 +46,26 @@ impl Pid {
         }
     }
 
+    pub fn alive(self) -> bool {
+        // SAFETY: Pid holds a positive pid other than this process and its group; signal 0 sends nothing.
+        match check(unsafe { libc::kill(self.0, 0) }) {
+            Ok(_) => true,
+            Err(error) => error.raw_os_error() == Some(libc::EPERM),
+        }
+    }
+
     pub fn try_wait(self) -> io::Result<Waited> {
+        self.waited(libc::WNOHANG)
+    }
+
+    pub fn wait(self) -> io::Result<Waited> {
+        self.waited(0)
+    }
+
+    fn waited(self, flags: libc::c_int) -> io::Result<Waited> {
         let mut status = 0;
         // SAFETY: status receives the child's status.
-        let waited = retry(|| check(unsafe { libc::waitpid(self.0, &mut status, libc::WNOHANG) }));
+        let waited = retry(|| check(unsafe { libc::waitpid(self.0, &mut status, flags) }));
         match waited {
             Ok(0) => Ok(Waited::Running),
             Ok(_) if libc::WIFEXITED(status) => {
@@ -163,22 +183,13 @@ impl Group {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spawn;
     use std::io::Read;
-    use std::process::{Child, Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::os::fd::AsFd;
+    use std::path::Path;
 
-    fn killed_by_sigkill(child: &mut Child) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match child.try_wait().unwrap() {
-                Some(status) => {
-                    use std::os::unix::process::ExitStatusExt;
-                    return status.signal() == Some(libc::SIGKILL);
-                }
-                None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-                None => return false,
-            }
-        }
+    fn killed_by_sigkill(pid: Pid) -> bool {
+        pid.wait().unwrap() == Waited::Ended(Exit::Signaled(libc::SIGKILL))
     }
 
     #[test]
@@ -198,10 +209,9 @@ mod tests {
         ] {
             assert_eq!(Pid::new(raw), None, "{raw}");
         }
-        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
-        let pid = Pid::new(i64::from(child.id())).unwrap();
+        let pid = spawn::program(Path::new("/bin/sleep"), &["30"], &[]).unwrap();
         pid.signal(Signal::Kill).unwrap();
-        assert!(killed_by_sigkill(&mut child));
+        assert!(killed_by_sigkill(pid));
         pid.signal(Signal::Kill).unwrap();
     }
 
@@ -234,30 +244,30 @@ mod tests {
     #[test]
     fn only_a_group_that_matches_its_recorded_start_is_signalled() {
         let program = "use POSIX; $|=1; POSIX::setsid(); print qq(up\\n); exec q(sleep), q(30)";
-        let mut child = Command::new("perl")
-            .args(["-e", program])
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        let child = spawn::program(
+            Path::new("/usr/bin/perl"),
+            &["-e", program],
+            &[(writer.as_fd(), 1)],
+        )
+        .unwrap();
+        drop(writer);
         let mut up = [0u8; 3];
-        child.stdout.take().unwrap().read_exact(&mut up).unwrap();
+        reader.read_exact(&mut up).unwrap();
         // SAFETY: getpid has no preconditions.
         let parent = Pid(unsafe { libc::getpid() });
-        let Verdict::Child(verified) = Group::verify(parent, i64::from(child.id())) else {
-            Pid::new(i64::from(child.id()))
-                .unwrap()
-                .signal(Signal::Kill)
-                .unwrap();
+        let Verdict::Child(verified) = Group::verify(parent, i64::from(child.0)) else {
+            child.signal(Signal::Kill).unwrap();
             panic!("child not verified");
         };
-        assert_eq!(verified.leader, Pid(i32::try_from(child.id()).unwrap()));
+        assert_eq!(verified.leader, child);
         let tampered = Group {
             start: verified.start + 1,
             ..verified
         };
         tampered.signal(Signal::Kill).unwrap();
-        assert!(child.try_wait().unwrap().is_none());
+        assert_eq!(child.try_wait().unwrap(), Waited::Running);
         verified.signal(Signal::Kill).unwrap();
-        assert!(killed_by_sigkill(&mut child));
+        assert!(killed_by_sigkill(child));
     }
 }

@@ -33,8 +33,17 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	koBin, koDecode = os.Getenv("KO_BIN"), os.Getenv("KO_DECODE")
-	if koBin == "" || koDecode == "" {
-		fmt.Fprintln(os.Stderr, "e2e setup: KO_BIN and KO_DECODE must both be set; run make e2e-ko")
+	if koBin == "" && koDecode == "" {
+		build := exec.Command("make", "build-ko")
+		build.Dir = root
+		build.Stdout, build.Stderr = os.Stderr, os.Stderr
+		if err := build.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "e2e setup: make build-ko:", err)
+			os.Exit(1)
+		}
+		koBin, koDecode = filepath.Join(root, "build/ko/bin/ko"), filepath.Join(root, "target/release/examples/decode")
+	} else if koBin == "" || koDecode == "" {
+		fmt.Fprintln(os.Stderr, "e2e setup: set both KO_BIN and KO_DECODE, or neither")
 		os.Exit(1)
 	}
 	if err := e2eenv.UnsetHooks(); err != nil {

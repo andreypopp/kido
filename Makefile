@@ -10,17 +10,19 @@ export PATH := $(if $(RUSTUP_BIN),$(RUSTUP_BIN):)$(PATH)
 CARGO := $(if $(RUSTUP_BIN),$(RUSTUP_BIN)/)cargo
 
 # The Rust ko builds on macOS only for now; elsewhere the Go suite runs
-# the OCaml ko with the OCaml decoder. Until the Rust server exists, the
-# suite runs the OCaml ko on macOS too, with the Rust decoder.
+# the OCaml ko with the OCaml decoder. On macOS the server tests run the
+# Rust ko and the client tests the OCaml ko, both with the Rust decoder
+# (scripts/verify.sh ko-suite).
 ifeq ($(shell uname -s),Darwin)
 KO_BUILD := build-ko
+KO_RUST ?= $(CURDIR)/build/ko/bin/ko
 KO_DECODE ?= $(CURDIR)/target/release/examples/decode
 else
 KO_BUILD := build-ko-ocaml
 KO_DECODE ?= $(CURDIR)/$(DUNE_DEFAULT)/ko_vt/decode.exe
 endif
-KO_BIN ?= $(CURDIR)/$(DUNE_INSTALL)/bin/ko
-export KO_BIN KO_DECODE
+KO_OCAML ?= $(CURDIR)/$(DUNE_INSTALL)/bin/ko
+export KO_RUST KO_OCAML KO_DECODE
 
 .PHONY: build install test e2e
 
@@ -54,7 +56,7 @@ install:
 # the OCaml tests above never gain a node dependency of their own.
 test: $(KO_BUILD)
 	dune test --force
-	go test ./test_e2e_ko/ -count=1
+	bash scripts/verify.sh ko-suite
 	./scripts/test-ts.sh
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
@@ -110,7 +112,7 @@ website:
 # installed.
 KO := build/ko
 build-ko:
-	$(CARGO) build --locked --release --bins --example decode
+	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release --bins --example decode
 	dune build @install
 	mkdir -p $(KO)/bin $(KO)/share
 	cp -f target/release/ko $(DUNE_INSTALL)/bin/ko-pane $(KO)/bin/
@@ -148,7 +150,7 @@ probe-ko:
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
 # names another (CI, with its cached build); it never skips
 e2e-ko: $(KO_BUILD)
-	KIDO_E2E_REQUIRED=1 go test ./test_e2e_ko/ -count=$(or $(COUNT),1) -run='$(or $(E2E_KO),.)' -v
+	COUNT='$(or $(COUNT),1)' E2E_KO='$(E2E_KO)' bash scripts/verify.sh ko-suite
 
 e2e: $(if $(KIDO_TMUX),,pinned-fork)
 	KIDO_TMUX=$${KIDO_TMUX:-$(CURDIR)/$(TMUX_FORK)/bin/kido-tmux} KIDO_E2E_REQUIRED=1 go test ./test_e2e/ -count=$(or $(COUNT),1) -run='$(or $(E2E),.)' -v

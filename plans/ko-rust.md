@@ -170,6 +170,87 @@ R1 forced these decisions:
     sets yet, so it is `unknown` until R2 adds `ko_server/build.rs`
     with `KO_VT` (4.1).
 
+During R2 the user decided:
+
+46. The command line uses clap with derive, so `--help` and the usage
+    errors are generated from the doc comments on the declarations, as
+    cmdliner does. clap has `default-features = false` and exactly the
+    features `std`, `derive`, `help`, `usage` and `error-context`:
+    `help` and `usage` generate the help and usage text,
+    `error-context` keeps the reason in a usage error. `color`,
+    `suggestions` and `wrap_help` add packages and are not used
+    (2.4, 2.5).
+
+R2 forced these decisions:
+
+47. `pane_proc` hands each delivery to the sink as the `Reader`, the
+    request and the position; `Delivery::Scanned` is gone. A view
+    needs the `Reader` (`end_offset`, the head), so the server pumps
+    the views after each scan, in the same turn.
+48. Each connection owns its `View` or its `Client`; there are no
+    parallel lists. A closed connection is removed at the end of the
+    turn, and the interests are computed again then.
+49. A request body (at most 1 MiB) is read whole before dispatch.
+    Only a paste and a `/screen` request wait in `Handling` for
+    `ko-pane`.
+50. The server encodes and decodes base64 itself (about 40 lines);
+    `data-encoding` stays a package of tungstenite only, not a direct
+    crate of ko.
+51. `make e2e-ko` and `make test` run `scripts/verify.sh ko-suite`. It
+    lists the test functions of `test_e2e_ko/`, runs the client tests
+    of its list (4.2) against `KO_OCAML` and every other test against `KO_RUST`,
+    and filters both by `E2E_KO`; on Linux `KO_RUST` is unset, so all
+    tests run the OCaml `ko`. These variables replace the Makefile's
+    `KO_BIN`, which stays the suite's own variable (4.1, 4.2).
+52. `ko_server/examples/ring_probe.rs` reads the ring as a real view
+    client over the socket, through `http.rs`, `Route` and
+    tungstenite's client role, because the server's test sink is
+    gone; its CPU figure includes the client thread.
+53. The server records the owner of each pane request once, when the
+    request goes out: `State`'s map from the pane and the request to
+    an `Owner` (a `/screen` reply, an HTTP paste, a view's paste, a
+    view's snapshot). Every reply from `ko-pane` finds its owner with
+    one lookup. The OCaml stores a reply closure with the request;
+    closures in `pane_proc` would break the rule of no callbacks.
+54. A refused HTTP request gets the reply of the OCaml ko, byte for
+    byte: a bad header line or `Content-Length` gets `400 Bad
+    Request` with the body `400` and a close; a request line that is
+    not HTTP gets a close with no reply; a body over 1 MiB on create
+    or input gets the JSON `invalid` 400 and the connection continues.
+    httparse differs from httpun in three cases that no client sends:
+    it refuses `HTTP/1.2`, accepts a head with bare LF line ends, and
+    refuses control bytes in a header value. A route without a body
+    answers a body over 1 MiB only after 1 MiB has arrived.
+55. Test processes start through `ko_sys::spawn::program` with
+    `POSIX_SPAWN_CLOEXEC_DEFAULT`, the flag of the pane spawn
+    (decision 38): on macOS, `UnixStream::pair` sets close-on-exec
+    after it creates the socket, and a concurrent `Command` in another
+    test thread inherited it, so a dropped peer stayed open and two
+    `pane_proc` tests failed about once in 12 runs. A lock around the
+    tests' own sockets cannot cover the sockets that production code
+    makes during a test.
+56. `make test` and `make e2e-ko` set `KIDO_E2E_REQUIRED=1`, so the
+    client tests fail, not skip, without the pinned fork.
+57. Decision 44's exports after R2: `peer_pid`, the `Reader` methods
+    with `Reach` and `Marker`, the frame key and mouse types and
+    `config::{dir, socket, Config::create}` have callers in other
+    crates; `Pane`, `PaneProc`, `Input`, `Refusal`, `Event`, `Io`,
+    `Sink`, `Panes`, `AddError`, `Verified::into_stream` and
+    `ClientId` are private to `ko_server`; `set_receive_buffer` is
+    deleted. `InvalidId` and `PaneId`'s `FromStr` stay `pub` without
+    an outside caller, because `PaneId` is in the public `Route`.
+
+The user also decided during R2:
+
+58. `SIGINT` and `SIGHUP` stop `ko server` as `SIGTERM` does: the
+    panes stop, the grace runs and the socket goes. This is a
+    deliberate difference from the OCaml ko, which handles only
+    `SIGTERM`, so C-c left its socket behind.
+59. `ko server` removes a stale socket before it binds, under the
+    launch lock and only when a connect is refused, as the OCaml
+    client's attach path does; the OCaml `ko server` refused it as
+    already in use.
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -364,7 +445,7 @@ the OCaml one.
 | the program's pty and spawn in `ko-pane` | `libc::openpty`; `std::process::Command` with one `pre_exec` (`setsid`, `TIOCSCTTY`); `waitid` with `WNOWAIT` (1.3) |
 | shared memory | `libc::shm_open`, `shm_unlink`, `mmap` (Linux's `memfd_create` in RL); the header words as `AtomicU64::from_ptr` |
 | process identity and signals | `libc::proc_pidinfo` (Linux's `/proc/<pid>/stat` in RL), `getsid`, `waitpid`; `libc::kill` only in `ko_sys::pid` |
-| CLI | own code: five commands, nine options, about 150 lines |
+| CLI | clap with derive, minimal features (decision 46) |
 | terminal input | vte (2.2) and own translation |
 | libghostty-vt FFI | `extern "C"` declarations generated once by the `bindgen` CLI and committed as `ko_vt_sys/src/bindings.rs`; `scripts/bindgen.sh` regenerates them; lint checks the recorded header hash against the ghostty pin |
 | the zig build | `ko_vt_sys/build.rs` runs `zig build` with the flags of `ko_vt/dune` and links `ghostty-vt` and the C++ runtime; zig comes from PATH, installed by the reference's `scripts/install-zig.sh` (the version of Ghostty's `build.zig.zon`, checked by SHA-256) |
@@ -422,6 +503,15 @@ and `derive_accept_key`, serde derives, vte):
   clean release build takes 66 to 68 s, most of it the zig build of
   libghostty-vt. Every profile shares one zig cache, so `cargo test`
   and `cargo clippy` do not compile that library again.
+- **Measured in R2** (2026-11-01, the same machine), clap with the
+  features of decision 46 adds 6 packages: `clap`, `clap_builder`,
+  `clap_derive`, `clap_lex`, `anstyle` and `heck`. `Cargo.lock` grows
+  from 98 to 104 packages, and a release build of the binaries and the
+  `decode` example compiles 48 packages (7 of them ko's) in place of
+  42. Before review, the stripped `ko` with R2's four commands was
+  1,083,880 bytes with clap and 830,392 bytes with a scratch
+  hand-written parser: clap adds 253,488 bytes, 31 percent. After
+  review, the stripped `ko` is 1,067,128 bytes.
 - **Supply chain**: `scripts/lint.sh` compares the package names in
   `Cargo.lock` with the committed list `scripts/crates.txt`. A new
   transitive crate fails lint until the same commit adds it to the
@@ -1527,6 +1617,13 @@ Each stage is one unit of work under one manager. Each ends with
   `build/ko/bin/ko` with the C `ko-pane` on macOS;
   `TestHostileClientsDoNotAffectOthers` and `TestClientGridLimit`
   included.
+- Result (2026-11-01, macOS): `make verify-ko` passes (build 2.7 s,
+  unit-ko 10.3 s, e2e-ko 4.7 s, lint 1.5 s). The 28 server tests pass
+  against `build/ko/bin/ko` with the C `ko-pane`, the hostile and grid
+  tests included; the 16 client tests pass against the OCaml `ko`.
+  `make probe-ko` read 1 GiB at 79.0 MB/s before review and 64 MiB at
+  77.8 MB/s after it, with no lost record.
+  Decisions 46 to 57 came from R2.
 
 ### RP. `ko-pane` in Rust (4 to 6 agent-days)
 
@@ -1853,7 +1950,7 @@ These requirements are fixed:
   exists only in `scripts/fuzz.sh` and `scripts/miri.sh`.
 - **Dependencies.** The production crates are `libc`, `httparse`,
   `tungstenite` (feature `handshake` only), `serde` (`derive`),
-  `serde_json`, `vte`, and `vstd` (pinned with `=` to the Verus
+  `serde_json`, `vte`, `clap` (the features of decision 46), and `vstd` (pinned with `=` to the Verus
   release) in the verified crates. `proptest` and `loom` are
   dev-dependencies;
   `libfuzzer-sys` and `arbitrary` belong to `fuzz/`.

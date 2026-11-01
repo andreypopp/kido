@@ -316,7 +316,8 @@ These requirements are fixed:
 - **Layout.** One cargo workspace at the root. A package has the
   name of its directory, with the underscore. The crates are in the
   ko directories, beside the OCaml files ("Layout" below). `ko/` is
-  the binary `ko`. ko's C stays only in the C `ko-pane` until the
+  the binary `ko`: `ko/src/main.rs` holds the command table and the
+  small command bodies, which print and return the exit code. ko's C stays only in the C `ko-pane` until the
   Rust `ko-pane` replaces it. Do not add new C.
 - **Toolchain.** `rust-toolchain.toml` pins the toolchain of the
   pinned Verus release. They move together. Homebrew's keg-only
@@ -337,7 +338,9 @@ These requirements are fixed:
   the Go suite against the OCaml ko and the OCaml decoder.
 - **Dependencies.** The production crates are `libc`, `httparse`,
   `tungstenite` (feature `handshake` only), `serde` (`derive`),
-  `serde_json` and `vte`. `proptest` and `loom` are dev-dependencies.
+  `serde_json`, `vte` and `clap` (`default-features = false`, with
+  exactly `std`, `derive`, `help`, `usage` and `error-context`).
+  `proptest` and `loom` are dev-dependencies.
   `scripts/crates.txt` lists every package of `Cargo.lock`, ko's own
   crates included. `scripts/lint.sh` fails on a package that the list
   does not name, and on a listed name that `Cargo.lock` does not
@@ -355,7 +358,10 @@ These requirements are fixed:
   `pane_proc.rs`) also deny `clippy::indexing_slicing` and
   `clippy::arithmetic_side_effects`.
 - **The command line is a contract** with `test_e2e_ko/`, `bench/`
-  and `share/`. A long option is `--name`.
+  and `share/`. A long option is `--name`. clap's derive generates
+  `--help` and the usage errors: the doc comment on each command and
+  argument is its help text, as cmdliner's `doc` is. A usage error
+  exits 124, as cmdliner's does.
 
 Conventions:
 
@@ -381,7 +387,11 @@ Conventions:
   Property tests use proptest in the same module. No test execs the
   `ko` binary; the Go suite does that. The `Server` SIGTERM test
   starts the C `ko-pane` that `make test-ko` builds and names in
-  `KO_PANE_EXE`.
+  `KO_PANE_EXE`. A test starts a process only through
+  `ko_sys::spawn::program`, which uses `POSIX_SPAWN_CLOEXEC_DEFAULT`:
+  on macOS, `UnixStream::pair` and `accept` set close-on-exec only
+  after they create the descriptor, so a `std::process::Command` in
+  another test thread can inherit it and keep a peer open.
 - **loom.** `ko_pane_wire::ring::model` replays the GenMC models of
   `ko_pane/genmc/` on the real `Reader` under `--cfg loom`. `make
   test-ko` runs them in `target/loom`. loom does not model a `SeqCst`
@@ -404,6 +414,33 @@ Conventions:
   handler only sets its pending flag and writes its pipe. A callback
   from libghostty-vt never unwinds and never calls back into the
   terminal.
+- **JSON.** serde derives every codec. `ko_server::protocol` owns
+  the wire types and keeps the wire of the OCaml ko byte for byte
+  until stage RW. A variant with a payload encodes through the
+  `compact!` macro of `protocol.rs`: a unit variant as `"name"`, a
+  payload variant as `["name", payload]`. A unit enum uses
+  `rename_all = "snake_case"`. An option field has
+  `#[serde(default, skip_serializing_if = "Option::is_none")]`. A
+  value with its own rules (an id, a size, a key, base64 text)
+  validates in its `TryFrom`, through `#[serde(try_from = ...)]` on
+  the derived codec. Every untrusted body and WebSocket message
+  decodes through `protocol::decode`, which refuses a JSON array for a
+  record at every level, as jsonkit does; serde's derive alone accepts
+  one. Do not write a codec by hand outside the macro, and do not walk a
+  `serde_json::Value` to decode a wire type. Catch a decode error only
+  at an untrusted-input edge: an HTTP body or a WebSocket text
+  message.
+- **HTTP.** `ko_server::http` is the only code that reads or writes
+  HTTP framing, for the server and for the client. httparse parses
+  heads. A request head has a limit of 16 KiB of bytes; a longer head
+  gets `431` after the responses to earlier pipelined requests.
+  Pipelined requests get their responses in order.
+- **The view write path.** `ko_server::conn` writes a view record
+  with `write_vectored` over `IoSlice`s that borrow the ring, only
+  while the connection's queue is empty. A partial write copies the
+  rest into the queue. Every other byte of a WebSocket goes through
+  tungstenite into the same queue. No other code writes a
+  connection's descriptor.
 - **Atomics.** The ring header's loads and stores are `SeqCst`
   ("The ring indices are sequentially consistent" below).
   `scripts/lint.sh` refuses any other `Ordering` in `ko_pane_wire` and
@@ -538,8 +575,13 @@ directories, beside the OCaml files: `ko_vt/` and `ko_vt_sys/`,
 the C `ko-pane` until the Rust one exists. It also builds the
 `decode` example of `ko_vt`, the Go suite's snapshot decoder, which is
 never installed. `test_e2e_ko/` runs the binary that `KO_BIN` names
-and the decoder that `KO_DECODE` names. Until the Rust server exists,
-the Makefile sets them to the OCaml `ko` and the Rust decoder.
+and the decoder that `KO_DECODE` names. With neither variable set,
+on macOS, `TestMain` runs `make build-ko` and uses `build/ko/bin/ko`
+and the Rust decoder; with one of them set, it fails.
+`make e2e-ko` runs `scripts/verify.sh ko-suite`: on macOS, the client
+tests that `scripts/verify.sh` lists run the OCaml `ko` (`KO_OCAML`),
+because the OCaml client starts its own server, and every other test
+runs the Rust `ko` (`KO_RUST`). On Linux, every test runs the OCaml `ko`.
 
 `scripts/install-zig.sh` pins the zig release and its checksums. CI
 and `scripts/ci-like/Dockerfile` install zig through it. lint fails

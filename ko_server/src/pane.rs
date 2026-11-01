@@ -8,7 +8,7 @@ use crate::ids::{ClientId, PaneId};
 use crate::pane_proc::{Io, PaneProc};
 
 #[derive(Debug)]
-pub struct Pane {
+pub(crate) struct Pane {
     id: PaneId,
     proc: PaneProc,
     command: Vec<Vec<u8>>,
@@ -38,7 +38,7 @@ impl Pane {
         self.id
     }
 
-    pub fn proc(&self) -> &PaneProc {
+    pub(crate) fn proc(&self) -> &PaneProc {
         &self.proc
     }
 
@@ -46,22 +46,22 @@ impl Pane {
         &mut self.proc
     }
 
-    pub fn command(&self) -> &[Vec<u8>] {
+    pub(crate) fn command(&self) -> &[Vec<u8>] {
         &self.command
     }
 
-    pub fn sizer(&self) -> Option<ClientId> {
+    pub(crate) fn sizer(&self) -> Option<ClientId> {
         self.sizer
     }
 
-    pub fn resize(&mut self, size: Size, io: &mut Io<'_>) {
+    pub(crate) fn resize(&mut self, size: Size, io: &mut Io<'_>) {
         if self.size != size {
             self.size = size;
             self.proc.resize(size, io);
         }
     }
 
-    pub fn claim(&mut self, client: ClientId, size: Size, io: &mut Io<'_>) {
+    pub(crate) fn claim(&mut self, client: ClientId, size: Size, io: &mut Io<'_>) {
         self.sizer = Some(client);
         self.resize(size, io);
     }

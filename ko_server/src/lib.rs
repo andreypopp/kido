@@ -1,6 +1,15 @@
+mod client;
 pub mod config;
+mod conn;
+pub mod http;
 pub mod ids;
-pub mod pane;
-pub mod pane_proc;
-pub mod panes;
+mod link;
+mod pane;
+mod pane_proc;
+mod panes;
+pub mod protocol;
+mod router;
 pub mod server;
+mod state;
+mod view;
+mod ws;

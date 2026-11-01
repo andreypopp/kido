@@ -19,6 +19,10 @@ impl Mono {
     pub fn from_nanos(nanos: u64) -> Mono {
         Mono(nanos)
     }
+
+    pub fn nanos(self) -> u64 {
+        self.0
+    }
 }
 
 pub fn cpu_time() -> Duration {

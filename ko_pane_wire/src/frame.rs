@@ -184,6 +184,10 @@ impl KeyCode {
     pub fn new(code: u16) -> Option<KeyCode> {
         (code <= MAX_KEY).then_some(KeyCode(code))
     }
+
+    pub fn get(self) -> u16 {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

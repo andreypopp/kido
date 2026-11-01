@@ -48,25 +48,37 @@ const DEFAULTS: [Signal; 8] = [
     Signal::Winch,
 ];
 
+const FIRST_FREE: libc::c_int = 16;
+
 fn above_targets(fd: BorrowedFd<'_>) -> io::Result<OwnedFd> {
-    // SAFETY: fd is open for the borrow; the copy is a new descriptor at 4 or above.
-    let raw = check(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 4) })?;
+    // SAFETY: fd is open for the borrow; the copy is a new descriptor above every target.
+    let raw = check(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, FIRST_FREE) })?;
     // SAFETY: fcntl returned a new descriptor that nothing else owns.
     Ok(unsafe { OwnedFd::from_raw_fd(raw) })
 }
 
 pub fn pane(program: &Path, control: BorrowedFd<'_>, mapping: BorrowedFd<'_>) -> io::Result<Pid> {
-    let program = CString::new(program.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in the program path"))?;
-    let control = above_targets(control)?;
-    let mapping = above_targets(mapping)?;
+    self::program(program, &[], &[(control, 0), (control, 1), (mapping, 3)])
+}
+
+pub fn program(program: &Path, args: &[&str], targets: &[(BorrowedFd<'_>, u8)]) -> io::Result<Pid> {
+    let invalid = |_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in a spawn argument");
+    let program = CString::new(program.as_os_str().as_bytes()).map_err(invalid)?;
+    let args = args
+        .iter()
+        .map(|arg| CString::new(*arg).map_err(invalid))
+        .collect::<io::Result<Vec<CString>>>()?;
+    let copies = targets
+        .iter()
+        .map(|(fd, target)| Ok((above_targets(*fd)?, libc::c_int::from(*target))))
+        .collect::<io::Result<Vec<(OwnedFd, libc::c_int)>>>()?;
     let mut actions = Actions(ptr::null_mut());
     // SAFETY: actions receives an initialized file action list.
     check_code(unsafe { libc::posix_spawn_file_actions_init(&mut actions.0) })?;
-    for (fd, target) in [(&control, 0), (&control, 1), (&mapping, 3)] {
+    for (fd, target) in &copies {
         // SAFETY: fd is open for the borrow, and the actions are initialized.
         check_code(unsafe {
-            libc::posix_spawn_file_actions_adddup2(&mut actions.0, fd.as_raw_fd(), target)
+            libc::posix_spawn_file_actions_adddup2(&mut actions.0, fd.as_raw_fd(), *target)
         })?;
     }
     // SAFETY: the actions are initialized; 2 is inherited past POSIX_SPAWN_CLOEXEC_DEFAULT.
@@ -99,7 +111,11 @@ pub fn pane(program: &Path, control: BorrowedFd<'_>, mapping: BorrowedFd<'_>) ->
         ))?;
         check_code(libc::posix_spawnattr_setsigmask(&mut attributes.0, &empty))?;
     }
-    let argv = [program.as_ptr().cast_mut(), ptr::null_mut()];
+    let argv: Vec<*mut libc::c_char> = std::iter::once(&program)
+        .chain(&args)
+        .map(|arg| arg.as_ptr().cast_mut())
+        .chain([ptr::null_mut()])
+        .collect();
     let mut raw = 0;
     retry(|| {
         // SAFETY: program and argv are NUL-terminated, the actions and attributes are
@@ -119,6 +135,6 @@ pub fn pane(program: &Path, control: BorrowedFd<'_>, mapping: BorrowedFd<'_>) ->
         let mut status = 0;
         // SAFETY: raw is the child just spawned, which this process reaps.
         let _ = retry(|| check(unsafe { libc::waitpid(raw, &mut status, 0) }));
-        io::Error::other(format!("ko-pane got the refused pid {raw}"))
+        io::Error::other(format!("a spawn returned the refused pid {raw}"))
     })
 }

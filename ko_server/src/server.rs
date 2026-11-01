@@ -3,15 +3,11 @@ use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
-use ko_pane_wire::ring::Reader;
 use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 
 use crate::config::Config;
-use crate::ids::PaneId;
-use crate::pane::Pane;
-use crate::pane_proc::{Delivery, Event, Io};
-use crate::panes::{AddError, Create, Panes};
+use crate::state::State;
 
 const ACCEPT_BURST: usize = 16;
 const SEND_BUFFER: usize = 1 << 20;
@@ -32,20 +28,20 @@ impl Timing {
 }
 
 #[derive(Debug)]
-pub struct Verified(UnixStream);
+pub(crate) struct Verified(UnixStream);
 
 impl Verified {
-    pub fn into_stream(self) -> UnixStream {
+    pub(crate) fn admit(stream: UnixStream) -> Option<Verified> {
+        let same = ko_sys::sock::peer_uid(stream.as_fd()).ok()? == ko_sys::sock::uid();
+        let ready = same
+            && ko_sys::sock::set_send_buffer(stream.as_fd(), SEND_BUFFER).is_ok()
+            && stream.set_nonblocking(true).is_ok();
+        ready.then_some(Verified(stream))
+    }
+
+    pub(crate) fn into_stream(self) -> UnixStream {
         self.0
     }
-}
-
-fn admit(stream: UnixStream) -> Option<Verified> {
-    let same = ko_sys::sock::peer_uid(stream.as_fd()).ok()? == ko_sys::sock::uid();
-    let ready = same
-        && ko_sys::sock::set_send_buffer(stream.as_fd(), SEND_BUFFER).is_ok()
-        && stream.set_nonblocking(true).is_ok();
-    ready.then_some(Verified(stream))
 }
 
 #[derive(Debug)]
@@ -70,7 +66,7 @@ impl Listener {
     fn accept(&self, poll: &mut Poll, accepted: &mut Vec<Verified>) -> io::Result<()> {
         for _ in 0..ACCEPT_BURST {
             match ko_sys::retry::retry(|| self.socket.accept()) {
-                Ok((stream, _)) => accepted.extend(admit(stream)),
+                Ok((stream, _)) => accepted.extend(Verified::admit(stream)),
                 Err(error) if error.raw_os_error() == Some(libc::ECONNABORTED) => {}
                 Err(error)
                     if matches!(
@@ -105,151 +101,77 @@ pub enum Status {
 
 #[derive(Debug)]
 pub struct Server {
-    config: Config,
     timing: Timing,
     poll: Poll,
     events: Events,
     signals: Signals,
     signal_token: Token,
     listener: Option<Listener>,
-    panes: Panes,
-    ticker: Timer,
+    accepted: Vec<Verified>,
+    state: State,
     stopping: Option<Timer>,
-    produced: Vec<Event>,
-}
-
-pub type PaneSink<'a> = &'a mut dyn FnMut(PaneId, &Reader, Delivery);
-
-fn io<'a>(
-    poll: &'a mut Poll,
-    events: &'a mut Vec<Event>,
-    sink: Option<crate::pane_proc::Sink<'a>>,
-) -> Io<'a> {
-    Io { poll, events, sink }
-}
-
-fn handle(
-    pane: &mut Pane,
-    poll: &mut Poll,
-    ticker: Timer,
-    timing: Timing,
-    produced: &mut Vec<Event>,
-    sink: PaneSink<'_>,
-) -> io::Result<()> {
-    let id = pane.id();
-    let mut events = std::mem::take(produced);
-    for event in events.drain(..) {
-        if event == Event::Output {
-            let leading = !poll.is_active(ticker);
-            if leading {
-                poll.start(ticker, timing.output_tick, Some(timing.output_tick))?;
-            }
-            if leading || !pane.proc().busy() {
-                let mut inner = |ring: &Reader, delivery| sink(id, ring, delivery);
-                pane.proc_mut()
-                    .scan(&mut io(poll, produced, Some(&mut inner)));
-            }
-        }
-    }
-    produced.clear();
-    *produced = events;
-    Ok(())
 }
 
 impl Server {
     pub fn new(config: Config, socket: UnixListener, timing: Timing) -> io::Result<Server> {
-        let signals = Signals::install(&[Signal::Child, Signal::Term])?;
+        let signals = Signals::install(&[Signal::Child, Signal::Term, Signal::Int, Signal::Hup])?;
         let mut poll = Poll::new();
         let signal_token = poll.watch(signals.fd(), Interest::Read);
         let listener = Listener::new(socket, &mut poll, timing.accept_retry)?;
-        let ticker = poll.timer();
+        let state = State::new(config, &mut poll, timing.output_tick);
         Ok(Server {
-            config,
             timing,
             poll,
             events: Events::default(),
             signals,
             signal_token,
             listener: Some(listener),
-            panes: Panes::default(),
-            ticker,
+            accepted: Vec::new(),
+            state,
             stopping: None,
-            produced: Vec::new(),
         })
     }
 
-    pub fn panes(&self) -> &Panes {
-        &self.panes
-    }
-
-    pub fn add_pane(&mut self, request: &Create) -> Result<PaneId, AddError> {
-        let added = self.panes.add(
-            &self.config,
-            request,
-            &mut io(&mut self.poll, &mut self.produced, None),
-        );
-        self.produced.clear();
-        added
-    }
-
-    pub fn turn(&mut self, accepted: &mut Vec<Verified>, sink: PaneSink<'_>) -> io::Result<Status> {
+    pub fn turn(&mut self) -> io::Result<Status> {
         let mut events = std::mem::take(&mut self.events);
         let turned = self.poll.turn(Mode::Wait, &mut events).and_then(|()| {
             for &ready in events.ready() {
-                self.ready(ready, accepted, &mut *sink)?;
+                self.ready(ready)?;
             }
             for &due in events.due() {
-                if self.poll.current(due) && self.due(due.timer, &mut *sink)? == Status::Stopped {
+                if self.poll.current(due) && self.due(due.timer)? == Status::Stopped {
                     return Ok(Status::Stopped);
                 }
             }
             Ok(Status::Running)
         });
         self.events = events;
+        self.state.settle(&mut self.poll);
         turned
     }
 
-    fn ready(
-        &mut self,
-        ready: Ready,
-        accepted: &mut Vec<Verified>,
-        sink: PaneSink<'_>,
-    ) -> io::Result<()> {
+    fn ready(&mut self, ready: Ready) -> io::Result<()> {
         if ready.token == self.signal_token {
             if self.poll.wants(ready).read {
                 let mut pending = Vec::new();
                 self.signals.take(&mut pending)?;
                 for signal in pending {
                     match signal {
-                        Signal::Child => {
-                            self.panes
-                                .reap(&mut io(&mut self.poll, &mut self.produced, None))?;
-                            self.produced.clear();
-                        }
-                        Signal::Term => self.stop()?,
+                        Signal::Child => self.state.reap(&mut self.poll)?,
+                        Signal::Term | Signal::Int | Signal::Hup => self.stop()?,
                         _ => {}
                     }
                 }
             }
         } else if let Some(listener) = self.listener.as_ref().filter(|l| l.token == ready.token) {
             if self.poll.wants(ready).read {
-                listener.accept(&mut self.poll, accepted)?;
+                listener.accept(&mut self.poll, &mut self.accepted)?;
+                for stream in self.accepted.drain(..) {
+                    self.state.accept(&mut self.poll, stream);
+                }
             }
-        } else if let Some(pane) = self.panes.by_token(ready.token) {
-            let id = pane.id();
-            let mut inner = |ring: &Reader, delivery| sink(id, ring, delivery);
-            pane.proc_mut().ready(
-                ready,
-                &mut io(&mut self.poll, &mut self.produced, Some(&mut inner)),
-            );
-            handle(
-                pane,
-                &mut self.poll,
-                self.ticker,
-                self.timing,
-                &mut self.produced,
-                sink,
-            )?;
+        } else if !self.state.pane_ready(&mut self.poll, ready) {
+            self.state.conn_ready(&mut self.poll, ready);
         }
         Ok(())
     }
@@ -261,10 +183,7 @@ impl Server {
         if let Some(listener) = self.listener.take() {
             listener.close(&mut self.poll);
         }
-        self.panes
-            .shutdown(&mut io(&mut self.poll, &mut self.produced, None));
-        self.produced.clear();
-        self.poll.stop(self.ticker);
+        self.state.shutdown(&mut self.poll);
         let stopping = self.poll.timer();
         self.poll
             .start(stopping, self.timing.shutdown_grace, None)?;
@@ -272,34 +191,21 @@ impl Server {
         Ok(())
     }
 
-    fn due(&mut self, timer: Timer, sink: PaneSink<'_>) -> io::Result<Status> {
+    fn due(&mut self, timer: Timer) -> io::Result<Status> {
         if let Some(listener) = self.listener.as_ref().filter(|l| l.resume == timer) {
             listener.resume(&mut self.poll);
-        } else if timer == self.ticker {
-            let mut produced = false;
-            for pane in self.panes.iter_mut() {
-                let id = pane.id();
-                let mut inner = |ring: &Reader, delivery| sink(id, ring, delivery);
-                produced |= pane.proc_mut().scan(&mut io(
-                    &mut self.poll,
-                    &mut self.produced,
-                    Some(&mut inner),
-                ));
-            }
-            if !produced {
-                self.poll.stop(self.ticker);
-            }
-            self.produced.clear();
+        } else if timer == self.state.ticker() {
+            self.state.tick(&mut self.poll);
         } else if Some(timer) == self.stopping {
-            self.panes.kill()?;
-            self.panes
-                .reap(&mut io(&mut self.poll, &mut self.produced, None))?;
-            self.produced.clear();
-            match std::fs::remove_file(&self.config.socket) {
+            self.state.panes.kill()?;
+            self.state.reap(&mut self.poll)?;
+            match std::fs::remove_file(&self.state.config.socket) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
                 _ => {}
             }
             return Ok(Status::Stopped);
+        } else {
+            self.state.ping(&mut self.poll, timer);
         }
         Ok(Status::Running)
     }
@@ -308,8 +214,9 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ko_sys::pid::{Exit, Pid, Waited};
+    use std::os::fd::AsFd;
     use std::path::PathBuf;
-    use std::process::Command;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/ko-{name}-{}", std::process::id()));
@@ -353,13 +260,21 @@ mod tests {
     #[test]
     fn the_listener_parks_under_descriptor_shortage_and_accepts_again() {
         let exe = std::env::current_exe().unwrap();
-        let status = Command::new("/bin/sh")
-            .args(["-c", "ulimit -n 64 && exec \"$0\" \"$@\""])
-            .arg(exe)
-            .args(["--ignored", "--exact", "server::tests::descriptor_shortage"])
-            .status()
-            .unwrap();
-        assert!(status.success());
+        let stdout = std::io::stdout();
+        let child = ko_sys::spawn::program(
+            std::path::Path::new("/bin/sh"),
+            &[
+                "-c",
+                "ulimit -n 64 && exec \"$0\" \"$@\"",
+                exe.to_str().unwrap(),
+                "--ignored",
+                "--exact",
+                "server::tests::descriptor_shortage",
+            ],
+            &[(stdout.as_fd(), 1)],
+        )
+        .unwrap();
+        assert_eq!(child.wait().unwrap(), Waited::Ended(Exit::Exited(0)));
     }
 
     #[test]
@@ -430,45 +345,41 @@ mod tests {
     }
 
     #[test]
-    fn sigterm_stops_the_server_and_ends_its_programs() {
-        use ko_sys::pid::Pid;
+    fn sigterm_sigint_and_sighup_stop_the_server_and_end_its_programs() {
         use std::io::BufRead;
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--ignored",
-                "--exact",
-                "server::tests::sigterm",
-                "--nocapture",
-            ])
-            .env("KO_PANE_EXE", ko_pane())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
+        for signal in [Signal::Term, Signal::Int, Signal::Hup] {
+            let (reader, writer) = std::io::pipe().unwrap();
+            let exe = std::env::current_exe().unwrap();
+            let child = ko_sys::spawn::program(
+                &exe,
+                &[
+                    "--ignored",
+                    "--exact",
+                    "server::tests::sigterm",
+                    "--nocapture",
+                ],
+                &[(writer.as_fd(), 1)],
+            )
             .unwrap();
-        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-        let program = lines
-            .by_ref()
-            .map_while(Result::ok)
-            .find_map(|line| line.strip_prefix("program ").map(str::to_owned))
-            .unwrap();
-        Pid::new(i64::from(child.id()))
-            .unwrap()
-            .signal(Signal::Term)
-            .unwrap();
-        assert!(within(Duration::from_secs(10), || child
-            .try_wait()
-            .unwrap()
-            .is_some()));
-        assert!(child.wait().unwrap().success());
-        drop(lines);
-        let gone = || {
-            !Command::new("/bin/ps")
-                .args(["-p", &program])
-                .stdout(std::process::Stdio::null())
-                .status()
-                .unwrap()
-                .success()
-        };
-        assert!(within(Duration::from_secs(5), gone));
+            drop(writer);
+            let mut lines = std::io::BufReader::new(reader).lines();
+            let program = lines
+                .by_ref()
+                .map_while(Result::ok)
+                .find_map(|line| line.strip_prefix("program ").map(str::to_owned))
+                .unwrap();
+            child.signal(signal).unwrap();
+            assert_eq!(
+                (signal, child.wait().unwrap()),
+                (signal, Waited::Ended(Exit::Exited(0)))
+            );
+            drop(lines);
+            let program = Pid::new(program.parse().unwrap()).unwrap();
+            assert!(
+                within(Duration::from_secs(5), || !program.alive()),
+                "{signal:?}"
+            );
+        }
     }
 
     #[test]
@@ -496,28 +407,28 @@ mod tests {
             ..Timing::DEFAULT
         };
         let mut server = Server::new(config, UnixListener::bind(&socket).unwrap(), timing).unwrap();
-        let request = Create {
+        let request = crate::protocol::CreatePane {
             cwd: None,
-            command: Some(crate::panes::Command::Argv(vec![
+            command: Some(crate::protocol::Command::Argv(vec![
                 "/bin/sleep".to_owned(),
                 "30".to_owned(),
             ])),
             env: Vec::new(),
         };
-        let id = server.add_pane(&request).unwrap();
-        let mut accepted = Vec::new();
+        let id = server.state.add_pane(&mut server.poll, &request).unwrap();
         let program = loop {
-            server.turn(&mut accepted, &mut |_, _, _| {}).unwrap();
-            let pane = server.panes().find(id).unwrap();
+            server.turn().unwrap();
+            let pane = server.state.panes.find(id).unwrap();
             if let Some(pid) = pane.proc().child_pid() {
                 break pid;
             }
         };
         println!("program {program}");
-        while server.turn(&mut accepted, &mut |_, _, _| {}).unwrap() == Status::Running {}
+        while server.turn().unwrap() == Status::Running {}
         assert!(
             server
-                .panes()
+                .state
+                .panes
                 .iter()
                 .all(|pane| pane.proc().life() == crate::pane_proc::Life::Reaped)
         );

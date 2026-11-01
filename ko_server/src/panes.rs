@@ -9,22 +9,10 @@ use crate::config::{BUILD, Config, variable};
 use crate::ids::PaneId;
 use crate::pane::Pane;
 use crate::pane_proc::{Io, Life};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command {
-    Argv(Vec<String>),
-    Shell(String),
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Create {
-    pub cwd: Option<PathBuf>,
-    pub command: Option<Command>,
-    pub env: Vec<(String, String)>,
-}
+use crate::protocol::{Command, CreatePane, Variable};
 
 #[derive(Debug)]
-pub enum AddError {
+pub(crate) enum AddError {
     Invalid(&'static str),
     Io(io::Error),
 }
@@ -39,7 +27,7 @@ impl fmt::Display for AddError {
 }
 
 #[derive(Debug)]
-pub struct Panes {
+pub(crate) struct Panes {
     next: u64,
     panes: Vec<Pane>,
     removed: Vec<Pane>,
@@ -55,7 +43,7 @@ impl Default for Panes {
     }
 }
 
-fn environment(config: &Config, id: PaneId, requested: &[(String, String)]) -> Vec<Vec<u8>> {
+fn environment(config: &Config, id: PaneId, requested: &[Variable]) -> Vec<Vec<u8>> {
     let mut terminfo = config.terminfo.as_os_str().as_encoded_bytes().to_vec();
     terminfo.push(b':');
     let forced: [(&str, Vec<u8>); 6] = [
@@ -75,8 +63,8 @@ fn environment(config: &Config, id: PaneId, requested: &[(String, String)]) -> V
         .chain(
             requested
                 .iter()
-                .filter(|(name, _)| forced.iter().all(|(forced, _)| forced != name))
-                .map(|(name, value)| (name.as_str(), value.clone().into_bytes())),
+                .filter(|variable| forced.iter().all(|(forced, _)| *forced != variable.name))
+                .map(|variable| (variable.name.as_str(), variable.value.clone().into_bytes())),
         )
         .collect();
     let overridden = |entry: &&Vec<u8>| {
@@ -97,8 +85,12 @@ fn environment(config: &Config, id: PaneId, requested: &[(String, String)]) -> V
 }
 
 impl Panes {
-    pub fn find(&self, id: PaneId) -> Option<&Pane> {
+    pub(crate) fn find(&self, id: PaneId) -> Option<&Pane> {
         self.panes.iter().find(|pane| pane.id() == id)
+    }
+
+    pub(crate) fn find_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
+        self.panes.iter_mut().find(|pane| pane.id() == id)
     }
 
     pub(crate) fn by_token(&mut self, token: Token) -> Option<&mut Pane> {
@@ -107,7 +99,7 @@ impl Panes {
             .find(|pane| pane.proc().token() == Some(token))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Pane> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Pane> {
         self.panes.iter()
     }
 
@@ -115,14 +107,21 @@ impl Panes {
         self.panes.iter_mut()
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.panes.len()
+    }
+
     pub(crate) fn add(
         &mut self,
         config: &Config,
-        request: &Create,
+        request: &CreatePane,
         io: &mut Io<'_>,
     ) -> Result<PaneId, AddError> {
         let id = PaneId::new(self.next);
-        let cwd = request.cwd.clone().unwrap_or_else(|| config.cwd.clone());
+        let cwd = request
+            .cwd
+            .as_ref()
+            .map_or_else(|| config.cwd.clone(), PathBuf::from);
         let shell = || config.shell.as_os_str().as_encoded_bytes().to_vec();
         let command: Vec<Vec<u8>> = match &request.command {
             None => vec![shell(), b"-l".to_vec()],
@@ -157,7 +156,7 @@ impl Panes {
             }
             Err(error) => return Err(AddError::Io(error)),
         }
-        let invalid = |(name, value): &(String, String)| {
+        let invalid = |Variable { name, value }: &Variable| {
             name.is_empty() || name.contains(['=', '\0']) || value.contains('\0')
         };
         if request.env.iter().any(invalid) {
@@ -170,7 +169,7 @@ impl Panes {
         Ok(id)
     }
 
-    pub fn remove(&mut self, id: PaneId, io: &mut Io<'_>) {
+    pub(crate) fn remove(&mut self, id: PaneId, io: &mut Io<'_>) {
         if let Some(at) = self.panes.iter().position(|pane| pane.id() == id) {
             let mut pane = self.panes.remove(at);
             pane.proc_mut().shutdown(io);
@@ -230,10 +229,10 @@ mod tests {
 
     #[test]
     fn the_forced_variables_override_the_request_and_the_inherited_environment() {
-        let requested = [
-            ("TERM".to_owned(), "vt100".to_owned()),
-            ("LANG".to_owned(), "en".to_owned()),
-        ];
+        let requested = [("TERM", "vt100"), ("LANG", "en")].map(|(name, value)| Variable {
+            name: name.to_owned(),
+            value: value.to_owned(),
+        });
         let env: Vec<String> = environment(&config(), PaneId::new(3), &requested)
             .into_iter()
             .map(|entry| String::from_utf8(entry).unwrap())
@@ -261,14 +260,17 @@ mod tests {
         let mut io = Io {
             poll: &mut poll,
             events: &mut events,
-            sink: None,
+            sink: &mut crate::pane_proc::discard,
         };
-        let request = |cwd: &str, command: Option<Command>, env: &[(&str, &str)]| Create {
-            cwd: Some(PathBuf::from(cwd)),
+        let request = |cwd: &str, command: Option<Command>, env: &[(&str, &str)]| CreatePane {
+            cwd: Some(cwd.to_owned()),
             command,
             env: env
                 .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .map(|(name, value)| Variable {
+                    name: (*name).to_owned(),
+                    value: (*value).to_owned(),
+                })
                 .collect(),
         };
         let argv = |argv: &[&str]| {
