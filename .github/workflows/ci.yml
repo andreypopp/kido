@@ -11,6 +11,7 @@ env:
 
 jobs:
   test:
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +38,7 @@ jobs:
 
       - name: Install zig
         if: steps.zig-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
         run: ./scripts/install-zig.sh "$HOME/zig"
 
       - name: Put zig on PATH
@@ -50,6 +52,7 @@ jobs:
       # dune-project.
       - name: Set up dune
         uses: ocaml-dune/setup-dune@v2
+        timeout-minutes: 20
         with:
           version: 3.24.2
           steps: install-dune build-deps
@@ -57,12 +60,20 @@ jobs:
       # Go only drives the e2e suite, which stays in Go.
       - name: Set up Go
         uses: actions/setup-go@v5
+        timeout-minutes: 5
         with:
           go-version-file: go.mod
 
+      - name: Download Go modules
+        timeout-minutes: 5
+        run: go mod download
+
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-timeouts
           sudo apt-get update
           sudo apt-get install -y libevent-dev libncurses-dev libutf8proc-dev libpng-dev zlib1g-dev \
             bison autoconf automake pkg-config openssh-server zsh less procps
@@ -71,6 +82,7 @@ jobs:
 
       - name: Install tmux dependencies (macOS)
         if: runner.os == 'macOS'
+        timeout-minutes: 10
         run: brew install libevent ncurses utf8proc libpng automake autoconf pkg-config
 
       - name: Resolve tmux fork build key
@@ -106,6 +118,7 @@ jobs:
       # suite, which this pin is how we learned.
       - name: Set up node
         uses: actions/setup-node@v4
+        timeout-minutes: 5
         with:
           node-version: '24'
 
@@ -192,6 +205,7 @@ jobs:
   # Re-verifies ko_proofs/ and diffs its extraction against the committed C
   # and OCaml, on the F* release's Linux x86_64 and Darwin arm64 binaries.
   proofs:
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -206,10 +220,16 @@ jobs:
         run: echo "key=$(./scripts/install-fstar.sh --print-key)" >> "$GITHUB_OUTPUT"
 
       - name: Cache F*
+        id: fstar-cache
         uses: actions/cache@v4
         with:
           path: build/fstar/${{ steps.fstar.outputs.key }}
           key: fstar-${{ runner.os }}-${{ steps.fstar.outputs.key }}
+
+      - name: Install F*
+        if: steps.fstar-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        run: ./scripts/install-fstar.sh "$PWD/build/fstar/${{ steps.fstar.outputs.key }}"
 
       - name: Cache checked files
         uses: actions/cache@v4

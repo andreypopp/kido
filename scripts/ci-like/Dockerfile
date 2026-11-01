@@ -5,6 +5,7 @@
 # >= 4.14 to bootstrap.
 FROM golang:1.27-trixie
 
+RUN printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-timeouts
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		bash zsh git curl ca-certificates gnupg \
 		build-essential bison autoconf automake pkg-config \
