@@ -251,6 +251,50 @@ The user also decided during R2:
     client's attach path does; the OCaml `ko server` refused it as
     already in use.
 
+RP forced these decisions:
+
+60. The R2 server broke row 13: after a write that the socket
+    refused whole, the view was not waiting, so the next pump decided
+    a skip mid-stream (`TestStalledViewSkips` failed 4 times in 320
+    runs under load). `conn::Output` now stays waiting until
+    `POLLOUT`, as `connection.ml`'s `Blocked -> wait t` does; the Go
+    test is unchanged and passed 640 of 640 runs.
+61. The R2 setup failures were not an exhaustion. macOS `openpty`
+    fails now and then with errno -6 when other processes allocate
+    ptys at the same moment (8 concurrent loops: about 1 in 4,000
+    calls); during the parallel server suite, ptys in use rose by 13
+    over a base of 38 (511 allowed) and processes peaked at 1,047
+    (10,666 allowed). `ko_sys::pty::spawn` tries `openpty` up to
+    three times, but not after `EAGAIN`, `ENOMEM`, `EMFILE` or
+    `ENFILE`.
+62. A setup failure of `ko-pane` sends an `error` frame that names
+    the call and the OS error ("openpty: Too many open files (os
+    error 24)"), which reaches the client as the cause `failed`. An
+    `exec` failure is a dead pane with exit 127, and a failure of
+    `chdir`, `setsid` or `TIOCSCTTY` before it a dead pane with exit
+    126, as `pane.c` reports them. By the user's decision,
+    `ko_sys::pty::spawn` forks and execs itself: the child runs only
+    async-signal-safe calls and reports its failed step and errno
+    through a close-on-exec pipe record, and the parent builds the
+    `Program` only after EOF on that pipe.
+63. The title and pwd callbacks only record a change, because a
+    callback must not re-enter the terminal; after the write,
+    `ko-pane` reads the value and sends one frame. Several changes in
+    one write give one frame with the last value.
+64. `fuzz/` is a workspace member outside `default-members`, so
+    clippy checks the targets on stable and `cargo test` does not
+    build libFuzzer. `libfuzzer-sys` adds `arbitrary` and
+    `jobserver`. The `control` target has no terminal pool and the
+    run lines of `scripts/fuzz.sh` for the Rust targets are R3's.
+65. The Rust `ko-pane` refuses three inputs that the C one accepts: a
+    size with exactly one zero cell dimension (`Size` holds the cell
+    size as one option of two nonzero values, decision 35), a
+    snapshot request with images (the protocol has only
+    `Images::None`), and key or paste text that is not UTF-8 (the
+    wire carries JSON strings). The only client is the coordinator,
+    which sends none of them; a refused frame fails the pane with an
+    `error` frame.
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -306,7 +350,7 @@ What moves where:
 | `pane.c` | the binary crate `ko_pane` (`ko_pane/Cargo.toml` and `ko_pane/src/` beside the C files until the cut): the loop, init, dispatch, the pty read into the ring, the dead marker, shutdown |
 | `compress.h`, `snapshot_cut.h`, the 44 libghostty-vt calls | `ko_vt` over `ko_vt_sys`, shared with the mirror: the terminal with its callbacks (`WRITE_PTY`, title, pwd), the key, mouse, focus and paste encoders, the formatter, the snapshot encoder with the cut, the compression tick |
 | `group_signal`, `struct group` | `ko_sys::pid`: the one signal module of the tree. `Group::spawned(&Child)` is the only constructor that `ko-pane` has; it exists only for the child that `ko_sys::pty::spawn` returned after a successful `exec` |
-| `openpty`, `fork`, `setsid`, `TIOCSCTTY`, `dup2`, `chdir`, `execve`, the close-on-exec start pipe | `ko_sys::pty`: `libc::openpty`, then `std::process::Command` with the slave as stdin, stdout and stderr, `current_dir`, `env_clear` and `envs`, and one `pre_exec` closure that calls only `setsid` and `ioctl(0, TIOCSCTTY)`, which are async-signal-safe. `Command::spawn` returns only after `exec` succeeded (std's own close-on-exec pipe), which replaces `pane.c`'s start pipe, and std resets `SIGPIPE` and the signal mask in the child. `pre_exec` is the one `unsafe` call of the module |
+| `openpty`, `fork`, `setsid`, `TIOCSCTTY`, `dup2`, `chdir`, `execve`, the close-on-exec start pipe | `ko_sys::pty`: `libc::openpty`, then its own `fork` and `execve`, as `pane.c` does: the child runs only async-signal-safe calls on memory prepared before the fork and reports a failed step and its errno through a close-on-exec pipe; EOF on the pipe means `exec` succeeded (decision 62) |
 | `waitid(..., WNOWAIT)`, the final `waitpid` | `ko_sys::pid::peek_exit` (`waitid` with `WEXITED | WNOHANG | WNOWAIT`) and `reap`. `ko-pane` never calls `Child::wait` before its final group kill, so the zombie holds the pid and the group id, as row 2 requires |
 | the `SIGCHLD` self-pipe, `SIGHUP` and `SIGTERM` flags | `ko_sys::signal`: `libc::sigaction` with a handler that only writes one byte to a pipe |
 | the `poll(2)` loop over the control socket, the pty master and the signal pipe | `ko_pane/src/main.rs` over `ko_sys::event`, the loop that the server and the client use too (3.6) |
@@ -442,7 +486,7 @@ the OCaml one.
 | WebSocket | tungstenite (`handshake`) |
 | JSON | serde (`derive`), serde_json |
 | process spawn of `ko-pane` by the coordinator | `libc::posix_spawn` with file actions: `adddup2` of the control socket onto 0 and 1 and of the mapping onto 3; every fd the coordinator holds is `OwnedFd` and so close-on-exec |
-| the program's pty and spawn in `ko-pane` | `libc::openpty`; `std::process::Command` with one `pre_exec` (`setsid`, `TIOCSCTTY`); `waitid` with `WNOWAIT` (1.3) |
+| the program's pty and spawn in `ko-pane` | `libc::openpty`; own `fork` and `execve` with a close-on-exec report pipe; `waitid` with `WNOWAIT` (1.3) |
 | shared memory | `libc::shm_open`, `shm_unlink`, `mmap` (Linux's `memfd_create` in RL); the header words as `AtomicU64::from_ptr` |
 | process identity and signals | `libc::proc_pidinfo` (Linux's `/proc/<pid>/stat` in RL), `getsid`, `waitpid`; `libc::kill` only in `ko_sys::pid` |
 | CLI | clap with derive, minimal features (decision 46) |
@@ -632,7 +676,7 @@ the underscore, so there is one spelling.
 |---|---|---|
 | `ko_server/ring.ml`, `mem.ml`, the ring stubs; `ko_pane/ring.h`, `protocol.h` | `ko_pane_wire/src/ring.rs`, `frame.rs` | positions and offsets are types (3.3); reads are `u64::from_le_bytes` on validated slices |
 | `pid.ml`, `pane.c`'s `group_signal` | `ko_sys/src/pid.rs` | the only file with `libc::kill` |
-| `ko_pane/pane.c`, `compress.h`, `snapshot_cut.h`, `buffer.h`, `pixels.h`, `now.h` | `ko_pane/src/` (`main.rs`: loop, init, dispatch; `pty_read.rs`: the reads into the ring, the dead marker; `input.rs`: the encoders' use), `ko_vt/src/` (`compress.rs`, `cut.rs`, the encoders), `ko_sys` (pty, signal, poll, the clock) | 1.3 |
+| `ko_pane/pane.c`, `compress.h`, `snapshot_cut.h`, `buffer.h`, `pixels.h`, `now.h` | `ko_pane/src/` (`run.rs`: the loop; `pane.rs`: init, dispatch, the pty reads into the ring, the dead marker, the shutdown; `io.rs`: the control socket, the output, the ring room and the nested wait; `control.rs`: the `control` fuzz entry), `ko_vt/src/` (`compress.rs`, `cut.rs`, the encoders), `ko_sys` (pty, signal, poll, the clock) | 1.3 |
 | `test_pane.c`, `test_compress.c`, `fuzz_frame.c`, `fuzz_control.c` | `ko_pane/tests/pane.rs`, `ko_vt` unit tests, `fuzz/fuzz_targets/{frame,control}.rs` | |
 | `pane_proc.ml` | `ko_server/src/pane_proc.rs` | the request table, the life variant, over `ko_pane_wire::frame`; the control socket is a source of the loop, read into a reused buffer |
 | `pane.ml`, `panes.ml` | `pane.rs`, `panes.rs` | |
@@ -655,11 +699,14 @@ the underscore, so there is one spelling.
 - `Pid` is a newtype over `i32` with a private field. `Pid::new`
   returns `None` for a value of 1 or less, above `i32::MAX`, the
   process's own pid or its own process group. `Group { leader: Pid,
-  start: u64 }` has one constructor, `Group::verify(parent, pid)`,
+  start: u64 }` has one public constructor, `Group::verify(parent, pid)`,
   which returns `Verdict::{Child(Group), Gone, Foreign}` from the OS
   check. `Group::signal` loads the identity again and signals only
   when the start time and the group id still match. This is `pid.ml`
-  as it is.
+  as it is. `ko-pane`'s program is the one value that
+  `ko_sys::pty::spawn` returns after `exec`: it owns the child, its
+  group signal, the exit check and the reap, and it is not `Copy`, so
+  no group signal can follow the reap (RP).
 - The ring has two integer types: `Pos`, a position in the record
   stream including headers (what the ring's `head`, `tail`, `read`
   and a view's cursor hold), and `Offset`, a pty byte offset (what a
@@ -709,10 +756,9 @@ modules (6.6).
 1. **`ko_sys`**: each libc call is wrapped in one safe function with
    typed arguments (`BorrowedFd`, `Pid`, `Duration`) and a `Result`.
    `retry` loops on `EINTR` around every call that can return it.
-   `Mapping` owns the `mmap` and unmaps on drop. `pty::spawn`'s
-   `pre_exec` closure calls only `setsid` and `ioctl(TIOCSCTTY)`,
-   which are async-signal-safe; it allocates nothing and takes no
-   lock. The signal handler only writes one byte to its pipe.
+   `Mapping` owns the `mmap` and unmaps on drop. Between `fork` and
+   `execve`, `pty::spawn`'s child calls only async-signal-safe
+   functions; it allocates nothing and takes no lock. The signal handler only writes one byte to its pipe.
 2. **`ko_vt_sys`**: the generated declarations. `ko_vt` wraps each in
    a safe method on `Terminal`, `Decoder`, `RenderState`,
    `Formatter`. A callback from libghostty-vt into Rust runs inside
@@ -1155,7 +1201,7 @@ inline test of the same meaning; "property" is a proptest module;
 | # | fix | commit | invariant | Rust home | test |
 |---|---|---|---|---|---|
 | 1 | `kill(-1)` from a frame's pid | 7c877215, b77d3ac2 | no signal to a pid that the coordinator did not verify; `Pid` refuses 0, 1, negatives, values over `i32::MAX`, the own pid and the own group; a `Group` exists only after the OS showed the pid is the spawned `ko-pane`'s child and leads its own group and session; `Group::signal` checks the start time again; `ESRCH` and `EPERM` are not errors (ed21d4a4) | `ko_sys/src/pid.rs`, the only `libc::kill`, used by the coordinator and by `ko-pane` | unit: the three `pid.ml` tests (refusals and a child; the `judge` table; the tampered start); Go `TestPaneProcessCrashKillsProgram`, `TestSIGTERMKillsPrograms`, `TestPaneProcessFailure`; lint (6.8) |
-| 2 | `ko-pane` sends `ready` only after `exec`, holds the zombie with `WNOWAIT`, `SIGKILL`s the group 250 ms after `SIGHUP` | 7c877215, b77d3ac2, ad858e14 | the pid and group id cannot be reused while `ko-pane` lives; `ready` names a program that has run `setsid` and `exec` | `ko_sys::pty::spawn` (std's `Command::spawn` returns only after `exec`; `pre_exec` runs `setsid`), `ko_sys::pid::peek_exit` (`waitid` with `WNOWAIT`), `ko_pane/src/main.rs` (the `ready` after spawn unless the program already exited; the shutdown: `SIGHUP` to the `Group`, 250 ms, `SIGKILL`, then `reap`) | Rust tests in `ko_pane/tests/pane.rs` ported from `test_pane.c` (the held zombie still answers `waitid` and `kill(pid, 0)`); Go `TestPaneProcessCrashKillsProgram`, `TestSIGTERMKillsPrograms` |
+| 2 | `ko-pane` sends `ready` only after `exec`, holds the zombie with `WNOWAIT`, `SIGKILL`s the group 250 ms after `SIGHUP` | 7c877215, b77d3ac2, ad858e14 | the pid and group id cannot be reused while `ko-pane` lives; `ready` names a program that has run `setsid` and `exec` | `ko_sys::pty::spawn` (EOF on its report pipe means `exec` succeeded; the child runs `setsid` first), `ko_sys::pid::peek_exit` (`waitid` with `WNOWAIT`), `ko_pane/src/pane.rs` (the `ready` after spawn unless the program already exited; the shutdown: `SIGHUP` to the group, 250 ms, `SIGKILL`, then the reap) | Rust tests in `ko_pane/tests/pane.rs` ported from `test_pane.c` (the held zombie still answers `waitid` and `kill(pid, 0)`); Go `TestPaneProcessCrashKillsProgram`, `TestSIGTERMKillsPrograms` |
 | 3 | a 0-byte read after a full buffer is not a close | a24ce22c | a read that returns `WouldBlock` after one that filled the buffer is "not ready"; only `Ok(0)` is EOF | `conn.rs`, `pane_proc.rs` and `ws::Io`: each source reads until `WouldBlock` and treats only `Ok(0)` as EOF | unit: a socketpair filled to exactly the buffer size delivers every byte and no close (from `uv.ml`); the control-frame test with a 64 KiB `screen` reply |
 | 4 | read back-pressure | 7b5422a4 | no byte is read from a connection while its request body or its WebSocket message waits for a handler; the read buffer is 16 KiB and never holds unread bytes beyond it; a client that writes without end blocks in its socket | `conn.rs`: the `Handling` phase and a waiting view input drop `POLLIN` from the interest (3.6) | unit: the `connection.ml` test "bytes that arrive while the runtime yields reading are kept"; Go `TestHostileClientsDoNotAffectOthers` (the `Content-Length: 99999999999` case) |
 | 5 | the 16 KiB head limit | 616cdef2 | a request head over 16,384 bytes, across reads, gets `431` through the write queue after any earlier pipelined response, then the connection closes; a chunked request gets `411`; the heap does not grow with the head; `/client` and upgrades pass through the same limit | `http.rs` (the byte count per request head, httparse with 128 stack headers and up to 4,096 on the heap), `conn.rs` (the queue order) | unit: the three `connection.ml` tests (the limit as a whole, the boundary at 16,383, 16,384 and 16,385 bytes and the 7-byte split; the heap; the pipelined 431 after a 3 MB response); Go hostile test (20,000 headers, chunked); fuzz `http` and `head` |
@@ -1270,7 +1316,7 @@ library crates with a byte slice:
 | `decode` | each `Request` decoder of `protocol.rs` over the bytes (serde_json and the `compact!` macro) | the decoder part of `fuzz_http` |
 | `frames` | `pane_proc`'s frame reader over the bytes, with a fake ring; each input is also fed in two parts at a fuzzer-chosen cut and must give the same effects | the reference's Monolith `pane-proc` target, which compares a frame fed whole with one fed in two parts |
 | `frame` | `ko_pane_wire::frame`'s frame-size reader: every accepted frame is at least 5 bytes, at most the input and at most `MAX_FRAME + 4` | `fuzz_frame.c` |
-| `control` | `ko-pane`'s control dispatch in process, with a pooled terminal, a fake pty and an in-memory ring; the first byte picks the mode (a fresh terminal or none, a stream read or frame by frame), as `fuzz_control.c` does | `fuzz_control.c`; its 188-input corpus moves from `ko_pane/fuzz/control/` to `fuzz/corpus/control/` unchanged, with `control.dict` and `max_len = 4000` |
+| `control` | `ko-pane`'s control dispatch in process (`ko_pane::control`), with a fresh terminal per input (R3 adds the pool, decision 64), no pty and an in-memory ring; the first byte picks the mode (a fresh terminal or none, a stream read or frame by frame), as `fuzz_control.c` does | `fuzz_control.c`; its 188-input corpus moves from `ko_pane/fuzz/control/` to `fuzz/corpus/control/` unchanged, with `control.dict` and `max_len = 4000` |
 
 Each target has a `#[test]` in the library crate that replays
 `fuzz/corpus/<target>/` through the same function on stable, so
@@ -1649,6 +1695,14 @@ Each stage is one unit of work under one manager. Each ends with
   and the ring with the C tail-acker: 81.0 MB/s at 0.97 core in
   p1-mvp.md 6.2; 78.7 MB/s in 6.5), and the idle `ko-pane` footprint
   stays under 2 MiB (1.5 MiB in p1-mvp.md 6.5).
+- Result (2026-11-01, macOS, load average 3.9 to 5.2, after review):
+  row 3 with 1 GiB, three alternating runs, gave the C `ko-pane`
+  78.7, 79.1 and 79.7 MB/s and the Rust one 77.4, 80.4 and 78.9
+  MB/s (0.5 percent below on the mean). `make probe-ko` through the
+  Rust server gave 77.7 MB/s at 1.068 CPU-s per GiB with the C
+  `ko-pane` and 77.1 MB/s at 1.061 with the Rust one, with no lost
+  record. The idle footprint is 1,824 KB for Rust and 1,552 KB for
+  C. Decisions 60 to 65 came from RP.
 
 ### R3. Harness, fuzz, Miri, bench (4 to 5 agent-days)
 
@@ -2025,8 +2079,8 @@ Conventions:
   WebSocket text message.
 - **Unsafe.** `unsafe` is permitted in `ko_sys`, `ko_vt_sys`'s
   generated file and `ko_pane_wire::ring::mapping`; `ko_pane`,
-  `ko_server` and `ko_tui` deny it. A `pre_exec` closure calls only
-  async-signal-safe functions, and a signal handler only writes its
+  `ko_server` and `ko_tui` deny it. A forked child calls only
+  async-signal-safe functions until `execve`, and a signal handler only writes its
   pipe. Each block has a
   `// SAFETY:` line that names the invariant. A safe wrapper takes
   typed arguments (`BorrowedFd`, `Pid`, `Duration`) and returns

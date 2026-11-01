@@ -317,8 +317,14 @@ These requirements are fixed:
   name of its directory, with the underscore. The crates are in the
   ko directories, beside the OCaml files ("Layout" below). `ko/` is
   the binary `ko`: `ko/src/main.rs` holds the command table and the
-  small command bodies, which print and return the exit code. ko's C stays only in the C `ko-pane` until the
-  Rust `ko-pane` replaces it. Do not add new C.
+  small command bodies, which print and return the exit code.
+  `ko_pane/` is the crate `ko_pane`: the binary `ko-pane`
+  (`src/main.rs`) over a library that the `control` fuzz target also
+  calls. One `ko-pane` process runs for each pane. `fuzz/` is the
+  cargo-fuzz crate, a workspace member outside `default-members`:
+  clippy checks it on stable, and only `make fuzz` runs it. ko's C
+  stays only in the C `ko-pane`, which the OCaml client tests and
+  the C unit tests use until the cut. Do not add new C.
 - **Toolchain.** `rust-toolchain.toml` pins the toolchain of the
   pinned Verus release. They move together. Homebrew's keg-only
   `rustup` formula supplies it (`brew install rustup`, then
@@ -355,7 +361,7 @@ These requirements are fixed:
   every crate inherits them. `clippy.toml` permits `unwrap`, `expect`,
   `panic!` and indexing in tests. The readers of untrusted bytes
   (`ko_pane_wire`'s `frame.rs` and `ring.rs`, `ko_server`'s
-  `pane_proc.rs`) also deny `clippy::indexing_slicing` and
+  `pane_proc.rs`, `ko_pane`'s `io.rs`) also deny `clippy::indexing_slicing` and
   `clippy::arithmetic_side_effects`.
 - **The command line is a contract** with `test_e2e_ko/`, `bench/`
   and `share/`. A long option is `--name`. clap's derive generates
@@ -385,9 +391,10 @@ Conventions:
 - **Tests** are `#[cfg(test)] mod tests` at the bottom of the file
   under test. Expectations are `assert_eq!` on values or strings.
   Property tests use proptest in the same module. No test execs the
-  `ko` binary; the Go suite does that. The `Server` SIGTERM test
-  starts the C `ko-pane` that `make test-ko` builds and names in
-  `KO_PANE_EXE`. A test starts a process only through
+  `ko` binary; the Go suite does that. `ko_pane/tests/pane.rs` drives
+  the `ko-pane` binary over a socketpair and a ring, as
+  `test_pane.c` does. The `Server` SIGTERM test starts the Rust
+  `ko-pane` that `make test-ko` builds and names in `KO_PANE_EXE`. A test starts a process only through
   `ko_sys::spawn::program`, which uses `POSIX_SPAWN_CLOEXEC_DEFAULT`:
   on macOS, `UnixStream::pair` and `accept` set close-on-exec only
   after they create the descriptor, so a `std::process::Command` in
@@ -443,15 +450,20 @@ Conventions:
   connection's descriptor.
 - **Atomics.** The ring header's loads and stores are `SeqCst`
   ("The ring indices are sequentially consistent" below).
-  `scripts/lint.sh` refuses any other `Ordering` in `ko_pane_wire` and
-  `ko_server`, except in the loom model `ring/model.rs`.
+  `scripts/lint.sh` refuses any other `Ordering` in `ko_pane`,
+  `ko_pane_wire` and `ko_server`, except in the loom model
+  `ring/model.rs`.
 - **Signals.** `libc::kill` occurs only in `ko_sys/src/pid.rs`.
   `scripts/lint.sh` refuses it, `killpg`, `nix::sys::signal` and a
   `kill` command elsewhere. `Pid::new` refuses 1 or less, values over
   `i32::MAX`, the own pid and the own process group. A `Group` exists
   only after `Group::verify` read from the OS that the pid is a child
   of the given parent and leads its own group and session.
-  `Group::signal` checks the start time and the group again. `ESRCH`
+  `Group::signal` checks the start time and the group again.
+  `ko-pane` signals its program's group only through the
+  `ko_sys::pty::Program` that `pty::spawn` returned after `exec`.
+  It owns the child and is not `Copy`, and its reap consumes it, so
+  no group signal follows the reap. `ESRCH`
   is not an error, and neither is `EPERM` on a group signal.
 - **Syscalls.** Every own libc call that can return `EINTR` goes
   through `ko_sys::retry`. An `EINTR` from `poll` is a turn with no
@@ -483,6 +495,20 @@ Conventions:
 - **The pane process.** `ko_pane_wire::frame` is the one source of the
   frame's constants for both processes. While the C `ko-pane` exists,
   a unit test checks each constant against `ko_pane/protocol.h`.
+  `ko-pane` holds its program's zombie: it never waits for the
+  child before the final group kill, so the pid and the group id
+  cannot be reused while it lives. `ko_sys::pty::spawn` forks and
+  execs the program itself: between `fork` and `execve` the child
+  calls only async-signal-safe functions on memory prepared before
+  the fork, and it reports a failed step and its errno through a
+  close-on-exec pipe. A setup failure sends an `error` frame that names the
+  failing call and its OS error ("openpty: ..."). The frame is
+  flushed before the process exits.
+- **Fuzz targets.** A target in `fuzz/fuzz_targets/` calls one
+  function of a library crate. That crate has a `#[test]` that
+  replays the target's corpus `fuzz/corpus/<target>/`, or fixed
+  cases if the target has no corpus, through the same function on
+  stable.
 
 ## Layout
 
@@ -572,7 +598,7 @@ The Rust ko (plans/ko-rust.md, "Rust (ko)" above) grows in the same
 directories, beside the OCaml files: `ko_vt/` and `ko_vt_sys/`,
 `ko_server/`, `ko_tui/`, `ko_sys/`, `ko_pane_wire/` and `ko/`.
 `make build-ko` builds the installed layout under `build/ko/`, with
-the C `ko-pane` until the Rust one exists. It also builds the
+the Rust `ko-pane`. It also builds the
 `decode` example of `ko_vt`, the Go suite's snapshot decoder, which is
 never installed. `test_e2e_ko/` runs the binary that `KO_BIN` names
 and the decoder that `KO_DECODE` names. With neither variable set,
@@ -1067,7 +1093,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make verify-ko  scrubbed make build-ko, ko's unit tests (cargo and dune), ko's e2e, and cargo fmt, clippy and scripts/lint.sh
     make build-ko  the Rust ko's installed layout under build/ko/ (macOS only for now)
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
-    make probe-ko BYTES=N  the Rust ring reader under the C ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
+    make probe-ko BYTES=N  the Rust server's ring reader under the Rust ko-pane (PANE=c: the C one), N bytes of bench/streams (default 1 GiB); not part of verify
     make test    dune test --force, ko's Go suite and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite
@@ -1147,9 +1173,10 @@ Do not write a unit test that execs the binary.
 **Fuzzing ko.** ko has no VT-parser target: Ghostty fuzzes
 libghostty-vt upstream. `scripts/fuzz.sh` names the targets:
 
-- `frame` and `control`: libFuzzer targets of `ko-pane`'s frame
+- `frame` and `control`: libFuzzer targets of the C `ko-pane`'s frame
   sizes and frame bodies, with dictionaries and options in
-  `ko_pane/fuzz/`. They build under `--profile fuzz` with an LLVM
+  `fuzz/`. The Rust targets of the same names are in
+  `fuzz/fuzz_targets/`; `scripts/fuzz.sh` runs them from R3. They build under `--profile fuzz` with an LLVM
   clang (`KO_FUZZ_CC`, else one found under Homebrew's `llvm`).
   Apple's clang has no libFuzzer, so the target prints SKIP.
 - `ring` and `pane-proc`: Monolith specifications. Each compares the
@@ -1223,8 +1250,9 @@ timing differ between runs of one seed.
 A bug that a fuzzer finds gets a regression test with that case:
 the explicit input or command list, not a seed, because a seed
 generates a different case when a generator changes.
-`ko_pane/fuzz/control/` is the libFuzzer corpus of `control`, files
-named by SHA-1, that `dune test` replays under ASan and UBSan; only
+`fuzz/corpus/control/` is the libFuzzer corpus of `control`, files
+named by SHA-1, that `dune test` replays under ASan and UBSan through
+the C target and `cargo test` through `ko_pane::control`; only
 `make fuzz MERGE=1` (`scripts/fuzz.sh --merge`) changes it, with a
 `-merge=1` into a minimal set, and only with a code change that needs
 the new inputs.

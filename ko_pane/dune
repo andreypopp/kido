@@ -143,9 +143,9 @@
  (alias runtest)
  (deps
   fuzz-control
-  (source_tree fuzz/control))
+  (source_tree ../fuzz/corpus/control))
  (action
-  (run ./fuzz-control fuzz/control)))
+  (run ./fuzz-control ../fuzz/corpus/control)))
 
 (rule
  (targets fuzz-control-libfuzzer)

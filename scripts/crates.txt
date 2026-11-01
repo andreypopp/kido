@@ -1,5 +1,6 @@
 aho-corasick
 anstyle
+arbitrary
 arrayvec
 autocfg
 bit-set
@@ -28,6 +29,7 @@ errno
 fastrand
 find-msvc-tools
 fnv
+fuzz
 generator
 getrandom
 hashbrown
@@ -37,7 +39,9 @@ httparse
 hybrid-array
 indexmap
 itoa
+jobserver
 ko
+ko_pane
 ko_pane_wire
 ko_server
 ko_sys
@@ -46,6 +50,7 @@ ko_vt
 ko_vt_sys
 lazy_static
 libc
+libfuzzer-sys
 linux-raw-sys
 log
 loom

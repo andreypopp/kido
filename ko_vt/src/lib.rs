@@ -6,8 +6,12 @@ use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::ptr::{self, NonNull};
 
-use ko_pane_wire::frame::{CellPx, Dim, Limits, Scrollback, Size};
+use ko_pane_wire::frame::{Dim, Limits, Medium, Scrollback, Size};
 use ko_vt_sys as sys;
+
+pub mod compress;
+mod cut;
+pub mod input;
 
 #[derive(Debug)]
 pub enum Error {
@@ -16,6 +20,7 @@ pub enum Error {
     NoTerminal,
     Rows(usize),
     Read(io::Error),
+    Stopped,
 }
 
 impl fmt::Display for Error {
@@ -26,6 +31,7 @@ impl fmt::Display for Error {
             Error::NoTerminal => write!(f, "the snapshot decoder returned no terminal"),
             Error::Rows(rows) => write!(f, "{rows} rows exceed a grid coordinate"),
             Error::Read(error) => write!(f, "snapshot read: {error}"),
+            Error::Stopped => write!(f, "the output stopped the encoder"),
         }
     }
 }
@@ -50,9 +56,47 @@ pub enum Extent {
     Full,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Changes {
+    pub title: bool,
+    pub pwd: bool,
+}
+
+#[derive(Debug, Default)]
+struct Notes {
+    replies: Vec<u8>,
+    changes: Changes,
+}
+
 #[derive(Debug)]
 pub struct Terminal {
     vt: NonNull<sys::GhosttyTerminalImpl>,
+    notes: Box<Notes>,
+}
+
+unsafe extern "C" fn write_pty(
+    _terminal: sys::GhosttyTerminal,
+    userdata: *mut c_void,
+    data: *const u8,
+    len: usize,
+) {
+    // SAFETY: userdata is the `Notes` that `serve` registered, which the terminal owns and
+    // nothing else touches during a write; data holds len readable bytes (terminal.h).
+    unsafe {
+        (*userdata.cast::<Notes>())
+            .replies
+            .extend_from_slice(std::slice::from_raw_parts(data, len));
+    }
+}
+
+unsafe extern "C" fn title_changed(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
+    // SAFETY: as in `write_pty`.
+    unsafe { (*userdata.cast::<Notes>()).changes.title = true };
+}
+
+unsafe extern "C" fn pwd_changed(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
+    // SAFETY: as in `write_pty`.
+    unsafe { (*userdata.cast::<Notes>()).changes.pwd = true };
 }
 
 impl Drop for Terminal {
@@ -101,6 +145,23 @@ unsafe extern "C" fn read_into<R: Read>(
                 return false;
             }
         }
+    }
+}
+
+unsafe extern "C" fn call_back<F: FnMut(&[u8]) -> bool>(
+    userdata: *mut c_void,
+    data: *const u8,
+    len: usize,
+) -> bool {
+    // SAFETY: userdata is the closure that `callback_writer` lends for one libghostty-vt call,
+    // and data holds len readable bytes (io.h).
+    unsafe { (*userdata.cast::<F>())(std::slice::from_raw_parts(data, len)) }
+}
+
+fn callback_writer<F: FnMut(&[u8]) -> bool>(sink: &mut F) -> sys::GhosttyWriter {
+    sys::GhosttyWriter {
+        write: Some(call_back::<F>),
+        userdata: ptr::from_mut(sink).cast(),
     }
 }
 
@@ -157,6 +218,7 @@ impl Terminal {
         check(unsafe { sys::ghostty_terminal_new(ptr::null(), &mut vt, cols.get(), rows.get()) })?;
         let terminal = Terminal {
             vt: NonNull::new(vt).ok_or(Error::NoHandle)?,
+            notes: Box::default(),
         };
         let (bytes, lines) = match limits.scrollback {
             Scrollback::Disabled => (Some(0), None),
@@ -220,12 +282,90 @@ impl Terminal {
                 .and_then(|()| restore(decoder, &mut vt, extent));
         // SAFETY: the decoder is freed once, whatever the result; snapshot.h permits NULL.
         unsafe { sys::ghostty_snapshot_decoder_free(decoder) };
-        let terminal = NonNull::new(vt).map(|vt| Terminal { vt });
+        let terminal = NonNull::new(vt).map(|vt| Terminal {
+            vt,
+            notes: Box::default(),
+        });
         if let Some(error) = source.error {
             return Err(Error::Read(error));
         }
         result?;
         terminal.ok_or(Error::NoTerminal)
+    }
+
+    pub fn serve(&mut self, media: &[Medium], tmpdir: &str) -> Result<(), Error> {
+        let flag = |medium| media.contains(&medium);
+        let set = |option, value: *const c_void| {
+            // SAFETY: each caller passes the type that terminal.h documents for its option.
+            check(unsafe { sys::ghostty_terminal_set(self.vt.as_ptr(), option, value) })
+        };
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
+            ptr::from_ref(&flag(Medium::File)).cast(),
+        )?;
+        let tmpdir = sys::GhosttyString {
+            ptr: tmpdir.as_ptr(),
+            len: tmpdir.len(),
+        };
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
+            if flag(Medium::TempFile) {
+                ptr::from_ref(&tmpdir).cast()
+            } else {
+                ptr::null()
+            },
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
+            ptr::from_ref(&flag(Medium::SharedMem)).cast(),
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_USERDATA,
+            ptr::from_mut(&mut *self.notes).cast(),
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_WRITE_PTY,
+            write_pty as unsafe extern "C" fn(_, _, _, _) as *const c_void,
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
+            title_changed as unsafe extern "C" fn(_, _) as *const c_void,
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
+            pwd_changed as unsafe extern "C" fn(_, _) as *const c_void,
+        )
+    }
+
+    pub fn replies(&mut self) -> &mut Vec<u8> {
+        &mut self.notes.replies
+    }
+
+    pub fn take_changes(&mut self) -> Changes {
+        std::mem::take(&mut self.notes.changes)
+    }
+
+    pub fn title(&self) -> Result<&[u8], Error> {
+        self.string(sys::GHOSTTY_TERMINAL_DATA_TITLE)
+    }
+
+    pub fn pwd(&self) -> Result<&[u8], Error> {
+        self.string(sys::GHOSTTY_TERMINAL_DATA_PWD)
+    }
+
+    fn string(&self, data: sys::GhosttyTerminalData) -> Result<&[u8], Error> {
+        let empty = sys::GhosttyString {
+            ptr: ptr::null(),
+            len: 0,
+        };
+        let string = self.get(data, empty)?;
+        Ok(if string.len == 0 {
+            &[]
+        } else {
+            // SAFETY: the string holds len readable bytes until the next terminal call, which
+            // the borrow of self excludes.
+            unsafe { std::slice::from_raw_parts(string.ptr, string.len) }
+        })
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -234,20 +374,94 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, size: Size) -> Result<(), Error> {
-        let cell = size.cell_px.unwrap_or(CellPx::DEFAULT);
+        let (width, height) = size.cell_pixels();
         // SAFETY: the handle is live.
         check(unsafe {
             sys::ghostty_terminal_resize(
                 self.vt.as_ptr(),
                 size.cols.get(),
                 size.rows.get(),
-                u32::from(cell.width.get()),
-                u32::from(cell.height.get()),
+                u32::from(width),
+                u32::from(height),
             )
         })
     }
 
-    fn get<T>(&self, data: sys::GhosttyTerminalData, mut value: T) -> Result<T, Error> {
+    pub(crate) fn compression_activity(&self) -> Result<u64, Error> {
+        let mut activity = 0;
+        // SAFETY: the handle is live, and activity is writable.
+        check(unsafe {
+            sys::ghostty_terminal_compression_activity(self.vt.as_ptr(), &mut activity)
+        })?;
+        Ok(activity)
+    }
+
+    pub(crate) fn compress_step(&mut self) -> Result<bool, Error> {
+        let mut result = 0;
+        // SAFETY: the handle is live, and result is writable.
+        check(unsafe {
+            sys::ghostty_terminal_compress(
+                self.vt.as_ptr(),
+                sys::GHOSTTY_TERMINAL_COMPRESSION_MODE_INCREMENTAL,
+                &mut result,
+            )
+        })?;
+        Ok(result == sys::GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING)
+    }
+
+    pub fn snapshot(
+        &mut self,
+        screen: bool,
+        mut emit: impl FnMut(&[u8]) -> bool,
+    ) -> Result<(), Error> {
+        let mut cut = cut::Cut::new(screen);
+        let synchronized = self.mode(2026)?;
+        if synchronized {
+            self.set_mode(2026, false)?;
+        }
+        let mut failed = false;
+        let mut sink = |bytes: &[u8]| {
+            failed = cut
+                .feed(bytes, &mut |piece: &[u8]| {
+                    if emit(piece) { Ok(()) } else { Err(()) }
+                })
+                .is_err();
+            !failed && !cut.done()
+        };
+        // SAFETY: the handle is live, and the writer's sink outlives the call.
+        let result = check(unsafe {
+            sys::ghostty_snapshot_encode(self.vt.as_ptr(), callback_writer(&mut sink))
+        });
+        let restored = if synchronized {
+            self.set_mode(2026, true)
+        } else {
+            Ok(())
+        };
+        if failed {
+            Err(Error::Stopped)
+        } else if cut.done() {
+            restored
+        } else {
+            result.and(restored)
+        }
+    }
+
+    fn set_mode(&mut self, number: u16, value: bool) -> Result<(), Error> {
+        let mode = sys::GhosttyTerminalModeConfig {
+            mode: number,
+            value,
+        };
+        // SAFETY: the handle is live, and OPT_MODE takes a mode config.
+        check(unsafe {
+            sys::ghostty_terminal_set(
+                self.vt.as_ptr(),
+                sys::GHOSTTY_TERMINAL_OPT_MODE,
+                ptr::from_ref(&mode).cast(),
+            )
+        })
+    }
+
+    pub(crate) fn get<T>(&self, data: sys::GhosttyTerminalData, mut value: T) -> Result<T, Error> {
         // SAFETY: each caller names the data whose input and output type terminal.h documents as
         // T.
         check(unsafe {
@@ -266,6 +480,82 @@ impl Terminal {
 
     pub fn total_rows(&self) -> Result<usize, Error> {
         self.get(sys::GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, 0usize)
+    }
+
+    pub fn screen(
+        &self,
+        format: Format,
+        history: u32,
+        mut emit: impl FnMut(&[u8]) -> bool,
+    ) -> Result<(), Error> {
+        let cols: u16 = self.get(sys::GHOSTTY_TERMINAL_DATA_COLS, 0)?;
+        let rows: u16 = self.get(sys::GHOSTTY_TERMINAL_DATA_ROWS, 0)?;
+        let total = self.total_rows()?;
+        let last = total.saturating_sub(1);
+        let start = total.saturating_sub(usize::from(rows));
+        let start = usize::try_from(history).map_or(0, |history| start.saturating_sub(history));
+        let point = |x: u16, y: usize| -> Result<sys::GhosttyPoint, Error> {
+            Ok(sys::GhosttyPoint {
+                tag: sys::GHOSTTY_POINT_TAG_SCREEN,
+                value: sys::GhosttyPointValue {
+                    coordinate: sys::GhosttyPointCoordinate {
+                        x,
+                        y: u32::try_from(y).map_err(|_| Error::Rows(y))?,
+                    },
+                },
+            })
+        };
+        let mut selection = sys::GhosttySelection {
+            size: size_of::<sys::GhosttySelection>(),
+            ..Default::default()
+        };
+        // SAFETY: both points lie inside the terminal's grid, and the refs receive their result.
+        check(unsafe {
+            sys::ghostty_terminal_grid_ref(self.vt.as_ptr(), point(0, start)?, &mut selection.start)
+        })?;
+        // SAFETY: as above.
+        check(unsafe {
+            sys::ghostty_terminal_grid_ref(
+                self.vt.as_ptr(),
+                point(cols.saturating_sub(1), last)?,
+                &mut selection.end,
+            )
+        })?;
+        let options = sys::GhosttyFormatterTerminalOptions {
+            size: size_of::<sys::GhosttyFormatterTerminalOptions>(),
+            emit: if format == Format::Vt {
+                sys::GHOSTTY_FORMATTER_FORMAT_VT
+            } else {
+                sys::GHOSTTY_FORMATTER_FORMAT_PLAIN
+            },
+            trim: true,
+            extra: sys::GhosttyFormatterTerminalExtra {
+                size: size_of::<sys::GhosttyFormatterTerminalExtra>(),
+                screen: sys::GhosttyFormatterScreenExtra {
+                    size: size_of::<sys::GhosttyFormatterScreenExtra>(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            selection: &selection,
+            ..Default::default()
+        };
+        let mut formatter = ptr::null_mut();
+        // SAFETY: the options and the selection outlive the formatter, which is freed below.
+        check(unsafe {
+            sys::ghostty_formatter_terminal_new(
+                ptr::null(),
+                &mut formatter,
+                self.vt.as_ptr(),
+                options,
+            )
+        })?;
+        // SAFETY: the formatter is live, and the writer's sink outlives the call.
+        let result =
+            unsafe { sys::ghostty_formatter_format(formatter, callback_writer(&mut emit)) };
+        // SAFETY: the formatter was created above and is not used again.
+        unsafe { sys::ghostty_formatter_free(formatter) };
+        check(result)
     }
 
     pub fn dump(&self, format: Format) -> Result<Vec<u8>, Error> {
@@ -363,6 +653,7 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ko_pane_wire::frame::Key;
 
     fn dim(value: u16) -> Dim {
         Dim::new(value).unwrap()
@@ -541,6 +832,142 @@ mod tests {
         );
         let truncated = Terminal::decode(&mut &b"GHOSTSNP"[..], Extent::Screen).unwrap_err();
         assert_eq!(truncated.to_string(), "libghostty-vt operation failed (-2)");
+    }
+
+    fn served(cols: u16, rows: u16) -> Terminal {
+        let mut vt = make(cols, rows);
+        vt.serve(&[], "/tmp").unwrap();
+        vt
+    }
+
+    #[test]
+    fn callbacks_collect_replies_and_changes_without_touching_the_terminal() {
+        let mut vt = served(20, 4);
+        vt.write(b"\x1b[5n\x1b]2;a title\x07\x1b]7;file://localhost/tmp\x07\x1b]2;second\x07");
+        assert_eq!(vt.replies().as_slice(), b"\x1b[0n");
+        assert_eq!(
+            vt.take_changes(),
+            Changes {
+                title: true,
+                pwd: true
+            }
+        );
+        assert_eq!(vt.title().unwrap(), b"second");
+        assert_eq!(vt.pwd().unwrap(), b"file://localhost/tmp");
+        assert_eq!(vt.take_changes(), Changes::default());
+        vt.write(b"plain text\r\n");
+        assert_eq!(vt.take_changes(), Changes::default());
+    }
+
+    #[test]
+    fn a_snapshot_is_taken_with_synchronized_output_off_and_leaves_it_on() {
+        let mut vt = served(20, 4);
+        vt.write(b"\x1b[?2026hhello");
+        let mut bytes = Vec::new();
+        vt.snapshot(false, |piece| {
+            bytes.extend_from_slice(piece);
+            true
+        })
+        .unwrap();
+        assert!(vt.mode(2026).unwrap());
+        assert!(!decode(&bytes, Extent::Full).mode(2026).unwrap());
+    }
+
+    #[test]
+    fn a_screen_cut_ends_at_the_ready_record_and_a_stopped_encoder_is_an_error() {
+        let mut vt = served(16, 2);
+        for i in 0..5_000 {
+            vt.write(format!("line{i:05}\r\n").as_bytes());
+        }
+        let mut encode = |screen| {
+            let mut bytes = Vec::new();
+            vt.snapshot(screen, |piece| {
+                bytes.extend_from_slice(piece);
+                true
+            })
+            .unwrap();
+            bytes
+        };
+        let (screen, full) = (encode(true), encode(false));
+        assert!(screen.len() < full.len(), "{} {}", screen.len(), full.len());
+        assert_eq!(
+            decode(&screen, Extent::Screen).dump(Format::Plain).unwrap(),
+            vt.dump(Format::Plain).unwrap()
+        );
+        let stopped = vt.snapshot(false, |_| false);
+        assert!(matches!(stopped, Err(Error::Stopped)));
+    }
+
+    #[test]
+    fn a_screen_request_starts_the_given_number_of_rows_above_the_visible_ones() {
+        let mut vt = served(10, 3);
+        for i in 0..10 {
+            vt.write(format!("row {i}\r\n").as_bytes());
+        }
+        let screen = |history| {
+            let mut bytes = Vec::new();
+            vt.screen(Format::Plain, history, |piece| {
+                bytes.extend_from_slice(piece);
+                true
+            })
+            .unwrap();
+            String::from_utf8(bytes).unwrap()
+        };
+        assert_eq!(screen(0), "row 8\nrow 9");
+        assert_eq!(screen(2), "row 6\nrow 7\nrow 8\nrow 9");
+        assert_eq!(screen(u32::MAX).lines().count(), 10);
+        assert!(screen(u32::MAX).starts_with("row 0\n"));
+    }
+
+    #[test]
+    fn input_is_encoded_for_the_modes_the_program_set() {
+        use ko_pane_wire::frame::{KeyAction, KeyCode, Mouse, MouseAction, MouseButton};
+        let mut vt = served(20, 4);
+        let alt_a = Key {
+            action: KeyAction::Press,
+            key: KeyCode::new(sys::GHOSTTY_KEY_A as u16).unwrap(),
+            mods: sys::GHOSTTY_MODS_ALT as u16,
+            unshifted: 'a',
+            text: "\u{e5}".to_owned(),
+            composing: false,
+        };
+        assert_eq!(vt.encode_key(&alt_a).unwrap(), b"\x1ba");
+        let left = Mouse {
+            action: MouseAction::Press,
+            button: MouseButton::Left,
+            col: 3,
+            row: 2,
+            mods: 0,
+        };
+        assert_eq!(vt.encode_mouse(&left).unwrap(), b"");
+        assert_eq!(vt.encode_focus(true).unwrap(), b"");
+        vt.write(b"\x1b[?1000h\x1b[?1006h\x1b[?1004h\x1b[?2004h");
+        assert_eq!(vt.encode_mouse(&left).unwrap(), b"\x1b[<0;4;3M");
+        assert_eq!(vt.encode_focus(true).unwrap(), b"\x1b[I");
+        assert_eq!(vt.encode_focus(false).unwrap(), b"\x1b[O");
+        let pasted = vt.paste("hi", true).unwrap();
+        assert_eq!(
+            (pasted, vt.replies().as_slice()),
+            (
+                input::Pasted {
+                    written: true,
+                    rejected: false
+                },
+                &b"\x1b[200~hi\x1b[201~"[..]
+            )
+        );
+        vt.replies().clear();
+        let unsafe_text = vt.paste("a\x1b[201~b", true).unwrap();
+        assert_eq!(
+            (unsafe_text, vt.replies().as_slice()),
+            (
+                input::Pasted {
+                    written: false,
+                    rejected: true
+                },
+                &b""[..]
+            )
+        );
     }
 
     #[test]

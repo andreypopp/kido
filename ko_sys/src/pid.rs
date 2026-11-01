@@ -12,6 +12,16 @@ pub enum Exit {
     Signaled(i32),
 }
 
+impl Exit {
+    fn new(exited: bool, value: i32) -> Exit {
+        if exited {
+            Exit::Exited(value)
+        } else {
+            Exit::Signaled(value)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Waited {
     Running,
@@ -54,6 +64,30 @@ impl Pid {
         }
     }
 
+    pub fn peek_exit(self) -> io::Result<Option<Exit>> {
+        let id = libc::id_t::try_from(self.0).map_err(io::Error::other)?;
+        // SAFETY: an all-zero siginfo_t is valid, and waitid fills it.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        retry(|| {
+            // SAFETY: info is writable; WNOWAIT leaves the child waitable.
+            check(unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    id,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            })
+        })?;
+        if info.si_pid != self.0 {
+            return Ok(None);
+        }
+        Ok(Some(Exit::new(
+            info.si_code == libc::CLD_EXITED,
+            info.si_status,
+        )))
+    }
+
     pub fn try_wait(self) -> io::Result<Waited> {
         self.waited(libc::WNOHANG)
     }
@@ -69,12 +103,12 @@ impl Pid {
         match waited {
             Ok(0) => Ok(Waited::Running),
             Ok(_) if libc::WIFEXITED(status) => {
-                Ok(Waited::Ended(Exit::Exited(libc::WEXITSTATUS(status))))
+                Ok(Waited::Ended(Exit::new(true, libc::WEXITSTATUS(status))))
             }
             Ok(_) if libc::WIFSIGNALED(status) => {
-                Ok(Waited::Ended(Exit::Signaled(libc::WTERMSIG(status))))
+                Ok(Waited::Ended(Exit::new(false, libc::WTERMSIG(status))))
             }
-            Ok(_) => Ok(Waited::Ended(Exit::Signaled(libc::WSTOPSIG(status)))),
+            Ok(_) => Ok(Waited::Ended(Exit::new(false, libc::WSTOPSIG(status)))),
             Err(error) if error.raw_os_error() == Some(libc::ECHILD) => Ok(Waited::NoChild),
             Err(error) => Err(error),
         }
@@ -123,9 +157,15 @@ fn identity(pid: Pid) -> Option<Identity> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Proof {
+    Start(u64),
+    Held,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Group {
     leader: Pid,
-    start: u64,
+    proof: Proof,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +182,7 @@ impl Group {
             Some(found) if found.ppid == parent.0 && found.pgid == pid.0 && found.sid == pid.0 => {
                 Verdict::Child(Group {
                     leader: pid,
-                    start: found.start,
+                    proof: Proof::Start(found.start),
                 })
             }
             Some(_) => Verdict::Foreign,
@@ -156,26 +196,34 @@ impl Group {
         }
     }
 
+    pub(crate) fn held(leader: Pid) -> Group {
+        Group {
+            leader,
+            proof: Proof::Held,
+        }
+    }
+
     pub fn leader(&self) -> Pid {
         self.leader
     }
 
     pub fn signal(&self, signal: Signal) -> io::Result<()> {
-        match identity(self.leader) {
-            Some(found) if found.start == self.start && found.pgid == self.leader.0 => {
-                // SAFETY: the leader is a verified group leader whose start time still matches.
-                match check(unsafe { libc::kill(-self.leader.0, signal.number()) }) {
-                    Ok(_) => Ok(()),
-                    // macOS can return EPERM for a group with only zombies or exiting processes.
-                    Err(error)
-                        if matches!(error.raw_os_error(), Some(libc::ESRCH | libc::EPERM)) =>
-                    {
-                        Ok(())
-                    }
-                    Err(error) => Err(error),
-                }
+        let current = match self.proof {
+            Proof::Start(start) => {
+                matches!(identity(self.leader), Some(found) if found.start == start && found.pgid == self.leader.0)
             }
-            Some(_) | None => Ok(()),
+            Proof::Held => true,
+        };
+        if !current {
+            return Ok(());
+        }
+        // SAFETY: the leader is a verified group leader whose start time still matches, or the
+        // spawned child whose zombie its parent holds, so its pid and group id are not reused.
+        match check(unsafe { libc::kill(-self.leader.0, signal.number()) }) {
+            Ok(_) => Ok(()),
+            // macOS can return EPERM for a group with only zombies or exiting processes.
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ESRCH | libc::EPERM)) => Ok(()),
+            Err(error) => Err(error),
         }
     }
 }
@@ -216,6 +264,24 @@ mod tests {
     }
 
     #[test]
+    fn a_held_zombie_still_answers_peek_exit_and_signal_zero_until_it_is_reaped() {
+        let pid = spawn::program(Path::new("/bin/sh"), &["-c", "exit 7"], &[]).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let exit = loop {
+            if let Some(exit) = pid.peek_exit().unwrap() {
+                break exit;
+            }
+            assert!(std::time::Instant::now() < deadline, "no exit within 5 s");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        assert_eq!(exit, Exit::Exited(7));
+        assert_eq!(pid.peek_exit().unwrap(), Some(Exit::Exited(7)));
+        assert!(pid.alive());
+        assert_eq!(pid.wait().unwrap(), Waited::Ended(Exit::Exited(7)));
+        assert!(!pid.alive());
+    }
+
+    #[test]
     fn only_the_parents_own_session_leader_is_a_child() {
         let parent = Pid(4242);
         let pid = Pid(900);
@@ -235,7 +301,7 @@ mod tests {
             verdict(found(4242, 900, 900)),
             Verdict::Child(Group {
                 leader: pid,
-                start: 7
+                proof: Proof::Start(7)
             })
         );
         assert_eq!(verdict(None), Verdict::Gone);
@@ -261,8 +327,11 @@ mod tests {
             panic!("child not verified");
         };
         assert_eq!(verified.leader, child);
+        let Proof::Start(start) = verified.proof else {
+            panic!("verified without a start time");
+        };
         let tampered = Group {
-            start: verified.start + 1,
+            proof: Proof::Start(start + 1),
             ..verified
         };
         tampered.signal(Signal::Kill).unwrap();

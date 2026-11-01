@@ -305,20 +305,20 @@ mod tests {
     fn harness(name: &str) -> Harness {
         let dir = PathBuf::from(format!("/tmp/ko-router-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let config = Config {
-            dir: dir.clone(),
-            socket: dir.join("socket"),
-            pane_exe: PathBuf::from(
-                std::env::var_os("KO_PANE_EXE")
-                    .expect("KO_PANE_EXE names the C ko-pane; make test-ko builds it and sets it"),
-            ),
-            terminfo: dir.clone(),
-            shell: PathBuf::from("/bin/sh"),
-            limits: DEFAULT_LIMITS,
-            media: Vec::new(),
-            env: Vec::new(),
-            cwd: PathBuf::from("/"),
-        };
+        let config =
+            Config {
+                dir: dir.clone(),
+                socket: dir.join("socket"),
+                pane_exe: PathBuf::from(std::env::var_os("KO_PANE_EXE").expect(
+                    "KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it",
+                )),
+                terminfo: dir.clone(),
+                shell: PathBuf::from("/bin/sh"),
+                limits: DEFAULT_LIMITS,
+                media: Vec::new(),
+                env: Vec::new(),
+                cwd: PathBuf::from("/"),
+            };
         let mut poll = Poll::new();
         let mut state = State::new(config, &mut poll, Duration::from_millis(2));
         let cat = CreatePane {

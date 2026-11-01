@@ -85,6 +85,7 @@ pub(crate) struct Output {
     stream: UnixStream,
     queue: Queue,
     open: bool,
+    refused: bool,
 }
 
 fn write_slices(stream: &UnixStream, slices: &[IoSlice<'_>]) -> io::Result<usize> {
@@ -100,11 +101,16 @@ impl Output {
     }
 
     pub(crate) fn waiting(&self) -> bool {
-        !self.queue.is_empty()
+        self.refused || !self.queue.is_empty()
     }
 
     pub(crate) fn available(&self) -> bool {
-        self.open && self.queue.is_empty()
+        self.open && !self.waiting()
+    }
+
+    pub(crate) fn writable(&mut self) {
+        self.refused = false;
+        self.flush();
     }
 
     pub(crate) fn parts(&mut self) -> (&UnixStream, &mut Queue) {
@@ -163,7 +169,10 @@ impl Output {
         let header = header.get(..size).unwrap_or_default();
         let written = if self.available() {
             match write_slices(&self.stream, &[IoSlice::new(header), IoSlice::new(payload)]) {
-                Ok(count) => count,
+                Ok(count) => {
+                    self.refused = count == 0;
+                    count
+                }
                 Err(_) => {
                     self.close();
                     return Written::Closed;
@@ -211,7 +220,10 @@ impl Output {
         let count = batch.entries.len();
         let mut remaining = if self.available() {
             match write_slices(&self.stream, slices.get(..2 * count).unwrap_or_default()) {
-                Ok(written) => written,
+                Ok(written) => {
+                    self.refused = written == 0;
+                    written
+                }
                 Err(_) => {
                     self.close();
                     return None;
@@ -357,6 +369,7 @@ impl Conn {
                 stream,
                 queue: Queue::default(),
                 open: true,
+                refused: false,
             },
             input: vec![0; MAX_HEAD].into_boxed_slice(),
             start: 0,
@@ -559,7 +572,7 @@ impl Conn {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ko_sys::event::{Events, Mode};
     use std::io::Read as _;
@@ -904,7 +917,7 @@ mod tests {
         );
     }
 
-    fn output() -> (Output, UnixStream) {
+    pub(crate) fn output() -> (Output, UnixStream) {
         let (writer, reader) = UnixStream::pair().unwrap();
         writer.set_nonblocking(true).unwrap();
         reader.set_nonblocking(true).unwrap();
@@ -912,7 +925,14 @@ mod tests {
             stream: writer,
             queue: Queue::default(),
             open: true,
+            refused: false,
         };
+        (out, reader)
+    }
+
+    pub(crate) fn full_output() -> (Output, UnixStream) {
+        let (out, reader) = output();
+        while (&out.stream).write(&[0; 4096]).is_ok() {}
         (out, reader)
     }
 

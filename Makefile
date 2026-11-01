@@ -106,16 +106,15 @@ release:
 website:
 	cd website && npm ci && npm run dev
 
-# The installed layout of the Rust ko. Until the Rust ko-pane exists,
-# ko-pane is the C one, taken with the terminfo from dune's install tree.
-# The decode example is the Go suite's snapshot decoder and is never
+# The installed layout of the Rust ko: the Rust ko-pane, and the terminfo
+# from dune's install tree. The decode example is the Go suite's snapshot decoder and is never
 # installed.
 KO := build/ko
 build-ko:
 	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release --bins --example decode
 	dune build @install
 	mkdir -p $(KO)/bin $(KO)/share
-	cp -f target/release/ko $(DUNE_INSTALL)/bin/ko-pane $(KO)/bin/
+	cp -f target/release/ko target/release/ko-pane $(KO)/bin/
 	cp -RLf $(DUNE_INSTALL)/share/ko $(KO)/share/
 	chmod -R u+w $(KO)
 
@@ -124,10 +123,12 @@ build-ko-ocaml:
 
 # The loom models of the ring handshake build with --cfg loom, so they get their own target
 # directory and do not rebuild the workspace's.
-# The server tests start the C ko-pane, which dune builds.
+# The server tests start the Rust ko-pane. dune test runs the unit tests of the C ko-pane, which
+# stays until the cut. The default members of the workspace exclude fuzz/, which needs a nightly
+# toolchain to run.
 test-ko:
-	dune build ko_pane/ko-pane
-	KO_PANE_EXE=$(CURDIR)/$(DUNE_DEFAULT)/ko_pane/ko-pane $(CARGO) test --locked --workspace
+	$(CARGO) build --locked -p ko_pane
+	KO_PANE_EXE=$(CURDIR)/target/debug/ko-pane $(CARGO) test --locked
 	RUSTFLAGS='--cfg loom' $(CARGO) test --locked --release -p ko_pane_wire --target-dir target/loom ring::model
 	KO_CHECK_CONTRACTS=true dune test --force ko_server ko_server/fuzz ko_tui ko_vt ko_pane
 
@@ -139,12 +140,14 @@ lint-ko:
 bindgen:
 	./scripts/bindgen.sh
 
-# The ring reader under the C ko-pane: BYTES of bench/streams through one pane, with every record
+# The ring reader under a ko-pane: BYTES of bench/streams through one pane, with every record
 # counted. It reports throughput, coordinator CPU and lost records; it is not part of verify.
+# PANE=c takes the C ko-pane that dune builds, the default is the Rust one.
 probe-ko:
 	dune build ko_pane/ko-pane bench/produce.exe
 	$(CARGO) build --locked --release -p ko_server --example ring_probe
-	target/release/examples/ring_probe $(CURDIR)/$(DUNE_DEFAULT)/ko_pane/ko-pane $(CURDIR)/$(DUNE_DEFAULT)/bench/produce.exe \
+	$(CARGO) build --locked --release -p ko_pane
+	target/release/examples/ring_probe $(if $(filter c,$(PANE)),$(CURDIR)/$(DUNE_DEFAULT)/ko_pane/ko-pane,$(CURDIR)/target/release/ko-pane) $(CURDIR)/$(DUNE_DEFAULT)/bench/produce.exe \
 		$(or $(BYTES),1073741824) $(addprefix $(CURDIR)/,$(wildcard bench/streams/*.vt))
 
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX

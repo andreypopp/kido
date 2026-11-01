@@ -111,6 +111,13 @@ impl Shared {
         Some(())
     }
 
+    pub(super) fn room(&mut self, at: u64, len: usize) -> Option<&mut [u8]> {
+        let start = self.data(at, len)?;
+        // SAFETY: the bytes lie inside the mapping; the writer owns its room, which no reader
+        // reads before the writer publishes a head past it, and `&mut self` is its only handle.
+        Some(unsafe { std::slice::from_raw_parts_mut(start, len) })
+    }
+
     pub(super) fn write(&self, at: u64, bytes: &[u8]) -> Option<()> {
         let start = self.data(at, bytes.len())?;
         // SAFETY: the bytes lie inside the mapping; the writer writes only its room, which no

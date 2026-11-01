@@ -8,12 +8,13 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use ko_pane_wire::frame::{
-    self, FromPane, History, Init, Key, MAX_FRAME, Malformed, Mouse, Oversize, Req, ScreenFormat,
-    ScreenRows, Size, ToPane,
+    self, FromPane, History, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse, Oversize, Req,
+    ScreenFormat, ScreenRows, Size, ToPane,
 };
 use ko_pane_wire::ring::{Invalid, Pos, Reader, RecordKind};
 use ko_sys::clock::Mono;
 use ko_sys::event::{Interest, Poll, Read, Reads, Ready, Token};
+use ko_sys::fd::Queue;
 use ko_sys::pid::{Exit, Group, Pid, Verdict, Waited};
 use ko_sys::signal::Signal;
 
@@ -22,7 +23,7 @@ use crate::ids::PaneId;
 
 const RING_CAPACITY: u64 = 1 << 20;
 const INPUT: usize = 65536;
-const MAX_INPUT: usize = MAX_FRAME as usize + 4;
+const MAX_INPUT: usize = MAX_FRAME_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Life {
@@ -190,8 +191,7 @@ struct Waiting {
 #[derive(Debug)]
 pub(crate) struct PaneProc {
     stage: Stage,
-    out: Vec<u8>,
-    sent: usize,
+    out: Queue,
     pid: Pid,
     child: Claim,
     title: Vec<u8>,
@@ -231,11 +231,11 @@ impl PaneProc {
         let init = Init {
             size: Size::DEFAULT,
             limits: config.limits,
-            media: &config.media,
-            cwd,
-            argv,
-            env,
-            id: &id,
+            media: (&config.media[..]).into(),
+            cwd: cwd.into(),
+            argv: argv.into(),
+            env: env.into(),
+            id: id.as_str().into(),
         };
         frame::encode(&ToPane::Init(&init), &mut out).map_err(|oversize| {
             io::Error::new(io::ErrorKind::InvalidInput, oversize.to_string())
@@ -247,7 +247,7 @@ impl PaneProc {
         socket.set_nonblocking(true)?;
         let token = io.poll.watch(socket.as_fd(), Interest::Read);
         let mut proc = PaneProc::new(socket, token, ring, pid, cwd);
-        proc.out = out;
+        proc.out.bytes = out;
         proc.flush(io);
         Ok(proc)
     }
@@ -260,8 +260,7 @@ impl PaneProc {
                 token,
                 ring,
             },
-            out: Vec::new(),
-            sent: 0,
+            out: Queue::default(),
             pid,
             child: Claim::Awaiting,
             title: Vec::new(),
@@ -394,23 +393,9 @@ impl PaneProc {
             return;
         };
         let token = *token;
-        let mut failed = false;
-        while let Some(rest) = self.out.get(self.sent..).filter(|rest| !rest.is_empty()) {
-            match ko_sys::fd::write(socket.as_fd(), rest) {
-                Ok(count) => self.sent = self.sent.saturating_add(count),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(_) => {
-                    failed = true;
-                    break;
-                }
-            }
-        }
-        if self.sent >= self.out.len() {
-            self.out.clear();
-            self.sent = 0;
-        } else if self.sent > self.out.len() / 2 {
-            self.out.drain(..self.sent);
-            self.sent = 0;
+        let failed = self.out.flush(socket.as_fd()).is_err();
+        if self.out.sent_past_half() {
+            self.out.compact();
         }
         if failed {
             self.failure(Fault::Closed, io);
@@ -423,7 +408,7 @@ impl PaneProc {
     fn send(&mut self, frame: &ToPane<'_>, io: &mut Io<'_>) -> Result<(), Oversize> {
         if self.is_open() {
             let idle = self.out.is_empty();
-            frame::encode(frame, &mut self.out)?;
+            frame::encode(frame, &mut self.out.bytes)?;
             if idle {
                 self.flush(io);
             }
@@ -683,7 +668,10 @@ impl PaneProc {
     }
 
     fn on_frame(&mut self, frame: &[u8], io: &mut Io<'_>) -> Result<(), Fault> {
-        match frame::decode(frame)? {
+        let Some(frame) = frame::decode(frame)? else {
+            return Ok(());
+        };
+        match frame {
             FromPane::Ready(raw) => {
                 self.child = match (self.child, Group::verify(self.pid, raw)) {
                     (Claim::Awaiting, Verdict::Gone) => Claim::Reported(None),
@@ -701,7 +689,7 @@ impl PaneProc {
                     io.events.push(Event::Pwd);
                 }
             }
-            FromPane::Head => io.events.push(Event::Output),
+            FromPane::Head(_) => io.events.push(Event::Output),
             FromPane::Dead(dead) => {
                 let death = Death {
                     at: dead.at,
@@ -709,7 +697,7 @@ impl PaneProc {
                 };
                 self.die(death, io);
             }
-            FromPane::Full => {
+            FromPane::Full(_) => {
                 self.scan(io);
                 if let Some(tail) = self.ring().map(Reader::tail) {
                     let _ = self.send(&ToPane::Tail(tail), io);
@@ -751,7 +739,6 @@ impl PaneProc {
             FromPane::Error(message) => {
                 return Err(Fault::Pane(String::from_utf8_lossy(message).into_owned()));
             }
-            FromPane::Ignored => {}
         }
         Ok(())
     }
@@ -1125,6 +1112,20 @@ mod tests {
             assert_eq!(death, Some(Cause::Failed("invalid ready".to_owned())));
             assert_eq!(fake.proc.child_pid(), None);
         }
+    }
+
+    #[test]
+    fn an_error_frame_of_the_pane_is_the_cause_of_the_failed_pane() {
+        let message = "openpty: Too many open files (os error 24)";
+        let body = [
+            &(message.len() as u32).to_le_bytes()[..],
+            message.as_bytes(),
+        ]
+        .concat();
+        let mut fake = fake(64);
+        fake.feed(&frame(Kind::Error, &body));
+        let death = fake.proc.dead().map(|death| death.cause.clone());
+        assert_eq!(death, Some(Cause::Failed(message.to_owned())));
     }
 
     #[test]

@@ -518,7 +518,7 @@ impl State {
         let ready = poll.wants(ready);
         if ready.write {
             let conn = &mut self.conns[index];
-            conn.out.flush();
+            conn.out.writable();
             if !conn.out.waiting() {
                 self.pump_view(poll, index);
             }

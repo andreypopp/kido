@@ -342,6 +342,45 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conn::tests::full_output;
+    use crate::ws::Ws;
+    use std::io::Read as _;
+
+    fn drain(peer: &mut std::os::unix::net::UnixStream) -> Vec<u8> {
+        let mut seen = Vec::new();
+        let mut buffer = [0; 65536];
+        while let Ok(count @ 1..) = peer.read(&mut buffer) {
+            seen.extend_from_slice(&buffer[..count]);
+        }
+        seen
+    }
+
+    #[test]
+    fn a_view_whose_socket_refused_a_write_whole_decides_no_skip_until_it_is_writable() {
+        let (mut out, mut peer) = full_output();
+        let mut ring = ring::Reader::create(1 << 20).unwrap();
+        let mut writer = ring.writer().unwrap();
+        writer.available();
+        writer.put(RecordKind::Bytes, &[1; 100_000]);
+        ring.head();
+        let mut ws = Ws::new(Vec::new());
+        let mut view = View::new(PaneId::new(1), None, History::None, &ring);
+        view.wanted = None;
+        let mut pump = |view: &mut View, out: &mut Output| {
+            view.pump(&mut Wire { ws: &mut ws, out }, &mut ring)
+                .unwrap()
+        };
+        assert_eq!(pump(&mut view, &mut out), None);
+        assert!(view.blocked && out.waiting());
+        assert_eq!(pump(&mut view, &mut out), None);
+        assert!(view.blocked && out.waiting());
+        let before = drain(&mut peer);
+        assert!(!String::from_utf8_lossy(&before).contains("skipped"));
+        out.writable();
+        assert_eq!(pump(&mut view, &mut out), Some(History::None));
+        out.flush();
+        assert!(String::from_utf8_lossy(&drain(&mut peer)).contains("skipped"));
+    }
 
     #[test]
     fn resume_resize_and_a_threshold_only_after_a_block() {

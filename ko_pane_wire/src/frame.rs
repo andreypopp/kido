@@ -1,5 +1,7 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
+use std::borrow::Cow;
+use std::ffi::OsStr;
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroUsize};
 use std::os::unix::ffi::OsStrExt;
@@ -11,10 +13,12 @@ use ko_sys::pid::Exit;
 use crate::ring::Pos;
 
 pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
+pub const MAX_FRAME_BYTES: usize = MAX_FRAME as usize + 4;
 const MAX_DIMENSION: u16 = 4096;
 pub const MAX_KEY: u16 = 175;
 const HEADER: usize = 5;
 const INIT_VERSION: u16 = 3;
+const MAX_STRINGS: u32 = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -103,6 +107,11 @@ pub struct Size {
 }
 
 impl Size {
+    pub fn cell_pixels(self) -> (u16, u16) {
+        self.cell_px
+            .map_or((0, 0), |cell| (cell.width.get(), cell.height.get()))
+    }
+
     pub const DEFAULT: Size = Size {
         cols: Dim(80),
         rows: Dim(24),
@@ -232,15 +241,15 @@ pub struct Mouse {
     pub mods: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Init<'a> {
     pub size: Size,
     pub limits: Limits,
-    pub media: &'a [Medium],
-    pub cwd: &'a Path,
-    pub argv: &'a [Vec<u8>],
-    pub env: &'a [Vec<u8>],
-    pub id: &'a str,
+    pub media: Cow<'a, [Medium]>,
+    pub cwd: Cow<'a, Path>,
+    pub argv: Cow<'a, [Vec<u8>]>,
+    pub env: Cow<'a, [Vec<u8>]>,
+    pub id: Cow<'a, str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -296,6 +305,10 @@ impl Body<'_> {
         self.u8(u8::from(value));
     }
 
+    fn i32(&mut self, value: i32) {
+        self.bytes(&value.to_le_bytes());
+    }
+
     fn u16(&mut self, value: u16) {
         self.bytes(&value.to_le_bytes());
     }
@@ -320,12 +333,7 @@ impl Body<'_> {
     }
 
     fn size(&mut self, size: Size) {
-        let (width, height) = size
-            .cell_px
-            .map_or((0, 0), |cell| (cell.width.get(), cell.height.get()));
-        for value in [size.cols.get(), size.rows.get(), width, height] {
-            self.u16(value);
-        }
+        self.bytes(&size_bytes(size));
     }
 
     fn limit(&mut self, limit: Option<usize>) {
@@ -360,8 +368,8 @@ impl Body<'_> {
         }));
         self.u64(limits.continuation_max_bytes as u64);
         self.string(init.cwd.as_os_str().as_bytes())?;
-        self.strings(init.argv)?;
-        self.strings(init.env)?;
+        self.strings(&init.argv)?;
+        self.strings(&init.env)?;
         self.string(init.id.as_bytes())
     }
 
@@ -402,6 +410,59 @@ impl Body<'_> {
         self.u16(mouse.col);
         self.u16(mouse.row);
         self.u16(mouse.mods);
+    }
+
+    fn pane_frame(&mut self, frame: &FromPane<'_>) -> Result<Kind, Oversize> {
+        Ok(match *frame {
+            FromPane::Ready(pid) => {
+                self.i32(i32::try_from(pid).map_err(|_| Oversize)?);
+                Kind::Ready
+            }
+            FromPane::Head(pos) => {
+                self.u64(pos.get());
+                Kind::Head
+            }
+            FromPane::Title(title) => {
+                self.string(title)?;
+                Kind::Title
+            }
+            FromPane::Pwd(cwd) => {
+                self.string(cwd)?;
+                Kind::Pwd
+            }
+            FromPane::Dead(dead) => {
+                self.bytes(&dead_bytes(dead));
+                Kind::Dead
+            }
+            FromPane::SnapshotDone(req) => {
+                self.u32(req.0);
+                Kind::SnapshotDone
+            }
+            FromPane::PasteDone {
+                req,
+                pasted,
+                unsafe_paste,
+            } => {
+                self.u32(req.0);
+                self.bool(pasted);
+                self.bool(unsafe_paste);
+                Kind::PasteDone
+            }
+            FromPane::Screen { req, last, text } => {
+                self.u32(req.0);
+                self.bool(last);
+                self.string(text)?;
+                Kind::Screen
+            }
+            FromPane::Error(message) => {
+                self.string(message)?;
+                Kind::Error
+            }
+            FromPane::Full(pos) => {
+                self.u64(pos.get());
+                Kind::Full
+            }
+        })
     }
 
     fn frame(&mut self, frame: &ToPane<'_>) -> Result<Kind, Oversize> {
@@ -466,10 +527,43 @@ impl Body<'_> {
     }
 }
 
+pub(crate) fn size_bytes(size: Size) -> [u8; 8] {
+    let (width, height) = size.cell_pixels();
+    let [c0, c1] = size.cols.get().to_le_bytes();
+    let [r0, r1] = size.rows.get().to_le_bytes();
+    let [w0, w1] = width.to_le_bytes();
+    let [h0, h1] = height.to_le_bytes();
+    [c0, c1, r0, r1, w0, w1, h0, h1]
+}
+
+pub(crate) fn dead_bytes(dead: Dead) -> [u8; 16] {
+    let (status, signal) = match dead.exit {
+        Exit::Exited(status) => (status, 0),
+        Exit::Signaled(signal) => (0, signal),
+    };
+    let [s0, s1, s2, s3] = status.to_le_bytes();
+    let [g0, g1, g2, g3] = signal.to_le_bytes();
+    let [a0, a1, a2, a3, a4, a5, a6, a7] = dead.at.nanos().to_le_bytes();
+    [
+        s0, s1, s2, s3, g0, g1, g2, g3, a0, a1, a2, a3, a4, a5, a6, a7,
+    ]
+}
+
 pub fn encode(frame: &ToPane<'_>, out: &mut Vec<u8>) -> Result<(), Oversize> {
+    framed(out, |body| body.frame(frame))
+}
+
+pub fn encode_from(frame: &FromPane<'_>, out: &mut Vec<u8>) -> Result<(), Oversize> {
+    framed(out, |body| body.pane_frame(frame))
+}
+
+fn framed(
+    out: &mut Vec<u8>,
+    body: impl FnOnce(&mut Body<'_>) -> Result<Kind, Oversize>,
+) -> Result<(), Oversize> {
     let start = out.len();
     out.extend_from_slice(&[0; HEADER]);
-    let kind = Body { out: &mut *out }.frame(frame);
+    let kind = body(&mut Body { out: &mut *out });
     let header = kind.and_then(|kind| {
         let [a, b, c, d] = out
             .len()
@@ -506,6 +600,8 @@ pub enum Malformed {
     String,
     Ready,
     Dead,
+    Field,
+    Trailing,
 }
 
 impl fmt::Display for Malformed {
@@ -517,6 +613,8 @@ impl fmt::Display for Malformed {
             Malformed::String => "invalid pane string",
             Malformed::Ready => "invalid ready",
             Malformed::Dead => "invalid dead",
+            Malformed::Field => "invalid pane field",
+            Malformed::Trailing => "trailing bytes in a pane frame",
         })
     }
 }
@@ -524,7 +622,7 @@ impl fmt::Display for Malformed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FromPane<'a> {
     Ready(i64),
-    Head,
+    Head(Pos),
     Title(&'a [u8]),
     Pwd(&'a [u8]),
     Dead(Dead),
@@ -540,8 +638,21 @@ pub enum FromPane<'a> {
         text: &'a [u8],
     },
     Error(&'a [u8]),
-    Full,
-    Ignored,
+    Full(Pos),
+}
+
+pub fn check_sizes(mut input: &[u8]) -> bool {
+    while let Ok(Some(size)) = frame_size(input) {
+        if size < HEADER || size > input.len() || size > MAX_FRAME_BYTES {
+            return false;
+        }
+        input = input.get(size..).unwrap_or_default();
+    }
+    true
+}
+
+pub fn kind(frame: &[u8]) -> Option<Kind> {
+    Kind::of_code(*frame.get(4)?)
 }
 
 pub fn frame_size(input: &[u8]) -> Result<Option<usize>, Malformed> {
@@ -627,23 +738,29 @@ pub(crate) fn size(body: &[u8]) -> Option<Size> {
     })
 }
 
-pub fn decode(frame: &[u8]) -> Result<FromPane<'_>, Malformed> {
+fn position(body: &[u8]) -> Result<Pos, Malformed> {
+    array(body, 0)
+        .map(|bytes| Pos::new(u64::from_le_bytes(bytes)))
+        .ok_or(Malformed::Short)
+}
+
+pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
     let (&code, body) = frame
         .get(4..)
         .and_then(<[u8]>::split_first)
         .ok_or(Malformed::Length)?;
     let kind = Kind::of_code(code).ok_or(Malformed::Unknown)?;
     let byte_is_one = |at: usize| body.get(at) == Some(&1);
-    Ok(match kind {
+    Ok(Some(match kind {
         Kind::Ready => match body {
             &[a, b, c, d] => FromPane::Ready(i64::from(i32::from_le_bytes([a, b, c, d]))),
             _ => return Err(Malformed::Ready),
         },
         Kind::Title => FromPane::Title(string_at(body, 0)?),
         Kind::Pwd => FromPane::Pwd(string_at(body, 0)?),
-        Kind::Head => FromPane::Head,
+        Kind::Head => FromPane::Head(position(body)?),
         Kind::Dead => FromPane::Dead(dead(body).ok_or(Malformed::Dead)?),
-        Kind::Full => FromPane::Full,
+        Kind::Full => FromPane::Full(position(body)?),
         Kind::SnapshotDone => FromPane::SnapshotDone(Req(u32_at(body, 0).ok_or(Malformed::Short)?)),
         Kind::PasteDone => {
             need(body, 6)?;
@@ -671,8 +788,289 @@ pub fn decode(frame: &[u8]) -> Result<FromPane<'_>, Malformed> {
         | Kind::Key
         | Kind::Paste
         | Kind::Mouse
-        | Kind::Focus => FromPane::Ignored,
-    })
+        | Kind::Focus => return Ok(None),
+    }))
+}
+
+#[derive(Debug, Clone)]
+pub enum Request<'a> {
+    Init(Init<'a>),
+    Tail,
+    Resize(Size),
+    Text(&'a [u8]),
+    Snapshot {
+        req: Req,
+        history: History,
+    },
+    Exit,
+    Key(Key),
+    Mouse(Mouse),
+    Paste {
+        req: Req,
+        text: &'a str,
+        check_safe: bool,
+    },
+    Focus(bool),
+    Screen {
+        req: Req,
+        format: ScreenFormat,
+        rows: ScreenRows,
+    },
+}
+
+#[derive(Debug)]
+struct Fields<'a>(&'a [u8]);
+
+impl<'a> Fields<'a> {
+    fn take(&mut self, count: usize) -> Result<&'a [u8], Malformed> {
+        let (taken, rest) = self.0.split_at_checked(count).ok_or(Malformed::Short)?;
+        self.0 = rest;
+        Ok(taken)
+    }
+
+    fn u8(&mut self) -> Result<u8, Malformed> {
+        self.take(1)?.first().copied().ok_or(Malformed::Short)
+    }
+
+    fn flag(&mut self) -> Result<bool, Malformed> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(Malformed::Field),
+        }
+    }
+
+    fn u16(&mut self) -> Result<u16, Malformed> {
+        u16_at(self.take(2)?, 0).ok_or(Malformed::Short)
+    }
+
+    fn u32(&mut self) -> Result<u32, Malformed> {
+        u32_at(self.take(4)?, 0).ok_or(Malformed::Short)
+    }
+
+    fn u64(&mut self) -> Result<u64, Malformed> {
+        array(self.take(8)?, 0)
+            .map(u64::from_le_bytes)
+            .ok_or(Malformed::Short)
+    }
+
+    fn size_of(&mut self) -> Result<usize, Malformed> {
+        usize::try_from(self.u64()?).map_err(|_| Malformed::Field)
+    }
+
+    fn bytes(&mut self) -> Result<&'a [u8], Malformed> {
+        let length = usize::try_from(self.u32()?).map_err(|_| Malformed::String)?;
+        self.take(length).map_err(|_| Malformed::String)
+    }
+
+    fn text(&mut self) -> Result<&'a [u8], Malformed> {
+        let bytes = self.bytes()?;
+        if bytes.contains(&0) {
+            Err(Malformed::Field)
+        } else {
+            Ok(bytes)
+        }
+    }
+
+    fn texts(&mut self) -> Result<Vec<Vec<u8>>, Malformed> {
+        let count = self.u32()?;
+        if count > MAX_STRINGS {
+            return Err(Malformed::Field);
+        }
+        (0..count)
+            .map(|_| self.text().map(<[u8]>::to_vec))
+            .collect()
+    }
+
+    fn limit(&mut self) -> Result<Option<usize>, Malformed> {
+        let present = self.flag()?;
+        let value = self.size_of()?;
+        Ok(present.then_some(value))
+    }
+
+    fn size(&mut self) -> Result<Size, Malformed> {
+        size(self.take(8)?).ok_or(Malformed::Field)
+    }
+
+    fn end(&self) -> Result<(), Malformed> {
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(Malformed::Trailing)
+        }
+    }
+
+    fn init(&mut self) -> Result<Init<'a>, Malformed> {
+        if self.u16()? != INIT_VERSION {
+            return Err(Malformed::Field);
+        }
+        let size = self.size()?;
+        let (bytes, lines) = (self.limit()?, self.limit()?);
+        let scrollback = if bytes == Some(0) || lines == Some(0) {
+            Scrollback::Disabled
+        } else {
+            Scrollback::Bounded {
+                max_bytes: bytes.and_then(NonZeroUsize::new),
+                max_lines: lines.and_then(NonZeroUsize::new),
+            }
+        };
+        let apc_max_bytes = self.size_of()?;
+        let kitty_images_max_bytes = self.u64()?;
+        let media = self.u8()?;
+        let continuation_max_bytes = self.size_of()?;
+        let cwd = Path::new(OsStr::from_bytes(self.text()?));
+        let (argv, env) = (self.texts()?, self.texts()?);
+        let id = String::from_utf8_lossy(self.text()?);
+        if !argv
+            .first()
+            .is_some_and(|program| program.first() == Some(&b'/'))
+        {
+            return Err(Malformed::Field);
+        }
+        let media = [
+            (1, Medium::File),
+            (2, Medium::TempFile),
+            (4, Medium::SharedMem),
+        ]
+        .into_iter()
+        .filter(|(bit, _)| media & bit != 0)
+        .map(|(_, medium)| medium)
+        .collect();
+        Ok(Init {
+            size,
+            limits: Limits {
+                scrollback,
+                apc_max_bytes,
+                kitty_images_max_bytes,
+                continuation_max_bytes,
+            },
+            media: Cow::Owned(media),
+            cwd: Cow::Borrowed(cwd),
+            argv: Cow::Owned(argv),
+            env: Cow::Owned(env),
+            id,
+        })
+    }
+
+    fn key(&mut self) -> Result<Key, Malformed> {
+        let action = match self.u8()? {
+            0 => KeyAction::Release,
+            1 => KeyAction::Press,
+            2 => KeyAction::Repeat,
+            _ => return Err(Malformed::Field),
+        };
+        let key = KeyCode::new(self.u16()?).ok_or(Malformed::Field)?;
+        let mods = self.u16()?;
+        let unshifted = char::from_u32(self.u32()?).ok_or(Malformed::Field)?;
+        let text = std::str::from_utf8(self.bytes()?)
+            .map_err(|_| Malformed::Field)?
+            .to_owned();
+        let composing = self.flag()?;
+        Ok(Key {
+            action,
+            key,
+            mods,
+            unshifted,
+            text,
+            composing,
+        })
+    }
+
+    fn mouse(&mut self) -> Result<Mouse, Malformed> {
+        let action = match self.u8()? {
+            0 => MouseAction::Press,
+            1 => MouseAction::Release,
+            2 => MouseAction::Motion,
+            _ => return Err(Malformed::Field),
+        };
+        let button = match self.u8()? {
+            0 => MouseButton::Unknown,
+            1 => MouseButton::Left,
+            2 => MouseButton::Right,
+            3 => MouseButton::Middle,
+            4 => MouseButton::Four,
+            5 => MouseButton::Five,
+            6 => MouseButton::Six,
+            7 => MouseButton::Seven,
+            8 => MouseButton::Eight,
+            9 => MouseButton::Nine,
+            10 => MouseButton::Ten,
+            11 => MouseButton::Eleven,
+            _ => return Err(Malformed::Field),
+        };
+        Ok(Mouse {
+            action,
+            button,
+            col: self.u16()?,
+            row: self.u16()?,
+            mods: self.u16()?,
+        })
+    }
+}
+
+pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
+    let (&code, body) = frame
+        .get(4..)
+        .and_then(<[u8]>::split_first)
+        .ok_or(Malformed::Length)?;
+    let mut fields = Fields(body);
+    let request = match Kind::of_code(code).ok_or(Malformed::Unknown)? {
+        Kind::Init => Request::Init(fields.init()?),
+        Kind::Tail => {
+            fields.take(8)?;
+            Request::Tail
+        }
+        Kind::Resize => Request::Resize(fields.size()?),
+        Kind::Text => return Ok(Request::Text(body)),
+        Kind::Snapshot => {
+            let req = Req(fields.u32()?);
+            let screen = fields.u8()? != 0;
+            if fields.u8()? != 0 || !fields.text()?.is_empty() {
+                return Err(Malformed::Field);
+            }
+            let history = if screen { History::None } else { History::All };
+            Request::Snapshot { req, history }
+        }
+        Kind::Exit => return Ok(Request::Exit),
+        Kind::Key => Request::Key(fields.key()?),
+        Kind::Mouse => Request::Mouse(fields.mouse()?),
+        Kind::Paste => {
+            let req = Req(fields.u32()?);
+            let text = std::str::from_utf8(fields.bytes()?).map_err(|_| Malformed::Field)?;
+            let check_safe = fields.flag()?;
+            Request::Paste {
+                req,
+                text,
+                check_safe,
+            }
+        }
+        Kind::Focus => Request::Focus(fields.flag()?),
+        Kind::Screen => {
+            let req = Req(fields.u32()?);
+            let format = if fields.u8()? == 0 {
+                ScreenFormat::Plain
+            } else {
+                ScreenFormat::Ansi
+            };
+            let rows = match fields.u32()? {
+                0 => ScreenRows::Visible,
+                u32::MAX => ScreenRows::Full,
+                rows => ScreenRows::Last(rows),
+            };
+            Request::Screen { req, format, rows }
+        }
+        Kind::Ready
+        | Kind::Head
+        | Kind::Title
+        | Kind::Pwd
+        | Kind::Dead
+        | Kind::SnapshotDone
+        | Kind::Error
+        | Kind::Full
+        | Kind::PasteDone => return Err(Malformed::Unknown),
+    };
+    fields.end()?;
+    Ok(request)
 }
 
 #[cfg(test)]
@@ -742,6 +1140,41 @@ mod tests {
             frame_size(&(MAX_FRAME + 1).to_le_bytes()),
             Err(Malformed::Length)
         );
+    }
+
+    #[test]
+    fn every_frame_size_in_a_stream_is_between_the_header_and_the_input() {
+        let mut stream = Vec::new();
+        for length in [1u32, 2, 300, MAX_FRAME] {
+            stream.extend_from_slice(&length.to_le_bytes());
+            stream.extend(std::iter::repeat_n(7, length as usize));
+        }
+        assert!(check_sizes(&stream));
+        for input in [
+            &[][..],
+            &[0, 0, 0],
+            &[0, 0, 0, 0],
+            &[1, 0, 0, 0],
+            &[255, 255, 255, 255, 1],
+            &(MAX_FRAME + 1).to_le_bytes(),
+        ] {
+            assert!(check_sizes(input));
+        }
+        let mut seed = 182u64;
+        for round in 0..2000 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let size = (seed >> 33) as usize % 200;
+            let mut input: Vec<u8> = (0..size).map(|i| (seed >> (i % 56)) as u8).collect();
+            if round % 2 == 1 {
+                for at in (0..size.saturating_sub(5)).step_by(16) {
+                    input[at] = (seed >> 20) as u8 % 70;
+                    input[at + 1..at + 4].fill(0);
+                }
+            }
+            assert!(check_sizes(&input));
+        }
     }
 
     #[test]
@@ -824,11 +1257,11 @@ mod tests {
                 kitty_images_max_bytes: 4,
                 continuation_max_bytes: 5,
             },
-            media: &[Medium::File, Medium::SharedMem],
-            cwd: Path::new("/"),
-            argv: &[b"/bin/sh".to_vec()],
-            env: &[],
-            id: "pane_1",
+            media: vec![Medium::File, Medium::SharedMem].into(),
+            cwd: Path::new("/").into(),
+            argv: vec![b"/bin/sh".to_vec()].into(),
+            env: Vec::new().into(),
+            id: "pane_1".into(),
         };
         let body = encoded(&ToPane::Init(&init))[5..].to_vec();
         let mut expected = vec![3, 0, 80, 0, 24, 0, 8, 0, 16, 0];
@@ -844,6 +1277,283 @@ mod tests {
         expected.extend([0, 0, 0, 0, 6, 0, 0, 0]);
         expected.extend(b"pane_1");
         assert_eq!(body, expected);
+    }
+
+    fn decoded<T>(frame: &ToPane<'_>, inspect: impl FnOnce(Request<'_>) -> T) -> T {
+        let bytes = encoded(frame);
+        inspect(decode_request(&bytes).unwrap())
+    }
+
+    #[test]
+    fn the_pane_decodes_what_the_server_encodes() {
+        let init = Init {
+            size: Size::DEFAULT,
+            limits: Limits {
+                scrollback: Scrollback::Bounded {
+                    max_bytes: NonZeroUsize::new(50),
+                    max_lines: NonZeroUsize::new(7),
+                },
+                apc_max_bytes: 3,
+                kitty_images_max_bytes: 4,
+                continuation_max_bytes: 5,
+            },
+            media: vec![Medium::File, Medium::SharedMem].into(),
+            cwd: Path::new("/tmp").into(),
+            argv: vec![b"/bin/sh".to_vec(), b"-c".to_vec()].into(),
+            env: vec![b"A=b".to_vec()].into(),
+            id: "pane_9".into(),
+        };
+        decoded(&ToPane::Init(&init), |request| {
+            let Request::Init(got) = request else {
+                panic!("not an init");
+            };
+            assert_eq!(
+                (
+                    got.size,
+                    got.limits,
+                    &*got.media,
+                    &*got.cwd,
+                    &*got.argv,
+                    &*got.env,
+                    &*got.id
+                ),
+                (
+                    init.size,
+                    init.limits,
+                    &*init.media,
+                    &*init.cwd,
+                    &*init.argv,
+                    &*init.env,
+                    &*init.id
+                )
+            );
+        });
+        let disabled = Init {
+            limits: Limits {
+                scrollback: Scrollback::Disabled,
+                ..init.limits
+            },
+            ..init.clone()
+        };
+        decoded(&ToPane::Init(&disabled), |request| {
+            assert!(matches!(
+                request,
+                Request::Init(Init {
+                    limits: Limits {
+                        scrollback: Scrollback::Disabled,
+                        ..
+                    },
+                    ..
+                })
+            ));
+        });
+        let key = Key {
+            action: KeyAction::Repeat,
+            key: KeyCode::new(MAX_KEY).unwrap(),
+            mods: 5,
+            unshifted: '\u{e9}',
+            text: "\u{c9}".to_owned(),
+            composing: true,
+        };
+        decoded(&ToPane::Key(&key), |request| {
+            assert!(matches!(request, Request::Key(got) if got == key));
+        });
+        let mouse = Mouse {
+            action: MouseAction::Motion,
+            button: MouseButton::Eleven,
+            col: 9,
+            row: 8,
+            mods: 7,
+        };
+        decoded(&ToPane::Mouse(mouse), |request| {
+            assert!(matches!(request, Request::Mouse(got) if got == mouse));
+        });
+        let size = Size {
+            cell_px: None,
+            ..Size::DEFAULT
+        };
+        decoded(&ToPane::Resize(size), |request| {
+            assert!(matches!(request, Request::Resize(got) if got == size));
+        });
+        let req = Req::FIRST.next();
+        decoded(
+            &ToPane::Snapshot {
+                req,
+                history: History::All,
+            },
+            |request| {
+                assert!(matches!(
+                    request,
+                    Request::Snapshot {
+                        history: History::All,
+                        ..
+                    }
+                ));
+            },
+        );
+        for rows in [ScreenRows::Visible, ScreenRows::Full, ScreenRows::Last(12)] {
+            let screen = ToPane::Screen {
+                req,
+                format: ScreenFormat::Ansi,
+                rows,
+            };
+            decoded(&screen, |request| {
+                assert!(matches!(
+                    request,
+                    Request::Screen { format: ScreenFormat::Ansi, rows: got, .. } if got == rows
+                ));
+            });
+        }
+        let paste = encoded(&ToPane::Paste {
+            req,
+            text: "a\nb",
+            check_safe: true,
+        });
+        assert!(matches!(
+            decode_request(&paste),
+            Ok(Request::Paste {
+                text: "a\nb",
+                check_safe: true,
+                ..
+            })
+        ));
+        let text = encoded(&ToPane::Text(b"\x00x"));
+        assert!(matches!(decode_request(&text), Ok(Request::Text(b"\x00x"))));
+        decoded(&ToPane::Focus(true), |request| {
+            assert!(matches!(request, Request::Focus(true)));
+        });
+        decoded(&ToPane::Tail(Pos::new(9)), |request| {
+            assert!(matches!(request, Request::Tail));
+        });
+        decoded(&ToPane::Exit, |request| {
+            assert!(matches!(request, Request::Exit));
+        });
+    }
+
+    #[test]
+    fn a_request_with_a_field_outside_its_range_is_refused() {
+        let key = |action: u8, code: u16, codepoint: u32, composing: u8| {
+            let mut body = vec![action];
+            body.extend(code.to_le_bytes());
+            body.extend(0u16.to_le_bytes());
+            body.extend(codepoint.to_le_bytes());
+            body.extend(0u32.to_le_bytes());
+            body.push(composing);
+            frame(Kind::Key, &body)
+        };
+        let refused = |bytes: Vec<u8>, label: &str| {
+            assert!(decode_request(&bytes).is_err(), "{label}");
+        };
+        assert!(decode_request(&key(1, 20, 97, 0)).is_ok());
+        refused(key(3, 20, 97, 0), "key action");
+        refused(key(1, MAX_KEY + 1, 97, 0), "key code");
+        refused(key(1, 20, 0xd800, 0), "surrogate");
+        refused(key(1, 20, 0x11_0000, 0), "codepoint");
+        refused(key(1, 20, 97, 2), "composing");
+        refused(
+            frame(Kind::Mouse, &[3, 1, 0, 0, 0, 0, 0, 0]),
+            "mouse action",
+        );
+        refused(
+            frame(Kind::Mouse, &[0, 12, 0, 0, 0, 0, 0, 0]),
+            "mouse button",
+        );
+        refused(frame(Kind::Focus, &[2]), "focus");
+        refused(frame(Kind::Tail, &[0; 7]), "short tail");
+        refused(
+            frame(Kind::Resize, &[0, 0, 24, 0, 8, 0, 16, 0]),
+            "zero columns",
+        );
+        refused(
+            frame(Kind::Resize, &[1, 16, 24, 0, 8, 0, 16, 0]),
+            "4097 columns",
+        );
+        refused(
+            frame(Kind::Resize, &[80, 0, 24, 0, 8, 0, 16, 0, 0]),
+            "trailing byte",
+        );
+        refused(
+            frame(Kind::Snapshot, &[1, 0, 0, 0, 1, 1, 0, 0, 0, 0]),
+            "images",
+        );
+        refused(
+            frame(Kind::Snapshot, &[1, 0, 0, 0, 1, 0, 1, 0, 0, 0, b'x']),
+            "file",
+        );
+        refused(
+            frame(Kind::Paste, &[1, 0, 0, 0, 0, 0, 0, 0, 2]),
+            "check flag",
+        );
+        refused(
+            frame(Kind::Ready, &[1, 0, 0, 0]),
+            "a frame of the other direction",
+        );
+        let init = |version: u16, argv: &[&[u8]], cwd: &[u8]| {
+            let mut body = version.to_le_bytes().to_vec();
+            body.extend([80, 0, 24, 0, 8, 0, 16, 0]);
+            body.extend([0; 18]);
+            body.extend([0; 8]);
+            body.extend([0; 8]);
+            body.push(0);
+            body.extend([0; 8]);
+            body.extend((cwd.len() as u32).to_le_bytes());
+            body.extend(cwd);
+            body.extend((argv.len() as u32).to_le_bytes());
+            for arg in argv {
+                body.extend((arg.len() as u32).to_le_bytes());
+                body.extend(*arg);
+            }
+            body.extend([0; 4]);
+            body.extend([0; 4]);
+            frame(Kind::Init, &body)
+        };
+        assert!(decode_request(&init(3, &[b"/bin/sh"], b"/")).is_ok());
+        refused(init(2, &[b"/bin/sh"], b"/"), "version");
+        refused(init(3, &[], b"/"), "no program");
+        refused(init(3, &[b"sh"], b"/"), "relative program");
+        refused(init(3, &[b"/bin/sh"], b"/\0"), "NUL in a string");
+    }
+
+    #[test]
+    fn what_the_pane_sends_decodes_to_what_it_was_built_from() {
+        let dead = Dead {
+            at: Mono::from_nanos(77),
+            exit: Exit::Signaled(9),
+        };
+        let req = Req::FIRST;
+        let cases = [
+            FromPane::Ready(4242),
+            FromPane::Head(Pos::new(123)),
+            FromPane::Title(b"a title"),
+            FromPane::Pwd(b""),
+            FromPane::Dead(dead),
+            FromPane::SnapshotDone(req),
+            FromPane::PasteDone {
+                req,
+                pasted: true,
+                unsafe_paste: false,
+            },
+            FromPane::Screen {
+                req,
+                last: true,
+                text: b"rows",
+            },
+            FromPane::Error(b"openpty: no"),
+            FromPane::Full(Pos::new(456)),
+        ];
+        for case in cases {
+            let mut out = Vec::new();
+            encode_from(&case, &mut out).unwrap();
+            assert_eq!(frame_size(&out), Ok(Some(out.len())));
+            assert_eq!(decode(&out), Ok(Some(case)));
+        }
+        let mut exited = Vec::new();
+        let ended = Dead {
+            exit: Exit::Exited(-3),
+            ..dead
+        };
+        encode_from(&FromPane::Dead(ended), &mut exited).unwrap();
+        assert_eq!(decode(&exited), Ok(Some(FromPane::Dead(ended))));
     }
 
     #[test]

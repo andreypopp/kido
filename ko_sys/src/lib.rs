@@ -5,6 +5,7 @@ pub mod event;
 pub mod fd;
 pub mod mapping;
 pub mod pid;
+pub mod pty;
 pub mod retry;
 pub mod signal;
 pub mod sock;

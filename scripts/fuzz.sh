@@ -14,12 +14,12 @@ target=${1:-}
 seconds=${2:-}
 if [[ -z $target || -z $seconds ]] || ! grep -qw -- "$target" <<<"$targets" || [[ ! $seconds =~ ^[1-9][0-9]*$ ]]; then
   echo "usage: make fuzz TARGET=<$(tr ' ' '|' <<<"$targets")> TIME=<seconds> [MERGE=1]" >&2
-  echo "       MERGE=1 fuzzes TIME seconds, then replaces ko_pane/fuzz/TARGET/ with the minimal set" >&2
+  echo "       MERGE=1 fuzzes TIME seconds, then replaces fuzz/corpus/TARGET/ with the minimal set" >&2
   echo "       of the checked-in inputs and the new ones; only a plain run never writes there" >&2
   exit 1
 fi
-if [[ -n $merge && ! -d ko_pane/fuzz/$target ]]; then
-  echo "fuzz.sh: $target has no checked-in corpus in ko_pane/fuzz/$target" >&2
+if [[ -n $merge && ! -d fuzz/corpus/$target ]]; then
+  echo "fuzz.sh: $target has no checked-in corpus in fuzz/corpus/$target" >&2
   exit 1
 fi
 scratch=$(mktemp -d /tmp/kofuzz-XXXXXX)
@@ -82,10 +82,10 @@ case $target in
     build --profile fuzz "ko_pane/fuzz-$target-libfuzzer" || exit 1
     corpus=$scratch/corpus
     mkdir -p "$corpus"
-    [[ -d ko_pane/fuzz/$target ]] && cp ko_pane/fuzz/$target/* "$corpus"/
+    [[ -d fuzz/corpus/$target ]] && cp fuzz/corpus/$target/* "$corpus"/
     options=()
-    [[ -f ko_pane/fuzz/$target.dict ]] && options+=("-dict=$PWD/ko_pane/fuzz/$target.dict")
-    max_len=$(sed -n 's/^max_len *= *//p' "ko_pane/fuzz/$target.options" 2>/dev/null)
+    [[ -f fuzz/$target.dict ]] && options+=("-dict=$PWD/fuzz/$target.dict")
+    max_len=$(sed -n 's/^max_len *= *//p' "fuzz/$target.options" 2>/dev/null)
     options+=("-max_len=${max_len:-1024}" -rss_limit_mb=4000 -timeout=10 -artifact_prefix="$PWD/_build/fuzz-")
     # ASan on macOS keeps what libghostty-vt frees, so a libFuzzer process grows by about
     # 100 KiB per input; restart it every 24000 inputs, which stays under the RSS limit.
@@ -107,8 +107,8 @@ case $target in
     tail -3 "$scratch/log"
     echo "fuzz.sh: $target ran ${total} inputs in ${seconds}s, corpus $(ls "$corpus" | wc -l) inputs"
     if [[ -n $merge ]]; then
-      destination=ko_pane/fuzz/$target
-      staging=ko_pane/fuzz/.$target.new
+      destination=fuzz/corpus/$target
+      staging=fuzz/corpus/.$target.new
       mkdir "$scratch/merged" || exit 1
       boxed 300 _build/default/ko_pane/fuzz-"$target"-libfuzzer -merge=1 "${options[@]}" "$scratch/merged" "$corpus" >"$scratch/log" 2>&1 || { cat "$scratch/log"; exit 1; }
       if [[ -z $(ls -A "$scratch/merged") ]]; then

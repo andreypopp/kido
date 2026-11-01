@@ -9,7 +9,7 @@ use std::fmt;
 #[cfg(not(loom))]
 use std::io;
 #[cfg(not(loom))]
-use std::os::fd::BorrowedFd;
+use std::os::fd::{BorrowedFd, OwnedFd};
 
 use crate::frame::{self, Dead, Size};
 
@@ -41,6 +41,10 @@ enum Index {
 pub struct Pos(u64);
 
 impl Pos {
+    pub(crate) fn new(value: u64) -> Pos {
+        Pos(value)
+    }
+
     pub fn get(self) -> u64 {
         self.0
     }
@@ -103,6 +107,37 @@ pub struct Slice {
     pub first: bool,
     pub last: bool,
     pub screen: bool,
+}
+
+pub const SLICE_HEADER: usize = 2;
+pub const RESIZE_LEN: usize = 9;
+pub const DEAD_LEN: usize = 17;
+
+impl Slice {
+    pub fn encode(self) -> [u8; SLICE_HEADER] {
+        [
+            u8::from(self.first) | u8::from(self.last) << 1,
+            u8::from(self.screen),
+        ]
+    }
+}
+
+fn tagged(out: &mut [u8; DEAD_LEN], tag: u8, body: &[u8]) -> usize {
+    for (slot, byte) in out.iter_mut().zip(std::iter::once(&tag).chain(body)) {
+        *slot = *byte;
+    }
+    body.len().saturating_add(1)
+}
+
+impl Marker {
+    fn encode(self) -> ([u8; DEAD_LEN], usize) {
+        let mut out = [0; DEAD_LEN];
+        let len = match self {
+            Marker::Resize(size) => tagged(&mut out, 1, &frame::size_bytes(size)),
+            Marker::Dead(dead) => tagged(&mut out, 2, &frame::dead_bytes(dead)),
+        };
+        (out, len)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,10 +226,7 @@ impl Reader {
 
     #[cfg(not(loom))]
     pub fn writer(&self) -> io::Result<Writer> {
-        let mapping = ko_sys::mapping::Mapping::attach(self.fd().try_clone_to_owned()?)?;
-        mapping::Shared::attach(mapping)
-            .map(Writer::attach)
-            .map_err(|invalid| io::Error::new(io::ErrorKind::InvalidData, invalid.to_string()))
+        Writer::open(self.fd().try_clone_to_owned()?)
     }
 
     pub fn head(&mut self) -> Pos {
@@ -427,6 +459,22 @@ impl Writer {
         }
     }
 
+    #[cfg(not(loom))]
+    pub fn open(fd: OwnedFd) -> io::Result<Writer> {
+        let mapping = ko_sys::mapping::Mapping::attach(fd)?;
+        mapping::Shared::attach(mapping)
+            .map(Writer::attach)
+            .map_err(|invalid| io::Error::new(io::ErrorKind::InvalidData, invalid.to_string()))
+    }
+
+    pub fn head(&self) -> Pos {
+        Pos(self.head)
+    }
+
+    pub fn tail(&self) -> Pos {
+        Pos(self.tail)
+    }
+
     fn fits(&self, tag: u8, len: u64) -> Option<u64> {
         let capacity = self.shared.capacity();
         let end = self
@@ -500,6 +548,28 @@ impl Writer {
         })
     }
 
+    #[cfg(not(loom))]
+    pub fn payload(&mut self, kind: RecordKind, len: usize) -> Option<&mut [u8]> {
+        self.fits(kind.tag(), u64::try_from(len).ok()?)?;
+        self.shared.room(payload_at(self.head)?, len)
+    }
+
+    pub fn publish(&mut self, kind: RecordKind, len: usize) -> Commit {
+        u64::try_from(len)
+            .ok()
+            .and_then(|len| self.commit(kind.tag(), len))
+            .unwrap_or(Commit::Refused)
+    }
+
+    pub fn put_marker(&mut self, marker: Marker) -> Commit {
+        let (bytes, len) = marker.encode();
+        self.put(RecordKind::Marker, bytes.get(..len).unwrap_or_default())
+    }
+
+    pub fn put_slice(&mut self, slice: Slice) -> Commit {
+        self.put(RecordKind::Slice, &slice.encode())
+    }
+
     pub fn put(&mut self, kind: RecordKind, payload: &[u8]) -> Commit {
         let written = u64::try_from(payload.len()).ok().and_then(|len| {
             self.fits(kind.tag(), len)?;
@@ -539,22 +609,6 @@ mod tests {
         if kind == RecordKind::Bytes { len } else { 0 }
     }
 
-    fn plan(capacity: u64, head: u64, tail: u64) -> (Option<u64>, u64) {
-        let free = capacity - (head - tail);
-        let room = capacity - head % capacity;
-        let (pad, free, room) = if room <= 2 * HEADER {
-            if free < room {
-                (None, 0, 0)
-            } else {
-                (Some(room - HEADER), free - room, capacity)
-            }
-        } else {
-            (None, free, room)
-        };
-        let n = free.min(room);
-        (pad, n.saturating_sub(2 * HEADER))
-    }
-
     #[derive(Debug, Clone)]
     struct Modeled {
         pos: u64,
@@ -584,8 +638,25 @@ mod tests {
             self.offset += advances_offset(kind, len);
         }
 
+        fn plan(&self) -> (Option<u64>, u64) {
+            let used: u64 = self.live().map(|r| HEADER + r.len).sum();
+            let end = self.records.last().map_or(0, |r| r.pos + HEADER + r.len);
+            let free = self.capacity - used;
+            let room = self.capacity - end % self.capacity;
+            let (pad, free, room) = if room <= 2 * HEADER {
+                if free < room {
+                    (None, 0, 0)
+                } else {
+                    (Some(room - HEADER), free - room, self.capacity)
+                }
+            } else {
+                (None, free, room)
+            };
+            (pad, free.min(room).saturating_sub(2 * HEADER))
+        }
+
         fn write(&mut self, kind: RecordKind, len: u64) -> bool {
-            let (pad, fits) = plan(self.capacity, self.head, self.tail);
+            let (pad, fits) = self.plan();
             if let Some(n) = pad {
                 self.push(RecordKind::Pad, n);
             }
@@ -843,6 +914,41 @@ mod tests {
         for capacity in [MIN_CAPACITY - 1, MAX_CAPACITY + 1] {
             let error = Reader::create(capacity).unwrap_err();
             assert_eq!(error.to_string(), Invalid::Capacity.to_string());
+        }
+    }
+
+    #[test]
+    fn the_markers_and_slices_the_writer_puts_are_the_ones_the_reader_decodes() {
+        let (reader, writer) = ring(512);
+        let mut candidate = Candidate { reader, writer };
+        let resize = Marker::Resize(Size {
+            cols: Dim::new(40).unwrap(),
+            rows: Dim::new(20).unwrap(),
+            cell_px: None,
+        });
+        let dead = Marker::Dead(Dead {
+            at: Mono::from_nanos(5),
+            exit: Exit::Signaled(15),
+        });
+        let slice = Slice {
+            first: false,
+            last: true,
+            screen: true,
+        };
+        let lengths = [RESIZE_LEN, DEAD_LEN, SLICE_HEADER];
+        candidate.writer.available();
+        assert_ne!(candidate.writer.put_marker(resize), Commit::Refused);
+        candidate.writer.available();
+        assert_ne!(candidate.writer.put_marker(dead), Commit::Refused);
+        candidate.writer.available();
+        assert_ne!(candidate.writer.put_slice(slice), Commit::Refused);
+        let at = candidate.positions(Pos(0));
+        let reader = &candidate.reader;
+        assert_eq!(reader.marker(at[0]), Ok(resize));
+        assert_eq!(reader.marker(at[1]), Ok(dead));
+        assert_eq!(reader.slice(at[2]), Ok(slice));
+        for (pos, length) in at.iter().zip(lengths) {
+            assert_eq!(reader.record(*pos).unwrap().len, length as u64);
         }
     }
 
