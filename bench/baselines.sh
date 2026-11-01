@@ -16,6 +16,7 @@ deadline() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 run() { deadline 900 "$@" 2>&1 | grep -v '^drain '; }
 seconds() { awk -F: '{ if (NF == 3) print $1 * 3600 + $2 * 60 + $3; else print $1 * 60 + $2 }'; }
 cd "$build"
+. "$root/bench/coordinator.sh"
 
 echo "== 1. raw pty, read until EAGAIN and discard"
 run ./bench/pty_read.exe discard ./bench/drain.exe "$produce" "$bytes" $streams
@@ -24,7 +25,7 @@ run ./bench/pty_read.exe parse ./bench/drain.exe "$produce" "$bytes" $streams
 echo "== 3. ko-pane + ring, C tail-acker"
 run ./bench/acker.exe "$build/ko_pane/ko-pane" "$produce" "$bytes" $streams
 echo "== 4. ko-pane + ring + coordinator (writev, 2 ms) + view socket + drain"
-run ./bench/coordinator.exe throughput writev "$bytes" 2 $streams
+run "$coordinator" throughput writev "$bytes" 2 $streams
 echo "== 5. control: pty -> copier -> socketpair -> drain"
 run ./bench/pty_read.exe socket ./bench/drain.exe "$produce" "$bytes" $streams
 

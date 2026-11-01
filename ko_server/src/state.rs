@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{History, Req, ScreenFormat, ScreenRows};
 use ko_pane_wire::ring::{Invalid, Pos, Reader};
-use ko_sys::event::{Poll, Reads, Ready, Timer, Token};
+use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
 
 use crate::client::{self, Change, Client};
 use crate::config::Config;
@@ -42,6 +42,12 @@ pub(crate) struct State {
     tick: Duration,
     spare: Vec<Vec<Event>>,
     ticked: Vec<(PaneId, Event)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Wake {
+    Ready(Ready),
+    Due(Timer),
 }
 
 fn client_of(conn: &Conn) -> Option<&Client> {
@@ -91,10 +97,6 @@ impl State {
             spare: Vec::new(),
             ticked: Vec::new(),
         }
-    }
-
-    pub(crate) fn ticker(&self) -> Timer {
-        self.ticker
     }
 
     fn index(&self, token: Token) -> Option<usize> {
@@ -217,18 +219,19 @@ impl State {
 
     fn event(&mut self, poll: &mut Poll, id: PaneId, event: Event) {
         match event {
-            Event::Title => {
+            Event::Title if self.watched() => {
                 if let Some(pane) = self.panes.find(id) {
                     let title = lossy(pane.proc().title());
                     self.broadcast(&ClientEvent::Title(Title { pane: id, title }));
                 }
             }
-            Event::Pwd => {
+            Event::Pwd if self.watched() => {
                 if let Some(pane) = self.panes.find(id) {
                     let pwd = lossy(pane.proc().cwd());
                     self.broadcast(&ClientEvent::Pwd(Pwd { pane: id, pwd }));
                 }
             }
+            Event::Title | Event::Pwd => {}
             Event::Dead(death) => {
                 self.broadcast(&ClientEvent::Dead(PaneDead {
                     pane: id,
@@ -338,10 +341,14 @@ impl State {
             .collect()
     }
 
+    fn watched(&self) -> bool {
+        self.conns
+            .iter()
+            .any(|conn| client_of(conn).is_some_and(|client| client.active.is_some()))
+    }
+
     fn broadcast(&mut self, event: &ClientEvent) {
-        let registered =
-            |conn: &Conn| client_of(conn).is_some_and(|client| client.active.is_some());
-        if !self.conns.iter().any(registered) {
+        if !self.watched() {
             return;
         }
         let text = protocol::json(event);
@@ -503,7 +510,34 @@ impl State {
         self.conns.push(Conn::new(stream, poll));
     }
 
-    pub(crate) fn pane_ready(&mut self, poll: &mut Poll, ready: Ready) -> bool {
+    pub(crate) fn turn(
+        &mut self,
+        poll: &mut Poll,
+        mode: Mode,
+        events: &mut Events,
+        mut own: impl FnMut(&mut State, &mut Poll, Wake) -> std::io::Result<bool>,
+    ) -> std::io::Result<()> {
+        let turned = poll.turn(mode, events).and_then(|()| {
+            for &ready in events.ready() {
+                if !own(self, poll, Wake::Ready(ready))? && !self.pane_ready(poll, ready) {
+                    self.conn_ready(poll, ready);
+                }
+            }
+            for &due in events.due() {
+                if !poll.current(due) || own(self, poll, Wake::Due(due.timer))? {
+                } else if due.timer == self.ticker {
+                    self.tick(poll);
+                } else {
+                    self.ping(poll, due.timer);
+                }
+            }
+            Ok(())
+        });
+        self.settle(poll);
+        turned
+    }
+
+    fn pane_ready(&mut self, poll: &mut Poll, ready: Ready) -> bool {
         let Some(id) = self.panes.by_token(ready.token).map(|pane| pane.id()) else {
             return false;
         };
@@ -511,7 +545,7 @@ impl State {
         true
     }
 
-    pub(crate) fn conn_ready(&mut self, poll: &mut Poll, ready: Ready) {
+    fn conn_ready(&mut self, poll: &mut Poll, ready: Ready) {
         let Some(index) = self.index(ready.token) else {
             return;
         };
@@ -679,7 +713,7 @@ impl State {
         }
     }
 
-    pub(crate) fn tick(&mut self, poll: &mut Poll) {
+    fn tick(&mut self, poll: &mut Poll) {
         let mut produced = false;
         let mut ticked = std::mem::take(&mut self.ticked);
         {
@@ -720,7 +754,7 @@ impl State {
         }
     }
 
-    pub(crate) fn ping(&mut self, poll: &mut Poll, timer: Timer) {
+    fn ping(&mut self, poll: &mut Poll, timer: Timer) {
         if let Some(Conn {
             out,
             phase: Phase::Ws(link),
@@ -732,7 +766,7 @@ impl State {
         }
     }
 
-    pub(crate) fn settle(&mut self, poll: &mut Poll) {
+    fn settle(&mut self, poll: &mut Poll) {
         loop {
             for conn in &mut self.conns {
                 conn.settle();

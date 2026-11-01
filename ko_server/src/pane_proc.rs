@@ -252,7 +252,13 @@ impl PaneProc {
         Ok(proc)
     }
 
-    fn new(socket: UnixStream, token: Token, ring: Reader, pid: Pid, cwd: &Path) -> PaneProc {
+    pub(crate) fn new(
+        socket: UnixStream,
+        token: Token,
+        ring: Reader,
+        pid: Pid,
+        cwd: &Path,
+    ) -> PaneProc {
         let start = ring.tail();
         PaneProc {
             stage: Stage::Open {
@@ -765,6 +771,19 @@ impl PaneProc {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "fuzz"))]
+    pub(crate) fn feed(&mut self, data: &[u8], io: &mut Io<'_>) {
+        let end = self.filled.saturating_add(data.len());
+        if self.input.len() < end {
+            self.input.resize(end, 0);
+        }
+        if let Some(room) = self.input.get_mut(self.filled..end) {
+            room.copy_from_slice(data);
+        }
+        self.filled = end;
+        self.consume(io);
+    }
+
     pub(crate) fn kill(&self) -> io::Result<()> {
         if self.life() != Life::Reaped {
             self.pid.signal(Signal::Kill)?;
@@ -835,15 +854,7 @@ mod tests {
         }
 
         fn feed(&mut self, data: &[u8]) {
-            self.with(|proc, io| {
-                let end = proc.filled + data.len();
-                if proc.input.len() < end {
-                    proc.input.resize(end, 0);
-                }
-                proc.input[proc.filled..end].copy_from_slice(data);
-                proc.filled = end;
-                proc.consume(io);
-            });
+            self.with(|proc, io| proc.feed(data, io));
         }
 
         fn scan(&mut self) -> bool {

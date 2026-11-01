@@ -3,11 +3,11 @@ use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
-use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token};
+use ko_sys::event::{Events, Interest, Mode, Poll, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 
 use crate::config::Config;
-use crate::state::State;
+use crate::state::{State, Wake};
 
 const ACCEPT_BURST: usize = 16;
 const SEND_BUFFER: usize = 1 << 20;
@@ -37,6 +37,12 @@ impl Verified {
             && ko_sys::sock::set_send_buffer(stream.as_fd(), SEND_BUFFER).is_ok()
             && stream.set_nonblocking(true).is_ok();
         ready.then_some(Verified(stream))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_send_buffer(self, size: usize) -> Verified {
+        assert!(ko_sys::sock::set_send_buffer(self.0.as_fd(), size).is_ok());
+        self
     }
 
     pub(crate) fn into_stream(self) -> UnixStream {
@@ -133,82 +139,110 @@ impl Server {
     }
 
     pub fn turn(&mut self) -> io::Result<Status> {
-        let mut events = std::mem::take(&mut self.events);
-        let turned = self.poll.turn(Mode::Wait, &mut events).and_then(|()| {
-            for &ready in events.ready() {
-                self.ready(ready)?;
-            }
-            for &due in events.due() {
-                if self.poll.current(due) && self.due(due.timer)? == Status::Stopped {
-                    return Ok(Status::Stopped);
-                }
-            }
-            Ok(Status::Running)
-        });
-        self.events = events;
-        self.state.settle(&mut self.poll);
-        turned
-    }
-
-    fn ready(&mut self, ready: Ready) -> io::Result<()> {
-        if ready.token == self.signal_token {
-            if self.poll.wants(ready).read {
-                let mut pending = Vec::new();
-                self.signals.take(&mut pending)?;
-                for signal in pending {
-                    match signal {
-                        Signal::Child => self.state.reap(&mut self.poll)?,
-                        Signal::Term | Signal::Int | Signal::Hup => self.stop()?,
-                        _ => {}
+        let Server {
+            poll,
+            events,
+            signals,
+            signal_token,
+            listener,
+            accepted,
+            state,
+            stopping,
+            timing,
+        } = self;
+        let mut taken = std::mem::take(events);
+        let mut stopped = false;
+        let turned = state.turn(
+            poll,
+            Mode::Wait,
+            &mut taken,
+            |state, poll, wake| match wake {
+                Wake::Ready(ready) if ready.token == *signal_token => {
+                    if poll.wants(ready).read {
+                        let mut pending = Vec::new();
+                        signals.take(&mut pending)?;
+                        for signal in pending {
+                            match signal {
+                                Signal::Child => state.reap(poll)?,
+                                Signal::Term | Signal::Int | Signal::Hup => {
+                                    halt(listener, stopping, state, poll, *timing)?
+                                }
+                                _ => {}
+                            }
+                        }
                     }
+                    Ok(true)
                 }
-            }
-        } else if let Some(listener) = self.listener.as_ref().filter(|l| l.token == ready.token) {
-            if self.poll.wants(ready).read {
-                listener.accept(&mut self.poll, &mut self.accepted)?;
-                for stream in self.accepted.drain(..) {
-                    self.state.accept(&mut self.poll, stream);
+                Wake::Ready(ready) => match listener.as_ref().filter(|l| l.token == ready.token) {
+                    Some(listener) => {
+                        if poll.wants(ready).read {
+                            listener.accept(poll, accepted)?;
+                            for stream in accepted.drain(..) {
+                                state.accept(poll, stream);
+                            }
+                        }
+                        Ok(true)
+                    }
+                    None => Ok(false),
+                },
+                Wake::Due(timer) => {
+                    if let Some(listener) = listener.as_ref().filter(|l| l.resume == timer) {
+                        listener.resume(poll);
+                    } else if Some(timer) == *stopping {
+                        state.panes.kill()?;
+                        state.reap(poll)?;
+                        match std::fs::remove_file(&state.config.socket) {
+                            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                                return Err(error);
+                            }
+                            _ => {}
+                        }
+                        stopped = true;
+                    } else {
+                        return Ok(false);
+                    }
+                    Ok(true)
                 }
-            }
-        } else if !self.state.pane_ready(&mut self.poll, ready) {
-            self.state.conn_ready(&mut self.poll, ready);
-        }
-        Ok(())
+            },
+        );
+        *events = taken;
+        turned?;
+        Ok(if stopped {
+            Status::Stopped
+        } else {
+            Status::Running
+        })
     }
 
     pub fn stop(&mut self) -> io::Result<()> {
-        if self.stopping.is_some() {
-            return Ok(());
-        }
-        if let Some(listener) = self.listener.take() {
-            listener.close(&mut self.poll);
-        }
-        self.state.shutdown(&mut self.poll);
-        let stopping = self.poll.timer();
-        self.poll
-            .start(stopping, self.timing.shutdown_grace, None)?;
-        self.stopping = Some(stopping);
-        Ok(())
+        halt(
+            &mut self.listener,
+            &mut self.stopping,
+            &mut self.state,
+            &mut self.poll,
+            self.timing,
+        )
     }
+}
 
-    fn due(&mut self, timer: Timer) -> io::Result<Status> {
-        if let Some(listener) = self.listener.as_ref().filter(|l| l.resume == timer) {
-            listener.resume(&mut self.poll);
-        } else if timer == self.state.ticker() {
-            self.state.tick(&mut self.poll);
-        } else if Some(timer) == self.stopping {
-            self.state.panes.kill()?;
-            self.state.reap(&mut self.poll)?;
-            match std::fs::remove_file(&self.state.config.socket) {
-                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-                _ => {}
-            }
-            return Ok(Status::Stopped);
-        } else {
-            self.state.ping(&mut self.poll, timer);
-        }
-        Ok(Status::Running)
+fn halt(
+    listener: &mut Option<Listener>,
+    stopping: &mut Option<Timer>,
+    state: &mut State,
+    poll: &mut Poll,
+    timing: Timing,
+) -> io::Result<()> {
+    if stopping.is_some() {
+        return Ok(());
     }
+    if let Some(listener) = listener.take() {
+        listener.close(poll);
+    }
+    state.shutdown(poll);
+    let timer = poll.timer();
+    poll.start(timer, timing.shutdown_grace, None)?;
+    *stopping = Some(timer);
+    Ok(())
 }
 
 #[cfg(test)]

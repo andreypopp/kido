@@ -35,6 +35,20 @@ pub const DEFAULT_LIMITS: Limits = Limits {
     continuation_max_bytes: 65 << 20,
 };
 
+pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
+    Config {
+        dir: dir.to_path_buf(),
+        socket: dir.join("socket"),
+        pane_exe,
+        terminfo: dir.to_path_buf(),
+        shell: PathBuf::from("/bin/sh"),
+        limits,
+        media: Vec::new(),
+        env: Vec::new(),
+        cwd: PathBuf::from("/"),
+    }
+}
+
 pub(crate) fn variable(name: &[u8], value: &[u8]) -> Vec<u8> {
     [name, b"=", value].concat()
 }

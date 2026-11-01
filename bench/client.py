@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""usage: KIDO_TMUX=path/to/kido-tmux bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll] [busy]"""
+"""usage: KIDO_TMUX=path/to/kido-tmux [KO_BIN=build/ko/bin/ko] bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll] [busy]
+
+KO_BIN names the ko to measure; without it the OCaml ko of dune's install tree runs. The rows that attach a
+terminal client (attach, resize, scroll, busy) need a ko with one."""
 import base64
 import fcntl
 import http.client
@@ -291,7 +294,7 @@ class WebSocket:
 class Ko:
     def __init__(self, scrollback="200M"):
         self.dir = tempfile.mkdtemp(prefix="p13-ko-", dir="/tmp")
-        self.exe = os.path.join(ROOT, "_build/install/default/bin/ko")
+        self.exe = os.environ.get("KO_BIN") or os.path.join(ROOT, "_build/install/default/bin/ko")
         self.env = scrubbed(HOME=self.dir, XDG_CONFIG_HOME=self.dir, XDG_STATE_HOME=self.dir, SHELL="/bin/sh", TERM="xterm-ghostty")
         self.log = open(self.dir + "/server.log", "wb")
         self.server = subprocess.Popen([self.exe, "server", "--server", self.dir, "--shell", "/bin/sh", "--scrollback-bytes", scrollback], env=self.env, stdout=self.log, stderr=self.log)
@@ -687,6 +690,7 @@ if __name__ == "__main__":
     names = sys.argv[1:] or list(ROWS_BY_NAME)
     if any(n not in ROWS_BY_NAME for n in names):
         raise SystemExit(__doc__)
-    subprocess.run(["dune", "build", "@install"], cwd=ROOT, check=True)
+    if not os.environ.get("KO_BIN"):
+        subprocess.run(["dune", "build", "@install"], cwd=ROOT, check=True)
     for n in names:
         ROWS_BY_NAME[n]()

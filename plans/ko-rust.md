@@ -86,8 +86,9 @@ The user decided:
     `/proc/<pid>/stat`) form the last stage, RL, after parity (7).
     Until R5, Linux CI keeps the Go suite on the OCaml `ko` and the
     OCaml decoder; from R5 to RL, Linux CI runs no ko stage.
-27. No push of `ko-rust` until OCaml parity, the end of R5. The first
-    push measures the CI job time (4.4).
+27. No push of `ko-rust` until the end of RL, the last stage. The
+    first push measures the CI job time (4.4). (During R3 the user
+    moved the first push from the end of R5 to the end of RL.)
 
 R0 forced these decisions:
 
@@ -294,6 +295,71 @@ RP forced these decisions:
     wire carries JSON strings). The only client is the coordinator,
     which sends none of them; a refused frame fails the pane with an
     `error` frame.
+
+R3 forced these decisions:
+
+66. R3 builds six of the new fuzz targets: `ring`, `loop`, `head`,
+    `http`, `decode` and `frames`. `client` and `ws` come with R4,
+    beside the client's `wire.rs`, which is the other reader of
+    responses and frames.
+67. `scripts/fuzz.sh` runs only the Rust cargo-fuzz targets. The long
+    runs of the C and OCaml targets, the AFL++ runs among them, leave
+    the script; their fast paths under `dune test` stay until the
+    cut, which also deletes `dune-workspace.afl` and `dune.afl.lock`.
+68. The fuzz entries of `ko_pane_wire`, `ko_sys` and `ko_server` are a
+    module `fuzz` under `cfg(any(test, feature = "fuzz"))`. Only
+    `fuzz/Cargo.toml` enables the feature, so no shipped binary
+    contains a target or its model. `ko_pane::control` stays as RP
+    left it.
+69. The nightly pin is `nightly-2026-10-14` in `scripts/nightly.sh`,
+    the day after rustc 1.99.1's commit, with `miri` for arm64 macOS.
+    `ko-nightly.yml` runs each target in its own job of a matrix
+    that `scripts/fuzz.sh --list` gives, for 600 s, with a job limit
+    of 40 minutes (the fuzz time, 15 minutes for the cargo-fuzz
+    install and build, 15 spare). The nightly cargo runs only through
+    `make nightly-cargo` (decision 31).
+70. Miri does not cover `conn` and `pane_proc`: their `Output` and
+    control socket are unix sockets, and neither has an in-memory
+    writer. Under `cfg(miri)`, `ko_sys::Mapping` is heap memory with
+    `/dev/null` as its descriptor, so the ring runs under Miri with
+    `-Zmiri-disable-isolation`.
+71. The `head` target requires one result for every cut of an input
+    under 16 KiB, and for a longer input a refusal for every cut, but
+    not one kind: read whole, httparse can refuse (`Invalid`) a byte
+    past the limit, while cut, the limit (`TooLarge`) comes first.
+    The server's read buffer is 16 KiB, so it never parses past the
+    limit.
+72. `unsafe` is permitted in `ko_bench/src/alloc.rs`, the counting
+    global allocator. It counts in a thread-local cell, so the figure
+    is the server thread's; `ko-bench` runs the drains as threads of
+    its own and reports the server thread's CPU time.
+73. Decision 16 held for every stream except the two with title and
+    pwd changes: `State` built their event JSON with no client
+    registered (0.14 and 1.00 allocations per record on `tui.vt` and
+    `shell.vt`). It now builds them only for a registered client.
+76. `ko-bench throughput` replaces `ko_server/examples/ring_probe.rs`
+    (decision 40): `make probe-ko` runs it, with `BYTES` and `PANE=c`,
+    and it fails on the same faults. `ko-bench` reads and writes the
+    wire through `ko_server::protocol` and `ko_server::ws`, so the
+    wire types that it uses are `pub`.
+77. The latency modes stamp the receive at different points: the
+    OCaml bench when its 2 ms timer scans the ring, before the view
+    write; `ko-bench` after the view client's `read`, which adds the
+    write and the client's wakeup. The producer stamps a record every
+    1 ms, under the 2 ms output tick, so both figures mostly measure
+    the wait for the tick.
+    With a client, a title or pwd change still allocates its event,
+    once for each change, not for each record.
+74. `TestNoIdleWakeups` reads the server's CPU time and wakeups with
+    `proc_pid_rusage` (cgo, `internal/rusage`), because `ps` counts
+    in 10 ms steps. Primed panes come with S1, so its three idle
+    panes run `read` with one view each.
+75. `TestKillServerSignalsByPeerPID` was a test race. On macOS
+    `kill(pid, 0)` succeeds on a zombie, so `ko kill-server` returned
+    only after Go's `cmd.Wait` had reaped the stand-in, and the test
+    then read the `exited` channel with `default` before the
+    goroutine had closed it. The test now waits up to 5 s for the
+    channel.
 
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
@@ -1162,7 +1228,7 @@ on each install step, and apt's `Acquire::Retries "3"` with 30 s
 timeouts (also in `scripts/ci-like/Dockerfile`). The `test` job's 30
 minutes now covers the Rust build, the `verus` stage and, from R0 to
 R4 and during RE, two e2e runs. No push happens before the end of
-R5 (decision 27); that first push measures the job and raises its
+RL (decision 27); that first push measures the job and raises its
 limit in the same change if the measured time is over two thirds of
 it. Each job of `ko-nightly.yml` gets `timeout-minutes` at its budget
 below plus 15 minutes.
@@ -1180,7 +1246,7 @@ jobs and their time budgets:
 
 | job | runs | about |
 |---|---|---|
-| fuzz | `make fuzz TARGET=t TIME=600` for each target of `scripts/fuzz.sh` (`frame`, `control`, `head`, `http`, `client`, `ws`, `decode`, `frames`), all on cargo-fuzz | 60 min |
+| fuzz | `make fuzz TARGET=t TIME=600` in one matrix job for each target of `scripts/fuzz.sh` (`frame`, `control`, `ring`, `loop`, `head`, `http`, `decode`, `frames`; R4 adds `client` and `ws`), all on cargo-fuzz | 60 min |
 | miri | `scripts/miri.sh` (6.6) | 15 min |
 
 A finding fails its job and uploads the artifact (the libFuzzer
@@ -1380,10 +1446,9 @@ uses a `Mutex`.
 `scripts/miri.sh` runs `cargo +nightly miri test` on the modules with
 no sockets and no FFI: `ko_pane_wire::ring` (the
 writer and the reader on an in-memory backing, the one module with
-ko's own raw-pointer `unsafe`), `ko_pane_wire::frame`, `pane_proc`'s
-codec, `protocol` (serde_json and the `compact!` macro), `ids`, and
-`conn`'s batch and partial-write logic over an in-memory writer,
-`http.rs`'s head reader and response writer over byte buffers.
+ko's own raw-pointer `unsafe`), `ko_pane_wire::frame`, `protocol` (serde_json and the `compact!`
+macro), `ids` and `http.rs`'s head reader over byte buffers.
+`conn` and `pane_proc` run on sockets and stay out (decision 70).
 httparse, tungstenite and serde_json are not in Miri's scope beyond
 what these tests call; their projects test themselves. It runs in the
 scheduled CI workflow beside `make fuzz`, because Miri is tens of
@@ -1707,7 +1772,7 @@ Each stage is one unit of work under one manager. Each ends with
 ### R3. Harness, fuzz, Miri, bench (4 to 5 agent-days)
 
 - The view harness (6.3) and its three explicit cases; `fuzz/` with
-  the four targets, corpora and replays; `scripts/fuzz.sh`;
+  the six targets of decision 66, corpora and replays; `scripts/fuzz.sh`;
   `scripts/miri.sh`; the scheduled workflow of 4.4 with its fuzz and
   miri jobs.
 - `ko_bench` with the modes of `coordinator.ml`; a counting
@@ -1731,6 +1796,24 @@ Each stage is one unit of work under one manager. Each ends with
 The idle criterion is s1.md 12's `TestNoIdleWakeups` brought forward:
 the coordinator's CPU grows less than 5 ms over 5 s with three idle
 primed panes. It becomes a Go test in R3.
+
+Result (2026-11-02, macOS, one run of each row, OCaml first, load
+average 1.1 to 1.99, RV paused):
+
+| metric | OCaml ko, this session | Rust ko | target |
+|---|---|---|---|
+| coordinator CPU, 1 GiB | 0.876 s, 79.5 MB/s | 0.881 s, 82.8 MB/s | missed: 0.80 s; MB/s met (+4 percent) |
+| allocation per record | 1.53 minor words | 0.00 allocations | met |
+| five flooding panes with views, 2 ms window, 128 MiB each | 0.27 core, 229.9 MB/s | 0.32 core, 238.2 MB/s | missed: 0.26 core |
+| hop latency, `latency writev 5000 2` | p50 1,288 us, p99 2,561 us | p50 1,303 us, p99 2,577 us | missed by both: 33 and 109 us (decision 77) |
+| key to frame, view only, 500 samples | p50 0.19, p99 0.53 ms (0.14 and 0.34 over the raw pty) | p50 0.18, p99 0.32 ms (0.13 and 0.20 over the raw pty) | met |
+| coordinator idle, no panes | RSS 13.5 MiB, footprint 8.5 MiB | RSS 2.6 MiB, footprint 1.5 MiB | met |
+| idle wakeups, three idle panes with views | | `TestNoIdleWakeups`: 12 us of CPU and 1 wakeup in 5 s | met |
+
+`client.py latency` attaches a terminal client before its view row,
+so the view row of the Rust ko ran through a scratch driver that
+calls the same functions without the client, for both servers in
+one session. The attach and resize rows wait for R4.
 
 ### RV. Verus: the ring and the handshake (6 to 9 agent-days)
 
@@ -1934,8 +2017,9 @@ build and pass on Linux.
   of 4.4 and runs `make verify-ko`, the `verus` stage included;
   `ko-nightly.yml` adds Ubuntu.
 - The idle-wakeup row of section 7's bench table with `strace -c`.
-- Acceptance: `make verify-ko` green on Ubuntu in CI and in
-  `scripts/ci-like.sh`; the ko e2e suite of that time passes on
+- Acceptance: `make verify-ko` green on Ubuntu in
+  `scripts/ci-like.sh`, and on both runners in CI on the first push
+  of `ko-rust` (decision 27), which measures the job time; the ko e2e suite of that time passes on
   Ubuntu, `TestHostileClientsDoNotAffectOthers` with its
   `ECONNRESET` case included.
 

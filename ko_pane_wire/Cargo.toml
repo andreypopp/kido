@@ -4,6 +4,9 @@ version = "0.0.0"
 edition.workspace = true
 publish.workspace = true
 
+[features]
+fuzz = []
+
 [dependencies]
 ko_sys = { path = "../ko_sys" }
 

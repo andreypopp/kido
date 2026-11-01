@@ -12,20 +12,21 @@ streams="$s/text.vt $s/ls.vt $s/gitlog.vt $s/yes.vt $s/tui.vt $s/osc8.vt $s/shel
 deadline() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 run() { deadline 600 "$@" 2>&1 | grep -v '^drain '; }
 cd "$build"
+. "$root/bench/coordinator.sh"
 echo "== control: pty -> plain copier -> socketpair -> drain"
 run ./bench/pty_read.exe socket ./bench/drain.exe "$build/bench/produce.exe" "$bytes" $streams
 echo "== ko-pane ring -> coordinator view write -> socketpair -> drain"
-run ./bench/coordinator.exe throughput writev "$bytes" 2 $streams
+run "$coordinator" throughput writev "$bytes" 2 $streams
 echo "== vt_write in process, mixed corpus and each stream"
 ./bench/parse.exe 268435456 65536 $streams
 for f in $streams; do ./bench/parse.exe 67108864 65536 "$f" | tail -1 | sed "s|^|$(basename "$f") |"; done
 echo "== hop latency, pty byte to coordinator write"
-run ./bench/coordinator.exe latency writev 5000 2
+run "$coordinator" latency writev 5000 2
 echo "== snapshots through the ring"
-run ./bench/coordinator.exe snapshot writev 10000
-run ./bench/coordinator.exe snapshot writev 100000
+run "$coordinator" snapshot writev 10000
+run "$coordinator" snapshot writev 100000
 echo "== snapshots in process, mirror determinism"
 deadline 600 ./bench/mirror.exe 2000 $streams
 echo "== macOS pty probes"
 ./bench/wait_master.exe
-run ./bench/coordinator.exe cpu-check
+run "$coordinator" cpu-check

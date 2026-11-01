@@ -505,9 +505,11 @@ while True:
 	if b, e := exec.Command(koBin, "kill-server", "--server", dir).CombinedOutput(); e != nil {
 		t.Fatalf("kill: %v %s", e, b)
 	}
+	// kill-server returns once kill(pid, 0) finds no process, which on macOS is
+	// after cmd.Wait reaped the child; the goroutine closes exited just after.
 	select {
 	case <-exited:
-	default:
+	case <-time.After(5 * time.Second):
 		t.Fatal("stand-in server survived kill-server")
 	}
 	if _, e := os.Stat(socket); !os.IsNotExist(e) {

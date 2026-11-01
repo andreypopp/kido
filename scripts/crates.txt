@@ -41,6 +41,7 @@ indexmap
 itoa
 jobserver
 ko
+ko_bench
 ko_pane
 ko_pane_wire
 ko_server

@@ -70,6 +70,11 @@ extern "C" fn to_pipe(number: libc::c_int) {
     unsafe { *libc::__error() = saved };
 }
 
+#[cfg(any(test, feature = "fuzz"))]
+pub(crate) fn simulate(signal: Signal) {
+    to_pipe(signal.number());
+}
+
 #[derive(Debug)]
 pub struct Signals {
     read: PipeReader,
@@ -154,6 +159,9 @@ impl Drop for Signals {
 }
 
 #[cfg(test)]
+pub(crate) static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::event::{Events, Interest, Mode, Poll};
@@ -163,6 +171,9 @@ mod tests {
 
     #[test]
     fn a_signal_is_never_lost_runs_once_per_wakeup_and_wakes_the_loop() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let signals = Signals::install(&[Signal::Usr1, Signal::Usr2, Signal::Child]).unwrap();
         assert_eq!(
             Signals::install(&[Signal::Usr1]).unwrap_err().kind(),

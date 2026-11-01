@@ -1,6 +1,10 @@
 mod client;
 pub mod config;
 mod conn;
+#[cfg(any(test, feature = "fuzz"))]
+pub mod fuzz;
+#[cfg(test)]
+mod harness;
 pub mod http;
 pub mod ids;
 mod link;
@@ -12,4 +16,4 @@ mod router;
 pub mod server;
 mod state;
 mod view;
-mod ws;
+pub mod ws;
