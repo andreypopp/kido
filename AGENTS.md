@@ -322,7 +322,10 @@ These requirements are fixed:
   (`src/main.rs`) over a library that the `control` fuzz target also
   calls. One `ko-pane` process runs for each pane. `fuzz/` is the
   cargo-fuzz crate, a workspace member outside `default-members`:
-  clippy checks it on stable, and only `make fuzz` runs it. ko's C
+  clippy checks it on stable, and only `make fuzz` runs it.
+  `ko_bench/` is the binary `ko-bench`, the port of
+  `bench/coordinator.ml`, which `make build-ko` builds into
+  `target/release` and never installs. ko's C
   stays only in the C `ko-pane`, which the OCaml client tests and
   the C unit tests use until the cut. Do not add new C.
 - **Toolchain.** `rust-toolchain.toml` pins the toolchain of the
@@ -339,6 +342,12 @@ These requirements are fixed:
   target. Scripts and the Go suite call make, never cargo. CI's
   toolchain install and `cargo fetch` steps are the exception. Every
   cargo command passes `--locked`. `Cargo.lock` is committed.
+  Nightly exists only for cargo-fuzz and Miri: `scripts/nightly.sh`
+  pins it, and `scripts/fuzz.sh`, `scripts/miri.sh` and
+  `.github/workflows/ko-nightly.yml` source it. The two scripts run
+  the nightly cargo through `make nightly-cargo ARGS=...`. Without that
+  toolchain, or without cargo-fuzz or the `miri` component, the two
+  scripts print SKIP and exit 0. Agents do not install it.
 - **Platforms.** The Rust ko builds and is verified on macOS only for
   now. On Linux, the Makefile builds no Rust, and `make e2e-ko` runs
   the Go suite against the OCaml ko and the OCaml decoder.
@@ -440,8 +449,9 @@ Conventions:
 - **Newtypes.** A value with its own rules is a newtype with a private
   field and one validating constructor. A closed set is an `enum`. "Unknown" is `None`. "Disabled" is a variant.
 - **Unsafe.** `unsafe` is permitted in `ko_sys`, in `ko_vt_sys` (the
-  generated bindings), in `ko_vt` (the safe wrapper over them) and in
-  `ko_pane_wire::ring::mapping` and `ring::model` (the loom backing).
+  generated bindings), in `ko_vt` (the safe wrapper over them), in
+  `ko_pane_wire::ring::mapping` and `ring::model` (the loom backing)
+  and in `ko_bench/src/alloc.rs` (the counting global allocator).
   Every other crate and module denies it. Each block has a
   `// SAFETY:` line that names the invariant. A safe wrapper takes
   typed arguments and returns `Result`. Descriptors are `OwnedFd` and
@@ -536,7 +546,21 @@ Conventions:
   function of a library crate. That crate has a `#[test]` that
   replays the target's corpus `fuzz/corpus/<target>/`, or fixed
   cases if the target has no corpus, through the same function on
-  stable.
+  stable. Except for `ko_pane::control`, the entry functions are in a
+  module `fuzz` under `cfg(any(test, feature = "fuzz"))`; only
+  `fuzz/Cargo.toml` enables the feature, so the shipped binaries do
+  not contain the targets or their models. A model in a target never
+  reuses the formula of the code under test.
+- **Miri.** `scripts/miri.sh` (`make miri`) runs the tests of the
+  modules without sockets, FFI or processes: `frame`, the ring,
+  `ids`, `protocol` and `http`'s head reader. It selects them by
+  name and skips the proptest tests. Under `cfg(miri)`, `ko_sys`'s
+  `Mapping` is heap memory (`ko_sys/src/mapping/heap.rs`), so the
+  ring's writer and reader run on it.
+- **Allocation.** The coordinator allocates nothing on the heap for
+  each ring record in steady state. `ko-bench` counts the server
+  thread's allocations with its global allocator and prints
+  `allocations/record`.
 
 ## Layout
 
@@ -636,6 +660,11 @@ and the Rust decoder; with one of them set, it fails.
 tests that `scripts/verify.sh` lists run the OCaml `ko` (`KO_OCAML`),
 because the OCaml client starts its own server, and every other test
 runs the Rust `ko` (`KO_RUST`). On Linux, every test runs the OCaml `ko`.
+`bench/coordinator.sh` selects the coordinator of `bench/run.sh`,
+`bench/flood.sh` and `bench/baselines.sh`: `COORDINATOR=ocaml` (the
+default, `bench/coordinator.exe`) or `COORDINATOR=rust` (`ko-bench`
+with the Rust `ko-pane`). `bench/client.py` runs the `ko` that
+`KO_BIN` names, else the OCaml one.
 
 `scripts/install-zig.sh` pins the zig release and its checksums. CI
 and `scripts/ci-like/Dockerfile` install zig through it. lint fails
@@ -1122,12 +1151,13 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make verus   cargo verus verify on ko_pane_wire with the pinned Verus release, downloaded once into build/verus/
     make build-ko  the Rust ko's installed layout under build/ko/ (macOS only for now)
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
-    make probe-ko BYTES=N  the Rust server's ring reader under the Rust ko-pane (PANE=c: the C one), N bytes of bench/streams (default 1 GiB); not part of verify
+    make probe-ko BYTES=N  ko-bench throughput: the Rust server's ring reader under the Rust ko-pane (PANE=c: the C one), N bytes of bench/streams (default 1 GiB); not part of verify
     make test    dune test --force, ko's Go suite and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
-    make fuzz TARGET=view TIME=600  one time-boxed ko fuzz run, for CI or the user; no TARGET lists the targets
+    make fuzz TARGET=ring TIME=600  one time-boxed ko fuzz run, for CI or the user; no TARGET lists the targets
+    make miri    Miri on ko's modules without sockets or FFI (scripts/miri.sh); for CI or the user
     make proofs  re-verify ko_proofs/ and diff its extraction against the committed files; WRITE=1 replaces them
     make clean-forks  remove fork builds other than the pin
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
@@ -1200,93 +1230,74 @@ location.
 Do not write a unit test that execs the binary.
 
 **Fuzzing ko.** ko has no VT-parser target: Ghostty fuzzes
-libghostty-vt upstream. `scripts/fuzz.sh` names the targets:
+libghostty-vt upstream. `scripts/fuzz.sh` names the targets, all
+cargo-fuzz targets of the Rust ko in `fuzz/fuzz_targets/`, with a
+dictionary and `max_len` in `fuzz/<target>.options`:
 
-- `frame` and `control`: libFuzzer targets of the C `ko-pane`'s frame
-  sizes and frame bodies, with dictionaries and options in
-  `fuzz/`. The Rust targets of the same names are in
-  `fuzz/fuzz_targets/`; `scripts/fuzz.sh` runs them from R3. They build under `--profile fuzz` with an LLVM
-  clang (`KO_FUZZ_CC`, else one found under Homebrew's `llvm`).
-  Apple's clang has no libFuzzer, so the target prints SKIP.
-- `ring` and `pane-proc`: Monolith specifications. Each compares the
-  candidate with a reference after every operation, and a failure
-  prints a short program of operations. `ring` is in
-  `ko_server/fuzz/fuzz_ring.ml`, with a pure model of the ring and
-  of ko-pane's room rule. `pane-proc` tests the frame parser and
-  stays inline in `ko_server/pane_proc.ml`, because it needs the
-  module's internals. `Monolith.run` is global and calls `exit`, so
-  `Fuzz_run.monolith` is the one entry, and each test runner holds
-  at most one Monolith test. It runs the engine in a forked child,
-  except under AFL, whose fork server needs the process. Under
-  `dune test`, it runs 200 scenarios, each from a byte file that a
-  fixed seed generates; a failure prints its seed, and
-  `KO_FUZZ_SEED` replays that scenario. `KO_FUZZ_SECONDS` selects
-  Monolith's random mode, which shortens a failing program.
-- `view`, `http` and `loop`: QCheck2 properties in the library
-  `ko_server/fuzz/`. QCheck2 shrinks each failing case through its
-  generator, so the properties have no shrinkers. `http` draws its
-  requests from generators that `ppx_deriving_qcheck` derives on the
-  `Protocol` types, with `[@gen]` on fields that need a valid range.
-  The ppx has no signature deriver, so `protocol.mli` declares the
-  generators that `fuzz_http.ml` uses as `val`s.
-  `Fuzz_server` is the in-process server.
-  `view` drives a real `ko-pane` through the view protocol and
-  compares every view's mirror, and a fresh snapshot, with the pane's
-  terminal. `http` sends requests, bodies and WebSocket messages to
-  an in-process server. `loop` drives `Event_loop` over socketpairs
-  and a pipe with interest changes, sends, full buffers, peer closes,
-  timers and signals, and compares each step with a model: the read
-  count, every byte once and in order, no callback after unwatch or
-  cancel, timers never early and in deadline order, one callback per
-  pending signal. It simulates a signal through the stub
-  `ko_signal_deliver`, which runs the C handler's body and sends no
-  signal.
+- `frame` and `control`: `ko-pane`'s frame sizes and its control
+  dispatch in process (`ko_pane::control`). The first byte of a
+  `control` input selects the mode.
+- `ring`: an operation list on the real ring writer and reader,
+  compared after every operation with a pure model of the ring and of
+  `ko-pane`'s room rule (`ko_pane_wire::fuzz`).
+- `loop`: `ko_sys::event` over socketpairs and a pipe with interest
+  changes, sends, full buffers, peer closes, timers and signals,
+  compared with a model: the read count, every byte once and in
+  order, no event after removal, timers never early and in deadline
+  order, one dispatch for each pending signal (`ko_sys::fuzz`). It
+  simulates a signal through the handler body and sends no signal.
+- `head`, `http`, `decode` and `frames` (`ko_server::fuzz`): the
+  head reader over the bytes cut at the chosen points; one connection
+  of an in-process server fed the bytes; each request decoder, whose
+  value must encode and decode to itself; `pane_proc`'s frame reader,
+  fed whole and in two parts, with the same effects. `http` makes its
+  server once for each process and a fresh socketpair for each input.
+  Its first pane runs `cat` under the real `ko-pane`. Every later
+  pane starts `/usr/bin/true` in place of `ko-pane`, so a fuzzed
+  request never runs its command. It
+  needs the Rust `ko-pane` in `KO_PANE_EXE`, which the script builds.
 - `test_e2e_ko/hostile_test.go` is the only Go part: hostile input
   against a real `ko server`, with other clients unaffected.
 
-- `ring-afl`, `pane-proc-afl` and `http-afl`: the same tests under
-  AFL++ (`afl-fuzz` on PATH or `KO_AFL_FUZZ`, else SKIP). They build
-  under `dune-workspace.afl`, with its own lock `dune.afl.lock` and
-  the build directory `_build_afl`. That lock selects
-  `ocaml-option-afl`, so the compiler instruments every dependency
-  too (httpun, angstrom, Monolith). Plain `dune build`, `dune test`
-  and verify never read that workspace. A re-lock of `dune.lock`
-  re-locks `dune.afl.lock` with the same pinned repositories, which
-  `dune-workspace.afl` names. On macOS, the script sets
-  `AFL_MAP_SIZE=65536` and `AFL_SKIP_BIN_CHECK=1`, because the OCaml
-  fork server reports no map size and the default 8 MiB map is over
-  `kern.sysv.shmmax`, and `__AFL_PERSISTENT=1`, because afl-fuzz
-  sets it only in the binary check that it skips. A crash replays
-  through `KO_AFL_SOURCE`.
-
-Test code in ko is acceptable: `ko_server` links Monolith, QCheck2
-and the derived generators. The fuzz entry reads its environment
-only when a test calls it: `scripts/lint.sh` permits `KO_FUZZ_*` and
-`KO_AFL_*` only in `ko_server/fuzz_run.ml`, and
-`TestFuzzVariablesDoNotReachTheBinary` runs `ko` with them set to
-junk.
-
-`dune test` replays each target's fixed seeds and the `control`
-corpus in a few seconds. `make fuzz` uses random seeds for TIME
-seconds, in CI or when the user asks ("Which verification" above). Each run has its own process group and scratch directory,
-and the script kills and removes both on every exit.
+`cargo test` replays every corpus in `fuzz/corpus/<target>/` in a
+fraction of a second for each target. `make fuzz` builds the target with debug
+assertions (`cargo fuzz build -a`, so the contract checks run) and
+fuzzes for TIME seconds, in CI or when the user asks ("Which
+verification" above). Each run has its own process group and
+scratch directory, and the script kills and removes both on every
+exit. A finding is in `target/fuzz-artifacts/`.
 A libFuzzer run restarts every 24000 inputs, because ASan on macOS
-keeps libghostty-vt's freed memory, about 100 KiB per input. The test
-entry reads `KO_FUZZ_SECONDS` (set by the script) and `KO_FUZZ_SEED`.
-A failure prints its seed or artifact; `KO_FUZZ_SEED` replays a seed.
-The `view` scenarios run a real `ko-pane`, so pty read boundaries and
-timing differ between runs of one seed.
+keeps libghostty-vt's freed memory, about 100 KiB per input.
 A bug that a fuzzer finds gets a regression test with that case:
-the explicit input or command list, not a seed, because a seed
-generates a different case when a generator changes.
-`fuzz/corpus/control/` is the libFuzzer corpus of `control`, files
-named by SHA-1, that `dune test` replays under ASan and UBSan through
-the C target and `cargo test` through `ko_pane::control`; only
-`make fuzz MERGE=1` (`scripts/fuzz.sh --merge`) changes it, with a
-`-merge=1` into a minimal set, and only with a code change that needs
-the new inputs.
+the explicit input or operation list, not a seed.
+The corpora are files named by SHA-1. Only `make fuzz MERGE=1`
+(`scripts/fuzz.sh --merge`) changes one, with a `-merge=1` into a
+minimal set, and only with a code change that needs the new inputs.
+The scheduled workflow `.github/workflows/ko-nightly.yml` runs each
+target for 600 s in its own job, and `make miri`, and uploads a
+finding. It never
+changes a corpus.
+
+The view harness (`ko_server/src/harness.rs`, a test module) drives
+the real `State` and a real `ko-pane` through views with fast, slow
+and stalled readers, resizes, resyncs, resumes, closes, EOF and a
+crash. It compares every view's mirror, and a fresh snapshot, with
+the pane's terminal. It runs 20 random cases under `cargo test`;
+`PROPTEST_CASES` scales them.
 A test that pins a libghostty-vt bug fails when the bug is fixed, so
 the workaround for it can be removed.
+
+Until the cut, the OCaml ko keeps its fast paths under `dune test`:
+the Monolith and QCheck2 properties of `ko_server/fuzz/` and
+`ko_server/pane_proc.ml`, through `Fuzz_run`, and the C targets'
+replay of `fuzz/corpus/control/` under ASan and UBSan. No script
+runs them for a long time. `dune-workspace.afl` and `dune.afl.lock`
+have no user until the cut deletes them. Test code in ko is
+acceptable: `ko_server` links Monolith, QCheck2 and the derived
+generators. `scripts/lint.sh` permits `KO_FUZZ_*` and `KO_AFL_*` only
+in `ko_server/fuzz_run.ml`, and
+`TestFuzzVariablesDoNotReachTheBinary` runs `ko` with them set to
+junk.
 
 `make e2e` builds the fork into `build/tmux-fork/<key>/`.
 It rebuilds only on a submodule bump or an installer change.

@@ -1,0 +1,157 @@
+name: ko nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+
+jobs:
+  targets:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: List the fuzz targets
+        id: list
+        run: echo "targets=$(scripts/fuzz.sh --list | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: targets
+    timeout-minutes: 40
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.targets) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Resolve zig key
+        id: zig
+        run: echo "key=$(./scripts/install-zig.sh --print-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache zig
+        id: zig-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ steps.zig.outputs.key }}
+
+      - name: Install zig
+        if: steps.zig-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        run: ./scripts/install-zig.sh "$HOME/zig"
+
+      - name: Put zig on PATH
+        run: echo "$HOME/zig" >> "$GITHUB_PATH"
+
+      - name: Install the Rust toolchain
+        timeout-minutes: 5
+        run: rustup toolchain install
+
+      - name: Install the nightly toolchain
+        timeout-minutes: 10
+        run: |
+          . scripts/nightly.sh
+          rustup toolchain install "$NIGHTLY" --profile minimal
+
+      - name: Cache crates
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Download crates
+        timeout-minutes: 5
+        run: cargo fetch --locked
+
+      - name: Install cargo-fuzz
+        timeout-minutes: 20
+        run: cargo install --locked cargo-fuzz
+
+      - name: Fuzz ${{ matrix.target }}
+        timeout-minutes: 25
+        run: make fuzz TARGET="${{ matrix.target }}" TIME=600
+
+      - name: Upload the findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings-${{ matrix.target }}
+          path: target/fuzz-artifacts/
+          if-no-files-found: ignore
+
+  miri:
+    timeout-minutes: 30
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install the Rust toolchain
+        timeout-minutes: 5
+        run: rustup toolchain install
+
+      - name: Install the nightly toolchain with Miri
+        timeout-minutes: 10
+        run: |
+          . scripts/nightly.sh
+          rustup toolchain install "$NIGHTLY" --profile minimal --component miri --component rust-src
+
+      - name: Cache crates
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Download crates
+        timeout-minutes: 5
+        run: cargo fetch --locked
+
+      # The ko_vt crate is a dependency of ko_server's dev tests only; Miri builds it too, so zig is needed.
+      - name: Resolve zig key
+        id: zig
+        run: echo "key=$(./scripts/install-zig.sh --print-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache zig
+        id: zig-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ steps.zig.outputs.key }}
+
+      - name: Install zig
+        if: steps.zig-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        run: ./scripts/install-zig.sh "$HOME/zig"
+
+      - name: Put zig on PATH
+        run: echo "$HOME/zig" >> "$GITHUB_PATH"
+
+      - name: Miri
+        timeout-minutes: 15
+        run: make miri 2>&1 | tee miri.log; exit "${PIPESTATUS[0]}"
+
+      - name: Upload the report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: miri-report
+          path: miri.log
+          if-no-files-found: ignore

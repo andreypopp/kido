@@ -300,7 +300,7 @@ impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Seed<S> {
     }
 }
 
-pub(crate) fn decode<T: DeserializeOwned>(text: &[u8]) -> serde_json::Result<T> {
+pub fn decode<T: DeserializeOwned>(text: &[u8]) -> serde_json::Result<T> {
     let mut deserializer = serde_json::Deserializer::from_slice(text);
     let value = T::deserialize(Objects(&mut deserializer))?;
     deserializer.end()?;
@@ -401,7 +401,7 @@ struct RawSize {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RawSize", into = "RawSize")]
-pub(crate) struct Size(pub(crate) frame::Size);
+pub struct Size(pub frame::Size);
 
 impl TryFrom<RawSize> for Size {
     type Error = &'static str;
@@ -437,7 +437,7 @@ impl From<Size> for RawSize {
 
 compact! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum Cause {
+    pub enum Cause {
         units {}
         payloads {
             Exited(i32) = "exited",
@@ -448,9 +448,9 @@ compact! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Dead {
-    pub(crate) at: u64,
-    pub(crate) cause: Cause,
+pub struct Dead {
+    pub at: u64,
+    pub cause: Cause,
 }
 
 impl From<Exit> for Cause {
@@ -475,27 +475,27 @@ impl From<&Death> for Dead {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Row {
-    pub(crate) id: PaneId,
-    pub(crate) pid: i32,
-    pub(crate) command: Vec<String>,
-    pub(crate) cwd: String,
-    pub(crate) title: String,
-    pub(crate) dead: Option<Dead>,
+pub struct Row {
+    pub id: PaneId,
+    pub pid: i32,
+    pub command: Vec<String>,
+    pub cwd: String,
+    pub title: String,
+    pub dead: Option<Dead>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Created {
-    pub(crate) pane: PaneId,
+pub struct Created {
+    pub pane: PaneId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PasteResult {
+pub struct PasteResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) id: Option<u64>,
-    pub(crate) pasted: bool,
+    pub id: Option<u64>,
+    pub pasted: bool,
     #[serde(rename = "unsafe")]
-    pub(crate) unsafe_paste: bool,
+    pub unsafe_paste: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -519,7 +519,7 @@ struct RawKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RawKey", into = "RawKey")]
-pub(crate) struct Key(pub(crate) frame::Key);
+pub struct Key(pub frame::Key);
 
 impl TryFrom<RawKey> for Key {
     type Error = &'static str;
@@ -587,14 +587,14 @@ struct MouseDef {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Mouse(#[serde(with = "MouseDef")] pub(crate) frame::Mouse);
+pub struct Mouse(#[serde(with = "MouseDef")] pub frame::Mouse);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Paste {
-    pub(crate) text: String,
-    pub(crate) check_safe: bool,
+pub struct Paste {
+    pub text: String,
+    pub check_safe: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) id: Option<u64>,
+    pub id: Option<u64>,
 }
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -649,7 +649,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub(crate) struct Text(pub(crate) Vec<u8>);
+pub struct Text(pub Vec<u8>);
 
 impl TryFrom<String> for Text {
     type Error = &'static str;
@@ -667,7 +667,7 @@ impl From<Text> for String {
 
 compact! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum Input {
+    pub enum Input {
         units {}
         payloads {
             Key(Key) = "key",
@@ -696,7 +696,7 @@ impl<'a> From<&'a Input> for pane_proc::Input<'a> {
 
 compact! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum Command {
+    pub enum Command {
         units {}
         payloads {
             Argv(Vec<String>) = "argv",
@@ -706,19 +706,19 @@ compact! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Variable {
-    pub(crate) name: String,
-    pub(crate) value: String,
+pub struct Variable {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CreatePane {
+pub struct CreatePane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cwd: Option<String>,
+    pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) command: Option<Command>,
+    pub command: Option<Command>,
     #[serde(default)]
-    pub(crate) env: Vec<Variable>,
+    pub env: Vec<Variable>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -749,7 +749,7 @@ pub struct ViewOptions {
 
 compact! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum Marker {
+    pub enum Marker {
         units {}
         payloads {
             Resize(Size) = "resize",
@@ -772,26 +772,26 @@ impl From<ring::Marker> for Marker {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum ClientKind {
+pub enum ClientKind {
     Terminal,
     App,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Hello {
-    pub(crate) kind: ClientKind,
-    pub(crate) name: String,
+pub struct Hello {
+    pub kind: ClientKind,
+    pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) pane: Option<PaneId>,
-    pub(crate) focused: bool,
-    pub(crate) size: Size,
+    pub pane: Option<PaneId>,
+    pub focused: bool,
+    pub size: Size,
     #[serde(default)]
-    pub(crate) ignore_size: bool,
+    pub ignore_size: bool,
 }
 
 compact! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum ClientRequest {
+    pub enum ClientRequest {
         units {}
         payloads {
             Hello(Hello) = "hello",
@@ -804,7 +804,7 @@ compact! {
 
 compact! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum ViewRequest {
+    pub enum ViewRequest {
         units {}
         payloads {
             Resync(ViewOptions) = "resync",
@@ -916,21 +916,21 @@ compact! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Marked {
-    pub(crate) offset: u64,
-    pub(crate) marker: Marker,
+pub struct Marked {
+    pub offset: u64,
+    pub marker: Marker,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Skipped {
-    pub(crate) offset: u64,
-    pub(crate) from: u64,
-    pub(crate) to: u64,
+pub struct Skipped {
+    pub offset: u64,
+    pub from: u64,
+    pub to: u64,
 }
 
 compact! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum ViewEvent {
+    pub enum ViewEvent {
         units {}
         payloads {
             Marked(Marked) = "marked",

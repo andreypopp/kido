@@ -12,13 +12,14 @@ dune build bench/coordinator.exe bench/produce.exe bench/drain.exe bench/latency
 s=$root/bench/streams
 streams="$s/text.vt $s/ls.vt $s/gitlog.vt $s/yes.vt $s/tui.vt $s/osc8.vt $s/shell.vt"
 cd "$root/_build/default"
+. "$root/bench/coordinator.sh"
 for count in $counts; do
   for window in $windows; do
     for rep in $(seq "$reps"); do
       echo "== panes=$count window=$window rep=$rep $(uptime | sed 's/.*load/load/')"
       shown=$views
       [ "$shown" = all ] && shown=$count
-      perl -e 'alarm shift; exec @ARGV' 120 ./bench/coordinator.exe flood "$count" "$shown" "$bytes" "$window" $streams 2>&1
+      perl -e 'alarm shift; exec @ARGV' 120 "$coordinator" flood "$count" "$shown" "$bytes" "$window" $streams 2>&1
     done
   done
 done

@@ -56,6 +56,13 @@ pub enum Extent {
     Full,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub x: u16,
+    pub y: u16,
+    pub visible: bool,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Changes {
     pub title: bool,
@@ -476,6 +483,14 @@ impl Terminal {
             value: false,
         };
         Ok(self.get(sys::GHOSTTY_TERMINAL_DATA_MODE, mode)?.value)
+    }
+
+    pub fn cursor(&self) -> Result<Cursor, Error> {
+        Ok(Cursor {
+            x: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_X, 0u16)?,
+            y: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_Y, 0u16)?,
+            visible: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE, false)?,
+        })
     }
 
     pub fn total_rows(&self) -> Result<usize, Error> {

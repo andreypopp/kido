@@ -303,4 +303,9 @@ impl Backend {
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.handle.fd()
     }
+
+    #[cfg(not(loom))]
+    pub fn duplicate(&self) -> std::io::Result<Handle> {
+        self.handle.duplicate()
+    }
 }

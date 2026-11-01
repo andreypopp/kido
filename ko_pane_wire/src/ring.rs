@@ -1372,7 +1372,7 @@ impl Reader {
 
     #[cfg(not(loom))]
     pub fn writer(&self) -> io::Result<Writer> {
-        Writer::open(self.fd().try_clone_to_owned()?)
+        self.shared.duplicate().map(Writer::attach)
     }
 
     pub fn tail(&self) -> Pos {
@@ -1456,6 +1456,7 @@ impl Writer {
 mod tests {
     use super::*;
     use crate::frame::{CellPx, Dim};
+    use crate::fuzz::{Candidate, Op, Pair};
     use ko_sys::clock::Mono;
     use ko_sys::pid::Exit;
     use proptest::prelude::*;
@@ -1466,228 +1467,13 @@ mod tests {
         (reader, writer)
     }
 
-    fn payload(kind: RecordKind, offset: u64, len: u64) -> Vec<u8> {
-        match kind {
-            RecordKind::Bytes => (0..len).map(|i| (offset + i) as u8).collect(),
-            RecordKind::Marker if len.is_multiple_of(2) => vec![1, 50, 0, 20, 0, 8, 0, 16, 0],
-            RecordKind::Marker => [vec![2], vec![0; 16]].concat(),
-            RecordKind::Slice | RecordKind::Pad => vec![0; len.max(2) as usize],
-        }
-    }
-
-    fn advances_offset(kind: RecordKind, len: u64) -> u64 {
-        if kind == RecordKind::Bytes { len } else { 0 }
-    }
-
-    #[derive(Debug, Clone)]
-    struct Modeled {
-        pos: u64,
-        kind: RecordKind,
-        offset: u64,
-        len: u64,
-    }
-
-    #[derive(Debug)]
-    struct Model {
-        capacity: u64,
-        head: u64,
-        tail: u64,
-        offset: u64,
-        records: Vec<Modeled>,
-    }
-
-    impl Model {
-        fn push(&mut self, kind: RecordKind, len: u64) {
-            self.records.push(Modeled {
-                pos: self.head,
-                kind,
-                offset: self.offset,
-                len,
-            });
-            self.head += HEADER + len;
-            self.offset += advances_offset(kind, len);
-        }
-
-        fn plan(&self) -> (Option<u64>, u64) {
-            let used: u64 = self.live().map(|r| HEADER + r.len).sum();
-            let end = self.records.last().map_or(0, |r| r.pos + HEADER + r.len);
-            let free = self.capacity - used;
-            let room = self.capacity - end % self.capacity;
-            let (pad, free, room) = if room <= 2 * HEADER {
-                if free < room {
-                    (None, 0, 0)
-                } else {
-                    (Some(room - HEADER), free - room, self.capacity)
-                }
-            } else {
-                (None, free, room)
-            };
-            (pad, free.min(room).saturating_sub(2 * HEADER))
-        }
-
-        fn write(&mut self, kind: RecordKind, len: u64) -> bool {
-            let (pad, fits) = self.plan();
-            if let Some(n) = pad {
-                self.push(RecordKind::Pad, n);
-            }
-            let length = payload(kind, self.offset, len).len() as u64;
-            let ok = length <= fits;
-            if ok {
-                self.push(kind, length);
-            }
-            ok
-        }
-
-        fn live(&self) -> impl Iterator<Item = &Modeled> {
-            self.records.iter().filter(|r| r.pos >= self.tail)
-        }
-
-        fn boundaries(&self) -> Vec<u64> {
-            self.live().map(|r| r.pos).chain([self.head]).collect()
-        }
-
-        fn advance(&mut self, keep: u64) {
-            let retain = self
-                .tail
-                .max(self.head.saturating_sub(self.capacity / 2).min(keep));
-            self.tail = *self.boundaries().iter().find(|&&p| p >= retain).unwrap();
-        }
-
-        fn oldest_offset(&self) -> u64 {
-            self.live().next().map_or(self.offset, |r| r.offset)
-        }
-
-        fn reachable(&self, pos: u64) -> Reach {
-            let lost = self.records.iter().any(|r| {
-                r.pos < self.tail
-                    && matches!(r.kind, RecordKind::Bytes | RecordKind::Marker)
-                    && r.pos + HEADER + r.len > pos
-            });
-            if lost {
-                Reach::Behind
-            } else {
-                Reach::At(Pos(pos.max(self.tail)))
-            }
-        }
-
-        fn resume(&self, target: u64) -> (Vec<u8>, Vec<u64>) {
-            let marks = self
-                .live()
-                .filter(|r| matches!(r.kind, RecordKind::Marker | RecordKind::Slice))
-                .filter(|r| r.offset >= target)
-                .map(|r| r.offset)
-                .collect();
-            (
-                payload(RecordKind::Bytes, target, self.offset - target),
-                marks,
-            )
-        }
-    }
-
-    #[derive(Debug)]
-    struct Candidate {
-        reader: Reader,
-        writer: Writer,
-    }
-
-    impl Candidate {
-        fn write(&mut self, kind: RecordKind, len: u64) -> bool {
-            let room = self.writer.available().room;
-            let body = payload(kind, self.writer.woff, len);
-            body.len() as u64 <= room && self.writer.put(kind, &body) != Commit::Refused
-        }
-
-        fn positions(&mut self, from: Pos) -> Vec<Pos> {
-            let head = self.reader.head();
-            let mut positions = Vec::new();
-            let mut pos = from;
-            while pos < head {
-                positions.push(pos);
-                pos = self.reader.record(pos).unwrap().next;
-            }
-            positions
-        }
-
-        fn advance(&mut self, keep: u64) {
-            let head = self.reader.head();
-            self.reader.advance(head, Pos(keep)).unwrap();
-        }
-
-        fn boundaries(&mut self) -> Vec<u64> {
-            let tail = self.reader.tail();
-            let head = self.reader.head();
-            let mut boundaries: Vec<u64> = self.positions(tail).iter().map(|p| p.0).collect();
-            boundaries.push(head.0);
-            boundaries
-        }
-
-        fn resume(&mut self, target: u64) -> (Vec<u8>, Vec<u64>) {
-            let from = self.reader.resume(Offset(target)).unwrap();
-            let mut bytes = Vec::new();
-            let mut marks = Vec::new();
-            for pos in self.positions(from) {
-                let record = self.reader.record(pos).unwrap();
-                match record.kind {
-                    RecordKind::Bytes => {
-                        let skip = target.saturating_sub(record.offset.0) as usize;
-                        bytes.extend_from_slice(&self.reader.payload(pos).unwrap()[skip..]);
-                    }
-                    RecordKind::Marker | RecordKind::Slice => marks.push(record.offset.0),
-                    RecordKind::Pad => {}
-                }
-            }
-            (bytes, marks)
-        }
-
-        fn check(&mut self, model: &Model) {
-            assert_eq!(self.reader.head().0, model.head);
-            assert_eq!(self.reader.tail().0, model.tail);
-            assert_eq!(self.reader.end_offset().unwrap().0, model.offset);
-            assert_eq!(
-                self.reader.oldest_offset().unwrap().0,
-                model.oldest_offset()
-            );
-            for pos in model.records.iter().map(|r| r.pos).chain([model.head]) {
-                assert_eq!(
-                    self.reader.reachable(Pos(pos)),
-                    model.reachable(pos),
-                    "{pos}"
-                );
-            }
-        }
-    }
-
-    fn pair(capacity: u64) -> (Model, Candidate) {
-        let (reader, writer) = ring(capacity);
-        (
-            Model {
-                capacity,
-                head: 0,
-                tail: 0,
-                offset: 0,
-                records: Vec::new(),
-            },
-            Candidate { reader, writer },
-        )
-    }
-
     #[test]
     fn a_marker_and_bytes_that_end_before_the_resume_target_are_not_replayed() {
-        let (mut model, mut candidate) = pair(553);
-        assert!(model.write(RecordKind::Marker, 0) && candidate.write(RecordKind::Marker, 0));
-        assert!(model.write(RecordKind::Bytes, 180) && candidate.write(RecordKind::Bytes, 180));
-        let replayed = candidate.resume(76);
-        assert!(replayed.1.is_empty());
-        assert_eq!(model.resume(76), replayed);
-    }
-
-    #[derive(Debug, Clone)]
-    enum Op {
-        Write(RecordKind, u64),
-        AdvanceToHead,
-        AdvanceToTail,
-        AdvanceToBoundary(usize),
-        Resume(u64),
+        let mut pair = Pair::new(553).unwrap();
+        pair.apply(Op::Write(RecordKind::Marker, 0));
+        pair.apply(Op::Write(RecordKind::Bytes, 179));
+        assert!(pair.candidate.resume(76).1.is_empty());
+        pair.apply(Op::Resume(76));
     }
 
     fn op() -> impl Strategy<Value = Op> {
@@ -1697,7 +1483,7 @@ mod tests {
             (0..2u64).prop_map(|n| Op::Write(RecordKind::Marker, n)),
             Just(Op::AdvanceToHead),
             Just(Op::AdvanceToTail),
-            any::<usize>().prop_map(Op::AdvanceToBoundary),
+            any::<u64>().prop_map(Op::AdvanceToBoundary),
             any::<u64>().prop_map(Op::Resume),
         ]
     }
@@ -1708,40 +1494,9 @@ mod tests {
             capacity in 64..=600u64,
             ops in prop::collection::vec(op(), 0..40),
         ) {
-            let (mut model, mut candidate) = pair(capacity);
+            let mut pair = Pair::new(capacity).unwrap();
             for op in ops {
-                match op {
-                    Op::Write(kind, n) => {
-                        let len = match kind {
-                            RecordKind::Marker => n,
-                            _ => 1 + n % (capacity / 3),
-                        };
-                        prop_assert_eq!(model.write(kind, len), candidate.write(kind, len));
-                    }
-                    Op::AdvanceToHead => {
-                        let head = model.head;
-                        model.advance(head);
-                        candidate.advance(head);
-                    }
-                    Op::AdvanceToTail => {
-                        let tail = model.tail;
-                        model.advance(tail);
-                        candidate.advance(tail);
-                    }
-                    Op::AdvanceToBoundary(i) => {
-                        let boundaries = model.boundaries();
-                        prop_assert_eq!(&boundaries, &candidate.boundaries());
-                        let keep = boundaries[i % boundaries.len()];
-                        model.advance(keep);
-                        candidate.advance(keep);
-                    }
-                    Op::Resume(n) => {
-                        let oldest = model.oldest_offset();
-                        let target = oldest + n % (model.offset - oldest + 1);
-                        prop_assert_eq!(model.resume(target), candidate.resume(target));
-                    }
-                }
-                candidate.check(&model);
+                pair.apply(op);
             }
         }
     }

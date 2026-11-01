@@ -41,6 +41,13 @@ impl Shared {
         Ok(Shared { mapping, capacity })
     }
 
+    pub(super) fn duplicate(&self) -> io::Result<Shared> {
+        Ok(Shared {
+            mapping: self.mapping.duplicate()?,
+            capacity: self.capacity,
+        })
+    }
+
     pub(super) fn attach(mapping: Mapping) -> Result<Shared, Invalid> {
         if mapping.size() < DATA {
             return Err(Invalid::Capacity);

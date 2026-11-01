@@ -1,0 +1,5 @@
+GET /panes/pane_1/screen?format=plain&history=none HTTP/1.1
+Host: ko
+Ko-Protocol: 1.0
+Ko-Vt: da3eff4c4ad49a0c90aebf7cb045492701f6dcce
+

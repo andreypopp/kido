@@ -276,146 +276,36 @@ pub(crate) fn failed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, DEFAULT_LIMITS};
+    use crate::config::DEFAULT_LIMITS;
+    use crate::fuzz::Rig;
     use crate::protocol::{Command, version_headers};
     use crate::server::Verified;
     use crate::ws::masked;
-    use ko_sys::event::{Events, Mode};
+    use ko_sys::event::Mode;
     use proptest::prelude::*;
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
-    use std::time::{Duration, Instant};
 
-    struct Harness {
-        poll: Poll,
-        state: State,
-        wake: ko_sys::event::Timer,
-        dir: PathBuf,
-    }
-
-    impl Drop for Harness {
-        fn drop(&mut self) {
-            self.state.shutdown(&mut self.poll);
-            let _ = self.state.panes.kill();
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
+    type Harness = Rig;
 
     fn harness(name: &str) -> Harness {
-        let dir = PathBuf::from(format!("/tmp/ko-router-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config =
-            Config {
-                dir: dir.clone(),
-                socket: dir.join("socket"),
-                pane_exe: PathBuf::from(std::env::var_os("KO_PANE_EXE").expect(
+        Rig::new(
+            PathBuf::from(format!("/tmp/ko-router-{name}-{}", std::process::id())),
+            PathBuf::from(
+                std::env::var_os("KO_PANE_EXE").expect(
                     "KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it",
-                )),
-                terminfo: dir.clone(),
-                shell: PathBuf::from("/bin/sh"),
-                limits: DEFAULT_LIMITS,
-                media: Vec::new(),
-                env: Vec::new(),
-                cwd: PathBuf::from("/"),
-            };
-        let mut poll = Poll::new();
-        let mut state = State::new(config, &mut poll, Duration::from_millis(2));
-        let cat = CreatePane {
-            cwd: None,
-            command: Some(Command::Argv(
-                ["/bin/sh", "-c", "stty raw -echo; exec cat"]
-                    .map(str::to_owned)
-                    .to_vec(),
-            )),
-            env: Vec::new(),
-        };
-        state.add_pane(&mut poll, &cat).unwrap();
-        let wake = poll.timer();
-        poll.start(
-            wake,
-            Duration::from_millis(20),
-            Some(Duration::from_millis(20)),
+                ),
+            ),
+            DEFAULT_LIMITS,
+            "stty raw -echo; exec cat",
         )
-        .unwrap();
-        Harness {
-            poll,
-            state,
-            wake,
-            dir,
-        }
     }
 
     impl Harness {
-        fn step(&mut self, mode: Mode) {
-            let mut events = Events::default();
-            self.poll.turn(mode, &mut events).unwrap();
-            for &ready in events.ready() {
-                if !self.state.pane_ready(&mut self.poll, ready) {
-                    self.state.conn_ready(&mut self.poll, ready);
-                }
-            }
-            for &due in events.due() {
-                if !self.poll.current(due) || due.timer == self.wake {
-                } else if due.timer == self.state.ticker() {
-                    self.state.tick(&mut self.poll);
-                } else {
-                    self.state.ping(&mut self.poll, due.timer);
-                }
-            }
-            self.state.settle(&mut self.poll);
-        }
-
-        fn exchange(&mut self, data: &[u8]) -> Vec<u8> {
-            let (ours, mut theirs) = UnixStream::pair().unwrap();
-            theirs.set_nonblocking(true).unwrap();
-            self.state
-                .accept(&mut self.poll, Verified::admit(ours).unwrap());
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut sent = 0;
-            let mut shut = false;
-            let mut reply = Vec::new();
-            let mut chunk = vec![0; 65536];
-            loop {
-                assert!(
-                    Instant::now() < deadline,
-                    "no close within 5 s after {:?}",
-                    String::from_utf8_lossy(data)
-                );
-                let mut progress = false;
-                if !shut {
-                    match theirs.write(&data[sent..]) {
-                        Ok(count) => {
-                            progress = count > 0;
-                            sent += count;
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(_) => shut = true,
-                    }
-                    if sent == data.len() {
-                        let _ = theirs.shutdown(std::net::Shutdown::Write);
-                        shut = true;
-                    }
-                }
-                match theirs.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(count) => {
-                        progress = true;
-                        reply.extend_from_slice(&chunk[..count]);
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => break,
-                }
-                self.step(if progress { Mode::Peek } else { Mode::Wait });
-            }
-            self.step(Mode::Peek);
-            reply
-        }
-
         fn reply(&mut self, request: &str, rest: &str) -> String {
-            let reply =
-                self.exchange(format!("{request} HTTP/1.1\r\n{}{rest}", ko_headers()).as_bytes());
-            String::from_utf8_lossy(&reply).into_owned()
+            let request = format!("{request} HTTP/1.1\r\n{}{rest}", ko_headers());
+            String::from_utf8_lossy(self.exchange(request.as_bytes())).into_owned()
         }
 
         fn status(&mut self, request: &str, rest: &str) -> String {
@@ -445,7 +335,7 @@ mod tests {
         let replies = [
             server.reply("GET /version", "Bad Header\r\n\r\n"),
             String::from_utf8_lossy(
-                &server.exchange(b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\r\n\r\n"),
+                server.exchange(b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\r\n\r\n"),
             )
             .into_owned(),
             server.reply("POST /panes", "Content-Length: abc\r\n\r\n{}"),
@@ -711,7 +601,7 @@ mod tests {
             let mut server = harness("http");
             for request in &requests {
                 let reply = server.exchange(request);
-                prop_assert!(!reply.starts_with(b"HTTP/1.1 5"), "{:?}: {:?}", String::from_utf8_lossy(request), String::from_utf8_lossy(&reply));
+                prop_assert!(!reply.starts_with(b"HTTP/1.1 5"), "{:?}: {:?}", String::from_utf8_lossy(request), String::from_utf8_lossy(reply));
             }
             prop_assert_eq!(server.status("GET /version", "\r\n"), "HTTP/1.1 200");
         }

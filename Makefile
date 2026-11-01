@@ -61,7 +61,7 @@ test: $(KO_BUILD)
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: build-ko build-ko-ocaml test-ko lint-ko probe-ko bindgen fuzz proofs verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: build-ko build-ko-ocaml test-ko lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane proofs verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -91,6 +91,19 @@ verus:
 
 fuzz:
 	bash scripts/fuzz.sh $(if $(MERGE),--merge) '$(TARGET)' '$(TIME)'
+
+NIGHTLY := $(shell bash -c '. scripts/nightly.sh; echo $$NIGHTLY')
+nightly-has:
+	@rustup toolchain list | grep -q '^$(NIGHTLY)'
+
+nightly-cargo:
+	$(CARGO) +$(NIGHTLY) $(ARGS)
+
+fuzz-pane:
+	$(CARGO) build --locked --release -p ko_pane
+
+miri:
+	bash scripts/miri.sh
 
 flake:
 	RUN='$(RUN)' COUNT='$(or $(COUNT),20)' bash scripts/verify.sh flake
@@ -147,15 +160,14 @@ lint-ko:
 bindgen:
 	./scripts/bindgen.sh
 
-# The ring reader under a ko-pane: BYTES of bench/streams through one pane, with every record
-# counted. It reports throughput, coordinator CPU and lost records; it is not part of verify.
-# PANE=c takes the C ko-pane that dune builds, the default is the Rust one.
+# ko-bench throughput through one pane: BYTES of bench/streams, every record counted; it fails on a lost
+# record, a gap, an invalid record or another byte total. PANE=c takes the C ko-pane that dune builds.
 probe-ko:
 	dune build ko_pane/ko-pane bench/produce.exe
-	$(CARGO) build --locked --release -p ko_server --example ring_probe
-	$(CARGO) build --locked --release -p ko_pane
-	target/release/examples/ring_probe $(if $(filter c,$(PANE)),$(CURDIR)/$(DUNE_DEFAULT)/ko_pane/ko-pane,$(CURDIR)/target/release/ko-pane) $(CURDIR)/$(DUNE_DEFAULT)/bench/produce.exe \
-		$(or $(BYTES),1073741824) $(addprefix $(CURDIR)/,$(wildcard bench/streams/*.vt))
+	$(CARGO) build --locked --release -p ko_bench -p ko_pane
+	KO_PANE_EXE=$(if $(filter c,$(PANE)),$(CURDIR)/$(DUNE_DEFAULT)/ko_pane/ko-pane,$(CURDIR)/target/release/ko-pane) \
+		KO_BENCH_PRODUCE=$(CURDIR)/$(DUNE_DEFAULT)/bench/produce.exe \
+		target/release/ko-bench throughput writev $(or $(BYTES),1073741824) 2 $(addprefix $(CURDIR)/,$(wildcard bench/streams/*.vt))
 
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
 # names another (CI, with its cached build); it never skips

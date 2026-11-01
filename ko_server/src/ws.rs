@@ -261,8 +261,24 @@ impl Ws {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn masked(opcode: u8, fin: bool, payload: &[u8], key: [u8; 4], lie: i64) -> Vec<u8> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub opcode: u8,
+    pub header: usize,
+    pub length: usize,
+}
+
+pub fn parse_frame(buffer: &[u8]) -> Option<Frame> {
+    let mut cursor = Cursor::new(buffer);
+    let (header, length) = FrameHeader::parse(&mut cursor).ok()??;
+    Some(Frame {
+        opcode: u8::from(header.opcode),
+        header: usize::try_from(cursor.position()).ok()?,
+        length: usize::try_from(length).ok()?,
+    })
+}
+
+pub fn masked(opcode: u8, fin: bool, payload: &[u8], key: [u8; 4], lie: i64) -> Vec<u8> {
     let declared = i64::try_from(payload.len())
         .unwrap_or(0)
         .saturating_add(lie);
