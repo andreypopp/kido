@@ -1,3 +1,5 @@
+#define _DARWIN_C_SOURCE
+#define _GNU_SOURCE
 /* The extracted writer and reader as two threads over one 64-byte ring.
    The writer fills each Bytes payload with the stream offsets of its bytes;
    the reader checks every byte once from its cursor, as a view does,

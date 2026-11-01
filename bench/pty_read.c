@@ -1,5 +1,5 @@
 #define _DARWIN_C_SOURCE
-#define _DEFAULT_SOURCE
+#define _GNU_SOURCE
 #include <ghostty/vt.h>
 #include <unistd.h>
 #include <fcntl.h>

@@ -2,6 +2,7 @@ package ko_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -24,7 +25,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var root, koBin string
+var root, buildDir, koBin string
 
 func TestMain(m *testing.M) {
 	var err error
@@ -32,7 +33,11 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	koBin = filepath.Join(root, "_build/install/default/bin/ko")
+	buildDir = cmp.Or(os.Getenv("DUNE_BUILD_DIR"), "_build")
+	if !filepath.IsAbs(buildDir) {
+		buildDir = filepath.Join(root, buildDir)
+	}
+	koBin = filepath.Join(buildDir, "install/default/bin/ko")
 	if err := e2eenv.UnsetHooks(); err != nil {
 		fmt.Fprintln(os.Stderr, "e2e setup:", err)
 		os.Exit(1)
@@ -316,7 +321,7 @@ func decode(t *testing.T, data []byte, full ...bool) struct {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(root, "_build/default/ko_vt/decode.exe"))
+	cmd := exec.CommandContext(ctx, filepath.Join(buildDir, "default/ko_vt/decode.exe"))
 	if len(full) > 0 && full[0] {
 		cmd.Args = append(cmd.Args, "--full")
 	}

@@ -313,7 +313,7 @@ let update t message =
                       (request ~consume:(output_string oc) t (Screen (pane, Ansi, Full_history)) "");
                     close_out oc;
                     Modes.reset t.modes;
-                    Matrix.suspend t.matrix;
+                    Matrix.suspend ~leave_alt:true t.matrix;
                     Fun.protect
                       ~finally:(fun () ->
                         Matrix.resume t.matrix;

@@ -1,3 +1,5 @@
+#define _DARWIN_C_SOURCE
+#define _GNU_SOURCE
 #include "protocol.h"
 #include <assert.h>
 int LLVMFuzzerTestOneInput(const uint8_t *data,size_t size) {

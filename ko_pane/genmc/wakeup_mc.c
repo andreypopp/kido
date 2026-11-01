@@ -1,3 +1,5 @@
+#define _DARWIN_C_SOURCE
+#define _GNU_SOURCE
 /* The idle handshake: the writer stores head then loads read; the reader
    stores read (in advance) then loads head. One of them must see the other. */
 #include <assert.h>

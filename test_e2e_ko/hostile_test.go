@@ -3,10 +3,12 @@ package ko_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -37,7 +39,8 @@ func TestHostileClientsDoNotAffectOthers(t *testing.T) {
 		conn.SetDeadline(time.Now().Add(5 * time.Second))
 		conn.Write(hostile)
 		conn.(*net.UnixConn).CloseWrite()
-		if _, err = io.Copy(io.Discard, io.LimitReader(conn, 8<<20)); err != nil {
+		// Linux resets a unix socket whose peer closed with unread input; macOS reports EOF.
+		if _, err = io.Copy(io.Discard, io.LimitReader(conn, 8<<20)); err != nil && !errors.Is(err, syscall.ECONNRESET) {
 			t.Fatalf("hostile input %d kept the connection open: %v", i, err)
 		}
 		conn.Close()

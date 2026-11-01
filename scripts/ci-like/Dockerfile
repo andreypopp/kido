@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 		bash zsh git curl ca-certificates gnupg \
 		build-essential bison autoconf automake pkg-config \
 		libevent-dev libncurses-dev libutf8proc-dev libpng-dev zlib1g-dev \
-		unzip bubblewrap rsync \
+		unzip bubblewrap rsync xz-utils less procps \
 	&& curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 	&& apt-get install -y --no-install-recommends nodejs \
 	&& rm -rf /var/lib/apt/lists/*
@@ -22,6 +22,11 @@ RUN test -n "$TMUX_BUILD_KEY" \
 	&& /tmp/build-tmux/scripts/install-tmux-fork.sh /usr/local/tmux-side \
 	&& /usr/local/tmux-side/bin/kido-tmux -V \
 	&& rm -rf /tmp/build-tmux
+
+# ko_vt builds libghostty-vt with zig, which CI installs with the same script.
+COPY scripts/install-zig.sh /tmp/install-zig.sh
+RUN /tmp/install-zig.sh /usr/local/zig && rm /tmp/install-zig.sh
+ENV PATH=/usr/local/zig:$PATH
 
 ENV KIDO_TMUX=/usr/local/tmux-side/bin/kido-tmux
 ENV PATH=/usr/local/tmux-side/bin:$PATH

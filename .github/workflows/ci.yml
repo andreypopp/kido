@@ -22,6 +22,26 @@ jobs:
         with:
           submodules: true
 
+      # ko_vt's dune rules build libghostty-vt with zig, and setup-dune's
+      # "build" step runs the whole project, so zig must be on PATH before it.
+      - name: Resolve zig key
+        id: zig
+        run: echo "key=$(./scripts/install-zig.sh --print-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache zig
+        id: zig-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ steps.zig.outputs.key }}
+
+      - name: Install zig
+        if: steps.zig-cache.outputs.cache-hit != 'true'
+        run: ./scripts/install-zig.sh "$HOME/zig"
+
+      - name: Put zig on PATH
+        run: echo "$HOME/zig" >> "$GITHUB_PATH"
+
       # The dune binary distribution, pinned to the release the README
       # installs; there is no opam. `build-deps` builds dune.lock into
       # _build (the compiler included) and the action caches dune's shared
@@ -35,11 +55,6 @@ jobs:
           steps: install-dune build-deps
 
       # Go only drives the e2e suite, which stays in Go.
-      - name: Set up Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -50,7 +65,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libevent-dev libncurses-dev libutf8proc-dev libpng-dev zlib1g-dev \
-            bison autoconf automake pkg-config openssh-server zsh
+            bison autoconf automake pkg-config openssh-server zsh less procps
           # Debian's global compinit can block test shells with an insecure-directories prompt.
           echo 'skip_global_compinit=1' | sudo tee -a /etc/zsh/zshenv
 
@@ -169,7 +184,7 @@ jobs:
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 KIDO_E2E_HOST_SSH=1 make e2e
 
       - name: Ko protocol tests
-        run: make e2e-ko
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux make e2e-ko
 
       - name: TypeScript tests
         run: KIDO_TS_TEST_REQUIRED=1 ./scripts/test-ts.sh

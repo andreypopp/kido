@@ -1,3 +1,5 @@
+#define _DARWIN_C_SOURCE
+#define _GNU_SOURCE
 #include <caml/mlvalues.h>
 #include <caml/memory.h>
 #include <caml/alloc.h>
@@ -20,7 +22,8 @@ struct terminal { GhosttyTerminal vt; GhosttyRenderState render;
   struct ko_compress compress; bool held; double hold_started; uintnat hold_id; GhosttyResult render_error; };
 #define S(v) (*(struct terminal **)Data_custom_val(v))
 static struct terminal *live(value v) {
-  if(!S(v)) caml_invalid_argument("closed terminal");return S(v);
+  if(!S(v)) caml_invalid_argument("closed terminal");
+  return S(v);
 }
 #define T(v) (live(v)->vt)
 static void finalize(value v) {
@@ -323,7 +326,8 @@ CAMLprim value ko_vt_render(value v) {
       Store_field(cell,2,fg_colour);Store_field(cell,3,bg_colour);
       Store_field(cell,4,Val_int(style.bold | (style.italic<<1) | ((style.underline!=0)<<2) | (style.inverse<<3)
         | (style.faint<<4) | (style.blink<<5) | (style.invisible<<6) | (style.strikethrough<<7) | (style.overline<<8)));
-      if(i>=(size_t)cols*rows)caml_failwith("render cell count");Store_field(array,i++,cell);
+      if(i>=(size_t)cols*rows)caml_failwith("render cell count");
+      Store_field(array,i++,cell);
     }
   }
   if(i!=(size_t)cols*rows)caml_failwith("render cell count");

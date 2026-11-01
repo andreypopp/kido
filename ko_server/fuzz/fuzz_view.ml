@@ -821,28 +821,23 @@ let%test_module "Tests" =
                 (Buffer.length text) (pane_state h))
 
     let%test "libghostty-vt still cannot decode a snapshot of this stream" =
-      match
-        run_exn ~seed:969
-          [
-            Open (History_none, Fast, true, false);
-            Feed (Osc8, 620, 4);
-            Resize (167, 3);
-            Feed (Lines, 45116, 3);
-            Feed (Binary, 463, 2);
-            Settle 26;
-            Reader (352, Fast);
-            Check;
-            Open (History_all, Stalled, false, false);
-            Open (History_all, Fast, true, false);
-            Feed (Wide, 1860, 7);
-            Reader (9, Fast);
-            Resize (32, 66);
-            Resize (11, 47);
-            Feed (Corpus 2, 16010, 30);
-          ]
-      with
-      | () -> false
-      | exception Libghostty_decode -> true
+      let limits = (Config.scrollback_limits (1 lsl 30)).terminal in
+      let feed source size seed = chunk (Random.State.make [| seed |]) source size in
+      let blank = Ko_vt.create ~cols:68 ~rows:36 ~limits in
+      let term =
+        Ko_vt.decode_string ~full:true (Ko_vt.snapshot blank ~screen:false ~images:false)
+      in
+      Ko_vt.resize term ~cols:167 ~rows:3;
+      Ko_vt.write term (feed Osc8 620 4);
+      Ko_vt.write term (feed Lines 45116 3);
+      Ko_vt.write term (feed Binary 463 2);
+      Ko_vt.resize term ~cols:32 ~rows:66;
+      Ko_vt.resize term ~cols:11 ~rows:47;
+      Ko_vt.write term (feed Wide 1860 7);
+      Ko_vt.write term (feed (Corpus 2) 16010 30);
+      match Ko_vt.decode_string ~full:false (Ko_vt.snapshot term ~screen:true ~images:false) with
+      | _ -> false
+      | exception Failure message -> String.ends_with ~suffix:"(-2)" message
 
     let%test "libghostty-vt still diverges after a full snapshot of a 1x1 terminal" =
       let limits = (Config.scrollback_limits (1 lsl 30)).terminal in

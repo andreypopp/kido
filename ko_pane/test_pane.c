@@ -66,7 +66,8 @@ int main(int argc,char **argv){
   int small=1024;assert(!setsockopt(sockets[1],SOL_SOCKET,SO_SNDBUF,&small,sizeof(small)));
   pid_t child=fork();assert(child>=0);
   if(!child){assert(dup2(sockets[1],0)>=0);assert(dup2(sockets[1],1)>=0);assert(dup2(fd,3)>=0);assert(!fcntl(3,F_SETFD,0));
-    for(int i=4;i<32;i++)close(i);execl(argv[1],argv[1],NULL);perror("exec pane");_exit(127);}
+    for(int i=4;i<32;i++)close(i);
+    execl(argv[1],argv[1],NULL);perror("exec pane");_exit(127);}
   assert(child>1);close(sockets[1]);close(fd);int control=sockets[0];fcntl(control,F_SETFL,O_NONBLOCK);
   struct data d={0};num(&d,3,2);num(&d,80,2);num(&d,24,2);num(&d,8,2);num(&d,16,2);
   num(&d,1,1);num(&d,32*1024*1024,8);num(&d,0,1);num(&d,0,8);num(&d,65*1024*1024,8);num(&d,32*1024*1024,8);num(&d,0,1);num(&d,65*1024*1024,8);

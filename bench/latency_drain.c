@@ -1,3 +1,5 @@
+#define _DARWIN_C_SOURCE
+#define _GNU_SOURCE
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>

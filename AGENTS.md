@@ -386,6 +386,15 @@ zig from PATH out of `third_party/ghostty`, and the binding),
 suite, `make e2e-ko`, a stage of `make verify`; the client tests run
 `ko` under an outer kido-tmux on a private socket). Nothing in `lib/` depends on them.
 
+`scripts/install-zig.sh` pins the zig release and its checksums. CI
+and `scripts/ci-like/Dockerfile` install zig through it. lint fails
+if the release differs from the `.minimum_zig_version` in
+`third_party/ghostty/build.zig.zon`. A ghostty bump that changes that
+version also changes the script. Every C file of ko starts with
+`#define _DARWIN_C_SOURCE` and `#define _GNU_SOURCE`, before its
+includes: the build uses `-std=c11`, which hides `clock_gettime` on
+Linux.
+
 Before you change `lib_tmux/`, read `lib_tmux/AGENTS.md`. pi does not
 load it for an agent that starts at the repo root.
 

@@ -36,6 +36,12 @@ if f'fork revision: {revision}\n' not in contract:
     print('share/rpc/contract.md: fork revision differs from third_party/tmux gitlink')
     raise SystemExit(1)
 
+zig = re.search(r'^release=(\S+)$', pathlib.Path('scripts/install-zig.sh').read_text(), re.M).group(1)
+zon = pathlib.Path('third_party/ghostty/build.zig.zon').read_text()
+if f'.minimum_zig_version = "{zig}"' not in zon:
+    print('scripts/install-zig.sh: zig release differs from third_party/ghostty minimum_zig_version')
+    raise SystemExit(1)
+
 errors = 0
 def report(path, text, offset, message):
     global errors

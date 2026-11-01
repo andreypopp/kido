@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -263,7 +264,11 @@ func (o *terminal) clientPID() int {
 	}
 	return pid
 }
-func (o *terminal) detach() { o.t.Helper(); o.chord(113); o.contains("KO-DETACHED") }
+func (o *terminal) detached() {
+	o.t.Helper()
+	o.wait(func() bool { return slices.Contains(strings.Split(o.screen(), "\n"), "KO-DETACHED") }, "KO-DETACHED on its own line")
+}
+func (o *terminal) detach() { o.t.Helper(); o.chord(113); o.detached() }
 func (s *server) text(pane, text string) {
 	s.request("POST", "/panes/"+pane+"/input", []any{"text", base64.StdEncoding.EncodeToString([]byte(text))}, 200, nil)
 }
@@ -341,10 +346,10 @@ func TestClientLifecycle(t *testing.T) {
 		return strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{mouse_standard_flag},#{mouse_sgr_flag}")) == "1,1"
 	}, "outer mouse reporting on")
 	signalOwned(t, o.serverPID(), syscall.SIGHUP, o.clientPID())
-	o.contains("KO-DETACHED")
+	o.detached()
 }
 
-func TestClientHistoryAndTop(t *testing.T) {
+func TestClientHistoryAndAlternateScreen(t *testing.T) {
 	t.Parallel()
 	s := start(t)
 	historyPane := s.pane("seq 300; printf '\033]0;history\007HISTORY-READY\\n'; exec cat")
@@ -384,25 +389,31 @@ func TestClientHistoryAndTop(t *testing.T) {
 	o.contains("HISTORY-READY")
 	o.detach()
 	s.request("DELETE", "/panes/"+historyPane, nil, 200, nil)
-	command := "seq 300; top; printf 'AFTER-TOP\\n'; exec /bin/sh"
-	topPane := s.pane(command)
+	command := "seq 300; stty -icanon -echo; printf '\\033[?1049hPID\\n'; dd bs=1 count=1 >/dev/null 2>&1; stty icanon echo; printf '\\033[?1049lAFTER-ALT\\n'; exec /bin/sh"
+	altPane := s.pane(command)
 	o.attach(pager)
 	o.contains("PID")
 	o.detach()
+	// tmux's server_child_stopped sends SIGCONT to a stopped pane child, so the
+	// shell cannot stay stopped; with job control it takes the tty back from
+	// the stopped client.
+	o.raw("set +m")
+	o.tmux("send-keys", "-t", "outer:0.0", "Enter")
 	o.attach(pager)
 	o.contains("PID")
 	o.raw("q")
-	o.contains("AFTER-TOP")
+	o.contains("AFTER-ALT")
+	os.Remove(record)
 	o.chord(101)
-	o.contains("PAGER-OPEN")
+	o.wait(func() bool { b, err := os.ReadFile(record); return err == nil && len(b) > 0 }, "pager started")
 	path, _ = os.ReadFile(record)
 	data, _ = os.ReadFile(string(path))
 	if !strings.Contains(string(data), "299") {
-		t.Fatal("top round trip lost primary history")
+		t.Fatal("alternate screen round trip lost primary history")
 	}
 	o.raw("done")
 	o.tmux("send-keys", "-t", "outer:0.0", "Enter")
-	o.contains("AFTER-TOP")
+	o.contains("AFTER-ALT")
 	client, server := o.clientPID(), o.serverPID()
 	shellPID, err := strconv.Atoi(strings.TrimSpace(o.tmux("display-message", "-p", "-t", "outer:0.0", "#{pane_pid}")))
 	if err != nil {
@@ -417,14 +428,14 @@ func TestClientHistoryAndTop(t *testing.T) {
 			signalOwned(t, server, syscall.SIGCONT, shellPID)
 		}
 	})
-	// An interactive shell takes the tty back when its child stops.
+	// Stopping the shell is best effort: tmux continues it (see set +m above).
 	signalOwned(t, server, syscall.SIGSTOP, shellPID, client)
 	shellStopped = true
 	clientStopped = true
 	producer := "for i in range(100000): print('H%05d'%i+'x'*70)"
-	s.text(topPane, "python3 -c "+quote(producer)+"; printf 'FLOOD-%s\\n' DONE\n")
+	s.text(altPane, "python3 -c "+quote(producer)+"; printf 'FLOOD-%s\\n' DONE\n")
 	o.wait(func() bool {
-		return strings.Contains(s.request("GET", "/panes/"+topPane+"/screen?format=plain", nil, 200, nil), "FLOOD-DONE")
+		return strings.Contains(s.request("GET", "/panes/"+altPane+"/screen?format=plain", nil, 200, nil), "FLOOD-DONE")
 	}, "output while client is stopped")
 	signalOwned(t, server, syscall.SIGCONT, client)
 	clientStopped = false
@@ -440,7 +451,7 @@ func TestClientHistoryAndTop(t *testing.T) {
 	}, "client exits before its shell resumes")
 	signalOwned(t, server, syscall.SIGCONT, shellPID)
 	shellStopped = false
-	o.contains("KO-DETACHED")
+	o.detached()
 }
 
 func TestClientWinchAndOuterModes(t *testing.T) {
@@ -523,9 +534,9 @@ func TestClientAttachOrStartAndWarning(t *testing.T) {
 	}
 	conn.Close()
 	o.chord(113)
-	o.contains("KO-DETACHED")
+	o.detached()
 	peer.chord(113)
-	peer.contains("KO-DETACHED")
+	peer.detached()
 	cmd := exec.CommandContext(ctx, koBin, "kill-server", "--server", dir)
 	cmd.Env = o.env
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -816,7 +827,7 @@ func TestClientDifferentSizesAndSignalCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 		signalOwned(t, o.serverPID(), sig, pid)
-		o.contains("KO-DETACHED")
+		o.detached()
 		after := o.tmux("display-message", "-p", "-t", "outer:0.0", "#{pane_private_modes}")
 		if before != after {
 			t.Errorf("signal %v: modes before %q after %q", sig, before, after)

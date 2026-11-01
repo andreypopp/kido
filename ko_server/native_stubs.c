@@ -348,7 +348,7 @@ CAMLprim value ko_process_identity(value vpid) {
   fclose(f);
   char *after = got ? strrchr(line, ')') : NULL;
   if (!after || sscanf(after + 1,
-                       " %*c %ld %ld %*ld %*d %*d %*u %*u %*u %*u %*u %*u %*u "
+                       " %*c %ld %ld %*d %*d %*d %*u %*u %*u %*u %*u %*u %*u "
                        "%*d %*d %*d %*d %*d %*d %lld",
                        &ppid, &pgid, &began) != 3) {
     CAMLreturn(Val_none);

@@ -1,4 +1,5 @@
 #define _DARWIN_C_SOURCE
+#define _GNU_SOURCE
 #include "compress.h"
 #include <assert.h>
 #include <stdio.h>

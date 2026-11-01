@@ -1,5 +1,5 @@
 #define _DARWIN_C_SOURCE
-#define _DEFAULT_SOURCE
+#define _GNU_SOURCE
 #include "../ko_pane/protocol.h"
 #include "../ko_pane/ring.h"
 #include "cpu.h"
