@@ -46,9 +46,8 @@ func (h *harness) addWindow(session, name string) {
 	}, settle, msgf("session %s has window %s", session, name))
 }
 
-// markSubagent sets @kido_run on session's window's active pane - the
-// pane-scoped mark Tmux.Exec.switch_window and Reap.sweep
-// trust to know a window is a subagent's, with no status record needed.
+// markSubagent sets the pane-scoped @kido_run mark on session's window's
+// active pane.
 func (h *harness) markSubagent(session, window string) {
 	h.t.Helper()
 	h.in("set-option", "-p", "-t", session+":"+window, "@kido_run", "run-"+session+"-"+window)
@@ -149,14 +148,13 @@ func TestSwitchOrderAndKeys(t *testing.T) {
 	h.sendKeys("S-Up") // c0 -> a1
 	h.waitWindow("a", "a1")
 
-	// One skip step: a marked subagent window must be stepped over.
+	// A parentless run window is a root, so top-level navigation reaches it.
 	h.markSubagent("a", "a1")
 	h.markSubagent("c", "c1")
-	h.selectWindow("a", "a0")
-	h.runSwitchWindow("next") // a0 -> c0, skipping a1
+	h.runSwitchWindow("next") // a1, a marked root -> c0
 	h.waitWindow("c", "c0")
-	h.runSwitchWindow("next") // c0 -> b0, skipping c1
-	h.waitWindow("b", "b0")
+	h.runSwitchWindow("next") // c0 -> c1, a marked root
+	h.waitWindow("c", "c1")
 	h.in("set-option", "-p", "-t", "a:a1", "@kido_run", "")
 	h.in("set-option", "-p", "-t", "c:c1", "@kido_run", "")
 	h.selectWindow("a", "a0")

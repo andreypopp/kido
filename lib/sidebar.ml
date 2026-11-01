@@ -290,14 +290,8 @@ let window_target ~next ~session ~window windows =
           let roots = List.filter (fun w -> Option.is_none (parent w)) windows |> Array.of_list in
           let active = first (root current) in
           let n = Array.length roots in
-          let rec find j k =
-            if k = 0 then None
-            else if List.for_all (fun (p : State.pane) -> Option.is_none p.run) roots.(j).panes then
-              Some (first roots.(j))
-            else find ((j + (if next then 1 else -1) + n) mod n) (k - 1)
-          in
-          Option.flat_map
-            (fun (i, _) -> find ((i + (if next then 1 else -1) + n) mod n) n)
+          Option.map
+            (fun (i, _) -> first roots.((i + (if next then 1 else -1) + n) mod n))
             (Array.find_idx
                (fun w ->
                  Tmux.equal_session_id (first w).session_id active.session_id
@@ -963,7 +957,7 @@ let%test_module "Tests" =
     @211 anchor=%101
     |}]
 
-    let%expect_test "window targets: siblings, roots, runs and session occurrences" =
+    let%expect_test "window targets: siblings, roots and session occurrences" =
       let pane = Test_fixture.pane in
       let p window id = pane ~window id in
       let root = p "@1" "%1" and later_pane = p "@1" "%2" in
@@ -1030,37 +1024,31 @@ let%test_module "Tests" =
         [
           [];
           [ { panes = [ root ]; anchor = None } ];
-          [ { panes = [ { root with run = Some "only-run" } ]; anchor = None } ];
-          [ { panes = [ root; { later_pane with run = Some "split-run" } ]; anchor = None } ];
           [ { panes = [ root ]; anchor = Some (Tmux.pane_id_of_string "%999") } ];
         ];
       [%expect
         {|
-    $0:@1 next -> $0:@7
-    $0:@5 next -> $0:@2
-    $0:@5 prev -> $0:@1
-    $0:@2 prev -> $0:@5
-    $0:@2 next -> $0:@3
-    $0:@3 next -> $0:@7
-    $0:@4 prev -> $0:@2
-    $0:@4 next -> $0:@9
-    $0:@9 prev -> $0:@4
-    $0:@9 next -> $0:@7
-    $0:@7 next -> $1:@1
-    $1:@1 prev -> $0:@7
-    $1:@6 next -> $0:@1
-    $0:@1 prev -> $1:@6
-    null
-    null
-    @1
-    @1
-    null
-    null
-    null
-    null
-    @1
-    @1
-    |}]
+        $0:@1 next -> $0:@7
+        $0:@5 next -> $0:@2
+        $0:@5 prev -> $0:@1
+        $0:@2 prev -> $0:@5
+        $0:@2 next -> $0:@3
+        $0:@3 next -> $0:@7
+        $0:@4 prev -> $0:@2
+        $0:@4 next -> $0:@9
+        $0:@9 prev -> $0:@4
+        $0:@9 next -> $0:@7
+        $0:@7 next -> $0:@8
+        $1:@1 prev -> $0:@8
+        $1:@6 next -> $0:@1
+        $0:@1 prev -> $1:@6
+        null
+        null
+        @1
+        @1
+        @1
+        @1
+        |}]
 
     let%expect_test "window targets: siblings precede parents, next leaves the root subtree" =
       let edges =
@@ -1112,7 +1100,7 @@ let%test_module "Tests" =
         ];
       [%expect
         {|
-        prev other -> @209
+        prev other -> @201
         prev root -> @209
         prev child2 -> @202
         prev grandchild -> @203

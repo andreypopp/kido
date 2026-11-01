@@ -51,16 +51,16 @@ steps to its adjacent direct sibling in feed order, including run windows.
 Prev from the first child selects its direct parent, even a nested run
 window. Next from the last child steps from its top-level ancestor to the
 next top-level window. Top-level steps never descend into children: they
-skip windows containing run-marked panes and wrap across all sessions in
-sidebar order.
+include every top-level window, run windows included, and wrap across all
+sessions in sidebar order.
 A successful switch replies
 {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}.
 {"id":7,"switch-session":{"direction":"next"}} or direction "prev" uses the
 same session ordering as the sidebar and CLI, wrapping at either end. Its
 reply has the same switched session and window shape.
 No eligible target replies
-{"reply":{"id":7,"switched":null}}. A sole eligible top-level window can
-select itself; a single session has no switch-session target.
+{"reply":{"id":7,"switched":null}}. A sole top-level window selects
+itself; a single session has no switch-session target.
 An invalid or unknown request carrying an integer id replies
 {"reply":{"id":7,"error":"invalid or unknown request"}}; requests without an
 integer id and invalid JSON are ignored. Errors do not stop the stream.

@@ -761,7 +761,6 @@ separate unmark step. Killing the run's pane removes the option, which
 exists nowhere else. Other readers use that option:
 
 - The tree nests the window under its parent.
-- Top-level window cycling skips the window.
 - The sidebar draws the run's label.
 - A later sweep considers the window again.
 
@@ -1084,9 +1083,9 @@ direct siblings in feed order, including runs.
 
 Prev from the first child selects its direct parent, even when nested.
 Next from the last child moves from its top-level ancestor. Top-level
-steps never descend. They skip windows containing the `@kido_run` pane
-of a run that kido started, and wrap across sessions in sidebar order. A sole eligible root can select
-itself.
+steps never descend. They include every top-level window, whatever its
+panes contain, a top-level run included. They wrap across sessions in
+sidebar order. A sole top-level window selects itself.
 
 The command prints nothing. Its key bindings use `run-shell`, which
 would display output in the pane. RPC and the focused sidebar's

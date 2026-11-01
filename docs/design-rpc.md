@@ -396,11 +396,11 @@ feed order, including run windows. Prev from the first child selects its
 direct parent, even when nested and run-marked. Next from the last child
 steps from its top-level ancestor to the next top-level window.
 
-Top-level steps never descend into children. They skip windows that
-contain run-marked panes and wrap across sessions in sidebar order.
-A sole eligible root can select itself. If there is no eligible root,
-the result is null. Siblings of a multi-pane parent follow its panes'
-feed order, then each pane's child order.
+Top-level steps never descend into children. They include every
+top-level window, run windows included, and wrap across sessions in
+sidebar order. A sole top-level window selects itself. Siblings of a
+multi-pane parent follow its panes' feed order, then each pane's child
+order.
 
 These rules use `Sidebar`'s typed `Switch_window` request across:
 
