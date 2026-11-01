@@ -17,7 +17,12 @@ stage() {
   shift
   local start end elapsed result
   start=$(now)
-  if "$@"; then result=PASS; else result=FAIL; status=1; fi
+  "$@"
+  case $? in
+    0) result=PASS ;;
+    77) result=SKIP ;;
+    *) result=FAIL; status=1 ;;
+  esac
   end=$(now)
   elapsed=$(perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$start" "$end")
   echo "$result: $name (${elapsed}s)"
@@ -29,6 +34,16 @@ e2e() {
 # they run the OCaml ko until the Rust client exists; every other test
 # runs the Rust server on macOS.
 client='^(TestClientLifecycle|TestClientHistoryAndAlternateScreen|TestClientWinchAndOuterModes|TestClientAttachOrStartAndWarning|TestClientModesBeforeAttachAndUnattachedDA1|TestClientOutputWithoutOuterInput|TestClientInitialCursorAndSynchronizedOutput|TestClientSidebarOwnership|TestClientUnknownCursorModeAndKeyboardStack|TestClientDifferentSizesAndSignalCleanup|TestClientSidebarRelease|TestClientWarningMouseBounds|TestClientSnapshotInterruption|TestClientDeadPaneLine|TestClientLegacyShiftedKey|TestClientNvimNormalModeShiftedKeys)$'
+# make verus prints SKIP: and succeeds when the Verus archive cannot be fetched.
+verus() {
+  local log rc
+  log=$(mktemp)
+  make verus 2>&1 | tee "$log"
+  rc=${PIPESTATUS[0]}
+  if (( rc == 0 )) && grep -q '^SKIP:' "$log"; then rc=77; fi
+  rm -f "$log"
+  return "$rc"
+}
 ko_run() {
   local IFS='|'
   KIDO_E2E_REQUIRED=1 KO_BIN=$1 go test ./test_e2e_ko/ -count="${COUNT:-1}" -run "^(${*:2})\$" -v
@@ -51,7 +66,7 @@ case ${1:-verify} in
     ;;
   verify|verify-ko)
     default='build unit e2e e2e-ko ts'
-    [[ ${1:-} == verify-ko ]] && default='build unit-ko e2e-ko lint'
+    [[ ${1:-} == verify-ko ]] && default='build unit-ko e2e-ko lint verus'
     for name in ${STAGES:-$default}; do
       case $name in
         build)
@@ -60,6 +75,7 @@ case ${1:-verify} in
         e2e) stage e2e e2e ;;
         unit-ko) stage unit-ko make test-ko ;;
         lint) stage lint make lint-ko ;;
+        verus) stage verus verus ;;
         e2e-ko) stage e2e-ko make e2e-ko ;;
         ts) stage ts ./scripts/test-ts.sh ;;
         *) echo "Unknown stage: $name" >&2; status=1 ;;

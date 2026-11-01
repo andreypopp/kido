@@ -16,6 +16,8 @@ proptest = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+verus_state_machines_macros = "=0.0.0-2026-10-25-0158"
+vstd = "=0.0.0-2026-10-25-0158"
 vte = "0.15.0"
 
 [workspace.lints.rust]
@@ -23,7 +25,7 @@ dead_code = "deny"
 unreachable_pub = "deny"
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
-unexpected_cfgs = { level = "deny", check-cfg = ["cfg(loom)", "cfg(verus_only)"] }
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(loom)", "cfg(verus_only)", "cfg(verus_keep_ghost)", "cfg(verus_keep_ghost_body)"] }
 
 [workspace.lints.clippy]
 expect_used = "deny"

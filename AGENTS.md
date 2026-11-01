@@ -345,7 +345,10 @@ These requirements are fixed:
 - **Dependencies.** The production crates are `libc`, `httparse`,
   `tungstenite` (feature `handshake` only), `serde` (`derive`),
   `serde_json`, `vte` and `clap` (`default-features = false`, with
-  exactly `std`, `derive`, `help`, `usage` and `error-context`).
+  exactly `std`, `derive`, `help`, `usage` and `error-context`),
+  and `vstd` and `verus_state_machines_macros` in `ko_pane_wire`,
+  pinned with `=` to the crates version of `scripts/verus.sh`
+  (`scripts/lint.sh` compares them).
   `proptest` and `loom` are dev-dependencies.
   `scripts/crates.txt` lists every package of `Cargo.lock`, ko's own
   crates included. `scripts/lint.sh` fails on a package that the list
@@ -362,7 +365,8 @@ These requirements are fixed:
   `panic!` and indexing in tests. The readers of untrusted bytes
   (`ko_pane_wire`'s `frame.rs` and `ring.rs`, `ko_server`'s
   `pane_proc.rs`, `ko_pane`'s `io.rs`) also deny `clippy::indexing_slicing` and
-  `clippy::arithmetic_side_effects`.
+  `clippy::arithmetic_side_effects`. Inside `verus!`, Verus also
+  proves that each index is in bounds and that no arithmetic overflows.
 - **The command line is a contract** with `test_e2e_ko/`, `bench/`
   and `share/`. A long option is `--name`. clap's derive generates
   `--help` and the usage errors: the doc comment on each command and
@@ -405,6 +409,30 @@ Conventions:
   access as sequentially consistent, so the model puts a
   `fence(SeqCst)` beside each one (its comment has the issue). The
   acquire/release twin of the wakeup model is `#[should_panic]`.
+- **Verus.** `ko_pane_wire::ring` is verified with Verus (`make
+  verus`, `scripts/verus.sh`, the pinned release archive in
+  `build/verus/<release>/`). A verified crate has
+  `[package.metadata.verus] verify = true` and builds with plain
+  cargo, because `verus!` erases the ghost code. Specs and proofs are
+  in `verus!{}` beside the code: `ring/spec.rs` (the log),
+  `ring/machine.rs` (the state machine and its invariant) and
+  `ring/backend.rs` (the trusted base). `cfg(verus_only)` guards only
+  `use` statements. `#[verifier::external_body]` occurs only in
+  `ring/backend.rs`: the constructor of each role
+  (`Backend::mint_reader`, `Backend::mint_writer`), the capacity
+  getter, the header word load and store, the byte accessors and the
+  opaque types that they use. Each has an `// Assumes:` comment that
+  names its assumption. No `external_body` function has an `ensures`
+  that its body does not establish beyond that comment. No `assume`
+  and no `admit` occur. The functions that `tokenized_state_machine!`
+  generates are `pub`, so everything that their contracts name is
+  `pub`, and the ring's proof modules allow `unreachable_pub`. rustfmt
+  does not format the inside of `verus!`. `scripts/verus.sh` cleans
+  each verified crate first, so every run verifies, and it fails
+  without a "verification results" line for each crate. The `verus`
+  stage of `make verify-ko` fails when the verification of ko's
+  crates takes more than 120 s, and it is SKIP when the archive cannot
+  be fetched, except with `KO_VERUS_REQUIRED=1` (CI).
 - **Derives.** Every type derives `Debug`. Derive `Clone`, `Copy`,
   `PartialEq` and `Eq` where the type is a value. Derive `PartialOrd`
   and `Ord` only where the order has a meaning, `Default` only when
@@ -1090,7 +1118,8 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
 ## Tests
 
     make verify  scrubbed dune build, dune test --force, full e2e and TypeScript tests
-    make verify-ko  scrubbed make build-ko, ko's unit tests (cargo and dune), ko's e2e, and cargo fmt, clippy and scripts/lint.sh
+    make verify-ko  scrubbed make build-ko, ko's unit tests (cargo and dune), ko's e2e, cargo fmt, clippy and scripts/lint.sh, and make verus
+    make verus   cargo verus verify on ko_pane_wire with the pinned Verus release, downloaded once into build/verus/
     make build-ko  the Rust ko's installed layout under build/ko/ (macOS only for now)
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe-ko BYTES=N  the Rust server's ring reader under the Rust ko-pane (PANE=c: the C one), N bytes of bench/streams (default 1 GiB); not part of verify

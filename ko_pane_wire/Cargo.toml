@@ -6,6 +6,8 @@ publish.workspace = true
 
 [dependencies]
 ko_sys = { path = "../ko_sys" }
+verus_state_machines_macros.workspace = true
+vstd.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
@@ -15,3 +17,6 @@ loom.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.verus]
+verify = true

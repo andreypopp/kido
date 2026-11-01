@@ -98,7 +98,7 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ring::{Commit, Reader, RecordKind, Writer};
+    use crate::ring::{Commit, Pos, Reader, RecordKind, Writer};
 
     const CAP: u64 = 64;
 
@@ -111,6 +111,23 @@ mod tests {
         let mut builder = loom::model::Builder::new();
         builder.preemption_bound = bound;
         builder.check(f);
+    }
+
+    fn scan(reader: &mut Reader, pos: &mut Pos, expect: &mut u64) {
+        let upper = reader.head();
+        while *pos < upper {
+            let record = reader.record(*pos).unwrap();
+            if record.kind == RecordKind::Bytes {
+                assert_eq!(record.offset.get(), *expect);
+                let mut bytes = vec![0; 9];
+                reader.copy(pos.get() + 13, &mut bytes).unwrap();
+                let wanted: Vec<u8> = (0..9).map(|i| (*expect + i) as u8).collect();
+                assert_eq!(bytes, wanted);
+                *expect += 9;
+            }
+            *pos = record.next;
+        }
+        reader.advance(upper, upper).unwrap();
     }
 
     #[test]
@@ -131,26 +148,16 @@ mod tests {
                     assert_ne!(writer.put(RecordKind::Bytes, &payload), Commit::Refused);
                     written += 1;
                 }
+                written
             });
             let mut expect = 0;
             let mut pos = reader.tail();
             for _ in 0..4 {
-                let upper = reader.head();
-                while pos < upper {
-                    let record = reader.record(pos).unwrap();
-                    if record.kind == RecordKind::Bytes {
-                        assert_eq!(record.offset.get(), expect);
-                        let mut bytes = vec![0; 9];
-                        reader.copy(pos.get() + 13, &mut bytes).unwrap();
-                        let wanted: Vec<u8> = (0..9).map(|i| (expect + i) as u8).collect();
-                        assert_eq!(bytes, wanted);
-                        expect += 9;
-                    }
-                    pos = record.next;
-                }
-                reader.advance(upper, upper).unwrap();
+                scan(&mut reader, &mut pos, &mut expect);
             }
-            records.join().unwrap();
+            let published = records.join().unwrap();
+            scan(&mut reader, &mut pos, &mut expect);
+            assert_eq!(expect, published * 9);
         });
     }
 

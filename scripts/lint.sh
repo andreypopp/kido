@@ -59,6 +59,12 @@ for name in sorted(locked - listed):
     print(f'Cargo.lock: package {name} is not in scripts/crates.txt')
 for name in sorted(listed - locked):
     print(f'scripts/crates.txt: {name} is not in Cargo.lock')
+verus_crates = re.search(r'^crates_version=(\S+)$', pathlib.Path('scripts/verus.sh').read_text(), re.M).group(1)
+workspace = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['workspace']['dependencies']
+for name in ('vstd', 'verus_state_machines_macros'):
+    if workspace.get(name) != f'={verus_crates}':
+        print(f'Cargo.toml: {name} is not pinned to ={verus_crates}, the crates version of scripts/verus.sh')
+        raise SystemExit(1)
 headers = subprocess.check_output(['scripts/bindgen.sh', '--print-hash'], text=True).strip()
 if f'// ghostty headers sha256: {headers}\n' not in pathlib.Path('ko_vt_sys/src/bindings.rs').read_text():
     print('ko_vt_sys/src/bindings.rs: header hash differs from third_party/ghostty/include; regenerate: make bindgen')
