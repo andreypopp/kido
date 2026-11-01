@@ -1,5 +1,27 @@
 PREFIX ?= $(HOME)/.local
 
+# Homebrew's rustup is keg-only, so cargo is not on PATH; every cargo
+# command runs through a target of this file. CI runners have neither
+# directory and use their own rustup from PATH.
+RUSTUP_BIN := $(firstword $(wildcard $(HOMEBREW_PREFIX)/opt/rustup/bin /opt/homebrew/opt/rustup/bin /usr/local/opt/rustup/bin))
+export PATH := $(if $(RUSTUP_BIN),$(RUSTUP_BIN):)$(PATH)
+# make 3.81 (macOS) execs a recipe line without shell syntax through its
+# own PATH, not the exported one.
+CARGO := $(if $(RUSTUP_BIN),$(RUSTUP_BIN)/)cargo
+
+# The Rust ko builds on macOS only for now; elsewhere the Go suite runs
+# the OCaml ko with the OCaml decoder. Until the Rust server exists, the
+# suite runs the OCaml ko on macOS too, with the Rust decoder.
+ifeq ($(shell uname -s),Darwin)
+KO_BUILD := build-ko
+KO_DECODE ?= $(CURDIR)/target/release/examples/decode
+else
+KO_BUILD := build-ko-ocaml
+KO_DECODE ?= $(CURDIR)/$(DUNE_DEFAULT)/ko_vt/decode.exe
+endif
+KO_BIN ?= $(CURDIR)/$(DUNE_INSTALL)/bin/ko
+export KO_BIN KO_DECODE
+
 .PHONY: build install test e2e
 
 build:
@@ -17,6 +39,7 @@ endef
 # management, so they are copied, dereferenced and made writable again.
 # Promotion substitutes dune-build-info in build/main.exe.
 DUNE_INSTALL := $(or $(DUNE_BUILD_DIR),_build)/install/default
+DUNE_DEFAULT := $(or $(DUNE_BUILD_DIR),_build)/default
 install:
 	$(call ensure-fork,$(INSTALL_FORK),$(if $(filter 1,$(SELF_CONTAINED)),--self-contained,))
 	dune build @install
@@ -29,14 +52,14 @@ install:
 # unit tests; the end-to-end suite needs the patched tmux and is separate.
 # test-ts covers pi's extension under node and skips without one, so
 # the OCaml tests above never gain a node dependency of their own.
-test:
+test: $(KO_BUILD)
 	dune test --force
 	go test ./test_e2e_ko/ -count=1
 	./scripts/test-ts.sh
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: fuzz proofs e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: build-ko build-ko-ocaml test-ko lint-ko bindgen fuzz proofs e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -81,9 +104,37 @@ release:
 website:
 	cd website && npm ci && npm run dev
 
+# The installed layout of the Rust ko. Until the Rust ko-pane exists,
+# ko-pane is the C one, taken with the terminfo from dune's install tree.
+# The decode example is the Go suite's snapshot decoder and is never
+# installed.
+KO := build/ko
+build-ko:
+	$(CARGO) build --locked --release --bins --example decode
+	dune build @install
+	mkdir -p $(KO)/bin $(KO)/share
+	cp -f target/release/ko $(DUNE_INSTALL)/bin/ko-pane $(KO)/bin/
+	cp -RLf $(DUNE_INSTALL)/share/ko $(KO)/share/
+	chmod -R u+w $(KO)
+
+build-ko-ocaml:
+	dune build @install ko_vt/decode.exe
+
+test-ko:
+	$(CARGO) test --locked --workspace
+	KO_CHECK_CONTRACTS=true dune test --force ko_server ko_server/fuzz ko_tui ko_vt ko_pane
+
+lint-ko:
+	$(CARGO) fmt --check
+	$(CARGO) clippy --locked --workspace --all-targets -- -D warnings
+	./scripts/test-ts.sh lint
+
+bindgen:
+	./scripts/bindgen.sh
+
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
 # names another (CI, with its cached build); it never skips
-e2e-ko:
+e2e-ko: $(KO_BUILD)
 	KIDO_E2E_REQUIRED=1 go test ./test_e2e_ko/ -count=$(or $(COUNT),1) -run='$(or $(E2E_KO),.)' -v
 
 e2e: $(if $(KIDO_TMUX),,pinned-fork)

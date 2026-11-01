@@ -302,6 +302,110 @@ Conventions:
   dune's package management builds the compiler and every dependency
   of `dune.lock` into `_build` (README.md, "Building" below).
 
+## Rust (ko)
+
+ko moves from OCaml to Rust on the `ko-rust` branch
+(plans/ko-rust.md). These rules apply to ko's Rust code. kido's
+code and ko's OCaml code keep the OCaml rules above until the
+Rust ko replaces the OCaml ko. Plan section 8 holds the rules for
+code that does not exist yet. Each stage moves its rules here when
+its code lands.
+
+These requirements are fixed:
+
+- **Layout.** One cargo workspace at the root. A package has the
+  name of its directory, with the underscore. The crates are in the
+  ko directories, beside the OCaml files ("Layout" below). `ko/` is
+  the binary `ko`. ko's C stays only in the C `ko-pane` until the
+  Rust `ko-pane` replaces it. Do not add new C.
+- **Toolchain.** `rust-toolchain.toml` pins the toolchain of the
+  pinned Verus release. They move together. Homebrew's keg-only
+  `rustup` formula supplies it (`brew install rustup`, then
+  `$(brew --prefix rustup)/bin/rustup toolchain install`, which reads
+  `rust-toolchain.toml`; since rustup 1.28, `rustup show` installs
+  nothing). Its `bin` is not on
+  PATH, and kido does not ask the user to change PATH. The Makefile is
+  the one place that finds cargo: it puts that `bin` first on PATH,
+  and it calls `$(CARGO)` by its full path, because make 3.81 on
+  macOS looks up a recipe's command through its own PATH, not the
+  exported one. Thus, every cargo command runs through a Makefile
+  target. Scripts and the Go suite call make, never cargo. CI's
+  toolchain install and `cargo fetch` steps are the exception. Every
+  cargo command passes `--locked`. `Cargo.lock` is committed.
+- **Platforms.** The Rust ko builds and is verified on macOS only for
+  now. On Linux, the Makefile builds no Rust, and `make e2e-ko` runs
+  the Go suite against the OCaml ko and the OCaml decoder.
+- **Dependencies.** The production crates are `libc`, `httparse`,
+  `tungstenite` (feature `handshake` only), `serde` (`derive`),
+  `serde_json` and `vte`. `proptest` and `loom` are dev-dependencies.
+  `scripts/crates.txt` lists every package of `Cargo.lock`, ko's own
+  crates included. `scripts/lint.sh` fails on a package that the list
+  does not name, and on a listed name that `Cargo.lock` does not
+  have. A new direct crate, or a new feature that adds packages, is a
+  decision for the user, with the cost of the hand-written
+  alternative in the request. No async runtime and no crate that
+  needs one: no `tokio`, `hyper`, `mio`, `futures`, `async-std` or
+  `smol`, and no `async fn` in ko's code.
+- **Formatting and lints.** `cargo fmt` with `rustfmt.toml`.
+  `cargo clippy --all-targets -- -D warnings` is clean.
+  `[workspace.lints]` in `Cargo.toml` holds the denied lints, and
+  every crate inherits them. `clippy.toml` permits `unwrap`, `expect`,
+  `panic!` and indexing in tests.
+- **The command line is a contract** with `test_e2e_ko/`, `bench/`
+  and `share/`. A long option is `--name`.
+
+Conventions:
+
+- **No panics in library code.** A library function returns `Result`.
+  `unwrap`, `expect`, `panic!`, indexing on untrusted lengths and
+  unchecked arithmetic on wire values do not occur outside tests and
+  `build.rs`. The release profile sets `panic = "abort"` and
+  `overflow-checks = true`: a panic is a bug, and a loud stop is
+  better than a half-state.
+- **Errors.** `std::io::Error` carries an OS error and propagates with
+  `?`. If callers distinguish cases, the module defines an enum and
+  implements `Display` manually. Do not use `anyhow`, `thiserror` or
+  `Box<dyn Error>` in ko's code. A crate's error becomes ko's own
+  error at the edge that received it.
+- **Visibility is the `.mli`.** An item is `pub` only when another
+  crate uses it, and `pub(crate)` only when another module uses it.
+  `lib.rs` lists modules and re-exports nothing. `unreachable_pub`
+  catches a `pub` item that the crate root cannot reach, but rustc
+  does not report an unused `pub` item of a library. Thus, review
+  checks that another crate uses each export.
+- **Tests** are `#[cfg(test)] mod tests` at the bottom of the file
+  under test. Expectations are `assert_eq!` on values or strings. No
+  test execs the binary; the Go suite does that.
+- **Derives.** Every type derives `Debug`. Derive `Clone`, `Copy`,
+  `PartialEq` and `Eq` where the type is a value. Derive `PartialOrd`
+  and `Ord` only where the order has a meaning, `Default` only when
+  every field has a meaningful default, and `Hash` only for a map key.
+- **Newtypes.** A value with its own rules is a newtype with a private
+  field and one validating constructor. A closed set is an `enum`.
+  "Unknown" is `None`. "Disabled" is a variant.
+- **Unsafe.** `unsafe` is permitted in `ko_sys`, in `ko_vt_sys` (the
+  generated bindings) and in `ko_vt` (the safe wrapper over them).
+  Every other crate denies it. Each block has a `// SAFETY:` line that
+  names the invariant. A safe wrapper takes typed arguments and
+  returns `Result`. A callback from libghostty-vt never unwinds and
+  never calls back into the terminal.
+- **Signals.** `libc::kill` occurs only in `ko_sys/src/pid.rs`.
+  `scripts/lint.sh` refuses it elsewhere.
+- **FFI bindings.** `scripts/bindgen.sh` (`make bindgen`) generates
+  `ko_vt_sys/src/bindings.rs` from `third_party/ghostty/include` with
+  the bindgen CLI (`cargo install --locked bindgen-cli`; on macOS,
+  `LIBCLANG_PATH` can name the Command Line Tools' `usr/lib`). The
+  file is committed with the hash of the headers in its first line.
+  A change of the ghostty pin regenerates it in the same commit.
+  `scripts/lint.sh` checks the hash.
+- **libghostty-vt.** `ko_vt_sys/build.rs` builds it with zig from
+  PATH, with the flags of `ko_vt/dune`. Both must change together
+  until the OCaml ko goes. Every cargo profile shares one zig cache,
+  so libghostty-vt compiles once for release, test and clippy.
+- **The pane process.** `ko_pane_wire::frame` is the one source of the
+  frame's constants for both processes. While the C `ko-pane` exists,
+  a unit test checks each constant against `ko_pane/protocol.h`.
+
 ## Layout
 
     bin/main.ml        the cmdliner command table and the small commands:
@@ -385,6 +489,16 @@ zig from PATH out of `third_party/ghostty`, and the binding),
 `bin/ko.ml`, `bench/` and `test_e2e_ko/` (its Go protocol and client
 suite, `make e2e-ko`, a stage of `make verify`; the client tests run
 `ko` under an outer kido-tmux on a private socket). Nothing in `lib/` depends on them.
+
+The Rust ko (plans/ko-rust.md, "Rust (ko)" above) grows in the same
+directories, beside the OCaml files: `ko_vt/` and `ko_vt_sys/`,
+`ko_server/`, `ko_tui/`, `ko_sys/`, `ko_pane_wire/` and `ko/`.
+`make build-ko` builds the installed layout under `build/ko/`, with
+the C `ko-pane` until the Rust one exists. It also builds the
+`decode` example of `ko_vt`, the Go suite's snapshot decoder, which is
+never installed. `test_e2e_ko/` runs the binary that `KO_BIN` names
+and the decoder that `KO_DECODE` names. Until the Rust server exists,
+the Makefile sets them to the OCaml `ko` and the Rust decoder.
 
 `scripts/install-zig.sh` pins the zig release and its checksums. CI
 and `scripts/ci-like/Dockerfile` install zig through it. lint fails
@@ -867,8 +981,10 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
 ## Tests
 
     make verify  scrubbed dune build, dune test --force, full e2e and TypeScript tests
-    make verify-ko  scrubbed dune build, ko's unit tests, ko's e2e and scripts/lint.sh
-    make test    dune test --force and scripts/test-ts.sh (including scripts/lint.sh)
+    make verify-ko  scrubbed make build-ko, ko's unit tests (cargo and dune), ko's e2e, and cargo fmt, clippy and scripts/lint.sh
+    make build-ko  the Rust ko's installed layout under build/ko/ (macOS only for now)
+    make bindgen  regenerate ko_vt_sys/src/bindings.rs
+    make test    dune test --force, ko's Go suite and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment

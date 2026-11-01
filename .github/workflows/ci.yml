@@ -44,6 +44,40 @@ jobs:
       - name: Put zig on PATH
         run: echo "$HOME/zig" >> "$GITHUB_PATH"
 
+      # The runner images ship rustup; this installs the toolchain that
+      # rust-toolchain.toml pins. The Rust ko builds on macOS only for now.
+      - name: Install the Rust toolchain
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: rustup toolchain install
+
+      - name: Cache crates
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      # ko_vt_sys/build.rs keeps zig's caches here for every cargo profile.
+      - name: Resolve ghostty pin
+        if: runner.os == 'macOS'
+        id: ghostty
+        run: echo "pin=$(git ls-files -s third_party/ghostty | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache libghostty-vt
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: target/zig-cache
+          key: zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
+
+      - name: Download crates
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: cargo fetch --locked
+
       # The dune binary distribution, pinned to the release the README
       # installs; there is no opam. `build-deps` builds dune.lock into
       # _build (the compiler included) and the action caches dune's shared
@@ -196,7 +230,14 @@ jobs:
       - name: E2E tests
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 KIDO_E2E_HOST_SSH=1 make e2e
 
+      - name: Verify ko
+        if: runner.os == 'macOS'
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux make verify-ko
+
+      # Linux has no Rust build yet: make e2e-ko runs the OCaml ko with the
+      # OCaml decoder there.
       - name: Ko protocol tests
+        if: runner.os == 'Linux'
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux make e2e-ko
 
       - name: TypeScript tests

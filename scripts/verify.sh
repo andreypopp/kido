@@ -35,11 +35,12 @@ case ${1:-verify} in
     [[ ${1:-} == verify-ko ]] && default='build unit-ko e2e-ko lint'
     for name in ${STAGES:-$default}; do
       case $name in
-        build) stage build dune build ;;
+        build)
+          if [[ ${1:-} == verify-ko ]]; then stage build make build-ko; else stage build dune build; fi ;;
         unit) stage unit env KO_CHECK_CONTRACTS=true dune test --force ;;
         e2e) stage e2e e2e ;;
-        unit-ko) stage unit-ko env KO_CHECK_CONTRACTS=true dune test --force ko_server ko_server/fuzz ko_tui ko_vt ko_pane ;;
-        lint) stage lint ./scripts/test-ts.sh lint ;;
+        unit-ko) stage unit-ko make test-ko ;;
+        lint) stage lint make lint-ko ;;
         e2e-ko) stage e2e-ko make e2e-ko ;;
         ts) stage ts ./scripts/test-ts.sh ;;
         *) echo "Unknown stage: $name" >&2; status=1 ;;

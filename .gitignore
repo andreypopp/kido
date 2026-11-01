@@ -4,3 +4,4 @@ share/pi/.copy-*/
 _build/
 _build-ci-like/
 _build_afl/
+/target/

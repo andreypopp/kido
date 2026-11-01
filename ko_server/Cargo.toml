@@ -1,0 +1,20 @@
+[package]
+name = "ko_server"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+httparse.workspace = true
+ko_pane_wire = { path = "../ko_pane_wire" }
+ko_sys = { path = "../ko_sys" }
+serde.workspace = true
+serde_json.workspace = true
+tungstenite.workspace = true
+
+[dev-dependencies]
+ko_vt = { path = "../ko_vt" }
+proptest.workspace = true
+
+[lints]
+workspace = true

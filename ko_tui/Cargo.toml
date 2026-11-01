@@ -1,0 +1,18 @@
+[package]
+name = "ko_tui"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+httparse.workspace = true
+ko_server = { path = "../ko_server" }
+ko_sys = { path = "../ko_sys" }
+ko_vt = { path = "../ko_vt" }
+serde.workspace = true
+serde_json.workspace = true
+tungstenite.workspace = true
+vte.workspace = true
+
+[lints]
+workspace = true

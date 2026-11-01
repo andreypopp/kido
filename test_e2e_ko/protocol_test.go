@@ -2,7 +2,6 @@ package ko_test
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -25,7 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var root, buildDir, koBin string
+var root, koBin, koDecode string
 
 func TestMain(m *testing.M) {
 	var err error
@@ -33,22 +32,13 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	buildDir = cmp.Or(os.Getenv("DUNE_BUILD_DIR"), "_build")
-	if !filepath.IsAbs(buildDir) {
-		buildDir = filepath.Join(root, buildDir)
-	}
-	koBin = filepath.Join(buildDir, "install/default/bin/ko")
-	if err := e2eenv.UnsetHooks(); err != nil {
-		fmt.Fprintln(os.Stderr, "e2e setup:", err)
+	koBin, koDecode = os.Getenv("KO_BIN"), os.Getenv("KO_DECODE")
+	if koBin == "" || koDecode == "" {
+		fmt.Fprintln(os.Stderr, "e2e setup: KO_BIN and KO_DECODE must both be set; run make e2e-ko")
 		os.Exit(1)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "dune", "build", "@install", "ko_vt/decode.exe")
-	cmd.Dir = root
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := e2eenv.UnsetHooks(); err != nil {
+		fmt.Fprintln(os.Stderr, "e2e setup:", err)
 		os.Exit(1)
 	}
 	home, err := e2eenv.Private()
@@ -321,7 +311,7 @@ func decode(t *testing.T, data []byte, full ...bool) struct {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(buildDir, "default/ko_vt/decode.exe"))
+	cmd := exec.CommandContext(ctx, koDecode)
 	if len(full) > 0 && full[0] {
 		cmd.Args = append(cmd.Args, "--full")
 	}

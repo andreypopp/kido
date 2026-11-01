@@ -17,6 +17,7 @@ signals=$( {
     | grep -vE '^(ko_server/pid\.ml|test_e2e/signal_test\.go|test_e2e_ko/signal_test\.go):'
   grep -rnE '\bos\.kill' bench --include='*.py' \
     | grep -vE '^bench/client\.py:[0-9]+:    os\.kill\(pid, sig\)$'
+  grep -rnE '\blibc::kill(pg)?\b' ko ko_* --include='*.rs' | grep -vE '^ko_sys/src/pid\.rs:'
   pattern='killpg|kill[[:space:]]*\([[:space:]]*-' awk '/^static int group_signal\(/ { inside = 1 } /^}/ { inside = 0 }
     !inside && $0 ~ ENVIRON["pattern"] { print FILENAME ":" FNR ":" $0 }' ko_pane/pane.c
 } || true)
@@ -29,6 +30,7 @@ import glob
 import pathlib
 import re
 import subprocess
+import tomllib
 
 revision = subprocess.check_output(['git', 'ls-files', '-s', 'third_party/tmux'], text=True).split()[1]
 contract = pathlib.Path('share/rpc/contract.md').read_text()
@@ -40,6 +42,19 @@ zig = re.search(r'^release=(\S+)$', pathlib.Path('scripts/install-zig.sh').read_
 zon = pathlib.Path('third_party/ghostty/build.zig.zon').read_text()
 if f'.minimum_zig_version = "{zig}"' not in zon:
     print('scripts/install-zig.sh: zig release differs from third_party/ghostty minimum_zig_version')
+    raise SystemExit(1)
+
+locked = {package['name'] for package in tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']}
+listed = set(pathlib.Path('scripts/crates.txt').read_text().split())
+for name in sorted(locked - listed):
+    print(f'Cargo.lock: package {name} is not in scripts/crates.txt')
+for name in sorted(listed - locked):
+    print(f'scripts/crates.txt: {name} is not in Cargo.lock')
+headers = subprocess.check_output(['scripts/bindgen.sh', '--print-hash'], text=True).strip()
+if f'// ghostty headers sha256: {headers}\n' not in pathlib.Path('ko_vt_sys/src/bindings.rs').read_text():
+    print('ko_vt_sys/src/bindings.rs: header hash differs from third_party/ghostty/include; regenerate: make bindgen')
+    raise SystemExit(1)
+if locked != listed:
     raise SystemExit(1)
 
 errors = 0
@@ -67,6 +82,16 @@ def lexical(text, ocaml=False):
             comments.append((match.start(), token))
         return re.sub(r'[^\n]', ' ', token)
     return re.sub(pattern, mask, text), comments
+
+# A glob or named import of libc's kill makes a bare kill( call; only ko_sys::pid signals.
+for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', recursive=True):
+    if path == 'ko_sys/src/pid.rs':
+        continue
+    text = pathlib.Path(path).read_text()
+    code, _ = lexical(text)
+    if re.search(r'\buse\s+libc::(\*|kill(?:pg)?\b|\{[^}]*(\*|\bkill(?:pg)?\b))', code):
+        for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
+            report(path, text, match.start(), 'signals must go through ko_sys::pid')
 
 core = ['share/pi/kido-pi.ts']
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
