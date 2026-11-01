@@ -112,6 +112,64 @@ R0 forced these decisions:
     adds `Dim` (3.3) and `ko_vt` takes it, so the rule has one
     place.
 
+R1 forced these decisions:
+
+34. `pane_proc` takes the loop's state for each call (`Io`, with an
+    optional sink that receives each snapshot slice and each scan).
+    It hands out ring slices at once, before the tail moves, and
+    returns done, title, dead and reply notices as events, so row 39
+    holds by construction. `Server::turn` takes the sink for each
+    call; R2's views take its place.
+35. `Limits`, `Scrollback` and `Medium` live in `ko_pane_wire::frame`,
+    so one type serves the init frame and the terminal; `ko_vt` takes
+    them and `Dim` (decision 33). `ko_pane_wire` depends on `ko_sys`.
+36. The ring `Writer` exists from R1, without a feature gate, for the
+    tests of `ko_pane_wire` and `ko_server`; RP makes it `ko-pane`'s
+    writer.
+37. `unsafe` is permitted in `ko_pane_wire::ring::model` too, the loom
+    backing of the mapping. loom does not model a `SeqCst` access as
+    sequentially consistent, so without a correction the `SeqCst`
+    wakeup model also lost the wakeup; the model puts a
+    `fence(SeqCst)` before each `SeqCst` load and after each `SeqCst`
+    store. `ring_mc` runs with
+    preemption bound 5: unbounded, it did not end in 15 minutes.
+38. The spawn of `ko-pane` uses `POSIX_SPAWN_CLOEXEC_DEFAULT` and keeps
+    fd 2 through `posix_spawn_file_actions_addinherit_np`, which
+    `ko_sys` declares, because the `libc` crate does not.
+39. Under `EMFILE`, macOS drops the connection that `accept` refused,
+    so the row-35 test connects a new client after it frees
+    descriptors.
+40. The acceptance probe is `ko_server/examples/ring_probe.rs`, run by
+    `make probe-ko` and not by verify. It drives the real `Server`,
+    and it fails on a lost record, a gap in the offsets, an invalid
+    record or a byte total other than the producer's. The producer
+    clears `OPOST`, so the total must match exactly. R3's `ko-bench
+    throughput` replaces it.
+41. `make test` keeps its dependency on `build-ko`: the Go suite in it
+    reads the OCaml `ko` from dune's install tree and the Rust
+    decoder. A no-op `build-ko` takes 1.0 s, 0.9 s of it `dune build
+    @install`; after an edit, 1.35 to 1.56 s.
+42. `Server::new` takes a `Timing` (the accept retry, the output tick,
+    the shutdown grace), so tests shorten them through the argument.
+43. The `Server` SIGTERM test starts the C `ko-pane` in a re-executed
+    test process. `make test-ko` builds it with dune first and names
+    it in `KO_PANE_EXE`; without the variable the test fails.
+44. These exports have no caller in another crate until R2 or R4 and
+    stay `pub` for them: `ko_sys::sock::{peer_pid,
+    set_receive_buffer}`; `ko_pane_wire::ring::Reader::{reachable,
+    resume, end_offset, oldest_offset, marker, payload}`, `Reach`,
+    `Marker`; `ko_pane_wire::frame::{KeyCode::new, KeyAction,
+    MouseAction, MouseButton}`; `ko_server::config::{dir, socket,
+    Config::create}`; `ko_server::ids::{ClientId, InvalidId}` and
+    `PaneId`'s `FromStr`; `Pane::{command, sizer, resize, claim}`;
+    `PaneProc::{child_pid, title, snapshot, screen, input, resize}`,
+    `Input`, `Refusal`, `Event`, `Io`, `Sink`; `Panes::{iter, remove}`,
+    `AddError`; `Verified::into_stream`. R2's review checks that each
+    has its caller.
+45. `BUILD` comes from `option_env!("KO_BUILD_ID")`, which nothing
+    sets yet, so it is `unknown` until R2 adds `ko_server/build.rs`
+    with `KO_VT` (4.1).
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -520,7 +578,8 @@ the underscore, so there is one spelling.
   replaces the `int option`.
 - `RecordKind::{Bytes, Marker, Slice, Pad}`; `Marker::{Resize(Size),
   Dead(Dead)}`; `Slice { first, last, screen }`.
-- `Size { cols: Dim, rows: Dim, cell_px: Option<CellPx> }` where
+- `Size { cols: Dim, rows: Dim, cell_px: Option<CellPx> }` in
+  `ko_pane_wire::frame` (decision 35), where
   `Dim` is built only from 1 to `KO_MAX_DIMENSION` and `CellPx`
   from 1 to 65535. A hello, a size and a resize carry a `Size`, so
   the 4096 cap has one place.
@@ -765,7 +824,7 @@ httparse, and the bytes past it go to `from_partially_read` with
 
 A library function returns `Result`. `std::io::Error` carries the OS
 error (the `Unix_error` of today) and propagates with `?`. A failure
-with a message to print is `Failure(String)`, one type in `ko_sys`.
+with a message to print is a `String` error that holds the message (R1).
 Where callers distinguish cases, the module defines an enum
 (`api::Error::{Websocket, NoServer, Failed(String)}` as `ko_tui/api.ml`
 has). `Display` is implemented by hand; ko's own code uses no
@@ -1010,8 +1069,8 @@ inline test of the same meaning; "property" is a proptest module;
 | 3 | a 0-byte read after a full buffer is not a close | a24ce22c | a read that returns `WouldBlock` after one that filled the buffer is "not ready"; only `Ok(0)` is EOF | `conn.rs`, `pane_proc.rs` and `ws::Io`: each source reads until `WouldBlock` and treats only `Ok(0)` as EOF | unit: a socketpair filled to exactly the buffer size delivers every byte and no close (from `uv.ml`); the control-frame test with a 64 KiB `screen` reply |
 | 4 | read back-pressure | 7b5422a4 | no byte is read from a connection while its request body or its WebSocket message waits for a handler; the read buffer is 16 KiB and never holds unread bytes beyond it; a client that writes without end blocks in its socket | `conn.rs`: the `Handling` phase and a waiting view input drop `POLLIN` from the interest (3.6) | unit: the `connection.ml` test "bytes that arrive while the runtime yields reading are kept"; Go `TestHostileClientsDoNotAffectOthers` (the `Content-Length: 99999999999` case) |
 | 5 | the 16 KiB head limit | 616cdef2 | a request head over 16,384 bytes, across reads, gets `431` through the write queue after any earlier pipelined response, then the connection closes; a chunked request gets `411`; the heap does not grow with the head; `/client` and upgrades pass through the same limit | `http.rs` (the byte count per request head, httparse with 128 stack headers and up to 4,096 on the heap), `conn.rs` (the queue order) | unit: the three `connection.ml` tests (the limit as a whole, the boundary at 16,383, 16,384 and 16,385 bytes and the 7-byte split; the heap; the pipelined 431 after a 3 MB response); Go hostile test (20,000 headers, chunked); fuzz `http` and `head` |
-| 6 | the 4096 grid cap | 7c877215 | `cols` and `rows` are 1 to `KO_MAX_DIMENSION` in a hello, a size and a resize; `ko-pane` refuses the same | `protocol::Dim`; `pane.c` | unit: the `protocol.ml` size test; Go `TestClientGridLimit` |
-| 7 | the seq_cst wakeup handshake | protocol.md 14; the `read` index of P1.1 (0d71779f, p1-mvp.md 6.3) | the writer stores `head` then loads `read`; the reader stores `read` then, on its next turn, loads `head`; both as sequentially consistent atomics, because with release and acquire alone the two store-then-load pairs can both miss and a wakeup is lost. GenMC shows it: `ko_pane/genmc/wakeup_mc.c` (the store-buffering handshake over the extracted ring `ko_proofs/ko_ring_proved.h`; `ko_pane/genmc/run.sh sc|acqrel wakeup`) finds a lost wakeup with `ko_pane/genmc/acqrel/ko_atomic.h` and none with `ko_proofs/ko_atomic.h`, and `ko_pane/genmc/ring_mc.c` (a 64-byte ring, 5 records) finds no error in 17,519 executions | `ko_pane_wire::ring` (writer and reader): every header access is `SeqCst`; no other ordering exists in the crate (clippy cannot check this, lint greps for `Ordering::` and accepts only `SeqCst`) | loom (6.5): replays of `wakeup_mc.c` (`SeqCst` passes, the `AcqRel` twin is `#[should_panic]`) and `ring_mc.c`; Verus (6.7): the handshake as a state-machine property; bench `latency` (section 7) |
+| 6 | the 4096 grid cap | 7c877215 | `cols` and `rows` are 1 to `KO_MAX_DIMENSION` in a hello, a size and a resize; `ko-pane` refuses the same | `ko_pane_wire::frame::Dim` (decision 35); `pane.c` | unit: the `protocol.ml` size test; Go `TestClientGridLimit` |
+| 7 | the seq_cst wakeup handshake | protocol.md 14; the `read` index of P1.1 (0d71779f, p1-mvp.md 6.3) | the writer stores `head` then loads `read`; the reader stores `read` then, on its next turn, loads `head`; both as sequentially consistent atomics, because with release and acquire alone the two store-then-load pairs can both miss and a wakeup is lost. GenMC shows it: `ko_pane/genmc/wakeup_mc.c` (the store-buffering handshake over the extracted ring `ko_proofs/ko_ring_proved.h`; `ko_pane/genmc/run.sh sc|acqrel wakeup`) finds a lost wakeup with `ko_pane/genmc/acqrel/ko_atomic.h` and none with `ko_proofs/ko_atomic.h`, and `ko_pane/genmc/ring_mc.c` (a 64-byte ring, 5 records) finds no error in 17,519 executions | `ko_pane_wire::ring` (writer and reader): every header access is `SeqCst`; no other ordering exists in the crate (clippy cannot check this, lint greps for `Ordering::` and accepts only `SeqCst`; the loom model uses its own orderings, so this lint is the only guard of `ring/mapping.rs`'s orderings) | loom (6.5): replays of `wakeup_mc.c` (`SeqCst` passes, the `AcqRel` twin is `#[should_panic]`) and `ring_mc.c`; Verus (6.7): the handshake as a state-machine property; bench `latency` (section 7) |
 | 8 | `tail` never passes undelivered snapshot slices | cd74d3c1 | retention keeps every slice of a snapshot whose `snapshot_done` has not arrived, and a finished snapshot's cursor until its done frame | `pane_proc.rs` (`deliver`, `scan`) | unit: "the tail never passes snapshot slices that were not delivered", "a finished snapshot keeps its cursor in the ring until its snapshot_done" |
 | 9 | retention and a blocked view | 09ba9cd4 | a view's cursor is a ring position; a cursor behind the tail gets a snapshot; `advance` retains at most half a ring behind the head | `ring.rs` (`advance`, `reachable`), `view.rs` | property: the ring contract (the port of `fuzz_ring.ml`: writes, advances, resumes, the `invariants`); Go `TestStalledViewLearnsResizeAfterRingRetention` |
 | 10 | resume by offset | 09ba9cd4 | a resume replays no marker from before the offset; bytes resume from the first record that ends after the offset | `ring.rs` (`resume`) | property (replay in `fuzz_ring`); Go `TestResumeSkipsResizeMarkersBeforeTheOffset`, `TestViewResumeResizeAndInput` |
@@ -1045,7 +1104,7 @@ inline test of the same meaning; "property" is a proptest module;
 | 38 | sources added in a dispatch do not hide the rest of the batch | 68232448 | a turn copies its ready entries before it dispatches | `ko_sys::event` | unit: the reference's test, where the first handler adds 100 sources and the second still runs |
 | 39 | done callbacks after the state change | 43440688 | a snapshot's done callback runs after the pane's own state has moved on, so a snapshot asked for from that callback gets the slices after it | `pane_proc.rs` | unit: "a snapshot asked for from a snapshot's done callback gets the slices after it" |
 | 40 | a snapshot that cannot be sent closes its view | 43440688 | a snapshot request that cannot be sent is refused and its callback never runs; the view closes instead of waiting forever | `pane_proc.rs`, `view.rs` | unit: "a snapshot request that cannot be sent is refused, and its callback never runs" |
-| 41 | `snapshot_done` in request order | 43440688 | a `snapshot_done` for another request than the oldest one fails the pane | `pane_proc.rs` | unit: an out-of-order `snapshot_done` fails the pane; RV2 proves the order (6.7) |
+| 41 | `snapshot_done` in request order | 43440688 | a `snapshot_done` for a request that still reads its slices ends that request as incomplete, because `ko-pane` ended it without its last slice, and the pane stays open; a `snapshot_done` for any other request is ignored (`Pane_core.fst`, `snapshot_done`) | `pane_proc.rs` | unit: a `snapshot_done` for a reading request ends it incomplete, and one for another request changes nothing; RV2 proves the order (6.7) |
 | 42 | run-time contract checks | 43440688 | the postconditions that run-time state can show (the ring's, the connection's batch result, the delivery contracts) are checked in tests and fuzz runs and cost nothing in release | `debug_assert!` at the same points as the reference's `Contract.check` (`ring.rs`, `conn.rs`, `pane_proc.rs`); `make test-ko` and cargo-fuzz build with debug assertions, the release profile without | the unit and fuzz runs themselves; a broken contract panics with the contract's name |
 | 43 | the pager runs outside ko's alternate screen | 37ea03a8 | before `$PAGER` runs, the client leaves the alternate screen (and restores the outer modes), and enters it again after | `ko_tui/client.rs`, `modes.rs` | Go `TestClientHistoryAndAlternateScreen` |
 | 44 | `ECONNRESET` is a close | 37ea03a8 | on Linux a unix socket whose peer closed with unread input reads `ECONNRESET`; ko treats it as the end of the source, as `Ok(0)` | `ko_sys::event`'s read, `wire.rs` | Go `TestHostileClientsDoNotAffectOthers` on Linux (RL) |
@@ -1175,6 +1234,7 @@ loom explores every interleaving and models the stale loads that
 release and acquire permit, so the `SeqCst` version passes and the
 `AcqRel` version fails, which the `#[should_panic]` twin pins. It runs in `unit-ko` under
 `RUSTFLAGS=--cfg loom` on its own target directory, in a few seconds.
+The model corrects loom's `SeqCst` (decision 37).
 loom models the two processes' shared atomics only; no ko process
 has threads that share state, except the client's compressor, which
 uses a `Mutex`.
@@ -1435,6 +1495,17 @@ Each stage is one unit of work under one manager. Each ends with
 - Acceptance: a Rust probe starts the C `ko-pane`, feeds 1 GiB from
   `bench/produce.exe`, and the ring reader keeps up with no lost
   record; `make test-ko` green, the loom tests included.
+- Result (2026-11-01, macOS, load average 1.7): `make probe-ko`
+  read 1 GiB of the seven `bench/streams` through the C `ko-pane` and
+  the real `Server` at 79.5 MB/s (13.50 s), with 0.755 s of
+  coordinator CPU (0.06 core): 1,048,634 records, 1,073,741,824
+  bytes, exactly the producer's total, no lost record, no gap in the
+  offsets and no invalid record. The ring's back-pressure is what
+  keeps a record from being lost; the probe checks the result. A
+  first run, before review, measured the C tail-acker at 77.4 MB/s on
+  the same machine. The loom models take 0.6 s;
+  the acquire/release twin loses the wakeup. Decisions 34 to 45 came
+  from R1.
 
 ### R2. HTTP, WebSocket, views, clients (5 to 7 agent-days)
 
@@ -1460,7 +1531,9 @@ Each stage is one unit of work under one manager. Each ends with
 ### RP. `ko-pane` in Rust (4 to 6 agent-days)
 
 - `ko_pane_wire::ring`'s `Writer` (`available`, `put_record`, the
-  pad record, the `full` wait); `ko_vt`'s server half (the terminal
+  pad record, the `full` wait); the ring property test of R1 then
+  derives the model's room from its record list, not from the
+  writer's own formula; `ko_vt`'s server half (the terminal
   with its callbacks, the encoders, the formatter, the snapshot
   encoder with `cut.rs`, `compress.rs`); `ko_sys`'s `pty`,
   `peek_exit`, `reap`; the `ko_pane` binary on R1's loop and signal
@@ -1813,7 +1886,7 @@ Conventions:
   `overflow-checks = true`: a panic is a bug, and a loud stop with a
   core is better than a half-state. Tests may `unwrap`.
 - **Errors.** `std::io::Error` carries an OS error and propagates
-  with `?`. A message to print is `ko_sys::Failure(String)`. If
+  with `?`. A message to print is a `String` error. If
   callers distinguish cases, the module defines an enum and
   implements `Display` by hand. No `anyhow`, no `thiserror`, no
   `Box<dyn Error>` in ko's code. A crate's error (httparse,

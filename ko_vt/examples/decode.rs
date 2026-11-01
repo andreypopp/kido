@@ -29,7 +29,16 @@ fn decoded(full: bool) -> Result<Decoded, Error> {
 }
 
 fn main() -> ExitCode {
-    let line = decoded(std::env::args_os().len() > 1)
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let full = match args.as_slice() {
+        [] => false,
+        [flag] if flag == "--full" => true,
+        _ => {
+            eprintln!("usage: decode [--full] < snapshot");
+            return ExitCode::from(2);
+        }
+    };
+    let line = decoded(full)
         .map_err(|error| error.to_string())
         .and_then(|decoded| serde_json::to_string(&decoded).map_err(|error| error.to_string()));
     match line {

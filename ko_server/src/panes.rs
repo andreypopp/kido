@@ -1,0 +1,305 @@
+use std::fmt;
+use std::fs;
+use std::io;
+use std::path::PathBuf;
+
+use ko_sys::event::Token;
+
+use crate::config::{BUILD, Config, variable};
+use crate::ids::PaneId;
+use crate::pane::Pane;
+use crate::pane_proc::{Io, Life};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    Argv(Vec<String>),
+    Shell(String),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Create {
+    pub cwd: Option<PathBuf>,
+    pub command: Option<Command>,
+    pub env: Vec<(String, String)>,
+}
+
+#[derive(Debug)]
+pub enum AddError {
+    Invalid(&'static str),
+    Io(io::Error),
+}
+
+impl fmt::Display for AddError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AddError::Invalid(message) => f.write_str(message),
+            AddError::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Panes {
+    next: u64,
+    panes: Vec<Pane>,
+    removed: Vec<Pane>,
+}
+
+impl Default for Panes {
+    fn default() -> Panes {
+        Panes {
+            next: 1,
+            panes: Vec::new(),
+            removed: Vec::new(),
+        }
+    }
+}
+
+fn environment(config: &Config, id: PaneId, requested: &[(String, String)]) -> Vec<Vec<u8>> {
+    let mut terminfo = config.terminfo.as_os_str().as_encoded_bytes().to_vec();
+    terminfo.push(b':');
+    let forced: [(&str, Vec<u8>); 6] = [
+        ("TERM", b"xterm-ghostty".to_vec()),
+        ("TERM_PROGRAM", b"ko".to_vec()),
+        ("TERM_PROGRAM_VERSION", BUILD.as_bytes().to_vec()),
+        ("TERMINFO_DIRS", terminfo),
+        (
+            "KO_SOCKET",
+            config.socket.as_os_str().as_encoded_bytes().to_vec(),
+        ),
+        ("KO_PANE", id.to_string().into_bytes()),
+    ];
+    let overrides: Vec<(&str, Vec<u8>)> = forced
+        .iter()
+        .cloned()
+        .chain(
+            requested
+                .iter()
+                .filter(|(name, _)| forced.iter().all(|(forced, _)| forced != name))
+                .map(|(name, value)| (name.as_str(), value.clone().into_bytes())),
+        )
+        .collect();
+    let overridden = |entry: &&Vec<u8>| {
+        let name = entry.split(|&byte| byte == b'=').next().unwrap_or_default();
+        overrides.iter().any(|(set, _)| set.as_bytes() == name)
+    };
+    let inherited: Vec<Vec<u8>> = config
+        .env
+        .iter()
+        .filter(|entry| !overridden(entry))
+        .cloned()
+        .collect();
+    overrides
+        .into_iter()
+        .map(|(name, value)| variable(name.as_bytes(), &value))
+        .chain(inherited)
+        .collect()
+}
+
+impl Panes {
+    pub fn find(&self, id: PaneId) -> Option<&Pane> {
+        self.panes.iter().find(|pane| pane.id() == id)
+    }
+
+    pub(crate) fn by_token(&mut self, token: Token) -> Option<&mut Pane> {
+        self.panes
+            .iter_mut()
+            .find(|pane| pane.proc().token() == Some(token))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Pane> {
+        self.panes.iter()
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Pane> {
+        self.panes.iter_mut()
+    }
+
+    pub(crate) fn add(
+        &mut self,
+        config: &Config,
+        request: &Create,
+        io: &mut Io<'_>,
+    ) -> Result<PaneId, AddError> {
+        let id = PaneId::new(self.next);
+        let cwd = request.cwd.clone().unwrap_or_else(|| config.cwd.clone());
+        let shell = || config.shell.as_os_str().as_encoded_bytes().to_vec();
+        let command: Vec<Vec<u8>> = match &request.command {
+            None => vec![shell(), b"-l".to_vec()],
+            Some(Command::Argv(argv)) => argv.iter().map(|arg| arg.clone().into_bytes()).collect(),
+            Some(Command::Shell(text)) => vec![shell(), b"-c".to_vec(), text.clone().into_bytes()],
+        };
+        if !command
+            .first()
+            .is_some_and(|executable| executable.starts_with(b"/"))
+        {
+            return Err(AddError::Invalid("command executable must be absolute"));
+        }
+        if cwd.is_relative() {
+            return Err(AddError::Invalid("cwd must be absolute"));
+        }
+        let nul = |bytes: &[u8]| bytes.contains(&0);
+        if nul(cwd.as_os_str().as_encoded_bytes()) || command.iter().any(|arg| nul(arg)) {
+            return Err(AddError::Invalid("NUL in pane request"));
+        }
+        match fs::metadata(&cwd) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Err(AddError::Invalid("cwd must be a directory")),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::NotADirectory
+                        | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                return Err(AddError::Invalid("cwd must be a directory"));
+            }
+            Err(error) => return Err(AddError::Io(error)),
+        }
+        let invalid = |(name, value): &(String, String)| {
+            name.is_empty() || name.contains(['=', '\0']) || value.contains('\0')
+        };
+        if request.env.iter().any(invalid) {
+            return Err(AddError::Invalid("invalid environment"));
+        }
+        let env = environment(config, id, &request.env);
+        let pane = Pane::spawn(config, id, &cwd, command, &env, io).map_err(AddError::Io)?;
+        self.next = self.next.saturating_add(1);
+        self.panes.push(pane);
+        Ok(id)
+    }
+
+    pub fn remove(&mut self, id: PaneId, io: &mut Io<'_>) {
+        if let Some(at) = self.panes.iter().position(|pane| pane.id() == id) {
+            let mut pane = self.panes.remove(at);
+            pane.proc_mut().shutdown(io);
+            self.removed.push(pane);
+        }
+    }
+
+    fn all(&self) -> impl Iterator<Item = &Pane> {
+        self.panes.iter().chain(&self.removed)
+    }
+
+    fn all_mut(&mut self) -> impl Iterator<Item = &mut Pane> {
+        self.panes.iter_mut().chain(self.removed.iter_mut())
+    }
+
+    pub(crate) fn shutdown(&mut self, io: &mut Io<'_>) {
+        for pane in self.all_mut() {
+            pane.proc_mut().shutdown(io);
+        }
+    }
+
+    pub(crate) fn kill(&self) -> io::Result<()> {
+        self.all().try_for_each(|pane| pane.proc().kill())
+    }
+
+    pub(crate) fn reap(&mut self, io: &mut Io<'_>) -> io::Result<()> {
+        for pane in self.all_mut() {
+            pane.proc_mut().reap(io)?;
+        }
+        self.removed
+            .retain(|pane| pane.proc().life() != Life::Reaped);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> Config {
+        Config {
+            dir: PathBuf::from("/tmp"),
+            socket: PathBuf::from("/tmp/ko/socket"),
+            pane_exe: PathBuf::from("/nonexistent/ko-pane"),
+            terminfo: PathBuf::from("/share/terminfo"),
+            shell: PathBuf::from("/bin/sh"),
+            limits: crate::config::DEFAULT_LIMITS,
+            media: Vec::new(),
+            env: vec![
+                b"TERM=dumb".to_vec(),
+                b"HOME=/home".to_vec(),
+                b"LANG=C".to_vec(),
+            ],
+            cwd: PathBuf::from("/"),
+        }
+    }
+
+    #[test]
+    fn the_forced_variables_override_the_request_and_the_inherited_environment() {
+        let requested = [
+            ("TERM".to_owned(), "vt100".to_owned()),
+            ("LANG".to_owned(), "en".to_owned()),
+        ];
+        let env: Vec<String> = environment(&config(), PaneId::new(3), &requested)
+            .into_iter()
+            .map(|entry| String::from_utf8(entry).unwrap())
+            .collect();
+        assert_eq!(
+            env,
+            [
+                "TERM=xterm-ghostty".to_owned(),
+                "TERM_PROGRAM=ko".to_owned(),
+                format!("TERM_PROGRAM_VERSION={BUILD}"),
+                "TERMINFO_DIRS=/share/terminfo:".to_owned(),
+                "KO_SOCKET=/tmp/ko/socket".to_owned(),
+                "KO_PANE=pane_3".to_owned(),
+                "LANG=en".to_owned(),
+                "HOME=/home".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_request_is_checked_before_anything_starts() {
+        let mut panes = Panes::default();
+        let mut poll = ko_sys::event::Poll::new();
+        let mut events = Vec::new();
+        let mut io = Io {
+            poll: &mut poll,
+            events: &mut events,
+            sink: None,
+        };
+        let request = |cwd: &str, command: Option<Command>, env: &[(&str, &str)]| Create {
+            cwd: Some(PathBuf::from(cwd)),
+            command,
+            env: env
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        };
+        let argv = |argv: &[&str]| {
+            Some(Command::Argv(
+                argv.iter().map(|a| (*a).to_owned()).collect(),
+            ))
+        };
+        let cases = [
+            (
+                request("/", argv(&["sh"]), &[]),
+                "command executable must be absolute",
+            ),
+            (request("tmp", None, &[]), "cwd must be absolute"),
+            (
+                request("/", argv(&["/bin/sh", "a\0b"]), &[]),
+                "NUL in pane request",
+            ),
+            (
+                request("/nonexistent", None, &[]),
+                "cwd must be a directory",
+            ),
+            (request("/etc/hosts", None, &[]), "cwd must be a directory"),
+            (request("/", None, &[("A=B", "c")]), "invalid environment"),
+            (request("/", None, &[("", "c")]), "invalid environment"),
+        ];
+        for (request, message) in cases {
+            let refused = panes.add(&config(), &request, &mut io).unwrap_err();
+            assert_eq!(refused.to_string(), message);
+        }
+        let spawned = panes.add(&config(), &request("/", None, &[]), &mut io);
+        assert!(matches!(spawned, Err(AddError::Io(_))));
+        assert!(panes.iter().next().is_none());
+    }
+}

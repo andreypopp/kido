@@ -17,12 +17,21 @@ signals=$( {
     | grep -vE '^(ko_server/pid\.ml|test_e2e/signal_test\.go|test_e2e_ko/signal_test\.go):'
   grep -rnE '\bos\.kill' bench --include='*.py' \
     | grep -vE '^bench/client\.py:[0-9]+:    os\.kill\(pid, sig\)$'
-  grep -rnE '\blibc::kill(pg)?\b' ko ko_* --include='*.rs' | grep -vE '^ko_sys/src/pid\.rs:'
+  grep -rnE '\blibc::kill(pg)?\b|\bkillpg\b|nix::sys::signal|Command::new\([[:space:]]*"kill"' ko ko_* --include='*.rs' \
+    | grep -vE '^ko_sys/src/pid\.rs:'
   pattern='killpg|kill[[:space:]]*\([[:space:]]*-' awk '/^static int group_signal\(/ { inside = 1 } /^}/ { inside = 0 }
     !inside && $0 ~ ENVIRON["pattern"] { print FILENAME ":" FNR ":" $0 }' ko_pane/pane.c
 } || true)
 if [[ -n "$signals" ]]; then
   echo "$signals" | sed 's/$/: signals must go through Pid, group_signal, signal_child or the signal_test.go helpers/'
+  failed=1
+fi
+# The ring header's atomics are sequentially consistent; only the loom model's acquire/release
+# twin, which shows the lost wakeup without them, uses another ordering.
+orderings=$(grep -rnoE 'Ordering::[A-Za-z]+' ko_pane_wire ko_server --include='*.rs' \
+  | grep -vE '^ko_pane_wire/src/ring/model\.rs:|:Ordering::SeqCst$' || true)
+if [[ -n "$orderings" ]]; then
+  echo "$orderings" | sed 's/$/: ko_pane_wire and ko_server use only Ordering::SeqCst/'
   failed=1
 fi
 python3 - <<'PY' || failed=1

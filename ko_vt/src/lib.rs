@@ -6,12 +6,11 @@ use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::ptr::{self, NonNull};
 
-use ko_pane_wire::frame::MAX_DIMENSION;
+use ko_pane_wire::frame::{CellPx, Dim, Limits, Scrollback, Size};
 use ko_vt_sys as sys;
 
 #[derive(Debug)]
 pub enum Error {
-    Dimensions { cols: u16, rows: u16 },
     Ghostty(sys::GhosttyResult),
     NoHandle,
     NoTerminal,
@@ -22,7 +21,6 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Dimensions { cols, rows } => write!(f, "terminal dimensions {cols}x{rows}"),
             Error::Ghostty(code) => write!(f, "libghostty-vt operation failed ({code})"),
             Error::NoHandle => write!(f, "libghostty-vt returned no terminal handle"),
             Error::NoTerminal => write!(f, "the snapshot decoder returned no terminal"),
@@ -40,36 +38,10 @@ fn check(result: sys::GhosttyResult) -> Result<(), Error> {
     }
 }
 
-fn check_size(cols: u16, rows: u16) -> Result<(), Error> {
-    let valid = 1..=MAX_DIMENSION;
-    if valid.contains(&cols) && valid.contains(&rows) {
-        Ok(())
-    } else {
-        Err(Error::Dimensions { cols, rows })
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Plain,
     Vt,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scrollback {
-    Disabled,
-    Bounded {
-        max_bytes: Option<NonZeroUsize>,
-        max_lines: Option<NonZeroUsize>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Limits {
-    pub scrollback: Scrollback,
-    pub apc_max_bytes: usize,
-    pub kitty_images_max_bytes: u64,
-    pub continuation_max_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,11 +151,10 @@ fn restore(
 }
 
 impl Terminal {
-    pub fn new(cols: u16, rows: u16, limits: Limits) -> Result<Terminal, Error> {
-        check_size(cols, rows)?;
+    pub fn new(cols: Dim, rows: Dim, limits: Limits) -> Result<Terminal, Error> {
         let mut vt = ptr::null_mut();
         // SAFETY: a NULL allocator selects the default one; vt receives the new handle.
-        check(unsafe { sys::ghostty_terminal_new(ptr::null(), &mut vt, cols, rows) })?;
+        check(unsafe { sys::ghostty_terminal_new(ptr::null(), &mut vt, cols.get(), rows.get()) })?;
         let terminal = Terminal {
             vt: NonNull::new(vt).ok_or(Error::NoHandle)?,
         };
@@ -262,10 +233,18 @@ impl Terminal {
         unsafe { sys::ghostty_terminal_vt_write(self.vt.as_ptr(), bytes.as_ptr(), bytes.len()) }
     }
 
-    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), Error> {
-        check_size(cols, rows)?;
+    pub fn resize(&mut self, size: Size) -> Result<(), Error> {
+        let cell = size.cell_px.unwrap_or(CellPx::DEFAULT);
         // SAFETY: the handle is live.
-        check(unsafe { sys::ghostty_terminal_resize(self.vt.as_ptr(), cols, rows, 8, 16) })
+        check(unsafe {
+            sys::ghostty_terminal_resize(
+                self.vt.as_ptr(),
+                size.cols.get(),
+                size.rows.get(),
+                u32::from(cell.width.get()),
+                u32::from(cell.height.get()),
+            )
+        })
     }
 
     fn get<T>(&self, data: sys::GhosttyTerminalData, mut value: T) -> Result<T, Error> {
@@ -385,6 +364,10 @@ impl Terminal {
 mod tests {
     use super::*;
 
+    fn dim(value: u16) -> Dim {
+        Dim::new(value).unwrap()
+    }
+
     fn make(cols: u16, rows: u16) -> Terminal {
         let limits = Limits {
             scrollback: Scrollback::Bounded {
@@ -395,7 +378,7 @@ mod tests {
             kitty_images_max_bytes: 10_000_000,
             continuation_max_bytes: 65 * 1024 * 1024,
         };
-        Terminal::new(cols, rows, limits).unwrap()
+        Terminal::new(dim(cols), dim(rows), limits).unwrap()
     }
 
     fn snapshot(terminal: &Terminal) -> Vec<u8> {
@@ -491,8 +474,13 @@ mod tests {
             mirror.write(bytes.as_bytes());
         }
         for (cols, rows) in [(10, 8), (40, 3), (20, 5)] {
-            server.resize(cols, rows).unwrap();
-            mirror.resize(cols, rows).unwrap();
+            let size = Size {
+                cols: dim(cols),
+                rows: dim(rows),
+                cell_px: None,
+            };
+            server.resize(size).unwrap();
+            mirror.resize(size).unwrap();
             let screen = decode(&snapshot(&server), Extent::Screen);
             let expected = server.dump(Format::Vt).unwrap();
             assert_eq!(expected, mirror.dump(Format::Vt).unwrap());
@@ -553,14 +541,13 @@ mod tests {
         );
         let truncated = Terminal::decode(&mut &b"GHOSTSNP"[..], Extent::Screen).unwrap_err();
         assert_eq!(truncated.to_string(), "libghostty-vt operation failed (-2)");
-        let mut terminal = make(4, 4);
+    }
+
+    #[test]
+    fn the_frame_key_bound_is_the_last_ghostty_key() {
         assert_eq!(
-            terminal.resize(0, 4).unwrap_err().to_string(),
-            "terminal dimensions 0x4"
+            i32::from(ko_pane_wire::frame::MAX_KEY),
+            sys::GHOSTTY_KEY_PASTE
         );
-        assert!(matches!(
-            terminal.resize(4, 4097),
-            Err(Error::Dimensions { .. })
-        ));
     }
 }

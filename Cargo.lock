@@ -288,6 +288,7 @@ dependencies = [
 name = "ko_pane_wire"
 version = "0.0.0"
 dependencies = [
+ "ko_sys",
  "loom",
  "proptest",
 ]
@@ -300,6 +301,7 @@ dependencies = [
  "ko_pane_wire",
  "ko_sys",
  "ko_vt",
+ "libc",
  "proptest",
  "serde",
  "serde_json",

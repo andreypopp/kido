@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 httparse.workspace = true
+libc.workspace = true
 ko_pane_wire = { path = "../ko_pane_wire" }
 ko_sys = { path = "../ko_sys" }
 serde.workspace = true

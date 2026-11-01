@@ -1,0 +1,263 @@
+use std::io;
+
+use crate::retry::{check, retry};
+use crate::signal::Signal;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pid(libc::pid_t);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exit {
+    Exited(i32),
+    Signaled(i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waited {
+    Running,
+    Ended(Exit),
+    NoChild,
+}
+
+impl std::fmt::Display for Pid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Pid {
+    pub fn new(raw: i64) -> Option<Pid> {
+        let pid = libc::pid_t::try_from(raw).ok().filter(|&pid| pid > 1)?;
+        // SAFETY: getpid and getpgrp have no preconditions.
+        let (own, group) = unsafe { (libc::getpid(), libc::getpgrp()) };
+        (pid != own && pid != group).then_some(Pid(pid))
+    }
+
+    pub fn signal(self, signal: Signal) -> io::Result<()> {
+        // SAFETY: Pid holds a positive pid other than this process and its group.
+        match check(unsafe { libc::kill(self.0, signal.number()) }) {
+            Ok(_) => Ok(()),
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn try_wait(self) -> io::Result<Waited> {
+        let mut status = 0;
+        // SAFETY: status receives the child's status.
+        let waited = retry(|| check(unsafe { libc::waitpid(self.0, &mut status, libc::WNOHANG) }));
+        match waited {
+            Ok(0) => Ok(Waited::Running),
+            Ok(_) if libc::WIFEXITED(status) => {
+                Ok(Waited::Ended(Exit::Exited(libc::WEXITSTATUS(status))))
+            }
+            Ok(_) if libc::WIFSIGNALED(status) => {
+                Ok(Waited::Ended(Exit::Signaled(libc::WTERMSIG(status))))
+            }
+            Ok(_) => Ok(Waited::Ended(Exit::Signaled(libc::WSTOPSIG(status)))),
+            Err(error) if error.raw_os_error() == Some(libc::ECHILD) => Ok(Waited::NoChild),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Identity {
+    ppid: libc::pid_t,
+    pgid: libc::pid_t,
+    sid: libc::pid_t,
+    start: u64,
+}
+
+fn identity(pid: Pid) -> Option<Identity> {
+    // SAFETY: an all-zero proc_bsdinfo is valid.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = libc::c_int::try_from(size_of::<libc::proc_bsdinfo>()).ok()?;
+    // SAFETY: info is writable for size bytes.
+    let filled = unsafe {
+        libc::proc_pidinfo(
+            pid.0,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
+    if filled != size {
+        return None;
+    }
+    // SAFETY: getsid has no preconditions.
+    let sid = unsafe { libc::getsid(pid.0) };
+    if sid < 0 {
+        return None;
+    }
+    Some(Identity {
+        ppid: libc::pid_t::try_from(info.pbi_ppid).ok()?,
+        pgid: libc::pid_t::try_from(info.pbi_pgid).ok()?,
+        sid,
+        start: info
+            .pbi_start_tvsec
+            .saturating_mul(1_000_000)
+            .saturating_add(info.pbi_start_tvusec),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Group {
+    leader: Pid,
+    start: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Child(Group),
+    Gone,
+    Foreign,
+}
+
+impl Group {
+    fn judge(parent: Pid, pid: Pid, found: Option<Identity>) -> Verdict {
+        match found {
+            None => Verdict::Gone,
+            Some(found) if found.ppid == parent.0 && found.pgid == pid.0 && found.sid == pid.0 => {
+                Verdict::Child(Group {
+                    leader: pid,
+                    start: found.start,
+                })
+            }
+            Some(_) => Verdict::Foreign,
+        }
+    }
+
+    pub fn verify(parent: Pid, raw: i64) -> Verdict {
+        match Pid::new(raw) {
+            None => Verdict::Foreign,
+            Some(pid) => Group::judge(parent, pid, identity(pid)),
+        }
+    }
+
+    pub fn leader(&self) -> Pid {
+        self.leader
+    }
+
+    pub fn signal(&self, signal: Signal) -> io::Result<()> {
+        match identity(self.leader) {
+            Some(found) if found.start == self.start && found.pgid == self.leader.0 => {
+                // SAFETY: the leader is a verified group leader whose start time still matches.
+                match check(unsafe { libc::kill(-self.leader.0, signal.number()) }) {
+                    Ok(_) => Ok(()),
+                    // macOS can return EPERM for a group with only zombies or exiting processes.
+                    Err(error)
+                        if matches!(error.raw_os_error(), Some(libc::ESRCH | libc::EPERM)) =>
+                    {
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Some(_) | None => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    fn killed_by_sigkill(child: &mut Child) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match child.try_wait().unwrap() {
+                Some(status) => {
+                    use std::os::unix::process::ExitStatusExt;
+                    return status.signal() == Some(libc::SIGKILL);
+                }
+                None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+                None => return false,
+            }
+        }
+    }
+
+    #[test]
+    fn new_refuses_what_no_caller_may_signal_and_accepts_a_child() {
+        let own = i64::from(std::process::id());
+        // SAFETY: getpgrp has no preconditions.
+        let group = i64::from(unsafe { libc::getpgrp() });
+        for raw in [
+            -1,
+            -4_294_967_295,
+            4_294_967_295,
+            0x8000_0000,
+            0,
+            1,
+            own,
+            group,
+        ] {
+            assert_eq!(Pid::new(raw), None, "{raw}");
+        }
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = Pid::new(i64::from(child.id())).unwrap();
+        pid.signal(Signal::Kill).unwrap();
+        assert!(killed_by_sigkill(&mut child));
+        pid.signal(Signal::Kill).unwrap();
+    }
+
+    #[test]
+    fn only_the_parents_own_session_leader_is_a_child() {
+        let parent = Pid(4242);
+        let pid = Pid(900);
+        let found = |ppid, pgid, sid| {
+            Some(Identity {
+                ppid,
+                pgid,
+                sid,
+                start: 7,
+            })
+        };
+        let verdict = |found| Group::judge(parent, pid, found);
+        assert_eq!(verdict(found(1, 900, 900)), Verdict::Foreign);
+        assert_eq!(verdict(found(4242, 1, 900)), Verdict::Foreign);
+        assert_eq!(verdict(found(4242, 900, 1)), Verdict::Foreign);
+        assert_eq!(
+            verdict(found(4242, 900, 900)),
+            Verdict::Child(Group {
+                leader: pid,
+                start: 7
+            })
+        );
+        assert_eq!(verdict(None), Verdict::Gone);
+    }
+
+    #[test]
+    fn only_a_group_that_matches_its_recorded_start_is_signalled() {
+        let program = "use POSIX; $|=1; POSIX::setsid(); print qq(up\\n); exec q(sleep), q(30)";
+        let mut child = Command::new("perl")
+            .args(["-e", program])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut up = [0u8; 3];
+        child.stdout.take().unwrap().read_exact(&mut up).unwrap();
+        // SAFETY: getpid has no preconditions.
+        let parent = Pid(unsafe { libc::getpid() });
+        let Verdict::Child(verified) = Group::verify(parent, i64::from(child.id())) else {
+            Pid::new(i64::from(child.id()))
+                .unwrap()
+                .signal(Signal::Kill)
+                .unwrap();
+            panic!("child not verified");
+        };
+        assert_eq!(verified.leader, Pid(i32::try_from(child.id()).unwrap()));
+        let tampered = Group {
+            start: verified.start + 1,
+            ..verified
+        };
+        tampered.signal(Signal::Kill).unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+        verified.signal(Signal::Kill).unwrap();
+        assert!(killed_by_sigkill(&mut child));
+    }
+}

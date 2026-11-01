@@ -350,7 +350,10 @@ These requirements are fixed:
   `cargo clippy --all-targets -- -D warnings` is clean.
   `[workspace.lints]` in `Cargo.toml` holds the denied lints, and
   every crate inherits them. `clippy.toml` permits `unwrap`, `expect`,
-  `panic!` and indexing in tests.
+  `panic!` and indexing in tests. The readers of untrusted bytes
+  (`ko_pane_wire`'s `frame.rs` and `ring.rs`, `ko_server`'s
+  `pane_proc.rs`) also deny `clippy::indexing_slicing` and
+  `clippy::arithmetic_side_effects`.
 - **The command line is a contract** with `test_e2e_ko/`, `bench/`
   and `share/`. A long option is `--name`.
 
@@ -374,23 +377,61 @@ Conventions:
   does not report an unused `pub` item of a library. Thus, review
   checks that another crate uses each export.
 - **Tests** are `#[cfg(test)] mod tests` at the bottom of the file
-  under test. Expectations are `assert_eq!` on values or strings. No
-  test execs the binary; the Go suite does that.
+  under test. Expectations are `assert_eq!` on values or strings.
+  Property tests use proptest in the same module. No test execs the
+  `ko` binary; the Go suite does that. The `Server` SIGTERM test
+  starts the C `ko-pane` that `make test-ko` builds and names in
+  `KO_PANE_EXE`.
+- **loom.** `ko_pane_wire::ring::model` replays the GenMC models of
+  `ko_pane/genmc/` on the real `Reader` under `--cfg loom`. `make
+  test-ko` runs them in `target/loom`. loom does not model a `SeqCst`
+  access as sequentially consistent, so the model puts a
+  `fence(SeqCst)` beside each one (its comment has the issue). The
+  acquire/release twin of the wakeup model is `#[should_panic]`.
 - **Derives.** Every type derives `Debug`. Derive `Clone`, `Copy`,
   `PartialEq` and `Eq` where the type is a value. Derive `PartialOrd`
   and `Ord` only where the order has a meaning, `Default` only when
   every field has a meaningful default, and `Hash` only for a map key.
 - **Newtypes.** A value with its own rules is a newtype with a private
-  field and one validating constructor. A closed set is an `enum`.
-  "Unknown" is `None`. "Disabled" is a variant.
+  field and one validating constructor. A closed set is an `enum`. "Unknown" is `None`. "Disabled" is a variant.
 - **Unsafe.** `unsafe` is permitted in `ko_sys`, in `ko_vt_sys` (the
-  generated bindings) and in `ko_vt` (the safe wrapper over them).
-  Every other crate denies it. Each block has a `// SAFETY:` line that
-  names the invariant. A safe wrapper takes typed arguments and
-  returns `Result`. A callback from libghostty-vt never unwinds and
-  never calls back into the terminal.
+  generated bindings), in `ko_vt` (the safe wrapper over them) and in
+  `ko_pane_wire::ring::mapping` and `ring::model` (the loom backing).
+  Every other crate and module denies it. Each block has a
+  `// SAFETY:` line that names the invariant. A safe wrapper takes
+  typed arguments and returns `Result`. Descriptors are `OwnedFd` and
+  `BorrowedFd`; no raw descriptor crosses a module boundary. A signal
+  handler only sets its pending flag and writes its pipe. A callback
+  from libghostty-vt never unwinds and never calls back into the
+  terminal.
+- **Atomics.** The ring header's loads and stores are `SeqCst`
+  ("The ring indices are sequentially consistent" below).
+  `scripts/lint.sh` refuses any other `Ordering` in `ko_pane_wire` and
+  `ko_server`, except in the loom model `ring/model.rs`.
 - **Signals.** `libc::kill` occurs only in `ko_sys/src/pid.rs`.
-  `scripts/lint.sh` refuses it elsewhere.
+  `scripts/lint.sh` refuses it, `killpg`, `nix::sys::signal` and a
+  `kill` command elsewhere. `Pid::new` refuses 1 or less, values over
+  `i32::MAX`, the own pid and the own process group. A `Group` exists
+  only after `Group::verify` read from the OS that the pid is a child
+  of the given parent and leads its own group and session.
+  `Group::signal` checks the start time and the group again. `ESRCH`
+  is not an error, and neither is `EPERM` on a group signal.
+- **Syscalls.** Every own libc call that can return `EINTR` goes
+  through `ko_sys::retry`. An `EINTR` from `poll` is a turn with no
+  events. A read of zero bytes is the end; `WouldBlock` is "not
+  ready". Signal handlers have `SA_RESTART`, but no call relies on it.
+- **The loop.** Every ko process is one thread on `ko_sys::event`:
+  non-blocking descriptors, the nearest deadline as the `poll`
+  timeout and none without one, at most 16 reads of a source per
+  turn. The server's listener accepts at most 16 connections per
+  turn. Signals reach the loop only through the self-pipe
+  of `ko_sys::signal`, one `Signals` per process. Back-pressure is the
+  interest. The owner matches on the ready tokens and the due timers
+  and calls its own handlers with `&mut self`; no callback is
+  registered with the loop, and no `Rc<RefCell<..>>` exists.
+- **Time.** `Mono` is nanoseconds of `CLOCK_UPTIME_RAW`, as
+  `ko_now_ns` reads it. The loop's deadlines are `std::time::Instant`.
+  Timeouts are `Duration` arguments, not statics.
 - **FFI bindings.** `scripts/bindgen.sh` (`make bindgen`) generates
   `ko_vt_sys/src/bindings.rs` from `third_party/ghostty/include` with
   the bindgen CLI (`cargo install --locked bindgen-cli`; on macOS,
@@ -984,6 +1025,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make verify-ko  scrubbed make build-ko, ko's unit tests (cargo and dune), ko's e2e, and cargo fmt, clippy and scripts/lint.sh
     make build-ko  the Rust ko's installed layout under build/ko/ (macOS only for now)
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
+    make probe-ko BYTES=N  the Rust ring reader under the C ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make test    dune test --force, ko's Go suite and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite

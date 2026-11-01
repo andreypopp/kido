@@ -59,7 +59,7 @@ test: $(KO_BUILD)
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: build-ko build-ko-ocaml test-ko lint-ko bindgen fuzz proofs e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: build-ko build-ko-ocaml test-ko lint-ko probe-ko bindgen fuzz proofs e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -120,8 +120,13 @@ build-ko:
 build-ko-ocaml:
 	dune build @install ko_vt/decode.exe
 
+# The loom models of the ring handshake build with --cfg loom, so they get their own target
+# directory and do not rebuild the workspace's.
+# The server tests start the C ko-pane, which dune builds.
 test-ko:
-	$(CARGO) test --locked --workspace
+	dune build ko_pane/ko-pane
+	KO_PANE_EXE=$(CURDIR)/$(DUNE_DEFAULT)/ko_pane/ko-pane $(CARGO) test --locked --workspace
+	RUSTFLAGS='--cfg loom' $(CARGO) test --locked --release -p ko_pane_wire --target-dir target/loom ring::model
 	KO_CHECK_CONTRACTS=true dune test --force ko_server ko_server/fuzz ko_tui ko_vt ko_pane
 
 lint-ko:
@@ -131,6 +136,14 @@ lint-ko:
 
 bindgen:
 	./scripts/bindgen.sh
+
+# The ring reader under the C ko-pane: BYTES of bench/streams through one pane, with every record
+# counted. It reports throughput, coordinator CPU and lost records; it is not part of verify.
+probe-ko:
+	dune build ko_pane/ko-pane bench/produce.exe
+	$(CARGO) build --locked --release -p ko_server --example ring_probe
+	target/release/examples/ring_probe $(CURDIR)/$(DUNE_DEFAULT)/ko_pane/ko-pane $(CURDIR)/$(DUNE_DEFAULT)/bench/produce.exe \
+		$(or $(BYTES),1073741824) $(addprefix $(CURDIR)/,$(wildcard bench/streams/*.vt))
 
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
 # names another (CI, with its cached build); it never skips
