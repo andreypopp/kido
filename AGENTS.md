@@ -378,8 +378,9 @@ Conventions:
   on macOS, `UnixStream::pair` and `accept` set close-on-exec only
   after they create the descriptor, so a `std::process::Command` in
   another test thread can inherit it and keep a peer open.
-- **loom.** `ko_pane_wire::ring::model` replays the GenMC models of
-  `ko_pane/genmc/` on the real `Reader` under `--cfg loom`. `make
+- **loom.** `ko_pane_wire::ring::model` checks the ring's records
+  and the wakeup handshake on the real `Reader` and `Writer` under
+  `--cfg loom` ("Proved modules (ko)" below). `make
   test-ko` runs them in `target/loom`. loom does not model a `SeqCst`
   access as sequentially consistent, so the model puts a
   `fence(SeqCst)` beside each one (its comment has the issue). The
@@ -637,8 +638,7 @@ Conventions:
 (plans/ko-rust.md, "Rust (ko)" above; rfc/kido-server/p1-mvp.md is
 its design). Its crates: `ko/` (the binary), `ko_server/` (the
 coordinator), `ko_tui/` (the terminal client), `ko_pane/` (the pane
-process; `ko_pane/genmc/` holds the GenMC models, "Proved modules
-(ko)" below), `ko_pane_wire/` (the frame codec and the ring),
+process), `ko_pane_wire/` (the frame codec and the ring),
 `ko_vt/` and `ko_vt_sys/` (libghostty-vt, built by zig from PATH
 out of `third_party/ghostty`), `ko_sys/` (the OS layer),
 `ko_bench/` and `fuzz/`. Beside them are `ko_proofs/` (the F*/Pulse
@@ -1478,21 +1478,21 @@ its comment.
 `View_core` that the OCaml ko extracted. No build uses them now. They
 are the specifications that the Verus stages port (`ko_pane_wire`'s
 ring, `ko_server::delivery`, then `view.rs`), and no job checks them
-(plan decision 111). `ko_proofs/ko_ring_proved.h` (the Karamel
-extraction of the ring) and `ko_proofs/ko_atomic.h` stay as the
-input of the GenMC models below; `ko_pane_wire`'s
-`constants_match_the_proved_ring` test keeps the ring's constants
-equal to that header.
+(plan decision 111).
 
 **The ring indices are sequentially consistent.** The wakeup
 handshake between `head` and `read` is a store-buffering pattern:
 each side stores its index, then loads the other's. Under
 acquire/release, both loads can read the old values, and a wakeup is
 lost. The proof assumes one interleaving, which only `seq_cst` gives.
-The Rust ring's accesses are `SeqCst` ("Atomics" under "Rust (ko)"),
-and its loom models replay the GenMC models. `ko_pane/genmc/` holds
-GenMC models of the extracted C ring (`ko_pane/genmc/run.sh sc|acqrel ring|wakeup`, GenMC
-0.19): `sc` passes both, and `acqrel wakeup` finds the lost wakeup.
+The Rust ring's accesses are `SeqCst` ("Atomics" under "Rust (ko)").
+GenMC 0.19 showed it on the extracted C ring, which is now deleted:
+the ring model passed 17,519 executions with no error, and the wakeup
+model lost a wakeup under acquire/release and none under `seq_cst`.
+The loom models of `ko_pane_wire::ring::model` replace them on the
+Rust code: `records_reach_the_reader_whole_and_in_order`,
+`a_seq_cst_handshake_loses_no_wakeup`, and
+`an_acquire_release_handshake_loses_a_wakeup` (`#[should_panic]`).
 
 ## Review
 

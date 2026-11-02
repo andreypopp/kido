@@ -44,8 +44,7 @@ and 3.2 hold the crates and their modules:
     ko_server/    the coordinator library
     ko_tui/       the thin terminal client library
     ko_pane/      the pane process `ko-pane`: pty, libghostty-vt, the
-                  frame codec of protocol.md section 14; genmc/ the
-                  GenMC models of the ring's atomics
+                  frame codec of protocol.md section 14
     ko_pane_wire/ the frame codec and the ring that both processes
                   share, verified with Verus
     ko_vt/, ko_vt_sys/  libghostty-vt, built by zig, and its safe API;

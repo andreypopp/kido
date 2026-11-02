@@ -1550,17 +1550,6 @@ mod tests {
     }
 
     #[test]
-    fn constants_match_the_proved_ring() {
-        let proved = include_str!("../../ko_proofs/ko_ring_proved.h");
-        assert!(proved.contains(&format!("KoRing_Inv_max_capacity = {MAX_CAPACITY:#x}ULL;")));
-        assert!(proved.contains(&format!("KoRing_Inv_min_capacity = {MIN_CAPACITY}ULL;")));
-        assert!(proved.contains(&format!("fin <= {MAX_HEAD:#x}ULL")));
-        assert!(proved.contains(&format!(
-            "h.hoff < {MAX_OFFSET:#x}ULL && h.hlen < {MAX_LENGTH:#x}ULL"
-        )));
-    }
-
-    #[test]
     fn a_ring_outside_the_capacity_bounds_is_refused() {
         for capacity in [MIN_CAPACITY - 1, MAX_CAPACITY + 1] {
             let error = Reader::create(capacity).unwrap_err();

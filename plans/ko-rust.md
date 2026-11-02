@@ -3,8 +3,11 @@
 Status: plan, 2026-11-01. Branch `ko-rust`, rebased onto `ko` at
 e38b032d. The tree is the OCaml reference at that commit: the poll
 loop, `ko_proofs/`, `ko_pane/genmc/`, `scripts/install-zig.sh` and the
-current `test_e2e_ko/`; every path in this plan is a path of this
-worktree. `~/Workspace/kido-ko` (branch `ko`) holds the same
+current `test_e2e_ko/`; every path in this plan was a path of this
+worktree then. R5 deleted the OCaml ko, the C `ko-pane` and the F*
+build, and `ko_pane/genmc/` went after it (decision 111); a path to
+one of them names the reference, which `~/Workspace/kido-ko` keeps.
+`~/Workspace/kido-ko` (branch `ko`) holds the same
 reference and does not change. The wire protocol does not change
 ([rfc/kido-server/protocol.md](../rfc/kido-server/protocol.md)). The
 Go suite `test_e2e_ko/` is the acceptance oracle.
@@ -132,7 +135,7 @@ R1 forced these decisions:
     sequentially consistent, so without a correction the `SeqCst`
     wakeup model also lost the wakeup; the model puts a
     `fence(SeqCst)` before each `SeqCst` load and after each `SeqCst`
-    store. `ring_mc` runs with
+    store. `records_reach_the_reader_whole_and_in_order` runs with
     preemption bound 5: unbounded, it did not end in 15 minutes.
 38. The spawn of `ko-pane` uses `POSIX_SPAWN_CLOEXEC_DEFAULT` and keeps
     fd 2 through `posix_spawn_file_actions_addinherit_np`, which
@@ -497,9 +500,12 @@ R5 forced these decisions:
      OCaml outputs `pane_core.ml` and `view_core.ml`, `make proofs`,
      `scripts/install-fstar.sh` and CI's `proofs` job. With no
      extracted code in a build, F* verifies nothing that ships, so
-     no job checks the sources. `ko_ring_proved.h` and `ko_atomic.h`
-     stay with `ko_pane/genmc/` as the record of the `seq_cst`
-     evidence that the loom models replay.
+     no job checks the sources. GenMC's models of the extracted C
+     ring went after R5 with `ko_ring_proved.h` and `ko_atomic.h`;
+     their result stays: the ring model ran 17,519 executions with no
+     error, and the wakeup model lost a wakeup under acquire/release
+     and none under `seq_cst`. loom on the Rust ring replaces them
+     (6.5).
 112. With the OCaml ko gone, the bench reference is the Rust ko at
      the R5 commit. A later bench run builds that commit in a
      scratch worktree (`git worktree add --detach /tmp/ko-ref-XXXXXX
@@ -533,10 +539,8 @@ R5 forced these decisions:
 115. Off macOS, `scripts/verify.sh` prints SKIP for the `e2e-ko`
      stage and for `ko-suite` (`make test`, `make e2e-ko`) until
      RL; `make verify-ko` is not run there.
-116. `ko_pane_wire`'s ring test against the C headers keeps only
-     its checks against `ko_proofs/ko_ring_proved.h`
-     (`constants_match_the_proved_ring`), because the header stays
-     as the GenMC models' input (decision 111).
+116. `ko_pane_wire` has no test against a C header: the Verus spec
+     (`ring/spec.rs`) is the one source of the ring's constants.
 
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
@@ -910,8 +914,7 @@ the underscore, so there is one spelling.
                    mirror.ml and usage.ml); bench/*.c and client.py stay
     fuzz/          the cargo-fuzz crate, outside the default members
     ko_proofs/     the reference's F*/Pulse proofs, read as the specs
-                   for Verus; each file goes when its Verus port lands
-    ko_pane/genmc/ the reference's GenMC models of the handshake
+                   for Verus (decision 111)
 
 ### 3.2 Module map
 
@@ -1599,13 +1602,15 @@ branches as well as ko's. The consequences:
 
 ### 6.5 loom
 
-`ko_pane_wire::ring` has a `loom` module under `cfg(loom)` with two
+`ko_pane_wire::ring` has a `model` module under `cfg(loom)` with three
 tests that replay the GenMC models of row 7 on the real `Writer` and
-`Reader` (the atomics go through a `cfg(loom)` alias of `AtomicU64`).
-`ring_mc` is `ring_mc.c`: a writer and a reader thread on a 64-byte
+`Reader` (the atomics go through a `cfg(loom)` alias of `AtomicU64`);
+the GenMC models and the extracted C ring went after R5 (decision
+111). `records_reach_the_reader_whole_and_in_order` replays
+`ring_mc.c`: a writer and a reader thread on a 64-byte
 ring, 5 records of 9 bytes whose payloads are their stream offsets;
-the reader checks every byte once and advances the tail. `wakeup_mc`
-is `wakeup_mc.c`, the handshake with two threads over the three
+the reader checks every byte once and advances the tail.
+`a_seq_cst_handshake_loses_no_wakeup` replays `wakeup_mc.c`, the handshake with two threads over the three
 header atomics and a one-slot "frame sent" flag: the writer commits a record (store `head`,
 load `read`, send a `head` frame if equal to the old head); the reader
 scans (load `head`, store `read`) and then, if no frame arrived, must
@@ -1663,8 +1668,8 @@ Decision 10: Verus writes ko's specs. The state of Verus on
   7). Verus has no weak-memory model, so the acq/rel failure stays a
   loom and GenMC fact (6.5).
 
-**The references** are committed in the reference tree (43440688) and
-so in this tree (see the status line): `ko_proofs/` (F*/Pulse, 4,208
+**The references** are committed in the reference tree (43440688);
+this tree keeps only the `.fst` and `.fsti` sources (decision 111): `ko_proofs/` (F*/Pulse, 4,208
 lines; `make proofs` installs the pinned F* through
 `scripts/install-fstar.sh`, verifies, extracts and compares) and
 `ko_pane/genmc/`.
@@ -2116,10 +2121,7 @@ one session. The attach and resize rows wait for R4.
   `ppx_deriving_qcheck`) and re-lock `dune.lock` with the pinned
   repositories rule of AGENTS.md.
 - `ko_proofs/`: every `.fst` and `.fsti` stays as the specification
-  of the Verus stages (decision 111). `ko_pane/genmc/` stays with
-  `ko_proofs/ko_ring_proved.h` and `ko_atomic.h` as the record of the
-  seq_cst evidence (`ko_pane/genmc/run.sh`), which the loom tests
-  replay. `lib/fs.ml` and `lib/timestamp.ml` stay with
+  of the Verus stages (decision 111). `lib/fs.ml` and `lib/timestamp.ml` stay with
   kido.
 - `verify.sh` loses the two-binary split; `lint.sh` loses the OCaml
   ko rows (QCheck, `Ko_server` doc references) and gains the Rust
