@@ -314,10 +314,16 @@ These requirements are fixed:
   the nightly cargo through `make nightly-cargo ARGS=...`. Without that
   toolchain, or without cargo-fuzz or the `miri` component, the two
   scripts print SKIP and exit 0. Agents do not install it.
-- **Platforms.** The Rust ko builds and is verified on macOS only for
-  now. On Linux, nothing builds or tests ko: the `e2e-ko` stage and
-  `scripts/verify.sh ko-suite` print SKIP, and CI runs no ko step,
-  until stage RL.
+- **Platforms.** The Rust ko builds and is verified on macOS and
+  Linux (glibc 2.34 or newer, for
+  `posix_spawn_file_actions_addclosefrom_np`). Each OS call that
+  differs has its two halves in `ko_sys`, behind `cfg(target_os)`
+  (plan decisions 170 to 172). Outside `ko_sys`, only the C++ runtime
+  that `ko_vt_sys/build.rs` and `build-bench` link (`c++` on macOS,
+  `stdc++` on Linux) and tests that pin a platform's behaviour
+  branch on the platform. On Linux, a read of a unix socket whose peer closed with unread input
+  fails with `ECONNRESET`; `ko_sys::fd::read` returns it as `Ok(0)`,
+  the end of the source.
 - **Dependencies.** The production crates are `libc`, `httparse`,
   `tungstenite` (feature `handshake` only), `serde` (`derive`),
   `serde_json`, `vte` and `clap` (`default-features = false`, with
@@ -374,10 +380,13 @@ Conventions:
   the `ko` binary; the e2e suite does that. `ko_pane/tests/pane.rs` drives
   the `ko-pane` binary over a socketpair and a ring. The `Server` SIGTERM test starts the Rust
   `ko-pane` that `make test-ko` builds and names in `KO_PANE_EXE`. A test starts a process only through
-  `ko_sys::spawn::program`, which uses `POSIX_SPAWN_CLOEXEC_DEFAULT`:
-  on macOS, `UnixStream::pair` and `accept` set close-on-exec only
-  after they create the descriptor, so a `std::process::Command` in
-  another test thread can inherit it and keep a peer open.
+  `ko_sys::spawn::program`, which closes every descriptor but its
+  targets and stderr in the child: `POSIX_SPAWN_CLOEXEC_DEFAULT` on
+  macOS, `posix_spawn_file_actions_addclosefrom_np` above the targets
+  on Linux. On macOS, `UnixStream::pair` and `accept` set
+  close-on-exec only after they create the descriptor, so a
+  `std::process::Command` in another test thread can inherit it and
+  keep a peer open.
 - **The e2e suite** is `ko_e2e/`: one integration-test binary,
   `ko_e2e/tests/e2e/main.rs`, with one module for each area, because
   cargo runs test binaries one after another and the tests of one binary
@@ -562,7 +571,7 @@ Conventions:
   `test_e2e/`: `killpg`, a C `kill(-`, `syscall.Kill`,
   `unix.Kill`, `os.FindProcess` and Python `os.kill`.
 - **Syscalls.** Every own libc call that can return `EINTR` goes
-  through `ko_sys::retry`. An `EINTR` from `poll` is a turn with no
+  through `ko_sys::retry`. An `EINTR` from the loop's wait (`poll`, or `ppoll` on Linux) is a turn with no
   events. A read of zero bytes is the end; `WouldBlock` is "not
   ready". Signal handlers have `SA_RESTART`, but no call relies on it.
 - **The loop.** Every ko process is one thread on `ko_sys::event`,
@@ -586,8 +595,8 @@ Conventions:
   wakes the loop. `ko_vt::Terminal` is `Send` only for this thread,
   and the `Mutex` serializes every call. vte tokenizes the outer
   terminal's input, and `ko_tui::input` translates its events.
-- **Time.** `Mono` is nanoseconds of `CLOCK_UPTIME_RAW`, as
-  `ko_now_ns` reads it. The loop's deadlines are `std::time::Instant`.
+- **Time.** `Mono` is nanoseconds of `CLOCK_UPTIME_RAW` on macOS, as
+  `ko_now_ns` reads it, and of `CLOCK_MONOTONIC` on Linux. The loop's deadlines are `std::time::Instant`.
   Timeouts are `Duration` arguments, not statics.
 - **FFI bindings.** `scripts/bindgen.sh` (`make bindgen`) generates
   `ko_vt_sys/src/bindings.rs` from `third_party/ghostty/include` with
@@ -621,7 +630,8 @@ Conventions:
 - **Miri.** `scripts/miri.sh` (`make miri`) runs the tests of the
   modules without sockets, FFI or processes: `frame`, the ring,
   `ids`, `protocol` and `http`'s head reader. It selects them by
-  name and skips the proptest tests. Under `cfg(miri)`, `ko_sys`'s
+  name and skips the proptest tests and the 16 MiB frame stream,
+  which ran out of memory under Miri in a 6 GiB container. Under `cfg(miri)`, `ko_sys`'s
   `Mapping` is heap memory (`ko_sys/src/mapping/heap.rs`), so the
   ring's writer and reader run on it.
 - **Allocation.** The coordinator allocates nothing on the heap for
@@ -722,7 +732,7 @@ new file, because macOS kills a process whose executable was
 overwritten in place after an earlier run (`Killed: 9`).
 `make e2e-ko` runs `make build-ko` and then every test of `ko_e2e`
 against that `ko`. `scripts/verify.sh ko-suite` (`make test`, the
-`e2e-ko` stage) runs it on macOS and prints SKIP elsewhere.
+`e2e-ko` stage) runs it.
 `make build-bench` builds the C helpers of `bench/` into
 `build/bench/`, beside `ko-bench` in `target/release/`; `bench/run.sh`, `bench/flood.sh`,
 `bench/baselines.sh` and `bench/table.sh` call it. `bench/client.py`
@@ -731,7 +741,7 @@ runs the `ko` that `KO_BIN` names, which measures a reference build
 `build/ko/bin/ko`.
 
 `scripts/install-zig.sh` pins the zig release and its checksums. CI
-installs zig through it on macOS. lint fails
+and `scripts/ci-like/Dockerfile` install zig through it. lint fails
 if the release differs from the `.minimum_zig_version` in
 `third_party/ghostty/build.zig.zon`. A ghostty bump that changes that
 version also changes the script. Every C file of `bench/` starts with
@@ -1213,10 +1223,10 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make verify  scrubbed dune build, dune test --force, full e2e and TypeScript tests (including scripts/lint.sh), and ko's stages: make build-ko, ko's cargo tests, ko's e2e, cargo fmt and clippy, and make verus
     make verify-ko  scrubbed make build-ko, ko's cargo tests, ko's e2e, cargo fmt, clippy and scripts/lint.sh, and make verus
     make verus   cargo verus verify on ko_pane_wire and ko_server with the pinned Verus release, downloaded once into build/verus/
-    make build-ko  the Rust ko's installed layout under build/ko/ (macOS only for now)
+    make build-ko  the Rust ko's installed layout under build/ko/
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe-ko BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
-    make build-bench  the C helpers of bench/ in build/bench/, after build-ko (macOS only)
+    make build-bench  the C helpers of bench/ in build/bench/, after build-ko
     make test    dune test --force, ko's e2e suite and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite
@@ -1241,7 +1251,7 @@ ko, in one run. For ko-only work, the full verification is
 `make verify-ko`. Use the whole `make verify` when the change also
 touches a file that kido shares with ko: the Makefile, `scripts/`,
 CI, `dune-project`, `dune.lock`, a shared library such as `kido_fs`,
-or kido's code. On Linux, ko's stages print SKIP until stage RL.
+or kido's code.
 
 Agents run `make fuzz` only when the user asks. Long fuzz runs occur
 only in CI and never in verify.
@@ -1398,6 +1408,19 @@ It does not cap a plain `--cpus`.
 Use contention for one named failure, not a whole suite.
 Never saturate the host's cores to reproduce a runner failure.
 Other agents work in parallel.
+
+The image also holds the Rust ko's toolchain: rustup at a pinned
+release with its checksums, the toolchain of `rust-toolchain.toml`,
+zig through `scripts/install-zig.sh` and `strace`. Its image tag
+digests `rust-toolchain.toml` and `install-zig.sh` too. `target/`
+and `build/` are named volumes over the bind mount, so a Linux build
+never overwrites the host's macOS outputs. In a linked worktree, the
+script also mounts the main repository's git directory read-only,
+because `ko_server/build.rs` runs git. Linux's ko check is
+`make ci-like ARGS="--cpus 3 --memory 6g -- make verify-ko"`; the
+Rust and zig builds need more than the default 1g. The podman
+machine on Apple silicon runs aarch64 Linux; CI's Ubuntu runner is
+x86_64.
 
 **The e2e harness** (`test_e2e/harness_test.go`) nests two tmux servers.
 The outer server hosts a pty.

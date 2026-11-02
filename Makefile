@@ -141,12 +141,13 @@ bindgen:
 # The C helpers of bench/, built into build/bench/. pty_read and parse link the
 # libghostty-vt that ko_vt_sys/build.rs built (build-ko first).
 BENCH := build/bench
+CXX_LIB := $(if $(filter Darwin,$(shell uname -s)),c++,stdc++)
 BENCH_CC := cc -std=c11 -O2 -Wall -Wextra -Werror
 build-bench: build-ko
 	mkdir -p $(BENCH)
 	set -e; for tool in produce drain wait_master; do $(BENCH_CC) bench/$$tool.c -o $(BENCH)/$$tool; done
 	set -e; lib=$$(ls -t target/release/build/ko_vt_sys-*/out/zig-out/lib/libghostty-vt.a | head -1); \
-		for tool in pty_read parse; do $(BENCH_CC) -Ithird_party/ghostty/include bench/$$tool.c $$lib -lc++ -o $(BENCH)/$$tool; done
+		for tool in pty_read parse; do $(BENCH_CC) -Ithird_party/ghostty/include bench/$$tool.c $$lib -l$(CXX_LIB) -o $(BENCH)/$$tool; done
 
 # ko-bench throughput through one pane: BYTES of bench/streams, every record counted; it fails on a lost
 # record, a gap, an invalid record or another byte total.

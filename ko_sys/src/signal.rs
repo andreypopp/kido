@@ -63,8 +63,8 @@ static PENDING: [AtomicBool; 10] = [const { AtomicBool::new(false) }; 10];
 static PIPE: AtomicI32 = AtomicI32::new(-1);
 
 extern "C" fn to_pipe(number: libc::c_int) {
-    // SAFETY: __error returns the calling thread's errno, which the handler restores.
-    let saved = unsafe { *libc::__error() };
+    // SAFETY: errno is the calling thread's, which the handler restores.
+    let saved = unsafe { *crate::retry::errno() };
     if let Some(signal) = Signal::of_number(number) {
         PENDING[signal as usize].store(true, Ordering::SeqCst);
     }
@@ -75,7 +75,7 @@ extern "C" fn to_pipe(number: libc::c_int) {
         unsafe { libc::write(fd, (&raw const byte).cast(), 1) };
     }
     // SAFETY: as above.
-    unsafe { *libc::__error() = saved };
+    unsafe { *crate::retry::errno() = saved };
 }
 
 #[cfg(any(test, feature = "fuzz"))]

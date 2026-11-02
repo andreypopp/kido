@@ -140,7 +140,6 @@ fn drive<T: Send + 'static>(
         .iter()
         .filter_map(|pid| Pid::new(i64::from(*pid)))
         .filter_map(|pid| process_cpu(pid).ok())
-        .map(|cpu| cpu.time)
         .sum();
     server.stop().map_err(failed)?;
     while server.turn().map_err(failed)? == Status::Running {}
@@ -372,9 +371,8 @@ pub(crate) fn cpu_check() -> Result<(), String> {
     child.wait().map_err(failed)?;
     let children = children_cpu_time().saturating_sub(before);
     println!(
-        "cpu check: proc_pid_rusage as ns={:.3} s, times mach_timebase={:.3} s, getrusage RUSAGE_CHILDREN={:.3} s",
-        cpu.ticks.get() as f64 / 1e9,
-        cpu.time.as_secs_f64(),
+        "cpu check: process_cpu={:.3} s, getrusage RUSAGE_CHILDREN={:.3} s",
+        cpu.as_secs_f64(),
         children.as_secs_f64()
     );
     Ok(())

@@ -16,10 +16,15 @@ fn read(clock: libc::clockid_t) -> Duration {
     )
 }
 
+// CLOCK_UPTIME_RAW is ko_now_ns's clock on macOS.
+#[cfg(target_os = "macos")]
+const MONO: libc::clockid_t = libc::CLOCK_UPTIME_RAW;
+#[cfg(target_os = "linux")]
+const MONO: libc::clockid_t = libc::CLOCK_MONOTONIC;
+
 impl Mono {
     pub fn now() -> Mono {
-        // CLOCK_UPTIME_RAW exists on macOS (ko_now_ns).
-        Mono(u64::try_from(read(libc::CLOCK_UPTIME_RAW).as_nanos()).unwrap_or(u64::MAX))
+        Mono(u64::try_from(read(MONO).as_nanos()).unwrap_or(u64::MAX))
     }
 
     pub fn from_nanos(nanos: u64) -> Mono {
@@ -56,7 +61,7 @@ pub fn children_cpu_time() -> Duration {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::{MachTicks, ProcessCpu, process_cpu};
+pub use macos::process_cpu;
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -74,23 +79,7 @@ mod macos {
         fn mach_timebase_info(info: *mut Timebase) -> libc::c_int;
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct MachTicks(u64);
-
-    impl MachTicks {
-        pub fn get(self) -> u64 {
-            self.0
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct ProcessCpu {
-        pub ticks: MachTicks,
-        pub time: Duration,
-        pub wakeups: u64,
-    }
-
-    pub fn process_cpu(pid: Pid) -> std::io::Result<ProcessCpu> {
+    pub fn process_cpu(pid: Pid) -> std::io::Result<Duration> {
         // SAFETY: an all-zero rusage_info_v2 is valid, and proc_pid_rusage fills it.
         let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
         // SAFETY: info is writable and has the layout of the V2 flavor.
@@ -109,12 +98,46 @@ mod macos {
         unsafe { mach_timebase_info(&mut base) };
         let ticks = info.ri_user_time.saturating_add(info.ri_system_time);
         let nanos = u128::from(ticks) * u128::from(base.numer) / u128::from(base.denom.max(1));
-        Ok(ProcessCpu {
-            ticks: MachTicks(ticks),
-            time: Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX)),
-            wakeups: info
-                .ri_pkg_idle_wkups
-                .saturating_add(info.ri_interrupt_wkups),
-        })
+        Ok(Duration::from_nanos(
+            u64::try_from(nanos).unwrap_or(u64::MAX),
+        ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use linux::process_cpu;
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::io;
+    use std::time::Duration;
+
+    use crate::pid::Pid;
+
+    fn schedstat_time(text: &str) -> Option<Duration> {
+        text.split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+            .map(Duration::from_nanos)
+    }
+
+    pub fn process_cpu(pid: Pid) -> io::Result<Duration> {
+        schedstat_time(&std::fs::read_to_string(format!("/proc/{pid}/schedstat"))?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unreadable schedstat"))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_cpu_time_is_the_first_nanosecond_field_of_schedstat() {
+            assert_eq!(
+                schedstat_time("1500000 220 17\n"),
+                Some(Duration::from_nanos(1_500_000))
+            );
+            assert_eq!(schedstat_time(""), None);
+        }
     }
 }

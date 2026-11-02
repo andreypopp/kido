@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 		bash zsh git curl ca-certificates gnupg \
 		build-essential bison autoconf automake pkg-config \
 		libevent-dev libncurses-dev libutf8proc-dev libpng-dev zlib1g-dev \
-		unzip bubblewrap rsync xz-utils less procps \
+		unzip bubblewrap rsync xz-utils less procps strace \
 	&& curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 	&& apt-get install -y --no-install-recommends nodejs \
 	&& rm -rf /var/lib/apt/lists/*
@@ -67,6 +67,31 @@ RUN cd /tmp/kido-deps && dune build @pkg-install \
 	&& git config --system --add safe.directory /dune-cache/git-repo \
 	&& cd / && rm -rf /tmp/kido-deps && chmod -R a+rwX /dune-cache
 
+# The Rust ko: rustup, pinned like the zig release, installs the toolchain
+# that rust-toolchain.toml names (`rustup toolchain install` reads it from
+# 1.28 on; Debian's rustup is older), and zig builds libghostty-vt for
+# ko_vt_sys/build.rs. Root installs both; the run-time user only reads them,
+# except for the cargo registry.
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:/usr/local/zig:$PATH
+ARG RUSTUP_VERSION=1.29.0
+COPY rust-toolchain.toml /tmp/rust-toolchain/rust-toolchain.toml
+COPY scripts/install-zig.sh /tmp/install-zig/install-zig.sh
+RUN case "$(uname -m)" in \
+		aarch64) triple=aarch64-unknown-linux-gnu sum=9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792 ;; \
+		x86_64) triple=x86_64-unknown-linux-gnu sum=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10 ;; \
+	esac \
+	&& curl -fsSL --connect-timeout 15 --max-time 300 "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/$triple/rustup-init" -o /tmp/rustup-init \
+	&& echo "$sum  /tmp/rustup-init" | sha256sum -c - \
+	&& chmod +x /tmp/rustup-init \
+	&& /tmp/rustup-init -y --profile minimal --default-toolchain none --no-modify-path \
+	&& rm /tmp/rustup-init \
+	&& cd /tmp/rust-toolchain && rustup toolchain install \
+	&& cd / && rm -rf /tmp/rust-toolchain \
+	&& chmod -R a+rwX /usr/local/cargo /usr/local/rustup \
+	&& bash /tmp/install-zig/install-zig.sh /usr/local/zig && rm -rf /tmp/install-zig
+
 # dune's build directory is a sibling of the host's _build inside the
 # bind-mounted checkout, so a Linux build never overwrites it. Relative on
 # purpose: dune 3.24.2's package management dies with "Unexpected external
@@ -75,5 +100,13 @@ ENV DUNE_BUILD_DIR=_build-ci-like
 ENV GOCACHE=/gocache
 ENV GOMODCACHE=/go/pkg/mod
 RUN mkdir -p /gocache /go/pkg/mod /home/ci && chmod 0777 /gocache /go/pkg/mod /home/ci
+
+# cargo's target directory and the build/ outputs (the Rust ko's install layout, the Verus
+# archive, the promoted build/main.exe) are volumes over the bind mount, so a Linux build never
+# overwrites the host's macOS ones.
+# ko_vt_sys/build.rs finds the target directory by cargo's CACHEDIR.TAG, which cargo writes only when it creates the directory.
+RUN mkdir -p /repo/target /repo/build \
+	&& printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > /repo/target/CACHEDIR.TAG \
+	&& chmod -R 0777 /repo/target /repo/build
 
 WORKDIR /repo

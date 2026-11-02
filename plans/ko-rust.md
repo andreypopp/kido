@@ -823,7 +823,41 @@ RW forced these decisions:
      work. `make lint-rs` is cargo fmt and clippy; `make lint-ko`
      adds `scripts/lint.sh`, which `make verify` runs once, in its
      `ts` stage. The stage `build` is always kido's `dune build`, and
-     `build-ko` is ko's. Off macOS, every ko stage prints SKIP.
+     `build-ko` is ko's. Off macOS, every ko stage printed SKIP
+     until RL.
+170. `ko_sys::fd::read` returns `ECONNRESET` as `Ok(0)` on both
+     platforms (row 44), in the one read that every source uses, so
+     `ko_tui`'s wire drops its own reset case. The e2e case of
+     `hostile_clients_do_not_affect_others` (a client that reads one
+     byte of a response and closes) can show only that the server
+     survives, because a reset and an EOF look the same from outside;
+     the `ko_sys` unit tests show that Linux resets the read and
+     that `fd::read` and `Poll::read` end the source.
+171. The Linux ring is a `memfd_create` descriptor with
+     `MFD_CLOEXEC | MFD_ALLOW_SEALING`, sealed with `F_SEAL_SHRINK`,
+     `F_SEAL_GROW` and `F_SEAL_SEAL` after its `ftruncate`: the
+     size that both processes map can then never change, and no
+     name exists to race on. macOS keeps `shm_open` with an
+     unlinked name and has no seals.
+172. On Linux, `spawn::program` closes the descriptors above its
+     targets with `posix_spawn_file_actions_addclosefrom_np` (glibc
+     2.34), the counterpart of macOS's
+     `POSIX_SPAWN_CLOEXEC_DEFAULT`; Linux's std opens its sockets
+     close-on-exec atomically, so the race that the macOS flag
+     closes does not exist there.
+173. `scripts/ci-like.sh` keeps `target/` and `build/` in named
+     volumes over the bind mount, as dune's build directory already
+     was, so the container never overwrites the host's macOS
+     outputs; its image installs rustup at a pinned release with
+     checksums, the toolchain of `rust-toolchain.toml` and zig.
+174. The idle-wakeup row of section 7's bench table is
+     `bench/client.py idle`: `sample` on macOS, `strace -c -f` on
+     the coordinator on Linux, 10 s with three idle panes and an
+     attached client. `no_idle_wakeups` reads the CPU time from
+     `/proc/<pid>/schedstat` on Linux.
+175. Open, after RL: the user wants CI's Linux job in a Debian trixie
+     container, as `scripts/ci-like.sh` runs; RL keeps
+     `ubuntu-latest`.
 
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
@@ -1689,7 +1723,7 @@ jobs and their time budgets:
 | job | runs | about |
 |---|---|---|
 | fuzz | `make fuzz TARGET=t TIME=600` in one matrix job for each target of `scripts/fuzz.sh` (`frame`, `control`, `ring`, `loop`, `head`, `http`, `decode`, `frames`; R4 adds `client` and `ws`), all on cargo-fuzz | 60 min |
-| miri | `scripts/miri.sh` (6.6) | 15 min |
+| miri | `scripts/miri.sh` (6.6) | 60 min, unmeasured on CI (RL) |
 
 A finding fails its job and uploads the artifact (the libFuzzer
 crash file, the proptest regression, the Miri report). The fix lands
@@ -1751,7 +1785,7 @@ inline test of the same meaning; "property" is a proptest module;
 | 41 | `snapshot_done` in request order | 43440688 | a `snapshot_done` for a request that still reads its slices ends that request as incomplete, because `ko-pane` ended it without its last slice, and the pane stays open; a `snapshot_done` for any other request is ignored (`Pane_core.fst`, `snapshot_done`) | `pane_proc.rs` | unit: a `snapshot_done` for a reading request ends it incomplete, and one for another request changes nothing; RV2 proves the order (6.7) |
 | 42 | run-time contract checks | 43440688 | the postconditions that run-time state can show (the ring's, the connection's batch result, the delivery contracts) are checked in tests and fuzz runs and cost nothing in release | `debug_assert!` at the same points as the reference's `Contract.check` (`ring.rs`, `conn.rs`, `pane_proc.rs`); `make test-ko` and cargo-fuzz build with debug assertions, the release profile without | the unit and fuzz runs themselves; a broken contract panics with the contract's name |
 | 43 | the pager runs outside ko's alternate screen | 37ea03a8 | before `$PAGER` runs, the client leaves the alternate screen (and restores the outer modes), and enters it again after | `ko_tui/client.rs`, `modes.rs` | Go `TestClientHistoryAndAlternateScreen` |
-| 44 | `ECONNRESET` is a close | 37ea03a8 | on Linux a unix socket whose peer closed with unread input reads `ECONNRESET`; ko treats it as the end of the source, as `Ok(0)` | `ko_sys::event`'s read, `wire.rs` | Go `TestHostileClientsDoNotAffectOthers` on Linux (RL) |
+| 44 | `ECONNRESET` is a close | 37ea03a8 | on Linux a unix socket whose peer closed with unread input reads `ECONNRESET`; ko treats it as the end of the source, as `Ok(0)` | `ko_sys::fd::read` (decision 170) | `hostile_clients_do_not_affect_others` on Linux and the `ko_sys` unit tests (RL) |
 
 Rows 34 to 44 come from the reference's commits after 93d03095
 (68232448, 4a7ea19b, 43440688, 37ea03a8). Every row now has a Rust home. Until the cut, the C `ko-pane` keeps
@@ -2545,6 +2579,20 @@ build and pass on Linux.
   of `ko-rust` (decision 27), which measures the job time; the ko e2e suite of that time passes on
   Ubuntu, `TestHostileClientsDoNotAffectOthers` with its
   `ECONNRESET` case included.
+- Result (2026-11-02): in `scripts/ci-like.sh` (Debian trixie,
+  aarch64, `--cpus 3 --memory 6g`), `make verify-ko` passes every
+  stage: build-ko, unit-ko, e2e-ko, lint and verus (`ko_pane_wire`
+  136 obligations and `ko_server` 81, 0 errors, with Linux's Verus
+  archive). `strace -c -f` on the idle coordinator recorded no
+  system call in 10 s; the bench fails unless strace reports that it
+  attached and exits normally. The fuzz build compiles on Linux. Miri passes
+  on Linux once it skips the proptest tests, which took 742 s, and the
+  16 MiB frame-stream test, which Miri's memory use killed in 6 GiB:
+  `ko_pane_wire` in 1 s and `ko_server` in 29 s of test time. Its boxes
+  (1500 s) and the nightly limits stay unmeasured until CI runs.
+  CI's `test` job limit is 45 minutes, with a limit on every step. Decisions 170
+  to 175 came from RL. CI on both runners is checked on the first
+  push (decision 27).
 
 ### Totals
 

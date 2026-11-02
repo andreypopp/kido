@@ -9,6 +9,18 @@ pub fn retry<T>(mut call: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn errno() -> *mut libc::c_int {
+    // SAFETY: __error has no preconditions.
+    unsafe { libc::__error() }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn errno() -> *mut libc::c_int {
+    // SAFETY: __errno_location has no preconditions.
+    unsafe { libc::__errno_location() }
+}
+
 pub(crate) fn check(result: libc::c_int) -> io::Result<libc::c_int> {
     if result == -1 {
         Err(io::Error::last_os_error())

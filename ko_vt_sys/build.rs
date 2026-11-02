@@ -38,5 +38,10 @@ fn main() {
         out.join("zig-out/lib").display()
     );
     println!("cargo:rustc-link-lib=static=ghostty-vt");
-    println!("cargo:rustc-link-lib=c++");
+    let cxx = if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
+        "c++"
+    } else {
+        "stdc++"
+    };
+    println!("cargo:rustc-link-lib={cxx}");
 }

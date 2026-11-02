@@ -186,7 +186,7 @@ macro_rules! again {
     ($call:expr) => {
         loop {
             let result = $call;
-            if result >= 0 || *libc::__error() != libc::EINTR {
+            if result >= 0 || *crate::retry::errno() != libc::EINTR {
                 break result;
             }
         }
@@ -220,7 +220,7 @@ unsafe fn child(prepared: &Prepared) -> ! {
                     Step::Exec
                 }
             };
-        let [e0, e1, e2, e3] = (*libc::__error()).to_le_bytes();
+        let [e0, e1, e2, e3] = (*crate::retry::errno()).to_le_bytes();
         let record = [step as u8, e0, e1, e2, e3, 0, 0, 0];
         let mut sent = 0;
         while sent < RECORD {
@@ -231,7 +231,7 @@ unsafe fn child(prepared: &Prepared) -> ! {
             );
             if wrote > 0 {
                 sent += wrote as usize;
-            } else if wrote == 0 || *libc::__error() != libc::EINTR {
+            } else if wrote == 0 || *crate::retry::errno() != libc::EINTR {
                 break;
             }
         }
@@ -280,6 +280,8 @@ fn report(read: &OwnedFd) -> Result<Option<(Step, io::Error)>, Setup> {
 pub fn spawn(size: Winsize, cwd: &Path, argv: &[Vec<u8>], env: &[Vec<u8>]) -> Result<Pty, Setup> {
     let (mut master, mut slave) = (-1, -1);
     let mut winsize = size.raw();
+    // openpty takes a *mut winsize on macOS and a *const on Linux.
+    let winsize = &raw mut winsize;
     let mut attempts = 0;
     // macOS openpty fails now and then with errno -6 when other processes allocate ptys at the
     // same moment; the next call succeeds.
@@ -292,7 +294,7 @@ pub fn spawn(size: Winsize, cwd: &Path, argv: &[Vec<u8>], env: &[Vec<u8>]) -> Re
                 &mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut winsize,
+                winsize,
             )
         });
         match opened {

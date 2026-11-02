@@ -408,6 +408,7 @@ fn client_modes_before_attach_and_unattached_da1() {
     // The pane reads whatever the client forwarded since its last read as one input; waiting for
     // each line's own count keeps the inputs apart. The client forwards a focus-in on attach.
     let lines_with = |needle: &str| o.screen().matches(needle).count();
+    o.contains(&input(FOCUS_IN));
     o.raw(FOCUS_OUT);
     o.contains(&input(FOCUS_OUT));
     let focus_ins = lines_with(&input(FOCUS_IN));

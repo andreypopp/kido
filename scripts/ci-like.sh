@@ -102,7 +102,7 @@ fi
 
 kido_repo_root=$(cd "$script_dir/.." && pwd)
 tmux_build_key=$("$script_dir/install-tmux-fork.sh" --print-build-key)
-dockerfile_digest=$(cat "$script_dir/ci-like/Dockerfile" "$kido_repo_root/dune-project" "$kido_repo_root/dune-workspace" "$kido_repo_root"/dune.lock/* | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12)
+dockerfile_digest=$(cat "$script_dir/ci-like/Dockerfile" "$script_dir/install-zig.sh" "$kido_repo_root/rust-toolchain.toml" "$kido_repo_root/dune-project" "$kido_repo_root/dune-workspace" "$kido_repo_root"/dune.lock/* | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12)
 image="kido-ci-like:$tmux_build_key-$dockerfile_digest"
 
 if ! "$podman" image exists "$image" 2>/dev/null; then
@@ -123,6 +123,14 @@ if [ "$("$podman" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "t
 else
 	repo_owner=$(stat -f '%u:%g' "$repo_root" 2>/dev/null || stat -c '%u:%g' "$repo_root")
 	userns_args=(--user "$repo_owner")
+fi
+
+# A linked worktree's .git file names a directory of the main repository, which the
+# container needs for git (ko_server/build.rs reads the ghostty pin through it).
+git_args=()
+if [ -f "$repo_root/.git" ]; then
+	git_common=$(cd "$(sed -n 's/^gitdir: //p' "$repo_root/.git")/../.." && pwd)
+	git_args=(-v "$git_common:$git_common:ro")
 fi
 
 env_args=()
@@ -184,9 +192,12 @@ status=0
 	-e HOME=/home/ci \
 	"${env_args[@]}" \
 	-v "$repo_root:/repo:Z" \
+	"${git_args[@]}" \
 	-v kido-ci-like-gomodcache:/go/pkg/mod \
 	-v kido-ci-like-gocache:/gocache \
 	-v kido-ci-like-dune-build:/dune-build \
+	-v kido-ci-like-target:/repo/target \
+	-v kido-ci-like-build:/repo/build \
 	-w /repo \
 	"$image" \
 	"$@" || status=$?

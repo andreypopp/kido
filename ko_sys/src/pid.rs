@@ -89,13 +89,11 @@ impl Pid {
                 )
             })
         })?;
-        if info.si_pid != self.0 {
+        let (child, status) = sigchld(&info);
+        if child != self.0 {
             return Ok(None);
         }
-        Ok(Some(Exit::new(
-            info.si_code == libc::CLD_EXITED,
-            info.si_status,
-        )))
+        Ok(Some(Exit::new(info.si_code == libc::CLD_EXITED, status)))
     }
 
     pub fn try_wait(self) -> io::Result<Waited> {
@@ -125,18 +123,35 @@ impl Pid {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn sigchld(info: &libc::siginfo_t) -> (libc::pid_t, i32) {
+    (info.si_pid, info.si_status)
+}
+
+#[cfg(target_os = "linux")]
+fn sigchld(info: &libc::siginfo_t) -> (libc::pid_t, i32) {
+    // SAFETY: info came from a successful waitid, which fills these union members.
+    unsafe { (info.si_pid(), info.si_status()) }
+}
+
 #[cfg(feature = "e2e")]
 const MAX_HOPS: usize = 64;
 
 #[cfg(feature = "e2e")]
 impl Pid {
     pub fn parent(self) -> Option<Pid> {
-        Pid::new(i64::from(bsdinfo(self)?.pbi_ppid))
+        Pid::new(i64::from(identity(self)?.ppid))
     }
 
+    #[cfg(target_os = "macos")]
     pub fn has_ended(self) -> bool {
         // SZOMB, <sys/proc.h>
         bsdinfo(self).is_none_or(|info| info.pbi_status == 5)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn has_ended(self) -> bool {
+        proc::read(self).is_none_or(|stat| stat.zombie)
     }
 
     fn descends_from(self, root: Pid) -> bool {
@@ -173,6 +188,10 @@ struct Identity {
     start: u64,
 }
 
+#[cfg(target_os = "linux")]
+mod proc;
+
+#[cfg(target_os = "macos")]
 fn bsdinfo(pid: Pid) -> Option<libc::proc_bsdinfo> {
     // SAFETY: an all-zero proc_bsdinfo is valid.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -190,6 +209,12 @@ fn bsdinfo(pid: Pid) -> Option<libc::proc_bsdinfo> {
     (filled == size).then_some(info)
 }
 
+#[cfg(target_os = "linux")]
+fn identity(pid: Pid) -> Option<Identity> {
+    Some(proc::read(pid)?.identity)
+}
+
+#[cfg(target_os = "macos")]
 fn identity(pid: Pid) -> Option<Identity> {
     let info = bsdinfo(pid)?;
     // SAFETY: getsid has no preconditions.

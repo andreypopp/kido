@@ -41,7 +41,10 @@ if [ "${1:-}" = "fetch" ]; then
 		Linux-aarch64 | Linux-arm64) platform=arm64-linux sum=55d0179000c2c78732825d47a8b8fed1aa4afbe6d24896acc6e060eddcd338e4 ;;
 		*) echo "verus.sh: no Verus release for $(uname -s) $(uname -m)" >&2; exit 1 ;;
 	esac
-	workdir=$(mktemp -d)
+	# Beside the prefix, so that the final mv is a rename: SELinux (the ci-like container) keeps the
+	# label of another filesystem's directory on a copy and then denies access to it.
+	mkdir -p "$(dirname "$prefix")"
+	workdir=$(mktemp -d "$(dirname "$prefix")/.fetch-XXXXXX")
 	trap 'rm -rf "$workdir"' EXIT INT TERM
 	archive="$workdir/verus.zip"
 	curl -fL --connect-timeout 15 --max-time 600 \
@@ -54,7 +57,6 @@ if [ "${1:-}" = "fetch" ]; then
 	unzip -q "$archive" -d "$workdir/unpacked"
 	"$workdir/unpacked/verus-$platform/verus" --version | grep -q "Version: $release"
 	rm -rf "$prefix"
-	mkdir -p "$(dirname "$prefix")"
 	mv "$workdir/unpacked/verus-$platform" "$prefix"
 	echo "installed Verus $release into $prefix" >&2
 	exit 0

@@ -143,10 +143,7 @@ impl Read for Io<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match self.source.as_mut() {
             None => fd::read(self.stream.as_fd(), buffer),
-            Some(source) => match source.read(buffer) {
-                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => Ok(0),
-                read => read,
-            },
+            Some(source) => source.read(buffer),
         }
     }
 }

@@ -243,9 +243,40 @@ pub struct Poll {
     arms: u64,
 }
 
-fn ceil_millis(left: Duration) -> libc::c_int {
-    let millis = left.as_nanos().div_ceil(1_000_000);
-    libc::c_int::try_from(millis).unwrap_or(libc::c_int::MAX)
+// macOS has no ppoll, so a sub-millisecond deadline rounds up to a whole millisecond.
+#[cfg(target_os = "macos")]
+fn wait_for(
+    fds: &mut [libc::pollfd],
+    count: libc::nfds_t,
+    timeout: Option<Duration>,
+) -> io::Result<libc::c_int> {
+    let millis = timeout.map_or(-1, |left| {
+        let millis = left.as_nanos().div_ceil(1_000_000);
+        libc::c_int::try_from(millis).unwrap_or(libc::c_int::MAX)
+    });
+    // SAFETY: fds holds count initialized pollfd entries.
+    check(unsafe { libc::poll(fds.as_mut_ptr(), count, millis) })
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for(
+    fds: &mut [libc::pollfd],
+    count: libc::nfds_t,
+    timeout: Option<Duration>,
+) -> io::Result<libc::c_int> {
+    let limit = timeout.map(|left| libc::timespec {
+        tv_sec: libc::time_t::try_from(left.as_secs()).unwrap_or(libc::time_t::MAX),
+        tv_nsec: libc::c_long::from(left.subsec_nanos()),
+    });
+    // SAFETY: fds holds count initialized pollfd entries; the timeout is null or one timespec.
+    check(unsafe {
+        libc::ppoll(
+            fds.as_mut_ptr(),
+            count,
+            limit.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
+            std::ptr::null(),
+        )
+    })
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -436,15 +467,12 @@ impl Poll {
         let next = self.next_due();
         if !self.fds.is_empty() || (mode == Mode::Wait && next.is_some()) {
             let timeout = match (mode, next) {
-                (Mode::Peek, _) => 0,
-                (Mode::Wait, None) => -1,
-                (Mode::Wait, Some(due)) => {
-                    ceil_millis(due.saturating_duration_since(Instant::now()))
-                }
+                (Mode::Peek, _) => Some(Duration::ZERO),
+                (Mode::Wait, None) => None,
+                (Mode::Wait, Some(due)) => Some(due.saturating_duration_since(Instant::now())),
             };
             let count = libc::nfds_t::try_from(self.fds.len()).unwrap_or(libc::nfds_t::MAX);
-            // SAFETY: fds holds count initialized pollfd entries.
-            match check(unsafe { libc::poll(self.fds.as_mut_ptr(), count, timeout) }) {
+            match wait_for(&mut self.fds, count, timeout) {
                 Ok(found) => self.collect(found, events),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
@@ -580,6 +608,19 @@ mod tests {
             turns += 1;
         }
         assert_eq!(turns, 1);
+    }
+
+    #[test]
+    fn a_peer_reset_is_the_end_of_the_source() {
+        let (mut a, b) = UnixStream::pair().unwrap();
+        a.set_nonblocking(true).unwrap();
+        a.write_all(b"unread").unwrap();
+        drop(b);
+        let mut poll = Poll::new();
+        let token = poll.watch(a.as_fd(), Interest::Read);
+        let read = poll.read(token, a.as_fd(), &mut [0; 8], &mut Reads::new());
+        assert_eq!(read.unwrap(), Some(Read::End));
+        assert_eq!(poll.interest_of(token), Interest::Idle);
     }
 
     #[test]

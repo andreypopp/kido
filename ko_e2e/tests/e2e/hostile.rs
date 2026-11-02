@@ -72,6 +72,23 @@ fn hostile_clients_do_not_affect_others() {
         good.output(&format!("alive{i}"));
     }
 
+    // A client that closes with a response unread makes Linux answer the server's next read of
+    // that connection with ECONNRESET, which is the end of the connection like EOF.
+    let mut conn = s.dial().unwrap();
+    within(&conn, Instant::now() + DEADLINE);
+    conn.write_all(format!("GET /version HTTP/1.1\r\nHost: ko\r\n{head}\r\n").as_bytes())
+        .unwrap();
+    assert_eq!(conn.read(&mut [0u8; 1]).unwrap(), 1);
+    drop(conn);
+    assert!(
+        s.child.wait(Duration::ZERO).is_none(),
+        "server exited after a client reset: {}",
+        s.log()
+    );
+    s.request("GET", "/version", None, 200);
+    good.type_text("alive-reset");
+    good.output("alive-reset");
+
     let grid = |cols: u32, rows: u32| json!({"cols": cols, "rows": rows, "cell_px": {"width": 65535, "height": 65535}});
     let hello = |cols: u32, rows: u32| {
         s.hello(Hello {

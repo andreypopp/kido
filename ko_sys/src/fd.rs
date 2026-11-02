@@ -6,10 +6,15 @@ use std::time::Duration;
 use crate::retry::{check, check_size, retry};
 
 pub fn read(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> io::Result<usize> {
-    retry(|| {
+    let read = retry(|| {
         // SAFETY: buffer is writable for its length, and fd is open for the borrow.
         check_size(unsafe { libc::read(fd.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) })
-    })
+    });
+    match read {
+        // Linux resets a unix socket whose peer closed with unread input; macOS reports EOF.
+        Err(error) if error.raw_os_error() == Some(libc::ECONNRESET) => Ok(0),
+        read => read,
+    }
 }
 
 pub fn write(fd: BorrowedFd<'_>, bytes: &[u8]) -> io::Result<usize> {
@@ -116,5 +121,32 @@ impl Queue {
         }
         self.clear();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    fn reset_pair() -> UnixStream {
+        let (mut a, b) = UnixStream::pair().unwrap();
+        a.write_all(b"unread").unwrap();
+        drop(b);
+        a
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_peer_that_closed_with_unread_input_resets_a_unix_socket() {
+        let error = std::io::Read::read(&mut reset_pair(), &mut [0; 8]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+    }
+
+    #[test]
+    fn a_reset_is_the_end_of_the_source() {
+        let a = reset_pair();
+        assert_eq!(read(a.as_fd(), &mut [0; 8]).unwrap(), 0);
     }
 }

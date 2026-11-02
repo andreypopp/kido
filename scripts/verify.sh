@@ -40,22 +40,11 @@ verus() {
   rm -f "$log"
   return "$rc"
 }
-# The Rust ko builds on macOS only until stage RL.
-ko_platform() {
-  [[ $(uname -s) == Darwin ]] && return 0
-  echo 'SKIP: the Rust ko builds on macOS only'
-  return 77
-}
-ko_stage() {
-  ko_platform || return
-  "$@"
-}
 ko_suite() {
-  ko_platform || return
   make e2e-ko E2E_KO="${E2E_KO:-}"
 }
 case ${1:-verify} in
-  ko-suite) ko_suite; case $? in 0|77) ;; *) status=1 ;; esac ;;
+  ko-suite) ko_suite || status=1 ;;
   flake)
     [[ -n ${RUN:-} && ${COUNT:-20} =~ ^[1-9][0-9]*$ ]] || { echo 'flake requires RUN and a positive COUNT' >&2; exit 1; }
     E2E=$RUN COUNT=${COUNT:-20} stage e2e e2e
@@ -66,13 +55,13 @@ case ${1:-verify} in
     for name in ${STAGES:-$default}; do
       case $name in
         build) stage build dune build ;;
-        build-ko) stage build-ko ko_stage make build-ko ;;
+        build-ko) stage build-ko make build-ko ;;
         unit) stage unit dune test --force ;;
         e2e) stage e2e e2e ;;
-        unit-ko) stage unit-ko ko_stage make test-ko ;;
-        lint) stage lint ko_stage make lint-ko ;;
-        lint-rs) stage lint-rs ko_stage make lint-rs ;;
-        verus) stage verus ko_stage verus ;;
+        unit-ko) stage unit-ko make test-ko ;;
+        lint) stage lint make lint-ko ;;
+        lint-rs) stage lint-rs make lint-rs ;;
+        verus) stage verus verus ;;
         e2e-ko) stage e2e-ko ko_suite ;;
         ts) stage ts ./scripts/test-ts.sh ;;
         *) echo "Unknown stage: $name" >&2; status=1 ;;

@@ -1064,7 +1064,13 @@ mod tests {
             text: "\u{e5}".to_owned(),
             composing: false,
         };
-        assert_eq!(vt.encode_key(&alt_a).unwrap(), b"\x1ba");
+        // ghostty's legacy encoder drops Option's composed text only when it is built for macOS.
+        let alt_a_bytes: &[u8] = if cfg!(target_os = "macos") {
+            b"\x1ba"
+        } else {
+            b"\x1b\xc3\xa5"
+        };
+        assert_eq!(vt.encode_key(&alt_a).unwrap(), alt_a_bytes);
         let left = Mouse {
             action: MouseAction::Press,
             button: MouseButton::Left,

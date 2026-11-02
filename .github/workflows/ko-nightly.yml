@@ -16,31 +16,37 @@ jobs:
       targets: ${{ steps.list.outputs.targets }}
     steps:
       - name: Checkout
+        timeout-minutes: 5
         uses: actions/checkout@v4
 
       - name: List the fuzz targets
+        timeout-minutes: 1
         id: list
         run: echo "targets=$(scripts/fuzz.sh --list | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
 
   fuzz:
     needs: targets
     timeout-minutes: 40
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [macos-latest, ubuntu-latest]
         target: ${{ fromJSON(needs.targets.outputs.targets) }}
     steps:
       - name: Checkout
+        timeout-minutes: 5
         uses: actions/checkout@v4
         with:
           submodules: true
 
       - name: Resolve zig key
+        timeout-minutes: 1
         id: zig
         run: echo "key=$(./scripts/install-zig.sh --print-key)" >> "$GITHUB_OUTPUT"
 
       - name: Cache zig
+        timeout-minutes: 5
         id: zig-cache
         uses: actions/cache@v4
         with:
@@ -53,7 +59,20 @@ jobs:
         run: ./scripts/install-zig.sh "$HOME/zig"
 
       - name: Put zig on PATH
+        timeout-minutes: 1
         run: echo "$HOME/zig" >> "$GITHUB_PATH"
+
+      - name: Resolve ghostty pin
+        timeout-minutes: 1
+        id: ghostty
+        run: echo "pin=$(git ls-files -s third_party/ghostty | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache libghostty-vt
+        timeout-minutes: 5
+        uses: actions/cache@v4
+        with:
+          path: target/fuzz/zig-cache
+          key: zig-cache-fuzz-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
 
       - name: Install the Rust toolchain
         timeout-minutes: 5
@@ -66,6 +85,7 @@ jobs:
           rustup toolchain install "$NIGHTLY" --profile minimal
 
       - name: Cache crates
+        timeout-minutes: 5
         uses: actions/cache@v4
         with:
           path: |
@@ -86,18 +106,24 @@ jobs:
         run: make fuzz TARGET="${{ matrix.target }}" TIME=600
 
       - name: Upload the findings
+        timeout-minutes: 5
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-findings-${{ matrix.target }}
+          name: fuzz-findings-${{ matrix.os }}-${{ matrix.target }}
           path: target/fuzz-artifacts/
           if-no-files-found: ignore
 
   miri:
-    timeout-minutes: 30
-    runs-on: macos-latest
+    timeout-minutes: 75
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
     steps:
       - name: Checkout
+        timeout-minutes: 5
         uses: actions/checkout@v4
         with:
           submodules: true
@@ -113,6 +139,7 @@ jobs:
           rustup toolchain install "$NIGHTLY" --profile minimal --component miri --component rust-src
 
       - name: Cache crates
+        timeout-minutes: 5
         uses: actions/cache@v4
         with:
           path: |
@@ -126,10 +153,12 @@ jobs:
 
       # The ko_vt crate is a dependency of ko_server's dev tests only; Miri builds it too, so zig is needed.
       - name: Resolve zig key
+        timeout-minutes: 1
         id: zig
         run: echo "key=$(./scripts/install-zig.sh --print-key)" >> "$GITHUB_OUTPUT"
 
       - name: Cache zig
+        timeout-minutes: 5
         id: zig-cache
         uses: actions/cache@v4
         with:
@@ -142,16 +171,30 @@ jobs:
         run: ./scripts/install-zig.sh "$HOME/zig"
 
       - name: Put zig on PATH
+        timeout-minutes: 1
         run: echo "$HOME/zig" >> "$GITHUB_PATH"
 
+      - name: Resolve ghostty pin
+        timeout-minutes: 1
+        id: ghostty
+        run: echo "pin=$(git ls-files -s third_party/ghostty | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache libghostty-vt
+        timeout-minutes: 5
+        uses: actions/cache@v4
+        with:
+          path: target/miri/zig-cache
+          key: zig-cache-miri-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
+
       - name: Miri
-        timeout-minutes: 15
+        timeout-minutes: 60
         run: make miri 2>&1 | tee miri.log; exit "${PIPESTATUS[0]}"
 
       - name: Upload the report
+        timeout-minutes: 5
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: miri-report
+          name: miri-report-${{ matrix.os }}
           path: miri.log
           if-no-files-found: ignore

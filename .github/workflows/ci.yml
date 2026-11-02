@@ -11,7 +11,7 @@ env:
 
 jobs:
   test:
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -19,19 +19,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
+        timeout-minutes: 5
         uses: actions/checkout@v4
         with:
           submodules: true
 
-      # ko_vt_sys/build.rs builds libghostty-vt with zig. The Rust ko builds
-      # on macOS only for now.
+      # ko_vt_sys/build.rs builds libghostty-vt with zig.
       - name: Resolve zig key
-        if: runner.os == 'macOS'
+        timeout-minutes: 1
         id: zig
         run: echo "key=$(./scripts/install-zig.sh --print-key)" >> "$GITHUB_OUTPUT"
 
       - name: Cache zig
-        if: runner.os == 'macOS'
+        timeout-minutes: 5
         id: zig-cache
         uses: actions/cache@v4
         with:
@@ -39,23 +39,22 @@ jobs:
           key: zig-${{ runner.os }}-${{ runner.arch }}-${{ steps.zig.outputs.key }}
 
       - name: Install zig
-        if: runner.os == 'macOS' && steps.zig-cache.outputs.cache-hit != 'true'
+        if: steps.zig-cache.outputs.cache-hit != 'true'
         timeout-minutes: 5
         run: ./scripts/install-zig.sh "$HOME/zig"
 
       - name: Put zig on PATH
-        if: runner.os == 'macOS'
+        timeout-minutes: 1
         run: echo "$HOME/zig" >> "$GITHUB_PATH"
 
       # The runner images ship rustup; this installs the toolchain that
-      # rust-toolchain.toml pins. The Rust ko builds on macOS only for now.
+      # rust-toolchain.toml pins.
       - name: Install the Rust toolchain
-        if: runner.os == 'macOS'
         timeout-minutes: 5
         run: rustup toolchain install
 
       - name: Cache crates
-        if: runner.os == 'macOS'
+        timeout-minutes: 5
         uses: actions/cache@v4
         with:
           path: |
@@ -65,31 +64,30 @@ jobs:
 
       # ko_vt_sys/build.rs keeps zig's caches here for every cargo profile.
       - name: Resolve ghostty pin
-        if: runner.os == 'macOS'
+        timeout-minutes: 1
         id: ghostty
         run: echo "pin=$(git ls-files -s third_party/ghostty | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
 
       - name: Cache libghostty-vt
-        if: runner.os == 'macOS'
+        timeout-minutes: 5
         uses: actions/cache@v4
         with:
           path: target/zig-cache
           key: zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
 
       - name: Download crates
-        if: runner.os == 'macOS'
         timeout-minutes: 5
         run: cargo fetch --locked
 
       # The Verus release archive (452 MB for arm64 macOS, 1.4 GB unpacked) that
       # `make verus` uses, keyed by the release in scripts/verus.sh.
       - name: Resolve Verus key
-        if: runner.os == 'macOS'
+        timeout-minutes: 1
         id: verus
         run: echo "key=$(./scripts/verus.sh --print-key)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Verus
-        if: runner.os == 'macOS'
+        timeout-minutes: 5
         id: verus-cache
         uses: actions/cache@v4
         with:
@@ -97,7 +95,7 @@ jobs:
           key: verus-${{ runner.os }}-${{ runner.arch }}-${{ steps.verus.outputs.key }}
 
       - name: Fetch Verus
-        if: runner.os == 'macOS' && steps.verus-cache.outputs.cache-hit != 'true'
+        if: steps.verus-cache.outputs.cache-hit != 'true'
         timeout-minutes: 10
         run: ./scripts/verus.sh install "$PWD/build/verus/${{ steps.verus.outputs.key }}"
 
@@ -143,11 +141,13 @@ jobs:
         run: brew install libevent ncurses utf8proc libpng automake autoconf pkg-config
 
       - name: Resolve tmux fork build key
+        timeout-minutes: 1
         id: tmux-fork
         run: |
           build_key=$(./scripts/install-tmux-fork.sh --print-build-key)
           echo "build-key=$build_key" >> "$GITHUB_OUTPUT"
       - name: Restore tmux fork build
+        timeout-minutes: 5
         id: tmux-cache
         uses: actions/cache/restore@v4
         with:
@@ -155,10 +155,12 @@ jobs:
           key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.build-key }}
 
       - name: Build and install tmux fork
+        timeout-minutes: 20
         if: steps.tmux-cache.outputs.cache-hit != 'true'
         run: ./scripts/install-tmux-fork.sh "$HOME/tmux-side"
 
       - name: Save tmux fork build
+        timeout-minutes: 5
         if: steps.tmux-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -166,6 +168,7 @@ jobs:
           key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.build-key }}
 
       - name: Check tmux fork
+        timeout-minutes: 1
         run: $HOME/tmux-side/bin/kido-tmux -V
 
       # test-ts.sh skips cleanly on a node it cannot use, and a runner's
@@ -180,17 +183,21 @@ jobs:
           node-version: '24'
 
       - name: Build
+        timeout-minutes: 20
         run: dune build
 
       - name: Install
+        timeout-minutes: 10
         run: make install PREFIX=$HOME/tmux-side && $HOME/tmux-side/bin/kido --version && test -x $HOME/tmux-side/share/kido/bin/tmux
 
       - name: Unit tests
+        timeout-minutes: 15
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test --force
 
       # "fork failed: Device not configured" from tmux on macOS runners reads as
       # pty exhaustion; this records the limit next to any such failure.
       - name: Pty limit
+        timeout-minutes: 1
         if: runner.os == 'macOS'
         run: sysctl kern.tty.ptmx_max; ls /dev/ttys* | wc -l
 
@@ -198,6 +205,7 @@ jobs:
       # Full Disk Access requirement. macOS Bash 3.2 is too old to prime,
       # so the account uses zsh with a startup file instead.
       - name: Set up localhost SSH
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           diagnose_ssh() {
@@ -251,11 +259,13 @@ jobs:
             esac'
 
       - name: E2E tests
+        timeout-minutes: 15
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 KIDO_E2E_HOST_SSH=1 make e2e
 
       - name: Verify ko
-        if: runner.os == 'macOS'
-        run: KO_VERUS_REQUIRED=1 make verify-ko
+        timeout-minutes: 25
+        run: KO_VERUS_REQUIRED=1 make verify-ko STAGES="build-ko unit-ko e2e-ko lint-rs verus"
 
       - name: TypeScript tests
+        timeout-minutes: 10
         run: KIDO_TS_TEST_REQUIRED=1 ./scripts/test-ts.sh

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""usage: KIDO_TMUX=path/to/kido-tmux [KO_BIN=build/ko/bin/ko] bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll] [busy]
+"""usage: KIDO_TMUX=path/to/kido-tmux [KO_BIN=build/ko/bin/ko] bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll] [busy] [idle]
 
 KO_BIN names the ko to measure (a reference build); without it `make build-ko` runs and build/ko/bin/ko is measured."""
 import base64
@@ -644,6 +644,37 @@ def memory_row():
         tmux.close()
 
 
+IDLE_SECONDS = 10
+
+
+def idle_row():
+    print(f"== idle wakeups of the coordinator, three idle panes, {IDLE_SECONDS} s ({load()})", flush=True)
+    ko = Ko()
+    try:
+        for _ in range(3):
+            pane = ko.pane("printf READY; while read x; do :; done")
+            wait_screen(ko, pane, "READY")
+        client = ko.attach()
+        client.quiet()
+        report = os.path.join(ko.dir, "idle.txt")
+        if sys.platform == "darwin":
+            command = ["sample", str(ko.server.pid), str(IDLE_SECONDS), "-file", report]
+        else:
+            command = ["strace", "-c", "-f", "-p", str(ko.server.pid), "-o", report]
+        tool = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        time.sleep(IDLE_SECONDS)
+        if tool.poll() is None and sys.platform != "darwin":
+            signal_child(tool.pid, signal.SIGINT)
+        _, errors = tool.communicate(timeout=30)
+        if tool.returncode not in (0, -signal.SIGINT) or (sys.platform != "darwin" and "attached" not in errors):
+            raise RuntimeError(f"{command[0]} did not trace the coordinator (status {tool.returncode}): {errors}")
+        with open(report) as f:
+            # strace -c prints no table when the process made no system call.
+            print(f.read() or f"no system call in {IDLE_SECONDS} s", flush=True)
+    finally:
+        ko.close()
+
+
 def scroll_row():
     print(f"== wheel scrolling through 100k lines ({load()})", flush=True)
     for name, make in (("tmux copy-mode", Tmux), ("ko", Ko)):
@@ -683,7 +714,7 @@ def scroll_row():
             target.close()
 
 
-ROWS_BY_NAME = {"latency": latency, "yes": yes_row, "attach": attach_row, "resize": resize_row, "memory": memory_row, "scroll": scroll_row, "busy": busy_row}
+ROWS_BY_NAME = {"latency": latency, "yes": yes_row, "attach": attach_row, "resize": resize_row, "memory": memory_row, "scroll": scroll_row, "busy": busy_row, "idle": idle_row}
 
 if __name__ == "__main__":
     names = sys.argv[1:] or list(ROWS_BY_NAME)
