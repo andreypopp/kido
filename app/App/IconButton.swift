@@ -16,6 +16,8 @@ final class IconButton: MouseButton {
     static let sidebarSymbols = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular, scale: .small)
     var invoke: () -> Void = {}
     var press: ((NSEvent) -> Void)?
+    var acceptsFirstClick = true
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { acceptsFirstClick && super.acceptsFirstMouse(for: event) }
     enum HoverStyle { case iconOnly, background, close, text }
     private let hoverStyle: HoverStyle
     private var hovered = false

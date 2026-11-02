@@ -28,7 +28,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     #if KIDO_VISUAL
     var visualKeyUps = 0
-    var visualKeyUpMonitor: ((NSEvent) -> NSEvent?)?
+    var visualEventMonitor: ((NSEvent) -> NSEvent?)?
     var visualKeyEvents = 0
     var visualBindingQueries = 0
     var visualBindingActions = 0
@@ -868,7 +868,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     #endif
 
     private var presented = (visible: true, realized: true)
-    private var keyUpMonitor: Any?
+    private var eventMonitor: Any?
     private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer?)?
     let runtime: GhosttyRuntime
     private var clipboard: (state: UnsafeMutableRawPointer, mimes: [String], list: Bool, timeout: DispatchWorkItem?, deadline: DispatchTime)?
@@ -890,7 +890,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             complete(paste.state, "")
             paste.alert.window.sheetParent?.endSheet(paste.alert.window)
         }
-        if let keyUpMonitor { NSEvent.removeMonitor(keyUpMonitor); self.keyUpMonitor = nil }
+        if let eventMonitor { NSEvent.removeMonitor(eventMonitor); self.eventMonitor = nil }
     }
 
     private var markedText = NSMutableAttributedString()
@@ -990,18 +990,28 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         updateTrackingAreas()
         registerForDraggedTypes([.fileURL] + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) })
         // AppKit sends no keyUp through the responder chain while Command is
-        // held (SurfaceView_AppKit.swift).
+        // held, and delivers no first click to a view without acceptsFirstMouse
+        // (SurfaceView_AppKit.swift, localEventLeftMouseDown).
         let monitor: (NSEvent) -> NSEvent? = { [weak self] event in
-            guard let self, acceptsKeyInput, event.modifierFlags.contains(.command), let window, event.window === window,
-                window.firstResponder === self
-            else { return event }
-            keyUp(with: event)
-            return nil
+            guard let self, let window, event.window === window else { return event }
+            switch event.type {
+            case .leftMouseDown:
+                if acceptsKeyInput, window.attachedSheet == nil, !(NSApp.isActive && window.isKeyWindow), window.firstResponder !== self,
+                   window.contentView?.superview?.hitTest(event.locationInWindow) === self {
+                    window.makeFirstResponder(self)
+                    onSelect()
+                }
+                return event
+            default:
+                guard acceptsKeyInput, event.modifierFlags.contains(.command), window.firstResponder === self else { return event }
+                keyUp(with: event)
+                return nil
+            }
         }
         #if KIDO_VISUAL
-        visualKeyUpMonitor = monitor
+        visualEventMonitor = monitor
         #endif
-        keyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp, handler: monitor)
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp, .leftMouseDown], handler: monitor)
     }
 
     required init?(coder: NSCoder) {
@@ -1010,7 +1020,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     deinit {
         MainActor.assumeIsolated {
-            if let keyUpMonitor { NSEvent.removeMonitor(keyUpMonitor) }
+            if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
             guard let surface else { return }
             if let paste {
                 complete(paste.state, "")
@@ -1633,7 +1643,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     func syncFocus() {
-        setSurfaceFocus(window?.firstResponder === self && (NSApp.keyWindow == nil || NSApp.keyWindow === window))
+        setSurfaceFocus(window?.firstResponder === self && (window as? OwnerWindow)?.isInputWindow != false)
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -2180,7 +2190,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var windowID: WindowID? { (superview as? WindowView)?.windowID }
 
     #if KIDO_VISUAL
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    var visualAcceptsFirstMouse = true
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { visualAcceptsFirstMouse }
     #endif
 
     override func pressureChange(with event: NSEvent) {
