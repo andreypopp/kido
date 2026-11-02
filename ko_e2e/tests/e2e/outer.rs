@@ -350,7 +350,8 @@ impl Outer {
     pub(crate) fn wait(&self, what: &str, check: impl FnMut() -> bool) {
         assert!(
             self.within(DEADLINE, check),
-            "wait for {what}; screen:\n{}",
+            "wait for {what}; {}; screen:\n{}",
+            crate::harness::load_report(),
             self.screen()
         );
     }
