@@ -772,6 +772,25 @@ mod tests {
             f(&mut self.proc, &mut io)
         }
 
+        // macOS posix_spawn in another thread holds every descriptor until it execs, so a
+        // closed peer can stay open for a moment.
+        fn hang_up(&mut self) {
+            drop(std::mem::replace(
+                &mut self.peer,
+                UnixStream::pair().unwrap().0,
+            ));
+            let timeout = self.poll.timer();
+            self.poll
+                .start(timeout, std::time::Duration::from_secs(5), None)
+                .unwrap();
+            let mut events = Events::default();
+            while events.ready().is_empty() {
+                assert!(events.due().is_empty(), "the peer never hung up");
+                self.poll.turn(Mode::Wait, &mut events).unwrap();
+            }
+            self.poll.free(timeout);
+        }
+
         fn feed(&mut self, data: &[u8]) {
             self.with(|proc, io| proc.feed(data, io));
         }
@@ -964,10 +983,7 @@ mod tests {
     #[test]
     fn a_snapshot_request_that_cannot_be_sent_is_refused_and_fails_its_entry_without_slices() {
         let mut fake = fake(2048);
-        drop(std::mem::replace(
-            &mut fake.peer,
-            UnixStream::pair().unwrap().0,
-        ));
+        fake.hang_up();
         let asked = fake.with(|proc, io| proc.snapshot(History::None, io));
         assert_eq!((asked, fake.proc.life()), (None, Life::Closed));
         let failed: Vec<_> = fake
@@ -1009,10 +1025,7 @@ mod tests {
             unsafe_paste: false,
         };
         assert_eq!(fake.events, [pasted]);
-        drop(std::mem::replace(
-            &mut fake.peer,
-            UnixStream::pair().unwrap().0,
-        ));
+        fake.hang_up();
         fake.with(|proc, io| proc.input(Input::Focus(true), io))
             .unwrap();
         let ended = fake.with(|proc, io| proc.input(Input::Focus(true), io));

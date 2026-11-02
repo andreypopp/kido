@@ -389,13 +389,6 @@ impl Pane {
             last: true,
             screen,
         });
-        if let Some(Process {
-            life: Life::Dead(dead),
-            ..
-        }) = &live.process
-        {
-            put_dead(&mut self.io, *dead)?;
-        }
         self.io.out.frame(&FromPane::SnapshotDone(req));
         Ok(())
     }

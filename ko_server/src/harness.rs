@@ -328,6 +328,7 @@ struct Mirror {
     skipped: bool,
     snapshot: Option<Snapshot>,
     snapshots: usize,
+    deaths: usize,
 }
 
 #[derive(Debug)]
@@ -370,7 +371,10 @@ impl Mirror {
                 }
                 match (marked.marker, self.term.as_mut()) {
                     (Marker::Resize(size), Some(term)) => vt(term.resize(size.0)),
-                    (Marker::Dead(_), _) => Ok(()),
+                    (Marker::Dead(_), _) => {
+                        self.deaths += 1;
+                        Ok(())
+                    }
                     (Marker::Resize(_), None) => bug("marker before any terminal".to_owned()),
                 }
             }
@@ -1057,6 +1061,13 @@ impl Harness {
         self.until("every view to catch up", |h| {
             h.stable >= 30 && h.views.iter().all(|v| v.server_closed || h.converged(v))
         })?;
+        if self.pane_state() == "exited" {
+            self.until("every view to see the death", |h| {
+                h.views
+                    .iter()
+                    .all(|v| v.server_closed || v.mirror.deaths > 0)
+            })?;
+        }
         if let Some(reason) = self
             .views
             .iter()
@@ -1319,6 +1330,40 @@ mod tests {
             Op::Feed(Source::Osc8, 517_456, 8),
         ];
         run(&ops).unwrap_or_else(|failure| panic!("{failure:?}"));
+    }
+
+    #[test]
+    fn views_catch_up_after_a_resync_on_a_pane_that_ended() {
+        let ops = [
+            Op::Feed(Source::Lines, 200_000, 0),
+            Op::Check,
+            Op::Open(History::None, Reader::Fast, true, false),
+            Op::Open(History::All, Reader::Stalled, true, true),
+            Op::Resize(47, 18),
+            Op::Eof,
+            Op::Resync(11_701_215_242_529_412_516, History::All),
+        ];
+        run(&ops).unwrap_or_else(|failure| panic!("{failure:?}"));
+    }
+
+    #[test]
+    fn a_live_view_and_a_view_opened_after_the_death_each_get_the_death_once() {
+        let mut h = Harness::new();
+        h.open_view(History::All, Reader::Fast, false, None, Mirror::fresh());
+        h.step_op(Op::Feed(Source::Lines, 2000, 1)).unwrap();
+        h.step_op(Op::Eof).unwrap();
+        h.until("the pane to die", |h| h.pane_state() == "exited")
+            .unwrap();
+        h.open_view(History::All, Reader::Fast, false, None, Mirror::fresh());
+        h.until("both views to see the death", |h| {
+            h.stable >= 30
+                && h.views
+                    .iter()
+                    .all(|v| v.mirror.deaths > 0 && h.converged(v))
+        })
+        .unwrap();
+        let deaths: Vec<usize> = h.views.iter().map(|v| v.mirror.deaths).collect();
+        assert_eq!(deaths, [1, 1]);
     }
 
     #[test]
