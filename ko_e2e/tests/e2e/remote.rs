@@ -300,14 +300,37 @@ fn remote_forward_attach_reconnect_and_cleanup() {
             .contains("ko-tui-"),
         "the new pane has the cwd of the client: {created}"
     );
+    outer.gone("READY");
     outer.raw(CHORD_UP);
     outer.contains("READY");
 
+    let pane_rows = |outer: &Outer| -> Vec<String> {
+        outer
+            .lines()
+            .into_iter()
+            .map(|line| {
+                line.split_once('│')
+                    .map_or(line.clone(), |(_, rest)| rest.to_owned())
+            })
+            .collect()
+    };
+    let first_history = |outer: &Outer| -> Option<u32> {
+        pane_rows(outer)
+            .first()?
+            .trim()
+            .strip_prefix("history-")?
+            .parse()
+            .ok()
+    };
+    let top = first_history(&outer).expect("a history line in the first pane row");
     for _ in 0..3 {
         outer.wheel_up(40, 5);
     }
-    outer.gone("READY");
-    let scrolled = outer.lines();
+    // One wheel event scrolls three rows.
+    outer.wait("three wheel events applied", || {
+        first_history(&outer) == top.checked_sub(9)
+    });
+    let scrolled = pane_rows(&outer);
 
     std::fs::write(&remote.block, "").unwrap();
     signal_descendant(outer.client_pid(), master, Signal::Kill).unwrap();
@@ -315,7 +338,9 @@ fn remote_forward_attach_reconnect_and_cleanup() {
     std::fs::remove_file(&remote.block).unwrap();
     outer.gone("reconnecting to");
     // A scrolled mirror that a snapshot does not replace keeps its place: the view resumed.
-    outer.wait("the scrolled screen again", || outer.lines() == scrolled);
+    outer.wait("the scrolled screen again", || {
+        pane_rows(&outer) == scrolled
+    });
     assert_ne!(remote.master(&outer.dir), master, "a new master");
 
     let master = remote.master(&outer.dir);
