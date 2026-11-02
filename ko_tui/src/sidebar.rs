@@ -1,4 +1,6 @@
-use ko_client::model::Model;
+use std::collections::BTreeMap;
+
+use ko_client::model::{Item, Pane};
 use ko_client::status::{self, Mark};
 use ko_server::ids::PaneId;
 use ko_server::protocol::{Cause, Dead};
@@ -7,7 +9,7 @@ const WIDTH: usize = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Line {
-    pub(crate) pane: PaneId,
+    pub(crate) pane: Option<PaneId>,
     pub(crate) lead: String,
     pub(crate) mark: Mark,
     pub(crate) title: String,
@@ -52,26 +54,45 @@ pub(crate) fn dead_line(dead: &Dead) -> String {
     format!("[{what} \u{2014} Ctrl+D to remove]")
 }
 
-pub(crate) fn lines(selected: Option<PaneId>, model: &Model) -> Vec<Line> {
-    model
-        .panes
+pub(crate) fn lines(
+    selected: Option<PaneId>,
+    items: &[Item],
+    panes: &[Pane],
+    mark: impl Fn(&Pane) -> Mark,
+) -> Vec<Line> {
+    let mut number = 0;
+    let by_id: BTreeMap<PaneId, &Pane> = panes.iter().map(|pane| (pane.row.id, pane)).collect();
+    items
         .iter()
-        .enumerate()
-        .map(|(i, pane)| {
-            let suffix = match &pane.row.dead {
-                Some(Dead {
-                    cause: Cause::Exited { code },
-                    ..
-                }) => format!(" \u{2020}{code}"),
-                Some(_) => " \u{2020}".to_owned(),
-                None => String::new(),
-            };
-            Line {
-                pane: pane.row.id,
-                lead: format!("{} ", i + 1),
-                mark: model.mark(pane),
-                title: format!("{}{suffix}", status::title(pane)),
-                selected: selected == Some(pane.row.id),
+        .map(|item| match item {
+            Item::Session { name, .. } => Line {
+                pane: None,
+                lead: String::new(),
+                mark: Mark::None,
+                title: name.clone(),
+                selected: false,
+            },
+            Item::Pane(id) => {
+                number += 1;
+                let pane = by_id.get(id).copied();
+                let suffix = match pane.and_then(|pane| pane.row.dead.as_ref()) {
+                    Some(Dead {
+                        cause: Cause::Exited { code },
+                        ..
+                    }) => format!(" \u{2020}{code}"),
+                    Some(_) => " \u{2020}".to_owned(),
+                    None => String::new(),
+                };
+                Line {
+                    pane: Some(*id),
+                    lead: format!("{number} "),
+                    mark: pane.map_or(Mark::None, &mark),
+                    title: format!(
+                        "{}{suffix}",
+                        pane.map_or_else(|| id.to_string(), status::title)
+                    ),
+                    selected: selected == Some(*id),
+                }
             }
         })
         .collect()
@@ -79,10 +100,76 @@ pub(crate) fn lines(selected: Option<PaneId>, model: &Model) -> Vec<Line> {
 
 #[cfg(test)]
 mod tests {
+    use ko_server::protocol::Row;
+
     use super::*;
 
     fn id(number: u64) -> PaneId {
         format!("pane_{number}").parse().unwrap()
+    }
+
+    fn pane(number: u64, title: &str, dead: Option<Dead>) -> Pane {
+        Pane {
+            row: Row {
+                id: id(number),
+                pid: 1,
+                command: vec!["/bin/sh".to_owned()],
+                cwd: "/".to_owned(),
+                title: title.to_owned(),
+                dead,
+                foreground: None,
+                status: None,
+                progress: None,
+            },
+            vars: Default::default(),
+        }
+    }
+
+    #[test]
+    fn the_list_has_a_header_for_each_session_and_keeps_pane_titles_and_dead_status() {
+        let dead = Dead {
+            at: 0,
+            cause: Cause::Exited { code: 7 },
+        };
+        let panes = [pane(1, "", None), pane(2, "build", Some(dead.clone()))];
+        let items = [
+            Item::Session {
+                id: "session_1".parse().unwrap(),
+                name: "work".to_owned(),
+            },
+            Item::Pane(id(1)),
+            Item::Session {
+                id: "session_2".parse().unwrap(),
+                name: "play".to_owned(),
+            },
+            Item::Pane(id(2)),
+            Item::Pane(id(3)),
+        ];
+        let shown: Vec<String> = lines(Some(id(2)), &items, &panes, |pane| {
+            if pane.row.id == id(2) {
+                Mark::Done
+            } else {
+                Mark::None
+            }
+        })
+        .iter()
+        .map(|line| {
+            format!(
+                "{:?} {} {:?} {}{}",
+                line.pane, line.selected, line.mark, line.lead, line.title
+            )
+        })
+        .collect();
+        assert_eq!(
+            shown,
+            [
+                "None false None work",
+                "Some(PaneId(1)) false None 1 sh",
+                "None false None play",
+                "Some(PaneId(2)) true Done 2 build \u{2020}7",
+                "Some(PaneId(3)) false None 3 pane_3",
+            ]
+        );
     }
 
     #[test]

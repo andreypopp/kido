@@ -337,7 +337,10 @@ pub(crate) fn snapshot(lines: &str) -> Result<(), String> {
         let hello = ClientRequest::Hello(Hello {
             kind: ClientKind::Terminal,
             name: "bench".to_owned(),
-            pane: Some(pane),
+            selection: protocol::Selection {
+                pane: Some(pane),
+                ..protocol::Selection::default()
+            },
             focused: true,
             size: protocol::Size(size),
             ignore_size: false,

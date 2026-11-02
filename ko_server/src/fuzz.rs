@@ -392,10 +392,11 @@ impl Rig {
                 argv: ["/bin/sh", "-c", command].map(str::to_owned).to_vec(),
             }),
             env: Vec::new(),
+            vars: Default::default(),
         };
         let pane = state
-            .add_pane(&mut poll, &request)
-            .unwrap_or_else(|error| panic!("the first pane did not start: {error}"));
+            .new_session(&mut poll, &request)
+            .unwrap_or_else(|error| panic!("the first pane did not start: {error:?}"));
         let wake = poll.timer();
         poll.start(
             wake,

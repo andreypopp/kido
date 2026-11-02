@@ -139,13 +139,19 @@ fn pane_process_failure() {
         json!("failed"),
         "failed pane: {dead}"
     );
+    let removed = c.event("layout");
+    assert_eq!(
+        removed["layout"]["sessions"],
+        json!([]),
+        "the failed pane leaves the layout: {removed}"
+    );
     s.ko(&["api", &format!("/panes/{p}/screen")], "")
-        .http_error(500);
+        .http_error(404);
     s.ko(
         &["api", "--input", "-", &format!("/panes/{p}/input")],
         r#"{"type": "paste", "text": "x", "check_safe": false}"#,
     )
-    .http_error(500);
+    .http_error(404);
     v.closed("failed pane view did not close");
     wait_gone(program, "its pane process");
 }
@@ -155,7 +161,8 @@ fn unfocused_first_client_sizes_pane() {
     let s = start(&[]);
     let p = s.pane("printf READY; cat");
     let mut unfocused = s.hello(Hello {
-        pane: Some(&p),
+        kind: "terminal",
+        selection: json!({"pane": p}),
         focused: false,
         size: size(51, 13),
     });

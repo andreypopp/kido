@@ -68,6 +68,8 @@ macro_rules! id {
 
 id!(pub PaneId, "pane_");
 id!(pub ClientId, "client_");
+id!(pub SessionId, "session_");
+id!(pub WindowId, "window_");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -105,7 +107,33 @@ impl From<Instance> for String {
     }
 }
 
-const MAX_VAR_NAME: usize = 256;
+const MAX_NAME: usize = 256;
+
+fn plain(text: &str) -> bool {
+    text.len() <= MAX_NAME && !text.chars().any(char::is_control)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Name(String);
+
+impl TryFrom<String> for Name {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<Name, &'static str> {
+        if plain(&text) {
+            Ok(Name(text))
+        } else {
+            Err("invalid name")
+        }
+    }
+}
+
+impl From<Name> for String {
+    fn from(Name(text): Name) -> String {
+        text
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -122,7 +150,7 @@ impl fmt::Display for InvalidName {
 
 impl VarName {
     pub fn new(name: &str) -> Result<VarName, InvalidName> {
-        if (1..=MAX_VAR_NAME).contains(&name.len()) && !name.chars().any(char::is_control) {
+        if !name.is_empty() && plain(name) {
             Ok(VarName(Cow::Owned(name.to_owned())))
         } else {
             Err(InvalidName)

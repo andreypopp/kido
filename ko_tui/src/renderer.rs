@@ -1,10 +1,9 @@
+use ko_client::status::Mark;
 use ko_vt::render::{Attribute, Attributes, Cell, Colour, CursorShape, Frame, Style};
 use ko_vt::unicode::clusters;
 
 use crate::differ::Differ;
 use crate::modes::Modes;
-use ko_client::status::Mark;
-
 use crate::sidebar::Line;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,7 +281,7 @@ mod tests {
 
     fn line(number: u64, title: &str, selected: bool) -> Line {
         Line {
-            pane: format!("pane_{number}").parse().unwrap(),
+            pane: Some(format!("pane_{number}").parse().unwrap()),
             lead: format!("{number} "),
             mark: Mark::None,
             title: title.to_owned(),
@@ -427,5 +426,46 @@ mod tests {
         );
         assert!(first.contains("\x1b[6 q\x1b[1;2H\x1b[?25h"), "{first:?}");
         assert_eq!(third, "");
+    }
+
+    #[test]
+    fn a_pane_larger_than_its_region_is_clipped_and_a_smaller_one_is_padded() {
+        let layout = Layout {
+            cols: 6,
+            rows: 3,
+            pane_x: 0,
+            pane_rows: 3,
+            warning: false,
+            dead: None,
+            sidebar: Vec::new(),
+            choosing: None,
+        };
+        let frame = |cols: u16, rows: u16| Frame {
+            cols,
+            rows,
+            cells: vec![
+                Cell {
+                    text: "a".to_owned(),
+                    width: 1,
+                    style: Style::default(),
+                };
+                usize::from(cols) * usize::from(rows)
+            ],
+            cursor: Some(ko_vt::render::FrameCursor {
+                x: cols - 1,
+                y: rows - 1,
+                shape: CursorShape::Block,
+            }),
+            mouse: ko_vt::render::MouseTracking::Off,
+            keyboard: 0,
+        };
+        let drawn = |frame: &Frame| {
+            let (mut renderer, mut modes) = (Renderer::default(), Modes::default());
+            let mut out = String::new();
+            renderer.paint(&mut modes, &layout, Some((1, frame)), &mut out);
+            (out.matches('a').count(), out.contains("\x1b[?25h"))
+        };
+        assert_eq!(drawn(&frame(8, 5)), (18, false));
+        assert_eq!(drawn(&frame(2, 1)), (2, true));
     }
 }

@@ -6,8 +6,8 @@ use ko_pane_wire::frame::History;
 use ko_server::http::{Response, call, read_response, read_upgrade};
 use ko_server::ids::PaneId;
 use ko_server::protocol::{
-    self, Command, CreatePane, Created, Images, Input, Marker, Route, Row, Text, ViewEvent,
-    ViewOptions, json,
+    self, Command, CreatePane, Images, Input, Marker, Route, Row, Text, ViewEvent, ViewOptions,
+    json,
 };
 use ko_server::ws::{Record, accepted, masked, parse_frame, parse_record, upgrade_request};
 use ko_sys::clock::Mono;
@@ -24,16 +24,19 @@ pub(crate) fn exchange(socket: &Path, route: &Route, body: &str) -> io::Result<R
 }
 
 pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> {
-    let body = json(&CreatePane {
-        cwd: Some("/".to_owned()),
-        command: Some(Command::Argv {
-            argv: argv.to_vec(),
-        }),
-        env: Vec::new(),
-    });
-    let response = exchange(socket, &Route::CreatePane, &body)?;
-    let created: Created = protocol::decode(&response.body).map_err(io::Error::other)?;
-    Ok(created.pane)
+    ko_client::layout::add_session(
+        socket,
+        None,
+        &CreatePane {
+            cwd: Some("/".to_owned()),
+            command: Some(Command::Argv {
+                argv: argv.to_vec(),
+            }),
+            env: Vec::new(),
+            vars: Default::default(),
+        },
+    )
+    .map_err(io::Error::other)
 }
 
 pub(crate) fn program_pids(socket: &Path) -> io::Result<Vec<i32>> {

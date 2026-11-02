@@ -28,17 +28,11 @@ fn defaults_and_pane_environment() {
     let build = version["build"].as_str().unwrap_or_default().to_owned();
     assert!(!build.is_empty(), "ko version has no build field");
 
-    let created = s
-        .ko(
-            &["api", "--input", "-", "/panes"],
-            r#"{"cwd": "/tmp", "env": [
-                {"name": "X", "value": "custom"},
-                {"name": "TERM", "value": "wrong"},
-                {"name": "KO_PANE", "value": "wrong"}
-            ]}"#,
-        )
-        .json();
-    let pane = created["pane"].as_str().unwrap_or_default().to_owned();
+    let pane = s.new_pane(json!({"cwd": "/tmp", "env": [
+        {"name": "X", "value": "custom"},
+        {"name": "TERM", "value": "wrong"},
+        {"name": "KO_PANE", "value": "wrong"}
+    ]}));
     let mut view = s.ws(&format!("/panes/{pane}/view"));
     let prompt_end = if ko_sys::sock::uid() == 0 { "# " } else { "$ " };
     view.ready(prompt_end);
@@ -68,10 +62,20 @@ fn defaults_and_pane_environment() {
         screen.len()
     );
 
-    s.ko(&["api", "--input", "-", "/panes"], r#"{"cwd": "relative"}"#)
-        .http_error(400);
-    s.ko(&["api", "--input", "-", "/panes"], "[]")
-        .http_error(400);
+    let refused = |new: serde_json::Value| {
+        let mut document = s.doc();
+        document["layout"]["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": pane}, {"pane": {"new": new}}]});
+        s.ko(
+            &["api", "-X", "PUT", "--input", "-", "/layout"],
+            &document.to_string(),
+        )
+        .http_error(400)
+    };
+    let error = refused(json!({"cwd": "relative"}));
+    assert!(error.contains("cwd must be absolute"), "{error}");
+    let error = refused(json!([]));
+    assert!(error.contains("a record must be a JSON object"), "{error}");
 }
 
 #[test]

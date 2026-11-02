@@ -264,7 +264,7 @@ at the cut-over (migration.md S8).
 | `Pane_proc` | one `ko-pane` child: the ring mapping, the control socket, the frame codec, requests and their replies, events |
 | `Pane` | one pane: its `Pane_proc`, title, pwd, OSC 133 phase, OSC 7501 records, foreground command, variables, output sequence number, ring, dead state |
 | `Panes` | the live panes by id |
-| `Layout` | the one layout document: sessions, windows, split trees, floats, zoom, active panes, names, order, session and window variables; its validation, normalization, revision and events (4.5) |
+| `Layout` | the one layout document: sessions, windows, split trees, floats, zoom, names, order, session and window variables; its validation, normalization, revision and events (4.5) |
 | `Client` | a connected client: its `/client` WebSocket, current session, window and pane, size, focus, sizing flag |
 | `View` | one streaming response of one pane: sync state, unsent count, pending snapshot |
 | `Pane_core`, `View_core` | the pane's delivery of ring records to its views and each view's stream decisions, generated from proved F*/Pulse (4.6) |
@@ -473,7 +473,8 @@ is held as **one JSON document** in the coordinator (decided
   a name, variables and windows in display order; each window has a
   name, variables, a size in cells and a cell size in pixels, a split
   tree of leaves with cell geometry, floating panes with position,
-  size, border, title and z-order, an active pane and a zoom state.
+  size, border, title and z-order, and a zoom state. It has no active
+  pane: the current pane is per client (migration.md 3.2).
   Ids are `session_N`, `window_N`, `pane_N` and `client_N` (decided
   2026-10-29), allocated once per server life, never reused. kido's
   run records and the app's keys take the new spelling; nothing
@@ -708,8 +709,9 @@ only after the pty accepted every byte. A client's close frame is
 processed after its queued input, so a `POST /input` followed by a hang
 up loses nothing (zmx #279).
 
-Input goes to the pane that the client names. The active pane of a
-window is where a client's focus goes when it does not name one.
+Input goes to the pane that the client names. A client that enters a
+window without a current pane there gets the window's last focused
+pane (migration.md 3.2).
 
 ### 4.8 Queries, clipboard and consent
 
@@ -781,8 +783,8 @@ with the nesting of kido's `Tree`. Compared with kido's feed:
   or re-arm outcomes" and "concurrent feeds give different serials"
   limits go away.
 - The server instance identity that replaces `server_instance` is
-  the `instance` field of the `Welcome` event (protocol 2.1,
-  plans/ko-stages.md K0): a client that reconnects must tell the
+  the `instance` field of the `Welcome` event (plans/ko-stages.md
+  K0): a client that reconnects must tell the
   same server from a new one, because pane ids restart at `pane_1`
   and an old view offset must not resume on a new server's pane. It
   survives an in-place upgrade.
@@ -903,7 +905,7 @@ and `ko_pane_wire/src/ring.rs`. The shape:
   local server the name of a server-owned shared-memory object. The
   client fetches the images with placements on screen, in parallel,
   and caches by id and generation. Nothing else carries pixels.
-- Input: key, text, paste, mouse, focus as text messages on the pane's
+- Input: key, text, paste, mouse as text messages on the pane's
   view, in order; `POST /panes/pane_N/input` for a sender with no view
   open, such as the CLI.
 - The layout as one document: `GET /layout`, `PUT /layout` with the

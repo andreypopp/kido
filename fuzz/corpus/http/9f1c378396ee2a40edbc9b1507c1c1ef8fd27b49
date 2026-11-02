@@ -1,7 +1,7 @@
 POST /panes HTTP/1.1
 Host: ko
-Ko-Protocol: 2.0
+Ko-Protocol: 1.0
 Ko-Vt: da3eff4c4ad49a0c90aebf7cb045492701f6dcce
-Content-Length: 99999999999
+Content-Length: 25
 
-{
+{"cwd":"/nonexistent"}   

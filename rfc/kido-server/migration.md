@@ -20,7 +20,7 @@ Decisions the user made on 2026-10-30, which this plan applies:
    client over HTTP and WebSocket with its libghostty mirror.
 5. The layout lives in the ko coordinator as **one JSON document**
    for the whole server that describes sessions, windows, split
-   trees, floats, names, order, zoom and active panes, and contains
+   trees, floats, names, order and zoom, and contains
    pane ids. Not per-pane layout fields, not separate session or
    window resources. The server understands and validates its schema
    and updates it itself when a pane is created or removed. Session
@@ -87,7 +87,7 @@ supplies instead.
 | sessions and windows: `list-sessions`, `list-windows`, `new-session -d -s -c`, `new-window -a`, `kill-session`, `kill-window`, `rename-session`, `rename-window`, `select-window`, `switch-client -c -t`, `%session-*`, `%window-*`, `%sessions-changed` | the layout document (section 3): its `sessions` and `windows`, edited and `PUT` back; the `{layout}` event; `select` on `/client` |
 | the split tree: `split-window -h/-v -c`, `kill-pane`, `move-pane -f/-b`, `swap-pane`, `resize-pane -L/R/U/D/-x/-y`, `resize-pane -Z`, `select-layout -E`, `%layout-change`, `#{window_layout}` as the fork's JSON tree, `#{window_visible_layout}` | the `tree` of each window with cell geometry; a tree edit in a `PUT`, normalized by the server; `DELETE /panes/pane_N` |
 | floats: `new-pane -x/-y/-X/-Y -B -T`, `move-pane -z 0`, float geometry in the layout JSON | `floats` in each window with `x, y, cols, rows, border, title, z`, edited in a `PUT` |
-| the active pane: `select-pane -t/-L/R/U/D/:.+/:.-`, `%window-pane-changed`, `#{window_active}` | `active` in each window, in a `PUT`; the `{layout}` event |
+| the active pane: `select-pane -t/-L/R/U/D/:.+/:.-`, `%window-pane-changed`, `#{window_active}` | each client's current pane, set by `select` on `/client`; the server's last focused pane per window for a client that enters a window (section 3.2) |
 | window size: `refresh-client -C WxHxXPxYP`, `window-size latest`, hidden-window `resize-pane -x -y` | a `size` message on `/client` for the client's current window; the sizing client of design.md 4.5; the server scales the tree |
 | pane content: `%output`, `%extended-output`, `send-keys -H`, `%pause`, `%continue`, `refresh-client -A` | views, snapshots, input events, skips (design.md 4.4, 4.6, 4.7) |
 | restore and Load more: `capture-pane -p -r -G -a -S -E`, `-F -L -T -N` metadata, `#{history_size}`, `#{alternate_on}` | a full snapshot; no paging; `/screen` for text |
@@ -121,7 +121,7 @@ schema and keeps its invariants; it is not opaque client data.
          windows: [                     in display order
            {id: "window_N", name, vars: {...},
             cols, rows, cell_px: {width, height} | absent,
-            active: "pane_N", zoom: "pane_N" | null,
+            zoom: "pane_N" | null,
             tree: node,
             floats: [{pane: "pane_N", x, y, cols, rows, z,
                       border: bool, title}]}]}]
@@ -133,7 +133,7 @@ schema and keeps its invariants; it is not opaque client data.
 Structural invariants, refused with `invalid` (400): every live pane
 is a leaf or a float of exactly one window; every leaf names a live
 pane; a window has at least one pane; a session has at least one
-window; `active` and `zoom` name a pane of the window; names are
+window; `zoom` names a pane of the window; names are
 UTF-8 with no control characters, at most 256 bytes; ids are the
 server's. Session, window and pane ids are allocated once per server
 life.
@@ -189,7 +189,19 @@ the retry costs one round trip.
 
 Per client, the server keeps the current session, window and pane
 (`hello` and `select` on `/client`), as design.md 4.5 says. They are
-not in the document.
+not in the document, and the document has no active pane (decided
+2026-11-02). A `select {pane}` changes only that client's current
+pane; it does not change the document or its revision. For each
+window the coordinator keeps the pane that a client focused most
+recently in it, as its own fact, outside the document: a client that
+enters a window where it has no current pane gets that pane. A new
+window starts with its first leaf; when that pane goes, the window's
+next pane in document order takes its place. A client focuses a
+pane when its terminal has focus and the pane becomes its current
+pane, or when its terminal gains focus on its current pane. A pane is focused for
+its program (focus reporting, CSI I and CSI O) while at least one
+client whose terminal is focused shows it as its current pane; the
+server derives this from the clients and stores nothing.
 
 ### 3.3 Pane variables
 
@@ -328,7 +340,8 @@ Adds to ko, as section 3 specifies:
   `DELETE /panes/pane_N`. `Ctrl+Shift+Up` and `Down` move through the
   whole list across sessions. Nothing else changes on screen.
 - The CLI: `ko panes [--json]`, `ko layout` (prints the document),
-  `ko layout put FILE` for tests and scripts, with the retry.
+  `ko layout put FILE` for tests and scripts, with the retry
+  (plans/ko-stages.md, K2).
 - Upgrade state: the document is in the state file's shape from the
   start, so S9 adds no field.
 
@@ -455,7 +468,8 @@ step can start at once.
    and the runs, with the nesting of kido's `Tree`; seen state and
    notifications read the same tree.
 3. The layout from the document: `WindowView` and `PaneLayout` read
-   `tree`, `floats`, `zoom` and `active` from `layout` events
+   `tree`, `floats` and `zoom` from `layout` events, and the current
+   pane from the app's own selection and `selected` events,
    instead of the fork's layout JSON; every menu, toolbar, drag and
    gesture is one edit of the document and one `PUT`, coalesced per
    gesture step as the command batches are today. Tabs project the

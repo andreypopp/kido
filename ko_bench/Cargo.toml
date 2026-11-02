@@ -9,6 +9,7 @@ name = "ko-bench"
 path = "src/main.rs"
 
 [dependencies]
+ko_client = { path = "../ko_client" }
 ko_pane_wire = { path = "../ko_pane_wire" }
 ko_server = { path = "../ko_server" }
 ko_sys = { path = "../ko_sys" }

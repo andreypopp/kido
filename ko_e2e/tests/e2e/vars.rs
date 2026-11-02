@@ -129,7 +129,7 @@ fn variables() {
     let (status, reply) = put(&s, &pane, "m8", &big(1_044_000));
     assert_eq!(
         (status, message(&reply).as_str()),
-        (400, "pane variables too large")
+        (400, "variables too large")
     );
 
     let other = s.pane("printf READY; read x");
@@ -167,4 +167,87 @@ fn variables() {
         "\"deploy@example.test\"",
         "a dead pane keeps its variables"
     );
+}
+
+#[test]
+fn a_layout_put_takes_vars_on_new_panes_sessions_and_windows_under_the_limits_of_the_vars_route() {
+    let s = start(&[]);
+    let attempt = |vars: &Value, place: &str| {
+        let mut document = s.doc();
+        let (mut session, mut window, mut new) =
+            (json!({}), json!({}), crate::harness::sh("exec cat"));
+        match place {
+            "pane" => new["vars"] = vars.clone(),
+            "window" => window["vars"] = vars.clone(),
+            _ => session["vars"] = vars.clone(),
+        }
+        window["name"] = json!("w");
+        window["tree"] = json!({"pane": {"new": new}});
+        session["name"] = json!("s");
+        session["windows"] = json!([window]);
+        document["layout"]["sessions"]
+            .as_array_mut()
+            .unwrap()
+            .push(session);
+        s.ko(
+            &["api", "-X", "PUT", "--input", "-", "/layout"],
+            &document.to_string(),
+        )
+    };
+
+    let crowded: serde_json::Map<String, Value> =
+        (0..1025).map(|n| (format!("n{n}"), Value::Null)).collect();
+    for place in ["pane", "window", "session"] {
+        for (vars, refusal) in [
+            (
+                json!({"big": "x".repeat(MAX_VALUE - 1)}),
+                "variable too large",
+            ),
+            (Value::Object(crowded.clone()), "too many variables"),
+            (json!({"n".repeat(257): 1}), "invalid variable name"),
+            (json!({"": 1}), "invalid variable name"),
+        ] {
+            let body = attempt(&vars, place).http_error(400);
+            let kind: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(kind["kind"], "invalid", "{place}: {body}");
+            assert!(
+                kind["message"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(refusal)),
+                "{place} {refusal}: {body}"
+            );
+            assert_eq!(
+                s.request("GET", "/panes", None, 200),
+                "[]",
+                "{place}: no pane started"
+            );
+        }
+    }
+
+    let vars = json!({
+        "ssh.dest": "deploy@example.test",
+        "n": [1, {"a": null}],
+        "big": "x".repeat(MAX_VALUE - 2),
+    });
+    let put = attempt(&vars, "pane").json();
+    let session = &put["layout"]["sessions"][0];
+    assert_eq!(
+        (session["id"].as_str(), session["windows"][0]["id"].as_str()),
+        (Some("session_1"), Some("window_1"))
+    );
+    assert_eq!(session["windows"][0]["tree"]["pane"], "pane_1");
+    let found = s.row("pane_1")["vars"].clone();
+    assert_eq!(found["ssh.dest"], "deploy@example.test");
+    assert_eq!(found["n"], json!([1, {"a": null}]));
+    assert_eq!(found["big"].as_str().map(str::len), Some(MAX_VALUE - 2));
+    assert_eq!(
+        s.request("GET", "/panes/pane_1/vars/n", None, 200),
+        "[1,{\"a\":null}]"
+    );
+
+    let small = json!({"k": 1});
+    let put = attempt(&small, "window").json();
+    assert_eq!(put["layout"]["sessions"][1]["windows"][0]["vars"], small);
+    let put = attempt(&small, "session").json();
+    assert_eq!(put["layout"]["sessions"][2]["vars"], small);
 }

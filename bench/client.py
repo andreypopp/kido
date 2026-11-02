@@ -244,7 +244,7 @@ class WebSocket:
         self.sock.connect(directory + "/socket")
         key = base64.b64encode(os.urandom(16)).decode()
         self.sock.sendall((f"GET {path} HTTP/1.1\r\nHost: ko\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                           f"Sec-WebSocket-Version: 13\r\nKo-Protocol: 2.0\r\nKo-Vt: {vt}\r\n\r\n").encode())
+                           f"Sec-WebSocket-Version: 13\r\nKo-Protocol: 1.0\r\nKo-Vt: {vt}\r\n\r\n").encode())
         self.buffer = b""
         while b"\r\n\r\n" not in self.buffer:
             self.buffer += self.sock.recv(65536)
@@ -314,7 +314,7 @@ class Ko:
         connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.sock.settimeout(10)
         connection.sock.connect(self.dir + "/socket")
-        connection.request(method, path, json.dumps(body).encode() if body is not None else b"", {"Ko-Protocol": "2.0", "Ko-Vt": self.vt})
+        connection.request(method, path, json.dumps(body).encode() if body is not None else b"", {"Ko-Protocol": "1.0", "Ko-Vt": self.vt})
         response = connection.getresponse()
         data = response.read()
         if response.status != 200:
@@ -323,7 +323,11 @@ class Ko:
         return data
 
     def pane(self, command):
-        return json.loads(self.request("POST", "/panes", {"command": {"type": "argv", "argv": ["/bin/sh", "-c", command]}, "cwd": self.dir}))["pane"]
+        document = json.loads(self.request("GET", "/layout"))
+        new = {"command": {"type": "argv", "argv": ["/bin/sh", "-c", command]}, "cwd": self.dir}
+        document["layout"]["sessions"].append({"name": "bench", "windows": [{"name": "bench", "tree": {"pane": {"new": new}}}]})
+        done = json.loads(self.request("PUT", "/layout", document))
+        return done["layout"]["sessions"][-1]["windows"][0]["tree"]["pane"]
 
     def screen(self, pane):
         return self.request("GET", f"/panes/{pane}/screen?history=none").decode(errors="replace")

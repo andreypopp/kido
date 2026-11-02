@@ -57,6 +57,7 @@ enum Op {
     Open(History, Reader, bool, bool),
     Resume(usize, History, Reader),
     Resync(usize, History),
+    ClearHistory,
     Reader(usize, Reader),
     Close(usize, Who),
     Eof,
@@ -1191,6 +1192,12 @@ impl Harness {
                     let _ = stream.write_all(&masked(1, true, text.as_bytes(), [1, 2, 3, 4], 0));
                 }
             }
+            Op::ClearHistory => {
+                if !self.crashed && self.pane_open() {
+                    let id = self.rig.pane;
+                    self.rig.state.clear_history(&mut self.rig.poll, id);
+                }
+            }
             Op::Reader(index, speed) => {
                 if let Some(at) = self.live(index) {
                     self.views[at].speed = speed;
@@ -1281,6 +1288,7 @@ fn op() -> impl Strategy<Value = Op> {
         3 => (history(), reader(), any::<bool>(), any::<bool>()).prop_map(|(h, s, small, bogus)| Op::Open(h, s, small, bogus)),
         2 => (any::<usize>(), history(), reader()).prop_map(|(i, h, s)| Op::Resume(i, h, s)),
         3 => (any::<usize>(), history()).prop_map(|(i, h)| Op::Resync(i, h)),
+        2 => Just(Op::ClearHistory),
         3 => (any::<usize>(), reader()).prop_map(|(i, s)| Op::Reader(i, s)),
         2 => (any::<usize>(), prop_oneof![Just(Who::Client), Just(Who::Server)]).prop_map(|(i, w)| Op::Close(i, w)),
         1 => Just(Op::Eof),
@@ -1344,6 +1352,34 @@ mod tests {
             Op::Resync(11_701_215_242_529_412_516, History::All),
         ];
         run(&ops).unwrap_or_else(|failure| panic!("{failure:?}"));
+    }
+
+    #[test]
+    fn clearing_the_history_leaves_every_mirror_equal_to_the_pane_and_without_history() {
+        let mut h = Harness::new();
+        h.open_view(History::All, Reader::Fast, false, None, Mirror::fresh());
+        h.open_view(History::None, Reader::Fast, false, None, Mirror::fresh());
+        h.step_op(Op::Feed(Source::Lines, 200_000, 3)).unwrap();
+        h.step_op(Op::Check).unwrap();
+        let history = |h: &Harness, view: usize| {
+            let term = h.views[view].mirror.term.as_ref().unwrap();
+            term.dump_history(Format::Plain).unwrap().len()
+        };
+        let before = history(&h, 0);
+        assert!(before > 100_000, "{before}");
+        h.step_op(Op::ClearHistory).unwrap();
+        h.step_op(Op::Feed(Source::Lines, 2000, 4)).unwrap();
+        h.step_op(Op::Check).unwrap();
+        assert!(
+            history(&h, 0) < before / 20,
+            "{} of {before}",
+            history(&h, 0)
+        );
+        assert!(
+            history(&h, 1) < before / 20,
+            "{} of {before}",
+            history(&h, 1)
+        );
     }
 
     #[test]

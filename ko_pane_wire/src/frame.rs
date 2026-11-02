@@ -51,6 +51,7 @@ pub enum Kind {
     Bell = 25,
     Notify = 26,
     Progress = 27,
+    ClearHistory = 28,
 }
 
 impl Kind {
@@ -83,6 +84,7 @@ impl Kind {
             25 => Kind::Bell,
             26 => Kind::Notify,
             27 => Kind::Progress,
+            28 => Kind::ClearHistory,
             _ => return None,
         })
     }
@@ -92,6 +94,9 @@ impl Kind {
 pub struct Dim(u16);
 
 impl Dim {
+    pub const MIN: Dim = Dim(1);
+    pub const MAX: Dim = Dim(MAX_DIMENSION);
+
     pub fn new(value: u16) -> Option<Dim> {
         (1..=MAX_DIMENSION).contains(&value).then_some(Dim(value))
     }
@@ -380,6 +385,7 @@ pub enum ToPane<'a> {
         format: ScreenFormat,
         rows: ScreenRows,
     },
+    ClearHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -671,6 +677,7 @@ impl Body<'_> {
                 Kind::Snapshot
             }
             ToPane::Exit => Kind::Exit,
+            ToPane::ClearHistory => Kind::ClearHistory,
             ToPane::Key(key) => {
                 self.key(key)?;
                 Kind::Key
@@ -1078,7 +1085,8 @@ pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
         | Kind::Key
         | Kind::Paste
         | Kind::Mouse
-        | Kind::Focus => return Ok(None),
+        | Kind::Focus
+        | Kind::ClearHistory => return Ok(None),
     }))
 }
 
@@ -1106,6 +1114,7 @@ pub enum Request<'a> {
         format: ScreenFormat,
         rows: ScreenRows,
     },
+    ClearHistory,
 }
 
 #[derive(Debug)]
@@ -1334,6 +1343,7 @@ pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
             Request::Snapshot { req, history }
         }
         Kind::Exit => return Ok(Request::Exit),
+        Kind::ClearHistory => return Ok(Request::ClearHistory),
         Kind::Key => Request::Key(fields.key()?),
         Kind::Mouse => Request::Mouse(fields.mouse()?),
         Kind::Paste => {
@@ -1695,6 +1705,9 @@ mod tests {
         assert!(matches!(decode_request(&text), Ok(Request::Text(b"\x00x"))));
         decoded(&ToPane::Focus(true), |request| {
             assert!(matches!(request, Request::Focus(true)));
+        });
+        decoded(&ToPane::ClearHistory, |request| {
+            assert!(matches!(request, Request::ClearHistory));
         });
         decoded(&ToPane::Tail(Pos::new(9)), |request| {
             assert!(matches!(request, Request::Tail));

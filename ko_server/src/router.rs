@@ -7,12 +7,11 @@ use crate::http::{self, LAST_CHUNK, Status};
 use crate::ids::ClientId;
 use crate::link::{Link, Role};
 use crate::pane_proc::{Life, Refusal};
-use crate::panes::AddError;
 use crate::protocol::{
-    self, CreatePane, Created, Error, ErrorKind, Input, PROTOCOL_HEADER, PasteResult, Route,
+    self, Error, ErrorKind, Input, PROTOCOL_HEADER, PasteResult, PutLayout, Route, Selection,
     VT_HEADER, check_version,
 };
-use crate::state::{Owner, State};
+use crate::state::{Owner, PutFailure, SelectFailure, State};
 use crate::view::View;
 use crate::ws::{self, Ws};
 
@@ -118,6 +117,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
         );
     };
     if let Route::DeletePane(id)
+    | Route::ClearHistory(id)
     | Route::Input(id)
     | Route::Screen(id, ..)
     | Route::View(id, ..)
@@ -142,22 +142,54 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
             let listing = state.listing();
             ok(&mut state.conns[index], &listing);
         }
-        Route::CreatePane => {
-            let Some(request) = body::<CreatePane>(&mut state.conns[index], &payload) else {
+        Route::GetLayout => {
+            let snapshot = state.snapshot_layout();
+            ok(&mut state.conns[index], &snapshot);
+        }
+        Route::PutLayout => {
+            let Some(request) = body::<PutLayout>(&mut state.conns[index], &payload) else {
                 return;
             };
-            match state.add_pane(poll, &request) {
-                Ok(pane) => {
-                    ok(&mut state.conns[index], &Created { pane });
-                    state.topology();
-                }
-                Err(AddError::Invalid(message)) => {
+            match state.put_layout(poll, request) {
+                Ok(snapshot) => ok(&mut state.conns[index], &snapshot),
+                Err(PutFailure::Stale(snapshot)) => respond(
+                    &mut state.conns[index],
+                    Status::Conflict,
+                    &protocol::json(&snapshot),
+                ),
+                Err(PutFailure::Invalid(message)) => {
                     error(&mut state.conns[index], ErrorKind::Invalid, message);
                 }
-                Err(AddError::Io(failure)) => {
-                    error(&mut state.conns[index], ErrorKind::Io, failure.to_string());
+                Err(PutFailure::Io(message)) => {
+                    error(&mut state.conns[index], ErrorKind::Io, message);
                 }
             }
+        }
+        Route::SelectClient(id) => {
+            let Some(selection) = body::<Selection>(&mut state.conns[index], &payload) else {
+                return;
+            };
+            match state.select_client(poll, id, selection) {
+                Ok(()) => ok(&mut state.conns[index], &Empty {}),
+                Err(SelectFailure::NoClient) => {
+                    error(
+                        &mut state.conns[index],
+                        ErrorKind::Missing,
+                        "client not found",
+                    );
+                }
+                Err(SelectFailure::NoTarget) => {
+                    error(
+                        &mut state.conns[index],
+                        ErrorKind::Invalid,
+                        "nothing to select",
+                    );
+                }
+            }
+        }
+        Route::ClearHistory(id) => {
+            state.clear_history(poll, id);
+            ok(&mut state.conns[index], &Empty {});
         }
         Route::Client => match ws::handshake(&head) {
             None => error(
@@ -172,9 +204,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
             }
         },
         Route::DeletePane(id) => {
-            state.close_views(id);
-            state.remove_pane(poll, id);
-            state.topology();
+            state.delete_pane(poll, id);
             ok(&mut state.conns[index], &Empty {});
         }
         Route::Input(id) => {
@@ -322,7 +352,7 @@ mod tests {
     use super::*;
     use crate::config::DEFAULT_LIMITS;
     use crate::fuzz::Rig;
-    use crate::protocol::{Command, version_headers};
+    use crate::protocol::{ClientEvent, Title, version_headers};
     use crate::server::Verified;
     use crate::ws::masked;
     use ko_sys::event::Mode;
@@ -387,18 +417,18 @@ mod tests {
                 server.exchange(b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\r\n\r\n"),
             )
             .into_owned(),
-            server.reply("POST /panes", "Content-Length: abc\r\n\r\n{}"),
+            server.reply("PUT /layout", "Content-Length: abc\r\n\r\n{}"),
             server.reply(
-                "POST /panes",
+                "PUT /layout",
                 "Content-Length: 2\r\nContent-Length: 3\r\n\r\n{}x",
             ),
-            server.reply("POST /panes", "Transfer-Encoding: chunked\r\n\r\n{}"),
+            server.reply("PUT /layout", "Transfer-Encoding: chunked\r\n\r\n{}"),
             server.reply(
                 &format!("GET /version HTTP/1.1\r\n{}", "A: b\r\n".repeat(4000)),
                 "\r\n",
             ),
             server.reply(
-                "POST /panes",
+                "PUT /layout",
                 &format!(
                     "Content-Length: 1048577\r\n\r\n{}GET /version HTTP/1.1\r\n{}\r\n",
                     "x".repeat(1_048_577),
@@ -409,7 +439,7 @@ mod tests {
             String::from_utf8_lossy(
                 server.exchange(
                     format!(
-                        "GET /panes HTTP/1.1\r\nHost: ko\r\nKo-Protocol: 1.0\r\nKo-Vt: {}\r\n\r\n",
+                        "GET /panes HTTP/1.1\r\nHost: ko\r\nKo-Protocol: 0.9\r\nKo-Vt: {}\r\n\r\n",
                         ours.vt
                     )
                     .as_bytes(),
@@ -466,10 +496,20 @@ mod tests {
     fn a_record_sent_as_an_array_is_refused_and_changes_nothing() {
         let mut server = harness("arrays");
         let panes = server.state.panes.len();
-        let create = server.status("POST /panes", "Content-Length: 10\r\n\r\n[\"/tmp\"]  ");
+        let revision = server.state.snapshot_layout().revision;
+        let create = server.status("PUT /layout", "Content-Length: 10\r\n\r\n[\"/tmp\"]  ");
+        let nested = format!(
+            r#"{{"revision":{},"layout":{{"sessions":[["s",[]]]}}}}"#,
+            serde_json::to_string(&revision).unwrap()
+        );
+        let array_layout = server.status(
+            "PUT /layout",
+            &format!("Content-Length: {}\r\n\r\n{nested}", nested.len()),
+        );
+        let text_input = r#"{"type":"text","data":"aGk="}"#;
         let input = server.status(
             "POST /panes/pane_1/input",
-            "Content-Length: 31\r\n\r\n{\"type\":\"focus\",\"focused\":true}",
+            &format!("Content-Length: {}\r\n\r\n{text_input}", text_input.len()),
         );
         let hello = r#"["hello",["terminal","t","pane_1",true,{"cols":7,"rows":7},false]]"#;
         let _array_hello = server.connect(&[upgrade("/client"), text(hello)].concat());
@@ -477,45 +517,38 @@ mod tests {
         let _array_size = server.connect(&[upgrade("/client"), text(size_hello)].concat());
         let key = r#"{"type":"input","input":["key",["press",20,0,97,"a",false]]}"#;
         let _array_key = server.connect(&[upgrade("/panes/pane_1/view"), text(key)].concat());
-        let sizer = server
-            .state
-            .panes
-            .find(crate::ids::PaneId::new(1))
-            .unwrap()
-            .sizer();
         assert_eq!(
             (
                 create.as_str(),
+                array_layout.as_str(),
                 input.as_str(),
                 server.state.panes.len(),
-                sizer,
+                server.state.snapshot_layout().revision,
                 server.state.conns.len()
             ),
-            ("HTTP/1.1 400", "HTTP/1.1 200", panes, None, 0)
+            (
+                "HTTP/1.1 400",
+                "HTTP/1.1 400",
+                "HTTP/1.1 200",
+                panes,
+                revision,
+                0
+            )
         );
     }
 
     #[test]
     fn a_client_that_never_reads_is_closed_before_its_queue_grows_without_bound() {
         let mut server = harness("unread");
-        let long = CreatePane {
-            cwd: None,
-            command: Some(Command::Argv {
-                argv: vec![
-                    "/bin/sh".to_owned(),
-                    "-c".to_owned(),
-                    "exec cat".to_owned(),
-                    "x".repeat(400_000),
-                ],
-            }),
-            env: Vec::new(),
-        };
-        server.state.add_pane(&mut server.poll, &long).unwrap();
+        let long = ClientEvent::Title(Title {
+            pane: crate::ids::PaneId::new(1),
+            title: "x".repeat(400_000),
+        });
         let hello = r#"{"type":"hello","kind":"app","name":"t","focused":false,"size":{"cols":80,"rows":24}}"#;
         let client = server.connect(&[upgrade("/client"), text(hello)].concat());
         let registered = server.state.registered(ClientId::new(1));
         let closed_at = (1..400).find(|_| {
-            server.state.topology();
+            server.state.announce(&long);
             server.step(Mode::Peek);
             !server.state.registered(ClientId::new(1))
         });
@@ -529,10 +562,13 @@ mod tests {
     #[test]
     fn bad_bodies_are_answered_with_400_or_411_not_a_crash_or_a_500() {
         let mut server = harness("bodies");
-        let chunked = server.status("POST /panes", "Transfer-Encoding: chunked\r\n\r\n{}");
+        let chunked = server.status("PUT /layout", "Transfer-Encoding: chunked\r\n\r\n{}");
+        let revision = serde_json::to_string(&server.state.snapshot_layout().revision).unwrap();
+        let layout = r#"{"sessions":[{"id":"session_1","name":"s","windows":[{"id":"window_1","name":"w","tree":{"split":"h","children":[{"pane":"pane_1"},{"pane":{"new":{"cwd":"/nonexistent"}}}]}}]}]}"#;
+        let body = format!(r#"{{"revision":{revision},"layout":{layout}}}"#);
         let cwd = server.status(
-            "POST /panes",
-            "Content-Length: 26\r\n\r\n{\"cwd\":\"/nonexistent\"}    ",
+            "PUT /layout",
+            &format!("Content-Length: {}\r\n\r\n{body}", body.len()),
         );
         assert_eq!(
             (chunked.as_str(), cwd.as_str()),
@@ -583,7 +619,7 @@ mod tests {
         let vt = ours.vt.clone();
         let versions = prop_oneof![
             30 => Just(ko_headers()),
-            1 => Just(format!("Ko-Protocol: 1.0\r\nKo-Vt: {vt}\r\n")),
+            1 => Just(format!("Ko-Protocol: 0.9\r\nKo-Vt: {vt}\r\n")),
             1 => Just(format!("Ko-Protocol: {}\r\n", ours.protocol)),
             1 => Just(String::new()),
         ];
@@ -666,5 +702,516 @@ mod tests {
             }
             prop_assert_eq!(server.status("GET /version", "\r\n"), "HTTP/1.1 200");
         }
+    }
+
+    struct Peer {
+        stream: UnixStream,
+        pending: Vec<u8>,
+        upgraded: bool,
+    }
+
+    impl Peer {
+        fn events(&mut self, server: &mut Harness) -> Vec<serde_json::Value> {
+            use std::io::Read;
+            for _ in 0..10 {
+                server.step(Mode::Peek);
+            }
+            let mut chunk = [0; 65536];
+            loop {
+                match self.stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(count) => self.pending.extend_from_slice(&chunk[..count]),
+                }
+            }
+            if !self.upgraded
+                && let Some(end) = self.pending.windows(4).position(|w| w == b"\r\n\r\n")
+            {
+                self.pending.drain(..end + 4);
+                self.upgraded = true;
+            }
+            let mut found = Vec::new();
+            while self.upgraded
+                && let Some(frame) = ws::parse_frame(&self.pending)
+                && self.pending.len() >= frame.header + frame.length
+            {
+                let bytes: Vec<u8> = self.pending.drain(..frame.header + frame.length).collect();
+                if frame.opcode == 1 {
+                    found.push(serde_json::from_slice(&bytes[frame.header..]).unwrap());
+                }
+            }
+            found
+        }
+
+        fn send(&mut self, server: &mut Harness, message: &str) {
+            self.stream.write_all(&text(message)).unwrap();
+            server.step(Mode::Peek);
+        }
+    }
+
+    impl Harness {
+        fn peer(&mut self, hello: &str) -> Peer {
+            let stream = self.connect(&[upgrade("/client"), text(hello)].concat());
+            stream.set_nonblocking(true).unwrap();
+            Peer {
+                stream,
+                pending: Vec::new(),
+                upgraded: false,
+            }
+        }
+
+        fn put(&mut self, edit: impl FnOnce(&mut serde_json::Value)) -> String {
+            let mut snapshot = serde_json::to_value(self.state.snapshot_layout()).unwrap();
+            edit(&mut snapshot["layout"]);
+            let body = snapshot.to_string();
+            self.reply(
+                "PUT /layout",
+                &format!("Content-Length: {}\r\n\r\n{body}", body.len()),
+            )
+        }
+
+        fn current(&self, client: u64) -> Option<crate::client::Current> {
+            self.state
+                .conns
+                .iter()
+                .filter_map(crate::state::client_of)
+                .find(|found| found.id == ClientId::new(client))
+                .and_then(|found| found.current())
+        }
+    }
+
+    fn hello(extra: &str, focused: bool, cols: u16, rows: u16) -> String {
+        hello_of("app", extra, focused, cols, rows)
+    }
+
+    fn hello_of(kind: &str, extra: &str, focused: bool, cols: u16, rows: u16) -> String {
+        format!(
+            r#"{{"type":"hello","kind":"{kind}","name":"t",{extra}"focused":{focused},"size":{{"cols":{cols},"rows":{rows}}}}}"#
+        )
+    }
+
+    fn cat() -> serde_json::Value {
+        json!({"command": {"type": "shell", "command": "exec cat"}})
+    }
+
+    fn kinds(events: &[serde_json::Value]) -> Vec<String> {
+        events
+            .iter()
+            .filter(|event| event["type"] != "status")
+            .map(|event| {
+                let kind = event["type"].as_str().unwrap_or_default();
+                match event["pane"].as_str() {
+                    Some(pane) if kind == "selected" => format!("selected {pane}"),
+                    _ => kind.to_owned(),
+                }
+            })
+            .collect()
+    }
+
+    fn windows(server: &Harness) -> Vec<(String, String, Vec<String>)> {
+        let layout = server.state.snapshot_layout().layout;
+        layout
+            .windows()
+            .map(|(session, window)| {
+                (
+                    session.id.to_string(),
+                    window.id.to_string(),
+                    window.panes().iter().map(ToString::to_string).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn three_windows(server: &mut Harness) {
+        let reply = server.put(|layout| {
+            let new_window = |name: &str| json!({"name": name, "tree": {"pane": {"new": cat()}}});
+            layout["sessions"][0]["windows"]
+                .as_array_mut()
+                .unwrap()
+                .push(new_window("second"));
+            layout["sessions"].as_array_mut().unwrap().push(json!({
+                "name": "other", "windows": [new_window("third")]
+            }));
+        });
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    }
+
+    use serde_json::json;
+
+    #[test]
+    fn a_client_gets_the_layout_after_its_welcome_and_every_change_after_that() {
+        let mut server = harness("layout-events");
+        let mut peer = server.peer(&hello("", false, 80, 24));
+        assert_eq!(kinds(&peer.events(&mut server)), ["welcome", "layout"]);
+        let reply = server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"}, {"pane": {"new": cat()}}]});
+        });
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        let events = peer.events(&mut server);
+        assert_eq!(kinds(&events), ["layout"]);
+        assert_eq!(events[0]["revision"], 2);
+        assert_eq!(
+            events[0]["layout"]["sessions"][0]["windows"][0]["tree"]["children"][1]["cols"],
+            39
+        );
+    }
+
+    #[test]
+    fn a_put_with_a_stale_revision_gets_409_and_the_current_document() {
+        let mut server = harness("stale");
+        let current = serde_json::to_value(server.state.snapshot_layout()).unwrap();
+        let stale = json!({"revision": 0, "layout": current["layout"]}).to_string();
+        let reply = server.reply(
+            "PUT /layout",
+            &format!("Content-Length: {}\r\n\r\n{stale}", stale.len()),
+        );
+        let (head, body) = reply.split_once("\r\n\r\n").unwrap();
+        assert!(head.starts_with("HTTP/1.1 409"), "{head}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            current
+        );
+        let get = server.reply("GET /layout", "\r\n");
+        let (_, body) = get.split_once("\r\n\r\n").unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            current
+        );
+    }
+
+    #[test]
+    fn a_failed_pane_start_rolls_the_whole_put_back() {
+        let mut server = harness("rollback");
+        let before = server.state.snapshot_layout();
+        let reply = server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"}, {"pane": {"new": cat()}},
+                {"pane": {"new": {"cwd": "/nonexistent"}}}]});
+        });
+        assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
+        assert_eq!(server.state.snapshot_layout(), before);
+        assert_eq!(server.state.panes.len(), 1);
+    }
+
+    #[test]
+    fn select_switch_and_the_selected_event_move_only_the_one_client() {
+        let mut server = harness("select");
+        three_windows(&mut server);
+        assert_eq!(windows(&server).len(), 3);
+        let mut a = server.peer(&hello(r#""pane":"pane_1","#, false, 80, 24));
+        let mut b = server.peer(&hello("", false, 80, 24));
+        assert_eq!(kinds(&a.events(&mut server)), ["welcome", "layout"]);
+        assert_eq!(kinds(&b.events(&mut server)), ["welcome", "layout"]);
+        assert_eq!(server.current(2), None);
+        let window_of = |server: &Harness, client| {
+            server
+                .current(client)
+                .map(|c| (c.window.to_string(), c.pane.to_string()))
+        };
+        a.send(
+            &mut server,
+            r#"{"type":"switch","over":"window","direction":"next"}"#,
+        );
+        assert_eq!(kinds(&a.events(&mut server)), ["selected pane_2"]);
+        a.send(
+            &mut server,
+            r#"{"type":"switch","over":"session","direction":"next"}"#,
+        );
+        assert_eq!(kinds(&a.events(&mut server)), ["selected pane_3"]);
+        a.send(
+            &mut server,
+            r#"{"type":"switch","over":"window","direction":"next"}"#,
+        );
+        assert_eq!(kinds(&a.events(&mut server)), ["selected pane_1"]);
+        a.send(
+            &mut server,
+            r#"{"type":"switch","over":"session","direction":"previous"}"#,
+        );
+        assert_eq!(
+            window_of(&server, 1),
+            Some(("window_3".to_owned(), "pane_3".to_owned()))
+        );
+        a.send(
+            &mut server,
+            r#"{"type":"switch","over":"session","direction":"previous"}"#,
+        );
+        assert_eq!(
+            window_of(&server, 1),
+            Some(("window_1".to_owned(), "pane_1".to_owned()))
+        );
+        a.events(&mut server);
+        a.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
+        assert!(kinds(&a.events(&mut server)).is_empty());
+        a.send(&mut server, r#"{"type":"select","session":"session_1"}"#);
+        assert_eq!(kinds(&a.events(&mut server)), ["selected pane_2"]);
+        a.send(&mut server, r#"{"type":"select","window":"window_9"}"#);
+        assert!(kinds(&b.events(&mut server)).is_empty());
+        assert_eq!(server.current(2), None);
+        let body = r#"{"window":"window_3"}"#;
+        let post = |server: &mut Harness, client: &str, body: &str| {
+            server.status(
+                &format!("POST /clients/{client}/select"),
+                &format!("Content-Length: {}\r\n\r\n{body}", body.len()),
+            )
+        };
+        assert_eq!(post(&mut server, "client_2", body), "HTTP/1.1 200");
+        assert_eq!(kinds(&b.events(&mut server)), ["selected pane_3"]);
+        assert!(kinds(&a.events(&mut server)).is_empty());
+        assert_eq!(post(&mut server, "client_9", body), "HTTP/1.1 404");
+        assert_eq!(post(&mut server, "client_2", "{}"), "HTTP/1.1 400");
+        assert_eq!(
+            post(&mut server, "client_2", r#"{"pane":"pane_9"}"#),
+            "HTTP/1.1 400"
+        );
+    }
+
+    #[test]
+    fn removing_the_current_pane_or_window_moves_the_client_and_ends_the_empty_window() {
+        let mut server = harness("remove");
+        three_windows(&mut server);
+        server.put(|layout| {
+            layout["sessions"][0]["windows"][1]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_2"}, {"pane": {"new": cat()}}]});
+        });
+        let mut peer = server.peer(&hello(r#""pane":"pane_2","#, false, 80, 24));
+        peer.events(&mut server);
+        assert_eq!(
+            server.reply("DELETE /panes/pane_2", "\r\n")[..12].to_owned(),
+            "HTTP/1.1 200"
+        );
+        assert_eq!(
+            kinds(&peer.events(&mut server)),
+            ["layout", "selected pane_4"]
+        );
+        server.reply("DELETE /panes/pane_4", "\r\n");
+        assert_eq!(
+            kinds(&peer.events(&mut server)),
+            ["layout", "selected pane_3"]
+        );
+        assert_eq!(
+            windows(&server)
+                .iter()
+                .map(|w| w.1.clone())
+                .collect::<Vec<_>>(),
+            ["window_1", "window_3"]
+        );
+        server.reply("DELETE /panes/pane_3", "\r\n");
+        server.reply("DELETE /panes/pane_1", "\r\n");
+        assert_eq!(server.state.snapshot_layout().layout.sessions, vec![]);
+        assert_eq!(server.current(1), None);
+        assert_eq!(server.state.panes.len(), 0);
+    }
+
+    #[test]
+    fn a_pane_whose_process_fails_leaves_the_document_but_an_exited_program_stays() {
+        let mut server = harness("death");
+        three_windows(&mut server);
+        server
+            .state
+            .panes
+            .find(crate::ids::PaneId::new(3))
+            .unwrap()
+            .proc()
+            .kill()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while windows(&server).len() == 3 && std::time::Instant::now() < deadline {
+            server.step(Mode::Wait);
+        }
+        assert_eq!(windows(&server).len(), 2);
+    }
+
+    #[test]
+    fn a_window_takes_the_size_of_the_client_that_shows_it_and_its_panes_follow() {
+        let mut server = harness("sizing");
+        three_windows(&mut server);
+        server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"}, {"pane": {"new": cat()}}]});
+        });
+        let size = |server: &Harness, pane: u64| {
+            let size = server
+                .state
+                .panes
+                .find(crate::ids::PaneId::new(pane))
+                .unwrap()
+                .size();
+            (size.cols.get(), size.rows.get())
+        };
+        let window = |server: &Harness, id: &str| {
+            let layout = server.state.snapshot_layout().layout;
+            let (_, window) = layout
+                .windows()
+                .find(|(_, w)| w.id.to_string() == id)
+                .unwrap();
+            (window.cols.get(), window.rows.get())
+        };
+        let mut a = server.peer(&hello(r#""pane":"pane_1","#, true, 100, 30));
+        a.events(&mut server);
+        assert_eq!(window(&server, "window_1"), (100, 30));
+        assert_eq!((size(&server, 1), size(&server, 4)), ((50, 30), (49, 30)));
+        let mut b = server.peer(&hello(r#""pane":"pane_1","#, false, 60, 20));
+        b.events(&mut server);
+        assert_eq!(window(&server, "window_1"), (100, 30));
+        b.send(&mut server, r#"{"type":"size","cols":61,"rows":21}"#);
+        assert_eq!(window(&server, "window_1"), (100, 30));
+        b.send(&mut server, r#"{"type":"focused","focused":true}"#);
+        assert_eq!(window(&server, "window_1"), (61, 21));
+        a.send(&mut server, r#"{"type":"size","cols":90,"rows":25}"#);
+        assert_eq!(window(&server, "window_1"), (61, 21));
+        a.send(&mut server, r#"{"type":"select","window":"window_2"}"#);
+        assert_eq!(window(&server, "window_2"), (90, 25));
+        assert_eq!(size(&server, 2), (90, 25));
+        drop(b);
+        for _ in 0..20 {
+            server.step(Mode::Peek);
+        }
+        assert_eq!(window(&server, "window_1"), (61, 21));
+    }
+
+    #[test]
+    fn a_terminal_client_sizes_only_a_window_with_one_pane_and_no_floats() {
+        let mut server = harness("terminal-sizing");
+        three_windows(&mut server);
+        server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"}, {"pane": {"new": cat()}}]});
+        });
+        let mut peer = server.peer(&hello_of("terminal", r#""pane":"pane_1","#, true, 70, 20));
+        peer.events(&mut server);
+        let layout = server.state.snapshot_layout().layout;
+        assert_eq!(
+            layout
+                .window(crate::ids::WindowId::new(1))
+                .unwrap()
+                .1
+                .cols
+                .get(),
+            80
+        );
+        peer.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
+        peer.send(&mut server, r#"{"type":"size","cols":71,"rows":21}"#);
+        let layout = server.state.snapshot_layout().layout;
+        assert_eq!(
+            layout
+                .window(crate::ids::WindowId::new(2))
+                .unwrap()
+                .1
+                .cols
+                .get(),
+            71
+        );
+    }
+
+    #[test]
+    fn a_program_sees_focus_while_a_focused_client_shows_its_pane() {
+        let mut server = harness("focus");
+        three_windows(&mut server);
+        let focused = |server: &Harness| -> Vec<bool> {
+            (1..=3)
+                .map(|pane| {
+                    server
+                        .state
+                        .panes
+                        .find(crate::ids::PaneId::new(pane))
+                        .unwrap()
+                        .focused()
+                })
+                .collect()
+        };
+        assert_eq!(focused(&server), [false, false, false]);
+        let mut a = server.peer(&hello(r#""pane":"pane_1","#, true, 80, 24));
+        a.events(&mut server);
+        assert_eq!(focused(&server), [true, false, false]);
+        let mut b = server.peer(&hello(r#""pane":"pane_1","#, false, 80, 24));
+        b.events(&mut server);
+        a.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
+        assert_eq!(focused(&server), [false, true, false]);
+        b.send(&mut server, r#"{"type":"focused","focused":true}"#);
+        assert_eq!(focused(&server), [true, true, false]);
+        a.send(&mut server, r#"{"type":"focused","focused":false}"#);
+        assert_eq!(focused(&server), [true, false, false]);
+        drop(b);
+        for _ in 0..20 {
+            server.step(Mode::Peek);
+        }
+        assert_eq!(focused(&server), [false, false, false]);
+    }
+
+    #[test]
+    fn a_window_returns_a_client_to_the_pane_that_was_focused_last() {
+        let mut server = harness("last-focused");
+        three_windows(&mut server);
+        server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"}, {"pane": {"new": cat()}}]});
+        });
+        let mut peer = server.peer(&hello(r#""pane":"pane_4","#, true, 80, 24));
+        peer.events(&mut server);
+        peer.send(&mut server, r#"{"type":"select","window":"window_2"}"#);
+        peer.events(&mut server);
+        peer.send(&mut server, r#"{"type":"select","window":"window_1"}"#);
+        assert_eq!(kinds(&peer.events(&mut server)), ["selected pane_4"]);
+    }
+
+    #[test]
+    fn only_a_client_with_a_focused_terminal_changes_the_last_focused_pane_of_a_window() {
+        let mut server = harness("focus-notes");
+        three_windows(&mut server);
+        server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"}, {"pane": {"new": cat()}}]});
+        });
+        let pane_of = |server: &Harness, client| server.current(client).unwrap().pane.to_string();
+        let _unfocused = server.peer(&hello(r#""pane":"pane_1","#, false, 80, 24));
+        let _focused = server.peer(&hello(r#""pane":"pane_4","#, true, 80, 24));
+        let _third = server.peer(&hello(r#""window":"window_1","#, false, 80, 24));
+        assert_eq!(pane_of(&server, 3), "pane_4");
+        let mut gains = server.peer(&hello(r#""pane":"pane_1","#, false, 80, 24));
+        gains.send(&mut server, r#"{"type":"select","pane":"pane_4"}"#);
+        let _fourth = server.peer(&hello(r#""window":"window_1","#, false, 80, 24));
+        assert_eq!(
+            pane_of(&server, 5),
+            "pane_4",
+            "an unfocused select notes nothing"
+        );
+        gains.send(&mut server, r#"{"type":"select","pane":"pane_1"}"#);
+        gains.send(&mut server, r#"{"type":"focused","focused":true}"#);
+        let _fifth = server.peer(&hello(r#""window":"window_1","#, false, 80, 24));
+        assert_eq!(
+            pane_of(&server, 6),
+            "pane_1",
+            "gaining focus notes the shown pane"
+        );
+    }
+
+    #[test]
+    fn a_failed_put_keeps_the_ids_it_handed_out() {
+        let mut server = harness("ids");
+        let reply = server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"}, {"pane": {"new": cat()}},
+                {"pane": {"new": {"cwd": "/nonexistent"}}}]});
+        });
+        assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
+        assert_eq!(server.state.panes.len(), 1);
+        let reply = server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"}, {"pane": {"new": cat()}}]});
+        });
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        let panes = windows(&server)[0].2.clone();
+        assert_eq!(panes, ["pane_1", "pane_4"]);
+    }
+
+    #[test]
+    fn clearing_the_history_answers_an_empty_object_and_an_unknown_pane_is_not_found() {
+        let mut server = harness("clear-history");
+        let ok = server.reply("POST /panes/pane_1/clear_history", "\r\n");
+        assert!(ok.starts_with("HTTP/1.1 200") && ok.ends_with("{}"), "{ok}");
+        assert_eq!(
+            server.status("POST /panes/pane_9/clear_history", "\r\n"),
+            "HTTP/1.1 404"
+        );
     }
 }

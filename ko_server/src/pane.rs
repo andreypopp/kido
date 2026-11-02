@@ -1,13 +1,12 @@
 use std::io;
-use std::path::Path;
 
 use ko_pane_wire::frame::Size;
 
 use crate::config::Config;
 use crate::delivery::Stamps;
-use crate::ids::{ClientId, PaneId};
+use crate::ids::PaneId;
 use crate::model::PaneModel;
-use crate::pane_proc::{Io, PaneProc};
+use crate::pane_proc::{Input, Io, Launch, PaneProc};
 use crate::telemetry::Telemetry;
 use crate::vars::Vars;
 
@@ -17,7 +16,7 @@ pub(crate) struct Pane {
     proc: PaneProc,
     command: Vec<Vec<u8>>,
     size: Size,
-    sizer: Option<ClientId>,
+    focused: bool,
     telemetry: Telemetry,
     vars: Vars,
     model: PaneModel,
@@ -26,21 +25,19 @@ pub(crate) struct Pane {
 impl Pane {
     pub(crate) fn spawn(
         config: &Config,
-        id: PaneId,
-        cwd: &Path,
-        command: Vec<Vec<u8>>,
-        env: &[Vec<u8>],
+        launch: &Launch<'_>,
+        vars: Vars,
         stamps: &mut Stamps,
         io: &mut Io<'_>,
     ) -> io::Result<Pane> {
         Ok(Pane {
-            id,
-            proc: PaneProc::spawn(config, id, cwd, &command, env, stamps, io)?,
-            command,
-            size: Size::DEFAULT,
-            sizer: None,
+            id: launch.id,
+            proc: PaneProc::spawn(config, launch, stamps, io)?,
+            command: launch.argv.to_vec(),
+            size: launch.size,
+            focused: false,
             telemetry: Telemetry::default(),
-            vars: Vars::default(),
+            vars,
             model: PaneModel::default(),
         })
     }
@@ -89,10 +86,6 @@ impl Pane {
         &self.command
     }
 
-    pub(crate) fn sizer(&self) -> Option<ClientId> {
-        self.sizer
-    }
-
     pub(crate) fn resize(&mut self, size: Size, io: &mut Io<'_>) {
         if self.size != size {
             self.size = size;
@@ -100,8 +93,20 @@ impl Pane {
         }
     }
 
-    pub(crate) fn claim(&mut self, client: ClientId, size: Size, io: &mut Io<'_>) {
-        self.sizer = Some(client);
-        self.resize(size, io);
+    #[cfg(test)]
+    pub(crate) fn size(&self) -> Size {
+        self.size
+    }
+
+    #[cfg(test)]
+    pub(crate) fn focused(&self) -> bool {
+        self.focused
+    }
+
+    pub(crate) fn focus(&mut self, focused: bool, io: &mut Io<'_>) {
+        if self.focused != focused {
+            self.focused = focused;
+            let _ = self.proc.input(Input::Focus(focused), io);
+        }
     }
 }

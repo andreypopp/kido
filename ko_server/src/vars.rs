@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::VarName;
@@ -10,7 +11,7 @@ const MAX_TOTAL: usize = 8 << 20;
 const MAX_NAMES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Refusal {
+pub enum Refusal {
     ValueTooLarge,
     TotalTooLarge,
     TooManyNames,
@@ -20,24 +21,66 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Refusal::ValueTooLarge => "variable too large",
-            Refusal::TotalTooLarge => "pane variables too large",
+            Refusal::TotalTooLarge => "variables too large",
             Refusal::TooManyNames => "too many variables",
         })
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct Vars {
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    try_from = "BTreeMap<VarName, Value>",
+    into = "BTreeMap<VarName, Value>"
+)]
+pub struct Vars {
     map: BTreeMap<VarName, (Value, usize)>,
     bytes: usize,
 }
 
+pub type Loose = BTreeMap<String, Value>;
+
+impl TryFrom<BTreeMap<VarName, Value>> for Vars {
+    type Error = Refusal;
+
+    fn try_from(map: BTreeMap<VarName, Value>) -> Result<Vars, Refusal> {
+        let mut vars = Vars::default();
+        for (name, value) in map {
+            vars.set(&name, value)?;
+        }
+        Ok(vars)
+    }
+}
+
+impl From<Vars> for BTreeMap<VarName, Value> {
+    fn from(vars: Vars) -> BTreeMap<VarName, Value> {
+        vars.map
+            .into_iter()
+            .map(|(name, (value, _))| (name, value))
+            .collect()
+    }
+}
+
 impl Vars {
-    pub(crate) fn snapshot(&self) -> BTreeMap<VarName, Value> {
+    pub(crate) fn checked(loose: Loose) -> Result<Vars, String> {
+        let mut map = BTreeMap::new();
+        for (name, value) in loose {
+            map.insert(
+                VarName::new(&name).map_err(|invalid| invalid.to_string())?,
+                value,
+            );
+        }
+        Vars::try_from(map).map_err(|refusal| refusal.to_string())
+    }
+
+    pub(crate) fn loose(&self) -> Loose {
         self.map
             .iter()
-            .map(|(name, (value, _))| (name.clone(), value.clone()))
+            .map(|(name, (value, _))| (name.as_str().to_owned(), value.clone()))
             .collect()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.map.is_empty()
     }
 
     pub(crate) fn all(&self) -> BTreeMap<&VarName, &Value> {
@@ -55,7 +98,7 @@ impl Vars {
         self.get(name).and_then(Value::as_str)
     }
 
-    pub(crate) fn set(&mut self, name: &VarName, value: Value) -> Result<bool, Refusal> {
+    pub fn set(&mut self, name: &VarName, value: Value) -> Result<bool, Refusal> {
         let old = self.map.get(name);
         if old.is_some_and(|(old, _)| *old == value) {
             return Ok(false);
@@ -80,7 +123,7 @@ impl Vars {
         Ok(true)
     }
 
-    pub(crate) fn remove(&mut self, name: &VarName) -> bool {
+    pub fn remove(&mut self, name: &VarName) -> bool {
         match self.map.remove(name) {
             Some((_, weight)) => {
                 self.bytes = self.bytes.saturating_sub(weight);

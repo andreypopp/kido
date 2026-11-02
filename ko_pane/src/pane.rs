@@ -277,6 +277,7 @@ fn simple(live: &mut Option<Live>, out: &mut Out, request: Request<'_>) -> Resul
                 .map_err(invalid)?;
             screen.chunk(true)?;
         }
+        Request::ClearHistory => live.vt.write(b"\x1b[3J"),
         Request::Exit => out.stopping = true,
         Request::Init(_) | Request::Resize(_) | Request::Snapshot { .. } => {
             return Err(Fault::Invalid);

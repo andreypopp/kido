@@ -452,8 +452,12 @@ mod tests {
                 argv: vec!["/bin/sleep".to_owned(), "30".to_owned()],
             }),
             env: Vec::new(),
+            vars: Default::default(),
         };
-        let id = server.state.add_pane(&mut server.poll, &request).unwrap();
+        let id = server
+            .state
+            .new_session(&mut server.poll, &request)
+            .unwrap();
         let program = loop {
             server.turn().unwrap();
             let pane = server.state.panes.find(id).unwrap();

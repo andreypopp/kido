@@ -33,7 +33,7 @@ From the code at 476db906, not from the RFCs.
 | proofs | Verus on `ko_pane_wire::ring`, `ko_server::delivery`, `ko_server::view`, `conn::Batch`; loom on the ring handshake |
 | tests | `ko_e2e` (28 tests, the test process is the outer terminal), unit and proptest modules, the view harness, 10 fuzz targets, Miri |
 | platform | macOS; RL adds Linux and CI |
-| protocol | 2.0, serde internal tagging, `kind`-flattened errors |
+| protocol | serde internal tagging, `kind`-flattened errors |
 | crates | `libc`, `httparse`, `tungstenite` (`handshake`), `serde`, `serde_json`, `vte`, `clap`, `vstd` |
 
 Facts that change the earlier plan:
@@ -71,7 +71,7 @@ code has; "missing" names the work; "stage" names the stage below.
 | sessions and windows (list, create, kill, rename, select, switch, events) | flat pane set; `topology` event | the layout document, `GET`/`PUT /layout`, revision and `409`, the `layout` event, per-client current session and window, `select` and `switch` with session and window, `POST /clients/client_N/select` | K2 |
 | the split tree (split, kill, move, swap, resize, equalize, layout events) | none | `tree` per window with normalization, pane creation inside a `PUT` (`{new}`), `DELETE` that gives cells to the sibling | K2 |
 | floats (`new-pane -x/-y`, raise, geometry) | none | `floats` per window with `x, y, cols, rows, z, border, title`, clamped into the window | K2 |
-| active pane | `select {pane}` per client | `active` per window in the document | K2 |
+| active pane | `select {pane}` per client | the current session, window and pane per client; the last focused pane per window in the coordinator | K2 |
 | window size and cell pixels | per-pane sizer, `size` on `/client` with `cell_px` | the sizing client per window, the tree scaled to the window, pty sizes from leaves | K2 |
 | pane content (output, input, pause, resume) | views, snapshots, skips, input events, resume by offset | nothing | done |
 | restore and Load more | full and screen snapshots, `/screen` | nothing | done |
@@ -159,7 +159,7 @@ never periodic), as plan decision 19 requires. The model runs whether
 or not a client is registered, because `GET /panes` and `POST /prompt`
 read `status` with no client; only the event's JSON is built for a
 registered client (decision 73). The `status.kind` JSON takes
-protocol 2.0's form: `#[serde(tag = "type")]` enums for the pane kind
+the protocol's form: `#[serde(tag = "type")]` enums for the pane kind
 and for each status, not kido's `["Terminal", {...}]` arrays that
 s1.md 6.4 still shows (the handover flagged s1.md:325). Kido.app
 decodes the new form in K5, so nothing depends on the old one.
@@ -220,10 +220,10 @@ last stage.
 
 ### 4.7 The protocol's shapes and versions
 
-Protocol 2.0 is the base. K0 appends `instance` to `welcome` (2.1).
-K1 appends (2.2). K2 removes `POST /panes`
-and the `topology` event and changes `hello`, so it is a major bump
-(3.0). K3 and K6 append. K7 and K9 add nothing to the wire.
+The protocol version changes only with a release. Between releases,
+a change of shape changes the docs and both clients in the same
+commit, and the version stays the same. ko has had no release, so
+the version is 1.0 (decided 2026-11-02).
 
 ### 4.8 The Verus boundary
 
@@ -315,7 +315,7 @@ wire layer, the API client and the `/client` event handling that were in
 `ko_tui`; `ko_tui` depends on it. The protocol types stay in
 `ko_server::protocol` until a later stage moves them (4.10). The
 `welcome` event carries `instance`, the server process's identity,
-and `ko_client` keeps it beside the client id. Protocol 2.1.
+and `ko_client` keeps it beside the client id.
 
 ### K1. Status, pane variables, `ko shell`, `ko ssh` (done)
 
@@ -340,7 +340,7 @@ Scope:
   (the store and limits). `Pane` gains the fields of s1.md 3.
   `protocol.rs`: the row fields `foreground`, `status`, `vars`; the
   events `status`, `var`, `var_deleted`, `bell`, `notify`,
-  `progress`; the routes under `/panes/pane_N/vars`. Protocol 2.2.
+  `progress`; the routes under `/panes/pane_N/vars`.
 - A new workspace crate `ko_shell`: `prime.rs`, `shell.rs`, `ssh.rs`,
   `bin_dir.rs`, ports of `lib/prime.ml`, `shell.ml`, `ssh.ml` and
   `bin_dir.ml`, with the shell integrations and shims embedded with
@@ -366,7 +366,7 @@ a test sends as `text` input, and libghostty-vt parses them.
 Risk: low. The rules exist and are tested; the port is mechanical.
 The one new mechanism is the model tick on the loop.
 
-Built (2026-11-02, protocol 2.2). The differences from s1.md, with
+Built (2026-11-02). The differences from s1.md, with
 their decisions:
 
 - The foreground check also runs at OSC 133 `A`, and its output
@@ -376,8 +376,8 @@ their decisions:
   by the user, because ssh prints at once.
 - Status times are `Mono` nanoseconds; `welcome` and every `status`
   event carry the server's `now` (protocol.md 2).
-- A `topology` row has no variables; a client reads them from
-  `GET /panes` (protocol.md 6). A variable value is at most
+- A `layout` event has no pane rows and so no variables; a client
+  reads them from `GET /panes` (protocol.md 6). A variable value is at most
   1,044,480 bytes, so its event fits in one 1 MiB message (4.2).
 - The seen rule, the mark choice and the row title rule are in
   `ko_client`, for both clients; `ko_tui` draws the glyphs and
@@ -408,7 +408,7 @@ Open after K1: the done criteria of s1.md 12 that are measurements
 probes of the ssh bootstrap against an unconfigured zsh and bash,
 which the host-ssh e2e tests cover only with `KO_E2E_HOST_SSH=1`.
 
-### K2. The layout document (8 to 11 agent-days)
+### K2. The layout document (8 to 11 agent-days, built)
 
 Depends on nothing. Runs beside K1. migration.md section 3 is the
 specification.
@@ -423,7 +423,6 @@ Scope:
   `GET`/`PUT /layout`, the `layout` event, `hello {session?, window?,
   pane?}`, `select`, `switch`, `POST /clients/client_N/select`,
   the `clear_history` request. `POST /panes` and `topology` go.
-  Protocol 3.0.
 - Sizing per window: `Pane.sizer` moves to the window; a leaf's pty
   size follows its cell geometry; a window with no sizing client keeps
   its last size, 80x24 at creation.
@@ -436,6 +435,83 @@ Scope:
   leaf is smaller or larger than the pane region.
 - CLI: `ko panes [--json]`, `ko layout`, `ko layout put FILE` with
   the retry.
+
+Shapes decided by the user for K2 (2026-11-02):
+
+- The document has no `active`. Each client keeps its current
+  session, window and pane on the server. `select {session?, window?,
+  pane?}` on `/client` changes only that client: a pane implies its
+  window and session; a window implies its session; a session implies
+  this client's last current window in it, else its first window. It
+  never changes the document or its revision.
+- The coordinator keeps, per window and outside the document, the pane
+  that a client focused most recently in it. A client that enters a
+  window where it has no current pane gets that pane. A new window
+  starts with its first leaf; when that pane goes, the window's next
+  pane in document order. A client focuses a pane when its terminal
+  has focus and the pane becomes its current pane, or when its
+  terminal gains focus on its current pane; a selection by a client
+  without focus does not count.
+- A pane is focused for its program (focus reporting) while at least
+  one client with a focused terminal shows it as its current pane.
+  Derived from the clients, not stored.
+- `switch {over: "session" | "window", direction: "next" |
+  "previous"}` moves the client in document order and wraps.
+  `POST /clients/client_N/select` takes the `select` body and answers
+  `{}`, `not_found` for an unknown client. The event `selected
+  {session?, window?, pane?}` goes to a client only when something
+  other than its own `select` moved it: its `switch`, a `POST` from
+  another connection, or the removal of its current pane or window.
+- A session or window without `id` in a `PUT` is new; the server
+  allocates its id. A new pane is `{new: {cwd?, command?, env?,
+  vars?}}`; K3 adds `run`.
+- `POST /panes/pane_N/clear_history` answers `{}`. Every mirror of
+  the pane stays equal to the pane's terminal after it.
+- A float's `cols` x `rows` is its pty size; with `border` the
+  rectangle and one cell on each side are clamped into the window.
+  `zoom` gives that pane the window's size; the other leaves keep
+  theirs.
+- The server starts with an empty document. A client that finds it
+  empty (the terminal client, Kido.app) `PUT`s one new session with
+  one new pane.
+
+Built on `ko-k2` (2026-11-02), for the K1 merge and later stages:
+
+- `clear_history` is a `ko-pane` frame that feeds `CSI 3 J` to the
+  pane's own terminal and writes nothing into the ring; the
+  coordinator then asks a full snapshot for every view of the pane,
+  as a resync does. No verified module changed.
+- `ko layout put FILE` (`-` is standard input) sends the file's
+  `revision`, else the current one; on `409` it sends the file's
+  layout again with the current revision, at most 8 times. The file
+  is a whole document, so the last writer wins; a document that omits
+  a pane that a concurrent `PUT` created is `invalid`.
+  `ko_client::layout::edit` is the read-edit-`PUT` loop with the same
+  bound for a client that edits the document.
+- `ko_client::Model::rejoin` is the reconnect gate: the same
+  `instance` resumes, another one starts fresh. The terminal client
+  does not reconnect, so only Kido.app (K5) will call it.
+Merged with K1 (2026-11-02):
+
+- One `Vars` type (`ko_server/src/vars.rs`) validates on decode with
+  the limits of the vars route. Pane variables, a new pane's `vars`
+  and session and window `vars` use it.
+- `ko_client::Model` owns the `GET /panes` read. K1's event buffer
+  went: the read blocks, so the events queued on `/client` during it
+  are applied after it in order (protocol.md 6). The model keeps
+  variables without limits, because an older event applied over the
+  read can pass through a state over a limit. It drops a row that the
+  layout no longer has. A `layout` event whose pane set differs from
+  the rows starts a new read.
+- The grouped list shows K1's mark column on pane rows; a session
+  header has no mark.
+- The `ko-pane` frame `clear_history` has kind 28, because K1's
+  `foreground` took 23.
+- A refused `vars` inside a `PUT` is `invalid`, and its message names
+  the refusal, as on the vars route.
+- The fuzz corpora still carry the shapes before K2 (`POST /panes`, a hello
+  with `pane`, view `focus`); they replay as error paths. A corpus
+  migration waits for the next change that needs new inputs.
 
 Tests that close it: every edit of migration.md section 2's table
 through `ko layout put` and the Rust client, with the normalized
@@ -757,7 +833,7 @@ status glyphs and colours in the terminal client; the record set in
 the coordinator; the 0.5 s green hold dropped; no `ko.conf`.
 
 One flagged change: the status `kind` JSON shape (4.3) follows
-protocol 2.0's tagging, not the kido RPC shape that s1.md 6.4 names.
+the protocol's tagging, not the kido RPC shape that s1.md 6.4 names.
 The decision of 2026-10-31 that the code is the source of every
 message shape covers this.
 

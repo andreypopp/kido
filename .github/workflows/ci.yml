@@ -264,7 +264,7 @@ jobs:
 
       - name: Verify ko
         timeout-minutes: 25
-        run: KO_VERUS_REQUIRED=1 make verify-ko STAGES="build-ko unit-ko e2e-ko lint-rs verus"
+        run: KO_VERUS_REQUIRED=1 KO_E2E_HOST_SSH=1 make verify-ko STAGES="build-ko unit-ko e2e-ko lint-rs verus"
 
       - name: TypeScript tests
         timeout-minutes: 10

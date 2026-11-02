@@ -111,7 +111,7 @@ fn client_lifecycle() {
     o.contains("pane-two");
     o.raw(CHORD_UP);
     o.contains("pane-one");
-    o.click(3, 2);
+    o.click(3, 3);
     o.contains("pane-two");
 
     o.chord('e');
@@ -141,6 +141,95 @@ fn client_lifecycle() {
     o.wait("outer mouse reporting on after the default pager", || {
         o.mouse_reporting()
     });
+    o.detach();
+}
+
+#[test]
+fn client_removing_the_only_pane_opens_a_replacement_that_takes_input() {
+    let s = start(&[]);
+    s.pane("printf 'last words\\n'; exit 3");
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("[exited 3 \u{2014} Ctrl+D to remove]");
+    o.ctrl('d');
+    o.wait("the replacement pane", || {
+        s.pane_pids()
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .eq(["pane_2"])
+    });
+    o.line("printf 'REPL-%s\\n' ACED");
+    o.contains("REPL-ACED");
+    o.gone("Ctrl+D to remove");
+    o.detach();
+}
+
+#[test]
+fn client_grouped_list_crosses_sessions_and_adds_a_window_to_the_shown_session() {
+    let s = start(&[]);
+    let named = |name: &str| {
+        let command = format!("printf '\\033]0;{name}-title\\007pane-{name}\\n'; exec cat");
+        serde_json::json!({"pane": {"new": crate::harness::sh(&command)}})
+    };
+    let sessions = ["alpha", "beta", "gamma"].map(
+        |name| serde_json::json!({"name": name, "windows": [{"name": "w", "tree": named(name)}]}),
+    );
+    s.put(&serde_json::json!({"layout": {"sessions": sessions}}));
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("pane-alpha");
+    let rows = |o: &Outer| -> Vec<String> {
+        o.lines()
+            .iter()
+            .take(7)
+            .map(|line| {
+                line.chars()
+                    .take(PANE_X - 1)
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            })
+            .collect()
+    };
+    o.wait("the grouped list", || {
+        rows(&o)
+            == [
+                "alpha",
+                "1  alpha-title",
+                "beta",
+                "2  beta-title",
+                "gamma",
+                "3  gamma-title",
+                "",
+            ]
+    });
+    o.raw(CHORD_DOWN);
+    o.contains("pane-beta");
+    o.raw(CHORD_DOWN);
+    o.contains("pane-gamma");
+    o.raw(CHORD_DOWN);
+    o.contains("pane-alpha");
+    o.raw(CHORD_UP);
+    o.contains("pane-gamma");
+    o.raw(CHORD_DOWN);
+    o.contains("pane-alpha");
+
+    o.chord('n');
+    o.wait(
+        "the new window's pane listed under the shown session",
+        || {
+            let rows = rows(&o);
+            rows[..2] == ["alpha", "1  alpha-title"]
+                && rows[2]
+                    .strip_prefix("2  ")
+                    .is_some_and(|title| !title.is_empty())
+                && rows[3..] == ["beta", "3  beta-title", "gamma", "4  gamma-title"]
+        },
+    );
+    let document = s.doc();
+    let alpha = &document["layout"]["sessions"][0]["windows"];
+    assert_eq!(alpha.as_array().map(Vec::len), Some(2));
+    assert_eq!(alpha[1]["tree"]["pane"], serde_json::json!("pane_4"));
     o.detach();
 }
 
@@ -476,7 +565,7 @@ fn client_initial_cursor_and_synchronized_output() {
     s.text(&pane, "r");
     let shell = s.pane("printf '\\033]0;shell\\007'; exec /bin/sh");
     o.contains("2  shell");
-    o.click(3, 2);
+    o.click(3, 3);
     s.text(&shell, "printf 'SWITCHED\\n'\n");
     o.contains("SWITCHED");
     o.quiet();
@@ -522,7 +611,8 @@ fn client_sidebar_ownership() {
         let bytes = line.as_bytes();
         let line = String::from_utf8_lossy(&bytes[..bytes.len().min(24)]).into_owned();
         let text = line.trim();
-        if (y == 0 && text == "1  fixture") || text.starts_with("ko:") {
+        if (y == 0 && text == "test") || (y == 1 && text == "1  fixture") || text.starts_with("ko:")
+        {
             continue;
         }
         assert!(text.is_empty(), "stale sidebar cells in row {y}: {line:?}");
@@ -696,9 +786,9 @@ fn client_dead_pane_line() {
         });
     };
     line("[exited 3 \u{2014} Ctrl+D to remove]");
-    o.click(3, 2);
-    line("[killed by SIGTERM \u{2014} Ctrl+D to remove]");
     o.click(3, 3);
+    line("[killed by SIGTERM \u{2014} Ctrl+D to remove]");
+    o.click(3, 4);
     o.contains("live");
     o.gone("Ctrl+D");
     o.detach();
@@ -812,46 +902,46 @@ fn sidebar_mark_column() {
 
     s.text(&second, "sleep 1\r");
     o.wait("a green running mark", || {
-        o.lines()[1].starts_with("2 \u{25fc}sleep 1")
-            && mark(&o, 1) == ("\u{25fc}".into(), green, false, false)
+        o.lines()[2].starts_with("2 \u{25fc}sleep 1")
+            && mark(&o, 2) == ("\u{25fc}".into(), green, false, false)
     });
     o.wait("a green done mark", || {
-        o.lines()[1].starts_with("2 \u{2713}zsh")
-            && mark(&o, 1) == ("\u{2713}".into(), green, true, false)
+        o.lines()[2].starts_with("2 \u{2713}zsh")
+            && mark(&o, 2) == ("\u{2713}".into(), green, true, false)
     });
     s.text(&second, "false\r");
     o.wait("a red failed mark", || {
-        o.lines()[1].starts_with("2 \u{25fc}zsh")
-            && mark(&o, 1) == ("\u{25fc}".into(), Colour::Indexed(1), false, false)
+        o.lines()[2].starts_with("2 \u{25fc}zsh")
+            && mark(&o, 2) == ("\u{25fc}".into(), Colour::Indexed(1), false, false)
     });
 
     o.raw(CHORD_DOWN);
     o.wait("the visit clears the mark", || {
-        o.lines()[1].starts_with("2  zsh") && mark(&o, 1).3
+        o.lines()[2].starts_with("2  zsh") && mark(&o, 2).3
     });
     o.raw(CHORD_UP);
     o.wait("the first pane shown again", || {
-        mark(&o, 0).3 && !mark(&o, 1).3
+        mark(&o, 1).3 && !mark(&o, 2).3
     });
     assert_eq!(
-        o.lines()[1].chars().take(6).collect::<String>(),
+        o.lines()[2].chars().take(6).collect::<String>(),
         "2  zsh",
         "a visit acknowledged the exit"
     );
 
     s.text(&second, "true\r");
     o.wait("an unseen exit while shown elsewhere", || {
-        o.lines()[1].starts_with("2 \u{2713}zsh")
+        o.lines()[2].starts_with("2 \u{2713}zsh")
     });
 
     o.line("sleep 1");
     o.wait("the shown row's mark has no colour", || {
-        o.lines()[0].starts_with("1 \u{25fc}sleep 1")
-            && mark(&o, 0) == ("\u{25fc}".into(), Colour::Default, false, true)
+        o.lines()[1].starts_with("1 \u{25fc}sleep 1")
+            && mark(&o, 1) == ("\u{25fc}".into(), Colour::Default, false, true)
     });
     let lines = o.lines();
     assert_eq!(
-        (lines[0].chars().nth(3), lines[1].chars().nth(3)),
+        (lines[1].chars().nth(3), lines[2].chars().nth(3)),
         (Some('s'), Some('z')),
         "titles align with and without a mark"
     );

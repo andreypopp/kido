@@ -80,7 +80,7 @@ fn version_and_origin() {
     let (status, body) = s.exchange(
         "GET",
         "/panes",
-        &vec![("Ko-Protocol".to_owned(), "1.0".to_owned())],
+        &vec![("Ko-Protocol".to_owned(), "0.9".to_owned())],
         b"",
     );
     assert_eq!(status, 426, "unsupported protocol version");
@@ -113,22 +113,41 @@ fn api() {
         "--include: {included:?}"
     );
 
-    let created = s
+    let layout = |revision: u64, session: &str| {
+        json!({"revision": revision, "layout": {"sessions": [{"name": session, "windows": [
+            {"name": "w", "tree": {"pane": {"new": {"command":
+                {"type": "shell", "command": "exec cat"}}}}}]}]}})
+        .to_string()
+    };
+    let put = s
         .ko(
-            &["api", "--input", "-", "/panes"],
-            r#"{"command":{"type":"shell","command":"exec cat"}}"#,
+            &["api", "-X", "PUT", "--input", "-", "/layout"],
+            &layout(0, "one"),
         )
         .json();
-    let created = created["pane"].as_str().unwrap_or_default().to_owned();
-    assert!(!created.is_empty(), "POST via stdin: {created:?}");
+    let created = put["layout"]["sessions"][0]["windows"][0]["tree"]["pane"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(created, "pane_1", "PUT via stdin: {put}");
     let file = s.dir.join("body.json");
-    std::fs::write(
-        &file,
-        r#"{"command":{"type":"shell","command":"exec cat"}}"#,
-    )
-    .unwrap();
+    let mut document = s.ko(&["api", "/layout"], "").json();
+    document["layout"]["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+        {"pane": created}, {"pane": {"new": {"command": {"type": "shell", "command": "exec cat"}}}}]});
+    std::fs::write(&file, document.to_string()).unwrap();
     s.ko(
-        &["api", "-X", "POST", "--input", text_of(&file), "/panes"],
+        &["api", "-X", "put", "--input", text_of(&file), "/layout"],
+        "",
+    )
+    .ok();
+    std::fs::write(&file, r#"{"type":"text","data":"aGk="}"#).unwrap();
+    s.ko(
+        &[
+            "api",
+            "--input",
+            text_of(&file),
+            &format!("/panes/{created}/input"),
+        ],
         "",
     )
     .ok();
