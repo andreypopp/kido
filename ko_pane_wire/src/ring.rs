@@ -1621,6 +1621,17 @@ pub const RESIZE_LEN: usize = 9;
 pub const DEAD_LEN: usize = 17;
 
 impl Slice {
+    pub fn decode(bytes: &[u8]) -> Option<(Slice, &[u8])> {
+        let (&flags, rest) = bytes.split_first()?;
+        let (&screen, body) = rest.split_first()?;
+        let slice = Slice {
+            first: flags & 1 != 0,
+            last: flags & 2 != 0,
+            screen: screen != 0,
+        };
+        Some((slice, body))
+    }
+
     pub fn encode(self) -> [u8; SLICE_HEADER] {
         [
             u8::from(self.first) | u8::from(self.last) << 1,

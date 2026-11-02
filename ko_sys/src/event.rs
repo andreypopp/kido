@@ -1,7 +1,9 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::io::Write;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::retry::check;
@@ -41,6 +43,51 @@ impl Interest {
             Interest::Write => libc::POLLOUT,
             Interest::ReadWrite => libc::POLLIN | libc::POLLOUT,
         }
+    }
+}
+
+// A pipe that any thread can write to and that a poll loop watches. A wake
+// that nobody drains stays readable, which makes it a cancellation that every
+// waiter sees.
+#[derive(Debug)]
+pub struct Wake {
+    reader: std::io::PipeReader,
+    writer: std::io::PipeWriter,
+    set: AtomicBool,
+}
+
+impl Wake {
+    pub fn new() -> io::Result<Wake> {
+        let (reader, writer) = std::io::pipe()?;
+        crate::fd::set_nonblocking(reader.as_fd())?;
+        crate::fd::set_nonblocking(writer.as_fd())?;
+        Ok(Wake {
+            reader,
+            writer,
+            set: AtomicBool::new(false),
+        })
+    }
+
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.reader.as_fd()
+    }
+
+    // A full pipe is already readable, so a refused byte loses no wake.
+    pub fn wake(&self) {
+        self.set.store(true, Ordering::SeqCst);
+        let _ = (&self.writer).write(&[1]);
+    }
+
+    pub fn drain(&self) {
+        self.set.store(false, Ordering::SeqCst);
+        let mut buffer = [0; 64];
+        while matches!(crate::fd::read(self.fd(), &mut buffer), Ok(count) if count == buffer.len())
+        {
+        }
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.set.load(Ordering::SeqCst)
     }
 }
 
@@ -531,6 +578,37 @@ mod tests {
     use std::io::Write;
     use std::os::fd::AsFd;
     use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn a_wake_makes_a_watched_pipe_readable_from_another_thread_until_it_is_drained() {
+        let wake = std::sync::Arc::new(Wake::new().unwrap());
+        let mut poll = Poll::new();
+        let mut events = Events::default();
+        let token = poll.watch(wake.fd(), Interest::Read);
+        poll.turn(Mode::Peek, &mut events).unwrap();
+        assert!(events.ready().is_empty() && !wake.is_set());
+        let waker = std::sync::Arc::clone(&wake);
+        std::thread::spawn(move || {
+            waker.wake();
+            waker.wake();
+        })
+        .join()
+        .unwrap();
+        poll.turn(Mode::Wait, &mut events).unwrap();
+        assert_eq!(
+            events.ready(),
+            [Ready {
+                token,
+                read: true,
+                write: false
+            }]
+        );
+        poll.turn(Mode::Peek, &mut events).unwrap();
+        assert!(wake.is_set() && !events.ready().is_empty());
+        wake.drain();
+        poll.turn(Mode::Peek, &mut events).unwrap();
+        assert!(!wake.is_set() && events.ready().is_empty());
+    }
 
     #[test]
     fn a_turn_returns_when_nothing_can_wake_it() {

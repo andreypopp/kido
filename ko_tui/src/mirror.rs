@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use ko_client::wire::{self, Link, Next, text};
 use ko_pane_wire::frame::{History, Limits};
+use ko_pane_wire::ring::Slice;
 use ko_server::ids::{ClientId, PaneId};
 use ko_server::protocol::{self, Images, Marker, Route, ViewEvent, ViewOptions, ViewRequest, json};
 use ko_server::ws::{BadRecord, Record, parse_record};
@@ -188,8 +189,13 @@ impl Mirror {
             history: History::All,
             images: Images::None,
         };
-        let link =
-            Link::connect(socket, Some(client), &Route::View(pane, options, None)).map_err(text)?;
+        let link = Link::connect(
+            socket,
+            Some(client),
+            &Route::View(pane, options, None),
+            None,
+        )
+        .map_err(text)?;
         Mirror::with(link, limits, poll)
     }
 
@@ -332,13 +338,12 @@ impl Mirror {
     }
 
     fn snapshot(&mut self, state: &mut State, data: &[u8]) -> Result<(), String> {
-        let (&flags, rest) = data.split_first().ok_or("short snapshot slice")?;
-        let (&screen, body) = rest.split_first().ok_or("short snapshot slice")?;
-        let (first, last) = (flags & 1 != 0, flags & 2 != 0);
+        let (slice, body) = Slice::decode(data).ok_or("short snapshot slice")?;
+        let (first, last) = (slice.first, slice.last);
         if first {
             self.assembly = Some(Assembly {
                 buffer: Vec::new(),
-                kind: if screen == 0 {
+                kind: if !slice.screen {
                     Shape::Full {
                         ready: Some(ReadyScan::new()),
                     }

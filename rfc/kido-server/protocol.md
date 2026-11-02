@@ -227,6 +227,16 @@ skip or a paste result.
   snapshot file, which it decodes with a file reader and unlinks.
 - A skip is always followed by a snapshot.
 
+A snapshot can cut a sequence open: an APC, a kitty image or an OSC
+that the pane's terminal held when the snapshot began. The decoded
+terminal completes it from the bytes after the snapshot's offset.
+`welcome.limits.terminal.continuation_max_bytes` is the server's
+limit for such a sequence, the value that the terminals of its panes
+use. A client gives this value, unchanged, to the decoder of every
+snapshot that it restores. A smaller local limit drops a sequence
+that the server kept: a fixed 1 MiB failed on an APC of 1.5 MB (K5,
+spike 2). A reconnect takes the value from its new `Welcome`.
+
 Client to server, each text message is one input event of section 8,
 applied in order, or a resync request for a new snapshot of the given
 kinds. Input for the shown pane therefore travels on its view with no

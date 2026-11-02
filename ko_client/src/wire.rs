@@ -3,14 +3,15 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ko_server::http::{self, Response, call};
 use ko_server::ids::{ClientId, PaneId};
 use ko_server::protocol::Route;
 use ko_server::ws::{accepted, upgrade_request};
-use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token};
-use ko_sys::fd::{self, Queue};
+use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
+use ko_sys::fd::{self, Queue, Waited, Want};
 use tungstenite::protocol::{Role, WebSocketConfig, WebSocketContext};
 use tungstenite::{Bytes, Error, Message, Utf8Bytes};
 
@@ -39,14 +40,68 @@ pub fn silent(received: Instant, now: Instant, limit: Duration) -> bool {
     now.saturating_duration_since(received) >= limit
 }
 
+// Reads that end when the cancel wake is set or `within` passes without data.
+struct Interruptible<'a> {
+    stream: &'a UnixStream,
+    cancel: Option<&'a Wake>,
+    within: Duration,
+}
+
+impl Read for Interruptible<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if let Some(cancel) = self.cancel {
+            wait_or_cancel(self.stream, Want::Read, cancel, self.within)?;
+        }
+        fd::read(self.stream.as_fd(), buffer)
+    }
+}
+
+fn wait_or_cancel(
+    stream: &UnixStream,
+    want: Want,
+    cancel: &Wake,
+    within: Duration,
+) -> io::Result<()> {
+    match fd::wait(stream.as_fd(), want, Some(cancel.fd()), Some(within))? {
+        Waited::Ready => Ok(()),
+        Waited::Cancelled => Err(launch::cancelled_error()),
+        Waited::TimedOut => Err(io::ErrorKind::TimedOut.into()),
+    }
+}
+
+// A write that ends when the cancel wake is set or `within` passes without room.
+fn write_until(
+    stream: &mut UnixStream,
+    mut bytes: &[u8],
+    cancel: Option<&Wake>,
+    within: Duration,
+) -> io::Result<()> {
+    let Some(cancel) = cancel else {
+        return stream.write_all(bytes);
+    };
+    stream.set_nonblocking(true)?;
+    while !bytes.is_empty() {
+        match fd::write(stream.as_fd(), bytes) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(count) => bytes = bytes.get(count..).unwrap_or_default(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                wait_or_cancel(stream, Want::Write, cancel, within)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    stream.set_nonblocking(false)
+}
+
 fn open(
     socket: &Path,
     (client, caller): (Option<ClientId>, Option<PaneId>),
     (method, target): (&str, &str),
     body: &[u8],
     within: Duration,
+    cancel: Option<&Wake>,
 ) -> io::Result<UnixStream> {
-    let mut stream = launch::connect(socket, PATIENCE)?;
+    let mut stream = launch::connect(socket, PATIENCE, cancel)?;
     stream.set_read_timeout(Some(within))?;
     stream.set_write_timeout(Some(within))?;
     let caller = caller.map(|pane| pane.to_string());
@@ -54,7 +109,12 @@ fn open(
     if let Some(caller) = &caller {
         extra.push(("Ko-Pane", caller));
     }
-    stream.write_all(&call(method, target, client, &extra, body))?;
+    write_until(
+        &mut stream,
+        &call(method, target, client, &extra, body),
+        cancel,
+        within,
+    )?;
     Ok(stream)
 }
 
@@ -64,8 +124,14 @@ pub(crate) fn exchange(
     target: (&str, &str),
     body: &[u8],
     within: Duration,
+    cancel: Option<&Wake>,
 ) -> io::Result<Response> {
-    http::read_response(&mut open(socket, who, target, body, within)?)
+    let stream = open(socket, who, target, body, within, cancel)?;
+    http::read_response(&mut Interruptible {
+        stream: &stream,
+        cancel,
+        within,
+    })
 }
 
 fn fetch(
@@ -73,19 +139,26 @@ fn fetch(
     client: Option<ClientId>,
     route: &Route,
     body: &[u8],
+    cancel: Option<&Wake>,
     mut sink: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> Result<(), String> {
     let (method, target) = route.to_request();
-    let mut stream = open(
+    let stream = open(
         socket,
         (client, None),
         (method, &target),
         body,
         READ_TIMEOUT,
+        cancel,
     )
     .map_err(text)?;
     let mut failure = Vec::new();
-    let response = http::read_response_with(&mut stream, |head, piece| {
+    let mut reader = Interruptible {
+        stream: &stream,
+        cancel,
+        within: READ_TIMEOUT,
+    };
+    let response = http::read_response_with(&mut reader, |head, piece| {
         if head.status == 200 {
             sink(piece)
         } else {
@@ -111,9 +184,10 @@ pub fn request(
     client: Option<ClientId>,
     route: &Route,
     body: &[u8],
+    cancel: Option<&Wake>,
 ) -> Result<Vec<u8>, String> {
     let mut answer = Vec::new();
-    fetch(socket, client, route, body, |piece| {
+    fetch(socket, client, route, body, cancel, |piece| {
         answer.extend_from_slice(piece);
         Ok(())
     })?;
@@ -126,7 +200,7 @@ pub fn download(
     route: &Route,
     file: &mut impl Write,
 ) -> Result<(), String> {
-    fetch(socket, Some(client), route, b"", |piece| {
+    fetch(socket, Some(client), route, b"", None, |piece| {
         file.write_all(piece)
     })
 }
@@ -147,12 +221,14 @@ pub struct Link {
     reads: Reads,
     token: Option<Token>,
     received: Instant,
+    cancel: Option<Arc<Wake>>,
 }
 
 struct Io<'a> {
     stream: &'a UnixStream,
     source: Option<PollRead<'a>>,
     out: &'a mut Queue,
+    cancel: Option<&'a Wake>,
 }
 
 impl Read for Io<'_> {
@@ -160,7 +236,12 @@ impl Read for Io<'_> {
         match self.source.as_mut() {
             None => {
                 self.out.flush(self.stream.as_fd())?;
-                fd::read(self.stream.as_fd(), buffer)
+                Interruptible {
+                    stream: self.stream,
+                    cancel: self.cancel,
+                    within: READ_TIMEOUT,
+                }
+                .read(buffer)
             }
             Some(source) => source.read(buffer),
         }
@@ -190,15 +271,22 @@ impl Link {
         mut stream: UnixStream,
         client: Option<ClientId>,
         route: &Route,
+        cancel: Option<Arc<Wake>>,
     ) -> io::Result<Link> {
         stream.set_read_timeout(Some(READ_TIMEOUT))?;
         ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER)?;
         let (method, target) = route.to_request();
         let (request, key) = upgrade_request(method, &target, client);
-        stream.write_all(&request)?;
-        let (response, rest) = http::read_upgrade(&mut stream)?;
+        write_until(&mut stream, &request, cancel.as_deref(), READ_TIMEOUT)?;
+        let (response, rest) = http::read_upgrade(&mut Interruptible {
+            stream: &stream,
+            cancel: cancel.as_deref(),
+            within: READ_TIMEOUT,
+        })?;
         accepted(&response, &key)?;
-        Ok(Link::of(stream, rest))
+        let mut link = Link::of(stream, rest);
+        link.cancel = cancel;
+        Ok(link)
     }
 
     pub fn of(stream: UnixStream, rest: Vec<u8>) -> Link {
@@ -214,11 +302,18 @@ impl Link {
             reads: Reads::new(),
             token: None,
             received: Instant::now(),
+            cancel: None,
         }
     }
 
-    pub fn connect(socket: &Path, client: Option<ClientId>, route: &Route) -> io::Result<Link> {
-        Link::upgrade(launch::connect(socket, PATIENCE)?, client, route)
+    pub fn connect(
+        socket: &Path,
+        client: Option<ClientId>,
+        route: &Route,
+        cancel: Option<Arc<Wake>>,
+    ) -> io::Result<Link> {
+        let stream = launch::connect(socket, PATIENCE, cancel.as_deref())?;
+        Link::upgrade(stream, client, route, cancel)
     }
 
     pub fn watch(&mut self, poll: &mut Poll) -> io::Result<Token> {
@@ -256,6 +351,7 @@ impl Link {
                 stream: &self.stream,
                 source: Some(source),
                 out: &mut self.out,
+                cancel: None,
             },
             &mut self.received,
             now,
@@ -271,6 +367,7 @@ impl Link {
                 stream: &self.stream,
                 source: None,
                 out: &mut self.out,
+                cancel: self.cancel.as_deref(),
             },
             &mut self.received,
             Instant::now(),
@@ -311,6 +408,7 @@ impl Link {
             stream: &self.stream,
             source: None,
             out: &mut self.out,
+            cancel: None,
         };
         self.ctx
             .write(&mut io, Message::Text(body.into()))

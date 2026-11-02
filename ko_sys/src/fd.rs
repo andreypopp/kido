@@ -1,6 +1,5 @@
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
-#[cfg(feature = "e2e")]
 use std::time::Duration;
 
 use crate::retry::{check, check_size, retry};
@@ -24,36 +23,66 @@ pub fn write(fd: BorrowedFd<'_>, bytes: &[u8]) -> io::Result<usize> {
     })
 }
 
-pub fn wait_writable(fd: BorrowedFd<'_>) -> io::Result<()> {
-    let mut wait = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLOUT,
-        revents: 0,
-    };
-    // SAFETY: wait is one initialized pollfd.
-    retry(|| check(unsafe { libc::poll(&mut wait, 1, -1) })).map(drop)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Want {
+    Read,
+    Write,
 }
 
-#[cfg(feature = "e2e")]
-fn wait(fd: BorrowedFd<'_>, events: libc::c_short, timeout: libc::c_int) -> io::Result<bool> {
-    let mut wait = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events,
-        revents: 0,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waited {
+    Ready,
+    Cancelled,
+    TimedOut,
+}
+
+// Waits for `fd`, until `cancel` is readable or `timeout` passes. No timeout waits for ever.
+pub fn wait(
+    fd: BorrowedFd<'_>,
+    want: Want,
+    cancel: Option<BorrowedFd<'_>>,
+    timeout: Option<Duration>,
+) -> io::Result<Waited> {
+    let events = match want {
+        Want::Read => libc::POLLIN,
+        Want::Write => libc::POLLOUT,
     };
-    // SAFETY: wait is one initialized pollfd.
-    retry(|| check(unsafe { libc::poll(&mut wait, 1, timeout) })).map(|ready| ready > 0)
+    let mut waits = [
+        libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: cancel.map_or(-1, |cancel| cancel.as_raw_fd()),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    let millis = timeout.map_or(-1, |timeout| {
+        libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX)
+    });
+    // SAFETY: waits holds two initialized pollfd entries; a negative descriptor is ignored.
+    let found = retry(|| check(unsafe { libc::poll(waits.as_mut_ptr(), 2, millis) }))?;
+    Ok(match (found, waits[1].revents != 0) {
+        (0, _) => Waited::TimedOut,
+        (_, true) => Waited::Cancelled,
+        _ => Waited::Ready,
+    })
+}
+
+pub fn wait_writable(fd: BorrowedFd<'_>) -> io::Result<()> {
+    wait(fd, Want::Write, None, None).map(drop)
 }
 
 #[cfg(feature = "e2e")]
 pub fn wait_readable(fd: BorrowedFd<'_>) -> io::Result<()> {
-    wait(fd, libc::POLLIN, -1).map(drop)
+    wait(fd, Want::Read, None, None).map(drop)
 }
 
 #[cfg(feature = "e2e")]
 pub fn wait_writable_within(fd: BorrowedFd<'_>, timeout: Duration) -> io::Result<bool> {
-    let millis = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
-    wait(fd, libc::POLLOUT, millis)
+    wait(fd, Want::Write, None, Some(timeout)).map(|waited| waited == Waited::Ready)
 }
 
 pub fn inherited(number: u8) -> io::Result<OwnedFd> {
@@ -135,6 +164,25 @@ mod tests {
         a.write_all(b"unread").unwrap();
         drop(b);
         a
+    }
+
+    #[test]
+    fn a_wait_ends_on_data_a_cancel_or_the_timeout() {
+        let wake = crate::event::Wake::new().unwrap();
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let wait = || {
+            wait(
+                a.as_fd(),
+                Want::Read,
+                Some(wake.fd()),
+                Some(Duration::from_millis(30)),
+            )
+        };
+        assert_eq!(wait().unwrap(), Waited::TimedOut);
+        b.write_all(b"x").unwrap();
+        assert_eq!(wait().unwrap(), Waited::Ready);
+        wake.wake();
+        assert_eq!(wait().unwrap(), Waited::Cancelled);
     }
 
     #[cfg(target_os = "linux")]

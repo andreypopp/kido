@@ -38,7 +38,15 @@ pub(crate) fn exchange(
     body: &[u8],
     within: Duration,
 ) -> Result<Response, Failure> {
-    wire::exchange(&socket(dir)?, (None, caller), (method, path), body, within).map_err(|error| {
+    wire::exchange(
+        &socket(dir)?,
+        (None, caller),
+        (method, path),
+        body,
+        within,
+        None,
+    )
+    .map_err(|error| {
         if launch::absent(&error) {
             Failure::NoServer
         } else {
@@ -71,5 +79,5 @@ pub fn get(dir: &Path, route: &Route) -> Result<Response, Failure> {
 }
 
 pub fn replace_layout(dir: &Path, document: &Document) -> Result<Snapshot, Failure> {
-    layout::replace(&socket(dir)?, None, document).map_err(Failure::Failed)
+    layout::replace(&socket(dir)?, None, document, None).map_err(Failure::Failed)
 }
