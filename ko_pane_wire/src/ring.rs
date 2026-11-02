@@ -26,6 +26,10 @@ use machine::{RGhost, WGhost, build, committed};
 use machine::{RingSm, World};
 pub(crate) use spec::HEADER;
 use spec::*;
+#[cfg(verus_only)]
+pub use spec::{
+    Log, boundary, log_le, log_le_boundary, log_le_head, retain_of, wf as log_wf, wf_rec,
+};
 
 verus! {
 
@@ -45,7 +49,10 @@ impl Pos {
         Pos(value)
     }
 
-    pub fn get(self) -> u64 {
+    pub fn get(self) -> (r: u64)
+        ensures
+            r == self.v(),
+    {
         self.0
     }
 
@@ -99,6 +106,13 @@ pub enum Commit {
     Refused,
     Published,
     Idle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slice {
+    pub first: bool,
+    pub last: bool,
+    pub screen: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,17 +212,25 @@ impl Reader {
         &&& tok_ok(self.shared.base(), self.rperm@)
     }
 
+    pub open spec fn log(&self) -> Log {
+        self.ghost().log
+    }
+
+    pub open spec fn tl(&self) -> nat {
+        self.ghost().tail
+    }
+
     pub closed spec fn marks(&self) -> (u64, u64, u64) {
         (self.settled, self.settled_offset, self.evicted)
     }
 
-    pub closed spec fn visible(&self, pos: u64) -> bool {
+    pub open spec fn visible(&self, pos: u64) -> bool {
         &&& self.ghost().tail <= pos as nat
         &&& (pos as nat) < self.ghost().log.head
         &&& self.ghost().log.m.contains_key(pos as nat)
     }
 
-    proof fn facts(tracked &self)
+    pub proof fn facts(tracked &self)
         requires
             self.wf(),
         ensures
@@ -219,6 +241,17 @@ impl Reader {
     {
         self.world.borrow().inst.reader_facts(self.tok.borrow());
         self.world.borrow().inst.cap_bounds();
+    }
+
+    #[cfg(not(loom))]
+    pub fn create(capacity: u64) -> (r: Result<Reader, std::io::Error>)
+        ensures
+            r is Ok ==> r->Ok_0.wf(),
+    {
+        match backend::create_handle(capacity) {
+            Ok(handle) => Ok(Reader::with(handle)),
+            Err(e) => Err(e),
+        }
     }
 
     fn with(handle: HandleBox) -> (r: Reader)
@@ -467,6 +500,7 @@ impl Reader {
             final(self).wf(),
             final(self).ghost().log == old(self).ghost().log,
             head.v() as nat == old(self).ghost().log.head ==> r.is_ok(),
+            r.is_err() ==> final(self).tl() == old(self).tl(),
             r.is_ok() ==> {
                 let tl0 = old(self).ghost().tail;
                 let tl1 = final(self).ghost().tail;
@@ -589,6 +623,62 @@ impl Reader {
             "Ring.advance"
         );
         Ok(())
+    }
+
+    pub fn tail(&self) -> (p: Pos)
+        requires
+            self.wf(),
+        ensures
+            p.v() as nat == self.tl(),
+    {
+        Pos(self.tail)
+    }
+
+    pub fn seen(&self) -> (p: Pos)
+        requires
+            self.wf(),
+        ensures
+            p.v() as nat == self.log().head,
+    {
+        Pos(self.seen)
+    }
+
+    fn prefix(&self, pos: Pos, out: &mut [u8]) -> (r: Result<u64, Invalid>)
+        requires
+            self.wf(),
+        ensures
+            final(out).len() == old(out).len(),
+    {
+        let header = match self.header(pos.0) {
+            Some(h) => h,
+            None => return Err(Invalid::Record),
+        };
+        let at = match pos.0.checked_add(HEADER) {
+            Some(at) => at,
+            None => return Err(Invalid::Record),
+        };
+        let copied = if header.len < out.len() as u64 {
+            header.len as usize
+        } else {
+            out.len()
+        };
+        let (head, _) = out.split_at_mut(copied);
+        match self.copy(at, head) {
+            Some(()) => Ok(header.len),
+            None => Err(Invalid::Record),
+        }
+    }
+
+    pub fn slice(&self, pos: Pos) -> (r: Result<Slice, Invalid>)
+        requires
+            self.wf(),
+    {
+        let mut bytes = [0u8; 2];
+        let len = self.prefix(pos, &mut bytes)?;
+        if len < 2 {
+            return Err(Invalid::Slice);
+        }
+        Ok(Slice { first: bytes[0] & 1 != 0, last: bytes[0] & 2 != 0, screen: bytes[1] == 1 })
     }
 
     pub fn reachable(&self, pos: Pos) -> (r: Reach)
@@ -1276,13 +1366,6 @@ pub enum Marker {
     Dead(Dead),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Slice {
-    pub first: bool,
-    pub last: bool,
-    pub screen: bool,
-}
-
 pub const SLICE_HEADER: usize = 2;
 pub const RESIZE_LEN: usize = 9;
 pub const DEAD_LEN: usize = 17;
@@ -1356,13 +1439,9 @@ impl fmt::Debug for Writer {
 }
 
 impl Reader {
+    #[cfg(loom)]
     fn attach(handle: Handle) -> Reader {
         Reader::with(HandleBox::new(handle))
-    }
-
-    #[cfg(not(loom))]
-    pub fn create(capacity: u64) -> io::Result<Reader> {
-        mapping::Shared::create(capacity).map(Reader::attach)
     }
 
     #[cfg(not(loom))]
@@ -1373,37 +1452,6 @@ impl Reader {
     #[cfg(not(loom))]
     pub fn writer(&self) -> io::Result<Writer> {
         self.shared.duplicate().map(Writer::attach)
-    }
-
-    pub fn tail(&self) -> Pos {
-        Pos(self.tail)
-    }
-
-    pub fn seen(&self) -> Pos {
-        Pos(self.seen)
-    }
-
-    fn prefix(&self, pos: Pos, out: &mut [u8; 17]) -> Result<u64, Invalid> {
-        let header = self.header(pos.0).ok_or(Invalid::Record)?;
-        let copied = usize::try_from(header.len).map_or(out.len(), |len| len.min(out.len()));
-        pos.0
-            .checked_add(HEADER)
-            .zip(out.get_mut(..copied))
-            .and_then(|(at, bytes)| self.copy(at, bytes))
-            .ok_or(Invalid::Record)?;
-        Ok(header.len)
-    }
-
-    pub fn slice(&self, pos: Pos) -> Result<Slice, Invalid> {
-        let mut bytes = [0; 17];
-        match (self.prefix(pos, &mut bytes)?, bytes) {
-            (2.., [flags, screen, ..]) => Ok(Slice {
-                first: flags & 1 != 0,
-                last: flags & 2 != 0,
-                screen: screen == 1,
-            }),
-            _ => Err(Invalid::Slice),
-        }
     }
 
     pub fn marker(&self, pos: Pos) -> Result<Marker, Invalid> {

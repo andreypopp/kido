@@ -64,6 +64,19 @@ pub tracked struct Words {
 #[verifier::external_body]
 pub struct HandleBox(Handle);
 
+#[allow(dead_code)]
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExIoError(std::io::Error);
+
+// Assumes: it returns a fresh mapping that only this handle refers to; it states nothing, and
+// `Reader::with` establishes `wf` from the zero-filled mapping.
+#[cfg(not(loom))]
+#[verifier::external_body]
+pub fn create_handle(capacity: u64) -> Result<HandleBox, std::io::Error> {
+    super::mapping::Shared::create(capacity).map(HandleBox::new)
+}
+
 #[verifier::external_body]
 pub struct Backend {
     handle: Handle,

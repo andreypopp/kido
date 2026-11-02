@@ -413,6 +413,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tungstenite",
+ "vstd",
 ]
 
 [[package]]

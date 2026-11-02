@@ -355,8 +355,8 @@ These requirements are fixed:
   `tungstenite` (feature `handshake` only), `serde` (`derive`),
   `serde_json`, `vte` and `clap` (`default-features = false`, with
   exactly `std`, `derive`, `help`, `usage` and `error-context`),
-  and `vstd` and `verus_state_machines_macros` in `ko_pane_wire`,
-  pinned with `=` to the crates version of `scripts/verus.sh`
+  and `vstd` and `verus_state_machines_macros` in `ko_pane_wire`
+  and `vstd` in `ko_server`, pinned with `=` to the crates version of `scripts/verus.sh`
   (`scripts/lint.sh` compares them).
   `proptest` and `loom` are dev-dependencies.
   `scripts/crates.txt` lists every package of `Cargo.lock`, ko's own
@@ -418,19 +418,23 @@ Conventions:
   access as sequentially consistent, so the model puts a
   `fence(SeqCst)` beside each one (its comment has the issue). The
   acquire/release twin of the wakeup model is `#[should_panic]`.
-- **Verus.** `ko_pane_wire::ring` is verified with Verus (`make
-  verus`, `scripts/verus.sh`, the pinned release archive in
-  `build/verus/<release>/`). A verified crate has
+- **Verus.** `ko_pane_wire::ring` and `ko_server::delivery` are
+  verified with Verus (`make verus`, `scripts/verus.sh`, the pinned
+  release archive in `build/verus/<release>/`). A verified crate has
   `[package.metadata.verus] verify = true` and builds with plain
   cargo, because `verus!` erases the ghost code. Specs and proofs are
   in `verus!{}` beside the code: `ring/spec.rs` (the log),
   `ring/machine.rs` (the state machine and its invariant) and
   `ring/backend.rs` (the trusted base). `cfg(verus_only)` guards only
   `use` statements. `#[verifier::external_body]` occurs only in
-  `ring/backend.rs`: the constructor of each role
-  (`Backend::mint_reader`, `Backend::mint_writer`), the capacity
-  getter, the header word load and store, the byte accessors and the
-  opaque types that they use. Each has an `// Assumes:` comment that
+  `ring/backend.rs` and `delivery.rs`. In `ring/backend.rs`: the
+  constructor of each role (`Backend::mint_reader`,
+  `Backend::mint_writer`), the mapping's creation
+  (`create_handle`, with no `ensures`), the capacity getter, the
+  header word load and store, the byte accessors and the opaque types
+  that they use. In `delivery.rs`: the sink call (`hand_over`, a
+  `requires` and no `ensures`), `Req`'s equality and the opaque
+  `Req`. Each has an `// Assumes:` comment that
   names its assumption. No `external_body` function has an `ensures`
   that its body does not establish beyond that comment. No `assume`
   and no `admit` occur. The functions that `tokenized_state_machine!`
@@ -438,7 +442,20 @@ Conventions:
   `pub`, and the ring's proof modules allow `unreachable_pub`. rustfmt
   does not format the inside of `verus!`. `scripts/verus.sh` cleans
   each verified crate first, so every run verifies, and it fails
-  without a "verification results" line for each crate. The `verus`
+  without a "verification results" line of 0 errors for each crate:
+  it verifies one crate for each `cargo verus verify` run and reads
+  the last result and time of that run, because Verus names no crate
+  on the line. `ko_server::delivery` (`Delivery`) owns the pane's
+  `Reader`, its snapshot queues and the delivered position; its `wf`
+  is `Pane_core.fst`'s `pane_inv` without the tokens' ring and
+  generation, because the routing of a `Req` to its view in
+  `state.rs` is not verified. `Delivery::ring_mut` lends the
+  `Reader` to unverified code, which may call only the methods that
+  keep the tail; `scripts/lint.sh` refuses `.advance(` in
+  `ko_server/src` outside `delivery.rs`. `delivery.rs` denies
+  `clippy::arithmetic_side_effects` but not `indexing_slicing`:
+  vstd specifies only `VecDeque::len` and its index, and Verus proves
+  each index in bounds. The `verus`
   stage of `make verify-ko` fails when the verification of ko's
   crates takes more than 120 s, and it is SKIP when the archive cannot
   be fetched, except with `KO_VERUS_REQUIRED=1` (CI).
@@ -1148,7 +1165,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
 
     make verify  scrubbed dune build, dune test --force, full e2e and TypeScript tests
     make verify-ko  scrubbed make build-ko, ko's unit tests (cargo and dune), ko's e2e, cargo fmt, clippy and scripts/lint.sh, and make verus
-    make verus   cargo verus verify on ko_pane_wire with the pinned Verus release, downloaded once into build/verus/
+    make verus   cargo verus verify on ko_pane_wire and ko_server with the pinned Verus release, downloaded once into build/verus/
     make build-ko  the Rust ko's installed layout under build/ko/ (macOS only for now)
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe-ko BYTES=N  ko-bench throughput: the Rust server's ring reader under the Rust ko-pane (PANE=c: the C one), N bytes of bench/streams (default 1 GiB); not part of verify

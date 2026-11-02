@@ -391,6 +391,39 @@ RV forced these decisions:
     code 77, which `scripts/verify.sh` prints as SKIP. The archive
     fetch has `--max-time 600`, the 10-minute deadline of decision 24.
 
+RV2 forced these decisions:
+
+90. `ko_server::delivery` is the verified module of RV2: `Delivery`
+    owns the pane's `Reader`, the queue of reading requests, the queue
+    of finished ones and the delivered position, and keeps the front
+    request's last slice as a ghost field. `Stage::Open` and
+    `Stage::Closed` hold a `Delivery` in place of the `Reader`.
+    `observed` and `busy` stay in `PaneProc`, outside the proof.
+    `ko_server` gains `vstd` as a direct dependency (no new package).
+91. `Delivery::ring_mut` lends `&mut Reader` to unverified code (the
+    views, until RV3), which may call only the methods that keep the
+    tail (`head`, `end_offset`, `oldest_offset`, `resume`); `wf`
+    survives them (`inv_grows`). `scripts/lint.sh` refuses
+    `.advance(` in `ko_server/src` outside `delivery.rs`. A type for
+    the views' ring replaces the lint in RV3, when `view.rs` is
+    verified. A `type_invariant` on `Reader` was tried and dropped:
+    Verus checks it at each field assignment, which broke RV's proofs.
+92. `deliver` updates its state at each record, so it allocates
+    nothing (the `done` vector went); it moves `delivered` past a
+    slice before it reads the slice's `last` flag, as `Pane_core`
+    does. A ring error drains every request, so the events do not
+    change.
+93. `scripts/verus.sh` runs `cargo verus verify` once for each crate
+    and reads the last result and time of each run: Verus names no
+    crate on its result line, cargo builds crates in parallel, and on
+    a cold run vstd's lines come first.
+94. `Delivery::wf` is `pane_inv` without the tokens' ring and
+    generation (`tring`, `tgen` and the generation clauses of
+    `slice_step` and `done_step`). Each `Delivery` owns its ring, so
+    the ring clause holds by construction; the generation is the
+    routing of a `Req` to its view in `state.rs`, unverified until
+    RV3.
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -1617,7 +1650,10 @@ and store (vstd's `from_ptr_load` and `from_ptr_store` contracts); the
 byte accessors (`external_body` reads and writes of a range that
 `requires` the permission over it, a few lines each); vstd and
 the verifier; the libghostty-vt calls that fill a payload; and the
-callers outside the verified modules until RV2.
+callers outside the verified modules until RV2. After RV2:
+`delivery.rs`'s sink call and `Req`'s equality, the unverified
+holders of `Delivery::ring_mut` and the routing of a `Req` to its view
+until RV3 (decisions 91 and 94).
 
 **The lessons of the Pulse work that the port keeps:** no trusted
 function with an unconditional `ensures` (the WhyML `writer_causal`
@@ -1884,6 +1920,12 @@ one session. The attach and resize rows wait for R4.
 - Depends on RV; beside R4 or after R5.
 - Acceptance: `cargo verus verify -p ko_server` passes on
   `pane_proc`; the unit tests of rows 8 and 14 still pass.
+- Result (2026-11-02, macOS): `ko_server::delivery` verifies with 14
+  obligations (1.0 s) and `ko_pane_wire` with 117 (1.3 s), no
+  `assume` and no `admit`; the `verus` stage takes 3.4 s warm,
+  with the Verus build of both crates. The stripped release `ko` grew by
+  16 bytes (1,067,464 to 1,067,480). Decisions 90 to 94 came from
+  RV2.
 
 ### R4. The terminal client (7 to 9 agent-days)
 

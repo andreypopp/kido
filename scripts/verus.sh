@@ -24,7 +24,7 @@ release=0.2026.10.26.d17fbd0
 # workspace Cargo.toml pins both with = (scripts/lint.sh compares). vstd pins the other Verus crates.
 crates_version=0.0.0-2026-10-25-0158
 cap_seconds=120
-crates=(ko_pane_wire)
+crates=(ko_pane_wire ko_server)
 
 if [ "${1:-}" = "--print-key" ]; then
 	echo "$release"
@@ -75,42 +75,43 @@ verify() {
 		return 0
 	fi
 	: "${CARGO:?verus.sh verify runs under make}"
-	log=$(mktemp)
-	trap 'rm -f "$log"' EXIT
+	local dir
+	dir=$(mktemp -d)
+	trap "rm -rf '$dir'" EXIT
 	export PATH="$prefix:$PATH"
-	local args=()
 	for crate in "${crates[@]}"; do
-		args+=(-p "$crate")
 		"$CARGO" clean --locked -p "$crate"
 	done
-	# The first run builds and verifies vstd; its time is not counted.
-	"$CARGO" verus verify --locked "${args[@]}" -- --time-expanded 2>&1 | tee "$log"
-	status=${PIPESTATUS[0]}
-	if [ "$status" != 0 ]; then
-		return "$status"
-	fi
-	local missing
-	missing=$(awk -v crates=" ${crates[*]} " '
-		/^ *(Checking|Compiling) / { current = $2 }
-		/^verification results:: [0-9]+ verified, 0 errors/ { done[current] = 1 }
-		END { for (n = split(crates, list, " "); n > 0; n--) if (!(list[n] in done)) print list[n] }' "$log")
-	if [ -n "$missing" ]; then
-		echo "FAIL: no verification result for: $missing" >&2
-		tail -n 20 "$log" >&2
-		return 1
-	fi
-	ms=$(awk -v crates=" ${crates[*]} " '
-		/^ *(Checking|Compiling) / { counted = index(crates, " " $2 " ") > 0 }
-		/^total-time:/ && counted { total += $2 }
-		END { print total + 0 }' "$log")
-	echo "verified ${crates[*]} in ${ms} ms (cap $((cap_seconds * 1000)) ms)"
-	if [ "$ms" -gt $((cap_seconds * 1000)) ]; then
+	# One run for each crate: the requested crate builds last in its run, so the last result
+	# and the last time of its log are its own. The first run also builds vstd; that is not counted.
+	local total=0 crate
+	for crate in "${crates[@]}"; do
+		log="$dir/$crate.log"
+		"$CARGO" verus verify --locked -p "$crate" -- --time-expanded 2>&1 | tee "$log"
+		status=${PIPESTATUS[0]}
+		if [ "$status" != 0 ]; then
+			return "$status"
+		fi
+		if ! grep '^verification results::' "$log" | tail -n 1 | grep -q '^verification results:: [0-9]* verified, 0 errors'; then
+			echo "FAIL: no verification result of 0 errors for $crate" >&2
+			tail -n 20 "$log" >&2
+			return 1
+		fi
+		ms=$(awk '/^total-time:/ { t = $2 } END { print t + 0 }' "$log")
+		echo "verified $crate in ${ms} ms"
+		total=$((total + ms))
+	done
+	echo "verified ${crates[*]} in ${total} ms (cap $((cap_seconds * 1000)) ms)"
+	if [ "$total" -gt $((cap_seconds * 1000)) ]; then
 		echo "FAIL: the verification takes more than ${cap_seconds} s; time of each module:" >&2
-		awk -v crates=" ${crates[*]} " '
-			/^ *(Checking|Compiling) / { counted = index(crates, " " $2 " ") > 0; inside = 0 }
-			/total verify-time:/ { inside = counted }
-			/total air-time:/ { inside = 0 }
-			inside && /^ +[0-9]+\. / { print }' "$log" >&2
+		for crate in "${crates[@]}"; do
+			awk '
+				/^ *(Checking|Compiling) / { inside = 0; lines = "" }
+				/total verify-time:/ { inside = 1 }
+				/total air-time:/ { inside = 0 }
+				inside && /^ +[0-9]+\. / { lines = lines $0 "\n" }
+				END { printf "%s", lines }' "$dir/$crate.log" >&2
+		done
 		return 1
 	fi
 }

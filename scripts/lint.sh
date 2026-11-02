@@ -34,6 +34,13 @@ if [[ -n "$orderings" ]]; then
   echo "$orderings" | sed 's/$/: ko_pane, ko_pane_wire and ko_server use only Ordering::SeqCst/'
   failed=1
 fi
+# Only Delivery::scan moves the ring's tail in ko_server: the pane's retention proof (delivery.rs)
+# holds only while no other code holds a `&mut Reader` and calls advance.
+advances=$(grep -rnE '\.advance\(' ko_server/src --include='*.rs' | grep -vE '^ko_server/src/delivery\.rs:' || true)
+if [[ -n "$advances" ]]; then
+  echo "$advances" | sed 's/$/: only ko_server\/src\/delivery.rs calls Reader::advance/'
+  failed=1
+fi
 python3 - <<'PY' || failed=1
 import glob
 import pathlib

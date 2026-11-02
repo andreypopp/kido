@@ -16,13 +16,13 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::Limits;
-use ko_pane_wire::ring::Reader;
 use ko_sys::event::{Events, Interest, Mode, Poll, Timer};
 use ko_sys::pid::Pid;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::config::DEFAULT_LIMITS;
+use crate::delivery::Delivery;
 use crate::http::{MAX_HEAD, Parsed, parse_head, request};
 #[cfg(test)]
 use crate::ids::PaneId;
@@ -150,12 +150,12 @@ struct Effects {
 }
 
 fn run_frames(parts: &[&[u8]]) -> Option<Effects> {
-    let ring = Reader::create(1 << 12).ok()?;
+    let delivery = Delivery::create(1 << 12).ok()?;
     let (socket, _peer) = UnixStream::pair().ok()?;
     socket.set_nonblocking(true).ok()?;
     let mut poll = Poll::new();
     let token = poll.watch(socket.as_fd(), Interest::Read);
-    let mut proc = PaneProc::new(socket, token, ring, dead_pid()?, Path::new(""));
+    let mut proc = PaneProc::new(socket, token, delivery, dead_pid()?, Path::new(""));
     let mut events = Vec::new();
     for part in parts {
         proc.feed(
