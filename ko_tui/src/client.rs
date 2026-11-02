@@ -6,13 +6,13 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 
 use ko_client::launch::{self, PATIENCE};
-use ko_client::model::Model;
+use ko_client::model::{Applied, Model};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
 use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
 use ko_server::ids::PaneId;
 use ko_server::protocol::{
-    self, ClientKind, ClientRequest, CreatePane, Created, Hello, Input as Wire, Key as WireKey,
-    Mouse as WireMouse, Paste, Route, ViewRequest, json,
+    self, ClientKind, ClientRequest, CreatePane, Hello, Input as Wire, Key as WireKey,
+    Mouse as WireMouse, Paste, Route, Selection, ViewRequest, json,
 };
 use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
@@ -323,14 +323,14 @@ impl Client {
         let hello = ClientRequest::Hello(Hello {
             kind: ClientKind::Terminal,
             name: "ko".to_owned(),
-            pane: None,
+            selection: Selection::default(),
             focused: true,
             size: protocol::Size(pane_size(geometry, panel, warning)),
             ignore_size: false,
         });
         link.send(json(&hello)).map_err(text)?;
         link.flush_blocking().map_err(text)?;
-        let model = Model::welcome(&mut link)?;
+        let model = Model::welcome(&mut link, &socket)?;
         let link_token = link.watch(&mut poll).map_err(text)?;
         let (wake, escape, watchdog) = (
             Deadline::new(&mut poll),
@@ -368,7 +368,7 @@ impl Client {
             watchdog,
         };
         client.client(wire::buffered(client.link_token), Instant::now())?;
-        match client.model.panes.first().map(|pane| pane.id) {
+        match client.model.order().first().copied() {
             None => client.create_pane()?,
             Some(pane) => client.switch(pane)?,
         }
@@ -406,6 +406,10 @@ impl Client {
 
     fn layout(&self) -> Layout {
         let (cols, rows) = self.geometry;
+        let outline = match self.panel {
+            Panel::Hidden => Vec::new(),
+            _ => self.model.outline(),
+        };
         Layout {
             cols,
             rows,
@@ -421,13 +425,15 @@ impl Client {
                 _ => None,
             },
             choosing: match self.panel {
-                Panel::Choosing(chosen) => Some(chosen),
+                Panel::Choosing(chosen) => outline
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| matches!(item, ko_client::model::Item::Pane(_)))
+                    .nth(chosen)
+                    .map(|(row, _)| row),
                 _ => None,
             },
-            sidebar: match self.panel {
-                Panel::Hidden => Vec::new(),
-                _ => sidebar::lines(self.pane(), &self.model.panes),
-            },
+            sidebar: sidebar::lines(self.pane(), &outline, &self.model.panes),
         }
     }
 
@@ -453,23 +459,18 @@ impl Client {
     }
 
     fn request(&self, route: &Route) -> Result<Vec<u8>, String> {
-        wire::request(&self.socket, self.model.client, route, b"")
+        wire::request(&self.socket, Some(self.model.client), route, b"")
     }
 
     fn switch(&mut self, pane: PaneId) -> Result<(), String> {
-        if let View::Showing { mut mirror, .. } = std::mem::replace(&mut self.view, View::None) {
-            mirror.send(
-                &mut self.poll,
-                &ViewRequest::Input {
-                    input: Wire::Focus { focused: false },
-                },
-            )?;
-            mirror.close(&mut self.poll);
-        }
+        self.close_view();
         self.leave_choosing();
         self.session.reset()?;
         self.renderer.invalidate();
-        self.client_send(&ClientRequest::Select { pane })?;
+        self.client_send(&ClientRequest::Select(Selection {
+            pane: Some(pane),
+            ..Selection::default()
+        }))?;
         let mirror = Mirror::open(
             &self.socket,
             self.model.client,
@@ -478,64 +479,56 @@ impl Client {
             &mut self.poll,
         )?;
         self.view = View::open(pane, mirror);
-        self.input_send(Wire::Focus {
-            focused: self.focused,
-        })?;
         self.immediate = true;
         Ok(())
     }
 
     fn create_pane(&mut self) -> Result<(), String> {
-        let cwd = std::env::current_dir()
-            .map(|dir| dir.to_string_lossy().into_owned())
-            .ok();
-        let body = json(&CreatePane {
-            cwd,
-            command: None,
-            env: Vec::new(),
-        });
-        let response = wire::request(
-            &self.socket,
-            self.model.client,
-            &Route::CreatePane,
-            body.as_bytes(),
-        )?;
-        let created: Created = protocol::decode(&response).map_err(text)?;
-        self.switch(created.pane)
+        let pane =
+            ko_client::layout::add_session(&self.socket, Some(self.model.client), &new_pane())?;
+        self.switch(pane)
     }
 
     fn selected(&self) -> usize {
         self.model
-            .panes
+            .order()
             .iter()
-            .position(|row| Some(row.id) == self.pane())
+            .position(|id| Some(*id) == self.pane())
             .unwrap_or(0)
     }
 
     fn choose(&mut self, step: isize) -> Result<(), String> {
-        let count = self.model.panes.len();
-        if count == 0 {
-            return Ok(());
-        }
-        let at = (self.selected() as isize + step).rem_euclid(count as isize) as usize;
-        match self.model.panes.get(at).map(|row| row.id) {
+        match self.model.step(self.pane(), step) {
             Some(pane) => self.switch(pane),
             None => Ok(()),
         }
     }
 
+    fn new_window(&mut self) -> Result<(), String> {
+        let Some(place) = self.pane().and_then(|pane| self.model.locate(pane)) else {
+            return self.create_pane();
+        };
+        let pane = ko_client::layout::add_window(
+            &self.socket,
+            Some(self.model.client),
+            place,
+            &new_pane(),
+        )?;
+        self.switch(pane)
+    }
+
+    fn close_view(&mut self) {
+        if let View::Showing { mirror, .. } = std::mem::replace(&mut self.view, View::None) {
+            mirror.close(&mut self.poll);
+        }
+    }
+
     fn remove(&mut self) -> Result<(), String> {
-        let View::Showing { pane, mirror, .. } = std::mem::replace(&mut self.view, View::None)
-        else {
+        let Some(pane) = self.pane() else {
             return Ok(());
         };
-        mirror.close(&mut self.poll);
-        self.request(&Route::DeletePane(pane))?;
-        self.model.panes = protocol::decode(&self.request(&Route::ListPanes)?).map_err(text)?;
-        match self.model.panes.first().map(|row| row.id) {
-            None => self.create_pane(),
-            Some(first) => self.switch(first),
-        }
+        self.close_view();
+        self.request(&Route::DeletePane(pane)).map(drop)
     }
 
     fn pager(&mut self) -> Result<(), String> {
@@ -661,7 +654,7 @@ impl Client {
                 self.resize()?;
             }
             Some(Command::Pager) => self.pager()?,
-            Some(Command::New) => self.create_pane()?,
+            Some(Command::New) => self.new_window()?,
             Some(Command::Remove) => self.remove()?,
             Some(Command::Previous) => self.choose(-1)?,
             Some(Command::Next) => self.choose(1)?,
@@ -671,21 +664,20 @@ impl Client {
     }
 
     fn plain(&mut self, key: &KeyEvent) -> Result<(), String> {
-        let count = self.model.panes.len();
         match (self.panel, key.name) {
             (Panel::Choosing(chosen), Name::Up | Name::Down) => {
+                let count = self.model.order().len();
                 if count > 0 {
                     let step = if key.name == Name::Up { count - 1 } else { 1 };
                     self.panel = Panel::Choosing((chosen + step) % count);
                 }
                 Ok(())
             }
-            (Panel::Choosing(chosen), Name::Enter) => {
-                match self.model.panes.get(chosen).map(|row| row.id) {
-                    Some(pane) => self.switch(pane),
-                    None => Ok(()),
-                }
-            }
+            (Panel::Choosing(chosen), Name::Enter) => match self.model.order().get(chosen).copied()
+            {
+                Some(pane) => self.switch(pane),
+                None => Ok(()),
+            },
             (Panel::Choosing(_), Name::Escape) => {
                 self.panel = Panel::Visible;
                 Ok(())
@@ -708,9 +700,9 @@ impl Client {
         if event.x < layout.pane_x {
             if matches!(event.kind, MouseKind::Down(_))
                 && event.x + 1 < layout.pane_x
-                && let Some(line) = layout.sidebar.get(event.y)
+                && let Some(pane) = layout.sidebar.get(event.y).and_then(|line| line.pane)
             {
-                self.switch(line.pane)?;
+                self.switch(pane)?;
             }
             return Ok(());
         }
@@ -749,8 +741,7 @@ impl Client {
             }
             Event::Focus(focused) => {
                 self.focused = focused;
-                self.client_send(&ClientRequest::Focused { focused })?;
-                self.input_send(Wire::Focus { focused })
+                self.client_send(&ClientRequest::Focused { focused })
             }
             Event::Reply(Reply::Kitty) => {
                 self.kitty = true;
@@ -922,7 +913,19 @@ impl Client {
                     }
                     Next::Text(event) => {
                         let event = protocol::decode(event.as_bytes()).map_err(text)?;
-                        self.model.apply(event);
+                        match self.model.apply(event)? {
+                            Applied::Nothing | Applied::Layout => {}
+                            Applied::Selected => match self.model.selection.pane {
+                                Some(pane) if Some(pane) != self.pane() => self.switch(pane)?,
+                                Some(_) => {}
+                                None => {
+                                    self.close_view();
+                                    if self.model.order().is_empty() {
+                                        self.create_pane()?;
+                                    }
+                                }
+                            },
+                        }
                     }
                 }
             }
@@ -943,6 +946,16 @@ impl Client {
             self.paint()?;
         }
         Ok(())
+    }
+}
+
+fn new_pane() -> CreatePane {
+    CreatePane {
+        cwd: std::env::current_dir()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .ok(),
+        command: None,
+        env: Vec::new(),
     }
 }
 

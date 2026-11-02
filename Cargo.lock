@@ -376,6 +376,7 @@ dependencies = [
 name = "ko_bench"
 version = "0.0.0"
 dependencies = [
+ "ko_client",
  "ko_pane_wire",
  "ko_server",
  "ko_sys",
@@ -389,6 +390,8 @@ dependencies = [
  "ko_pane_wire",
  "ko_server",
  "ko_sys",
+ "proptest",
+ "serde",
  "tungstenite",
 ]
 

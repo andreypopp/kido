@@ -67,6 +67,8 @@ macro_rules! id {
 
 id!(pub PaneId, "pane_");
 id!(pub ClientId, "client_");
+id!(pub SessionId, "session_");
+id!(pub WindowId, "window_");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]

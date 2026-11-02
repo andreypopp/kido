@@ -8,7 +8,11 @@ publish.workspace = true
 ko_pane_wire = { path = "../ko_pane_wire" }
 ko_server = { path = "../ko_server" }
 ko_sys = { path = "../ko_sys" }
+serde.workspace = true
 tungstenite.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

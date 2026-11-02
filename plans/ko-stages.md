@@ -71,7 +71,7 @@ code has; "missing" names the work; "stage" names the stage below.
 | sessions and windows (list, create, kill, rename, select, switch, events) | flat pane set; `topology` event | the layout document, `GET`/`PUT /layout`, revision and `409`, the `layout` event, per-client current session and window, `select` and `switch` with session and window, `POST /clients/client_N/select` | K2 |
 | the split tree (split, kill, move, swap, resize, equalize, layout events) | none | `tree` per window with normalization, pane creation inside a `PUT` (`{new}`), `DELETE` that gives cells to the sibling | K2 |
 | floats (`new-pane -x/-y`, raise, geometry) | none | `floats` per window with `x, y, cols, rows, z, border, title`, clamped into the window | K2 |
-| active pane | `select {pane}` per client | `active` per window in the document | K2 |
+| active pane | `select {pane}` per client | the current session, window and pane per client; the last focused pane per window in the coordinator | K2 |
 | window size and cell pixels | per-pane sizer, `size` on `/client` with `cell_px` | the sizing client per window, the tree scaled to the window, pty sizes from leaves | K2 |
 | pane content (output, input, pause, resume) | views, snapshots, skips, input events, resume by offset | nothing | done |
 | restore and Load more | full and screen snapshots, `/screen` | nothing | done |
@@ -362,7 +362,7 @@ a test sends as `text` input, and libghostty-vt parses them.
 Risk: low. The rules exist and are tested; the port is mechanical.
 The one new mechanism is the model tick on the loop.
 
-### K2. The layout document (8 to 11 agent-days)
+### K2. The layout document (8 to 11 agent-days, built)
 
 Depends on nothing. Runs beside K1. migration.md section 3 is the
 specification.
@@ -390,6 +390,66 @@ Scope:
   leaf is smaller or larger than the pane region.
 - CLI: `ko panes [--json]`, `ko layout`, `ko layout put FILE` with
   the retry.
+
+Shapes decided by the user for K2 (2026-11-02):
+
+- The document has no `active`. Each client keeps its current
+  session, window and pane on the server. `select {session?, window?,
+  pane?}` on `/client` changes only that client: a pane implies its
+  window and session; a window implies its session; a session implies
+  this client's last current window in it, else its first window. It
+  never changes the document or its revision.
+- The coordinator keeps, per window and outside the document, the pane
+  that a client focused most recently in it. A client that enters a
+  window where it has no current pane gets that pane. A new window
+  starts with its first leaf; when that pane goes, the window's next
+  pane in document order. A client focuses a pane when its terminal
+  has focus and the pane becomes its current pane, or when its
+  terminal gains focus on its current pane; a selection by a client
+  without focus does not count.
+- A pane is focused for its program (focus reporting) while at least
+  one client with a focused terminal shows it as its current pane.
+  Derived from the clients, not stored.
+- `switch {over: "session" | "window", direction: "next" |
+  "previous"}` moves the client in document order and wraps.
+  `POST /clients/client_N/select` takes the `select` body and answers
+  `{}`, `not_found` for an unknown client. The event `selected
+  {session?, window?, pane?}` goes to a client only when something
+  other than its own `select` moved it: its `switch`, a `POST` from
+  another connection, or the removal of its current pane or window.
+- A session or window without `id` in a `PUT` is new; the server
+  allocates its id. A new pane is `{new: {cwd?, command?, env?}}`;
+  K1's merge adds `vars`, K3 adds `run`.
+- `POST /panes/pane_N/clear_history` answers `{}`. Every mirror of
+  the pane stays equal to the pane's terminal after it.
+- A float's `cols` x `rows` is its pty size; with `border` the
+  rectangle and one cell on each side are clamped into the window.
+  `zoom` gives that pane the window's size; the other leaves keep
+  theirs.
+- The server starts with an empty document. A client that finds it
+  empty (the terminal client, Kido.app) `PUT`s one new session with
+  one new pane.
+- The protocol is 3.0; K1's merge keeps 3.0.
+
+Built on `ko-k2` (2026-11-02), for the K1 merge and later stages:
+
+- `clear_history` is a `ko-pane` frame that feeds `CSI 3 J` to the
+  pane's own terminal and writes nothing into the ring; the
+  coordinator then asks a full snapshot for every view of the pane,
+  as a resync does. No verified module changed.
+- `ko layout put FILE` (`-` is standard input) sends the file's
+  `revision`, else the current one; on `409` it sends the file's
+  layout again with the current revision, at most 8 times. The file
+  is a whole document, so the last writer wins; a document that omits
+  a pane that a concurrent `PUT` created is `invalid`.
+  `ko_client::layout::edit` is the read-edit-`PUT` loop with the same
+  bound for a client that edits the document.
+- `ko_client::Model::rejoin` is the reconnect gate: the same
+  `instance` resumes, another one starts fresh. The terminal client
+  does not reconnect, so only Kido.app (K5) will call it.
+- The fuzz corpora still carry 2.x shapes (`POST /panes`, a hello
+  with `pane`, view `focus`); they replay as error paths. A corpus
+  migration waits for the next change that needs new inputs.
 
 Tests that close it: every edit of migration.md section 2's table
 through `ko layout put` and the Rust client, with the normalized

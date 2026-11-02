@@ -212,20 +212,32 @@ fn store(text: &mut Vec<u8>, value: &[u8]) -> bool {
     changed
 }
 
+pub(crate) struct Launch<'a> {
+    pub(crate) id: PaneId,
+    pub(crate) cwd: &'a Path,
+    pub(crate) argv: &'a [Vec<u8>],
+    pub(crate) env: &'a [Vec<u8>],
+    pub(crate) size: Size,
+}
+
 impl PaneProc {
     pub(crate) fn spawn(
         config: &Config,
-        id: PaneId,
-        cwd: &Path,
-        argv: &[Vec<u8>],
-        env: &[Vec<u8>],
+        launch: &Launch<'_>,
         stamps: &mut Stamps,
         io: &mut Io<'_>,
     ) -> io::Result<PaneProc> {
+        let Launch {
+            id,
+            cwd,
+            argv,
+            env,
+            size,
+        } = *launch;
         let mut out = Vec::new();
         let id = id.to_string();
         let init = Init {
-            size: Size::DEFAULT,
+            size,
             limits: config.limits,
             media: (&config.media[..]).into(),
             cwd: cwd.into(),
@@ -502,6 +514,10 @@ impl PaneProc {
             Refusal::TooLarge(oversize)
         })?;
         Ok(req)
+    }
+
+    pub(crate) fn clear_history(&mut self, io: &mut Io<'_>) {
+        let _ = self.send(&ToPane::ClearHistory, io);
     }
 
     pub(crate) fn resize(&mut self, size: Size, io: &mut Io<'_>) {

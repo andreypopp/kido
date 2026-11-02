@@ -8,6 +8,7 @@ pub mod fuzz;
 mod harness;
 pub mod http;
 pub mod ids;
+mod layout;
 mod link;
 mod pane;
 mod pane_proc;

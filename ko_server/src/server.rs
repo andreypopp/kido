@@ -451,7 +451,10 @@ mod tests {
             }),
             env: Vec::new(),
         };
-        let id = server.state.add_pane(&mut server.poll, &request).unwrap();
+        let id = server
+            .state
+            .new_session(&mut server.poll, &request)
+            .unwrap();
         let program = loop {
             server.turn().unwrap();
             let pane = server.state.panes.find(id).unwrap();

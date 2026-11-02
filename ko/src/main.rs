@@ -7,9 +7,10 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 use ko_client::api;
 use ko_client::launch::{self, PATIENCE};
+use ko_client::layout::Document;
 use ko_pane_wire::frame::Scrollback;
 use ko_server::config::{self, Config, DEFAULT_LIMITS};
-use ko_server::protocol;
+use ko_server::protocol::{self, Cause, Route, Row};
 use ko_server::server::{Server, Status, Timing};
 use ko_tui::client;
 
@@ -45,6 +46,43 @@ enum Command {
     /// any other status it still prints the body, writes "ko api: HTTP" and the status to stderr
     /// and exits 1. It refuses a WebSocket endpoint (/client and /panes/ID/view) and exits 2.
     Api(ApiArgs),
+    /// List the panes of the ko server.
+    Panes(PanesArgs),
+    /// Print the layout document, the sessions and windows with their splits and floats.
+    Layout(LayoutArgs),
+}
+
+#[derive(Debug, Args)]
+struct PanesArgs {
+    /// The server's state directory.
+    #[arg(long, value_name = "DIR")]
+    server: Option<PathBuf>,
+    /// Print the JSON of GET /panes, not a table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct LayoutArgs {
+    /// The server's state directory.
+    #[arg(long, value_name = "DIR", global = true)]
+    server: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<LayoutCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum LayoutCommand {
+    /// Replace the layout with the document in FILE.
+    ///
+    /// FILE is JSON with a "layout" and, as the output of ko layout has it, a "revision". With a
+    /// stale revision, or none, the command takes the server's current revision and sends the
+    /// layout again. It prints the normalized document. - reads standard input.
+    Put {
+        /// The file with the document.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,17 +223,25 @@ fn server(args: ServerArgs) -> ExitCode {
     }
 }
 
+fn read_input(path: &std::path::Path) -> io::Result<Vec<u8>> {
+    if path.as_os_str() == "-" {
+        let mut body = Vec::new();
+        io::stdin().read_to_end(&mut body).map(|_| body)
+    } else {
+        std::fs::read(path)
+    }
+}
+
+fn server_failure(name: &str, dir: &std::path::Path, failure: api::Failure) -> ExitCode {
+    match failure {
+        api::Failure::NoServer => fail(name, format!("no server at {}", dir.display())),
+        api::Failure::Failed(message) => fail(name, message),
+    }
+}
+
 fn api(args: ApiArgs) -> ExitCode {
-    let body = match args.input.as_deref() {
-        None => Ok(Vec::new()),
-        Some(path) if path.as_os_str() == "-" => {
-            let mut body = Vec::new();
-            io::stdin().read_to_end(&mut body).map(|_| body)
-        }
-        Some(path) => std::fs::read(path),
-    };
-    let body = match body {
-        Ok(body) => body,
+    let body = match args.input.as_deref().map(read_input).transpose() {
+        Ok(body) => body.unwrap_or_default(),
         Err(error) => return fail("api", error),
     };
     let method = match (args.method, &args.input) {
@@ -216,8 +262,7 @@ fn api(args: ApiArgs) -> ExitCode {
             );
             ExitCode::from(2)
         }
-        Err(api::Error::NoServer) => fail("api", format!("no server at {}", dir.display())),
-        Err(api::Error::Failed(message)) => fail("api", message),
+        Err(api::Error::Server(failure)) => server_failure("api", &dir, failure),
         Ok(response) => {
             let mut out = io::stdout().lock();
             if args.include {
@@ -231,6 +276,98 @@ fn api(args: ApiArgs) -> ExitCode {
                 fail("api", format!("HTTP {}", response.status))
             }
         }
+    }
+}
+
+fn get(name: &str, server: Option<PathBuf>, route: &Route) -> Result<Vec<u8>, ExitCode> {
+    let dir = config::dir(server);
+    match api::get(&dir, route) {
+        Ok(response) if response.status / 100 == 2 => Ok(response.body),
+        Ok(response) => Err(fail(name, format!("HTTP {}", response.status))),
+        Err(failure) => Err(server_failure(name, &dir, failure)),
+    }
+}
+
+fn state(row: &Row) -> String {
+    match row.dead.as_ref().map(|dead| &dead.cause) {
+        None => "running".to_owned(),
+        Some(Cause::Exited { code }) => format!("exited {code}"),
+        Some(Cause::Signaled { signal }) => format!("signal {signal}"),
+        Some(Cause::Failed { .. }) => "failed".to_owned(),
+    }
+}
+
+fn panes(args: PanesArgs) -> ExitCode {
+    let body = match get("panes", args.server, &Route::ListPanes) {
+        Ok(body) => body,
+        Err(code) => return code,
+    };
+    let mut out = io::stdout().lock();
+    if args.json {
+        let _ = out.write_all(&body);
+        let _ = writeln!(out);
+        return ExitCode::SUCCESS;
+    }
+    let rows: Vec<Row> = match protocol::decode(&body) {
+        Ok(rows) => rows,
+        Err(error) => return fail("panes", error),
+    };
+    let table: Vec<[String; 5]> =
+        std::iter::once(["PANE", "PID", "STATE", "TITLE", "CWD"].map(str::to_owned))
+            .chain(rows.iter().map(|row| {
+                [
+                    row.id.to_string(),
+                    row.pid.to_string(),
+                    state(row),
+                    row.title.clone(),
+                    row.cwd.clone(),
+                ]
+            }))
+            .collect();
+    let widths: Vec<usize> = (0..4)
+        .map(|column| {
+            table
+                .iter()
+                .map(|line| line[column].chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    for line in &table {
+        let cells: Vec<String> = (0..4)
+            .map(|column| format!("{:width$}", line[column], width = widths[column]))
+            .collect();
+        let _ = writeln!(out, "{}  {}", cells.join("  "), line[4]);
+    }
+    ExitCode::SUCCESS
+}
+
+fn layout(args: LayoutArgs) -> ExitCode {
+    let Some(LayoutCommand::Put { file }) = args.command else {
+        return match get("layout", args.server, &Route::GetLayout) {
+            Ok(body) => {
+                let mut out = io::stdout().lock();
+                let _ = out.write_all(&body);
+                let _ = writeln!(out);
+                ExitCode::SUCCESS
+            }
+            Err(code) => code,
+        };
+    };
+    let dir = config::dir(args.server);
+    let document = read_input(&file)
+        .map_err(|error| error.to_string())
+        .and_then(|text| protocol::decode::<Document>(&text).map_err(|error| error.to_string()));
+    let document = match document {
+        Ok(document) => document,
+        Err(message) => return fail("layout put", message),
+    };
+    match api::replace_layout(&dir, &document) {
+        Ok(snapshot) => {
+            let _ = writeln!(io::stdout().lock(), "{}", protocol::json(&snapshot));
+            ExitCode::SUCCESS
+        }
+        Err(failure) => server_failure("layout put", &dir, failure),
     }
 }
 
@@ -272,5 +409,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Api(args) => api(args),
+        Command::Panes(args) => panes(args),
+        Command::Layout(args) => layout(args),
     }
 }

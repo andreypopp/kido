@@ -15,7 +15,7 @@ use crate::ring::Pos;
 
 pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
 pub const MAX_FRAME_BYTES: usize = MAX_FRAME as usize + 4;
-const MAX_DIMENSION: u16 = 4096;
+pub const MAX_DIMENSION: u16 = 4096;
 pub const MAX_KEY: u16 = 175;
 const HEADER: usize = 5;
 const INIT_VERSION: u16 = 3;
@@ -44,6 +44,7 @@ pub enum Kind {
     Mouse = 20,
     Focus = 21,
     Screen = 22,
+    ClearHistory = 23,
 }
 
 impl Kind {
@@ -69,6 +70,7 @@ impl Kind {
             20 => Kind::Mouse,
             21 => Kind::Focus,
             22 => Kind::Screen,
+            23 => Kind::ClearHistory,
             _ => return None,
         })
     }
@@ -78,6 +80,9 @@ impl Kind {
 pub struct Dim(u16);
 
 impl Dim {
+    pub const MIN: Dim = Dim(1);
+    pub const MAX: Dim = Dim(MAX_DIMENSION);
+
     pub fn new(value: u16) -> Option<Dim> {
         (1..=MAX_DIMENSION).contains(&value).then_some(Dim(value))
     }
@@ -302,6 +307,7 @@ pub enum ToPane<'a> {
         format: ScreenFormat,
         rows: ScreenRows,
     },
+    ClearHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,6 +523,7 @@ impl Body<'_> {
                 Kind::Snapshot
             }
             ToPane::Exit => Kind::Exit,
+            ToPane::ClearHistory => Kind::ClearHistory,
             ToPane::Key(key) => {
                 self.key(key)?;
                 Kind::Key
@@ -814,7 +821,8 @@ pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
         | Kind::Key
         | Kind::Paste
         | Kind::Mouse
-        | Kind::Focus => return Ok(None),
+        | Kind::Focus
+        | Kind::ClearHistory => return Ok(None),
     }))
 }
 
@@ -842,6 +850,7 @@ pub enum Request<'a> {
         format: ScreenFormat,
         rows: ScreenRows,
     },
+    ClearHistory,
 }
 
 #[derive(Debug)]
@@ -1058,6 +1067,7 @@ pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
             Request::Snapshot { req, history }
         }
         Kind::Exit => return Ok(Request::Exit),
+        Kind::ClearHistory => return Ok(Request::ClearHistory),
         Kind::Key => Request::Key(fields.key()?),
         Kind::Mouse => Request::Mouse(fields.mouse()?),
         Kind::Paste => {
@@ -1412,6 +1422,9 @@ mod tests {
         assert!(matches!(decode_request(&text), Ok(Request::Text(b"\x00x"))));
         decoded(&ToPane::Focus(true), |request| {
             assert!(matches!(request, Request::Focus(true)));
+        });
+        decoded(&ToPane::ClearHistory, |request| {
+            assert!(matches!(request, Request::ClearHistory));
         });
         decoded(&ToPane::Tail(Pos::new(9)), |request| {
             assert!(matches!(request, Request::Tail));

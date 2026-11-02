@@ -114,7 +114,7 @@ panes and their offsets survive.
 
 Every other request carries the `Ko-Protocol` and `Ko-Vt` headers; a
 request without them is refused as a mismatch. The protocol version
-is 2.1. A major mismatch is `426 Upgrade Required`, a `vt` mismatch
+is 3.0. A major mismatch is `426 Upgrade Required`, a `vt` mismatch
 is `409 Conflict`, with a `protocol_mismatch` or `vt_mismatch` body
 that names the server's values beside `kind` and `message`. Those two
 fields have the same place in every major, so a client of any major
@@ -150,7 +150,34 @@ a crash, a network loss or a ping timeout is a close too. On close the
 server deletes the client and closes its views; a view or request that
 names a closed client gets `gone`. The server keeps the client's
 current session, window, pane, size, focus and sizing flag, and prompt
-scope uses them. A reconnecting client sends a new hello with the
+scope uses them. The current pane is per client and is not in the
+layout document; a client that enters a window where it has no
+current pane gets the pane that a client focused most recently in
+that window (migration.md 3.2). When a `switch`, another
+connection's select or a removal moves a client, the client gets a
+`selected` event. A client also gets `selected` when its own hello
+or `select` names only a session or a window, because the server
+chose the pane; it gets none when it named the pane.
+
+A client's selection names a session, a window or a pane; a pane
+implies its window and session, a window implies its session, and a
+session implies the client's last current window in it, else its
+first window. A relative switch moves over windows or sessions in
+document order, next or previous, and wraps. `POST
+/clients/client_N/select` takes the same selection for another
+client: `not_found` for an unknown client, `invalid` for an empty or
+unknown target.
+
+The input focus of a pane is derived, not sent as input: a pane is
+focused while at least one client whose `focused` is true has it as
+its current pane. On a change the server sends focus in or out to the
+pane (CSI I, CSI O under mode 1004), so a pane that two focused
+clients show sees no transition when one of them leaves.
+
+The window that a client shows is sized by the client that claims it
+(design.md 4.5). A terminal client claims only a window with one leaf
+and no floats; a pane in a split keeps its leaf size and the terminal
+client clips or pads it. A reconnecting client sends a new hello with the
 state it shows and gets a new id; the client owns that state, not the
 server. Messages on one client connection are applied in order.
 
@@ -300,7 +327,8 @@ exists; its typed `kind` keeps the shape of kido's `Pane_status.kind`.
 
 The layout is one JSON document for the whole server (decided
 2026-10-30). migration.md 3 gives its schema and invariants until the
-`Layout` module exists; then `ko_server/layout.mli` is the reference.
+`Layout` module exists; now `ko_server/src/layout.rs` and the
+document types of `ko_server/src/protocol.rs` are the reference.
 
 - `GET /layout` returns the document and its revision.
 - `PUT /layout` takes the document with the revision the client read.
@@ -313,9 +341,28 @@ The layout is one JSON document for the whole server (decided
   every `/client`, whether a client sent it or the server made it: a
   new pane, a `DELETE`, a pane's death, a size from the window's
   sizing client.
+- A `PUT` must keep every live pane: a document that omits one is
+  `invalid`. A new session or window has no `id`; the server allocates
+  it. A new pane is a leaf or float whose `pane` is `{new: {cwd?,
+  command?, env?}}`. If the `ko-pane` process of one cannot start,
+  the server stops the others that started and keeps the old
+  document, but not its id counters, so an id is never handed out
+  twice. A program that fails later, an exec failure included, is a
+  pane death as any other. A window grows to
+  give each pane at least one cell. The variable limits below apply
+  to session and window `vars` too.
 - `DELETE /panes/pane_N` removes the pane from its window; an empty
-  window or session goes with it. There is no `POST /panes`: a pane is
-  created inside a `PUT /layout`.
+  window or session goes with it. A pane whose `ko-pane` process ends
+  leaves the document by itself; a pane whose program exits stays,
+  dead, until a `DELETE`. There is no `POST /panes`: a pane is
+  created inside a `PUT /layout`. The server starts with an empty
+  document; a client that finds it empty `PUT`s one new session with
+  one new pane.
+- `POST /panes/pane_N/clear_history` clears the pane's scrollback.
+  Every open view of the pane then gets a full snapshot through the
+  same path as a client's resync, so every mirror stays equal to the
+  pane's terminal; the snapshot is small because the history is
+  empty.
 - `POST /clients/client_N/select` moves another connected client; the
   client itself sends its selection on its own connection.
 
@@ -333,8 +380,8 @@ pane's foreground process is `ssh`.
 ## 8. Input
 
 An input event is one JSON message, as `Protocol.input` defines
-it: a key, already-encoded text, a paste, a mouse event or a focus
-change. It is sent as a text message on the pane's view, or as the
+it: a key, already-encoded text, a paste or a mouse event. Focus is
+not input; the server derives it from the clients (section 3). It is sent as a text message on the pane's view, or as the
 body of `POST /panes/pane_N/input` when the sender has no view open
 (the CLI's prompt delivery).
 

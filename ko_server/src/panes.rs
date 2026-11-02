@@ -3,13 +3,14 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use ko_pane_wire::frame::Size;
 use ko_sys::event::Token;
 
 use crate::config::{BUILD, Config, variable};
 use crate::delivery::{Stamps, mint_stamps};
 use crate::ids::PaneId;
 use crate::pane::Pane;
-use crate::pane_proc::{Io, Life};
+use crate::pane_proc::{Io, Launch, Life};
 use crate::protocol::{Command, CreatePane, Variable};
 
 #[derive(Debug)]
@@ -29,7 +30,6 @@ impl fmt::Display for AddError {
 
 #[derive(Debug)]
 pub(crate) struct Panes {
-    next: u64,
     stamps: Stamps,
     panes: Vec<Pane>,
     removed: Vec<Pane>,
@@ -38,7 +38,6 @@ pub(crate) struct Panes {
 impl Default for Panes {
     fn default() -> Panes {
         Panes {
-            next: 1,
             stamps: mint_stamps(),
             panes: Vec::new(),
             removed: Vec::new(),
@@ -117,10 +116,11 @@ impl Panes {
     pub(crate) fn add(
         &mut self,
         config: &Config,
+        id: PaneId,
+        size: Size,
         request: &CreatePane,
         io: &mut Io<'_>,
-    ) -> Result<PaneId, AddError> {
-        let id = PaneId::new(self.next);
+    ) -> Result<(), AddError> {
         let cwd = request
             .cwd
             .as_ref()
@@ -170,11 +170,21 @@ impl Panes {
             return Err(AddError::Invalid("invalid environment"));
         }
         let env = environment(config, id, &request.env);
-        let pane = Pane::spawn(config, id, &cwd, command, &env, &mut self.stamps, io)
-            .map_err(AddError::Io)?;
-        self.next = self.next.saturating_add(1);
+        let pane = Pane::spawn(
+            config,
+            &Launch {
+                id,
+                cwd: &cwd,
+                argv: &command,
+                env: &env,
+                size,
+            },
+            &mut self.stamps,
+            io,
+        )
+        .map_err(AddError::Io)?;
         self.panes.push(pane);
-        Ok(id)
+        Ok(())
     }
 
     pub(crate) fn remove(&mut self, id: PaneId, io: &mut Io<'_>) {
@@ -305,10 +315,18 @@ mod tests {
             (request("/", None, &[("", "c")]), "invalid environment"),
         ];
         for (request, message) in cases {
-            let refused = panes.add(&config(), &request, &mut io).unwrap_err();
+            let refused = panes
+                .add(&config(), PaneId::new(1), Size::DEFAULT, &request, &mut io)
+                .unwrap_err();
             assert_eq!(refused.to_string(), message);
         }
-        let spawned = panes.add(&config(), &request("/", None, &[]), &mut io);
+        let spawned = panes.add(
+            &config(),
+            PaneId::new(1),
+            Size::DEFAULT,
+            &request("/", None, &[]),
+            &mut io,
+        );
         assert!(matches!(spawned, Err(AddError::Io(_))));
         assert!(panes.iter().next().is_none());
     }

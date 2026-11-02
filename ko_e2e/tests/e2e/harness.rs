@@ -276,6 +276,10 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+pub(crate) fn sh(command: &str) -> Value {
+    json!({"command": {"type": "argv", "argv": ["/bin/sh", "-c", command]}, "cwd": "/tmp"})
+}
+
 pub(crate) fn history_lines(count: u32) -> String {
     format!("i=0; while [ $i -lt {count} ]; do printf 'history-%s\\r\\n' $i; i=$((i+1)); done")
 }
@@ -285,8 +289,9 @@ pub(crate) fn size(cols: u16, rows: u16) -> Value {
 }
 
 #[derive(Debug)]
-pub(crate) struct Hello<'a> {
-    pub(crate) pane: Option<&'a str>,
+pub(crate) struct Hello {
+    pub(crate) kind: &'static str,
+    pub(crate) selection: Value,
     pub(crate) focused: bool,
     pub(crate) size: Value,
 }
@@ -296,7 +301,7 @@ pub(crate) fn tagged(text: &str) -> Option<(String, Value)> {
     Some((message.get("type")?.as_str()?.to_owned(), message))
 }
 
-pub(crate) const PROTOCOL: &str = "2.1";
+pub(crate) const PROTOCOL: &str = "3.0";
 
 pub(crate) fn size_request(size: Value) -> Value {
     let mut request = size;
@@ -438,7 +443,7 @@ impl Ws {
 
     pub(crate) fn welcome(&mut self) -> Value {
         let mut identity = Value::Null;
-        for key in ["welcome", "topology"] {
+        for key in ["welcome", "layout"] {
             let Message::Text(text) = self.read() else {
                 panic!("expected {key}, got a binary message");
             };
@@ -782,36 +787,124 @@ impl Server {
         let mut ws = self.ws("/client");
         let mut body = json!({
             "type": "hello",
-            "kind": "terminal",
+            "kind": hello.kind,
             "name": "test",
             "focused": hello.focused,
             "size": hello.size,
         });
-        if let Some(pane) = hello.pane {
-            body["pane"] = json!(pane);
+        if let Value::Object(fields) = hello.selection {
+            for (name, value) in fields {
+                body[name] = value;
+            }
         }
         ws.send(&body);
         ws
     }
 
     pub(crate) fn client(&self, pane: Option<&str>) -> (Ws, Value) {
-        let mut ws = self.hello(Hello {
-            pane,
+        let selection = pane.map_or(json!({}), |pane| json!({"pane": pane}));
+        self.joined(Hello {
+            kind: "terminal",
+            selection,
             focused: true,
             size: size(80, 24),
-        });
+        })
+    }
+
+    pub(crate) fn app_client(
+        &self,
+        selection: Value,
+        focused: bool,
+        (cols, rows): (u16, u16),
+    ) -> (Ws, Value) {
+        self.joined(Hello {
+            kind: "app",
+            selection,
+            focused,
+            size: size(cols, rows),
+        })
+    }
+
+    fn joined(&self, hello: Hello) -> (Ws, Value) {
+        let mut ws = self.hello(hello);
         let welcome = ws.welcome();
         (ws, welcome)
     }
 
     pub(crate) fn pane(&self, command: &str) -> String {
-        let body =
-            json!({"command": {"type": "argv", "argv": ["/bin/sh", "-c", command]}, "cwd": "/tmp"});
-        self.ko(&["api", "--input", "-", "/panes"], &body.to_string())
-            .json()["pane"]
+        self.new_pane(sh(command))
+    }
+
+    pub(crate) fn new_pane(&self, new: Value) -> String {
+        let window = json!({"name": "test", "tree": {"pane": {"new": new}}});
+        let put = self.edit(|layout| {
+            let sessions = layout["sessions"].as_array_mut().expect("sessions");
+            match sessions.first_mut() {
+                Some(first) => first["windows"]
+                    .as_array_mut()
+                    .expect("a list of windows")
+                    .push(window),
+                None => sessions.push(json!({"name": "test", "windows": [window]})),
+            }
+        });
+        let windows = put["layout"]["sessions"][0]["windows"]
+            .as_array()
+            .expect("windows");
+        windows[windows.len() - 1]["tree"]["pane"]
             .as_str()
             .unwrap_or_default()
             .to_owned()
+    }
+
+    pub(crate) fn doc(&self) -> Value {
+        self.ko(&["layout"], "").json()
+    }
+
+    pub(crate) fn put(&self, document: &Value) -> Value {
+        self.ko(&["layout", "put", "-"], &document.to_string())
+            .json()
+    }
+
+    pub(crate) fn edit(&self, change: impl FnOnce(&mut Value)) -> Value {
+        let mut document = self.doc();
+        change(&mut document["layout"]);
+        self.put(&document)
+    }
+
+    pub(crate) fn delete(&self, pane: &str) {
+        self.ko(&["api", "-X", "DELETE", &format!("/panes/{pane}")], "")
+            .ok();
+    }
+
+    pub(crate) fn sttys(&self, panes: &[&str]) -> Vec<(u32, u32)> {
+        static TAG: AtomicU32 = AtomicU32::new(0);
+        let files: Vec<PathBuf> = panes
+            .iter()
+            .map(|pane| {
+                let file = self
+                    .scratch
+                    .join(format!("stty-{}", TAG.fetch_add(1, Ordering::Relaxed)));
+                self.text(pane, &format!("stty size > {}\n", quote(text_of(&file))));
+                file
+            })
+            .collect();
+        let mut sizes = vec![None; files.len()];
+        poll("stty size in every pane", || {
+            for (size, file) in sizes.iter_mut().zip(&files) {
+                if size.is_none() {
+                    *size = std::fs::read_to_string(file).ok().and_then(|text| {
+                        let (rows, cols) = text.trim_end().split_once(' ')?;
+                        Some((rows.parse().ok()?, cols.parse().ok()?))
+                    });
+                }
+            }
+            sizes.iter().all(Option::is_some)
+        });
+        sizes.into_iter().flatten().collect()
+    }
+
+    pub(crate) fn stty(&self, pane: &str) -> (u32, u32) {
+        self.sttys(&[pane])[0]
     }
 
     pub(crate) fn text(&self, pane: &str, text: &str) {

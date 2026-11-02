@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
+use ko_client::model::Item;
 use ko_server::ids::PaneId;
 use ko_server::protocol::{Cause, Dead, Row};
 
@@ -7,7 +9,7 @@ const WIDTH: usize = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Line {
-    pub(crate) pane: PaneId,
+    pub(crate) pane: Option<PaneId>,
     pub(crate) text: String,
     pub(crate) selected: bool,
 }
@@ -50,34 +52,44 @@ pub(crate) fn dead_line(dead: &Dead) -> String {
     format!("[{what} \u{2014} Ctrl+D to remove]")
 }
 
-pub(crate) fn lines(selected: Option<PaneId>, panes: &[Row]) -> Vec<Line> {
-    panes
+pub(crate) fn lines(selected: Option<PaneId>, items: &[Item], panes: &[Row]) -> Vec<Line> {
+    let mut number = 0;
+    let rows: BTreeMap<PaneId, &Row> = panes.iter().map(|row| (row.id, row)).collect();
+    items
         .iter()
-        .enumerate()
-        .map(|(i, pane)| {
-            let title = if !pane.title.is_empty() {
-                pane.title.clone()
-            } else {
-                match pane.command.first() {
-                    None => pane.id.to_string(),
-                    Some(command) => Path::new(command).file_name().map_or_else(
-                        || command.clone(),
-                        |name| name.to_string_lossy().into_owned(),
-                    ),
+        .map(|item| match item {
+            Item::Session { name, .. } => Line {
+                pane: None,
+                text: name.clone(),
+                selected: false,
+            },
+            Item::Pane(id) => {
+                number += 1;
+                let pane = rows.get(id).copied();
+                let title = match pane {
+                    None => id.to_string(),
+                    Some(pane) if !pane.title.is_empty() => pane.title.clone(),
+                    Some(pane) => match pane.command.first() {
+                        None => pane.id.to_string(),
+                        Some(command) => Path::new(command).file_name().map_or_else(
+                            || command.clone(),
+                            |name| name.to_string_lossy().into_owned(),
+                        ),
+                    },
+                };
+                let status = match pane.and_then(|pane| pane.dead.as_ref()) {
+                    Some(Dead {
+                        cause: Cause::Exited { code },
+                        ..
+                    }) => format!(" \u{2020}{code}"),
+                    Some(_) => " \u{2020}".to_owned(),
+                    None => String::new(),
+                };
+                Line {
+                    pane: Some(*id),
+                    text: format!("{number} {title}{status}"),
+                    selected: selected == Some(*id),
                 }
-            };
-            let status = match &pane.dead {
-                Some(Dead {
-                    cause: Cause::Exited { code },
-                    ..
-                }) => format!(" \u{2020}{code}"),
-                Some(_) => " \u{2020}".to_owned(),
-                None => String::new(),
-            };
-            Line {
-                pane: pane.id,
-                text: format!("{} {title}{status}", i + 1),
-                selected: selected == Some(pane.id),
             }
         })
         .collect()
@@ -92,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_list_preserves_pane_titles_and_dead_status() {
+    fn the_list_has_a_header_for_each_session_and_keeps_pane_titles_and_dead_status() {
         let pane = Row {
             id: id(1),
             pid: 1,
@@ -114,13 +126,32 @@ mod tests {
                 ..pane
             },
         ];
-        let shown: Vec<String> = lines(Some(id(2)), &panes)
+        let items = [
+            Item::Session {
+                id: "session_1".parse().unwrap(),
+                name: "work".to_owned(),
+            },
+            Item::Pane(id(1)),
+            Item::Session {
+                id: "session_2".parse().unwrap(),
+                name: "play".to_owned(),
+            },
+            Item::Pane(id(2)),
+            Item::Pane(id(3)),
+        ];
+        let shown: Vec<String> = lines(Some(id(2)), &items, &panes)
             .iter()
-            .map(|line| format!("{} {} {}", line.pane, line.selected, line.text))
+            .map(|line| format!("{:?} {} {}", line.pane, line.selected, line.text))
             .collect();
         assert_eq!(
             shown,
-            ["pane_1 false 1 sh", "pane_2 true 2 build \u{2020}7"]
+            [
+                "None false work",
+                "Some(PaneId(1)) false 1 sh",
+                "None false play",
+                "Some(PaneId(2)) true 2 build \u{2020}7",
+                "Some(PaneId(3)) false 3 pane_3",
+            ]
         );
         assert_eq!((WIDTH, visible(99), visible(100)), (24, false, true));
         let causes = [

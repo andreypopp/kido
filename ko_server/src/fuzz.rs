@@ -394,8 +394,8 @@ impl Rig {
             env: Vec::new(),
         };
         let pane = state
-            .add_pane(&mut poll, &request)
-            .unwrap_or_else(|error| panic!("the first pane did not start: {error}"));
+            .new_session(&mut poll, &request)
+            .unwrap_or_else(|error| panic!("the first pane did not start: {error:?}"));
         let wake = poll.timer();
         poll.start(
             wake,

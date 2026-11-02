@@ -25,9 +25,9 @@ fn hostile_clients_do_not_affect_others() {
             "A: b\r\n".repeat(20000)
         )
         .into_bytes(),
-        format!("POST /panes HTTP/1.1\r\nHost: ko\r\n{head}Content-Length: 99999999999\r\n\r\n{{")
+        format!("PUT /layout HTTP/1.1\r\nHost: ko\r\n{head}Content-Length: 99999999999\r\n\r\n{{")
             .into_bytes(),
-        format!("POST /panes HTTP/1.1\r\nHost: ko\r\n{head}Transfer-Encoding: chunked\r\n\r\n{{}}")
+        format!("PUT /layout HTTP/1.1\r\nHost: ko\r\n{head}Transfer-Encoding: chunked\r\n\r\n{{}}")
             .into_bytes(),
         b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03".to_vec(),
         after(&[
@@ -92,7 +92,8 @@ fn hostile_clients_do_not_affect_others() {
     let grid = |cols: u32, rows: u32| json!({"cols": cols, "rows": rows, "cell_px": {"width": 65535, "height": 65535}});
     let hello = |cols: u32, rows: u32| {
         s.hello(Hello {
-            pane: None,
+            kind: "terminal",
+            selection: serde_json::json!({}),
             focused: true,
             size: grid(cols, rows),
         })

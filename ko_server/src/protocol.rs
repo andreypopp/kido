@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroUsize};
 
@@ -13,11 +14,11 @@ use serde_json::Value;
 
 use crate::config::BUILD;
 use crate::http::Status;
-use crate::ids::{ClientId, Instance, PaneId};
+use crate::ids::{ClientId, Instance, PaneId, SessionId, WindowId};
 use crate::pane_proc::{self, Death};
 
-const PROTOCOL: &str = "2.1";
-const PROTOCOL_MAJOR: &str = "2";
+const PROTOCOL: &str = "3.0";
+const PROTOCOL_MAJOR: &str = "3";
 const VT: &str = env!("KO_VT");
 const MAX_OFFSET: u64 = (1 << 62) - 1;
 
@@ -146,7 +147,7 @@ struct RawSize {
     cols: u16,
     rows: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    cell_px: Option<RawCellPx>,
+    cell_px: Option<CellPixels>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,17 +158,10 @@ impl TryFrom<RawSize> for Size {
     type Error = &'static str;
 
     fn try_from(raw: RawSize) -> Result<Size, &'static str> {
-        let cell_px = match raw.cell_px {
-            None => None,
-            Some(cell) => Some(CellPx {
-                width: NonZeroU16::new(cell.width).ok_or("invalid size")?,
-                height: NonZeroU16::new(cell.height).ok_or("invalid size")?,
-            }),
-        };
         Ok(Size(frame::Size {
             cols: Dim::new(raw.cols).ok_or("invalid size")?,
             rows: Dim::new(raw.rows).ok_or("invalid size")?,
-            cell_px,
+            cell_px: raw.cell_px.map(|cell| cell.0),
         }))
     }
 }
@@ -177,10 +171,7 @@ impl From<Size> for RawSize {
         RawSize {
             cols: size.cols.get(),
             rows: size.rows.get(),
-            cell_px: size.cell_px.map(|cell| RawCellPx {
-                width: cell.width.get(),
-                height: cell.height.get(),
-            }),
+            cell_px: size.cell_px.map(CellPixels),
         }
     }
 }
@@ -230,11 +221,6 @@ pub struct Row {
     pub cwd: String,
     pub title: String,
     pub dead: Option<Dead>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Created {
-    pub pane: PaneId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,7 +406,6 @@ pub enum Input {
     Mouse(Mouse),
     Paste(Paste),
     Text { data: Text },
-    Focus { focused: bool },
 }
 
 impl<'a> From<&'a Input> for pane_proc::Input<'a> {
@@ -433,7 +418,6 @@ impl<'a> From<&'a Input> for pane_proc::Input<'a> {
                 check_safe: paste.check_safe,
             },
             Input::Text { data } => pane_proc::Input::Text(&data.0),
-            Input::Focus { focused } => pane_proc::Input::Focus(*focused),
         }
     }
 }
@@ -459,6 +443,411 @@ pub struct CreatePane {
     pub command: Option<Command>,
     #[serde(default)]
     pub env: Vec<Variable>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct Cells(Dim);
+
+impl Cells {
+    pub fn new(count: u16) -> Option<Cells> {
+        Dim::new(count).map(Cells)
+    }
+
+    pub(crate) fn clamped(count: usize) -> Cells {
+        let count = u16::try_from(count).unwrap_or(u16::MAX);
+        Cells(Dim::new(count).unwrap_or(if count == 0 { Dim::MIN } else { Dim::MAX }))
+    }
+
+    pub fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl From<Dim> for Cells {
+    fn from(dim: Dim) -> Cells {
+        Cells(dim)
+    }
+}
+
+impl From<Cells> for Dim {
+    fn from(cells: Cells) -> Dim {
+        cells.0
+    }
+}
+
+impl TryFrom<u16> for Cells {
+    type Error = &'static str;
+
+    fn try_from(count: u16) -> Result<Cells, &'static str> {
+        Cells::new(count).ok_or("invalid size")
+    }
+}
+
+impl From<Cells> for u16 {
+    fn from(cells: Cells) -> u16 {
+        cells.get()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Name(String);
+
+impl TryFrom<String> for Name {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<Name, &'static str> {
+        if text.len() > 256 || text.chars().any(char::is_control) {
+            Err("invalid name")
+        } else {
+            Ok(Name(text))
+        }
+    }
+}
+
+impl From<Name> for String {
+    fn from(Name(text): Name) -> String {
+        text
+    }
+}
+
+pub type Vars = BTreeMap<Name, Value>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Revision(u64);
+
+impl Revision {
+    pub const FIRST: Revision = Revision(0);
+
+    pub(crate) fn next(self) -> Revision {
+        Revision(self.0.saturating_add(1))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawCellPx", into = "RawCellPx")]
+pub struct CellPixels(pub CellPx);
+
+impl TryFrom<RawCellPx> for CellPixels {
+    type Error = &'static str;
+
+    fn try_from(raw: RawCellPx) -> Result<CellPixels, &'static str> {
+        Ok(CellPixels(CellPx {
+            width: NonZeroU16::new(raw.width).ok_or("invalid size")?,
+            height: NonZeroU16::new(raw.height).ok_or("invalid size")?,
+        }))
+    }
+}
+
+impl From<CellPixels> for RawCellPx {
+    fn from(CellPixels(cell): CellPixels) -> RawCellPx {
+        RawCellPx {
+            width: cell.width.get(),
+            height: cell.height.get(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Axis {
+    #[serde(rename = "h")]
+    Horizontal,
+    #[serde(rename = "v")]
+    Vertical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Node<L> {
+    Split { split: Axis, children: Vec<Node<L>> },
+    Leaf(L),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Leaf {
+    pub pane: PaneId,
+    pub cols: Cells,
+    pub rows: Cells,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Float {
+    pub pane: PaneId,
+    pub x: u16,
+    pub y: u16,
+    pub cols: Cells,
+    pub rows: Cells,
+    pub z: u32,
+    pub border: bool,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Window {
+    pub id: WindowId,
+    pub name: Name,
+    pub vars: Vars,
+    pub cols: Cells,
+    pub rows: Cells,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_px: Option<CellPixels>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<PaneId>,
+    pub tree: Node<Leaf>,
+    pub floats: Vec<Float>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Session {
+    pub id: SessionId,
+    pub name: Name,
+    pub vars: Vars,
+    pub windows: Vec<Window>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Layout {
+    pub sessions: Vec<Session>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub revision: Revision,
+    pub layout: Layout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PaneRef {
+    Existing(PaneId),
+    New { new: CreatePane },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftLeaf {
+    pub pane: PaneRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cols: Option<Cells>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Cells>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftFloat {
+    pub pane: PaneRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cols: Option<Cells>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Cells>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub z: Option<u32>,
+    #[serde(default)]
+    pub border: bool,
+    #[serde(default)]
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<WindowId>,
+    pub name: Name,
+    #[serde(default)]
+    pub vars: Vars,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cols: Option<Cells>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Cells>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_px: Option<CellPixels>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<PaneId>,
+    pub tree: Node<DraftLeaf>,
+    #[serde(default)]
+    pub floats: Vec<DraftFloat>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftSession {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<SessionId>,
+    pub name: Name,
+    #[serde(default)]
+    pub vars: Vars,
+    pub windows: Vec<DraftWindow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftLayout {
+    pub sessions: Vec<DraftSession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PutLayout {
+    pub revision: Revision,
+    pub layout: DraftLayout,
+}
+
+impl Node<Leaf> {
+    pub fn leaves<'a>(&'a self, out: &mut Vec<&'a Leaf>) {
+        match self {
+            Node::Leaf(leaf) => out.push(leaf),
+            Node::Split { children, .. } => {
+                children.iter().for_each(|child| child.leaves(out));
+            }
+        }
+    }
+
+    pub(crate) fn contains(&self, pane: PaneId) -> bool {
+        match self {
+            Node::Leaf(leaf) => leaf.pane == pane,
+            Node::Split { children, .. } => children.iter().any(|child| child.contains(pane)),
+        }
+    }
+}
+
+impl Window {
+    pub fn panes(&self) -> Vec<PaneId> {
+        let mut leaves = Vec::new();
+        self.tree.leaves(&mut leaves);
+        leaves
+            .into_iter()
+            .map(|leaf| leaf.pane)
+            .chain(self.floats.iter().map(|float| float.pane))
+            .collect()
+    }
+
+    pub(crate) fn has(&self, pane: PaneId) -> bool {
+        self.tree.contains(pane) || self.floats.iter().any(|float| float.pane == pane)
+    }
+
+    pub fn pane_sizes(&self) -> Vec<(PaneId, frame::Size)> {
+        let mut leaves = Vec::new();
+        self.tree.leaves(&mut leaves);
+        let cell_px = self.cell_px.map(|cell| cell.0);
+        leaves
+            .into_iter()
+            .map(|leaf| (leaf.pane, leaf.cols, leaf.rows))
+            .chain(
+                self.floats
+                    .iter()
+                    .map(|float| (float.pane, float.cols, float.rows)),
+            )
+            .map(|(pane, cols, rows)| {
+                let (cols, rows) = if self.zoom == Some(pane) {
+                    (self.cols, self.rows)
+                } else {
+                    (cols, rows)
+                };
+                (
+                    pane,
+                    frame::Size {
+                        cols: cols.into(),
+                        rows: rows.into(),
+                        cell_px,
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+impl Layout {
+    pub fn windows(&self) -> impl Iterator<Item = (&Session, &Window)> {
+        self.sessions
+            .iter()
+            .flat_map(|session| session.windows.iter().map(move |window| (session, window)))
+    }
+
+    pub fn session(&self, id: SessionId) -> Option<&Session> {
+        self.sessions.iter().find(|session| session.id == id)
+    }
+
+    pub fn window(&self, id: WindowId) -> Option<(&Session, &Window)> {
+        self.windows().find(|(_, window)| window.id == id)
+    }
+
+    pub fn locate(&self, pane: PaneId) -> Option<(&Session, &Window)> {
+        self.windows().find(|(_, window)| window.has(pane))
+    }
+
+    pub fn pane_sizes(&self) -> Vec<(PaneId, frame::Size)> {
+        self.windows()
+            .flat_map(|(_, window)| window.pane_sizes())
+            .collect()
+    }
+}
+
+impl From<&Node<Leaf>> for Node<DraftLeaf> {
+    fn from(node: &Node<Leaf>) -> Node<DraftLeaf> {
+        match node {
+            Node::Leaf(leaf) => Node::Leaf(DraftLeaf {
+                pane: PaneRef::Existing(leaf.pane),
+                cols: Some(leaf.cols),
+                rows: Some(leaf.rows),
+            }),
+            Node::Split { split, children } => Node::Split {
+                split: *split,
+                children: children.iter().map(Node::from).collect(),
+            },
+        }
+    }
+}
+
+impl From<&Float> for DraftFloat {
+    fn from(float: &Float) -> DraftFloat {
+        DraftFloat {
+            pane: PaneRef::Existing(float.pane),
+            x: Some(float.x),
+            y: Some(float.y),
+            cols: Some(float.cols),
+            rows: Some(float.rows),
+            z: Some(float.z),
+            border: float.border,
+            title: float.title.clone(),
+        }
+    }
+}
+
+impl From<&Window> for DraftWindow {
+    fn from(window: &Window) -> DraftWindow {
+        DraftWindow {
+            id: Some(window.id),
+            name: window.name.clone(),
+            vars: window.vars.clone(),
+            cols: Some(window.cols),
+            rows: Some(window.rows),
+            cell_px: window.cell_px,
+            zoom: window.zoom,
+            tree: Node::from(&window.tree),
+            floats: window.floats.iter().map(DraftFloat::from).collect(),
+        }
+    }
+}
+
+impl From<&Session> for DraftSession {
+    fn from(session: &Session) -> DraftSession {
+        DraftSession {
+            id: Some(session.id),
+            name: session.name.clone(),
+            vars: session.vars.clone(),
+            windows: session.windows.iter().map(DraftWindow::from).collect(),
+        }
+    }
+}
+
+impl From<&Layout> for DraftLayout {
+    fn from(layout: &Layout) -> DraftLayout {
+        DraftLayout {
+            sessions: layout.sessions.iter().map(DraftSession::from).collect(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -517,19 +906,50 @@ pub enum ClientKind {
 pub struct Hello {
     pub kind: ClientKind,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane: Option<PaneId>,
+    #[serde(flatten)]
+    pub selection: Selection,
     pub focused: bool,
     pub size: Size,
     #[serde(default)]
     pub ignore_size: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Selection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<PaneId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Over {
+    Session,
+    Window,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    Next,
+    Previous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Switch {
+    pub over: Over,
+    pub direction: Direction,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientRequest {
     Hello(Hello),
-    Select { pane: PaneId },
+    Select(Selection),
+    Switch(Switch),
     Size(Size),
     Focused { focused: bool },
 }
@@ -650,7 +1070,8 @@ pub struct PaneDead {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
     Welcome(Welcome),
-    Topology { panes: Vec<Row> },
+    Layout(Snapshot),
+    Selected(Selection),
     Title(Title),
     Pwd(Pwd),
     Dead(PaneDead),
@@ -690,9 +1111,12 @@ impl fmt::Display for Invalid {
 pub enum Route {
     Version,
     ListPanes,
-    CreatePane,
+    GetLayout,
+    PutLayout,
     Client,
+    SelectClient(ClientId),
     DeletePane(PaneId),
+    ClearHistory(PaneId),
     Input(PaneId),
     Screen(PaneId, ScreenFormat, ScreenRows),
     View(PaneId, ViewOptions, Option<u64>),
@@ -743,14 +1167,17 @@ impl Route {
         Ok(match (method, segments.as_slice()) {
             ("GET", ["", "version"]) => Some(Route::Version),
             ("GET", ["", "panes"]) => Some(Route::ListPanes),
-            ("POST", ["", "panes"]) => Some(Route::CreatePane),
+            ("GET", ["", "layout"]) => Some(Route::GetLayout),
+            ("PUT", ["", "layout"]) => Some(Route::PutLayout),
             ("GET", ["", "client"]) => Some(Route::Client),
+            ("POST", ["", "clients", id, "select"]) => id.parse().ok().map(Route::SelectClient),
             (_, ["", "panes", id, rest @ ..]) => {
                 let Ok(id) = id.parse::<PaneId>() else {
                     return Ok(None);
                 };
                 match (method, rest) {
                     ("DELETE", []) => Some(Route::DeletePane(id)),
+                    ("POST", ["clear_history"]) => Some(Route::ClearHistory(id)),
                     ("POST", ["input"]) => Some(Route::Input(id)),
                     ("GET", ["screen"]) => {
                         let format = match arg("format") {
@@ -795,9 +1222,12 @@ impl Route {
         match self {
             Route::Version => ("GET", "/version".to_owned()),
             Route::ListPanes => ("GET", "/panes".to_owned()),
-            Route::CreatePane => ("POST", "/panes".to_owned()),
+            Route::GetLayout => ("GET", "/layout".to_owned()),
+            Route::PutLayout => ("PUT", "/layout".to_owned()),
             Route::Client => ("GET", "/client".to_owned()),
+            Route::SelectClient(id) => ("POST", format!("/clients/{id}/select")),
             Route::DeletePane(id) => ("DELETE", pane(id)),
+            Route::ClearHistory(id) => ("POST", format!("{}/clear_history", pane(id))),
             Route::Input(id) => ("POST", format!("{}/input", pane(id))),
             Route::Screen(id, format, rows) => {
                 let format = match format {
@@ -838,7 +1268,7 @@ mod tests {
     #[test]
     fn every_wire_type_round_trips_its_json() {
         same::<Version>(
-            r#"{"protocol":"2.1","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
+            r#"{"protocol":"3.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
         );
         for json in [
             r#"{"kind":"invalid","message":"m"}"#,
@@ -846,8 +1276,8 @@ mod tests {
             r#"{"kind":"gone","message":"m"}"#,
             r#"{"kind":"io","message":"m"}"#,
             r#"{"kind":"not_found","message":"m"}"#,
-            r#"{"kind":"protocol_mismatch","protocol":"2.1","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
-            r#"{"kind":"vt_mismatch","protocol":"2.1","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
+            r#"{"kind":"protocol_mismatch","protocol":"3.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
+            r#"{"kind":"vt_mismatch","protocol":"3.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
         ] {
             same::<Error>(json);
         }
@@ -859,7 +1289,6 @@ mod tests {
         ] {
             same::<Row>(json);
         }
-        same::<Created>(r#"{"pane":"pane_3"}"#);
         for json in [
             r#"{"pasted":true,"unsafe":false}"#,
             r#"{"id":41,"pasted":false,"unsafe":true}"#,
@@ -869,7 +1298,10 @@ mod tests {
         for json in [
             r#"{"type":"hello","kind":"terminal","name":"test","focused":true,"size":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"ignore_size":false}"#,
             r#"{"type":"hello","kind":"app","name":"app","pane":"pane_3","focused":false,"size":{"cols":4096,"rows":1},"ignore_size":true}"#,
+            r#"{"type":"hello","kind":"app","name":"app","session":"session_1","window":"window_2","pane":"pane_3","focused":false,"size":{"cols":80,"rows":24},"ignore_size":false}"#,
             r#"{"type":"select","pane":"pane_3"}"#,
+            r#"{"type":"select","session":"session_1"}"#,
+            r#"{"type":"switch","over":"window","direction":"previous"}"#,
             r#"{"type":"size","cols":80,"rows":24,"cell_px":{"width":8,"height":16}}"#,
             r#"{"type":"focused","focused":true}"#,
         ] {
@@ -894,7 +1326,6 @@ mod tests {
             r#"{"type":"input","input":{"type":"paste","text":"hello\n","check_safe":false,"id":23}}"#,
             r#"{"type":"input","input":{"type":"paste","text":"x","check_safe":true}}"#,
             r#"{"type":"input","input":{"type":"text","data":"aGk="}}"#,
-            r#"{"type":"input","input":{"type":"focus","focused":false}}"#,
         ] {
             same::<ViewRequest>(json);
         }
@@ -903,8 +1334,10 @@ mod tests {
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef"}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef"}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef"}"#,
-            r#"{"type":"topology","panes":[{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":null},{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"exited","code":0}}}]}"#,
-            r#"{"type":"topology","panes":[]}"#,
+            r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]}}"#,
+            r#"{"type":"layout","revision":0,"layout":{"sessions":[]}}"#,
+            r#"{"type":"selected","session":"session_1","window":"window_1","pane":"pane_2"}"#,
+            r#"{"type":"selected"}"#,
             r#"{"type":"title","pane":"pane_3","title":"x"}"#,
             r#"{"type":"pwd","pane":"pane_3","pwd":"file://h/tmp"}"#,
             r#"{"type":"dead","pane":"pane_3","dead":{"at":123456789012345,"cause":{"type":"signaled","signal":15}}}"#,
@@ -949,7 +1382,8 @@ mod tests {
         );
         for refused in [
             r#"["select","pane_1"]"#,
-            r#"{"type":"select"}"#,
+            r#"{"type":"switch","over":"pane","direction":"next"}"#,
+            r#"{"type":"switch","over":"window"}"#,
             r#"{"type":"focused","focused":1}"#,
             r#"{"type":"focused"}"#,
             r#""focused""#,
@@ -1037,7 +1471,10 @@ mod tests {
         for route in [
             Route::Version,
             Route::ListPanes,
-            Route::CreatePane,
+            Route::GetLayout,
+            Route::PutLayout,
+            Route::SelectClient(ClientId::new(4)),
+            Route::ClearHistory(pane),
             Route::Client,
             Route::DeletePane(pane),
             Route::Input(pane),
@@ -1071,6 +1508,8 @@ mod tests {
             ("GET", "/panes/pane_7/view?"),
             ("GET", "/panes/pane_x/view"),
             ("PUT", "/panes"),
+            ("POST", "/clients/client_x/select"),
+            ("POST", "/panes/pane_1/clear_history/x"),
             ("GET", "/panes?x=1"),
         ]
         .into_iter()
@@ -1089,6 +1528,8 @@ mod tests {
                 "invalid query",
                 "None",
                 "None",
+                "None",
+                "None",
                 "Some(ListPanes)",
             ]
         );
@@ -1097,13 +1538,13 @@ mod tests {
     #[test]
     fn the_version_check_takes_a_higher_minor_and_refuses_another_major_or_terminal() {
         let checked: Vec<String> = [
-            (Some("2.1"), Some(VT)),
-            (Some("2.7"), Some(VT)),
-            (Some("1.0"), Some(VT)),
-            (Some("2."), Some(VT)),
+            (Some("3.1"), Some(VT)),
+            (Some("3.7"), Some(VT)),
+            (Some("2.0"), Some(VT)),
+            (Some("3."), Some(VT)),
             (None, Some(VT)),
-            (Some("2.1"), Some("wrong")),
-            (Some("2.1"), None),
+            (Some("3.1"), Some("wrong")),
+            (Some("3.1"), None),
         ]
         .into_iter()
         .map(|(protocol, vt)| match check_version(protocol, vt) {
@@ -1221,8 +1662,8 @@ mod tests {
                 r#"{"type":"input","input":{"type":"mouse","action":"press","button":"left","col":1,"row":2,"mods":0}}"#,
             ),
             (
-                decoded::<ClientEvent>(r#"{"type":"topology","panes":[]}"#),
-                r#"{"type":"topology","panes":[]}"#,
+                decoded::<ClientEvent>(r#"{"type":"selected","pane":null}"#),
+                r#"{"type":"selected"}"#,
             ),
         ] {
             assert_eq!(accepted, Ok(json.to_owned()), "{json}");
@@ -1247,7 +1688,7 @@ mod tests {
                 r#"{"type":"marked","offset":1,"marker":{"type":"dead","at":1,"cause":["exited",7]}}"#,
             ),
             decoded::<ViewEvent>(r#"{"type":"marked","offset":1,"marker":["resize",80,24]}"#),
-            decoded::<ClientEvent>(r#"{"type":"topology","panes":[["pane_1",1,[],"/","t",null]]}"#),
+            decoded::<ClientEvent>(r#"{"type":"layout","revision":1,"layout":[["s"]]}"#),
             decoded::<ClientEvent>(r#"{"type":"welcome","client":"client_1","limits":[]}"#),
             decoded::<ClientEvent>(
                 r#"{"type":"welcome","client":"client_1","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":1,"kitty_images_max_bytes":1,"continuation_max_bytes":1},"media":[]},"instance":"0123456789ABCDEF0123456789abcdef"}"#,

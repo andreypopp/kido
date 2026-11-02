@@ -63,13 +63,13 @@ pub(crate) fn exchange(
 
 fn fetch(
     socket: &Path,
-    client: ClientId,
+    client: Option<ClientId>,
     route: &Route,
     body: &[u8],
     mut sink: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> Result<(), String> {
     let (method, target) = route.to_request();
-    let mut stream = open(socket, Some(client), (method, &target), body).map_err(text)?;
+    let mut stream = open(socket, client, (method, &target), body).map_err(text)?;
     let mut failure = Vec::new();
     let response = http::read_response_with(&mut stream, |head, piece| {
         if head.status == 200 {
@@ -94,7 +94,7 @@ fn fetch(
 
 pub fn request(
     socket: &Path,
-    client: ClientId,
+    client: Option<ClientId>,
     route: &Route,
     body: &[u8],
 ) -> Result<Vec<u8>, String> {
@@ -112,7 +112,9 @@ pub fn download(
     route: &Route,
     file: &mut impl Write,
 ) -> Result<(), String> {
-    fetch(socket, client, route, b"", |piece| file.write_all(piece))
+    fetch(socket, Some(client), route, b"", |piece| {
+        file.write_all(piece)
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
