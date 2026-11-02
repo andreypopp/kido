@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::Limits;
 use ko_server::ids::{ClientId, Instance, PaneId, RunId, SessionId, VarName, WindowId};
@@ -82,13 +82,21 @@ impl Model {
         socket: &Path,
         cancel: Option<&Wake>,
     ) -> Result<Model, String> {
-        link.send(protocol::json(&ClientRequest::Hello(hello)))
-            .and_then(|()| link.flush_blocking())
-            .map_err(text)?;
-        Model::welcome(link, socket, cancel)
+        Model::greet(link, hello)?;
+        Model::welcome(link, socket, (cancel, wire::READ_TIMEOUT))
     }
 
-    fn welcome(link: &mut Link, socket: &Path, cancel: Option<&Wake>) -> Result<Model, String> {
+    fn greet(link: &mut Link, hello: Hello) -> Result<(), String> {
+        link.send(protocol::json(&ClientRequest::Hello(hello)))
+            .and_then(|()| link.flush_blocking())
+            .map_err(text)
+    }
+
+    fn welcome(
+        link: &mut Link,
+        socket: &Path,
+        limits: (Option<&Wake>, Duration),
+    ) -> Result<Model, String> {
         let mut next = || match link.receive().map_err(text)? {
             Next::Text(event) => protocol::decode::<ClientEvent>(event.as_bytes()).map_err(text),
             _ => Err("client event missing".to_owned()),
@@ -100,7 +108,7 @@ impl Model {
             return Err("layout missing".to_owned());
         };
         let mut model = Model::new(welcome, socket.to_owned(), layout);
-        model.refresh(cancel)?;
+        model.refresh(limits)?;
         Ok(model)
     }
 
@@ -119,12 +127,20 @@ impl Model {
         }
     }
 
-    pub fn rejoin(&self, link: &mut Link) -> Result<Rejoin, String> {
-        Ok(self.gate(Model::welcome(link, &self.socket, None)?))
+    pub fn rejoin(
+        &mut self,
+        link: &mut Link,
+        hello: Hello,
+        limits: (Option<&Wake>, Duration),
+    ) -> Result<Rejoin, String> {
+        Model::greet(link, hello)?;
+        let joined = Model::welcome(link, &self.socket, limits)?;
+        Ok(self.gate(joined))
     }
 
-    fn gate(&self, joined: Model) -> Rejoin {
+    pub(crate) fn gate(&mut self, mut joined: Model) -> Rejoin {
         if joined.instance == self.instance {
+            joined.seen = std::mem::replace(&mut self.seen, Seen::new(joined.anchor.0));
             Rejoin::Resume(joined)
         } else {
             Rejoin::Fresh(joined)
@@ -141,11 +157,6 @@ impl Model {
     }
 
     #[cfg(target_vendor = "apple")]
-    pub(crate) fn keep_seen(&mut self, earlier: Model) {
-        self.seen = earlier.seen;
-    }
-
-    #[cfg(target_vendor = "apple")]
     pub(crate) fn runs(&self) -> impl Iterator<Item = &RunEvent> {
         self.runs.values()
     }
@@ -154,8 +165,8 @@ impl Model {
         self.seen.mark(pane)
     }
 
-    fn refresh(&mut self, cancel: Option<&Wake>) -> Result<(), String> {
-        let rows = Model::fetch(&self.socket, self.client, cancel)?;
+    fn refresh(&mut self, limits: (Option<&Wake>, Duration)) -> Result<(), String> {
+        let rows = Model::fetch(&self.socket, self.client, limits)?;
         self.install(rows);
         Ok(())
     }
@@ -163,12 +174,12 @@ impl Model {
     pub(crate) fn fetch(
         socket: &Path,
         client: ClientId,
-        cancel: Option<&Wake>,
+        limits: (Option<&Wake>, Duration),
     ) -> Result<Fetched, String> {
-        let body = wire::request(socket, Some(client), &Route::ListPanes, b"", cancel)?;
+        let body = wire::request_within(socket, Some(client), &Route::ListPanes, b"", limits)?;
         let listing = protocol::decode(&body).map_err(text)?;
         let route = Route::ListRuns(Show::Present, None);
-        let body = wire::request(socket, Some(client), &route, b"", cancel)?;
+        let body = wire::request_within(socket, Some(client), &route, b"", limits)?;
         Ok(Fetched {
             listing,
             infos: protocol::decode(&body).map_err(text)?,
@@ -226,7 +237,7 @@ impl Model {
     pub fn apply(&mut self, event: ClientEvent) -> Result<Applied, String> {
         let (applied, fetch) = self.apply_event(event);
         if fetch {
-            self.refresh(None)?;
+            self.refresh((None, wire::READ_TIMEOUT))?;
         }
         Ok(applied)
     }
@@ -775,7 +786,7 @@ mod tests {
 
     #[test]
     fn a_rejoin_resumes_on_the_same_instance_and_starts_fresh_on_another() {
-        let old = model(Layout { sessions: vec![] });
+        let mut old = model(Layout { sessions: vec![] });
         let mut same = model(Layout { sessions: vec![] });
         same.client = id("client_", 2);
         let mut other = model(Layout { sessions: vec![] });

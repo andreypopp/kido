@@ -4,6 +4,7 @@ pub mod ffi;
 pub mod launch;
 pub mod layout;
 pub mod model;
+pub mod remote;
 pub mod runs;
 pub mod status;
 mod tree;

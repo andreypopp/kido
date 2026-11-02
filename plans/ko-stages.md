@@ -955,6 +955,45 @@ RTT table.
 Risk: low to medium. The transport is standard; the app's lifecycle
 code exists for a stdio transport and changes shape.
 
+Built (the server and terminal-client part, without the app part, the
+RTT measurements and compression):
+
+- `ko HOST`, `ko api --host HOST PATH` and `ko server
+  --print-socket` (ko/src/main.rs, ko_client/src/remote.rs). The
+  private directory is `<state>/remote-XXXXXXXX`, mode 0700, or
+  `/tmp/ko-remote-<uid>-XXXXXXXX` when the state path is too long for
+  ssh's temporary ControlPath name in `sun_path`. The master runs as
+  a child of `ko`; a guard stops it and removes the directory on
+  every exit and on SIGINT, SIGTERM and SIGHUP. The errors are
+  separate for a missing remote `ko`, no server (the message names
+  `ssh HOST ko server`) and a refused forward.
+- Reconnect, for a remote attach only: a lost link, the master's
+  SIGCHLD, or an error in a step when a `/version` probe also fails
+  starts it. One outage deadline of 60 s runs until the view is
+  restored; attempts are loop timers with a backoff of 100 ms to 2 s,
+  and each blocking step gets only the time that is left. The ssh
+  steps (the master, the socket query, the forward) are stages of
+  `Remote::advance` that the loop reaps on SIGCHLD; a ControlPath that
+  exists means the master is ready. An attempt starts the master and
+  the forward again when they are gone, sends a new hello and calls
+  `Model::rejoin`, which carries the seen record: the same `instance`
+  reopens the view at its offset (`wire::Resume`, shared with the
+  app's views), another `instance` drops the mirror and starts the
+  model again. While the pager runs, attempts wait, and the deadline
+  starts again when the pager ends. A remote attach sends no `cwd`
+  when it creates a pane. A local attach does not reconnect.
+- `ko server` gives every pane `SSH_AUTH_SOCK=<dir>/agent.sock`
+  (ko_server/src/panes.rs); a pane request's `env` replaces it.
+
+Limits: the handshake and the model fetch of an attempt block the
+loop for at most the time left, the error probe for at most 3 s, and
+the refused-or-no-server check (`ko api /version` on the host) for
+at most 20 s. The first master start can wait 60 s for a password
+prompt. A SIGKILL of `ko` leaves the master and the private
+directory. The 60 s limit has no test.
+
+Open: the app part, the RTT table and question 2 of section 7.
+
 ### K8. The cut-over (6 to 9 agent-days)
 
 Depends on K3, K5, K6 and K7. One unit of work that merges `ko-rust`

@@ -12,6 +12,7 @@ mod outer;
 mod prompt;
 mod protocol;
 mod reap;
+mod remote;
 mod runs;
 mod shell;
 mod spawn_tree;

@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::fmt::{self, Write};
+use std::fmt;
 use std::io;
 use std::str::FromStr;
 
@@ -71,14 +71,6 @@ id!(pub ClientId, "client_");
 id!(pub SessionId, "session_");
 id!(pub WindowId, "window_");
 
-fn mint_hex() -> io::Result<String> {
-    let mut text = String::with_capacity(32);
-    for byte in ko_sys::entropy::bytes()? {
-        let _ = write!(text, "{byte:02x}");
-    }
-    Ok(text)
-}
-
 fn hex32(text: String) -> Result<String, InvalidId> {
     if text.len() == 32
         && text
@@ -99,7 +91,7 @@ macro_rules! hex_id {
 
         impl $name {
             pub(crate) fn mint() -> io::Result<$name> {
-                mint_hex().map($name)
+                ko_sys::entropy::hex(16).map($name)
             }
         }
 

@@ -3,7 +3,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use ko_client::wire::{self, Link, Next, text};
+use ko_client::wire::{self, Link, Next, Resume, text};
 use ko_pane_wire::frame::{History, Limits};
 use ko_pane_wire::ring::Slice;
 use ko_server::ids::{ClientId, PaneId};
@@ -16,6 +16,10 @@ use ko_vt::render::Frame;
 use ko_vt::{Extent, ReadyScan, Terminal};
 use tungstenite::Bytes;
 
+const OPTIONS: ViewOptions = ViewOptions {
+    history: History::All,
+    images: Images::None,
+};
 const BURST: Duration = Duration::from_millis(1);
 const YIELD: Duration = Duration::from_micros(500);
 
@@ -154,6 +158,7 @@ enum Shape {
 
 #[derive(Debug)]
 struct Assembly {
+    end: u64,
     buffer: Vec<u8>,
     kind: Shape,
     following: Vec<Following>,
@@ -175,9 +180,20 @@ pub(crate) struct Mirror {
     limits: Limits,
     assembly: Option<Assembly>,
     dead: Option<protocol::Dead>,
+    resume: Resume,
 }
 
 impl Mirror {
+    fn connect(
+        socket: &Path,
+        client: ClientId,
+        pane: PaneId,
+        resume: Option<u64>,
+    ) -> Result<Link, String> {
+        let route = Route::View(pane, OPTIONS, resume);
+        Link::connect(socket, Some(client), &route, None).map_err(text)
+    }
+
     pub(crate) fn open(
         socket: &Path,
         client: ClientId,
@@ -185,18 +201,7 @@ impl Mirror {
         limits: Limits,
         poll: &mut Poll,
     ) -> Result<Mirror, String> {
-        let options = ViewOptions {
-            history: History::All,
-            images: Images::None,
-        };
-        let link = Link::connect(
-            socket,
-            Some(client),
-            &Route::View(pane, options, None),
-            None,
-        )
-        .map_err(text)?;
-        Mirror::with(link, limits, poll)
+        Mirror::with(Mirror::connect(socket, client, pane, None)?, limits, poll)
     }
 
     fn with(mut link: Link, limits: Limits, poll: &mut Poll) -> Result<Mirror, String> {
@@ -220,6 +225,7 @@ impl Mirror {
             limits,
             assembly: None,
             dead: None,
+            resume: Resume::default(),
         };
         mirror.handle(poll, wire::buffered(token), Instant::now())?;
         Ok(mirror)
@@ -317,31 +323,42 @@ impl Mirror {
 
     fn record(&mut self, state: &mut State, record: &Bytes) -> Result<(), String> {
         match parse_record(record) {
-            Ok((Record::Output, _, data)) => self.output(state, record, data),
-            Ok((Record::Snapshot, _, data)) => self.snapshot(state, data),
+            Ok((Record::Output, offset, data)) => self.output(state, record, offset, data),
+            Ok((Record::Snapshot, offset, data)) => self.snapshot(state, offset, data),
             Err(BadRecord::Short) => Err("short record".to_owned()),
             Err(BadRecord::Kind(_)) => Err("invalid record kind".to_owned()),
         }
     }
 
-    fn output(&mut self, state: &mut State, record: &Bytes, data: &[u8]) -> Result<(), String> {
+    fn output(
+        &mut self,
+        state: &mut State,
+        record: &Bytes,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), String> {
         state.scroll_bottom().map_err(text)?;
+        let end = offset.saturating_add(data.len() as u64);
         if let Some(assembly) = self.assembly.as_mut() {
             let start = record.len().saturating_sub(data.len());
             assembly
                 .following
                 .push(Following::Bytes(record.slice(start..)));
+            assembly.end = end;
         } else if let Some(screen) = state.surface.screen_mut() {
             screen.vt.write(data);
+            self.resume.advance(end);
         }
         Ok(())
     }
 
-    fn snapshot(&mut self, state: &mut State, data: &[u8]) -> Result<(), String> {
+    fn snapshot(&mut self, state: &mut State, offset: u64, data: &[u8]) -> Result<(), String> {
         let (slice, body) = Slice::decode(data).ok_or("short snapshot slice")?;
         let (first, last) = (slice.first, slice.last);
         if first {
+            self.resume.clear();
             self.assembly = Some(Assembly {
+                end: offset,
                 buffer: Vec::new(),
                 kind: if !slice.screen {
                     Shape::Full {
@@ -383,6 +400,9 @@ impl Mirror {
             return Ok(());
         };
         let full = matches!(assembly.kind, Shape::Full { .. });
+        if full {
+            self.resume.at(assembly.end);
+        }
         let extent = if full { Extent::Full } else { Extent::Screen };
         let mut vt = Terminal::decode(&mut &assembly.buffer[..], extent).map_err(text)?;
         vt.configure(self.limits).map_err(text)?;
@@ -445,11 +465,7 @@ impl Mirror {
             }
         });
         if resync {
-            let options = ViewOptions {
-                history: History::All,
-                images: Images::None,
-            };
-            self.send(poll, &ViewRequest::Resync(options))?;
+            self.send(poll, &ViewRequest::Resync(OPTIONS))?;
         }
         Ok(())
     }
@@ -480,6 +496,27 @@ impl Mirror {
 
     pub(crate) fn close(mut self, poll: &mut Poll) {
         self.link.unwatch(poll);
+    }
+
+    pub(crate) fn unwatch(&mut self, poll: &mut Poll) {
+        self.link.unwatch(poll);
+    }
+
+    pub(crate) fn resume(&self) -> Option<u64> {
+        self.resume.offset()
+    }
+
+    pub(crate) fn relink(
+        &mut self,
+        socket: &Path,
+        client: ClientId,
+        pane: PaneId,
+        poll: &mut Poll,
+    ) -> Result<(), String> {
+        self.link = Mirror::connect(socket, client, pane, self.resume.offset())?;
+        self.token = self.link.watch(poll).map_err(text)?;
+        self.assembly = None;
+        self.handle(poll, wire::buffered(self.token), Instant::now())
     }
 }
 
@@ -622,6 +659,37 @@ mod tests {
         mirror.frame(&mut frame).unwrap();
         let cursor = frame.cursor.map(|cursor| cursor.x);
         assert_eq!((frame.cols, frame.rows, cursor), (8, 2, Some(7)));
+    }
+
+    #[test]
+    fn a_full_mirror_resumes_after_its_last_bytes_and_a_snapshot_in_progress_or_a_screen_does_not()
+    {
+        let (mut mirror, _theirs, _poll) = mirror();
+        let at = |offset: u64, mut record: Vec<u8>| {
+            record[1..9].copy_from_slice(&offset.to_le_bytes());
+            record
+        };
+        let snapshot = slices(&server(8, 2, "x").snapshot_bytes(false).unwrap(), 4096);
+        feed(&mut mirror, &at(40, snapshot[0].clone())).unwrap();
+        let loaded = mirror.resume();
+        feed(&mut mirror, &at(40, output(b"abc"))).unwrap();
+        feed(&mut mirror, &at(43, output(b"de"))).unwrap();
+        let after = mirror.resume();
+        let long = slices(&server(8, 2, "x").snapshot_bytes(false).unwrap(), 40);
+        feed(&mut mirror, &at(90, long[0].clone())).unwrap();
+        feed(&mut mirror, &at(90, output(b"f"))).unwrap();
+        let during = mirror.resume();
+        for record in &long[1..] {
+            feed(&mut mirror, &at(90, record.clone())).unwrap();
+        }
+        let finished = mirror.resume();
+        let mut screen = snapshot[0].clone();
+        screen[10] = 1;
+        feed(&mut mirror, &at(120, screen)).unwrap();
+        assert_eq!(
+            (loaded, after, during, finished, mirror.resume()),
+            (Some(40), Some(45), None, Some(91), None)
+        );
     }
 
     #[test]

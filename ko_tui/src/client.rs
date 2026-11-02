@@ -1,12 +1,14 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
-use ko_client::launch::{self, PATIENCE};
-use ko_client::model::{Applied, Model};
+use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
+use ko_client::model::{Applied, Model, Rejoin};
+use ko_client::remote::{Progress, Remote};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
 use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
 use ko_server::ids::PaneId;
@@ -30,6 +32,17 @@ const PROBE: Duration = Duration::from_millis(500);
 const ENTER: &str = "\x1b[?1049h\x1b[?25l";
 const LEAVE: &str = "\x1b[?25h\x1b[0m\x1b[?1049l\x1b[?25h";
 const WARNING_ROWS: usize = 1;
+const GIVE_UP: Duration = Duration::from_secs(60);
+const PAUSED: Duration = Duration::from_millis(100);
+const PROBE_TRANSPORT: Duration = Duration::from_secs(3);
+const SIGNALS: [Signal; 6] = [
+    Signal::Hup,
+    Signal::Term,
+    Signal::Int,
+    Signal::Quit,
+    Signal::Winch,
+    Signal::Child,
+];
 
 fn dim(value: usize) -> Dim {
     u16::try_from(value.max(1))
@@ -254,6 +267,20 @@ fn probe(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Restore {
+    Reopen,
+    Show,
+}
+
+#[derive(Debug)]
+struct Reconnecting {
+    since: Instant,
+    backoff: Duration,
+    cause: String,
+    restore: Restore,
+}
+
 #[derive(Debug)]
 struct Client {
     view: View,
@@ -284,24 +311,19 @@ struct Client {
     wake: Deadline,
     escape: Deadline,
     watchdog: Deadline,
+    retry: Deadline,
+    remote: Option<Remote>,
+    reconnecting: Option<Reconnecting>,
 }
 
 impl Client {
     fn start(
         socket: PathBuf,
-        stream: std::os::unix::net::UnixStream,
+        mut link: Link,
         pager: String,
+        signals: Signals,
+        remote: Option<Remote>,
     ) -> Result<Client, String> {
-        let signals = Signals::install(&[
-            Signal::Hup,
-            Signal::Term,
-            Signal::Int,
-            Signal::Quit,
-            Signal::Winch,
-            Signal::Child,
-        ])
-        .map_err(text)?;
-        let mut link = Link::upgrade(stream, None, &Route::Client, None).map_err(text)?;
         let mut session = Session {
             tty: Tty::raw().map_err(text)?,
             modes: Modes::default(),
@@ -320,17 +342,11 @@ impl Client {
         } else {
             Panel::Hidden
         };
-        let hello = Hello {
-            kind: ClientKind::Terminal,
-            name: "ko".to_owned(),
-            selection: Selection::default(),
-            focused: true,
-            size: protocol::Size(pane_size(geometry, panel, warning)),
-            ignore_size: false,
-        };
+        let hello = hello(geometry, panel, warning, true);
         let model = Model::join(&mut link, hello, &socket, None)?;
         let link_token = link.watch(&mut poll).map_err(text)?;
-        let (wake, escape, watchdog) = (
+        let (wake, escape, watchdog, retry) = (
+            Deadline::new(&mut poll),
             Deadline::new(&mut poll),
             Deadline::new(&mut poll),
             Deadline::new(&mut poll),
@@ -364,12 +380,12 @@ impl Client {
             wake,
             escape,
             watchdog,
+            retry,
+            remote,
+            reconnecting: None,
         };
         client.client(wire::buffered(client.link_token), Instant::now())?;
-        match client.model.order().first().copied() {
-            None => client.create_pane()?,
-            Some(pane) => client.switch(pane)?,
-        }
+        client.show_first()?;
         Ok(client)
     }
 
@@ -414,12 +430,19 @@ impl Client {
             pane_x: self.panel.x(cols),
             pane_rows: rows.saturating_sub(usize::from(self.warning) * WARNING_ROWS),
             warning: self.warning,
-            dead: match &self.view {
-                View::Showing {
-                    mirror,
-                    serial: Some(_),
-                    ..
-                } => mirror.dead().map(sidebar::dead_line),
+            dead: match (&self.view, &self.remote) {
+                (_, Some(remote)) if self.reconnecting.is_some() => Some(format!(
+                    "[reconnecting to {} \u{2014} Ctrl+Shift+Q to detach]",
+                    remote.host()
+                )),
+                (
+                    View::Showing {
+                        mirror,
+                        serial: Some(_),
+                        ..
+                    },
+                    _,
+                ) => mirror.dead().map(sidebar::dead_line),
                 _ => None,
             },
             choosing: match self.panel {
@@ -438,6 +461,9 @@ impl Client {
     }
 
     fn client_send(&mut self, request: &ClientRequest) -> Result<(), String> {
+        if self.reconnecting.is_some() {
+            return Ok(());
+        }
         self.link.send(json(request)).map_err(text)?;
         self.link.settle(&mut self.poll).map_err(text)
     }
@@ -485,9 +511,19 @@ impl Client {
     }
 
     fn create_pane(&mut self) -> Result<(), String> {
-        let pane =
-            ko_client::layout::add_session(&self.socket, Some(self.model.client), &new_pane())?;
+        let pane = ko_client::layout::add_session(
+            &self.socket,
+            Some(self.model.client),
+            &new_pane(self.remote.is_some()),
+        )?;
         self.switch(pane)
+    }
+
+    fn show_first(&mut self) -> Result<(), String> {
+        match self.model.order().first().copied() {
+            None => self.create_pane(),
+            Some(pane) => self.switch(pane),
+        }
     }
 
     fn selected(&self) -> usize {
@@ -513,7 +549,7 @@ impl Client {
             &self.socket,
             Some(self.model.client),
             place,
-            &new_pane(),
+            &new_pane(self.remote.is_some()),
         )?;
         self.switch(pane)
     }
@@ -585,7 +621,7 @@ impl Client {
         self.poll.interest(self.stdin, Interest::Idle);
         let spawned = std::process::Command::new("/bin/sh")
             .arg("-c")
-            .arg(format!("{} \"$1\"", self.pager_command))
+            .arg(format!("exec {} \"$1\"", self.pager_command))
             .arg("ko-pager")
             .arg(path)
             .spawn();
@@ -619,6 +655,10 @@ impl Client {
         if ended {
             self.pager = None;
             self.resume()?;
+            if let Some(outage) = self.reconnecting.as_mut() {
+                outage.since = Instant::now();
+                self.retry.set(&mut self.poll, Some(Instant::now()))?;
+            }
         }
         Ok(())
     }
@@ -729,6 +769,19 @@ impl Client {
     }
 
     fn event(&mut self, event: Event) -> Result<(), String> {
+        if self.reconnecting.is_some() {
+            match event {
+                Event::Key(key)
+                    if key.kind != Kind::Release
+                        && matches!(input::command(&key), Some(Command::Detach)) =>
+                {
+                    self.quit = true;
+                }
+                Event::Focus(focused) => self.focused = focused,
+                _ => {}
+            }
+            return Ok(());
+        }
         match event {
             Event::Key(key) => self.key(key),
             Event::Mouse(mouse) => self.mouse(mouse),
@@ -830,7 +883,7 @@ impl Client {
 
     fn turn(&mut self, events: &mut Events) -> Result<(), String> {
         self.escape.set(&mut self.poll, self.input.deadline())?;
-        if self.watchdog.at.is_none() {
+        if self.reconnecting.is_none() && self.watchdog.at.is_none() {
             let at = self.received() + WATCHDOG;
             self.watchdog.set(&mut self.poll, Some(at))?;
         }
@@ -847,27 +900,44 @@ impl Client {
             .collect();
         let mut incoming = Vec::new();
         let mut resized = false;
+        let mut cause = None;
         for ready in ready {
             if ready.token == self.signal_token && ready.read {
                 resized |= self.signal()?;
             } else if ready.token == self.stdin && ready.read {
                 self.read(&mut incoming, now)?;
             } else if ready.token == self.link_token {
-                self.client(ready, now)?;
+                if self.reconnecting.is_none()
+                    && let Err(error) = self.client(ready, now)
+                {
+                    cause = Some(self.recoverable(error)?);
+                }
             } else if let View::Showing { mirror, .. } = &mut self.view
                 && ready.token == mirror.token()
+                && self.reconnecting.is_none()
+                && let Err(error) = mirror.handle(&mut self.poll, ready, now)
             {
-                mirror.handle(&mut self.poll, ready, now)?;
+                cause = Some(self.recoverable(error)?);
             }
         }
         let due = events.due();
         if self.escape.fired(&self.poll, due) {
             self.input.expire(now, &mut incoming);
         }
-        if self.watchdog.fired(&self.poll, due) && silent(self.received(), now, WATCHDOG) {
-            return Err("ko socket timed out".to_owned());
+        if self.watchdog.fired(&self.poll, due)
+            && self.reconnecting.is_none()
+            && silent(self.received(), now, WATCHDOG)
+        {
+            cause = Some(self.recoverable("ko socket timed out".to_owned())?);
         }
         self.wake.fired(&self.poll, due);
+        let retry = self.retry.fired(&self.poll, due);
+        if let Some(cause) = cause {
+            self.lost(cause)?;
+        }
+        if retry {
+            self.attempt()?;
+        }
         for event in incoming {
             if self.quit {
                 break;
@@ -887,11 +957,149 @@ impl Client {
         for signal in pending {
             match signal {
                 Signal::Winch => resized = true,
-                Signal::Child => self.pager_ended()?,
+                Signal::Child => {
+                    self.pager_ended()?;
+                    if self.remote.as_mut().is_some_and(Remote::lost) {
+                        self.lost("ssh ended".to_owned())?;
+                    }
+                    if self.reconnecting.is_some() {
+                        self.retry.set(&mut self.poll, Some(Instant::now()))?;
+                    }
+                }
                 _ => self.quit = true,
             }
         }
         Ok(resized)
+    }
+
+    fn recoverable(&self, error: String) -> Result<String, String> {
+        if self.remote.is_some() {
+            Ok(error)
+        } else {
+            Err(error)
+        }
+    }
+
+    fn recover(&mut self, error: String) -> Result<(), String> {
+        if self.remote.is_none() || self.reconnecting.is_some() {
+            return Err(error);
+        }
+        let probe = wire::request_within(
+            &self.socket,
+            None,
+            &Route::Version,
+            b"",
+            (None, PROBE_TRANSPORT),
+        );
+        if probe.is_ok() {
+            return Err(error);
+        }
+        self.lost(error)
+    }
+
+    fn lost(&mut self, cause: String) -> Result<(), String> {
+        if self.remote.is_none() {
+            return Err(cause);
+        }
+        if self.reconnecting.is_some() {
+            return Ok(());
+        }
+        self.link.unwatch(&mut self.poll);
+        if let View::Showing { mirror, .. } = &mut self.view {
+            mirror.unwatch(&mut self.poll);
+        }
+        self.watchdog.set(&mut self.poll, None)?;
+        self.reconnecting = Some(Reconnecting {
+            since: Instant::now(),
+            backoff: BACKOFF_FIRST,
+            cause,
+            restore: Restore::Reopen,
+        });
+        self.immediate = true;
+        self.retry.set(&mut self.poll, Some(Instant::now()))
+    }
+
+    fn attempt(&mut self) -> Result<(), String> {
+        let Some(outage) = self.reconnecting.as_ref() else {
+            return Ok(());
+        };
+        if self.pager.is_some() {
+            return self
+                .retry
+                .set(&mut self.poll, Some(Instant::now() + PAUSED));
+        }
+        let (restore, cause) = (outage.restore, outage.cause.clone());
+        let left = GIVE_UP.saturating_sub(outage.since.elapsed());
+        let Some(remote) = self.remote.as_mut() else {
+            return Ok(());
+        };
+        if left.is_zero() {
+            return Err(format!("lost {}: {cause}", remote.host()));
+        }
+        let failure = match remote.advance() {
+            Ok(Progress::Pending(until)) => {
+                return self.retry.set(&mut self.poll, Some(until));
+            }
+            Ok(Progress::Up) => match self.reconnect(left, restore) {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            },
+            Err(error) => error.to_string(),
+        };
+        let Some(outage) = self.reconnecting.as_mut() else {
+            return Ok(());
+        };
+        let wait = outage.backoff;
+        outage.backoff = backoff_after(wait);
+        outage.cause = failure;
+        self.retry.set(&mut self.poll, Some(Instant::now() + wait))
+    }
+
+    fn reconnect(&mut self, left: Duration, mut restore: Restore) -> Result<(), String> {
+        let mut link =
+            Link::connect_within(&self.socket, None, &Route::Client, None, left).map_err(text)?;
+        let hello = hello(self.geometry, self.panel, self.warning, self.focused);
+        let rejoin = self.model.rejoin(&mut link, hello, (None, left))?;
+        let token = link.watch(&mut self.poll).map_err(text)?;
+        self.link.unwatch(&mut self.poll);
+        self.link = link;
+        self.link_token = token;
+        match rejoin {
+            Rejoin::Resume(joined) => self.model = joined,
+            Rejoin::Fresh(joined) => {
+                self.model = joined;
+                restore = Restore::Show;
+            }
+        }
+        if let Some(outage) = self.reconnecting.as_mut() {
+            outage.restore = restore;
+        }
+        self.client(wire::buffered(token), Instant::now())?;
+        self.restore(restore)?;
+        self.reconnecting = None;
+        self.immediate = true;
+        self.retry.set(&mut self.poll, None)
+    }
+
+    fn restore(&mut self, restore: Restore) -> Result<(), String> {
+        let Some(pane) = self.pane().filter(|_| restore == Restore::Reopen) else {
+            return self.show_first();
+        };
+        if !self.model.order().contains(&pane) {
+            return self.show_first();
+        }
+        self.client_send(&ClientRequest::Select(Selection {
+            pane: Some(pane),
+            ..Selection::default()
+        }))?;
+        match &mut self.view {
+            View::Showing { mirror, .. } if mirror.resume().is_some() => {
+                mirror.relink(&self.socket, self.model.client, pane, &mut self.poll)?;
+                self.model.observe(&[pane], true);
+                Ok(())
+            }
+            _ => self.switch(pane),
+        }
     }
 
     fn read(&mut self, incoming: &mut Vec<Event>, now: Instant) -> Result<(), String> {
@@ -944,27 +1152,53 @@ impl Client {
         Ok(())
     }
 
-    fn run(&mut self) -> Result<(), String> {
-        let mut events = Events::default();
+    fn begin(&mut self) -> Result<(), String> {
         for event in std::mem::take(&mut self.pending) {
             self.event(event)?;
         }
-        self.tick()?;
-        self.paint()?;
-        while !self.quit || self.pager.is_some() {
-            self.turn(&mut events)?;
-            self.tick()?;
-            self.paint()?;
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<(), String> {
+        let mut events = Events::default();
+        let mut first = true;
+        while first || !self.quit {
+            let stepped = if first {
+                self.begin()
+            } else {
+                self.turn(&mut events)
+            }
+            .and_then(|()| self.tick())
+            .and_then(|()| self.paint());
+            first = false;
+            if let Err(error) = stepped {
+                self.recover(error)?;
+            }
         }
         Ok(())
     }
 }
 
-fn new_pane() -> CreatePane {
+fn hello(geometry: (usize, usize), panel: Panel, warning: bool, focused: bool) -> Hello {
+    Hello {
+        kind: ClientKind::Terminal,
+        name: "ko".to_owned(),
+        selection: Selection::default(),
+        focused,
+        size: protocol::Size(pane_size(geometry, panel, warning)),
+        ignore_size: false,
+    }
+}
+
+fn new_pane(remote: bool) -> CreatePane {
     CreatePane {
-        cwd: std::env::current_dir()
-            .map(|dir| dir.to_string_lossy().into_owned())
-            .ok(),
+        cwd: if remote {
+            None
+        } else {
+            std::env::current_dir()
+                .map(|dir| dir.to_string_lossy().into_owned())
+                .ok()
+        },
         command: None,
         env: Vec::new(),
         vars: Default::default(),
@@ -980,12 +1214,56 @@ fn pane_size(geometry: (usize, usize), panel: Panel, warning: bool) -> Size {
     }
 }
 
-pub fn run(dir: &std::path::Path, executable: &std::path::Path, pager: &str) -> Result<(), String> {
-    let (socket, stream) = launch::attach(dir, executable, PATIENCE)?;
-    let mut client = Client::start(socket, stream, pager.to_owned())?;
+fn serve(mut client: Client) -> Result<(), String> {
     let result = client.run();
-    if let Some(running) = client.pager.as_mut() {
+    if let Some(mut running) = client.pager.take() {
+        let _ = running.child.kill();
         let _ = running.child.wait();
     }
     result
+}
+
+pub fn run(dir: &std::path::Path, executable: &std::path::Path, pager: &str) -> Result<(), String> {
+    let (socket, stream) = launch::attach(dir, executable, PATIENCE)?;
+    let link = Link::upgrade(stream, None, &Route::Client, None).map_err(text)?;
+    let signals = Signals::install(&SIGNALS).map_err(text)?;
+    serve(Client::start(
+        socket,
+        link,
+        pager.to_owned(),
+        signals,
+        None,
+    )?)
+}
+
+pub fn run_remote(
+    host: &str,
+    ssh: &std::path::Path,
+    state: &std::path::Path,
+    pager: &str,
+) -> Result<(), String> {
+    let signals = Signals::install(&SIGNALS).map_err(text)?;
+    let remote = Remote::open(host, ssh, state, &signals).map_err(text)?;
+    let socket = remote.socket();
+    let link = UnixStream::connect(&socket)
+        .and_then(|stream| Link::upgrade(stream, None, &Route::Client, None))
+        .map_err(|_| remote.unreachable().to_string())?;
+    serve(Client::start(
+        socket,
+        link,
+        pager.to_owned(),
+        signals,
+        Some(remote),
+    )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_remote_attach_sends_no_cwd_because_the_local_one_may_not_exist_there() {
+        assert_eq!(new_pane(true).cwd, None);
+        assert!(new_pane(false).cwd.is_some());
+    }
 }

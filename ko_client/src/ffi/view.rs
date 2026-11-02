@@ -10,6 +10,8 @@ use ko_server::protocol::{Images, Marker, ViewOptions};
 use ko_sys::event::Wake;
 use tungstenite::Bytes;
 
+use crate::wire::Resume;
+
 use super::{Command, FeedFn, FeedItem, Posted, RestoreFn, Shared, User, ViewEvent, locked, post};
 
 const HIGH_WATER: usize = 4 << 20;
@@ -148,7 +150,7 @@ struct State {
     work: VecDeque<Work>,
     current: Option<Arc<Stream>>,
     skipping: bool,
-    resume: Option<u64>,
+    resume: Resume,
     queued: usize,
 }
 
@@ -241,7 +243,7 @@ impl View {
                 work: VecDeque::new(),
                 current: None,
                 skipping: false,
-                resume: None,
+                resume: Resume::default(),
                 queued: 0,
             }),
             changed: Condvar::new(),
@@ -305,7 +307,11 @@ impl View {
         }
         let ok = result == Restored::Ok;
         state.skipping = !ok;
-        state.resume = ok.then_some(job.offset);
+        if ok {
+            state.resume.at(job.offset);
+        } else {
+            state.resume.clear();
+        }
         post(
             &self.shared,
             Posted::View(
@@ -364,7 +370,7 @@ impl View {
         let mut state = locked(&self.state);
         state.queued = state.queued.saturating_sub(bytes);
         if !state.skipping && bytes > 0 {
-            state.resume = Some(offset.saturating_add(bytes as u64));
+            state.resume.at(offset.saturating_add(bytes as u64));
         }
         if state.queued < LOW_WATER && self.pause.swap(false, Ordering::SeqCst) {
             self.shared.wake.wake();
@@ -389,7 +395,7 @@ impl View {
             state.work.clear();
             state.queued = 0;
             state.generation += 1;
-            state.resume = None;
+            state.resume.clear();
             self.pause.store(false, Ordering::SeqCst);
             let stream = Arc::new(Stream::default());
             state.current = Some(Arc::clone(&stream));
@@ -443,7 +449,7 @@ impl View {
     }
 
     pub(super) fn resume_offset(&self) -> Option<u64> {
-        locked(&self.state).resume
+        locked(&self.state).resume.offset()
     }
 
     pub(super) fn abandon(&self) {

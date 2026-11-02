@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use crate::harness::{Dir, Server, ko, run_ko, run_program, start_with, test_env, which};
+use crate::harness::{
+    Dir, Server, host_ssh_enabled, ko, run_ko, run_program, start_with, test_env, which,
+};
 use crate::status::{Flavour, dotfiles, shell_of};
 
 pub(crate) fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
@@ -375,8 +377,7 @@ fn login_command() {
 // dotfiles, whatever HOME the test sets. They run only with KO_E2E_HOST_SSH=1; then a failed ssh
 // probe or a missing zsh is a failure, not a skip.
 fn host_ssh() -> Option<Server> {
-    if std::env::var("KO_E2E_HOST_SSH").as_deref() != Ok("1") {
-        eprintln!("skipped: KO_E2E_HOST_SSH is not 1");
+    if !host_ssh_enabled() {
         return None;
     }
     let ssh = which("ssh").expect("ssh is not on PATH");
@@ -395,6 +396,10 @@ fn host_ssh() -> Option<Server> {
     );
     let s = zsh_server(&std::env::var("PATH").unwrap_or_default())
         .expect("KO_E2E_HOST_SSH needs a local zsh");
+    // Panes get SSH_AUTH_SOCK=<dir>/agent.sock; publish the developer's agent there, as the app does.
+    if let Some(agent) = std::env::var_os("SSH_AUTH_SOCK") {
+        std::os::unix::fs::symlink(agent, s.dir.join("agent.sock")).unwrap();
+    }
     Some(s)
 }
 

@@ -635,33 +635,40 @@ pub(crate) fn start(args: &[&str]) -> Server {
     start_with(Path::new("/bin/sh"), &[], args)
 }
 
-pub(crate) fn start_with(shell: &Path, env: &[(&str, &str)], args: &[&str]) -> Server {
-    let dir = Dir::new("ko-");
-    std::fs::write(dir.join(".zshrc"), "").unwrap();
-    let log = PathBuf::from(format!("{}.log", dir.display()));
-    let (null, output) = (
-        File::open("/dev/null").unwrap(),
-        File::create(&log).unwrap(),
-    );
+fn spawn_server(
+    dir: &Path,
+    log: &Path,
+    shell: &Path,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> Child {
+    let (null, output) = (File::open("/dev/null").unwrap(), File::create(log).unwrap());
     let mut argv = vec![
         "server",
         "--server",
-        text_of(&dir),
+        text_of(dir),
         "--shell",
         text_of(shell),
     ];
     argv.extend_from_slice(args);
-    let mut server_env = test_env(&dir);
+    let mut server_env = test_env(dir);
     for (name, value) in env {
         server_env.retain(|entry| !entry.starts_with(format!("{name}=").as_bytes()));
         server_env.push(format!("{name}={value}").into_bytes());
     }
-    let child = Child::spawn(
+    Child::spawn(
         &ko(),
         &argv,
         &server_env,
         &[(null.as_fd(), 0), (output.as_fd(), 1), (output.as_fd(), 2)],
-    );
+    )
+}
+
+pub(crate) fn start_with(shell: &Path, env: &[(&str, &str)], args: &[&str]) -> Server {
+    let dir = Dir::new("ko-");
+    std::fs::write(dir.join(".zshrc"), "").unwrap();
+    let log = PathBuf::from(format!("{}.log", dir.display()));
+    let child = spawn_server(&dir, &log, shell, env, args);
     let mut server = Server {
         dir,
         scratch: Dir::new("ko-run-"),
@@ -670,21 +677,48 @@ pub(crate) fn start_with(shell: &Path, env: &[(&str, &str)], args: &[&str]) -> S
         log,
         stopped: false,
     };
-    poll("the server socket", || {
-        assert!(
-            server.child.wait(Duration::ZERO).is_none(),
-            "server exited: {}",
-            server.log()
-        );
-        server.dial().is_ok()
-    });
+    server.wait_listening();
     let version: Value =
         serde_json::from_str(&server.request("GET", "/version", None, 200)).unwrap();
     server.vt = version["vt"].as_str().map(str::to_owned);
     server
 }
 
+pub(crate) fn host_ssh_enabled() -> bool {
+    if std::env::var("KO_E2E_HOST_SSH").as_deref() == Ok("1") {
+        true
+    } else {
+        eprintln!("skipped: KO_E2E_HOST_SSH is not 1");
+        false
+    }
+}
+
 impl Server {
+    fn wait_listening(&mut self) {
+        poll("the server socket", || {
+            assert!(
+                self.child.wait(Duration::ZERO).is_none(),
+                "server exited: {}",
+                self.log()
+            );
+            self.dial().is_ok()
+        });
+    }
+
+    pub(crate) fn stop(&mut self) {
+        self.child.signal(Signal::Term).unwrap();
+        assert_eq!(
+            self.child.wait(Duration::from_secs(3)),
+            Some(Exit::Exited(0))
+        );
+    }
+
+    pub(crate) fn restart(&mut self) {
+        self.stop();
+        self.child = spawn_server(&self.dir, &self.log, Path::new("/bin/sh"), &[], &[]);
+        self.wait_listening();
+    }
+
     pub(crate) fn log(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }

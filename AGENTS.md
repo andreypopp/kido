@@ -292,7 +292,8 @@ These requirements are fixed:
   command: the mirror, the renderer, the input and the tty.
   `ko_client/` is the client core that `ko_tui` and `ko` use and
   Kido.app will link (plans/ko-stages.md 4.10): the launcher, the
-  wire layer, the API client and the `/client` model. It never
+  wire layer, the API client, the `/client` model and the SSH remote
+  (`remote.rs`: the master, the forward and their cleanup). It never
   depends on `ko_vt` or libghostty-vt. `ko_shell/` is the crate
   `ko_shell` that `ko shell`, `ko ssh` and `ko server --bin-dir` use:
   the priming of a local or remote login shell, the ssh arguments and
@@ -417,7 +418,12 @@ Conventions:
   its process name. A pane that runs `stty raw -echo; exec cat`
   echoes the OSC 133 and OSC 7501 bytes that a test sends as `text`
   input; it replaces kido's fake agent. The ssh tests that use the
-  host's sshd run only with `KO_E2E_HOST_SSH=1`, as kido's do. It drives `build/ko/bin/ko`, which
+  host's sshd run only with `KO_E2E_HOST_SSH=1`, as kido's do. The
+  remote tests (`remote.rs`) run under the same variable, with a
+  private `sshd` (its own config, and host and client keys made once
+  for each process), so one test can refuse forwarding, and an `ssh`
+  wrapper on the client's PATH that adds `-F`. They never read the
+  user's `~/.ssh`. It drives `build/ko/bin/ko`, which
   `make e2e-ko` builds first; a test never runs make or cargo. A test
   reads like command-line use: a step that a `ko` command can do (`ko
   api`, `ko kill-server`, `ko version`) runs that command through

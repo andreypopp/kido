@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::Limits;
 use ko_pane_wire::ring::Slice as Header;
-use ko_server::ids::{ClientId, Instance};
+use ko_server::ids::ClientId;
 use ko_server::protocol::{
     self, ClientEvent, ClientRequest, Route, ViewEvent as Wire, ViewRequest, json,
 };
@@ -16,12 +16,10 @@ use tungstenite::Bytes;
 
 use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
-use crate::launch;
-use crate::model::{Applied, Model};
-use crate::wire::{Link, Next, WATCHDOG, buffered, silent, text};
+use crate::launch::{self, BACKOFF_FIRST, backoff_after};
+use crate::model::{Applied, Model, Rejoin};
+use crate::wire::{self, Link, Next, WATCHDOG, buffered, silent, text};
 
-const BACKOFF_FIRST: Duration = Duration::from_millis(100);
-const BACKOFF_LAST: Duration = Duration::from_secs(2);
 const WATCH: Duration = Duration::from_secs(2);
 
 struct Session {
@@ -52,7 +50,6 @@ struct Engine<'a> {
     watch: Timer,
     backoff: Duration,
     reported: bool,
-    instance: Option<Instance>,
     session: Option<Session>,
     epoch: u64,
     fetching: Option<JoinHandle<()>>,
@@ -94,7 +91,6 @@ pub(super) fn run(shared: &Arc<Shared>) {
         watch,
         backoff: BACKOFF_FIRST,
         reported: false,
-        instance: None,
         session: None,
         epoch: 0,
         fetching: None,
@@ -155,13 +151,16 @@ impl Engine<'_> {
         )
         .map_err(|error| failure(&error))?;
         let hello = locked(&shared.hello).clone();
-        let mut model =
+        let joined =
             Model::join(&mut link, hello, socket, Some(&shared.cancel)).map_err(protocol_error)?;
-        let fresh = self.instance.as_ref() != Some(&model.instance);
-        if !fresh && let Some(earlier) = locked(&shared.model).take() {
-            model.keep_seen(earlier);
-        }
-        self.instance = Some(model.instance.clone());
+        let rejoin = match locked(&shared.model).as_mut() {
+            Some(earlier) => earlier.gate(joined),
+            None => Rejoin::Fresh(joined),
+        };
+        let (model, fresh) = match rejoin {
+            Rejoin::Resume(model) => (model, false),
+            Rejoin::Fresh(model) => (model, true),
+        };
         let token = link
             .watch(&mut self.poll)
             .map_err(|error| failure(&error))?;
@@ -218,7 +217,7 @@ impl Engine<'_> {
             open.drop_conn(&mut self.poll);
         }
         let _ = self.poll.start(self.retry, self.backoff, None);
-        self.backoff = (self.backoff * 2).min(BACKOFF_LAST);
+        self.backoff = backoff_after(self.backoff);
     }
 
     fn watchdog(&mut self) {
@@ -343,7 +342,11 @@ impl Engine<'_> {
         }
         let (shared, client, epoch) = (Arc::clone(self.shared), session.client, session.epoch);
         self.fetching = Some(std::thread::spawn(move || {
-            let rows = Model::fetch(&shared.socket, client, Some(&shared.cancel));
+            let rows = Model::fetch(
+                &shared.socket,
+                client,
+                (Some(&shared.cancel), wire::READ_TIMEOUT),
+            );
             *locked(&shared.fetched) = Some((epoch, rows));
             shared.wake.wake();
         }));
