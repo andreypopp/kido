@@ -347,15 +347,16 @@ final class WindowView: NSView {
         let lookup = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
         let chromes = subviews.compactMap { $0 as? PaneChrome }
         let multiple = chromes.filter { !$0.isHidden && lookup[$0.pane]?.transparentPaper == true }.count > 1
-        let sidebarFocused = session?.sidebarFocused() ?? false
+        let notKey = (window as? OwnerWindow)?.isInputWindow == false
+        let unfocused = notKey || (session?.sidebarFocused() ?? false)
         for pane in panes { pane.syncFocus() }
         for chrome in chromes {
             guard let pane = lookup[chrome.pane] else { continue }
             let tiled = pane.transparentPaper
-            let shifted = tiled && multiple && (sidebarFocused || chrome.pane != active)
+            let shifted = tiled && (notKey || multiple && (unfocused || chrome.pane != active))
             chrome.treatment = tiled
-                ? (multiple && !sidebarFocused && chrome.pane == active ? .edge : .plain)
-                : (chrome.pane == active ? .plain : .overlay)
+                ? (multiple && !unfocused && chrome.pane == active ? .edge : .plain)
+                : (chrome.pane == active && !notKey ? .plain : .overlay)
             let changed = shifted != pane.shiftedBackground
             if changed { pane.shiftedBackground = shifted }
             else if forcePaper { pane.updatePaper() }
@@ -978,18 +979,12 @@ final class WindowView: NSView {
         guard let window else { return }
         center.addObserver(self, selector: #selector(didBecomeKey), name: NSWindow.didBecomeKeyNotification, object: window)
         for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
-            center.addObserver(self, selector: #selector(lostKey), name: name, object: window)
+            center.addObserver(self, selector: #selector(cancelDrag), name: name, object: window)
         }
         center.addObserver(self, selector: #selector(cancelDrag), name: NSApplication.didResignActiveNotification, object: NSApp)
     }
 
-    @objc private func lostKey() {
-        cancelDrag()
-        DispatchQueue.main.async { [weak self] in self?.panes.forEach { $0.syncFocus() } }
-    }
-
     @objc private func didBecomeKey() {
-        for pane in panes { pane.syncFocus() }
         guard !isHidden, let pane = window?.firstResponder as? PaneView, pane.pane != active else { return }
         connection?.send([Command("select-pane", "-t", pane.pane)])
     }

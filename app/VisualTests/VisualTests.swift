@@ -1014,6 +1014,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         session.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         (window as? OwnerWindow)?.focusChanged = { [weak self, weak sidebar] _, _ in
             self?.terminal?.updateFocusTreatment()
+            sidebar?.updateFocusEdge()
             sidebar?.view.needsLayout = true
             sidebar?.view.layoutSubtreeIfNeeded()
         }
@@ -1057,6 +1058,101 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             terminal.updateFocusTreatment()
             try await drain(runtime)
             try await snapshot("pane-\(name)", view: root)
+            func expectLook(_ looksFocused: Bool, _ message: String, edge: Bool = true) async throws {
+                let chromes = terminal.subviews.compactMap { $0 as? PaneChrome }.filter { !$0.isHidden }
+                for chrome in chromes {
+                    let frame = expectation(description: "presented \(chrome.pane)")
+                    try XCTUnwrap(terminal.panes.first { $0.pane == chrome.pane }).visualFrame { _ in frame.fulfill() }
+                    await fulfillment(of: [frame], timeout: 10)
+                }
+                let image = try capture()
+                for chrome in chromes {
+                    let pane = try XCTUnwrap(terminal.panes.first { $0.pane == chrome.pane })
+                    let focused = looksFocused && chrome.pane == terminal.active
+                    XCTAssertEqual(chrome.treatment, focused && edge ? .edge : .plain, "\(message) \(chrome.pane) treatment")
+                    check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), focused ? pure : shifted, "\(message) \(chrome.pane) paper")
+                    let inset = try color(image, chrome, CGPoint(x: chrome.bounds.maxX - 0.75, y: chrome.bounds.midY))
+                    if focused && edge { XCTAssertGreaterThan(abs(inset.blueComponent * 255 - Double(pure[2])), 3, "\(message) focused pane edge") }
+                    else { check(inset, focused ? pure : shifted, "\(message) \(chrome.pane) has no edge") }
+                    var metrics = ghostty_surface_grid_metrics_s()
+                    XCTAssertTrue(ghostty_surface_grid_metrics(pane.surface, &metrics))
+                    let cursor = CGPoint(x: (CGFloat(metrics.cursor_column) + 0.5) * pane.cell.width,
+                                         y: pane.bounds.maxY - pane.renderInsets.top - (CGFloat(metrics.cursor_row) + 0.5) * pane.cell.height)
+                    let centre = try color(image, pane, cursor)
+                    if focused { XCTAssertGreaterThan(abs(centre.redComponent * 255 - Double(pure[0])), 10, "\(message) \(chrome.pane) solid cursor") }
+                    else { check(centre, shifted, "\(message) \(chrome.pane) hollow cursor") }
+                }
+            }
+            NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+            try await drain(runtime)
+            try await snapshot("window-not-key-\(name)", view: root)
+            try await expectLook(false, "window not key")
+            XCTAssertTrue(sidebar.visualFocusEdge.isHidden)
+            NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+            try await drain(runtime)
+            try await expectLook(true, "window key again")
+            window.makeFirstResponder(sidebar.list)
+            XCTAssertFalse(sidebar.visualFocusEdge.isHidden)
+            NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+            try await drain(runtime)
+            try await expectLook(false, "sidebar focused, window not key")
+            XCTAssertTrue(sidebar.visualFocusEdge.isHidden, "no sidebar stroke while the window is not key")
+            NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+            try await drain(runtime)
+            try await expectLook(false, "sidebar focused, window key again")
+            XCTAssertFalse(sidebar.visualFocusEdge.isHidden, "sidebar stroke returns with the window")
+            window.makeFirstResponder(active)
+            terminal.updateFocusTreatment()
+            if !dark {
+                let panes = terminal.panes.filter { !$0.isHidden }
+                let target = try XCTUnwrap(panes.first { $0 !== active })
+                func click(_ view: NSView) throws -> NSEvent {
+                    try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil),
+                                                     modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+                }
+                var selected = 0
+                let onSelect = target.onSelect
+                target.onSelect = { selected += 1 }
+                defer { target.onSelect = onSelect }
+                func release(_ view: NSView) throws -> NSEvent {
+                    try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil),
+                                                     modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0))
+                }
+                let sidebarDown = try click(sidebar.list)
+                for pane in panes { XCTAssertTrue(pane.visualEventMonitor?(sidebarDown) === sidebarDown) }
+                XCTAssertTrue(window.firstResponder === active, "a first click outside a pane leaves the pane focus alone")
+                let down = try click(target)
+                let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+                sheet.isReleasedWhenClosed = false
+                window.beginSheet(sheet, completionHandler: nil)
+                XCTAssertNotNil(window.attachedSheet)
+                for pane in panes { XCTAssertTrue(pane.visualEventMonitor?(down) === down) }
+                window.endSheet(sheet)
+                window.orderOut(nil)
+                XCTAssertTrue(window.firstResponder === active, "a click under a sheet focuses nothing")
+                XCTAssertEqual(selected, 0, "a click under a sheet selects nothing")
+                for pane in panes { XCTAssertTrue(pane.visualEventMonitor?(down) === down, "the click continues to AppKit, which only activates the window") }
+                XCTAssertTrue(window.firstResponder === target, "the first click focuses the clicked pane")
+                XCTAssertEqual(selected, 1, "the first click selects the clicked pane in tmux")
+                target.visualAcceptsFirstMouse = false
+                window.sendEvent(down)
+                XCTAssertEqual(target.visualPressed, 0, "the first click is not a terminal press")
+                window.sendEvent(try release(target))
+                target.visualAcceptsFirstMouse = true
+                for pane in panes { _ = pane.visualEventMonitor?(down) }
+                XCTAssertEqual(selected, 1, "a click on the focused pane selects nothing")
+                window.makeFirstResponder(active)
+                var firstMouse: Set<String> = []
+                var views = [root]
+                while let view = views.popLast() {
+                    if view.acceptsFirstMouse(for: nil) { firstMouse.insert(String(describing: type(of: view))) }
+                    views += view.subviews
+                }
+                let kido = firstMouse.filter { !$0.hasPrefix("NS") && !$0.hasPrefix("_") }
+                let toolbarButtons = PaneToolbar(runtime: runtime).subviews.compactMap { $0 as? IconButton }
+                XCTAssertTrue(toolbarButtons.allSatisfy { !$0.acceptsFirstMouse(for: nil) }, "a first click on a hover toolbar button only activates the window")
+                XCTAssertEqual(kido, ["IconButton", "MouseButton", "PaneView", "Table"], "pane chrome, dividers, tabs and sidebar rows never take first mouse; PaneView and Table answer true only in the visual build")
+            }
             var image = try capture()
             let textRect = root.convert(CGRect(x: 20, y: active.bounds.maxY - 80, width: 240, height: 75), from: active)
             let scale = CGFloat(image.pixelsWide) / root.bounds.width
@@ -1212,11 +1308,17 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             try await wait("single visible focus pane") { terminal.panes.filter { !$0.isHidden }.count == 1 }
             try await paint(content: content)
             try await snapshot("single-\(name)", view: root)
-            image = try capture()
             let chrome = try XCTUnwrap(terminal.subviews.compactMap { $0 as? PaneChrome }.first { !$0.isHidden })
             let pane = try XCTUnwrap(terminal.panes.first { !$0.isHidden })
-            check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), pure, "single pane pure paper")
-            check(try color(image, chrome, CGPoint(x: chrome.bounds.maxX - 0.75, y: chrome.bounds.midY)), pure, "single pane has no edge")
+            window.makeFirstResponder(pane)
+            try await expectLook(true, "single pane key", edge: false)
+            NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+            try await drain(runtime)
+            try await snapshot("single-window-not-key-\(name)", view: root)
+            try await expectLook(false, "single pane window not key", edge: false)
+            NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+            try await drain(runtime)
+            try await expectLook(true, "single pane window key again", edge: false)
             window.makeFirstResponder(sidebar.list)
             terminal.updateFocusTreatment()
             sidebar.view.needsLayout = true
@@ -1294,6 +1396,21 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await settle()
         try await paint()
         try await snapshot("float-top")
+        let owner = try XCTUnwrap(window as? OwnerWindow)
+        owner.focusChanged = { [weak self] _, _ in self?.terminal?.updateFocusTreatment() }
+        let terminal = try XCTUnwrap(terminal)
+        let float = try XCTUnwrap(terminal.panes.first { !$0.transparentPaper })
+        _ = try await command(["select-pane", "-t", "\(float.pane)"])
+        try await wait("float is active") { terminal.active == float.pane }
+        window.makeFirstResponder(float)
+        let floatChrome = try XCTUnwrap(terminal.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == float.pane })
+        XCTAssertEqual(floatChrome.treatment, .plain)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        try await paint()
+        try await snapshot("float-window-not-key")
+        XCTAssertEqual(floatChrome.treatment, .overlay, "the active float takes the inactive overlay while the window is not key")
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertEqual(floatChrome.treatment, .plain)
     }
 
     func testEmptyPaneWheelDoesNotFloodMetadata() async throws {

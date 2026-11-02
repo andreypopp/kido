@@ -186,7 +186,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         return host.convertPoint(fromScreen: window.convertPoint(toScreen: edge)).x
     }
     func updateFocusEdge() {
-        focusEdge.isHidden = !list.containsFocus || isCollapsed
+        focusEdge.isHidden = !list.containsFocus || isCollapsed || (view.window as? OwnerWindow)?.isInputWindow == false
     }
 
     override func viewDidLayout() {

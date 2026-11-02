@@ -868,7 +868,7 @@ import TmuxControl
         let keyUp = try XCTUnwrap(NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: owner.window.windowNumber, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
         XCTAssertTrue(keyUp.window === owner.window)
         let beforeMonitor = pane.visualKeyUps
-        _ = pane.visualKeyUpMonitor?(keyUp)
+        _ = pane.visualEventMonitor?(keyUp)
         XCTAssertEqual(pane.visualKeyUps, beforeMonitor + 1, "the registered monitor works while the palette is closed")
         for mode in [PaletteMode.root, .connect, .sessionName(owner, source.instance, .rename(session.id, original: session.name)), .prompt(source)] {
             fixture.app.togglePalette()
@@ -881,7 +881,7 @@ import TmuxControl
             try sendKey(panel, "b", code: 11, modifiers: .command)
             _ = owner.window.performKeyEquivalent(with: try key(owner.window, "a", code: 0, modifiers: .command))
             owner.window.sendEvent(try key(owner.window, "x", code: 7))
-            XCTAssertTrue(pane.visualKeyUpMonitor?(keyUp) === keyUp, "palette blocks the pane key-up monitor")
+            XCTAssertTrue(pane.visualEventMonitor?(keyUp) === keyUp, "palette blocks the pane key-up monitor")
             XCTAssertEqual(pane.visualKeyEvents, keys, "palette mode leaked a pane key")
             XCTAssertEqual(pane.visualBindingQueries, bindings, "palette mode leaked a Ghostty binding query")
             XCTAssertEqual(pane.visualBindingActions, bindingActions, "palette mode leaked a Ghostty binding action")

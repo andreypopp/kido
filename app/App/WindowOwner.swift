@@ -17,6 +17,16 @@ class OwnerWindow: NSWindow {
     }
 
     var focusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
+    private(set) var isInputWindow = true
+    override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
+        super.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyChanged), name: NSWindow.didBecomeKeyNotification, object: self)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyChanged), name: NSWindow.didResignKeyNotification, object: self)
+    }
+    @objc private func keyChanged(_ note: Notification) {
+        isInputWindow = note.name == NSWindow.didBecomeKeyNotification
+        focusChanged(firstResponder, firstResponder)
+    }
     private var nested = 0
     // Ending a field editor's session first makes the window itself first
     // responder, through this method.
@@ -267,6 +277,7 @@ private class AlertEscape: NSView {
             guard let self else { return }
             sidebar.updateFocusEdge()
             session?.windows.values.filter { !$0.isHidden }.forEach { $0.updateFocusTreatment() }
+            if old === next { return }
             if let pane = next as? PaneView, model.window.flatMap({ session?.windows[$0]?.active }) == pane.pane,
                old == nil || old is PaneView || old === window { return }
             supersedeIntent()

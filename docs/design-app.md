@@ -892,15 +892,15 @@ include order and diagnostic rules of `kido-sidebar-shade`, with
 a 3% default, and the same reader reads both keys. A reload that changes only this key repaints the
 panes and the band. The focused pane also gets a 1pt `controlAccentColor`
 stroke at 50% alpha, inside its chrome rect, over the padding and not over
-cells. A single-pane window draws no shift and no edge on its pane, in
-every focus state. Floating panes keep a 45% theme-background overlay when
-they are not active.
+cells. A single-pane window draws no shift and no edge on its pane while
+its window is key, also under sidebar focus. Floating panes keep a 45%
+theme-background overlay when they are not active.
 
 A pane has Ghostty surface focus, and a solid cursor, only while it is its
-window's first responder and that window is key, or while no app window is
-key. Each pane observes the key-window notifications. Thus, a key panel
-over the window, such as the [command palette](#command-palette), makes
-the focused pane's cursor hollow without moving the window's first
+window's first responder and that window is key (see the not-key rule
+below). Thus, a key panel over the window, such as the
+[command palette](#command-palette), or another frontmost app makes the
+focused pane's cursor hollow without moving the window's first
 responder.
 
 The shift changes the paper, not the ink. Each tiled surface gets its own
@@ -952,6 +952,30 @@ shadow. When the floating card's list is first responder, its edge is
 the same stroke inset 1pt inside its hairline border, with a 17pt radius.
 The panes then behave as under docked sidebar focus. Accent and
 appearance-dependent colours resolve at draw time.
+
+When the window is not key, no keyboard input goes to a pane, so no pane
+looks focused. This occurs when another app is frontmost, another Kido
+window is key, or a panel or sheet over the window is key, such as the
+[command palette](#command-palette). Every tiled pane then takes the
+shift, also in a single-pane window, the active floating pane takes the
+inactive float overlay, no edge shows on a pane or on the sidebar, and
+the active pane's cursor is hollow. A change of key window
+runs the same focus-treatment update as a change of first responder, so
+when the window becomes key again, the previous look returns at once: the
+pane edge, or the sidebar edge if the sidebar list is still first
+responder. A window that has never been key counts as key, so off-screen
+test windows keep the focused look.
+
+One click on a pane in a window that is not key, or in an inactive app,
+activates the window and focuses that pane, as in Ghostty's own app
+(`SurfaceView_AppKit.swift`, `localEventLeftMouseDown`). A local
+left-mouse-down monitor on each pane makes the pane first responder and
+selects it in tmux. The pane does not accept first mouse, so the click
+itself reaches no program: no mouse report, no selection. A window with a
+sheet or an open command palette does not take this focus. A click on a
+pane in a key window goes to the terminal as before. The pane hover
+toolbar's buttons do not accept first mouse either, so a first click on
+the grip, zoom, split or close button only activates the window.
 
 ### Clipboard
 
