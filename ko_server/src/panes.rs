@@ -256,7 +256,7 @@ impl Panes {
     }
 
     pub(crate) fn reap(&mut self, io: &mut Io<'_>) -> io::Result<()> {
-        for pane in self.all_mut() {
+        for pane in &mut self.removed {
             pane.proc_mut().reap(io)?;
         }
         self.removed

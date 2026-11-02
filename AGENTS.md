@@ -625,7 +625,10 @@ Conventions:
   requests (create, delete, list, the pager's `/screen`) block with
   the deadlines of `ko api`. While the pager runs, the loop keeps
   both links and stops reading stdin and painting until `SIGCHLD`
-  reports the pager's exit, so pings get their answers. The
+  reports the pager's exit, so pings get their answers. A turn
+  handles `SIGWINCH` after it dispatches the stdin events that it
+  read, so input that the terminal sent before a resize maps to the
+  old layout. It handles the other signals at once. The
   compressor thread shares the mirror
   under a `Mutex` and a `Condvar`. It does CPU work only and never
   wakes the loop. `ko_vt::Terminal` is `Send` only for this thread,

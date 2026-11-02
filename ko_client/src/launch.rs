@@ -59,6 +59,7 @@ impl Cancel {
         self.done.load(Ordering::SeqCst)
     }
 
+    #[cfg(target_vendor = "apple")]
     pub(crate) fn cancel(&self) {
         self.done.store(true, Ordering::SeqCst);
         let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
@@ -78,6 +79,7 @@ impl Cancel {
     }
 }
 
+#[cfg(target_vendor = "apple")]
 pub(crate) fn cancellable<T>(cancel: &Arc<Cancel>, work: impl FnOnce() -> T) -> T {
     CANCEL.with(|current| *current.borrow_mut() = Some(Arc::clone(cancel)));
     let done = work();

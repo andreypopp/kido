@@ -1356,6 +1356,36 @@ mod tests {
     }
 
     #[test]
+    fn views_opened_and_resumed_after_a_crash_are_closed() {
+        let ops = [
+            Op::Check,
+            Op::Settle(34),
+            Op::Reader(6123798006828066835, Reader::Slow(45568)),
+            Op::Reader(12894341417404591382, Reader::Slow(18944)),
+            Op::Settle(18),
+            Op::Reader(11508181364395358113, Reader::Fast),
+            Op::Crash,
+            Op::Check,
+            Op::Resume(15267699191680156832, History::None, Reader::Slow(32768)),
+            Op::Resync(4391464946971535817, History::All),
+            Op::Resync(781273300046072735, History::All),
+            Op::Feed(Source::Lines, 1198, 2420560970),
+            Op::Crash,
+            Op::ClearHistory,
+            Op::Resume(17558291883570854628, History::None, Reader::Fast),
+            Op::Feed(Source::Corpus(1), 1187, 63297853),
+            Op::Feed(Source::Corpus(3), 845, 1750752358),
+            Op::Settle(14),
+            Op::Open(History::None, Reader::Fast, true, true),
+            Op::Resize(11, 57),
+            Op::Close(1482633719110522583, Who::Client),
+            Op::Eof,
+            Op::Check,
+        ];
+        run(&ops).unwrap_or_else(|failure| panic!("{failure:?}"));
+    }
+
+    #[test]
     fn views_catch_up_after_a_resync_on_a_pane_that_ended() {
         let ops = [
             Op::Feed(Source::Lines, 200_000, 0),

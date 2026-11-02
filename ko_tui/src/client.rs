@@ -846,9 +846,10 @@ impl Client {
             .map(|ready| self.poll.wants(*ready))
             .collect();
         let mut incoming = Vec::new();
+        let mut resized = false;
         for ready in ready {
             if ready.token == self.signal_token && ready.read {
-                self.signal()?;
+                resized |= self.signal()?;
             } else if ready.token == self.stdin && ready.read {
                 self.read(&mut incoming, now)?;
             } else if ready.token == self.link_token {
@@ -873,20 +874,24 @@ impl Client {
             }
             self.event(event)?;
         }
+        if resized {
+            self.winch()?;
+        }
         Ok(())
     }
 
-    fn signal(&mut self) -> Result<(), String> {
+    fn signal(&mut self) -> Result<bool, String> {
         let mut pending = Vec::new();
         self.signals.take(&mut pending).map_err(text)?;
+        let mut resized = false;
         for signal in pending {
             match signal {
-                Signal::Winch => self.winch()?,
+                Signal::Winch => resized = true,
                 Signal::Child => self.pager_ended()?,
                 _ => self.quit = true,
             }
         }
-        Ok(())
+        Ok(resized)
     }
 
     fn read(&mut self, incoming: &mut Vec<Event>, now: Instant) -> Result<(), String> {
