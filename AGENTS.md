@@ -537,9 +537,9 @@ Conventions:
 - **Unsafe.** `unsafe` is permitted in `ko_sys`, in `ko_vt_sys` (the
   generated bindings), in `ko_vt` (the safe wrapper over them), in
   `ko_pane_wire::ring::mapping` and `ring::model` (the loom backing),
-  in `ko_client::ffi` (the C ABI of Kido.app, beside
-  `ko_client/include/ko_client.h`) and in `ko_bench/src/alloc.rs`
-  (the counting global allocator).
+  in `ko_client::ffi` and its modules `ffi::engine` and `ffi::view`
+  (the C ABI of Kido.app, beside `ko_client/include/ko_client.h`) and
+  in `ko_bench/src/alloc.rs` (the counting global allocator).
   Every other crate and module denies it. Each block has a
   `// SAFETY:` line that names the invariant. A safe wrapper takes
   typed arguments and returns `Result`. Descriptors are `OwnedFd` and
@@ -628,7 +628,8 @@ Conventions:
   events. A read of zero bytes is the end; `WouldBlock` is "not
   ready". Signal handlers have `SA_RESTART`, but no call relies on it.
 - **The loop.** Every ko process is one thread on `ko_sys::event`,
-  except for the terminal client's mirror compressor (below):
+  except for the terminal client's mirror compressor and the threads
+  of `ko_client::ffi` (both below):
   non-blocking descriptors, the nearest deadline as the `poll`
   timeout and none without one, at most 16 reads of a source per
   turn. The server's listener accepts at most 16 connections per
@@ -656,6 +657,26 @@ Conventions:
   wakes the loop. `ko_vt::Terminal` is `Send` only for this thread,
   and the `Mutex` serializes every call. vte tokenizes the outer
   terminal's input, and `ko_tui::input` translates its events.
+- **The C ABI.** `ko_client::ffi` builds only for
+  `target_vendor = "apple"`; no other crate uses it, and the Linux
+  build has none of it. The header comment of
+  `ko_client/include/ko_client.h` is the contract: handles, memory,
+  threads, close and reconnect. The ffi lives in the app's process,
+  so it has threads: one I/O thread (`ffi::engine`) on
+  `ko_sys::event` that owns the `/client` link, every view link and
+  the reconnect, a short thread for each model fetch, and one decoder
+  thread for each view (`ffi::view`) that runs the restore and feed
+  callbacks. A call wakes the I/O thread through a
+  `ko_sys::event::Wake`. A second `Wake`, set at close, is the
+  cancellation that ends the blocking calls (`ko_sys::fd::wait` with
+  a cancel descriptor). Events reach the
+  app only through `dispatch_async_f` on the caller's serial queue.
+  `ko_client_put_layout` is conditional on the document's
+  revision: when the layout changed, it returns `KO_ERR_CONFLICT`
+  with the newer document in its buffer, and the caller applies its
+  edit to that document and sends it again. A view gives the restore
+  the `continuation_max_bytes` of the client's `Welcome`
+  (rfc/kido-server/protocol.md, section 4).
 - **Time.** `Mono` is nanoseconds of `CLOCK_UPTIME_RAW` on macOS, as
   `ko_now_ns` reads it, and of `CLOCK_MONOTONIC` on Linux. The loop's deadlines are `std::time::Instant`.
   Timeouts are `Duration` arguments, not statics.

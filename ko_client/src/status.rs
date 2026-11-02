@@ -5,10 +5,12 @@ use ko_server::ids::PaneId;
 use ko_server::protocol::{
     AgentState, CommandExit, Live, Outcome, OutcomeResult, PaneStatus, Phase,
 };
+use serde::Serialize;
 
 use crate::model::Pane;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Mark {
     None,
     Running,
@@ -68,23 +70,24 @@ impl Seen {
         }
     }
 
-    pub fn observe(&mut self, shown: Option<PaneId>, panes: &[Pane]) {
-        let Some(pane) = shown.and_then(|shown| panes.iter().find(|pane| pane.row.id == shown))
-        else {
+    pub fn observe(&mut self, shown: &[PaneId], attending: bool, panes: &[Pane]) {
+        if !attending {
             return;
-        };
-        let keys = pane
-            .row
-            .status
-            .as_ref()
-            .map_or_else(Keys::default, |status| {
-                let (outcome, exit) = outcomes(status);
-                Keys {
-                    outcome: outcome.map(|(source, outcome)| (source, outcome.serial)),
-                    exit: exit.map(|exit| (exit.started_at, exit.ended_at)),
-                }
-            });
-        self.keys.insert(pane.row.id, keys);
+        }
+        for pane in panes.iter().filter(|pane| shown.contains(&pane.row.id)) {
+            let keys = pane
+                .row
+                .status
+                .as_ref()
+                .map_or_else(Keys::default, |status| {
+                    let (outcome, exit) = outcomes(status);
+                    Keys {
+                        outcome: outcome.map(|(source, outcome)| (source, outcome.serial)),
+                        exit: exit.map(|exit| (exit.started_at, exit.ended_at)),
+                    }
+                });
+            self.keys.insert(pane.row.id, keys);
+        }
     }
 
     fn unseen<'a>(
@@ -364,7 +367,7 @@ mod tests {
             (seen.mark(&failed), seen.mark(&other)),
             (Mark::Failed, Mark::Done)
         );
-        seen.observe(Some(id(1)), &[failed.clone(), other.clone()]);
+        seen.observe(&[id(1)], true, &[failed.clone(), other.clone()]);
         assert_eq!(
             (seen.mark(&failed), seen.mark(&other)),
             (Mark::None, Mark::Done)
@@ -375,7 +378,7 @@ mod tests {
         assert_eq!(seen.mark(&early), Mark::None);
         let reported = pane(1, Some(agent(outcome(7, OutcomeResult::Success))));
         assert_eq!(seen.mark(&reported), Mark::Done);
-        seen.observe(Some(id(1)), std::slice::from_ref(&reported));
+        seen.observe(&[id(1)], true, std::slice::from_ref(&reported));
         assert_eq!(seen.mark(&reported), Mark::None);
         let later = pane(1, Some(agent(outcome(8, OutcomeResult::Success))));
         assert_eq!(seen.mark(&later), Mark::Done);

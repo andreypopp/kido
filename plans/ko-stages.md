@@ -771,6 +771,26 @@ specification, with the shared core of 4.10 in place of a Swift
      thread-local `launch::Cancel`.
    - When the app must keep data, the ABI gives an owned buffer with
      a free call.
+   Done: `ko_client::ffi` with `ffi::engine` (the I/O thread, the
+   reconnect, the views' links) and `ffi::view` (one decoder thread
+   for each view), `ko_client/include/ko_client.h` and the export
+   list. A restore gets the `continuation_max_bytes` of the
+   `Welcome` (protocol.md, section 4). The image, clipboard and search calls
+   stay with K6. Risks that step 4 takes over, from the app's review:
+   - Layout edits cross as a whole JSON document, and on
+     `KO_ERR_CONFLICT` the app applies its edit again to the newer
+     document. Typed edit operations, with the re-apply on conflict
+     in the core, would move that logic out of Swift.
+   - The model reaches Swift as untyped JSON (`ko_client_model`), so
+     Swift decodes it and a field change is not seen at compile time.
+   - The surface's `set_grid_size` runs on the decoder thread for a
+     restore and on the main queue for a local resize; step 4 must
+     show that the two cannot interleave badly.
+   - The error codes are coarse: seven `ko_code` values, and the
+     cause of a failure is only in the text of the buffer or of the
+     `FAILED` event.
+   - The x86_64 slice of the xcframework builds and passes the `nm`
+     check, but no test executes it.
 4. The layout from the model; every gesture one edit call, coalesced
    per gesture step. Tabs, the sidebar tree, seen state and
    notifications read the model's snapshots. After K2b: a tab of a

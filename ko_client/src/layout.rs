@@ -5,6 +5,7 @@ use ko_server::ids::{ClientId, Name, PaneId, SessionId, WindowId};
 use ko_server::protocol::{
     self, CreatePane, DraftLayout, DraftSession, DraftWindow, Node, PutLayout, Revision, Snapshot,
 };
+use ko_sys::event::Wake;
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{self, text};
@@ -18,17 +19,29 @@ pub struct Document {
     pub layout: DraftLayout,
 }
 
-type Put = Result<Snapshot, Snapshot>;
+pub(crate) type Put = Result<Snapshot, Snapshot>;
 
-fn fetch(socket: &Path, client: Option<ClientId>) -> Result<Snapshot, String> {
-    protocol::decode(&wire::request(socket, client, &Route::GetLayout {}, b"")?).map_err(text)
+fn fetch(
+    socket: &Path,
+    client: Option<ClientId>,
+    cancel: Option<&Wake>,
+) -> Result<Snapshot, String> {
+    protocol::decode(&wire::request(
+        socket,
+        client,
+        &Route::GetLayout {},
+        b"",
+        cancel,
+    )?)
+    .map_err(text)
 }
 
-fn send(
+pub(crate) fn send(
     socket: &Path,
     client: Option<ClientId>,
     revision: Revision,
     layout: DraftLayout,
+    cancel: Option<&Wake>,
 ) -> Result<Put, String> {
     let request = PutLayout { revision, layout };
     let (method, target) = Route::PutLayout {}.to_request();
@@ -38,6 +51,7 @@ fn send(
         (method, &target),
         protocol::json(&request).as_bytes(),
         wire::READ_TIMEOUT,
+        cancel,
     )
     .map_err(text)?;
     match response.status {
@@ -73,8 +87,8 @@ fn edit(
     change: impl FnMut(&mut DraftLayout) -> Result<(), String>,
 ) -> Result<Snapshot, String> {
     converge(
-        fetch(socket, client)?,
-        |revision, layout| send(socket, client, revision, layout),
+        fetch(socket, client, None)?,
+        |revision, layout| send(socket, client, revision, layout, None),
         change,
     )
 }
@@ -83,13 +97,14 @@ pub(crate) fn replace(
     socket: &Path,
     client: Option<ClientId>,
     document: &Document,
+    cancel: Option<&Wake>,
 ) -> Result<Snapshot, String> {
     let mut revision = match document.revision {
         Some(revision) => revision,
-        None => fetch(socket, client)?.revision,
+        None => fetch(socket, client, cancel)?.revision,
     };
     for _ in 0..ATTEMPTS {
-        match send(socket, client, revision, document.layout.clone())? {
+        match send(socket, client, revision, document.layout.clone(), cancel)? {
             Ok(done) => return Ok(done),
             Err(newer) => revision = newer.revision,
         }

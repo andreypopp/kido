@@ -1,15 +1,13 @@
-use std::cell::RefCell;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use ko_server::config::{self, Dir};
+use ko_sys::event::Wake;
 use ko_sys::pid::Waited;
 use ko_sys::signal::Signal;
 
@@ -41,65 +39,18 @@ fn remove_stale(socket: &Path, error: &io::Error) -> io::Result<()> {
     }
 }
 
-// Cancels every connection that a thread opens through `connect` while it runs
-// `cancellable`. The first one is the long-lived link; each later one replaces
-// the previous, which a single-threaded caller has finished with.
-#[derive(Debug, Default)]
-pub(crate) struct Cancel {
-    done: AtomicBool,
-    streams: Mutex<[Option<UnixStream>; 2]>,
-}
-
-thread_local! {
-    static CANCEL: RefCell<Option<Arc<Cancel>>> = const { RefCell::new(None) };
-}
-
-impl Cancel {
-    pub(crate) fn cancelled(&self) -> bool {
-        self.done.load(Ordering::SeqCst)
-    }
-
-    #[cfg(target_vendor = "apple")]
-    pub(crate) fn cancel(&self) {
-        self.done.store(true, Ordering::SeqCst);
-        let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
-        for stream in streams.iter_mut().filter_map(Option::take) {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-        }
-    }
-
-    fn watch(&self, stream: &UnixStream) -> io::Result<()> {
-        let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.cancelled() {
-            return Err(cancelled_error());
-        }
-        let slot = usize::from(streams[0].is_some());
-        streams[slot] = Some(stream.try_clone()?);
-        Ok(())
-    }
-}
-
-#[cfg(target_vendor = "apple")]
-pub(crate) fn cancellable<T>(cancel: &Arc<Cancel>, work: impl FnOnce() -> T) -> T {
-    CANCEL.with(|current| *current.borrow_mut() = Some(Arc::clone(cancel)));
-    let done = work();
-    CANCEL.with(|current| *current.borrow_mut() = None);
-    done
-}
-
-fn cancelled_error() -> io::Error {
+pub(crate) fn cancelled_error() -> io::Error {
     io::Error::other("cancelled")
 }
 
-fn cancel_of_thread() -> Option<Arc<Cancel>> {
-    CANCEL.with(|current| current.borrow().clone())
-}
-
-pub(crate) fn connect(socket: &Path, patience: Patience) -> io::Result<UnixStream> {
-    let cancel = cancel_of_thread();
+pub(crate) fn connect(
+    socket: &Path,
+    patience: Patience,
+    cancel: Option<&Wake>,
+) -> io::Result<UnixStream> {
     let deadline = Instant::now() + patience.deadline;
     loop {
-        if cancel.as_ref().is_some_and(|cancel| cancel.cancelled()) {
+        if cancel.is_some_and(Wake::is_set) {
             return Err(cancelled_error());
         }
         match UnixStream::connect(socket) {
@@ -108,17 +59,10 @@ pub(crate) fn connect(socket: &Path, patience: Patience) -> io::Result<UnixStrea
             {
                 std::thread::sleep(patience.retry);
             }
-            Ok(stream) => {
-                if let Some(cancel) = &cancel {
-                    cancel.watch(&stream)?;
-                }
-                return Ok(stream);
-            }
-            failed => return failed,
+            connected => return connected,
         }
     }
 }
-
 fn lock(dir: &Path, patience: Patience) -> io::Result<File> {
     let lock = OpenOptions::new()
         .read(true)
@@ -144,7 +88,7 @@ fn lock(dir: &Path, patience: Patience) -> io::Result<File> {
 
 pub fn bind(dir: &Path, socket: &Path, patience: Patience) -> io::Result<UnixListener> {
     let _lock = lock(dir, patience)?;
-    if let Err(error) = connect(socket, patience) {
+    if let Err(error) = connect(socket, patience, None) {
         remove_stale(socket, &error)?;
     }
     UnixListener::bind(socket)
@@ -157,13 +101,13 @@ pub fn attach(
 ) -> Result<(PathBuf, UnixStream), String> {
     let socket = config::socket(Dir::Create, dir)?;
     let message = |error: io::Error| error.to_string();
-    match connect(&socket, patience) {
+    match connect(&socket, patience, None) {
         Ok(stream) => return Ok((socket, stream)),
         Err(error) if absent(&error) => {}
         Err(error) => return Err(message(error)),
     }
     let held = lock(dir, patience).map_err(message)?;
-    match connect(&socket, patience) {
+    match connect(&socket, patience, None) {
         Ok(stream) => return Ok((socket, stream)),
         Err(error) if absent(&error) => remove_stale(&socket, &error).map_err(message)?,
         Err(error) => return Err(message(error)),
@@ -180,7 +124,7 @@ pub fn attach(
     drop(held);
     let deadline = Instant::now() + patience.deadline;
     loop {
-        match connect(&socket, patience) {
+        match connect(&socket, patience, None) {
             Ok(stream) => return Ok((socket, stream)),
             Err(error) if absent(&error) => {}
             Err(error) => return Err(message(error)),
@@ -202,7 +146,7 @@ pub fn attach(
 pub fn stop(dir: &Path, patience: Patience) -> Result<(), String> {
     let socket = config::socket(Dir::Existing, dir)?;
     let message = |error: io::Error| error.to_string();
-    let stream = connect(&socket, patience).map_err(message)?;
+    let stream = connect(&socket, patience, None).map_err(message)?;
     if ko_sys::sock::peer_uid(stream.as_fd()).map_err(message)? != ko_sys::sock::uid() {
         return Err("server belongs to another user".to_owned());
     }

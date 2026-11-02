@@ -10,6 +10,8 @@ use ko_server::protocol::{
     Snapshot, Window,
 };
 use ko_server::runs::Parent;
+use ko_sys::event::Wake;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::status::{Mark, Seen};
@@ -46,7 +48,14 @@ pub struct Model {
     seen: Seen,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
+pub(crate) struct Fetched {
+    listing: Vec<Listing>,
+    infos: Vec<Info>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Item {
     Session { id: SessionId, name: String },
     Pane { id: PaneId, depth: usize },
@@ -55,6 +64,7 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Applied {
     Nothing,
+    State,
     Layout,
     Selected,
     Notice(Notice),
@@ -67,14 +77,19 @@ pub enum Rejoin {
 }
 
 impl Model {
-    pub fn join(link: &mut Link, hello: Hello, socket: &Path) -> Result<Model, String> {
+    pub fn join(
+        link: &mut Link,
+        hello: Hello,
+        socket: &Path,
+        cancel: Option<&Wake>,
+    ) -> Result<Model, String> {
         link.send(protocol::json(&ClientRequest::Hello(hello)))
             .and_then(|()| link.flush_blocking())
             .map_err(text)?;
-        Model::welcome(link, socket)
+        Model::welcome(link, socket, cancel)
     }
 
-    fn welcome(link: &mut Link, socket: &Path) -> Result<Model, String> {
+    fn welcome(link: &mut Link, socket: &Path, cancel: Option<&Wake>) -> Result<Model, String> {
         let mut next = || match link.receive().map_err(text)? {
             Next::Text(event) => protocol::decode::<ClientEvent>(event.as_bytes()).map_err(text),
             _ => Err("client event missing".to_owned()),
@@ -86,7 +101,7 @@ impl Model {
             return Err("layout missing".to_owned());
         };
         let mut model = Model::new(welcome, socket.to_owned(), layout);
-        model.refresh()?;
+        model.refresh(cancel)?;
         Ok(model)
     }
 
@@ -106,7 +121,7 @@ impl Model {
     }
 
     pub fn rejoin(&self, link: &mut Link) -> Result<Rejoin, String> {
-        Ok(self.gate(Model::welcome(link, &self.socket)?))
+        Ok(self.gate(Model::welcome(link, &self.socket, None)?))
     }
 
     fn gate(&self, joined: Model) -> Rejoin {
@@ -122,24 +137,56 @@ impl Model {
         self.anchor.0.saturating_add(elapsed)
     }
 
-    pub fn observe(&mut self, shown: Option<PaneId>) {
-        self.seen.observe(shown, &self.panes);
+    pub fn observe(&mut self, shown: &[PaneId], attending: bool) {
+        self.seen.observe(shown, attending, &self.panes);
+    }
+
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn keep_seen(&mut self, earlier: Model) {
+        self.seen = earlier.seen;
+    }
+
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn runs(&self) -> impl Iterator<Item = &RunEvent> {
+        self.runs.values()
     }
 
     pub fn mark(&self, pane: &Pane) -> Mark {
         self.seen.mark(pane)
     }
 
-    fn refresh(&mut self) -> Result<(), String> {
-        let body = wire::request(&self.socket, Some(self.client), &Route::ListPanes {}, b"")?;
-        self.load(protocol::decode(&body).map_err(text)?);
+    fn refresh(&mut self, cancel: Option<&Wake>) -> Result<(), String> {
+        let rows = Model::fetch(&self.socket, self.client, cancel)?;
+        self.install(rows);
+        Ok(())
+    }
+
+    pub(crate) fn fetch(
+        socket: &Path,
+        client: ClientId,
+        cancel: Option<&Wake>,
+    ) -> Result<Fetched, String> {
+        let body = wire::request(socket, Some(client), &Route::ListPanes {}, b"", cancel)?;
+        let listing = protocol::decode(&body).map_err(text)?;
         let route = Route::ListRuns {
             show: Show::Present,
             parent: None,
         };
-        let body = wire::request(&self.socket, Some(self.client), &route, b"")?;
-        self.load_runs(protocol::decode(&body).map_err(text)?);
-        Ok(())
+        let body = wire::request(socket, Some(client), &route, b"", cancel)?;
+        Ok(Fetched {
+            listing,
+            infos: protocol::decode(&body).map_err(text)?,
+        })
+    }
+
+    pub(crate) fn install(&mut self, fetched: Fetched) {
+        self.load(fetched.listing);
+        self.load_runs(fetched.infos);
+    }
+
+    fn stale(&self) -> bool {
+        let known: BTreeSet<PaneId> = self.panes.iter().map(|pane| pane.row.id).collect();
+        known != self.order().into_iter().collect()
     }
 
     fn load_runs(&mut self, infos: Vec<Info>) {
@@ -181,14 +228,18 @@ impl Model {
     }
 
     pub fn apply(&mut self, event: ClientEvent) -> Result<Applied, String> {
-        let applied = self.apply_now(event);
-        if applied == Applied::Layout {
-            let known: BTreeSet<PaneId> = self.panes.iter().map(|pane| pane.row.id).collect();
-            if known != self.order().into_iter().collect() {
-                self.refresh()?;
-            }
+        let (applied, fetch) = self.apply_event(event);
+        if fetch {
+            self.refresh(None)?;
         }
         Ok(applied)
+    }
+
+    // The second member says that the rows are stale and `fetch` must run again.
+    pub(crate) fn apply_event(&mut self, event: ClientEvent) -> (Applied, bool) {
+        let layout = matches!(event, ClientEvent::Layout(_));
+        let applied = self.apply_now(event);
+        (applied, layout && self.stale())
     }
 
     fn apply_now(&mut self, event: ClientEvent) -> Applied {
@@ -214,6 +265,7 @@ impl Model {
             ClientEvent::Run(run) => {
                 if self.order().contains(&run.pane) {
                     self.runs.insert(run.id.clone(), run);
+                    return Applied::State;
                 }
             }
             ClientEvent::Selected(selection) => {
@@ -223,32 +275,38 @@ impl Model {
             ClientEvent::Title(title) => {
                 if let Some(pane) = self.pane_mut(title.pane) {
                     pane.row.title = title.title;
+                    return Applied::State;
                 }
             }
             ClientEvent::Dead(dead) => {
                 if let Some(pane) = self.pane_mut(dead.pane) {
                     pane.row.dead = Some(dead.dead);
+                    return Applied::State;
                 }
             }
             ClientEvent::Status(change) => {
                 self.anchor = (change.now, Instant::now());
                 if let Some(pane) = self.pane_mut(change.pane) {
                     pane.row.status = Some(change.status);
+                    return Applied::State;
                 }
             }
             ClientEvent::Var { pane, name, value } => {
                 if let Some(pane) = self.pane_mut(pane) {
                     pane.vars.insert(name, value);
+                    return Applied::State;
                 }
             }
             ClientEvent::VarDeleted { pane, name } => {
                 if let Some(pane) = self.pane_mut(pane) {
                     pane.vars.remove(&name);
+                    return Applied::State;
                 }
             }
             ClientEvent::Progress { pane, progress } => {
                 if let Some(pane) = self.pane_mut(pane) {
                     pane.row.progress = progress;
+                    return Applied::State;
                 }
             }
             ClientEvent::Bell { pane } => return Applied::Notice(Notice::Bell(pane)),
@@ -606,7 +664,7 @@ mod tests {
             run(3, 2, Some(Parent::Pane(pane(5)))),
         ];
         for event in events {
-            assert_eq!(model.apply(ClientEvent::Run(event)), Ok(Applied::Nothing));
+            assert_eq!(model.apply(ClientEvent::Run(event)), Ok(Applied::State));
         }
         assert_eq!(
             outline_of(&model),
@@ -687,7 +745,7 @@ mod tests {
             pane: pane(1),
             title: "t".to_owned(),
         });
-        assert_eq!(model.apply(title), Ok(Applied::Nothing));
+        assert_eq!(model.apply(title), Ok(Applied::State));
     }
 
     #[test]

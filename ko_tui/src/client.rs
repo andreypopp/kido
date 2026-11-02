@@ -302,7 +302,7 @@ impl Client {
             Signal::Child,
         ])
         .map_err(text)?;
-        let mut link = Link::upgrade(stream, None, &Route::Client {}).map_err(text)?;
+        let mut link = Link::upgrade(stream, None, &Route::Client {}, None).map_err(text)?;
         let mut session = Session {
             tty: Tty::raw().map_err(text)?,
             modes: Modes::default(),
@@ -329,7 +329,7 @@ impl Client {
             size: protocol::Size(pane_size(geometry, panel, warning)),
             ignore_size: false,
         };
-        let model = Model::join(&mut link, hello, &socket)?;
+        let model = Model::join(&mut link, hello, &socket, None)?;
         let link_token = link.watch(&mut poll).map_err(text)?;
         let (wake, escape, watchdog) = (
             Deadline::new(&mut poll),
@@ -460,7 +460,7 @@ impl Client {
     }
 
     fn request(&self, route: &Route) -> Result<Vec<u8>, String> {
-        wire::request(&self.socket, Some(self.model.client), route, b"")
+        wire::request(&self.socket, Some(self.model.client), route, b"", None)
     }
 
     fn switch(&mut self, pane: PaneId) -> Result<(), String> {
@@ -480,7 +480,7 @@ impl Client {
             &mut self.poll,
         )?;
         self.view = View::open(pane, mirror);
-        self.model.observe(Some(pane));
+        self.model.observe(&[pane], true);
         self.immediate = true;
         Ok(())
     }
@@ -925,9 +925,12 @@ impl Client {
                     Next::Text(event) => {
                         let event = protocol::decode(event.as_bytes()).map_err(text)?;
                         let applied = self.model.apply(event)?;
-                        self.model.observe(self.pane());
+                        self.model.observe(self.pane().as_slice(), true);
                         match applied {
-                            Applied::Nothing | Applied::Layout | Applied::Notice(_) => {}
+                            Applied::Nothing
+                            | Applied::State
+                            | Applied::Layout
+                            | Applied::Notice(_) => {}
                             Applied::Selected => match self.model.selection.pane {
                                 Some(pane) if Some(pane) != self.pane() => self.switch(pane)?,
                                 Some(_) => {}

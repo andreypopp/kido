@@ -350,6 +350,54 @@ pub struct Mouse {
     pub mods: u16,
 }
 
+impl TryFrom<u8> for KeyAction {
+    type Error = Malformed;
+
+    fn try_from(code: u8) -> Result<KeyAction, Malformed> {
+        match code {
+            0 => Ok(KeyAction::Release),
+            1 => Ok(KeyAction::Press),
+            2 => Ok(KeyAction::Repeat),
+            _ => Err(Malformed::Field),
+        }
+    }
+}
+
+impl TryFrom<u8> for MouseAction {
+    type Error = Malformed;
+
+    fn try_from(code: u8) -> Result<MouseAction, Malformed> {
+        match code {
+            0 => Ok(MouseAction::Press),
+            1 => Ok(MouseAction::Release),
+            2 => Ok(MouseAction::Motion),
+            _ => Err(Malformed::Field),
+        }
+    }
+}
+
+impl TryFrom<u8> for MouseButton {
+    type Error = Malformed;
+
+    fn try_from(code: u8) -> Result<MouseButton, Malformed> {
+        Ok(match code {
+            0 => MouseButton::Unknown,
+            1 => MouseButton::Left,
+            2 => MouseButton::Right,
+            3 => MouseButton::Middle,
+            4 => MouseButton::Four,
+            5 => MouseButton::Five,
+            6 => MouseButton::Six,
+            7 => MouseButton::Seven,
+            8 => MouseButton::Eight,
+            9 => MouseButton::Nine,
+            10 => MouseButton::Ten,
+            11 => MouseButton::Eleven,
+            _ => return Err(Malformed::Field),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Init<'a> {
     pub size: Size,
@@ -1264,12 +1312,7 @@ impl<'a> Fields<'a> {
     }
 
     fn key(&mut self) -> Result<Key, Malformed> {
-        let action = match self.u8()? {
-            0 => KeyAction::Release,
-            1 => KeyAction::Press,
-            2 => KeyAction::Repeat,
-            _ => return Err(Malformed::Field),
-        };
+        let action = KeyAction::try_from(self.u8()?)?;
         let key = KeyCode::new(self.u16()?).ok_or(Malformed::Field)?;
         let mods = self.u16()?;
         let unshifted = char::from_u32(self.u32()?).ok_or(Malformed::Field)?;
@@ -1288,27 +1331,8 @@ impl<'a> Fields<'a> {
     }
 
     fn mouse(&mut self) -> Result<Mouse, Malformed> {
-        let action = match self.u8()? {
-            0 => MouseAction::Press,
-            1 => MouseAction::Release,
-            2 => MouseAction::Motion,
-            _ => return Err(Malformed::Field),
-        };
-        let button = match self.u8()? {
-            0 => MouseButton::Unknown,
-            1 => MouseButton::Left,
-            2 => MouseButton::Right,
-            3 => MouseButton::Middle,
-            4 => MouseButton::Four,
-            5 => MouseButton::Five,
-            6 => MouseButton::Six,
-            7 => MouseButton::Seven,
-            8 => MouseButton::Eight,
-            9 => MouseButton::Nine,
-            10 => MouseButton::Ten,
-            11 => MouseButton::Eleven,
-            _ => return Err(Malformed::Field),
-        };
+        let action = MouseAction::try_from(self.u8()?)?;
+        let button = MouseButton::try_from(self.u8()?)?;
         Ok(Mouse {
             action,
             button,
