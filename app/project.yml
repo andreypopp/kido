@@ -19,6 +19,12 @@ settings:
       DEVELOPMENT_TEAM: LC2633WWXE
       CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
       ENABLE_HARDENED_RUNTIME: NO
+settingGroups:
+  KoClientSlice:
+    KO_CLIENT_SLICE: "$(SRCROOT)/build/ko_client.xcframework/macos-arm64_x86_64"
+    SWIFT_INCLUDE_PATHS: "$(KO_CLIENT_SLICE)/Headers"
+    LIBRARY_SEARCH_PATHS: "$(KO_CLIENT_SLICE)"
+    OTHER_LDFLAGS: [-lko_client, -lc++]
 packages:
   SnapshotTesting:
     url: https://github.com/pointfreeco/swift-snapshot-testing
@@ -99,7 +105,52 @@ targets:
       - framework: build/GhosttyKit.xcframework
         embed: false
         link: false
+  KoProbe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: KoProbe
+    settings:
+      groups: [KoClientSlice]
+      base:
+        PRODUCT_NAME: ko-probe
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      - name: Build ko_client
+        script: |
+          set -eu
+          : "${KO_CHECKOUT:?set KO_CHECKOUT to the kido-rust checkout}"
+          env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin DEVELOPER_DIR="$DEVELOPER_DIR" MACOSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            make -C "$KO_CHECKOUT" ko-client-xcframework KO_CLIENT_XC="$SRCROOT/build/ko_client.xcframework"
+        basedOnDependencyAnalysis: false
+    dependencies:
+      - framework: build/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: IOSurface.framework
+      - sdk: Carbon.framework
+  KoProbeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: KoProbeTests
+      - path: KoProbe/KoConnection.swift
+    settings:
+      groups: [KoClientSlice]
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: KoProbe
+        link: false
 schemes:
+  KoProbe:
+    build:
+      targets:
+        KoProbe: all
+        KoProbeTests: [test]
+    test:
+      targets: [KoProbeTests]
   Kido:
     build:
       targets:
