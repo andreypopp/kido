@@ -3,13 +3,32 @@ use std::time::{Duration, Instant};
 
 use ko_sys::pid::signal_descendant;
 use ko_sys::signal::Signal;
+use ko_vt::Extent;
 use serde_json::{Value, json};
 use tungstenite::protocol::frame::coding::{Data, OpCode};
 use tungstenite::protocol::frame::{Frame, FrameHeader};
 
 use crate::harness::{
-    DEADLINE, End, Message, contains, decode, history_lines, size, start, tagged, wait_gone,
+    DEADLINE, Hello, Message, Record, contains, decode, history_lines, size, start, tagged,
+    wait_gone,
 };
+
+const SOCKET_BUFFER: usize = 1 << 20;
+const FLOOD: usize = 8 * SOCKET_BUFFER;
+
+const KEY_A: u32 = 20;
+const KEY_ENTER: u32 = 58;
+const MODS_NONE: u32 = 0;
+const MODS_CTRL: u32 = 2;
+
+fn key_press(key: u32, mods: u32, text: &str) -> Value {
+    let unshifted = text.chars().next().map_or(0, u32::from);
+    json!(["input", ["key", {"action": "press", "key": key, "mods": mods, "unshifted_codepoint": unshifted, "text": text, "composing": false}]])
+}
+
+fn paste(id: u32, text: &str, check_safe: bool) -> Value {
+    json!(["input", ["paste", {"id": id, "text": text, "check_safe": check_safe}]])
+}
 
 fn history_program(record: &str) -> String {
     format!(
@@ -19,31 +38,37 @@ fn history_program(record: &str) -> String {
 
 #[test]
 fn full_snapshot_slow_reader() {
-    let mut s = start(&[]);
-    let (mut c, _) = s.client("");
+    let s = start(&[]);
+    let (mut c, _) = s.client(None);
     let p = s.pane(&history_program("/dev/null"));
     c.event("title");
     let mut v = s.ws(&format!("/panes/{p}/view?offset=1000000000000&history=all"));
-    s.request_text("GET", &format!("/panes/{p}/screen"), None, 200);
+    s.ko(&["api", &format!("/panes/{p}/screen")], "").ok();
     let mut snapshot = Vec::new();
     v.within(DEADLINE);
     loop {
-        let Message::Binary(data) = v.read() else {
+        let Message::Binary(bytes) = v.read() else {
             panic!("snapshot record: text");
         };
-        assert!(
-            data.len() >= 11 && data[0] == 2,
-            "snapshot record: {data:?}"
+        let Some(Record::Snapshot {
+            last, extent, data, ..
+        }) = Record::parse(&bytes)
+        else {
+            panic!("snapshot record: {bytes:?}");
+        };
+        assert_eq!(
+            extent,
+            Extent::Full,
+            "full snapshot was downgraded to screen"
         );
-        assert_eq!(data[10], 0, "full snapshot was downgraded to screen");
-        snapshot.extend_from_slice(&data[11..]);
+        snapshot.extend_from_slice(data);
         s.request("GET", "/version", None, 200);
-        if data[9] & 2 != 0 {
+        if last {
             break;
         }
     }
     assert!(
-        snapshot.len() > 1 << 20,
+        snapshot.len() > SOCKET_BUFFER,
         "fixture does not exceed socket buffer: {}",
         snapshot.len()
     );
@@ -57,8 +82,8 @@ fn full_snapshot_slow_reader() {
 
 #[test]
 fn paste_then_enter_during_snapshot() {
-    let mut s = start(&[]);
-    let (mut c, _) = s.client("");
+    let s = start(&[]);
+    let (mut c, _) = s.client(None);
     let record = s.dir.join("input");
     let p = s.pane(&history_program(record.to_str().unwrap()));
     c.event("title");
@@ -66,8 +91,8 @@ fn paste_then_enter_during_snapshot() {
     v.ready("READY");
     let messages = [
         json!(["resync", {"history": "all", "images": "none"}]),
-        json!(["input", ["paste", {"id": 77, "text": "PASTE", "check_safe": false}]]),
-        json!(["input", ["key", {"action": "press", "key": 58, "mods": 0, "unshifted_codepoint": 0, "text": "", "composing": false}]]),
+        paste(77, "PASTE", false),
+        key_press(KEY_ENTER, MODS_NONE, ""),
     ];
     let frames: Vec<Vec<u8>> = messages
         .iter()
@@ -79,7 +104,10 @@ fn paste_then_enter_during_snapshot() {
     let Message::Binary(first) = v.read() else {
         panic!("snapshot record: text");
     };
-    assert_eq!(first[0], 2, "resync did not start a snapshot: {first:?}");
+    assert!(
+        matches!(Record::parse(&first), Some(Record::Snapshot { .. })),
+        "resync did not start a snapshot: {first:?}"
+    );
     v.raw().write_all(&batch[cut..]).unwrap();
     v.type_text("BARRIER");
     v.output("BARRIER");
@@ -92,8 +120,8 @@ fn paste_then_enter_during_snapshot() {
 
 #[test]
 fn pane_process_failure() {
-    let mut s = start(&[]);
-    let (mut c, _) = s.client("");
+    let s = start(&[]);
+    let (mut c, _) = s.client(None);
     let p = s.pane("trap '' HUP; printf READY; exec sleep 3000");
     let mut v = s.ws(&format!("/panes/{p}/view"));
     v.ready("READY");
@@ -106,67 +134,70 @@ fn pane_process_failure() {
         dead.contains(r#""cause":["failed","#),
         "failed pane: {dead}"
     );
-    s.request_text("GET", &format!("/panes/{p}/screen"), None, 500);
-    s.request(
-        "POST",
-        &format!("/panes/{p}/input"),
-        Some(&json!(["paste", {"text": "x", "check_safe": false}])),
-        500,
-    );
-    v.within(DEADLINE);
-    loop {
-        match v.next() {
-            Err(End::Timeout) => panic!("failed pane view did not close"),
-            Err(End::Closed) => break,
-            Ok(_) => {}
-        }
-    }
+    s.ko(&["api", &format!("/panes/{p}/screen")], "")
+        .http_error(500);
+    s.ko(
+        &["api", "--input", "-", &format!("/panes/{p}/input")],
+        r#"["paste", {"text": "x", "check_safe": false}]"#,
+    )
+    .http_error(500);
+    v.closed("failed pane view did not close");
     wait_gone(program, "its pane process");
 }
 
 #[test]
 fn unfocused_first_client_sizes_pane() {
-    let mut s = start(&[]);
+    let s = start(&[]);
     let p = s.pane("printf READY; cat");
-    let mut c = s.ws("/client");
-    c.send(&json!(["hello", {"kind": "terminal", "name": "unfocused", "focused": false, "pane": p, "size": size(51, 13)}]));
-    c.event("welcome");
-    c.event("topology");
+    let mut unfocused = s.hello(Hello {
+        pane: Some(&p),
+        focused: false,
+        size: size(51, 13),
+    });
+    unfocused.welcome();
     let mut v = s.ws(&format!("/panes/{p}/view?history=none"));
     let (data, _) = v.snapshot();
     let terminal = decode(&data, false);
-    assert_eq!(terminal.rows, 13, "unfocused sizing");
-    let (mut focused, _) = s.client(&p);
+    assert_eq!(
+        terminal.rows, 13,
+        "rows of a pane sized by its unfocused first client"
+    );
+    let (mut focused, _) = s.client(Some(&p));
     focused.send(&json!(["size", size(51, 9)]));
     let deadline = Instant::now() + DEADLINE;
     while decode(&v.snapshot().0, false).rows != 9 {
         assert!(Instant::now() < deadline, "no snapshot with 9 rows");
     }
+    drop(unfocused);
 }
 
 // A view with a snapshot still queued cannot read the resize marker that arrives after it. Another
 // view's snapshot then pushes that marker out of the ring. The stalled view must still learn the new size.
 #[test]
 fn stalled_view_learns_resize_after_ring_retention() {
-    let mut s = start(&[]);
-    let (mut c, _) = s.client("");
+    let s = start(&[]);
+    let (mut c, _) = s.client(None);
     let p = s.pane(&history_program("/dev/null"));
     c.event("title");
-    let (mut sizer, _) = s.client(&p);
-    let view = format!("/panes/{p}/view?history=all");
-    let mut stalled = s.ws(&view);
-    let mut reader = s.ws(&view);
+    let (mut sizer, _) = s.client(Some(&p));
+    let mut stalled = s.ws(&format!("/panes/{p}/view?history=all"));
+    let mut reader = s.ws(&format!("/panes/{p}/view?history=all"));
     reader.snapshot();
     sizer.send(&json!(["size", size(61, 21)]));
     reader.event("marked");
-    let mut flood = s.ws(&view);
+    let mut flood = s.ws(&format!("/panes/{p}/view?history=all"));
     flood.snapshot();
     stalled.snapshot();
     stalled.within(Duration::from_secs(2));
     loop {
         match stalled.read() {
-            Message::Binary(data) if data.len() >= 11 && data[0] == 2 && data[9] & 1 != 0 => {
-                return;
+            Message::Binary(data) => {
+                if matches!(
+                    Record::parse(&data),
+                    Some(Record::Snapshot { first: true, .. })
+                ) {
+                    return;
+                }
             }
             Message::Text(text) => {
                 if let Some((tag, payload)) = tagged(&text)
@@ -176,7 +207,6 @@ fn stalled_view_learns_resize_after_ring_retention() {
                     return;
                 }
             }
-            Message::Binary(_) => {}
         }
     }
 }
@@ -196,31 +226,26 @@ fn masked_frame(payload: &[u8]) -> Vec<u8> {
 
 #[test]
 fn client_close_closes_its_views() {
-    let mut s = start(&[]);
+    let s = start(&[]);
     let p = s.pane("printf READY; cat");
-    let (c, id) = s.client(&p);
-    let view = format!("/panes/{p}/view");
-    let mut v = s.dial_ws(&view, Some(s.client_headers(&id)), 101).unwrap();
+    let (c, welcome) = s.client(Some(&p));
+    let id = welcome["client"].as_str().unwrap();
+    let mut v = s
+        .dial_ws(&format!("/panes/{p}/view"), Some(s.client_headers(id)), 101)
+        .unwrap();
     v.snapshot();
     drop(c);
-    v.within(DEADLINE);
-    loop {
-        match v.next() {
-            Err(End::Timeout) => panic!("view survived client close"),
-            Err(End::Closed) => break,
-            Ok(_) => {}
-        }
-    }
-    s.dial_ws(&view, Some(s.client_headers(&id)), 410);
+    v.closed("view survived client close");
+    s.dial_ws(&format!("/panes/{p}/view"), Some(s.client_headers(id)), 410);
 }
 
 #[test]
 fn stalled_view_skips() {
-    let mut s = start(&[]);
-    let (mut c, _) = s.client("");
-    let p = s.pane(
-        "printf READY; IFS= read -r start; head -c 8388608 /dev/zero | tr '\\000' x; printf LAST",
-    );
+    let s = start(&[]);
+    let (mut c, _) = s.client(None);
+    let p = s.pane(&format!(
+        "printf READY; IFS= read -r start; head -c {FLOOD} /dev/zero | tr '\\000' x; printf LAST"
+    ));
     let mut v = s.ws(&format!("/panes/{p}/view"));
     v.ready("READY");
     s.text(&p, "\n");
@@ -235,8 +260,8 @@ fn stalled_view_skips() {
 
 #[test]
 fn pane_dead_snapshot() {
-    let mut s = start(&[]);
-    let (mut c, _) = s.client("");
+    let s = start(&[]);
+    let (mut c, _) = s.client(None);
     let p = s.pane(&format!(
         "{}; printf READY; IFS= read -r go; printf '\x1b]2;dead title\x07\x1b]7;file://localhost/tmp\x07\x1b[?2026hretained'; exit 7",
         history_lines(100)
@@ -268,95 +293,107 @@ fn pane_dead_snapshot() {
         "missing title or pwd event: {seen_title} {seen_pwd}"
     );
     let marked = live.event("marked");
-    let rows = s.request("GET", "/panes", None, 200);
+    let rows = s.ko(&["api", "/panes"], "").json();
     let at = |value: &Value| value.as_i64().unwrap_or_default();
     let (notice, marker, row) = (
         at(&notice["dead"]["at"]),
         at(&marked["marker"][1]["at"]),
         at(&rows[0]["dead"]["at"]),
     );
-    assert!(
-        notice != 0 && notice == marker && notice == row,
-        "death times differ: event {notice}, view marker {marker}, row {row}"
-    );
+    assert_ne!(notice, 0, "death time of the event");
+    assert_eq!(marker, notice, "death time of the view marker");
+    assert_eq!(row, notice, "death time of the pane row");
+
     let mut v = s.ws(&format!("/panes/{p}/view?history=all"));
     let (data, _) = v.snapshot();
     let terminal = decode(&data, false);
     assert!(
-        !terminal.sync && terminal.screen.contains("retained"),
+        !terminal.sync,
+        "snapshot of a dead pane has synchronized output on"
+    );
+    assert!(
+        terminal.screen.contains("retained"),
         "snapshot: {}",
         terminal.screen
     );
-    let screen = s.request_text("GET", &format!("/panes/{p}/screen?history=all"), None, 200);
+
+    let screen = s
+        .ko(&["api", &format!("/panes/{p}/screen?history=all")], "")
+        .ok();
+    assert!(screen.contains("retained"), "screen: {screen:?}");
     assert!(
-        screen.contains("retained")
-            && (screen.contains("history-0\r") || screen.contains("history-0\n")),
+        screen.contains("history-0\r") || screen.contains("history-0\n"),
         "screen: {screen:?}"
     );
-    let screen = s.request_text("GET", &format!("/panes/{p}/screen?history=none"), None, 200);
+    let screen = s
+        .ko(&["api", &format!("/panes/{p}/screen?history=none")], "")
+        .ok();
+    assert!(screen.contains("retained"), "screen selection: {screen:?}");
     assert!(
-        !screen.contains("history-0\n")
-            && !screen.contains("history-0\r")
-            && screen.contains("retained"),
+        !screen.contains("history-0\n") && !screen.contains("history-0\r"),
         "screen selection: {screen:?}"
     );
-    s.request("DELETE", &format!("/panes/{p}"), None, 200);
-    s.request("GET", &format!("/panes/{p}/screen"), None, 404);
+
+    s.ko(&["api", "-X", "DELETE", &format!("/panes/{p}")], "")
+        .ok();
+    s.ko(&["api", &format!("/panes/{p}/screen")], "")
+        .http_error(404);
 }
 
 #[test]
 fn view_resume_resize_and_input() {
-    let mut s = start(&[]);
+    let s = start(&[]);
     let record = s.dir.join("input");
     let p = s.pane(&format!(
         "stty raw -echo; printf '\x1b[?2004h\x1b[=3;1uREADY'; tee '{}'",
         record.display()
     ));
-    let (c, _) = s.client(&p);
-    let view = format!("/panes/{p}/view?history=all");
-    let mut v = s.ws(&view);
+    let (c, _) = s.client(Some(&p));
+    let mut v = s.ws(&format!("/panes/{p}/view?history=all"));
     v.ready("READY");
-    let key = json!(["input", ["key", {"action": "press", "key": 20, "mods": 2, "unshifted_codepoint": 97, "text": "a", "composing": false}]]);
-    v.send(&key);
+    v.send(&key_press(KEY_A, MODS_CTRL, "a"));
     v.type_text("FIRST");
     v.output("FIRST");
     drop(c);
     drop(v);
-    let (mut c, _) = s.client(&p);
-    let mut v = s.ws(&view);
+
+    let (mut c, _) = s.client(Some(&p));
+    let mut v = s.ws(&format!("/panes/{p}/view?history=all"));
     v.snapshot();
-    v.send(&key);
+    v.send(&key_press(KEY_A, MODS_CTRL, "a"));
     v.type_text("BARRIER");
     v.output("BARRIER");
+
     c.send(&json!(["size", size(62, 22)]));
     let marker = v.event("marked").to_string();
     assert!(marker.contains(r#""cols":62"#), "marker: {marker}");
-    v.send(&json!(["input", ["paste", {"id": 23, "text": "hello\n", "check_safe": false}]]));
+
+    v.send(&paste(23, "hello\n", false));
     let reply = v.event("pasted").to_string();
     assert!(reply.contains(r#""pasted":true"#), "paste: {reply}");
     v.output("\x1b[201~");
     v.type_text("\x1b[?2004l");
     let offset = v.output("\x1b[?2004l");
-    let response = s.request(
-        "POST",
-        &format!("/panes/{p}/input"),
-        Some(&json!(["paste", {"id": 41, "text": "unsafe\n", "check_safe": true}])),
-        200,
-    );
-    assert!(
-        response["pasted"] != json!(true) && response["unsafe"] == json!(true),
-        "unsafe response: {response}"
-    );
+
+    let response = s
+        .ko(
+            &["api", "--input", "-", &format!("/panes/{p}/input")],
+            r#"["paste", {"id": 41, "text": "unsafe\n", "check_safe": true}]"#,
+        )
+        .json();
+    assert_ne!(response["pasted"], json!(true), "unsafe paste: {response}");
+    assert_eq!(response["unsafe"], json!(true), "unsafe paste: {response}");
     drop(v);
+
     let mut v = s.ws(&format!("/panes/{p}/view?history=all&offset={offset}"));
     v.type_text("resumed\n");
     let mut resumed = Vec::new();
     while !contains(&resumed, b"resumed") {
         match v.read() {
-            Message::Binary(data) if data.len() >= 9 && data[0] == 1 => {
-                resumed.extend_from_slice(&data[9..]);
-            }
-            Message::Binary(data) => panic!("resume sent a snapshot or marker: {data:?}"),
+            Message::Binary(bytes) => match Record::parse(&bytes) {
+                Some(Record::Output { data, .. }) => resumed.extend_from_slice(data),
+                _ => panic!("resume sent a snapshot or marker: {bytes:?}"),
+            },
             Message::Text(text) => panic!("resume sent a snapshot or marker: {text:?}"),
         }
     }
@@ -365,10 +402,14 @@ fn view_resume_resize_and_input() {
         input, b"\x1b[97;5uFIRST\x1b[97;5uBARRIER\x1b[200~hello\n\x1b[201~\x1b[?2004lresumed\n",
         "pty input: {input:?}"
     );
+
     c.send(&json!(["size", size(60, 20)]));
     let marker = v.event("marked").to_string();
     assert!(marker.contains(r#""cols":60"#), "marker: {marker}");
     v.send(&json!(["resync", {"history": "none", "images": "none"}]));
     let (data, _) = v.snapshot();
-    assert!(!decode(&data, false).sync, "sync set");
+    assert!(
+        !decode(&data, false).sync,
+        "snapshot after resync has synchronized output on"
+    );
 }

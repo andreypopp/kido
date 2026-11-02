@@ -14,7 +14,16 @@ use ko_vt::{Format, Terminal};
 
 use crate::harness::{DEADLINE, Dir, quote, test_env, text_of};
 
+const OUTPUT_TAIL: usize = 12000;
+
 const KITTY_QUERY: &[u8] = b"\x1b[?u";
+
+pub(crate) const UP: &str = "\x1b[A";
+pub(crate) const DOWN_PRESS_RELEASE: &str = "\x1b[1;1:1B\x1b[1;1:3B";
+pub(crate) const CHORD_UP: &str = "\x1b[1;6A";
+pub(crate) const CHORD_DOWN: &str = "\x1b[1;6B";
+pub(crate) const FOCUS_IN: &str = "\x1b[I";
+pub(crate) const FOCUS_OUT: &str = "\x1b[O";
 
 // The DEC private modes that `modes` reports.
 const MODES: [u16; 14] = [
@@ -302,7 +311,6 @@ impl Outer {
         pty::set_size(&self.master, winsize(cols, rows)).unwrap();
     }
 
-    // Rechecks when the screen changed, for a check that reads only the screen.
     pub(crate) fn within(&self, limit: Duration, mut check: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + limit;
         loop {
@@ -313,27 +321,11 @@ impl Outer {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 return false;
             };
-            let _ = self
-                .shared
-                .changed
-                .wait_timeout_while(self.lock(), left, |screen| screen.generation == seen);
-        }
-    }
-
-    // Rechecks every 10 ms, for a check that reads something besides the screen.
-    fn within_ticking(&self, limit: Duration, mut check: impl FnMut() -> bool) -> bool {
-        let deadline = Instant::now() + limit;
-        loop {
-            if check() {
-                return true;
-            }
-            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-                return false;
-            };
-            let _ = self
-                .shared
-                .changed
-                .wait_timeout(self.lock(), left.min(Duration::from_millis(10)));
+            let _ = self.shared.changed.wait_timeout_while(
+                self.lock(),
+                left.min(Duration::from_millis(10)),
+                |screen| screen.generation == seen,
+            );
         }
     }
 
@@ -345,16 +337,12 @@ impl Outer {
         );
     }
 
-    pub(crate) fn wait_ticking(&self, what: &str, check: impl FnMut() -> bool) {
-        assert!(
-            self.within_ticking(DEADLINE, check),
-            "wait for {what}; screen:\n{}",
-            self.screen()
-        );
-    }
-
     pub(crate) fn contains(&self, text: &str) {
         self.wait(text, || self.screen().contains(text));
+    }
+
+    pub(crate) fn gone(&self, text: &str) {
+        self.wait(&format!("{text} gone"), || !self.screen().contains(text));
     }
 
     pub(crate) fn raw(&self, text: &str) {
@@ -366,8 +354,30 @@ impl Outer {
         self.raw("\r");
     }
 
-    pub(crate) fn chord(&self, code: u32) {
-        self.raw(&format!("\x1b[{code};6u"));
+    pub(crate) fn line(&self, text: &str) {
+        self.raw(text);
+        self.enter();
+    }
+
+    pub(crate) fn chord(&self, key: char) {
+        self.raw(&format!("\x1b[{};6u", u32::from(key)));
+    }
+
+    pub(crate) fn ctrl(&self, key: char) {
+        self.raw(&format!("\x1b[{};5u", u32::from(key)));
+    }
+
+    pub(crate) fn press(&self, col: usize, row: usize) {
+        self.raw(&format!("\x1b[<0;{col};{row}M"));
+    }
+
+    pub(crate) fn click(&self, col: usize, row: usize) {
+        self.press(col, row);
+        self.raw(&format!("\x1b[<0;{col};{row}m"));
+    }
+
+    pub(crate) fn wheel_up(&self, col: usize, row: usize) {
+        self.raw(&format!("\x1b[<64;{col};{row}M"));
     }
 
     pub(crate) fn attach(&self, pager: &str) {
@@ -389,8 +399,7 @@ impl Outer {
                 quote(text_of(&self.state))
             ))
         );
-        self.raw(&command);
-        self.enter();
+        self.line(&command);
     }
 
     pub(crate) fn client_pid(&self) -> Pid {
@@ -405,14 +414,14 @@ impl Outer {
     }
 
     pub(crate) fn detach(&self) {
-        self.chord(113);
+        self.chord('q');
         self.detached();
     }
 
     pub(crate) fn quiet(&self) {
         let mut size = usize::MAX;
         let mut changed = Instant::now();
-        self.wait_ticking("terminal output becomes quiet", || {
+        self.wait("terminal output becomes quiet", || {
             let length = self.lock().raw.len();
             if length != size {
                 size = length;
@@ -428,7 +437,7 @@ impl Drop for Outer {
     fn drop(&mut self) {
         if thread::panicking() {
             let raw = self.output();
-            let tail = &raw[raw.len().saturating_sub(12000)..];
+            let tail = &raw[raw.len().saturating_sub(OUTPUT_TAIL)..];
             eprintln!("outer output: {:?}", String::from_utf8_lossy(tail));
             eprintln!("outer screen:\n{}", self.screen());
         }

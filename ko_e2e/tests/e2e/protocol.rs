@@ -1,7 +1,7 @@
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::harness::{Child, DEADLINE, Dir, poll, run_ko, start, test_env, text_of, wait_gone};
 
@@ -12,13 +12,7 @@ fn kill_server() {
     let mut v = s.ws(&format!("/panes/{p}/view"));
     v.ready("READY");
     let program = s.program_pid();
-    let run = run_ko(
-        &s.scratch,
-        &test_env(&s.dir),
-        &["kill-server", "--server", text_of(&s.dir)],
-        "",
-    );
-    assert_eq!(run.code, 0, "kill: {} {}", run.stdout, run.stderr);
+    assert_eq!(s.ko(&["kill-server"], "").ok(), "");
     assert!(!s.dir.join("socket").exists(), "socket after kill-server");
     wait_gone(program, "kill-server");
 }
@@ -55,7 +49,7 @@ while True:
         &["kill-server", "--server", text_of(&dir)],
         "",
     );
-    assert_eq!(run.code, 0, "kill: {} {}", run.stdout, run.stderr);
+    assert_eq!(run.ok(), "");
     // kill-server returns once kill(pid, 0) finds no process, which on macOS is after the
     // child was reaped; the reaper thread reports the exit just after.
     assert!(
@@ -68,15 +62,16 @@ while True:
 #[test]
 fn version_and_origin() {
     let mut s = start(&[]);
-    let _client = s.client("");
-    let scrollback = &s.limits["terminal"]["scrollback"];
-    assert!(
-        scrollback[0] == json!("scrollback") && scrollback[1] == json!({"max_bytes": 50000000}),
-        "default scrollback limits: {}",
-        s.limits
+    let (_client, welcome) = s.client(None);
+    let scrollback = &welcome["limits"]["terminal"]["scrollback"];
+    assert_eq!(
+        scrollback[0],
+        json!("scrollback"),
+        "limits: {}",
+        welcome["limits"]
     );
-    let vt = s.vt.clone();
-    s.vt = "wrong".to_owned();
+    assert_eq!(scrollback[1], json!({"max_bytes": 50000000}));
+    let vt = s.vt.replace("wrong".to_owned()).unwrap();
     s.request("GET", "/panes", None, 409);
     let (status, _) = s.exchange(
         "GET",
@@ -84,7 +79,7 @@ fn version_and_origin() {
         &vec![("Ko-Protocol".to_owned(), "2.0".to_owned())],
         b"",
     );
-    assert_eq!(status, 426, "version");
+    assert_eq!(status, 426, "unsupported protocol version");
     let headers = vec![
         ("Ko-Protocol".to_owned(), "1.0".to_owned()),
         ("Origin".to_owned(), "https://evil.example".to_owned()),
@@ -96,73 +91,64 @@ fn version_and_origin() {
 #[test]
 fn api() {
     let s = start(&[]);
-    let ko = |dir: &std::path::Path, stdin: &str, args: &[&str]| {
-        let mut argv = vec!["api", "--server", text_of(dir)];
-        argv.extend_from_slice(args);
-        let run = run_ko(&s.scratch, &test_env(dir), &argv, stdin);
-        (run.stdout, run.stderr, run.code)
-    };
-    let (out, _, code) = ko(&s.dir, "", &["/version"]);
-    let version: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+
+    let version = s.ko(&["api", "/version"], "").json();
     assert!(
-        code == 0 && version["protocol"].as_str().is_some_and(|p| !p.is_empty()),
-        "/version: {code} {out:?}"
+        version["protocol"].as_str().is_some_and(|p| !p.is_empty()),
+        "/version: {version}"
     );
-    let (out, _, code) = ko(&s.dir, "", &["-i", "/version"]);
+    let included = s.ko(&["api", "-i", "/version"], "").ok();
     assert!(
-        code == 0 && out.starts_with("HTTP/1.1 200 OK\r\n"),
-        "--include: {code} {out:?}"
+        included.starts_with("HTTP/1.1 200 OK\r\n"),
+        "--include: {included:?}"
     );
-    let (out, _, code) = ko(
-        &s.dir,
-        r#"{"command":["shell","exec cat"]}"#,
-        &["--input", "-", "/panes"],
-    );
-    let created: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+
+    let created = s
+        .ko(
+            &["api", "--input", "-", "/panes"],
+            r#"{"command":["shell","exec cat"]}"#,
+        )
+        .json();
     let created = created["pane"].as_str().unwrap_or_default().to_owned();
-    assert!(
-        code == 0 && !created.is_empty(),
-        "POST via stdin: {code} {out:?}"
-    );
+    assert!(!created.is_empty(), "POST via stdin: {created:?}");
     let file = s.dir.join("body.json");
     std::fs::write(&file, r#"{"command":["shell","exec cat"]}"#).unwrap();
-    let (_, _, code) = ko(
-        &s.dir,
+    s.ko(
+        &["api", "-X", "POST", "--input", text_of(&file), "/panes"],
         "",
-        &["-X", "POST", "--input", text_of(&file), "/panes"],
+    )
+    .ok();
+    let rows = s.ko(&["api", "/panes"], "").json();
+    assert_eq!(rows.as_array().map(Vec::len), Some(2), "/panes: {rows}");
+    assert_eq!(rows[0]["id"].as_str(), Some(created.as_str()));
+
+    assert_eq!(
+        s.ko(&["api", "/nope"], "").http_error(404),
+        r#"{"kind":"not_found","message":"resource not found"}"#
     );
-    assert_eq!(code, 0, "POST via file");
-    let (out, _, code) = ko(&s.dir, "", &["/panes"]);
-    let rows: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
-    assert!(
-        code == 0
-            && rows.as_array().is_some_and(|rows| rows.len() == 2)
-            && rows[0]["id"].as_str() == Some(created.as_str()),
-        "/panes: {code} {out:?}"
-    );
-    let (out, errs, code) = ko(&s.dir, "", &["/nope"]);
-    assert!(
-        code == 1 && errs == "ko api: HTTP 404\n" && out.contains("not_found"),
-        "404: {code} {out:?} {errs:?}"
-    );
+
     for path in [
         "/client".to_owned(),
         format!("/panes/{created}/view?history=all"),
     ] {
-        let (out, errs, code) = ko(&s.dir, "", &[&path]);
+        let error = s.ko(&["api", &path], "").error(2);
         assert!(
-            code == 2 && out.is_empty() && errs.contains("is a WebSocket endpoint"),
-            "{path}: {code} {out:?} {errs:?}"
+            error.contains("is a WebSocket endpoint"),
+            "{path}: {error:?}"
         );
     }
+
     let empty = Dir::new("ko-api-");
     for dir in [empty.to_path_buf(), empty.join("absent")] {
-        let (out, errs, code) = ko(&dir, "", &["/version"]);
-        assert!(
-            code == 1
-                && out.is_empty()
-                && errs == format!("ko api: no server at {}\n", dir.display()),
-            "no server: {code} {out:?} {errs:?}"
+        let run = run_ko(
+            &s.scratch,
+            &test_env(&dir),
+            &["api", "/version", "--server", text_of(&dir)],
+            "",
+        );
+        assert_eq!(
+            run.error(1),
+            format!("ko api: no server at {}\n", dir.display())
         );
     }
     let entries: Vec<_> = std::fs::read_dir(&*empty).unwrap().collect();

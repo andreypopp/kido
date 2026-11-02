@@ -701,6 +701,33 @@ RE forced these decisions:
      than the socket buffer and the ring. `full_snapshot_slow_reader`
      stays: the view harness never fills the socket buffer.
 
+The e2e readability pass forced this decision:
+
+140. An e2e test reads like command-line use. A step that a `ko`
+     command can do (`ko api` with `-X`, `--input` and `-i`, `ko
+     kill-server`, `ko version`) runs that command through
+     `Server::ko` and asserts its stdout, stderr and exit code, with
+     the request path written out at the call site; no named helper
+     hides the path of a request that a test asserts on. The setup
+     helpers `Server::pane` and `Server::text` and the pid reads stay.
+     `ko api` exits 0 for every 2xx, and `ko_server::http::Status` has
+     no 2xx but 200, so exit 0 asserts the 200 of the raw request.
+     This replaces RE's rule that the client side
+     writes every request as literal bytes. The trade-off: an ordinary
+     request now goes through ko's own HTTP client and server, so a
+     fault that both ends share can hide there. The framing stays
+     covered by the raw-byte tests (`hostile.rs`, the exact statuses
+     of `version_and_origin`), the unit tests of `http.rs` and the
+     `head`, `http` and `client` fuzz targets. Raw requests also stay
+     where a test polls (`pane_pids` in `client_lifecycle`, the
+     `/version` read after each record of `full_snapshot_slow_reader`),
+     because a process start for each request would add its cost to
+     the loop, and in `start`, the setup of every test, which reads the
+     `vt` value of `/version` for the `Ko-Vt` header. WebSocket
+     views and clients stay raw, because `ko api` refuses those
+     endpoints. `client_grid_limit` merged into
+     `hostile_clients_do_not_affect_others`, on its server: 28 tests.
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -2304,9 +2331,11 @@ Decision 22. The crate `ko_e2e/` holds integration tests
 (`ko_e2e/tests/*.rs`) that drive the built `ko` and `ko-pane` of
 `build/ko/bin` over the wire, as the Go suite does.
 
-- **The client side of the tests** writes requests as literal bytes
-  and parses replies with `httparse` directly, not through ko's
-  `http.rs`, and speaks WebSocket through tungstenite's client role.
+- **The client side of the tests** sends ordinary requests through
+  `ko api` (decision 140). Raw requests, written as literal bytes and
+  parsed with `httparse` directly, not through ko's `http.rs`, stay
+  for framing, exact statuses, hostile input and polling. WebSocket
+  goes through tungstenite's client role.
   So a fault in ko's own framing cannot hide behind the same code on
   both ends. tungstenite is on both ends, as gorilla was not; the
   hostile tests send raw frame bytes and check raw replies, which
