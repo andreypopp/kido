@@ -61,7 +61,7 @@ test("a real subagent still gets the parent edge and the standing subagent instr
       };
       await s.emit("before_agent_start", event);
       const guidelines = event.systemPromptOptions.promptGuidelines.join("\n");
-      assert.match(guidelines, /your last message of that turn goes to your parent as your report/, "the standing instruction rides on every turn");
+      assert.match(guidelines, /your report is the last message of a turn that ends after all of them finish/, "the standing instruction rides on every turn");
       assert.match(guidelines, /never run `sleep`/i, "so does the always-on never-sleep rule");
     });
   } finally {

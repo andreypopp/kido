@@ -10,24 +10,6 @@ Never run `sleep` in bash to wait for anything - an async run, a subagent, a mes
 
 ## Tools
 
-### set_status
-
-description:
-
-```
-Set the free-text activity shown next to you in ko's sidebar. Separate from your running/waiting/idle status.
-```
-
-promptSnippet:
-
-```
-set_status(activity) - tell everyone else what you are doing, visible in list_runs()
-```
-
-parameters:
-
-- `activity` (string, required): What you are doing right now ("refactoring internal/ui"), or "" to clear it. Capped at 256 bytes.
-
 ### list_runs
 
 description:
@@ -130,7 +112,7 @@ parameters:
 description:
 
 ```
-Stop own runs and descendant subagents in parallel. Pass an address or a non-empty list of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped.
+Stop own runs and descendant subagents in parallel. Pass an address or a non-empty list of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped. Each line names the outcome with the report path or output path; a run that had already ended says how. The result is the only signal: a run you stop gets no ending notice.
 ```
 
 promptSnippet:
@@ -224,6 +206,13 @@ run: <run id>
 message it to retry, or stop_run to end it
 ```
 delivered as: steer
+
+### a live run's result suffix for a subagent caller
+
+```
+; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no run of yours is running and no subagent of yours owes you a report
+```
+delivered as: tool result
 
 ### a spawn's result (spawn_agent)
 

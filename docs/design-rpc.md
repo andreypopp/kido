@@ -46,7 +46,7 @@ not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`6.2`. It versions the RPC surface between the binary and its client,
+`7.0`. It versions the RPC surface between the binary and its client,
 and the tmux commands and flags that the contract names, such as
 `capture-pane -G`, `-K` and `-r` and the `image-shm` control flag. A remote kido with an older fork thus fails
 the version check, not the first capture. The version describes no tmux
@@ -247,7 +247,7 @@ the pane's `@kido_activity` option supplies it. The model removes a local pi
 message that repeats its title.
 
 The model reads a local pi's identity, name, inbox and activity from
-four pane options that pi's harness writes: `@kido_session`,
+four pane options that pi's harness owns: `@kido_session`,
 `@kido_name`, `@kido_inbox` and `@kido_activity`. It trusts them only
 while the pane has an OSC 7501 root with `app=pi`. A snapshot's `run`
 is the id that the pane's `@kido_run` names, not data from the run's
@@ -284,9 +284,9 @@ to the session tree it draws. Matching uses session names, agent titles
 and ssh destinations. It sorts matching sessions by score.
 Empty text keeps the original order.
 
-An ssh destination is the typed `user@host` of the pane kind, never
-remote command text. RPC accepts no filter request and emits no filter
-field.
+An ssh destination is the pane kind's `destination`, the token as the
+user typed it, never remote command text. RPC accepts no filter request
+and emits no filter field.
 
 Switch-window and switch-session requests contain an integer id and a
 `next` or `prev` direction. Each receives a correlated reply with one of
@@ -315,6 +315,10 @@ Search clearing after successful activation and standalone picker exit
 remain TUI-local. Each frontend can recover from request errors and
 syscall failures at its execution boundary. These failures do not occupy
 `snapshot.error`.
+
+Protocol 7.0 changes from 6.2:
+- Changed: `Ssh` carries `destination`, the destination as the user
+  typed it, in place of `user` and `host` from `ssh -G`.
 
 Protocol 6.0 changes from 5.0:
 - Changed: an item's `run` is the pane's `@kido_run` id, or null. It was
@@ -396,11 +400,11 @@ feed order, including run windows. Prev from the first child selects its
 direct parent, even when nested and run-marked. Next from the last child
 steps from its top-level ancestor to the next top-level window.
 
-Top-level steps never descend into children. They skip windows that
-contain run-marked panes and wrap across sessions in sidebar order.
-A sole eligible root can select itself. If there is no eligible root,
-the result is null. Siblings of a multi-pane parent follow its panes'
-feed order, then each pane's child order.
+Top-level steps never descend into children. They include every
+top-level window, run windows included, and wrap across sessions in
+sidebar order. A sole top-level window selects itself. Siblings of a
+multi-pane parent follow its panes' feed order, then each pane's child
+order.
 
 These rules use `Sidebar`'s typed `Switch_window` request across:
 

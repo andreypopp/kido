@@ -16,6 +16,7 @@ import {
   withEnv,
   pollUntil,
   customMessages,
+  notices,
   agentJson,
   argAfter,
   type Fixture,
@@ -31,7 +32,7 @@ function writeOutput(fx: Fixture, text: string): string {
 }
 
 function lastNotice(s: { messages: Array<{ message: { customType?: string; content: unknown }; opts: unknown }> }): string {
-  return String(customMessages(s, "kido-notice").at(-1)?.message.content ?? "");
+  return notices(s).at(-1) ?? "";
 }
 
 function waitNotice(s: { messages: Array<{ message: { customType?: string; content: unknown }; opts: unknown }> }, includes: string): Promise<void> {
@@ -276,12 +277,12 @@ test("a subagent's ending notice says it reported plainly, and names the earlier
       utimesSync(report, past, past);
       writeFileSync(join(fx.agentDir(SELF, "kid2"), "work"), "");
       writeFileSync(gate, "");
-      await pollUntil(() => customMessages(s, "kido-notice").length === 2, 3000, "both ending notices");
-      const notices = customMessages(s, "kido-notice").map((m) => String(m.message.content));
-      const plain = notices.find((n) => n.includes(`subagent "kid"`))!;
+      await pollUntil(() => notices(s).length === 2, 3000, "both ending notices");
+      const sent = notices(s);
+      const plain = sent.find((n) => n.includes(`subagent "kid"`))!;
       assert.ok(!plain.includes("without a report"), "a report on the last work is a plain ending");
       assert.ok(!plain.includes("message it"), "a reported child gets no continue hint");
-      const earlier = notices.find((n) => n.includes(`subagent "kid2"`))!;
+      const earlier = sent.find((n) => n.includes(`subagent "kid2"`))!;
       assert.equal(
         earlier,
         `notice from kid2 (a subagent or background run's report, not the user):\nsubagent "kid2" completed without reporting on its last work: its earlier report is ${report}\nrun: fake-run-id-2\nmessage it to continue it, or stop_run to end it\n`,
@@ -505,10 +506,10 @@ test("stop_run stops a bash run with run-stop, and a subagent with a stop reques
     fx.setPanes([selfPane()]);
     const s = await startNamedSession(fx, "Self");
     await s.tools.get("async_bash").execute("c", { command: "make", name: "build" });
-    assert.equal((await s.tools.get("stop_run").execute("c", { to: ["build"] })).content[0].text, "stopped run fake-run-id; killed its pane");
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: ["build"] })).content[0].text, `stopped run fake-run-id; killed its pane; output: ${join(fx.stateDir, "runs", "fake-run-id", "output")}`);
     assert.deepEqual(fx.runStopCalls()[0], ["run-stop", "fake-run-id"]);
     await withEnv({ KIDO_FAKE_RUN_ID: "fake-run-id-2" }, () => s.tools.get("async_bash").execute("c", { command: "make", name: "build-string" }));
-    assert.equal((await s.tools.get("stop_run").execute("c", { to: "build-string" })).content[0].text, "stopped run fake-run-id-2; killed its pane");
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: "build-string" })).content[0].text, `stopped run fake-run-id-2; killed its pane; output: ${join(fx.stateDir, "runs", "fake-run-id-2", "output")}`);
     assert.deepEqual(fx.runStopCalls()[1], ["run-stop", "fake-run-id-2"]);
   } finally {
     await fx.restore();
@@ -566,7 +567,7 @@ test("stop_run refuses an ended subagent without an inbox and records nothing", 
       outcome: { result: "died", text: "" } }]);
 
     const result = await s.tools.get("stop_run").execute("c", { to: ["fake-run-id"] });
-    assert.equal(result.content[0].text, '"fake-run-id": error: run fake-run-id has already ended');
+    assert.equal(result.content[0].text, '"fake-run-id": error: run fake-run-id has already ended died');
     assert.deepEqual(inbox.received(), []);
     assert.deepEqual(fx.runStopCalls(), []);
     assert.deepEqual(fx.runOutcomeCalls(), []);

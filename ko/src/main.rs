@@ -392,7 +392,7 @@ fn ssh(args: &[OsString]) -> ExitCode {
                 id: id.into_string().ok()?.parse().ok()?,
             })
         });
-    let argv = ssh::prepare(&ssh_path, tty, pane.as_ref(), args);
+    let argv = ssh::prepare(tty, pane.as_ref(), args);
     let Some((first, rest)) = argv.split_first() else {
         return fail("ssh", "no arguments");
     };

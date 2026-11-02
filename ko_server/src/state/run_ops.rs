@@ -376,6 +376,12 @@ impl State {
             StopResult::Stopped => RunResult::Stopped,
             StopResult::Completed => RunResult::Completed,
         };
+        let Some(pane) = live else {
+            return Some(Err(Error::new(
+                ErrorKind::Refused,
+                format!("run {id} has already ended"),
+            )));
+        };
         self.record(
             poll,
             &meta,
@@ -385,12 +391,6 @@ impl State {
                 at: Some(Timestamp::now()),
             },
         );
-        let Some(pane) = live else {
-            return Some(Err(Error::new(
-                ErrorKind::Refused,
-                format!("run {id} has already ended"),
-            )));
-        };
         if request.wait_ms == 0 {
             self.kill_run_pane(poll, pane);
             return Some(Ok(Empty {}));

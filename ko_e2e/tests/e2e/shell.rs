@@ -50,8 +50,7 @@ fn ssh_mark() {
 
     let pane = session("alias uptime");
     s.wait_row(&pane, "the ssh marks", |row| {
-        row["vars"]["ssh.dest"] == "deploy@example.test"
-            && row["vars"]["ssh.args"] == json!(["alias"])
+        row["vars"]["ssh.dest"] == "alias" && row["vars"]["ssh.args"] == json!(["alias"])
     });
     s.screen_has(&pane, "SSH-ARGS:alias uptime");
 
@@ -60,9 +59,8 @@ fn ssh_mark() {
         row["status"]["kind"]["pane"]["interactive"] == true
     });
     assert_eq!(row["status"]["kind"]["type"], "ssh");
-    assert_eq!(row["status"]["kind"]["user"], "deploy");
-    assert_eq!(row["status"]["kind"]["host"], "example.test");
-    assert_eq!(row["status"]["title"], "ssh deploy@example.test");
+    assert_eq!(row["status"]["kind"]["destination"], "alias");
+    assert_eq!(row["status"]["title"], "ssh alias");
     assert_eq!(
         row["status"]["kind"]["pane"]["status"]["phase"]["type"],
         "idle"
@@ -72,7 +70,7 @@ fn ssh_mark() {
     let row = s.wait_row(&pane, "a remote command", |row| {
         row["status"]["kind"]["pane"]["status"]["phase"]["type"] == "running"
     });
-    assert_eq!(row["status"]["title"], "ssh deploy@example.test: sleep 45");
+    assert_eq!(row["status"]["title"], "ssh alias: sleep 45");
 
     s.text(&pane, "agent\n");
     let row = s.wait_row(&pane, "a remote agent", |row| {
@@ -85,25 +83,48 @@ fn ssh_mark() {
     let row = s.wait_row(&pane, "the shell back in the foreground", |row| {
         row["status"]["kind"]["type"] == "terminal"
     });
-    assert_eq!(row["vars"]["ssh.dest"], "deploy@example.test");
+    assert_eq!(row["vars"]["ssh.dest"], "alias");
     assert_eq!(row["vars"]["ssh.args"], json!(["alias"]));
 
     let realm = session("-l deploy@realm realm uptime");
     s.wait_row(&realm, "the realm marks", |row| {
-        row["vars"]["ssh.dest"] == "deploy@realm@next.test"
+        row["vars"]["ssh.dest"] == "realm"
             && row["vars"]["ssh.args"] == json!(["-l", "deploy@realm", "realm"])
     });
     s.text(&realm, "prompt\n");
-    let row = s.wait_row(&realm, "the split destination", |row| {
+    let row = s.wait_row(&realm, "the destination as typed", |row| {
         row["status"]["kind"]["type"] == "ssh"
     });
-    assert_eq!(row["status"]["kind"]["user"], "deploy@realm");
-    assert_eq!(row["status"]["kind"]["host"], "next.test");
+    assert_eq!(row["status"]["kind"]["destination"], "realm");
 
-    let failing = session("fail uptime");
-    s.screen_has(&failing, "SSH-ARGS:fail uptime");
-    let row = s.row(&failing);
-    assert_eq!(row["vars"], json!({}), "a failed -G sets nothing: {row}");
+    let user = session("bob@alias uptime");
+    s.wait_row(&user, "the user kept in the destination", |row| {
+        row["vars"]["ssh.dest"] == "bob@alias"
+    });
+
+    for unparsable in ["-p", "-v"] {
+        let pane = session(unparsable);
+        s.screen_has(&pane, &format!("SSH-ARGS:{unparsable}"));
+        let row = s.row(&pane);
+        assert_eq!(
+            row["vars"],
+            json!({}),
+            "ssh {unparsable} sets nothing: {row}"
+        );
+    }
+
+    let stale = s.pane("set -m; ko ssh alias; ko ssh -p; exec cat");
+    s.wait_row(&stale, "the first mark", |row| {
+        row["vars"]["ssh.dest"] == "alias"
+    });
+    s.text(&stale, "exit\n");
+    s.screen_has(&stale, "SSH-ARGS:-p");
+    let row = s.row(&stale);
+    assert_eq!(
+        row["vars"],
+        json!({}),
+        "an unparsable ssh clears both marks: {row}"
+    );
 }
 
 fn recorded(file: &Path) -> Vec<Vec<String>> {
@@ -133,7 +154,6 @@ fn ko_ssh_arguments() {
         "ssh",
         &format!(
             r#"#!/bin/sh
-if [ "$1" = -G ]; then echo "user u"; echo "hostname h"; exit 0; fi
 {{ for arg in "$@"; do printf '%s\0' "$arg"; done; printf '\002'; }} >> {}
 "#,
             record.display()
@@ -408,7 +428,7 @@ fn ko_ssh_primes_a_remote_shell() {
     assert!(
         row["status"]["title"]
             .as_str()
-            .is_some_and(|title| title.starts_with("ssh ") && title.ends_with("@localhost")),
+            .is_some_and(|title| title == "ssh localhost"),
         "the row names the destination: {row}"
     );
     s.text(&primed, "sleep 1\r");
@@ -459,9 +479,6 @@ fn ssh_remote_shell_status() {
         row["status"]["kind"]["pane"]["status"]["phase"]["type"] == "running"
     });
     let title = row["status"]["title"].as_str().unwrap_or_default();
-    assert!(
-        title.starts_with("ssh ") && title.ends_with("@localhost: sleep 3"),
-        "{row}"
-    );
+    assert_eq!(title, "ssh localhost: sleep 3", "{row}");
     assert_eq!(row["foreground"]["name"], "ssh", "{row}");
 }

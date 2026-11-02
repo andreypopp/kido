@@ -375,19 +375,9 @@ pub enum Remote {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Live {
     Terminal(Shell),
-    SomeAgent {
-        name: String,
-        status: Agent,
-    },
-    PiAgent {
-        session: String,
-        status: Agent,
-    },
-    Ssh {
-        user: String,
-        host: String,
-        pane: Remote,
-    },
+    SomeAgent { name: String, status: Agent },
+    PiAgent { session: String, status: Agent },
+    Ssh { destination: String, pane: Remote },
 }
 
 impl Live {
@@ -1940,8 +1930,8 @@ mod tests {
         for json in [
             r#"{"type":"some_agent","name":"claude-code","status":{"since":1,"state":{"type":"idle","outcome":{"serial":2,"result":"success"}}}}"#,
             r#"{"type":"pi_agent","session":"s","status":{"since":1,"state":{"type":"running"}}}"#,
-            r#"{"type":"ssh","user":"deploy","host":"h","pane":{"type":"terminal","interactive":true,"status":{"phase":{"type":"idle","last":{"code":1,"command":"false","started_at":1,"ended_at":2}}}}}"#,
-            r#"{"type":"ssh","user":"u","host":"h","pane":{"type":"agent","name":"pi","status":{"since":0,"state":{"type":"idle"}}}}"#,
+            r#"{"type":"ssh","destination":"deploy@h","pane":{"type":"terminal","interactive":true,"status":{"phase":{"type":"idle","last":{"code":1,"command":"false","started_at":1,"ended_at":2}}}}}"#,
+            r#"{"type":"ssh","destination":"h","pane":{"type":"agent","name":"pi","status":{"since":0,"state":{"type":"idle"}}}}"#,
             r#"{"type":"terminal","phase":{"type":"running","origin":{"type":"unknown"},"fullscreen":true}}"#,
             r#"{"type":"terminal","phase":{"type":"unknown"}}"#,
         ] {

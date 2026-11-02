@@ -30,15 +30,15 @@ pub(crate) enum Kind {
         inbox: Option<String>,
     },
     Ssh {
-        user: String,
-        host: String,
+        destination: String,
         pane: RemoteKind,
     },
 }
 
-fn destination(vars: &Vars) -> Option<(String, String)> {
-    let (user, host) = vars.text(&SSH_DEST)?.rsplit_once('@')?;
-    (!user.is_empty() && !host.is_empty()).then(|| (user.to_owned(), host.to_owned()))
+fn destination(vars: &Vars) -> Option<String> {
+    vars.text(&SSH_DEST)
+        .filter(|destination| !destination.is_empty())
+        .map(str::to_owned)
 }
 
 pub(crate) fn classify(telemetry: &Telemetry, vars: &Vars, records: &[ProgramRecord]) -> Kind {
@@ -49,14 +49,14 @@ pub(crate) fn classify(telemetry: &Telemetry, vars: &Vars, records: &[ProgramRec
         .is_some_and(|foreground| foreground.name == "ssh")
         .then(|| destination(vars))
         .flatten();
-    if let Some((user, host)) = ssh {
+    if let Some(destination) = ssh {
         let pane = match root_app {
             Some(name @ ("pi" | "claude-code")) => RemoteKind::Agent {
                 name: name.to_owned(),
             },
             _ => RemoteKind::Terminal,
         };
-        return Kind::Ssh { user, host, pane };
+        return Kind::Ssh { destination, pane };
     }
     let var = |name: &VarName| vars.text(name).unwrap_or_default().to_owned();
     match root_app {
@@ -241,27 +241,26 @@ mod tests {
     }
 
     #[test]
-    fn an_ssh_destination_needs_the_ssh_foreground_and_splits_at_the_last_at_sign() {
+    fn an_ssh_destination_needs_the_ssh_foreground_and_is_kept_as_typed() {
         let vars = [("ssh.dest", json!("deploy@realm@next.test"))];
         let ssh = telemetry("ssh", &vars).kind(&root_app("claude-code"));
         assert_eq!(
             ssh,
             Kind::Ssh {
-                user: "deploy@realm".to_owned(),
-                host: "next.test".to_owned(),
+                destination: "deploy@realm@next.test".to_owned(),
                 pane: RemoteKind::Agent {
                     name: "claude-code".to_owned()
                 }
             }
         );
         assert_eq!(telemetry("zsh", &vars).kind(&[]), Kind::Terminal);
-        for dest in [json!("nohost"), json!("@host"), json!("user@"), json!(5)] {
+        for dest in [json!(""), json!(5)] {
             assert_eq!(
                 telemetry("ssh", &[("ssh.dest", dest)]).kind(&[]),
                 Kind::Terminal
             );
         }
-        let remote = telemetry("ssh", &[("ssh.dest", json!("u@h"))]).kind(&[]);
+        let remote = telemetry("ssh", &[("ssh.dest", json!("h"))]).kind(&[]);
         assert_eq!(title(&remote, "t"), None);
     }
 

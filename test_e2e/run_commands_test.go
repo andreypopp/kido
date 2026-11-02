@@ -194,13 +194,13 @@ func TestRunStopRecordsThenCloses(t *testing.T) {
 		t.Errorf("run-stop of a recorded run = %d %q, want exit 5", rc, out)
 	}
 
-	ended := h.startRun(caller, "run", "--name", "run-ended", "--", "sh", "-c", "exit 0")
+	ended := h.startRun(caller, "run", "--name", "run-ended", "--", "sh", "-c", "exit 3")
 	h.waitFor(func() bool { return h.paneDead(ended.paneID()) }, settle, msgf("the exited run's pane to die"))
-	if out, rc := h.kidoAs(caller, "", nil, "run-stop", "--result", "completed", ended.ID); rc != 5 || !strings.Contains(out, "already ended") {
+	if out, rc := h.kidoAs(caller, "", nil, "run-stop", ended.ID); rc != 5 || !strings.Contains(out, "already ended") {
 		t.Errorf("run-stop of a dead pane = %d %q, want exit 5 and already ended", rc, out)
 	}
-	if info := h.runInfo(ended.ID); info.Outcome != "completed" {
-		t.Errorf("dead pane's run = %+v, want recorded completed", info)
+	if info := h.runInfo(ended.ID); info.Outcome != "failed" || info.OutcomeText != "exit 3" {
+		t.Errorf("dead pane's run = %+v, want its own ending, failed exit 3", info)
 	}
 
 	lonely := h.startRun(caller, "run", "--name", "run-lonely", "--", "sleep", "300")

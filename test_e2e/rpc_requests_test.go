@@ -26,11 +26,11 @@ func TestRpcHelloAndRequests(t *testing.T) {
 			return false
 		}, settle, msgf("RPC line %s", want))
 	}
-	waitLine(`{"hello":{"protocol":"6.2"}}`)
+	waitLine(`{"hello":{"protocol":"7.0"}}`)
 	f.mu.Lock()
 	first := f.lines[0].raw
 	f.mu.Unlock()
-	if first != `{"hello":{"protocol":"6.2"}}` {
+	if first != `{"hello":{"protocol":"7.0"}}` {
 		t.Fatalf("first line: %s", first)
 	}
 	session := h.in("display-message", "-p", "-t", "alpha:", "#{session_id}")
@@ -93,6 +93,7 @@ func TestRpcSwitchWindowTree(t *testing.T) {
 	h.newSessionSpaced("b")
 	root := h.in("display-message", "-p", "-t", "a:root", "#{window_id}")
 	top := h.in("display-message", "-p", "-t", "a:top", "#{window_id}")
+	orphan := h.in("display-message", "-p", "-t", "a:orphan", "#{window_id}")
 	other := h.in("display-message", "-p", "-t", "b:", "#{window_id}")
 	session := h.in("display-message", "-p", "-t", "a:", "#{session_id}")
 	otherSession := h.in("display-message", "-p", "-t", "b:", "#{session_id}")
@@ -107,8 +108,9 @@ func TestRpcSwitchWindowTree(t *testing.T) {
 		{session, grandSibling, "prev", session, grandchild},
 		{session, grandSibling, "next", session, top},
 		{session, sibling, "next", session, top},
-		{session, top, "next", otherSession, other},
-		{otherSession, other, "prev", session, top},
+		{session, top, "next", session, orphan},
+		{session, orphan, "next", otherSession, other},
+		{otherSession, other, "prev", session, orphan},
 		{otherSession, other, "next", session, root},
 		{session, root, "prev", otherSession, other},
 	} {
@@ -119,11 +121,6 @@ func TestRpcSwitchWindowTree(t *testing.T) {
 			t.Fatalf("switch-window %s from %s: %s, want %s %s", step.direction, step.from, got, step.session, step.window)
 		}
 	}
-	h.markSubagent("a", "root")
-	h.markSubagent("a", "top")
-	h.in("set-option", "-p", "-t", "b:", "@kido_run", "other-run")
-	f.send(`{"id":100,"switch-window":{"direction":"next"}}`)
-	f.waitReply(`{"reply":{"id":100,"switched":null}}`)
 }
 
 func TestRpcServerStampRefusal(t *testing.T) {
@@ -157,7 +154,7 @@ func TestRpcServerStampRefusal(t *testing.T) {
 		if stamp != "" {
 			server = `"other-stamp"`
 		}
-		want := "{\"hello\":{\"protocol\":\"6.2\",\"server\":" + server + ",\"expected\":\"" + h.expectedStamp() +
+		want := "{\"hello\":{\"protocol\":\"7.0\",\"server\":" + server + ",\"expected\":\"" + h.expectedStamp() +
 			"\"}}\n{\"error\":\"server stamp does not match binary stamp\"}\n"
 		if out.String() != want {
 			t.Fatalf("refusal %q, want %q", out.String(), want)

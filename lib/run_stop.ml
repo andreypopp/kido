@@ -42,10 +42,6 @@ let stop ~dir ~wait ~escalation ~result id =
   in
   let* tmux = Result.map_err (fun m -> No_run m) (Server_dir.tmux ~dir) in
   let* state = Result.map_err (fun e -> No_run e) (State.read_run tmux meta) in
-  let live =
-    match State.run_pane state meta with Some p -> Option.is_none p.dead_at | None -> false
-  in
-  ignore (Run.record_outcome ~dir meta.id { result; text = ""; at = Some (Timestamp.now ()) });
   let ended () =
     match State.read_run tmux meta with
     | Error _ -> false
@@ -53,7 +49,7 @@ let stop ~dir ~wait ~escalation ~result id =
         match State.run_pane s meta with None -> true | Some p -> Option.is_some p.dead_at)
   in
   let finish () =
-    let pid = if live then meta.pid else 0 in
+    let pid = meta.pid in
     if (not (wait_until ~within:wait ended)) && pid > 0 then signal pid Sys.sigterm;
     if not (wait_until ~within:escalation ended) then begin
       if pid > 0 then signal pid Sys.sigkill;
@@ -66,5 +62,11 @@ let stop ~dir ~wait ~escalation ~result id =
     in
     close_pane ~tmux ~dir pane
   in
-  if live then Ok (finish ())
-  else Error (Ended (Printf.sprintf "run %s has already ended" (Run.string_of_id id)))
+  let live =
+    match State.run_pane state meta with Some p -> Option.is_none p.dead_at | None -> false
+  in
+  if not live then Error (Ended (Printf.sprintf "run %s has already ended" (Run.string_of_id id)))
+  else begin
+    ignore (Run.record_outcome ~dir meta.id { result; text = ""; at = Some (Timestamp.now ()) });
+    Ok (finish ())
+  end

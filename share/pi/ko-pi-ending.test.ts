@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSyn
 
 import { join } from "node:path";
 
-import koPi from "./ko-pi.ts";
+import koPi, { SUBAGENT_RESULT_RULE } from "./ko-pi.ts";
 
 import {
   makeFixture,
@@ -224,6 +224,18 @@ const LIVE_RUN_TOOLS: Array<[string, Record<string, unknown>]> = [
 ];
 
 for (const [tool, params] of LIVE_RUN_TOOLS) {
+  test(`a top-level ${tool} result has no parent-report clause`, async () => {
+    const fx = makeFixture();
+    try {
+      const s = await startNamedSession(fx, "boss", SELF);
+      const result = await s.tools.get(tool).execute("c", params);
+      assert.ok(result.content[0].text.includes(tool === "async_bash" ? "started run" : "spawned "));
+      assert.ok(!result.content[0].text.includes(SUBAGENT_RESULT_RULE));
+    } finally {
+      await fx.restore();
+    }
+  });
+
   test(`a child waiting on its own live ${tool} run sends no report, then sends one once that run ends`, async () => {
     const fx = makeFixture();
     try {
@@ -237,7 +249,8 @@ for (const [tool, params] of LIVE_RUN_TOOLS) {
           await withEnv({ KO_FAKE_RUN_WAIT_GATE: gate }, async () => {
             const s = await startNamedSession(fx, "worker", SELF);
             await s.emit("agent_start");
-            await s.tools.get(tool).execute("c", params);
+            const result = await s.tools.get(tool).execute("c", params);
+            assert.ok(result.content[0].text.includes(SUBAGENT_RESULT_RULE));
             await pollUntil(() => fx.runWaitCalls().length === 1, 2000, "the run-wait");
             await s.emit("agent_end", { messages: [assistant("stop", "done")] });
             await s.emit("agent_settled", {}, { isIdle: () => true });

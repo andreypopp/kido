@@ -1,4 +1,4 @@
-# kido rpc protocol 6.2
+# kido rpc protocol 7.0
 
 fork revision: a020eaf3c42e24bf9e383a080219bd1caa65517e
 
@@ -30,10 +30,10 @@ first on PATH), all with fixed placeholder paths. Install paths do not change
 it; a fork bump, an installer edit, an edit to kido-tmux.conf, to the generated configuration or
 to the launch environment does.
 
-The first stdout line is {"hello":{"protocol":"6.2"}} when KIDO_SERVER equals
+The first stdout line is {"hello":{"protocol":"7.0"}} when KIDO_SERVER equals
 the binary's stamp. A differing or absent stamp produces
-{"hello":{"protocol":"6.2","server":"other","expected":"0123456789ab"}} or
-{"hello":{"protocol":"6.2","server":null,"expected":"0123456789ab"}}, followed
+{"hello":{"protocol":"7.0","server":"other","expected":"0123456789ab"}} or
+{"hello":{"protocol":"7.0","server":null,"expected":"0123456789ab"}}, followed
 by {"error":"server stamp does not match binary stamp"}, then exit 2.
 expected is the binary's stamp; the server needs a restart.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
@@ -51,16 +51,16 @@ steps to its adjacent direct sibling in feed order, including run windows.
 Prev from the first child selects its direct parent, even a nested run
 window. Next from the last child steps from its top-level ancestor to the
 next top-level window. Top-level steps never descend into children: they
-skip windows containing run-marked panes and wrap across all sessions in
-sidebar order.
+include every top-level window, run windows included, and wrap across all
+sessions in sidebar order.
 A successful switch replies
 {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}.
 {"id":7,"switch-session":{"direction":"next"}} or direction "prev" uses the
 same session ordering as the sidebar and CLI, wrapping at either end. Its
 reply has the same switched session and window shape.
 No eligible target replies
-{"reply":{"id":7,"switched":null}}. A sole eligible top-level window can
-select itself; a single session has no switch-session target.
+{"reply":{"id":7,"switched":null}}. A sole top-level window selects
+itself; a single session has no switch-session target.
 An invalid or unknown request carrying an integer id replies
 {"reply":{"id":7,"error":"invalid or unknown request"}}; requests without an
 integer id and invalid JSON are ignored. Errors do not stop the stream.
@@ -160,6 +160,13 @@ A prompt error adds a `kind` to the error envelope:
   failed paste); the client must not send it again.
 - `invalid`: empty text, `pane` not found in fresh state, or `target` not a
   candidate of `pane`.
+
+## Changes from 6.2 to 7.0
+
+- Changed: `Ssh` carries `destination`, the destination token as the user
+  typed it (`fish000`, `bob@fish000`), in place of `user` and `host`.
+  Options such as `-l` are not part of it.
+- Unchanged: everything else, including the `pane` of `Ssh`.
 
 ## Changes from 5.0 to 6.0
 
@@ -371,8 +378,8 @@ group's place. Groups are the "group" rows the app may draw differently.
 ["Terminal",{"phase":["Idle",{"last":null}],"report":null}]
 ["Some_agent",{"name":"claude-code","status":AGENT}]
 ["Pi_agent",{"session":"pi-session-id","status":AGENT}]
-["Ssh",{"user":"alice","host":"example.org","pane":["Remote_terminal",{"interactive":true,"status":SHELL}]}]
-["Ssh",{"user":"alice","host":"example.org","pane":["Remote_agent",{"name":"pi","status":AGENT}]}]
+["Ssh",{"destination":"example.org","pane":["Remote_terminal",{"interactive":true,"status":SHELL}]}]
+["Ssh",{"destination":"example.org","pane":["Remote_agent",{"name":"pi","status":AGENT}]}]
 ```
 
   Detection is OSC 7501 root app `pi` or `claude-code`, and the believed
@@ -505,7 +512,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"6.2","server":"0123456789ab","expected":"0123456789ab"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"7.0","server":"0123456789ab","expected":"0123456789ab"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_SERVER stamp, or null when absent, even when it matches expected.
 expected is the binary's own stamp, always a string. The app compares server

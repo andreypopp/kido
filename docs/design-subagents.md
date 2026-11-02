@@ -20,7 +20,7 @@ This document refers to those sections by name instead of repeating them.
 
 ## The tools, and what they call
 
-The six tools are in `share/pi/kido-pi.ts`. No tool has a kido
+The five tools are in `share/pi/kido-pi.ts`. No tool has a kido
 subcommand of its own. A tool that starts, waits for or stops a run
 calls a run command. Every other tool reads tmux and the extension's
 state directory, and writes to inboxes.
@@ -28,7 +28,6 @@ state directory, and writes to inboxes.
 | tool | what it uses |
 |---|---|
 | `list_runs()` | `kido runs --json --all --parent P`, `agents/<me>/*`, one `tmux list-panes -a` |
-| `set_status(activity)` | `tmux set-option -p @kido_activity` |
 | `message_agent(to, message, mode?)` | the target's inbox; `kido run-child` to restart an ended child |
 | `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `kido run-child P --name N --cwd D --env ... -- kido shell -- kido-pi ...`, or `kido run` for a top-level agent |
 | `stop_run(to, force?)`, `to` one address or a list | the target's inbox, then `kido run-stop` |
@@ -57,11 +56,9 @@ itself, to the parent edge (design.md, "Identity"; "Reporting",
 below). Tools register unconditionally. They report kido as
 unavailable outside kido.
 
-`set_status` has a bound of 256 bytes, and a report notice a bound of
-4000 bytes. The schema does not repeat the bound as `maxLength`.
-The tool cuts an activity, because it is a UI label. The harness keeps
-a report whole, because it is a work product. Only the text *sent* to
-the parent has a bound ("Reporting", below).
+A report notice has a bound of 4000 bytes. The harness keeps a report
+whole, because it is a work product. Only the text *sent* to the parent
+has a bound ("Reporting", below).
 
 **list_runs** is the only tool for finding agents to message and runs to
 stop with `stop_run`. It lists the caller's discovery scope: the agents
@@ -387,17 +384,32 @@ task, so it can receive questions during its first turn. It reads
 
 Every turn's system prompt then contains these standing instructions:
 
-- You were spawned.
-- The last message of a turn that ends with no async run of your own
-  running and no subagent of your own still owing a report is your
-  report, once for each piece of work from your parent.
-  It must stand on its own.
+- While an async run of your own is running or a subagent of your own
+  still owes a report, ending your turn sends nothing to your parent.
+- You were spawned. Your report is the last message of a turn that
+  ends after all of them finish, once for each piece of work from
+  your parent. It must stand on its own.
 - If you stop to wait for another agent or the user, say so; when the
   work completes later, tell your parent with `message_agent`.
+
+The first instruction comes first, so that a child ends its turn and
+does not sleep to keep its report back.
 
 The system prompt contains the instructions instead of the task because
 the task arrives only once. Otherwise, a restart or a follow-up message
 from the parent would not include the instructions.
+
+A subagent caller gets the same fact in a tool result. These results
+add that ending the turn now sends no report, and that the report is
+the last message of a turn that ends when no run of its own is running
+and no subagent of its own owes a report:
+
+- The `async_bash` start result.
+- The `spawn_agent` result, except for an independent peer and for a
+  `resume_from` with an empty task, which owes no report.
+- The `message_agent` result that restarts an ended child.
+
+A top-level caller does not get this clause.
 
 **Watching the parent.** The child's pi is a child of the tmux server.
 Thus, no signal tells it that its parent has ended. Every
@@ -540,7 +552,8 @@ parent in a turn sees it between tool calls.
 reports, or after a turn settles with nothing to do, it stays alive.
 Only its parent (`stop_run`), the user, or the orphan rule ends it.
 `stop_run` records `completed` for a child that has reported, and
-`stopped` for one that has not.
+`stopped` for one that has not. The parent then gets no ending notice for it
+("Redirecting one, and ending one from outside").
 
 **Shutdown.** The child uses one teardown, whether it quits, is stopped
 or loses its parent:
@@ -603,7 +616,47 @@ targets that name one run stop it once. The resolved runs stop in
 parallel, so a call takes about one escalation, not one for each run.
 The result has one line for each target, in input order: completed,
 stopped or the error. The call is an error only if no target stopped a
-run.
+run. Each line gives the path to read: a bash run's `output:`, or a
+subagent's `report:` if its report file exists.
+
+    stopped run 6f1c...; killed its pane; output: <server state>/runs/6f1c.../output
+    completed worker; <run-stop text>; report: <agent dir>/report
+    "build": error: run 6f1c... has already ended failed: exit 3; output: ...
+
+**The result is the only signal.** A run that the caller stops with
+`stop_run` sends the caller no ending notice: the caller already knows.
+Before it stops a run that it watches, `stop_run` sets the run's watch
+to silenced. The flag is part of the watch data, so it survives a
+`/reload`. The `run-wait` close handler keeps the outcome of a silenced
+watch for the stop and sends no notice. A stop that fails while the
+watch is open clears the flag, so a later ending still notifies. A stop
+that fails after the silenced watch closed puts that ending in its
+error line: `<error>; run ID has already ended RESULT[: TEXT]` with the
+path. A run that
+ends any other way notifies as before: the user closes it, `kido
+run-stop` from elsewhere, the orphan sweep, a crash, normal completion.
+Only the caller's own runs have a notice to drop; a deeper
+descendant's notice goes to its own parent, which did not stop it.
+
+A run can end on its own before or during the call. Exactly one signal
+reaches the caller:
+
+- Ended before the call, with its notice not yet sent (`run-wait` has
+  not exited): the line reads `run ID has already ended RESULT[: TEXT]`
+  with the path, and the notice is dropped.
+- Ended during the call: `run-outcome` exits 5 (an outcome exists), or a
+  bash run's `run-stop` exits 5 (its pane is dead or gone; it records
+  nothing, so the pane's own ending stays). `stop_run` reports the
+  ending in the same `has already ended` line. It takes the outcome
+  from the watch, or from `kido run-wait ID --json` for a run that it
+  does not watch. The notice is dropped.
+- A subagent whose `run-stop` exits 5 after `stop_run` recorded the
+  outcome ended on the stop request: the line reads `stopped NAME; its
+  pane was already gone`, or `completed`.
+
+If the notice already went out before the call, the caller has it and
+the line also says the run had ended: the line answers the call, it
+is not a second notice.
 
 - A bash run: `kido run-stop ID`.
 - A subagent: `kido run-outcome ID` records `completed` if the child has
@@ -704,7 +757,8 @@ character. The output file is the source of truth; nothing truncates
 it.
 
 **Exactly one notice.** The parent's `run-wait` exits once, so the
-parent sends one notice for each run. The ending itself has one
+parent sends one notice for each run, or none for a run that it
+stopped itself with `stop_run`. The ending itself has one
 recorded write: `Run.record_outcome` links a complete temporary file
 with `Unix.link`, and the first write wins. `run-stop`, the sweep and
 the child's own `run-outcome` can race; the notice shows whichever won.

@@ -1,6 +1,5 @@
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ko_client::api;
@@ -104,12 +103,13 @@ fn parse(args: &[String]) -> Option<SshArgs> {
     let mut dest: Option<String> = None;
     let mut at = 0;
     let finish = |opts, options, dest: Option<String>, command: &[String]| {
-        dest.map(|dest| SshArgs {
-            opts,
-            options,
-            dest,
-            command: command.to_vec(),
-        })
+        dest.filter(|dest| !dest.is_empty() && !dest.starts_with('-'))
+            .map(|dest| SshArgs {
+                opts,
+                options,
+                dest,
+                command: command.to_vec(),
+            })
     };
     while let Some(arg) = args.get(at) {
         let rest = args.get(at + 1..).unwrap_or_default();
@@ -138,9 +138,6 @@ fn parse(args: &[String]) -> Option<SshArgs> {
 }
 
 fn connection_args(args: &SshArgs) -> Option<Vec<String>> {
-    if args.dest.is_empty() || args.dest.starts_with('-') {
-        return None;
-    }
     let mut kept = Vec::new();
     for option in &args.options {
         match option.class {
@@ -156,35 +153,18 @@ fn connection_args(args: &SshArgs) -> Option<Vec<String>> {
     Some(kept)
 }
 
-fn destination(ssh: &Path, args: &[String]) -> Option<String> {
-    let output = Command::new(ssh)
-        .arg("-G")
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|output| output.status.success())?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let field = |key: &str| {
-        text.lines()
-            .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
-    };
-    Some(format!("{}@{}", field("user")?, field("hostname")?))
-}
-
-fn mark(ssh: &Path, pane: &Pane, args: &[String], parsed: Option<&SshArgs>) {
-    let Some(destination) = destination(ssh, args) else {
-        return;
-    };
+fn mark(pane: &Pane, parsed: Option<&SshArgs>) {
     let (Ok(dest), Ok(extra)) = (VarName::new("ssh.dest"), VarName::new("ssh.args")) else {
         return;
     };
     let requests = [
-        (
-            Route::SetVar(pane.id, dest),
-            json!(destination).to_string().into_bytes(),
-        ),
+        match parsed {
+            Some(parsed) => (
+                Route::SetVar(pane.id, dest),
+                json!(parsed.dest).to_string().into_bytes(),
+            ),
+            None => (Route::DeleteVar(pane.id, dest), Vec::new()),
+        },
         match parsed.and_then(connection_args) {
             Some(connection) => (
                 Route::SetVar(pane.id, extra),
@@ -204,7 +184,7 @@ fn mark(ssh: &Path, pane: &Pane, args: &[String], parsed: Option<&SshArgs>) {
     }
 }
 
-pub fn prepare(ssh: &Path, tty: bool, pane: Option<&Pane>, args: &[OsString]) -> Vec<OsString> {
+pub fn prepare(tty: bool, pane: Option<&Pane>, args: &[OsString]) -> Vec<OsString> {
     let unchanged = || {
         std::iter::once(OsString::from("ssh"))
             .chain(args.iter().cloned())
@@ -219,7 +199,7 @@ pub fn prepare(ssh: &Path, tty: bool, pane: Option<&Pane>, args: &[OsString]) ->
     };
     let parsed = parse(&text);
     if let Some(pane) = pane {
-        mark(ssh, pane, &text, parsed.as_ref());
+        mark(pane, parsed.as_ref());
     }
     match parsed {
         Some(parsed)
@@ -270,7 +250,7 @@ mod tests {
 
     #[test]
     fn ssh_connection_arguments() {
-        let cases: [(&[&str], &str); 16] = [
+        let cases: [(&[&str], &str); 17] = [
             (&["alias"], r#"["alias"]"#),
             (
                 &[
@@ -338,6 +318,7 @@ mod tests {
             (&["-V"], "refused"),
             (&["-p"], "refused"),
             (&["--", "-host"], "refused"),
+            (&[""], "refused"),
             (&["-i", "clé/🔑", "hôte"], r#"["-i","clé/🔑","hôte"]"#),
         ];
         for (args, expected) in cases {
@@ -465,7 +446,7 @@ mod tests {
             dir: PathBuf::from("/nonexistent"),
             id: "pane_1".parse().unwrap(),
         };
-        let argv = prepare(Path::new("/nonexistent/ssh"), true, Some(&pane), &args);
+        let argv = prepare(true, Some(&pane), &args);
         assert_eq!(
             argv,
             [OsString::from("ssh"), args[0].clone(), args[1].clone()]
@@ -475,7 +456,7 @@ mod tests {
     #[test]
     fn a_terminal_session_without_a_command_runs_the_bootstrap_after_the_options() {
         let args = [OsString::from("-oBatchMode=yes"), OsString::from("alias")];
-        let primed = prepare(Path::new("/nonexistent/ssh"), true, None, &args);
+        let primed = prepare(true, None, &args);
         let bootstrap = ssh_bootstrap();
         assert_eq!(
             primed,
@@ -490,19 +471,13 @@ mod tests {
             .map(OsString::from)
         );
         for passthrough in [
-            prepare(Path::new("/nonexistent/ssh"), false, None, &args),
+            prepare(false, None, &args),
             prepare(
-                Path::new("/nonexistent/ssh"),
                 true,
                 None,
                 &[OsString::from("alias"), OsString::from("uptime")],
             ),
-            prepare(
-                Path::new("/nonexistent/ssh"),
-                true,
-                None,
-                &[OsString::from("-N"), OsString::from("alias")],
-            ),
+            prepare(true, None, &[OsString::from("-N"), OsString::from("alias")]),
         ] {
             assert!(
                 !passthrough.contains(&OsString::from("-t")),

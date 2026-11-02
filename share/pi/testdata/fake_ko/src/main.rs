@@ -265,7 +265,10 @@ fn run_wait(argv: &[String]) -> ExitCode {
     let _ = std::io::stdout().flush();
     let ready = env("KO_FAKE_RUN_WAIT_READY");
     if !ready.is_empty() {
-        let _ = fs::write(ready, "");
+        let staging = format!("{ready}.tmp");
+        if fs::write(&staging, std::process::id().to_string()).is_ok() {
+            let _ = fs::rename(&staging, &ready);
+        }
     }
     wait_gate("KO_FAKE_RUN_WAIT_EXIT_GATE");
     ExitCode::SUCCESS
@@ -286,6 +289,10 @@ fn run_stop(argv: &[String]) -> ExitCode {
             ExitCode::from(3)
         }
         Some(row) => {
+            if row.get("dead") == Some(&Value::Bool(true)) {
+                eprintln!("run {id} has already ended");
+                return ExitCode::from(5);
+            }
             if row.get("outcome").is_none() {
                 with_row(&id, |row| with_outcome(row, result, ""));
             }
@@ -297,6 +304,7 @@ fn run_stop(argv: &[String]) -> ExitCode {
 
 fn run_outcome(argv: &[String]) -> ExitCode {
     log("KO_FAKE_RUN_OUTCOME_LOG", argv);
+    wait_gate("KO_FAKE_RUN_OUTCOME_GATE");
     let requested = after(argv, "--result").unwrap_or_default();
     if !["stopped", "completed", "failed"].contains(&requested) {
         eprintln!("run-outcome: result must be stopped, completed or failed");

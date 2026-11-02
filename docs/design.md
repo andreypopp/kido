@@ -53,15 +53,15 @@ pane-scoped option lets a sweep and the sidebar distinguish the run's
 pane from a pane that the user later creates with a split. A
 window-scoped option would also apply to the user's pane.
 
-**Pane options, for the facts only an agent has.** The extension writes
-four more pane options with `set-option -p`:
+**Pane options, for the facts only an agent has.** The extension owns
+four more pane options, set with `set-option -p`:
 
 | option | value | kido reads it for |
 |---|---|---|
 | `@kido_session` | the pi session id | `Pane_kind.Pi_agent`, `Pane_status` identity, the session column of `kido runs` |
 | `@kido_name` | the session name | the row title of a local pi |
 | `@kido_inbox` | the inbox socket's full path | `Prompt.reachable`: `kido prompt` and the RPC prompt |
-| `@kido_activity` | `set_status` text, one line, at most 256 bytes | the caption fallback |
+| `@kido_activity` | the agent's activity text, one line | the caption fallback |
 
 kido trusts them only while the pane has an OSC 7501 root with
 `app=pi`, as it trusts `@kido_ssh` only while the foreground is `ssh`.
@@ -195,8 +195,9 @@ map outlives a reboot. It holds:
   (design-subagents.md, "The agent directory").
 
 **The options.** The extension writes `@kido_session` and `@kido_name`
-at `session_start`, `@kido_inbox` after the bind, `@kido_name` again on
-`session_info_changed`, and `@kido_activity` on `set_status`. Writes
+at `session_start`, `@kido_inbox` after the bind, and `@kido_name` again on
+`session_info_changed`. It writes no `@kido_activity` value, but kido
+reads that option and the extension unsets it with the others. Writes
 are coalesced, and one `tmux` call carries each batch, with `;`
 between the commands. Without `$TMUX_PANE`, nothing is written. At
 shutdown it unsets the four. An uncaught crash exits through
@@ -205,9 +206,7 @@ shutdown it unsets the four. An uncaught crash exits through
 while this one is suspended. The handler stays across `/reload` until
 the next `session_start` replaces it. Only a
 process that ends without cleanup, such as with SIGKILL, leaves them; the trust rule makes
-them harmless for identity. `set_status` replaces control characters with spaces and
-cuts the text at 256 bytes on a character boundary, because the sidebar
-allows one terminal line per row.
+them harmless for identity.
 
 **The trust rule.** The extension's own discovery uses kido's rule: a
 pane is a local pi agent only with an OSC 7501 root with `app=pi`
@@ -654,13 +653,17 @@ failed server, so after an error one `list-panes -a` tells them apart.
 `run-stop` waits with the same read. A pid is never evidence: a killed pane whose process survives
 its HUP has ended, and `run-wait` reports `died`.
 
-**run-stop** records its result first, so that an ending that the pane
-produces later cannot replace it. If an outcome already exists, the
-earlier outcome stays and the stop continues. Then it waits `--wait`
+**run-stop** first reads whether the run's pane is live. A run with no
+live pane (dead or gone) exits 5 at once and records nothing, so the
+ending that the pane gave stays the run's ending. For a live pane, it
+records its result first, so that an ending that the pane produces
+later cannot replace it. A pane that dies between the read and the
+record loses its ending to the stop. If an outcome already exists, the earlier
+outcome stays and the stop continues. Then it waits `--wait`
 seconds (default 0) for the pane to die, sends TERM to the pane's process
 group, KILL after `KIDO_STOP_ESCALATION_MS`, and kills the pane under
 the last-window refusal (`Reap.close_of`). A refusal exits 1 with the
-outcome recorded. A run with no live pane (dead or gone) exits 5 at once.
+outcome recorded.
 
 A caller that must act between the record and the stop records first
 with `run-outcome`, then runs `run-stop`. `--result completed` is for a subagent that reported
@@ -761,7 +764,6 @@ separate unmark step. Killing the run's pane removes the option, which
 exists nowhere else. Other readers use that option:
 
 - The tree nests the window under its parent.
-- Top-level window cycling skips the window.
 - The sidebar draws the run's label.
 - A later sweep considers the window again.
 
@@ -804,9 +806,8 @@ recorded ending is independent of screen availability.
 
 Losing a screen is better than leaving an uncollected window. A
 `capture-pane` error or lost race never prevents closure. The byte cap,
-`Run.max_screen_bytes`, is much smaller than a task's 1MB and much
-larger than an activity line's 256 bytes. An unresponsive agent's
-scrollback otherwise has no size limit. Truncation keeps the end,
+`Run.max_screen_bytes`, is much smaller than a task's 1MB. An
+unresponsive agent's scrollback otherwise has no size limit. Truncation keeps the end,
 because the last output is the most likely crash diagnostic.
 
 The sweep uses a 30-second grace from `KIDO_LINGER_SECONDS`.
@@ -879,7 +880,9 @@ as parent cannot let a session stop itself.
 records the outcome with `kido run-outcome ID --result stopped`. The child's
 own shutdown writes `completed` or `failed`, so a request sent before
 the record would let that write win. A record that loses to an earlier
-outcome is ignored. Then it sends its request, and runs
+outcome (exit 5) means that the child ended on its own: `stop_run` sends
+no request and reports that ending (design-subagents.md,
+"Redirecting one, and ending one from outside"). Otherwise, it sends its request, and runs
 `kido run-stop ID --wait 5` whatever the request returned: a
 recorded stop must also end the process. A request that fails is
 reported beside the cleanup's result. The extension's deadline for
@@ -917,8 +920,7 @@ the right moment. The parent reads the child's own closing text, which
 says what it did or what it waits for.
 
 The parent receives at most 4000 bytes, the guidance included. This
-exceeds the activity cap, because it carries work results, not a UI
-label. It is much smaller than the 1MB inbox payload cap, because the
+is much smaller than the 1MB inbox payload cap, because the
 whole message enters the parent's context.
 
 **What this costs, and what covers it.** A crashed subagent that never
@@ -926,7 +928,10 @@ settles a turn supplies no work report. kido does not invent one.
 Instead, the parent's own `run-wait` tells it how the run ended
 (design-subagents.md, "A child's life", Endings). An ending needs no
 judgment about the work. Without this limited notice, a parent could
-wait forever for a child that no longer exists.
+wait forever for a child that no longer exists. A run that the parent
+stops itself with `stop_run` sends no ending notice: the tool result
+is the only signal (design-subagents.md,
+"Redirecting one, and ending one from outside").
 
 **Telling a child this is its job.** `before_agent_start` appends a
 standing instruction to the subagent's system prompt on every turn, if
@@ -1084,9 +1089,9 @@ direct siblings in feed order, including runs.
 
 Prev from the first child selects its direct parent, even when nested.
 Next from the last child moves from its top-level ancestor. Top-level
-steps never descend. They skip windows containing the `@kido_run` pane
-of a run that kido started, and wrap across sessions in sidebar order. A sole eligible root can select
-itself.
+steps never descend. They include every top-level window, whatever its
+panes contain, a top-level run included. They wrap across sessions in
+sidebar order. A sole top-level window selects itself.
 
 The command prints nothing. Its key bindings use `run-shell`, which
 would display output in the pane. RPC and the focused sidebar's
@@ -1152,8 +1157,8 @@ source `share/zsh/integration.zsh` or `share/bash/integration.bash`.
 Both emit the same four markers.
 
 On a host without an installed integration, the marked pane remains
-running throughout the connection. `kido ssh` resolves user and hostname
-with `ssh -G`, sets `@kido_ssh` on its pane, then execs ssh. The mark
+running throughout the connection. `kido ssh` sets `@kido_ssh` on its pane
+to the destination as typed, then execs ssh. The mark
 remains after ssh exits. kido trusts it only while the foreground
 command is `ssh`. A remote pi or Claude Code root gives a nested
 `Remote_agent`, including paste prompt support; otherwise it gives
@@ -1231,8 +1236,8 @@ For priming, kido adds `-t` for an interactive shell. Every remote
 failure starts the same login shell without priming. These failures
 include an unsupported shell, missing `mktemp` or `base64`, directory
 creation failure and payload decoding failure. kido execs ssh. Signals,
-exit status and tty therefore behave as with ssh alone. If `ssh -G`
-fails, kido skips the pane mark but still runs the connection.
+exit status and tty therefore behave as with ssh alone. If kido cannot
+parse the arguments, it unsets the pane mark but still runs the connection.
 
 The bootstrap reads remote `$SHELL`. It primes zsh and bash, with both
 base64-encoded integrations on the command line. It selects the branch

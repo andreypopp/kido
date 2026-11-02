@@ -11,21 +11,6 @@ fn emit(text: &str) {
     let _ = out.flush();
 }
 
-fn answer_config(args: &[String]) -> i32 {
-    let (mut user, mut host) = ("deploy", "example.test");
-    let mut rest = args.iter();
-    while let Some(arg) = rest.next() {
-        match arg.as_str() {
-            "-l" => user = rest.next().map_or(user, String::as_str),
-            "realm" => host = "next.test",
-            "fail" => return 1,
-            _ => {}
-        }
-    }
-    emit(&format!("user {user}\nhostname {host}\n"));
-    0
-}
-
 fn session(args: &[String]) {
     emit(&format!("SSH-ARGS:{}\n", args.join(" ")));
     for line in std::io::stdin().lock().lines().map_while(Result::ok) {
@@ -49,9 +34,6 @@ fn main() {
         "ko-probe" => {
             emit("OUT\n");
             std::thread::sleep(Duration::from_secs(1));
-        }
-        _ if args.first().map(String::as_str) == Some("-G") => {
-            std::process::exit(answer_config(args.get(1..).unwrap_or_default()));
         }
         _ => session(&args),
     }

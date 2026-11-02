@@ -65,7 +65,6 @@ export function agentPane(row: {
   window?: string;
   title?: string;
   cwd?: string;
-  status?: string;
 }): PaneRow {
   return paneRow({
     pane_id: row.pane,
@@ -74,7 +73,6 @@ export function agentPane(row: {
     kido_session: row.session,
     kido_name: row.name ?? "",
     kido_inbox: row.inbox ?? "",
-    kido_activity: row.status ?? "",
     pane_program_status: piStatus(row.state ?? "idle"),
     pane_title: row.title ?? "",
     pane_current_path: row.cwd ?? "/tmp",
@@ -614,6 +612,10 @@ export function envelope(kind: string, text: string, extra: { from?: { session: 
 
 export function customMessages(s: Pick<ReturnType<typeof createFakePi>, "messages">, customType: string) {
   return s.messages.filter((m) => m.message.customType === customType);
+}
+
+export function notices(s: Pick<ReturnType<typeof createFakePi>, "messages">): string[] {
+  return customMessages(s, "kido-notice").map((m) => String(m.message.content));
 }
 
 export function agentJson(fx: Fixture, parent: string, name: string): { session: string; run: string; model: string; fork: boolean } {

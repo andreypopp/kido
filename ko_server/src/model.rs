@@ -65,8 +65,7 @@ fn row_title(kind: &Kind, live: &Live, pane_title: &str, label: String) -> Strin
     match (kind, live) {
         (
             Kind::Ssh {
-                user,
-                host,
+                destination,
                 pane: RemoteKind::Terminal,
             },
             Live::Ssh {
@@ -74,8 +73,8 @@ fn row_title(kind: &Kind, live: &Live, pane_title: &str, label: String) -> Strin
                 ..
             },
         ) => match command.filter(|_| *interactive) {
-            Some(command) => format!("ssh {user}@{host}: {command}"),
-            None => format!("ssh {user}@{host}"),
+            Some(command) => format!("ssh {destination}: {command}"),
+            None => format!("ssh {destination}"),
         },
         (_, Live::Terminal(_)) => command.map_or(label, str::to_owned),
         _ => label,

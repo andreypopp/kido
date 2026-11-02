@@ -384,19 +384,18 @@ fn a_run_stops_after_its_wait_and_a_stop_records_before_it_closes() {
         "the first outcome stands"
     );
 
-    let ended = run_of(&s, &caller, "run-ended", &["sh", "-c", "exit 0"]);
+    let ended = run_of(&s, &caller, "run-ended", &["sh", "-c", "exit 3"]);
     poll("the exited run's pane to die", || {
         s.row(pane_of(&ended))["dead"].is_object()
     });
-    let late = ko_as(
-        &s,
-        None,
-        &["run-stop", "--result", "completed", id_of(&ended)],
-        "",
-    );
+    let late = ko_as(&s, None, &["run-stop", id_of(&ended)], "");
     assert_eq!(code(&late), 5, "{late:?}");
     assert!(late.stderr.contains("already ended"), "{late:?}");
-    assert_eq!(ending(&s, id_of(&ended)).0, "completed");
+    assert_eq!(
+        ending(&s, id_of(&ended)).0,
+        "failed",
+        "a stop of an ended run records nothing"
+    );
 }
 
 #[test]

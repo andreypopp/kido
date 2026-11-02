@@ -49,7 +49,7 @@ enum Root {
 struct Identity {
     root: Root,
     session: Option<String>,
-    ssh: Option<(String, String)>,
+    ssh: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,7 +324,7 @@ fn identity(kind: &Kind) -> Identity {
             _ => None,
         },
         ssh: match kind {
-            Kind::Ssh { user, host, .. } => Some((user.clone(), host.clone())),
+            Kind::Ssh { destination, .. } => Some(destination.clone()),
             _ => None,
         },
     }
@@ -401,20 +401,17 @@ pub(crate) fn observe(
             ),
         },
         Kind::Ssh {
-            user,
-            host,
+            destination,
             pane: RemoteKind::Agent { name },
         } => Live::Ssh {
-            user: user.clone(),
-            host: host.clone(),
+            destination: destination.clone(),
             pane: Remote::Agent {
                 name: name.clone(),
                 status: agent(&mut t, false, None),
             },
         },
         Kind::Ssh {
-            user,
-            host,
+            destination,
             pane: RemoteKind::Terminal,
         } => {
             t.interactive |= match (telemetry.last_prompt, &telemetry.command) {
@@ -432,8 +429,7 @@ pub(crate) fn observe(
             );
             t = next;
             Live::Ssh {
-                user: user.clone(),
-                host: host.clone(),
+                destination: destination.clone(),
                 pane: Remote::Terminal {
                     interactive,
                     status,
@@ -910,9 +906,8 @@ mod tests {
         step("same claude", &claude, 5, done("claude-code"));
         step("root cleared", &Kind::Terminal, 5, Vec::new());
         step("claude again", &claude, 6, done("claude-code"));
-        let ssh = |host: &str| Kind::Ssh {
-            user: "u".to_owned(),
-            host: host.to_owned(),
+        let ssh = |destination: &str| Kind::Ssh {
+            destination: destination.to_owned(),
             pane: RemoteKind::Agent {
                 name: "pi".to_owned(),
             },
@@ -977,11 +972,8 @@ mod tests {
             };
             let mut vars = Vars::default();
             if let Some(host) = self.ssh_host {
-                vars.set(
-                    &VarName::new("ssh.dest").unwrap(),
-                    json!(format!("deploy@{host}")),
-                )
-                .unwrap();
+                vars.set(&VarName::new("ssh.dest").unwrap(), json!(host))
+                    .unwrap();
             }
             (telemetry, vars)
         }

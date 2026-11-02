@@ -423,8 +423,10 @@ their decisions:
   `title_set` or `msg_set`, because libghostty-vt's report has no
   such flags: an empty string is absent. `RESET` is not registered,
   because RIS already reports a `clear` and a progress `remove`.
-- `ko ssh` sets no variable when `ssh -G` fails, and runs ssh
-  unchanged and unmarked when an argument is not UTF-8.
+- `ko ssh` sets the mark to the destination as typed, as kido does
+  (docs/design-program-status.md, "The ssh mark"). It unsets the mark
+  when the arguments do not parse, and runs ssh unchanged and unmarked
+  when an argument is not UTF-8.
 - The row title: the status title for an agent, an ssh pane and a
   running command with no report; else the OSC 2 title, then the
   status title, then the command's basename.

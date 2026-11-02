@@ -142,7 +142,7 @@ Every tracked process has one run, `<state>/runs/<run-id>/`. Its
 start. It contains the outcome after the run ends. The run's pane has
 the `@kido_run` mark. See design.md, "Who is authoritative for what".
 
-A local pi that runs kido's extension (`kido-pi`) writes four pane
+A local pi that runs kido's extension (`kido-pi`) owns four pane
 options: `@kido_session`, `@kido_name`, `@kido_inbox` and
 `@kido_activity`. kido's classification and status read only these
 options, and trust them only while the pane has an OSC 7501 root with
@@ -150,16 +150,20 @@ options, and trust them only while the pane has an OSC 7501 root with
 
 ### The ssh mark
 
-kido's `ssh` shim runs `kido ssh`. This command resolves the destination
-with `ssh -G`. It sets the pane option `@kido_ssh` (`set-option -p`) to
-`<user>@<host>` immediately before it replaces itself with ssh.
+kido's `ssh` shim runs `kido ssh`. This command sets the pane option
+`@kido_ssh` (`set-option -p`) to the destination argument as typed,
+immediately before it replaces itself with ssh. kido does not resolve
+it: `ssh fish000` and `ssh -l bob fish000` give `fish000`, and
+`ssh bob@fish000` gives `bob@fish000`. If kido cannot parse the
+arguments, or the destination is absent, empty or hyphen-prefixed, it
+unsets the mark but still runs ssh.
 It never unsets the option. kido trusts `@kido_ssh` only while
 `#{pane_current_command}` is `ssh`. The next `kido ssh` in the pane
 overwrites it.
 
 Before exec, `kido ssh` also sets the pane option `@kido_ssh_args`.
 Its value is a JSON array of strings. The last element is the destination
-as entered, not the host from `ssh -G`. The preceding elements are ssh
+as entered, the same token as `@kido_ssh`. The preceding elements are ssh
 options and their values, in the user's order, before the destination.
 Grouped options and attached values become separate elements. ssh parses
 options before and after the destination, until `--` or the first remote
@@ -270,14 +274,15 @@ Pi and Claude Code report their status through OSC 7501.
   - Parent links.
   - Run records.
 
-### `Ssh { user; host; pane }`
+### `Ssh { destination; pane }`
 
 - Detected: the ssh mark, trusted while the pane's command is `ssh`.
   A remote program's OSC 133 and OSC 7501 reach the local pane through
   ssh like other output. `pane` is the kind of the remote root record.
-- Destination: typed `user` and `host`. The TUI labels a remote terminal
-  `ssh <user>@<host>`. While an interactive remote command runs, it adds
-  `: <command line>`. A `Remote_agent` keeps its agent title.
+- Destination: the typed destination from the mark. The TUI labels a
+  remote terminal `ssh <destination>`, and search matches that text.
+  While an interactive remote command runs, it adds `: <command line>`.
+  A `Remote_agent` keeps its agent title.
 - Status: a `Remote_agent` uses its records' reduction. Otherwise, the
   pane is an ordinary command until a remote OSC 133 prompt strictly
   later than ssh's start. It reports running while ssh runs. Once that

@@ -2,7 +2,7 @@ type t =
   | Terminal
   | Some_agent of { name : string }
   | Pi_agent of { session : string; name : string; inbox : string; activity : string }
-  | Ssh of { user : string; host : string; pane : ssh_kind }
+  | Ssh of { destination : string; pane : ssh_kind }
 
 and ssh_kind = Remote_terminal | Remote_agent of { name : string }
 
@@ -15,13 +15,13 @@ let classify (p : State.pane) =
     | None -> None
   in
   match (p.ssh, p.current_command, app) with
-  | Some (user, host), "ssh", app ->
+  | Some destination, "ssh", app ->
       let pane =
         match app with
         | Some (("pi" | "claude-code") as name) -> Remote_agent { name }
         | _ -> Remote_terminal
       in
-      Ssh { user; host; pane }
+      Ssh { destination; pane }
   | _, _, Some "pi" -> (
       match p.session with
       | Some session ->
