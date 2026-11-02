@@ -1,19 +1,46 @@
 use ko_sys::event::{Events, Interest, Mode, Poll, Token};
 use ko_vt::compress::Tick;
 
+use crate::io::Stop;
 use crate::pane::Pane;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Outcome {
     Stopped,
-    Failed(Option<String>),
+    Failed(Failure),
 }
 
-fn ended(pane: &mut Pane) -> Outcome {
-    if pane.stopping() {
-        Outcome::Stopped
-    } else {
-        Outcome::Failed(pane.take_failure())
+#[derive(Debug)]
+pub enum Failure {
+    Call(&'static str, std::io::Error),
+    Invalid,
+    Setup(String),
+    OutputStalled,
+    RingFull,
+}
+
+impl Failure {
+    pub(crate) fn call(call: &'static str) -> impl FnOnce(std::io::Error) -> Failure {
+        move |error| Failure::Call(call, error)
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::Call(call, error) => write!(f, "{call}: {error}"),
+            Failure::Invalid => f.write_str("invalid control frame"),
+            Failure::Setup(message) => f.write_str(message),
+            Failure::OutputStalled => f.write_str("the server did not read the control socket"),
+            Failure::RingFull => f.write_str("no room in the ring for a record"),
+        }
+    }
+}
+
+fn ended(pane: &Pane, stop: Stop) -> Outcome {
+    match stop {
+        Stop::Failed(failure) if !pane.stopping() => Outcome::Failed(failure),
+        _ => Outcome::Stopped,
     }
 }
 
@@ -41,8 +68,8 @@ fn turns(pane: &mut Pane) -> Outcome {
             let token = *master.get_or_insert_with(|| poll.watch(fd, Interest::Idle));
             poll.interest(token, interest);
         }
-        if poll.turn(mode, &mut events).is_err() {
-            return Outcome::Failed(None);
+        if let Err(error) = poll.turn(mode, &mut events) {
+            return Outcome::Failed(Failure::call("poll")(error));
         }
         let ready = |token: Token| {
             events
@@ -51,17 +78,21 @@ fn turns(pane: &mut Pane) -> Outcome {
                 .any(|ready| ready.token == token && ready.read)
         };
         let activity = !events.ready().is_empty() || !events.due().is_empty();
-        if ready(input) && pane.control().is_err() {
-            return ended(pane);
+        if ready(input)
+            && let Err(stop) = pane.control()
+        {
+            return ended(pane, stop);
         }
         pane.flush_pty();
-        if signals.is_some_and(ready) && pane.signaled().is_err() {
-            return Outcome::Failed(None);
+        if signals.is_some_and(ready)
+            && let Err(error) = pane.signaled()
+        {
+            return Outcome::Failed(Failure::call("read the signal pipe")(error));
         }
         pane.settle_child();
         let committed = (master.is_some_and(ready) || pane.exit_pending()) && pane.read_pty();
-        if pane.dead().is_err() || pane.flush().is_err() {
-            return ended(pane);
+        if let Err(stop) = pane.dead().and_then(|()| pane.flush()) {
+            return ended(pane, stop);
         }
         mode = Mode::Wait;
         if activity || committed || pane.compress_pending() {
@@ -72,8 +103,8 @@ fn turns(pane: &mut Pane) -> Outcome {
                     mode = Mode::Peek;
                 }
                 Tick::After(after) => {
-                    if poll.start(timer, after, None).is_err() {
-                        return Outcome::Failed(None);
+                    if let Err(error) = poll.start(timer, after, None) {
+                        return Outcome::Failed(Failure::call("arm the tick timer")(error));
                     }
                 }
             }

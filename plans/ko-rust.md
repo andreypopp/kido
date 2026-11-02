@@ -653,6 +653,16 @@ RE forced these decisions:
      `make verify` on macOS", and the deletion of the Go suite is in
      the same change as the Rust suite; there was no period with an
      `e2e-rs` stage.
+123. The client draws the dead line from the shown view's dead marker,
+     not from the `dead` event of the `/client` link. The two travel on
+     different sockets, so the event could arrive before the pane's
+     last output and the line was drawn over an empty snapshot
+     (`client_dead_pane_line` failed about once in 33 runs). A view
+     whose snapshot starts after the marker would never see it, so
+     `ko-pane` puts the dead marker into the ring again after every
+     snapshot of a dead pane; views already past it get a repeat that
+     changes nothing. The sidebar's `†` and Ctrl+D still follow the
+     event.
 
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from

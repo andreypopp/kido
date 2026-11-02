@@ -15,6 +15,7 @@ use ko_vt::compress::{Compress, Tick};
 use ko_vt::{Format, Terminal};
 
 use crate::io::{Fault, Io, Out, Stop};
+use crate::run::Failure;
 
 const SCREEN_CHUNK: usize = 65536;
 const MAX_READS: u8 = 16;
@@ -32,7 +33,7 @@ enum Launch {
 enum Life {
     Running,
     Exited(Exit),
-    Dead,
+    Dead(Dead),
 }
 
 #[derive(Debug)]
@@ -175,7 +176,7 @@ impl Slices<'_> {
                 .payload(self.room.saturating_add(SLICE_HEADER))
                 .and_then(|payload| payload.get_mut(start..))
                 .and_then(|room| room.get_mut(..take))
-                .ok_or(Stop)?
+                .ok_or(Stop::Failed(Failure::RingFull))?
                 .copy_from_slice(head);
             self.used = self.used.saturating_add(take);
             bytes = rest;
@@ -241,6 +242,12 @@ fn simple(live: &mut Option<Live>, out: &mut Out, request: Request<'_>) -> Resul
             return Err(Fault::Invalid);
         }
     }
+    Ok(())
+}
+
+fn put_dead(io: &mut Io, dead: Dead) -> Result<(), Stop> {
+    io.wait_space(DEAD_LEN)?;
+    io.out.put_marker(Marker::Dead(dead));
     Ok(())
 }
 
@@ -361,9 +368,19 @@ impl Pane {
             first: true,
             screen,
         };
-        live.vt
-            .snapshot(screen, |bytes| slices.emit(bytes).is_ok())
-            .map_err(|_| Fault::Stop)?;
+        let mut stopped = None;
+        let snapshot = live.vt.snapshot(screen, |bytes| match slices.emit(bytes) {
+            Ok(()) => true,
+            Err(stop) => {
+                stopped = Some(stop);
+                false
+            }
+        });
+        match (snapshot, stopped) {
+            (_, Some(stop)) => return Err(Fault::Stop(stop)),
+            (Err(error), None) => return Err(vt_fault(error)),
+            (Ok(()), None) => {}
+        }
         slices.commit();
         self.io.wait_space(SLICE_HEADER)?;
         self.io.out.put_slice(Slice {
@@ -371,6 +388,13 @@ impl Pane {
             last: true,
             screen,
         });
+        if let Some(Process {
+            life: Life::Dead(dead),
+            ..
+        }) = &live.process
+        {
+            put_dead(&mut self.io, *dead)?;
+        }
         self.io.out.frame(&FromPane::SnapshotDone(req));
         Ok(())
     }
@@ -381,14 +405,10 @@ impl Pane {
             let range = match pending.next() {
                 Ok(Some(range)) => range,
                 Ok(None) => return Ok(()),
-                Err(_) => {
-                    self.io.out.report(&Fault::Invalid);
-                    return Err(Stop);
-                }
+                Err(_) => return Err(self.io.out.report(Fault::Invalid)),
             };
             if let Err(fault) = self.dispatch(pending.frame(range)) {
-                self.io.out.report(&fault);
-                return Err(Stop);
+                return Err(self.io.out.report(fault));
             }
         }
     }
@@ -397,10 +417,7 @@ impl Pane {
         let range = match self.io.input.next() {
             Ok(Some(range)) => range,
             Ok(None) => return Ok(false),
-            Err(_) => {
-                self.io.out.report(&Fault::Invalid);
-                return Err(Stop);
-            }
+            Err(_) => return Err(self.io.out.report(Fault::Invalid)),
         };
         let bytes = self.io.input.frame(range);
         let fault = if matches!(
@@ -419,8 +436,7 @@ impl Pane {
                 .and_then(|request| simple(&mut self.live, &mut self.io.out, request))
         };
         if let Err(fault) = fault {
-            self.io.out.report(&fault);
-            return Err(Stop);
+            return Err(self.io.out.report(fault));
         }
         Ok(true)
     }
@@ -480,10 +496,6 @@ impl Pane {
 
     pub(crate) fn stopping(&self) -> bool {
         self.io.out.stopping
-    }
-
-    pub(crate) fn take_failure(&mut self) -> Option<String> {
-        self.io.out.failure.take()
     }
 
     pub(crate) fn signaled(&mut self) -> std::io::Result<()> {
@@ -603,9 +615,8 @@ impl Pane {
             at: Mono::now(),
             exit,
         };
-        self.io.wait_space(DEAD_LEN)?;
-        self.io.out.put_marker(Marker::Dead(dead));
-        process.life = Life::Dead;
+        put_dead(&mut self.io, dead)?;
+        process.life = Life::Dead(dead);
         self.io.out.frame(&FromPane::Dead(dead));
         Ok(())
     }

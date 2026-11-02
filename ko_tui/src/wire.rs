@@ -9,7 +9,7 @@ use ko_server::http::{self, Response, call};
 use ko_server::ids::ClientId;
 use ko_server::protocol::Route;
 use ko_server::ws::{accepted, upgrade_request};
-use ko_sys::event::{Interest, Poll, PollRead, Reads, Token};
+use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token};
 use ko_sys::fd::{self, Queue};
 use tungstenite::protocol::{Role, WebSocketConfig, WebSocketContext};
 use tungstenite::{Bytes, Error, Message, Utf8Bytes};
@@ -20,6 +20,16 @@ const MAX_MESSAGE: usize = 128 << 20;
 const RECEIVE_BUFFER: usize = 1 << 20;
 const READ_TIMEOUT: Duration = Duration::from_secs(40);
 pub(crate) const WATCHDOG: Duration = Duration::from_secs(40);
+
+// poll cannot see frames that the upgrade read already buffered in the link,
+// so the owner of a new link dispatches one read at once.
+pub(crate) fn buffered(token: Token) -> Ready {
+    Ready {
+        token,
+        read: true,
+        write: false,
+    }
+}
 
 pub(crate) fn text(error: impl Display) -> String {
     error.to_string()

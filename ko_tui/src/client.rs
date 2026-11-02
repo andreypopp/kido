@@ -384,6 +384,7 @@ impl Client {
             escape,
             watchdog,
         };
+        client.client(wire::buffered(client.link_token), Instant::now())?;
         match client.panes.first().map(|pane| pane.id) {
             None => client.create_pane()?,
             Some(pane) => client.switch(pane)?,
@@ -404,16 +405,6 @@ impl Client {
             .iter()
             .find(|row| row.id == pane)
             .and_then(|row| row.dead.clone())
-    }
-
-    fn shown(&self) -> bool {
-        matches!(
-            &self.view,
-            View::Showing {
-                serial: Some(_),
-                ..
-            }
-        )
     }
 
     fn received(&self) -> Instant {
@@ -437,10 +428,14 @@ impl Client {
             pane_x: self.panel.x(cols),
             pane_rows: rows.saturating_sub(usize::from(self.warning) * WARNING_ROWS),
             warning: self.warning,
-            dead: self
-                .dead()
-                .filter(|_| self.shown())
-                .map(|dead| sidebar::dead_line(&dead)),
+            dead: match &self.view {
+                View::Showing {
+                    mirror,
+                    serial: Some(_),
+                    ..
+                } => mirror.dead().map(sidebar::dead_line),
+                _ => None,
+            },
             choosing: match self.panel {
                 Panel::Choosing(chosen) => Some(chosen),
                 _ => None,

@@ -14,7 +14,7 @@ use ko_vt::render::Frame;
 use ko_vt::{Extent, ReadyScan, Terminal};
 use tungstenite::Bytes;
 
-use crate::wire::{Link, Next, text};
+use crate::wire::{self, Link, Next, text};
 
 const BURST: Duration = Duration::from_millis(1);
 const YIELD: Duration = Duration::from_micros(500);
@@ -174,6 +174,7 @@ pub(crate) struct Mirror {
     compressor: Option<JoinHandle<()>>,
     limits: Limits,
     assembly: Option<Assembly>,
+    dead: Option<protocol::Dead>,
 }
 
 impl Mirror {
@@ -206,14 +207,21 @@ impl Mirror {
             wake: Condvar::new(),
         });
         let thread = Arc::clone(&shared);
-        Ok(Mirror {
+        let mut mirror = Mirror {
             link,
             token,
             shared,
             compressor: Some(std::thread::spawn(move || compress_loop(&thread))),
             limits,
             assembly: None,
-        })
+            dead: None,
+        };
+        mirror.handle(poll, wire::buffered(token), Instant::now())?;
+        Ok(mirror)
+    }
+
+    pub(crate) fn dead(&self) -> Option<&protocol::Dead> {
+        self.dead.as_ref()
     }
 
     pub(crate) fn token(&self) -> Token {
@@ -281,6 +289,12 @@ impl Mirror {
         Ok(())
     }
 
+    fn note(&mut self, marker: &Marker) {
+        if let Marker::Dead(dead) = marker {
+            self.dead = Some(dead.clone());
+        }
+    }
+
     fn marker(&mut self, state: &mut State, event: &str) -> Result<(), String> {
         let ViewEvent::Marked(marked) = protocol::decode(event.as_bytes()).map_err(text)? else {
             return Ok(());
@@ -289,6 +303,7 @@ impl Mirror {
             assembly.following.push(Following::Marker(marked.marker));
             return Ok(());
         }
+        self.note(&marked.marker);
         match &mut state.surface {
             Surface::Full(screen) => apply(&mut screen.vt, &marked.marker).map_err(text),
             _ => Ok(()),
@@ -369,6 +384,9 @@ impl Mirror {
         vt.configure(self.limits).map_err(text)?;
         let mut screen = Screen::new(vt).map_err(text)?;
         for next in assembly.following {
+            if let Following::Marker(marker) = &next {
+                self.note(marker);
+            }
             match next {
                 Following::Marker(marker) if full => {
                     apply(&mut screen.vt, &marker).map_err(text)?;
@@ -600,6 +618,38 @@ mod tests {
         mirror.frame(&mut frame).unwrap();
         let cursor = frame.cursor.map(|cursor| cursor.x);
         assert_eq!((frame.cols, frame.rows, cursor), (8, 2, Some(7)));
+    }
+
+    #[test]
+    fn records_buffered_with_the_upgrade_response_are_read_without_new_socket_data() {
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let record = slices(
+            &server(16, 2, "buffered").snapshot_bytes(false).unwrap(),
+            4096,
+        )
+        .remove(0);
+        let length = u16::try_from(record.len()).unwrap().to_be_bytes();
+        let rest = [&[0x82, 126][..], &length, &record].concat();
+        let mut poll = Poll::new();
+        let mirror = Mirror::with(Link::of(ours, rest), DEFAULT_LIMITS, &mut poll).unwrap();
+        assert_eq!(
+            (kind(&mirror), row(&mirror, 0)),
+            ("full", "buffered".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_dead_marker_counts_once_the_output_before_it_is_applied() {
+        let (mut mirror, _theirs, _poll) = mirror();
+        let records = slices(&server(8, 2, "x").snapshot_bytes(false).unwrap(), 10);
+        let dead = r#"["marked",{"offset":0,"marker":["dead",{"at":1,"cause":["exited",3]}]}]"#;
+        feed(&mut mirror, &records[0]).unwrap();
+        marked(&mut mirror, dead);
+        let queued = mirror.dead().cloned();
+        for record in &records[1..] {
+            feed(&mut mirror, record).unwrap();
+        }
+        assert_eq!((queued, mirror.dead().map(|dead| dead.at)), (None, Some(1)));
     }
 
     #[test]

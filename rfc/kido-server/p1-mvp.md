@@ -125,7 +125,10 @@ touched in P1 and nothing in kido depends on the new directories.
   ring's dead marker and the `dead` frame on the control socket, two
   channels; the server makes the pane dead (row and event) only on the
   control frame, so a client always sees the pane's last title and
-  pwd before `dead`.
+  pwd before `dead`. A snapshot of a dead pane is followed in the ring
+  by its dead marker again, with the same time and status, so every
+  view reaches a dead marker after the pane's last output, also a view
+  whose snapshot starts after the first marker.
 
 ### 3.2 Panes
 
@@ -262,7 +265,8 @@ changes (6.2, 6.4, 6.5).
   region. The mirror's viewport is what scrolls: the wheel moves it
   with libghostty-vt's scroll API, 3 rows a notch, and any output or
   key returns it to the bottom, as a terminal does.
-- **A dead pane.** While the shown pane is dead, the bottom row of the
+- **A dead pane.** Once the shown view has applied a dead marker (after
+  its snapshot, so after the pane's last output), the bottom row of the
   pane region shows `[exited N — Ctrl+D to remove]`, or
   `[killed by SIGNAME — Ctrl+D to remove]` for a signal (`signal N`
   for a number without a name), in reverse video across the pane
@@ -376,7 +380,11 @@ changes (6.2, 6.4, 6.5).
   started at once start one server. It opens `/client` with a hello;
   the `welcome` and the first `topology` follow. If the list is empty,
   `POST /panes`; send `{select}` for the first pane and open its view.
-  Switching a pane is `{select}` and a new view. Detach, closing the
+  Switching a pane is `{select}` and a new view. The reads of the
+  upgrade response and the `welcome` can already hold the next
+  messages, which `poll` does not see, so the client handles each link
+  once as readable when it starts to watch it. The pane region stays
+  blank until the view's first snapshot is applied. Detach, closing the
   outer window and a crash all close `/client`; the server then
   deletes the client and closes its views. A new `ko` is a new hello:
   it selects the first pane and opens its view with a full snapshot;

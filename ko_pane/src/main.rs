@@ -14,8 +14,8 @@ fn main() -> ExitCode {
     pane.finish();
     match outcome {
         Outcome::Stopped => ExitCode::SUCCESS,
-        Outcome::Failed(cause) => {
-            eprintln!("pane control failed: {}", cause.unwrap_or_default());
+        Outcome::Failed(failure) => {
+            eprintln!("pane control failed: {failure}");
             ExitCode::from(2)
         }
     }

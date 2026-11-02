@@ -11,24 +11,34 @@ use ko_sys::event::{Events, Interest, Mode, Poll, Timer, Token};
 use ko_sys::fd::Queue;
 use ko_sys::signal::{Signal, Signals};
 
+use crate::run::Failure;
+
 const CHUNK: usize = 65536;
 const SHRINK: usize = 1 << 20;
 const WRITE_WAIT: Duration = Duration::from_secs(5);
-const INVALID: &[u8] = b"invalid control frame";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Stop;
+#[derive(Debug)]
+pub(crate) enum Stop {
+    Requested,
+    Failed(Failure),
+}
 
-#[derive(Debug, PartialEq, Eq)]
+impl Stop {
+    pub(crate) fn call(call: &'static str) -> impl FnOnce(io::Error) -> Stop {
+        move |error| Stop::Failed(Failure::call(call)(error))
+    }
+}
+
+#[derive(Debug)]
 pub(crate) enum Fault {
     Invalid,
     Setup(String),
-    Stop,
+    Stop(Stop),
 }
 
 impl From<Stop> for Fault {
-    fn from(Stop: Stop) -> Fault {
-        Fault::Stop
+    fn from(stop: Stop) -> Fault {
+        Fault::Stop(stop)
     }
 }
 
@@ -129,7 +139,6 @@ pub(crate) struct Out {
     pub(crate) stopping: bool,
     signals: Option<Signals>,
     pub(crate) child_signal: bool,
-    pub(crate) failure: Option<String>,
     nested: Poll,
     tokens: Tokens,
     deadline: Timer,
@@ -157,7 +166,6 @@ impl Out {
             stopping: false,
             signals,
             child_signal: false,
-            failure: None,
             nested,
             tokens,
             deadline,
@@ -205,20 +213,20 @@ impl Out {
         }
     }
 
-    pub(crate) fn report(&mut self, fault: &Fault) {
-        let message = match fault {
-            Fault::Invalid => INVALID,
-            Fault::Setup(message) => message.as_bytes(),
-            Fault::Stop => return,
+    pub(crate) fn report(&mut self, fault: Fault) -> Stop {
+        let failure = match fault {
+            Fault::Stop(stop) => return stop,
+            Fault::Invalid => Failure::Invalid,
+            Fault::Setup(message) => Failure::Setup(message),
         };
-        self.frame(&FromPane::Error(message));
-        self.failure = Some(String::from_utf8_lossy(message).into_owned());
+        self.frame(&FromPane::Error(failure.to_string().as_bytes()));
+        Stop::Failed(failure)
     }
 
     pub(crate) fn flush(&mut self) -> Result<(), Stop> {
         self.output
             .flush(self.output_fd.as_fd())
-            .map_err(|_| Stop)?;
+            .map_err(Stop::call("write to the control socket"))?;
         if self.output.is_empty() && self.output.bytes.capacity() > SHRINK {
             self.output.bytes = Vec::new();
         }
@@ -277,10 +285,14 @@ impl Out {
         while !self.output.is_empty() && !self.stopping {
             self.flush()?;
             if !self.output.is_empty() && self.poll_once(false, Some(WRITE_WAIT))?.timed_out {
-                return Err(Stop);
+                return Err(Stop::Failed(Failure::OutputStalled));
             }
         }
-        if self.stopping { Err(Stop) } else { Ok(()) }
+        if self.stopping {
+            Err(Stop::Requested)
+        } else {
+            Ok(())
+        }
     }
 
     fn poll_once(&mut self, reading: bool, wait: Option<Duration>) -> Result<Polled, Stop> {
@@ -294,12 +306,12 @@ impl Out {
             Some(wait) => self
                 .nested
                 .start(self.deadline, wait, None)
-                .map_err(|_| Stop)?,
+                .map_err(Stop::call("arm the write deadline"))?,
             None => self.nested.stop(self.deadline),
         }
         self.nested
             .turn(Mode::Wait, &mut self.polled)
-            .map_err(|_| Stop)?;
+            .map_err(Stop::call("poll"))?;
         let mut polled = Polled {
             input: false,
             timed_out: self
@@ -314,7 +326,8 @@ impl Out {
             signaled |= Some(ready.token) == self.tokens.signals && ready.read;
         }
         if signaled {
-            self.signaled().map_err(|_| Stop)?;
+            self.signaled()
+                .map_err(Stop::call("read the signal pipe"))?;
         }
         self.flush()?;
         Ok(polled)
@@ -345,12 +358,10 @@ impl Io {
     pub(crate) fn fill(&mut self) -> Result<bool, Stop> {
         match self.input.fill(self.out.input_fd.as_fd()) {
             Ok(eof) => Ok(eof),
-            Err(error) => {
-                if error.kind() == io::ErrorKind::InvalidData {
-                    self.out.report(&Fault::Invalid);
-                }
-                Err(Stop)
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                Err(self.out.report(Fault::Invalid))
             }
+            Err(error) => Err(Stop::call("read the control socket")(error)),
         }
     }
 
@@ -361,7 +372,11 @@ impl Io {
                 self.nested_control()?;
             }
         }
-        if self.out.stopping { Err(Stop) } else { Ok(()) }
+        if self.out.stopping {
+            Err(Stop::Requested)
+        } else {
+            Ok(())
+        }
     }
 
     fn nested_control(&mut self) -> Result<(), Stop> {
@@ -370,10 +385,7 @@ impl Io {
             let range = match self.input.next() {
                 Ok(Some(range)) => range,
                 Ok(None) => break,
-                Err(_) => {
-                    self.out.report(&Fault::Invalid);
-                    return Err(Stop);
-                }
+                Err(_) => return Err(self.out.report(Fault::Invalid)),
             };
             let frame = self.input.frame(range);
             match frame::kind(frame) {
@@ -382,8 +394,7 @@ impl Io {
                     if matches!(frame::decode_request(frame), Ok(Request::Tail)) {
                         self.out.full = false;
                     } else {
-                        self.out.report(&Fault::Invalid);
-                        return Err(Stop);
+                        return Err(self.out.report(Fault::Invalid));
                     }
                 }
                 _ => self.deferred.push(frame),
