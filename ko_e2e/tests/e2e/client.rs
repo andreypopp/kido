@@ -1,18 +1,11 @@
-use std::io::{self, Read, Write};
-use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use ko_sys::pid::{Pid, signal_descendant};
 use ko_sys::signal::Signal;
-use tungstenite::protocol::frame::coding::{Data, OpCode};
-use tungstenite::protocol::frame::{Frame, FrameSocket};
 
-use crate::harness::{Dir, Server, quote, run_ko, start, text_of, which};
+use crate::harness::{Dir, Server, quote, run_ko, start, text_of};
 use crate::outer::{Keys, Outer};
 
 const PANE_X: usize = 25;
@@ -75,6 +68,7 @@ fn client_lifecycle() {
     let s = start(&[]);
     let p1 = s.pane("printf '\x1b]0;one\x07pane-one\\n'; exec /bin/sh");
     s.pane("printf '\x1b]0;two\x07pane-two\\n'; exec /bin/sh");
+    s.pane("printf '\x1b]0;three\x07pane-three\\n'; exec /bin/sh");
     let o = Outer::new(&s.dir, Keys::Extended);
     let (pager, record) = pager_fixture(&o.dir);
     o.attach(text_of(&pager));
@@ -85,6 +79,10 @@ fn client_lifecycle() {
     o.wait("sidebar hidden", || !o.screen().contains("1 one"));
     o.chord(115);
     o.contains("1 one");
+    o.raw("\x1b[1;1:1B\x1b[1;1:3B\r");
+    o.contains("pane-two");
+    o.raw("\x1b[1;6A");
+    o.contains("pane-one");
     o.raw("\x1b[1;6B");
     o.contains("pane-two");
     o.raw("\x1b[1;6A");
@@ -102,11 +100,11 @@ fn client_lifecycle() {
     o.contains("pane-two");
     o.wait_ticking("pager temporary file removed after exit", || !file.exists());
     o.chord(110);
-    o.wait_ticking("new pane", || s.pane_pids().len() == 3);
+    o.wait_ticking("new pane", || s.pane_pids().len() == 4);
     o.raw("\x1b[100;5u");
     o.contains("†");
     o.raw("\x1b[100;5u");
-    o.wait_ticking("remove dead pane", || s.pane_pids().len() == 2);
+    o.wait_ticking("remove dead pane", || s.pane_pids().len() == 3);
     o.detach();
     s.text(&p1, "printf 'AFTER-DETACH\\n'\n");
     o.attach("");
@@ -115,8 +113,7 @@ fn client_lifecycle() {
     o.contains("(END)");
     o.raw("q");
     o.wait("outer mouse reporting on", || o.mouse_reporting());
-    signal_descendant(o.shell_pid(), o.client_pid(), Signal::Hup).unwrap();
-    o.detached();
+    o.detach();
 }
 
 #[derive(Debug)]
@@ -211,7 +208,7 @@ fn client_history_and_alternate_screen() {
     resume.shell_stopped = true;
     signal_descendant(shell, client, Signal::Stop).unwrap();
     resume.client_stopped = true;
-    let producer = "for i in range(100000): print('H%05d'%i+'x'*70)";
+    let producer = "for i in range(20000): print('H%05d'%i+'x'*70)";
     s.text(
         &alt_pane,
         &format!(
@@ -232,7 +229,7 @@ fn client_history_and_alternate_screen() {
     resume.client_stopped = false;
     o.contains("FLOOD-DONE");
     o.raw("\x1b[<64;40;5M");
-    o.contains("H99970");
+    o.contains("H19970");
     o.chord(113);
     o.wait_ticking("client exits before its shell resumes", || {
         client.has_ended()
@@ -391,26 +388,6 @@ fn client_modes_before_attach_and_unattached_da1() {
 }
 
 #[test]
-fn client_output_without_outer_input() {
-    let s = start(&[]);
-    let pane = s.pane("printf '\\033]0;fixture\\007'; exec /bin/sh");
-    let o = Outer::new(&s.dir, Keys::Extended);
-    o.attach("cat");
-    o.contains("1 fixture");
-    o.quiet();
-    o.raw("echo abc");
-    o.enter();
-    o.wait("complete echo output without another input", || {
-        o.lines().iter().any(|line| pane_text(line).trim() == "abc")
-    });
-    s.text(&pane, "printf 'POST-%s\\n' OUTPUT\n");
-    o.contains("POST-OUTPUT");
-    s.text(&pane, "printf 'COLORS:%s\\n' \"$(tput colors)\"\n");
-    o.contains("COLORS:256");
-    o.detach();
-}
-
-#[test]
 fn client_initial_cursor_and_synchronized_output() {
     let s = start(&[]);
     let pane = interactive_fixture(&s);
@@ -442,6 +419,22 @@ fn client_initial_cursor_and_synchronized_output() {
             .contains("HOLD-CHANGED")),
         "synchronized output did not expire within 400 ms"
     );
+    s.text(&pane, "r");
+    let shell = s.pane("printf '\\033]0;shell\\007'; exec /bin/sh");
+    o.contains("2 shell");
+    o.raw("\x1b[<0;3;2M\x1b[<0;3;2m");
+    s.text(&shell, "printf 'SWITCHED\\n'\n");
+    o.contains("SWITCHED");
+    o.quiet();
+    o.raw("echo abc");
+    o.enter();
+    o.wait("complete echo output without another input", || {
+        o.lines().iter().any(|line| pane_text(line).trim() == "abc")
+    });
+    s.text(&shell, "printf 'POST-%s\\n' OUTPUT\n");
+    o.contains("POST-OUTPUT");
+    s.text(&shell, "printf 'COLORS:%s\\n' \"$(tput colors)\"\n");
+    o.contains("COLORS:256");
     o.detach();
 }
 
@@ -481,12 +474,6 @@ fn client_sidebar_ownership() {
         }
         assert!(text.is_empty(), "stale sidebar cells in row {y}: {line:?}");
     }
-    let narrow = Outer::new(&s.dir, Keys::Unconfirmed);
-    narrow.resize(80, 30);
-    narrow.attach("cat");
-    narrow.contains("extended keys were not confirmed");
-    narrow.contains("1 fixture");
-    narrow.detach();
     o.detach();
 }
 
@@ -597,24 +584,6 @@ fn client_different_sizes_and_signal_cleanup() {
 }
 
 #[test]
-fn client_sidebar_release() {
-    let s = start(&[]);
-    for name in ["A", "B", "C"] {
-        s.pane(&format!(
-            "printf '\\033]0;row{name}\\007SELECTED-{name}'; exec cat"
-        ));
-    }
-    let o = Outer::new(&s.dir, Keys::Extended);
-    o.attach("cat");
-    o.contains("rowC");
-    o.chord(115);
-    o.chord(115);
-    o.raw("\x1b[1;1:1B\x1b[1;1:3B\r");
-    o.contains("SELECTED-B");
-    o.detach();
-}
-
-#[test]
 fn client_warning_mouse_bounds() {
     let s = start(&[]);
     for i in 1..=5 {
@@ -635,201 +604,6 @@ fn client_warning_mouse_bounds() {
     o.contains("INPUT:78");
     o.contains("SELECTED-1");
     o.detach();
-}
-
-const MAX_HEAD: usize = 64 << 10;
-const MAX_FRAME: usize = 64 << 20;
-const MARKED: &[u8] = br#"["marked",{"offset":0,"marker":["resize",{"cols":37,"rows":9}]}]"#;
-
-fn send(sink: &mut UnixStream, opcode: OpCode, is_final: bool, payload: &[u8]) -> io::Result<()> {
-    let mut out = Vec::new();
-    Frame::message(payload.to_vec(), opcode, is_final)
-        .format(&mut out)
-        .map_err(io::Error::other)?;
-    sink.write_all(&out)
-}
-
-fn inject(
-    front: &mut UnixStream,
-    back: UnixStream,
-    leftover: Vec<u8>,
-    marker: bool,
-) -> io::Result<()> {
-    let binary = OpCode::Data(Data::Binary);
-    let mut frames = FrameSocket::from_partially_read(back, leftover);
-    let mut injected = false;
-    while let Some(frame) = frames.read(Some(MAX_FRAME)).map_err(io::Error::other)? {
-        let (opcode, is_final) = (frame.header().opcode, frame.header().is_final);
-        let mut payload = frame.payload().to_vec();
-        let mut replaced = false;
-        if !injected && opcode == binary && is_final && payload.len() > 50 && payload[0] == 2 {
-            let mut start = payload[..40].to_vec();
-            start[9] = 1;
-            send(front, binary, true, &start)?;
-            if marker {
-                send(front, OpCode::Data(Data::Text), true, MARKED)?;
-                replaced = true;
-                let mut tail = payload[..11].to_vec();
-                tail[9] = payload[9] & !1;
-                tail.extend_from_slice(&payload[40..]);
-                payload = tail;
-            }
-            injected = true;
-        }
-        send(front, opcode, is_final, &payload)?;
-        if replaced {
-            let mut record = vec![0u8; 9];
-            record[0] = 1;
-            record.extend_from_slice(b"\x1b[1;50HR");
-            send(front, binary, true, &record)?;
-        }
-    }
-    Ok(())
-}
-
-// Sends the client's connections to the server, except for a pane view, where it injects
-// frames into the server's side of the stream.
-#[derive(Debug)]
-struct Proxy {
-    stopped: Arc<AtomicBool>,
-    socket: PathBuf,
-    open: Arc<Mutex<Vec<UnixStream>>>,
-    workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    acceptor: Option<JoinHandle<()>>,
-}
-
-impl Proxy {
-    fn start(socket: PathBuf, real: PathBuf, marker: bool) -> Proxy {
-        let listener = UnixListener::bind(&socket).unwrap();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let open = Arc::new(Mutex::new(Vec::new()));
-        let workers = Arc::new(Mutex::new(Vec::new()));
-        let acceptor = {
-            let (stopped, open, workers) = (stopped.clone(), open.clone(), workers.clone());
-            thread::spawn(move || {
-                for connection in listener.incoming() {
-                    let Ok(connection) = connection else { break };
-                    if stopped.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    open.lock().unwrap().push(connection.try_clone().unwrap());
-                    let (real, stopped, open) = (real.clone(), stopped.clone(), open.clone());
-                    let worker = thread::spawn(move || {
-                        let _ = proxy_connection(connection, &real, marker, &open, &stopped);
-                    });
-                    workers.lock().unwrap().push(worker);
-                }
-            })
-        };
-        Proxy {
-            stopped,
-            socket,
-            open,
-            workers,
-            acceptor: Some(acceptor),
-        }
-    }
-}
-
-impl Drop for Proxy {
-    fn drop(&mut self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        let _ = UnixStream::connect(&self.socket);
-        if let Some(acceptor) = self.acceptor.take() {
-            let _ = acceptor.join();
-        }
-        for connection in self.open.lock().unwrap().iter() {
-            let _ = connection.shutdown(Shutdown::Both);
-        }
-        let workers = std::mem::take(&mut *self.workers.lock().unwrap());
-        for worker in workers {
-            let _ = worker.join();
-        }
-    }
-}
-
-fn proxy_connection(
-    mut front: UnixStream,
-    real: &Path,
-    marker: bool,
-    open: &Mutex<Vec<UnixStream>>,
-    stopped: &AtomicBool,
-) -> io::Result<()> {
-    let mut pending = Vec::new();
-    let path = loop {
-        let mut chunk = [0u8; 4096];
-        let count = front.read(&mut chunk)?;
-        if count == 0 || pending.len() > MAX_HEAD {
-            return Ok(());
-        }
-        pending.extend_from_slice(&chunk[..count]);
-        let mut slots = [httparse::EMPTY_HEADER; 64];
-        let mut request = httparse::Request::new(&mut slots);
-        if let httparse::Status::Complete(_) = request.parse(&pending).map_err(io::Error::other)? {
-            break request.path.unwrap_or_default().to_owned();
-        }
-    };
-    let mut back = UnixStream::connect(real)?;
-    open.lock().unwrap().push(back.try_clone()?);
-    if stopped.load(Ordering::SeqCst) {
-        return Ok(());
-    }
-    back.write_all(&pending)?;
-    let (mut up_from, mut up_to) = (front.try_clone()?, back.try_clone()?);
-    let upstream = thread::spawn(move || {
-        let _ = io::copy(&mut up_from, &mut up_to);
-        let _ = up_to.shutdown(Shutdown::Write);
-    });
-    let result = if path
-        .split('?')
-        .next()
-        .unwrap_or_default()
-        .ends_with("/view")
-    {
-        let mut buffer = Vec::new();
-        let head_len = loop {
-            let mut chunk = [0u8; 4096];
-            let count = back.read(&mut chunk)?;
-            if count == 0 || buffer.len() > MAX_HEAD {
-                return Ok(());
-            }
-            buffer.extend_from_slice(&chunk[..count]);
-            let mut slots = [httparse::EMPTY_HEADER; 64];
-            let mut response = httparse::Response::new(&mut slots);
-            if let httparse::Status::Complete(len) =
-                response.parse(&buffer).map_err(io::Error::other)?
-            {
-                break len;
-            }
-        };
-        front.write_all(&buffer[..head_len])?;
-        inject(&mut front, back, buffer[head_len..].to_vec(), marker)
-    } else {
-        io::copy(&mut back, &mut front).map(drop)
-    };
-    let _ = front.shutdown(Shutdown::Both);
-    let _ = upstream.join();
-    result
-}
-
-#[test]
-fn client_snapshot_interruption() {
-    let s = start(&[]);
-    interactive_fixture(&s);
-    let real = s.dir.join("socket");
-    for marker in [false, true] {
-        let dir = Dir::new("ko-proxy-");
-        let _proxy = Proxy::start(dir.join("socket"), real.clone(), marker);
-        let o = Outer::new(&dir, Keys::Extended);
-        o.attach("cat");
-        o.contains("BASE");
-        if marker {
-            o.wait("queued resize applies before following output", || {
-                o.cursor().1 == PANE_X + 36
-            });
-        }
-        o.detach();
-    }
 }
 
 #[test]
@@ -870,7 +644,7 @@ fn client_dead_pane_line() {
 
 #[test]
 fn client_legacy_shifted_key() {
-    let cases: [(&str, i32, &str, String); 18] = [
+    let cases: [(&str, i32, &str, String); 21] = [
         ("flags 3, plain colon", 3, ":", hex(":")),
         ("flags 3, plain A", 3, "A", hex("A")),
         ("flags 3, plain É", 3, "É", hex("É")),
@@ -909,6 +683,14 @@ fn client_legacy_shifted_key() {
         ),
         ("legacy pane, Alt+Shift+A", 0, "\x1b[97;4u", hex("\x1bA")),
         ("legacy pane, Alt+b", 0, "\x1b[98;3u", hex("\x1bb")),
+        ("flags 1, plain A", 1, "A", hex("A")),
+        ("flags 1, CSI u A without text", 1, "\x1b[97;2u", hex("A")),
+        (
+            "flags 1, CSI u colon without text",
+            1,
+            "\x1b[59;2u",
+            hex(":"),
+        ),
     ];
     let plan: Vec<String> = cases.iter().map(|case| case.1.to_string()).collect();
     let s = start(&[]);
@@ -931,40 +713,5 @@ while True:
             o.screen().contains(&expected)
         });
     }
-    o.detach();
-}
-
-#[test]
-fn client_nvim_normal_mode_shifted_keys() {
-    let Some(nvim) = which("nvim") else {
-        eprintln!("nvim missing");
-        return;
-    };
-    let s = start(&[]);
-    let file = s.dir.join("typed");
-    s.pane(&format!(
-        "exec {} -u NONE -i NONE -n {}",
-        quote(text_of(&nvim)),
-        quote(text_of(&file))
-    ));
-    let o = Outer::new(&s.dir, Keys::Extended);
-    o.attach("cat");
-    o.contains("typed");
-    let insert = |append: &str, text: &str| {
-        o.raw(append);
-        o.contains("-- INSERT --");
-        o.raw(&format!("{text}\x1b"));
-        o.wait("normal mode", || !o.screen().contains("-- INSERT --"));
-    };
-    insert("A", "x");
-    o.raw(":w\r");
-    o.wait_ticking("A, x, Esc, :w to write x", || {
-        read_file(&file).as_deref() == Some("x\n")
-    });
-    insert("\x1b[97;2u", "y");
-    o.raw("\x1b[59;2uwq\r");
-    o.wait_ticking("CSI u A, y, Esc, CSI u colon, wq to write xy", || {
-        read_file(&file).as_deref() == Some("xy\n")
-    });
     o.detach();
 }

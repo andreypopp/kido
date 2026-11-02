@@ -1,103 +1,26 @@
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::harness::{
-    Child, DEADLINE, Dir, Message, contains, decode, poll, run_ko, size, start, tagged, test_env,
-    text_of, wait_gone, which,
-};
-
-#[test]
-fn pane_dead_snapshot() {
-    let mut s = start(&[]);
-    let (mut c, _) = s.client("");
-    let p = s.pane(
-        "printf '\x1b]2;dead title\x07\x1b]7;file://localhost/tmp\x07\x1b[?2026hretained'; exit 7",
-    );
-    let (mut seen_title, mut seen_pwd) = (false, false);
-    loop {
-        let Message::Text(data) = c.read() else {
-            panic!("event: binary");
-        };
-        let Some((tag, value)) = tagged(&data) else {
-            panic!("event: {data}");
-        };
-        let value = value.to_string();
-        match tag.as_str() {
-            "title" => seen_title = value.contains(r#""title":"dead title""#),
-            "pwd" => seen_pwd = value.contains(r#""pwd":"file://localhost/tmp""#),
-            "dead" => {
-                assert!(value.contains(r#""cause":["exited",7]"#), "dead: {value}");
-                break;
-            }
-            _ => {}
-        }
-    }
-    assert!(
-        seen_title && seen_pwd,
-        "missing title or pwd event: {seen_title} {seen_pwd}"
-    );
-    let mut v = s.ws(&format!("/panes/{p}/view?history=all"));
-    let (data, _) = v.snapshot();
-    let terminal = decode(&data, false);
-    assert!(
-        !terminal.sync && terminal.screen.contains("retained"),
-        "snapshot: {}",
-        terminal.screen
-    );
-    let screen = s.request_text("GET", &format!("/panes/{p}/screen?history=all"), None, 200);
-    assert!(screen.contains("retained"), "screen: {screen:?}");
-    s.request("DELETE", &format!("/panes/{p}"), None, 200);
-    s.request("GET", &format!("/panes/{p}/screen"), None, 404);
-}
-
-#[test]
-fn view_resume_resize_and_input() {
-    let mut s = start(&[]);
-    let p = s.pane("stty -echo -icanon min 1 time 0; printf '\x1b[?2004h\x1b[=3;1uREADY'; cat -v");
-    let (mut c, _) = s.client(&p);
-    let mut v = s.ws(&format!("/panes/{p}/view?history=all"));
-    let (data, _) = v.snapshot();
-    if !decode(&data, false).screen.contains("READY") {
-        v.output("READY");
-    }
-    v.send(&json!(["input", ["paste", {"id": 23, "text": "hello\n", "check_safe": false}]]));
-    let reply = v.event("pasted").to_string();
-    assert!(reply.contains(r#""pasted":true"#), "paste: {reply}");
-    let offset = v.output("^[[201~");
-    drop(v);
-    let mut v = s.ws(&format!("/panes/{p}/view?history=all&offset={offset}"));
-    v.type_text("resumed\n");
-    let mut resumed = Vec::new();
-    while !contains(&resumed, b"resumed") {
-        match v.read() {
-            Message::Binary(data) if data.len() >= 9 && data[0] == 1 => {
-                resumed.extend_from_slice(&data[9..]);
-            }
-            Message::Binary(data) => panic!("resume sent a snapshot or marker: {data:?}"),
-            Message::Text(text) => panic!("resume sent a snapshot or marker: {text:?}"),
-        }
-    }
-    c.send(&json!(["size", size(60, 20)]));
-    let marker = v.event("marked").to_string();
-    assert!(marker.contains(r#""cols":60"#), "marker: {marker}");
-    v.send(&json!(["resync", {"history": "none", "images": "none"}]));
-    let (data, _) = v.snapshot();
-    assert!(!decode(&data, false).sync, "sync set");
-}
+use crate::harness::{Child, DEADLINE, Dir, poll, run_ko, start, test_env, text_of, wait_gone};
 
 #[test]
 fn kill_server() {
-    let mut s = start(&[]);
+    let s = start(&[]);
     let p = s.pane("trap '' HUP; printf READY; while read x; do :; done");
     let mut v = s.ws(&format!("/panes/{p}/view"));
     v.ready("READY");
     let program = s.program_pid();
-    let run = s.run(&["kill-server", "--server", text_of(&s.dir)]);
+    let run = run_ko(
+        &s.scratch,
+        &test_env(&s.dir),
+        &["kill-server", "--server", text_of(&s.dir)],
+        "",
+    );
     assert_eq!(run.code, 0, "kill: {} {}", run.stdout, run.stderr);
     assert!(!s.dir.join("socket").exists(), "socket after kill-server");
     wait_gone(program, "kill-server");
-    s.stop();
 }
 
 #[test]
@@ -244,4 +167,10 @@ fn api() {
     }
     let entries: Vec<_> = std::fs::read_dir(&*empty).unwrap().collect();
     assert!(entries.is_empty(), "ko api created {entries:?}");
+}
+
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
 }

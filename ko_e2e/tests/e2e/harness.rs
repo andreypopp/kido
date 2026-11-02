@@ -17,8 +17,6 @@ use ko_sys::spawn::{self, Env};
 use ko_vt::{Extent, Format, Terminal};
 use serde_json::{Value, json};
 use tungstenite::http::{HeaderName, HeaderValue};
-use tungstenite::protocol::frame::coding::{Data, OpCode};
-use tungstenite::protocol::frame::{Frame, FrameHeader};
 use tungstenite::{Message as Msg, WebSocket};
 
 pub(crate) const DEADLINE: Duration = Duration::from_secs(5);
@@ -56,7 +54,7 @@ fn time_left(deadline: Instant) -> Duration {
         .expect("the deadline passed")
 }
 
-pub(crate) fn read_within(stream: &UnixStream, deadline: Instant) {
+fn read_within(stream: &UnixStream, deadline: Instant) {
     stream.set_read_timeout(Some(time_left(deadline))).unwrap();
 }
 
@@ -239,7 +237,7 @@ pub(crate) fn run_ko(scratch: &Path, env: &[Vec<u8>], args: &[&str], stdin: &str
     }
 }
 
-pub(crate) fn base64(bytes: &[u8]) -> String {
+fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
@@ -257,17 +255,8 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     out
 }
 
-pub(crate) fn masked_frame(payload: &[u8]) -> Vec<u8> {
-    let header = FrameHeader {
-        opcode: OpCode::Data(Data::Text),
-        mask: Some([1, 2, 3, 4]),
-        ..FrameHeader::default()
-    };
-    let mut out = Vec::new();
-    Frame::from_payload(header, payload.to_vec().into())
-        .format(&mut out)
-        .unwrap();
-    out
+pub(crate) fn history_lines(count: u32) -> String {
+    format!("i=0; while [ $i -lt {count} ]; do printf 'history-%s\\r\\n' $i; i=$((i+1)); done")
 }
 
 pub(crate) fn size(cols: u16, rows: u16) -> Value {
@@ -754,16 +743,6 @@ impl Server {
         Pid::new(panes[0].1).unwrap()
     }
 
-    pub(crate) fn run(&self, args: &[&str]) -> Run {
-        run_ko(&self.scratch, &test_env(&self.dir), args, "")
-    }
-
-    pub(crate) fn stop(&mut self) {
-        if let Err(message) = self.shutdown() {
-            panic!("{message}");
-        }
-    }
-
     fn shutdown(&mut self) -> Result<(), String> {
         if std::mem::replace(&mut self.stopped, true) {
             return Ok(());
@@ -791,12 +770,6 @@ impl Drop for Server {
         }
         let _ = std::fs::remove_file(&self.log);
     }
-}
-
-pub(crate) fn which(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
 }
 
 pub(crate) fn wait_gone(pid: Pid, what: &str) {

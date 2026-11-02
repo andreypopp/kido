@@ -663,6 +663,43 @@ RE forced these decisions:
      snapshot of a dead pane; views already past it get a repeat that
      changes nothing. The sidebar's `†` and Ctrl+D still follow the
      event.
+124. The suite was trimmed from 45 tests to 29, because each server
+     start costs the whole suite and a test earns its time. Thirteen
+     tests merged into a test with the same setup, on its server:
+     `client_output_without_outer_input` into
+     `client_initial_cursor_and_synchronized_output`;
+     `client_sidebar_release` into `client_lifecycle`;
+     `client_nvim_normal_mode_shifted_keys` into
+     `client_legacy_shifted_key`, as rows with kitty flags 1 checked on
+     the pane's received bytes, so no test needs nvim;
+     `resume_skips_resize_markers_before_the_offset`,
+     `unsafe_paste_is_not_written` and `detach_keeps_kitty_input` into
+     `view_resume_resize_and_input`; `death_has_one_timestamp` and
+     `live_synchronized_snapshot_and_history` into
+     `pane_dead_snapshot` (a live pane and a dead pane take the same
+     snapshot path in `ko_pane`, so the dead snapshot checks it);
+     `pane_process_crash_kills_program` into `pane_process_failure`;
+     `partial_resize_snapshot` into
+     `unfocused_first_client_sizes_pane`; `scrollback_lines_limit` and
+     `fuzz_variables_do_not_reach_the_binary` into
+     `defaults_and_pane_environment`;
+     `view_input_frame_split_across_writes` into
+     `paste_then_enter_during_snapshot`, which writes its batch in two
+     parts cut inside a frame. Three tests went, because a unit test
+     checks the same fact: `client_snapshot_interruption` and its
+     proxy (`ko_tui::mirror`), `sigterm_kills_programs`
+     (`ko_server::server`; `kill_server` keeps the program that
+     ignores SIGHUP) and `view_input_frames_in_one_write`
+     (`ko_server::ws`). `client_grid_limit` stays: the unit test of
+     `ko_server::protocol` checks the decoded size, not that the
+     server closes the connection. The modules no longer follow the
+     Go files: `views.rs` holds the view and pane tests, `protocol.rs`
+     the server and API tests, and `input_frames.rs`, `state.rs` and
+     `streams.rs` went. `no_idle_wakeups` measures a shorter window
+     with the same CPU bound for each second, and the flood of
+     `client_history_and_alternate_screen` is shorter but still more
+     than the socket buffer and the ring. `full_snapshot_slow_reader`
+     stays: the view harness never fills the socket buffer.
 
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
@@ -2333,6 +2370,10 @@ Decision 22. The crate `ko_e2e/` holds integration tests
 | `idle_test.go` | `TestNoIdleWakeups` (decision 118) | `tests/e2e/idle.rs` |
 | `signal_test.go` | the `signalOwned` and `gone` helpers | `ko_sys::pid::signal_descendant`, `Pid::has_ended` (feature `e2e`) |
 
+  This is the mapping of the port. The trim of decision 124 merged or
+  removed 16 of these tests and moved the rest into other modules;
+  the suite has 29.
+
 - When every row of the table passes in the final local `make
   verify` on macOS (decision 122), the same change deletes
   `test_e2e_ko/`, `internal/rusage/` and the `decode` example, and
@@ -2357,6 +2398,10 @@ Decision 22. The crate `ko_e2e/` holds integration tests
   client can paint the layout, with the dead line, before the pane's
   snapshot arrives, and the test fails at once when no output is
   directly above the line. The test keeps the Go semantics.
+- Trim (decision 124, 2026-11-02, macOS): 29 tests. The tests take
+  2.66 s, not 5.80 s, and the `e2e-ko` stage of `make verify-ko`
+  2.9 s, not 8.9 s. The final `make verify-ko` passed: build 0.2 s,
+  unit-ko 11.1 s, e2e-ko 2.9 s, lint 1.8 s, verus 5.0 s.
 
 ### RW. The serde wire (about 1 agent-day, after RE)
 
@@ -2588,7 +2633,7 @@ Conventions:
   reference's are, but no call relies on it.
 - **Fuzz variables.** `KO_FUZZ_*` is read only in `fuzz/` and in test
   modules; the shipped binaries read no fuzz or test variable
-  (`TestFuzzVariablesDoNotReachTheBinary`).
+  (`defaults_and_pane_environment` in `ko_e2e`).
 - **The loop and threads.** Every process is one thread on
   `ko_sys::event`: non-blocking descriptors, one state enum per
   connection, a read buffer and a write queue per connection, the

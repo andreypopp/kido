@@ -1347,8 +1347,8 @@ A test that pins a libghostty-vt bug fails when the bug is fixed, so
 the workaround for it can be removed.
 
 Only `fuzz/` reads `KO_FUZZ_*` (`scripts/lint.sh` refuses it in the
-other crates), and `TestFuzzVariablesDoNotReachTheBinary` runs `ko`
-with fuzz variables set to junk.
+other crates), and `ko_e2e`'s `defaults_and_pane_environment` runs
+`ko version` with fuzz variables set to junk.
 
 `make e2e` builds the fork into `build/tmux-fork/<key>/`.
 It rebuilds only on a submodule bump or an installer change.

@@ -205,7 +205,7 @@ for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go')):
             allowed[statement] -= 1
 # ko_e2e waits for events; its one fixed wait is the idle measurement, and harness.rs holds the poll tick.
 rust_sleeps = {
-    'ko_e2e/tests/e2e/idle.rs': {'std::thread::sleep(Duration::from_secs(5));': 1},
+    'ko_e2e/tests/e2e/idle.rs': {'std::thread::sleep(Duration::from_secs(2));': 1},
 }
 for path in candidates(r'thread::(sleep|park_timeout)', glob.glob('ko_e2e/tests/e2e/*.rs')):
     if path == 'ko_e2e/tests/e2e/harness.rs':
