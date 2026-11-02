@@ -4,6 +4,7 @@ mod backend;
 mod machine;
 #[cfg(not(loom))]
 mod mapping;
+mod mark;
 #[cfg(loom)]
 mod model;
 mod spec;
@@ -24,12 +25,18 @@ use backend::{covers, dom_is, in_rng, tok_ok};
 #[cfg(verus_only)]
 use machine::{RGhost, WGhost, build, committed};
 use machine::{RingSm, World};
+pub use mark::Mark;
+use mark::Marks;
 pub(crate) use spec::HEADER;
 use spec::*;
 #[cfg(verus_only)]
 pub use spec::{
-    Log, boundary, log_le, log_le_boundary, log_le_head, retain_of, wf as log_wf, wf_rec,
+    Log, before, boundary, is_data, log_le, log_le_boundary, log_le_head, log_le_same,
+    log_le_trans, lost, lost_at, next_bnd, off_at, off_mono, quiet, rec_bounds, resumes, retain_of,
+    size, wf as log_wf, wf_head, wf_rec,
 };
+#[cfg(verus_only)]
+use vstd::tokens::InstanceId;
 
 verus! {
 
@@ -65,11 +72,17 @@ impl Pos {
 pub struct Offset(u64);
 
 impl Offset {
-    pub fn new(value: u64) -> Offset {
+    pub fn new(value: u64) -> (r: Offset)
+        ensures
+            r.v() == value,
+    {
         Offset(value)
     }
 
-    pub fn get(self) -> u64 {
+    pub fn get(self) -> (r: u64)
+        ensures
+            r == self.v(),
+    {
         self.0
     }
 
@@ -187,6 +200,8 @@ pub struct Reader {
     tok: Tracked<RingSm::r>,
     #[allow(dead_code)]
     rperm: Tracked<Map<nat, ByteTok>>,
+    #[allow(dead_code)]
+    log_marks: Tracked<Marks>,
 }
 
 impl Reader {
@@ -210,6 +225,11 @@ impl Reader {
         &&& dom_is(self.rperm@.dom(), self.cap(), self.ghost().tail, self.ghost().log.head)
         &&& hdr_ok(self.cap(), self.ghost().log, self.rperm@, self.ghost().tail, self.ghost().log.head)
         &&& tok_ok(self.shared.base(), self.rperm@)
+        &&& self.log_marks@.wf(self.cap(), self.ghost().log)
+    }
+
+    pub closed spec fn mark_id(&self) -> InstanceId {
+        self.log_marks@.id()
     }
 
     pub open spec fn log(&self) -> Log {
@@ -228,6 +248,14 @@ impl Reader {
         &&& self.ghost().tail <= pos as nat
         &&& (pos as nat) < self.ghost().log.head
         &&& self.ghost().log.m.contains_key(pos as nat)
+    }
+
+    pub open spec fn describes(&self, pos: Pos, r: Record) -> bool {
+        &&& self.visible(pos.v())
+        &&& r.kind == self.log().m[pos.v() as nat].kind
+        &&& r.len as nat == self.log().m[pos.v() as nat].len
+        &&& r.offset.v() as nat == self.log().m[pos.v() as nat].off
+        &&& r.next.v() as nat == pos.v() as nat + size(self.log().m[pos.v() as nat])
     }
 
     pub proof fn facts(tracked &self)
@@ -266,6 +294,10 @@ impl Reader {
             assert(tok_ok(shared.base(), Map::<nat, ByteTok>::empty()));
             assert(dom_is(Map::<nat, ByteTok>::empty().dom(), shared.cap(), 0, 0));
         }
+        proof {
+            empty_wf(shared.cap());
+        }
+        let tracked marks = Marks::new(shared.cap(), empty_log());
         Reader {
             shared,
             tail: 0,
@@ -276,13 +308,36 @@ impl Reader {
             world: Tracked(world),
             tok: Tracked(rtok),
             rperm: Tracked(Map::tracked_empty()),
+            log_marks: Tracked(marks),
         }
+    }
+
+    pub fn mark(&self) -> (m: Tracked<Mark>)
+        requires
+            self.wf(),
+        ensures
+            m@.id() == self.mark_id(),
+            m@.log() == self.log(),
+    {
+        Tracked(self.log_marks.borrow().mark(self.cap(), self.ghost().log))
+    }
+
+    pub proof fn bound(tracked &self, tracked m: &Mark)
+        requires
+            self.wf(),
+            m.id() == self.mark_id(),
+        ensures
+            wf(self.cap(), m.log()),
+            log_le(m.log(), self.log()),
+    {
+        self.log_marks.borrow().bound(m, self.cap(), self.ghost().log);
     }
 
     pub fn head(&mut self) -> (p: Pos)
         requires
             old(self).wf(),
         ensures
+            final(self).mark_id() == old(self).mark_id(),
             final(self).wf(),
             final(self).cap() == old(self).cap(),
             final(self).ghost().tail == old(self).ghost().tail,
@@ -330,6 +385,9 @@ impl Reader {
             log_le_head(old_lr, self.ghost().log);
             log_le_boundary(self.cap(), old_lr, self.ghost().log, self.settled as nat);
             evicted_grows(old_lr, self.ghost().log, self.evicted as nat, self.ghost().tail);
+            let ghost cap = self.cap();
+            let ghost log = self.ghost().log;
+            self.log_marks.borrow_mut().grow(cap, old_lr, log);
         }
         debug_assert!(self.seen >= before && self.seen >= self.tail, "Ring.head");
         Pos(self.seen)
@@ -433,15 +491,7 @@ impl Reader {
         requires
             self.wf(),
         ensures
-            self.visible(pos.v()) ==> {
-                &&& r.is_ok()
-                &&& r.unwrap().kind == self.ghost().log.m[pos.v() as nat].kind
-                &&& r.unwrap().len as nat == self.ghost().log.m[pos.v() as nat].len
-                &&& r.unwrap().offset.v() as nat == self.ghost().log.m[pos.v() as nat].off
-                &&& r.unwrap().next.v() as nat == pos.v() as nat + size(
-                    self.ghost().log.m[pos.v() as nat],
-                )
-            },
+            self.visible(pos.v()) ==> r.is_ok() && self.describes(pos, r.unwrap()),
     {
         proof {
             self.facts();
@@ -497,6 +547,7 @@ impl Reader {
         requires
             old(self).wf(),
         ensures
+            final(self).mark_id() == old(self).mark_id(),
             final(self).wf(),
             final(self).ghost().log == old(self).ghost().log,
             head.v() as nat == old(self).ghost().log.head ==> r.is_ok(),
@@ -708,6 +759,7 @@ impl Reader {
         requires
             old(self).wf(),
         ensures
+            final(self).mark_id() == old(self).mark_id(),
             final(self).wf(),
             final(self).cap() == old(self).cap(),
             final(self).ghost().tail == old(self).ghost().tail,
@@ -765,6 +817,7 @@ impl Reader {
         requires
             old(self).wf(),
         ensures
+            final(self).mark_id() == old(self).mark_id(),
             final(self).wf(),
             final(self).cap() == old(self).cap(),
             final(self).ghost().tail == old(self).ghost().tail,
@@ -805,6 +858,7 @@ impl Reader {
         requires
             old(self).wf(),
         ensures
+            final(self).mark_id() == old(self).mark_id(),
             final(self).wf(),
             final(self).cap() == old(self).cap(),
             final(self).ghost().tail == old(self).ghost().tail,

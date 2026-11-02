@@ -191,8 +191,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
                 .panes
                 .find(id)
                 .filter(|pane| pane.proc().life() == Life::Open)
-                .and_then(|pane| pane.proc().ring())
-                .map(|ring| View::new(id, client, options.history, ring));
+                .and_then(|pane| pane.proc().delivery())
+                .map(|delivery| View::new(id, client, options.history, delivery));
             let Some(view) = opened else {
                 return error(
                     &mut state.conns[index],

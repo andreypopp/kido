@@ -2,6 +2,7 @@ use crate::client::Client;
 use crate::conn::Output;
 use crate::view::View;
 use crate::ws::Ws;
+use vstd::prelude::*;
 
 #[derive(Debug)]
 pub(crate) enum Role {
@@ -15,8 +16,12 @@ pub(crate) struct Link {
     pub(crate) role: Role,
 }
 
+verus! {
+
 #[derive(Debug)]
 pub(crate) struct Wire<'a> {
     pub(crate) ws: &'a mut Ws,
     pub(crate) out: &'a mut Output,
 }
+
+} // verus!

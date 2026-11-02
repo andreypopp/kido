@@ -212,12 +212,12 @@ fn a_recorded_stream_arrives_as_frames_records_and_a_snapshot_across_a_full_ring
                 assert!(ready.unwrap().alive(), "the held zombie keeps its pid");
                 pane.send(&encoded(&ToPane::Resize(size(40, 20))));
                 pane.send(&encoded(&ToPane::Snapshot {
-                    req: Req::FIRST,
+                    req: Req::of_serial(1),
                     history: History::None,
                 }));
             }
             FromPane::SnapshotDone(req) => {
-                assert_eq!(req, Req::FIRST);
+                assert_eq!(req, Req::of_serial(1));
                 done = true;
             }
             other => panic!("unexpected frame {other:?}"),
@@ -250,9 +250,8 @@ fn a_recorded_stream_arrives_as_frames_records_and_a_snapshot_across_a_full_ring
     let expected: Vec<String> = (181..200).map(|line| format!("line {line}")).collect();
     assert_eq!(rows, expected);
 
-    let mut request = Req::FIRST;
-    for _ in 0..9 {
-        request = request.next();
+    for serial in 2..=10 {
+        let request = Req::of_serial(serial);
         pane.send(&encoded(&ToPane::Screen {
             req: request,
             format: ScreenFormat::Ansi,

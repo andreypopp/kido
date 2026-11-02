@@ -11,7 +11,7 @@ use ko_pane_wire::frame::{
     self, FromPane, History, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse, Oversize, Req,
     ScreenFormat, ScreenRows, Size, ToPane,
 };
-use ko_pane_wire::ring::{Pos, Reader};
+use ko_pane_wire::ring::Pos;
 use ko_sys::clock::Mono;
 use ko_sys::event::{Interest, Poll, Read, Reads, Ready, Token};
 use ko_sys::fd::Queue;
@@ -19,7 +19,7 @@ use ko_sys::pid::{Exit, Group, Pid, Verdict, Waited};
 use ko_sys::signal::Signal;
 
 use crate::config::Config;
-use crate::delivery::{self, Delivery};
+use crate::delivery::{self, Delivery, Done, Handle};
 use crate::ids::PaneId;
 
 const RING_CAPACITY: u64 = 1 << 20;
@@ -51,10 +51,7 @@ pub(crate) enum Event {
     Pwd,
     Output,
     Dead(Death),
-    Snapshot {
-        req: Req,
-        complete: bool,
-    },
+    Snapshot(Done),
     Screen {
         req: Req,
         chunk: Vec<u8>,
@@ -137,9 +134,9 @@ impl From<Malformed> for Fault {
     }
 }
 
-pub(crate) type Sink<'a> = &'a mut dyn FnMut(&Reader, Req, Pos);
+pub(crate) type Sink<'a> = &'a mut dyn FnMut(Handle<'_>);
 
-pub(crate) fn discard(_: &Reader, _: Req, _: Pos) {}
+pub(crate) fn discard(_: Handle<'_>) {}
 
 pub(crate) struct Io<'a> {
     pub(crate) poll: &'a mut Poll,
@@ -201,7 +198,6 @@ pub(crate) struct PaneProc {
     dead: Option<Death>,
     input: Vec<u8>,
     filled: usize,
-    next_req: Req,
     pending: BTreeMap<Req, Reply>,
     observed: Pos,
     busy: bool,
@@ -273,7 +269,6 @@ impl PaneProc {
             dead: None,
             input: vec![0; INPUT],
             filled: 0,
-            next_req: Req::FIRST,
             pending: BTreeMap::new(),
             observed: start,
             busy: false,
@@ -299,15 +294,15 @@ impl PaneProc {
         }
     }
 
-    pub(crate) fn ring(&self) -> Option<&Reader> {
+    pub(crate) fn delivery(&self) -> Option<&Delivery> {
         match &self.stage {
-            Stage::Open { delivery, .. } | Stage::Closed { delivery } => Some(delivery.ring()),
+            Stage::Open { delivery, .. } | Stage::Closed { delivery } => Some(delivery),
             Stage::Reaped => None,
         }
     }
 
-    pub(crate) fn ring_mut(&mut self) -> Option<&mut Reader> {
-        self.stage.delivery_mut().map(Delivery::ring_mut)
+    pub(crate) fn delivery_mut(&mut self) -> Option<&mut Delivery> {
+        self.stage.delivery_mut()
     }
 
     pub(crate) fn child_pid(&self) -> Option<Pid> {
@@ -366,11 +361,7 @@ impl PaneProc {
             .delivery_mut()
             .map(Delivery::fail_all)
             .unwrap_or_default();
-        io.events
-            .extend(snapshots.into_iter().map(|req| Event::Snapshot {
-                req,
-                complete: false,
-            }));
+        io.events.extend(snapshots.into_iter().map(Event::Snapshot));
         io.events.extend(
             std::mem::take(&mut self.pending)
                 .into_keys()
@@ -422,10 +413,8 @@ impl PaneProc {
         Ok(())
     }
 
-    fn next_req(&mut self) -> Req {
-        let req = self.next_req;
-        self.next_req = req.next();
-        req
+    fn mint(&mut self) -> Option<Req> {
+        self.stage.delivery_mut()?.mint_serial().map(|(_, req)| req)
     }
 
     fn scan_ring(&mut self, io: &mut Io<'_>) -> Result<bool, Fault> {
@@ -453,26 +442,28 @@ impl PaneProc {
     }
 
     fn snapshot_done(&mut self, req: Req, io: &mut Io<'_>) {
-        let complete = self
+        let done = self
             .stage
             .delivery_mut()
             .and_then(|delivery| delivery.snapshot_done(req));
-        io.events
-            .extend(complete.map(|complete| Event::Snapshot { req, complete }));
+        io.events.extend(done.map(Event::Snapshot));
     }
 
-    pub(crate) fn snapshot(&mut self, history: History, io: &mut Io<'_>) -> Option<Req> {
+    pub(crate) fn snapshot(&mut self, history: History, io: &mut Io<'_>) -> Option<(u64, Req)> {
         if !self.is_open() {
             return None;
         }
-        self.stage.delivery_mut()?.observe();
-        let req = self.next_req();
+        let delivery = self.stage.delivery_mut()?;
+        delivery.head();
+        let (serial, req) = delivery.mint_serial()?;
         let _ = self.send(&ToPane::Snapshot { req, history }, io);
         if !self.is_open() {
             return None;
         }
-        self.stage.delivery_mut()?.request(req);
-        Some(req)
+        self.stage
+            .delivery_mut()?
+            .request(serial)
+            .then_some((serial, req))
     }
 
     pub(crate) fn screen(
@@ -480,18 +471,11 @@ impl PaneProc {
         format: ScreenFormat,
         rows: ScreenRows,
         io: &mut Io<'_>,
-    ) -> Req {
-        let req = self.next_req();
-        if self.is_open() {
-            self.pending.insert(req, Reply::Screen);
-            let _ = self.send(&ToPane::Screen { req, format, rows }, io);
-        } else {
-            io.events.push(Event::Failed {
-                req,
-                message: Refusal::Ended.to_string(),
-            });
-        }
-        req
+    ) -> Option<Req> {
+        let req = self.mint().filter(|_| self.is_open())?;
+        self.pending.insert(req, Reply::Screen);
+        let _ = self.send(&ToPane::Screen { req, format, rows }, io);
+        Some(req)
     }
 
     pub(crate) fn input(
@@ -504,7 +488,7 @@ impl PaneProc {
         }
         let (frame, req) = match input {
             Input::Paste { text, check_safe } => {
-                let req = self.next_req();
+                let req = self.mint().ok_or(Refusal::Ended)?;
                 self.pending.insert(req, Reply::Paste);
                 let paste = ToPane::Paste {
                     req,
@@ -641,7 +625,7 @@ impl PaneProc {
             }
             FromPane::Full(_) => {
                 self.scan(io);
-                if let Some(tail) = self.ring().map(Reader::tail) {
+                if let Some(tail) = self.delivery().map(|delivery| delivery.ring().tail()) {
                     let _ = self.send(&ToPane::Tail(tail), io);
                 }
                 io.events.push(Event::Output);
@@ -756,7 +740,7 @@ mod tests {
         peer: UnixStream,
         poll: Poll,
         events: Vec<Event>,
-        slices: Vec<(Req, u64)>,
+        slices: Vec<(u64, u64)>,
     }
 
     fn fake(capacity: u64) -> Fake {
@@ -780,7 +764,7 @@ mod tests {
     impl Fake {
         fn with<R>(&mut self, f: impl FnOnce(&mut PaneProc, &mut Io<'_>) -> R) -> R {
             let slices = &mut self.slices;
-            let mut slice = |_: &Reader, req, at: Pos| slices.push((req, at.get()));
+            let mut slice = |handle: Handle<'_>| slices.push((handle.serial(), handle.pos().get()));
             let mut io = Io {
                 poll: &mut self.poll,
                 events: &mut self.events,
@@ -802,11 +786,11 @@ mod tests {
             body[0] = u8::from(first) | (u8::from(last) << 1);
             self.writer.available();
             assert_ne!(self.writer.put(RecordKind::Slice, &body), Commit::Refused);
-            self.proc.ring_mut().unwrap().head().get()
+            self.proc.delivery_mut().unwrap().head().get()
         }
 
         fn tail(&self) -> u64 {
-            self.proc.ring().unwrap().tail().get()
+            self.proc.delivery().unwrap().ring().tail().get()
         }
     }
 
@@ -860,7 +844,7 @@ mod tests {
     #[test]
     fn the_tail_never_passes_snapshot_slices_that_were_not_delivered() {
         let mut fake = fake(2048);
-        let asked = fake
+        let (asked, _) = fake
             .with(|proc, io| proc.snapshot(History::None, io))
             .unwrap();
         let ends: Vec<u64> = (0..3).map(|i| fake.slice(i == 0, false)).collect();
@@ -872,7 +856,7 @@ mod tests {
             slices,
             ..
         } = &mut fake;
-        let mut slice = |_: &Reader, req, at: Pos| {
+        let mut slice = |handle: Handle<'_>| {
             if slices.is_empty() {
                 for i in 3..15 {
                     let mut body = vec![0; 100];
@@ -881,7 +865,7 @@ mod tests {
                     writer.put(RecordKind::Slice, &body);
                 }
             }
-            slices.push((req, at.get()));
+            slices.push((handle.serial(), handle.pos().get()));
         };
         let mut io = Io {
             poll,
@@ -889,20 +873,20 @@ mod tests {
             sink: &mut slice,
         };
         proc.scan(&mut io);
-        let tail = proc.ring().unwrap().tail().get();
+        let tail = proc.delivery().unwrap().ring().tail().get();
         assert_eq!((slices.len(), tail > ends[2]), (3, false));
         fake.scan();
-        let expected: Vec<(Req, u64)> = (0..15).map(|i| (asked, i * 113)).collect();
+        let expected: Vec<(u64, u64)> = (0..15).map(|i| (asked, i * 113)).collect();
         assert_eq!(fake.slices, expected);
     }
 
     #[test]
     fn a_finished_snapshot_keeps_its_cursor_in_the_ring_until_its_snapshot_done() {
         let mut fake = fake(2048);
-        let first = fake
+        let (first, _) = fake
             .with(|proc, io| proc.snapshot(History::None, io))
             .unwrap();
-        let second = fake
+        let (second, _) = fake
             .with(|proc, io| proc.snapshot(History::None, io))
             .unwrap();
         for i in 0..3 {
@@ -923,24 +907,26 @@ mod tests {
         assert_eq!(cursor, Some(339));
         assert!(fake.slices.iter().any(|(req, _)| *req == second));
         fake.feed(&frame(Kind::SnapshotDone, &req(1)));
-        let done = Event::Snapshot {
-            req: first,
-            complete: true,
+        let [Event::Snapshot(done)] = &fake.events[..] else {
+            panic!("{:?}", fake.events);
         };
-        assert_eq!(fake.events, [done]);
+        assert_eq!(
+            (done.serial(), done.hold().map(Pos::get)),
+            (first, Some(339))
+        );
         assert_eq!(fake.tail(), 339);
     }
 
     #[test]
     fn a_snapshot_asked_for_from_a_snapshots_done_event_gets_the_slices_after_it() {
         let mut fake = fake(2048);
-        let first = fake
+        let (first, _) = fake
             .with(|proc, io| proc.snapshot(History::None, io))
             .unwrap();
         let mut log = Vec::new();
         let mut second = None;
         let write =
-            |fake: &mut Fake, log: &mut Vec<String>, done: u32, second: &mut Option<Req>| {
+            |fake: &mut Fake, log: &mut Vec<String>, done: u32, second: &mut Option<u64>| {
                 fake.slice(true, false);
                 fake.slice(false, true);
                 fake.scan();
@@ -950,11 +936,13 @@ mod tests {
                     log.push(format!("{name} slice {pos}"));
                 }
                 for event in std::mem::take(&mut fake.events) {
-                    if let Event::Snapshot { req, complete } = event {
-                        let name = if req == first { "A" } else { "B" };
-                        log.push(format!("{name} {complete}"));
-                        if req == first {
-                            *second = fake.with(|proc, io| proc.snapshot(History::None, io));
+                    if let Event::Snapshot(done) = event {
+                        let name = if done.serial() == first { "A" } else { "B" };
+                        log.push(format!("{name} {}", done.hold().is_some()));
+                        if done.serial() == first {
+                            *second = fake
+                                .with(|proc, io| proc.snapshot(History::None, io))
+                                .map(|(serial, _)| serial);
                         }
                     }
                 }
@@ -1031,17 +1019,16 @@ mod tests {
     #[test]
     fn a_snapshot_done_for_another_request_is_ignored() {
         let mut fake = fake(2048);
-        let asked = fake
+        let (asked, _) = fake
             .with(|proc, io| proc.snapshot(History::None, io))
             .unwrap();
         fake.feed(&frame(Kind::SnapshotDone, &req(7)));
         assert_eq!((fake.events.len(), fake.proc.life()), (0, Life::Open));
         fake.feed(&frame(Kind::SnapshotDone, &req(1)));
-        let ended = Event::Snapshot {
-            req: asked,
-            complete: false,
+        let [Event::Snapshot(ended)] = &fake.events[..] else {
+            panic!("{:?}", fake.events);
         };
-        assert_eq!(fake.events, [ended]);
+        assert_eq!((ended.serial(), ended.hold()), (asked, None));
     }
 
     #[test]
@@ -1078,7 +1065,9 @@ mod tests {
     #[test]
     fn a_screen_reply_larger_than_the_read_buffer_arrives_whole() {
         let mut fake = fake(2048);
-        let asked = fake.with(|proc, io| proc.screen(ScreenFormat::Plain, ScreenRows::Visible, io));
+        let asked = fake
+            .with(|proc, io| proc.screen(ScreenFormat::Plain, ScreenRows::Visible, io))
+            .unwrap();
         let text = vec![b'x'; 70_000];
         let body = [req(1), vec![1], string(&text)].concat();
         let reply = frame(Kind::Screen, &body);
@@ -1110,13 +1099,13 @@ mod tests {
     fn watched() -> Fake {
         let mut fake = fake(64);
         let delivery = fake.proc.stage.delivery_mut().unwrap();
-        delivery.observe();
-        delivery.request(Req::FIRST);
-        fake.proc.next_req = Req::FIRST.next().next().next();
-        fake.proc.pending.insert(Req::FIRST.next(), Reply::Paste);
-        fake.proc
-            .pending
-            .insert(Req::FIRST.next().next(), Reply::Screen);
+        delivery.head();
+        let (serial, _) = delivery.mint_serial().unwrap();
+        assert!(delivery.request(serial));
+        let (_, paste) = delivery.mint_serial().unwrap();
+        let (_, screen) = delivery.mint_serial().unwrap();
+        fake.proc.pending.insert(paste, Reply::Paste);
+        fake.proc.pending.insert(screen, Reply::Screen);
         fake
     }
 
@@ -1137,6 +1126,10 @@ mod tests {
                     at: Mono::from_nanos(0),
                     cause,
                 }),
+                Event::Snapshot(done) => Event::Failed {
+                    req: done.req(),
+                    message: format!("{:?} {}", done.hold(), done.slices()),
+                },
                 event => event,
             })
             .collect();

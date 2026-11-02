@@ -476,6 +476,60 @@ RV2 forced these decisions:
     routing of a `Req` to its view in `state.rs`, unverified until
     RV3.
 
+RV3 forced these decisions:
+
+95. `Delivery` mints every `Req` (snapshot, screen and paste) from a
+    u64 serial; the wire `Req` is its low 32 bits and still wraps. The
+    queued entries, the slice handles and the view carry the serial,
+    so a request and its entry match for the life of the process. The
+    mint refuses when the new `Req` equals the oldest queued one (the
+    span of 2^32) and at `u64::MAX`. A refused snapshot rejects the
+    view, a refused screen answers "pane process ended" with no
+    owner, a refused paste is `Refusal::Ended`. Neither is reachable
+    in practice. This closes decision 94.
+96. A view finds its `Delivery` through unverified `state.rs`, so the
+    identity is checked at run time: each `Delivery` takes a stamp
+    from a process-wide counter, and the view keeps it. `open` and
+    `pump` compare the `Delivery`'s stamp; `on_slice` and `on_done`
+    compare the stamp and the serial of the `Handle` or `Done` that
+    only `delivery.rs` constructs. That is one compare for each call,
+    never for each record. The one trusted item is `delivery.rs`'s
+    `bind`, which ties the stamp to the ring's mark instance, as
+    `Backend::mint_reader` ties a role to its mapping (decision 80):
+    it assumes that the counter increases and never repeats a value.
+    The counter refuses to wrap, and `Delivery::create` then fails.
+97. The view proves its invariant against the log through
+    `ko_pane_wire::ring::mark`: a state machine with the reader's
+    current log and persistent marks below it. The view keeps a
+    `Mark` and, after the stamp compare, grows its facts to the
+    current log. F*'s ghost `floor`, `snapped` and `last_slice` and
+    the two assumed ghost steps go: the unverified sink can drop or
+    reorder a slice, so the order is checked at run time instead.
+    `on_slice` rejects a slice whose offset is before `coff` (one
+    compare for each slice, on the snapshot path only). `Delivery`
+    counts the slices that it hands over for each request, and the
+    view counts the slices that it takes. `on_done` takes a `Done`
+    with the stamp, the serial, the hold and the count, and makes the
+    view live only if it took every slice (the counts agree and are
+    not 0) and its cursor is the hold; otherwise it rejects the view.
+    Then `on_done` ensures `View_core`'s `linked` (the cursor is the
+    hold) and `resumable` (the tail at the done is at or before the
+    cursor). ko-pane writes a last slice before every `SnapshotDone`,
+    and a slice's offset is at or after the head at the request, so
+    no check rejects in normal operation.
+98. Small behaviour changes that the proof needed: `started` clears
+    `wanted`; a skip sets `coff` to the head that its event names;
+    `open` acts only on a fresh view; `View::close` always calls
+    `Output::close`, which is idempotent.
+99. The views take `&mut Delivery` in place of `Delivery::ring_mut`.
+    Its `head`, `end_offset`, `oldest_offset` and `resume` keep the
+    tail, and only `scan` calls `Reader::advance`. The lint row of
+    decision 91 is deleted.
+100. `Output`'s socket I/O is an `external_fn_specification` in
+    `conn.rs` over the opaque `closed` and `waits` (the model of
+    `Connection.fsti`), and the WebSocket sends of the view are
+    `external_body` functions in `view.rs`. `Batch` is verified.
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -1644,8 +1698,8 @@ lines; `make proofs` installs the pinned F* through
   I/O contracts `Delivery_io.fsti`, `Connection.fsti`, `Feed.fst`,
   `Oint.fsti` (native ints), which `KO_CHECK_CONTRACTS` checks at run
   time (row 42). Known gaps: two assumed ghost steps
-  (`start_stream`, `set_snapshotting`; the fields exist only for the
-  proof, so the Verus port keeps them in the view's own ghost state),
+  (`start_stream`, `set_snapshotting`; the Verus port drops their
+  fields for run-time checks, decision 97),
   the glue from tokens to generations, and no liveness (safety only).
 - GenMC: `ko_pane/genmc/ring_mc.c` (the writer and the reader as two
   threads on a 64-byte ring, 5 records of 9 bytes: no errors under SC
@@ -1684,12 +1738,11 @@ lines; `make proofs` installs the pinned F* through
    of 7c877215 were, and bug 2 passed every module proof while the
    call site was wrong; so RV2 verifies the caller in
    `pane_proc.rs`, not only the ring.
-4. **`view.rs`'s cursor, resume and snapshot rules** (later, its own
-   decision), from `View_core.fst`.
+4. **`view.rs`'s cursor, resume and snapshot rules** (stage RV3,
+   decisions 95 to 100), from `View_core.fst`.
 
 Not Verus: `Pid` and `Group` (their facts come from the OS; unit tests
-and the type's one constructor); `view::decide` (a six-line table with
-its unit test); the frame codec's bounds (the `clippy::indexing_slicing`
+and the type's one constructor); the frame codec's bounds (the `clippy::indexing_slicing`
 and `arithmetic_side_effects` lints, the `frame` fuzz target and
 Miri). Kani is not planned: Verus covers the ring arithmetic.
 
@@ -1704,10 +1757,10 @@ and store (vstd's `from_ptr_load` and `from_ptr_store` contracts); the
 byte accessors (`external_body` reads and writes of a range that
 `requires` the permission over it, a few lines each); vstd and
 the verifier; the libghostty-vt calls that fill a payload; and the
-callers outside the verified modules until RV2. After RV2:
-`delivery.rs`'s sink call and `Req`'s equality, the unverified
-holders of `Delivery::ring_mut` and the routing of a `Req` to its view
-until RV3 (decisions 91 and 94).
+callers outside the verified modules until RV2. After RV3:
+`delivery.rs`'s sink call and its `bind` of a stamp to a ring
+(decision 96), the WebSocket sends and marker decode of `view.rs`,
+and `Output`'s socket I/O in `conn.rs` (decision 100).
 
 **The lessons of the Pulse work that the port keeps:** no trusted
 function with an unconditional `ensures` (the WhyML `writer_causal`
@@ -2180,9 +2233,16 @@ Decision 25. One change applies every row of 2.6:
 
 Decision 15. The view's cursor, resume, snapshot and flush rules from
 `ko_proofs/View_core.fst`, verified at the call sites in `view.rs` and
-`conn.rs`, with the two ghost steps of 6.7 in the view's own ghost
-state. Acceptance: `cargo verus verify -p ko_server` passes on `view`
-within the cap of decision 18; `View_core.fst` and its contracts go.
+`conn.rs` (decisions 95 to 100). Acceptance: `cargo verus verify -p ko_server` passes on `view`
+within the cap of decision 18. RV3 keeps `ko_proofs/` unchanged: the
+OCaml ko still extracts `view_core.ml` from `View_core.fst`, and R5
+decides what in `ko_proofs/` goes with the OCaml ko.
+- Result (2026-11-02, macOS): `ko_server` verifies with 81
+  obligations (1.6 s) and `ko_pane_wire` with 132 (1.4 s), no
+  `assume` and no `admit`; the `verus` stage takes 4.3 s. The
+  stripped release `ko` grew by 16,504 bytes (2,674,040 to
+  2,690,544); `ko-pane` did not change. Decisions 95 to 100 came
+  from RV3.
 
 ### RL. Linux (3 to 5 agent-days, last, after parity)
 

@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{History, Req, ScreenFormat, ScreenRows};
-use ko_pane_wire::ring::{Invalid, Pos, Reader};
+use ko_pane_wire::ring::Invalid;
 use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
 
 use crate::client::{self, Change, Client};
 use crate::config::Config;
 use crate::conn::{Conn, Phase};
+use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
 use crate::ids::{ClientId, PaneId};
 use crate::link::{Role, Wire};
@@ -72,13 +73,11 @@ fn deliver(
     conns: &mut [Conn],
     owners: &BTreeMap<(PaneId, Req), Owner>,
     pane: PaneId,
-    ring: &Reader,
-    req: Req,
-    at: Pos,
+    handle: Handle<'_>,
 ) {
-    if let Some(Owner::Snapshot(token)) = owners.get(&(pane, req))
+    if let Some(Owner::Snapshot(token)) = owners.get(&(pane, handle.req()))
         && let Some((Role::View(view), mut wire)) = find(conns, *token).and_then(Conn::role_mut)
-        && view.on_slice(wire.out, ring, req, at).is_err()
+        && view.on_slice(wire.out, handle).is_err()
     {
         view.reject(&mut wire);
     }
@@ -125,7 +124,7 @@ impl State {
             spare.push(events);
             return None;
         };
-        let mut sink = |ring: &Reader, req: Req, at: Pos| deliver(conns, owners, id, ring, req, at);
+        let mut sink = |handle: Handle<'_>| deliver(conns, owners, id, handle);
         let result = f(
             pane,
             &mut Io {
@@ -252,12 +251,12 @@ impl State {
                     self.pump_views(poll, id);
                 }
             }
-            Event::Snapshot { req, complete } => {
-                if let Some(Owner::Snapshot(token)) = self.owners.remove(&(id, req))
+            Event::Snapshot(done) => {
+                if let Some(Owner::Snapshot(token)) = self.owners.remove(&(id, done.req()))
                     && let Some(index) = self.index(token)
                 {
                     if let Some((Role::View(view), mut wire)) = self.conns[index].role_mut() {
-                        view.on_done(&mut wire, req, complete);
+                        view.on_done(&mut wire, &done);
                     }
                     self.pump_view(poll, index);
                 }
@@ -406,20 +405,20 @@ impl State {
         &mut self,
         poll: &mut Poll,
         index: usize,
-        step: impl FnOnce(&mut View, &mut Wire<'_>, &mut Reader) -> Result<Option<History>, Invalid>,
+        step: impl FnOnce(&mut View, &mut Wire<'_>, &mut Delivery) -> Result<Option<History>, Invalid>,
     ) {
         let State { panes, conns, .. } = self;
         let Some((Role::View(view), mut wire)) = conns.get_mut(index).and_then(Conn::role_mut)
         else {
             return;
         };
-        let Some(ring) = panes
+        let Some(delivery) = panes
             .find_mut(view.pane)
-            .and_then(|pane| pane.proc_mut().ring_mut())
+            .and_then(|pane| pane.proc_mut().delivery_mut())
         else {
             return view.reject(&mut wire);
         };
-        match step(view, &mut wire, ring) {
+        match step(view, &mut wire, delivery) {
             Ok(None) => {}
             Ok(Some(history)) => self.snapshot(poll, index, history),
             Err(_) => view.reject(&mut wire),
@@ -427,12 +426,14 @@ impl State {
     }
 
     fn pump_view(&mut self, poll: &mut Poll, index: usize) {
-        self.drive(poll, index, |view, wire, ring| view.pump(wire, ring));
+        self.drive(poll, index, |view, wire, delivery| {
+            view.pump(wire, delivery)
+        });
     }
 
     pub(crate) fn open_view(&mut self, poll: &mut Poll, index: usize, offset: Option<u64>) {
-        self.drive(poll, index, |view, wire, ring| {
-            view.open(wire, ring, offset)
+        self.drive(poll, index, |view, wire, delivery| {
+            view.open(wire, delivery, offset)
         });
     }
 
@@ -445,13 +446,13 @@ impl State {
             return;
         };
         let requested = self.call(poll, pane, |pane, io| pane.proc_mut().snapshot(history, io));
-        let (req, events) = requested.unwrap_or((None, Vec::new()));
-        if let Some(req) = req {
+        let (ticket, events) = requested.unwrap_or((None, Vec::new()));
+        if let Some((_, req)) = ticket {
             self.owners.insert((pane, req), Owner::Snapshot(token));
         }
         if let Some((Role::View(view), mut wire)) = self.conns[index].role_mut() {
-            match req {
-                Some(req) => view.started(req, history),
+            match ticket {
+                Some((serial, _)) => view.started(serial, history),
                 None => view.reject(&mut wire),
             }
         }
@@ -495,14 +496,19 @@ impl State {
         }) else {
             return;
         };
-        self.owners.insert(
-            (pane, req),
-            Owner::Screen {
-                conn,
-                started: false,
-            },
-        );
         self.conns[index].phase = Phase::Handling;
+        match req {
+            Some(req) => {
+                self.owners.insert(
+                    (pane, req),
+                    Owner::Screen {
+                        conn,
+                        started: false,
+                    },
+                );
+            }
+            None => router::failed(self, poll, conn, false, &Refusal::Ended.to_string()),
+        }
         self.dispatch(poll, pane, events);
     }
 
@@ -727,8 +733,7 @@ impl State {
             let mut events = spare.pop().unwrap_or_default();
             for pane in panes.iter_mut() {
                 let id = pane.id();
-                let mut sink =
-                    |ring: &Reader, req: Req, at: Pos| deliver(conns, owners, id, ring, req, at);
+                let mut sink = |handle: Handle<'_>| deliver(conns, owners, id, handle);
                 produced |= pane.proc_mut().scan(&mut Io {
                     poll,
                     events: &mut events,

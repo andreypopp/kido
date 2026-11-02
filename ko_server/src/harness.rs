@@ -892,8 +892,8 @@ impl Harness {
         let progress = match self.rig.state.panes.find_mut(self.rig.pane) {
             Some(pane) if pane.proc().life() != Life::Reaped => self.frames.wrapping_add(
                 pane.proc_mut()
-                    .ring_mut()
-                    .map_or(0, |ring| ring.head().get()),
+                    .delivery_mut()
+                    .map_or(0, |delivery| delivery.head().get()),
             ),
             _ => self.frames,
         };
@@ -1331,8 +1331,8 @@ mod tests {
                     .state
                     .panes
                     .find_mut(h.rig.pane)
-                    .and_then(|pane| pane.proc_mut().ring_mut())
-                    .and_then(|ring| ring.end_offset().ok())
+                    .and_then(|pane| pane.proc_mut().delivery_mut())
+                    .and_then(|delivery| delivery.end_offset().ok())
                     .is_some_and(|end| end.get() == fed)
         })
         .unwrap();

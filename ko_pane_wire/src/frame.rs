@@ -9,6 +9,7 @@ use std::path::Path;
 
 use ko_sys::clock::Mono;
 use ko_sys::pid::Exit;
+use vstd::prelude::*;
 
 use crate::ring::Pos;
 
@@ -149,16 +150,41 @@ pub enum Medium {
     SharedMem,
 }
 
+verus! {
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Req(u32);
 
-impl Req {
-    pub const FIRST: Req = Req(1);
+pub open spec fn low32(serial: u64) -> nat {
+    serial as nat % 0x1_0000_0000nat
+}
 
-    pub fn next(self) -> Req {
-        Req(self.0.wrapping_add(1))
+impl Req {
+    pub closed spec fn val(self) -> u32 {
+        self.0
+    }
+
+    pub fn of_serial(serial: u64) -> (r: Req)
+        ensures
+            r.val() as nat == low32(serial),
+    {
+        let low = (serial & 0xffff_ffff) as u32;
+        assert(low as nat == serial as nat % 0x1_0000_0000nat) by (bit_vector)
+            requires
+                low == (serial & 0xffff_ffff) as u32,
+        ;
+        Req(low)
+    }
+
+    pub fn same(self, other: Req) -> (r: bool)
+        ensures
+            r == (self.val() == other.val()),
+    {
+        self.0 == other.0
     }
 }
+
+} // verus!
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum History {
@@ -1229,7 +1255,7 @@ mod tests {
 
     #[test]
     fn requests_carry_their_id_first() {
-        let req = Req::FIRST.next();
+        let req = Req::of_serial(2);
         assert_eq!(
             encoded(&ToPane::Snapshot {
                 req,
@@ -1375,7 +1401,7 @@ mod tests {
         decoded(&ToPane::Resize(size), |request| {
             assert!(matches!(request, Request::Resize(got) if got == size));
         });
-        let req = Req::FIRST.next();
+        let req = Req::of_serial(2);
         decoded(
             &ToPane::Snapshot {
                 req,
@@ -1520,7 +1546,7 @@ mod tests {
             at: Mono::from_nanos(77),
             exit: Exit::Signaled(9),
         };
-        let req = Req::FIRST;
+        let req = Req::of_serial(1);
         let cases = [
             FromPane::Ready(4242),
             FromPane::Head(Pos::new(123)),

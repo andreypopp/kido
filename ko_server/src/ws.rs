@@ -15,7 +15,7 @@ use crate::http::{self, Head, MAX_HEAD, Status};
 use crate::ids::ClientId;
 
 const RECORD_HEADER: usize = 9;
-pub(crate) const MAX_HEADER: usize = 10 + RECORD_HEADER;
+const MAX_HEADER: usize = 10 + RECORD_HEADER;
 const MAX_MESSAGE: usize = 1 << 20;
 const IDLE: Duration = Duration::from_secs(30);
 const PONG: Duration = Duration::from_secs(10);
@@ -51,12 +51,29 @@ pub fn parse_record(payload: &[u8]) -> Result<(Record, u64, &[u8]), BadRecord> {
     }
 }
 
-pub(crate) fn record_header(
-    out: &mut [u8; MAX_HEADER],
-    record: Record,
-    offset: u64,
-    len: usize,
-) -> usize {
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Header {
+    bytes: [u8; MAX_HEADER],
+    size: usize,
+}
+
+impl Header {
+    pub(crate) fn new(record: Record, offset: u64, len: usize) -> Header {
+        let mut bytes = [0; MAX_HEADER];
+        let size = record_header(&mut bytes, record, offset, len);
+        Header { bytes, size }
+    }
+
+    pub(crate) fn size(&self) -> usize {
+        self.size
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.bytes.get(..self.size).unwrap_or_default()
+    }
+}
+
+fn record_header(out: &mut [u8; MAX_HEADER], record: Record, offset: u64, len: usize) -> usize {
     let header = FrameHeader {
         opcode: OpCode::Data(Data::Binary),
         ..FrameHeader::default()

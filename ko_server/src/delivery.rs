@@ -4,21 +4,25 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ko_pane_wire::frame::Req;
-use ko_pane_wire::ring::{Invalid, Pos, Reader, RecordKind};
+#[cfg(verus_only)]
+use ko_pane_wire::frame::low32;
+use ko_pane_wire::ring::{Invalid, Mark, Offset, Pos, Reader, RecordKind};
 #[cfg(verus_only)]
 use ko_pane_wire::ring::{
-    Log, boundary, log_le, log_le_boundary, log_le_head, log_wf, retain_of, wf_rec,
+    Log, boundary, log_le, log_le_boundary, log_le_head, log_le_trans, log_wf, off_at, resumes,
+    retain_of, wf_rec,
 };
+#[cfg(verus_only)]
+use vstd::arithmetic::div_mod::{lemma_mod_equivalence, lemma_small_mod};
 use vstd::prelude::*;
+use vstd::tokens::InstanceId;
+
+static NEXT_STAMP: AtomicU64 = AtomicU64::new(1);
 
 verus! {
-
-#[allow(dead_code, unreachable_pub)]
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExReq(Req);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Fault {
@@ -28,8 +32,9 @@ pub(crate) enum Fault {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Waiting {
-    pub(crate) req: Req,
+    pub(crate) serial: u64,
     pub(crate) at: Pos,
+    pub(crate) slices: u64,
 }
 
 pub(crate) struct Delivery {
@@ -38,15 +43,33 @@ pub(crate) struct Delivery {
     finished: VecDeque<Waiting>,
     delivered: Pos,
     last_slice: Ghost<Option<nat>>,
+    slices: u64,
+    next: u64,
+    stamp: u64,
 }
 
-// Assumes: Req's derived PartialEq is equality of the values.
+#[derive(Clone)]
+pub(crate) struct Done {
+    stamp: u64,
+    serial: u64,
+    hold: Option<Pos>,
+    slices: u64,
+    #[allow(dead_code)]
+    tl: Ghost<nat>,
+}
+
+pub(crate) uninterp spec fn instance_of(stamp: u64) -> InstanceId;
+
+// Assumes: the process-wide counter increases and never repeats a value that it handed out.
 #[verifier::external_body]
-fn same_req(a: Req, b: Req) -> (r: bool)
+#[allow(unused_variables)]
+fn bind(id: Ghost<InstanceId>) -> (r: Result<u64, std::io::Error>)
     ensures
-        r == (a == b),
+        r is Ok ==> instance_of(r->Ok_0) == id@,
 {
-    a == b
+    NEXT_STAMP
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |stamp| stamp.checked_add(1))
+        .map_err(|_| std::io::Error::other("the Delivery stamp counter is exhausted"))
 }
 
 spec fn inv(
@@ -66,8 +89,131 @@ spec fn inv(
     &&& forall|i: int| 0 <= i < finished.len() ==> hold_ok(log, tl, d, #[trigger] finished[i])
 }
 
-pub(crate) closed spec fn reqs_of(waiting: Seq<Waiting>) -> Seq<Req> {
-    waiting.map_values(|w: Waiting| w.req)
+spec fn serials_ok(all: Seq<u64>, next: u64) -> bool {
+    &&& 1 <= next
+    &&& forall|i: int| 0 <= i < all.len() ==> 1 <= (#[trigger] all[i]) < next
+    &&& forall|i: int, j: int| 0 <= i < j < all.len() ==> (#[trigger] all[i]) < (#[trigger] all[j])
+    &&& all.len() > 0 ==> next as nat - all[0] as nat <= 0x1_0000_0000nat
+}
+
+proof fn serials_skip(all: Seq<u64>, next: u64)
+    requires
+        serials_ok(all, next),
+        all.len() > 0,
+    ensures
+        serials_ok(all.skip(1), next),
+{
+    let rest = all.skip(1);
+    assert forall|i: int| 0 <= i < rest.len() implies 1 <= (#[trigger] rest[i]) < next by {
+        assert(rest[i] == all[i + 1]);
+    }
+    assert forall|i: int, j: int|
+        0 <= i < j < rest.len() implies (#[trigger] rest[i]) < (#[trigger] rest[j]) by {
+        assert(rest[i] == all[i + 1]);
+        assert(rest[j] == all[j + 1]);
+    }
+    if rest.len() > 0 {
+        assert(rest[0] == all[1]);
+        assert(all[0] < all[1]);
+    }
+}
+
+proof fn serials_drop(finished: Seq<u64>, queue: Seq<u64>, next: u64)
+    requires
+        serials_ok(finished + queue, next),
+        queue.len() > 0,
+    ensures
+        serials_ok(finished + queue.skip(1), next),
+{
+    let all = finished + queue;
+    let rest = finished + queue.skip(1);
+    assert forall|i: int| 0 <= i < rest.len() implies (rest[i] == all[i] || rest[i] == all[i + 1])
+        && (i < finished.len() ==> rest[i] == all[i]) by {
+        if i >= finished.len() {
+            assert(rest[i] == queue.skip(1)[i - finished.len()]);
+            assert(all[i + 1] == queue[i + 1 - finished.len()]);
+        }
+    }
+    assert forall|i: int| 0 <= i < rest.len() implies 1 <= (#[trigger] rest[i]) < next by {}
+    assert forall|i: int, j: int|
+        0 <= i < j < rest.len() implies (#[trigger] rest[i]) < (#[trigger] rest[j]) by {
+        assert(rest[i] == all[i] || rest[i] == all[i + 1]);
+        assert(rest[j] == all[j] || rest[j] == all[j + 1]);
+        assert(i < finished.len() ==> rest[i] == all[i]);
+        assert(j >= finished.len() ==> rest[j] == all[j + 1]);
+        if i < finished.len() && j >= finished.len() {
+            assert(all[i] < all[j + 1]);
+        }
+    }
+    if rest.len() > 0 {
+        if finished.len() > 0 {
+            assert(rest[0] == all[0]);
+        } else {
+            assert(rest[0] == all[1]);
+            assert(all[0] < all[1]);
+        }
+    }
+}
+
+proof fn serials_push(all: Seq<u64>, next: u64, serial: u64)
+    requires
+        serials_ok(all, next),
+        serial + 1 == next,
+        1 <= serial,
+        all.len() > 0 ==> all.last() < serial,
+    ensures
+        serials_ok(all.push(serial), next),
+{
+    let more = all.push(serial);
+    assert forall|i: int| 0 <= i < more.len() implies 1 <= (#[trigger] more[i]) < next by {
+        if i < all.len() {
+            assert(more[i] == all[i]);
+        }
+    }
+    assert forall|i: int, j: int|
+        0 <= i < j < more.len() implies (#[trigger] more[i]) < (#[trigger] more[j]) by {
+        assert(more[i] == all[i]);
+        if j < all.len() {
+            assert(more[j] == all[j]);
+        } else {
+            assert(more[j] == serial);
+            if i < all.len() - 1 {
+                assert(all[i] < all.last());
+            }
+        }
+    }
+    if all.len() > 0 {
+        assert(more[0] == all[0]);
+    } else {
+        assert(more[0] == serial);
+    }
+}
+
+proof fn serials_distinct(all: Seq<u64>, next: u64)
+    requires
+        serials_ok(all, next),
+    ensures
+        forall|i: int, j: int|
+            0 <= i < j < all.len() ==> low32(#[trigger] all[i]) != low32(#[trigger] all[j]),
+{
+    assert forall|i: int, j: int| 0 <= i < j < all.len() implies low32(#[trigger] all[i])
+        != low32(#[trigger] all[j]) by {
+        let a = all[i] as int;
+        let b = all[j] as int;
+        assert(all[0] <= all[i]) by {
+            if i > 0 {
+                assert(all[0] < all[i]);
+            }
+        }
+        if low32(all[i]) == low32(all[j]) {
+            lemma_mod_equivalence(b, a, 0x1_0000_0000int);
+            lemma_small_mod((b - a) as nat, 0x1_0000_0000nat);
+        }
+    }
+}
+
+pub(crate) closed spec fn serials_of(waiting: Seq<Waiting>) -> Seq<u64> {
+    waiting.map_values(|w: Waiting| w.serial)
 }
 
 spec fn hold_ok(log: Log, tl: nat, d: nat, w: Waiting) -> bool {
@@ -100,10 +246,80 @@ proof fn inv_grows(
     }
 }
 
+impl Done {
+    pub(crate) open spec fn valid(self) -> bool {
+        match self.hold_of() {
+            Some(hold) => self.tl_of() <= hold.v() as nat,
+            None => true,
+        }
+    }
+
+    pub(crate) closed spec fn stamp_of(self) -> u64 {
+        self.stamp
+    }
+
+    pub(crate) closed spec fn serial_of(self) -> u64 {
+        self.serial
+    }
+
+    pub(crate) closed spec fn hold_of(self) -> Option<Pos> {
+        self.hold
+    }
+
+    pub(crate) closed spec fn slices_of(self) -> u64 {
+        self.slices
+    }
+
+    pub(crate) closed spec fn tl_of(self) -> nat {
+        self.tl@
+    }
+
+    pub(crate) fn stamp(&self) -> (r: u64)
+        ensures
+            r == self.stamp_of(),
+    {
+        self.stamp
+    }
+
+    pub(crate) fn serial(&self) -> (r: u64)
+        ensures
+            r == self.serial_of(),
+    {
+        self.serial
+    }
+
+    pub(crate) fn slices(&self) -> (r: u64)
+        ensures
+            r == self.slices_of(),
+    {
+        self.slices
+    }
+
+    pub(crate) fn hold(&self) -> (r: Option<Pos>)
+        ensures
+            r == self.hold_of(),
+    {
+        self.hold
+    }
+
+    pub(crate) fn req(&self) -> (r: Req)
+        ensures
+            r.val() as nat == low32(self.serial_of()),
+    {
+        Req::of_serial(self.serial)
+    }
+}
+
 impl Delivery {
     pub(crate) closed spec fn wf(self) -> bool {
         &&& self.ring.wf()
         &&& inv(self.log(), self.tl(), self.at(), self.queue(), self.done(), self.last_slice@)
+        &&& serials_ok(self.serials(), self.next)
+        &&& instance_of(self.stamp) == self.ring.mark_id()
+    }
+
+    closed spec fn serials(self) -> Seq<u64> {
+        serials_of(self.done()) + serials_of(self.queue())
     }
 
     pub(crate) closed spec fn log(self) -> Log {
@@ -124,6 +340,110 @@ impl Delivery {
 
     pub(crate) closed spec fn at(self) -> nat {
         self.delivered.v() as nat
+    }
+
+    pub(crate) closed spec fn stamp_of(self) -> u64 {
+        self.stamp
+    }
+
+    pub(crate) closed spec fn cap(self) -> nat {
+        self.ring.cap()
+    }
+
+    pub(crate) open spec fn grew(self, old: Delivery) -> bool {
+        &&& self.wf()
+        &&& log_wf(self.cap(), self.log())
+        &&& self.tl() <= self.log().head
+        &&& boundary(self.log(), self.tl())
+        &&& self.cap() == old.cap()
+        &&& self.stamp_of() == old.stamp_of()
+        &&& self.tl() == old.tl()
+        &&& log_le(old.log(), self.log())
+        &&& self.queue() == old.queue()
+        &&& self.done() == old.done()
+        &&& self.at() == old.at()
+    }
+
+    pub(crate) proof fn grew_trans(a: Delivery, b: Delivery, c: Delivery)
+        requires
+            b.grew(a),
+            c.grew(b),
+        ensures
+            c.grew(a),
+    {
+        log_le_trans(a.log(), b.log(), c.log());
+    }
+
+    proof fn regrown(tracked &self, old: Delivery)
+        requires
+            old.wf(),
+            log_wf(old.cap(), old.log()),
+            self.ring.wf(),
+            self.ring.cap() == old.ring.cap(),
+            self.ring.tl() == old.ring.tl(),
+            self.ring.mark_id() == old.ring.mark_id(),
+            log_le(old.log(), self.log()),
+            self.requests@ == old.requests@,
+            self.finished@ == old.finished@,
+            self.delivered == old.delivered,
+            self.last_slice@ == old.last_slice@,
+            self.next == old.next,
+            self.stamp == old.stamp,
+        ensures
+            self.grew(old),
+    {
+        self.ring.facts();
+        inv_grows(
+            self.ring.cap(),
+            old.log(),
+            self.log(),
+            self.tl(),
+            self.at(),
+            self.queue(),
+            self.done(),
+            self.last_slice@,
+        );
+    }
+
+    pub(crate) proof fn facts(tracked &self)
+        requires
+            self.wf(),
+        ensures
+            log_wf(self.cap(), self.log()),
+            self.tl() <= self.log().head,
+            boundary(self.log(), self.tl()),
+    {
+        self.ring.facts();
+    }
+
+    pub(crate) proof fn bound(tracked &self, tracked m: &Mark)
+        requires
+            self.wf(),
+            m.id() == instance_of(self.stamp_of()),
+        ensures
+            log_wf(self.cap(), m.log()),
+            log_le(m.log(), self.log()),
+    {
+        self.ring.bound(m);
+    }
+
+    closed spec fn queued_reqs(self) -> Seq<u32> {
+        (self.done() + self.queue()).map_values(|w: Waiting| low32(w.serial) as u32)
+    }
+
+    proof fn reqs_unique(tracked &self)
+        requires
+            self.wf(),
+        ensures
+            self.queued_reqs().no_duplicates(),
+    {
+        let all = self.serials();
+        serials_distinct(all, self.next);
+        let reqs = self.queued_reqs();
+        assert forall|i: int, j: int| 0 <= i < j < reqs.len() implies reqs[i] != reqs[j] by {
+            assert(reqs[i] as nat == low32(all[i]));
+            assert(reqs[j] as nat == low32(all[j]));
+        }
     }
 
     pub(crate) closed spec fn keep_of(self, head: nat) -> nat {
@@ -149,68 +469,198 @@ impl Delivery {
                     ring.facts();
                 }
                 let delivered = ring.tail();
+                let stamp = bind(Ghost(ring.mark_id()))?;
                 Ok(Delivery {
                     ring,
                     requests: VecDeque::new(),
                     finished: VecDeque::new(),
                     delivered,
                     last_slice: Ghost(None),
+                    slices: 0,
+                    next: 1,
+                    stamp,
                 })
             },
             Err(e) => Err(e),
         }
     }
 
-    pub(crate) fn observe(&mut self) -> (head: Pos)
+    pub(crate) fn ring(&self) -> (r: &Reader)
+        requires
+            self.wf(),
+        ensures
+            r.wf(),
+            r.log() == self.log(),
+            r.tl() == self.tl(),
+            r.mark_id() == instance_of(self.stamp_of()),
+    {
+        &self.ring
+    }
+
+    pub(crate) fn stamp(&self) -> (s: u64)
+        ensures
+            s == self.stamp_of(),
+    {
+        self.stamp
+    }
+
+    pub(crate) fn mark(&self) -> (m: Tracked<Mark>)
+        requires
+            self.wf(),
+        ensures
+            m@.id() == instance_of(self.stamp_of()),
+            m@.log() == self.log(),
+    {
+        self.ring.mark()
+    }
+
+    pub(crate) fn head(&mut self) -> (head: Pos)
         requires
             old(self).wf(),
         ensures
-            final(self).wf(),
+            final(self).grew(*old(self)),
             head.v() as nat == final(self).log().head,
-            final(self).tl() == old(self).tl(),
-            log_le(old(self).log(), final(self).log()),
-            final(self).queue() == old(self).queue(),
-            final(self).done() == old(self).done(),
-            final(self).at() == old(self).at(),
     {
         proof {
             self.ring.facts();
         }
-        let ghost before = self.ring.log();
+        let ghost old = *self;
         let head = self.ring.head();
         proof {
             self.ring.facts();
-            inv_grows(
-                self.ring.cap(),
-                before,
-                self.log(),
-                self.tl(),
-                self.at(),
-                self.queue(),
-                self.done(),
-                self.last_slice@,
-            );
+            self.regrown(old);
         }
         head
     }
 
-    // Assumes: the sink reads the slice at `at` from the ring during the call only, and keeps
-    // neither the ring nor the position.
-    #[verifier::external_body]
-    fn hand_over<S: FnMut(&Reader, Req, Pos)>(&self, sink: &mut S, req: Req, at: Pos)
+    pub(crate) fn end_offset(&mut self) -> (r: Result<Offset, Invalid>)
         requires
-            self.wf(),
-            self.requests@.len() > 0,
-            self.requests@[0].req == req,
-            self.ring.visible(at.v()),
-            self.ring.log().m[at.v() as nat].kind == RecordKind::Slice,
-            self.requests@[0].at.v() <= at.v(),
-            self.last_slice@ is Some ==> self.last_slice@->Some_0 < at.v() as nat,
+            old(self).wf(),
+        ensures
+            final(self).grew(*old(self)),
+            r.is_ok(),
+            r.unwrap().v() as nat == final(self).log().head_offset,
     {
-        sink(&self.ring, req, at)
+        proof {
+            self.ring.facts();
+        }
+        let ghost old = *self;
+        let r = self.ring.end_offset();
+        proof {
+            self.ring.facts();
+            self.regrown(old);
+        }
+        r
     }
 
-    fn deliver<S: FnMut(&Reader, Req, Pos)>(&mut self, upper: Pos, sink: &mut S) -> (r: Result<
+    pub(crate) fn oldest_offset(&mut self) -> (r: Result<Offset, Invalid>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).grew(*old(self)),
+            r.is_ok(),
+            off_at(final(self).log(), final(self).tl()) <= r.unwrap().v(),
+    {
+        proof {
+            self.ring.facts();
+        }
+        let ghost old = *self;
+        let r = self.ring.oldest_offset();
+        proof {
+            self.ring.facts();
+            self.regrown(old);
+        }
+        r
+    }
+
+    pub(crate) fn resume(&mut self, target: Offset) -> (r: Result<Pos, Invalid>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).grew(*old(self)),
+            r.is_ok(),
+            resumes(final(self).tl(), final(self).log(), target.v() as nat, r.unwrap().v() as nat),
+    {
+        proof {
+            self.ring.facts();
+        }
+        let ghost old = *self;
+        let r = self.ring.resume(target);
+        proof {
+            self.ring.facts();
+            self.regrown(old);
+        }
+        r
+    }
+
+    // Assumes: the sink uses the handle during the call only.
+    #[verifier::external_body]
+    fn hand_over<S: FnMut(Handle<'_>)>(sink: &mut S, handle: Handle<'_>) {
+        sink(handle)
+    }
+
+    fn pop_done(&mut self) -> (w: Waiting)
+        requires
+            old(self).wf(),
+            old(self).done().len() > 0,
+        ensures
+            final(self).wf(),
+            final(self).log() == old(self).log(),
+            final(self).tl() == old(self).tl(),
+            final(self).at() == old(self).at(),
+            final(self).stamp_of() == old(self).stamp_of(),
+            final(self).queue() == old(self).queue(),
+            final(self).done() == old(self).done().skip(1),
+            final(self).ring == old(self).ring,
+            final(self).next == old(self).next,
+            w == old(self).done()[0],
+    {
+        proof {
+            self.ring.facts();
+        }
+        let w = self.finished[0];
+        let ghost all0 = self.serials();
+        self.finished.pop_front();
+        proof {
+            assert(self.serials() =~= all0.skip(1));
+            serials_skip(all0, self.next);
+        }
+        w
+    }
+
+    fn pop_queue(&mut self) -> (w: Waiting)
+        requires
+            old(self).wf(),
+            old(self).queue().len() > 0,
+        ensures
+            final(self).wf(),
+            final(self).log() == old(self).log(),
+            final(self).tl() == old(self).tl(),
+            final(self).at() == old(self).at(),
+            final(self).stamp_of() == old(self).stamp_of(),
+            final(self).done() == old(self).done(),
+            final(self).queue() == old(self).queue().skip(1),
+            final(self).ring == old(self).ring,
+            final(self).next == old(self).next,
+            w == old(self).queue()[0],
+    {
+        proof {
+            self.ring.facts();
+        }
+        let w = self.requests[0];
+        proof {
+            serials_drop(serials_of(self.finished@), serials_of(self.requests@), self.next);
+        }
+        self.requests.pop_front();
+        proof {
+            assert(serials_of(self.requests@) =~= serials_of(old(self).requests@).skip(1));
+        }
+        self.last_slice = Ghost(None);
+        self.slices = 0;
+        w
+    }
+
+    fn deliver<S: FnMut(Handle<'_>)>(&mut self, upper: Pos, sink: &mut S) -> (r: Result<
         (),
         Fault,
     >)
@@ -220,6 +670,7 @@ impl Delivery {
         ensures
             final(self).wf(),
             final(self).ring == old(self).ring,
+            final(self).stamp_of() == old(self).stamp_of(),
             r is Ok && old(self).queue().len() > 0 ==> upper.v() <= final(self).at(),
     {
         proof {
@@ -232,6 +683,7 @@ impl Delivery {
             invariant
                 self.wf(),
                 self.ring == old(self).ring,
+                self.stamp == old(self).stamp,
                 upper.v() as nat <= self.log().head,
                 self.tl() <= self.at(),
                 old(self).at() <= self.at(),
@@ -256,16 +708,26 @@ impl Delivery {
                     } else {
                         let front = self.requests[0];
                         if front.at.get() <= at.get() {
-                            self.hand_over(sink, front.req, at);
+                            Self::hand_over(sink, Handle::new(self, front.serial, at));
                             self.last_slice = Ghost(Some(at.v() as nat));
+                            self.slices = self.slices.saturating_add(1);
                             self.delivered = next;
                             match self.ring.slice(at) {
                                 Err(e) => return Err(Fault::Ring(e)),
                                 Ok(slice) => {
                                     if slice.last {
-                                        self.requests.pop_front();
-                                        self.finished.push_back(Waiting { req: front.req, at: next });
-                                        self.last_slice = Ghost(None);
+                                        let count = self.slices;
+                                        let ghost all0 = self.serials();
+                                        proof {
+                                            assert(serials_ok(all0, self.next));
+                                        }
+                                        self.pop_queue();
+                                        self.finished.push_back(
+                                            Waiting { serial: front.serial, at: next, slices: count },
+                                        );
+                                        proof {
+                                            assert(self.serials() =~= all0);
+                                        }
                                     }
                                 },
                             }
@@ -282,7 +744,7 @@ impl Delivery {
         Ok(())
     }
 
-    pub(crate) fn scan<S: FnMut(&Reader, Req, Pos)>(&mut self, sink: &mut S) -> (r: Result<
+    pub(crate) fn scan<S: FnMut(Handle<'_>)>(&mut self, sink: &mut S) -> (r: Result<
         Pos,
         Fault,
     >)
@@ -290,6 +752,7 @@ impl Delivery {
             old(self).wf(),
         ensures
             final(self).wf(),
+            final(self).stamp_of() == old(self).stamp_of(),
             old(self).tl() <= final(self).tl(),
             log_le(old(self).log(), final(self).log()),
             r is Ok ==> {
@@ -298,7 +761,7 @@ impl Delivery {
                 &&& final(self).tl() <= final(self).keep_of(head)
             },
     {
-        let head = self.observe();
+        let head = self.head();
         match self.deliver(head, sink) {
             Ok(()) => {},
             Err(e) => return Err(e),
@@ -341,54 +804,135 @@ impl Delivery {
         Ok(head)
     }
 
-    pub(crate) fn request(&mut self, req: Req)
+    pub(crate) fn mint_serial(&mut self) -> (r: Option<(u64, Req)>)
         requires
             old(self).wf(),
         ensures
             final(self).wf(),
             final(self).log() == old(self).log(),
             final(self).tl() == old(self).tl(),
-            final(self).queue().len() == old(self).queue().len() + 1,
-            final(self).queue().drop_last() == old(self).queue(),
-            final(self).queue().last().req == req,
-            final(self).queue().last().at.v() as nat == final(self).log().head,
+            final(self).queue() == old(self).queue(),
             final(self).done() == old(self).done(),
-            old(self).queue().len() == 0 ==> final(self).at() == final(self).log().head,
-            old(self).queue().len() > 0 ==> final(self).at() == old(self).at(),
+            final(self).at() == old(self).at(),
+            final(self).stamp_of() == old(self).stamp_of(),
     {
         proof {
             self.ring.facts();
+        }
+        let candidate = self.next;
+        let following = candidate.checked_add(1)?;
+        let oldest = if self.finished.len() > 0 {
+            Some(self.finished[0].serial)
+        } else if self.requests.len() > 0 {
+            Some(self.requests[0].serial)
+        } else {
+            None
+        };
+        if let Some(oldest) = oldest {
+            if Req::of_serial(oldest).same(Req::of_serial(candidate)) {
+                return None;
+            }
+            proof {
+                let all = self.serials();
+                assert(all[0] == oldest);
+                lemma_mod_equivalence(candidate as int, oldest as int, 0x1_0000_0000int);
+                assert(candidate as nat - oldest as nat != 0x1_0000_0000nat) by {
+                    if candidate as nat - oldest as nat == 0x1_0000_0000nat {
+                        assert(0x1_0000_0000int % 0x1_0000_0000int == 0) by (nonlinear_arith);
+                    }
+                }
+            }
+        }
+        self.next = following;
+        Some((candidate, Req::of_serial(candidate)))
+    }
+
+    pub(crate) fn request(&mut self, serial: u64) -> (r: bool)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            final(self).log() == old(self).log(),
+            final(self).tl() == old(self).tl(),
+            final(self).done() == old(self).done(),
+            final(self).stamp_of() == old(self).stamp_of(),
+            if r {
+                &&& final(self).queue().len() == old(self).queue().len() + 1
+                &&& final(self).queue().drop_last() == old(self).queue()
+                &&& final(self).queue().last().serial == serial
+                &&& final(self).queue().last().at.v() as nat == final(self).log().head
+                &&& old(self).queue().len() == 0 ==> final(self).at() == final(self).log().head
+                &&& old(self).queue().len() > 0 ==> final(self).at() == old(self).at()
+            } else {
+                &&& final(self).queue() == old(self).queue()
+                &&& final(self).at() == old(self).at()
+            },
+    {
+        proof {
+            self.ring.facts();
+        }
+        if serial == 0 {
+            return false;
+        }
+        match serial.checked_add(1) {
+            Some(following) => {
+                if following != self.next {
+                    return false;
+                }
+            },
+            None => return false,
+        }
+        let last = if let Some(top) = self.requests.len().checked_sub(1) {
+            Some(self.requests[top].serial)
+        } else if let Some(top) = self.finished.len().checked_sub(1) {
+            Some(self.finished[top].serial)
+        } else {
+            None
+        };
+        if matches!(last, Some(last) if last >= serial) {
+            return false;
         }
         let floor = self.ring.seen();
         if self.requests.len() == 0 {
             self.delivered = floor;
         }
-        self.requests.push_back(Waiting { req, at: floor });
+        let ghost all0 = self.serials();
+        self.requests.push_back(Waiting { serial, at: floor, slices: 0 });
+        proof {
+            assert(self.serials() =~= all0.push(serial));
+            serials_push(all0, self.next, serial);
+        }
+        true
     }
 
-    pub(crate) fn snapshot_done(&mut self, req: Req) -> (r: Option<bool>)
+    pub(crate) fn snapshot_done(&mut self, req: Req) -> (r: Option<Done>)
         requires
             old(self).wf(),
         ensures
             final(self).wf(),
             final(self).log() == old(self).log(),
             final(self).tl() == old(self).tl(),
+            final(self).stamp_of() == old(self).stamp_of(),
             match r {
-                Some(true) => {
-                    &&& old(self).done().len() > 0
-                    &&& old(self).done()[0].req == req
-                    &&& old(self).tl() <= old(self).done()[0].at.v() as nat
-                    &&& old(self).done()[0].at.v() as nat <= old(self).log().head
-                    &&& boundary(old(self).log(), old(self).done()[0].at.v() as nat)
-                    &&& final(self).done() == old(self).done().skip(1)
-                    &&& final(self).queue() == old(self).queue()
-                },
-                Some(false) => {
-                    &&& old(self).done().len() == 0
-                    &&& old(self).queue().len() > 0
-                    &&& old(self).queue()[0].req == req
-                    &&& final(self).queue() == old(self).queue().skip(1)
-                    &&& final(self).done() == old(self).done()
+                Some(done) => {
+                    &&& done.valid()
+                    &&& done.stamp_of() == old(self).stamp_of()
+                    &&& done.tl_of() == old(self).tl()
+                    &&& req.val() as nat == low32(done.serial_of())
+                    &&& if done.hold_of() is Some {
+                        &&& old(self).done().len() > 0
+                        &&& old(self).done()[0].serial == done.serial_of()
+                        &&& done.hold_of() == Some(old(self).done()[0].at)
+                        &&& boundary(old(self).log(), old(self).done()[0].at.v() as nat)
+                        &&& final(self).done() == old(self).done().skip(1)
+                        &&& final(self).queue() == old(self).queue()
+                    } else {
+                        &&& old(self).done().len() == 0
+                        &&& old(self).queue().len() > 0
+                        &&& old(self).queue()[0].serial == done.serial_of()
+                        &&& final(self).queue() == old(self).queue().skip(1)
+                        &&& final(self).done() == old(self).done()
+                    }
                 },
                 None => {
                     &&& final(self).queue() == old(self).queue()
@@ -399,20 +943,36 @@ impl Delivery {
         proof {
             self.ring.facts();
         }
+        let ghost tl = self.tl();
         if self.finished.len() > 0 {
             let front = self.finished[0];
-            if same_req(front.req, req) {
-                self.finished.pop_front();
-                Some(true)
+            if Req::of_serial(front.serial).same(req) {
+                self.pop_done();
+                Some(
+                    Done {
+                        stamp: self.stamp,
+                        serial: front.serial,
+                        hold: Some(front.at),
+                        slices: front.slices,
+                        tl: Ghost(tl),
+                    },
+                )
             } else {
                 None
             }
         } else if self.requests.len() > 0 {
             let front = self.requests[0];
-            if same_req(front.req, req) {
-                self.requests.pop_front();
-                self.last_slice = Ghost(None);
-                Some(false)
+            if Req::of_serial(front.serial).same(req) {
+                self.pop_queue();
+                Some(
+                    Done {
+                        stamp: self.stamp,
+                        serial: front.serial,
+                        hold: None,
+                        slices: 0,
+                        tl: Ghost(tl),
+                    },
+                )
             } else {
                 None
             }
@@ -421,48 +981,58 @@ impl Delivery {
         }
     }
 
-    pub(crate) fn fail_all(&mut self) -> (out: Vec<Req>)
+    pub(crate) fn fail_all(&mut self) -> (out: Vec<Done>)
         requires
             old(self).wf(),
         ensures
             final(self).wf(),
             final(self).queue().len() == 0,
             final(self).done().len() == 0,
-            out@ == reqs_of(old(self).done()) + reqs_of(old(self).queue()),
+            out@.map_values(|d: Done| d.serial_of()) == serials_of(old(self).done()) + serials_of(
+                old(self).queue(),
+            ),
     {
         let mut out = Vec::new();
+        let ghost tl = self.tl();
         while self.finished.len() > 0
             invariant
                 self.wf(),
+                self.tl() == tl,
+                self.stamp == old(self).stamp,
                 self.queue() == old(self).queue(),
-                out@ + reqs_of(self.done()) == reqs_of(old(self).done()),
+                out@.map_values(|d: Done| d.serial_of()) + serials_of(self.done()) == serials_of(
+                    old(self).done(),
+                ),
             decreases self.finished@.len(),
         {
-            proof {
-                self.ring.facts();
-            }
-            let front = self.finished.pop_front();
-            if let Some(waiting) = front {
-                out.push(waiting.req);
-            }
+            let waiting = self.pop_done();
+            out.push(
+                Done { stamp: self.stamp, serial: waiting.serial, hold: None, slices: 0, tl: Ghost(tl) },
+            );
+        }
+        proof {
+            assert(serials_of(self.finished@) =~= Seq::<u64>::empty());
         }
         while self.requests.len() > 0
             invariant
                 self.wf(),
+                self.tl() == tl,
+                self.stamp == old(self).stamp,
                 self.done().len() == 0,
-                out@ + reqs_of(self.queue()) == reqs_of(old(self).done()) + reqs_of(old(self).queue()),
+                out@.map_values(|d: Done| d.serial_of()) + serials_of(self.queue()) == serials_of(
+                    old(self).done(),
+                ) + serials_of(old(self).queue()),
             decreases self.requests@.len(),
         {
-            let front = self.requests.pop_front();
-            self.last_slice = Ghost(None);
-            if let Some(waiting) = front {
-                out.push(waiting.req);
-            }
+            let waiting = self.pop_queue();
+            out.push(
+                Done { stamp: self.stamp, serial: waiting.serial, hold: None, slices: 0, tl: Ghost(tl) },
+            );
         }
         out
     }
 
-    pub(crate) fn deliver_now<S: FnMut(&Reader, Req, Pos)>(&mut self, sink: &mut S) -> (r: Result<
+    pub(crate) fn deliver_now<S: FnMut(Handle<'_>)>(&mut self, sink: &mut S) -> (r: Result<
         (),
         Fault,
     >)
@@ -471,12 +1041,116 @@ impl Delivery {
         ensures
             final(self).wf(),
     {
-        let upper = self.observe();
+        let upper = self.head();
         self.deliver(upper, sink)
     }
 }
 
+pub(crate) struct Handle<'a> {
+    d: &'a Delivery,
+    serial: u64,
+    pos: Pos,
+}
+
+impl<'a> Handle<'a> {
+    pub(crate) closed spec fn valid(self) -> bool {
+        &&& self.d.wf()
+        &&& self.d.requests@.len() > 0
+        &&& self.d.requests@[0].serial == self.serial
+        &&& self.d.ring.visible(self.pos.v())
+        &&& self.d.ring.log().m[self.pos.v() as nat].kind == RecordKind::Slice
+    }
+
+    pub(crate) closed spec fn serial_of(self) -> u64 {
+        self.serial
+    }
+
+    pub(crate) closed spec fn pos_of(self) -> u64 {
+        self.pos.v()
+    }
+
+    pub(crate) closed spec fn stamp_of(self) -> u64 {
+        self.d.stamp
+    }
+
+    fn new(d: &'a Delivery, serial: u64, pos: Pos) -> (h: Handle<'a>)
+        requires
+            d.wf(),
+            d.requests@.len() > 0,
+            d.requests@[0].serial == serial,
+            d.ring.visible(pos.v()),
+            d.ring.log().m[pos.v() as nat].kind == RecordKind::Slice,
+        ensures
+            h.valid(),
+            h.serial_of() == serial,
+            h.pos_of() == pos.v(),
+            h.stamp_of() == d.stamp_of(),
+    {
+        Handle { d, serial, pos }
+    }
+
+    pub(crate) fn serial(&self) -> (r: u64)
+        ensures
+            r == self.serial_of(),
+    {
+        self.serial
+    }
+
+    pub(crate) fn pos(&self) -> (r: Pos)
+        ensures
+            r.v() == self.pos_of(),
+    {
+        self.pos
+    }
+
+    pub(crate) fn stamp(&self) -> (r: u64)
+        ensures
+            r == self.stamp_of(),
+    {
+        self.d.stamp
+    }
+
+    pub(crate) fn req(&self) -> (r: Req)
+        ensures
+            r.val() as nat == low32(self.serial_of()),
+    {
+        Req::of_serial(self.serial)
+    }
+
+    pub(crate) fn ring(&self) -> (r: &'a Reader)
+        requires
+            self.valid(),
+        ensures
+            r.wf(),
+            r.visible(self.pos_of()),
+            r.log().m[self.pos_of() as nat].kind == RecordKind::Slice,
+            r.mark_id() == instance_of(self.stamp_of()),
+    {
+        &self.d.ring
+    }
+}
+
 } // verus!
+
+impl fmt::Debug for Done {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Done")
+            .field("stamp", &self.stamp)
+            .field("serial", &self.serial)
+            .field("hold", &self.hold)
+            .field("slices", &self.slices)
+            .finish()
+    }
+}
+
+impl PartialEq for Done {
+    fn eq(&self, other: &Done) -> bool {
+        (self.stamp, self.serial, self.hold, self.slices)
+            == (other.stamp, other.serial, other.hold, other.slices)
+    }
+}
+
+impl Eq for Done {}
 
 impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -494,19 +1168,7 @@ impl fmt::Debug for Delivery {
             .field("requests", &self.requests)
             .field("finished", &self.finished)
             .field("delivered", &self.delivered)
+            .field("next", &self.next)
             .finish()
-    }
-}
-
-impl Delivery {
-    pub(crate) fn ring(&self) -> &Reader {
-        &self.ring
-    }
-
-    // Unverified: a holder of the `&mut Reader` can call `head`, `end_offset`,
-    // `oldest_offset` and `resume`, which keep the tail and only grow the log
-    // (`inv_grows`). It must not call `advance`: only `scan` moves the tail.
-    pub(crate) fn ring_mut(&mut self) -> &mut Reader {
-        &mut self.ring
     }
 }

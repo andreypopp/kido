@@ -419,23 +419,31 @@ Conventions:
   access as sequentially consistent, so the model puts a
   `fence(SeqCst)` beside each one (its comment has the issue). The
   acquire/release twin of the wakeup model is `#[should_panic]`.
-- **Verus.** `ko_pane_wire::ring` and `ko_server::delivery` are
+- **Verus.** `ko_pane_wire::ring`, `ko_pane_wire::frame::Req`,
+  `ko_server::delivery`, `ko_server::view` and `conn.rs`'s `Batch` are
   verified with Verus (`make verus`, `scripts/verus.sh`, the pinned
   release archive in `build/verus/<release>/`). A verified crate has
   `[package.metadata.verus] verify = true` and builds with plain
   cargo, because `verus!` erases the ghost code. Specs and proofs are
   in `verus!{}` beside the code: `ring/spec.rs` (the log),
-  `ring/machine.rs` (the state machine and its invariant) and
+  `ring/machine.rs` (the state machine and its invariant),
+  `ring/mark.rs` (the reader's log marks) and
   `ring/backend.rs` (the trusted base). `cfg(verus_only)` guards only
-  `use` statements. `#[verifier::external_body]` occurs only in
-  `ring/backend.rs` and `delivery.rs`. In `ring/backend.rs`: the
+  `use` statements. `#[verifier::external_body]` and
+  `external_fn_specification` occur only in `ring/backend.rs`,
+  `delivery.rs`, `view.rs` and `conn.rs`. In `ring/backend.rs`: the
   constructor of each role (`Backend::mint_reader`,
   `Backend::mint_writer`), the mapping's creation
   (`create_handle`, with no `ensures`), the capacity getter, the
   header word load and store, the byte accessors and the opaque types
-  that they use. In `delivery.rs`: the sink call (`hand_over`, a
-  `requires` and no `ensures`), `Req`'s equality and the opaque
-  `Req`. Each has an `// Assumes:` comment that
+  that they use. In `delivery.rs`: the sink call (`hand_over`, with
+  no contract) and `bind`, which ties a `Delivery`'s stamp from the
+  process-wide counter to its ring's mark instance. In `view.rs`: the
+  WebSocket sends (`reject_ws`, `emit_marked`, `emit_skipped`,
+  `write_slice`) and the marker decode (`resize_marker`). In
+  `conn.rs`: `Output`'s `waiting`, `available`, `close` and
+  `send_batch` over the opaque `closed` and `waits`, and
+  `Header::new` (the record header). Each has an `// Assumes:` comment that
   names its assumption. No `external_body` function has an `ensures`
   that its body does not establish beyond that comment. No `assume`
   and no `admit` occur. The functions that `tokenized_state_machine!`
@@ -447,13 +455,18 @@ Conventions:
   it verifies one crate for each `cargo verus verify` run and reads
   the last result and time of that run, because Verus names no crate
   on the line. `ko_server::delivery` (`Delivery`) owns the pane's
-  `Reader`, its snapshot queues and the delivered position; its `wf`
-  is `Pane_core.fst`'s `pane_inv` without the tokens' ring and
-  generation, because the routing of a `Req` to its view in
-  `state.rs` is not verified. `Delivery::ring_mut` lends the
-  `Reader` to unverified code, which may call only the methods that
-  keep the tail; `scripts/lint.sh` refuses `.advance(` in
-  `ko_server/src` outside `delivery.rs`. `delivery.rs` denies
+  `Reader`, its snapshot queues, the delivered position and the mint
+  of every `Req` (a u64 serial; the `Req` is its low 32 bits). Its
+  `wf` is `Pane_core.fst`'s `pane_inv`, with the queued serials
+  unique and in mint order. A slice reaches a view only as a
+  `Handle` that `deliver` constructs, and a snapshot's end only as a
+  `Done` that `snapshot_done` or `fail_all` constructs. The views get
+  `&mut Delivery`, whose methods keep the tail, so only `scan`
+  advances the ring. A `View` keeps its `Delivery`'s stamp, its
+  request's serial and slice count, and a `Mark` of the log. `open`
+  and `pump` compare the stamp at run time; `on_slice` and `on_done`
+  compare the stamp and the serial. The `View`'s `wf` holds through
+  every `pub(crate)` method, because its fields are private. `delivery.rs` denies
   `clippy::arithmetic_side_effects` but not `indexing_slicing`:
   vstd specifies only `VecDeque::len` and its index, and Verus proves
   each index in bounds. The `verus`

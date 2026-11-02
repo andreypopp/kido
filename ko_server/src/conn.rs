@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fmt;
 use std::io::{self, IoSlice, Write};
 use std::net::Shutdown;
 use std::os::fd::AsFd;
@@ -6,14 +7,14 @@ use std::os::unix::net::UnixStream;
 
 use ko_pane_wire::ring::{Pos, Reader};
 use ko_sys::event::{Interest, Poll, Read, Reads, Timer, Token};
+use vstd::prelude::*;
 
 use crate::http::{self, Framing, Head, MAX_HEAD, Parsed, Status};
 use crate::link::{Link, Role, Wire};
 use crate::server::Verified;
-use crate::ws::{self, MAX_HEADER, Record};
+use crate::ws::{Header, Record};
 
 const MAX_QUEUED: usize = 64 << 20;
-const BATCH: usize = 64;
 const SLICES: usize = 64;
 
 #[derive(Debug, Default)]
@@ -164,11 +165,12 @@ impl Output {
         if !self.open {
             return Written::Closed;
         }
-        let mut header = [0; MAX_HEADER];
-        let size = ws::record_header(&mut header, record, offset, payload.len());
-        let header = header.get(..size).unwrap_or_default();
+        let header = Header::new(record, offset, payload.len());
         let written = if self.available() {
-            match write_slices(&self.stream, &[IoSlice::new(header), IoSlice::new(payload)]) {
+            match write_slices(
+                &self.stream,
+                &[IoSlice::new(header.bytes()), IoSlice::new(payload)],
+            ) {
                 Ok(count) => {
                     self.refused = count == 0;
                     count
@@ -181,11 +183,11 @@ impl Output {
         } else {
             0
         };
-        if written == size.saturating_add(payload.len()) {
+        if written == header.size().saturating_add(payload.len()) {
             Written::Accepted
         } else if written == 0 && !queue {
             Written::Blocked
-        } else if self.queue_rest(header, written, payload) {
+        } else if self.queue_rest(header.bytes(), written, payload) {
             Written::Queued
         } else {
             Written::Closed
@@ -213,7 +215,7 @@ impl Output {
         for (pair, (entry, payload)) in slices.chunks_mut(2).zip(batch.entries.iter().zip(payloads))
         {
             if let [header, body] = pair {
-                *header = IoSlice::new(entry.header());
+                *header = IoSlice::new(entry.header.bytes());
                 *body = IoSlice::new(payload);
             }
         }
@@ -234,14 +236,14 @@ impl Output {
         };
         let mut accepted = 0;
         for (entry, payload) in batch.entries.iter().zip(payloads) {
-            let total = entry.size.saturating_add(payload.len());
+            let total = entry.header.size().saturating_add(payload.len());
             if remaining >= total {
                 remaining = remaining.saturating_sub(total);
                 accepted += 1;
                 continue;
             }
             if remaining > 0 {
-                if !self.queue_rest(entry.header(), remaining, payload) {
+                if !self.queue_rest(entry.header.bytes(), remaining, payload) {
                     return None;
                 }
                 accepted += 1;
@@ -252,10 +254,13 @@ impl Output {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+verus! {
+
+pub(crate) const BATCH: usize = 64;
+
+#[derive(Clone, Copy)]
 struct Entry {
-    header: [u8; MAX_HEADER],
-    size: usize,
+    header: Header,
     pos: Pos,
     skip: usize,
     len: usize,
@@ -263,23 +268,53 @@ struct Entry {
     end: u64,
 }
 
-impl Entry {
-    fn header(&self) -> &[u8] {
-        self.header.get(..self.size).unwrap_or_default()
-    }
+#[verifier::external_type_specification]
+#[verifier::external_body]
+#[allow(dead_code, unreachable_pub)]
+pub struct ExHeader(Header);
+
+#[verifier::external_type_specification]
+#[allow(dead_code, unreachable_pub)]
+pub struct ExRecord(Record);
+
+// Assumes: it builds the websocket header of a record, as the wire format requires.
+#[verifier::external_fn_specification]
+#[allow(dead_code, unreachable_pub)]
+pub fn ex_header_new(record: Record, offset: u64, len: usize) -> (header: Header) {
+    Header::new(record, offset, len)
 }
 
-#[derive(Debug, Default)]
 pub(crate) struct Batch {
     entries: Vec<Entry>,
 }
 
+impl View for Batch {
+    type V = Seq<(Pos, u64)>;
+
+    closed spec fn view(&self) -> Seq<(Pos, u64)> {
+        self.entries@.map_values(|e: Entry| (e.next, e.end))
+    }
+}
+
 impl Batch {
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) fn new() -> (b: Batch)
+        ensures
+            b@.len() == 0,
+    {
+        Batch { entries: Vec::new() }
+    }
+
+    pub(crate) fn len(&self) -> (n: usize)
+        ensures
+            n == self@.len(),
+    {
         self.entries.len()
     }
 
-    pub(crate) fn full(&self) -> bool {
+    pub(crate) fn full(&self) -> (b: bool)
+        ensures
+            b == (self@.len() == BATCH),
+    {
         self.entries.len() == BATCH
     }
 
@@ -291,27 +326,97 @@ impl Batch {
         len: usize,
         next: Pos,
         end: u64,
-    ) {
-        let mut header = [0; MAX_HEADER];
-        let size = ws::record_header(&mut header, Record::Output, offset, len);
-        self.entries.push(Entry {
-            header,
-            size,
-            pos,
-            skip,
-            len,
-            next,
-            end,
-        });
+    )
+        ensures
+            final(self)@ == old(self)@.push((next, end)),
+    {
+        let header = Header::new(Record::Output, offset, len);
+        self.entries.push(Entry { header, pos, skip, len, next, end });
     }
 
-    pub(crate) fn sent(&mut self, accepted: usize) -> Option<(Pos, u64)> {
-        let last = accepted
-            .checked_sub(1)
-            .and_then(|last| self.entries.get(last))
-            .map(|entry| (entry.next, entry.end));
+    pub(crate) fn sent(&mut self, accepted: usize) -> (r: Option<(Pos, u64)>)
+        ensures
+            final(self)@.len() == 0,
+            match r {
+                Some(last) => 0 < accepted <= old(self)@.len() && last == old(self)@[accepted - 1],
+                None => accepted == 0 || accepted > old(self)@.len(),
+            },
+    {
+        let last = if accepted == 0 || accepted > self.entries.len() {
+            None
+        } else {
+            Some((self.entries[accepted - 1].next, self.entries[accepted - 1].end))
+        };
         self.entries.clear();
         last
+    }
+}
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+#[allow(dead_code, unreachable_pub)]
+pub struct ExOutput(Output);
+
+#[verifier::external_type_specification]
+#[allow(dead_code, unreachable_pub)]
+pub struct ExWritten(Written);
+
+impl Output {
+    pub(crate) uninterp spec fn closed(&self) -> bool;
+
+    pub(crate) uninterp spec fn waits(&self) -> bool;
+}
+
+// Assumes: waits() holds when the socket refused a write or bytes wait in the queue.
+#[verifier::external_fn_specification]
+#[allow(dead_code, unreachable_pub)]
+pub fn ex_waiting(output: &Output) -> (b: bool)
+    ensures
+        b == output.waits(),
+{
+    output.waiting()
+}
+
+// Assumes: available() is open and not waiting; closed() holds when the stream is shut down.
+#[verifier::external_fn_specification]
+#[allow(dead_code, unreachable_pub)]
+pub fn ex_available(output: &Output) -> (b: bool)
+    ensures
+        b ==> !output.closed() && !output.waits(),
+{
+    output.available()
+}
+
+// Assumes: close() shuts the stream down.
+#[verifier::external_fn_specification]
+#[allow(dead_code, unreachable_pub)]
+pub fn ex_close(output: &mut Output)
+    ensures
+        final(output).closed(),
+{
+    output.close()
+}
+
+// Assumes: send_batch() closes the output when it returns None, returns at most the batch length,
+// and never reopens a closed output.
+#[verifier::external_fn_specification]
+#[allow(dead_code, unreachable_pub)]
+pub fn ex_send_batch(output: &mut Output, batch: &Batch, ring: &Reader) -> (r: Option<usize>)
+    ensures
+        old(output).closed() ==> final(output).closed(),
+        r is None ==> final(output).closed(),
+        r is Some ==> r->Some_0 <= batch@.len(),
+{
+    output.send_batch(batch, ring)
+}
+
+} // verus!
+
+impl fmt::Debug for Batch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Batch")
+            .field("entries", &self.entries.len())
+            .finish()
     }
 }
 
@@ -952,7 +1057,7 @@ pub(crate) mod tests {
         ko_sys::sock::set_send_buffer(out.stream.as_fd(), 4096).unwrap();
         let mut ring = Reader::create(1 << 20).unwrap();
         let mut writer = ring.writer().unwrap();
-        let mut batch = Batch::default();
+        let mut batch = Batch::new();
         let mut at = ring.tail();
         let mut expected = 0;
         for len in [100, 150_000] {
@@ -968,7 +1073,7 @@ pub(crate) mod tests {
                 record.next,
                 record.offset.get() + record.len,
             );
-            expected += batch.entries.last().unwrap().size + len;
+            expected += batch.entries.last().unwrap().header.size() + len;
             at = record.next;
         }
         let accepted = out.send_batch(&batch, &ring);

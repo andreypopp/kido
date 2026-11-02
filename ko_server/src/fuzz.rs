@@ -334,7 +334,7 @@ fn run_frames(parts: &[&[u8]]) -> Option<Effects> {
         life: proc.life(),
         cause: proc.dead().map(|death| death.cause.clone()),
         child: proc.child_pid(),
-        tail: proc.ring().map(|ring| ring.tail().get()),
+        tail: proc.delivery().map(|delivery| delivery.ring().tail().get()),
     })
 }
 

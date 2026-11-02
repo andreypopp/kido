@@ -904,4 +904,39 @@ pub proof fn reachable_iff(cap: nat, l: Log, ev: nat, tail: nat, p: nat)
     }
 }
 
+pub open spec fn next_bnd(l: Log, p: nat) -> nat {
+    if l.m.contains_key(p) {
+        p + size(l.m[p])
+    } else {
+        p
+    }
+}
+
+pub proof fn off_mono(cap: nat, l: Log, p: nat, q: nat)
+    requires
+        wf(cap, l),
+        boundary(l, p),
+        boundary(l, q),
+        p <= q,
+    ensures
+        off_at(l, p) <= off_at(l, q),
+        quiet(l, p, q) ==> off_at(l, p) == off_at(l, q),
+    decreases q - p,
+{
+    if p < q {
+        wf_head(cap, l);
+        if l.m.contains_key(q) {
+            wf_rec(cap, l, q);
+        }
+        assert(l.m.contains_key(p));
+        wf_rec(cap, l, p);
+        let r = l.m[p];
+        if q < p + size(r) {
+            assert(false);
+        } else {
+            off_mono(cap, l, (p + size(r)) as nat, q);
+        }
+    }
+}
+
 } // verus!
