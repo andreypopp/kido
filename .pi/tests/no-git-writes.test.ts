@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { after, test } from "node:test";
 import { blocksGitWrite, parentSession } from "../extensions/no-git-writes/policy.ts";
 
 const allowed = [
@@ -46,6 +47,63 @@ for (const name of ["KIDO_AGENT_PARENT_SESSION", "KO_AGENT_PARENT_SESSION"]) {
     assert.equal(blocksGitWrite("git status", session), false);
   });
 }
+const root = realpathSync(mkdtempSync("/var/tmp/no-git-writes-"));
+const tmpRoot = mkdtempSync("/tmp/no-git-writes-");
+const home = `${root}/home`;
+mkdirSync(`${home}/Workspace/kido-real`, { recursive: true });
+mkdirSync(`${root}/outside`);
+symlinkSync("/etc", `${home}/Workspace/kido-link`);
+symlinkSync("/etc", `${home}/Workspace/kido-real/up`);
+symlinkSync("kido-loop", `${home}/Workspace/kido-loop`);
+symlinkSync(`${home}/Workspace/kido-real`, `${root}/outside/alias`);
+symlinkSync(`${root}/outside`, `${tmpRoot}/out`);
+symlinkSync(home, `${root}/linked-home`);
+after(() => {
+  rmSync(root, { recursive: true });
+  rmSync(tmpRoot, { recursive: true });
+});
+const addWorktree = (path: string, homeDir = home) => blocksGitWrite(`git worktree add --detach ${path} HEAD`, "parent", homeDir);
+
+test("worktree add --detach: kido-<name> directly in $HOME/Workspace and /tmp are allowed", () => {
+  for (const path of [`${home}/Workspace/kido-x`, `${home}/Workspace/kido-x/`, `${home}/Workspace//kido-x`, `${home}/Workspace/./kido-x/.`,
+    "~/Workspace/kido-x", "~/Workspace/kido-x/", "$HOME/Workspace/kido-x", "${HOME}/Workspace/kido-x", "~/Workspace//kido-x",
+    `'${home}/Workspace/kido-y z'`, `${home}/Workspace/kido-x/../kido-y`, `${home}/Workspace/kido-real`,
+    `${root}/outside/alias`, "/tmp/x", "/tmp/../tmp/x", "/tmp//x", `${tmpRoot}/x`]) {
+    assert.equal(addWorktree(path), false, path);
+  }
+  assert.equal(addWorktree("~/Workspace/kido-x", `${root}/linked-home`), false);
+  assert.equal(addWorktree(`${root}/linked-home/Workspace/kido-x`), false);
+});
+test("worktree add --detach: near misses, escapes, symlinks and relative paths are refused", () => {
+  for (const path of [`${home}/Workspace/kido-`, `${home}/Workspace/kidox`, `${home}/Workspace/kido`, `${home}/Workspace/kido-x/sub`,
+    `${home}/Workspace/kido-x/../../evil`, `${home}/Workspace/kido-x/..`, `${home}/Workspace/other`, `${home}/kido-x`,
+    "~/Workspace/kido-", "~/Workspace/kidox", "~/Workspace/kido-x/../../evil", "$HOME/Workspace/../kido-x", "~user/Workspace/kido-x",
+    "Workspace/kido-x", "./kido-x", "../kido-x", "kido-x",
+    `${home}/Workspace/kido-link`, `${home}/Workspace/kido-link/x`, "~/Workspace/kido-link", `${home}/Workspace/kido-real/up/../x`,
+    `${home}/Workspace/kido-real/up/x`, `${home}/Workspace/kido-loop`, `${home}/Workspace/kido-loop/x`,
+    `${tmpRoot}/out/x`, `${tmpRoot}/out`, `${root}/outside/alias/x`,
+    "/Users/nobody/Workspace/kido-x", "/tmp", "/tmpx/y"]) {
+    assert.equal(addWorktree(path), true, path);
+  }
+});
+test("worktree add: ~ and $HOME expand only when the shell would expand them", () => {
+  for (const path of ["'~/Workspace/kido-x'", "'$HOME/Workspace/kido-x'", '"$HOME/Workspace/kido-x"', '"~/Workspace/kido-x"', "'${HOME}/Workspace/kido-x'",
+    "\\~/Workspace/kido-x", "\\$HOME/Workspace/kido-x", "\\${HOME}/Workspace/kido-x", "''~/Workspace/kido-x", "x~/Workspace/kido-x"]) {
+    assert.equal(addWorktree(path), true, path);
+  }
+});
+test("worktree add: only value-less options are allowed", () => {
+  const dir = `${home}/Workspace/kido-x`;
+  for (const option of ["-f", "--force", "-q", "--quiet", "--no-checkout", "--checkout"]) {
+    assert.equal(blocksGitWrite(`git worktree add --detach ${option} ${dir} HEAD`, "parent", home), false, option);
+  }
+  for (const command of [
+    `git worktree add --detach --reason x ${dir}`, `git worktree add --detach --orphan ${dir}`, `git worktree add --detach --guess-remote ${dir}`,
+    `git worktree add --detach -- ${dir}`, `git worktree add --detach --lock ${dir}`, `git worktree add --detach -b t ${dir}`,
+    `git worktree add --detach -B t ${dir}`, `git worktree add ${dir}`, "git worktree add --detach",
+  ]) assert.equal(blocksGitWrite(command, "parent", home), true, command);
+});
+
 test("neither variable set is a top-level session", () => {
   assert.equal(blocksGitWrite("git add .", parentSession({})), false);
   assert.equal(blocksGitWrite("git add .", parentSession({ KO_AGENT_PARENT_SESSION: "" })), false);

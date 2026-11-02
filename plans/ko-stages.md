@@ -2,7 +2,12 @@
 
 Status: plan, 2026-11-02. Written against `ko-rust` at 476db906 (the
 RW and RV4 merge) and the ko-rust handover report of the same day.
-RL (Linux and CI) is still uncommitted. This plan replaces the stage
+RL (Linux and CI) is still uncommitted. Decided 2026-11-03: `ko-rust`
+is closed, and `kido-app-ko` is the one development branch of ko and
+Kido.app until K8. Units work in worktrees under
+`~/Workspace/kido-<unit>`. Only the top-level session merges into
+`kido-app-ko` and pushes (AGENTS.md, "Working here as a spawned
+agent"). This plan replaces the stage
 list of `rfc/kido-server/migration.md` section 5 (in
 `~/Workspace/kido-rust`), which was written for the OCaml base. Sections 2, 3, 6, 7,
 8, 9 and 10 of migration.md stay valid unless this plan says otherwise.
@@ -853,7 +858,8 @@ the libghostty-vt C API, in one fork commit on top of `da3eff4c`:
 The commit carries an upstreaming note: both calls are
 renderer-neutral additions to the public API with no app policy in
 them, so they are candidates for upstream Ghostty, as the fork's
-`t=s` and refused-media commits are. The pin bump regenerates
+`t=s` and refused-media commits are. The top-level session moves the
+pin (AGENTS.md, "One Ghostty"). The pin bump regenerates
 `ko_vt_sys/src/bindings.rs` and bumps `Ko-Vt`. `ko_vt` gains the two
 safe wrappers with unit tests over a two-frame upload.
 
@@ -1015,8 +1021,10 @@ Open: the app part, the RTT table and question 2 of section 7.
 
 ### K8. The cut-over (6 to 9 agent-days)
 
-Depends on K3, K5, K6 and K7. One unit of work that merges `ko-rust`
-into `main`.
+Depends on K3, K5, K6 and K7. One unit of work that merges
+`kido-app-ko` into `main`. Thus, `main` also takes `app/`, and the
+separate `kido-app` branch ends: Kido.app builds and releases from
+`main` (AGENTS.md, "Releasing", changes to match).
 
 - Delete as migration.md S8 lists, plus everything of 4.9: dune and
   every OCaml file. `go.mod` goes with `test_e2e/`.

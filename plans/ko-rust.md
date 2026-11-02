@@ -1,6 +1,8 @@
 # ko in Rust
 
-Status: plan, 2026-11-01. Branch `ko-rust`, rebased onto `ko` at
+Status: plan, 2026-11-01. The branch `ko-rust` is closed (2026-11-03):
+it merged into `kido-app-ko`, and its rules on branches and pushes
+(decision 27) no longer apply. Branch `ko-rust`, rebased onto `ko` at
 e38b032d. The tree is the OCaml reference at that commit: the poll
 loop, `ko_proofs/`, `ko_pane/genmc/`, `scripts/install-zig.sh` and the
 current `test_e2e_ko/`; every path in this plan was a path of this
@@ -561,8 +563,8 @@ R5 forced these decisions:
      (6.5).
 112. With the OCaml ko gone, the bench reference is the Rust ko at
      the R5 commit. A later bench run builds that commit in a
-     scratch worktree (`git worktree add --detach /tmp/ko-ref-XXXXXX
-     <commit>`, then `make build-ko` there) and measures it first, in
+     scratch worktree (`git worktree add --detach
+     ~/Workspace/kido-ko-ref <commit>`, then `make build-ko` there) and measures it first, in
      the same session, on AC power, at load average under 2, as
      decisions 78 and 79 did with the OCaml ko. The rules stay
      relative: coordinator CPU per GiB within 5 percent of the

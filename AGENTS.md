@@ -697,7 +697,9 @@ Conventions:
   of andreypopp/ghostty) is the one Ghostty checkout of ko and
   Kido.app: libghostty-vt for ko, GhosttyKit for the app
   (`app/scripts/build-ghosttykit.sh`). A pin bump moves both, so it
-  passes ko's verification and the app's build and tests.
+  passes ko's verification and the app's build and tests. The
+  top-level session moves a submodule pin, because the guard refuses
+  `checkout` and `add` for agents.
 - **libghostty-vt.** `ko_vt_sys/build.rs` builds it with zig from
   PATH. Every cargo profile and target directory shares one zig cache,
   so libghostty-vt compiles once for release, test and clippy. The
@@ -1799,7 +1801,8 @@ A brief does not repeat them.
 - **Do the task yourself.** An implementer or reviewer does not spawn
   subagents.
 - **No git writes.** Do not commit, push, reset, add, checkout or stash.
-  The top-level session commits.
+  The top-level session commits, merges into the development branch
+  and pushes.
   Leave work uncommitted.
   Never use `git stash`.
   If `KIDO_AGENT_PARENT_SESSION` or `KO_AGENT_PARENT_SESSION` is set,
@@ -1816,14 +1819,18 @@ A brief does not repeat them.
   (`tmux -S "$scratch/socket"`).
   End it with `kill-session`.
   Never change `~/bin/tmux`, `/opt/homebrew/bin/tmux` or the running server.
-- **Scratch worktrees.** Use `mktemp -d /tmp/<name>-XXXXXX`.
-  A bare `mktemp -d` on macOS resolves under `/var/folders`.
-  There, `.pi/extensions/no-git-writes/policy.ts` refuses
-  `git worktree add --detach`.
-  It permits detached worktrees only under `/tmp`.
+- **One development branch.** `kido-app-ko` holds ko and Kido.app
+  together until the cut-over (plans/ko-stages.md, K8). Each unit
+  of work has its own worktree. Only the top-level session merges
+  a unit into `kido-app-ko`.
+- **Worktrees.** A worktree is `~/Workspace/kido-<name>`:
+  `git worktree add --detach ~/Workspace/kido-<name> <base>`.
+  `.pi/extensions/no-git-writes/policy.ts` permits
+  `git worktree add --detach` only to an absolute path there or
+  under `/tmp`.
 
-  The submodule makes `git worktree remove` refuse here.
-  Remove the scratch directory with `rm -rf`.
+  The submodules make `git worktree remove` refuse.
+  Remove the worktree directory with `rm -rf`.
   Then use `git worktree prune`.
 - **Every wait has a deadline.**
   Do not poll without a deadline in code or your shell.
@@ -1922,7 +1929,8 @@ Afterward, run `/reload` in the panes.
 `KIDO_PREVIEW_PREFIX` selects a fake install for tests.
 
 Only `kido-app/N.N.N` tags mark Kido.app releases.
-`app/scripts/release.sh` builds them from `kido-app`.
+`app/scripts/release.sh` builds them from `kido-app`, until the
+cut-over (plans/ko-stages.md, K8) moves `app/` into `main`.
 They are published as `Casks/kido-app.rb` in `andreypopp/homebrew-tap`.
 kido itself never has tags.
 

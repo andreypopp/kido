@@ -9,7 +9,7 @@ They can run in parallel.
    Replace `N` with the PR number.
    Run `git fetch origin pull/N/head`.
    Record the fetched head SHA.
-   Run `git worktree add --detach "$(mktemp -d /tmp/kido-prN-XXXXXX)" <head sha>`.
+   Run `git worktree add --detach ~/Workspace/kido-prN <head sha>`.
    Run `git -C <worktree> submodule update --init third_party/tmux`.
    The e2e stage needs the fork source.
    Record the PR's base.
