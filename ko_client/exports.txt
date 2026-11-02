@@ -1,0 +1,3 @@
+_ko_client_connect
+_ko_client_close
+_ko_code_message

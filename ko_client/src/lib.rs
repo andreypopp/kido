@@ -1,4 +1,6 @@
 pub mod api;
+#[cfg(target_vendor = "apple")]
+pub mod ffi;
 pub mod launch;
 pub mod layout;
 pub mod model;

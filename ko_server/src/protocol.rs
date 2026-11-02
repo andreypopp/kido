@@ -749,6 +749,10 @@ pub struct Revision(u64);
 impl Revision {
     pub const FIRST: Revision = Revision(0);
 
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
     pub(crate) fn next(self) -> Revision {
         Revision(self.0.saturating_add(1))
     }

@@ -404,18 +404,16 @@ fn a_stop_waits_for_the_run_to_end_by_itself_and_then_kills_what_ignores_hup() {
     let s = start(&[]);
     let caller = caller(&s);
 
-    let polite = run_of(&s, &caller, "polite", &["sh", "-c", "sleep 0.8"]);
+    let finished = s.scratch.join("polite.finished");
+    let script = format!("sleep 0.8; touch {}", finished.display());
+    let polite = run_of(&s, &caller, "polite", &["sh", "-c", &script]);
     let began = Instant::now();
     ko_as(&s, None, &["run-stop", "--wait", "4", id_of(&polite)], "").ok();
     assert!(
         began.elapsed() < Duration::from_secs(3),
         "the stop ended with the run"
     );
-    assert!(
-        began.elapsed() >= Duration::from_millis(500),
-        "{:?}",
-        began.elapsed()
-    );
+    assert!(finished.exists(), "the stop killed the run before it ended");
     assert_eq!(ending(&s, id_of(&polite)).0, "stopped");
     wait_pane_gone(&s, pane_of(&polite));
 

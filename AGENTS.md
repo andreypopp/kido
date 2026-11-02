@@ -535,8 +535,10 @@ Conventions:
   field and one validating constructor. A closed set is an `enum`. "Unknown" is `None`. "Disabled" is a variant.
 - **Unsafe.** `unsafe` is permitted in `ko_sys`, in `ko_vt_sys` (the
   generated bindings), in `ko_vt` (the safe wrapper over them), in
-  `ko_pane_wire::ring::mapping` and `ring::model` (the loom backing)
-  and in `ko_bench/src/alloc.rs` (the counting global allocator).
+  `ko_pane_wire::ring::mapping` and `ring::model` (the loom backing),
+  in `ko_client::ffi` (the C ABI of Kido.app, beside
+  `ko_client/include/ko_client.h`) and in `ko_bench/src/alloc.rs`
+  (the counting global allocator).
   Every other crate and module denies it. Each block has a
   `// SAFETY:` line that names the invariant. A safe wrapper takes
   typed arguments and returns `Result`. Descriptors are `OwnedFd` and
@@ -775,6 +777,18 @@ overwritten in place after an earlier run (`Killed: 9`).
 `make e2e-ko` runs `make build-ko` and then every test of `ko_e2e`
 against that `ko`. `scripts/verify.sh ko-suite` (`make test`, the
 `e2e-ko` stage) runs it.
+`make ko-client-xcframework` builds `ko_client` as a static library
+for arm64 and x86_64 macOS into `build/ko_client.xcframework`
+(`KO_CLIENT_XC` overrides the path), with `ko_client/include/` (the header and the
+module map) for Kido.app. It needs `MACOSX_DEPLOYMENT_TARGET` and
+the two rust targets. It fails when `ko_client` depends on `ko_vt`:
+the app links its own libghostty-vt. Each slice goes through
+`ld -r -exported_symbols_list ko_client/exports.txt`, which makes
+every other symbol local, and then `nm` must show exactly the names
+of `exports.txt`. The reason: Rust's `compiler_builtins` and Zig's
+`compiler_rt` in the app's libghostty define the same symbols, and
+the app's link refuses the duplicates. A new exported function goes
+into `ko_client.h`, `ffi.rs` and `exports.txt` together.
 `make build-bench` builds the C helpers of `bench/` into
 `build/bench/`, beside `ko-bench` in `target/release/`; `bench/run.sh`, `bench/flood.sh`,
 `bench/baselines.sh` and `bench/table.sh` call it. `bench/client.py`

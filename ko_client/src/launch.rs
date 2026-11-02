@@ -1,9 +1,12 @@
+use std::cell::RefCell;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use ko_server::config::{self, Dir};
@@ -38,16 +41,78 @@ fn remove_stale(socket: &Path, error: &io::Error) -> io::Result<()> {
     }
 }
 
+// Cancels every connection that a thread opens through `connect` while it runs
+// `cancellable`. The first one is the long-lived link; each later one replaces
+// the previous, which a single-threaded caller has finished with.
+#[derive(Debug, Default)]
+pub(crate) struct Cancel {
+    done: AtomicBool,
+    streams: Mutex<[Option<UnixStream>; 2]>,
+}
+
+thread_local! {
+    static CANCEL: RefCell<Option<Arc<Cancel>>> = const { RefCell::new(None) };
+}
+
+impl Cancel {
+    pub(crate) fn cancelled(&self) -> bool {
+        self.done.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.done.store(true, Ordering::SeqCst);
+        let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+        for stream in streams.iter_mut().filter_map(Option::take) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    fn watch(&self, stream: &UnixStream) -> io::Result<()> {
+        let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.cancelled() {
+            return Err(cancelled_error());
+        }
+        let slot = usize::from(streams[0].is_some());
+        streams[slot] = Some(stream.try_clone()?);
+        Ok(())
+    }
+}
+
+pub(crate) fn cancellable<T>(cancel: &Arc<Cancel>, work: impl FnOnce() -> T) -> T {
+    CANCEL.with(|current| *current.borrow_mut() = Some(Arc::clone(cancel)));
+    let done = work();
+    CANCEL.with(|current| *current.borrow_mut() = None);
+    done
+}
+
+fn cancelled_error() -> io::Error {
+    io::Error::other("cancelled")
+}
+
+fn cancel_of_thread() -> Option<Arc<Cancel>> {
+    CANCEL.with(|current| current.borrow().clone())
+}
+
 pub(crate) fn connect(socket: &Path, patience: Patience) -> io::Result<UnixStream> {
+    let cancel = cancel_of_thread();
     let deadline = Instant::now() + patience.deadline;
     loop {
+        if cancel.as_ref().is_some_and(|cancel| cancel.cancelled()) {
+            return Err(cancelled_error());
+        }
         match UnixStream::connect(socket) {
             Err(error)
                 if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
             {
                 std::thread::sleep(patience.retry);
             }
-            connected => return connected,
+            Ok(stream) => {
+                if let Some(cancel) = &cancel {
+                    cancel.watch(&stream)?;
+                }
+                return Ok(stream);
+            }
+            failed => return failed,
         }
     }
 }

@@ -5,7 +5,8 @@ use std::time::Instant;
 use ko_pane_wire::frame::Limits;
 use ko_server::ids::{ClientId, Instance, PaneId, RunId, SessionId, VarName, WindowId};
 use ko_server::protocol::{
-    self, ClientEvent, Info, Listing, Route, Row, RunEvent, Selection, Show, Snapshot, Window,
+    self, ClientEvent, ClientRequest, Hello, Info, Listing, Route, Row, RunEvent, Selection, Show,
+    Snapshot, Window,
 };
 use ko_server::runs::Parent;
 use serde_json::Value;
@@ -65,7 +66,14 @@ pub enum Rejoin {
 }
 
 impl Model {
-    pub fn welcome(link: &mut Link, socket: &Path) -> Result<Model, String> {
+    pub fn join(link: &mut Link, hello: Hello, socket: &Path) -> Result<Model, String> {
+        link.send(protocol::json(&ClientRequest::Hello(hello)))
+            .and_then(|()| link.flush_blocking())
+            .map_err(text)?;
+        Model::welcome(link, socket)
+    }
+
+    fn welcome(link: &mut Link, socket: &Path) -> Result<Model, String> {
         let mut next = || match link.receive().map_err(text)? {
             Next::Text(event) => protocol::decode::<ClientEvent>(event.as_bytes()).map_err(text),
             _ => Err("client event missing".to_owned()),

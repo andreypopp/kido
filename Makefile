@@ -45,7 +45,7 @@ test:
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: build-ko build-fake-ko build-bench test-ko cargo fmt lint-rs lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: build-ko build-fake-ko ko-client-xcframework build-bench test-ko cargo fmt lint-rs lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -124,6 +124,47 @@ $(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/s
 	cp -f $$(ls $(KO)/tic/*/xterm-ghostty | head -1) $(TERMINFO)/78/
 	cp -f $(TERMINFO)/78/xterm-ghostty $@
 	rm -rf $(KO)/tic $(KO)/ghostty.terminfo
+
+# Kido.app links Zig's compiler_rt (GhosttyKit), which clashes with the Rust
+# compiler_builtins in libko_client.a: ld -r exports only ko_client/exports.txt.
+# FORCE runs cargo on every build, because cargo decides whether a slice is current.
+KO_CLIENT_TARGETS := aarch64-apple-darwin x86_64-apple-darwin
+KO_CLIENT_XC ?= $(CURDIR)/build/ko_client.xcframework
+KO_CLIENT_SLICES := $(foreach t,$(KO_CLIENT_TARGETS),target/$(t)/release/libko_client_private.a)
+XCDEV := DEVELOPER_DIR=$${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
+
+ko-client-xcframework: $(KO_CLIENT_XC)/Info.plist
+
+$(KO_CLIENT_XC)/Info.plist: $(KO_CLIENT_SLICES) $(wildcard ko_client/include/*)
+	mkdir -p target/ko_client
+	$(XCDEV) xcrun lipo -create $(KO_CLIENT_SLICES) -output target/ko_client/libko_client.a
+	rm -rf $(KO_CLIENT_XC)
+	$(XCDEV) xcodebuild -create-xcframework -library target/ko_client/libko_client.a -headers ko_client/include -output $(KO_CLIENT_XC)
+
+target/%/release/libko_client_private.a: target/%/release/libko_client.a ko_client/exports.txt
+	@: $${MACOSX_DEPLOYMENT_TARGET:?set MACOSX_DEPLOYMENT_TARGET}
+	arch=$(if $(filter aarch64-%,$*),arm64,x86_64); r=target/$*/release; set -e; \
+	$(XCDEV) xcrun ld -r -arch $$arch -platform_version macos $$MACOSX_DEPLOYMENT_TARGET $$MACOSX_DEPLOYMENT_TARGET -all_load -exported_symbols_list ko_client/exports.txt $$r/libko_client.a -o $$r/ko_client.o; \
+	trap 'rm -f $@.tmp' EXIT; \
+	$(XCDEV) xcrun libtool -static -D -o $@.tmp $$r/ko_client.o; \
+	test "$$(nm -arch $$arch -g -U $@.tmp | awk 'NF==3 {print $$3}' | sort)" = "$$(sort ko_client/exports.txt)" || \
+	{ echo "ko-client-xcframework: the $* slice does not export exactly ko_client/exports.txt" >&2; exit 1; }; \
+	mv $@.tmp $@
+
+target/%/release/libko_client.a: build/.ko_client_deps FORCE
+	@: $${MACOSX_DEPLOYMENT_TARGET:?set MACOSX_DEPLOYMENT_TARGET}
+	@test -d "$$(rustc --print target-libdir --target $*)" || \
+	{ echo "ko-client-xcframework: rust target $* is not installed for $$(rustc --version); run: rustup target add $*" >&2; exit 1; }
+	$(CARGO) rustc --locked --release -p ko_client --lib --crate-type staticlib --target $*
+
+build/.ko_client_deps: Cargo.lock ko_client/Cargo.toml
+	set -e; tree=$$($(CARGO) tree --locked -p ko_client -e normal --prefix none); \
+	! echo "$$tree" | grep -q '^ko_vt' || \
+	{ echo "ko-client-xcframework: ko_client depends on ko_vt; the app has its own libghostty-vt" >&2; exit 1; }
+	mkdir -p build && touch $@
+
+FORCE:
+.SECONDARY: $(KO_CLIENT_SLICES:_private.a=.a)
 
 # The loom models of the ring handshake build with --cfg loom, so they get their own target
 # directory and do not rebuild the workspace's.

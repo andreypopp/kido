@@ -158,7 +158,10 @@ struct Io<'a> {
 impl Read for Io<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match self.source.as_mut() {
-            None => fd::read(self.stream.as_fd(), buffer),
+            None => {
+                self.out.flush(self.stream.as_fd())?;
+                fd::read(self.stream.as_fd(), buffer)
+            }
             Some(source) => source.read(buffer),
         }
     }

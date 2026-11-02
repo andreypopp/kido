@@ -320,17 +320,15 @@ impl Client {
         } else {
             Panel::Hidden
         };
-        let hello = ClientRequest::Hello(Hello {
+        let hello = Hello {
             kind: ClientKind::Terminal,
             name: "ko".to_owned(),
             selection: Selection::default(),
             focused: true,
             size: protocol::Size(pane_size(geometry, panel, warning)),
             ignore_size: false,
-        });
-        link.send(json(&hello)).map_err(text)?;
-        link.flush_blocking().map_err(text)?;
-        let model = Model::welcome(&mut link, &socket)?;
+        };
+        let model = Model::join(&mut link, hello, &socket)?;
         let link_token = link.watch(&mut poll).map_err(text)?;
         let (wake, escape, watchdog) = (
             Deadline::new(&mut poll),

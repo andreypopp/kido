@@ -690,9 +690,22 @@ specification, with the shared core of 4.10 in place of a Swift
    The probe shows that the app's Ghostty fork and the core link
    without a duplicate symbol, and it fixes the ABI conventions
    (ownership of buffers, the callback thread, error reporting).
+   Done: `make ko-client-xcframework` and `ko_client::ffi`. The core
+   copies the socket path; an event is valid only during its
+   callback; callbacks run through `dispatch_async_f` on the
+   caller's serial queue; after close, no new callback starts, and a
+   callback on another thread has ended (a callback that calls close
+   ends normally).
+   `ld -r` with the export list and an `nm` check hide the clash of
+   Zig's `compiler_rt` with Rust's `compiler_builtins`. `ko_client`
+   does not link `ko_vt`.
 2. Spike 2: `restore_snapshot` on a Ghostty surface in the app's
    fork, shown on the pen, charset and pending-wrap cases of
-   known-issues-app.md. 2 to 3 agent-days. It has not run.
+   known-issues-app.md. Done: pen, charset and pending wrap restore
+   exactly, and sequences cut by the snapshot complete. 100k mixed
+   lines give a 78 MB snapshot: encoded in 19 ms, READY in 0.08 ms,
+   history in 197 ms, and the longest hold of the renderer lock is
+   1.3 ms.
 3. The `ffi` module of `ko_client` (4.10): connect and reconnect,
    the model as read-only snapshots across the ABI (the layout
    document, the panes with status and variables, the runs, the
@@ -702,7 +715,22 @@ specification, with the shared core of 4.10 in place of a Swift
    shown panes and the attendance flag, the one implementation for
    both clients), and in K6 the image, clipboard and search calls.
    Kido.app's Swift side holds no protocol decoding and no reconnect
-   logic.
+   logic. Rules from steps 1 and 2:
+   - The terminal size equals the snapshot size. The server's size
+     is authoritative.
+   - The ffi streams a snapshot to one decoder thread for each
+     surface, not the main queue and not the core's I/O thread. It
+     never buffers a whole snapshot.
+   - Ownership, cancellation and generations: a new snapshot cancels
+     the blocked reads of the old one, and a swap or a close waits
+     for the old restore to end.
+   - The server tells the client its continuation limit (a small
+     protocol addition). A fixed 1 MiB failed on an APC of 1.5 MB.
+   - `HISTORY_INCOMPLETE` makes the client ask for a resync.
+   - The event loop of 4.10 on `ko_sys` with a wake replaces the
+     thread-local `launch::Cancel`.
+   - When the app must keep data, the ABI gives an owned buffer with
+     a free call.
 4. The layout from the model; every gesture one edit call, coalesced
    per gesture step. Tabs, the sidebar tree, seen state and
    notifications read the model's snapshots. After K2b: a tab of a
@@ -855,7 +883,9 @@ Scope:
   server that `ko` started before the first app window. There is no
   server-environment route (decided 2026-11-02).
 - Measured: attach, 100k-line restore and echo at 50, 150 and 300 ms
-  RTT with a throttled link, with and without a compression crate in
+  RTT with a throttled link, including an attach of 100k mixed lines
+  (a 78 MB snapshot, spike 2 of K5; 4.6 assumed about 6 MB from
+  plain lines), with and without a compression crate in
   a scratch build. The result decides question 2 of section 7.
 
 Tests that close it: a localhost sshd (`KO_E2E_HOST_SSH=1`) with the
