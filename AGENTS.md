@@ -473,8 +473,8 @@ Conventions:
   `Reader`, its snapshot queues, the delivered position and the mint
   of every `Req` (a u64 serial; the `Req` is its low 32 bits). A
   snapshot request's floor is the head that `request` loads. Its
-  `wf` is `Pane_core.fst`'s `pane_inv`, with the queued serials
-  unique and in mint order. A slice reaches a view only as a
+  `wf` keeps the delivered position at a boundary of the log and the
+  queued serials unique and in mint order. A slice reaches a view only as a
   `Handle` that `deliver` constructs, and a snapshot's end only as a
   `Done` that `snapshot_done` or `fail_all` constructs. The views get
   `&mut Delivery`, whose methods keep the tail, so only `scan`
@@ -708,8 +708,7 @@ coordinator), `ko_tui/` (the terminal client), `ko_pane/` (the pane
 process), `ko_pane_wire/` (the frame codec and the ring),
 `ko_vt/` and `ko_vt_sys/` (libghostty-vt, built by zig from PATH
 out of `third_party/ghostty`), `ko_sys/` (the OS layer),
-`ko_bench/` and `fuzz/`. Beside them are `ko_proofs/` (the F*/Pulse
-specifications), `bench/` and `ko_e2e/` (its e2e suite, `make
+`ko_bench/` and `fuzz/`. Beside them are `bench/` and `ko_e2e/` (its e2e suite, `make
 e2e-ko`, a stage of `make verify` and `make verify-ko`; "The e2e
 suite" under "Rust (ko)").
 Nothing in kido depends on them, and dune builds none of them.
@@ -1543,11 +1542,11 @@ its comment.
 
 ## Proved modules (ko)
 
-`ko_proofs/` holds the F*/Pulse proofs of the ring, `Pane_core` and
-`View_core` that the OCaml ko extracted. No build uses them now. They
-are the specifications that the Verus stages port (`ko_pane_wire`'s
-ring, `ko_server::delivery`, then `view.rs`), and no job checks them
-(plan decision 111).
+Verus is ko's one specification ("Verus" under "Rust (ko)"). The
+OCaml ko had F*/Pulse proofs of the ring, `Pane_core` and `View_core`;
+stages RV to RV4 ported them with parity (plan decision 135), and the
+sources were then deleted. The reference copy is in
+`~/Workspace/kido-ko`.
 
 **The ring indices are sequentially consistent.** The wakeup
 handshake between `head` and `read` is a store-buffering pattern:
