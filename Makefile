@@ -138,22 +138,20 @@ $(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/s
 # Kido.app links Zig's compiler_rt (GhosttyKit), which clashes with the Rust
 # compiler_builtins in libko_client.a: ld -r exports only ko_client/exports.txt.
 # FORCE runs cargo on every build, because cargo decides whether a slice is current.
-KO_CLIENT_TARGETS := aarch64-apple-darwin x86_64-apple-darwin
+KO_CLIENT_TARGET := aarch64-apple-darwin
 KO_CLIENT_XC ?= $(CURDIR)/build/ko_client.xcframework
-KO_CLIENT_SLICES := $(foreach t,$(KO_CLIENT_TARGETS),target/$(t)/release/libko_client_private.a)
+KO_CLIENT_SLICE := target/$(KO_CLIENT_TARGET)/release/libko_client_private.a
 XCDEV := DEVELOPER_DIR=$${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 
 ko-client-xcframework: $(KO_CLIENT_XC)/Info.plist
 
-$(KO_CLIENT_XC)/Info.plist: $(KO_CLIENT_SLICES) $(wildcard ko_client/include/*)
-	mkdir -p target/ko_client
-	$(XCDEV) xcrun lipo -create $(KO_CLIENT_SLICES) -output target/ko_client/libko_client.a
+$(KO_CLIENT_XC)/Info.plist: $(KO_CLIENT_SLICE) $(wildcard ko_client/include/*)
 	rm -rf $(KO_CLIENT_XC)
-	$(XCDEV) xcodebuild -create-xcframework -library target/ko_client/libko_client.a -headers ko_client/include -output $(KO_CLIENT_XC)
+	$(XCDEV) xcodebuild -create-xcframework -library $(KO_CLIENT_SLICE) -headers ko_client/include -output $(KO_CLIENT_XC)
 
 target/%/release/libko_client_private.a: target/%/release/libko_client.a ko_client/exports.txt
 	@: $${MACOSX_DEPLOYMENT_TARGET:?set MACOSX_DEPLOYMENT_TARGET}
-	arch=$(if $(filter aarch64-%,$*),arm64,x86_64); r=target/$*/release; set -e; \
+	arch=arm64; r=target/$*/release; set -e; \
 	$(XCDEV) xcrun ld -r -arch $$arch -platform_version macos $$MACOSX_DEPLOYMENT_TARGET $$MACOSX_DEPLOYMENT_TARGET -all_load -exported_symbols_list ko_client/exports.txt $$r/libko_client.a -o $$r/ko_client.o; \
 	trap 'rm -f $@.tmp' EXIT; \
 	$(XCDEV) xcrun libtool -static -D -o $@.tmp $$r/ko_client.o; \
@@ -174,7 +172,7 @@ build/.ko_client_deps: Cargo.lock ko_client/Cargo.toml
 	mkdir -p build && touch $@
 
 FORCE:
-.SECONDARY: $(KO_CLIENT_SLICES:_private.a=.a)
+.SECONDARY: $(KO_CLIENT_SLICE:_private.a=.a)
 
 # The loom models of the ring handshake build with --cfg loom, so they get their own target
 # directory and do not rebuild the workspace's.

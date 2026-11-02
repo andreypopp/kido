@@ -830,11 +830,11 @@ overwritten in place after an earlier run (`Killed: 9`).
 against that `ko`. `scripts/verify.sh ko-suite` (`make test`, the
 `e2e-ko` stage) runs it.
 `make ko-client-xcframework` builds `ko_client` as a static library
-for arm64 and x86_64 macOS into `build/ko_client.xcframework`
+for arm64 macOS into `build/ko_client.xcframework`
 (`KO_CLIENT_XC` overrides the path), with `ko_client/include/` (the header and the
-module map) for Kido.app. It needs `MACOSX_DEPLOYMENT_TARGET` and
-the two rust targets. It fails when `ko_client` depends on `ko_vt`:
-the app links its own libghostty-vt. Each slice goes through
+module map) for Kido.app. It needs `MACOSX_DEPLOYMENT_TARGET` (26.0: Kido.app supports only Apple
+Silicon and macOS 26 or later) and the rust target `aarch64-apple-darwin`. It fails when `ko_client` depends on `ko_vt`:
+the app links its own libghostty-vt. The slice goes through
 `ld -r -exported_symbols_list ko_client/exports.txt`, which makes
 every other symbol local, and then `nm` must show exactly the names
 of `exports.txt`. The reason: Rust's `compiler_builtins` and Zig's

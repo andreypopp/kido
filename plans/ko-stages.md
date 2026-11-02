@@ -300,7 +300,7 @@ Decided 2026-11-02 (question 3). Both clients share one Rust crate,
   `client.rs` and the model that K1 to K3 would have put into
   `ko_tui` move into `ko_client`.
 - Kido.app links it as a static library in an `.xcframework` (arm64
-  and x86_64) through a hand-written C ABI: a header and a module
+  only) through a hand-written C ABI: a header and a module
   map, no UniFFI and no swift-bridge. The core runs its own I/O
   thread on `ko_sys::event`; callbacks are delivered for the main
   queue; data crosses as small C structs or owned buffers that the
@@ -723,7 +723,7 @@ specification, with the shared core of 4.10 in place of a Swift
 
 1. **The probe** (1 to 2 agent-days, in the kido repo and the app
    repo): build `ko_client` as a static library into an
-   `.xcframework` for arm64 and x86_64 with a header and module map,
+   `.xcframework` for arm64 (macOS 26.0 or later) with a header and module map,
    link it into a scratch app target through one cargo build phase on
    the pinned toolchain, connect to a local server, and receive
    `welcome` and `layout` events as main-queue callbacks in Swift.
@@ -789,8 +789,8 @@ specification, with the shared core of 4.10 in place of a Swift
    - The error codes are coarse: seven `ko_code` values, and the
      cause of a failure is only in the text of the buffer or of the
      `FAILED` event.
-   - The x86_64 slice of the xcframework builds and passes the `nm`
-     check, but no test executes it.
+   - The x86_64 slice of the xcframework is gone: Kido.app supports only
+     Apple Silicon and macOS 26 or later, so no slice stays untested.
 4. The layout from the model; every gesture one edit call, coalesced
    per gesture step. Tabs, the sidebar tree, seen state and
    notifications read the model's snapshots. After K2b: a tab of a
