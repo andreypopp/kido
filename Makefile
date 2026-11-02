@@ -9,20 +9,6 @@ export PATH := $(if $(RUSTUP_BIN),$(RUSTUP_BIN):)$(PATH)
 # own PATH, not the exported one.
 CARGO := $(if $(RUSTUP_BIN),$(RUSTUP_BIN)/)cargo
 
-# The Rust ko builds on macOS only for now; elsewhere the Go suite runs
-# the OCaml ko with the OCaml decoder. On macOS every test of the suite
-# runs the Rust ko with the Rust decoder (scripts/verify.sh ko-suite).
-ifeq ($(shell uname -s),Darwin)
-KO_BUILD := build-ko
-KO_RUST ?= $(CURDIR)/build/ko/bin/ko
-KO_DECODE ?= $(CURDIR)/target/release/examples/decode
-else
-KO_BUILD := build-ko-ocaml
-KO_DECODE ?= $(CURDIR)/$(DUNE_DEFAULT)/ko_vt/decode.exe
-endif
-KO_OCAML ?= $(CURDIR)/$(DUNE_INSTALL)/bin/ko
-export KO_RUST KO_OCAML KO_DECODE
-
 .PHONY: build install test e2e
 
 build:
@@ -40,7 +26,6 @@ endef
 # management, so they are copied, dereferenced and made writable again.
 # Promotion substitutes dune-build-info in build/main.exe.
 DUNE_INSTALL := $(or $(DUNE_BUILD_DIR),_build)/install/default
-DUNE_DEFAULT := $(or $(DUNE_BUILD_DIR),_build)/default
 install:
 	$(call ensure-fork,$(INSTALL_FORK),$(if $(filter 1,$(SELF_CONTAINED)),--self-contained,))
 	dune build @install
@@ -53,14 +38,14 @@ install:
 # unit tests; the end-to-end suite needs the patched tmux and is separate.
 # test-ts covers pi's extension under node and skips without one, so
 # the OCaml tests above never gain a node dependency of their own.
-test: $(KO_BUILD)
+test:
 	dune test --force
 	bash scripts/verify.sh ko-suite
 	./scripts/test-ts.sh
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: build-ko build-ko-ocaml test-ko lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane proofs verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: build-ko build-bench test-ko lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -71,15 +56,6 @@ verify:
 
 verify-ko:
 	STAGES='$(STAGES)' bash scripts/verify.sh verify-ko
-
-# re-verifies ko_proofs/ and diffs its extraction against the committed C
-# and OCaml; WRITE=1 replaces them instead. Only this target needs F*.
-FSTAR_KEY := $(shell ./scripts/install-fstar.sh --print-key)
-FSTAR := build/fstar/$(FSTAR_KEY)
-proofs:
-	@test -x $(FSTAR)/bin/fstar.exe || ./scripts/install-fstar.sh $(CURDIR)/$(FSTAR)
-	PATH="$(CURDIR)/$(FSTAR)/bin:$$PATH" KO_FSTAR_CACHE=$(CURDIR)/build/fstar-checked/$(FSTAR_KEY) \
-		sh ko_proofs/extract.sh $(if $(filter 1,$(WRITE)),--write)
 
 # verifies the crates of scripts/verus.sh with the pinned Verus release, which it
 # downloads into build/verus/<release> once. Only this target needs Verus.
@@ -125,31 +101,32 @@ release:
 website:
 	cd website && npm ci && npm run dev
 
-# The installed layout of the Rust ko: the Rust ko-pane, and the terminfo
-# from dune's install tree. The decode example is the Go suite's snapshot decoder and is never
-# installed.
+# The installed layout of the Rust ko. The terminfo is compiled from ghostty's
+# source by terminfo.zig; tic writes x/ or 78/ by platform, and both are shipped.
+# zig keeps its caches where ko_vt_sys/build.rs does.
+# The decode example is the Go suite's snapshot decoder and is never installed.
 KO := build/ko
-build-ko:
+TERMINFO := $(KO)/share/ko/terminfo
+build-ko: $(TERMINFO)/x/xterm-ghostty
 	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release --bins --example decode
-	dune build @install
-	mkdir -p $(KO)/bin $(KO)/share
 	cp -f target/release/ko target/release/ko-pane $(KO)/bin/
-	cp -RLf $(DUNE_INSTALL)/share/ko $(KO)/share/
-	chmod -R u+w $(KO)
 
-build-ko-ocaml:
-	dune build @install ko_vt/decode.exe
+$(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/src/terminfo/*.zig)
+	mkdir -p $(KO)/bin $(TERMINFO)/x $(TERMINFO)/78
+	ZIG_GLOBAL_CACHE_DIR=$(CURDIR)/target/zig-cache/global zig run --cache-dir target/zig-cache/local -lc --dep terminfo -Mroot=ko_vt/terminfo.zig -Mterminfo=third_party/ghostty/src/terminfo/main.zig > $(KO)/ghostty.terminfo
+	tic -x -o $(KO)/tic $(KO)/ghostty.terminfo
+	cp -f $$(ls $(KO)/tic/*/xterm-ghostty | head -1) $(TERMINFO)/78/
+	cp -f $(TERMINFO)/78/xterm-ghostty $@
+	rm -rf $(KO)/tic $(KO)/ghostty.terminfo
 
 # The loom models of the ring handshake build with --cfg loom, so they get their own target
 # directory and do not rebuild the workspace's.
-# The server tests start the Rust ko-pane. dune test runs the unit tests of the C ko-pane, which
-# stays until the cut. The default members of the workspace exclude fuzz/, which needs a nightly
+# The server tests start the Rust ko-pane. The default members of the workspace exclude fuzz/, which needs a nightly
 # toolchain to run.
 test-ko:
 	$(CARGO) build --locked -p ko_pane
 	KO_PANE_EXE=$(CURDIR)/target/debug/ko-pane $(CARGO) test --locked
 	RUSTFLAGS='--cfg loom' $(CARGO) test --locked --release -p ko_pane_wire --target-dir target/loom ring::model
-	KO_CHECK_CONTRACTS=true dune test --force ko_server ko_server/fuzz ko_tui ko_vt ko_pane
 
 lint-ko:
 	$(CARGO) fmt --check
@@ -159,18 +136,24 @@ lint-ko:
 bindgen:
 	./scripts/bindgen.sh
 
+# The C helpers of bench/, built into build/bench/. pty_read and parse link the
+# libghostty-vt that ko_vt_sys/build.rs built (build-ko first).
+BENCH := build/bench
+BENCH_CC := cc -std=c11 -O2 -Wall -Wextra -Werror
+build-bench: build-ko
+	mkdir -p $(BENCH)
+	set -e; for tool in produce drain wait_master; do $(BENCH_CC) bench/$$tool.c -o $(BENCH)/$$tool; done
+	set -e; lib=$$(ls -t target/release/build/ko_vt_sys-*/out/zig-out/lib/libghostty-vt.a | head -1); \
+		for tool in pty_read parse; do $(BENCH_CC) -Ithird_party/ghostty/include bench/$$tool.c $$lib -lc++ -o $(BENCH)/$$tool; done
+
 # ko-bench throughput through one pane: BYTES of bench/streams, every record counted; it fails on a lost
-# record, a gap, an invalid record or another byte total. PANE=c takes the C ko-pane that dune builds.
-probe-ko:
-	dune build ko_pane/ko-pane bench/produce.exe
-	$(CARGO) build --locked --release -p ko_bench -p ko_pane
-	KO_PANE_EXE=$(if $(filter c,$(PANE)),$(CURDIR)/$(DUNE_DEFAULT)/ko_pane/ko-pane,$(CURDIR)/target/release/ko-pane) \
-		KO_BENCH_PRODUCE=$(CURDIR)/$(DUNE_DEFAULT)/bench/produce.exe \
-		target/release/ko-bench throughput writev $(or $(BYTES),1073741824) 2 $(addprefix $(CURDIR)/,$(wildcard bench/streams/*.vt))
+# record, a gap, an invalid record or another byte total.
+probe-ko: build-bench
+	target/release/ko-bench throughput writev $(or $(BYTES),1073741824) 2 $(addprefix $(CURDIR)/,$(wildcard bench/streams/*.vt))
 
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
 # names another (CI, with its cached build); it never skips
-e2e-ko: $(KO_BUILD)
+e2e-ko:
 	COUNT='$(or $(COUNT),1)' E2E_KO='$(E2E_KO)' bash scripts/verify.sh ko-suite
 
 e2e: $(if $(KIDO_TMUX),,pinned-fork)

@@ -43,20 +43,11 @@
    (>= 3.0))
   (ppx_yojson_conv
    (>= v0.17))
-  (jsonkit
-   (>= 1.1.0))
   (ppx_compare
    (>= v0.17))
   (ppx_string_conv
    (>= v0.17))
   mosaic
-  iomux
-  httpun
-  httpun-ws
   dune-build-info
   (ppx_expect :with-test)
-  qcheck-core
-  ppx_deriving_qcheck
-  monolith
-  (afl-persistent :with-test)
   (ocamlformat :with-dev-setup)))

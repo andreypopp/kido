@@ -7,3 +7,5 @@ corpus/*
 !corpus/http/
 !corpus/loop/
 !corpus/ring/
+!corpus/client/
+!corpus/ws/

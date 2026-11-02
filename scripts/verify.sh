@@ -40,20 +40,24 @@ verus() {
   rm -f "$log"
   return "$rc"
 }
-ko_run() {
-  local IFS='|'
-  KIDO_E2E_REQUIRED=1 KO_BIN=$1 go test ./test_e2e_ko/ -count="${COUNT:-1}" -run "^(${*:2})\$" -v
+# The Rust ko builds on macOS only until stage RL.
+ko_platform() {
+  [[ $(uname -s) == Darwin ]] && return 0
+  echo 'SKIP: the Rust ko builds on macOS only'
+  return 77
 }
 ko_suite() {
+  ko_platform || return
   local names=() name
   for name in $(sed -n 's/^func \(Test[A-Za-z0-9_]*\)(t \*testing\.T).*/\1/p' test_e2e_ko/*_test.go); do
     [[ $name =~ ${E2E_KO:-.} ]] && names+=("$name")
   done
   (( ${#names[@]} )) || return 0
-  ko_run "${KO_RUST:-$KO_OCAML}" "${names[@]}"
+  local IFS='|'
+  KIDO_E2E_REQUIRED=1 go test ./test_e2e_ko/ -count="${COUNT:-1}" -run "^(${names[*]})\$" -v
 }
 case ${1:-verify} in
-  ko-suite) ko_suite || status=1 ;;
+  ko-suite) ko_suite; case $? in 0|77) ;; *) status=1 ;; esac ;;
   flake)
     [[ -n ${RUN:-} && ${COUNT:-20} =~ ^[1-9][0-9]*$ ]] || { echo 'flake requires RUN and a positive COUNT' >&2; exit 1; }
     E2E=$RUN COUNT=${COUNT:-20} stage e2e e2e
@@ -65,12 +69,12 @@ case ${1:-verify} in
       case $name in
         build)
           if [[ ${1:-} == verify-ko ]]; then stage build make build-ko; else stage build dune build; fi ;;
-        unit) stage unit env KO_CHECK_CONTRACTS=true dune test --force ;;
+        unit) stage unit dune test --force ;;
         e2e) stage e2e e2e ;;
         unit-ko) stage unit-ko make test-ko ;;
         lint) stage lint make lint-ko ;;
         verus) stage verus verus ;;
-        e2e-ko) stage e2e-ko make e2e-ko ;;
+        e2e-ko) stage e2e-ko ko_suite ;;
         ts) stage ts ./scripts/test-ts.sh ;;
         *) echo "Unknown stage: $name" >&2; status=1 ;;
       esac

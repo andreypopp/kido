@@ -24,11 +24,6 @@ RUN test -n "$TMUX_BUILD_KEY" \
 	&& /usr/local/tmux-side/bin/kido-tmux -V \
 	&& rm -rf /tmp/build-tmux
 
-# ko_vt builds libghostty-vt with zig, which CI installs with the same script.
-COPY scripts/install-zig.sh /tmp/install-zig.sh
-RUN /tmp/install-zig.sh /usr/local/zig && rm /tmp/install-zig.sh
-ENV PATH=/usr/local/zig:$PATH
-
 ENV KIDO_TMUX=/usr/local/tmux-side/bin/kido-tmux
 ENV PATH=/usr/local/tmux-side/bin:$PATH
 

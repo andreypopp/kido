@@ -1104,41 +1104,6 @@ pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
 mod tests {
     use super::*;
 
-    const PROTOCOL: &str = include_str!("../../ko_pane/protocol.h");
-
-    #[test]
-    fn constants_match_the_c_ko_pane() {
-        assert!(PROTOCOL.contains(&format!("#define KO_MAX_DIMENSION {MAX_DIMENSION}u\n")));
-        assert!(PROTOCOL.contains("#define KO_MAX_FRAME (16u*1024u*1024u)\n"));
-        assert_eq!(MAX_FRAME, 16 * 1024 * 1024);
-        let kinds = [
-            (Kind::Init, "INIT"),
-            (Kind::Tail, "TAIL"),
-            (Kind::Resize, "RESIZE"),
-            (Kind::Text, "TEXT"),
-            (Kind::Snapshot, "SNAPSHOT"),
-            (Kind::Exit, "EXIT"),
-            (Kind::Ready, "READY"),
-            (Kind::Head, "HEAD"),
-            (Kind::Title, "TITLE"),
-            (Kind::Pwd, "PWD"),
-            (Kind::Dead, "DEAD"),
-            (Kind::SnapshotDone, "SNAPSHOT_DONE"),
-            (Kind::Error, "ERROR"),
-            (Kind::Full, "FULL"),
-            (Kind::Key, "KEY"),
-            (Kind::Paste, "PASTE"),
-            (Kind::PasteDone, "PASTE_DONE"),
-            (Kind::Mouse, "MOUSE"),
-            (Kind::Focus, "FOCUS"),
-            (Kind::Screen, "SCREEN"),
-        ];
-        for (kind, name) in kinds {
-            let defined = format!("KO_{name} = {}", kind as u8);
-            assert!(PROTOCOL.contains(&defined), "{defined}");
-        }
-    }
-
     fn frame(kind: Kind, body: &[u8]) -> Vec<u8> {
         let mut frame = u32::try_from(body.len() + 1)
             .unwrap()
@@ -1274,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn the_init_frame_has_the_c_ko_pane_layout() {
+    fn the_init_frame_has_its_wire_layout() {
         let init = Init {
             size: Size::DEFAULT,
             limits: Limits {

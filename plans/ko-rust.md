@@ -3,8 +3,11 @@
 Status: plan, 2026-11-01. Branch `ko-rust`, rebased onto `ko` at
 e38b032d. The tree is the OCaml reference at that commit: the poll
 loop, `ko_proofs/`, `ko_pane/genmc/`, `scripts/install-zig.sh` and the
-current `test_e2e_ko/`; every path in this plan is a path of this
-worktree. `~/Workspace/kido-ko` (branch `ko`) holds the same
+current `test_e2e_ko/`; every path in this plan was a path of this
+worktree then. R5 deleted the OCaml ko, the C `ko-pane` and the F*
+build, and `ko_pane/genmc/` went after it (decision 111); a path to
+one of them names the reference, which `~/Workspace/kido-ko` keeps.
+`~/Workspace/kido-ko` (branch `ko`) holds the same
 reference and does not change. The wire protocol does not change
 ([rfc/kido-server/protocol.md](../rfc/kido-server/protocol.md)). The
 Go suite `test_e2e_ko/` is the acceptance oracle.
@@ -132,7 +135,7 @@ R1 forced these decisions:
     sequentially consistent, so without a correction the `SeqCst`
     wakeup model also lost the wakeup; the model puts a
     `fence(SeqCst)` before each `SeqCst` load and after each `SeqCst`
-    store. `ring_mc` runs with
+    store. `records_reach_the_reader_whole_and_in_order` runs with
     preemption bound 5: unbounded, it did not end in 15 minutes.
 38. The spawn of `ko-pane` uses `POSIX_SPAWN_CLOEXEC_DEFAULT` and keeps
     fd 2 through `posix_spawn_file_actions_addinherit_np`, which
@@ -530,6 +533,69 @@ RV3 forced these decisions:
     `Connection.fsti`), and the WebSocket sends of the view are
     `external_body` functions in `view.rs`. `Batch` is verified.
 
+Decisions 101 to 109 are not used. Before R5 the user decided:
+
+110. The `yes` row of the client measures client CPU per MB parsed,
+     and its target is no more than the reference. The target "under
+     1 core" is dropped. The Rust client parses the whole stream
+     (77.9 MB/s, 0 view skips, about 9.6 ms of CPU per MB). The OCaml
+     client parses only for its parse budget of 4 ms in each 8 ms,
+     so it parses about 19 MB/s with 18 view skips per second (about
+     40 ms of CPU per MB). A producer that floods keeps a parser at
+     one core, as in kitty and Ghostty. The client gets no parse
+     budget.
+
+R5 forced these decisions:
+
+111. `ko_proofs/` keeps every F*/Pulse source (`.fst`, `.fsti`) as
+     the specification that the Verus stages port; RV3 ports
+     `View_core.fst` and its contracts from it. Only what exists for
+     the OCaml and C build goes: the extraction (`extract.sh`), its
+     OCaml outputs `pane_core.ml` and `view_core.ml`, `make proofs`,
+     `scripts/install-fstar.sh` and CI's `proofs` job. With no
+     extracted code in a build, F* verifies nothing that ships, so
+     no job checks the sources. GenMC's models of the extracted C
+     ring went after R5 with `ko_ring_proved.h` and `ko_atomic.h`;
+     their result stays: the ring model ran 17,519 executions with no
+     error, and the wakeup model lost a wakeup under acquire/release
+     and none under `seq_cst`. loom on the Rust ring replaces them
+     (6.5).
+112. With the OCaml ko gone, the bench reference is the Rust ko at
+     the R5 commit. A later bench run builds that commit in a
+     scratch worktree (`git worktree add --detach /tmp/ko-ref-XXXXXX
+     <commit>`, then `make build-ko` there) and measures it first, in
+     the same session, on AC power, at load average under 2, as
+     decisions 78 and 79 did with the OCaml ko. The rules stay
+     relative: coordinator CPU per GiB within 5 percent of the
+     reference, the five-pane flood within 10 percent, the latency,
+     attach and resize rows the same or better, `yes` client CPU per
+     MB no more than the reference (decision 110), zero allocations
+     per record. A change that moves a row past its rule names the
+     new reference commit in the plan or in docs/ with the reason.
+     The R3 and R4 tables stay as the record of the OCaml
+     comparison, not as fixed targets: absolute figures drift with
+     the machine and its load. R5 runs no benchmark; its acceptance
+     has no bench row.
+113. `make build-bench` compiles the kept C helpers of `bench/`
+     (`produce`, `drain`, `wait_master`, and `pty_read` and `parse`
+     against the libghostty-vt of `ko_vt_sys/build.rs`) with `cc`
+     into `build/bench/`; dune builds no part of
+     ko. `ko-bench` finds `ko-pane` beside itself and `produce` at
+     `build/bench/produce` of its checkout, from its own path; it
+     reads no variable for either. The bench scripts share their
+     setup in one sourced file.
+114. Two bench rows go with the OCaml bench: `bench/kitten.sh`
+     (`kitten __benchmark__` in `ko-pane`, through
+     `coordinator.exe run`, a mode that `ko-bench` does not have) and
+     the C tail-acker row of `bench/baselines.sh` (`acker.c` drove the
+     C `ko-pane`). The kitty and tmux comparisons of p1-mvp.md 6
+     stay as recorded figures.
+115. Off macOS, `scripts/verify.sh` prints SKIP for the `e2e-ko`
+     stage and for `ko-suite` (`make test`, `make e2e-ko`) until
+     RL; `make verify-ko` is not run there.
+116. `ko_pane_wire` has no test against a C header: the Verus spec
+     (`ring/spec.rs`) is the one source of the ring's constants.
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -902,8 +968,7 @@ the underscore, so there is one spelling.
                    mirror.ml and usage.ml); bench/*.c and client.py stay
     fuzz/          the cargo-fuzz crate, outside the default members
     ko_proofs/     the reference's F*/Pulse proofs, read as the specs
-                   for Verus; each file goes when its Verus port lands
-    ko_pane/genmc/ the reference's GenMC models of the handshake
+                   for Verus (decision 111)
 
 ### 3.2 Module map
 
@@ -1591,13 +1656,15 @@ branches as well as ko's. The consequences:
 
 ### 6.5 loom
 
-`ko_pane_wire::ring` has a `loom` module under `cfg(loom)` with two
+`ko_pane_wire::ring` has a `model` module under `cfg(loom)` with three
 tests that replay the GenMC models of row 7 on the real `Writer` and
-`Reader` (the atomics go through a `cfg(loom)` alias of `AtomicU64`).
-`ring_mc` is `ring_mc.c`: a writer and a reader thread on a 64-byte
+`Reader` (the atomics go through a `cfg(loom)` alias of `AtomicU64`);
+the GenMC models and the extracted C ring went after R5 (decision
+111). `records_reach_the_reader_whole_and_in_order` replays
+`ring_mc.c`: a writer and a reader thread on a 64-byte
 ring, 5 records of 9 bytes whose payloads are their stream offsets;
-the reader checks every byte once and advances the tail. `wakeup_mc`
-is `wakeup_mc.c`, the handshake with two threads over the three
+the reader checks every byte once and advances the tail.
+`a_seq_cst_handshake_loses_no_wakeup` replays `wakeup_mc.c`, the handshake with two threads over the three
 header atomics and a one-slot "frame sent" flag: the writer commits a record (store `head`,
 load `read`, send a `head` frame if equal to the old head); the reader
 scans (load `head`, store `read`) and then, if no frame arrived, must
@@ -1655,8 +1722,8 @@ Decision 10: Verus writes ko's specs. The state of Verus on
   7). Verus has no weak-memory model, so the acq/rel failure stays a
   loom and GenMC fact (6.5).
 
-**The references** are committed in the reference tree (43440688) and
-so in this tree (see the status line): `ko_proofs/` (F*/Pulse, 4,208
+**The references** are committed in the reference tree (43440688);
+this tree keeps only the `.fst` and `.fsti` sources (decision 111): `ko_proofs/` (F*/Pulse, 4,208
 lines; `make proofs` installs the pinned F* through
 `scripts/install-fstar.sh`, verifies, extracts and compares) and
 `ko_pane/genmc/`.
@@ -2067,7 +2134,7 @@ one session. The attach and resize rows wait for R4.
 | hop latency, `latency writev 5000 2` | 2.4, 2.2 | p50 13.3, p99 19.6 us | p50 14, p99 20 us | met (the Rust bench prints whole microseconds) |
 | key to frame through the client, 500 samples | 1.5 | p50 1.34, p99 3.35 ms | p50 0.53, p99 0.69 ms | met |
 | key to frame, view only | 1.5 | p50 0.18, p99 0.30 ms | p50 0.18, p99 0.26 ms | met |
-| `yes` 5 s, shown: client CPU | 1.4, 1.6 | 0.63 core | 1.00 core | missed: under 1 core, and worse than OCaml |
+| `yes` 5 s, shown: client CPU | 1.4, 1.6 | 0.63 core | 1.00 core | met by decision 110: about 9.6 ms of CPU per MB parsed, OCaml about 40 |
 | attach, 100k lines: screen, history in the mirror | 1.7, 2.2 | 29 ms, 66 ms | 6 ms, 26 ms | met |
 | resize, 100k lines, to READY | 1.6 | p50 5.14, p99 5.55 ms | p50 4.99, p99 5.44 ms | met |
 | client, 100k-line mirror, footprint | 1.6, 1.5 | 16.9 MiB (RSS 100.9) | 13.4 MiB (RSS 93.3) | met |
@@ -2086,8 +2153,8 @@ one session. The attach and resize rows wait for R4.
   On `yes`, the client's time is in `ghostty_terminal_vt_write` in
   the mirror: `sample` gave 1,935 of 2,115 samples there and 88 in
   the paint. The client is limited by the parse, so it uses the whole
-  core. The reason that the OCaml client uses less is not measured.
-  The decision about a limit on the parse work is open for the user.
+  core. The OCaml client uses less because its parse budget skips
+  views; decision 110 replaces the target.
   The first attach row gave 70 ms and 117 ms: the probe waited 50 ms
   after the DA1 answer. It now ends at the DA1 answer, the last
   reply.
@@ -2106,13 +2173,8 @@ one session. The attach and resize rows wait for R4.
   `httpun`, `httpun-ws`, `jsonkit`, `qcheck-core`, `monolith`,
   `ppx_deriving_qcheck`) and re-lock `dune.lock` with the pinned
   repositories rule of AGENTS.md.
-- `ko_proofs/`: the files whose Verus port has landed go (the
-  `KoRing.*` files, `Ring.fsti` and `Ring_proof.fst` after RV);
-  `Pane_core.fst` stays as RV2's spec and `View_core.fst` with its
-  contracts as RV3's. `ko_pane/genmc/` stays with
-  `ko_proofs/ko_ring_proved.h` and `ko_atomic.h` as the record of the
-  seq_cst evidence (`ko_pane/genmc/run.sh`), which the loom tests
-  replay. `lib/fs.ml` and `lib/timestamp.ml` stay with
+- `ko_proofs/`: every `.fst` and `.fsti` stays as the specification
+  of the Verus stages (decision 111). `lib/fs.ml` and `lib/timestamp.ml` stay with
   kido.
 - `verify.sh` loses the two-binary split; `lint.sh` loses the OCaml
   ko rows (QCheck, `Ko_server` doc references) and gains the Rust
@@ -2233,10 +2295,10 @@ Decision 25. One change applies every row of 2.6:
 
 Decision 15. The view's cursor, resume, snapshot and flush rules from
 `ko_proofs/View_core.fst`, verified at the call sites in `view.rs` and
-`conn.rs` (decisions 95 to 100). Acceptance: `cargo verus verify -p ko_server` passes on `view`
-within the cap of decision 18. RV3 keeps `ko_proofs/` unchanged: the
-OCaml ko still extracts `view_core.ml` from `View_core.fst`, and R5
-decides what in `ko_proofs/` goes with the OCaml ko.
+`conn.rs` (decisions 95 to 100). Acceptance: `cargo verus verify -p
+ko_server` passes on `view` within the cap of decision 18.
+`ko_proofs/` keeps `View_core.fst` and its contracts as the
+specification (decision 111).
 - Result (2026-11-02, macOS): `ko_server` verifies with 81
   obligations (1.6 s) and `ko_pane_wire` with 132 (1.4 s), no
   `assume` and no `admit`; the `verus` stage takes 4.3 s. The

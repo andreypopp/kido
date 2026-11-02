@@ -131,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn ring_mc() {
+    fn records_reach_the_reader_whole_and_in_order() {
         model(Some(5), || {
             let (mut reader, mut writer) = ring(Handshake::SeqCst);
             let records = loom::thread::spawn(move || {
@@ -182,13 +182,13 @@ mod tests {
     }
 
     #[test]
-    fn wakeup_mc() {
+    fn a_seq_cst_handshake_loses_no_wakeup() {
         wakeup(Handshake::SeqCst);
     }
 
     #[test]
     #[should_panic(expected = "a lost wakeup")]
-    fn wakeup_mc_acquire_release_loses_a_wakeup() {
+    fn an_acquire_release_handshake_loses_a_wakeup() {
         wakeup(Handshake::AcqRel);
     }
 }
