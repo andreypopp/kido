@@ -770,49 +770,6 @@ After RV4 the user decided:
 137. `ko_proofs/` is deleted. Verus is the one specification; the
      reference copy of the F* sources is `~/Workspace/kido-ko`.
      Decision 111's "the sources stay as the specification" ends here.
-160. A test that closes a socket peer waits, with a deadline, for the
-     other end to see the hangup before it asserts on it. On macOS, a
-     `posix_spawn` in another thread holds a reference to every
-     descriptor of the process until the child execs, even with
-     close-on-exec set on the descriptor and
-     `POSIX_SPAWN_CLOEXEC_DEFAULT`. A C probe (a socketpair with
-     close-on-exec on both ends, four threads that spawn
-     `/usr/bin/true`) wrote to the open end after the close of its peer
-     in 13 of 20,000 attempts, and in 0 of 20,000 with no spawning
-     thread. Thus, two `pane_proc` tests that expected the first write
-     after the close to fail failed in 15 of 40 runs of the
-     `ko_server` suite at 64 test threads, and in 0 of 60 runs with
-     `Fake::hang_up`. No change on the spawn side closes the window:
-     `POSIX_SPAWN_CLOEXEC_DEFAULT` and a `closefrom` in the child act
-     only after the reference exists, and `shutdown(Both)` on the
-     peer does not make the write fail on macOS. Tests that start
-     processes in their own test binary do not close it either,
-     because those tests also close sockets while other tests spawn.
-     No lint finds the pattern, because it is a close followed by an
-     assertion that depends on it.
-161. `ko-pane` appends no record to the ring for a snapshot of a dead
-     pane. The server knows the death from the `dead` control frame,
-     which `ko-pane` sends on the same socket before any later
-     `SnapshotDone`, and the view sends the client the same dead
-     marker after the snapshot's end, at the view's offset
-     (`View::on_done`). Decision 123's repeated dead marker
-     caused a livelock: the marker is a data record, so a snapshot of
-     about the ring's size by one view evicted the unread marker of
-     another view. That view was then behind and took a snapshot,
-     which appended a new marker that evicted the first view's, and
-     so on (the view harness's "views catch up after a resync on a
-     pane that ended" timed out in 1 of 19 suite runs and in every
-     run of its explicit case). Now a snapshot adds only slices,
-     which are not data records, so it cannot make another view
-     behind. Decision 123's cases still
-     hold: a view opened after the death gets the dead marker after
-     its snapshot content, and a live view gets the original marker
-     once ("a live view and a view opened after the death each get
-     the death once"). The rejected alternative was a view that is
-     behind at the head and has already shown the death and resumes
-     at the head: a resize after the death writes a resize marker
-     (`Pane::resize`), so such a view could lose it, and a view that
-     snapshots has not seen the death before its snapshot ends.
 
 The e2e readability pass forced this decision:
 
@@ -869,6 +826,49 @@ RW forced these decisions:
      `ts` stage. The stage `build` is always kido's `dune build`, and
      `build-ko` is ko's. Off macOS, every ko stage printed SKIP
      until RL.
+160. A test that closes a socket peer waits, with a deadline, for the
+     other end to see the hangup before it asserts on it. On macOS, a
+     `posix_spawn` in another thread holds a reference to every
+     descriptor of the process until the child execs, even with
+     close-on-exec set on the descriptor and
+     `POSIX_SPAWN_CLOEXEC_DEFAULT`. A C probe (a socketpair with
+     close-on-exec on both ends, four threads that spawn
+     `/usr/bin/true`) wrote to the open end after the close of its peer
+     in 13 of 20,000 attempts, and in 0 of 20,000 with no spawning
+     thread. Thus, two `pane_proc` tests that expected the first write
+     after the close to fail failed in 15 of 40 runs of the
+     `ko_server` suite at 64 test threads, and in 0 of 60 runs with
+     `Fake::hang_up`. No change on the spawn side closes the window:
+     `POSIX_SPAWN_CLOEXEC_DEFAULT` and a `closefrom` in the child act
+     only after the reference exists, and `shutdown(Both)` on the
+     peer does not make the write fail on macOS. Tests that start
+     processes in their own test binary do not close it either,
+     because those tests also close sockets while other tests spawn.
+     No lint finds the pattern, because it is a close followed by an
+     assertion that depends on it.
+161. `ko-pane` appends no record to the ring for a snapshot of a dead
+     pane. The server knows the death from the `dead` control frame,
+     which `ko-pane` sends on the same socket before any later
+     `SnapshotDone`, and the view sends the client the same dead
+     marker after the snapshot's end, at the view's offset
+     (`View::on_done`). Decision 123's repeated dead marker
+     caused a livelock: the marker is a data record, so a snapshot of
+     about the ring's size by one view evicted the unread marker of
+     another view. That view was then behind and took a snapshot,
+     which appended a new marker that evicted the first view's, and
+     so on (the view harness's "views catch up after a resync on a
+     pane that ended" timed out in 1 of 19 suite runs and in every
+     run of its explicit case). Now a snapshot adds only slices,
+     which are not data records, so it cannot make another view
+     behind. Decision 123's cases still
+     hold: a view opened after the death gets the dead marker after
+     its snapshot content, and a live view gets the original marker
+     once ("a live view and a view opened after the death each get
+     the death once"). The rejected alternative was a view that is
+     behind at the head and has already shown the death and resumes
+     at the head: a resize after the death writes a resize marker
+     (`Pane::resize`), so such a view could lose it, and a view that
+     snapshots has not seen the death before its snapshot ends.
 170. `ko_sys::fd::read` returns `ECONNRESET` as `Ok(0)` on both
      platforms (row 44), in the one read that every source uses, so
      `ko_tui`'s wire drops its own reset case. The e2e case of
