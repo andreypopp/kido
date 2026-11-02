@@ -143,6 +143,12 @@ targets:
     dependencies:
       - target: KoProbe
         link: false
+      - framework: build/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: IOSurface.framework
+      - sdk: Carbon.framework
 schemes:
   KoProbe:
     build:

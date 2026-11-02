@@ -1,55 +1,7 @@
 import KoClient
 import XCTest
 
-@MainActor final class KoProbeTests: XCTestCase {
-    private func ko(_ arguments: [String], dir: String) throws -> Process {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["KO_BIN"], "KO_BIN"))
-        process.arguments = arguments + ["--server", dir]
-        process.environment = ["PATH": "/usr/bin:/bin", "HOME": dir]
-        try process.run()
-        return process
-    }
-
-    private func run(_ arguments: [String], dir: String) throws {
-        let process = try ko(arguments, dir: dir)
-        process.waitUntilExit()
-        XCTAssertEqual(process.terminationStatus, 0, arguments.joined(separator: " "))
-    }
-
-    private func wait(_ description: String, within seconds: TimeInterval = 10, _ condition: () -> Bool) {
-        let deadline = Date(timeIntervalSinceNow: seconds)
-        while !condition() {
-            if Date() >= deadline { return XCTFail("Timed out: \(description)") }
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
-        }
-    }
-
-    private func put(_ layout: String, dir: String) throws {
-        let draft = dir + "/draft.json"
-        try layout.write(toFile: draft, atomically: true, encoding: .utf8)
-        try run(["api", "-X", "PUT", "--input", draft, "/layout"], dir: dir)
-    }
-
-    private func server() throws -> String {
-        var template = Array("/tmp/ko-kp-XXXXXX".utf8CString)
-        let dir = String(cString: try XCTUnwrap(mkdtemp(&template)))
-        let process = try ko(["server"], dir: dir)
-        addTeardownBlock {
-            process.waitUntilExit()
-            try? FileManager.default.removeItem(atPath: dir)
-        }
-        addTeardownBlock { @MainActor in try? self.run(["kill-server"], dir: dir) }
-        wait("the server socket") { FileManager.default.fileExists(atPath: dir + "/socket") }
-        return dir
-    }
-
-    private func mainQueueDrained() {
-        let drained = expectation(description: "the main queue drained")
-        DispatchQueue.main.async { drained.fulfill() }
-        wait(for: [drained], timeout: 10)
-    }
-
+@MainActor final class KoProbeTests: KoTestCase {
     func testWelcomeAndLayoutArriveAsMainQueueCallbacksAndNothingFollowsAClose() throws {
         let dir = try server()
         var events: [KoEvent] = []
@@ -60,9 +12,10 @@ import XCTest
         }
         let connection = try KoConnection(socket: dir + "/socket", sink: record)
         wait("welcome and layout") { events.count >= 2 }
-        guard case .welcome(let client, let instance, _) = events.first else { return XCTFail("\(events)") }
+        guard case .welcome(let client, let instance, _, let fresh) = events.first else { return XCTFail("\(events)") }
         XCTAssertTrue(client.hasPrefix("client_"))
         XCTAssertEqual(instance.count, 32)
+        XCTAssertTrue(fresh)
         XCTAssertEqual(events[1], .layout(revision: 0, sessions: 0, windows: 0, panes: 0))
 
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"s","windows":[{"name":"w","tree":{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}}]}]}}"#, dir: dir)
