@@ -49,6 +49,7 @@ pub(crate) enum PutError {
 #[derive(Debug, Clone)]
 pub(crate) struct Document {
     revision: Revision,
+    unpublished: bool,
     layout: Layout,
     ids: Ids,
     shell: Option<Name>,
@@ -78,6 +79,7 @@ impl Document {
         Document {
             shell: shell.to_str().and_then(base_name),
             revision: Revision::FIRST,
+            unpublished: false,
             layout: Layout { sessions: vec![] },
             ids: Ids {
                 pane: 1,
@@ -125,7 +127,7 @@ impl Document {
         let before = self.layout.clone();
         change(&mut self.layout);
         settle(&before, &mut self.layout);
-        self.revision = self.revision.next();
+        self.unpublished = true;
         Removal { panes, before }
     }
 
@@ -157,8 +159,15 @@ impl Document {
         }))
     }
 
-    pub(crate) fn fold_into(&mut self, revision: Revision) {
-        self.revision = revision;
+    pub(crate) fn unpublished(&self) -> bool {
+        self.unpublished
+    }
+
+    pub(crate) fn publish(&mut self) {
+        if self.unpublished {
+            self.unpublished = false;
+            self.revision = self.revision.next();
+        }
     }
 
     pub(crate) fn focus(&mut self, window: WindowId, pane: PaneId) -> bool {
@@ -173,7 +182,6 @@ impl Document {
             return false;
         };
         found.focus = pane;
-        self.revision = self.revision.next();
         true
     }
 
@@ -200,7 +208,7 @@ impl Document {
         };
         let wanted = (usize::from(cols.get()), usize::from(rows.get()));
         if resize(found, wanted, cell_px) {
-            self.revision = self.revision.next();
+            self.unpublished = true;
             Resized::Changed
         } else {
             Resized::Same
@@ -211,7 +219,7 @@ impl Document {
         settle(&self.layout, &mut layout);
         if layout != self.layout {
             self.layout = layout;
-            self.revision = self.revision.next();
+            self.unpublished = true;
         }
     }
 }
@@ -859,6 +867,7 @@ mod tests {
         document
             .put(request(&document, vec![session(vec![window])]))
             .unwrap();
+        document.publish();
         document
     }
 
@@ -870,7 +879,9 @@ mod tests {
         edited["id"] = json!("window_1");
         let mut named = session(vec![edited]);
         named["id"] = json!("session_1");
-        document.put(request(document, vec![named]))
+        let created = document.put(request(document, vec![named]))?;
+        document.publish();
+        Ok(created)
     }
 
     fn first_window(document: &Document) -> Window {
@@ -1288,6 +1299,7 @@ mod tests {
         assert_eq!(created[0].0.to_string(), "pane_2");
         document.rollback(before);
         assert_eq!(document.revision(), Revision::FIRST.next());
+        assert!(!document.unpublished());
         assert_eq!(tree_shape(&document), "1:80x24");
         let created = edit(
             &mut document,
@@ -1346,6 +1358,8 @@ mod tests {
         let revision = document.snapshot().revision;
         assert!(document.remove_pane(PaneId::new(1)).is_some());
         assert_eq!(tree_shape(&document), "v[2:200x20 3:200x59]");
+        assert_eq!(document.snapshot().revision, revision);
+        document.publish();
         assert_eq!(document.snapshot().revision, revision.next());
         assert!(document.remove_pane(PaneId::new(1)).is_none());
         assert!(document.remove_pane(PaneId::new(3)).is_some());
@@ -1511,6 +1525,7 @@ mod tests {
                 ],
             ))
             .unwrap();
+        document.publish();
         document
     }
 
@@ -1537,6 +1552,7 @@ mod tests {
                 .map(|removed| removed.panes),
             Some(vec![PaneId::new(1), PaneId::new(2)])
         );
+        document.publish();
         assert_eq!(document.revision(), revision.next());
         assert_eq!(document.layout().sessions[0].windows.len(), 1);
         assert_eq!(
@@ -1545,6 +1561,7 @@ mod tests {
                 .map(|removed| removed.panes),
             Some(vec![PaneId::new(4)])
         );
+        document.publish();
         assert_eq!(document.revision(), revision.next().next());
         assert_eq!(document.layout().sessions.len(), 1);
         assert_eq!(
@@ -1577,14 +1594,16 @@ mod tests {
         assert_eq!(document.revision(), revision);
         assert!(document.focus(window, PaneId::new(2)));
         assert_eq!(focus(&document), PaneId::new(2));
-        assert_eq!(document.revision(), revision.next());
+        assert!(!document.unpublished());
+        assert_eq!(document.revision(), revision);
 
         let mut sent = serde_json::to_value(document.snapshot()).unwrap();
         sent["layout"]["sessions"][0]["windows"][0]["focus"] = json!("pane_1");
         sent["layout"]["sessions"][0]["windows"][1]["focus"] = json!("pane_99");
         document.put(serde_json::from_value(sent).unwrap()).unwrap();
         assert_eq!(focus(&document), PaneId::new(2));
-        assert_eq!(document.revision(), revision.next());
+        assert!(!document.unpublished());
+        assert_eq!(document.revision(), revision);
     }
 
     #[test]

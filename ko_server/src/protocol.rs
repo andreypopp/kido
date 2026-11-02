@@ -1338,6 +1338,10 @@ pub struct StatusChange {
 pub enum ClientEvent {
     Welcome(Welcome),
     Layout(Snapshot),
+    Focus {
+        window: WindowId,
+        pane: PaneId,
+    },
     Selected(Selection),
     Title(Title),
     Pwd(Pwd),
@@ -2083,6 +2087,7 @@ mod tests {
             r#"{"type":"notify","pane":"pane_3","title":"build","body":"done"}"#,
             r#"{"type":"progress","pane":"pane_3","progress":null}"#,
             r#"{"type":"progress","pane":"pane_3","progress":{"state":"indeterminate"}}"#,
+            r#"{"type":"focus","window":"window_2","pane":"pane_3"}"#,
         ] {
             same::<ClientEvent>(json);
         }

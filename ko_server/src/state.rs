@@ -272,7 +272,7 @@ impl State {
             }
             started.push(id);
         }
-        if self.document.revision() != before.revision() {
+        if self.document.unpublished() {
             self.changed(poll, before.layout());
         }
         Ok(self.document.snapshot())
@@ -358,12 +358,11 @@ impl State {
                 }
             }
         }
-        let revision = self.document.revision();
         for (index, _) in &moved {
             self.note_focus(*index);
             self.claim(poll, *index);
         }
-        self.document.fold_into(revision);
+        self.document.publish();
         let sizes = self.document.layout().pane_sizes().into_iter().collect();
         self.resize_panes(poll, &sizes);
         self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
@@ -472,13 +471,28 @@ impl State {
     }
 
     fn arrive(&mut self, poll: &mut Poll, index: usize) {
-        let before = self.document.revision();
-        self.note_focus(index);
+        let focused = self.note_focus(index);
         self.claim(poll, index);
-        if self.document.revision() != before {
-            self.document.fold_into(before.next());
-            self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
+        if self.document.unpublished() {
+            self.publish();
+        } else if focused
+            && let Some(current) = self
+                .conns
+                .get(index)
+                .and_then(client_of)
+                .and_then(|client| client.active)
+                .and_then(|active| active.current)
+        {
+            self.broadcast(&ClientEvent::Focus {
+                window: current.window,
+                pane: current.pane,
+            });
         }
+    }
+
+    fn publish(&mut self) {
+        self.document.publish();
+        self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
     }
 
     pub(crate) fn select_client(
@@ -1196,7 +1210,7 @@ impl State {
                     && self.sizable(active.kind, current.window)
                     && self.size_window(poll, current.window, active.size)
                 {
-                    self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
+                    self.publish();
                 }
                 return;
             }

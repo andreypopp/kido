@@ -684,8 +684,11 @@ Built (2026-11-02), with two additions of the top-level session:
 
 - The window's focus lives only in the document (`Window.focus`,
   always present); the coordinator's separate per-window store went.
-  A focus change bumps the revision, so a `PUT` can get `409` from a
-  focused client's selection; the read-edit-`PUT` loop retries it.
+  The focus is outside the revision (decided 2026-11-02, after K2b
+  first bumped it): a selection by a focused client sends a `focus`
+  event, not a `layout` event, so it cannot make a `PUT` stale.
+  The document's steps only mark it changed, and the coordinator
+  increases the revision once, when it publishes the change.
 - `DraftWindow.name` is optional. The default rule and its limits are
   in protocol.md 7. A `PUT` whose new window has no name and no
   derivable one is `invalid`.

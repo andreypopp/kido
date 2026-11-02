@@ -242,6 +242,7 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
+        document.publish();
         document
     }
 

@@ -325,7 +325,8 @@ result.
 Events arrive on the client connection, one text message per event,
 in the order the server produced them. The kinds, as `Protocol`'s
 client event type defines them: the whole layout document on every
-change (section 7); a pane's title, pwd, status, variable, death,
+change (section 7); a window's new `focus` when only the focus
+changed (section 7); a pane's title, pwd, status, variable, death,
 bell, notification and progress; later a pane's clipboard write and
 clipboard read (K6), a run's start or outcome (section 10), and this client's
 own state when another connection moved it (K2). The OSC 133 steps
@@ -389,7 +390,9 @@ document types of `ko_server/src/protocol.rs` are the reference.
 - Every change bumps the revision and is sent as a layout event on
   every `/client`, whether a client sent it or the server made it: a
   new pane, a `DELETE`, a pane's death, a size from the window's
-  sizing client.
+  sizing client. The revision increases once for each published
+  change: a change and the sizes and focus moves that it causes are
+  one revision and one layout event.
 - A `PUT` must keep every live pane: a document that omits one is
   `invalid`. A new session or window has no `id`; the server allocates
   it. A new pane is a leaf or float whose `pane` is `{new: {cwd?,
@@ -421,10 +424,16 @@ document types of `ko_server/src/protocol.rs` are the reference.
   ignores it. It names the window's last-focused pane (section 3); a
   new window starts with its first leaf, and when that pane leaves
   the window, the focus goes to the window's next pane in document
-  order. A change of a window's `focus` is a change of the document:
-  it bumps the revision and sends a layout event. Thus a selection
-  by a client whose terminal has focus can make a concurrent `PUT`
-  stale.
+  order. The focus is outside the revision (decided 2026-11-02): a
+  selection by a client whose terminal has focus does not bump the
+  revision and cannot make a concurrent `PUT` stale. It sends a
+  `focus` event with the window and the pane on every `/client`.
+  When the selection also changes the window's size (the client
+  becomes its sizing client), the change is a document change: one
+  revision and one layout event, which carries the new focus, and no
+  `focus` event. A focus that moves because its pane left the window
+  goes in the layout event of that change. The `focus` event has no
+  replay: a client that reconnects reads it from `GET /layout`.
 - A new window without `name` gets a default from its first pane, as
   tmux names a new window: the basename of the first word of the
   pane's `command`, else of the shell that `ko shell` runs. A new

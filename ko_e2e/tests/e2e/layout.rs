@@ -1,6 +1,8 @@
 use serde_json::{Value, json};
 
-use crate::harness::{Server, Ws, poll, sh, start, wait_gone};
+use std::time::Duration;
+
+use crate::harness::{Message, Server, Ws, poll, sh, start, tagged, wait_gone};
 
 pub(crate) fn shell() -> Value {
     sh("exec /bin/sh")
@@ -539,19 +541,50 @@ fn a_window_names_its_last_focused_pane_and_a_put_cannot_set_it() {
         {"name": "w", "tree": split("h", vec![new(), new()])}]}]}}));
     assert_eq!(windows(&first)[0]["focus"], json!("pane_1"));
     let (mut client, _) = s.app_client(json!({"pane": "pane_1"}), true, (80, 24));
-    let sized = revision(&s.doc());
-    assert!(sized >= revision(&first));
+    let (mut peer, _) = s.app_client(json!({"pane": "pane_1"}), false, (80, 24));
+    let before = s.doc();
+    assert!(revision(&before) >= revision(&first));
 
     client.send(&json!({"type": "select", "pane": "pane_2"}));
-    let event = layout_at(&mut client, |event| {
-        windows(event)[0]["focus"] == json!("pane_2")
+    let current = s.doc();
+    assert_eq!(windows(&current)[0]["focus"], json!("pane_2"));
+    assert_eq!(
+        revision(&current),
+        revision(&before),
+        "a focus change is outside the revision"
+    );
+    let renamed = s.put(&{
+        let mut stale = before.clone();
+        stale["layout"]["sessions"][0]["name"] = json!("renamed");
+        stale
     });
     assert_eq!(
-        revision(&event),
-        sized + 1,
-        "a focus change is one revision"
+        (revision(&renamed), windows(&renamed)[0]["focus"].clone()),
+        (revision(&before) + 1, json!("pane_2")),
+        "a PUT made before the select still lands, and the first layout event is its own"
     );
-    assert_eq!(s.doc()["layout"], event["layout"]);
+    peer.within(Duration::from_secs(5));
+    let mut seen = Vec::new();
+    let layout = loop {
+        let Message::Text(text) = peer.read() else {
+            continue;
+        };
+        match tagged(&text) {
+            Some((tag, payload)) if tag == "layout" => break payload,
+            Some((tag, payload)) if tag == "focus" => seen.push(payload),
+            _ => {}
+        }
+    };
+    assert_eq!(layout["revision"], renamed["revision"]);
+    assert_eq!(
+        seen.len(),
+        1,
+        "one focus event and no layout event before the rename's"
+    );
+    assert_eq!(
+        (&seen[0]["window"], &seen[0]["pane"]),
+        (&json!("window_1"), &json!("pane_2"))
+    );
 
     let mut sent = s.doc();
     sent["layout"]["sessions"][0]["windows"][0]["focus"] = json!("pane_1");
@@ -559,7 +592,7 @@ fn a_window_names_its_last_focused_pane_and_a_put_cannot_set_it() {
     assert_eq!(windows(&kept)[0]["focus"], json!("pane_2"));
     assert_eq!(
         revision(&kept),
-        revision(&event),
+        revision(&renamed),
         "a PUT of focus alone changes nothing"
     );
     sent["layout"]["sessions"][0]["windows"][0]["focus"] = json!("pane_99");

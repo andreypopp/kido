@@ -194,6 +194,19 @@ impl Model {
                 self.forget_runs();
                 return Applied::Layout;
             }
+            ClientEvent::Focus { window, pane } => {
+                let found = self
+                    .layout
+                    .layout
+                    .sessions
+                    .iter_mut()
+                    .flat_map(|session| &mut session.windows)
+                    .find(|candidate| candidate.id == window);
+                if let Some(found) = found {
+                    found.focus = pane;
+                    return Applied::Layout;
+                }
+            }
             ClientEvent::Run(run) => {
                 if self.order().contains(&run.pane) {
                     self.runs.insert(run.id.clone(), run);
@@ -671,6 +684,35 @@ mod tests {
             title: "t".to_owned(),
         });
         assert_eq!(model.apply(title), Ok(Applied::Nothing));
+    }
+
+    #[test]
+    fn a_focus_event_moves_the_focus_of_its_window_and_keeps_the_revision() {
+        let layout = layout_of(&[vec![(Shape::Leaf, 1), (Shape::Leaf, 0)]]);
+        let mut model = model(layout);
+        model.layout.revision = revision(4);
+        model.panes = rows_of(&model.layout.layout);
+        let focus = |window, number| ClientEvent::Focus {
+            window: id("window_", window),
+            pane: pane(number),
+        };
+        assert_eq!(model.apply(focus(1, 2)), Ok(Applied::Layout));
+        let focused: Vec<_> = model
+            .layout
+            .layout
+            .windows()
+            .map(|(_, w)| w.focus)
+            .collect();
+        assert_eq!(focused, [pane(2), pane(3)]);
+        assert_eq!(model.layout.revision, revision(4));
+        assert_eq!(model.apply(focus(9, 1)), Ok(Applied::Nothing));
+        let focused: Vec<_> = model
+            .layout
+            .layout
+            .windows()
+            .map(|(_, w)| w.focus)
+            .collect();
+        assert_eq!(focused, [pane(2), pane(3)]);
     }
 
     #[test]
