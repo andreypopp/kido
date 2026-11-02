@@ -171,7 +171,7 @@ let run () =
       flush stdout;
       let ready = Fs.getenv "KIDO_FAKE_RUN_WAIT_READY" in
       if not (String.is_empty ready) then
-        Fs.write ~perm:0o644 ready (string_of_int (Unix.getpid ()));
+        Fs.write_atomic ready (string_of_int (Unix.getpid ()));
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_WAIT_EXIT_GATE");
       exit 0
   | "run-stop" ->
