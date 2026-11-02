@@ -12,8 +12,10 @@ let ssh_letters a = String.of_list (List.map (fun o -> o.letter) a.options)
 
 let parse_ssh args =
   let finish opts options dest command =
-    Option.map
-      (fun dest -> { opts = List.rev opts; options = List.rev options; dest; command })
+    Option.flat_map
+      (fun dest ->
+        if String.is_empty dest || String.prefix ~pre:"-" dest then None
+        else Some { opts = List.rev opts; options = List.rev options; dest; command })
       dest
   in
   let rec go opts options dest = function
@@ -73,47 +75,30 @@ let ssh_connection_args a =
           (fun rest -> ("-" ^ String.make 1 letter) :: (Option.to_list value @ rest))
           (go rest)
   in
-  if
-    String.is_empty a.dest || String.prefix ~pre:"-" a.dest
-    || not (List.for_all String.is_valid_utf_8 ((a.dest :: a.opts) @ a.command))
-  then None
+  if not (List.for_all String.is_valid_utf_8 ((a.dest :: a.opts) @ a.command)) then None
   else go a.options
 
-let prepare ~ssh ~tty ~pane args =
+let prepare ~tty ~pane args =
   let parsed = parse_ssh args in
   Option.iter
     (fun pane ->
-      let ic = Unix.open_process_args_in ssh (Array.of_list ("ssh" :: "-G" :: args)) in
-      let lines = In_channel.input_all ic |> String.lines in
-      let status = Unix.close_process_in ic in
-      let field key = List.find_map (String.chop_prefix ~pre:(key ^ " ")) lines in
-      let destination =
-        match (status, field "user", field "hostname") with
-        | Unix.WEXITED 0, Some user, Some host -> Some (user ^ "@" ^ host)
-        | _ -> None
-      in
       let tmux = Tmux.create () in
-      let args = Option.flat_map ssh_connection_args parsed in
       let target = [ "-t"; Tmux.string_of_pane_id pane ] in
+      let set name value = [ "set-option"; "-p" ] @ target @ [ name; value ] in
+      let unset name = [ "set-option"; "-p"; "-u" ] @ target @ [ name ] in
       let mark =
-        Option.map
-          (fun destination -> [ "set-option"; "-p" ] @ target @ [ Tmux_vars.ssh; destination ])
-          destination
+        match parsed with Some a -> set Tmux_vars.ssh a.dest | None -> unset Tmux_vars.ssh
       in
-      let unset = [ "set-option"; "-p"; "-u" ] @ target @ [ Tmux_vars.ssh_args ] in
       let record =
-        match args with
-        | None -> unset
-        | Some args ->
-            [ "set-option"; "-p" ] @ target @ [ Tmux_vars.ssh_args; ssh_connection_args_json args ]
+        match Option.flat_map ssh_connection_args parsed with
+        | Some args -> set Tmux_vars.ssh_args (ssh_connection_args_json args)
+        | None -> unset Tmux_vars.ssh_args
       in
-      match
-        Tmux.run tmux (match mark with None -> record | Some mark -> mark @ [ ";" ] @ record)
-      with
+      match Tmux.run tmux (mark @ [ ";" ] @ record) with
       | Ok () -> ()
       | Error _ ->
-          ignore (Tmux.run tmux unset);
-          Option.iter (fun mark -> ignore (Tmux.run tmux mark)) mark)
+          ignore (Tmux.run tmux (unset Tmux_vars.ssh_args));
+          ignore (Tmux.run tmux mark))
     pane;
   match parsed with
   | Some a

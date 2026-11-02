@@ -77,12 +77,13 @@ func TestFollowActivePane(t *testing.T) {
 func TestSSHRow(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	ssh := kidoBin + " ssh -F /dev/null -o ProxyCommand=" + h.sshProxy() + " deploy@example.test"
+	// -l makes the resolved user differ from the typed destination, which is the label.
+	ssh := kidoBin + " ssh -F /dev/null -l deploy -o ProxyCommand=" + h.sshProxy() + " example.test"
 	// ssh blocks on the proxy command, so no network is needed.
 	pane := h.newWindow("alpha", "")
 	h.in("send-keys", "-t", pane, ssh, "Enter")
 	h.waitPaneCommand(pane, "ssh")
-	h.waitRow("ssh deploy@example.test")
+	h.waitRow("ssh example.test")
 
 	// OSC 133 markers cross the connection and land on the local pane, so
 	// the row must name the far side's running command too. The test writes
@@ -98,7 +99,7 @@ func TestSSHRow(t *testing.T) {
 	h.writeTTY(far, "\x1b]133;A\x07")
 	h.waitFor(func() bool { return !running() }, settle, msgf("the row to go idle at the far side's prompt"))
 	h.writeTTY(far, "\x1b]133;C;cmdline_url=sleep%2045\x07")
-	h.waitRow("ssh deploy@example.test: sleep 45")
+	h.waitRow("ssh example.test: sleep 45")
 }
 
 // A plain zsh pane through kido's OSC 133 integration must carry the

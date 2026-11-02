@@ -46,7 +46,7 @@ not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`6.2`. It versions the RPC surface between the binary and its client,
+`7.0`. It versions the RPC surface between the binary and its client,
 and the tmux commands and flags that the contract names, such as
 `capture-pane -G`, `-K` and `-r` and the `image-shm` control flag. A remote kido with an older fork thus fails
 the version check, not the first capture. The version describes no tmux
@@ -284,9 +284,9 @@ to the session tree it draws. Matching uses session names, agent titles
 and ssh destinations. It sorts matching sessions by score.
 Empty text keeps the original order.
 
-An ssh destination is the typed `user@host` of the pane kind, never
-remote command text. RPC accepts no filter request and emits no filter
-field.
+An ssh destination is the pane kind's `destination`, the token as the
+user typed it, never remote command text. RPC accepts no filter request
+and emits no filter field.
 
 Switch-window and switch-session requests contain an integer id and a
 `next` or `prev` direction. Each receives a correlated reply with one of
@@ -315,6 +315,10 @@ Search clearing after successful activation and standalone picker exit
 remain TUI-local. Each frontend can recover from request errors and
 syscall failures at its execution boundary. These failures do not occupy
 `snapshot.error`.
+
+Protocol 7.0 changes from 6.2:
+- Changed: `Ssh` carries `destination`, the destination as the user
+  typed it, in place of `user` and `host` from `ssh -G`.
 
 Protocol 6.0 changes from 5.0:
 - Changed: an item's `run` is the pane's `@kido_run` id, or null. It was
