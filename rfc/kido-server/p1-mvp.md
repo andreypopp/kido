@@ -34,48 +34,33 @@ Out, until later stages:
 
 ## 2. Layout
 
-    ko_pane/      the pane process `ko-pane`, in C: pty, libghostty-vt,
-                  the frame codec of protocol.md section 14; built by a
-                  dune rule with the same flags as the library, with
-                  `-fsanitize=address,undefined` in the test build and
-                  libFuzzer targets for frame sizes and frame bodies;
-                  genmc/ the GenMC models of the ring's atomics
-    ko_vt/        the libghostty-vt binding for the client's mirror:
-                  terminal, snapshot decoder, render state, scroll,
-                  formatter
-    ko_server/    the coordinator library: Loop, Pane_proc, Pane, Panes,
-                  Client, View, Input, Http (the router), Connection
-                  (the socket and its queued `writev` output), Outbox
-                  (the queued strings that Connection and Pane_proc
-                  write), State
-                  (the registry of clients and views), Protocol (the
-                  wire JSON types), Ws (WebSocket frames), Event_loop
-                  (the poll(2) loop), Native (peer credentials, the
-                  monotonic clock, signal numbers), Pid (the only
-                  signal calls), Config, Ring (the mapped ring's
-                  reader), Pane_core and View_core (generated from
-                  ko_proofs/), Delivery_io (their I/O)
-    ko_proofs/    the F*/Pulse proofs of the ring, Pane_core and
-                  View_core, their trusted interfaces, extract.sh, and
-                  the generated ring header ko_ring_proved.h
-    ko_server/fuzz/  the fuzz properties (QCheck2 and Monolith), a test-only library
-    ko_tui/       the thin terminal client library: Mosaic for the
-                  sidebar and input, a direct cell differ for the screen
-    bin/ko.ml     the entry point: `ko` (attach or start and attach),
+P1 was built in OCaml and C. ko is now Rust; plans/ko-rust.md 3.1
+and 3.2 hold the crates and their modules:
+
+    ko/           the binary `ko`: `ko` (attach or start and attach),
                   `ko server` (foreground), `ko kill-server`,
                   `ko version`, `ko api`; `ko-pane` is found beside
                   the executable
-    third_party/ghostty   submodule, built by zig into libghostty-vt.a
-                  through a dune rule; the terminfo for xterm-ghostty
-                  installed beside the binary
-    bench/        the benchmark scripts and their recorded streams, and
-                  the P1.0 probes `coordinator.exe` and `wait_master.exe`
+    ko_server/    the coordinator library
+    ko_tui/       the thin terminal client library
+    ko_pane/      the pane process `ko-pane`: pty, libghostty-vt, the
+                  frame codec of protocol.md section 14; genmc/ the
+                  GenMC models of the ring's atomics
+    ko_pane_wire/ the frame codec and the ring that both processes
+                  share, verified with Verus
+    ko_vt/, ko_vt_sys/  libghostty-vt, built by zig, and its safe API;
+                  ko_vt/terminfo.zig writes the xterm-ghostty terminfo
+                  that is installed beside the binary
+    ko_sys/       the OS layer
+    ko_proofs/    the F*/Pulse proofs of the ring, Pane_core and
+                  View_core, the specifications of the Verus proofs
+    ko_bench/, bench/  the benchmark binary, scripts, C helpers and
+                  recorded streams
+    fuzz/         the cargo-fuzz targets
     test_e2e_ko/  the Go protocol suite of section 7
 
-The code rules of AGENTS.md apply: `.mli` for every module, inline
-ppx_expect tests, `-open Containers`, library code returns and the
-CLI reports. kido's `lib/` is not touched in P1 and nothing in `lib/`
-depends on the new directories.
+AGENTS.md, "Rust (ko)", holds the code rules. kido's `lib/` is not
+touched in P1 and nothing in kido depends on the new directories.
 
 ## 3. The server in P1
 
@@ -414,7 +399,7 @@ print one table:
 | metric | target | baseline |
 |---|---|---|
 | ingest throughput, one pane, `cat` of a 1 GiB recorded stream | within 10 percent of the same pty read with `vt_write` in the reader and no ring (6.2, row 2); `ko-pane` plus the coordinator under 1.3 cores; coordinator allocation bounded per write call, none per byte | tmux and kitty on the same stream, and `kitten __benchmark__` in ko-pane, tmux and kitty |
-| end-to-end, `yes` for 5 s in a shown pane | the client keeps the screen current through skips; the client's CPU under 1 core; no growth of the ring beyond 1 MiB | tmux attached |
+| end-to-end, `yes` for 5 s in a shown pane | the client keeps the screen current; the client's CPU per MB parsed no more than the reference (plans/ko-rust.md decision 110); no growth of the ring beyond 1 MiB | tmux attached |
 | keystroke echo latency, quiet pane | p50 under 1 ms and p99 under 3 ms added over a raw pty, including the ring and control hops | tmux |
 | attach to a pane with 100k lines of history | the screen visible under 50 ms; history fully loaded under 500 ms | tmux attach plus a `capture-pane -S -` of the history, which is what a client that wants the history pays under tmux |
 | resize of a pane with 100k lines | under 100 ms to the new READY | tmux |
@@ -579,12 +564,13 @@ kitty's ASCII rate of 352 MB/s with low-latency settings is twice the
 raw macOS pty ceiling that `ko-pane` sees, so kitty gets more than 1 KiB
 a wakeup or its writer differs. Neither is explained yet.
 
-To run them again: `bench/run.sh`, `bench/baselines.sh` and
-`bench/kitten.sh` (the kitty rows open windows);
-`_build/default/bench/coordinator.exe throughput|flood|latency|snapshot|cpu-check`;
-`_build/default/bench/wait_master.exe`;
-`python3 bench/client.py` for the client's key-to-frame latency and CPU
-(6.4). The spike 3 driver was removed with `spikes/mosaic/` in P1.2.
+These figures came from the OCaml ko. To run the rows that stay:
+`bench/run.sh`, `bench/baselines.sh` (the kitty rows open windows),
+`bench/flood.sh`, `target/release/ko-bench
+throughput|flood|latency|snapshot|cpu-check`, `build/bench/wait_master`
+and `python3 bench/client.py` for the client's key-to-frame latency and
+CPU (6.4). The `kitten __benchmark__` row in `ko-pane` and the C
+tail-acker row need the OCaml bench (plans/ko-rust.md decision 114). The spike 3 driver was removed with `spikes/mosaic/` in P1.2.
 The spike 4 driver (`spikes/http/`) was removed with the spike server
 in P1.1; P1.3 measures the same table against `ko server`. Since P1.1
 `bench/coordinator.exe` runs the production `Pane_proc` and
@@ -714,7 +700,7 @@ in the plan:
   system ncurses looks up terminfo in hexadecimal directories, so
   `xterm-ghostty` installs as both `x/` and `78/`. The terminfo is
   found only in the installed layout, so the tests and
-  `bench/client.py` run `_build/install/default/bin/ko`.
+  `bench/client.py` run `build/ko/bin/ko`.
 - **Tests.** The client tests run `ko` under an outer kido-tmux on a
   private socket, resolved through the fork's build key as kido's
   e2e does. They poll the outer screen through persistent control
@@ -842,11 +828,10 @@ These points were open or wrong in the plan:
   program of operations; the mirror, HTTP and loop properties use
   QCheck2, so a failure shrinks through its generator. The HTTP
   requests come from generators derived on the protocol types.
-  The ring, `Pane_core` and `View_core` are also proved in F*/Pulse
-  (design.md 4.6); `make proofs` re-verifies them and its CI job runs
-  on Linux and macOS. The unit and fuzz builds set
-  `KO_CHECK_CONTRACTS`, so the fuzzers also check the executable
-  part of the contracts that the proofs trust.
+  P1 also proved the ring, `Pane_core` and `View_core` in F*/Pulse
+  (design.md 4.6). In the Rust ko, Verus proves the ring and the
+  delivery (plans/ko-rust.md 6.7), and the F* sources stay as their
+  specification (decision 111).
   `dune test` replays fixed seeds and one explicit regression case
   for each bug that a fuzzer found; `make fuzz` runs one target for
   a fixed time, only in CI. The `-afl` targets run the same tests

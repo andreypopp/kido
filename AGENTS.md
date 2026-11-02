@@ -176,8 +176,7 @@ These requirements are fixed:
   `State_fixture` have no `.mli`.
   Only `tmux.mli` exposes `lib_tmux/program_status.ml`.
 
-  kido's JSON uses yojson with ppx_yojson_conv. ko's JSON uses jsonkit
-  ("JSON in ko" below). Equality and comparison use
+  kido's JSON uses yojson with ppx_yojson_conv. Equality and comparison use
   ppx_compare. String conversion uses ppx_string_conv.
   `lib/` and `lib_tmux/` also open their runtime primitives:
   `Ppx_compare_lib.Builtin` and
@@ -228,9 +227,7 @@ Conventions:
   Write the others manually under the derived name. Examples are numeric
   `Tmux.compare_pane_id` and validating `Tmux.pane_id_of_string`.
   For derived and manually written functions, use `[@@deriving ...]`
-  in the `.mli`, not explicit `val` declarations. The exception is
-  `ppx_deriving_qcheck`, which has no signature deriver: the `.mli`
-  declares each exported generator as a `val`.
+  in the `.mli`, not explicit `val` declarations.
 
   A validating `_of_string` raises `Invalid_argument` that names
   the bad value. A caller maps it over an absent value (an unset or empty
@@ -248,22 +245,6 @@ Conventions:
   because `[@yojson.option]` rejects an explicit `null`.
 
   A bare option field encodes `None` as `null`.
-- **JSON in ko.** ko code (`ko_server/`, `ko_tui/`, `bin/ko.ml`,
-  `bench/`) derives its codecs with jsonkit (`jsonkit.ppx`) on
-  `Yojson.Basic`, with `open Jsonkit.Primitives`. kido code stays on
-  ppx_yojson_conv until the cut-over.
-  - Derive every codec with `[@@deriving json]`. Do not write a codec
-    by hand. The exception is a codec that validates its value, such as
-    an id.
-  - A variant uses `[@@json.compact_variants]` with a lowercase
-    `[@json.name]` on each constructor. A constructor without arguments
-    encodes as a string, and one with arguments as an array.
-  - An option field uses `[@json.option] [@json.drop_default]`, so
-    `None` is omitted. jsonkit ignores unknown fields.
-  - Decoding raises `Jsonkit.Of_json_error`. Catch it only at an
-    untrusted-input edge: an HTTP body or a WebSocket message.
-  - A query string is not JSON. Parse it into its variant with a
-    plain `match`.
 - **Cmdliner docs.** A bare `$` is markup.
   It produces "unescaped $" on `--help`.
   Write environment variables as `$(b,NAME)`.
@@ -282,19 +263,6 @@ Conventions:
   `Tmux.Client.t` has no mutex. Only the sidebar's single tick may
   access it. `Tmux.binary` is the accepted exception for lazy
   environment lookup.
-- **Signals (ko).** ko sends a signal only through `Pid` in
-  `ko_server/`. `Pid.t` cannot be 1 or less, the coordinator's pid or
-  its process group, and it fits in a C `int`. A `Pid.Group.t`
-  exists only after the OS verified the pane's child, and its signal
-  checks the recorded start time and group again. No API takes a
-  negative pid. In C, `ko-pane` signals its child's group only
-  through `group_signal`. In Python, `bench/client.py` signals only
-  through `signal_child`. Each Go test package signals only through
-  its `signal_test.go`, which applies the same refusals.
-  `scripts/lint.sh` refuses the other signal calls in ko, `bench/`
-  and the e2e suites: `Unix.kill`, `UnixLabels.kill`, `killpg`, a C
-  `kill(-`, `syscall.Kill`, `unix.Kill`, `os.FindProcess` and
-  Python `os.kill`.
 - **Mosaic (`bin/kido_sidebar.ml`).** The grid's default foreground
   is truecolor white. Thus, every style sets `fg` explicitly.
   A lone Escape arrives about 0.5s late.
@@ -304,18 +272,15 @@ Conventions:
 
 ## Rust (ko)
 
-ko moves from OCaml to Rust on the `ko-rust` branch
-(plans/ko-rust.md). These rules apply to ko's Rust code. kido's
-code and ko's OCaml code keep the OCaml rules above until the
-Rust ko replaces the OCaml ko. Plan section 8 holds the rules for
-code that does not exist yet. Each stage moves its rules here when
-its code lands.
+ko is written in Rust (plans/ko-rust.md); kido stays in OCaml
+under the rules above. These rules apply to ko. Plan section 8 holds
+the rules for code that does not exist yet. Each stage moves its
+rules here when its code lands.
 
 These requirements are fixed:
 
 - **Layout.** One cargo workspace at the root. A package has the
-  name of its directory, with the underscore. The crates are in the
-  ko directories, beside the OCaml files ("Layout" below). `ko/` is
+  name of its directory, with the underscore ("Layout" below). `ko/` is
   the binary `ko`: `ko/src/main.rs` holds the command table and the
   small command bodies, which print and return the exit code.
   `ko_pane/` is the crate `ko_pane`: the binary `ko-pane`
@@ -324,11 +289,11 @@ These requirements are fixed:
   cargo-fuzz crate, a workspace member outside `default-members`:
   clippy checks it on stable, and only `make fuzz` runs it.
   `ko_tui/` is the terminal client that `ko` runs without a
-  command. `ko_bench/` is the binary `ko-bench`, the port of
-  `bench/coordinator.ml`, `bench/mirror.ml` and `bench/usage.ml`,
-  which `make build-ko` builds into `target/release` and never
-  installs. ko's C stays only in the C `ko-pane`, which the OCaml ko
-  on Linux and the C unit tests use until the cut. Do not add new C.
+  command. `ko_bench/` is the binary `ko-bench`, the benchmark
+  modes, which `make build-ko` builds into `target/release` and never
+  installs. ko has no C of its own; the only C is the measurement
+  helpers of `bench/`, which `make build-bench` compiles. Do not add
+  new C.
 - **Toolchain.** `rust-toolchain.toml` pins the toolchain of the
   pinned Verus release. They move together. Homebrew's keg-only
   `rustup` formula supplies it (`brew install rustup`, then
@@ -350,8 +315,9 @@ These requirements are fixed:
   toolchain, or without cargo-fuzz or the `miri` component, the two
   scripts print SKIP and exit 0. Agents do not install it.
 - **Platforms.** The Rust ko builds and is verified on macOS only for
-  now. On Linux, the Makefile builds no Rust, and `make e2e-ko` runs
-  the Go suite against the OCaml ko and the OCaml decoder.
+  now. On Linux, nothing builds or tests ko: the `e2e-ko` stage and
+  `scripts/verify.sh ko-suite` print SKIP, and CI runs no ko step,
+  until stage RL.
 - **Dependencies.** The production crates are `libc`, `httparse`,
   `tungstenite` (feature `handshake` only), `serde` (`derive`),
   `serde_json`, `vte` and `clap` (`default-features = false`, with
@@ -406,8 +372,7 @@ Conventions:
   under test. Expectations are `assert_eq!` on values or strings.
   Property tests use proptest in the same module. No test execs the
   `ko` binary; the Go suite does that. `ko_pane/tests/pane.rs` drives
-  the `ko-pane` binary over a socketpair and a ring, as
-  `test_pane.c` does. The `Server` SIGTERM test starts the Rust
+  the `ko-pane` binary over a socketpair and a ring. The `Server` SIGTERM test starts the Rust
   `ko-pane` that `make test-ko` builds and names in `KO_PANE_EXE`. A test starts a process only through
   `ko_sys::spawn::program`, which uses `POSIX_SPAWN_CLOEXEC_DEFAULT`:
   on macOS, `UnixStream::pair` and `accept` set close-on-exec only
@@ -478,8 +443,8 @@ Conventions:
   from libghostty-vt never unwinds and never calls back into the
   terminal.
 - **JSON.** serde derives every codec. `ko_server::protocol` owns
-  the wire types and keeps the wire of the OCaml ko byte for byte
-  until stage RW. A variant with a payload encodes through the
+  the wire types and keeps the wire of protocol version 1.0 byte for
+  byte until stage RW. A variant with a payload encodes through the
   `compact!` macro of `protocol.rs`: a unit variant as `"name"`, a
   payload variant as `["name", payload]`. A unit enum uses
   `rename_all = "snake_case"`. An option field has
@@ -488,8 +453,7 @@ Conventions:
   validates in its `TryFrom`, through `#[serde(try_from = ...)]` on
   the derived codec. Every untrusted body and WebSocket message
   decodes through `protocol::decode`, which refuses a JSON array for a
-  record at every level, as jsonkit does; serde's derive alone accepts
-  one. Do not write a codec by hand outside the macro, and do not walk a
+  record at every level; serde's derive alone accepts one. Do not write a codec by hand outside the macro, and do not walk a
   `serde_json::Value` to decode a wire type. Catch a decode error only
   at an untrusted-input edge: an HTTP body or a WebSocket text
   message.
@@ -521,6 +485,12 @@ Conventions:
   It owns the child and is not `Copy`, and its reap consumes it, so
   no group signal follows the reap. `ESRCH`
   is not an error, and neither is `EPERM` on a group signal.
+  In Python, `bench/client.py` signals only through `signal_child`.
+  Each Go test package (`test_e2e/`, `test_e2e_ko/`) signals only
+  through its `signal_test.go`, which applies the same refusals.
+  `scripts/lint.sh` refuses the other signal calls in `bench/` and
+  the e2e suites: `killpg`, a C `kill(-`, `syscall.Kill`,
+  `unix.Kill`, `os.FindProcess` and Python `os.kill`.
 - **Syscalls.** Every own libc call that can return `EINTR` goes
   through `ko_sys::retry`. An `EINTR` from `poll` is a turn with no
   events. A read of zero bytes is the end; `WouldBlock` is "not
@@ -557,13 +527,10 @@ Conventions:
   A change of the ghostty pin regenerates it in the same commit.
   `scripts/lint.sh` checks the hash.
 - **libghostty-vt.** `ko_vt_sys/build.rs` builds it with zig from
-  PATH, with the flags of `ko_vt/dune`. Both must change together
-  until the OCaml ko goes. Every cargo profile shares one zig cache,
+  PATH. Every cargo profile shares one zig cache,
   so libghostty-vt compiles once for release, test and clippy.
 - **The pane process.** `ko_pane_wire::frame` is the one source of the
-  frame's constants for both processes. While the C `ko-pane` exists,
-  a unit test checks each constant against `ko_pane/protocol.h`.
-  `ko-pane` holds its program's zombie: it never waits for the
+  frame's constants for both processes. `ko-pane` holds its program's zombie: it never waits for the
   child before the final group kill, so the pid and the group id
   cannot be reused while it lives. `ko_sys::pty::spawn` forks and
   execs the program itself: between `fork` and `execve` the child
@@ -666,40 +633,40 @@ Conventions:
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     test_e2e/          tests driving kido inside a real tmux server, in Go
 
-**ko**, the terminal server that replaces tmux, is in development on
-the `ko` branch. rfc/kido-server/p1-mvp.md is its plan and layout:
-`ko_pane/` (the C pane process), `ko_vt/` (libghostty-vt, built by
-zig from PATH out of `third_party/ghostty`, and the binding),
-`ko_server/` (the coordinator), `ko_tui/` (the terminal client),
-`ko_proofs/` (the F*/Pulse proofs, "Proved modules (ko)" below),
-`bin/ko.ml`, `bench/` and `test_e2e_ko/` (its Go protocol and client
-suite, `make e2e-ko`, a stage of `make verify`; the client tests run
-`ko` under an outer kido-tmux on a private socket). Nothing in `lib/` depends on them.
+**ko**, the terminal server that replaces tmux, is in Rust
+(plans/ko-rust.md, "Rust (ko)" above; rfc/kido-server/p1-mvp.md is
+its design). Its crates: `ko/` (the binary), `ko_server/` (the
+coordinator), `ko_tui/` (the terminal client), `ko_pane/` (the pane
+process; `ko_pane/genmc/` holds the GenMC models, "Proved modules
+(ko)" below), `ko_pane_wire/` (the frame codec and the ring),
+`ko_vt/` and `ko_vt_sys/` (libghostty-vt, built by zig from PATH
+out of `third_party/ghostty`), `ko_sys/` (the OS layer),
+`ko_bench/` and `fuzz/`. Beside them are `ko_proofs/` (the F*/Pulse
+specifications), `bench/` and `test_e2e_ko/` (its Go protocol and
+client suite, `make e2e-ko`, a stage of `make verify`; the client
+tests run `ko` under an outer kido-tmux on a private socket).
+Nothing in kido depends on them, and dune builds none of them.
 
-The Rust ko (plans/ko-rust.md, "Rust (ko)" above) grows in the same
-directories, beside the OCaml files: `ko_vt/` and `ko_vt_sys/`,
-`ko_server/`, `ko_tui/`, `ko_sys/`, `ko_pane_wire/` and `ko/`.
-`make build-ko` builds the installed layout under `build/ko/`, with
-the Rust `ko-pane`. It also builds the
-`decode` example of `ko_vt`, the Go suite's snapshot decoder, which is
-never installed. `test_e2e_ko/` runs the binary that `KO_BIN` names
-and the decoder that `KO_DECODE` names. With neither variable set,
-on macOS, `TestMain` runs `make build-ko` and uses `build/ko/bin/ko`
-and the Rust decoder; with one of them set, it fails.
-`make e2e-ko` runs `scripts/verify.sh ko-suite`: on macOS, every test
-runs the Rust `ko` (`KO_RUST`). On Linux, every test runs the OCaml
-`ko` (`KO_OCAML`).
-`bench/coordinator.sh` selects the coordinator of `bench/run.sh`,
-`bench/flood.sh` and `bench/baselines.sh`: `COORDINATOR=ocaml` (the
-default, `bench/coordinator.exe`) or `COORDINATOR=rust` (`ko-bench`
-with the Rust `ko-pane`). `bench/client.py` runs the `ko` that
-`KO_BIN` names, else the OCaml one.
+`make build-ko` builds the installed layout under `build/ko/`: `ko`,
+`ko-pane` and the terminfo, which `ko_vt/terminfo.zig` writes from
+ghostty's source and `tic` compiles. It also builds the `decode`
+example of `ko_vt`, the Go suite's snapshot decoder, which is never
+installed. `TestMain` runs `make build-ko` and uses
+`build/ko/bin/ko` and `target/release/examples/decode`.
+`make e2e-ko` runs `scripts/verify.sh ko-suite`, which runs every
+test of the suite against that `ko`.
+`make build-bench` builds the C helpers of `bench/` into
+`build/bench/`, beside `ko-bench` in `target/release/`; `bench/run.sh`, `bench/flood.sh`,
+`bench/baselines.sh` and `bench/table.sh` call it. `bench/client.py`
+runs the `ko` that `KO_BIN` names, which measures a reference build
+(plan decision 112), else it runs `make build-ko` and uses
+`build/ko/bin/ko`.
 
 `scripts/install-zig.sh` pins the zig release and its checksums. CI
-and `scripts/ci-like/Dockerfile` install zig through it. lint fails
+installs zig through it on macOS. lint fails
 if the release differs from the `.minimum_zig_version` in
 `third_party/ghostty/build.zig.zon`. A ghostty bump that changes that
-version also changes the script. Every C file of ko starts with
+version also changes the script. Every C file of `bench/` starts with
 `#define _DARWIN_C_SOURCE` and `#define _GNU_SOURCE`, before its
 includes: the build uses `-std=c11`, which hides `clock_gettime` on
 Linux.
@@ -1176,18 +1143,18 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
 ## Tests
 
     make verify  scrubbed dune build, dune test --force, full e2e and TypeScript tests
-    make verify-ko  scrubbed make build-ko, ko's unit tests (cargo and dune), ko's e2e, cargo fmt, clippy and scripts/lint.sh, and make verus
+    make verify-ko  scrubbed make build-ko, ko's cargo tests, ko's e2e, cargo fmt, clippy and scripts/lint.sh, and make verus
     make verus   cargo verus verify on ko_pane_wire and ko_server with the pinned Verus release, downloaded once into build/verus/
     make build-ko  the Rust ko's installed layout under build/ko/ (macOS only for now)
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
-    make probe-ko BYTES=N  ko-bench throughput: the Rust server's ring reader under the Rust ko-pane (PANE=c: the C one), N bytes of bench/streams (default 1 GiB); not part of verify
+    make probe-ko BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
+    make build-bench  the C helpers of bench/ in build/bench/, after build-ko (macOS only)
     make test    dune test --force, ko's Go suite and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
     make fuzz TARGET=ring TIME=600  one time-boxed ko fuzz run, for CI or the user; no TARGET lists the targets
     make miri    Miri on ko's modules without sockets or FFI (scripts/miri.sh); for CI or the user
-    make proofs  re-verify ko_proofs/ and diff its extraction against the committed files; WRITE=1 replaces them
     make clean-forks  remove fork builds other than the pin
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
     make website the website's dev server at http://localhost:4321 (website/README.md)
@@ -1321,17 +1288,9 @@ the pane's terminal. It runs 20 random cases under `cargo test`;
 A test that pins a libghostty-vt bug fails when the bug is fixed, so
 the workaround for it can be removed.
 
-Until the cut, the OCaml ko keeps its fast paths under `dune test`:
-the Monolith and QCheck2 properties of `ko_server/fuzz/` and
-`ko_server/pane_proc.ml`, through `Fuzz_run`, and the C targets'
-replay of `fuzz/corpus/control/` under ASan and UBSan. No script
-runs them for a long time. `dune-workspace.afl` and `dune.afl.lock`
-have no user until the cut deletes them. Test code in ko is
-acceptable: `ko_server` links Monolith, QCheck2 and the derived
-generators. `scripts/lint.sh` permits `KO_FUZZ_*` and `KO_AFL_*` only
-in `ko_server/fuzz_run.ml`, and
-`TestFuzzVariablesDoNotReachTheBinary` runs `ko` with them set to
-junk.
+Only `fuzz/` reads `KO_FUZZ_*` (`scripts/lint.sh` refuses it in the
+other crates), and `TestFuzzVariablesDoNotReachTheBinary` runs `ko`
+with fuzz variables set to junk.
 
 `make e2e` builds the fork into `build/tmux-fork/<key>/`.
 It rebuilds only on a submodule bump or an installer change.
@@ -1515,66 +1474,30 @@ its comment.
 
 ## Proved modules (ko)
 
-The ring, `Pane_core` and `View_core` are proved in F* with Pulse, in
-`ko_proofs/`. The specifications are the `.fsti` and `.fst` files
-there. Extraction generates three committed files:
-
-- `ko_proofs/ko_ring_proved.h`: the ring writer and reader, in C,
-  through Karamel. `ko_pane/pane.c` and the coordinator's ring
-  stubs call it.
-- `ko_server/pane_core.ml` and `ko_server/view_core.ml`: the
-  coordinator's pane and view logic, in OCaml.
-
-Never edit a generated file. Change the F* source, then run
-`make proofs WRITE=1`. `make proofs` installs the pinned F* release
-(it includes Pulse, Karamel and Z3) through `scripts/install-fstar.sh`
-into `build/fstar/<key>`, and keeps the `.checked` files in
-`build/fstar-checked/<key>`. Then `ko_proofs/extract.sh` verifies
-every module, extracts, and compares the output with the committed
-files. As a smoke test of extraction, it also checks that the OCaml
-has as many call sites of each effectful extern as the F*. This check
-does not see order or control flow. `dune build`, `make verify` and `make verify-ko` need
-no F*. CI runs `make proofs` in its `proofs` job on Linux x86_64 and
-macOS arm64.
-
-The proofs trust the interfaces that the cores call:
-`Ring.fsti` (the OCaml reader in `ko_server/ring.ml`),
-`Connection.fsti`, `Delivery_io.fsti`, `Oint.fsti` and
-`KoAtomic.fsti` (`ko_proofs/ko_atomic.h`). Their assumed `val`s and
-`custard_extern` attributes are the trusted base. A reviewer reads
-these contracts and compares each one with the real OCaml or C. The
-proofs of the cores do not need review.
-
-- An assumed `val` never has an unconditional `ensures` that the real
-  code cannot guarantee. If a call can change state that the contract
-  describes, the contract says so.
-- `Ring_proof.fst` proves each `Ring.fsti` contract against the
-  proved model. Only the correspondence of `ring.ml` with that model
-  is trusted.
-- When `KO_CHECK_CONTRACTS=true` at build time, `Ring`, `Connection`
-  and `Delivery_io` check the postconditions that their run-time
-  state can show, and a broken contract fails with "broken
-  contract". Ghost-state properties, such as the data-loss predicate
-  of `reachable`, and the functions without a check still need the
-  comparison with the code. The unit stages of `scripts/verify.sh`,
-  `scripts/fuzz.sh` and CI's unit tests set the variable, so the
-  fuzzers test these contracts. Without it, the checks fold away and
-  cost nothing.
+`ko_proofs/` holds the F*/Pulse proofs of the ring, `Pane_core` and
+`View_core` that the OCaml ko extracted. No build uses them now. They
+are the specifications that the Verus stages port (`ko_pane_wire`'s
+ring, `ko_server::delivery`, then `view.rs`), and no job checks them
+(plan decision 111). `ko_proofs/ko_ring_proved.h` (the Karamel
+extraction of the ring) and `ko_proofs/ko_atomic.h` stay as the
+input of the GenMC models below; `ko_pane_wire`'s
+`constants_match_the_proved_ring` test keeps the ring's constants
+equal to that header.
 
 **The ring indices are sequentially consistent.** The wakeup
 handshake between `head` and `read` is a store-buffering pattern:
 each side stores its index, then loads the other's. Under
 acquire/release, both loads can read the old values, and a wakeup is
 lost. The proof assumes one interleaving, which only `seq_cst` gives.
-C and OCaml access the indices only through the proved functions and
-the `ko_atomic.h` stubs. `ko_pane/genmc/` holds GenMC models of the
-extracted code (`ko_pane/genmc/run.sh sc|acqrel ring|wakeup`, GenMC
+The Rust ring's accesses are `SeqCst` ("Atomics" under "Rust (ko)"),
+and its loom models replay the GenMC models. `ko_pane/genmc/` holds
+GenMC models of the extracted C ring (`ko_pane/genmc/run.sh sc|acqrel ring|wakeup`, GenMC
 0.19): `sc` passes both, and `acqrel wakeup` finds the lost wakeup.
 
 ## Review
 
-A reviewer checks the change against "Code rules", "OCaml" and
-"Tests" above. Read each rule and look for its fault in the diff: a
+A reviewer checks the change against "Code rules", "OCaml" (kido) or
+"Rust (ko)", and "Tests" above. Read each rule and look for its fault in the diff: a
 rule alone does not find a fault.
 
 **Simplify reviewers** use the `simplify` skill
@@ -1668,7 +1591,7 @@ A brief does not repeat them.
 - **No signal to a pid from untrusted input.**
   No code, test, fuzzer or script gives a pid from fuzzed, synthetic
   or untrusted input to a signal call. A signal goes only through the
-  one signal module of its language ("Signals" under "OCaml").
+  one signal module of its language ("Signals" under "Rust (ko)").
   Its types refuse such pids. A test checks the validation. It never
   sends a signal to prove it.
   Agents run `make fuzz` only when the user asks. When you change a fuzz target or a

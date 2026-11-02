@@ -1,17 +1,3 @@
-(executable
- (name ko)
- (modules ko)
- (public_name ko)
- (flags
-  (:standard -open Containers))
- (libraries ko_server ko_tui kido_fs containers cmdliner unix yojson))
-
-(rule
- (targets ko-pane)
- (deps ../ko_pane/ko-pane)
- (action
-  (copy ../ko_pane/ko-pane ko-pane)))
-
 (library
  (name kido_sidebar)
  (modules kido_sidebar sidebar_theme)

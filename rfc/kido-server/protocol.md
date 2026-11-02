@@ -6,12 +6,12 @@ socket, with WebSocket (RFC 6455) for the long-lived streams.
 **The code is the source of truth for every message shape** (decided
 2026-10-31):
 
-- `ko_server/protocol.ml` and `protocol.mli`: the HTTP and WebSocket
-  JSON types and their codecs, request and response bodies, events,
-  input events, markers, ids.
-- `ko_pane/protocol.h`: the frame kinds and the ring record layout
-  between the coordinator and `ko-pane`.
-- `ko_server/pane_proc.ml`: the OCaml codec of those frames.
+- `ko_server/src/protocol.rs`: the HTTP and WebSocket JSON types and
+  their codecs, request and response bodies, events, input events,
+  markers, ids.
+- `ko_pane_wire/src/frame.rs`: the frame kinds and their codec between
+  the coordinator and `ko-pane`.
+- `ko_pane_wire/src/ring.rs`: the ring header and record layout.
 
 This document gives only what the code cannot say: the routes and what
 each does, the ordering, flow control, resume, snapshot, reconnect
@@ -124,7 +124,7 @@ limits, then the full layout document (section 7), then events
 (section 6). Later the client sends a selection, a relative switch, a size, a
 focus change or a clipboard answer, all on this connection.
 A size has at least one column and row and at most
-`KO_MAX_DIMENSION` (`ko_pane/protocol.h`) of each; the server refuses
+`MAX_DIMENSION` (`ko_pane_wire/src/frame.rs`) of each; the server refuses
 a hello or a size outside that range. A larger grid is never useful,
 and one 65535x65535 grid takes gigabytes.
 
@@ -417,8 +417,8 @@ stderr goes to the coordinator's log. The mapping is fd 3.
 
 The mapping is a ring of records, written only by `ko-pane` and read
 only by the coordinator. Its header, the record kinds and the marker
-and snapshot slice layouts are `ko_pane/protocol.h` and
-`Pane_proc.record`. The header's indices are sequentially consistent
+and snapshot slice layouts are `ko_pane_wire/src/ring.rs` and
+`ko_pane_wire/src/frame.rs`. The header's indices are sequentially consistent
 atomics, because each side stores its own index and then loads the
 other's to decide on a wakeup. A record never wraps: a `pad` record
 fills the end of the ring instead.
@@ -440,7 +440,7 @@ mapping. Snapshot slices and markers are ring records, so one offset
 order covers everything.
 
 The control socket carries length-prefixed frames in both directions;
-the kinds are `ko_pane/protocol.h`, the codec `Pane_proc`. The first
+the kinds and the codec are `ko_pane_wire/src/frame.rs`. The first
 frame from the coordinator is `init`; `ko-pane` answers `ready` or
 exits with status 2 and a message on stderr, which the coordinator
 logs. The `ready` pid is a claim, not a fact: the coordinator

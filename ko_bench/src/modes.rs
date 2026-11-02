@@ -32,20 +32,22 @@ fn number<T: std::str::FromStr>(text: &str, what: &str) -> Result<T, String> {
     text.parse().map_err(|_| format!("{what} must be a number"))
 }
 
-fn pane_exe() -> PathBuf {
-    std::env::var_os("KO_PANE_EXE").map_or_else(
-        || {
-            std::env::current_exe()
-                .map(|exe| exe.with_file_name("ko-pane"))
-                .unwrap_or_default()
-        },
-        PathBuf::from,
-    )
+fn pane_exe() -> Result<PathBuf, String> {
+    Ok(std::env::current_exe()
+        .map_err(failed)?
+        .with_file_name("ko-pane"))
 }
 
-fn produce() -> String {
-    std::env::var("KO_BENCH_PRODUCE")
-        .unwrap_or_else(|_| "_build/default/bench/produce.exe".to_owned())
+fn produce() -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(failed)?;
+    let root = exe
+        .ancestors()
+        .nth(3)
+        .ok_or("ko-bench is not in <repo>/target/<profile>")?;
+    Ok(root
+        .join("build/bench/produce")
+        .to_string_lossy()
+        .into_owned())
 }
 
 fn gated(argv: Vec<String>) -> Vec<String> {
@@ -108,8 +110,8 @@ fn drive<T: Send + 'static>(
     std::fs::create_dir_all(&dir).map_err(failed)?;
     let socket = dir.join("socket");
     let listener = UnixListener::bind(&socket).map_err(failed)?;
-    let mut server =
-        Server::new(scratch(&dir, pane_exe(), DEFAULT_LIMITS), listener, timing).map_err(failed)?;
+    let mut server = Server::new(scratch(&dir, pane_exe()?, DEFAULT_LIMITS), listener, timing)
+        .map_err(failed)?;
     let (sender, messages) = mpsc::channel();
     let client_socket = socket.clone();
     std::thread::spawn(move || {
@@ -184,7 +186,7 @@ pub(crate) fn throughput(bytes: &str, coalesce: &str, streams: &[&str]) -> Resul
     if coalesce != "2" {
         return Err("production coalescing is 2 ms".to_owned());
     }
-    let mut argv = vec![produce(), bytes.to_owned()];
+    let mut argv = vec![produce()?, bytes.to_owned()];
     argv.extend(streams.iter().map(|stream| (*stream).to_owned()));
     let (measured, count) = drive(Timing::DEFAULT, move |socket, tx| {
         let pane = create_pane(socket, &gated(argv)).map_err(failed)?;
@@ -252,7 +254,7 @@ fn summary(mut samples: Vec<f64>) -> String {
 
 pub(crate) fn latency(count: &str) -> Result<(), String> {
     let wanted: usize = number(count, "COUNT")?;
-    let argv = vec![produce(), "--latency".to_owned(), count.to_owned()];
+    let argv = vec![produce()?, "--latency".to_owned(), count.to_owned()];
     let (_, samples) = drive(Timing::DEFAULT, move |socket, tx| {
         let pane = create_pane(socket, &gated(argv)).map_err(failed)?;
         let mut view = open_view(socket, pane, History::None).map_err(failed)?;
@@ -313,7 +315,7 @@ fn slices(view: &mut Socket, started: Instant) -> Result<(u64, f64), String> {
 
 pub(crate) fn snapshot(lines: &str) -> Result<(), String> {
     let count: u64 = number(lines, "LINES")?;
-    let argv = vec![produce(), "--lines".to_owned(), count.to_string()];
+    let argv = vec![produce()?, "--lines".to_owned(), count.to_string()];
     let (_, results) = drive(Timing::DEFAULT, move |socket, tx| {
         let pane = create_pane(socket, &argv).map_err(failed)?;
         let mut view = open_view(socket, pane, History::None).map_err(failed)?;
@@ -446,19 +448,19 @@ pub(crate) fn flood(
     };
     let (measured, flood) = drive(timing, move |socket, tx| {
         let command = |stamped: bool| {
-            let mut argv = vec![produce()];
+            let mut argv = vec![produce()?];
             if stamped {
                 argv.push("--stamped".to_owned());
             }
             argv.push(per_pane.to_string());
             argv.extend(streams.iter().cloned());
-            gated(argv)
+            Ok::<_, String>(gated(argv))
         };
         let (deaths, died) = mpsc::channel();
         let mut flooded = Vec::new();
         let mut readers = Vec::new();
         for i in 0..panes {
-            let pane = create_pane(socket, &command(i == 0)).map_err(failed)?;
+            let pane = create_pane(socket, &command(i == 0)?).map_err(failed)?;
             flooded.push(pane);
             if i < views {
                 let view = open_view(socket, pane, History::None).map_err(failed)?;

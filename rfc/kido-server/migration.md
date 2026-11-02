@@ -681,7 +681,7 @@ and S4 run beside S5.
 |---|---|
 | `lib_tmux/tmux.ml` | deleted |
 | `lib_tmux/program_status.ml` | parsing moved to `ko_server` in S1; the tmux encoding deleted |
-| `bin/main.ml` | deleted; `bin/ko.ml` holds the command table |
+| `bin/main.ml` | deleted; `ko/src/main.rs` holds the command table |
 | `bin/kido_sidebar.ml`, `bin/sidebar_theme.ml` | deleted; `ko_tui/sidebar.ml` takes the glyphs in S1 |
 | `share/bin/kido`, `share/shim.sh` | renamed `ko`, kept: bare `ko` in a pane resolves to its prefix |
 | `share/bin/tmux` | deleted |

@@ -1550,30 +1550,8 @@ mod tests {
     }
 
     #[test]
-    fn constants_match_the_c_ring() {
-        let protocol = include_str!("../../ko_pane/protocol.h");
-        let ring = include_str!("../../ko_pane/ring.h");
+    fn constants_match_the_proved_ring() {
         let proved = include_str!("../../ko_proofs/ko_ring_proved.h");
-        assert!(protocol.contains(&format!("#define KO_HEADER {HEADER}\n")));
-        assert!(protocol.contains(&format!(
-            "enum ko_record {{ KO_BYTES = {BYTES}, KO_MARKER = {MARKER}, \
-             KO_SNAPSHOT_SLICE = {SLICE}, KO_PAD = {PAD} }};"
-        )));
-        assert!(protocol.contains(
-            "struct ko_ring { uint64_t capacity; _Atomic uint64_t head, tail, read; uint8_t data[]; };"
-        ));
-        assert_eq!(
-            (
-                Index::Head as usize,
-                Index::Tail as usize,
-                Index::Read as usize
-            ),
-            (1, 2, 3)
-        );
-        assert!(ring.contains(&format!(
-            "offsetof(struct ko_ring, data) == {}",
-            mapping::DATA
-        )));
         assert!(proved.contains(&format!("KoRing_Inv_max_capacity = {MAX_CAPACITY:#x}ULL;")));
         assert!(proved.contains(&format!("KoRing_Inv_min_capacity = {MIN_CAPACITY}ULL;")));
         assert!(proved.contains(&format!("fin <= {MAX_HEAD:#x}ULL")));

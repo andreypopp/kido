@@ -22,7 +22,8 @@ lists them.
 Decisions the user made on 2026-10-29:
 
 - The server is OCaml. libghostty-vt does terminal parsing and holds the
-  grid. Everything else is OCaml.
+  grid. Everything else is OCaml. (Replaced by decision 1 of
+  plans/ko-rust.md: ko is Rust.)
 - The other recommendations of the first round stand: a thin terminal
   client, no plain-tmux compatibility, no linked or grouped sessions,
   per-client current window, the server routes clipboard requests,
@@ -152,7 +153,7 @@ What the server's own terminal is for, if clients emulate too:
 
 The server is two programs (decided 2026-10-30):
 
-- **`ko`, the coordinator**, in OCaml. One per state directory, as
+- **`ko`, the coordinator**, in Rust (`ko_server`). One per state directory, as
   today. The socket is `<dir>/socket`. The directory rules of
   `Server_dir` stay (0700, owner, no comma, 103-byte path). It owns
   the layout document, clients, the HTTP and WebSocket protocol, the ring and
@@ -245,9 +246,11 @@ connection (`LOCAL_PEERCRED` on macOS, `SO_PEERCRED` on Linux) with one
 `getsockopt` stub on the accepted fd. There is
 no other authentication.
 
-### 4.2 Modules, in OCaml
+### 4.2 Modules
 
-The server is the library `ko_server` in the kido repo. Of `lib/` it
+The server is the Rust library `ko_server` in the kido repo. The
+table below is the module plan of the OCaml server of P1;
+plans/ko-rust.md 3.2 maps it onto the Rust modules. Of `lib/` it
 reuses only what has no tmux in its types: `Tree`, `Timestamp`, `Fs`.
 The rules of `Pane_status`, `Program_status`, `Run`, `Reap` and
 `Prompt` move into the server's modules with new inputs (events with
@@ -864,8 +867,8 @@ it (2026-10-30). A crash of one `ko-pane` kills one pane.
 ## 5. Protocol summary
 
 [protocol.md](protocol.md) gives the routes and rules; the message
-shapes are `ko_server/protocol.ml`, `ko_pane/protocol.h` and
-`ko_server/pane_proc.ml`. The shape:
+shapes are `ko_server/src/protocol.rs`, `ko_pane_wire/src/frame.rs`
+and `ko_pane_wire/src/ring.rs`. The shape:
 
 - HTTP/1.1 over the unix socket, keep-alive, one connection per
   stream. Control bodies are JSON. Long-lived streams are WebSockets:

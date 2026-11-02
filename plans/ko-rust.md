@@ -476,6 +476,68 @@ RV2 forced these decisions:
     routing of a `Req` to its view in `state.rs`, unverified until
     RV3.
 
+Decisions 95 to 109 are RV3's. Before R5 the user decided:
+
+110. The `yes` row of the client measures client CPU per MB parsed,
+     and its target is no more than the reference. The target "under
+     1 core" is dropped. The Rust client parses the whole stream
+     (77.9 MB/s, 0 view skips, about 9.6 ms of CPU per MB). The OCaml
+     client parses only for its parse budget of 4 ms in each 8 ms,
+     so it parses about 19 MB/s with 18 view skips per second (about
+     40 ms of CPU per MB). A producer that floods keeps a parser at
+     one core, as in kitty and Ghostty. The client gets no parse
+     budget.
+
+R5 forced these decisions:
+
+111. `ko_proofs/` keeps every F*/Pulse source (`.fst`, `.fsti`) as
+     the specification that the Verus stages port; RV3 ports
+     `View_core.fst` and its contracts from it. Only what exists for
+     the OCaml and C build goes: the extraction (`extract.sh`), its
+     OCaml outputs `pane_core.ml` and `view_core.ml`, `make proofs`,
+     `scripts/install-fstar.sh` and CI's `proofs` job. With no
+     extracted code in a build, F* verifies nothing that ships, so
+     no job checks the sources. `ko_ring_proved.h` and `ko_atomic.h`
+     stay with `ko_pane/genmc/` as the record of the `seq_cst`
+     evidence that the loom models replay.
+112. With the OCaml ko gone, the bench reference is the Rust ko at
+     the R5 commit. A later bench run builds that commit in a
+     scratch worktree (`git worktree add --detach /tmp/ko-ref-XXXXXX
+     <commit>`, then `make build-ko` there) and measures it first, in
+     the same session, on AC power, at load average under 2, as
+     decisions 78 and 79 did with the OCaml ko. The rules stay
+     relative: coordinator CPU per GiB within 5 percent of the
+     reference, the five-pane flood within 10 percent, the latency,
+     attach and resize rows the same or better, `yes` client CPU per
+     MB no more than the reference (decision 110), zero allocations
+     per record. A change that moves a row past its rule names the
+     new reference commit in the plan or in docs/ with the reason.
+     The R3 and R4 tables stay as the record of the OCaml
+     comparison, not as fixed targets: absolute figures drift with
+     the machine and its load. R5 runs no benchmark; its acceptance
+     has no bench row.
+113. `make build-bench` compiles the kept C helpers of `bench/`
+     (`produce`, `drain`, `wait_master`, and `pty_read` and `parse`
+     against the libghostty-vt of `ko_vt_sys/build.rs`) with `cc`
+     into `build/bench/`; dune builds no part of
+     ko. `ko-bench` finds `ko-pane` beside itself and `produce` at
+     `build/bench/produce` of its checkout, from its own path; it
+     reads no variable for either. The bench scripts share their
+     setup in one sourced file.
+114. Two bench rows go with the OCaml bench: `bench/kitten.sh`
+     (`kitten __benchmark__` in `ko-pane`, through
+     `coordinator.exe run`, a mode that `ko-bench` does not have) and
+     the C tail-acker row of `bench/baselines.sh` (`acker.c` drove the
+     C `ko-pane`). The kitty and tmux comparisons of p1-mvp.md 6
+     stay as recorded figures.
+115. Off macOS, `scripts/verify.sh` prints SKIP for the `e2e-ko`
+     stage and for `ko-suite` (`make test`, `make e2e-ko`) until
+     RL; `make verify-ko` is not run there.
+116. `ko_pane_wire`'s ring test against the C headers keeps only
+     its checks against `ko_proofs/ko_ring_proved.h`
+     (`constants_match_the_proved_ring`), because the header stays
+     as the GenMC models' input (decision 111).
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -2014,7 +2076,7 @@ one session. The attach and resize rows wait for R4.
 | hop latency, `latency writev 5000 2` | 2.4, 2.2 | p50 13.3, p99 19.6 us | p50 14, p99 20 us | met (the Rust bench prints whole microseconds) |
 | key to frame through the client, 500 samples | 1.5 | p50 1.34, p99 3.35 ms | p50 0.53, p99 0.69 ms | met |
 | key to frame, view only | 1.5 | p50 0.18, p99 0.30 ms | p50 0.18, p99 0.26 ms | met |
-| `yes` 5 s, shown: client CPU | 1.4, 1.6 | 0.63 core | 1.00 core | missed: under 1 core, and worse than OCaml |
+| `yes` 5 s, shown: client CPU | 1.4, 1.6 | 0.63 core | 1.00 core | met by decision 110: about 9.6 ms of CPU per MB parsed, OCaml about 40 |
 | attach, 100k lines: screen, history in the mirror | 1.7, 2.2 | 29 ms, 66 ms | 6 ms, 26 ms | met |
 | resize, 100k lines, to READY | 1.6 | p50 5.14, p99 5.55 ms | p50 4.99, p99 5.44 ms | met |
 | client, 100k-line mirror, footprint | 1.6, 1.5 | 16.9 MiB (RSS 100.9) | 13.4 MiB (RSS 93.3) | met |
@@ -2033,8 +2095,8 @@ one session. The attach and resize rows wait for R4.
   On `yes`, the client's time is in `ghostty_terminal_vt_write` in
   the mirror: `sample` gave 1,935 of 2,115 samples there and 88 in
   the paint. The client is limited by the parse, so it uses the whole
-  core. The reason that the OCaml client uses less is not measured.
-  The decision about a limit on the parse work is open for the user.
+  core. The OCaml client uses less because its parse budget skips
+  views; decision 110 replaces the target.
   The first attach row gave 70 ms and 117 ms: the probe waited 50 ms
   after the DA1 answer. It now ends at the DA1 answer, the last
   reply.
@@ -2053,10 +2115,8 @@ one session. The attach and resize rows wait for R4.
   `httpun`, `httpun-ws`, `jsonkit`, `qcheck-core`, `monolith`,
   `ppx_deriving_qcheck`) and re-lock `dune.lock` with the pinned
   repositories rule of AGENTS.md.
-- `ko_proofs/`: the files whose Verus port has landed go (the
-  `KoRing.*` files, `Ring.fsti` and `Ring_proof.fst` after RV);
-  `Pane_core.fst` stays as RV2's spec and `View_core.fst` with its
-  contracts as RV3's. `ko_pane/genmc/` stays with
+- `ko_proofs/`: every `.fst` and `.fsti` stays as the specification
+  of the Verus stages (decision 111). `ko_pane/genmc/` stays with
   `ko_proofs/ko_ring_proved.h` and `ko_atomic.h` as the record of the
   seq_cst evidence (`ko_pane/genmc/run.sh`), which the loom tests
   replay. `lib/fs.ml` and `lib/timestamp.ml` stay with

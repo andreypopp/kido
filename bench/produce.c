@@ -10,7 +10,16 @@
 #include <poll.h>
 #include <string.h>
 #include <time.h>
-#include "../ko_pane/now.h"
+
+static inline uint64_t ko_now_ns(void) {
+#ifdef __APPLE__
+  return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#else
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
+#endif
+}
 
 static void output(const void *ptr, size_t n) {
   const uint8_t *p = ptr;

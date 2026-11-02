@@ -1121,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn every_wire_type_round_trips_the_json_of_the_ocaml_codecs() {
+    fn every_wire_type_round_trips_the_protocol_1_0_json() {
         same::<Version>(
             r#"{"protocol":"1.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
         );
@@ -1214,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn decoders_take_defaults_and_nulls_and_refuse_what_the_ocaml_codecs_refuse() {
+    fn decoders_take_defaults_and_nulls_and_refuse_bad_shapes() {
         let hello = r#"["hello",{"kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1},"ignore_size":false}]"#;
         assert_eq!(
             decoded::<ClientRequest>(

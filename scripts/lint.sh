@@ -8,22 +8,19 @@ esac
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 failed=0
-# A negative pid or a process group reaches kill(2) only through Pid, group_signal, signal_child and the Go signal helpers.
+# A negative pid or a process group reaches kill(2) only through ko_sys::pid, signal_child and the Go signal helpers.
 signal_pattern='\bUnix(Labels)?\.kill\b|\bkillpg\b|\bkill[[:space:]]*\([[:space:]]*-|syscall\.Kill|unix\.Kill|os\.FindProcess'
 signals=$( {
-  grep -rnE "$signal_pattern" ko_server ko_tui bin/ko.ml bench ko_pane test_e2e test_e2e_ko \
-      --include='*.ml' --include='*.mli' --include='*.c' --include='*.h' --include='*.go' --include='*.py' \
-      --exclude=pane.c \
-    | grep -vE '^(ko_server/pid\.ml|test_e2e/signal_test\.go|test_e2e_ko/signal_test\.go):'
+  grep -rnE "$signal_pattern" bench test_e2e test_e2e_ko \
+      --include='*.c' --include='*.h' --include='*.go' --include='*.py' \
+    | grep -vE '^(test_e2e/signal_test\.go|test_e2e_ko/signal_test\.go):'
   grep -rnE '\bos\.kill' bench --include='*.py' \
     | grep -vE '^bench/client\.py:[0-9]+:    os\.kill\(pid, sig\)$'
   grep -rnE '\blibc::kill(pg)?\b|\bkillpg\b|nix::sys::signal|Command::new\([[:space:]]*"kill"' ko ko_* fuzz --include='*.rs' \
     | grep -vE '^ko_sys/src/pid\.rs:'
-  pattern='killpg|kill[[:space:]]*\([[:space:]]*-' awk '/^static int group_signal\(/ { inside = 1 } /^}/ { inside = 0 }
-    !inside && $0 ~ ENVIRON["pattern"] { print FILENAME ":" FNR ":" $0 }' ko_pane/pane.c
 } || true)
 if [[ -n "$signals" ]]; then
-  echo "$signals" | sed 's/$/: signals must go through Pid, group_signal, signal_child or the signal_test.go helpers/'
+  echo "$signals" | sed 's/$/: signals must go through ko_sys::pid, signal_child or the signal_test.go helpers/'
   failed=1
 fi
 # The ring header's atomics are sequentially consistent; only the loom model's acquire/release
@@ -133,11 +130,10 @@ text = pathlib.Path('lib/dune').read_text()
 for match in re.finditer(r'\b(?:mosaic|matrix(?:\.text)?)\b', text):
     report('lib/dune', text, match.start(), 'TUI library dependency')
 
-for path in sum((glob.glob(f'{d}/**/*.ml', recursive=True) for d in ['ko_server', 'ko_tui', 'ko_vt', 'bin']), []):
-    if path != 'ko_server/fuzz_run.ml':
-        text = pathlib.Path(path).read_text()
-        for match in re.finditer(r'KO_(?:FUZZ|AFL)_\w+', text):
-            report(path, text, match.start(), 'fuzz variables are read in ko_server/fuzz_run.ml only, when a test entry calls it')
+for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', recursive=True):
+    text = pathlib.Path(path).read_text()
+    for match in re.finditer(r'KO_FUZZ_\w+', text):
+        report(path, text, match.start(), 'fuzz variables are read in fuzz/ only')
 
 history = r'\b(previously|no longer|(?<!be )used to|formerly|as of now|since this fix)\b'
 for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', sources):
@@ -165,9 +161,6 @@ for path in ['AGENTS.md', *glob.glob('docs/*.md'), 'share/pi/README.md']:
         elif parts[0] == 'Kido_sidebar':
             module = 'bin/kido_sidebar.ml'
             symbols = parts[1:]
-        elif parts[0] == 'Ko_server':
-            module = 'ko_server/' + parts[1].lower() + '.ml'
-            symbols = parts[2:]
         else:
             module = 'lib/' + parts[0].lower() + '.ml'
             symbols = parts[1:]
