@@ -20,7 +20,7 @@ This document refers to those sections by name instead of repeating them.
 
 ## The tools, and what they call
 
-The six tools are in `share/pi/kido-pi.ts`. No tool has a kido
+The five tools are in `share/pi/kido-pi.ts`. No tool has a kido
 subcommand of its own. A tool that starts, waits for or stops a run
 calls a run command. Every other tool reads tmux and the extension's
 state directory, and writes to inboxes.
@@ -28,7 +28,6 @@ state directory, and writes to inboxes.
 | tool | what it uses |
 |---|---|
 | `list_runs()` | `kido runs --json --all --parent P`, `agents/<me>/*`, one `tmux list-panes -a` |
-| `set_status(activity)` | `tmux set-option -p @kido_activity` |
 | `message_agent(to, message, mode?)` | the target's inbox; `kido run-child` to restart an ended child |
 | `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `kido run-child P --name N --cwd D --env ... -- kido shell -- kido-pi ...`, or `kido run` for a top-level agent |
 | `stop_run(to, force?)`, `to` one address or a list | the target's inbox, then `kido run-stop` |
@@ -57,11 +56,9 @@ itself, to the parent edge (design.md, "Identity"; "Reporting",
 below). Tools register unconditionally. They report kido as
 unavailable outside kido.
 
-`set_status` has a bound of 256 bytes, and a report notice a bound of
-4000 bytes. The schema does not repeat the bound as `maxLength`.
-The tool cuts an activity, because it is a UI label. The harness keeps
-a report whole, because it is a work product. Only the text *sent* to
-the parent has a bound ("Reporting", below).
+A report notice has a bound of 4000 bytes. The harness keeps a report
+whole, because it is a work product. Only the text *sent* to the parent
+has a bound ("Reporting", below).
 
 **list_runs** is the only tool for finding agents to message and runs to
 stop with `stop_run`. It lists the caller's discovery scope: the agents

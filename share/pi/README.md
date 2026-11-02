@@ -38,8 +38,9 @@ Inside kido (`KIDO_RUN_ID` set, or `$TMUX` set and `kido` on PATH), a pi
 with a UI and a session id:
 
 - writes `@kido_session` and `@kido_name` on its pane at
-  `session_start`, `@kido_inbox` after it binds the inbox, and
-  `@kido_activity` on `set_status`. It unsets the four at shutdown.
+  `session_start` and `@kido_inbox` after it binds the inbox. At
+  shutdown it unsets these three and `@kido_activity`, the pane's
+  activity text that kido shows as the caption fallback.
 - binds its inbox. A stale socket file is unlinked only after a connect
   probe fails, so a second pi on the same session binds nothing.
 - for a subagent, delivers its task once, watches its parent's pane, and
@@ -94,8 +95,6 @@ the reloaded module.
   and its own subagent and bash runs (all running, the newest 20
   ended). The `@` completion offers the same agents. `message_agent`
   still addresses any agent in the tmux session.
-- `set_status(activity)`: one line, at most 256 bytes, in
-  `@kido_activity`; an empty string clears it.
 - `message_agent(to, message, mode?)`: to an agent's inbox. `message`
   (the default) queues for any agent until its turn ends; to an ended
   child of this session, it resumes the child in its own session, with

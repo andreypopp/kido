@@ -64,7 +64,7 @@ func TestSubagentRowShowsElapsedUnlessActivity(t *testing.T) {
 				}
 			}
 			return false
-		}, "subagent caption after set_status")
+		}, "subagent caption after the activity option")
 	}
 	h.runKido("alpha", "end-agent.out", "run-outcome", "--result", "completed", "--", runID)
 	h.in("select-window", "-t", windowID)

@@ -65,7 +65,6 @@ export function agentPane(row: {
   window?: string;
   title?: string;
   cwd?: string;
-  status?: string;
 }): PaneRow {
   return paneRow({
     pane_id: row.pane,
@@ -74,7 +73,6 @@ export function agentPane(row: {
     kido_session: row.session,
     kido_name: row.name ?? "",
     kido_inbox: row.inbox ?? "",
-    kido_activity: row.status ?? "",
     pane_program_status: piStatus(row.state ?? "idle"),
     pane_title: row.title ?? "",
     pane_current_path: row.cwd ?? "/tmp",

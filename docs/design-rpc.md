@@ -247,7 +247,7 @@ the pane's `@kido_activity` option supplies it. The model removes a local pi
 message that repeats its title.
 
 The model reads a local pi's identity, name, inbox and activity from
-four pane options that pi's harness writes: `@kido_session`,
+four pane options that pi's harness owns: `@kido_session`,
 `@kido_name`, `@kido_inbox` and `@kido_activity`. It trusts them only
 while the pane has an OSC 7501 root with `app=pi`. A snapshot's `run`
 is the id that the pane's `@kido_run` names, not data from the run's

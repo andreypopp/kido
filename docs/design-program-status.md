@@ -142,7 +142,7 @@ Every tracked process has one run, `<state>/runs/<run-id>/`. Its
 start. It contains the outcome after the run ends. The run's pane has
 the `@kido_run` mark. See design.md, "Who is authoritative for what".
 
-A local pi that runs kido's extension (`kido-pi`) writes four pane
+A local pi that runs kido's extension (`kido-pi`) owns four pane
 options: `@kido_session`, `@kido_name`, `@kido_inbox` and
 `@kido_activity`. kido's classification and status read only these
 options, and trust them only while the pane has an OSC 7501 root with

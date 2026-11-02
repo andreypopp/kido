@@ -647,7 +647,7 @@ and the first write wins. Each write replaces the whole file. There is
 - **kido has no caller.** `run-child` takes its parent as an argument:
   a run id, or the pane `%N` of a top-level pi. kido never finds a
   caller from the environment or its pane.
-- **kido stores nothing for a pi session.** The extension writes the
+- **kido stores nothing for a pi session.** The extension owns the
   four options on its pane. A pane is a local pi only with a pi root
   and `@kido_session`. Thus, a stale option is no agent.
 - **A run's status comes from its outcome and its pane, never a pid.**

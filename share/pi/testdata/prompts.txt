@@ -10,24 +10,6 @@ Never run `sleep` in bash to wait for anything - an async run, a subagent, a mes
 
 ## Tools
 
-### set_status
-
-description:
-
-```
-Set the free-text activity shown next to you in kido's tmux sidebar. Separate from your running/waiting/idle status.
-```
-
-promptSnippet:
-
-```
-set_status(activity) - tell everyone else what you are doing, visible in list_runs()
-```
-
-parameters:
-
-- `activity` (string, required): What you are doing right now ("refactoring internal/ui"), or "" to clear it. Capped at 256 bytes.
-
 ### list_runs
 
 description:

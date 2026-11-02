@@ -53,15 +53,15 @@ pane-scoped option lets a sweep and the sidebar distinguish the run's
 pane from a pane that the user later creates with a split. A
 window-scoped option would also apply to the user's pane.
 
-**Pane options, for the facts only an agent has.** The extension writes
-four more pane options with `set-option -p`:
+**Pane options, for the facts only an agent has.** The extension owns
+four more pane options, set with `set-option -p`:
 
 | option | value | kido reads it for |
 |---|---|---|
 | `@kido_session` | the pi session id | `Pane_kind.Pi_agent`, `Pane_status` identity, the session column of `kido runs` |
 | `@kido_name` | the session name | the row title of a local pi |
 | `@kido_inbox` | the inbox socket's full path | `Prompt.reachable`: `kido prompt` and the RPC prompt |
-| `@kido_activity` | `set_status` text, one line, at most 256 bytes | the caption fallback |
+| `@kido_activity` | the agent's activity text, one line | the caption fallback |
 
 kido trusts them only while the pane has an OSC 7501 root with
 `app=pi`, as it trusts `@kido_ssh` only while the foreground is `ssh`.
@@ -195,8 +195,9 @@ map outlives a reboot. It holds:
   (design-subagents.md, "The agent directory").
 
 **The options.** The extension writes `@kido_session` and `@kido_name`
-at `session_start`, `@kido_inbox` after the bind, `@kido_name` again on
-`session_info_changed`, and `@kido_activity` on `set_status`. Writes
+at `session_start`, `@kido_inbox` after the bind, and `@kido_name` again on
+`session_info_changed`. It writes no `@kido_activity` value, but kido
+reads that option and the extension unsets it with the others. Writes
 are coalesced, and one `tmux` call carries each batch, with `;`
 between the commands. Without `$TMUX_PANE`, nothing is written. At
 shutdown it unsets the four. An uncaught crash exits through
@@ -205,9 +206,7 @@ shutdown it unsets the four. An uncaught crash exits through
 while this one is suspended. The handler stays across `/reload` until
 the next `session_start` replaces it. Only a
 process that ends without cleanup, such as with SIGKILL, leaves them; the trust rule makes
-them harmless for identity. `set_status` replaces control characters with spaces and
-cuts the text at 256 bytes on a character boundary, because the sidebar
-allows one terminal line per row.
+them harmless for identity.
 
 **The trust rule.** The extension's own discovery uses kido's rule: a
 pane is a local pi agent only with an OSC 7501 root with `app=pi`
@@ -807,9 +806,8 @@ recorded ending is independent of screen availability.
 
 Losing a screen is better than leaving an uncollected window. A
 `capture-pane` error or lost race never prevents closure. The byte cap,
-`Run.max_screen_bytes`, is much smaller than a task's 1MB and much
-larger than an activity line's 256 bytes. An unresponsive agent's
-scrollback otherwise has no size limit. Truncation keeps the end,
+`Run.max_screen_bytes`, is much smaller than a task's 1MB. An
+unresponsive agent's scrollback otherwise has no size limit. Truncation keeps the end,
 because the last output is the most likely crash diagnostic.
 
 The sweep uses a 30-second grace from `KIDO_LINGER_SECONDS`.
@@ -922,8 +920,7 @@ the right moment. The parent reads the child's own closing text, which
 says what it did or what it waits for.
 
 The parent receives at most 4000 bytes, the guidance included. This
-exceeds the activity cap, because it carries work results, not a UI
-label. It is much smaller than the 1MB inbox payload cap, because the
+is much smaller than the 1MB inbox payload cap, because the
 whole message enters the parent's context.
 
 **What this costs, and what covers it.** A crashed subagent that never

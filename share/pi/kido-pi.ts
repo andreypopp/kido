@@ -493,16 +493,6 @@ function isFirstCopy(): boolean {
   return (globalThis.__kidoPiExtensionCopy ??= path) === path;
 }
 
-export function oneLine(text: string, max: number): string {
-  const clean = [...text]
-    .map((ch) => {
-      const code = ch.codePointAt(0) ?? 0;
-      return code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0xfffd ? " " : ch;
-    })
-    .join("");
-  return utf8Prefix(clean, max).replace(/ +$/, "");
-}
-
 // Must agree with pi's own CombinedAutocompleteProvider (extractAtPrefix), since
 // the merged list carries one prefix for the agents and the files both.
 function atToken(textBeforeCursor: string): string | undefined {
@@ -1897,27 +1887,6 @@ export default function (pi: ExtensionAPI) {
     pendingNotices.delete(noticeId);
     renderNoticeWidget();
   });
-
-  pi.registerTool({
-    name: "set_status",
-    label: "Set Status",
-    description:
-      "Set the free-text activity shown next to you in kido's tmux sidebar. Separate from your running/waiting/idle status.",
-    promptSnippet: "set_status(activity) - tell everyone else what you are doing, visible in list_runs()",
-    parameters: Type.Object(
-      {
-        activity: Type.String({
-          description: 'What you are doing right now ("refactoring internal/ui"), or "" to clear it. Capped at 256 bytes.',
-        }),
-      },
-      { additionalProperties: false },
-    ),
-    async execute(_toolCallId, params) {
-      await writeOptions([[OPTION_ACTIVITY, oneLine(params.activity, 256)]]);
-      return reply("ok");
-    },
-  });
-
 
   pi.registerTool({
     name: "list_runs",
