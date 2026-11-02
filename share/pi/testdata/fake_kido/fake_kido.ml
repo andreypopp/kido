@@ -170,7 +170,8 @@ let run () =
       print_endline answer;
       flush stdout;
       let ready = Fs.getenv "KIDO_FAKE_RUN_WAIT_READY" in
-      if not (String.is_empty ready) then Fs.write ~perm:0o644 ready "";
+      if not (String.is_empty ready) then
+        Fs.write ~perm:0o644 ready (string_of_int (Unix.getpid ()));
       Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_WAIT_EXIT_GATE");
       exit 0
   | "run-stop" ->
@@ -191,12 +192,17 @@ let run () =
           Printf.eprintf "run %s: no such run\n" id;
           exit 3
       | Some row ->
+          if Yojson.Safe.equal (Yojson.Safe.Util.member "dead" row) (`Bool true) then begin
+            Printf.eprintf "run %s has already ended\n" id;
+            exit 5
+          end;
           if Option.is_none (outcome row) then
             ignore (with_row id (fun row -> with_outcome row result ""));
           Printf.printf "stopped run %s; killed its pane\n" id);
       exit 0
   | "run-outcome" ->
       Fake_common.log "KIDO_FAKE_RUN_OUTCOME_LOG" argv;
+      Fake_common.wait_gate (Fs.getenv "KIDO_FAKE_RUN_OUTCOME_GATE");
       let requested = Option.value ~default:"" (Fake_common.arg_after "--result" argv) in
       if not (List.mem ~eq:String.equal requested [ "stopped"; "completed"; "failed" ]) then begin
         Printf.eprintf "run-outcome: result must be stopped, completed or failed\n";

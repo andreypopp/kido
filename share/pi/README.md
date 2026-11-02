@@ -121,6 +121,8 @@ the reloaded module.
   one result line for each target; a bash run through `kido run-stop`; a
   subagent by a stop request, then `kido run-stop --wait 5`. A child that
   reported since its last new work ends as completed, else stopped.
+  Each line gives the output or report path. A run that the caller
+  stops sends it no ending notice; the result is the only signal.
 
 A subagent has no report tool. When its turn ends with nothing of its
 own still running, its last message goes to its parent as a notice,

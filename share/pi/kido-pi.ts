@@ -54,6 +54,14 @@ const parseOutcome = (value: unknown): { result: string; text: string } | undefi
   return { result: value.result, text: str(value.text) };
 };
 
+const outcomeOf = (text: string): { result: string; text: string } | undefined => {
+  try {
+    return parseOutcome(JSON.parse(text.trim()));
+  } catch {
+    return undefined;
+  }
+};
+
 export function parseEnvelope(text: string): Envelope | null {
   let parsed: unknown;
   try {
@@ -420,6 +428,7 @@ type WatchData = {
   budget: number;
   budgetTold: boolean;
   idleDelay: number;
+  silenced: boolean;
 };
 
 declare global {
@@ -1252,6 +1261,7 @@ export default function (pi: ExtensionAPI) {
     flushTimer: NodeJS.Timeout | null;
     waiter: ChildProcess | null;
     detach: (() => void) | null;
+    outcome?: { result: string; text: string };
   };
 
   const watches = new Map<string, Watch>();
@@ -1268,6 +1278,7 @@ export default function (pi: ExtensionAPI) {
     budget: envMs("KIDO_STREAM_BUDGET_BYTES", 256 * 1024),
     budgetTold: false,
     idleDelay: streamFlushMs(),
+    silenced: false,
   });
 
   type TailRead = { data: Buffer; skipped: number; end: number } | { error: string };
@@ -1449,11 +1460,10 @@ export default function (pi: ExtensionAPI) {
       if (entry.timer) clearInterval(entry.timer);
       clearFlush(entry);
       watches.delete(entry.run);
-      let outcome: { result: string; text: string } | undefined;
-      try {
-        outcome = parseOutcome(JSON.parse(Buffer.concat(chunks).toString("utf8").trim()));
-      } catch {}
+      const outcome = outcomeOf(Buffer.concat(chunks).toString("utf8"));
       if (!outcome) return;
+      entry.outcome = outcome;
+      if (entry.silenced) return;
       if (entry.target.kind === "bash" && entry.target.stream) tailWatch(entry, true);
       deliverNotice(endingBody(entry, outcome), entry.name);
     };
@@ -2223,7 +2233,7 @@ export default function (pi: ExtensionAPI) {
     name: "stop_run",
     label: "Stop Run",
     description:
-      "Stop own runs and descendant subagents in parallel. Pass an address or a non-empty list of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped.",
+      "Stop own runs and descendant subagents in parallel. Pass an address or a non-empty list of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped. Each line names the outcome with the report path or output path; a run that had already ended says how. The result is the only signal: a run you stop gets no ending notice.",
     promptSnippet: "stop_run(to, force?) - end own runs and descendant subagents in parallel; to is an address or a non-empty list of addresses",
     parameters: Type.Object(
       {
@@ -2244,7 +2254,7 @@ export default function (pi: ExtensionAPI) {
       const addresses = typeof params.to === "string" ? [params.to] : params.to;
       const command = kido;
       if (!command) return reply("could not stop: kido is not on PATH");
-      const { all, entries } = await discovery();
+      const { all, entries, runs } = await discovery();
       const force = !!params.force;
       const candidates = all.filter((a) => !a.self && (a.relationship === "own" || isDescendant(a, entries)));
       const resolved = addresses.map((address): { target: AgentRow } | { error: string } => {
@@ -2268,26 +2278,50 @@ export default function (pi: ExtensionAPI) {
       const stop = async (target: AgentRow, run: string): Promise<{ text: string } | { error: string }> => {
         const stopWait = 5;
         const stopDeadline = (wait: number): number => wait * 1000 + envMs("KIDO_STOP_ESCALATION_MS", 5000) + 1500;
-        if (target.state === "ended") return { error: `run ${run} has already ended` };
+        const watched = watches.get(run);
+        const entry = target.kind === "bash" ? undefined : entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
+        const output = runs.find((r) => r.id === run)?.output;
+        const path = entry ? (reportState(entry.dir).report === undefined ? "" : `report: ${join(entry.dir, "report")}`) : output ? `output: ${output}` : "";
+        const withPath = (text: string): string => (path ? `${text}; ${path}` : text);
+        const endedText = (ended: { result: string; text?: string } | undefined): string =>
+          withPath(`run ${run} has already ended${ended ? ` ${ended.result}${ended.text ? `: ${ended.text}` : ""}` : ""}`);
+        const endingOf = async (): Promise<{ result: string; text: string } | undefined> => {
+          if (watched?.outcome) return watched.outcome;
+          const waited = await runCommand(command, ["run-wait", run, "--json"], { timeoutMs: stopDeadline(0) });
+          return waited.ok ? outcomeOf(waited.out) : undefined;
+        };
+        const alreadyEnded = async (): Promise<{ error: string }> => ({ error: endedText(await endingOf()) });
+        if (target.state === "ended") {
+          if (watched) watched.silenced = true;
+          return { error: endedText(target.outcome) };
+        }
+        if (target.kind !== "bash" && !force && !target.inbox) return { error: `subagent ${target.name || target.id} has no inbox for a stop request; pass --force to kill its window instead` };
+        if (watched) watched.silenced = true;
+        const failed = async (error: string): Promise<{ error: string }> => {
+          const live = watches.get(run);
+          if (live) live.silenced = false;
+          else if (watched) return { error: `${error}; ${endedText(await endingOf())}` };
+          return { error };
+        };
         if (target.kind === "bash") {
           const res = await runCommand(command, ["run-stop", run], { timeoutMs: stopDeadline(0) });
-          return res.ok ? { text: res.out } : { error: res.error };
+          if (res.ok) return { text: withPath(res.out) };
+          return res.code === 5 ? alreadyEnded() : failed(res.error);
         }
         const name = target.name || target.id;
-        const entry = entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
-        if (!force && !target.inbox) return { error: `subagent ${name} has no inbox for a stop request; pass --force to kill its window instead` };
         const outcome = entry && reported(entry) ? "completed" : "stopped";
         const recordArgs = ["run-outcome", run, "--result", outcome];
         const recorded = await runCommand(command, recordArgs, { timeoutMs: stopDeadline(stopWait) });
-        if (!recorded.ok && recorded.code !== 5) return { error: recorded.error };
+        if (!recorded.ok) return recorded.code === 5 ? alreadyEnded() : failed(recorded.error);
         let requestFailure = "";
         if (!force && target.inbox) {
           const request = await sendEnvelope(target.inbox, "stop", "");
           if (!request.ok && request.kind !== "refused") requestFailure = request.message;
         }
         const res = await runCommand(command, ["run-stop", run, "--wait", String(stopWait)], { timeoutMs: stopDeadline(stopWait) });
-        if (res.ok) return { text: requestFailure ? `${outcome} ${name}; ${res.out}; the stop request failed: ${requestFailure}` : `${outcome} ${name}; ${res.out}` };
-        return { error: requestFailure ? `${res.error}; the stop request failed: ${requestFailure}` : res.error };
+        if (res.ok) return { text: withPath(requestFailure ? `${outcome} ${name}; ${res.out}; the stop request failed: ${requestFailure}` : `${outcome} ${name}; ${res.out}`) };
+        if (res.code === 5) return { text: withPath(`${outcome} ${name}; its pane was already gone`) };
+        return failed(requestFailure ? `${res.error}; the stop request failed: ${requestFailure}` : res.error);
       };
       const results = await Promise.all(resolved.map((result) => {
         if ("error" in result) return result;
@@ -2496,7 +2530,8 @@ export default function (pi: ExtensionAPI) {
     stopParentWatch();
     if (reload) {
       globalThis.__kidoPiExtensionWatches = [...watches.values()].map(
-        ({ timer, flushTimer, waiter, detach, ...data }): WatchData => {
+        ({ timer, flushTimer, waiter, detach, outcome, ...data }): WatchData => {
+          void outcome;
           void timer;
           void flushTimer;
           void waiter;

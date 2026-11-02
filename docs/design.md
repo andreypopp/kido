@@ -654,13 +654,17 @@ failed server, so after an error one `list-panes -a` tells them apart.
 `run-stop` waits with the same read. A pid is never evidence: a killed pane whose process survives
 its HUP has ended, and `run-wait` reports `died`.
 
-**run-stop** records its result first, so that an ending that the pane
-produces later cannot replace it. If an outcome already exists, the
-earlier outcome stays and the stop continues. Then it waits `--wait`
+**run-stop** first reads whether the run's pane is live. A run with no
+live pane (dead or gone) exits 5 at once and records nothing, so the
+ending that the pane gave stays the run's ending. For a live pane, it
+records its result first, so that an ending that the pane produces
+later cannot replace it. A pane that dies between the read and the
+record loses its ending to the stop. If an outcome already exists, the earlier
+outcome stays and the stop continues. Then it waits `--wait`
 seconds (default 0) for the pane to die, sends TERM to the pane's process
 group, KILL after `KIDO_STOP_ESCALATION_MS`, and kills the pane under
 the last-window refusal (`Reap.close_of`). A refusal exits 1 with the
-outcome recorded. A run with no live pane (dead or gone) exits 5 at once.
+outcome recorded.
 
 A caller that must act between the record and the stop records first
 with `run-outcome`, then runs `run-stop`. `--result completed` is for a subagent that reported
@@ -878,7 +882,9 @@ as parent cannot let a session stop itself.
 records the outcome with `kido run-outcome ID --result stopped`. The child's
 own shutdown writes `completed` or `failed`, so a request sent before
 the record would let that write win. A record that loses to an earlier
-outcome is ignored. Then it sends its request, and runs
+outcome (exit 5) means that the child ended on its own: `stop_run` sends
+no request and reports that ending (design-subagents.md,
+"Redirecting one, and ending one from outside"). Otherwise, it sends its request, and runs
 `kido run-stop ID --wait 5` whatever the request returned: a
 recorded stop must also end the process. A request that fails is
 reported beside the cleanup's result. The extension's deadline for
@@ -925,7 +931,10 @@ settles a turn supplies no work report. kido does not invent one.
 Instead, the parent's own `run-wait` tells it how the run ended
 (design-subagents.md, "A child's life", Endings). An ending needs no
 judgment about the work. Without this limited notice, a parent could
-wait forever for a child that no longer exists.
+wait forever for a child that no longer exists. A run that the parent
+stops itself with `stop_run` sends no ending notice: the tool result
+is the only signal (design-subagents.md,
+"Redirecting one, and ending one from outside").
 
 **Telling a child this is its job.** `before_agent_start` appends a
 standing instruction to the subagent's system prompt on every turn, if

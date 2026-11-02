@@ -616,6 +616,10 @@ export function customMessages(s: Pick<ReturnType<typeof createFakePi>, "message
   return s.messages.filter((m) => m.message.customType === customType);
 }
 
+export function notices(s: Pick<ReturnType<typeof createFakePi>, "messages">): string[] {
+  return customMessages(s, "kido-notice").map((m) => String(m.message.content));
+}
+
 export function agentJson(fx: Fixture, parent: string, name: string): { session: string; run: string; model: string; fork: boolean } {
   return JSON.parse(readFileSync(join(fx.agentDir(parent, name), "agent.json"), "utf8"));
 }

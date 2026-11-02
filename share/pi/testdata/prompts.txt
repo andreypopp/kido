@@ -130,7 +130,7 @@ parameters:
 description:
 
 ```
-Stop own runs and descendant subagents in parallel. Pass an address or a non-empty list of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped.
+Stop own runs and descendant subagents in parallel. Pass an address or a non-empty list of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped. Each line names the outcome with the report path or output path; a run that had already ended says how. The result is the only signal: a run you stop gets no ending notice.
 ```
 
 promptSnippet:
