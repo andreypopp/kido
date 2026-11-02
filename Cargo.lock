@@ -382,6 +382,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ko_e2e"
+version = "0.0.0"
+dependencies = [
+ "httparse",
+ "ko_pane_wire",
+ "ko_sys",
+ "ko_vt",
+ "serde_json",
+ "tungstenite",
+]
+
+[[package]]
 name = "ko_pane"
 version = "0.0.0"
 dependencies = [
@@ -443,8 +455,6 @@ dependencies = [
  "ko_pane_wire",
  "ko_sys",
  "ko_vt_sys",
- "serde",
- "serde_json",
 ]
 
 [[package]]

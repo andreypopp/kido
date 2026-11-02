@@ -16,6 +16,10 @@ pub enum Signal {
     Usr1 = 7,
     Usr2 = 8,
     Winch = 9,
+    #[cfg(feature = "e2e")]
+    Stop = 10,
+    #[cfg(feature = "e2e")]
+    Cont = 11,
 }
 
 impl Signal {
@@ -31,6 +35,10 @@ impl Signal {
             Signal::Usr1 => libc::SIGUSR1,
             Signal::Usr2 => libc::SIGUSR2,
             Signal::Winch => libc::SIGWINCH,
+            #[cfg(feature = "e2e")]
+            Signal::Stop => libc::SIGSTOP,
+            #[cfg(feature = "e2e")]
+            Signal::Cont => libc::SIGCONT,
         }
     }
 
@@ -207,7 +215,8 @@ mod tests {
         assert_eq!(users(&pending), []);
         let deadline = poll.timer();
         poll.start(deadline, Duration::from_secs(5), None).unwrap();
-        let child = spawn::program(Path::new("/usr/bin/true"), &[], &[]).unwrap();
+        let child =
+            spawn::program(Path::new("/usr/bin/true"), &[], &[], spawn::Env::Inherit).unwrap();
         let start = Instant::now();
         while !pending.contains(&Signal::Child) && poll.is_active(deadline) {
             turn(&mut poll, Mode::Wait, &mut pending);

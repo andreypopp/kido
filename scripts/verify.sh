@@ -48,13 +48,7 @@ ko_platform() {
 }
 ko_suite() {
   ko_platform || return
-  local names=() name
-  for name in $(sed -n 's/^func \(Test[A-Za-z0-9_]*\)(t \*testing\.T).*/\1/p' test_e2e_ko/*_test.go); do
-    [[ $name =~ ${E2E_KO:-.} ]] && names+=("$name")
-  done
-  (( ${#names[@]} )) || return 0
-  local IFS='|'
-  KIDO_E2E_REQUIRED=1 go test ./test_e2e_ko/ -count="${COUNT:-1}" -run "^(${names[*]})\$" -v
+  make e2e-ko E2E_KO="${E2E_KO:-}"
 }
 case ${1:-verify} in
   ko-suite) ko_suite; case $? in 0|77) ;; *) status=1 ;; esac ;;

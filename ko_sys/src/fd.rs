@@ -1,5 +1,7 @@
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+#[cfg(feature = "e2e")]
+use std::time::Duration;
 
 use crate::retry::{check, check_size, retry};
 
@@ -25,6 +27,28 @@ pub fn wait_writable(fd: BorrowedFd<'_>) -> io::Result<()> {
     };
     // SAFETY: wait is one initialized pollfd.
     retry(|| check(unsafe { libc::poll(&mut wait, 1, -1) })).map(drop)
+}
+
+#[cfg(feature = "e2e")]
+fn wait(fd: BorrowedFd<'_>, events: libc::c_short, timeout: libc::c_int) -> io::Result<bool> {
+    let mut wait = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events,
+        revents: 0,
+    };
+    // SAFETY: wait is one initialized pollfd.
+    retry(|| check(unsafe { libc::poll(&mut wait, 1, timeout) })).map(|ready| ready > 0)
+}
+
+#[cfg(feature = "e2e")]
+pub fn wait_readable(fd: BorrowedFd<'_>) -> io::Result<()> {
+    wait(fd, libc::POLLIN, -1).map(drop)
+}
+
+#[cfg(feature = "e2e")]
+pub fn wait_writable_within(fd: BorrowedFd<'_>, timeout: Duration) -> io::Result<bool> {
+    let millis = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
+    wait(fd, libc::POLLOUT, millis)
 }
 
 pub fn inherited(number: u8) -> io::Result<OwnedFd> {

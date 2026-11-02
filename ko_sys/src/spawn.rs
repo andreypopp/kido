@@ -58,7 +58,18 @@ fn above_targets(fd: BorrowedFd<'_>) -> io::Result<OwnedFd> {
 }
 
 pub fn pane(program: &Path, control: BorrowedFd<'_>, mapping: BorrowedFd<'_>) -> io::Result<Pid> {
-    self::program(program, &[], &[(control, 0), (control, 1), (mapping, 3)])
+    self::program(
+        program,
+        &[],
+        &[(control, 0), (control, 1), (mapping, 3)],
+        Env::Inherit,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Env<'a> {
+    Inherit,
+    Only(&'a [Vec<u8>]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,17 +82,29 @@ enum Session {
 const POSIX_SPAWN_SETSID: libc::c_int = 0x0400;
 
 pub fn detached(program: &Path, args: &[&str], log: BorrowedFd<'_>) -> io::Result<Pid> {
-    start(program, args, &[(log, 0), (log, 1), (log, 2)], Session::New)
+    start(
+        program,
+        args,
+        &[(log, 0), (log, 1), (log, 2)],
+        Env::Inherit,
+        Session::New,
+    )
 }
 
-pub fn program(program: &Path, args: &[&str], targets: &[(BorrowedFd<'_>, u8)]) -> io::Result<Pid> {
-    start(program, args, targets, Session::Inherit)
+pub fn program(
+    program: &Path,
+    args: &[&str],
+    targets: &[(BorrowedFd<'_>, u8)],
+    env: Env<'_>,
+) -> io::Result<Pid> {
+    start(program, args, targets, env, Session::Inherit)
 }
 
 fn start(
     program: &Path,
     args: &[&str],
     targets: &[(BorrowedFd<'_>, u8)],
+    env: Env<'_>,
     session: Session,
 ) -> io::Result<Pid> {
     let invalid = |_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in a spawn argument");
@@ -90,6 +113,18 @@ fn start(
         .iter()
         .map(|arg| CString::new(*arg).map_err(invalid))
         .collect::<io::Result<Vec<CString>>>()?;
+    let entries = match env {
+        Env::Inherit => Vec::new(),
+        Env::Only(entries) => entries
+            .iter()
+            .map(|entry| CString::new(entry.as_slice()).map_err(invalid))
+            .collect::<io::Result<Vec<CString>>>()?,
+    };
+    let envp: Vec<*mut libc::c_char> = entries
+        .iter()
+        .map(|entry| entry.as_ptr().cast_mut())
+        .chain([ptr::null_mut()])
+        .collect();
     let copies = targets
         .iter()
         .map(|(fd, target)| Ok((above_targets(*fd)?, libc::c_int::from(*target))))
@@ -145,7 +180,7 @@ fn start(
     let mut raw = 0;
     retry(|| {
         // SAFETY: program and argv are NUL-terminated, the actions and attributes are
-        // initialized, and environ is the process environment.
+        // initialized, and the environment is the process's own or the NUL-terminated envp.
         check_code(unsafe {
             libc::posix_spawn(
                 &mut raw,
@@ -153,7 +188,10 @@ fn start(
                 &actions.0,
                 &attributes.0,
                 argv.as_ptr(),
-                environ,
+                match env {
+                    Env::Inherit => environ,
+                    Env::Only(_) => envp.as_ptr(),
+                },
             )
         })
     })?;

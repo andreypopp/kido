@@ -87,6 +87,7 @@ mod macos {
     pub struct ProcessCpu {
         pub ticks: MachTicks,
         pub time: Duration,
+        pub wakeups: u64,
     }
 
     pub fn process_cpu(pid: Pid) -> std::io::Result<ProcessCpu> {
@@ -111,6 +112,9 @@ mod macos {
         Ok(ProcessCpu {
             ticks: MachTicks(ticks),
             time: Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX)),
+            wakeups: info
+                .ri_pkg_idle_wkups
+                .saturating_add(info.ri_interrupt_wkups),
         })
     }
 }

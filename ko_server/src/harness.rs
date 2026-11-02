@@ -676,6 +676,7 @@ impl Harness {
             std::path::Path::new("/usr/bin/mkfifo"),
             &[fifo.to_str().unwrap()],
             &[],
+            ko_sys::spawn::Env::Inherit,
         )
         .unwrap()
         .wait()

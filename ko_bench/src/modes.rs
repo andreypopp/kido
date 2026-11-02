@@ -363,6 +363,7 @@ pub(crate) fn cpu_check() -> Result<(), String> {
         Path::new("/usr/bin/yes"),
         &[],
         &[(std::os::fd::AsFd::as_fd(&null), 1)],
+        ko_sys::spawn::Env::Inherit,
     )
     .map_err(failed)?;
     std::thread::sleep(Duration::from_secs(1));

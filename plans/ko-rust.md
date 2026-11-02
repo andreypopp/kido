@@ -615,6 +615,45 @@ R5 forced these decisions:
      fuzz code mints one counter for each `Delivery`; only the
      server's binary holds to the one-counter assumption.
 
+RE forced these decisions:
+
+118. `TestNoIdleWakeups` (decision 74), which R3 added after the RE
+     table was written, is ported too, as `idle.rs`'s
+     `no_idle_wakeups`: the Rust suite has 45 tests, not 44. It reads
+     the server's CPU time and wakeups through `ko_sys::clock`'s
+     `process_cpu` (`proc_pid_rusage`); its 5 s window is the one
+     entry of the `thread::sleep` table. `internal/rusage/` goes with
+     the Go ko suite.
+119. The suite is one integration-test binary,
+     `ko_e2e/tests/e2e/main.rs`, with one module for each Go file in
+     `ko_e2e/tests/e2e/` and the shared `harness.rs` and `outer.rs`.
+     cargo runs test binaries one after another, so one binary for
+     each Go file would run the files in series; one binary keeps the
+     parallelism of `t.Parallel()` and links once. The entry is
+     `main.rs` in the directory, because a file `tests/e2e.rs` would
+     make cargo take each module file in `tests/` for another test
+     binary.
+120. The `ko_sys` feature is `e2e`, not `test-signals`: it holds
+     the OS calls that only the suite needs (`signal_descendant`,
+     `Pid::parent`, `Pid::has_ended`, `Pid::wait_exit`, `Signal::Stop`,
+     `Signal::Cont`, `fd::wait_readable`, `fd::wait_writable_within`).
+     `spawn::program` takes an `Env` (`Inherit` or `Only`, with the
+     entry form of `pty::spawn`), so each child of a test gets an
+     explicit environment and the test process never sets its own.
+     `make e2e-ko` passes `--test-threads=64`: libtest starts tests
+     in name order on a pool of one thread for each CPU, and the
+     5 s window of `no_idle_wakeups` waited for a free thread behind
+     the 20 tests that sort before it.
+121. `make build-ko` replaces each installed binary with a new file.
+     `cp -f` over the binary of an earlier run wrote the file in
+     place, and macOS then killed every exec of it (`Killed: 9`); both
+     suites failed all 45 tests until the copy changed.
+122. The branch is not pushed before RL (decision 27), so "passes in
+     CI on macOS" in the RE text became "passes in the final local
+     `make verify` on macOS", and the deletion of the Go suite is in
+     the same change as the Rust suite; there was no period with an
+     `e2e-rs` stage.
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -2230,7 +2269,7 @@ Decision 22. The crate `ko_e2e/` holds integration tests
 - **The client tests**: the test is the outer terminal. It opens a
   pty with `ko_sys::pty`, starts `ko` on the slave, and feeds
   everything the client writes into a `ko_vt::Terminal` whose
-  `WRITE_PTY` callback writes the terminal's replies back into the
+  replies (`Terminal::replies`) the pty thread writes back into the
   master, as a real terminal answers DA1, DECRQM and the kitty
   keyboard query. Keys are bytes written to the master; the screen,
   the cursor and the modes that the Go tests read from tmux
@@ -2238,14 +2277,16 @@ Decision 22. The crate `ko_e2e/` holds integration tests
   that terminal; the raw output that `pipe-pane` captured is the bytes
   themselves. For the two tests of the warning
   (`TestClientAttachOrStartAndWarning`, `TestClientWarningMouseBounds`)
-  the harness drops the kitty query (`CSI ? u`) before the terminal
-  sees it, as tmux does today. The pty is read on a test thread. This
+  and the narrow terminal of `TestClientSidebarOwnership`, the Go
+  outer tmux without extended keys, the harness drops the kitty query
+  (`CSI ? u`) before the terminal sees it, as tmux did. The pty is read on a test thread. This
   removes ko's last use of the tmux fork without an outer server.
 - **Parallelism**: every test calls its own server on its own state
-  directory, and `cargo test` runs the tests of a file on a thread
-  pool, as `t.Parallel()` does. A state directory is
-  `mkdtemp("/tmp/ko-e2e-XXXXXX")` through `ko_sys`, so a socket path
-  stays under the 104-byte macOS limit. The harness scrubs the
+  directory, and the one test binary (decision 119) runs every test
+  on a thread pool, as `t.Parallel()` does. A state directory is a
+  new mode-0700 directory under `/tmp`, named by the pid, a counter
+  and the time, so a socket path stays under the 104-byte macOS
+  limit. The harness scrubs the
   environment as `internal/e2eenv` does: a private `HOME`,
   `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, no `ZDOTDIR`, `ENV`, `BASH_ENV`,
   `PROMPT_COMMAND`, `KO_*`, `KIDO_*` or exported bash functions.
@@ -2254,37 +2295,58 @@ Decision 22. The crate `ko_e2e/` holds integration tests
   no sleep. `scripts/lint.sh` refuses `thread::sleep` in `ko_e2e/`
   except through its table of exact statements, as it does for
   `time.Sleep` in Go.
-- **Signals**: a test signals only processes that descend from the
-  server it started, through `ko_sys::pid::signal_descendant(root,
+- **Signals**: a test signals a process that it spawned through its
+  `Pid`, and any other process only if it descends from the server
+  that the test started or from the outer terminal's shell, through `ko_sys::pid::signal_descendant(root,
   pid, signal)`, which walks the parent chain (at most 64 hops) as
   `signal_test.go`'s `signalOwned` does and then calls `Pid::signal`.
-  It is behind the cargo feature `test-signals` of `ko_sys`, which
-  only `ko_e2e` enables, so the one `kill` stays in `pid.rs`.
+  It is behind the cargo feature `e2e` of `ko_sys` (decision 120),
+  which only `ko_e2e` enables, so the one `kill` stays in `pid.rs`.
 - **Crates**: none new. `ko_e2e`'s dev-dependencies are `httparse`,
-  `tungstenite`, `serde_json`, `libc` and the workspace crates
-  `ko_sys` and `ko_vt`.
-- **The mapping**, one Rust file per Go file, one test per Go test
-  with the same name in snake case:
+  `tungstenite`, `serde_json` and the workspace crates `ko_sys`,
+  `ko_vt` and `ko_pane_wire` (the terminal's `Dim`, `Limits` and
+  `Size`).
+- **The mapping**, one Rust module in `ko_e2e/tests/e2e/` per Go
+  file, one test per Go test with its name in snake case without
+  `Test`:
 
 | Go file | Go tests | Rust file |
 |---|---|---|
-| `protocol_test.go` | `TestPaneDeadSnapshot`, `TestViewResumeResizeAndInput`, `TestKillServer`, `TestKillServerSignalsByPeerPID`, `TestVersionAndOrigin`, `TestApi` | `tests/protocol.rs` |
-| `review_test.go` | `TestFullSnapshotSlowReader`, `TestPasteThenEnterDuringSnapshot`, `TestPaneProcessFailure`, `TestUnfocusedFirstClientSizesPane`, `TestStalledViewLearnsResizeAfterRingRetention`, `TestResumeSkipsResizeMarkersBeforeTheOffset`, `TestDeathHasOneTimestamp` | `tests/review.rs` |
-| `state_test.go` | `TestLiveSynchronizedSnapshotAndHistory`, `TestUnsafePasteIsNotWritten`, `TestSIGTERMKillsPrograms`, `TestClientCloseClosesItsViews`, `TestScrollbackLinesLimit`, `TestPaneProcessCrashKillsProgram` | `tests/state.rs` |
-| `streams_test.go` | `TestStalledViewSkips`, `TestDetachKeepsKittyInput`, `TestPartialResizeSnapshot` | `tests/streams.rs` |
-| `hostile_test.go` | `TestHostileClientsDoNotAffectOthers`, `TestClientGridLimit` | `tests/hostile.rs` |
-| `input_frames_test.go` | `TestViewInputFramesInOneWrite`, `TestViewInputFrameSplitAcrossWrites` | `tests/input_frames.rs` |
-| `config_test.go` | `TestDefaultsAndPaneEnvironment`, `TestFuzzVariablesDoNotReachTheBinary` | `tests/config.rs` |
-| `client_test.go` | the 16 `TestClient*` of 4.2 | `tests/client.rs` |
-| `signal_test.go` | the `signalOwned` and `gone` helpers | `ko_sys::pid::signal_descendant` (feature `test-signals`) |
+| `protocol_test.go` | `TestPaneDeadSnapshot`, `TestViewResumeResizeAndInput`, `TestKillServer`, `TestKillServerSignalsByPeerPID`, `TestVersionAndOrigin`, `TestApi` | `tests/e2e/protocol.rs` |
+| `review_test.go` | `TestFullSnapshotSlowReader`, `TestPasteThenEnterDuringSnapshot`, `TestPaneProcessFailure`, `TestUnfocusedFirstClientSizesPane`, `TestStalledViewLearnsResizeAfterRingRetention`, `TestResumeSkipsResizeMarkersBeforeTheOffset`, `TestDeathHasOneTimestamp` | `tests/e2e/review.rs` |
+| `state_test.go` | `TestLiveSynchronizedSnapshotAndHistory`, `TestUnsafePasteIsNotWritten`, `TestSIGTERMKillsPrograms`, `TestClientCloseClosesItsViews`, `TestScrollbackLinesLimit`, `TestPaneProcessCrashKillsProgram` | `tests/e2e/state.rs` |
+| `streams_test.go` | `TestStalledViewSkips`, `TestDetachKeepsKittyInput`, `TestPartialResizeSnapshot` | `tests/e2e/streams.rs` |
+| `hostile_test.go` | `TestHostileClientsDoNotAffectOthers`, `TestClientGridLimit` | `tests/e2e/hostile.rs` |
+| `input_frames_test.go` | `TestViewInputFramesInOneWrite`, `TestViewInputFrameSplitAcrossWrites` | `tests/e2e/input_frames.rs` |
+| `config_test.go` | `TestDefaultsAndPaneEnvironment`, `TestFuzzVariablesDoNotReachTheBinary` | `tests/e2e/config.rs` |
+| `client_test.go` | the 16 `TestClient*` of 4.2 | `tests/e2e/client.rs` |
+| `idle_test.go` | `TestNoIdleWakeups` (decision 118) | `tests/e2e/idle.rs` |
+| `signal_test.go` | the `signalOwned` and `gone` helpers | `ko_sys::pid::signal_descendant`, `Pid::has_ended` (feature `e2e`) |
 
-- During RE, `make verify-ko` and CI run both suites; a stage `e2e-rs`
-  joins `e2e-ko`. When every row of the table passes in CI on macOS, the same commit deletes `test_e2e_ko/`, the `decode`
-  example, `KO_BIN`, `KO_DECODE` and the `e2e-ko` stage, and `make
-  e2e-ko` runs the Rust suite. `go.mod`, `go.sum` and
+- When every row of the table passes in the final local `make
+  verify` on macOS (decision 122), the same change deletes
+  `test_e2e_ko/`, `internal/rusage/` and the `decode` example, and
+  `make e2e-ko` runs the Rust suite. `go.mod`, `go.sum` and
   `internal/e2eenv/` stay, because kido's `test_e2e/` uses them.
-- Acceptance: the Rust suite's 44 tests pass on macOS; its
-  wall time is not more than the Go suite's on the same machine.
+- Acceptance: the Rust suite's 45 tests (decision 118) pass on
+  macOS; its wall time is not more than the Go suite's on the same
+  machine.
+- Result (2026-11-02, macOS): 45 of 45 Go tests ported and passing.
+  Wall time, back to back with `make build-ko` in each: Go 6.51 s,
+  Rust 6.47 s (both 45 of 45), before the review; after the review,
+  with `--test-threads=64`, the Rust tests take 5.70 s, most of it
+  the 5 s window of `no_idle_wakeups`. The final `make verify` with
+  ko's stages added passed: build 1.0 s, unit 2.5 s, e2e 17.9 s,
+  e2e-ko 5.9 s, ts 8.1 s, unit-ko 12.4 s, lint 1.8 s, verus 5.2 s.
+  Two client tests stay flaky. `client_dead_pane_line` (the Go
+  suite's known flake) failed in about 1 of 5 runs of the suite, and
+  `client_lifecycle` in 2 of about 30. In both, ko's client wrote the
+  sidebar but never the pane's content, and the raw bytes from the
+  client show it, so the cause is in ko, not in the harness. The
+  review found one more failure path of `client_dead_pane_line`: the
+  client can paint the layout, with the dead line, before the pane's
+  snapshot arrives, and the test fails at once when no output is
+  directly above the line. The test keeps the Go semantics.
 
 ### RW. The serde wire (about 1 agent-day, after RE)
 

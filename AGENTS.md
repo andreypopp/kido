@@ -305,7 +305,7 @@ These requirements are fixed:
   and it calls `$(CARGO)` by its full path, because make 3.81 on
   macOS looks up a recipe's command through its own PATH, not the
   exported one. Thus, every cargo command runs through a Makefile
-  target. Scripts and the Go suite call make, never cargo. CI's
+  target. Scripts and kido's Go suite call make, never cargo. CI's
   toolchain install and `cargo fetch` steps are the exception. Every
   cargo command passes `--locked`. `Cargo.lock` is committed.
   Nightly exists only for cargo-fuzz and Miri: `scripts/nightly.sh`
@@ -343,7 +343,7 @@ These requirements are fixed:
   `pane_proc.rs`, `ko_pane`'s `io.rs`) also deny `clippy::indexing_slicing` and
   `clippy::arithmetic_side_effects`. Inside `verus!`, Verus also
   proves that each index is in bounds and that no arithmetic overflows.
-- **The command line is a contract** with `test_e2e_ko/`, `bench/`
+- **The command line is a contract** with `ko_e2e/`, `bench/`
   and `share/`. A long option is `--name`. clap's derive generates
   `--help` and the usage errors: the doc comment on each command and
   argument is its help text, as cmdliner's `doc` is. A usage error
@@ -370,14 +370,48 @@ Conventions:
   checks that another crate uses each export.
 - **Tests** are `#[cfg(test)] mod tests` at the bottom of the file
   under test. Expectations are `assert_eq!` on values or strings.
-  Property tests use proptest in the same module. No test execs the
-  `ko` binary; the Go suite does that. `ko_pane/tests/pane.rs` drives
+  Property tests use proptest in the same module. No unit test execs
+  the `ko` binary; the e2e suite does that. `ko_pane/tests/pane.rs` drives
   the `ko-pane` binary over a socketpair and a ring. The `Server` SIGTERM test starts the Rust
   `ko-pane` that `make test-ko` builds and names in `KO_PANE_EXE`. A test starts a process only through
   `ko_sys::spawn::program`, which uses `POSIX_SPAWN_CLOEXEC_DEFAULT`:
   on macOS, `UnixStream::pair` and `accept` set close-on-exec only
   after they create the descriptor, so a `std::process::Command` in
   another test thread can inherit it and keep a peer open.
+- **The e2e suite** is `ko_e2e/`: one integration-test binary,
+  `ko_e2e/tests/e2e/main.rs`, with one module for each area, because
+  cargo runs test binaries one after another and the tests of one
+  binary in parallel. It is a workspace member outside
+  `default-members`, so `make test-ko` does not run it. It drives
+  `build/ko/bin/ko`, which `make e2e-ko` builds first; a test never
+  runs make or cargo. Its client side writes requests as literal
+  bytes and parses replies with httparse, not ko's `http.rs`, and
+  speaks WebSocket through tungstenite's client role; the hostile
+  tests send raw frame bytes. Snapshots decode in the test process
+  through `ko_vt::Terminal::decode`. A client test is the outer
+  terminal (`outer.rs`): an interactive `/bin/sh` on a pty from
+  `ko_sys::pty::spawn`, and a `ko_vt::Terminal` that gets every byte
+  from the master and writes its replies back, so the client's queries
+  get a real terminal's answers. An outer terminal without extended
+  keys drops the kitty keyboard query (`CSI ? u`) before the terminal
+  sees it. The screen, the cursor and the modes that the tests read
+  change only outside synchronized output (mode 2026), as a real
+  terminal paints. Each child gets an explicit environment through
+  `spawn::program`'s `Env::Only`, scrubbed as `harness::test_env`
+  does, with a private `HOME` and XDG directories; the test process
+  never sets its own environment. State directories are under `/tmp`,
+  for the 104-byte socket path limit. Every wait reads a socket or
+  polls a condition with a deadline of 5 s. `scripts/lint.sh` refuses
+  `thread::sleep` and `thread::park_timeout` in `ko_e2e/` except
+  through its table of exact statements; `harness.rs` holds the poll
+  tick. The cargo feature `e2e` of `ko_sys` holds the OS calls that
+  only the suite needs (`signal_descendant`, `Pid::parent`,
+  `Pid::has_ended`, `Pid::wait_exit`, `Signal::Stop`, `Signal::Cont`,
+  `fd::wait_readable`, `fd::wait_writable_within`), and only `ko_e2e`
+  enables it. A `Child` of the harness reaps its process under the
+  lock that its signals take, after a wait that keeps the zombie, so
+  no signal reaches a reaped pid. `make e2e-ko` runs the tests with
+  `--test-threads=64`, so every test starts at once.
 - **loom.** `ko_pane_wire::ring::model` checks the ring's records
   and the wakeup handshake on the real `Reader` and `Writer` under
   `--cfg loom` ("Proved modules (ko)" below). `make
@@ -505,10 +539,14 @@ Conventions:
   no group signal follows the reap. `ESRCH`
   is not an error, and neither is `EPERM` on a group signal.
   In Python, `bench/client.py` signals only through `signal_child`.
-  Each Go test package (`test_e2e/`, `test_e2e_ko/`) signals only
-  through its `signal_test.go`, which applies the same refusals.
+  kido's `test_e2e/` signals only through its `signal_test.go`,
+  which applies the same refusals. `ko_e2e` signals a process that it
+  spawned through its `Pid`, and any other process only through
+  `ko_sys::pid::signal_descendant`, which refuses a pid that does not
+  descend, within 64 hops of the parent chain, from the given root:
+  the server that the test started or the outer terminal's shell.
   `scripts/lint.sh` refuses the other signal calls in `bench/` and
-  the e2e suites: `killpg`, a C `kill(-`, `syscall.Kill`,
+  `test_e2e/`: `killpg`, a C `kill(-`, `syscall.Kill`,
   `unix.Kill`, `os.FindProcess` and Python `os.kill`.
 - **Syscalls.** Every own libc call that can return `EINTR` goes
   through `ko_sys::retry`. An `EINTR` from `poll` is a turn with no
@@ -660,19 +698,19 @@ process), `ko_pane_wire/` (the frame codec and the ring),
 `ko_vt/` and `ko_vt_sys/` (libghostty-vt, built by zig from PATH
 out of `third_party/ghostty`), `ko_sys/` (the OS layer),
 `ko_bench/` and `fuzz/`. Beside them are `ko_proofs/` (the F*/Pulse
-specifications), `bench/` and `test_e2e_ko/` (its Go protocol and
-client suite, `make e2e-ko`, a stage of `make verify`; the client
-tests run `ko` under an outer kido-tmux on a private socket).
+specifications), `bench/` and `ko_e2e/` (its e2e suite, `make
+e2e-ko`, a stage of `make verify` and `make verify-ko`; "The e2e
+suite" under "Rust (ko)").
 Nothing in kido depends on them, and dune builds none of them.
 
 `make build-ko` builds the installed layout under `build/ko/`: `ko`,
 `ko-pane` and the terminfo, which `ko_vt/terminfo.zig` writes from
-ghostty's source and `tic` compiles. It also builds the `decode`
-example of `ko_vt`, the Go suite's snapshot decoder, which is never
-installed. `TestMain` runs `make build-ko` and uses
-`build/ko/bin/ko` and `target/release/examples/decode`.
-`make e2e-ko` runs `scripts/verify.sh ko-suite`, which runs every
-test of the suite against that `ko`.
+ghostty's source and `tic` compiles. It replaces each binary with a
+new file, because macOS kills a process whose executable was
+overwritten in place after an earlier run (`Killed: 9`).
+`make e2e-ko` runs `make build-ko` and then every test of `ko_e2e`
+against that `ko`. `scripts/verify.sh ko-suite` (`make test`, the
+`e2e-ko` stage) runs it on macOS and prints SKIP elsewhere.
 `make build-bench` builds the C helpers of `bench/` into
 `build/bench/`, beside `ko-bench` in `target/release/`; `bench/run.sh`, `bench/flood.sh`,
 `bench/baselines.sh` and `bench/table.sh` call it. `bench/client.py`
@@ -1167,7 +1205,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe-ko BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build-ko (macOS only)
-    make test    dune test --force, ko's Go suite and scripts/test-ts.sh (including scripts/lint.sh)
+    make test    dune test --force, ko's e2e suite and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
@@ -1181,7 +1219,8 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
 `STAGES=e2e` selects only that stage.
 Every selected stage runs even after a failure and prints PASS/FAIL.
 `make verify-ko` uses the same script, environment and output, with
-ko's stages only. `E2E_KO=TestFoo` limits its e2e. Its lint stage
+ko's stages only. `E2E_KO=client_` limits its e2e to the tests
+whose names contain the text (a cargo test filter). Its lint stage
 uses the TypeScript suite's setup, so it also needs Node 24 or newer.
 Before a release, validation uses `make verify` in full.
 
@@ -1275,8 +1314,9 @@ dictionary and `max_len` in `fuzz/<target>.options`:
   with the same result; a server-side WebSocket over a connection fed
   the bytes as client frames, whole and in two parts, with the same
   messages and close, and no message over 1 MiB.
-- `test_e2e_ko/hostile_test.go` is the only Go part: hostile input
-  against a real `ko server`, with other clients unaffected.
+- `ko_e2e`'s `hostile.rs` is the only part outside cargo-fuzz:
+  hostile input against a real `ko server`, with other clients
+  unaffected.
 
 `cargo test` replays every corpus in `fuzz/corpus/<target>/` in a
 fraction of a second for each target. `make fuzz` builds the target with debug

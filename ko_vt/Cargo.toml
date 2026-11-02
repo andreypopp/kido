@@ -9,9 +9,5 @@ ko_pane_wire = { path = "../ko_pane_wire" }
 ko_sys = { path = "../ko_sys" }
 ko_vt_sys = { path = "../ko_vt_sys" }
 
-[dev-dependencies]
-serde.workspace = true
-serde_json.workspace = true
-
 [lints]
 workspace = true

@@ -728,7 +728,13 @@ mod tests {
     fn unsignalled_pid() -> Pid {
         static PID: OnceLock<Pid> = OnceLock::new();
         *PID.get_or_init(|| {
-            let child = ko_sys::spawn::program(Path::new("/usr/bin/true"), &[], &[]).unwrap();
+            let child = ko_sys::spawn::program(
+                Path::new("/usr/bin/true"),
+                &[],
+                &[],
+                ko_sys::spawn::Env::Inherit,
+            )
+            .unwrap();
             child.wait().unwrap();
             child
         })

@@ -92,6 +92,7 @@ impl Harness {
             program,
             args,
             &[(theirs.as_fd(), 0), (theirs.as_fd(), 1), (reader.fd(), 3)],
+            spawn::Env::Inherit,
         )
         .unwrap();
         control.set_read_timeout(Some(DEADLINE)).unwrap();

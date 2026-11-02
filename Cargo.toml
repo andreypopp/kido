@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["fuzz", "ko", "ko_bench", "ko_pane", "ko_pane_wire", "ko_server", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys"]
+members = ["fuzz", "ko", "ko_e2e", "ko_bench", "ko_pane", "ko_pane_wire", "ko_server", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys"]
 default-members = ["ko", "ko_bench", "ko_pane", "ko_pane_wire", "ko_server", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys"]
 
 [workspace.package]

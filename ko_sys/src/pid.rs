@@ -65,6 +65,16 @@ impl Pid {
     }
 
     pub fn peek_exit(self) -> io::Result<Option<Exit>> {
+        self.peek(libc::WNOHANG)
+    }
+
+    #[cfg(feature = "e2e")]
+    pub fn wait_exit(self) -> io::Result<Exit> {
+        self.peek(0)?
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+    }
+
+    fn peek(self, flags: libc::c_int) -> io::Result<Option<Exit>> {
         let id = libc::id_t::try_from(self.0).map_err(io::Error::other)?;
         // SAFETY: an all-zero siginfo_t is valid, and waitid fills it.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -75,7 +85,7 @@ impl Pid {
                     libc::P_PID,
                     id,
                     &mut info,
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    libc::WEXITED | flags | libc::WNOWAIT,
                 )
             })
         })?;
@@ -115,6 +125,46 @@ impl Pid {
     }
 }
 
+#[cfg(feature = "e2e")]
+const MAX_HOPS: usize = 64;
+
+#[cfg(feature = "e2e")]
+impl Pid {
+    pub fn parent(self) -> Option<Pid> {
+        Pid::new(i64::from(bsdinfo(self)?.pbi_ppid))
+    }
+
+    pub fn has_ended(self) -> bool {
+        // SZOMB, <sys/proc.h>
+        bsdinfo(self).is_none_or(|info| info.pbi_status == 5)
+    }
+
+    fn descends_from(self, root: Pid) -> bool {
+        let mut at = self;
+        for _ in 0..MAX_HOPS {
+            if at == root {
+                return true;
+            }
+            match at.parent() {
+                Some(parent) => at = parent,
+                None => return false,
+            }
+        }
+        false
+    }
+}
+
+#[cfg(feature = "e2e")]
+pub fn signal_descendant(root: Pid, pid: Pid, signal: Signal) -> io::Result<()> {
+    if !pid.descends_from(root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing to signal pid {pid} under {root}"),
+        ));
+    }
+    pid.signal(signal)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Identity {
     ppid: libc::pid_t,
@@ -123,7 +173,7 @@ struct Identity {
     start: u64,
 }
 
-fn identity(pid: Pid) -> Option<Identity> {
+fn bsdinfo(pid: Pid) -> Option<libc::proc_bsdinfo> {
     // SAFETY: an all-zero proc_bsdinfo is valid.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = libc::c_int::try_from(size_of::<libc::proc_bsdinfo>()).ok()?;
@@ -137,9 +187,11 @@ fn identity(pid: Pid) -> Option<Identity> {
             size,
         )
     };
-    if filled != size {
-        return None;
-    }
+    (filled == size).then_some(info)
+}
+
+fn identity(pid: Pid) -> Option<Identity> {
+    let info = bsdinfo(pid)?;
     // SAFETY: getsid has no preconditions.
     let sid = unsafe { libc::getsid(pid.0) };
     if sid < 0 {
@@ -257,7 +309,8 @@ mod tests {
         ] {
             assert_eq!(Pid::new(raw), None, "{raw}");
         }
-        let pid = spawn::program(Path::new("/bin/sleep"), &["30"], &[]).unwrap();
+        let pid =
+            spawn::program(Path::new("/bin/sleep"), &["30"], &[], spawn::Env::Inherit).unwrap();
         pid.signal(Signal::Kill).unwrap();
         assert!(killed_by_sigkill(pid));
         pid.signal(Signal::Kill).unwrap();
@@ -265,7 +318,13 @@ mod tests {
 
     #[test]
     fn a_held_zombie_still_answers_peek_exit_and_signal_zero_until_it_is_reaped() {
-        let pid = spawn::program(Path::new("/bin/sh"), &["-c", "exit 7"], &[]).unwrap();
+        let pid = spawn::program(
+            Path::new("/bin/sh"),
+            &["-c", "exit 7"],
+            &[],
+            spawn::Env::Inherit,
+        )
+        .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let exit = loop {
             if let Some(exit) = pid.peek_exit().unwrap() {
@@ -315,6 +374,7 @@ mod tests {
             Path::new("/usr/bin/perl"),
             &["-e", program],
             &[(writer.as_fd(), 1)],
+            spawn::Env::Inherit,
         )
         .unwrap();
         drop(writer);

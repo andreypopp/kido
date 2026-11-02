@@ -280,7 +280,13 @@ pub fn ws(data: &[u8]) {
 fn dead_pid() -> Option<Pid> {
     static PID: OnceLock<Option<Pid>> = OnceLock::new();
     *PID.get_or_init(|| {
-        let child = ko_sys::spawn::program(Path::new("/usr/bin/true"), &[], &[]).ok()?;
+        let child = ko_sys::spawn::program(
+            Path::new("/usr/bin/true"),
+            &[],
+            &[],
+            ko_sys::spawn::Env::Inherit,
+        )
+        .ok()?;
         child.wait().ok()?;
         Some(child)
     })

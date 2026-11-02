@@ -56,7 +56,7 @@ and 3.2 hold the crates and their modules:
     ko_bench/, bench/  the benchmark binary, scripts, C helpers and
                   recorded streams
     fuzz/         the cargo-fuzz targets
-    test_e2e_ko/  the Go protocol suite of section 7
+    ko_e2e/       the Rust e2e suite of section 7
 
 AGENTS.md, "Rust (ko)", holds the code rules. kido's `lib/` is not
 touched in P1 and nothing in kido depends on the new directories.
@@ -836,9 +836,10 @@ These points were open or wrong in the plan:
   a fixed time, only in CI. The `-afl` targets run the same tests
   under AFL++ in a separate dune workspace whose compiler
   instruments the dependencies too.
-- A Go e2e suite in `test_e2e_ko/` that starts `ko server` on a
-  scratch socket and drives the protocol with `net/http` and a
-  WebSocket package over a unix dialer: pane creation and exit, view open with snapshot, resume by
+- An e2e suite in `ko_e2e/` (Rust; a Go suite until stage RE of
+  plans/ko-rust.md) that starts `ko server` on a scratch socket and
+  drives the protocol with its own HTTP client on httparse and
+  tungstenite's WebSocket client over a unix socket: pane creation and exit, view open with snapshot, resume by
   offset, skip after a stalled reader, resize marker and READY,
   input encoding under bracketed paste and the kitty keyboard flags
   (observed through a pane that runs `cat -v` or a tiny recorder).
@@ -847,10 +848,11 @@ These points were open or wrong in the plan:
   program enabled the kitty keyboard protocol keeps that program's
   input working, with no bytes replayed to the pty (zmx's known
   issue).
-- The client under an outer tmux pty, as kido's harness does today:
+- The client under an outer terminal: the test itself, over a pty
+  with a libghostty-vt terminal that answers the client's queries (an
+  outer tmux until stage RE):
   attach, switch, sidebar toggle, pager round trip, wheel scroll,
-  detach, and `ko` starting a server when none runs. The outer tmux
-  is test scaffolding only. From zmx's suite: `seq 300`, detach,
+  detach, and `ko` starting a server when none runs. From zmx's suite: `seq 300`, detach,
   reattach, count the lines; `top` open at reattach, quit, history
   present; a `trap WINCH` counter that shows one signal per real size
   change and none on a same-size reattach; DA1 answered by the server
@@ -858,8 +860,8 @@ These points were open or wrong in the plan:
   and `CSI = 3;1 u` set before the first view opens are in the mirror
   after it opens; and the outer terminal's modes restored exactly
   after detach.
-- `make verify` runs all of them, the Go suite as its stage `e2e-ko`
-  (`make e2e-ko`, `E2E_KO=TestFoo` to limit it). `make verify-ko`
+- `make verify` runs all of them, the e2e suite as its stage `e2e-ko`
+  (`make e2e-ko`, `E2E_KO=name` to limit it). `make verify-ko`
   runs only ko's stages; it is the full verification of ko work.
   `bench/` runs on demand.
 

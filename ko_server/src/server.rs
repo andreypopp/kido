@@ -306,6 +306,7 @@ mod tests {
                 "server::tests::descriptor_shortage",
             ],
             &[(stdout.as_fd(), 1)],
+            ko_sys::spawn::Env::Inherit,
         )
         .unwrap();
         assert_eq!(child.wait().unwrap(), Waited::Ended(Exit::Exited(0)));
@@ -393,6 +394,7 @@ mod tests {
                     "--nocapture",
                 ],
                 &[(writer.as_fd(), 1)],
+                ko_sys::spawn::Env::Inherit,
             )
             .unwrap();
             drop(writer);

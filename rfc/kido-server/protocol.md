@@ -403,8 +403,9 @@ rules).
 
 Recorded fixtures under `share/protocol/` will hold request and
 response pairs and view message sequences; each implementation
-replays them. Until then `test_e2e_ko/` is the only cross-language
-check.
+replays them. Until then `ko_e2e/`, whose client side is its own
+byte-level code and not ko's, is the only independent check of the
+wire.
 
 ## 14. The pane protocol: coordinator to `ko-pane`
 

@@ -444,6 +444,7 @@ mod tests {
                 "--nocapture",
             ],
             &[(stdout.as_fd(), 1)],
+            crate::spawn::Env::Inherit,
         )
         .unwrap();
         assert_eq!(child.wait().unwrap(), Waited::Ended(Exit::Exited(0)));

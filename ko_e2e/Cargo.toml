@@ -1,0 +1,20 @@
+[package]
+name = "ko_e2e"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+httparse.workspace = true
+ko_pane_wire = { path = "../ko_pane_wire" }
+ko_sys = { path = "../ko_sys", features = ["e2e"] }
+ko_vt = { path = "../ko_vt" }
+serde_json.workspace = true
+tungstenite.workspace = true
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+
+[lints]
+workspace = true

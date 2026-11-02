@@ -11,9 +11,9 @@ failed=0
 # A negative pid or a process group reaches kill(2) only through ko_sys::pid, signal_child and the Go signal helpers.
 signal_pattern='\bUnix(Labels)?\.kill\b|\bkillpg\b|\bkill[[:space:]]*\([[:space:]]*-|syscall\.Kill|unix\.Kill|os\.FindProcess'
 signals=$( {
-  grep -rnE "$signal_pattern" bench test_e2e test_e2e_ko \
+  grep -rnE "$signal_pattern" bench test_e2e \
       --include='*.c' --include='*.h' --include='*.go' --include='*.py' \
-    | grep -vE '^(test_e2e/signal_test\.go|test_e2e_ko/signal_test\.go):'
+    | grep -vE '^test_e2e/signal_test\.go:'
   grep -rnE '\bos\.kill' bench --include='*.py' \
     | grep -vE '^bench/client\.py:[0-9]+:    os\.kill\(pid, sig\)$'
   grep -rnE '\blibc::kill(pg)?\b|\bkillpg\b|nix::sys::signal|Command::new\([[:space:]]*"kill"' ko ko_* fuzz --include='*.rs' \
@@ -123,10 +123,25 @@ text = pathlib.Path('lib/dune').read_text()
 for match in re.finditer(r'\b(?:mosaic|matrix(?:\.text)?)\b', text):
     report('lib/dune', text, match.start(), 'TUI library dependency')
 
+fuzz_allowed = {
+    'ko_e2e/tests/e2e/config.rs': {
+        'b"KO_FUZZ_SECONDS=abc".to_vec(),': 1,
+        'b"KO_FUZZ_SEED=abc".to_vec(),': 1,
+    },
+}
 for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', recursive=True):
     text = pathlib.Path(path).read_text()
-    for match in re.finditer(r'KO_FUZZ_\w+', text):
-        report(path, text, match.start(), 'fuzz variables are read in fuzz/ only')
+    allowed = fuzz_allowed.get(path, {})
+    for match in re.finditer(r'^.*KO_FUZZ_\w+.*$', text, re.M):
+        statement = match.group().strip()
+        if allowed.get(statement, 0) > 0:
+            allowed[statement] -= 1
+        else:
+            report(path, text, match.start(), 'fuzz variables are read in fuzz/ only')
+for path, statements in fuzz_allowed.items():
+    for statement, left in statements.items():
+        if left:
+            report(path, '', 0, f'stale KO_FUZZ_ allowance {statement!r} ({left} unused)')
 
 history = r'\b(previously|no longer|(?<!be )used to|formerly|as of now|since this fix)\b'
 for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', sources):
@@ -177,7 +192,7 @@ sleeps = {
     'test_e2e/switch_session_test.go': {'time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)) + 50*time.Millisecond)': 1},
     'test_e2e/watchdog_test.go': {'time.Sleep(110 * time.Second)': 1, 'time.Sleep(200 * time.Millisecond)': 2},
 }
-for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go') + glob.glob('test_e2e_ko/*.go')):
+for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go')):
     if path == 'test_e2e/harness_test.go':
         continue
     text = pathlib.Path(path).read_text()
@@ -188,6 +203,25 @@ for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go') + glob.glob('t
             report(path, text, match.start(), 'time.Sleep outside harness/allowlist')
         else:
             allowed[statement] -= 1
+# ko_e2e waits for events; its one fixed wait is the idle measurement, and harness.rs holds the poll tick.
+rust_sleeps = {
+    'ko_e2e/tests/e2e/idle.rs': {'std::thread::sleep(Duration::from_secs(5));': 1},
+}
+for path in candidates(r'thread::(sleep|park_timeout)', glob.glob('ko_e2e/tests/e2e/*.rs')):
+    if path == 'ko_e2e/tests/e2e/harness.rs':
+        continue
+    text = pathlib.Path(path).read_text()
+    for match in re.finditer(r'^.*thread::(sleep|park_timeout).*$', text, re.M):
+        statement = match.group().strip().split('//')[0].rstrip()
+        allowed = rust_sleeps.get(path, {})
+        if allowed.get(statement, 0) == 0:
+            report(path, text, match.start(), 'thread::sleep outside the allowlist')
+        else:
+            allowed[statement] -= 1
+for path, statements in rust_sleeps.items():
+    for statement, left in statements.items():
+        if left:
+            report(path, '', 0, f'stale thread::sleep allowance {statement!r} ({left} unused)')
 for path, statements in sleeps.items():
     for statement, left in statements.items():
         if left:

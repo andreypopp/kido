@@ -255,7 +255,7 @@ jobs:
 
       - name: Verify ko
         if: runner.os == 'macOS'
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KO_VERUS_REQUIRED=1 make verify-ko
+        run: KO_VERUS_REQUIRED=1 make verify-ko
 
       - name: TypeScript tests
         run: KIDO_TS_TEST_REQUIRED=1 ./scripts/test-ts.sh

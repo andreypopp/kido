@@ -104,12 +104,12 @@ website:
 # The installed layout of the Rust ko. The terminfo is compiled from ghostty's
 # source by terminfo.zig; tic writes x/ or 78/ by platform, and both are shipped.
 # zig keeps its caches where ko_vt_sys/build.rs does.
-# The decode example is the Go suite's snapshot decoder and is never installed.
 KO := build/ko
 TERMINFO := $(KO)/share/ko/terminfo
 build-ko: $(TERMINFO)/x/xterm-ghostty
-	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release --bins --example decode
-	cp -f target/release/ko target/release/ko-pane $(KO)/bin/
+	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release --bins
+	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
+	cp target/release/ko target/release/ko-pane $(KO)/bin/
 
 $(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/src/terminfo/*.zig)
 	mkdir -p $(KO)/bin $(TERMINFO)/x $(TERMINFO)/78
@@ -151,10 +151,9 @@ build-bench: build-ko
 probe-ko: build-bench
 	target/release/ko-bench throughput writev $(or $(BYTES),1073741824) 2 $(addprefix $(CURDIR)/,$(wildcard bench/streams/*.vt))
 
-# drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
-# names another (CI, with its cached build); it never skips
-e2e-ko:
-	COUNT='$(or $(COUNT),1)' E2E_KO='$(E2E_KO)' bash scripts/verify.sh ko-suite
+# the Rust suite of ko_e2e drives the built build/ko/bin/ko; E2E_KO is a cargo test name filter
+e2e-ko: build-ko
+	$(CARGO) test --locked -p ko_e2e -- --test-threads=64 $(E2E_KO)
 
 e2e: $(if $(KIDO_TMUX),,pinned-fork)
 	KIDO_TMUX=$${KIDO_TMUX:-$(CURDIR)/$(TMUX_FORK)/bin/kido-tmux} KIDO_E2E_REQUIRED=1 go test ./test_e2e/ -count=$(or $(COUNT),1) -run='$(or $(E2E),.)' -v
