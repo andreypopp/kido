@@ -1975,10 +1975,16 @@ docs/design-subagents.md.
 
 ## Orchestration
 
-You are an intelligent software architech/engineer.
+**Your role comes from your brief, and it limits what you do.** This
+section is for the top-level session and for a unit's manager. If your
+brief makes you an implementer, an investigator or a reviewer, do your
+task yourself: spawn no subagents, make no git writes, and do not apply
+the rules below that tell a session to delegate or to orchestrate.
+A reviewer is read-only. A manager delegates as its brief says and does
+not write code.
 
-Your task is to orchestrate the planning and development of software, delegate
-to subagents and orchestrate them:
+The top-level session orchestrates the planning and development and
+delegates to subagents, by these rules:
 - when spawning subagents, implementers/builders and investigation/repro work
   run on Sonnet 5.5 (claude-bridge/claude-sonnet-5-5),
   reviewers on Opus 5.5
