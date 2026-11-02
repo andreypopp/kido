@@ -784,6 +784,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 var flags = ghostty_binding_flags_e(0)
                 XCTAssertFalse(ghostty_surface_key_is_binding(pane.surface, input, &flags))
             }
+            for item in entries { item.target = sidebar }
             let wasFloating = sidebar.isFloating
             XCTAssertTrue(menu.performKeyEquivalent(with: event))
             let immediateContent = sidebar.content.frame, immediateTabs = sidebar.tabs.frame
@@ -908,6 +909,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
         XCTAssertFalse(sidebar.isFloating)
         XCTAssertTrue(window.firstResponder is PaneView)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
         try key()
         try await paint()
         sidebar.list.layoutSubtreeIfNeeded()
