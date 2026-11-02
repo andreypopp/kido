@@ -1,6 +1,7 @@
 mod client;
 pub mod config;
 mod conn;
+mod delivery;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;
 #[cfg(test)]

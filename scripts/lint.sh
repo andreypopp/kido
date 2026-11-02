@@ -34,6 +34,13 @@ if [[ -n "$orderings" ]]; then
   echo "$orderings" | sed 's/$/: ko_pane, ko_pane_wire and ko_server use only Ordering::SeqCst/'
   failed=1
 fi
+# Only Delivery::scan moves the ring's tail in ko_server: the pane's retention proof (delivery.rs)
+# holds only while no other code holds a `&mut Reader` and calls advance.
+advances=$(grep -rnE '\.advance\(' ko_server/src --include='*.rs' | grep -vE '^ko_server/src/delivery\.rs:' || true)
+if [[ -n "$advances" ]]; then
+  echo "$advances" | sed 's/$/: only ko_server\/src\/delivery.rs calls Reader::advance/'
+  failed=1
+fi
 python3 - <<'PY' || failed=1
 import glob
 import pathlib
@@ -59,6 +66,12 @@ for name in sorted(locked - listed):
     print(f'Cargo.lock: package {name} is not in scripts/crates.txt')
 for name in sorted(listed - locked):
     print(f'scripts/crates.txt: {name} is not in Cargo.lock')
+verus_crates = re.search(r'^crates_version=(\S+)$', pathlib.Path('scripts/verus.sh').read_text(), re.M).group(1)
+workspace = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['workspace']['dependencies']
+for name in ('vstd', 'verus_state_machines_macros'):
+    if workspace.get(name) != f'={verus_crates}':
+        print(f'Cargo.toml: {name} is not pinned to ={verus_crates}, the crates version of scripts/verus.sh')
+        raise SystemExit(1)
 headers = subprocess.check_output(['scripts/bindgen.sh', '--print-hash'], text=True).strip()
 if f'// ghostty headers sha256: {headers}\n' not in pathlib.Path('ko_vt_sys/src/bindings.rs').read_text():
     print('ko_vt_sys/src/bindings.rs: header hash differs from third_party/ghostty/include; regenerate: make bindgen')

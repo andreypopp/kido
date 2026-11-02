@@ -15,6 +15,7 @@ ko_sys = { path = "../ko_sys" }
 serde.workspace = true
 serde_json.workspace = true
 tungstenite.workspace = true
+vstd.workspace = true
 
 [dev-dependencies]
 ko_vt = { path = "../ko_vt" }
@@ -22,3 +23,6 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.verus]
+verify = true

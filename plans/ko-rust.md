@@ -376,6 +376,36 @@ After R3 the user decided:
     the fault). The target is the same or better than a fresh OCaml
     run of the fixed bench in the same session.
 
+RV forced these decisions:
+
+80. The data bytes are a tracked map from index to an opaque
+    `ByteTok` (the role of F*'s `pts_to_mask`), not a ghost copy in
+    the state machine. The published and the released bytes are
+    `storage_map` fields of the machine, as in `ring_inv`. A token
+    carries its value as an `Option<u8>`, as F*'s `bytes` does: a
+    payload that `Writer::payload` lends out is `None` until it is
+    published, and a read gives no claim for a `None` byte. One Verus
+    instance cannot span two processes, so each role has its own
+    trusted constructor and its own instance: `Backend::mint_reader`
+    (the reader created the zero-filled mapping, and owns no data
+    byte) and `Backend::mint_writer` (the writer attaches once for each
+    ring, before any record, and owns every data byte). The other
+    process holding the other token of the same ring is the trusted
+    "one heap" assumption of F*. The in-process writer of
+    `Reader::writer` is a second mapping with its own words, so it
+    also takes `mint_writer`.
+81. `Reader::record` has no `requires` beyond `wf`, because its
+    callers in `ko_server` are not verified; it ensures its fields
+    only for a position in the log. Its `debug_assert!` lost the
+    conjunct `header.off <= pos`, which a hostile peer can break.
+82. `Writer::available` returns room 0 when its pad record is
+    refused, which can happen only within one capacity of
+    `MAX_HEAD`; before, it returned the room as if the pad was
+    published.
+83. The `verus` stage maps the `SKIP:` line of `make verus` to exit
+    code 77, which `scripts/verify.sh` prints as SKIP. The archive
+    fetch has `--max-time 600`, the 10-minute deadline of decision 24.
+
 R4 forced these decisions:
 
 84. The terminal client's plain requests (create a pane, delete a
@@ -412,6 +442,39 @@ R4 forced these decisions:
     idle link after 30 s (protocol.md 1); a client that has received
     no frame on `/client` or the shown view for 40 s fails with "ko
     socket timed out".
+
+RV2 forced these decisions:
+
+90. `ko_server::delivery` is the verified module of RV2: `Delivery`
+    owns the pane's `Reader`, the queue of reading requests, the queue
+    of finished ones and the delivered position, and keeps the front
+    request's last slice as a ghost field. `Stage::Open` and
+    `Stage::Closed` hold a `Delivery` in place of the `Reader`.
+    `observed` and `busy` stay in `PaneProc`, outside the proof.
+    `ko_server` gains `vstd` as a direct dependency (no new package).
+91. `Delivery::ring_mut` lends `&mut Reader` to unverified code (the
+    views, until RV3), which may call only the methods that keep the
+    tail (`head`, `end_offset`, `oldest_offset`, `resume`); `wf`
+    survives them (`inv_grows`). `scripts/lint.sh` refuses
+    `.advance(` in `ko_server/src` outside `delivery.rs`. A type for
+    the views' ring replaces the lint in RV3, when `view.rs` is
+    verified. A `type_invariant` on `Reader` was tried and dropped:
+    Verus checks it at each field assignment, which broke RV's proofs.
+92. `deliver` updates its state at each record, so it allocates
+    nothing (the `done` vector went); it moves `delivered` past a
+    slice before it reads the slice's `last` flag, as `Pane_core`
+    does. A ring error drains every request, so the events do not
+    change.
+93. `scripts/verus.sh` runs `cargo verus verify` once for each crate
+    and reads the last result and time of each run: Verus names no
+    crate on its result line, cargo builds crates in parallel, and on
+    a cold run vstd's lines come first.
+94. `Delivery::wf` is `pane_inv` without the tokens' ring and
+    generation (`tring`, `tgen` and the generation clauses of
+    `slice_step` and `done_step`). Each `Delivery` owns its ring, so
+    the ring clause holds by construction; the generation is the
+    routing of a `Req` to its view in `state.rs`, unverified until
+    RV3.
 
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
@@ -1609,8 +1672,11 @@ lines; `make proofs` installs the pinned F* through
    facts and the payload writes within the room are proved, not
    trusted.
 2. **The wakeup handshake** (stage RV): the theorem of `wakeup_mc.c`
-   as a transition property: if `put_record` does not report
-   `Published`, the reader's next `observe` sees the new head. The
+   as a transition property: if `put_record` reports `Published`
+   (the reader's `read` was not the old head), the reader's next
+   `observe` after its `set_read` sees the new head; `Idle` (the
+   reader was idle at the old head) is the case where the writer
+   sends the head frame. The
    loom twins of 6.5 replay `wakeup_mc.c` and `ring_mc.c` beside it,
    because Verus models only SC.
 3. **`pane_proc`'s `deliver`, `scan` and `keep`** (stage RV2), from
@@ -1628,13 +1694,20 @@ and `arithmetic_side_effects` lints, the `frame` fuzz target and
 Miri). Kani is not planned: Verus covers the ring arithmetic.
 
 **Still trusted after RV:** the mapping itself (one
-`#[verifier::external_body]` function builds the `Ring` and its two
-tokens from `mmap`'s pointer and states that the region is shared,
-zero-filled at creation and owned by exactly two processes, one per
-token); the byte accessors (`external_body` reads and writes of a
-range that `requires` the matching token, a few lines each); vstd and
+`#[verifier::external_body]` constructor for each role,
+`Backend::mint_reader` and `Backend::mint_writer`, makes that role's
+header word and data byte permissions from the mapping and states that
+the region is zero-filled at creation, attached before any record and
+shared by exactly two owners, one per token, decision 80; and the
+capacity getter); the header word load
+and store (vstd's `from_ptr_load` and `from_ptr_store` contracts); the
+byte accessors (`external_body` reads and writes of a range that
+`requires` the permission over it, a few lines each); vstd and
 the verifier; the libghostty-vt calls that fill a payload; and the
-callers outside the verified modules until RV2.
+callers outside the verified modules until RV2. After RV2:
+`delivery.rs`'s sink call and `Req`'s equality, the unverified
+holders of `Delivery::ring_mut` and the routing of a `Req` to its view
+until RV3 (decisions 91 and 94).
 
 **The lessons of the Pulse work that the port keeps:** no trusted
 function with an unconditional `ensures` (the WhyML `writer_causal`
@@ -1678,8 +1751,11 @@ lemma); if a module cannot meet the cap, a recorded decision moves its
 verification to the scheduled workflow. The ring port is about ten
 times the probe's transitions and much more exec code than the probe;
 an estimate from the probe is 10 to 40 s, and RV records the real
-figure. CI's cost is the cache restore of the archive and the cold
-`vstd` build (about 13 s, then cached in `target/`).
+figure. CI's cost is the cache restore of the archive and, on every
+run, the cold build and verification of `vstd` (about 15 s, RV's
+result), because CI does not cache `target/`; the 120 s cap does not
+count it. The Verus crates also build in each cargo target directory
+(debug, release, `target/loom`, clippy).
 
 The production dependency allowlist (section 8) gains the 11 new
 packages. Most are compile-time macros, and the ghost code is erased;
@@ -1881,6 +1957,16 @@ one session. The attach and resize rows wait for R4.
   `assume` and no `admit`, the only `external_body` functions being
   the mapping and the byte accessors of 6.7; the loom replays of the
   GenMC models pass; the ingest bench rows do not move.
+- Result (2026-11-02, macOS): `ko_pane_wire` verifies with 111
+  obligations, no `assume` and no `admit`, in about 1.4 s warm; a cold run
+  takes about 15 s, most of it vstd. The packages that Verus adds
+  are 8 of the 11 of 2.5 (`vstd`, `verus_builtin`,
+  `verus_builtin_macros`, `verus_state_machines_macros`, `verus_syn`,
+  `verus_prettyplease`, `synstructure`, `convert_case`) and a second
+  `syn` (2.0.119, for `verus_builtin_macros` and `synstructure`).
+  vstd pins `verus_builtin` itself (`0.0.0-2026-10-11-0230`). The
+  stripped release `ko` and `ko-pane` with `vstd` differ by 48 bytes
+  from the build without it. Decisions 80 to 83 came from RV.
 
 ### RV2. Verus: `deliver`, `scan` and `keep` (3 to 5 agent-days)
 
@@ -1889,6 +1975,12 @@ one session. The attach and resize rows wait for R4.
 - Depends on RV; beside R4 or after R5.
 - Acceptance: `cargo verus verify -p ko_server` passes on
   `pane_proc`; the unit tests of rows 8 and 14 still pass.
+- Result (2026-11-02, macOS): `ko_server::delivery` verifies with 14
+  obligations (1.0 s) and `ko_pane_wire` with 117 (1.3 s), no
+  `assume` and no `admit`; the `verus` stage takes 3.4 s warm,
+  with the Verus build of both crates. The stripped release `ko` grew by
+  16 bytes (1,067,464 to 1,067,480). Decisions 90 to 94 came from
+  RV2.
 
 ### R4. The terminal client (7 to 9 agent-days)
 

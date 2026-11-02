@@ -1,6 +1,6 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
 use std::os::fd::AsFd;
@@ -11,7 +11,7 @@ use ko_pane_wire::frame::{
     self, FromPane, History, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse, Oversize, Req,
     ScreenFormat, ScreenRows, Size, ToPane,
 };
-use ko_pane_wire::ring::{Invalid, Pos, Reader, RecordKind};
+use ko_pane_wire::ring::{Pos, Reader};
 use ko_sys::clock::Mono;
 use ko_sys::event::{Interest, Poll, Read, Reads, Ready, Token};
 use ko_sys::fd::Queue;
@@ -19,6 +19,7 @@ use ko_sys::pid::{Exit, Group, Pid, Verdict, Waited};
 use ko_sys::signal::Signal;
 
 use crate::config::Config;
+use crate::delivery::{self, Delivery};
 use crate::ids::PaneId;
 
 const RING_CAPACITY: u64 = 1 << 20;
@@ -96,9 +97,8 @@ impl fmt::Display for Refusal {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Fault {
-    Ring(Invalid),
+    Delivery(delivery::Fault),
     Frame(Malformed),
-    EarlySlice,
     Ready,
     Closed,
     TooLarge,
@@ -109,9 +109,8 @@ enum Fault {
 impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Fault::Ring(invalid) => invalid.fmt(f),
+            Fault::Delivery(fault) => fault.fmt(f),
             Fault::Frame(malformed) => malformed.fmt(f),
-            Fault::EarlySlice => f.write_str("ko-pane wrote a slice before its request"),
             Fault::Ready => f.write_str("invalid ready"),
             Fault::Closed => f.write_str("pane control socket closed"),
             Fault::TooLarge => f.write_str("control frame too large"),
@@ -126,9 +125,9 @@ impl fmt::Display for Fault {
     }
 }
 
-impl From<Invalid> for Fault {
-    fn from(invalid: Invalid) -> Fault {
-        Fault::Ring(invalid)
+impl From<delivery::Fault> for Fault {
+    fn from(fault: delivery::Fault) -> Fault {
+        Fault::Delivery(fault)
     }
 }
 
@@ -174,18 +173,21 @@ enum Stage {
     Open {
         socket: UnixStream,
         token: Token,
-        ring: Reader,
+        delivery: Delivery,
     },
     Closed {
-        ring: Reader,
+        delivery: Delivery,
     },
     Reaped,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Waiting {
-    req: Req,
-    at: Pos,
+impl Stage {
+    fn delivery_mut(&mut self) -> Option<&mut Delivery> {
+        match self {
+            Stage::Open { delivery, .. } | Stage::Closed { delivery } => Some(delivery),
+            Stage::Reaped => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -201,9 +203,6 @@ pub(crate) struct PaneProc {
     filled: usize,
     next_req: Req,
     pending: BTreeMap<Req, Reply>,
-    requests: VecDeque<Waiting>,
-    finished: VecDeque<Waiting>,
-    delivered: Pos,
     observed: Pos,
     busy: bool,
 }
@@ -240,13 +239,13 @@ impl PaneProc {
         frame::encode(&ToPane::Init(&init), &mut out).map_err(|oversize| {
             io::Error::new(io::ErrorKind::InvalidInput, oversize.to_string())
         })?;
-        let ring = Reader::create(RING_CAPACITY)?;
+        let delivery = Delivery::create(RING_CAPACITY)?;
         let (socket, theirs) = UnixStream::pair()?;
-        let pid = ko_sys::spawn::pane(&config.pane_exe, theirs.as_fd(), ring.fd())?;
+        let pid = ko_sys::spawn::pane(&config.pane_exe, theirs.as_fd(), delivery.ring().fd())?;
         drop(theirs);
         socket.set_nonblocking(true)?;
         let token = io.poll.watch(socket.as_fd(), Interest::Read);
-        let mut proc = PaneProc::new(socket, token, ring, pid, cwd);
+        let mut proc = PaneProc::new(socket, token, delivery, pid, cwd);
         proc.out.bytes = out;
         proc.flush(io);
         Ok(proc)
@@ -255,16 +254,16 @@ impl PaneProc {
     pub(crate) fn new(
         socket: UnixStream,
         token: Token,
-        ring: Reader,
+        delivery: Delivery,
         pid: Pid,
         cwd: &Path,
     ) -> PaneProc {
-        let start = ring.tail();
+        let start = delivery.ring().tail();
         PaneProc {
             stage: Stage::Open {
                 socket,
                 token,
-                ring,
+                delivery,
             },
             out: Queue::default(),
             pid,
@@ -276,9 +275,6 @@ impl PaneProc {
             filled: 0,
             next_req: Req::FIRST,
             pending: BTreeMap::new(),
-            requests: VecDeque::new(),
-            finished: VecDeque::new(),
-            delivered: start,
             observed: start,
             busy: false,
         }
@@ -305,16 +301,13 @@ impl PaneProc {
 
     pub(crate) fn ring(&self) -> Option<&Reader> {
         match &self.stage {
-            Stage::Open { ring, .. } | Stage::Closed { ring } => Some(ring),
+            Stage::Open { delivery, .. } | Stage::Closed { delivery } => Some(delivery.ring()),
             Stage::Reaped => None,
         }
     }
 
     pub(crate) fn ring_mut(&mut self) -> Option<&mut Reader> {
-        match &mut self.stage {
-            Stage::Open { ring, .. } | Stage::Closed { ring } => Some(ring),
-            Stage::Reaped => None,
-        }
+        self.stage.delivery_mut().map(Delivery::ring_mut)
     }
 
     pub(crate) fn child_pid(&self) -> Option<Pid> {
@@ -357,20 +350,27 @@ impl PaneProc {
     fn close(&mut self, io: &mut Io<'_>) {
         let stage = std::mem::replace(&mut self.stage, Stage::Reaped);
         self.stage = match stage {
-            Stage::Open { token, ring, .. } => {
+            Stage::Open {
+                token, delivery, ..
+            } => {
                 io.poll.unwatch(token);
-                Stage::Closed { ring }
+                Stage::Closed { delivery }
             }
             other => other,
         };
     }
 
     fn fail_pending(&mut self, message: &str, io: &mut Io<'_>) {
-        let snapshots = self.finished.drain(..).chain(self.requests.drain(..));
-        io.events.extend(snapshots.map(|waiting| Event::Snapshot {
-            req: waiting.req,
-            complete: false,
-        }));
+        let snapshots = self
+            .stage
+            .delivery_mut()
+            .map(Delivery::fail_all)
+            .unwrap_or_default();
+        io.events
+            .extend(snapshots.into_iter().map(|req| Event::Snapshot {
+                req,
+                complete: false,
+            }));
         io.events.extend(
             std::mem::take(&mut self.pending)
                 .into_keys()
@@ -428,71 +428,11 @@ impl PaneProc {
         req
     }
 
-    fn observe(&mut self) -> Option<Pos> {
-        self.ring_mut().map(Reader::head)
-    }
-
-    fn deliver(&mut self, upper: Pos, io: &mut Io<'_>) -> Result<(), Fault> {
-        let Some(ring) = self.ring().filter(|_| !self.requests.is_empty()) else {
-            return Ok(());
-        };
-        let mut at = self.delivered;
-        let mut early = false;
-        let mut done = Vec::new();
-        let mut requests = self.requests.iter().copied().peekable();
-        while !early && at < upper {
-            let record = ring.record(at)?;
-            if record.kind == RecordKind::Slice {
-                match requests.peek().copied() {
-                    None => {}
-                    Some(front) if front.at <= at => {
-                        (io.sink)(ring, front.req, at);
-                        if ring.slice(at)?.last {
-                            requests.next();
-                            done.push(record.next);
-                        }
-                    }
-                    Some(_) => {
-                        early = true;
-                        continue;
-                    }
-                }
-            }
-            at = record.next;
-        }
-        for hold in done {
-            if let Some(waiting) = self.requests.pop_front() {
-                self.finished.push_back(Waiting {
-                    at: hold,
-                    ..waiting
-                });
-            }
-        }
-        self.delivered = at;
-        if early {
-            Err(Fault::EarlySlice)
-        } else {
-            Ok(())
-        }
-    }
-
     fn scan_ring(&mut self, io: &mut Io<'_>) -> Result<bool, Fault> {
-        let Some(head) = self.observe() else {
+        let Some(delivery) = self.stage.delivery_mut() else {
             return Ok(false);
         };
-        self.deliver(head, io)?;
-        let reading = if self.requests.is_empty() {
-            head
-        } else {
-            self.delivered
-        };
-        let keep = self
-            .finished
-            .front()
-            .map_or(reading, |finished| finished.at.min(reading));
-        if let Some(ring) = self.ring_mut() {
-            ring.advance(head, keep)?;
-        }
+        let head = delivery.scan(&mut io.sink)?;
         let changed = head != self.observed;
         self.observed = head;
         self.busy = changed;
@@ -513,29 +453,25 @@ impl PaneProc {
     }
 
     fn snapshot_done(&mut self, req: Req, io: &mut Io<'_>) {
-        let event = match (self.finished.front(), self.requests.front()) {
-            (Some(front), _) if front.req == req => self.finished.pop_front().map(|_| true),
-            (None, Some(front)) if front.req == req => self.requests.pop_front().map(|_| false),
-            _ => None,
-        };
+        let complete = self
+            .stage
+            .delivery_mut()
+            .and_then(|delivery| delivery.snapshot_done(req));
         io.events
-            .extend(event.map(|complete| Event::Snapshot { req, complete }));
+            .extend(complete.map(|complete| Event::Snapshot { req, complete }));
     }
 
     pub(crate) fn snapshot(&mut self, history: History, io: &mut Io<'_>) -> Option<Req> {
         if !self.is_open() {
             return None;
         }
-        let head = self.observe()?;
+        self.stage.delivery_mut()?.observe();
         let req = self.next_req();
         let _ = self.send(&ToPane::Snapshot { req, history }, io);
         if !self.is_open() {
             return None;
         }
-        if self.requests.is_empty() {
-            self.delivered = head;
-        }
-        self.requests.push_back(Waiting { req, at: head });
+        self.stage.delivery_mut()?.request(req);
         Some(req)
     }
 
@@ -667,8 +603,8 @@ impl PaneProc {
     }
 
     fn deliver_now(&mut self, io: &mut Io<'_>) -> Result<(), Fault> {
-        match self.observe() {
-            Some(upper) => self.deliver(upper, io),
+        match self.stage.delivery_mut() {
+            Some(delivery) => Ok(delivery.deliver_now(&mut io.sink)?),
             None => Ok(()),
         }
     }
@@ -798,7 +734,7 @@ impl PaneProc {
 mod tests {
     use super::*;
     use ko_pane_wire::frame::Kind;
-    use ko_pane_wire::ring::{Commit, Writer};
+    use ko_pane_wire::ring::{Commit, RecordKind, Writer};
     use ko_sys::event::{Events, Mode};
     use proptest::prelude::*;
     use std::io::Write;
@@ -824,13 +760,13 @@ mod tests {
     }
 
     fn fake(capacity: u64) -> Fake {
-        let ring = Reader::create(capacity).unwrap();
-        let writer = ring.writer().unwrap();
+        let delivery = Delivery::create(capacity).unwrap();
+        let writer = delivery.ring().writer().unwrap();
         let (socket, peer) = UnixStream::pair().unwrap();
         socket.set_nonblocking(true).unwrap();
         let mut poll = Poll::new();
         let token = poll.watch(socket.as_fd(), Interest::Read);
-        let proc = PaneProc::new(socket, token, ring, unsignalled_pid(), Path::new(""));
+        let proc = PaneProc::new(socket, token, delivery, unsignalled_pid(), Path::new(""));
         Fake {
             proc,
             writer,
@@ -1173,12 +1109,10 @@ mod tests {
 
     fn watched() -> Fake {
         let mut fake = fake(64);
-        let head = fake.proc.observe().unwrap();
+        let delivery = fake.proc.stage.delivery_mut().unwrap();
+        delivery.observe();
+        delivery.request(Req::FIRST);
         fake.proc.next_req = Req::FIRST.next().next().next();
-        fake.proc.requests.push_back(Waiting {
-            req: Req::FIRST,
-            at: head,
-        });
         fake.proc.pending.insert(Req::FIRST.next(), Reply::Paste);
         fake.proc
             .pending

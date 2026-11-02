@@ -60,7 +60,7 @@ test: $(KO_BUILD)
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: build-ko build-ko-ocaml test-ko lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane proofs e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: build-ko build-ko-ocaml test-ko lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane proofs verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -80,6 +80,13 @@ proofs:
 	@test -x $(FSTAR)/bin/fstar.exe || ./scripts/install-fstar.sh $(CURDIR)/$(FSTAR)
 	PATH="$(CURDIR)/$(FSTAR)/bin:$$PATH" KO_FSTAR_CACHE=$(CURDIR)/build/fstar-checked/$(FSTAR_KEY) \
 		sh ko_proofs/extract.sh $(if $(filter 1,$(WRITE)),--write)
+
+# verifies the crates of scripts/verus.sh with the pinned Verus release, which it
+# downloads into build/verus/<release> once. Only this target needs Verus.
+VERUS_KEY := $(shell ./scripts/verus.sh --print-key)
+VERUS := build/verus/$(VERUS_KEY)
+verus:
+	CARGO='$(CARGO)' ./scripts/verus.sh verify $(CURDIR)/$(VERUS)
 
 fuzz:
 	bash scripts/fuzz.sh $(if $(MERGE),--merge) '$(TARGET)' '$(TIME)'

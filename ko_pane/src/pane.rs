@@ -148,7 +148,7 @@ impl Slices<'_> {
             screen: self.screen,
         }
         .encode();
-        if let Some(payload) = self.io.out.writer.payload(RecordKind::Slice, SLICE_HEADER) {
+        if let Some(payload) = self.io.out.writer.payload(SLICE_HEADER) {
             payload.copy_from_slice(&flags);
         }
         self.first = false;
@@ -172,7 +172,7 @@ impl Slices<'_> {
             self.io
                 .out
                 .writer
-                .payload(RecordKind::Slice, self.room.saturating_add(SLICE_HEADER))
+                .payload(self.room.saturating_add(SLICE_HEADER))
                 .and_then(|payload| payload.get_mut(start..))
                 .and_then(|room| room.get_mut(..take))
                 .ok_or(Stop)?
@@ -548,7 +548,7 @@ impl Pane {
             out.announce_full();
             return false;
         }
-        let Some(dst) = out.writer.payload(RecordKind::Bytes, room) else {
+        let Some(dst) = out.writer.payload(room) else {
             return false;
         };
         let (mut used, mut reads) = (0, 0);

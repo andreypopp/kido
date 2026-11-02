@@ -19,6 +19,7 @@ clap_builder
 clap_derive
 clap_lex
 const-oid
+convert_case
 core_detect
 cpufeatures
 crypto-common
@@ -85,6 +86,7 @@ sharded-slab
 shlex
 smallvec
 syn
+synstructure
 tempfile
 thiserror
 thiserror-impl
@@ -101,6 +103,12 @@ typenum
 unarray
 unicode-ident
 valuable
+verus_builtin
+verus_builtin_macros
+verus_prettyplease
+verus_state_machines_macros
+verus_syn
+vstd
 vte
 wait-timeout
 windows-link

@@ -78,6 +78,26 @@ jobs:
         timeout-minutes: 5
         run: cargo fetch --locked
 
+      # The Verus release archive (452 MB for arm64 macOS, 1.4 GB unpacked) that
+      # `make verus` uses, keyed by the release in scripts/verus.sh.
+      - name: Resolve Verus key
+        if: runner.os == 'macOS'
+        id: verus
+        run: echo "key=$(./scripts/verus.sh --print-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Verus
+        if: runner.os == 'macOS'
+        id: verus-cache
+        uses: actions/cache@v4
+        with:
+          path: build/verus/${{ steps.verus.outputs.key }}
+          key: verus-${{ runner.os }}-${{ runner.arch }}-${{ steps.verus.outputs.key }}
+
+      - name: Fetch Verus
+        if: runner.os == 'macOS' && steps.verus-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        run: ./scripts/verus.sh install "$PWD/build/verus/${{ steps.verus.outputs.key }}"
+
       # The dune binary distribution, pinned to the release the README
       # installs; there is no opam. `build-deps` builds dune.lock into
       # _build (the compiler included) and the action caches dune's shared
@@ -232,7 +252,7 @@ jobs:
 
       - name: Verify ko
         if: runner.os == 'macOS'
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux make verify-ko
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KO_VERUS_REQUIRED=1 make verify-ko
 
       # Linux has no Rust build yet: make e2e-ko runs the OCaml ko with the
       # OCaml decoder there.
