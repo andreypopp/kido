@@ -13,7 +13,10 @@ const MAX_INPUT: usize = 60000;
 const CAPACITY: u64 = 1 << 20;
 
 fn input_file(data: &[u8], at_end: bool) -> Option<File> {
-    let path = std::env::temp_dir().join(format!("ko-pane-control-{}", std::process::id()));
+    static FILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let number = FILES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let path =
+        std::env::temp_dir().join(format!("ko-pane-control-{}-{number}", std::process::id()));
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)

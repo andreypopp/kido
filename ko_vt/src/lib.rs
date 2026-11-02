@@ -6,7 +6,10 @@ use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::ptr::{self, NonNull};
 
-use ko_pane_wire::frame::{Dim, Limits, Medium, Scrollback, Size};
+use ko_pane_wire::frame::{
+    Dim, Limits, Medium, ProgramKind, ProgramState, ProgressReport, ProgressState, PromptStep,
+    Scrollback, Size,
+};
 use ko_vt_sys as sys;
 
 pub mod compress;
@@ -83,9 +86,34 @@ pub struct Changes {
     pub pwd: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Report {
+    Prompt {
+        step: PromptStep,
+        exit: Option<i32>,
+        command: Vec<u8>,
+    },
+    Status {
+        state: ProgramState,
+        kind: ProgramKind,
+        progress: Option<u8>,
+        id: Vec<u8>,
+        app: Vec<u8>,
+        title: Vec<u8>,
+        msg: Vec<u8>,
+    },
+    Bell,
+    Notify {
+        title: Vec<u8>,
+        body: Vec<u8>,
+    },
+    Progress(Option<ProgressReport>),
+}
+
 #[derive(Debug, Default)]
 struct Notes {
     replies: Vec<u8>,
+    reports: Vec<Report>,
     changes: Changes,
     render: Option<render::Render>,
 }
@@ -126,6 +154,132 @@ unsafe extern "C" fn title_changed(_terminal: sys::GhosttyTerminal, userdata: *m
 unsafe extern "C" fn pwd_changed(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
     // SAFETY: as in `write_pty`.
     unsafe { (*userdata.cast::<Notes>()).changes.pwd = true };
+}
+
+fn text(string: &sys::GhosttyString) -> Vec<u8> {
+    if string.len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: a GhosttyString holds len readable bytes for the duration of the callback that
+        // received it (terminal.h), and the bytes are copied before the callback returns.
+        unsafe { std::slice::from_raw_parts(string.ptr, string.len) }.to_vec()
+    }
+}
+
+fn percent(value: i8) -> Option<u8> {
+    u8::try_from(value).ok().filter(|&percent| percent <= 100)
+}
+
+fn record(notes: *mut c_void, report: Report) {
+    // SAFETY: as in `write_pty`.
+    unsafe { (*notes.cast::<Notes>()).reports.push(report) };
+}
+
+unsafe extern "C" fn semantic_prompt(
+    _terminal: sys::GhosttyTerminal,
+    userdata: *mut c_void,
+    event: *const sys::GhosttyTerminalSemanticPrompt,
+) {
+    // SAFETY: event is valid for the call (terminal.h).
+    let event = unsafe { &*event };
+    let step = match event.kind {
+        sys::GHOSTTY_SEMANTIC_PROMPT_PROMPT_START
+            if event.prompt_kind == sys::GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY =>
+        {
+            PromptStep::Start
+        }
+        sys::GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START => PromptStep::OutputStart,
+        sys::GHOSTTY_SEMANTIC_PROMPT_COMMAND_END => PromptStep::End,
+        _ => return,
+    };
+    record(
+        userdata,
+        Report::Prompt {
+            step,
+            exit: event.has_exit_code.then_some(event.exit_code),
+            command: text(&event.command),
+        },
+    );
+}
+
+unsafe extern "C" fn program_status(
+    _terminal: sys::GhosttyTerminal,
+    userdata: *mut c_void,
+    status: *const sys::GhosttyTerminalProgramStatus,
+) {
+    // SAFETY: status is valid for the call (terminal.h).
+    let status = unsafe { &*status };
+    let state = match status.state {
+        sys::GHOSTTY_PROGRAM_STATUS_STATE_IDLE => ProgramState::Idle,
+        sys::GHOSTTY_PROGRAM_STATUS_STATE_WORKING => ProgramState::Working,
+        sys::GHOSTTY_PROGRAM_STATUS_STATE_DONE => ProgramState::Done,
+        sys::GHOSTTY_PROGRAM_STATUS_STATE_BLOCKED => ProgramState::Blocked,
+        sys::GHOSTTY_PROGRAM_STATUS_STATE_ERROR => ProgramState::Error,
+        sys::GHOSTTY_PROGRAM_STATUS_STATE_CLEAR => ProgramState::Clear,
+        _ => return,
+    };
+    let kind = match status.kind {
+        sys::GHOSTTY_PROGRAM_STATUS_KIND_PERMISSION => ProgramKind::Permission,
+        sys::GHOSTTY_PROGRAM_STATUS_KIND_QUESTION => ProgramKind::Question,
+        sys::GHOSTTY_PROGRAM_STATUS_KIND_AUTH => ProgramKind::Auth,
+        _ => ProgramKind::None,
+    };
+    record(
+        userdata,
+        Report::Status {
+            state,
+            kind,
+            progress: percent(status.progress),
+            id: text(&status.id),
+            app: text(&status.app),
+            title: text(&status.title),
+            msg: text(&status.message),
+        },
+    );
+}
+
+unsafe extern "C" fn bell(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
+    record(userdata, Report::Bell);
+}
+
+unsafe extern "C" fn desktop_notification(
+    _terminal: sys::GhosttyTerminal,
+    userdata: *mut c_void,
+    notification: *const sys::GhosttyTerminalDesktopNotification,
+) {
+    // SAFETY: notification is valid for the call (terminal.h).
+    let notification = unsafe { &*notification };
+    record(
+        userdata,
+        Report::Notify {
+            title: text(&notification.title),
+            body: text(&notification.body),
+        },
+    );
+}
+
+unsafe extern "C" fn progress_report(
+    _terminal: sys::GhosttyTerminal,
+    userdata: *mut c_void,
+    progress: *const sys::GhosttyTerminalProgressReport,
+) {
+    // SAFETY: progress is valid for the call (terminal.h).
+    let progress = unsafe { &*progress };
+    let state = match progress.state {
+        sys::GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE => None,
+        sys::GHOSTTY_TERMINAL_PROGRESS_STATE_SET => Some(ProgressState::Set),
+        sys::GHOSTTY_TERMINAL_PROGRESS_STATE_ERROR => Some(ProgressState::Error),
+        sys::GHOSTTY_TERMINAL_PROGRESS_STATE_INDETERMINATE => Some(ProgressState::Indeterminate),
+        sys::GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE => Some(ProgressState::Pause),
+        _ => return,
+    };
+    record(
+        userdata,
+        Report::Progress(state.map(|state| ProgressReport {
+            state,
+            progress: percent(progress.progress),
+        })),
+    );
 }
 
 impl Drop for Terminal {
@@ -364,7 +518,38 @@ impl Terminal {
         set(
             sys::GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
             pwd_changed as unsafe extern "C" fn(_, _) as *const c_void,
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT,
+            semantic_prompt as unsafe extern "C" fn(_, _, _) as *const c_void,
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS,
+            program_status as unsafe extern "C" fn(_, _, _) as *const c_void,
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_BELL,
+            bell as unsafe extern "C" fn(_, _) as *const c_void,
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION,
+            desktop_notification as unsafe extern "C" fn(_, _, _) as *const c_void,
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
+            progress_report as unsafe extern "C" fn(_, _, _) as *const c_void,
         )
+    }
+
+    pub fn reports(&mut self) -> &mut Vec<Report> {
+        &mut self.notes.reports
+    }
+
+    pub fn alternate(&self) -> Result<bool, Error> {
+        Ok(self.get(
+            sys::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+            sys::GHOSTTY_TERMINAL_SCREEN_PRIMARY,
+        )? == sys::GHOSTTY_TERMINAL_SCREEN_ALTERNATE)
     }
 
     pub fn replies(&mut self) -> &mut Vec<u8> {
@@ -982,6 +1167,66 @@ mod tests {
         let mut vt = make(cols, rows);
         vt.serve(&[], "/tmp").unwrap();
         vt
+    }
+
+    #[test]
+    fn reports_record_in_order_and_only_for_primary_prompts() {
+        let mut vt = served(20, 4);
+        vt.write(
+            b"\x1b]133;A\x07\x1b]133;A;k=s\x07\x1b]133;B\x07\x1b]133;C;cmdline_url=sleep%202\x07\
+              \x1b]133;D;3\x07\x1b]7501;state=working:app=pi\x07\x07\
+              \x1b]9;4;3\x07\x1b]9;4;0\x07\x1b]9;hello\x07",
+        );
+        let reports = std::mem::take(vt.reports());
+        assert_eq!(
+            reports,
+            [
+                Report::Prompt {
+                    step: PromptStep::Start,
+                    exit: None,
+                    command: Vec::new()
+                },
+                Report::Prompt {
+                    step: PromptStep::OutputStart,
+                    exit: None,
+                    command: b"sleep 2".to_vec()
+                },
+                Report::Prompt {
+                    step: PromptStep::End,
+                    exit: Some(3),
+                    command: Vec::new()
+                },
+                Report::Status {
+                    state: ProgramState::Working,
+                    kind: ProgramKind::None,
+                    progress: None,
+                    id: Vec::new(),
+                    app: b"pi".to_vec(),
+                    title: Vec::new(),
+                    msg: Vec::new()
+                },
+                Report::Bell,
+                Report::Progress(Some(ProgressReport {
+                    state: ProgressState::Indeterminate,
+                    progress: None
+                })),
+                Report::Progress(None),
+                Report::Notify {
+                    title: Vec::new(),
+                    body: b"hello".to_vec()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_alternate_screen_is_read_from_the_terminal() {
+        let mut vt = served(20, 4);
+        assert!(!vt.alternate().unwrap());
+        vt.write(b"\x1b[?1049h");
+        assert!(vt.alternate().unwrap());
+        vt.write(b"\x1b[?1049l");
+        assert!(!vt.alternate().unwrap());
     }
 
     #[test]

@@ -117,8 +117,14 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
             "resource not found",
         );
     };
-    if let Route::DeletePane(id) | Route::Input(id) | Route::Screen(id, ..) | Route::View(id, ..) =
-        route
+    if let Route::DeletePane(id)
+    | Route::Input(id)
+    | Route::Screen(id, ..)
+    | Route::View(id, ..)
+    | Route::Vars(id)
+    | Route::Var(id, _)
+    | Route::SetVar(id, _)
+    | Route::DeleteVar(id, _) = route
         && state.panes.find(id).is_none()
     {
         return error(
@@ -133,8 +139,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
     match route {
         Route::Version => ok(&mut state.conns[index], &ours),
         Route::ListPanes => {
-            let rows = state.rows();
-            ok(&mut state.conns[index], &rows);
+            let listing = state.listing();
+            ok(&mut state.conns[index], &listing);
         }
         Route::CreatePane => {
             let Some(request) = body::<CreatePane>(&mut state.conns[index], &payload) else {
@@ -189,6 +195,41 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
             state.dispatch(poll, id, events);
         }
         Route::Screen(id, format, rows) => state.screen(poll, index, id, format, rows),
+        Route::Vars(id) => {
+            if let Some(pane) = state.panes.find(id) {
+                ok(&mut state.conns[index], &pane.vars().all());
+            }
+        }
+        Route::Var(id, name) => {
+            let value = state.panes.find(id).and_then(|pane| pane.vars().get(&name));
+            match value {
+                Some(value) => ok(&mut state.conns[index], value),
+                None => error(
+                    &mut state.conns[index],
+                    ErrorKind::Missing,
+                    "variable not found",
+                ),
+            }
+        }
+        Route::SetVar(id, name) => {
+            let value = match &payload {
+                Payload::Oversized => Err("variable too large".to_owned()),
+                Payload::Bytes(bytes) => serde_json::from_slice(bytes).map_err(|e| e.to_string()),
+            };
+            let set = value.and_then(|value| {
+                state
+                    .set_var(poll, id, name, value)
+                    .map_err(|refusal| refusal.to_string())
+            });
+            match set {
+                Ok(()) => ok(&mut state.conns[index], &Empty {}),
+                Err(message) => error(&mut state.conns[index], ErrorKind::Invalid, message),
+            }
+        }
+        Route::DeleteVar(id, name) => {
+            state.delete_var(poll, id, name);
+            ok(&mut state.conns[index], &Empty {});
+        }
         Route::View(id, options, offset) => {
             let opened = state
                 .panes

@@ -7,8 +7,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{
-    self, CellPx, Dead, Dim, FromPane, History, Init, Kind, Limits, Medium, Req, ScreenFormat,
-    ScreenRows, Scrollback, Size, ToPane,
+    self, CellPx, Dead, Dim, FromPane, History, Init, Kind, Limits, Medium, ProgramState,
+    ProgressReport, ProgressState, PromptStep, Req, ScreenFormat, ScreenRows, Scrollback, Size,
+    ToPane,
 };
 use ko_pane_wire::ring::{Marker, Pos, Reader, RecordKind};
 use ko_sys::fd;
@@ -207,12 +208,20 @@ fn a_recorded_stream_arrives_as_frames_records_and_a_snapshot_across_a_full_ring
     pane.send(&init(&["/bin/sh", "-c", script], "/"));
     let (mut ready, mut titles, mut pwds, mut fulls, mut done) = (None, 0, 0, 0, false);
     let mut death = None;
+    let (mut prompts, mut records, mut foregrounds) = (Vec::new(), Vec::new(), Vec::new());
     while !done {
         let bytes = pane.receive();
         pane.drain();
         match frame::decode(&bytes).unwrap().unwrap() {
             FromPane::Ready(child) => ready = Some(Pid::new(child).unwrap()),
             FromPane::Head(_) => {}
+            FromPane::Prompt(prompt) => {
+                prompts.push((prompt.step, prompt.exit, prompt.command.to_vec()));
+            }
+            FromPane::Record(record) => {
+                records.push((record.state, record.app.to_vec()));
+            }
+            FromPane::Foreground(foreground) => foregrounds.push(foreground.name.to_vec()),
             FromPane::Full(_) => {
                 fulls += 1;
                 let tail = pane.cursor;
@@ -247,6 +256,16 @@ fn a_recorded_stream_arrives_as_frames_records_and_a_snapshot_across_a_full_ring
     pane.drain();
     assert!(ready.is_some() && fulls > 0, "{ready:?} {fulls}");
     assert_eq!((titles, pwds), (1, 1));
+    assert_eq!(
+        prompts,
+        [
+            (PromptStep::Start, None, Vec::new()),
+            (PromptStep::OutputStart, None, b"echo".to_vec()),
+            (PromptStep::End, Some(7), Vec::new()),
+        ]
+    );
+    assert_eq!(records, [(ProgramState::Working, b"ko".to_vec())]);
+    assert_eq!(foregrounds.first(), Some(&b"sh".to_vec()));
     assert!(pane.seen.offset > 8000, "{}", pane.seen.offset);
     assert_eq!(pane.seen.resizes, [size(40, 20)]);
     assert_eq!(pane.seen.deaths, [death.unwrap()]);
@@ -291,7 +310,7 @@ fn a_recorded_stream_arrives_as_frames_records_and_a_snapshot_across_a_full_ring
                 screen_bytes += text.len();
                 screens += usize::from(last);
             }
-            FromPane::Head(_) | FromPane::Full(_) => {}
+            FromPane::Head(_) | FromPane::Full(_) | FromPane::Foreground(_) => {}
             other => panic!("unexpected frame {other:?}"),
         }
     }
@@ -368,7 +387,7 @@ fn a_grid_over_the_dimension_limit_is_refused_and_the_limit_itself_is_accepted()
         let bytes = pane.receive();
         match frame::decode(&bytes).unwrap().unwrap() {
             FromPane::Error(message) => break String::from_utf8_lossy(message).into_owned(),
-            FromPane::Head(_) => {}
+            FromPane::Head(_) | FromPane::Foreground(_) => {}
             other => panic!("unexpected frame {other:?}"),
         }
     };
@@ -404,5 +423,69 @@ fn a_control_frame_is_handled_while_the_program_keeps_the_pty_readable() {
     pane.pump_until(|seen| !seen.resizes.is_empty());
     assert_eq!(pane.seen.resizes, [size(40, 20)]);
     pane.pump_until(|seen| seen.offset > 2 << 20);
+    assert_eq!(pane.finish(), Waited::Ended(Exit::Exited(0)));
+}
+
+#[test]
+fn reports_and_the_foreground_arrive_as_frames_after_the_record_that_carried_them() {
+    let script = "printf '\\033[?1049h\\033]9;4;1;50\\007\\033]9;hello\\007\\007\\033]777;notify;T;B\\007\\033]9;4;0\\007\\033]133;C\\007'; \
+        exec /usr/bin/awk 'BEGIN{printf \"LATE\"; system(\"sleep 5\")}'";
+    let mut pane = Harness::start(1 << 16);
+    pane.send(&init(&["/bin/sh", "-c", script], "/"));
+    let (mut alternate, mut bells, mut notices, mut progress) =
+        (Vec::new(), 0, Vec::new(), Vec::new());
+    let mut foregrounds = Vec::new();
+    while foregrounds.last() != Some(&b"awk".to_vec()) {
+        let bytes = pane.receive();
+        pane.drain();
+        match frame::decode(&bytes).unwrap().unwrap() {
+            FromPane::Alternate(on) => alternate.push(on),
+            FromPane::Bell => bells += 1,
+            FromPane::Notify { title, body } => notices.push((title.to_vec(), body.to_vec())),
+            FromPane::Progress(report) => progress.push(report),
+            FromPane::Foreground(foreground) => foregrounds.push(foreground.name.to_vec()),
+            FromPane::Ready(_) | FromPane::Head(_) | FromPane::Prompt(_) => {}
+            other => panic!("unexpected frame {other:?}"),
+        }
+    }
+    assert_eq!(alternate, [true]);
+    assert_eq!(bells, 1);
+    assert_eq!(
+        notices,
+        [
+            (Vec::new(), b"hello".to_vec()),
+            (b"T".to_vec(), b"B".to_vec())
+        ]
+    );
+    assert_eq!(
+        progress,
+        [
+            Some(ProgressReport {
+                state: ProgressState::Set,
+                progress: Some(50)
+            }),
+            None
+        ]
+    );
+    assert_eq!(foregrounds.first(), Some(&b"sh".to_vec()));
+    assert_eq!(pane.finish(), Waited::Ended(Exit::Exited(0)));
+}
+
+#[test]
+fn output_inside_the_throttle_window_then_silence_gets_one_trailing_foreground_check() {
+    let script = "exec /usr/bin/awk 'BEGIN{printf \"X\"; system(\"sleep 5\")}'";
+    let mut pane = Harness::start(1 << 16);
+    pane.send(&init(&["/bin/sh", "-c", script], "/"));
+    let mut foregrounds = Vec::new();
+    while foregrounds.last() != Some(&b"awk".to_vec()) {
+        let bytes = pane.receive();
+        pane.drain();
+        match frame::decode(&bytes).unwrap().unwrap() {
+            FromPane::Foreground(foreground) => foregrounds.push(foreground.name.to_vec()),
+            FromPane::Ready(_) | FromPane::Head(_) => {}
+            other => panic!("unexpected frame {other:?}"),
+        }
+    }
+    assert!(foregrounds.len() <= 2, "{foregrounds:?}");
     assert_eq!(pane.finish(), Waited::Ended(Exit::Exited(0)));
 }

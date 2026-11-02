@@ -387,6 +387,39 @@ pub fn set_size(master: &OwnedFd, size: Winsize) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Foreground {
+    pub group: u32,
+    pub name: Vec<u8>,
+}
+
+#[cfg(target_os = "macos")]
+fn process_name(pid: libc::pid_t) -> Vec<u8> {
+    let mut name = [0u8; 256];
+    // SAFETY: name is writable for the size that proc_name receives.
+    let length = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
+    let length = usize::try_from(length).unwrap_or(0).min(name.len());
+    name.get(..length).unwrap_or_default().to_vec()
+}
+
+#[cfg(target_os = "linux")]
+fn process_name(pid: libc::pid_t) -> Vec<u8> {
+    let mut name = std::fs::read(format!("/proc/{pid}/comm")).unwrap_or_default();
+    if name.last() == Some(&b'\n') {
+        name.pop();
+    }
+    name
+}
+
+pub fn foreground(master: BorrowedFd<'_>) -> Option<Foreground> {
+    // SAFETY: master is an open pty master.
+    let group = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+    Some(Foreground {
+        group: u32::try_from(group).ok().filter(|&group| group > 0)?,
+        name: process_name(group),
+    })
+}
+
 pub fn read(master: BorrowedFd<'_>, buffer: &mut [u8]) -> io::Result<usize> {
     match crate::fd::read(master, buffer) {
         Err(error) if error.raw_os_error() == Some(libc::EIO) => Ok(0),

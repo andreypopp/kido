@@ -232,6 +232,16 @@ impl Run {
 }
 
 pub(crate) fn run_ko(scratch: &Path, env: &[Vec<u8>], args: &[&str], stdin: &str) -> Run {
+    run_program(scratch, &ko(), env, args, stdin)
+}
+
+pub(crate) fn run_program(
+    scratch: &Path,
+    program: &Path,
+    env: &[Vec<u8>],
+    args: &[&str],
+    stdin: &str,
+) -> Run {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let file = |name: &str| scratch.join(format!("run-{id}-{name}"));
@@ -243,14 +253,14 @@ pub(crate) fn run_ko(scratch: &Path, env: &[Vec<u8>], args: &[&str], stdin: &str
         File::create(file("stderr")).unwrap(),
     );
     let mut child = Child::spawn(
-        &ko(),
+        program,
         args,
         env,
         &[(stdin.as_fd(), 0), (stdout.as_fd(), 1), (stderr.as_fd(), 2)],
     );
     let exit = child
         .wait(DEADLINE)
-        .unwrap_or_else(|| panic!("ko {args:?} did not exit"));
+        .unwrap_or_else(|| panic!("{} {args:?} did not exit", program.display()));
     Run {
         stdout: std::fs::read_to_string(file("stdout")).unwrap(),
         stderr: std::fs::read_to_string(file("stderr")).unwrap(),
@@ -258,7 +268,7 @@ pub(crate) fn run_ko(scratch: &Path, env: &[Vec<u8>], args: &[&str], stdin: &str
     }
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
@@ -296,7 +306,7 @@ pub(crate) fn tagged(text: &str) -> Option<(String, Value)> {
     Some((message.get("type")?.as_str()?.to_owned(), message))
 }
 
-pub(crate) const PROTOCOL: &str = "2.1";
+pub(crate) const PROTOCOL: &str = "2.2";
 
 pub(crate) fn size_request(size: Value) -> Value {
     let mut request = size;
@@ -575,19 +585,40 @@ pub(crate) struct Server {
     stopped: bool,
 }
 
+pub(crate) fn which(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+}
+
 pub(crate) fn start(args: &[&str]) -> Server {
+    start_with(Path::new("/bin/sh"), &[], args)
+}
+
+pub(crate) fn start_with(shell: &Path, env: &[(&str, &str)], args: &[&str]) -> Server {
     let dir = Dir::new("ko-");
     let log = PathBuf::from(format!("{}.log", dir.display()));
     let (null, output) = (
         File::open("/dev/null").unwrap(),
         File::create(&log).unwrap(),
     );
-    let mut argv = vec!["server", "--server", text_of(&dir), "--shell", "/bin/sh"];
+    let mut argv = vec![
+        "server",
+        "--server",
+        text_of(&dir),
+        "--shell",
+        text_of(shell),
+    ];
     argv.extend_from_slice(args);
+    let mut server_env = test_env(&dir);
+    for (name, value) in env {
+        server_env.retain(|entry| !entry.starts_with(format!("{name}=").as_bytes()));
+        server_env.push(format!("{name}={value}").into_bytes());
+    }
     let child = Child::spawn(
         &ko(),
         &argv,
-        &test_env(&dir),
+        &server_env,
         &[(null.as_fd(), 0), (output.as_fd(), 1), (output.as_fd(), 2)],
     );
     let mut server = Server {
@@ -814,6 +845,58 @@ impl Server {
             .to_owned()
     }
 
+    pub(crate) fn shell_pane(&self) -> String {
+        self.ko(&["api", "--input", "-", "/panes"], r#"{"cwd": "/tmp"}"#)
+            .json()["pane"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    pub(crate) fn echo_pane(&self) -> String {
+        let pane = self.pane("stty raw -echo; printf READY; exec cat");
+        self.screen_has(&pane, "READY");
+        pane
+    }
+
+    pub(crate) fn screen(&self, pane: &str) -> String {
+        self.ko(&["api", &format!("/panes/{pane}/screen")], "").ok()
+    }
+
+    pub(crate) fn screen_has(&self, pane: &str, needle: &str) {
+        poll(&format!("{needle} on the screen of {pane}"), || {
+            self.screen(pane).contains(needle)
+        });
+    }
+
+    pub(crate) fn rows(&self) -> Vec<Value> {
+        match serde_json::from_str(&self.request("GET", "/panes", None, 200)) {
+            Ok(Value::Array(rows)) => rows,
+            other => panic!("/panes is not a list: {other:?}"),
+        }
+    }
+
+    pub(crate) fn row(&self, pane: &str) -> Value {
+        self.rows()
+            .into_iter()
+            .find(|row| row["id"] == pane)
+            .unwrap_or_else(|| panic!("no row for {pane}"))
+    }
+
+    pub(crate) fn wait_row(
+        &self,
+        pane: &str,
+        what: &str,
+        mut check: impl FnMut(&Value) -> bool,
+    ) -> Value {
+        let mut last = Value::Null;
+        poll(what, || {
+            last = self.row(pane);
+            check(&last)
+        });
+        last
+    }
+
     pub(crate) fn text(&self, pane: &str, text: &str) {
         let body = json!({"type": "text", "data": base64(text.as_bytes())});
         self.ko(
@@ -824,12 +907,8 @@ impl Server {
     }
 
     pub(crate) fn pane_pids(&self) -> Vec<(String, i64)> {
-        let Ok(Value::Array(rows)) =
-            serde_json::from_str(&self.request("GET", "/panes", None, 200))
-        else {
-            panic!("/panes is not a list");
-        };
-        rows.iter()
+        self.rows()
+            .iter()
             .map(|row| {
                 (
                     row["id"].as_str().unwrap_or_default().to_owned(),

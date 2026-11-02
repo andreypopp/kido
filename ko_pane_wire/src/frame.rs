@@ -44,6 +44,13 @@ pub enum Kind {
     Mouse = 20,
     Focus = 21,
     Screen = 22,
+    Prompt = 11,
+    Record = 12,
+    Foreground = 23,
+    Alternate = 24,
+    Bell = 25,
+    Notify = 26,
+    Progress = 27,
 }
 
 impl Kind {
@@ -69,6 +76,13 @@ impl Kind {
             20 => Kind::Mouse,
             21 => Kind::Focus,
             22 => Kind::Screen,
+            11 => Kind::Prompt,
+            12 => Kind::Record,
+            23 => Kind::Foreground,
+            24 => Kind::Alternate,
+            25 => Kind::Bell,
+            26 => Kind::Notify,
+            27 => Kind::Progress,
             _ => return None,
         })
     }
@@ -148,6 +162,70 @@ pub enum Medium {
     File,
     TempFile,
     SharedMem,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptStep {
+    Start,
+    OutputStart,
+    End,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prompt<'a> {
+    pub step: PromptStep,
+    pub exit: Option<i32>,
+    pub at: Mono,
+    pub command: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramState {
+    Idle,
+    Working,
+    Done,
+    Blocked,
+    Error,
+    Clear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramKind {
+    None,
+    Permission,
+    Question,
+    Auth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Record<'a> {
+    pub state: ProgramState,
+    pub kind: ProgramKind,
+    pub progress: Option<u8>,
+    pub id: &'a [u8],
+    pub app: &'a [u8],
+    pub title: &'a [u8],
+    pub msg: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Foreground<'a> {
+    pub pid: u32,
+    pub name: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressState {
+    Set,
+    Error,
+    Indeterminate,
+    Pause,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressReport {
+    pub state: ProgressState,
+    pub progress: Option<u8>,
 }
 
 verus! {
@@ -335,6 +413,55 @@ impl Body<'_> {
         self.bytes(&value.to_le_bytes());
     }
 
+    fn prompt(&mut self, prompt: &Prompt<'_>) -> Result<(), Oversize> {
+        self.u8(match prompt.step {
+            PromptStep::Start => 1,
+            PromptStep::OutputStart => 2,
+            PromptStep::End => 3,
+        });
+        self.bool(prompt.exit.is_some());
+        self.i32(prompt.exit.unwrap_or(0));
+        self.u64(prompt.at.nanos());
+        self.string(prompt.command)
+    }
+
+    fn record(&mut self, record: &Record<'_>) -> Result<(), Oversize> {
+        self.u8(match record.state {
+            ProgramState::Idle => 0,
+            ProgramState::Working => 1,
+            ProgramState::Done => 2,
+            ProgramState::Blocked => 3,
+            ProgramState::Error => 4,
+            ProgramState::Clear => 5,
+        });
+        self.u8(match record.kind {
+            ProgramKind::None => 0,
+            ProgramKind::Permission => 1,
+            ProgramKind::Question => 2,
+            ProgramKind::Auth => 3,
+        });
+        self.u8(record.progress.unwrap_or(u8::MAX));
+        self.string(record.id)?;
+        self.string(record.app)?;
+        self.string(record.title)?;
+        self.string(record.msg)
+    }
+
+    fn progress(&mut self, report: Option<ProgressReport>) {
+        let Some(report) = report else {
+            self.u8(0);
+            self.u8(u8::MAX);
+            return;
+        };
+        self.u8(match report.state {
+            ProgressState::Set => 1,
+            ProgressState::Error => 2,
+            ProgressState::Indeterminate => 3,
+            ProgressState::Pause => 4,
+        });
+        self.u8(report.progress.unwrap_or(u8::MAX));
+    }
+
     fn u16(&mut self, value: u16) {
         self.bytes(&value.to_le_bytes());
     }
@@ -487,6 +614,33 @@ impl Body<'_> {
             FromPane::Full(pos) => {
                 self.u64(pos.get());
                 Kind::Full
+            }
+            FromPane::Prompt(prompt) => {
+                self.prompt(&prompt)?;
+                Kind::Prompt
+            }
+            FromPane::Record(record) => {
+                self.record(&record)?;
+                Kind::Record
+            }
+            FromPane::Foreground(foreground) => {
+                self.u32(foreground.pid);
+                self.string(foreground.name)?;
+                Kind::Foreground
+            }
+            FromPane::Alternate(on) => {
+                self.bool(on);
+                Kind::Alternate
+            }
+            FromPane::Bell => Kind::Bell,
+            FromPane::Notify { title, body } => {
+                self.string(title)?;
+                self.string(body)?;
+                Kind::Notify
+            }
+            FromPane::Progress(report) => {
+                self.progress(report);
+                Kind::Progress
             }
         })
     }
@@ -665,6 +819,16 @@ pub enum FromPane<'a> {
     },
     Error(&'a [u8]),
     Full(Pos),
+    Prompt(Prompt<'a>),
+    Record(Record<'a>),
+    Foreground(Foreground<'a>),
+    Alternate(bool),
+    Bell,
+    Notify {
+        title: &'a [u8],
+        body: &'a [u8],
+    },
+    Progress(Option<ProgressReport>),
 }
 
 pub fn check_sizes(mut input: &[u8]) -> bool {
@@ -805,6 +969,106 @@ pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
             }
         }
         Kind::Error => FromPane::Error(string_at(body, 0)?),
+        Kind::Prompt => {
+            let mut fields = Fields(body);
+            let step = match fields.u8()? {
+                1 => PromptStep::Start,
+                2 => PromptStep::OutputStart,
+                3 => PromptStep::End,
+                _ => return Err(Malformed::Field),
+            };
+            let has_exit = fields.flag()?;
+            let exit = fields.i32()?;
+            let at = Mono::from_nanos(fields.u64()?);
+            let command = fields.bytes()?;
+            fields.end()?;
+            FromPane::Prompt(Prompt {
+                step,
+                exit: has_exit.then_some(exit),
+                at,
+                command,
+            })
+        }
+        Kind::Record => {
+            let mut fields = Fields(body);
+            let state = match fields.u8()? {
+                0 => ProgramState::Idle,
+                1 => ProgramState::Working,
+                2 => ProgramState::Done,
+                3 => ProgramState::Blocked,
+                4 => ProgramState::Error,
+                5 => ProgramState::Clear,
+                _ => return Err(Malformed::Field),
+            };
+            let kind = match fields.u8()? {
+                0 => ProgramKind::None,
+                1 => ProgramKind::Permission,
+                2 => ProgramKind::Question,
+                3 => ProgramKind::Auth,
+                _ => return Err(Malformed::Field),
+            };
+            let progress = fields.percent()?;
+            let record = Record {
+                state,
+                kind,
+                progress,
+                id: fields.bytes()?,
+                app: fields.bytes()?,
+                title: fields.bytes()?,
+                msg: fields.bytes()?,
+            };
+            fields.end()?;
+            FromPane::Record(record)
+        }
+        Kind::Foreground => {
+            let mut fields = Fields(body);
+            let pid = fields.u32()?;
+            let name = fields.bytes()?;
+            fields.end()?;
+            FromPane::Foreground(Foreground { pid, name })
+        }
+        Kind::Alternate => {
+            let mut fields = Fields(body);
+            let on = fields.flag()?;
+            fields.end()?;
+            FromPane::Alternate(on)
+        }
+        Kind::Bell => {
+            Fields(body).end()?;
+            FromPane::Bell
+        }
+        Kind::Notify => {
+            let mut fields = Fields(body);
+            let (title, body) = (fields.bytes()?, fields.bytes()?);
+            fields.end()?;
+            FromPane::Notify { title, body }
+        }
+        Kind::Progress => {
+            let mut fields = Fields(body);
+            let state = fields.u8()?;
+            let progress = fields.percent()?;
+            fields.end()?;
+            FromPane::Progress(match state {
+                0 => None,
+                1 => Some(ProgressReport {
+                    state: ProgressState::Set,
+                    progress,
+                }),
+                2 => Some(ProgressReport {
+                    state: ProgressState::Error,
+                    progress,
+                }),
+                3 => Some(ProgressReport {
+                    state: ProgressState::Indeterminate,
+                    progress,
+                }),
+                4 => Some(ProgressReport {
+                    state: ProgressState::Pause,
+                    progress,
+                }),
+                _ => return Err(Malformed::Field),
+            })
+        }
         Kind::Init
         | Kind::Tail
         | Kind::Resize
@@ -868,6 +1132,18 @@ impl<'a> Fields<'a> {
 
     fn u16(&mut self) -> Result<u16, Malformed> {
         u16_at(self.take(2)?, 0).ok_or(Malformed::Short)
+    }
+
+    fn i32(&mut self) -> Result<i32, Malformed> {
+        i32_at(self.take(4)?, 0).ok_or(Malformed::Short)
+    }
+
+    fn percent(&mut self) -> Result<Option<u8>, Malformed> {
+        match self.u8()? {
+            u8::MAX => Ok(None),
+            percent @ 0..=100 => Ok(Some(percent)),
+            _ => Err(Malformed::Field),
+        }
     }
 
     fn u32(&mut self) -> Result<u32, Malformed> {
@@ -1093,7 +1369,14 @@ pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
         | Kind::SnapshotDone
         | Kind::Error
         | Kind::Full
-        | Kind::PasteDone => return Err(Malformed::Unknown),
+        | Kind::PasteDone
+        | Kind::Prompt
+        | Kind::Record
+        | Kind::Foreground
+        | Kind::Alternate
+        | Kind::Bell
+        | Kind::Notify
+        | Kind::Progress => return Err(Malformed::Unknown),
     };
     fields.end()?;
     Ok(request)
@@ -1188,7 +1471,7 @@ mod tests {
             Err(Malformed::Ready)
         );
         assert_eq!(decode(&frame(Kind::Dead, &[0; 15])), Err(Malformed::Dead));
-        assert_eq!(decode(&[1, 0, 0, 0, 11]), Err(Malformed::Unknown));
+        assert_eq!(decode(&[1, 0, 0, 0, 99]), Err(Malformed::Unknown));
     }
 
     fn encoded(frame: &ToPane<'_>) -> Vec<u8> {
@@ -1531,6 +1814,55 @@ mod tests {
             },
             FromPane::Error(b"openpty: no"),
             FromPane::Full(Pos::new(456)),
+            FromPane::Prompt(Prompt {
+                step: PromptStep::End,
+                exit: Some(-2),
+                at: Mono::from_nanos(9),
+                command: b"",
+            }),
+            FromPane::Prompt(Prompt {
+                step: PromptStep::OutputStart,
+                exit: None,
+                at: Mono::from_nanos(10),
+                command: b"sleep 2",
+            }),
+            FromPane::Record(Record {
+                state: ProgramState::Blocked,
+                kind: ProgramKind::Question,
+                progress: Some(42),
+                id: b"a/b",
+                app: b"",
+                title: b"t",
+                msg: b"m",
+            }),
+            FromPane::Record(Record {
+                state: ProgramState::Clear,
+                kind: ProgramKind::None,
+                progress: None,
+                id: b"",
+                app: b"",
+                title: b"",
+                msg: b"",
+            }),
+            FromPane::Foreground(Foreground {
+                pid: 77,
+                name: b"sleep",
+            }),
+            FromPane::Alternate(true),
+            FromPane::Bell,
+            FromPane::Notify {
+                title: b"",
+                body: b"done",
+            },
+            FromPane::Progress(None),
+            FromPane::Progress(Some(ProgressReport {
+                state: ProgressState::Pause,
+                progress: Some(100),
+            })),
+            FromPane::Progress(Some(ProgressReport {
+                state: ProgressState::Indeterminate,
+                progress: None,
+            })),
         ];
         for case in cases {
             let mut out = Vec::new();
@@ -1545,6 +1877,33 @@ mod tests {
         };
         encode_from(&FromPane::Dead(ended), &mut exited).unwrap();
         assert_eq!(decode(&exited), Ok(Some(FromPane::Dead(ended))));
+    }
+
+    #[test]
+    fn a_report_frame_with_a_field_outside_its_range_is_refused() {
+        let tail = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let record = |state: u8, kind: u8, progress: u8| {
+            let mut body = vec![state, kind, progress];
+            body.extend([0; 16]);
+            frame(Kind::Record, &body)
+        };
+        assert!(decode(&record(5, 3, 100)).is_ok());
+        assert!(decode(&record(5, 3, 255)).is_ok());
+        for bad in [record(6, 0, 0), record(0, 4, 0), record(0, 0, 101)] {
+            assert_eq!(decode(&bad), Err(Malformed::Field));
+        }
+        let mut prompt = vec![4, 0];
+        prompt.extend(tail);
+        assert_eq!(decode(&frame(Kind::Prompt, &prompt)), Err(Malformed::Field));
+        assert_eq!(
+            decode(&frame(Kind::Progress, &[5, 255])),
+            Err(Malformed::Field)
+        );
+        assert_eq!(
+            decode(&frame(Kind::Alternate, &[1, 0])),
+            Err(Malformed::Trailing)
+        );
+        assert_eq!(decode(&frame(Kind::Bell, &[0])), Err(Malformed::Trailing));
     }
 
     #[test]

@@ -2,7 +2,8 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{
-    self, Dead, FromPane, History, Init, Kind, Req, Request, ScreenFormat, ScreenRows, Size,
+    self, Dead, FromPane, History, Init, Kind, Prompt, Record, Req, Request, ScreenFormat,
+    ScreenRows, Size,
 };
 use ko_pane_wire::ring::{DEAD_LEN, Marker, RESIZE_LEN, RecordKind, SLICE_HEADER, Slice, Writer};
 use ko_sys::clock::Mono;
@@ -12,8 +13,9 @@ use ko_sys::pid::Exit;
 use ko_sys::pty::{self, Program, Winsize};
 use ko_sys::signal::{Signal, Signals};
 use ko_vt::compress::{Compress, Tick};
-use ko_vt::{Format, Terminal};
+use ko_vt::{Format, Report, Terminal};
 
+use crate::foreground::Watch;
 use crate::io::{Fault, Io, Out, Stop};
 use crate::run::Failure;
 
@@ -50,6 +52,8 @@ struct Live {
     pty_input: Queue,
     compress: Compress,
     process: Option<Process>,
+    alternate: bool,
+    watch: Watch,
 }
 
 #[derive(Debug)]
@@ -59,6 +63,41 @@ pub struct Pane {
     launch: Launch,
     tmpdir: String,
     scratch: Vec<u8>,
+}
+
+fn frame_of(report: &Report, at: Mono) -> FromPane<'_> {
+    match report {
+        Report::Prompt {
+            step,
+            exit,
+            command,
+        } => FromPane::Prompt(Prompt {
+            step: *step,
+            exit: *exit,
+            at,
+            command,
+        }),
+        Report::Status {
+            state,
+            kind,
+            progress,
+            id,
+            app,
+            title,
+            msg,
+        } => FromPane::Record(Record {
+            state: *state,
+            kind: *kind,
+            progress: *progress,
+            id,
+            app,
+            title,
+            msg,
+        }),
+        Report::Bell => FromPane::Bell,
+        Report::Notify { title, body } => FromPane::Notify { title, body },
+        Report::Progress(report) => FromPane::Progress(*report),
+    }
 }
 
 fn winsize(size: Size) -> Winsize {
@@ -324,11 +363,22 @@ impl Pane {
                 })
             }
         };
+        let mut watch = Watch::default();
+        if let Some(Process {
+            master,
+            life: Life::Running,
+            ..
+        }) = &process
+        {
+            watch.check(master.as_fd(), &mut self.io.out, Instant::now());
+        }
         self.live = Some(Live {
             vt,
             pty_input: Queue::default(),
             compress: Compress::new(Mono::now()),
             process,
+            alternate: false,
+            watch,
         });
         Ok(())
     }
@@ -544,6 +594,8 @@ impl Pane {
             vt,
             pty_input,
             process: Some(process),
+            alternate,
+            watch,
             ..
         }) = &mut self.live
         else {
@@ -586,9 +638,37 @@ impl Pane {
         {
             out.event(&FromPane::Pwd(pwd));
         }
+        if let Ok(on) = vt.alternate()
+            && on != *alternate
+        {
+            *alternate = on;
+            out.event(&FromPane::Alternate(on));
+        }
+        let at = Mono::now();
+        let mut event = false;
+        for report in vt.reports().drain(..) {
+            event |= matches!(report, Report::Prompt { .. });
+            out.event(&frame_of(&report, at));
+        }
         collect(vt, pty_input);
         out.publish(RecordKind::Bytes, used);
+        watch.after_read(process.master.as_fd(), out, event, Instant::now());
         true
+    }
+
+    pub(crate) fn foreground_arm(&mut self) -> Option<Duration> {
+        self.live.as_mut()?.watch.arm(Instant::now())
+    }
+
+    pub(crate) fn foreground_due(&mut self) {
+        if let Some(Live {
+            watch,
+            process: Some(process),
+            ..
+        }) = &mut self.live
+        {
+            watch.run_deferred(process.master.as_fd(), &mut self.io.out, Instant::now());
+        }
     }
 
     pub(crate) fn dead(&mut self) -> Result<(), Stop> {

@@ -368,6 +368,7 @@ dependencies = [
  "ko_client",
  "ko_pane_wire",
  "ko_server",
+ "ko_shell",
  "ko_sys",
  "ko_tui",
 ]
@@ -389,6 +390,7 @@ dependencies = [
  "ko_pane_wire",
  "ko_server",
  "ko_sys",
+ "serde_json",
  "tungstenite",
 ]
 
@@ -438,6 +440,16 @@ dependencies = [
  "serde_json",
  "tungstenite",
  "vstd",
+]
+
+[[package]]
+name = "ko_shell"
+version = "0.0.0"
+dependencies = [
+ "ko_client",
+ "ko_server",
+ "ko_sys",
+ "serde_json",
 ]
 
 [[package]]

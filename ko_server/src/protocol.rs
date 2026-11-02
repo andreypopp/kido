@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroUsize};
 
@@ -13,10 +14,10 @@ use serde_json::Value;
 
 use crate::config::BUILD;
 use crate::http::Status;
-use crate::ids::{ClientId, Instance, PaneId};
+use crate::ids::{ClientId, Instance, PaneId, VarName};
 use crate::pane_proc::{self, Death};
 
-const PROTOCOL: &str = "2.1";
+const PROTOCOL: &str = "2.2";
 const PROTOCOL_MAJOR: &str = "2";
 const VT: &str = env!("KO_VT");
 const MAX_OFFSET: u64 = (1 << 62) - 1;
@@ -222,6 +223,228 @@ impl From<&Death> for Dead {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramKind {
+    Permission,
+    Question,
+    Auth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProgramState {
+    Idle,
+    Working {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<u8>,
+    },
+    Done,
+    Blocked {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<ProgramKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<u8>,
+    },
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramRecord {
+    pub id: String,
+    #[serde(flatten)]
+    pub state: ProgramState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramStatus {
+    pub serial: u64,
+    pub records: Vec<ProgramRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutcomeResult {
+    Success,
+    Failure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outcome {
+    pub serial: u64,
+    pub result: OutcomeResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentState {
+    Running {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<u8>,
+    },
+    Waiting {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<ProgramKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<u8>,
+    },
+    Idle {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<Outcome>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Agent {
+    pub since: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg: Option<String>,
+    pub state: AgentState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandExit {
+    pub code: i32,
+    pub command: String,
+    pub started_at: u64,
+    pub ended_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Origin {
+    Unknown,
+    Command { command: String, started_at: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Phase {
+    Unknown,
+    Idle {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last: Option<CommandExit>,
+    },
+    Running {
+        origin: Origin,
+        fullscreen: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shell {
+    pub phase: Phase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<Agent>,
+}
+
+impl Shell {
+    pub fn running_command(&self) -> Option<&str> {
+        match self {
+            Shell {
+                report: None,
+                phase:
+                    Phase::Running {
+                        origin: Origin::Command { command, .. },
+                        fullscreen: false,
+                    },
+            } if !command.is_empty() => Some(command),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Remote {
+    Terminal { interactive: bool, status: Shell },
+    Agent { name: String, status: Agent },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Live {
+    Terminal(Shell),
+    SomeAgent {
+        name: String,
+        status: Agent,
+    },
+    PiAgent {
+        session: String,
+        status: Agent,
+    },
+    Ssh {
+        user: String,
+        host: String,
+        pane: Remote,
+    },
+}
+
+impl Live {
+    pub fn shell(&self) -> Option<&Shell> {
+        match self {
+            Live::Terminal(shell)
+            | Live::Ssh {
+                pane: Remote::Terminal { status: shell, .. },
+                ..
+            } => Some(shell),
+            Live::SomeAgent { .. } | Live::PiAgent { .. } | Live::Ssh { .. } => None,
+        }
+    }
+
+    pub fn agent(&self) -> Option<&Agent> {
+        match self {
+            Live::SomeAgent { status, .. }
+            | Live::PiAgent { status, .. }
+            | Live::Ssh {
+                pane: Remote::Agent { status, .. },
+                ..
+            } => Some(status),
+            Live::Terminal(_) | Live::Ssh { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneStatus {
+    pub kind: Live,
+    pub program_status: ProgramStatus,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<u8>,
+    pub since: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Foreground {
+    pub pid: u32,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressState {
+    Set,
+    Error,
+    Indeterminate,
+    Pause,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Progress {
+    pub state: ProgressState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Row {
     pub id: PaneId,
@@ -230,6 +453,20 @@ pub struct Row {
     pub cwd: String,
     pub title: String,
     pub dead: Option<Dead>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<Foreground>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<PaneStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Progress>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listing {
+    #[serde(flatten)]
+    pub row: Row,
+    #[serde(default)]
+    pub vars: BTreeMap<VarName, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -377,7 +614,7 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn base64_encode(bytes: &[u8]) -> String {
+pub fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for group in bytes.chunks(3) {
         let mut word = [0; 4];
@@ -626,6 +863,7 @@ pub struct Welcome {
     pub client: ClientId,
     pub limits: Limits,
     pub instance: Instance,
+    pub now: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -647,13 +885,45 @@ pub struct PaneDead {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusChange {
+    pub pane: PaneId,
+    pub status: PaneStatus,
+    pub now: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
     Welcome(Welcome),
-    Topology { panes: Vec<Row> },
+    Topology {
+        panes: Vec<Row>,
+    },
     Title(Title),
     Pwd(Pwd),
     Dead(PaneDead),
+    Status(StatusChange),
+    Var {
+        pane: PaneId,
+        name: VarName,
+        value: Value,
+    },
+    VarDeleted {
+        pane: PaneId,
+        name: VarName,
+    },
+    Bell {
+        pane: PaneId,
+    },
+    Notify {
+        pane: PaneId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        body: String,
+    },
+    Progress {
+        pane: PaneId,
+        progress: Option<Progress>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -696,6 +966,39 @@ pub enum Route {
     Input(PaneId),
     Screen(PaneId, ScreenFormat, ScreenRows),
     View(PaneId, ViewOptions, Option<u64>),
+    Vars(PaneId),
+    Var(PaneId, VarName),
+    SetVar(PaneId, VarName),
+    DeleteVar(PaneId, VarName),
+}
+
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        if byte == b'%' {
+            let hex = text.get(at + 1..at + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            at += 3;
+        } else {
+            out.push(byte);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 fn natural(value: &str, max: u64) -> Result<u64, Invalid> {
@@ -768,6 +1071,18 @@ impl Route {
                         };
                         Some(Route::Screen(id, format, rows))
                     }
+                    ("GET", ["vars"]) => Some(Route::Vars(id)),
+                    (_, ["vars", name]) => {
+                        let name = percent_decode(name)
+                            .and_then(|name| VarName::new(&name).ok())
+                            .ok_or(Invalid("invalid variable name"))?;
+                        match method {
+                            "GET" => Some(Route::Var(id, name)),
+                            "PUT" => Some(Route::SetVar(id, name)),
+                            "DELETE" => Some(Route::DeleteVar(id, name)),
+                            _ => None,
+                        }
+                    }
                     ("GET", ["view"]) => {
                         let history = match arg("history") {
                             None | Some("none") => History::None,
@@ -814,6 +1129,19 @@ impl Route {
                     format!("{}/screen?format={format}&history={rows}", pane(id)),
                 )
             }
+            Route::Vars(id) => ("GET", format!("{}/vars", pane(id))),
+            Route::Var(id, name) => (
+                "GET",
+                format!("{}/vars/{}", pane(id), percent_encode(name.as_str())),
+            ),
+            Route::SetVar(id, name) => (
+                "PUT",
+                format!("{}/vars/{}", pane(id), percent_encode(name.as_str())),
+            ),
+            Route::DeleteVar(id, name) => (
+                "DELETE",
+                format!("{}/vars/{}", pane(id), percent_encode(name.as_str())),
+            ),
             Route::View(id, options, offset) => {
                 let history = match options.history {
                     History::None => "none",
@@ -836,9 +1164,43 @@ mod tests {
     use serde::de::DeserializeOwned;
 
     #[test]
+    fn variable_routes_decode_and_encode_their_name() {
+        let pane: PaneId = "pane_2".parse().unwrap();
+        let name = VarName::new("pi.session é/x?").unwrap();
+        let encoded = "/panes/pane_2/vars/pi.session%20%C3%A9%2Fx%3F";
+        for (method, route) in [
+            ("GET", Route::Var(pane, name.clone())),
+            ("PUT", Route::SetVar(pane, name.clone())),
+            ("DELETE", Route::DeleteVar(pane, name.clone())),
+        ] {
+            assert_eq!(Route::of_request(method, encoded), Ok(Some(route.clone())));
+            assert_eq!(route.to_request(), (method, encoded.to_owned()));
+        }
+        assert_eq!(
+            Route::of_request("GET", "/panes/pane_2/vars"),
+            Ok(Some(Route::Vars(pane)))
+        );
+        assert_eq!(Route::of_request("POST", "/panes/pane_2/vars/a"), Ok(None));
+        for bad in [
+            "/panes/pane_2/vars/",
+            "/panes/pane_2/vars/%FF",
+            "/panes/pane_2/vars/%0A",
+            "/panes/pane_2/vars/%",
+            &format!("/panes/pane_2/vars/{}", "n".repeat(257)),
+        ] {
+            assert!(Route::of_request("GET", bad).is_err(), "{bad}");
+        }
+        let longest = format!("/panes/pane_2/vars/{}", "n".repeat(256));
+        assert!(matches!(
+            Route::of_request("GET", &longest),
+            Ok(Some(Route::Var(..)))
+        ));
+    }
+
+    #[test]
     fn every_wire_type_round_trips_its_json() {
         same::<Version>(
-            r#"{"protocol":"2.1","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
+            r#"{"protocol":"2.2","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
         );
         for json in [
             r#"{"kind":"invalid","message":"m"}"#,
@@ -846,8 +1208,8 @@ mod tests {
             r#"{"kind":"gone","message":"m"}"#,
             r#"{"kind":"io","message":"m"}"#,
             r#"{"kind":"not_found","message":"m"}"#,
-            r#"{"kind":"protocol_mismatch","protocol":"2.1","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
-            r#"{"kind":"vt_mismatch","protocol":"2.1","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
+            r#"{"kind":"protocol_mismatch","protocol":"2.2","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
+            r#"{"kind":"vt_mismatch","protocol":"2.2","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
         ] {
             same::<Error>(json);
         }
@@ -859,6 +1221,22 @@ mod tests {
         ] {
             same::<Row>(json);
         }
+        same::<Row>(
+            r#"{"id":"pane_4","pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"foreground":{"pid":77,"name":"sleep"},"status":{"kind":{"type":"terminal","phase":{"type":"running","origin":{"type":"command","command":"sleep 2","started_at":5},"fullscreen":false},"report":{"since":4,"msg":"m","state":{"type":"waiting","kind":"question","progress":42}}},"program_status":{"serial":3,"records":[{"id":"","state":"blocked","kind":"question","progress":42,"app":"pi","title":"t","msg":"m"},{"id":"a/b","state":"working"},{"id":"c","state":"done"}]},"title":"sleep 2","message":"m","progress":42,"since":6},"progress":{"state":"set","progress":50}}"#,
+        );
+        for json in [
+            r#"{"type":"some_agent","name":"claude-code","status":{"since":1,"state":{"type":"idle","outcome":{"serial":2,"result":"success"}}}}"#,
+            r#"{"type":"pi_agent","session":"s","status":{"since":1,"state":{"type":"running"}}}"#,
+            r#"{"type":"ssh","user":"deploy","host":"h","pane":{"type":"terminal","interactive":true,"status":{"phase":{"type":"idle","last":{"code":1,"command":"false","started_at":1,"ended_at":2}}}}}"#,
+            r#"{"type":"ssh","user":"u","host":"h","pane":{"type":"agent","name":"pi","status":{"since":0,"state":{"type":"idle"}}}}"#,
+            r#"{"type":"terminal","phase":{"type":"running","origin":{"type":"unknown"},"fullscreen":true}}"#,
+            r#"{"type":"terminal","phase":{"type":"unknown"}}"#,
+        ] {
+            same::<Live>(json);
+        }
+        same::<Listing>(
+            r#"{"id":"pane_4","pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"vars":{"n":[1,{"a":null}],"pi.name":"Worker"}}"#,
+        );
         same::<Created>(r#"{"pane":"pane_3"}"#);
         for json in [
             r#"{"pasted":true,"unsafe":false}"#,
@@ -899,15 +1277,23 @@ mod tests {
             same::<ViewRequest>(json);
         }
         for json in [
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":50000000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef"}"#,
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef"}"#,
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef"}"#,
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef"}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":50000000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
             r#"{"type":"topology","panes":[{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":null},{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"exited","code":0}}}]}"#,
             r#"{"type":"topology","panes":[]}"#,
             r#"{"type":"title","pane":"pane_3","title":"x"}"#,
             r#"{"type":"pwd","pane":"pane_3","pwd":"file://h/tmp"}"#,
             r#"{"type":"dead","pane":"pane_3","dead":{"at":123456789012345,"cause":{"type":"signaled","signal":15}}}"#,
+            r#"{"type":"status","pane":"pane_3","status":{"kind":{"type":"terminal","phase":{"type":"idle"}},"program_status":{"serial":0,"records":[]},"title":"zsh","since":9},"now":99}"#,
+            r#"{"type":"var","pane":"pane_3","name":"ssh.args","value":["-l","x"]}"#,
+            r#"{"type":"var_deleted","pane":"pane_3","name":"ssh.args"}"#,
+            r#"{"type":"bell","pane":"pane_3"}"#,
+            r#"{"type":"notify","pane":"pane_3","body":"done"}"#,
+            r#"{"type":"notify","pane":"pane_3","title":"build","body":"done"}"#,
+            r#"{"type":"progress","pane":"pane_3","progress":null}"#,
+            r#"{"type":"progress","pane":"pane_3","progress":{"state":"indeterminate"}}"#,
         ] {
             same::<ClientEvent>(json);
         }
@@ -1281,7 +1667,7 @@ mod tests {
         #[test]
         fn routes_return_a_route_nothing_or_invalid(
             method in prop::sample::select(vec!["GET", "POST", "DELETE", "PUT", ""]),
-            path in prop::sample::select(vec!["/version", "/panes", "/client", "/panes/pane_1", "/panes/pane_1/view", "/panes/pane_1/screen", "/panes/pane_1/input", "/panes/1/view", "/", ""]),
+            path in prop::sample::select(vec!["/version", "/panes", "/client", "/panes/pane_1", "/panes/pane_1/view", "/panes/pane_1/screen", "/panes/pane_1/input", "/panes/pane_1/vars", "/panes/pane_1/vars/a%20b", "/panes/pane_1/vars/%FF", "/panes/1/view", "/", ""]),
             query in prop::collection::vec((prop::sample::select(vec!["history", "images", "offset", "format", "x", ""]), prop::sample::select(vec!["", "a", "all", "none", "0", "-1", "99999999999999999999", "4294967296", "%00", "=", "&", "?", "/"])), 0..3),
             with_query in any::<bool>(),
         ) {

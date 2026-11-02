@@ -111,6 +111,9 @@ build-ko: $(TERMINFO)/x/xterm-ghostty
 	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release --bins
 	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
 	cp target/release/ko target/release/ko-pane $(KO)/bin/
+	rm -rf $(KO)/share/ko/bin
+	cp -R share/ko/bin $(KO)/share/ko/bin
+	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
 
 $(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/src/terminfo/*.zig)
 	mkdir -p $(KO)/bin $(TERMINFO)/x $(TERMINFO)/78

@@ -1,10 +1,9 @@
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 
 use serde_json::json;
 
 use crate::harness::{
-    Child, DEADLINE, Dir, PROTOCOL, poll, run_ko, start, test_env, text_of, wait_gone,
+    Child, DEADLINE, Dir, PROTOCOL, poll, run_ko, start, test_env, text_of, wait_gone, which,
 };
 
 #[test]
@@ -168,10 +167,4 @@ fn api() {
     }
     let entries: Vec<_> = std::fs::read_dir(&*empty).unwrap().collect();
     assert!(entries.is_empty(), "ko api created {entries:?}");
-}
-
-fn which(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
 }

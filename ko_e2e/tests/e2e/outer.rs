@@ -10,6 +10,7 @@ use ko_sys::fd;
 use ko_sys::pid::Pid;
 use ko_sys::pty::{self, Program, Winsize};
 use ko_sys::signal::Signal;
+use ko_vt::render::{Cell, Frame};
 use ko_vt::{Format, Terminal};
 
 use crate::harness::{DEADLINE, Dir, quote, test_env, text_of};
@@ -212,6 +213,7 @@ impl Outer {
         )
         .unwrap();
         terminal.serve(&[], "/tmp").unwrap();
+        terminal.watch().unwrap();
         let mut screen = Screen {
             terminal,
             raw: Vec::new(),
@@ -275,6 +277,16 @@ impl Outer {
 
     pub(crate) fn screen(&self) -> String {
         self.lock().shown.text.clone()
+    }
+
+    pub(crate) fn cell(&self, col: usize, row: usize) -> Cell {
+        let mut frame = Frame::default();
+        self.lock().terminal.render_into(&mut frame).unwrap();
+        frame
+            .cells
+            .get(row * usize::from(frame.cols) + col)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub(crate) fn lines(&self) -> Vec<String> {

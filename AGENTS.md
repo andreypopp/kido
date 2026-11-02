@@ -293,7 +293,15 @@ These requirements are fixed:
   `ko_client/` is the client core that `ko_tui` and `ko` use and
   Kido.app will link (plans/ko-stages.md 4.10): the launcher, the
   wire layer, the API client and the `/client` model. It never
-  depends on `ko_vt` or libghostty-vt. `ko_bench/` is the binary `ko-bench`, the benchmark
+  depends on `ko_vt` or libghostty-vt. `ko_shell/` is the crate
+  `ko_shell` that `ko shell`, `ko ssh` and `ko server --bin-dir` use:
+  the priming of a local or remote login shell, the ssh arguments and
+  the bin directory lookup, ports of kido's `lib/prime.ml`,
+  `shell.ml`, `ssh.ml` and `bin_dir.ml`. It embeds the shell
+  integrations of `share/ko/` with `include_str!`; `make build-ko`
+  installs `share/ko/bin` (the `ko` and `ssh` shims) and
+  `share/ko/shim.sh` beside `bin/ko` in `build/ko/`, the layout that
+  `Bin_dir` finds as installed. `ko_bench/` is the binary `ko-bench`, the benchmark
   modes, which `make build-ko` builds into `target/release` and never
   installs. ko has no C of its own; the only C is the measurement
   helpers of `bench/`, which `make build-bench` compiles. Do not add
@@ -398,7 +406,14 @@ Conventions:
   `ko_e2e/tests/e2e/main.rs`, with one module for each area, because
   cargo runs test binaries one after another and the tests of one binary
   in parallel. It is a workspace member outside `default-members`, so
-  `make test-ko` does not run it. It drives `build/ko/bin/ko`, which
+  `make test-ko` does not run it. Its second binary, `ko-fake`
+  (`ko_e2e/fake/main.rs`), is the fake program of the status and ssh
+  tests: a test copies it under the name it stands for (`ssh`,
+  `ko-probe`), because macOS reports a `#!` script's interpreter as
+  its process name. A pane that runs `stty raw -echo; exec cat`
+  echoes the OSC 133 and OSC 7501 bytes that a test sends as `text`
+  input; it replaces kido's fake agent. The ssh tests that use the
+  host's sshd run only with `KO_E2E_HOST_SSH=1`, as kido's do. It drives `build/ko/bin/ko`, which
   `make e2e-ko` builds first; a test never runs make or cargo. A test
   reads like command-line use: a step that a `ko` command can do (`ko
   api`, `ko kill-server`, `ko version`) runs that command through
@@ -729,7 +744,8 @@ Conventions:
 (plans/ko-rust.md, "Rust (ko)" above; rfc/kido-server/p1-mvp.md is
 its design). Its crates: `ko/` (the binary), `ko_server/` (the
 coordinator), `ko_client/` (the client core), `ko_tui/` (the
-terminal client), `ko_pane/` (the pane
+terminal client), `ko_shell/` (shell priming, `ko ssh` and the bin
+directory), `ko_pane/` (the pane
 process), `ko_pane_wire/` (the frame codec and the ring),
 `ko_vt/` and `ko_vt_sys/` (libghostty-vt, built by zig from PATH
 out of `third_party/ghostty`), `ko_sys/` (the OS layer),

@@ -21,6 +21,11 @@ use ko_sys::signal::Signal;
 use crate::config::Config;
 use crate::delivery::{self, Delivery, Done, Handle, Stamps};
 use crate::ids::PaneId;
+use crate::program_status::Report;
+use crate::protocol::{
+    Foreground, ProgramKind, ProgramRecord, ProgramState, Progress, ProgressState,
+};
+use crate::telemetry::Prompt;
 
 const RING_CAPACITY: u64 = 1 << 20;
 const INPUT: usize = 65536;
@@ -66,6 +71,50 @@ pub(crate) enum Event {
         req: Req,
         message: String,
     },
+    Prompt(Prompt),
+    Record(Report),
+    Foreground(Foreground),
+    Alternate(bool),
+    Bell,
+    Notify {
+        title: Option<String>,
+        body: String,
+    },
+    Progress(Option<Progress>),
+}
+
+fn report_of(record: &frame::Record<'_>) -> Report {
+    let text = |bytes: &[u8]| (!bytes.is_empty()).then(|| lossy(bytes));
+    let kind = match record.kind {
+        frame::ProgramKind::None => None,
+        frame::ProgramKind::Permission => Some(ProgramKind::Permission),
+        frame::ProgramKind::Question => Some(ProgramKind::Question),
+        frame::ProgramKind::Auth => Some(ProgramKind::Auth),
+    };
+    let progress = record.progress;
+    let state = match record.state {
+        frame::ProgramState::Clear => {
+            return Report::Clear {
+                id: lossy(record.id),
+            };
+        }
+        frame::ProgramState::Idle => ProgramState::Idle,
+        frame::ProgramState::Working => ProgramState::Working { progress },
+        frame::ProgramState::Done => ProgramState::Done,
+        frame::ProgramState::Blocked => ProgramState::Blocked { kind, progress },
+        frame::ProgramState::Error => ProgramState::Error,
+    };
+    Report::Set(ProgramRecord {
+        id: lossy(record.id),
+        state,
+        app: text(record.app),
+        title: text(record.title),
+        msg: text(record.msg),
+    })
+}
+
+fn lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -657,6 +706,35 @@ impl PaneProc {
             }
             FromPane::Error(message) => {
                 return Err(Fault::Pane(String::from_utf8_lossy(message).into_owned()));
+            }
+            FromPane::Prompt(prompt) => io.events.push(Event::Prompt(Prompt {
+                step: prompt.step,
+                exit: prompt.exit,
+                at: prompt.at.nanos(),
+                command: lossy(prompt.command),
+            })),
+            FromPane::Record(record) => io.events.push(Event::Record(report_of(&record))),
+            FromPane::Foreground(foreground) => io.events.push(Event::Foreground(Foreground {
+                pid: foreground.pid,
+                name: lossy(foreground.name),
+            })),
+            FromPane::Alternate(on) => io.events.push(Event::Alternate(on)),
+            FromPane::Bell => io.events.push(Event::Bell),
+            FromPane::Notify { title, body } => io.events.push(Event::Notify {
+                title: (!title.is_empty()).then(|| lossy(title)),
+                body: lossy(body),
+            }),
+            FromPane::Progress(report) => {
+                io.events
+                    .push(Event::Progress(report.map(|report| Progress {
+                        state: match report.state {
+                            frame::ProgressState::Set => ProgressState::Set,
+                            frame::ProgressState::Error => ProgressState::Error,
+                            frame::ProgressState::Indeterminate => ProgressState::Indeterminate,
+                            frame::ProgressState::Pause => ProgressState::Pause,
+                        },
+                        progress: report.progress,
+                    })))
             }
         }
         Ok(())

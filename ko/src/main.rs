@@ -1,6 +1,9 @@
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::num::NonZeroUsize;
+use std::os::fd::AsFd;
+use std::os::unix::fs::FileTypeExt;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -11,6 +14,7 @@ use ko_pane_wire::frame::Scrollback;
 use ko_server::config::{self, Config, DEFAULT_LIMITS};
 use ko_server::protocol;
 use ko_server::server::{Server, Status, Timing};
+use ko_shell::{bin_dir, shell, ssh};
 use ko_tui::client;
 
 const USAGE_ERROR: u8 = 124;
@@ -45,6 +49,29 @@ enum Command {
     /// any other status it still prints the body, writes "ko api: HTTP" and the status to stderr
     /// and exits 1. It refuses a WebSocket endpoint (/client and /panes/ID/view) and exits 2.
     Api(ApiArgs),
+    /// Exec the primed login shell, or run a command through an interactive login shell.
+    ///
+    /// Without a command, ko shell execs the login shell, primed to report each command to ko.
+    /// With a command, the command runs through an interactive login shell without priming, with
+    /// the ko bin directory first on PATH.
+    Shell {
+        /// The command and its arguments, after --.
+        #[arg(last = true, value_name = "CMD")]
+        command: Vec<String>,
+    },
+    /// Run ssh, priming the remote login shell when it can.
+    ///
+    /// Inside a pane, ko ssh records the destination and the connection arguments as the pane
+    /// variables ssh.dest and ssh.args.
+    Ssh {
+        /// The arguments of ssh, options included.
+        #[arg(
+            allow_hyphen_values = true,
+            trailing_var_arg = true,
+            value_name = "ARG"
+        )]
+        args: Vec<OsString>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +146,10 @@ struct ServerArgs {
     /// The login shell of the panes.
     #[arg(long, value_name = "PATH")]
     shell: Option<PathBuf>,
+    /// The directory of the ko shims, put first on the PATH of every pane. The default is
+    /// share/ko/bin beside the installed ko, if it exists.
+    #[arg(long, value_name = "DIR")]
+    bin_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -169,7 +200,13 @@ fn server(args: ServerArgs) -> ExitCode {
             max_lines: chosen(args.scrollback_lines, default_lines),
         }
     };
-    let config = match Config::create(&invoked(), args.server, args.shell, scrollback) {
+    let config = match Config::create(
+        &invoked(),
+        args.server,
+        args.shell,
+        args.bin_dir.or_else(|| bin_dir::of_exe(&invoked())),
+        scrollback,
+    ) {
         Ok(config) => config,
         Err(message) => return fail("server", message),
     };
@@ -234,6 +271,43 @@ fn api(args: ApiArgs) -> ExitCode {
     }
 }
 
+fn ssh(args: &[OsString]) -> ExitCode {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let found = match bin_dir::of_exe(&invoked()) {
+        Some(dir) => bin_dir::look_path_past(&path, &dir, "ssh")
+            .ok_or_else(|| format!("no ssh on PATH past {}", dir.display())),
+        None => bin_dir::look_path(&path, "ssh").ok_or_else(|| "ssh not found on PATH".to_owned()),
+    };
+    let ssh_path = match found {
+        Ok(found) => found,
+        Err(message) => return fail("ssh", message),
+    };
+    let tty = io::stdin()
+        .as_fd()
+        .try_clone_to_owned()
+        .and_then(|fd| std::fs::File::from(fd).metadata())
+        .is_ok_and(|meta| meta.file_type().is_char_device());
+    let pane = std::env::var_os("KO_PANE")
+        .zip(std::env::var_os("KO_SOCKET"))
+        .and_then(|(id, socket)| {
+            Some(ssh::Pane {
+                dir: PathBuf::from(socket).parent()?.to_path_buf(),
+                id: id.into_string().ok()?.parse().ok()?,
+            })
+        });
+    let argv = ssh::prepare(&ssh_path, tty, pane.as_ref(), args);
+    let Some((first, rest)) = argv.split_first() else {
+        return fail("ssh", "no arguments");
+    };
+    fail(
+        "ssh",
+        std::process::Command::new(&ssh_path)
+            .arg0(first)
+            .args(rest)
+            .exec(),
+    )
+}
+
 fn attach(server: Option<PathBuf>) -> ExitCode {
     let pager = std::env::var("PAGER")
         .ok()
@@ -272,5 +346,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Api(args) => api(args),
+        Command::Shell { command } => fail("shell", shell::exec(&command, &invoked())),
+        Command::Ssh { args } => ssh(&args),
     }
 }

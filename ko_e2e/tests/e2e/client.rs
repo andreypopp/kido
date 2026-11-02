@@ -95,12 +95,12 @@ fn client_lifecycle() {
     o.attach(text_of(&pager));
     o.contains("pane-one");
     o.wait("outer mouse reporting on", || o.mouse_reporting());
-    o.contains("1 one");
+    o.contains("1  one");
 
     o.chord('s');
-    o.gone("1 one");
+    o.gone("1  one");
     o.chord('s');
-    o.contains("1 one");
+    o.contains("1  one");
 
     o.raw(DOWN_PRESS_RELEASE);
     o.enter();
@@ -475,7 +475,7 @@ fn client_initial_cursor_and_synchronized_output() {
     );
     s.text(&pane, "r");
     let shell = s.pane("printf '\\033]0;shell\\007'; exec /bin/sh");
-    o.contains("2 shell");
+    o.contains("2  shell");
     o.click(3, 2);
     s.text(&shell, "printf 'SWITCHED\\n'\n");
     o.contains("SWITCHED");
@@ -517,12 +517,12 @@ fn client_sidebar_ownership() {
         "bar drawn while the sidebar is hidden"
     );
     o.chord('s');
-    o.contains("1 fixture");
+    o.contains("1  fixture");
     for (y, line) in o.lines().iter().enumerate() {
         let bytes = line.as_bytes();
         let line = String::from_utf8_lossy(&bytes[..bytes.len().min(24)]).into_owned();
         let text = line.trim();
-        if (y == 0 && text == "1 fixture") || text.starts_with("ko:") {
+        if (y == 0 && text == "1  fixture") || text.starts_with("ko:") {
             continue;
         }
         assert!(text.is_empty(), "stale sidebar cells in row {y}: {line:?}");
@@ -775,5 +775,85 @@ while True:
             o.screen().contains(&expected)
         });
     }
+    o.detach();
+}
+
+fn mark(o: &Outer, row: usize) -> (String, ko_vt::render::Colour, bool, bool) {
+    use ko_vt::render::Attribute;
+    let cell = o.cell(2, row);
+    (
+        cell.text,
+        cell.style.fg,
+        cell.style.attrs.has(Attribute::Bold),
+        cell.style.attrs.has(Attribute::Inverse),
+    )
+}
+
+#[test]
+fn sidebar_mark_column() {
+    use ko_vt::render::Colour;
+    let Some(shell) = crate::status::shell_of(&crate::status::Flavour::Zsh) else {
+        eprintln!("skipped: no zsh on PATH");
+        return;
+    };
+    let s = crate::harness::start_with(&shell, &[], &[]);
+    crate::status::dotfiles(&crate::status::Flavour::Zsh, &s.dir, "");
+    let (first, second) = (s.shell_pane(), s.shell_pane());
+    for pane in [&first, &second] {
+        s.wait_row(pane, "the first prompt", |row| {
+            row["status"]["kind"]["phase"]["type"] == "idle"
+        });
+    }
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("");
+    o.contains("1  zsh");
+    o.contains("2  zsh");
+    let green = Colour::Indexed(2);
+
+    s.text(&second, "sleep 1\r");
+    o.wait("a green running mark", || {
+        o.lines()[1].starts_with("2 \u{25fc}sleep 1")
+            && mark(&o, 1) == ("\u{25fc}".into(), green, false, false)
+    });
+    o.wait("a green done mark", || {
+        o.lines()[1].starts_with("2 \u{2713}zsh")
+            && mark(&o, 1) == ("\u{2713}".into(), green, true, false)
+    });
+    s.text(&second, "false\r");
+    o.wait("a red failed mark", || {
+        o.lines()[1].starts_with("2 \u{25fc}zsh")
+            && mark(&o, 1) == ("\u{25fc}".into(), Colour::Indexed(1), false, false)
+    });
+
+    o.raw(CHORD_DOWN);
+    o.wait("the visit clears the mark", || {
+        o.lines()[1].starts_with("2  zsh") && mark(&o, 1).3
+    });
+    o.raw(CHORD_UP);
+    o.wait("the first pane shown again", || {
+        mark(&o, 0).3 && !mark(&o, 1).3
+    });
+    assert_eq!(
+        o.lines()[1].chars().take(6).collect::<String>(),
+        "2  zsh",
+        "a visit acknowledged the exit"
+    );
+
+    s.text(&second, "true\r");
+    o.wait("an unseen exit while shown elsewhere", || {
+        o.lines()[1].starts_with("2 \u{2713}zsh")
+    });
+
+    o.line("sleep 1");
+    o.wait("the shown row's mark has no colour", || {
+        o.lines()[0].starts_with("1 \u{25fc}sleep 1")
+            && mark(&o, 0) == ("\u{25fc}".into(), Colour::Default, false, true)
+    });
+    let lines = o.lines();
+    assert_eq!(
+        (lines[0].chars().nth(3), lines[1].chars().nth(3)),
+        (Some('s'), Some('z')),
+        "titles align with and without a mark"
+    );
     o.detach();
 }

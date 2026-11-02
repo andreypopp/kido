@@ -9,6 +9,7 @@ clap.workspace = true
 ko_client = { path = "../ko_client" }
 ko_pane_wire = { path = "../ko_pane_wire" }
 ko_server = { path = "../ko_server" }
+ko_shell = { path = "../ko_shell" }
 ko_sys = { path = "../ko_sys" }
 ko_tui = { path = "../ko_tui" }
 

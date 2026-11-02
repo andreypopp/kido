@@ -48,6 +48,7 @@ ko_e2e
 ko_pane
 ko_pane_wire
 ko_server
+ko_shell
 ko_sys
 ko_tui
 ko_vt

@@ -18,7 +18,7 @@ use crate::launch::{self, PATIENCE};
 
 const MAX_MESSAGE: usize = 128 << 20;
 const RECEIVE_BUFFER: usize = 1 << 20;
-const READ_TIMEOUT: Duration = Duration::from_secs(40);
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(40);
 pub const WATCHDOG: Duration = Duration::from_secs(40);
 
 // poll cannot see frames that the upgrade read already buffered in the link,
@@ -44,9 +44,11 @@ fn open(
     client: Option<ClientId>,
     (method, target): (&str, &str),
     body: &[u8],
+    within: Duration,
 ) -> io::Result<UnixStream> {
     let mut stream = launch::connect(socket, PATIENCE)?;
-    stream.set_read_timeout(Some(READ_TIMEOUT))?;
+    stream.set_read_timeout(Some(within))?;
+    stream.set_write_timeout(Some(within))?;
     let extra = [("Connection", "keep-alive")];
     stream.write_all(&call(method, target, client, &extra, body))?;
     Ok(stream)
@@ -57,8 +59,9 @@ pub(crate) fn exchange(
     client: Option<ClientId>,
     target: (&str, &str),
     body: &[u8],
+    within: Duration,
 ) -> io::Result<Response> {
-    http::read_response(&mut open(socket, client, target, body)?)
+    http::read_response(&mut open(socket, client, target, body, within)?)
 }
 
 fn fetch(
@@ -69,7 +72,8 @@ fn fetch(
     mut sink: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> Result<(), String> {
     let (method, target) = route.to_request();
-    let mut stream = open(socket, Some(client), (method, &target), body).map_err(text)?;
+    let mut stream =
+        open(socket, Some(client), (method, &target), body, READ_TIMEOUT).map_err(text)?;
     let mut failure = Vec::new();
     let response = http::read_response_with(&mut stream, |head, piece| {
         if head.status == 200 {

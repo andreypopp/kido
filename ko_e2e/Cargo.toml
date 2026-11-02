@@ -12,6 +12,10 @@ ko_vt = { path = "../ko_vt" }
 serde_json.workspace = true
 tungstenite.workspace = true
 
+[[bin]]
+name = "ko-fake"
+path = "fake/main.rs"
+
 [[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"

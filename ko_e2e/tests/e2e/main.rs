@@ -7,4 +7,7 @@ mod hostile;
 mod idle;
 mod outer;
 mod protocol;
+mod shell;
+mod status;
+mod vars;
 mod views;

@@ -434,6 +434,8 @@ mod tests {
             pane_exe: ko_pane(),
             terminfo: dir.clone(),
             shell: PathBuf::from("/bin/sh"),
+            exe: PathBuf::from("/nonexistent/ko"),
+            bin_dir: None,
             limits: crate::config::DEFAULT_LIMITS,
             media: Vec::new(),
             env: Vec::new(),

@@ -57,6 +57,7 @@ fn turns(pane: &mut Pane) -> Outcome {
     let signals = pane.signals_fd().map(|fd| poll.watch(fd, Interest::Read));
     let mut master: Option<Token> = None;
     let timer = poll.timer();
+    let foreground = poll.timer();
     let mut events = Events::default();
     let mut mode = Mode::Wait;
     loop {
@@ -89,10 +90,18 @@ fn turns(pane: &mut Pane) -> Outcome {
         {
             return Outcome::Failed(Failure::call("read the signal pipe")(error));
         }
+        if events.due().iter().any(|due| due.timer == foreground) {
+            pane.foreground_due();
+        }
         pane.settle_child();
         let committed = (master.is_some_and(ready) || pane.exit_pending()) && pane.read_pty();
         if let Err(stop) = pane.dead().and_then(|()| pane.flush()) {
             return ended(pane, stop);
+        }
+        if let Some(after) = pane.foreground_arm()
+            && let Err(error) = poll.start(foreground, after, None)
+        {
+            return Outcome::Failed(Failure::call("arm the foreground timer")(error));
         }
         mode = Mode::Wait;
         if activity || committed || pane.compress_pending() {

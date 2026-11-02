@@ -1,8 +1,10 @@
-use ko_vt::render::{Attribute, Attributes, Cell, CursorShape, Frame, Style};
+use ko_vt::render::{Attribute, Attributes, Cell, Colour, CursorShape, Frame, Style};
 use ko_vt::unicode::clusters;
 
 use crate::differ::Differ;
 use crate::modes::Modes;
+use ko_client::status::Mark;
+
 use crate::sidebar::Line;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,15 +51,15 @@ fn put(grid: &mut [Cell], cols: usize, x: usize, y: usize, cell: Cell) {
     }
 }
 
-fn draw_line(
+fn draw_row(
     grid: &mut [Cell],
     cols: usize,
     (x, y): (usize, usize),
     width: usize,
     inverse: bool,
-    text: &str,
+    parts: &[(&str, Style)],
 ) {
-    let style = Style {
+    let base = Style {
         attrs: if inverse {
             Attributes::default().with(Attribute::Inverse)
         } else {
@@ -65,24 +67,62 @@ fn draw_line(
         },
         ..Style::default()
     };
-    let cell = |text: &str, width| Cell {
-        text: text.to_owned(),
-        width,
-        style,
-    };
     for at in 0..width {
-        put(grid, cols, x + at, y, cell(" ", 1));
+        let blank = Cell {
+            text: " ".to_owned(),
+            width: 1,
+            style: base,
+        };
+        put(grid, cols, x + at, y, blank);
     }
     let mut at = x;
-    for (cluster, wide) in clusters(text) {
-        if at + usize::from(wide) > x + width {
-            break;
+    for (text, style) in parts {
+        let style = if inverse { base } else { *style };
+        for (cluster, wide) in clusters(text) {
+            if at + usize::from(wide) > x + width {
+                return;
+            }
+            let cell = |text: &str, width| Cell {
+                text: text.to_owned(),
+                width,
+                style,
+            };
+            put(grid, cols, at, y, cell(cluster, wide.max(1)));
+            if wide == 2 {
+                put(grid, cols, at + 1, y, cell("", 0));
+            }
+            at += usize::from(wide);
         }
-        put(grid, cols, at, y, cell(cluster, wide.max(1)));
-        if wide == 2 {
-            put(grid, cols, at + 1, y, cell("", 0));
-        }
-        at += usize::from(wide);
+    }
+}
+
+fn draw_line(
+    grid: &mut [Cell],
+    cols: usize,
+    at: (usize, usize),
+    width: usize,
+    inverse: bool,
+    text: &str,
+) {
+    draw_row(grid, cols, at, width, inverse, &[(text, Style::default())]);
+}
+
+fn glyph(mark: Mark) -> (&'static str, Style) {
+    let colour = |index, bold: bool| Style {
+        fg: Colour::Indexed(index),
+        attrs: if bold {
+            Attributes::default().with(Attribute::Bold)
+        } else {
+            Attributes::default()
+        },
+        ..Style::default()
+    };
+    match mark {
+        Mark::None => (" ", Style::default()),
+        Mark::Running => ("\u{25fc}", colour(2, false)),
+        Mark::Waiting => ("\u{25c6}", colour(3, true)),
+        Mark::Done => ("\u{2713}", colour(2, true)),
+        Mark::Failed => ("\u{25fc}", colour(1, false)),
     }
 }
 
@@ -101,13 +141,18 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
     }
     for (y, line) in l.sidebar.iter().enumerate().take(l.pane_rows) {
         let inverse = l.choosing.map_or(line.selected, |chosen| chosen == y);
-        draw_line(
+        let (mark, style) = glyph(line.mark);
+        draw_row(
             &mut grid,
             l.cols,
             (0, y),
             l.pane_x.saturating_sub(1),
             inverse,
-            &line.text,
+            &[
+                (&line.lead, Style::default()),
+                (mark, style),
+                (&line.title, Style::default()),
+            ],
         );
     }
     if let Some(dead) = &l.dead {
@@ -235,10 +280,12 @@ mod tests {
 
     use super::*;
 
-    fn line(number: u64, text: &str, selected: bool) -> Line {
+    fn line(number: u64, title: &str, selected: bool) -> Line {
         Line {
             pane: format!("pane_{number}").parse().unwrap(),
-            text: text.to_owned(),
+            lead: format!("{number} "),
+            mark: Mark::None,
+            title: title.to_owned(),
             selected,
         }
     }
@@ -252,7 +299,7 @@ mod tests {
             pane_rows: 2,
             warning: false,
             dead: None,
-            sidebar: vec![line(1, "1 \u{754c}", true), line(2, "2 /tmp", false)],
+            sidebar: vec![line(1, "\u{754c}", true), line(2, "/tmp", false)],
             choosing: Some(1),
         };
         let grid = draw_ui(&layout);
@@ -276,6 +323,50 @@ mod tests {
     }
 
     #[test]
+    fn a_mark_has_its_own_colour_except_on_the_reversed_row_and_titles_stay_aligned() {
+        let marked = |number: u64, mark: Mark, selected: bool| Line {
+            mark,
+            ..line(number, "zsh", selected)
+        };
+        let layout = Layout {
+            cols: 30,
+            rows: 3,
+            pane_x: 25,
+            pane_rows: 3,
+            warning: false,
+            dead: None,
+            sidebar: vec![
+                marked(1, Mark::Running, false),
+                marked(2, Mark::Waiting, true),
+                marked(3, Mark::None, false),
+            ],
+            choosing: None,
+        };
+        let grid = draw_ui(&layout);
+        let at = |y: usize, x: usize| &grid[y * 30 + x];
+        let seen: Vec<(String, Colour, bool, bool)> = (0..3)
+            .map(|y| {
+                let cell = at(y, 2);
+                (
+                    cell.text.clone(),
+                    cell.style.fg,
+                    cell.style.attrs.has(Attribute::Bold),
+                    cell.style.attrs.has(Attribute::Inverse),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("\u{25fc}".to_owned(), Colour::Indexed(2), false, false),
+                ("\u{25c6}".to_owned(), Colour::Default, false, true),
+                (" ".to_owned(), Colour::Default, false, false),
+            ]
+        );
+        assert!((0..3).all(|y| at(y, 3).text == "z" && at(y, 3).style.fg == Colour::Default));
+    }
+
+    #[test]
     fn a_one_column_terminal_draws_no_negative_width() {
         let layout = Layout {
             cols: 1,
@@ -284,7 +375,7 @@ mod tests {
             pane_rows: 1,
             warning: true,
             dead: Some("[exited 1]".to_owned()),
-            sidebar: vec![line(1, "1 sh", true)],
+            sidebar: vec![line(1, "sh", true)],
             choosing: None,
         };
         assert_eq!(draw_ui(&layout)[0].text, "k");

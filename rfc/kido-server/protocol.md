@@ -1,6 +1,6 @@
 # ko protocol (appendix to design.md)
 
-Status: design, 2026-10-29, updated 2026-10-31. HTTP/1.1 over a unix
+Status: design, 2026-10-29, updated 2026-11-02 (protocol 2.2, K1). HTTP/1.1 over a unix
 socket, with WebSocket (RFC 6455) for the long-lived streams.
 
 **The code is the source of truth for every message shape** (decided
@@ -114,7 +114,7 @@ panes and their offsets survive.
 
 Every other request carries the `Ko-Protocol` and `Ko-Vt` headers; a
 request without them is refused as a mismatch. The protocol version
-is 2.1. A major mismatch is `426 Upgrade Required`, a `vt` mismatch
+is 2.2. A major mismatch is `426 Upgrade Required`, a `vt` mismatch
 is `409 Conflict`, with a `protocol_mismatch` or `vt_mismatch` body
 that names the server's values beside `kind` and `message`. Those two
 fields have the same place in every major, so a client of any major
@@ -122,6 +122,20 @@ reads the refusal. The minor of the
 server may be higher: it appends fields and resources and never
 removes them. The launcher and Kido.app discovery compare these
 values instead of a server stamp.
+
+Times in status values (a status's `since`, a command's start and
+end) are nanoseconds of the server's monotonic clock (`Mono`), which
+has no meaning on another machine. The `Welcome` event and every
+`status` event carry `now`, the server's `Mono` time when it sent the
+message. A client keeps the latest `now` with its own local monotonic
+time of arrival, and estimates the server's current time from that
+pair. Thus it shows an elapsed time without a shared wall clock, and
+each `status` event anchors the estimate again, for example after the
+client's machine sleeps. A reader of `GET /panes` alone has no
+anchor; it compares times with each other only. The decision is the
+manager's of K1 (2026-11-02): wall-clock times would depend on the
+clocks of two machines agreeing, which remote panes (K7) do not
+promise.
 
 Error kinds and their status codes: `invalid` (400), `not_found`
 (404), `refused` (409), `gone` (410, a closed client), `busy` (503),
@@ -281,10 +295,11 @@ result.
 Events arrive on the client connection, one text message per event,
 in the order the server produced them. The kinds, as `Protocol`'s
 client event type defines them: the whole layout document on every
-change (section 7); a pane's title, pwd, prompt step, OSC 7501 records,
-status, variable, death, bell, notification, progress, clipboard
-write and clipboard read; a run's start or end; and this client's
-own state when another connection moved it.
+change (section 7); a pane's title, pwd, status, variable, death,
+bell, notification and progress; later a pane's clipboard write and
+clipboard read (K6), a run's start or end (K3), and this client's
+own state when another connection moved it (K2). The OSC 133 steps
+and the OSC 7501 records reach a client only through `status`.
 
 The first message after the welcome is the full layout. There is no
 event replay; a client that reconnects reads `/layout`, `/panes` and
@@ -293,8 +308,32 @@ event replay; a client that reconnects reads `/layout`, `/panes` and
 There is no feed and no tree snapshot (decided 2026-10-30). The server
 computes one `status` per pane and announces a change for that pane
 only; a client builds its sidebar tree from the layout document, the
-panes and the runs. s1.md 6.4 specifies `status` until its code
-exists; its typed `kind` keeps the shape of kido's `Pane_status.kind`.
+panes and the runs. `PaneStatus` in `ko_server/src/protocol.rs` is
+the reference for its shape: tagged enums for the pane kind, the
+phase and the agent state (plans/ko-stages.md 4.3), with the rules of
+kido's `Pane_status` (s1.md 6).
+
+Pane state and pane events (protocol 2.2):
+
+- A `GET /panes` row carries the pane's foreground process, its
+  status, its variables and its progress (OSC 9;4). The status is
+  absent until the model has run once for the pane; the progress is
+  absent after a `remove` report.
+- A `status`, `var`, `var_deleted` or `progress` event announces a
+  change of that state. A report that changes nothing sends no event:
+  an unchanged OSC 7501 record, an equal `PUT` of a variable, a
+  `DELETE` of an absent name, an unchanged progress.
+- A `topology` row carries no variables, because one pane can hold
+  8 MiB of them and a client would get them again on every change of
+  the pane set. A client reads the variables once from `GET /panes`
+  after its `Welcome` and then applies `var` and `var_deleted`. An
+  event that arrives while that read is in flight is newer than the
+  read, so the client applies it over the read's result.
+- `bell` and `notify` (OSC 9 and OSC 777) are events only, with no
+  row field and no replay: a client that is not connected when a
+  program rings or notifies does not see it (decided 2026-11-02).
+  Progress is pane state, so a client that connects late sees it on
+  the row (decided 2026-11-02).
 
 ## 7. The layout document and pane variables
 
@@ -322,9 +361,15 @@ The layout is one JSON document for the whole server (decided
 Session and window variables are the `vars` objects inside the
 document. Pane variables are resources under `/panes/pane_N/vars`:
 `GET` the set or one name, `PUT` one name with one JSON value,
-`DELETE` one name. A value is any JSON, at most 1 MiB; one pane holds
+`DELETE` one name. A value is any JSON, at most 1 MiB minus 4 KiB
+(1,044,480 bytes) of encoded JSON, so that its `var` event, with a
+name of 256 bytes escaped and any pane id, fits in one WebSocket
+message of 1 MiB (section 1). The rule "a message is at most 1 MiB"
+holds in both directions, and the value limit is a constant that does
+not depend on the name (decided 2026-11-02). One pane holds
 at most 8 MiB and 1,024 names; a name is UTF-8 without control
-characters, at most 256 bytes. The server stores and announces
+characters, at most 256 bytes, percent-decoded from the path. A dead
+pane keeps its variables until it is removed. The server stores and announces
 variables and reads only the `pi.*` and `ssh.*` names under kido's
 trust rules (s1.md 6.1). `ko ssh` sets `ssh.dest` and `ssh.args`
 before it execs ssh, and the model believes them only while the
@@ -482,10 +527,23 @@ frames (`key`, `text`, `paste`, `mouse`, `focus`), `snapshot`, `screen`,
 `SCM_RIGHTS`, for the per-pane upgrade).
 
 Frames `ko-pane` sends: `ready`, `head`, `full`, `title`, `pwd`, `dead`,
-`snapshot_done`, `screen`, `paste_done`, `error`. Later stages add
-`prompt`, `record`, `foreground` and `alternate` (s1.md 4),
-`image` and `image_gone` (section 5), `search`, `bell`, `notify`,
-`progress`, `clipboard_write`, `clipboard_read` and `snapshot_file`.
+`snapshot_done`, `screen`, `paste_done`, `error`, `prompt`, `record`,
+`foreground`, `alternate`, `bell`, `notify` and `progress`. Later
+stages add `image` and `image_gone` (section 5), `search`,
+`clipboard_write`, `clipboard_read` and `snapshot_file`.
+
+The libghostty-vt callbacks of the reports only record; `ko-pane`
+sends one frame for each recorded report after the write that carried
+it, so a report frame follows the ring record of its bytes. `ko-pane`
+forwards OSC 133 `A` (primary prompts only), `C` and `D`; `B` and
+the other prompt kinds have no reader and stay in `ko-pane`. The
+coordinator keeps the OSC 7501 record set and applies its rules
+(s1.md 5); `ko-pane` parses nothing that libghostty-vt has
+validated. An OSC 7501 report has no flag for an absent title or
+message, so an empty string is absent. RIS needs no frame of its own:
+libghostty-vt reports a `clear` of every record and a progress
+`remove` before its reset, so `ko-pane` does not register the
+`RESET` callback.
 
 Rules: `bytes` offsets are consecutive from zero; a `resize` is
 applied by `ko-pane` between two `bytes` records and written as a
@@ -501,6 +559,22 @@ the program has called `setsid` and `exec` (a close-on-exec pipe), and
 not if it already exited. It collects the program's status with
 `WNOWAIT` and keeps the zombie until its final group kill, so the pid
 and group id cannot be reused while `ko-pane` lives; if the program
-is already a zombie, it sends `SIGKILL` to the group at once. The foreground check runs only on events
-(s1.md 4): after OSC 133 `C` and `D` and on pty output at most once
-per 100 ms, never on a timer.
+is already a zombie, it sends `SIGKILL` to the group at once.
+
+The foreground check runs only on events (decided 2026-10-30, s1.md
+4): at `ready`, after OSC 133 `A`, `C` and `D`, and on pty output at
+most once per 100 ms. The output throttle is leading and trailing:
+output after the window has ended checks at once, and output inside
+the window arms one deadline at the window's end in `ko-pane`'s loop,
+which only new output arms again. Thus a program that prints once and
+then waits (an ssh password question) is seen, and an idle pane never
+wakes. `A` and the trailing deadline are the top-level session's
+decisions within the user's rule, not separate user decisions. There
+is no recheck on a timer after `C`. The known limit: a shell sends
+`C` before it forks, so the check at `C` usually sees the shell, and
+a program that prints nothing shows the shell as the foreground until
+its first output or its `D`. This is accepted, because the case that
+matters, ssh, prints almost at once (a prompt, a banner, a host key
+or password question). `ko-pane` sends a `foreground` frame only when
+the pid or the name changed, and an `alternate` frame when the
+active screen changed after a write.

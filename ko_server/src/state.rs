@@ -10,17 +10,19 @@ use crate::config::Config;
 use crate::conn::{Conn, Phase};
 use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
-use crate::ids::{ClientId, Instance, PaneId};
+use crate::ids::{ClientId, Instance, PaneId, VarName};
 use crate::link::{Role, Wire};
+use crate::model::{self, Model};
 use crate::pane::Pane;
 use crate::pane_proc::{self, Event, Io, Refusal, discard};
 use crate::panes::{AddError, Panes};
 use crate::protocol::{
-    self, ClientEvent, ClientRequest, CreatePane, Input, Limits, PaneDead, PasteResult, Pwd, Row,
-    Title, ViewEvent, ViewRequest, Welcome,
+    self, ClientEvent, ClientRequest, CreatePane, Input, Limits, Listing, PaneDead, PasteResult,
+    Pwd, Row, StatusChange, Title, ViewEvent, ViewRequest, Welcome,
 };
 use crate::router;
 use crate::server::Verified;
+use crate::vars::Refusal as VarRefusal;
 use crate::view::View;
 use crate::ws::{Next, Ping};
 
@@ -42,6 +44,7 @@ pub(crate) struct State {
     next_client: u64,
     ticker: Timer,
     tick: Duration,
+    model: Model,
     spare: Vec<Vec<Event>>,
     ticked: Vec<(PaneId, Event)>,
 }
@@ -100,6 +103,7 @@ impl State {
             next_client: 1,
             ticker: poll.timer(),
             tick,
+            model: Model::new(poll),
             spare: Vec::new(),
             ticked: Vec::new(),
         }
@@ -184,6 +188,13 @@ impl State {
     }
 
     pub(crate) fn remove_pane(&mut self, poll: &mut Poll, id: PaneId) {
+        if let Some(timer) = self
+            .panes
+            .find_mut(id)
+            .and_then(|pane| pane.model_mut().take_promotion())
+        {
+            poll.free(timer);
+        }
         let mut events = self.spare.pop().unwrap_or_default();
         self.panes.remove(
             id,
@@ -221,12 +232,75 @@ impl State {
             sink: &mut discard,
         });
         poll.stop(self.ticker);
+        self.model.stop(poll);
+    }
+
+    fn mark(&mut self, poll: &mut Poll, id: PaneId) {
+        if let Some(pane) = self.panes.find_mut(id) {
+            self.model.mark(poll, pane);
+        }
+    }
+
+    fn model_tick(&mut self, poll: &mut Poll) {
+        let mut changed = Vec::new();
+        for pane in self.panes.iter_mut() {
+            if pane.model().dirty()
+                && let Some(status) = model::observe(pane, poll)
+            {
+                changed.push((pane.id(), status));
+            }
+        }
+        let now = ko_sys::clock::Mono::now().nanos();
+        for (pane, status) in changed {
+            self.broadcast(&ClientEvent::Status(StatusChange { pane, status, now }));
+        }
+    }
+
+    pub(crate) fn set_var(
+        &mut self,
+        poll: &mut Poll,
+        id: PaneId,
+        name: VarName,
+        value: serde_json::Value,
+    ) -> Result<(), VarRefusal> {
+        let watched = self.watched();
+        let Some(pane) = self.panes.find_mut(id) else {
+            return Ok(());
+        };
+        if pane.vars_mut().set(&name, value)? {
+            self.model.mark(poll, pane);
+            let event = watched
+                .then(|| pane.vars().get(&name).cloned())
+                .flatten()
+                .map(|value| ClientEvent::Var {
+                    pane: id,
+                    name,
+                    value,
+                });
+            if let Some(event) = event {
+                self.broadcast(&event);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn delete_var(&mut self, poll: &mut Poll, id: PaneId, name: VarName) {
+        let Some(pane) = self.panes.find_mut(id) else {
+            return;
+        };
+        if pane.vars_mut().remove(&name) {
+            self.model.mark(poll, pane);
+            self.broadcast(&ClientEvent::VarDeleted { pane: id, name });
+        }
     }
 
     fn event(&mut self, poll: &mut Poll, id: PaneId, event: Event) {
         match event {
-            Event::Title if self.watched() => {
-                if let Some(pane) = self.panes.find(id) {
+            Event::Title => {
+                self.mark(poll, id);
+                if self.watched()
+                    && let Some(pane) = self.panes.find(id)
+                {
                     let title = lossy(pane.proc().title());
                     self.broadcast(&ClientEvent::Title(Title { pane: id, title }));
                 }
@@ -237,14 +311,60 @@ impl State {
                     self.broadcast(&ClientEvent::Pwd(Pwd { pane: id, pwd }));
                 }
             }
-            Event::Title | Event::Pwd => {}
+            Event::Pwd => {}
             Event::Dead(death) => {
+                if let Some(pane) = self.panes.find_mut(id) {
+                    pane.telemetry_mut().records.clear();
+                    self.model.mark(poll, pane);
+                }
                 self.broadcast(&ClientEvent::Dead(PaneDead {
                     pane: id,
                     dead: (&death).into(),
                 }));
                 if let pane_proc::Cause::Failed(_) = death.cause {
                     self.close_views(id);
+                }
+            }
+            Event::Prompt(prompt) => {
+                if let Some(pane) = self.panes.find_mut(id) {
+                    pane.telemetry_mut().prompt(prompt);
+                    self.model.mark(poll, pane);
+                }
+            }
+            Event::Record(report) => {
+                if let Some(pane) = self.panes.find_mut(id)
+                    && pane.telemetry_mut().records.apply(report)
+                {
+                    self.model.mark(poll, pane);
+                }
+            }
+            Event::Foreground(foreground) => {
+                if let Some(pane) = self.panes.find_mut(id)
+                    && pane.telemetry_mut().foreground(foreground)
+                {
+                    self.model.mark(poll, pane);
+                }
+            }
+            Event::Alternate(on) => {
+                if let Some(pane) = self.panes.find_mut(id)
+                    && pane.telemetry_mut().set_alternate(on)
+                {
+                    self.model.mark(poll, pane);
+                }
+            }
+            Event::Bell => self.broadcast(&ClientEvent::Bell { pane: id }),
+            Event::Notify { title, body } => {
+                self.broadcast(&ClientEvent::Notify {
+                    pane: id,
+                    title,
+                    body,
+                });
+            }
+            Event::Progress(progress) => {
+                if let Some(pane) = self.panes.find_mut(id)
+                    && pane.telemetry_mut().set_progress(progress)
+                {
+                    self.broadcast(&ClientEvent::Progress { pane: id, progress });
                 }
             }
             Event::Output => {
@@ -348,6 +468,7 @@ impl State {
             .iter()
             .map(|pane| {
                 let proc = pane.proc();
+                let telemetry = pane.telemetry();
                 Row {
                     id: pane.id(),
                     pid: proc.child_pid().map_or(0, |pid| pid.get()),
@@ -355,7 +476,22 @@ impl State {
                     cwd: lossy(proc.cwd()),
                     title: lossy(proc.title()),
                     dead: proc.dead().map(Into::into),
+                    foreground: telemetry.foreground.clone(),
+                    status: pane.model().status().cloned(),
+                    progress: telemetry.progress,
                 }
+            })
+            .collect()
+    }
+
+    pub(crate) fn listing(&self) -> Vec<Listing> {
+        let rows = self.rows();
+        self.panes
+            .iter()
+            .zip(rows)
+            .map(|(pane, row)| Listing {
+                row,
+                vars: pane.vars().snapshot(),
             })
             .collect()
     }
@@ -553,8 +689,12 @@ impl State {
                 if !poll.current(due) || own(self, poll, Wake::Due(due.timer))? {
                 } else if due.timer == self.ticker {
                     self.tick(poll);
-                } else {
+                } else if self.model.is_tick(due.timer) {
+                    self.model_tick(poll);
+                } else if self.conns.iter().any(|conn| conn.timer == due.timer) {
                     self.ping(poll, due.timer);
+                } else if let Some(id) = self.panes.by_promotion(due.timer) {
+                    self.mark(poll, id);
                 }
             }
             Ok(())
@@ -654,6 +794,7 @@ impl State {
                     client: id,
                     limits: Limits::of(self.config.limits, &self.config.media),
                     instance: self.instance.clone(),
+                    now: ko_sys::clock::Mono::now().nanos(),
                 });
                 let topology = ClientEvent::Topology { panes: self.rows() };
                 if let Some((_, wire)) = self.conns.get_mut(index).and_then(Conn::role_mut) {

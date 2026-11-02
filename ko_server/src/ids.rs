@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::{self, Write};
 use std::io;
 use std::str::FromStr;
@@ -104,9 +105,66 @@ impl From<Instance> for String {
     }
 }
 
+const MAX_VAR_NAME: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct VarName(Cow<'static, str>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidName;
+
+impl fmt::Display for InvalidName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid variable name")
+    }
+}
+
+impl VarName {
+    pub fn new(name: &str) -> Result<VarName, InvalidName> {
+        if (1..=MAX_VAR_NAME).contains(&name.len()) && !name.chars().any(char::is_control) {
+            Ok(VarName(Cow::Owned(name.to_owned())))
+        } else {
+            Err(InvalidName)
+        }
+    }
+
+    pub(crate) const fn known(name: &'static str) -> VarName {
+        VarName(Cow::Borrowed(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for VarName {
+    type Error = InvalidName;
+
+    fn try_from(name: String) -> Result<VarName, InvalidName> {
+        VarName::new(&name)
+    }
+}
+
+impl From<VarName> for String {
+    fn from(name: VarName) -> String {
+        name.0.into_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_are_one_to_256_bytes_without_control_characters() {
+        assert!(VarName::new("").is_err());
+        assert!(VarName::new(&"n".repeat(256)).is_ok());
+        assert!(VarName::new(&"n".repeat(257)).is_err());
+        assert!(VarName::new("a\nb").is_err());
+        assert!(VarName::new("pi.session é").is_ok());
+        assert!(VarName::new(&"é".repeat(129)).is_err());
+    }
 
     #[test]
     fn an_id_round_trips_and_only_its_canonical_form_parses() {

@@ -49,7 +49,7 @@ impl Default for Panes {
 fn environment(config: &Config, id: PaneId, requested: &[Variable]) -> Vec<Vec<u8>> {
     let mut terminfo = config.terminfo.as_os_str().as_encoded_bytes().to_vec();
     terminfo.push(b':');
-    let forced: [(&str, Vec<u8>); 6] = [
+    let mut forced: Vec<(&str, Vec<u8>)> = vec![
         ("TERM", b"xterm-ghostty".to_vec()),
         ("TERM_PROGRAM", b"ko".to_vec()),
         ("TERM_PROGRAM_VERSION", BUILD.as_bytes().to_vec()),
@@ -59,7 +59,29 @@ fn environment(config: &Config, id: PaneId, requested: &[Variable]) -> Vec<Vec<u
             config.socket.as_os_str().as_encoded_bytes().to_vec(),
         ),
         ("KO_PANE", id.to_string().into_bytes()),
+        (
+            "KO_SHELL",
+            config.shell.as_os_str().as_encoded_bytes().to_vec(),
+        ),
     ];
+    if let Some(dir) = &config.bin_dir {
+        let inherited = config
+            .env
+            .iter()
+            .find_map(|entry| entry.strip_prefix(b"PATH="))
+            .unwrap_or_default();
+        let mut path = dir.as_os_str().as_encoded_bytes().to_vec();
+        for entry in inherited
+            .split(|&byte| byte == b':')
+            .filter(|entry| !entry.is_empty())
+        {
+            if entry != dir.as_os_str().as_encoded_bytes() {
+                path.push(b':');
+                path.extend_from_slice(entry);
+            }
+        }
+        forced.push(("PATH", path));
+    }
     let overrides: Vec<(&str, Vec<u8>)> = forced
         .iter()
         .cloned()
@@ -102,6 +124,13 @@ impl Panes {
             .find(|pane| pane.proc().token() == Some(token))
     }
 
+    pub(crate) fn by_promotion(&self, timer: ko_sys::event::Timer) -> Option<PaneId> {
+        self.panes
+            .iter()
+            .find(|pane| pane.model().promotion() == Some(timer))
+            .map(Pane::id)
+    }
+
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Pane> {
         self.panes.iter()
     }
@@ -127,7 +156,10 @@ impl Panes {
             .map_or_else(|| config.cwd.clone(), PathBuf::from);
         let shell = || config.shell.as_os_str().as_encoded_bytes().to_vec();
         let command: Vec<Vec<u8>> = match &request.command {
-            None => vec![shell(), b"-l".to_vec()],
+            None => vec![
+                config.exe.as_os_str().as_encoded_bytes().to_vec(),
+                b"shell".to_vec(),
+            ],
             Some(Command::Argv { argv }) => {
                 argv.iter().map(|arg| arg.clone().into_bytes()).collect()
             }
@@ -224,6 +256,8 @@ mod tests {
             pane_exe: PathBuf::from("/nonexistent/ko-pane"),
             terminfo: PathBuf::from("/share/terminfo"),
             shell: PathBuf::from("/bin/sh"),
+            exe: PathBuf::from("/bin/ko"),
+            bin_dir: None,
             limits: crate::config::DEFAULT_LIMITS,
             media: Vec::new(),
             env: vec![
@@ -254,6 +288,7 @@ mod tests {
                 "TERMINFO_DIRS=/share/terminfo:".to_owned(),
                 "KO_SOCKET=/tmp/ko/socket".to_owned(),
                 "KO_PANE=pane_3".to_owned(),
+                "KO_SHELL=/bin/sh".to_owned(),
                 "LANG=en".to_owned(),
                 "HOME=/home".to_owned(),
             ]

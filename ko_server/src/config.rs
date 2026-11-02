@@ -19,6 +19,8 @@ pub struct Config {
     pub pane_exe: PathBuf,
     pub terminfo: PathBuf,
     pub shell: PathBuf,
+    pub exe: PathBuf,
+    pub bin_dir: Option<PathBuf>,
     pub limits: Limits,
     pub media: Vec<Medium>,
     pub env: Vec<Vec<u8>>,
@@ -42,6 +44,8 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
         pane_exe,
         terminfo: dir.to_path_buf(),
         shell: PathBuf::from("/bin/sh"),
+        exe: PathBuf::from("/nonexistent/ko"),
+        bin_dir: None,
         limits,
         media: Vec::new(),
         env: Vec::new(),
@@ -104,24 +108,26 @@ pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn shipped(exe: &Path) -> Result<(PathBuf, PathBuf), String> {
+pub fn candidates(exe: &Path) -> Vec<PathBuf> {
     let resolved = fs::canonicalize(exe)
         .ok()
         .filter(|resolved| resolved != exe);
-    let candidates: Vec<&Path> = [Some(exe), resolved.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect();
+    std::iter::once(exe.to_path_buf()).chain(resolved).collect()
+}
+
+pub fn is_executable(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+fn shipped(exe: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let candidates = candidates(exe);
     let beside = |name: &'static str| {
         candidates
             .iter()
             .filter_map(move |exe| Some(exe.parent()?.join(name)))
     };
     let pane_exe = beside("ko-pane")
-        .find(|path| {
-            fs::metadata(path)
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        })
+        .find(|path| is_executable(path))
         .ok_or("ko-pane was not found beside ko")?;
     let terminfo = beside("../share/ko/terminfo")
         .find(|path| path.exists())
@@ -134,6 +140,7 @@ impl Config {
         exe: &Path,
         chosen: Option<PathBuf>,
         shell: Option<PathBuf>,
+        bin_dir: Option<PathBuf>,
         scrollback: Scrollback,
     ) -> Result<Config, String> {
         let shell = shell
@@ -143,6 +150,10 @@ impl Config {
         if shell.is_relative() {
             return Err("shell must be an absolute path".to_owned());
         }
+        let exe = std::path::absolute(exe).map_err(|error| error.to_string())?;
+        let bin_dir = bin_dir
+            .map(|dir| std::path::absolute(dir).map_err(|error| error.to_string()))
+            .transpose()?;
         let dir = dir(chosen);
         let socket = socket(Dir::Create, &dir)?;
         let cwd = env::current_dir().map_err(|error: io::Error| error.to_string())?;
@@ -152,6 +163,8 @@ impl Config {
             pane_exe,
             terminfo,
             shell,
+            exe,
+            bin_dir,
             limits: Limits {
                 scrollback,
                 ..DEFAULT_LIMITS

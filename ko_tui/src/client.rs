@@ -368,7 +368,8 @@ impl Client {
             watchdog,
         };
         client.client(wire::buffered(client.link_token), Instant::now())?;
-        match client.model.panes.first().map(|pane| pane.id) {
+        client.list_panes()?;
+        match client.model.panes.first().map(|pane| pane.row.id) {
             None => client.create_pane()?,
             Some(pane) => client.switch(pane)?,
         }
@@ -387,8 +388,8 @@ impl Client {
         self.model
             .panes
             .iter()
-            .find(|row| row.id == pane)
-            .and_then(|row| row.dead.clone())
+            .find(|found| found.row.id == pane)
+            .and_then(|found| found.row.dead.clone())
     }
 
     fn received(&self) -> Instant {
@@ -426,7 +427,7 @@ impl Client {
             },
             sidebar: match self.panel {
                 Panel::Hidden => Vec::new(),
-                _ => sidebar::lines(self.pane(), &self.model.panes),
+                _ => sidebar::lines(self.pane(), &self.model),
             },
         }
     }
@@ -478,6 +479,7 @@ impl Client {
             &mut self.poll,
         )?;
         self.view = View::open(pane, mirror);
+        self.model.observe(Some(pane));
         self.input_send(Wire::Focus {
             focused: self.focused,
         })?;
@@ -508,7 +510,7 @@ impl Client {
         self.model
             .panes
             .iter()
-            .position(|row| Some(row.id) == self.pane())
+            .position(|found| Some(found.row.id) == self.pane())
             .unwrap_or(0)
     }
 
@@ -518,7 +520,7 @@ impl Client {
             return Ok(());
         }
         let at = (self.selected() as isize + step).rem_euclid(count as isize) as usize;
-        match self.model.panes.get(at).map(|row| row.id) {
+        match self.model.panes.get(at).map(|pane| pane.row.id) {
             Some(pane) => self.switch(pane),
             None => Ok(()),
         }
@@ -531,11 +533,18 @@ impl Client {
         };
         mirror.close(&mut self.poll);
         self.request(&Route::DeletePane(pane))?;
-        self.model.panes = protocol::decode(&self.request(&Route::ListPanes)?).map_err(text)?;
-        match self.model.panes.first().map(|row| row.id) {
+        self.list_panes()?;
+        match self.model.panes.first().map(|pane| pane.row.id) {
             None => self.create_pane(),
             Some(first) => self.switch(first),
         }
+    }
+
+    fn list_panes(&mut self) -> Result<(), String> {
+        self.model.begin_fetch();
+        let listing = protocol::decode(&self.request(&Route::ListPanes)?).map_err(text)?;
+        self.model.finish_fetch(listing);
+        Ok(())
     }
 
     fn pager(&mut self) -> Result<(), String> {
@@ -681,7 +690,7 @@ impl Client {
                 Ok(())
             }
             (Panel::Choosing(chosen), Name::Enter) => {
-                match self.model.panes.get(chosen).map(|row| row.id) {
+                match self.model.panes.get(chosen).map(|pane| pane.row.id) {
                     Some(pane) => self.switch(pane),
                     None => Ok(()),
                 }
@@ -923,6 +932,7 @@ impl Client {
                     Next::Text(event) => {
                         let event = protocol::decode(event.as_bytes()).map_err(text)?;
                         self.model.apply(event);
+                        self.model.observe(self.pane());
                     }
                 }
             }

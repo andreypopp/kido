@@ -143,8 +143,12 @@ walks one `serde_json::Value` for a body that contains `[`; a `PUT
 
 Keep, with the limits of migration.md 3.3. A value is arbitrary JSON,
 so a variable body decodes as `serde_json::Value` and skips the
-array-shape check, which exists for records only. The 1 MiB body cap
-of `conn.rs` equals the value limit; a value of exactly 1 MiB passes.
+array-shape check, which exists for records only. The value limit
+is 1 MiB minus 4 KiB (1,044,480 bytes) of encoded JSON, below the
+1 MiB body cap of `conn.rs`: a value's `var` event must fit in one
+WebSocket message of 1 MiB, and 4 KiB covers the envelope with a
+256-byte name and any pane id (decided 2026-11-02, after review found
+that a 1 MiB value disconnected every client).
 The store is a `BTreeMap<String, Value>` per pane with its encoded
 size.
 
@@ -313,7 +317,7 @@ wire layer, the API client and the `/client` event handling that were in
 `welcome` event carries `instance`, the server process's identity,
 and `ko_client` keeps it beside the client id. Protocol 2.1.
 
-### K1. Status, pane variables, `ko shell`, `ko ssh` (10 to 14 agent-days)
+### K1. Status, pane variables, `ko shell`, `ko ssh` (done)
 
 Depends on nothing. Runs beside K2. s1.md is the specification, with
 these changes for the Rust base and the shapes of 4.3.
@@ -361,6 +365,48 @@ a test sends as `text` input, and libghostty-vt parses them.
 
 Risk: low. The rules exist and are tested; the port is mechanical.
 The one new mechanism is the model tick on the loop.
+
+Built (2026-11-02, protocol 2.2). The differences from s1.md, with
+their decisions:
+
+- The foreground check also runs at OSC 133 `A`, and its output
+  throttle is leading plus one trailing deadline (protocol.md 14).
+  There is no recheck on a timer after `C`. A silent program shows
+  the shell until its first output or `D`: a known limit, accepted
+  by the user, because ssh prints at once.
+- Status times are `Mono` nanoseconds; `welcome` and every `status`
+  event carry the server's `now` (protocol.md 2).
+- A `topology` row has no variables; a client reads them from
+  `GET /panes` (protocol.md 6). A variable value is at most
+  1,044,480 bytes, so its event fits in one 1 MiB message (4.2).
+- The seen rule, the mark choice and the row title rule are in
+  `ko_client`, for both clients; `ko_tui` draws the glyphs and
+  colours.
+- `bell` and `notify` are events only; progress is pane state on the
+  row and an event (decided 2026-11-02).
+- `ko-pane` forwards only primary `A`, `C` and `D`. A record has no
+  `title_set` or `msg_set`, because libghostty-vt's report has no
+  such flags: an empty string is absent. `RESET` is not registered,
+  because RIS already reports a `clear` and a progress `remove`.
+- `ko ssh` sets no variable when `ssh -G` fails, and runs ssh
+  unchanged and unmarked when an argument is not UTF-8.
+- The row title: the status title for an agent, an ssh pane and a
+  running command with no report; else the OSC 2 title, then the
+  status title, then the command's basename.
+- `TestForegroundOnEvents` reads `foreground` on `GET /panes`; there
+  is no frame counter. The idle test watches 2 s, not 5 s.
+- The macOS path_helper case is a `.zprofile` that moves the bin
+  directory down PATH, on both platforms.
+
+The coordinator does not build the `forest` of s1.md 5: no server
+reader needs it. A client builds it from the published records when
+Kido.app needs it (K5, in `ko_client`).
+
+Open after K1: the done criteria of s1.md 12 that are measurements
+(a flood of reports from 20 panes against the event count, and the
+20 ms status latency through `bench/client.py`), and the host-shell
+probes of the ssh bootstrap against an unconfigured zsh and bash,
+which the host-ssh e2e tests cover only with `KO_E2E_HOST_SSH=1`.
 
 ### K2. The layout document (8 to 11 agent-days)
 
