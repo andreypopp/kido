@@ -1217,10 +1217,9 @@ mod tests {
         a.send(&mut server, r#"{"type":"focused","focused":false}"#);
         assert_eq!(focused(&server), [true, false, false]);
         drop(b);
-        for _ in 0..20 {
-            server.step(Mode::Peek);
-        }
-        assert_eq!(focused(&server), [false, false, false]);
+        step_until(&mut server, "the hangup to clear the focus", |server| {
+            focused(server) == [false, false, false]
+        });
     }
 
     #[test]

@@ -304,10 +304,9 @@ fn client_history_and_alternate_screen() {
     o.contains("AFTER-ALT");
 
     let _ = std::fs::remove_file(&record);
+    let before = o.shown_marks(b"PAGER-OPEN");
     o.chord('e');
-    o.wait("pager started", || {
-        read_file(&record).is_some_and(|text| !text.is_empty())
-    });
+    o.wait("pager started", || o.shown_marks(b"PAGER-OPEN") > before);
     let path = read_file(&record).unwrap_or_default();
     let data = read_file(Path::new(&path)).unwrap_or_default();
     assert!(

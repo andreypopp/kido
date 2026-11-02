@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use crate::harness::{Dir, Server, ko, run_ko, run_program, start_with, test_env, which};
+use crate::harness::{DEADLINE, Dir, Server, ko, run_ko, run_program, start_with, test_env, which};
 use crate::status::{Flavour, dotfiles, shell_of};
 
 pub(crate) fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
@@ -226,20 +226,19 @@ fn pane_runs_the_shims() {
     );
 }
 
+const PROBE_SHELLS: [&str; 3] = ["bash", "zsh", "sh"];
+const PROBE_ARGS: [&[&str]; 3] = [&["-l", "-i", "-c", ":"], &["-i", "-c", ":"], &["-c", ":"]];
+
 // The test runs itself again with decoy dotfiles in the inherited HOME, ZDOTDIR, ENV and BASH_ENV.
 // The child, with the harness's private environment, runs login and interactive shells and
 // `ko shell -- CMD` panes; a decoy that is read leaves a marker.
 fn dotfile_probe() {
     let scratch = Dir::new("ko-probe-run-");
     let home = Dir::new("ko-probe-home-");
-    for name in ["bash", "zsh", "sh"] {
+    for name in PROBE_SHELLS {
         let Some(shell) = which(name) else { continue };
-        for args in [
-            &["-l", "-i", "-c", ":"][..],
-            &["-i", "-c", ":"],
-            &["-c", ":"],
-        ] {
-            let run = run_program(&scratch, &shell, &test_env(&home), args, "");
+        for args in PROBE_ARGS {
+            let run = run_program(&scratch, &shell, &test_env(&home), args, "", DEADLINE);
             assert_eq!(
                 run.exit,
                 ko_sys::pid::Exit::Exited(0),
@@ -296,6 +295,8 @@ fn shell_dotfile_isolation() {
         b"KO_E2E_DOTFILE_PROBE=1".to_vec(),
     ]);
     let out = Dir::new("ko-probe-out-");
+    let shells = PROBE_SHELLS.iter().filter(|name| which(name).is_some());
+    let probe_steps = u32::try_from(shells.count() * (PROBE_ARGS.len() + 2)).unwrap();
     let run = run_program(
         &out,
         &std::env::current_exe().unwrap(),
@@ -306,6 +307,7 @@ fn shell_dotfile_isolation() {
             "--test-threads=1",
         ],
         "",
+        DEADLINE * probe_steps,
     );
     assert_eq!(run.exit, ko_sys::pid::Exit::Exited(0), "the probe: {run:?}");
     let reads = fs::read_to_string(&marker).unwrap_or_default();
@@ -342,6 +344,7 @@ fn login_command() {
                 "literal arg",
             ],
             "",
+            DEADLINE,
         );
         assert_eq!(run.exit, ko_sys::pid::Exit::Exited(23), "{run:?}");
         let foo = if matches!(flavour, Flavour::Zsh) {
@@ -387,6 +390,7 @@ fn host_ssh() -> Option<Server> {
         &test_env(&probe),
         &["-o", "BatchMode=yes", "localhost", "true"],
         "",
+        DEADLINE,
     );
     assert_eq!(
         run.exit,

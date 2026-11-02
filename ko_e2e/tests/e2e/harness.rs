@@ -267,7 +267,7 @@ impl Run {
 }
 
 pub(crate) fn run_ko(scratch: &Path, env: &[Vec<u8>], args: &[&str], stdin: &str) -> Run {
-    run_program(scratch, &ko(), env, args, stdin)
+    run_program(scratch, &ko(), env, args, stdin, DEADLINE)
 }
 
 pub(crate) fn run_program(
@@ -276,6 +276,7 @@ pub(crate) fn run_program(
     env: &[Vec<u8>],
     args: &[&str],
     stdin: &str,
+    deadline: Duration,
 ) -> Run {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -293,9 +294,16 @@ pub(crate) fn run_program(
         env,
         &[(stdin.as_fd(), 0), (stdout.as_fd(), 1), (stderr.as_fd(), 2)],
     );
-    let exit = child
-        .wait(DEADLINE)
-        .unwrap_or_else(|| panic!("{} {args:?} did not exit", program.display()));
+    let started = Instant::now();
+    let exit = child.wait(deadline).unwrap_or_else(|| {
+        panic!(
+            "{} {args:?} did not exit after {:?}; stdout: {:?}; stderr: {:?}",
+            program.display(),
+            started.elapsed(),
+            std::fs::read_to_string(file("stdout")).unwrap_or_default(),
+            std::fs::read_to_string(file("stderr")).unwrap_or_default(),
+        )
+    });
     Run {
         stdout: std::fs::read_to_string(file("stdout")).unwrap(),
         stderr: std::fs::read_to_string(file("stderr")).unwrap(),

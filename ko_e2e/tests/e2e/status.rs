@@ -353,7 +353,7 @@ fn child_records() {
 
 use std::path::PathBuf;
 
-use crate::harness::{Dir, run_program, which};
+use crate::harness::{DEADLINE, Dir, run_program, which};
 
 pub(crate) enum Flavour {
     Zsh,
@@ -372,6 +372,7 @@ pub(crate) fn shell_of(flavour: &Flavour) -> Option<PathBuf> {
                 &[],
                 &["-c", "echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"],
                 "",
+                DEADLINE,
             )
             .stdout;
             let (major, minor) = version.trim().split_once('.')?;
