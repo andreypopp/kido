@@ -226,6 +226,7 @@ final class PaneToolbar: PaneCapsule {
         super.init(runtime: runtime, radius: 12, separators: 1)
         for (button, x) in [(grip, 3.0), (right, 29.0), (down, 55.0), (zoom, 81.0), (close, 116.0)] {
             button.frame = NSRect(x: x, y: 3, width: 26, height: 26)
+            button.acceptsFirstClick = false
             addSubview(button)
         }
         separatorX = [111]
