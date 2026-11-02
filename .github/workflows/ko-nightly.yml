@@ -71,8 +71,8 @@ jobs:
         timeout-minutes: 5
         uses: actions/cache@v4
         with:
-          path: target/fuzz/zig-cache
-          key: zig-cache-fuzz-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
+          path: target/zig-cache
+          key: zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
 
       - name: Install the Rust toolchain
         timeout-minutes: 5
@@ -183,8 +183,8 @@ jobs:
         timeout-minutes: 5
         uses: actions/cache@v4
         with:
-          path: target/miri/zig-cache
-          key: zig-cache-miri-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
+          path: target/zig-cache
+          key: zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
 
       - name: Miri
         timeout-minutes: 60

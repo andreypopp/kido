@@ -11,11 +11,8 @@ fn main() {
     for input in ["build.zig", "build.zig.zon", "src", "include", "pkg"] {
         println!("cargo:rerun-if-changed={}", ghostty.join(input).display());
     }
-    let target = out
-        .ancestors()
-        .find(|dir| dir.join("CACHEDIR.TAG").is_file())
-        .expect("cargo's target directory");
-    let cache = target.join("zig-cache");
+    println!("cargo:rerun-if-env-changed=KO_ZIG_CACHE");
+    let cache = PathBuf::from(env::var_os("KO_ZIG_CACHE").expect("KO_ZIG_CACHE"));
     let status = Command::new("zig")
         .arg("build")
         .arg("--build-file")

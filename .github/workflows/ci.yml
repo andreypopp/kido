@@ -62,7 +62,7 @@ jobs:
             ~/.cargo/git
           key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
 
-      # ko_vt_sys/build.rs keeps zig's caches here for every cargo profile.
+      # .cargo/config.toml keeps zig's caches here (KO_ZIG_CACHE) for every cargo profile and target directory.
       - name: Resolve ghostty pin
         timeout-minutes: 1
         id: ghostty

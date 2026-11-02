@@ -613,8 +613,13 @@ Conventions:
   A change of the ghostty pin regenerates it in the same commit.
   `scripts/lint.sh` checks the hash.
 - **libghostty-vt.** `ko_vt_sys/build.rs` builds it with zig from
-  PATH. Every cargo profile shares one zig cache,
-  so libghostty-vt compiles once for release, test and clippy.
+  PATH. Every cargo profile and target directory shares one zig cache,
+  so libghostty-vt compiles once for release, test and clippy. The
+  cache is `target/zig-cache`: `.cargo/config.toml` gives its absolute
+  path to every cargo command as `KO_ZIG_CACHE`, and the Makefile's
+  terminfo rule uses the same directory. The path does not come from
+  `OUT_DIR`, because cargo writes `CACHEDIR.TAG` only when it creates
+  `target/` itself, and CI's cache restore creates it first.
 - **The pane process.** `ko_pane_wire::frame` is the one source of the
   frame's constants for both processes. `ko-pane` holds its program's zombie: it never waits for the
   child before the final group kill, so the pid and the group id

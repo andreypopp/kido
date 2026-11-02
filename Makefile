@@ -103,8 +103,9 @@ website:
 
 # The installed layout of the Rust ko. The terminfo is compiled from ghostty's
 # source by terminfo.zig; tic writes x/ or 78/ by platform, and both are shipped.
-# zig keeps its caches where ko_vt_sys/build.rs does.
+# zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
+ZIG_CACHE := $(CURDIR)/target/zig-cache
 TERMINFO := $(KO)/share/ko/terminfo
 build-ko: $(TERMINFO)/x/xterm-ghostty
 	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release --bins
@@ -113,7 +114,7 @@ build-ko: $(TERMINFO)/x/xterm-ghostty
 
 $(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/src/terminfo/*.zig)
 	mkdir -p $(KO)/bin $(TERMINFO)/x $(TERMINFO)/78
-	ZIG_GLOBAL_CACHE_DIR=$(CURDIR)/target/zig-cache/global zig run --cache-dir target/zig-cache/local -lc --dep terminfo -Mroot=ko_vt/terminfo.zig -Mterminfo=third_party/ghostty/src/terminfo/main.zig > $(KO)/ghostty.terminfo
+	ZIG_GLOBAL_CACHE_DIR=$(ZIG_CACHE)/global zig run --cache-dir $(ZIG_CACHE)/local -lc --dep terminfo -Mroot=ko_vt/terminfo.zig -Mterminfo=third_party/ghostty/src/terminfo/main.zig > $(KO)/ghostty.terminfo
 	tic -x -o $(KO)/tic $(KO)/ghostty.terminfo
 	cp -f $$(ls $(KO)/tic/*/xterm-ghostty | head -1) $(TERMINFO)/78/
 	cp -f $(TERMINFO)/78/xterm-ghostty $@

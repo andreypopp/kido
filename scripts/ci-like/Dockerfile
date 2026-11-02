@@ -104,9 +104,7 @@ RUN mkdir -p /gocache /go/pkg/mod /home/ci && chmod 0777 /gocache /go/pkg/mod /h
 # cargo's target directory and the build/ outputs (the Rust ko's install layout, the Verus
 # archive, the promoted build/main.exe) are volumes over the bind mount, so a Linux build never
 # overwrites the host's macOS ones.
-# ko_vt_sys/build.rs finds the target directory by cargo's CACHEDIR.TAG, which cargo writes only when it creates the directory.
 RUN mkdir -p /repo/target /repo/build \
-	&& printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > /repo/target/CACHEDIR.TAG \
 	&& chmod -R 0777 /repo/target /repo/build
 
 WORKDIR /repo
