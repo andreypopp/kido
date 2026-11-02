@@ -23,11 +23,7 @@ use crate::protocol::{
     self, Images, Marker, Route, ViewEvent, ViewOptions, ViewRequest, version_headers,
 };
 use crate::server::Verified;
-use crate::ws::{Frame, masked, parse_frame};
-
-const MODES: [u16; 13] = [
-    1, 6, 7, 25, 47, 1000, 1002, 1003, 1004, 1006, 1049, 2004, 2026,
-];
+use crate::ws::{BadRecord, Frame, Record, masked, parse_frame, parse_record};
 
 #[derive(Debug, Clone, Copy)]
 enum Source {
@@ -400,18 +396,13 @@ impl Mirror {
     }
 
     fn record(&mut self, recorder: Option<&mut Mirror>, payload: &[u8]) -> Checked {
-        let (Some(&kind), Some(offset)) = (
-            payload.first(),
-            payload
-                .get(1..9)
-                .and_then(|bytes| bytes.try_into().ok())
-                .map(u64::from_le_bytes),
-        ) else {
-            return bug("record shorter than its header".to_owned());
+        let (kind, offset, body) = match parse_record(payload) {
+            Ok(parsed) => parsed,
+            Err(BadRecord::Short) => return bug("record shorter than its header".to_owned()),
+            Err(BadRecord::Kind(kind)) => return bug(format!("record kind {kind}")),
         };
-        let body = &payload[9..];
         match kind {
-            1 => {
+            Record::Output => {
                 if self.skipped || self.snapshot.is_some() {
                     return bug("output between a skip and its snapshot".to_owned());
                 }
@@ -429,11 +420,9 @@ impl Mirror {
                     _ => bug("output before a snapshot".to_owned()),
                 }
             }
-            2 => self.slice(recorder, offset, body),
-            _ => bug(format!("record kind {kind}")),
+            Record::Snapshot => self.slice(recorder, offset, body),
         }
     }
-
     fn slice(&mut self, recorder: Option<&mut Mirror>, offset: u64, body: &[u8]) -> Checked {
         let [flags, screen, data @ ..] = body else {
             return bug("snapshot slice shorter than its header".to_owned());
@@ -578,30 +567,7 @@ fn first_difference(a: &[u8], b: &[u8]) -> String {
 }
 
 fn differences(history: bool, a: &Terminal, b: &Terminal) -> Checked<Vec<String>> {
-    let mut found = Vec::new();
-    if vt(a.dump(Format::Plain))? != vt(b.dump(Format::Plain))? {
-        found.push("plain text".to_owned());
-    }
-    if without_hyperlinks(&vt(a.dump(Format::Vt))?) != without_hyperlinks(&vt(b.dump(Format::Vt))?)
-    {
-        found.push("vt dump".to_owned());
-    }
-    if vt(a.cursor())? != vt(b.cursor())? {
-        found.push("cursor".to_owned());
-    }
-    for mode in MODES {
-        if vt(a.mode(mode))? != vt(b.mode(mode))? {
-            found.push(format!("mode {mode}"));
-        }
-    }
-    if history
-        && (vt(a.total_rows())? != vt(b.total_rows())?
-            || without_hyperlinks(&vt(a.dump_history(Format::Vt))?)
-                != without_hyperlinks(&vt(b.dump_history(Format::Vt))?))
-    {
-        found.push("history".to_owned());
-    }
-    Ok(found)
+    vt(ko_vt::differences(a, b, history, without_hyperlinks))
 }
 
 fn compare_with(reference: &Mirror, name: &str, other: &Mirror) -> Checked {

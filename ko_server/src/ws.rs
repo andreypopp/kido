@@ -2,10 +2,9 @@
 
 use std::io::{self, Cursor, Read, Write};
 use std::os::fd::AsFd;
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use ko_sys::event::{Poll, Read as Readiness, Reads, Token};
+use ko_sys::event::{Poll, PollRead, Reads, Token};
 use tungstenite::protocol::frame::FrameHeader;
 use tungstenite::protocol::frame::coding::{CloseCode, Data, OpCode};
 use tungstenite::protocol::{CloseFrame, Role as Side, WebSocketConfig, WebSocketContext};
@@ -13,6 +12,7 @@ use tungstenite::{Error, Message};
 
 use crate::conn::{Output, Queue};
 use crate::http::{self, Head, MAX_HEAD, Status};
+use crate::ids::ClientId;
 
 const RECORD_HEADER: usize = 9;
 pub(crate) const MAX_HEADER: usize = 10 + RECORD_HEADER;
@@ -22,9 +22,33 @@ const PONG: Duration = Duration::from_secs(10);
 pub(crate) const FIRST_PING: Duration = IDLE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Record {
+pub enum Record {
     Output,
     Snapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadRecord {
+    Short,
+    Kind(u8),
+}
+
+pub fn parse_record(payload: &[u8]) -> Result<(Record, u64, &[u8]), BadRecord> {
+    let (Some(&kind), Some(offset), Some(body)) = (
+        payload.first(),
+        payload
+            .get(1..RECORD_HEADER)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u64::from_le_bytes),
+        payload.get(RECORD_HEADER..),
+    ) else {
+        return Err(BadRecord::Short);
+    };
+    match kind {
+        1 => Ok((Record::Output, offset, body)),
+        2 => Ok((Record::Snapshot, offset, body)),
+        other => Err(BadRecord::Kind(other)),
+    }
 }
 
 pub(crate) fn record_header(
@@ -46,6 +70,29 @@ pub(crate) fn record_header(
     }]);
     let _ = cursor.write_all(&offset.to_le_bytes());
     usize::try_from(cursor.position()).unwrap_or(MAX_HEADER)
+}
+
+pub fn upgrade_request(method: &str, target: &str, client: Option<ClientId>) -> (Vec<u8>, String) {
+    let key = tungstenite::handshake::client::generate_key();
+    let extra = [
+        ("Upgrade", "websocket"),
+        ("Connection", "Upgrade"),
+        ("Sec-WebSocket-Version", "13"),
+        ("Sec-WebSocket-Key", key.as_str()),
+    ];
+    (http::call(method, target, client, &extra, b""), key)
+}
+
+pub fn accepted(response: &http::Response, key: &str) -> io::Result<()> {
+    let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
+    if response.status == 101 && response.header("sec-websocket-accept") == Some(&accept) {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "WebSocket upgrade failed: {} {}",
+            response.status, response.reason
+        )))
+    }
 }
 
 pub(crate) fn handshake(head: &Head) -> Option<Vec<u8>> {
@@ -76,31 +123,16 @@ pub(crate) fn handshake(head: &Head) -> Option<Vec<u8>> {
 }
 
 #[derive(Debug)]
-struct Source<'a> {
-    poll: &'a mut Poll,
-    token: Token,
-    stream: &'a UnixStream,
-    reads: &'a mut Reads,
-}
-
-#[derive(Debug)]
 struct Io<'a> {
-    source: Option<Source<'a>>,
+    source: Option<PollRead<'a>>,
     queue: &'a mut Queue,
 }
 
 impl Read for Io<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let Some(source) = self.source.as_mut() else {
-            return Err(io::ErrorKind::WouldBlock.into());
-        };
-        match source
-            .poll
-            .read(source.token, source.stream.as_fd(), buffer, source.reads)?
-        {
+        match self.source.as_mut() {
+            Some(source) => source.read(buffer),
             None => Err(io::ErrorKind::WouldBlock.into()),
-            Some(Readiness::Data(count)) => Ok(count),
-            Some(Readiness::End) => Ok(0),
         }
     }
 }
@@ -172,12 +204,7 @@ impl Ws {
         }
         let (stream, queue) = out.parts();
         let mut io = Io {
-            source: Some(Source {
-                poll,
-                token,
-                stream,
-                reads,
-            }),
+            source: Some(PollRead::new(poll, token, stream.as_fd(), reads)),
             queue,
         };
         let next = loop {
@@ -303,6 +330,8 @@ pub fn masked(opcode: u8, fin: bool, payload: &[u8], key: [u8; 4], lie: i64) -> 
 #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixStream;
+
     use crate::conn::Conn;
     use crate::server::Verified;
     use std::io::Write;

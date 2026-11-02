@@ -70,7 +70,7 @@ int main(int argc, char **argv) {
       char line[32];
       int n = snprintf(line, sizeof(line), "T%020llu\r\n", (unsigned long long)ko_now_ns());
       output(line, (size_t)n);
-      struct timespec pause = {0, 1000000};
+      struct timespec pause = {0, 3300000};
       nanosleep(&pause, NULL);
     }
     return 0;

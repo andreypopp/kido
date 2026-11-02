@@ -372,6 +372,7 @@ dependencies = [
  "ko_pane_wire",
  "ko_server",
  "ko_sys",
+ "ko_vt",
 ]
 
 [[package]]
@@ -418,12 +419,10 @@ dependencies = [
 name = "ko_tui"
 version = "0.0.0"
 dependencies = [
- "httparse",
+ "ko_pane_wire",
  "ko_server",
  "ko_sys",
  "ko_vt",
- "serde",
- "serde_json",
  "tungstenite",
  "vte",
 ]

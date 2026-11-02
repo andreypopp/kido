@@ -170,6 +170,40 @@ pub struct Reads {
     more: bool,
 }
 
+#[derive(Debug)]
+pub struct PollRead<'a> {
+    poll: &'a mut Poll,
+    token: Token,
+    fd: BorrowedFd<'a>,
+    reads: &'a mut Reads,
+}
+
+impl<'a> PollRead<'a> {
+    pub fn new(
+        poll: &'a mut Poll,
+        token: Token,
+        fd: BorrowedFd<'a>,
+        reads: &'a mut Reads,
+    ) -> PollRead<'a> {
+        PollRead {
+            poll,
+            token,
+            fd,
+            reads,
+        }
+    }
+}
+
+impl io::Read for PollRead<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self.poll.read(self.token, self.fd, buffer, self.reads)? {
+            None => Err(io::ErrorKind::WouldBlock.into()),
+            Some(Read::Data(count)) => Ok(count),
+            Some(Read::End) => Ok(0),
+        }
+    }
+}
+
 impl Reads {
     pub fn new() -> Reads {
         Reads {

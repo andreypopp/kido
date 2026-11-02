@@ -65,7 +65,7 @@ macro_rules! id {
 }
 
 id!(pub PaneId, "pane_");
-id!(pub(crate) ClientId, "client_");
+id!(pub ClientId, "client_");
 
 #[cfg(test)]
 mod tests {

@@ -3,39 +3,23 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use ko_pane_wire::frame::History;
-use ko_server::http::{Response, read_response, read_upgrade, request};
+use ko_server::http::{Response, call, read_response, read_upgrade};
 use ko_server::ids::PaneId;
 use ko_server::protocol::{
     self, Command, CreatePane, Created, Images, Input, Marker, Route, Row, Text, ViewEvent,
-    ViewOptions, json, version_headers,
+    ViewOptions, json,
 };
-use ko_server::ws::{masked, parse_frame};
+use ko_server::ws::{Record, accepted, masked, parse_frame, parse_record, upgrade_request};
 use ko_sys::clock::Mono;
 
-fn headers() -> Vec<(&'static str, String)> {
-    let mut headers: Vec<(&'static str, String)> = version_headers().to_vec();
-    headers.push(("host", "ko".to_owned()));
-    headers
-}
-
-fn send(
-    stream: &mut UnixStream,
-    route: &Route,
-    mut headers: Vec<(&'static str, String)>,
-    body: &[u8],
-) -> io::Result<()> {
+fn send(stream: &mut UnixStream, route: &Route, body: &[u8]) -> io::Result<()> {
     let (method, target) = route.to_request();
-    headers.push(("content-length", body.len().to_string()));
-    let headers: Vec<(&str, &str)> = headers
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .collect();
-    stream.write_all(&request(method, &target, &headers, body))
+    stream.write_all(&call(method, &target, None, &[], body))
 }
 
 pub(crate) fn exchange(socket: &Path, route: &Route, body: &str) -> io::Result<Response> {
     let mut stream = UnixStream::connect(socket)?;
-    send(&mut stream, route, headers(), body.as_bytes())?;
+    send(&mut stream, route, body.as_bytes())?;
     read_response(&mut stream)
 }
 
@@ -80,12 +64,7 @@ impl Typist {
 
     pub(crate) fn type_text(&mut self, pane: PaneId, text: &[u8]) -> io::Result<()> {
         let body = json(&Input::Text(Text(text.to_vec())));
-        send(
-            &mut self.stream,
-            &Route::Input(pane),
-            headers(),
-            body.as_bytes(),
-        )?;
+        send(&mut self.stream, &Route::Input(pane), body.as_bytes())?;
         read_response(&mut self.stream).map(drop)
     }
 }
@@ -108,21 +87,11 @@ pub(crate) struct Socket {
 
 pub(crate) fn upgrade(socket: &Path, route: &Route) -> io::Result<Socket> {
     let mut stream = UnixStream::connect(socket)?;
-    let mut upgrade = headers();
-    upgrade.extend([
-        ("upgrade", "websocket".to_owned()),
-        ("connection", "Upgrade".to_owned()),
-        ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==".to_owned()),
-        ("sec-websocket-version", "13".to_owned()),
-    ]);
-    send(&mut stream, route, upgrade, b"")?;
+    let (method, target) = route.to_request();
+    let (request, key) = upgrade_request(method, &target, None);
+    stream.write_all(&request)?;
     let (response, rest) = read_upgrade(&mut stream)?;
-    if response.status != 101 {
-        return Err(io::Error::other(format!(
-            "upgrade refused: {}",
-            response.status
-        )));
-    }
+    accepted(&response, &key)?;
     let mut buffer = vec![0; 1 << 21];
     if buffer.len() < rest.len() {
         buffer.resize(rest.len(), 0);
@@ -186,9 +155,10 @@ impl Socket {
 }
 
 pub(crate) fn output<'a>(message: &Message<'a>) -> Option<(u64, &'a [u8])> {
-    let (&kind, rest) = message.payload.split_first()?;
-    let offset = u64::from_le_bytes(rest.get(..8)?.try_into().ok()?);
-    (message.opcode == 2 && kind == 1).then(|| (offset, &rest[8..]))
+    match parse_record(message.payload) {
+        Ok((Record::Output, offset, data)) if message.opcode == 2 => Some((offset, data)),
+        _ => None,
+    }
 }
 
 pub(crate) fn dead(message: &Message<'_>) -> bool {

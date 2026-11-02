@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 use std::fmt::Debug;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::config::DEFAULT_LIMITS;
-use crate::http::{MAX_HEAD, Parsed, parse_head, request};
+use crate::conn::Conn;
+use crate::http::{MAX_HEAD, Parsed, parse_head, read_response, read_upgrade, request};
 #[cfg(test)]
 use crate::ids::PaneId;
 use crate::pane_proc::{Cause, Event, Io, Life, PaneProc, discard};
@@ -32,6 +33,7 @@ use crate::protocol::{
 };
 use crate::server::Verified;
 use crate::state::{State, Wake};
+use crate::ws::{Next, Ws};
 
 fn roundtrip<T: DeserializeOwned + Serialize + PartialEq + Debug>(data: &[u8]) {
     if let Ok(value) = protocol::decode::<T>(data) {
@@ -127,6 +129,152 @@ pub fn head(data: &[u8]) {
             "{whole:?} against {single:?}"
         );
     }
+}
+
+struct Pieces<'a> {
+    pieces: Vec<&'a [u8]>,
+    next: usize,
+}
+
+impl Read for Pieces<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        while self
+            .pieces
+            .get(self.next)
+            .is_some_and(|piece| piece.is_empty())
+        {
+            self.next += 1;
+        }
+        let Some(piece) = self.pieces.get(self.next) else {
+            return Ok(0);
+        };
+        let count = piece.len().min(buffer.len());
+        buffer[..count].copy_from_slice(&piece[..count]);
+        if count == piece.len() {
+            self.next += 1;
+        } else {
+            self.pieces[self.next] = &piece[count..];
+        }
+        Ok(count)
+    }
+}
+
+fn summary<T: Debug>(result: io::Result<T>) -> String {
+    match result {
+        Ok(value) => format!("{value:?}"),
+        Err(error) => format!("{:?} {error}", error.kind()),
+    }
+}
+
+fn upgraded(mut source: impl Read) -> String {
+    summary(read_upgrade(&mut source).and_then(|(response, mut rest)| {
+        source.read_to_end(&mut rest)?;
+        Ok((response, rest))
+    }))
+}
+
+fn same_reads(bytes: &[u8], cuts: &[usize]) {
+    let cut = || Pieces {
+        pieces: pieces(bytes, cuts),
+        next: 0,
+    };
+    assert_eq!(
+        summary(read_response(&mut &bytes[..])),
+        summary(read_response(&mut cut())),
+        "a response cut at {cuts:?}"
+    );
+    assert_eq!(
+        upgraded(bytes),
+        upgraded(cut()),
+        "an upgrade cut at {cuts:?}"
+    );
+}
+
+pub fn client(data: &[u8]) {
+    let Some((&count, rest)) = data.split_first() else {
+        return;
+    };
+    let count = usize::from(count % 8);
+    if rest.len() < count {
+        return;
+    }
+    let (fractions, bytes) = rest.split_at(count);
+    let mut cuts: Vec<usize> = fractions
+        .iter()
+        .map(|&fraction| usize::from(fraction) * bytes.len() / 256)
+        .collect();
+    cuts.sort_unstable();
+    same_reads(bytes, &cuts);
+}
+
+fn drive(parts: &[&[u8]]) -> Vec<Next> {
+    let (mut client, server) = UnixStream::pair().expect("a socket pair");
+    client.set_nonblocking(true).expect("a non-blocking peer");
+    let mut poll = Poll::new();
+    let mut conn = Conn::new(
+        Verified::admit(server).expect("an admitted stream"),
+        &mut poll,
+    );
+    let mut ws = Ws::new(Vec::new());
+    let mut events = Events::default();
+    let mut seen = Vec::new();
+    let mut closed = false;
+    let mut drain = |poll: &mut Poll, seen: &mut Vec<Next>| loop {
+        let mut reads = ko_sys::event::Reads::new();
+        let next = ws.next(&mut conn.out, poll, conn.token, &mut reads);
+        match next {
+            Next::Wait => {
+                poll.turn(Mode::Peek, &mut events).expect("a peek");
+                if !events
+                    .ready()
+                    .iter()
+                    .any(|ready| ready.token == conn.token && ready.read)
+                {
+                    return false;
+                }
+            }
+            Next::Close => {
+                seen.push(Next::Close);
+                return true;
+            }
+            text => {
+                assert!(matches!(&text, Next::Text(body) if body.len() <= 1 << 20));
+                seen.push(text);
+            }
+        }
+    };
+    'parts: for part in parts {
+        let mut sent = 0;
+        while sent < part.len() {
+            match client.write(&part[sent..part.len().min(sent + 4096)]) {
+                Ok(count) => sent += count,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(_) => break 'parts,
+            }
+            closed = drain(&mut poll, &mut seen);
+            if closed {
+                break 'parts;
+            }
+        }
+    }
+    if !closed {
+        let _ = client.shutdown(std::net::Shutdown::Write);
+        drain(&mut poll, &mut seen);
+    }
+    seen
+}
+
+pub fn ws(data: &[u8]) {
+    let (Some(&high), Some(&low)) = (data.first(), data.get(1)) else {
+        return;
+    };
+    let frames = &data[2..];
+    let cut = (usize::from(high) << 8 | usize::from(low)) % (frames.len() + 1);
+    assert_eq!(
+        drive(&[frames]),
+        drive(&[&frames[..cut], &frames[cut..]]),
+        "cut at {cut}"
+    );
 }
 
 fn dead_pid() -> Option<Pid> {
@@ -458,6 +606,29 @@ mod tests {
     }
 
     #[test]
+    fn a_reader_with_empty_pieces_and_an_upgrade_cut_at_its_head_read_the_same_as_a_whole() {
+        let head = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n";
+        let upgrade = [&head[..], b"\x81\x02hi"].concat();
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        for cuts in [
+            &[0][..],
+            &[0, 0, 7, 7],
+            &[head.len()],
+            &[head.len(), head.len()],
+        ] {
+            same_reads(&upgrade, cuts);
+            same_reads(response, cuts);
+        }
+        assert_eq!(
+            upgraded(&upgrade[..]),
+            upgraded(Pieces {
+                pieces: vec![head, b"\x81\x02hi"],
+                next: 0
+            })
+        );
+    }
+
+    #[test]
     fn the_replayed_corpora_run_to_the_end() {
         assert!(
             std::env::var_os("KO_PANE_EXE").is_some(),
@@ -468,6 +639,8 @@ mod tests {
             replay("head", head),
             replay("frames", frames),
             replay("http", http),
+            replay("client", client),
+            replay("ws", ws),
         ];
         assert!(replayed.iter().all(|&count| count >= 4), "{replayed:?}");
     }

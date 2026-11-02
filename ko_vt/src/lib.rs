@@ -12,12 +12,16 @@ use ko_vt_sys as sys;
 pub mod compress;
 mod cut;
 pub mod input;
+pub mod render;
+pub mod unicode;
 
 #[derive(Debug)]
 pub enum Error {
     Ghostty(sys::GhosttyResult),
     NoHandle,
     NoTerminal,
+    NotWatched,
+    CellCount,
     Rows(usize),
     Read(io::Error),
     Stopped,
@@ -29,6 +33,8 @@ impl fmt::Display for Error {
             Error::Ghostty(code) => write!(f, "libghostty-vt operation failed ({code})"),
             Error::NoHandle => write!(f, "libghostty-vt returned no terminal handle"),
             Error::NoTerminal => write!(f, "the snapshot decoder returned no terminal"),
+            Error::NotWatched => write!(f, "the terminal does not track rendering"),
+            Error::CellCount => write!(f, "the render state has the wrong cell count"),
             Error::Rows(rows) => write!(f, "{rows} rows exceed a grid coordinate"),
             Error::Read(error) => write!(f, "snapshot read: {error}"),
             Error::Stopped => write!(f, "the output stopped the encoder"),
@@ -61,6 +67,14 @@ pub struct Cursor {
     pub x: u16,
     pub y: u16,
     pub visible: bool,
+    pub pending_wrap: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Memory {
+    pub pages: u64,
+    pub compressed_pages: u64,
+    pub resident_bytes: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +87,15 @@ pub struct Changes {
 struct Notes {
     replies: Vec<u8>,
     changes: Changes,
+    render: Option<render::Render>,
 }
+
+// SAFETY: libghostty-vt keeps no thread-local or thread-affine state, and terminal.h requires
+// only that the caller serializes every access to one terminal (ghostty_terminal_compress
+// names writes, rendering, searches and other terminal access). The one thread that owns a
+// terminal at a time is the holder of the mutex that wraps it, and the callbacks run inside
+// the call that triggers them, on the calling thread.
+unsafe impl Send for Terminal {}
 
 #[derive(Debug)]
 pub struct Terminal {
@@ -108,6 +130,7 @@ unsafe extern "C" fn pwd_changed(_terminal: sys::GhosttyTerminal, userdata: *mut
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        self.notes.render = None;
         // SAFETY: the terminal owns its handle, and no decoder borrows it after `decode` returns.
         unsafe { sys::ghostty_terminal_free(self.vt.as_ptr()) }
     }
@@ -223,10 +246,15 @@ impl Terminal {
         let mut vt = ptr::null_mut();
         // SAFETY: a NULL allocator selects the default one; vt receives the new handle.
         check(unsafe { sys::ghostty_terminal_new(ptr::null(), &mut vt, cols.get(), rows.get()) })?;
-        let terminal = Terminal {
+        let mut terminal = Terminal {
             vt: NonNull::new(vt).ok_or(Error::NoHandle)?,
             notes: Box::default(),
         };
+        terminal.configure(limits)?;
+        Ok(terminal)
+    }
+
+    pub fn configure(&mut self, limits: Limits) -> Result<(), Error> {
         let (bytes, lines) = match limits.scrollback {
             Scrollback::Disabled => (Some(0), None),
             Scrollback::Bounded {
@@ -241,11 +269,7 @@ impl Terminal {
             // SAFETY: each value points to the type that terminal.h documents for its option, and
             // NULL removes a scrollback limit.
             check(unsafe {
-                sys::ghostty_terminal_set(
-                    terminal.vt.as_ptr(),
-                    option,
-                    value.unwrap_or(ptr::null()),
-                )
+                sys::ghostty_terminal_set(self.vt.as_ptr(), option, value.unwrap_or(ptr::null()))
             })
         };
         let pointer = |value: &usize| ptr::from_ref(value).cast::<c_void>();
@@ -268,8 +292,7 @@ impl Terminal {
         set(
             sys::GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES,
             Some(pointer(&limits.continuation_max_bytes)),
-        )?;
-        Ok(terminal)
+        )
     }
 
     pub fn decode<R: Read>(reader: &mut R, extent: Extent) -> Result<Terminal, Error> {
@@ -416,6 +439,57 @@ impl Terminal {
         Ok(result == sys::GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING)
     }
 
+    pub fn scroll(&mut self, delta: isize) {
+        let to = sys::GhosttyTerminalScrollViewport {
+            tag: sys::GHOSTTY_SCROLL_VIEWPORT_DELTA,
+            value: sys::GhosttyTerminalScrollViewportValue { delta },
+        };
+        // SAFETY: the handle is live, and the viewport request is initialized.
+        unsafe { sys::ghostty_terminal_scroll_viewport(self.vt.as_ptr(), to) };
+    }
+
+    fn scrollbar(&self) -> Result<u64, Error> {
+        let bar = sys::GhosttyTerminalScrollbar {
+            total: 0,
+            offset: 0,
+            len: 0,
+        };
+        Ok(self.get(sys::GHOSTTY_TERMINAL_DATA_SCROLLBAR, bar)?.offset)
+    }
+
+    pub fn bottom(&mut self) -> Result<bool, Error> {
+        let before = self.scrollbar()?;
+        let to = sys::GhosttyTerminalScrollViewport {
+            tag: sys::GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
+            value: sys::GhosttyTerminalScrollViewportValue { delta: 0 },
+        };
+        // SAFETY: the handle is live, and the viewport request is initialized.
+        unsafe { sys::ghostty_terminal_scroll_viewport(self.vt.as_ptr(), to) };
+        Ok(before != self.scrollbar()?)
+    }
+
+    pub fn memory(&self) -> Result<Memory, Error> {
+        let usage = sys::GhosttyTerminalMemoryUsage {
+            size: size_of::<sys::GhosttyTerminalMemoryUsage>(),
+            ..Default::default()
+        };
+        let usage = self.get(sys::GHOSTTY_TERMINAL_DATA_MEMORY_USAGE, usage)?;
+        Ok(Memory {
+            pages: usage.primary_pages + usage.alternate_pages,
+            compressed_pages: usage.primary_compressed_pages + usage.alternate_compressed_pages,
+            resident_bytes: usage.primary_resident_bytes + usage.alternate_resident_bytes,
+        })
+    }
+
+    pub fn snapshot_bytes(&mut self, screen: bool) -> Result<Vec<u8>, Error> {
+        let mut bytes = Vec::new();
+        self.snapshot(screen, |piece| {
+            bytes.extend_from_slice(piece);
+            true
+        })?;
+        Ok(bytes)
+    }
+
     pub fn snapshot(
         &mut self,
         screen: bool,
@@ -490,6 +564,7 @@ impl Terminal {
             x: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_X, 0u16)?,
             y: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_Y, 0u16)?,
             visible: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE, false)?,
+            pending_wrap: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP, false)?,
         })
     }
 
@@ -662,6 +737,60 @@ impl Terminal {
         unsafe { sys::ghostty_formatter_free(formatter) };
         check(result)?;
         Ok(out)
+    }
+}
+
+const MODES: [u16; 13] = [
+    1, 6, 7, 25, 47, 1000, 1002, 1003, 1004, 1006, 1049, 2004, 2026,
+];
+
+pub fn differences(
+    a: &Terminal,
+    b: &Terminal,
+    history: bool,
+    strip: impl Fn(&[u8]) -> Vec<u8>,
+) -> Result<Vec<String>, Error> {
+    let mut found = Vec::new();
+    if a.dump(Format::Plain)? != b.dump(Format::Plain)? {
+        found.push("plain text".to_owned());
+    }
+    if strip(&a.dump(Format::Vt)?) != strip(&b.dump(Format::Vt)?) {
+        found.push("vt dump".to_owned());
+    }
+    if a.cursor()? != b.cursor()? {
+        found.push("cursor".to_owned());
+    }
+    for mode in MODES {
+        if a.mode(mode)? != b.mode(mode)? {
+            found.push(format!("mode {mode}"));
+        }
+    }
+    if history
+        && (a.total_rows()? != b.total_rows()?
+            || strip(&a.dump_history(Format::Vt)?) != strip(&b.dump_history(Format::Vt)?))
+    {
+        found.push("history".to_owned());
+    }
+    Ok(found)
+}
+
+#[derive(Debug)]
+pub struct ReadyScan(cut::Cut);
+
+impl ReadyScan {
+    pub fn new() -> ReadyScan {
+        ReadyScan(cut::Cut::new(true))
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) -> bool {
+        let _ = self.0.feed::<()>(bytes, &mut |_| Ok(()));
+        self.0.done()
+    }
+}
+
+impl Default for ReadyScan {
+    fn default() -> ReadyScan {
+        ReadyScan::new()
     }
 }
 
@@ -878,12 +1007,7 @@ mod tests {
     fn a_snapshot_is_taken_with_synchronized_output_off_and_leaves_it_on() {
         let mut vt = served(20, 4);
         vt.write(b"\x1b[?2026hhello");
-        let mut bytes = Vec::new();
-        vt.snapshot(false, |piece| {
-            bytes.extend_from_slice(piece);
-            true
-        })
-        .unwrap();
+        let bytes = vt.snapshot_bytes(false).unwrap();
         assert!(vt.mode(2026).unwrap());
         assert!(!decode(&bytes, Extent::Full).mode(2026).unwrap());
     }
@@ -894,16 +1018,10 @@ mod tests {
         for i in 0..5_000 {
             vt.write(format!("line{i:05}\r\n").as_bytes());
         }
-        let mut encode = |screen| {
-            let mut bytes = Vec::new();
-            vt.snapshot(screen, |piece| {
-                bytes.extend_from_slice(piece);
-                true
-            })
-            .unwrap();
-            bytes
-        };
-        let (screen, full) = (encode(true), encode(false));
+        let (screen, full) = (
+            vt.snapshot_bytes(true).unwrap(),
+            vt.snapshot_bytes(false).unwrap(),
+        );
         assert!(screen.len() < full.len(), "{} {}", screen.len(), full.len());
         assert_eq!(
             decode(&screen, Extent::Screen).dump(Format::Plain).unwrap(),
@@ -983,6 +1101,76 @@ mod tests {
                 &b""[..]
             )
         );
+    }
+
+    fn tags(bytes: &[u8]) -> Vec<u16> {
+        let mut at = 10;
+        let mut tags = Vec::new();
+        while let Some(header) = bytes.get(at..at + 10) {
+            tags.push(u16::from_le_bytes([header[0], header[1]]));
+            at += 10 + u32::from_le_bytes([header[2], header[3], header[4], header[5]]) as usize;
+        }
+        tags
+    }
+
+    #[test]
+    fn a_snapshot_drops_kitty_payloads_and_a_screen_cut_ends_at_ready() {
+        let mut vt = served(20, 5);
+        vt.write(b"\x1b_Ga=T,f=32,s=1,v=1,i=1;AQIDBA==\x1b\\\x1b[?2026himage");
+        assert_eq!(
+            tags(&vt.snapshot_bytes(false).unwrap()),
+            [1, 2, 3, 8, 7, 5, 4, 6]
+        );
+        assert_eq!(tags(&vt.snapshot_bytes(true).unwrap()), [1, 2, 3, 8, 7, 5]);
+    }
+
+    #[test]
+    fn ready_publishes_a_screen_before_the_full_history() {
+        let mut server = served(16, 2);
+        for i in 0..10_000 {
+            server.write(format!("line{i:05}\r\n").as_bytes());
+        }
+        let bytes = server.snapshot_bytes(false).unwrap();
+        let mut scan = ReadyScan::new();
+        let ready = bytes
+            .chunks(4096)
+            .scan(0, |end, chunk| {
+                *end += chunk.len();
+                Some((*end, scan.feed(chunk)))
+            })
+            .find_map(|(end, seen)| seen.then_some(end))
+            .unwrap();
+        let screen = decode(&bytes[..ready], Extent::Screen);
+        let full = decode(&bytes, Extent::Full);
+        assert!(screen.total_rows().unwrap() < full.total_rows().unwrap());
+        assert_eq!(full.total_rows().unwrap(), 10_001);
+    }
+
+    #[test]
+    fn a_decoded_snapshot_starts_compressed_and_the_line_limit_prunes() {
+        let fill = |vt: &mut Terminal| {
+            for i in 0..20_000 {
+                vt.write(format!("compressible line {i}\r\n").as_bytes());
+            }
+        };
+        let mut server = make(80, 24);
+        fill(&mut server);
+        assert_eq!(server.memory().unwrap().compressed_pages, 0);
+        let restored = decode(&snapshot(&server), Extent::Full);
+        assert!(restored.memory().unwrap().compressed_pages > 0);
+        assert_eq!(restored.total_rows().unwrap(), server.total_rows().unwrap());
+        let limits = Limits {
+            scrollback: Scrollback::Bounded {
+                max_bytes: NonZeroUsize::new(50_000_000),
+                max_lines: NonZeroUsize::new(1000),
+            },
+            apc_max_bytes: 0,
+            kitty_images_max_bytes: 0,
+            continuation_max_bytes: 0,
+        };
+        let mut limited = Terminal::new(dim(80), dim(24), limits).unwrap();
+        fill(&mut limited);
+        assert!(limited.total_rows().unwrap() < 3000);
     }
 
     #[test]

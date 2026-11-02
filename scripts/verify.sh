@@ -25,23 +25,17 @@ stage() {
 e2e() {
   make e2e KIDO_TMUX= COUNT="${COUNT:-1}" E2E="${E2E:-.}"
 }
-# The 16 client tests start their own server from the client binary, so
-# they run the OCaml ko until the Rust client exists; every other test
-# runs the Rust server on macOS.
-client='^(TestClientLifecycle|TestClientHistoryAndAlternateScreen|TestClientWinchAndOuterModes|TestClientAttachOrStartAndWarning|TestClientModesBeforeAttachAndUnattachedDA1|TestClientOutputWithoutOuterInput|TestClientInitialCursorAndSynchronizedOutput|TestClientSidebarOwnership|TestClientUnknownCursorModeAndKeyboardStack|TestClientDifferentSizesAndSignalCleanup|TestClientSidebarRelease|TestClientWarningMouseBounds|TestClientSnapshotInterruption|TestClientDeadPaneLine|TestClientLegacyShiftedKey|TestClientNvimNormalModeShiftedKeys)$'
 ko_run() {
   local IFS='|'
   KIDO_E2E_REQUIRED=1 KO_BIN=$1 go test ./test_e2e_ko/ -count="${COUNT:-1}" -run "^(${*:2})\$" -v
 }
 ko_suite() {
-  local rust=() ocaml=() name ret=0
+  local names=() name
   for name in $(sed -n 's/^func \(Test[A-Za-z0-9_]*\)(t \*testing\.T).*/\1/p' test_e2e_ko/*_test.go); do
-    [[ $name =~ ${E2E_KO:-.} ]] || continue
-    if [[ -n ${KO_RUST:-} && ! $name =~ $client ]]; then rust+=("$name"); else ocaml+=("$name"); fi
+    [[ $name =~ ${E2E_KO:-.} ]] && names+=("$name")
   done
-  if (( ${#rust[@]} )); then ko_run "$KO_RUST" "${rust[@]}" || ret=1; fi
-  if (( ${#ocaml[@]} )); then ko_run "$KO_OCAML" "${ocaml[@]}" || ret=1; fi
-  return "$ret"
+  (( ${#names[@]} )) || return 0
+  ko_run "${KO_RUST:-$KO_OCAML}" "${names[@]}"
 }
 case ${1:-verify} in
   ko-suite) ko_suite || status=1 ;;

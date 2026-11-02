@@ -3,7 +3,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . scripts/nightly.sh
-targets='frame control ring loop head http decode frames'
+targets='frame control ring loop head http decode frames client ws'
 if [[ ${1:-} == --list ]]; then
   tr ' ' '\n' <<<"$targets"
   exit 0

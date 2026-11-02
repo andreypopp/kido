@@ -337,17 +337,6 @@ R3 forced these decisions:
     pwd changes: `State` built their event JSON with no client
     registered (0.14 and 1.00 allocations per record on `tui.vt` and
     `shell.vt`). It now builds them only for a registered client.
-76. `ko-bench throughput` replaces `ko_server/examples/ring_probe.rs`
-    (decision 40): `make probe-ko` runs it, with `BYTES` and `PANE=c`,
-    and it fails on the same faults. `ko-bench` reads and writes the
-    wire through `ko_server::protocol` and `ko_server::ws`, so the
-    wire types that it uses are `pub`.
-77. The latency modes stamp the receive at different points: the
-    OCaml bench when its 2 ms timer scans the ring, before the view
-    write; `ko-bench` after the view client's `read`, which adds the
-    write and the client's wakeup. The producer stamps a record every
-    1 ms, under the 2 ms output tick, so both figures mostly measure
-    the wait for the tick.
     With a client, a title or pwd change still allocates its event,
     once for each change, not for each record.
 74. `TestNoIdleWakeups` reads the server's CPU time and wakeups with
@@ -360,6 +349,69 @@ R3 forced these decisions:
     then read the `exited` channel with `default` before the
     goroutine had closed it. The test now waits up to 5 s for the
     channel.
+76. `ko-bench throughput` replaces `ko_server/examples/ring_probe.rs`
+    (decision 40): `make probe-ko` runs it, with `BYTES` and `PANE=c`,
+    and it fails on the same faults. `ko-bench` reads and writes the
+    wire through `ko_server::protocol` and `ko_server::ws`, so the
+    wire types that it uses are `pub`.
+77. The latency modes stamp the receive at different points: the
+    OCaml bench when its 2 ms timer scans the ring, before the view
+    write; `ko-bench` after the view client's `read`, which adds the
+    write and the client's wakeup. The producer stamps a record every
+    1 ms, under the 2 ms output tick, so both figures mostly measure
+    the wait for the tick.
+
+After R3 the user decided:
+
+78. The bench targets are relative to a fresh OCaml run in the same
+    session, on AC power, at load average under 2: coordinator CPU
+    per GiB within 5 percent of the OCaml figure, and the five-pane
+    flood within 10 percent. The absolute targets of 0.80 s per GiB
+    and 0.26 core are dropped: both servers missed them on the same
+    machine (on AC power, OCaml 0.914 s and Rust 0.912 s per GiB;
+    flood 0.28 and 0.30 core).
+79. The hop latency row measures one hop. The producer stamps at an
+    interval that does not alias the 2 ms output tick, and both
+    benches stamp the receive at the same point (decision 77 records
+    the fault). The target is the same or better than a fresh OCaml
+    run of the fixed bench in the same session.
+
+R4 forced these decisions:
+
+84. The terminal client's plain requests (create a pane, delete a
+    pane, list the panes, `/screen` for the pager) are blocking calls
+    with the deadlines of the OCaml client (5 s to connect, 40 s to
+    read), as the OCaml `Wire.request` is. Only `/client` and the
+    shown view are sources of the loop (3.6).
+85. The compressor thread has no pipe to the loop. It changes no
+    visible cell, so the loop never needs its wakeup, as in the OCaml
+    client, whose loop wakes only for the view reader. The thread
+    waits on the `Condvar`: between steps of 1 ms it yields for
+    500 us, and when the mirror is settled it waits without a
+    timeout until the loop notifies it of an update (3.5).
+86. vte swallows an APC string, so the client's input gives no reply
+    for a kitty graphics `_G` answer. The client does not use that
+    reply. The replies test of P1.2 expects no key and three replies
+    (XTVERSION, the kitty flags, DA1), not four. The client sends one
+    startup probe: the DECRQM queries of `modes.rs`, the kitty flags
+    query, XTVERSION and DA1. It ends at the DA1 answer, the last
+    reply, or after 500 ms. It replaces Matrix's capability probe and the mode
+    query of the OCaml client.
+87. `ko_tui` denies `unsafe`, so the raw mode, the window size and the
+    input flush are in `ko_sys::tty`. The client starts a missing
+    server through `ko_sys::spawn::detached`: `posix_spawn` with
+    `POSIX_SPAWN_SETSID` (0x0400 in macOS's `<spawn.h>`, which
+    `ko_sys` declares because the `libc` crate does not, as decision
+    38), `POSIX_SPAWN_CLOEXEC_DEFAULT` and the log as fd 1 and 2. The
+    client does no `fork`.
+88. The client releases the launch lock as soon as it has spawned the
+    server. The Rust server takes the same lock in its bind (decision
+    59), so a client that held it would stall the start for its 5 s
+    deadline.
+89. The client has no ping deadline of its own. The server pings an
+    idle link after 30 s (protocol.md 1); a client that has received
+    no frame on `/client` or the shown view for 40 s fails with "ko
+    socket timed out".
 
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
@@ -862,8 +914,8 @@ exception: the terminal client's mirror compressor.
 |---|---|---|
 | `ko server` (the coordinator) | the loop | the listener, every connection, every pane's control socket, the signal pipe; deadlines: the 2 ms output tick while a pane is busy, each WebSocket's ping, the 500 ms shutdown grace |
 | `ko-pane` | the loop | the control socket, the pty master, the signal pipe; deadline: the compression tick (`ko_vt::compress`) |
-| `ko` (the terminal client) | the loop | stdin (a tty, which `poll(2)` watches on macOS), the `/client` socket, the shown view's socket, plain request sockets, the signal pipe (`SIGWINCH`, `SIGHUP`, `SIGTERM`, `SIGINT`, `SIGQUIT`), the compressor's pipe; deadlines: the 8 ms paint pacing, the 150 ms synchronized-output hold, the 50 ms Escape timeout, the ping |
-| `ko` (the terminal client) | the compressor | the mirror under its `Mutex` and a `Condvar`, as `ko_tui/mirror.ml` has (`ko_vt::Terminal` holds a `NonNull` and so is not `Send`; R4 adds `unsafe impl Send` with a SAFETY line that it checks against libghostty-vt's threading rules; the `Mutex` serializes every call); it does CPU work only (`ghostty_terminal_compress` steps of about 1 ms) and writes one byte to a pipe that the loop watches when the mirror changed |
+| `ko` (the terminal client) | the loop | stdin (a tty, which `poll(2)` watches on macOS), the `/client` socket, the shown view's socket, the signal pipe (`SIGWINCH`, `SIGHUP`, `SIGTERM`, `SIGINT`, `SIGQUIT`, and `SIGCHLD` for the pager, which runs while the loop keeps the links and stops reading stdin and painting); deadlines: the 8 ms paint pacing, the 150 ms synchronized-output hold, the 50 ms Escape timeout, the 40 s receive watchdog (decision 89); plain requests block (decision 84) |
+| `ko` (the terminal client) | the compressor | the mirror under its `Mutex` and a `Condvar`, as `ko_tui/mirror.ml` has (`ko_vt::Terminal` holds a `NonNull` and so is not `Send`; R4 adds `unsafe impl Send` with a SAFETY line that it checks against libghostty-vt's threading rules; the `Mutex` serializes every call); it does CPU work only (`ghostty_terminal_compress` steps of about 1 ms) and never wakes the loop (decision 85) |
 
 The OCaml client's view reader thread is gone: the view socket is a
 source of the loop, and the snapshot decoder reads from memory. The
@@ -1015,12 +1067,14 @@ deadline that exists only while a pane is busy.
 HTTP/1.1 client of about 120 lines over the same `http.rs` writer and
 `httparse::Response::parse`. `ko api` and `ko ssh` (S1) send one
 request on a blocking socket with a 5 s deadline and read the
-response; they need no loop. The terminal client's requests (create a
+response; they need no loop. The terminal client's plain requests (create a
 pane, delete a pane, `/screen` for the pager, streamed into the 0600
-file) and its two upgrades (`/client` and the shown view) are sources
-of its loop: the upgrade request is written, the 101 is parsed with
-httparse, and the bytes past it go to `from_partially_read` with
-`Role::Client`. The client's frames are masked by tungstenite.
+file) block, as `ko api` does (decision 84). Its two upgrades
+(`/client` and the shown view) block until the 101, as the OCaml
+`Wire.upgrade` does: the upgrade request is written, the 101 is parsed
+with httparse, and the bytes past it go to `from_partially_read` with
+`Role::Client`. Then the link becomes a source of the loop. The
+client's frames are masked by tungstenite.
 
 ### 3.7 Errors
 
@@ -1779,14 +1833,15 @@ Each stage is one unit of work under one manager. Each ends with
   `#[global_allocator]` in the bench binary reports allocations per
   record.
 - Acceptance, measured with the commands below on the same machine
-  as a fresh run of the OCaml numbers, both at load average under 2:
+  as a fresh run of the OCaml numbers, both on AC power at load
+  average under 2 (decision 78):
 
 | metric | command | OCaml ko | Rust target |
 |---|---|---|---|
-| coordinator CPU, one pane, 1 GiB mixed stream | `ko-bench throughput writev 1073741824 2 bench/streams/*.vt` (row 4 of `bench/baselines.sh`) | 0.80 s per GiB (cd74d3c1); 79.1 MB/s end to end at 1.17 cores (p1-mvp.md 6.5) | at most 0.80 s per GiB; MB/s within 5 percent |
+| coordinator CPU, one pane, 1 GiB mixed stream | `ko-bench throughput writev 1073741824 2 bench/streams/*.vt` (row 4 of `bench/baselines.sh`) | 0.80 s per GiB (cd74d3c1); 79.1 MB/s end to end at 1.17 cores (p1-mvp.md 6.5) | within 5 percent of a fresh OCaml run, CPU per GiB and MB/s (decision 78) |
 | allocation per record | the same, `allocations/record` in place of `minor_words/record` | 1.5 minor words on the poll loop (68232448; 2.3 on luv) | 0 heap allocations per record in steady state (decision 16) |
-| five flooding panes with views | `bench/flood.sh` (`ko-bench flood`) | 0.26 core (cd74d3c1) | at most 0.26 core |
-| hop latency, pty byte to the view write | `ko-bench latency writev 5000 2` | p50 33 us, p99 109 us (p1-mvp.md 6.2) | p50 at most 33 us, p99 at most 109 us |
+| five flooding panes with views | `bench/flood.sh` (`ko-bench flood`) | 0.26 core (cd74d3c1) | within 10 percent of a fresh OCaml run (decision 78) |
+| hop latency, pty byte to the view write | `ko-bench latency writev 5000 2` | p50 33 us, p99 109 us (p1-mvp.md 6.2) | the same or better than a fresh OCaml run of the fixed bench (decision 79) |
 | key to frame, view only | `python3 bench/client.py latency` | p50 0.09 ms, p99 0.17 ms (p1-mvp.md 6.5) | the same or better |
 | attach, 100k lines | `python3 bench/client.py attach` (after R4) | screen 14 ms, history 39 ms | the same or better |
 | resize, 100k lines, to READY | `python3 bench/client.py resize` (after R4) | 5.7 ms, p99 6.8 | the same or better |
@@ -1843,7 +1898,7 @@ one session. The attach and resize rows wait for R4.
   `wire` (the client side of `http.rs` and tungstenite with the
   client role, as sources of the loop, 3.6), `mirror` (the snapshot
   buffer, the in-memory decodes at READY and at the last slice, the
-  compressor thread and its pipe, 3.5), `differ`, `renderer`,
+  compressor thread, 3.5), `differ`, `renderer`,
   `sidebar`, `client` (the loop over stdin, `/client`, the view and
   the signal pipe), `launch` (attach-or-start with the lock file),
   `api`; `ko` with no arguments.
@@ -1853,6 +1908,44 @@ one session. The attach and resize rows wait for R4.
   `attach`, `resize`, `memory`, `scroll` within the table above and
   the client rows of p1-mvp.md 6.5 (client CPU under 1 core on `yes`;
   100k-line mirror footprint 18 MiB against the 40 MiB target).
+- Result (2026-11-02, macOS, AC power, RV paused, one run of each
+  row, OCaml first): `make verify-ko` passes, and every Go test runs
+  against the Rust `ko`, the 16 client tests included. The two
+  clients gave byte-identical outer screens (`capture-pane -e`) over
+  27 steps of the same input: attach, SGR and wide text, the sidebar,
+  a new pane, pane switches, two resizes, vi, wheel scrolls,
+  Alt+Backspace, a bracketed paste, sidebar clicks, the pager, the
+  alternate screen, a dead pane and detach.
+
+| row | load | OCaml ko | Rust ko | target |
+|---|---|---|---|---|
+| hop latency, `latency writev 5000 2` | 2.4, 2.2 | p50 13.3, p99 19.6 us | p50 14, p99 20 us | met (the Rust bench prints whole microseconds) |
+| key to frame through the client, 500 samples | 1.5 | p50 1.34, p99 3.35 ms | p50 0.53, p99 0.69 ms | met |
+| key to frame, view only | 1.5 | p50 0.18, p99 0.30 ms | p50 0.18, p99 0.26 ms | met |
+| `yes` 5 s, shown: client CPU | 1.4, 1.6 | 0.63 core | 1.00 core | missed: under 1 core, and worse than OCaml |
+| attach, 100k lines: screen, history in the mirror | 1.7, 2.2 | 29 ms, 66 ms | 6 ms, 26 ms | met |
+| resize, 100k lines, to READY | 1.6 | p50 5.14, p99 5.55 ms | p50 4.99, p99 5.44 ms | met |
+| client, 100k-line mirror, footprint | 1.6, 1.5 | 16.9 MiB (RSS 100.9) | 13.4 MiB (RSS 93.3) | met |
+| coordinator idle, footprint | 1.6, 1.5 | 8.5 MiB | 1.5 MiB | met |
+| one wheel notch to the first output | 1.5, 1.4 | p50 0.72, p99 3.00 ms | p50 0.45, p99 0.53 ms | met |
+| 240 notches per second: client CPU | 1.5, 1.4 | 0.34 core | 0.09 core | met |
+
+  The hop row needed two fixes of the OCaml bench beyond decision 79.
+  The producer stamps every 3.3 ms. Both benches stamp the receive
+  in their view reader after `read`. The OCaml bench polled the ring
+  only on its own repeating 2 ms timer, but the real server scans and
+  pumps at once on a pane's first output after idle. In latency mode
+  the OCaml bench now flushes on every output notice. Before these
+  fixes, the OCaml figure was p50 1,307 us (the 2 ms poll); the
+  Rust figure was p50 47 us at load 1.7 and 14 us at load 2.2.
+  On `yes`, the client's time is in `ghostty_terminal_vt_write` in
+  the mirror: `sample` gave 1,935 of 2,115 samples there and 88 in
+  the paint. The client is limited by the parse, so it uses the whole
+  core. The reason that the OCaml client uses less is not measured.
+  The decision about a limit on the parse work is open for the user.
+  The first attach row gave 70 ms and 117 ms: the probe waited 50 ms
+  after the DA1 answer. It now ends at the DA1 answer, the last
+  reply.
 
 ### R5. One implementation (2 to 3 agent-days)
 

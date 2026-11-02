@@ -17,6 +17,16 @@ pub fn write(fd: BorrowedFd<'_>, bytes: &[u8]) -> io::Result<usize> {
     })
 }
 
+pub fn wait_writable(fd: BorrowedFd<'_>) -> io::Result<()> {
+    let mut wait = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: wait is one initialized pollfd.
+    retry(|| check(unsafe { libc::poll(&mut wait, 1, -1) })).map(drop)
+}
+
 pub fn inherited(number: u8) -> io::Result<OwnedFd> {
     let raw = libc::c_int::from(number);
     // SAFETY: F_GETFD only tests that the descriptor is open.

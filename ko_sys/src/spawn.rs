@@ -61,7 +61,29 @@ pub fn pane(program: &Path, control: BorrowedFd<'_>, mapping: BorrowedFd<'_>) ->
     self::program(program, &[], &[(control, 0), (control, 1), (mapping, 3)])
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Session {
+    Inherit,
+    New,
+}
+
+// <sys/spawn.h>; the libc crate does not declare it for macOS.
+const POSIX_SPAWN_SETSID: libc::c_int = 0x0400;
+
+pub fn detached(program: &Path, args: &[&str], log: BorrowedFd<'_>) -> io::Result<Pid> {
+    start(program, args, &[(log, 0), (log, 1), (log, 2)], Session::New)
+}
+
 pub fn program(program: &Path, args: &[&str], targets: &[(BorrowedFd<'_>, u8)]) -> io::Result<Pid> {
+    start(program, args, targets, Session::Inherit)
+}
+
+fn start(
+    program: &Path,
+    args: &[&str],
+    targets: &[(BorrowedFd<'_>, u8)],
+    session: Session,
+) -> io::Result<Pid> {
     let invalid = |_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in a spawn argument");
     let program = CString::new(program.as_os_str().as_bytes()).map_err(invalid)?;
     let args = args
@@ -98,7 +120,11 @@ pub fn program(program: &Path, args: &[&str], targets: &[(BorrowedFd<'_>, u8)]) 
     }
     let flags = libc::POSIX_SPAWN_CLOEXEC_DEFAULT
         | libc::POSIX_SPAWN_SETSIGDEF
-        | libc::POSIX_SPAWN_SETSIGMASK;
+        | libc::POSIX_SPAWN_SETSIGMASK
+        | match session {
+            Session::Inherit => 0,
+            Session::New => POSIX_SPAWN_SETSID,
+        };
     // SAFETY: the attributes are initialized, and the sets outlive the calls.
     unsafe {
         check_code(libc::posix_spawnattr_setflags(

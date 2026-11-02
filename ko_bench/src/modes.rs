@@ -24,7 +24,7 @@ use crate::client::{
 
 const DEADLINE: Duration = Duration::from_secs(900);
 
-fn failed(error: impl Display) -> String {
+pub(crate) fn failed(error: impl Display) -> String {
     error.to_string()
 }
 

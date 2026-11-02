@@ -28,9 +28,10 @@ type pane = {
   mutable counted : int;
   mutable bytes : int;
   mutable records : int;
-  mutable samples : float list option;
   transcript : Buffer.t option;
 }
+
+let on_output = ref ignore
 
 let start ~pane_exe ~argv ~transcript ~latency =
   let config =
@@ -49,13 +50,19 @@ let start ~pane_exe ~argv ~transcript ~latency =
   Unix.setsockopt_int fd Unix.SO_SNDBUF (1 lsl 20);
   Unix.setsockopt_int other Unix.SO_RCVBUF (1 lsl 20);
   Unix.set_close_on_exec fd;
-  let drain = Unix.create_process (drain_exe ()) [| "drain" |] other Unix.stdout Unix.stderr in
+  let drain =
+    if latency then
+      let exe = Filename.concat (Filename.dirname Sys.executable_name) "latency_drain.exe" in
+      Unix.create_process exe [| exe; "hop"; "--hop" |] other Unix.stdout Unix.stderr
+    else Unix.create_process (drain_exe ()) [| "drain" |] other Unix.stdout Unix.stderr
+  in
   Unix.close other;
   let proc =
     Pane_proc.create config ~id:(Ids.Pane_id.make 1) ~cwd:"/" ~argv ~env:[ "TERM=xterm-ghostty" ]
       ~notify:(function
       | Dead { cause = Failed message; _ } -> failwith message
-      | Title | Pwd | Output | Dead _ -> ())
+      | Output -> !on_output ()
+      | Title | Pwd | Dead _ -> ())
   in
   let p =
     {
@@ -66,7 +73,6 @@ let start ~pane_exe ~argv ~transcript ~latency =
       counted = 0;
       bytes = 0;
       records = 0;
-      samples = (if latency then Some [] else None);
       transcript = (if transcript then Some (Buffer.create 4096) else None);
     }
   in
@@ -92,19 +98,6 @@ let count p =
       let at = Ring.at ring pos and len = Ring.length ring pos in
       p.bytes <- p.bytes + len;
       p.records <- p.records + 1;
-      (match p.samples with
-      | None -> ()
-      | Some samples ->
-          let now = Native.now () in
-          let found = ref samples in
-          let text = Bigstringaf.substring (Ring.buffer ring) ~off:at ~len in
-          for i = 0 to String.length text - 21 do
-            if Char.equal text.[i] 'T' then
-              match int_of_string_opt (String.sub text (i + 1) 20) with
-              | Some ts -> found := (float (now - ts) /. 1e3) :: !found
-              | None -> ()
-          done;
-          p.samples <- Some !found);
       match p.transcript with
       | None -> ()
       | Some b -> Buffer.add_string b (Bigstringaf.substring (Ring.buffer ring) ~off:at ~len));
@@ -217,16 +210,13 @@ let latency ~pane_exe ~produce ~count =
   let p =
     start ~pane_exe
       ~argv:[ produce; "--latency"; string_of_int count ]
-      ~transcript:true ~latency:true
+      ~transcript:false ~latency:true
   in
+  let leading = Event_loop.timer (fun () -> flush p) in
+  on_output := (fun () -> Event_loop.start_timer leading ~after:0 ~repeat:None);
   run_until ~timeout:120. (fun () -> dead p && drained p) (fun () -> flush p);
-  let a = Array.of_list (List.sort Float.compare (Option.value ~default:[] p.samples)) in
-  if Array.length a > 0 then
-    Printf.printf "hop latency view=writev samples=%d p50_us=%.1f p99_us=%.1f max_us=%.1f\n%!"
-      (Array.length a)
-      a.(Array.length a / 2)
-      a.(Array.length a * 99 / 100)
-      a.(Array.length a - 1);
+  Event_loop.stop_timer leading;
+  on_output := ignore;
   finish p
 
 let run_program ~pane_exe ~argv =

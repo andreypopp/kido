@@ -3,29 +3,26 @@ use std::io::{self, Read, Write};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use ko_pane_wire::frame::Scrollback;
 use ko_server::config::{self, Config, DEFAULT_LIMITS};
 use ko_server::protocol;
 use ko_server::server::{Server, Status, Timing};
-use ko_tui::api;
-use ko_tui::launch::{self, Patience};
+use ko_tui::launch::{self, PATIENCE};
+use ko_tui::{api, client};
 
 const USAGE_ERROR: u8 = 124;
-const PATIENCE: Patience = Patience {
-    deadline: Duration::from_secs(5),
-    retry: Duration::from_millis(10),
-};
-const READ_TIMEOUT: Duration = Duration::from_secs(40);
 
-/// The ko terminal server.
+/// The ko terminal. Without a command, it attaches to the server and starts one if none runs.
 #[derive(Debug, Parser)]
 #[command(name = "ko")]
 struct Cli {
+    /// The server's state directory.
+    #[arg(long, value_name = "DIR")]
+    server: Option<PathBuf>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -210,7 +207,7 @@ fn api(args: ApiArgs) -> ExitCode {
         return fail("api", "path must start with /");
     }
     let dir = config::dir(args.server);
-    match api::request(&dir, &method, &args.path, &body, PATIENCE, READ_TIMEOUT) {
+    match api::request(&dir, &method, &args.path, &body) {
         Err(api::Error::Websocket) => {
             eprintln!(
                 "ko api: {} is a WebSocket endpoint; ko api sends one request and prints one response",
@@ -236,6 +233,17 @@ fn api(args: ApiArgs) -> ExitCode {
     }
 }
 
+fn attach(server: Option<PathBuf>) -> ExitCode {
+    let pager = std::env::var("PAGER")
+        .ok()
+        .filter(|pager| !pager.is_empty())
+        .unwrap_or_else(|| "less -R +G -+F".to_owned());
+    match client::run(&config::dir(server), &invoked(), &pager) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => fail("attach", message),
+    }
+}
+
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -248,7 +256,10 @@ fn main() -> ExitCode {
             };
         }
     };
-    match cli.command {
+    let Some(command) = cli.command else {
+        return attach(cli.server);
+    };
+    match command {
         Command::Server(args) => server(args),
         Command::KillServer { server } => match launch::stop(&config::dir(server), PATIENCE) {
             Ok(()) => ExitCode::SUCCESS,

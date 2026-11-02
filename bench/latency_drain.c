@@ -18,6 +18,7 @@ static int compare(const void *a, const void *b) {
 
 int main(int argc, char **argv) {
   const char *label = argc > 1 ? argv[1] : "reader";
+  int hop = argc > 2 && !strcmp(argv[2], "--hop");
   static uint8_t buffer[(1 << 20) + KEEP];
   size_t capacity = 1 << 20, count = 0, kept = 0;
   double *samples = malloc(capacity * sizeof(double));
@@ -48,7 +49,11 @@ int main(int argc, char **argv) {
     memmove(buffer, buffer + have - kept, kept);
   }
   qsort(samples, count, sizeof(double), compare);
-  if (count)
+  if (hop) {
+    if (count)
+      fprintf(stderr, "hop latency view=writev samples=%zu p50_us=%.1f p99_us=%.1f max_us=%.1f\n", count,
+              samples[count / 2], samples[count * 99 / 100], samples[count - 1]);
+  } else if (count)
     fprintf(stderr, "%s bytes=%llu samples=%zu p50_us=%.0f p99_us=%.0f max_us=%.0f\n", label,
             (unsigned long long)total, count, samples[count / 2], samples[count * 99 / 100],
             samples[count - 1]);

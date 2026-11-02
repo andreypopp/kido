@@ -12,3 +12,4 @@ pub mod retry;
 pub mod signal;
 pub mod sock;
 pub mod spawn;
+pub mod tty;

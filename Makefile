@@ -10,9 +10,8 @@ export PATH := $(if $(RUSTUP_BIN),$(RUSTUP_BIN):)$(PATH)
 CARGO := $(if $(RUSTUP_BIN),$(RUSTUP_BIN)/)cargo
 
 # The Rust ko builds on macOS only for now; elsewhere the Go suite runs
-# the OCaml ko with the OCaml decoder. On macOS the server tests run the
-# Rust ko and the client tests the OCaml ko, both with the Rust decoder
-# (scripts/verify.sh ko-suite).
+# the OCaml ko with the OCaml decoder. On macOS every test of the suite
+# runs the Rust ko with the Rust decoder (scripts/verify.sh ko-suite).
 ifeq ($(shell uname -s),Darwin)
 KO_BUILD := build-ko
 KO_RUST ?= $(CURDIR)/build/ko/bin/ko

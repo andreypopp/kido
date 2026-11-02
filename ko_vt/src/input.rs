@@ -6,6 +6,82 @@ use ko_vt_sys as sys;
 
 use crate::{Error, Terminal, check};
 
+pub mod key {
+    use ko_vt_sys as sys;
+
+    pub const BACKQUOTE: u16 = sys::GHOSTTY_KEY_BACKQUOTE as u16;
+    pub const BACKSLASH: u16 = sys::GHOSTTY_KEY_BACKSLASH as u16;
+    pub const BRACKET_LEFT: u16 = sys::GHOSTTY_KEY_BRACKET_LEFT as u16;
+    pub const BRACKET_RIGHT: u16 = sys::GHOSTTY_KEY_BRACKET_RIGHT as u16;
+    pub const COMMA: u16 = sys::GHOSTTY_KEY_COMMA as u16;
+    pub const DIGIT_0: u16 = sys::GHOSTTY_KEY_DIGIT_0 as u16;
+    pub const EQUAL: u16 = sys::GHOSTTY_KEY_EQUAL as u16;
+    pub const A: u16 = sys::GHOSTTY_KEY_A as u16;
+    pub const MINUS: u16 = sys::GHOSTTY_KEY_MINUS as u16;
+    pub const PERIOD: u16 = sys::GHOSTTY_KEY_PERIOD as u16;
+    pub const QUOTE: u16 = sys::GHOSTTY_KEY_QUOTE as u16;
+    pub const SEMICOLON: u16 = sys::GHOSTTY_KEY_SEMICOLON as u16;
+    pub const SLASH: u16 = sys::GHOSTTY_KEY_SLASH as u16;
+    pub const ALT_LEFT: u16 = sys::GHOSTTY_KEY_ALT_LEFT as u16;
+    pub const ALT_RIGHT: u16 = sys::GHOSTTY_KEY_ALT_RIGHT as u16;
+    pub const BACKSPACE: u16 = sys::GHOSTTY_KEY_BACKSPACE as u16;
+    pub const CAPS_LOCK: u16 = sys::GHOSTTY_KEY_CAPS_LOCK as u16;
+    pub const CONTEXT_MENU: u16 = sys::GHOSTTY_KEY_CONTEXT_MENU as u16;
+    pub const CONTROL_LEFT: u16 = sys::GHOSTTY_KEY_CONTROL_LEFT as u16;
+    pub const CONTROL_RIGHT: u16 = sys::GHOSTTY_KEY_CONTROL_RIGHT as u16;
+    pub const ENTER: u16 = sys::GHOSTTY_KEY_ENTER as u16;
+    pub const META_LEFT: u16 = sys::GHOSTTY_KEY_META_LEFT as u16;
+    pub const META_RIGHT: u16 = sys::GHOSTTY_KEY_META_RIGHT as u16;
+    pub const SHIFT_LEFT: u16 = sys::GHOSTTY_KEY_SHIFT_LEFT as u16;
+    pub const SHIFT_RIGHT: u16 = sys::GHOSTTY_KEY_SHIFT_RIGHT as u16;
+    pub const SPACE: u16 = sys::GHOSTTY_KEY_SPACE as u16;
+    pub const TAB: u16 = sys::GHOSTTY_KEY_TAB as u16;
+    pub const DELETE: u16 = sys::GHOSTTY_KEY_DELETE as u16;
+    pub const END: u16 = sys::GHOSTTY_KEY_END as u16;
+    pub const HOME: u16 = sys::GHOSTTY_KEY_HOME as u16;
+    pub const INSERT: u16 = sys::GHOSTTY_KEY_INSERT as u16;
+    pub const PAGE_DOWN: u16 = sys::GHOSTTY_KEY_PAGE_DOWN as u16;
+    pub const PAGE_UP: u16 = sys::GHOSTTY_KEY_PAGE_UP as u16;
+    pub const ARROW_DOWN: u16 = sys::GHOSTTY_KEY_ARROW_DOWN as u16;
+    pub const ARROW_LEFT: u16 = sys::GHOSTTY_KEY_ARROW_LEFT as u16;
+    pub const ARROW_RIGHT: u16 = sys::GHOSTTY_KEY_ARROW_RIGHT as u16;
+    pub const ARROW_UP: u16 = sys::GHOSTTY_KEY_ARROW_UP as u16;
+    pub const NUM_LOCK: u16 = sys::GHOSTTY_KEY_NUM_LOCK as u16;
+    pub const NUMPAD_0: u16 = sys::GHOSTTY_KEY_NUMPAD_0 as u16;
+    pub const NUMPAD_5: u16 = sys::GHOSTTY_KEY_NUMPAD_5 as u16;
+    pub const NUMPAD_ADD: u16 = sys::GHOSTTY_KEY_NUMPAD_ADD as u16;
+    pub const NUMPAD_DECIMAL: u16 = sys::GHOSTTY_KEY_NUMPAD_DECIMAL as u16;
+    pub const NUMPAD_DIVIDE: u16 = sys::GHOSTTY_KEY_NUMPAD_DIVIDE as u16;
+    pub const NUMPAD_ENTER: u16 = sys::GHOSTTY_KEY_NUMPAD_ENTER as u16;
+    pub const NUMPAD_EQUAL: u16 = sys::GHOSTTY_KEY_NUMPAD_EQUAL as u16;
+    pub const NUMPAD_MULTIPLY: u16 = sys::GHOSTTY_KEY_NUMPAD_MULTIPLY as u16;
+    pub const NUMPAD_SUBTRACT: u16 = sys::GHOSTTY_KEY_NUMPAD_SUBTRACT as u16;
+    pub const NUMPAD_SEPARATOR: u16 = sys::GHOSTTY_KEY_NUMPAD_SEPARATOR as u16;
+    pub const NUMPAD_UP: u16 = sys::GHOSTTY_KEY_NUMPAD_UP as u16;
+    pub const NUMPAD_DOWN: u16 = sys::GHOSTTY_KEY_NUMPAD_DOWN as u16;
+    pub const NUMPAD_RIGHT: u16 = sys::GHOSTTY_KEY_NUMPAD_RIGHT as u16;
+    pub const NUMPAD_LEFT: u16 = sys::GHOSTTY_KEY_NUMPAD_LEFT as u16;
+    pub const NUMPAD_BEGIN: u16 = sys::GHOSTTY_KEY_NUMPAD_BEGIN as u16;
+    pub const NUMPAD_HOME: u16 = sys::GHOSTTY_KEY_NUMPAD_HOME as u16;
+    pub const NUMPAD_END: u16 = sys::GHOSTTY_KEY_NUMPAD_END as u16;
+    pub const NUMPAD_INSERT: u16 = sys::GHOSTTY_KEY_NUMPAD_INSERT as u16;
+    pub const NUMPAD_DELETE: u16 = sys::GHOSTTY_KEY_NUMPAD_DELETE as u16;
+    pub const NUMPAD_PAGE_UP: u16 = sys::GHOSTTY_KEY_NUMPAD_PAGE_UP as u16;
+    pub const NUMPAD_PAGE_DOWN: u16 = sys::GHOSTTY_KEY_NUMPAD_PAGE_DOWN as u16;
+    pub const ESCAPE: u16 = sys::GHOSTTY_KEY_ESCAPE as u16;
+    pub const F1: u16 = sys::GHOSTTY_KEY_F1 as u16;
+    pub const PRINT_SCREEN: u16 = sys::GHOSTTY_KEY_PRINT_SCREEN as u16;
+    pub const SCROLL_LOCK: u16 = sys::GHOSTTY_KEY_SCROLL_LOCK as u16;
+    pub const PAUSE: u16 = sys::GHOSTTY_KEY_PAUSE as u16;
+    pub const MEDIA_PLAY_PAUSE: u16 = sys::GHOSTTY_KEY_MEDIA_PLAY_PAUSE as u16;
+    pub const MEDIA_STOP: u16 = sys::GHOSTTY_KEY_MEDIA_STOP as u16;
+    pub const MEDIA_TRACK_NEXT: u16 = sys::GHOSTTY_KEY_MEDIA_TRACK_NEXT as u16;
+    pub const MEDIA_TRACK_PREVIOUS: u16 = sys::GHOSTTY_KEY_MEDIA_TRACK_PREVIOUS as u16;
+    pub const AUDIO_VOLUME_DOWN: u16 = sys::GHOSTTY_KEY_AUDIO_VOLUME_DOWN as u16;
+    pub const AUDIO_VOLUME_MUTE: u16 = sys::GHOSTTY_KEY_AUDIO_VOLUME_MUTE as u16;
+    pub const AUDIO_VOLUME_UP: u16 = sys::GHOSTTY_KEY_AUDIO_VOLUME_UP as u16;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pasted {
     pub written: bool,

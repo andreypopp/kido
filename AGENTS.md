@@ -323,11 +323,12 @@ These requirements are fixed:
   calls. One `ko-pane` process runs for each pane. `fuzz/` is the
   cargo-fuzz crate, a workspace member outside `default-members`:
   clippy checks it on stable, and only `make fuzz` runs it.
-  `ko_bench/` is the binary `ko-bench`, the port of
-  `bench/coordinator.ml`, which `make build-ko` builds into
-  `target/release` and never installs. ko's C
-  stays only in the C `ko-pane`, which the OCaml client tests and
-  the C unit tests use until the cut. Do not add new C.
+  `ko_tui/` is the terminal client that `ko` runs without a
+  command. `ko_bench/` is the binary `ko-bench`, the port of
+  `bench/coordinator.ml`, `bench/mirror.ml` and `bench/usage.ml`,
+  which `make build-ko` builds into `target/release` and never
+  installs. ko's C stays only in the C `ko-pane`, which the OCaml ko
+  on Linux and the C unit tests use until the cut. Do not add new C.
 - **Toolchain.** `rust-toolchain.toml` pins the toolchain of the
   pinned Verus release. They move together. Homebrew's keg-only
   `rustup` formula supplies it (`brew install rustup`, then
@@ -479,7 +480,8 @@ Conventions:
   through `ko_sys::retry`. An `EINTR` from `poll` is a turn with no
   events. A read of zero bytes is the end; `WouldBlock` is "not
   ready". Signal handlers have `SA_RESTART`, but no call relies on it.
-- **The loop.** Every ko process is one thread on `ko_sys::event`:
+- **The loop.** Every ko process is one thread on `ko_sys::event`,
+  except for the terminal client's mirror compressor (below):
   non-blocking descriptors, the nearest deadline as the `poll`
   timeout and none without one, at most 16 reads of a source per
   turn. The server's listener accepts at most 16 connections per
@@ -488,6 +490,17 @@ Conventions:
   interest. The owner matches on the ready tokens and the due timers
   and calls its own handlers with `&mut self`; no callback is
   registered with the loop, and no `Rc<RefCell<..>>` exists.
+- **The terminal client.** `ko_tui`'s loop watches stdin, the
+  `/client` link, the shown view and the signal pipe. Its plain
+  requests (create, delete, list, the pager's `/screen`) block with
+  the deadlines of `ko api`. While the pager runs, the loop keeps
+  both links and stops reading stdin and painting until `SIGCHLD`
+  reports the pager's exit, so pings get their answers. The
+  compressor thread shares the mirror
+  under a `Mutex` and a `Condvar`. It does CPU work only and never
+  wakes the loop. `ko_vt::Terminal` is `Send` only for this thread,
+  and the `Mutex` serializes every call. vte tokenizes the outer
+  terminal's input, and `ko_tui::input` translates its events.
 - **Time.** `Mono` is nanoseconds of `CLOCK_UPTIME_RAW`, as
   `ko_now_ns` reads it. The loop's deadlines are `std::time::Instant`.
   Timeouts are `Duration` arguments, not statics.
@@ -628,10 +641,9 @@ never installed. `test_e2e_ko/` runs the binary that `KO_BIN` names
 and the decoder that `KO_DECODE` names. With neither variable set,
 on macOS, `TestMain` runs `make build-ko` and uses `build/ko/bin/ko`
 and the Rust decoder; with one of them set, it fails.
-`make e2e-ko` runs `scripts/verify.sh ko-suite`: on macOS, the client
-tests that `scripts/verify.sh` lists run the OCaml `ko` (`KO_OCAML`),
-because the OCaml client starts its own server, and every other test
-runs the Rust `ko` (`KO_RUST`). On Linux, every test runs the OCaml `ko`.
+`make e2e-ko` runs `scripts/verify.sh ko-suite`: on macOS, every test
+runs the Rust `ko` (`KO_RUST`). On Linux, every test runs the OCaml
+`ko` (`KO_OCAML`).
 `bench/coordinator.sh` selects the coordinator of `bench/run.sh`,
 `bench/flood.sh` and `bench/baselines.sh`: `COORDINATOR=ocaml` (the
 default, `bench/coordinator.exe`) or `COORDINATOR=rust` (`ko-bench`
@@ -1227,6 +1239,11 @@ dictionary and `max_len` in `fuzz/<target>.options`:
   pane starts `/usr/bin/true` in place of `ko-pane`, so a fuzzed
   request never runs its command. It
   needs the Rust `ko-pane` in `KO_PANE_EXE`, which the script builds.
+- `client` and `ws` (`ko_server::fuzz`): the client's response and
+  upgrade readers over the bytes, whole and cut at the chosen points,
+  with the same result; a server-side WebSocket over a connection fed
+  the bytes as client frames, whole and in two parts, with the same
+  messages and close, and no message over 1 MiB.
 - `test_e2e_ko/hostile_test.go` is the only Go part: hostile input
   against a real `ko server`, with other clients unaffected.
 

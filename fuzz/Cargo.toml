@@ -70,5 +70,19 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "client"
+path = "fuzz_targets/client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws"
+path = "fuzz_targets/ws.rs"
+test = false
+doc = false
+bench = false
+
 [lints]
 workspace = true

@@ -830,7 +830,7 @@ compact! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Terminal {
+pub struct Terminal {
     pub(crate) scrollback: Scrollback,
     pub(crate) apc_max_bytes: usize,
     pub(crate) kitty_images_max_bytes: u64,
@@ -849,8 +849,8 @@ enum MediumDef {
 pub(crate) struct Medium(#[serde(with = "MediumDef")] pub(crate) frame::Medium);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Limits {
-    pub(crate) terminal: Terminal,
+pub struct Limits {
+    pub terminal: Terminal,
     pub(crate) media: Vec<Medium>,
 }
 
@@ -877,33 +877,50 @@ impl Limits {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Welcome {
-    pub(crate) client: ClientId,
-    pub(crate) limits: Limits,
+impl Terminal {
+    pub fn limits(&self) -> frame::Limits {
+        frame::Limits {
+            scrollback: match self.scrollback {
+                Scrollback::Disabled => frame::Scrollback::Disabled,
+                Scrollback::Scrollback(bounds) => frame::Scrollback::Bounded {
+                    max_bytes: bounds.max_bytes,
+                    max_lines: bounds.max_lines,
+                },
+            },
+            apc_max_bytes: self.apc_max_bytes,
+            kitty_images_max_bytes: self.kitty_images_max_bytes,
+            continuation_max_bytes: self.continuation_max_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Title {
-    pub(crate) pane: PaneId,
-    pub(crate) title: String,
+pub struct Welcome {
+    pub client: ClientId,
+    pub limits: Limits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Pwd {
+pub struct Title {
+    pub pane: PaneId,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pwd {
     pub(crate) pane: PaneId,
     pub(crate) pwd: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PaneDead {
-    pub(crate) pane: PaneId,
-    pub(crate) dead: Dead,
+pub struct PaneDead {
+    pub pane: PaneId,
+    pub dead: Dead,
 }
 
 compact! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum ClientEvent {
+    pub enum ClientEvent {
         units {}
         payloads {
             Welcome(Welcome) = "welcome",

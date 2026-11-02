@@ -3,16 +3,39 @@ use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ko_server::config::{self, Dir};
+use ko_sys::pid::Waited;
 use ko_sys::signal::Signal;
+
+pub const PATIENCE: Patience = Patience {
+    deadline: Duration::from_secs(5),
+    retry: Duration::from_millis(10),
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Patience {
-    pub deadline: Duration,
-    pub retry: Duration,
+    deadline: Duration,
+    retry: Duration,
+}
+
+pub(crate) fn absent(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
+}
+
+fn remove_stale(socket: &Path, error: &io::Error) -> io::Result<()> {
+    if error.kind() != io::ErrorKind::ConnectionRefused {
+        return Ok(());
+    }
+    match std::fs::remove_file(socket) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 pub(crate) fn connect(socket: &Path, patience: Patience) -> io::Result<UnixStream> {
@@ -54,15 +77,59 @@ fn lock(dir: &Path, patience: Patience) -> io::Result<File> {
 
 pub fn bind(dir: &Path, socket: &Path, patience: Patience) -> io::Result<UnixListener> {
     let _lock = lock(dir, patience)?;
-    if let Err(error) = connect(socket, patience)
-        && error.kind() == io::ErrorKind::ConnectionRefused
-    {
-        match std::fs::remove_file(socket) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
+    if let Err(error) = connect(socket, patience) {
+        remove_stale(socket, &error)?;
     }
     UnixListener::bind(socket)
+}
+
+pub(crate) fn attach(
+    dir: &Path,
+    executable: &Path,
+    patience: Patience,
+) -> Result<(PathBuf, UnixStream), String> {
+    let socket = config::socket(Dir::Create, dir)?;
+    let message = |error: io::Error| error.to_string();
+    match connect(&socket, patience) {
+        Ok(stream) => return Ok((socket, stream)),
+        Err(error) if absent(&error) => {}
+        Err(error) => return Err(message(error)),
+    }
+    let held = lock(dir, patience).map_err(message)?;
+    match connect(&socket, patience) {
+        Ok(stream) => return Ok((socket, stream)),
+        Err(error) if absent(&error) => remove_stale(&socket, &error).map_err(message)?,
+        Err(error) => return Err(message(error)),
+    }
+    let log = dir.join("log");
+    let output = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&log)
+        .map_err(message)?;
+    let args = ["server", "--server", &dir.to_string_lossy()];
+    let child = ko_sys::spawn::detached(executable, &args, output.as_fd()).map_err(message)?;
+    drop(held);
+    let deadline = Instant::now() + patience.deadline;
+    loop {
+        match connect(&socket, patience) {
+            Ok(stream) => return Ok((socket, stream)),
+            Err(error) if absent(&error) => {}
+            Err(error) => return Err(message(error)),
+        }
+        if !matches!(child.try_wait(), Ok(Waited::Running)) {
+            return Err(format!("server exited; see {}", log.display()));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "server did not start within {} seconds; see {}",
+                patience.deadline.as_secs(),
+                log.display()
+            ));
+        }
+        std::thread::sleep(patience.retry);
+    }
 }
 
 pub fn stop(dir: &Path, patience: Patience) -> Result<(), String> {
@@ -94,11 +161,6 @@ pub fn stop(dir: &Path, patience: Patience) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    const PATIENCE: Patience = Patience {
-        deadline: Duration::from_secs(5),
-        retry: Duration::from_millis(10),
-    };
 
     fn scratch(name: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/ko-launch-{name}-{}", std::process::id()));

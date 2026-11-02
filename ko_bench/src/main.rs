@@ -1,6 +1,7 @@
 mod alloc;
 mod client;
 mod modes;
+mod terminal;
 
 use std::process::ExitCode;
 
@@ -20,9 +21,11 @@ fn main() -> ExitCode {
         ["latency", "writev", count, "2"] => modes::latency(count),
         ["snapshot", "writev", lines] => modes::snapshot(lines),
         ["cpu-check"] => modes::cpu_check(),
+        ["mirror", iterations, streams @ ..] => terminal::mirror(iterations, streams),
+        ["usage", lines, cols, rows] => terminal::usage(lines, cols, rows),
         _ => {
             eprintln!(
-                "usage: ko-bench throughput|latency|snapshot writev ... | flood ... | cpu-check"
+                "usage: ko-bench throughput|latency|snapshot writev ... | flood ... | cpu-check | mirror ITERATIONS STREAM... | usage LINES COLS ROWS"
             );
             return ExitCode::from(2);
         }

@@ -2,6 +2,9 @@
 
 use std::io::{self, Read};
 
+use crate::ids::ClientId;
+use crate::protocol::version_headers;
+
 pub(crate) const MAX_HEAD: usize = 16384;
 const MAX_BODY: usize = 1 << 20;
 const STACK_HEADERS: usize = 128;
@@ -203,6 +206,26 @@ pub fn request(method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]
     )
 }
 
+pub fn call(
+    method: &str,
+    target: &str,
+    client: Option<ClientId>,
+    extra: &[(&str, &str)],
+    body: &[u8],
+) -> Vec<u8> {
+    let versions = version_headers();
+    let client = client.map(|client| client.to_string());
+    let length = body.len().to_string();
+    let mut headers = vec![("Host", "localhost")];
+    headers.extend(versions.iter().map(|(name, value)| (*name, value.as_str())));
+    if let Some(client) = &client {
+        headers.push(("Ko-Client", client));
+    }
+    headers.extend_from_slice(extra);
+    headers.push(("Content-Length", &length));
+    request(method, target, &headers, body)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     pub status: u16,
@@ -302,14 +325,45 @@ impl<R: Read> Incoming<'_, R> {
     }
 }
 
-pub fn read_response(stream: &mut impl Read) -> io::Result<Response> {
+const PIECE: usize = 65536;
+
+impl<R: Read> Incoming<'_, R> {
+    fn pour(
+        &mut self,
+        mut left: usize,
+        head: &Response,
+        sink: &mut impl FnMut(&Response, &[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        while left > 0 {
+            if self.buffered().is_empty() {
+                self.more()?;
+                if self.eof {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "server closed the connection",
+                    ));
+                }
+            }
+            let count = left.min(self.buffered().len()).min(PIECE);
+            sink(head, self.buffered().get(..count).unwrap_or_default())?;
+            self.start = self.start.saturating_add(count);
+            left = left.saturating_sub(count);
+        }
+        Ok(())
+    }
+}
+
+pub fn read_response_with(
+    stream: &mut impl Read,
+    mut sink: impl FnMut(&Response, &[u8]) -> io::Result<()>,
+) -> io::Result<Response> {
     let mut incoming = Incoming {
         stream,
         buffer: Vec::new(),
         start: 0,
         eof: false,
     };
-    let mut response = incoming.head()?;
+    let response = incoming.head()?;
     if response.header("transfer-encoding") == Some("chunked") {
         loop {
             let (start, size) = loop {
@@ -327,20 +381,40 @@ pub fn read_response(stream: &mut impl Read) -> io::Result<Response> {
             if size == 0 {
                 break;
             }
-            response.body.extend_from_slice(incoming.take(size)?);
+            incoming.pour(size, &response, &mut sink)?;
             if incoming.take(2)? != b"\r\n" {
                 return Err(invalid("invalid HTTP chunk"));
             }
         }
     } else if let Some(length) = response.header("content-length") {
         let length = length.parse().map_err(|_| invalid("invalid HTTP status"))?;
-        response.body = incoming.take(length)?.to_vec();
+        incoming.pour(length, &response, &mut sink)?;
     } else {
-        while !incoming.eof {
-            incoming.more()?;
+        loop {
+            let count = incoming.buffered().len().min(PIECE);
+            if count > 0 {
+                sink(
+                    &response,
+                    incoming.buffered().get(..count).unwrap_or_default(),
+                )?;
+                incoming.start = incoming.start.saturating_add(count);
+            } else if incoming.eof {
+                break;
+            } else {
+                incoming.more()?;
+            }
         }
-        response.body = incoming.buffered().to_vec();
     }
+    Ok(response)
+}
+
+pub fn read_response(stream: &mut impl Read) -> io::Result<Response> {
+    let mut body = Vec::new();
+    let mut response = read_response_with(stream, |_, piece| {
+        body.extend_from_slice(piece);
+        Ok(())
+    })?;
+    response.body = body;
     Ok(response)
 }
 
@@ -468,5 +542,34 @@ mod tests {
                 "HTTP header too long",
             ]
         );
+    }
+
+    #[test]
+    fn a_body_reaches_the_sink_in_pieces_of_at_most_64_kib() {
+        let body = vec![b'x'; 200_000];
+        let length = [
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(),
+            &body,
+        ]
+        .concat();
+        let chunked = [
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".as_slice(),
+            format!("{:x}\r\n", body.len()).as_bytes(),
+            &body,
+            b"\r\n0\r\n\r\n",
+        ]
+        .concat();
+        let to_end = [b"HTTP/1.1 200 OK\r\n\r\n".as_slice(), &body].concat();
+        for bytes in [length, chunked, to_end] {
+            let mut sizes = Vec::new();
+            read_response_with(&mut &bytes[..], |head, piece| {
+                assert_eq!(head.status, 200);
+                sizes.push(piece.len());
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(sizes.iter().sum::<usize>(), body.len());
+            assert!(sizes.iter().all(|size| *size <= PIECE), "{sizes:?}");
+        }
     }
 }
