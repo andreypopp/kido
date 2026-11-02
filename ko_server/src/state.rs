@@ -15,6 +15,7 @@ use crate::layout::{Document, PutError, Resized};
 use crate::link::{Role, Wire};
 use crate::model::{self, Model};
 use crate::pane::Pane;
+use crate::pane_kind::{PI_SESSION, RUN};
 use crate::pane_proc::{self, Event, Io, Refusal, discard};
 use crate::panes::{AddError, Panes};
 use crate::protocol::{
@@ -28,12 +29,17 @@ use crate::vars::{Refusal as VarRefusal, Vars};
 use crate::view::View;
 use crate::ws::{Next, Ping};
 
+mod prompt;
+mod run_ops;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Owner {
     Screen { conn: Token, started: bool },
     HttpPaste(Token, Option<u64>),
     ViewPaste(Token, Option<u64>),
     Snapshot(Token),
+    Capture,
+    Prompt(Token),
 }
 
 #[derive(Debug)]
@@ -41,6 +47,17 @@ pub(crate) enum PutFailure {
     Stale(Snapshot),
     Invalid(String),
     Io(String),
+}
+
+impl From<PutFailure> for protocol::Error {
+    fn from(failure: PutFailure) -> protocol::Error {
+        let (kind, message) = match failure {
+            PutFailure::Invalid(message) => (protocol::ErrorKind::Invalid, message),
+            PutFailure::Io(message) => (protocol::ErrorKind::Io, message),
+            PutFailure::Stale(_) => (protocol::ErrorKind::Io, "layout changed".to_owned()),
+        };
+        protocol::Error::new(kind, message)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +80,8 @@ pub(crate) struct State {
     ticker: Timer,
     tick: Duration,
     model: Model,
+    runs: run_ops::RunState,
+    prompts: prompt::PromptState,
     spare: Vec<Vec<Event>>,
     ticked: Vec<(PaneId, Event)>,
 }
@@ -112,6 +131,7 @@ impl State {
         poll: &mut Poll,
         tick: Duration,
     ) -> State {
+        let runs = run_ops::RunState::new(&config, poll);
         State {
             config,
             instance,
@@ -125,6 +145,8 @@ impl State {
             ticker: poll.timer(),
             tick,
             model: Model::new(poll),
+            runs,
+            prompts: prompt::PromptState::default(),
             spare: Vec::new(),
             ticked: Vec::new(),
         }
@@ -407,14 +429,20 @@ impl State {
         }
     }
 
-    fn refocus(&mut self, poll: &mut Poll) {
-        let shown: BTreeSet<PaneId> = self
-            .conns
+    pub(crate) fn focused_panes(&self) -> BTreeSet<PaneId> {
+        self.conns
             .iter()
             .filter_map(client_of)
             .filter_map(|client| client.active.filter(|active| active.focused))
             .filter_map(|active| active.current.map(|current| current.pane))
-            .collect();
+            .collect()
+    }
+
+    fn refocus(&mut self, poll: &mut Poll) {
+        let shown = self.focused_panes();
+        if self.runs.focus_changed(shown.clone()) {
+            self.sweep_soon(poll);
+        }
         self.each_pane(poll, |pane, io| pane.focus(shown.contains(&pane.id()), io));
     }
 
@@ -482,6 +510,7 @@ impl State {
             },
         );
         self.dispatch(poll, id, events);
+        self.runs_changed(poll);
     }
 
     pub(crate) fn reap(&mut self, poll: &mut Poll) -> std::io::Result<()> {
@@ -510,6 +539,8 @@ impl State {
         });
         poll.stop(self.ticker);
         self.model.stop(poll);
+        self.runs.stop(poll);
+        self.prompts.stop(poll);
     }
 
     fn mark(&mut self, poll: &mut Poll, id: PaneId) {
@@ -531,6 +562,9 @@ impl State {
         for (pane, status) in changed {
             self.broadcast(&ClientEvent::Status(StatusChange { pane, status, now }));
         }
+        if self.runs.take_due() {
+            self.sweep(poll);
+        }
     }
 
     pub(crate) fn set_var(
@@ -546,6 +580,9 @@ impl State {
         };
         if pane.vars_mut().set(&name, value)? {
             self.model.mark(poll, pane);
+            if name == RUN || name == PI_SESSION {
+                self.runs.want_sweep();
+            }
             let event = watched
                 .then(|| pane.vars().get(&name).cloned())
                 .flatten()
@@ -567,6 +604,9 @@ impl State {
         };
         if pane.vars_mut().remove(&name) {
             self.model.mark(poll, pane);
+            if name == RUN || name == PI_SESSION {
+                self.runs.want_sweep();
+            }
             self.broadcast(&ClientEvent::VarDeleted { pane: id, name });
         }
     }
@@ -601,6 +641,7 @@ impl State {
                 if let pane_proc::Cause::Failed(_) = death.cause {
                     self.delete_pane(poll, id);
                 }
+                self.runs_changed(poll);
             }
             Event::Prompt(prompt) => {
                 if let Some(pane) = self.panes.find_mut(id) {
@@ -613,6 +654,7 @@ impl State {
                     && pane.telemetry_mut().records.apply(report)
                 {
                     self.model.mark(poll, pane);
+                    self.runs.want_sweep();
                 }
             }
             Event::Foreground(foreground) => {
@@ -680,6 +722,12 @@ impl State {
             }
             Event::Screen { req, chunk, last } => {
                 let key = (id, req);
+                if self.owners.get(&key) == Some(&Owner::Capture) {
+                    if last {
+                        self.owners.remove(&key);
+                    }
+                    return self.capture_chunk(poll, id, req, &chunk, last);
+                }
                 let Some(Owner::Screen { conn, started }) = self.owners.get(&key).copied() else {
                     return;
                 };
@@ -718,7 +766,8 @@ impl State {
                             wire.ws.send(wire.out, protocol::json(&event));
                         }
                     }
-                    Some(Owner::Screen { .. } | Owner::Snapshot(_)) | None => {}
+                    Some(Owner::Prompt(conn)) => self.prompt_pasted(poll, id, conn, pasted),
+                    Some(Owner::Screen { .. } | Owner::Snapshot(_) | Owner::Capture) | None => {}
                 }
             }
             Event::Failed { req, message } => match self.owners.remove(&(id, req)) {
@@ -735,6 +784,8 @@ impl State {
                         view.reject(&mut wire);
                     }
                 }
+                Some(Owner::Prompt(conn)) => router::failed(self, poll, conn, false, &message),
+                Some(Owner::Capture) => self.capture_failed(poll, id, req),
                 Some(Owner::Snapshot(_)) | None => {}
             },
         }
@@ -944,7 +995,10 @@ impl State {
     ) -> std::io::Result<()> {
         let turned = poll.turn(mode, events).and_then(|()| {
             for &ready in events.ready() {
-                if !own(self, poll, Wake::Ready(ready))? && !self.pane_ready(poll, ready) {
+                if !own(self, poll, Wake::Ready(ready))?
+                    && !self.pane_ready(poll, ready)
+                    && !self.prompt_ready(poll, ready)
+                {
                     self.conn_ready(poll, ready);
                 }
             }
@@ -954,6 +1008,11 @@ impl State {
                     self.tick(poll);
                 } else if self.model.is_tick(due.timer) {
                     self.model_tick(poll);
+                } else if self.runs.is_sweep(due.timer) {
+                    self.sweep(poll);
+                } else if self.runs.is_escalation(due.timer) {
+                    self.escalate(poll);
+                } else if self.prompt_due(poll, due.timer) || self.wait_due(poll, due.timer) {
                 } else if self.conns.iter().any(|conn| conn.timer == due.timer) {
                     self.ping(poll, due.timer);
                 } else if let Some(id) = self.panes.by_promotion(due.timer) {
@@ -1221,6 +1280,8 @@ impl State {
             let conn = self.conns.remove(index);
             poll.unwatch(conn.token);
             poll.free(conn.timer);
+            self.runs.forget(conn.token);
+            self.prompts.forget(conn.token);
             if let Phase::Ws(link) = conn.phase
                 && let Role::Client(client) = link.role
             {

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use ko_server::config::{self, Dir};
 use ko_server::http::Response;
+use ko_server::ids::PaneId;
 use ko_server::protocol::{Route, Snapshot};
 
 use crate::launch;
@@ -30,14 +31,14 @@ fn socket(dir: &Path) -> Result<PathBuf, Failure> {
     config::socket(Dir::Existing, dir).map_err(Failure::Failed)
 }
 
-fn exchange(
+pub(crate) fn exchange(
     dir: &Path,
-    method: &str,
-    path: &str,
+    caller: Option<PaneId>,
+    (method, path): (&str, &str),
     body: &[u8],
     within: Duration,
 ) -> Result<Response, Failure> {
-    wire::exchange(&socket(dir)?, None, (method, path), body, within).map_err(|error| {
+    wire::exchange(&socket(dir)?, (None, caller), (method, path), body, within).map_err(|error| {
         if launch::absent(&error) {
             Failure::NoServer
         } else {
@@ -61,12 +62,12 @@ pub fn request_within(
     if route.is_some_and(|route| route.websocket()) {
         return Err(Error::Websocket);
     }
-    exchange(dir, method, path, body, within).map_err(Error::Server)
+    exchange(dir, None, (method, path), body, within).map_err(Error::Server)
 }
 
 pub fn get(dir: &Path, route: &Route) -> Result<Response, Failure> {
     let (method, path) = route.to_request();
-    exchange(dir, method, &path, b"", wire::READ_TIMEOUT)
+    exchange(dir, None, (method, &path), b"", wire::READ_TIMEOUT)
 }
 
 pub fn replace_layout(dir: &Path, document: &Document) -> Result<Snapshot, Failure> {

@@ -897,6 +897,7 @@ mod tests {
             session: id.to_owned(),
             name: String::new(),
             activity: String::new(),
+            inbox: None,
         };
         let done = |app: &str| agent(app, ProgramState::Done, &[]);
         step("pi done", &pi("a"), 1, done("pi"));

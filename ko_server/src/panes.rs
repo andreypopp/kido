@@ -244,6 +244,13 @@ impl Panes {
         }
     }
 
+    pub(crate) fn kill_removed(&self, id: PaneId) -> io::Result<()> {
+        self.removed
+            .iter()
+            .filter(|pane| pane.id() == id)
+            .try_for_each(|pane| pane.proc().kill())
+    }
+
     pub(crate) fn kill(&self) -> io::Result<()> {
         self.all().try_for_each(|pane| pane.proc().kill())
     }
@@ -279,6 +286,8 @@ mod tests {
                 b"LANG=C".to_vec(),
             ],
             cwd: PathBuf::from("/"),
+            linger: crate::config::LINGER,
+            stop_escalation: crate::config::STOP_ESCALATION,
         }
     }
 

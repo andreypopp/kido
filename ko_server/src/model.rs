@@ -93,6 +93,10 @@ impl Model {
 
     pub(crate) fn mark(&self, poll: &mut Poll, pane: &mut Pane) {
         pane.model_mut().dirty = true;
+        self.arm(poll);
+    }
+
+    pub(crate) fn arm(&self, poll: &mut Poll) {
         if !poll.is_active(self.tick) {
             let _ = poll.start(self.tick, TICK, None);
         }

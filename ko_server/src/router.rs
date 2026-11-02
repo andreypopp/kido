@@ -4,19 +4,23 @@ use serde::Serialize;
 use crate::client::Client;
 use crate::conn::{Conn, Payload, Phase, Request};
 use crate::http::{self, LAST_CHUNK, Status};
-use crate::ids::ClientId;
+use crate::ids::{ClientId, PaneId};
 use crate::link::{Link, Role};
 use crate::pane_proc::{Life, Refusal};
 use crate::protocol::{
-    self, Error, ErrorKind, Input, PROTOCOL_HEADER, PasteResult, PutLayout, Route, Selection,
-    VT_HEADER, check_version,
+    self, Empty, Error, ErrorKind, Input, PROTOCOL_HEADER, PasteResult, PutLayout, ReportOutcome,
+    Route, Selection, SendPrompt, StartRun, StopRun, VT_HEADER, check_version,
 };
 use crate::state::{Owner, PutFailure, SelectFailure, State};
 use crate::view::View;
 use crate::ws::{self, Ws};
 
-#[derive(Serialize)]
-struct Empty {}
+fn reply<T: Serialize>(conn: &mut Conn, result: Result<T, Error>) {
+    match result {
+        Ok(value) => ok(conn, &value),
+        Err(Error { kind, message }) => error(conn, kind, message),
+    }
+}
 
 fn respond(conn: &mut Conn, status: Status, body: &str) {
     let length = body.len().to_string();
@@ -36,10 +40,7 @@ fn ok(conn: &mut Conn, value: &impl Serialize) {
 
 fn error(conn: &mut Conn, kind: ErrorKind, message: impl Into<String>) {
     let status = kind.status();
-    let body = protocol::json(&Error {
-        kind,
-        message: message.into(),
-    });
+    let body = protocol::json(&Error::new(kind, message));
     respond(conn, status, &body);
 }
 
@@ -109,6 +110,17 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
         return error(&mut state.conns[index], ErrorKind::Gone, "client is closed");
     }
     let client = client.flatten();
+    let caller = match head.header("ko-pane").map(str::parse::<PaneId>) {
+        None => None,
+        Some(Ok(pane)) => Some(pane),
+        Some(Err(_)) => {
+            return error(
+                &mut state.conns[index],
+                ErrorKind::Invalid,
+                "invalid Ko-Pane",
+            );
+        }
+    };
     let Some(route) = route else {
         return error(
             &mut state.conns[index],
@@ -157,11 +169,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
                     Status::Conflict,
                     &protocol::json(&snapshot),
                 ),
-                Err(PutFailure::Invalid(message)) => {
-                    error(&mut state.conns[index], ErrorKind::Invalid, message);
-                }
-                Err(PutFailure::Io(message)) => {
-                    error(&mut state.conns[index], ErrorKind::Io, message);
+                Err(failure) => {
+                    reply::<Empty>(&mut state.conns[index], Err(failure.into()));
                 }
             }
         }
@@ -260,6 +269,58 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
             state.delete_var(poll, id, name);
             ok(&mut state.conns[index], &Empty {});
         }
+        Route::StartRun => {
+            let Some(request) = body::<StartRun>(&mut state.conns[index], &payload) else {
+                return;
+            };
+            let result = state.start_run(poll, caller, request);
+            reply(&mut state.conns[index], result);
+        }
+        Route::ListRuns(show, parent) => {
+            let infos = state.list_runs(show, parent.as_ref());
+            ok(&mut state.conns[index], &infos);
+        }
+        Route::Reap => {
+            state.reap_runs(poll);
+            ok(&mut state.conns[index], &Empty {});
+        }
+        Route::GetRun(id) => {
+            let result = state.run_detail(&id);
+            reply(&mut state.conns[index], result);
+        }
+        Route::WaitRun(id, timeout) => {
+            if let Some(result) = state.wait_run(poll, index, id, timeout) {
+                reply(&mut state.conns[index], result);
+            }
+        }
+        Route::RunOutcome(id) => {
+            let Some(report) = body::<ReportOutcome>(&mut state.conns[index], &payload) else {
+                return;
+            };
+            if let Some(result) = state.run_outcome(poll, index, id, report) {
+                reply(&mut state.conns[index], result);
+            }
+        }
+        Route::StopRun(id) => {
+            let Some(request) = body::<StopRun>(&mut state.conns[index], &payload) else {
+                return;
+            };
+            if let Some(result) = state.stop_run(poll, index, id, request) {
+                reply(&mut state.conns[index], result);
+            }
+        }
+        Route::PromptResolve { window_only } => {
+            let result = state.resolve_prompt(caller, window_only);
+            reply(&mut state.conns[index], result);
+        }
+        Route::SendPrompt => {
+            let Some(request) = body::<SendPrompt>(&mut state.conns[index], &payload) else {
+                return;
+            };
+            if let Some(result) = state.send_prompt(poll, index, caller, request) {
+                reply(&mut state.conns[index], result);
+            }
+        }
         Route::View(id, options, offset) => {
             let opened = state
                 .panes
@@ -325,6 +386,15 @@ pub(crate) fn screen(
     } else if let Some(found) = state.conns.iter_mut().find(|found| found.token == conn) {
         found.out.send(out);
     }
+}
+
+pub(crate) fn answer<T: Serialize>(
+    state: &mut State,
+    poll: &mut Poll,
+    conn: Token,
+    result: Result<T, Error>,
+) {
+    finish(state, poll, conn, |conn| reply(conn, result));
 }
 
 pub(crate) fn pasted(state: &mut State, poll: &mut Poll, conn: Token, result: &PasteResult) {
@@ -835,7 +905,7 @@ mod tests {
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
     }
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn a_client_gets_the_layout_after_its_welcome_and_every_change_after_that() {
@@ -1213,5 +1283,456 @@ mod tests {
             server.status("POST /panes/pane_9/clear_history", "\r\n"),
             "HTTP/1.1 404"
         );
+    }
+
+    impl Harness {
+        fn call(&mut self, request: &str, body: &Value) -> (String, Value) {
+            let body = body.to_string();
+            let reply = self.reply(
+                request,
+                &format!("Content-Length: {}\r\n\r\n{body}", body.len()),
+            );
+            let status = reply[9..12].to_owned();
+            let json = reply
+                .split_once("\r\n\r\n")
+                .and_then(|(_, body)| serde_json::from_str(body).ok())
+                .unwrap_or(Value::Null);
+            (status, json)
+        }
+    }
+
+    #[test]
+    fn a_run_is_a_marked_window_whose_first_outcome_stands() {
+        let mut server = harness("runs");
+        let mut peer = server.peer(&hello("", false, 80, 24));
+        assert_eq!(kinds(&peer.events(&mut server)), ["welcome", "layout"]);
+        let cat = json!(["/bin/sh", "-c", "exec cat"]);
+        let (status, started) = server.call(
+            "POST /runs",
+            &json!({"name": "job", "session": "s", "env": [], "argv": cat}),
+        );
+        assert_eq!(status, "200", "{started}");
+        let (id, pane) = (
+            started["id"].as_str().unwrap(),
+            started["pane"].as_str().unwrap(),
+        );
+        assert_eq!(
+            server
+                .state
+                .panes
+                .find(pane.parse().unwrap())
+                .and_then(|pane| pane
+                    .vars()
+                    .text(&crate::ids::VarName::new("ko.run").unwrap())
+                    .map(str::to_owned)),
+            Some(id.to_owned())
+        );
+        let (_, listed) = server.call("GET /runs?show=live", &json!(null));
+        assert_eq!(listed[0]["name"], "job");
+        assert_eq!(listed[0]["pane"], pane);
+        assert_eq!(listed[0].get("outcome"), None);
+
+        let events = peer.events(&mut server);
+        let runs: Vec<&Value> = events
+            .iter()
+            .filter(|event| event["type"] == "run")
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                &json!({"type": "run", "id": id, "name": "job", "pane": pane, "startedAt": listed[0]["startedAt"]})
+            ]
+        );
+        let began = std::time::Instant::now();
+        let (_, waited) = server.call(&format!("GET /runs/{id}/wait?timeout_ms=150"), &json!(null));
+        assert_eq!(waited, json!({}));
+        assert!(began.elapsed() >= std::time::Duration::from_millis(140));
+
+        let outcome = |server: &mut Harness| {
+            server
+                .call(
+                    &format!("POST /runs/{id}/outcome"),
+                    &json!({"result": "completed"}),
+                )
+                .0
+        };
+        assert_eq!(outcome(&mut server), "200");
+        assert_eq!(outcome(&mut server), "409");
+        let ended: Vec<Value> = peer
+            .events(&mut server)
+            .into_iter()
+            .filter(|event| event["type"] == "run")
+            .collect();
+        assert_eq!(ended.len(), 1, "a lost write announces nothing: {ended:?}");
+        assert_eq!(ended[0]["outcome"]["result"], "completed");
+        let (_, waited) = server.call(&format!("GET /runs/{id}/wait"), &json!(null));
+        assert_eq!(waited["outcome"]["result"], "completed");
+        let (_, live) = server.call("GET /runs", &json!(null));
+        assert_eq!(live, json!([]));
+        let (_, all) = server.call("GET /runs?show=all", &json!(null));
+        assert_eq!(all[0]["outcome"]["result"], "completed");
+
+        let stop = json!({"wait_ms": 0, "result": "stopped"});
+        assert_eq!(
+            server.call(&format!("POST /runs/{id}/stop"), &stop).0,
+            "200"
+        );
+        assert!(server.state.panes.find(pane.parse().unwrap()).is_none());
+        assert_eq!(
+            server.call(&format!("POST /runs/{id}/stop"), &stop).0,
+            "409"
+        );
+        let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
+        assert_eq!(
+            detail["outcome"]["result"], "completed",
+            "the first outcome stands"
+        );
+    }
+
+    #[test]
+    fn a_run_refuses_a_bad_name_session_and_parent() {
+        let mut server = harness("run-refusals");
+        let argv = json!(["/bin/sh"]);
+        let unknown = "0123456789abcdef0123456789abcdef";
+        let long = "n".repeat(65);
+        let cases = [
+            (json!({"name": long, "session": "s", "argv": argv}), "400"),
+            (
+                json!({"name": "a", "session": "absent", "argv": argv}),
+                "400",
+            ),
+            (json!({"name": "a", "argv": argv}), "400"),
+            (
+                json!({"name": "a", "session": "s", "parent": unknown, "argv": argv}),
+                "404",
+            ),
+            (
+                json!({"name": "a", "session": "s", "parent": "pane_99", "argv": argv}),
+                "410",
+            ),
+            (json!({"name": "a", "session": "s", "argv": ["sh"]}), "400"),
+        ];
+        for (body, want) in cases {
+            assert_eq!(server.call("POST /runs", &body).0, want, "{body}");
+        }
+        assert_eq!(server.state.panes.len(), 1, "a refused run starts nothing");
+        assert_eq!(server.call("GET /runs/abc", &json!(null)).0, "404");
+        assert_eq!(
+            server.call(&format!("GET /runs/{unknown}"), &json!(null)).0,
+            "404"
+        );
+        assert_eq!(
+            server
+                .call(
+                    &format!("POST /runs/{unknown}/outcome"),
+                    &json!({"result": "failed"})
+                )
+                .0,
+            "404"
+        );
+    }
+
+    fn pi_pane(inbox: Option<&str>, name: &str) -> Value {
+        let mut vars = json!({"pi.session": format!("session-{name}"), "pi.name": name});
+        if let Some(inbox) = inbox {
+            vars["pi.inbox"] = json!(inbox);
+        }
+        json!({"command": {"type": "shell", "command":
+            "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\007'; exec cat"}, "vars": vars})
+    }
+
+    fn add_window(server: &mut Harness, name: &str, pane: Value) -> String {
+        let reply = server.put(|layout| {
+            layout["sessions"][0]["windows"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name": name, "tree": {"pane": {"new": pane}}}));
+        });
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        windows(server).last().unwrap().2[0].clone()
+    }
+
+    fn prompt_call(server: &mut Harness, request: &str, body: &Value) -> (String, Value) {
+        let body = body.to_string();
+        let reply = server.reply(
+            request,
+            &format!(
+                "Ko-Pane: pane_1\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        );
+        let json = reply
+            .split_once("\r\n\r\n")
+            .and_then(|(_, body)| serde_json::from_str(body).ok())
+            .unwrap_or(Value::Null);
+        (reply[9..12].to_owned(), json)
+    }
+
+    fn wait_for_root(server: &mut Harness, pane: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (_, candidates) = prompt_call(server, "GET /prompt/resolve", &json!(null));
+            if candidates
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["pane"] == pane)
+            {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{pane} never showed a pi root"
+            );
+            server.step(Mode::Peek);
+        }
+    }
+
+    #[test]
+    fn a_prompt_goes_to_an_agent_of_the_session_by_paste_or_by_inbox() {
+        let mut server = harness("prompt");
+        let paste = add_window(&mut server, "paste", pi_pane(None, "Paster"));
+        let dir = PathBuf::from(format!("/tmp/ko-router-inbox-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("inbox.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let peer = std::thread::spawn(move || {
+            use std::io::Read;
+            let (mut peer, _) = listener.accept().unwrap();
+            let mut got = String::new();
+            peer.read_to_string(&mut got).unwrap();
+            peer.write_all(b"ok").unwrap();
+            got
+        });
+        let inbox = add_window(&mut server, "inbox", pi_pane(socket.to_str(), "Inboxer"));
+        let dead_inbox = add_window(
+            &mut server,
+            "dead",
+            pi_pane(Some("/tmp/ko-no-such.sock"), "Gone"),
+        );
+        wait_for_root(&mut server, &paste);
+        wait_for_root(&mut server, &inbox);
+        wait_for_root(&mut server, &dead_inbox);
+
+        let (status, candidates) = prompt_call(&mut server, "GET /prompt/resolve", &json!(null));
+        assert_eq!(status, "200");
+        let panes: Vec<&str> = candidates
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["pane"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            panes,
+            [paste.as_str(), inbox.as_str(), dead_inbox.as_str()],
+            "pane_1 is a terminal"
+        );
+        assert_eq!(candidates[0]["title"], "Paster");
+        let (_, narrowed) =
+            prompt_call(&mut server, "GET /prompt/resolve?window=true", &json!(null));
+        assert_eq!(narrowed, json!([]), "the caller's window holds no agent");
+        assert_eq!(candidates[0]["session"], "session_1");
+
+        let send = |server: &mut Harness, target: &str, text: &str| {
+            prompt_call(
+                server,
+                "POST /prompt",
+                &json!({"target": target, "text": text}),
+            )
+        };
+        assert_eq!(
+            send(&mut server, &paste, "one two"),
+            ("200".to_owned(), json!({"via": "paste"}))
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let screen = server.reply(&format!("GET /panes/{paste}/screen"), "\r\n");
+            if screen.contains("two") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{screen}");
+            server.step(Mode::Peek);
+        }
+        assert_eq!(
+            send(&mut server, &inbox, "hello inbox"),
+            ("200".to_owned(), json!({"via": "inbox"}))
+        );
+        assert_eq!(peer.join().unwrap(), "hello inbox");
+        let (status, refused) = send(&mut server, &dead_inbox, "x");
+        assert_eq!(
+            (status.as_str(), refused["message"].as_str()),
+            ("409", Some("Gone is not accepting messages")),
+            "an advertised inbox that does not answer is refused, never a paste"
+        );
+        assert_eq!(
+            send(&mut server, "pane_1", "x").0,
+            "400",
+            "a terminal is no candidate"
+        );
+        assert_eq!(send(&mut server, &paste, "").0, "400");
+        assert_eq!(server.status("GET /prompt/resolve", "\r\n"), "HTTP/1.1 400");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn step_until(server: &mut Harness, what: &str, mut done: impl FnMut(&mut Harness) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done(server) {
+            assert!(std::time::Instant::now() < deadline, "wait for {what}");
+            server.step(Mode::Wait);
+        }
+    }
+
+    #[test]
+    fn the_sweep_closes_a_dead_run_after_the_grace_unless_a_client_shows_it() {
+        let mut server = harness("sweep-grace");
+        server.state.config.linger = std::time::Duration::from_millis(150);
+        let (_, started) = server.call(
+            "POST /runs",
+            &json!({"name": "dies", "session": "s", "argv": ["/bin/sh", "-c", "echo last words; exit 3"]}),
+        );
+        let (id, pane) = (
+            started["id"].as_str().unwrap(),
+            started["pane"].as_str().unwrap(),
+        );
+        let mut watcher = server.peer(&hello(&format!(r#""pane":"{pane}","#), true, 80, 24));
+        step_until(&mut server, "the pane to die", |server| {
+            server
+                .state
+                .panes
+                .find(pane.parse().unwrap())
+                .is_some_and(|p| p.proc().dead().is_some())
+        });
+        let (_, waited) = server.call(&format!("GET /runs/{id}/wait"), &json!(null));
+        assert_eq!(
+            waited["outcome"],
+            json!({"result": "failed", "text": "exit 3"})
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < until {
+            server.step(Mode::Wait);
+        }
+        assert!(
+            server.state.panes.find(pane.parse().unwrap()).is_some(),
+            "a pane that a client shows stays"
+        );
+        watcher.send(&mut server, r#"{"type":"select","pane":"pane_1"}"#);
+        step_until(&mut server, "the sweep", |server| {
+            server.state.panes.find(pane.parse().unwrap()).is_none()
+        });
+        let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
+        assert_eq!(detail["outcome"]["result"], "failed");
+        assert_eq!(detail["outcome"]["text"], "exit 3");
+        assert!(
+            detail["screen"].as_str().unwrap().contains("last words"),
+            "{detail}"
+        );
+        let layout = server.state.snapshot_layout().layout;
+        assert_eq!(layout.windows().count(), 1, "the run's window is gone");
+    }
+
+    fn dying_run(server: &mut Harness, name: &str) -> (String, crate::ids::PaneId) {
+        let (_, started) = server.call(
+            "POST /runs",
+            &json!({"name": name, "session": "s", "argv": ["/bin/sh", "-c", "echo bye; exit 3"]}),
+        );
+        let id = started["id"].as_str().unwrap().to_owned();
+        let pane: crate::ids::PaneId = started["pane"].as_str().unwrap().parse().unwrap();
+        step_until(server, "the pane to die", |server| {
+            server
+                .state
+                .panes
+                .find(pane)
+                .is_some_and(|p| p.proc().dead().is_some())
+        });
+        (id, pane)
+    }
+
+    #[test]
+    fn a_pane_that_is_no_longer_sweepable_when_its_screen_arrives_stays() {
+        let mut server = harness("sweep-recheck");
+        server.state.config.linger = std::time::Duration::from_secs(3600);
+        let (id, pane) = dying_run(&mut server, "recheck");
+        server.state.config.linger = std::time::Duration::from_millis(1);
+        server.state.reap_runs(&mut server.poll);
+        server.state.config.linger = std::time::Duration::from_secs(3600);
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(400);
+        while std::time::Instant::now() < until {
+            server.step(Mode::Wait);
+        }
+        assert!(server.state.panes.find(pane).is_some());
+        let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
+        assert_eq!(detail["screen"], Value::Null, "nothing was recorded");
+    }
+
+    #[test]
+    fn a_finished_capture_that_lost_its_write_still_lets_the_sweep_collect_the_pane() {
+        let mut server = harness("sweep-after-capture");
+        server.state.config.linger = std::time::Duration::from_secs(3600);
+        let (id, pane) = dying_run(&mut server, "after");
+        let done = json!({"result": "completed"});
+        assert_eq!(
+            server.call(&format!("POST /runs/{id}/outcome"), &done).0,
+            "200"
+        );
+        server.state.config.linger = std::time::Duration::from_millis(1);
+        let failed = json!({"result": "failed", "text": "late"});
+        assert_eq!(
+            server.call(&format!("POST /runs/{id}/outcome"), &failed).0,
+            "409"
+        );
+        step_until(&mut server, "the pane to be collected", |server| {
+            server.state.panes.find(pane).is_none()
+        });
+        let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
+        assert_eq!(detail["outcome"]["result"], "completed");
+    }
+
+    #[test]
+    fn the_sweep_stops_a_run_whose_parent_ended() {
+        let mut server = harness("sweep-orphan");
+        let cat = json!(["/bin/sh", "-c", "exec cat"]);
+        let start = |server: &mut Harness, name: &str, parent: Value| {
+            let (status, started) = server.call(
+                "POST /runs",
+                &json!({"name": name, "session": "s", "parent": parent, "argv": cat}),
+            );
+            assert_eq!(status, "200", "{started}");
+            started
+        };
+        let parent = start(&mut server, "parent", Value::Null);
+        let child = start(&mut server, "child", parent["id"].clone());
+        let (parent_id, child_id) = (
+            parent["id"].as_str().unwrap(),
+            child["id"].as_str().unwrap(),
+        );
+        let child_pane: crate::ids::PaneId = child["pane"].as_str().unwrap().parse().unwrap();
+        server.step(Mode::Peek);
+        assert!(
+            server.state.panes.find(child_pane).is_some(),
+            "a live parent keeps its child"
+        );
+        let outcome = json!({"result": "completed"});
+        assert_eq!(
+            server
+                .call(&format!("POST /runs/{parent_id}/outcome"), &outcome)
+                .0,
+            "200"
+        );
+        step_until(&mut server, "the orphan to be collected", |server| {
+            server.state.panes.find(child_pane).is_none()
+        });
+        let (_, detail) = server.call(&format!("GET /runs/{child_id}"), &json!(null));
+        assert_eq!(
+            (&detail["outcome"]["result"], &detail["outcome"]["text"]),
+            (&json!("failed"), &json!("its parent ended")),
+            "{detail}"
+        );
+        assert!(detail["outcome"]["at"].is_string());
+        let (status, _) = server.call(
+            &format!("POST /runs/{parent_id}/stop"),
+            &json!({"result": "stopped"}),
+        );
+        assert_eq!(status, "200", "the parent's window goes too");
+        assert_eq!(windows(&server).len(), 1, "only the first window remains");
     }
 }

@@ -13,8 +13,10 @@ use serde_json::Value;
 
 use crate::config::BUILD;
 use crate::http::Status;
-use crate::ids::{ClientId, Instance, Name, PaneId, SessionId, VarName, WindowId};
+use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::pane_proc::{self, Death};
+use crate::runs::{Meta, Parent, RunName, RunOutcome, RunResult};
+use crate::timestamp::Timestamp;
 use crate::vars::{Loose, Vars};
 
 const PROTOCOL: &str = "1.0";
@@ -82,7 +84,7 @@ pub fn version() -> Version {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ErrorKind {
+pub enum ErrorKind {
     Invalid,
     Refused,
     Gone,
@@ -107,11 +109,23 @@ impl ErrorKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Error {
+pub struct Error {
     #[serde(flatten)]
-    pub(crate) kind: ErrorKind,
-    pub(crate) message: String,
+    pub kind: ErrorKind,
+    pub message: String,
 }
+
+impl Error {
+    pub(crate) fn new(kind: ErrorKind, message: impl Into<String>) -> Error {
+        Error {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Empty {}
 
 pub(crate) fn check_version(protocol: Option<&str>, vt: Option<&str>) -> Result<(), Error> {
     let compatible = protocol
@@ -1353,6 +1367,186 @@ pub enum ClientEvent {
         pane: PaneId,
         progress: Option<Progress>,
     },
+    Run(RunEvent),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunEvent {
+    pub id: RunId,
+    pub name: RunName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Parent>,
+    pub pane: PaneId,
+    #[serde(rename = "startedAt")]
+    pub started_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<RunOutcome>,
+}
+
+impl RunEvent {
+    pub fn of(meta: &Meta, outcome: Option<RunOutcome>) -> Option<RunEvent> {
+        Some(RunEvent {
+            id: meta.id.clone(),
+            name: meta.name.clone(),
+            parent: meta.parent.clone(),
+            pane: meta.pane?,
+            started_at: meta.started_at,
+            outcome,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Show {
+    Live,
+    Present,
+    All,
+}
+
+const SHOWS: [(Show, &str); 3] = [
+    (Show::Live, "live"),
+    (Show::Present, "present"),
+    (Show::All, "all"),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reported {
+    Completed,
+    Failed,
+    Stopped,
+}
+
+impl From<Reported> for RunResult {
+    fn from(reported: Reported) -> RunResult {
+        match reported {
+            Reported::Completed => RunResult::Completed,
+            Reported::Failed => RunResult::Failed,
+            Reported::Stopped => RunResult::Stopped,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Info {
+    #[serde(flatten)]
+    pub meta: Meta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<RunOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Detail {
+    #[serde(flatten)]
+    pub info: Info,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum SessionRef {
+    Id(SessionId),
+    Name(Name),
+}
+
+impl TryFrom<String> for SessionRef {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<SessionRef, &'static str> {
+        match text.parse() {
+            Ok(id) => Ok(SessionRef::Id(id)),
+            Err(_) => Name::try_from(text).map(SessionRef::Name),
+        }
+    }
+}
+
+impl From<SessionRef> for String {
+    fn from(session: SessionRef) -> String {
+        match session {
+            SessionRef::Id(id) => id.to_string(),
+            SessionRef::Name(name) => name.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartRun {
+    pub name: RunName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Parent>,
+    #[serde(default)]
+    pub env: Vec<Variable>,
+    pub argv: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Started {
+    pub id: RunId,
+    pub window: WindowId,
+    pub pane: PaneId,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Waited {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<RunOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportOutcome {
+    pub result: Reported,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopResult {
+    Stopped,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopRun {
+    #[serde(default)]
+    pub wait_ms: u64,
+    pub result: StopResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Candidate {
+    pub pane: PaneId,
+    pub session: SessionId,
+    pub window: WindowId,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendPrompt {
+    pub target: PaneId,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Via {
+    Inbox,
+    Paste,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sent {
+    pub via: Via,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1402,7 +1596,19 @@ pub enum Route {
     Var(PaneId, VarName),
     SetVar(PaneId, VarName),
     DeleteVar(PaneId, VarName),
+    StartRun,
+    ListRuns(Show, Option<Parent>),
+    Reap,
+    GetRun(RunId),
+    WaitRun(RunId, u64),
+    RunOutcome(RunId),
+    StopRun(RunId),
+    PromptResolve { window_only: bool },
+    SendPrompt,
 }
+
+pub const WAIT_DEFAULT_MS: u64 = 30_000;
+pub const WAIT_MAX_MS: u64 = 3_600_000;
 
 fn percent_decode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
@@ -1482,6 +1688,47 @@ impl Route {
             ("PUT", ["", "layout"]) => Some(Route::PutLayout),
             ("GET", ["", "client"]) => Some(Route::Client),
             ("POST", ["", "clients", id, "select"]) => id.parse().ok().map(Route::SelectClient),
+            ("POST", ["", "runs"]) => Some(Route::StartRun),
+            ("GET", ["", "runs"]) => {
+                let show = match arg("show") {
+                    None => Show::Live,
+                    Some(name) => SHOWS
+                        .iter()
+                        .find(|(_, known)| *known == name)
+                        .map(|(show, _)| *show)
+                        .ok_or(Invalid("invalid show"))?,
+                };
+                let parent = arg("parent")
+                    .map(|parent| parent.parse().map_err(|_| Invalid("invalid parent")))
+                    .transpose()?;
+                Some(Route::ListRuns(show, parent))
+            }
+            ("POST", ["", "runs", "reap"]) => Some(Route::Reap),
+            (_, ["", "runs", id, rest @ ..]) => {
+                let Ok(id) = id.parse::<RunId>() else {
+                    return Ok(None);
+                };
+                match (method, rest) {
+                    ("GET", []) => Some(Route::GetRun(id)),
+                    ("GET", ["wait"]) => {
+                        let timeout = arg("timeout_ms")
+                            .map_or(Ok(WAIT_DEFAULT_MS), |timeout| natural(timeout, WAIT_MAX_MS))?;
+                        Some(Route::WaitRun(id, timeout))
+                    }
+                    ("POST", ["outcome"]) => Some(Route::RunOutcome(id)),
+                    ("POST", ["stop"]) => Some(Route::StopRun(id)),
+                    _ => None,
+                }
+            }
+            ("GET", ["", "prompt", "resolve"]) => {
+                let window_only = match arg("window") {
+                    None => false,
+                    Some("true") => true,
+                    Some(_) => return Err(Invalid("invalid window")),
+                };
+                Some(Route::PromptResolve { window_only })
+            }
+            ("POST", ["", "prompt"]) => Some(Route::SendPrompt),
             (_, ["", "panes", id, rest @ ..]) => {
                 let Ok(id) = id.parse::<PaneId>() else {
                     return Ok(None);
@@ -1580,6 +1827,30 @@ impl Route {
                 "DELETE",
                 format!("{}/vars/{}", pane(id), percent_encode(name.as_str())),
             ),
+            Route::StartRun => ("POST", "/runs".to_owned()),
+            Route::ListRuns(show, parent) => {
+                let show = SHOWS
+                    .iter()
+                    .find(|(known, _)| known == show)
+                    .map_or("live", |(_, name)| *name);
+                let parent = parent
+                    .as_ref()
+                    .map_or(String::new(), |parent| format!("&parent={parent}"));
+                ("GET", format!("/runs?show={show}{parent}"))
+            }
+            Route::Reap => ("POST", "/runs/reap".to_owned()),
+            Route::GetRun(id) => ("GET", format!("/runs/{id}")),
+            Route::WaitRun(id, timeout) => ("GET", format!("/runs/{id}/wait?timeout_ms={timeout}")),
+            Route::RunOutcome(id) => ("POST", format!("/runs/{id}/outcome")),
+            Route::StopRun(id) => ("POST", format!("/runs/{id}/stop")),
+            Route::PromptResolve { window_only } => (
+                "GET",
+                format!(
+                    "/prompt/resolve{}",
+                    if *window_only { "?window=true" } else { "" }
+                ),
+            ),
+            Route::SendPrompt => ("POST", "/prompt".to_owned()),
             Route::View(id, options, offset) => {
                 let history = match options.history {
                     History::None => "none",
@@ -1692,6 +1963,55 @@ mod tests {
             r#"{"type":"focused","focused":true}"#,
         ] {
             same::<ClientRequest>(json);
+        }
+        for json in [
+            r#"{"name":"w","env":[],"argv":["/bin/sh"]}"#,
+            r#"{"name":"w","cwd":"/tmp","session":"session_2","parent":"pane_1","env":[{"name":"X","value":"y"}],"argv":["/bin/sh","-c","x"]}"#,
+            r#"{"name":"w","session":"work","parent":"0123456789abcdef0123456789abcdef","env":[],"argv":["/bin/sh"]}"#,
+        ] {
+            same::<StartRun>(json);
+        }
+        same::<Started>(
+            r#"{"id":"0123456789abcdef0123456789abcdef","window":"window_2","pane":"pane_3","output":"/tmp/x/output"}"#,
+        );
+        for json in [
+            r#"{}"#,
+            r#"{"outcome":{"result":"failed","text":"exit 2","at":"2023-11-14T22:13:20Z"}}"#,
+        ] {
+            same::<Waited>(json);
+        }
+        for json in [
+            r#"{"result":"completed"}"#,
+            r#"{"result":"failed","text":"why"}"#,
+            r#"{"result":"stopped"}"#,
+        ] {
+            same::<ReportOutcome>(json);
+        }
+        for json in [
+            r#"{"wait_ms":0,"result":"stopped"}"#,
+            r#"{"wait_ms":1500,"result":"completed"}"#,
+        ] {
+            same::<StopRun>(json);
+        }
+        same::<RunEvent>(
+            r#"{"id":"0123456789abcdef0123456789abcdef","name":"w","parent":"pane_1","pane":"pane_3","startedAt":"2023-11-14T22:13:20Z","outcome":{"result":"died"}}"#,
+        );
+        same::<ClientEvent>(
+            r#"{"type":"run","id":"0123456789abcdef0123456789abcdef","name":"w","pane":"pane_3","startedAt":"2023-11-14T22:13:20Z"}"#,
+        );
+        same::<SendPrompt>(r#"{"target":"pane_2","text":"hi\nthere"}"#);
+        same::<Sent>(r#"{"via":"inbox"}"#);
+        same::<Candidate>(
+            r#"{"pane":"pane_2","session":"session_1","window":"window_3","title":"Worker"}"#,
+        );
+        for bad in [
+            r#"{"name":"w","argv":["/bin/sh"],"parent":"../x"}"#,
+            r#"{"name":"w","argv":["/bin/sh"],"session":"a\nb"}"#,
+            r#"{"name":"a\nb","argv":["/bin/sh"]}"#,
+            r#"{"name":"w"}"#,
+            r#"["w",["/bin/sh"]]"#,
+        ] {
+            assert!(decode::<StartRun>(bad.as_bytes()).is_err(), "{bad}");
         }
         for json in [
             r#"{"env":[]}"#,
@@ -1863,6 +2183,7 @@ mod tests {
     #[test]
     fn a_route_parses_its_own_request_and_refuses_a_bad_query() {
         let pane = PaneId::new(7);
+        let run: RunId = "0123456789abcdef0123456789abcdef".parse().unwrap();
         for route in [
             Route::Version,
             Route::ListPanes,
@@ -1875,6 +2196,18 @@ mod tests {
             Route::Input(pane),
             Route::Screen(pane, ScreenFormat::Ansi, ScreenRows::Last(40)),
             Route::Screen(pane, ScreenFormat::Plain, ScreenRows::Full),
+            Route::StartRun,
+            Route::ListRuns(Show::Live, None),
+            Route::ListRuns(Show::All, Some(Parent::Pane(pane))),
+            Route::ListRuns(Show::Present, Some(Parent::Run(run.clone()))),
+            Route::Reap,
+            Route::GetRun(run.clone()),
+            Route::WaitRun(run.clone(), 250),
+            Route::RunOutcome(run.clone()),
+            Route::StopRun(run),
+            Route::PromptResolve { window_only: false },
+            Route::PromptResolve { window_only: true },
+            Route::SendPrompt,
             Route::View(
                 pane,
                 ViewOptions {
@@ -1906,6 +2239,17 @@ mod tests {
             ("POST", "/clients/client_x/select"),
             ("POST", "/panes/pane_1/clear_history/x"),
             ("GET", "/panes?x=1"),
+            ("GET", "/runs?show=some"),
+            ("GET", "/prompt/resolve?window=1"),
+            ("GET", "/runs?parent=nope"),
+            (
+                "GET",
+                "/runs/0123456789abcdef0123456789abcdef/wait?timeout_ms=3600001",
+            ),
+            ("GET", "/runs/0123456789abcdef0123456789abcdef/wait"),
+            ("GET", "/runs/abc"),
+            ("POST", "/runs/reap"),
+            ("PUT", "/runs"),
         ]
         .into_iter()
         .map(|(method, target)| match Route::of_request(method, target) {
@@ -1926,6 +2270,14 @@ mod tests {
                 "None",
                 "None",
                 "Some(ListPanes)",
+                "invalid show",
+                "invalid window",
+                "invalid parent",
+                "invalid number",
+                "Some(WaitRun(RunId(\"0123456789abcdef0123456789abcdef\"), 30000))",
+                "None",
+                "Some(Reap)",
+                "None",
             ]
         );
     }

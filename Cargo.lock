@@ -242,6 +242,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fake_ko"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

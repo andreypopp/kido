@@ -5,9 +5,11 @@ use crate::telemetry::Telemetry;
 use crate::vars::Vars;
 
 const SSH_DEST: VarName = VarName::known("ssh.dest");
-const PI_SESSION: VarName = VarName::known("pi.session");
+pub(crate) const PI_SESSION: VarName = VarName::known("pi.session");
 const PI_NAME: VarName = VarName::known("pi.name");
 const PI_ACTIVITY: VarName = VarName::known("pi.activity");
+const PI_INBOX: VarName = VarName::known("pi.inbox");
+pub(crate) const RUN: VarName = VarName::known("ko.run");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RemoteKind {
@@ -25,6 +27,7 @@ pub(crate) enum Kind {
         session: String,
         name: String,
         activity: String,
+        inbox: Option<String>,
     },
     Ssh {
         user: String,
@@ -62,6 +65,7 @@ pub(crate) fn classify(telemetry: &Telemetry, vars: &Vars, records: &[ProgramRec
                 session: session.to_owned(),
                 name: var(&PI_NAME),
                 activity: var(&PI_ACTIVITY),
+                inbox: Some(var(&PI_INBOX)).filter(|inbox| !inbox.is_empty()),
             },
             None => Kind::SomeAgent {
                 name: "pi".to_owned(),
@@ -72,6 +76,18 @@ pub(crate) fn classify(telemetry: &Telemetry, vars: &Vars, records: &[ProgramRec
         },
         _ => Kind::Terminal,
     }
+}
+
+pub(crate) fn of_pane(telemetry: &Telemetry, vars: &Vars) -> Kind {
+    classify(telemetry, vars, &telemetry.records.published().records)
+}
+
+pub(crate) fn pi_evidence(telemetry: &Telemetry, vars: &Vars) -> bool {
+    let published = telemetry.records.published();
+    root(&published.records).is_some_and(|record| app(&published.records, record) == Some("pi"))
+        || vars
+            .text(&PI_SESSION)
+            .is_some_and(|session| !session.is_empty())
 }
 
 pub(crate) fn title(kind: &Kind, pane_title: &str) -> Option<String> {
@@ -167,7 +183,8 @@ mod tests {
             Kind::PiAgent {
                 session: "s1".to_owned(),
                 name: "Worker".to_owned(),
-                activity: String::new()
+                activity: String::new(),
+                inbox: None
             }
         );
         let bare = telemetry("zsh", &[("pi.session", json!(7))]);
@@ -184,6 +201,43 @@ mod tests {
             }
         );
         assert_eq!(bare.kind(&root_app("make")), Kind::Terminal);
+    }
+
+    #[test]
+    fn pi_evidence_is_a_pi_root_or_a_session_variable_and_the_inbox_needs_the_root() {
+        let mut found = telemetry(
+            "zsh",
+            &[
+                ("pi.session", json!("s1")),
+                ("pi.inbox", json!("/tmp/inbox.sock")),
+            ],
+        );
+        assert!(pi_evidence(&found.telemetry, &found.vars));
+        assert_eq!(of_pane(&found.telemetry, &found.vars), Kind::Terminal);
+        let root = root_app("pi").pop().unwrap();
+        found
+            .telemetry
+            .records
+            .apply(crate::program_status::Report::Set(root));
+        assert_eq!(
+            of_pane(&found.telemetry, &found.vars),
+            Kind::PiAgent {
+                session: "s1".to_owned(),
+                name: String::new(),
+                activity: String::new(),
+                inbox: Some("/tmp/inbox.sock".to_owned())
+            }
+        );
+        let bare = telemetry("zsh", &[]);
+        assert!(!pi_evidence(&bare.telemetry, &bare.vars));
+        let mut rooted = telemetry("zsh", &[]);
+        rooted
+            .telemetry
+            .records
+            .apply(crate::program_status::Report::Set(
+                root_app("pi").pop().unwrap(),
+            ));
+        assert!(pi_evidence(&rooted.telemetry, &rooted.vars));
     }
 
     #[test]
@@ -222,6 +276,7 @@ mod tests {
             session: "s".to_owned(),
             name: name.to_owned(),
             activity: String::new(),
+            inbox: None,
         };
         assert_eq!(title(&pi("Worker"), "pane").as_deref(), Some("Worker"));
         assert_eq!(title(&pi(""), "pane").as_deref(), Some("pane"));

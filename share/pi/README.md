@@ -126,3 +126,25 @@ A subagent has no report tool. When its turn ends with nothing of its
 own still running, its last message goes to its parent as a notice,
 once for each piece of work. The whole report is kept in the agent
 directory's `report`.
+
+## ko-pi
+
+`ko-pi.ts` is the same harness for ko, a copy of `kido-pi.ts` until
+the cut-over deletes `kido-pi.ts` (plans/ko-stages.md K8). `ko-pi` in
+ko's bin directory loads it. The differences:
+
+- It calls `ko` (`run`, `run-child`, `runs --json`, `run-wait --json`,
+  `run-stop`, `run-outcome`) in place of `kido`. In place of tmux it
+  calls `ko api`: `GET /panes` and `GET /layout` for the panes with
+  their sessions and windows, and `PUT` and `DELETE` on
+  `/panes/$KO_PANE/vars/<name>`. It never opens ko's socket itself.
+- It writes the pane variables `pi.session`, `pi.name`, `pi.inbox` and
+  `pi.activity` in place of the four `@kido_*` options.
+- Inside ko is `KO_RUN_ID` set, or `$KO_SOCKET` set and `ko` on PATH.
+  Its pane is `$KO_PANE`. Every `KIDO_*` knob is `KO_*`.
+- Its state directory is `$KO_PI_STATE_DIR`, else
+  `$XDG_STATE_HOME/ko-pi`, else `~/.local/state/ko-pi`. A ko agent
+  starts with an empty directory: nothing migrates from `kido-pi`, and
+  ko-pi never reads it. kido and ko never share state.
+- Descriptions and refusals say "session" and "window", not "tmux
+  session".

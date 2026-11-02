@@ -1,0 +1,404 @@
+import { test } from "node:test";
+
+import assert from "node:assert/strict";
+
+import { writeFileSync } from "node:fs";
+
+import { join } from "node:path";
+
+import {
+  makeFixture,
+  selfPane,
+  agentPane,
+  startNamedSession,
+  asSubagent,
+  withEnv,
+  pollUntil,
+  type Fixture,
+} from "./ko-pi-fixture.ts";
+
+type Row = {
+  id: string;
+  name: string;
+  kind: string;
+  relationship: string;
+  state: string;
+  task?: string;
+  report?: string;
+  outcome?: { result: string };
+};
+
+type ListTool = { execute: (id: string, params: object) => Promise<{ content: { text: string }[] }> };
+
+function rows(s: { tools: Map<string, unknown> }): Promise<Row[]> {
+  const tool = s.tools.get("list_runs") as ListTool;
+  return tool.execute("c", {}).then((r) => JSON.parse(r.content[0].text) as Row[]);
+}
+
+function completion(s: Awaited<ReturnType<typeof startNamedSession>>, getSuggestions = async (): Promise<{ items: { value: string; label: string }[]; prefix: string } | null> => null) {
+  const provider = s.autocompleteFactories[0]({
+    triggerCharacters: ["@"],
+    getSuggestions,
+    applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+  });
+  return (text: string) => provider.getSuggestions([text], 0, text.length, { signal: new AbortController().signal });
+}
+
+function run(fx: Fixture, options: { edge: boolean }): void {
+  fx.writeAgent("boss-session", "mid", { session: "mid", run: "mid-run" });
+  fx.writeAgent("boss-session", "peer", { session: "peer" });
+  fx.writeAgent("other-parent", "stranger", { session: "stranger" });
+  fx.writeAgent("mid", "kid", { session: "kid-session", run: "kid-run" });
+  writeFileSync(join(fx.agentDir("mid", "kid"), "task"), "do the thing");
+  writeFileSync(join(fx.agentDir("mid", "kid"), "report"), "did the thing");
+  fx.setPanes([
+    agentPane({ pane: "pane_1", session: "mid", name: "mid" }),
+    agentPane({ pane: "pane_2", session: "boss-session", name: "boss" }),
+    agentPane({ pane: "pane_3", session: "peer", name: "peer" }),
+    agentPane({ pane: "pane_4", session: "stranger", name: "stranger" }),
+    agentPane({ pane: "pane_5", session: "kid-session", name: "kid", koSession: "session_2" }),
+  ]);
+  void options;
+}
+
+test("list_runs joins my runs with my parent, same-parent peers, and a subagent's task and report", async () => {
+  const fx = makeFixture();
+  try {
+    run(fx, { edge: true });
+    fx.setRuns([
+      { id: "kid-run", name: "kid", parent: "mid-run", pane: "pane_5", session: "kid-session", startedAt: "2023-11-14T22:00:02Z" },
+      { id: "job", name: "job", parent: "mid-run", startedAt: "2023-11-14T22:00:01Z" },
+    ]);
+    await asSubagent(
+      fx,
+      "mid",
+      async () => {
+        const s = await startNamedSession(fx, "mid", "mid");
+        const listed = await rows(s);
+        assert.deepEqual(
+          listed.map((r) => `${r.id}:${r.relationship}:${r.kind}`),
+          ["boss-session:parent:agent", "peer:peer:subagent", "kid-session:own:subagent", "job:own:bash"],
+          "my parent, a same-parent peer, my subagent and my bash run; never myself or another parent's child",
+        );
+        const kid = listed.find((r) => r.id === "kid-session")!;
+        assert.equal(kid.task, "do the thing");
+        assert.equal(kid.report, join(fx.agentDir("mid", "kid"), "report"));
+        assert.equal(kid.state, "running");
+        const boss = listed.find((r) => r.id === "boss-session")!;
+        assert.equal(boss.name, "boss");
+
+        const raw = (await (s.tools.get("list_runs") as ListTool).execute("c", {})).content[0].text;
+        assert.deepEqual(Object.keys((JSON.parse(raw) as Array<Record<string, unknown>>)[0]!), [
+          "id", "name", "named", "pane", "window", "status", "activity", "parent", "depth",
+          "self", "cwd", "canMessage", "model", "kind", "relationship", "run", "state",
+        ]);
+      },
+      { parent: "boss-session", name: "mid", run: "mid-run" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("list_runs keeps every running run and the newest twenty ended ones", async () => {
+  const fx = makeFixture();
+  try {
+    run(fx, { edge: true });
+    const ended = Array.from({ length: 24 }, (_, i) => ({
+      id: `ended-${String(i).padStart(2, "0")}`,
+      name: `ended-${i}`,
+      
+      parent: "mid-run",
+      startedAt: `2023-11-14T21:${String(i).padStart(2, "0")}:00Z`,
+      outcome: { result: "completed", text: "done" },
+    }));
+    fx.setRuns([
+      { id: "live-a", name: "live-a", parent: "mid-run" },
+      { id: "live-b", name: "live-b", parent: "mid-run" },
+      ...ended,
+    ]);
+    await asSubagent(
+      fx,
+      "mid",
+      async () => {
+        const s = await startNamedSession(fx, "mid", "mid");
+        const listed = await rows(s);
+        const own = listed.filter((r) => r.relationship === "own" && r.kind === "bash");
+        assert.equal(own.length, 22, "two running and twenty ended");
+        assert.deepEqual(own.slice(0, 2).map((r) => r.id), ["live-a", "live-b"]);
+        assert.deepEqual(own.slice(2).map((r) => r.id), ended.slice(0, 20).map((r) => r.id), "newest first");
+        assert.equal(own[2]!.state, "ended");
+        assert.deepEqual(own[2]!.outcome, { result: "completed", text: "done" });
+      },
+      { parent: "boss-session", name: "mid", run: "mid-run" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a live grandchild carries its agent entry's run id, so stop_run names its run", async () => {
+  const fx = makeFixture();
+  try {
+    fx.writeAgent("root", "mid", { session: "mid-session", run: "mid-run" });
+    fx.writeAgent("mid-session", "grand", { session: "grand-session", run: "grand-run" });
+    fx.setPanes([selfPane(), agentPane({ pane: "pane_3", session: "grand-session", name: "grand" })]);
+    fx.setRuns([{ id: "grand-run", name: "grand", parent: "mid-run", pane: "pane_3", session: "grand-session" }]);
+    await asSubagent(
+      fx,
+      "mid-session",
+      async () => {
+        const s = await startNamedSession(fx, "mid", "mid-session");
+        await s.tools.get("stop_run").execute("c", { to: ["grand"], force: true });
+        assert.ok(fx.runStopCalls()[0]?.includes("grand-run"), "stop_run passes the descendant's run id, not its session id");
+      },
+      { parent: "root", name: "mid", run: "mid-run" },
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a top-level pi lists the run-child %N children it started", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    fx.setRuns([{ id: "child-run", name: "child", parent: "pane_1", startedAt: "2023-11-14T22:00:00Z" }]);
+    const s = await startNamedSession(fx, "Self");
+    const listed = await rows(s);
+    assert.deepEqual(
+      listed.map((r) => `${r.id}:${r.relationship}:${r.kind}`),
+      ["child-run:own:bash"],
+      "a run-child of the top-level pi's own pane is one of its runs",
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a stale pi.session on a pane without a pi root is no agent", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([
+      selfPane(),
+      // A shell pane left behind by a crashed pi: the option says pi, the root does not.
+      { ...agentPane({ pane: "pane_2", session: "ghost", name: "ghost" }), pane_program_status: JSON.stringify({ serial: 1, records: [{ id: "", state: "idle" }] }) },
+    ]);
+    const s = await startNamedSession(fx, "Self");
+    assert.deepEqual(await rows(s), [], "no agent row and no address");
+    assert.equal(
+      (await s.tools.get("message_agent").execute("c", { to: "ghost", message: "x" })).content[0].text,
+      'could not message ghost: no agent session matches "ghost"',
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+// The editor gets whatever the last list returned, stale or empty, while a
+// refresh runs behind it.
+test("@ completion offers this session's agents first and still returns the built-in provider's file items", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane(), agentPane({ pane: "pane_2", session: "worker-session", name: "worker-2", state: "idle" })]);
+    const s = await startNamedSession(fx, "Self");
+    assert.equal(s.autocompleteFactories.length, 1, "a completion provider is registered");
+    const complete = completion(s, async () => ({ items: [{ value: "@worker-2.ts", label: "worker-2.ts" }], prefix: "@wo" }));
+    const suggest = () => complete("@wo");
+    let out = await suggest();
+    await pollUntil(async () => {
+      out = await suggest();
+      return out?.items.some((i: { value: string }) => i.value === "@worker-2 (session worker-s)") ?? false;
+    }, 2000, "the agent list to load");
+    assert.deepEqual(out!.items.map((i: { value: string }) => i.value), ["@worker-2 (session worker-s)", "@worker-2.ts"], "agents first, then the files for the same token");
+    assert.equal(out!.prefix, "@wo");
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("@ completion excludes unnamed agents and non-live runs, matches a word inside a name, and inserts an id prefix when the name cannot be typed", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([
+      selfPane(),
+      agentPane({ pane: "pane_2", session: "titled-session", title: "π - a title" }),
+      agentPane({ pane: "pane_3", session: "two-words-session", name: "two words" }),
+      agentPane({ pane: "pane_4", session: "worker-session", name: "worker-two" }),
+      agentPane({ pane: "pane_5", session: "tiny", name: "short" }),
+      { ...agentPane({ pane: "pane_6", session: "", name: "Claude" }), pane_program_status: JSON.stringify({ serial: 1, records: [{ id: "", state: "idle", app: "claude-code" }] }) },
+    ]);
+    fx.writeAgent("self-session", "worker-two", { session: "worker-session", run: "two-words-run" });
+    fx.setRuns([
+      { id: "bash-run", name: "build", parent: "pane_1", },
+      { id: "two-words-run", name: "worker-two", parent: "pane_1", pane: "pane_4", session: "worker-session" },
+      { id: "ended-run", name: "finished", parent: "pane_1", outcome: { result: "completed" } },
+    ]);
+    const s = await startNamedSession(fx, "Self");
+    const current = {
+      triggerCharacters: ["@"],
+      async getSuggestions() {
+        return null;
+      },
+      applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+    };
+    const provider = s.autocompleteFactories[0](current);
+    const suggest = (token: string) => provider.getSuggestions([`@${token}`], 0, token.length + 1, { signal: new AbortController().signal });
+    let out = await suggest("two");
+    await pollUntil(async () => ((out = await suggest("two"))?.items.length ?? 0) >= 2, 2000, "the agent list to load");
+    const items = out!.items as Array<{ value: string; label: string }>;
+    assert.deepEqual(items.map((i) => i.label).sort(), ["@two words", "@worker-two"], "a word inside a name matches too");
+    const twoWords = items.find((i) => i.label === "@two words")!;
+    assert.equal(twoWords.value, "@two words (session two-words-s)");
+    assert.equal(items.find((i) => i.label === "@worker-two")!.value, "@worker-two (run two-words-r)");
+    assert.equal((await suggest("short"))!.items[0].value, "@short (session tiny)");
+    assert.equal(await suggest("Claude"), null, "native panes have no addressable pi session and stay out of completion");
+    await pollUntil(async () => ((out = await suggest("a title"))?.items.length ?? 0) === 0, 2000, "the unnamed agent to stay out");
+    await pollUntil(async () => ((out = await suggest("build"))?.items.length ?? 0) === 0, 2000, "the bash run to stay out");
+    await pollUntil(async () => ((out = await suggest("finished"))?.items.length ?? 0) === 0, 2000, "the ended run to stay out");
+
+    let handed = 0;
+    const wrapped = s.autocompleteFactories[0]({
+      ...current,
+      async getSuggestions() {
+        handed++;
+        return { items: [], prefix: "plain" };
+      },
+    });
+    assert.deepEqual(await wrapped.getSuggestions(["plain"], 0, 5, { signal: new AbortController().signal }), { items: [], prefix: "plain" });
+    assert.equal(handed, 1, "a token that is not an @ reference is handed to the built-in provider untouched");
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("completion mentions round-trip by id across hidden collisions and ignore id-like names", async () => {
+  const fx = makeFixture();
+  try {
+    const inbox = await fx.startInbox();
+    const decoy = await fx.startInbox();
+    fx.setPanes([
+      selfPane(),
+      agentPane({ pane: "pane_2", session: "target-session", name: "worker", inbox: inbox.path }),
+      agentPane({ pane: "pane_3", session: "decoy-session", name: "abcdefgh-o", inbox: decoy.path }),
+    ]);
+    fx.writeAgent("self-session", "worker", { session: "target-session", run: "abcdefgh-one" });
+    fx.writeAgent("self-session", "abcdefgh-o", { session: "decoy-session", run: "decoy-run" });
+    fx.setRuns([
+      { id: "abcdefgh-one", name: "worker", pane: "pane_2", session: "target-session", parent: "pane_1" },
+      { id: "decoy-run", name: "abcdefgh-o", pane: "pane_3", session: "decoy-session", parent: "pane_1" },
+      { id: "abcdefgh-two", name: "hidden", parent: "pane_1", outcome: { result: "completed" } },
+    ]);
+    const s = await startNamedSession(fx, "Self");
+    const complete = completion(s);
+    const suggest = () => complete("@wo");
+    let value = "";
+    await pollUntil(async () => { value = (await suggest())?.items[0]?.value ?? ""; return !!value; }, 2000, "the agent mention");
+    assert.equal(value, "@worker (run abcdefgh-o)", "ended runs still constrain the prefix");
+    assert.equal((await s.tools.get("message_agent").execute("c", { to: value, message: "hello" })).content[0].text, "delivered to worker by inbox");
+    assert.equal(inbox.received().length, 1);
+    assert.equal(decoy.received().length, 0);
+    assert.equal((await s.tools.get("stop_run").execute("c", { to: ["abc"] })).content[0].text, '"abc": error: id prefixes need at least 8 characters');
+    await s.tools.get("stop_run").execute("c", { to: [value] });
+    assert.deepEqual(fx.runStopCalls().at(-1), ["run-stop", "abcdefgh-one", "--wait", "5"]);
+    assert.equal(inbox.received().length, 2);
+    assert.equal(decoy.received().length, 0);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("completion follows pi wrapper boundaries and delegates quoted attachments", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane(), agentPane({ pane: "pane_2", session: "worker-session", name: "worker" })]);
+    const s = await startNamedSession(fx, "Self");
+    const files = { items: [{ label: "file", value: '@"path @worker.ts"' }], prefix: '@"path @wo' };
+    const suggest = completion(s, async () => files);
+    await pollUntil(async () => ((await suggest("@wo"))?.items[0]?.label ?? "") === "@worker", 2000, "the agent list");
+    assert.deepEqual(await suggest('@"path @wo'), files);
+    assert.equal((await suggest("(@wo"))?.items[0]?.label, "@worker");
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("@ completion serves the last agent list without waiting for the subprocess behind it", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane(), agentPane({ pane: "pane_2", session: "worker-session", name: "worker-2" })]);
+    const s = await startNamedSession(fx, "Self");
+    const current = {
+      triggerCharacters: ["@"],
+      async getSuggestions() {
+        return null;
+      },
+      applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+    };
+    const provider = s.autocompleteFactories[0](current);
+    const suggest = () => provider.getSuggestions(["@wo"], 0, 3, { signal: new AbortController().signal });
+    await withEnv({ KO_AGENT_LIST_TTL_MS: "60000" }, async () => {
+      await pollUntil(async () => ((await suggest())?.items.length ?? 0) > 0, 2000, "the first list");
+      fx.setPanes([selfPane(), agentPane({ pane: "pane_2", session: "worker-session", name: "worker-three" })]);
+      const second = await suggest();
+      assert.deepEqual(second!.items.map((i: { value: string }) => i.value), ["@worker-2 (session worker-s)"], "the cached list answers at once");
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("discovery agrees for listing and completion without restricting addressing", async () => {
+  const fx = makeFixture();
+  try {
+    const leafInbox = await fx.startInbox();
+    const cousinInbox = await fx.startInbox();
+    for (const [owner, child] of [
+      ["root", "mid"], ["root", "midpeer"], ["mid", "leaf"],
+      ["mid", "leafpeer"], ["leaf", "child"], ["child", "grandchild"],
+      ["midpeer", "cousin"], ["toppeer", "otherchild"],
+    ]) fx.writeAgent(owner, child, { session: child });
+    const names = ["root", "toppeer", "mid", "midpeer", "leaf", "leafpeer", "child", "grandchild", "cousin", "otherchild", "elsewhere"];
+    fx.setPanes(names.map((session, i) => agentPane({
+      pane: `pane_${i + 1}`, session, name: session,
+      inbox: session === "leaf" ? leafInbox.path : session === "cousin" ? cousinInbox.path : "",
+      koSession: session === "elsewhere" ? "session_2" : "session_1",
+    })));
+    for (const [caller, parent, expected] of [
+      ["root", "", ["toppeer", "mid", "midpeer"]],
+      ["mid", "root", ["root", "toppeer", "midpeer", "leaf", "leafpeer"]],
+      ["leaf", "mid", ["root", "toppeer", "mid", "midpeer", "leafpeer", "child"]],
+    ] as const) {
+      const check = async () => {
+        const s = await startNamedSession(fx, caller, caller);
+        const listed = await rows(s);
+        assert.deepEqual(listed.map(r => r.name).sort(), [...expected].sort(), caller);
+        if (caller === "mid") assert.deepEqual(listed.map(r => [r.name, r.relationship]), [
+          ["root", "parent"], ["toppeer", "relative"], ["midpeer", "peer"],
+          ["leaf", "own"], ["leafpeer", "own"],
+        ]);
+        const suggest = completion(s);
+        let suggestions: { items: { label: string; value: string }[] } | null = null;
+        await pollUntil(async () => {
+          suggestions = await suggest("@");
+          return suggestions?.items.length === expected.length;
+        }, 2000, `${caller} discovery completions`);
+        assert.deepEqual(suggestions!.items.map(i => i.label.slice(1)).sort(), [...expected].sort(), caller);
+        if (caller === "root") {
+          for (const to of ["leaf", "cousin"]) assert.equal(
+            (await s.tools.get("message_agent").execute("c", { to, message: to })).content[0].text,
+            `delivered to ${to} by inbox`);
+          assert.deepEqual(leafInbox.received().map(raw => JSON.parse(raw).text), ["leaf"]);
+          assert.deepEqual(cousinInbox.received().map(raw => JSON.parse(raw).text), ["cousin"]);
+        }
+        await s.emit("session_shutdown", { reason: "new" });
+      };
+      await withEnv({ KO_PANE: `pane_${names.indexOf(caller) + 1}` }, async () => {
+        if (parent) await asSubagent(fx, caller, check, { parent, name: caller });
+        else await check();
+      });
+    }
+  } finally {
+    await fx.restore();
+  }
+});

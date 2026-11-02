@@ -5,6 +5,7 @@ use std::io;
 use std::num::NonZeroUsize;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use ko_pane_wire::frame::{Limits, Medium, Scrollback};
 
@@ -25,7 +26,12 @@ pub struct Config {
     pub media: Vec<Medium>,
     pub env: Vec<Vec<u8>>,
     pub cwd: PathBuf,
+    pub linger: Duration,
+    pub stop_escalation: Duration,
 }
+
+pub const LINGER: Duration = Duration::from_secs(30);
+pub const STOP_ESCALATION: Duration = Duration::from_secs(5);
 
 pub const DEFAULT_LIMITS: Limits = Limits {
     scrollback: Scrollback::Bounded {
@@ -50,6 +56,8 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
         media: Vec::new(),
         env: Vec::new(),
         cwd: PathBuf::from("/"),
+        linger: LINGER,
+        stop_escalation: STOP_ESCALATION,
     }
 }
 
@@ -59,6 +67,21 @@ pub(crate) fn variable(name: &[u8], value: &[u8]) -> Vec<u8> {
 
 fn set(name: &str) -> Option<OsString> {
     env::var_os(name).filter(|value| !value.is_empty())
+}
+
+fn count(value: Option<OsString>) -> Option<u64> {
+    value?.to_str()?.parse().ok().filter(|count| *count > 0)
+}
+
+fn positive(name: &str) -> Option<u64> {
+    count(set(name))
+}
+
+fn seconds(value: Option<OsString>) -> Option<Duration> {
+    let seconds: f64 = value?.to_str()?.parse().ok()?;
+    Duration::try_from_secs_f64(seconds)
+        .ok()
+        .filter(|linger| !linger.is_zero())
 }
 
 pub fn dir(chosen: Option<PathBuf>) -> PathBuf {
@@ -174,6 +197,9 @@ impl Config {
                 .map(|(name, value)| variable(name.as_encoded_bytes(), value.as_encoded_bytes()))
                 .collect(),
             cwd,
+            linger: seconds(set("KO_LINGER_SECONDS")).unwrap_or(LINGER),
+            stop_escalation: positive("KO_STOP_ESCALATION_MS")
+                .map_or(STOP_ESCALATION, Duration::from_millis),
         })
     }
 }
@@ -201,6 +227,34 @@ mod tests {
             Err("server socket path exceeds 103 bytes".to_owned())
         );
         fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn a_duration_knob_is_a_positive_whole_number_or_the_default() {
+        let read = |text: &str| count(Some(OsString::from(text)));
+        assert_eq!(
+            (
+                read("30"),
+                read("1"),
+                read("0"),
+                read("-2"),
+                read("1.5"),
+                read(""),
+                read("x")
+            ),
+            (Some(30), Some(1), None, None, None, None, None)
+        );
+        assert_eq!(count(None), None);
+    }
+
+    #[test]
+    fn the_linger_takes_decimal_seconds_and_refuses_what_is_no_duration() {
+        let read = |text: &str| seconds(Some(OsString::from(text)));
+        assert_eq!(read("30"), Some(Duration::from_secs(30)));
+        assert_eq!(read("0.2"), Some(Duration::from_millis(200)));
+        for text in ["0", "-1", "nan", "inf", "1e300", "", "x"] {
+            assert_eq!(read(text), None, "{text}");
+        }
     }
 
     fn tempdir() -> PathBuf {

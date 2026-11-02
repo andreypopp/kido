@@ -72,7 +72,7 @@ pub(crate) fn lines(
                 title: name.clone(),
                 selected: false,
             },
-            Item::Pane(id) => {
+            Item::Pane { id, depth } => {
                 number += 1;
                 let pane = by_id.get(id).copied();
                 let suffix = match pane.and_then(|pane| pane.row.dead.as_ref()) {
@@ -85,7 +85,7 @@ pub(crate) fn lines(
                 };
                 Line {
                     pane: Some(*id),
-                    lead: format!("{number} "),
+                    lead: format!("{number} {}", " ".repeat(*depth)),
                     mark: pane.map_or(Mark::None, &mark),
                     title: format!(
                         "{}{suffix}",
@@ -137,13 +137,22 @@ mod tests {
                 id: "session_1".parse().unwrap(),
                 name: "work".to_owned(),
             },
-            Item::Pane(id(1)),
+            Item::Pane {
+                id: id(1),
+                depth: 0,
+            },
             Item::Session {
                 id: "session_2".parse().unwrap(),
                 name: "play".to_owned(),
             },
-            Item::Pane(id(2)),
-            Item::Pane(id(3)),
+            Item::Pane {
+                id: id(2),
+                depth: 0,
+            },
+            Item::Pane {
+                id: id(3),
+                depth: 1,
+            },
         ];
         let shown: Vec<String> = lines(Some(id(2)), &items, &panes, |pane| {
             if pane.row.id == id(2) {
@@ -167,7 +176,7 @@ mod tests {
                 "Some(PaneId(1)) false None 1 sh",
                 "None false None play",
                 "Some(PaneId(2)) true Done 2 build \u{2020}7",
-                "Some(PaneId(3)) false None 3 pane_3",
+                "Some(PaneId(3)) false None 3  pane_3",
             ]
         );
     }

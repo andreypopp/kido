@@ -80,3 +80,6 @@ export function blocksGitWrite(command: string, parentSession: string | undefine
   }
   return false;
 }
+
+export const parentSession = (env: NodeJS.ProcessEnv): string | undefined =>
+  env.KIDO_AGENT_PARENT_SESSION || env.KO_AGENT_PARENT_SESSION || undefined;

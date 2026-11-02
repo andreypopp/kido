@@ -18,6 +18,8 @@ use ko_server::server::{Server, Status, Timing};
 use ko_shell::{bin_dir, shell, ssh};
 use ko_tui::client;
 
+mod runs;
+
 const USAGE_ERROR: u8 = 124;
 
 /// The ko terminal. Without a command, it attaches to the server and starts one if none runs.
@@ -77,6 +79,22 @@ enum Command {
     Panes(PanesArgs),
     /// Print the layout document, the sessions and windows with their splits and floats.
     Layout(LayoutArgs),
+    /// Start a run in its own window.
+    Run(runs::RunArgs),
+    /// Start a run under a parent run or pi pane.
+    RunChild(runs::RunChildArgs),
+    /// List live runs, or show one.
+    Runs(runs::RunsArgs),
+    /// Record a run's own outcome.
+    RunOutcome(runs::RunOutcomeArgs),
+    /// Wait for a run to end and print its outcome.
+    RunWait(runs::RunWaitArgs),
+    /// Record a run's ending, then stop its process and close its pane.
+    RunStop(runs::RunStopArgs),
+    /// Close the finished subagent windows a sweep names.
+    Reap(runs::ServerOnly),
+    /// Send a prompt, read from stdin, to the agent in the caller's window or session.
+    Prompt(runs::PromptArgs),
 }
 
 #[derive(Debug, Args)]
@@ -209,7 +227,14 @@ struct ApiArgs {
     path: String,
 }
 
-fn fail(name: &str, message: impl std::fmt::Display) -> ExitCode {
+pub(crate) fn client_dir(server: Option<PathBuf>) -> PathBuf {
+    let pane_server = std::env::var_os("KO_SOCKET")
+        .map(PathBuf::from)
+        .and_then(|socket| socket.parent().map(std::path::Path::to_path_buf));
+    config::dir(server.or(pane_server))
+}
+
+pub(crate) fn fail(name: &str, message: impl std::fmt::Display) -> ExitCode {
     eprintln!("ko {name}: {message}");
     ExitCode::FAILURE
 }
@@ -269,10 +294,37 @@ fn read_input(path: &std::path::Path) -> io::Result<Vec<u8>> {
     }
 }
 
-fn server_failure(name: &str, dir: &std::path::Path, failure: api::Failure) -> ExitCode {
+pub(crate) fn server_message(dir: &std::path::Path, failure: api::Failure) -> String {
     match failure {
-        api::Failure::NoServer => fail(name, format!("no server at {}", dir.display())),
-        api::Failure::Failed(message) => fail(name, message),
+        api::Failure::NoServer => format!("no server at {}", dir.display()),
+        api::Failure::Failed(message) => message,
+    }
+}
+
+fn server_failure(name: &str, dir: &std::path::Path, failure: api::Failure) -> ExitCode {
+    fail(name, server_message(dir, failure))
+}
+
+pub(crate) fn table(rows: &[Vec<String>]) {
+    let widths: Vec<usize> = (0..rows.first().map_or(0, Vec::len))
+        .map(|column| {
+            rows.iter()
+                .map(|row| row.get(column).map_or(0, |cell| cell.chars().count()))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let mut out = io::stdout().lock();
+    for row in rows {
+        let line: Vec<String> = row
+            .iter()
+            .enumerate()
+            .map(|(at, cell)| match widths.get(at) {
+                Some(width) if at + 1 < row.len() => format!("{cell:width$}"),
+                _ => cell.clone(),
+            })
+            .collect();
+        let _ = writeln!(out, "{}", line.join("  "));
     }
 }
 
@@ -290,7 +342,7 @@ fn api(args: ApiArgs) -> ExitCode {
     if !args.path.starts_with('/') {
         return fail("api", "path must start with /");
     }
-    let dir = config::dir(args.server);
+    let dir = client_dir(args.server);
     match api::request(&dir, &method, &args.path, &body) {
         Err(api::Error::Websocket) => {
             eprintln!(
@@ -354,7 +406,7 @@ fn ssh(args: &[OsString]) -> ExitCode {
 }
 
 fn get(name: &str, server: Option<PathBuf>, route: &Route) -> Result<Vec<u8>, ExitCode> {
-    let dir = config::dir(server);
+    let dir = client_dir(server);
     match api::get(&dir, route) {
         Ok(response) if response.status / 100 == 2 => Ok(response.body),
         Ok(response) => Err(fail(name, format!("HTTP {}", response.status))),
@@ -386,33 +438,21 @@ fn panes(args: PanesArgs) -> ExitCode {
         Ok(rows) => rows,
         Err(error) => return fail("panes", error),
     };
-    let table: Vec<[String; 5]> =
-        std::iter::once(["PANE", "PID", "STATE", "TITLE", "CWD"].map(str::to_owned))
-            .chain(rows.iter().map(|row| {
-                [
-                    row.id.to_string(),
-                    row.pid.to_string(),
-                    state(row),
-                    row.title.clone(),
-                    row.cwd.clone(),
-                ]
-            }))
-            .collect();
-    let widths: Vec<usize> = (0..4)
-        .map(|column| {
-            table
-                .iter()
-                .map(|line| line[column].chars().count())
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    for line in &table {
-        let cells: Vec<String> = (0..4)
-            .map(|column| format!("{:width$}", line[column], width = widths[column]))
-            .collect();
-        let _ = writeln!(out, "{}  {}", cells.join("  "), line[4]);
-    }
+    let mut lines = vec![
+        ["PANE", "PID", "STATE", "TITLE", "CWD"]
+            .map(str::to_owned)
+            .to_vec(),
+    ];
+    lines.extend(rows.iter().map(|row| {
+        vec![
+            row.id.to_string(),
+            row.pid.to_string(),
+            state(row),
+            row.title.clone(),
+            row.cwd.clone(),
+        ]
+    }));
+    table(&lines);
     ExitCode::SUCCESS
 }
 
@@ -428,7 +468,7 @@ fn layout(args: LayoutArgs) -> ExitCode {
             Err(code) => code,
         };
     };
-    let dir = config::dir(args.server);
+    let dir = client_dir(args.server);
     let document = read_input(&file)
         .map_err(|error| error.to_string())
         .and_then(|text| protocol::decode::<Document>(&text).map_err(|error| error.to_string()));
@@ -487,5 +527,13 @@ fn main() -> ExitCode {
         Command::Ssh { args } => ssh(&args),
         Command::Panes(args) => panes(args),
         Command::Layout(args) => layout(args),
+        Command::Run(args) => runs::run(args),
+        Command::RunChild(args) => runs::run_child(args),
+        Command::Runs(args) => runs::runs(args),
+        Command::RunOutcome(args) => runs::run_outcome(args),
+        Command::RunWait(args) => runs::run_wait(args),
+        Command::RunStop(args) => runs::run_stop(args),
+        Command::Reap(args) => runs::reap(args),
+        Command::Prompt(args) => runs::prompt(args),
     }
 }

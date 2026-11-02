@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { blocksGitWrite } from "../extensions/no-git-writes/policy.ts";
+import { blocksGitWrite, parentSession } from "../extensions/no-git-writes/policy.ts";
 
 const allowed = [
   "git status", "git diff --cached", "git log -3", "git show HEAD", "git grep TODO",
@@ -38,3 +38,15 @@ test("top-level: every blocked command is allowed with no parent session", () =>
   for (const command of blocked) assert.equal(blocksGitWrite(command, undefined), false);
 });
 test("empty parent session is top-level", () => assert.equal(blocksGitWrite("git stash", ""), false));
+
+for (const name of ["KIDO_AGENT_PARENT_SESSION", "KO_AGENT_PARENT_SESSION"]) {
+  test(`${name} makes a spawned agent: git writes are blocked`, () => {
+    const session = parentSession({ [name]: "parent" });
+    assert.equal(blocksGitWrite("git add .", session), true);
+    assert.equal(blocksGitWrite("git status", session), false);
+  });
+}
+test("neither variable set is a top-level session", () => {
+  assert.equal(blocksGitWrite("git add .", parentSession({})), false);
+  assert.equal(blocksGitWrite("git add .", parentSession({ KO_AGENT_PARENT_SESSION: "" })), false);
+});

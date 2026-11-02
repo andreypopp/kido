@@ -3,11 +3,15 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ko_pane_wire::frame::Limits;
-use ko_server::ids::{ClientId, Instance, PaneId, SessionId, VarName, WindowId};
-use ko_server::protocol::{self, ClientEvent, Listing, Route, Row, Selection, Snapshot};
+use ko_server::ids::{ClientId, Instance, PaneId, RunId, SessionId, VarName, WindowId};
+use ko_server::protocol::{
+    self, ClientEvent, Info, Listing, Route, Row, RunEvent, Selection, Show, Snapshot, Window,
+};
+use ko_server::runs::Parent;
 use serde_json::Value;
 
 use crate::status::{Mark, Seen};
+use crate::tree;
 use crate::wire::{self, Link, Next, text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +39,7 @@ pub struct Model {
     pub layout: Snapshot,
     pub selection: Selection,
     pub panes: Vec<Pane>,
+    runs: BTreeMap<RunId, RunEvent>,
     anchor: (u64, Instant),
     seen: Seen,
 }
@@ -42,7 +47,7 @@ pub struct Model {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Session { id: SessionId, name: String },
-    Pane(PaneId),
+    Pane { id: PaneId, depth: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +90,7 @@ impl Model {
             layout,
             selection: Selection::default(),
             panes: Vec::new(),
+            runs: BTreeMap::new(),
             anchor: (welcome.now, Instant::now()),
             seen: Seen::new(welcome.now),
         }
@@ -118,7 +124,32 @@ impl Model {
     fn refresh(&mut self) -> Result<(), String> {
         let body = wire::request(&self.socket, Some(self.client), &Route::ListPanes, b"")?;
         self.load(protocol::decode(&body).map_err(text)?);
+        let route = Route::ListRuns(Show::Present, None);
+        let body = wire::request(&self.socket, Some(self.client), &route, b"")?;
+        self.load_runs(protocol::decode(&body).map_err(text)?);
         Ok(())
+    }
+
+    fn load_runs(&mut self, infos: Vec<Info>) {
+        self.runs = infos
+            .into_iter()
+            .filter_map(|info| RunEvent::of(&info.meta, info.outcome))
+            .map(|event| (event.id.clone(), event))
+            .collect();
+        self.forget_runs();
+    }
+
+    fn forget_runs(&mut self) {
+        let in_layout: BTreeSet<PaneId> = self.order().into_iter().collect();
+        self.runs.retain(|_, run| in_layout.contains(&run.pane));
+    }
+
+    fn parent_of(&self, pane: PaneId) -> Option<PaneId> {
+        let run = self.runs.values().find(|run| run.pane == pane)?;
+        match run.parent.as_ref()? {
+            Parent::Pane(parent) => Some(*parent),
+            Parent::Run(id) => self.runs.get(id).map(|parent| parent.pane),
+        }
     }
 
     fn load(&mut self, listing: Vec<Listing>) {
@@ -152,7 +183,13 @@ impl Model {
         match event {
             ClientEvent::Layout(layout) => {
                 self.layout = layout;
+                self.forget_runs();
                 return Applied::Layout;
+            }
+            ClientEvent::Run(run) => {
+                if self.order().contains(&run.pane) {
+                    self.runs.insert(run.id.clone(), run);
+                }
             }
             ClientEvent::Selected(selection) => {
                 self.selection = selection;
@@ -205,9 +242,12 @@ impl Model {
                 id: session.id,
                 name: String::from(session.name.clone()),
             });
-            for window in &session.windows {
-                items.extend(window.panes().into_iter().map(Item::Pane));
-            }
+            let panes: Vec<PaneId> = session.windows.iter().flat_map(Window::panes).collect();
+            items.extend(
+                tree::order(panes, |pane| *pane, |pane| self.parent_of(*pane))
+                    .into_iter()
+                    .map(|(id, depth)| Item::Pane { id, depth }),
+            );
         }
         items
     }
@@ -216,7 +256,7 @@ impl Model {
         self.outline()
             .into_iter()
             .filter_map(|item| match item {
-                Item::Pane(pane) => Some(pane),
+                Item::Pane { id, .. } => Some(id),
                 Item::Session { .. } => None,
             })
             .collect()
@@ -251,7 +291,7 @@ mod tests {
 
     use ko_server::ids::Name;
     use ko_server::protocol::{
-        Axis, Cause, Cells, Dead, Float, Layout, Leaf, Node, Revision, Session, Window,
+        Axis, Cause, Cells, Dead, Float, Layout, Leaf, Node, Revision, Session,
     };
     use ko_server::vars::Vars;
     use proptest::prelude::*;
@@ -468,7 +508,7 @@ mod tests {
             .iter()
             .map(|item| match item {
                 Item::Session { id, name } => format!("{id} {name}"),
-                Item::Pane(pane) => pane.to_string(),
+                Item::Pane { id, depth } => format!("{}{id}", " ".repeat(*depth)),
             })
             .collect();
         assert_eq!(
@@ -488,6 +528,83 @@ mod tests {
             Some((id("session_", 1), id("window_", 2)))
         );
         assert_eq!(model.locate(pane(9)), None);
+    }
+
+    fn run(number: u8, on: u64, parent: Option<Parent>) -> RunEvent {
+        RunEvent {
+            id: format!("{number:032x}").parse().unwrap(),
+            name: ko_server::runs::RunName::new("r").unwrap(),
+            parent,
+            pane: pane(on),
+            started_at: ko_server::timestamp::Timestamp::from_micros(0),
+            outcome: None,
+        }
+    }
+
+    fn run_id(number: u8) -> RunId {
+        format!("{number:032x}").parse().unwrap()
+    }
+
+    fn outline_of(model: &Model) -> Vec<String> {
+        model
+            .outline()
+            .iter()
+            .filter_map(|item| match item {
+                Item::Pane { id, depth } => Some(format!("{depth}{id}")),
+                Item::Session { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_run_pane_follows_its_parent_pane_one_level_deeper_and_the_step_order_follows_the_rows() {
+        let windows = vec![
+            (Shape::Leaf, 0),
+            (Shape::Leaf, 0),
+            (Shape::Leaf, 0),
+            (Shape::Leaf, 0),
+        ];
+        let mut model = model(layout_of(&[windows, vec![(Shape::Leaf, 0)]]));
+        assert_eq!(
+            outline_of(&model),
+            ["0pane_1", "0pane_2", "0pane_3", "0pane_4", "0pane_5"]
+        );
+        let events = [
+            run(1, 3, Some(Parent::Pane(pane(1)))),
+            run(2, 4, Some(Parent::Run(run_id(1)))),
+            run(3, 2, Some(Parent::Pane(pane(5)))),
+        ];
+        for event in events {
+            assert_eq!(model.apply(ClientEvent::Run(event)), Ok(Applied::Nothing));
+        }
+        assert_eq!(
+            outline_of(&model),
+            ["0pane_1", "1pane_3", "2pane_4", "0pane_2", "0pane_5"],
+            "a parent in another session leaves the child a root of its own"
+        );
+        assert_eq!(model.step(Some(pane(1)), 1), Some(pane(3)));
+        assert_eq!(model.step(Some(pane(4)), 1), Some(pane(2)));
+        let mut without_runs = model.layout.clone();
+        without_runs.layout.sessions[0].windows.remove(2);
+        model.panes = rows_of(&without_runs.layout);
+        assert_eq!(
+            model.apply(ClientEvent::Layout(without_runs)),
+            Ok(Applied::Layout)
+        );
+        assert_eq!(
+            model.runs.keys().cloned().collect::<Vec<_>>(),
+            [run_id(2), run_id(3)],
+            "the run of a pane that the layout dropped goes with it"
+        );
+        assert_eq!(
+            model.apply(ClientEvent::Run(run(9, 3, None))),
+            Ok(Applied::Nothing)
+        );
+        assert_eq!(
+            model.runs.len(),
+            2,
+            "a run event for a pane the layout lacks changes nothing"
+        );
     }
 
     #[test]

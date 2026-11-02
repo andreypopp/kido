@@ -36,6 +36,15 @@ impl Mono {
     }
 }
 
+pub fn local_utc_offset_seconds(seconds: i64) -> Option<i64> {
+    let time: libc::time_t = seconds;
+    // SAFETY: an all-zero tm is valid.
+    let mut zone: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: time and zone are valid for the call, and localtime_r keeps no reference to them.
+    let converted = unsafe { libc::localtime_r(&raw const time, &raw mut zone) };
+    (!converted.is_null()).then_some(zone.tm_gmtoff)
+}
+
 pub fn thread_cpu_time() -> Duration {
     read(libc::CLOCK_THREAD_CPUTIME_ID)
 }
@@ -139,5 +148,16 @@ mod linux {
             );
             assert_eq!(schedstat_time(""), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod offset_tests {
+    use super::*;
+
+    #[test]
+    fn the_local_offset_is_a_whole_number_of_minutes_within_a_day() {
+        let offset = local_utc_offset_seconds(1_700_000_000).unwrap();
+        assert!(offset % 60 == 0 && offset.abs() <= 14 * 3600, "{offset}");
     }
 }

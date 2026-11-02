@@ -1,6 +1,6 @@
 # ko protocol (appendix to design.md)
 
-Status: design, 2026-10-29, updated 2026-11-02 (K1 and K2). HTTP/1.1 over a unix
+Status: design, 2026-10-29, updated 2026-11-02 (K1, K2 and K3). HTTP/1.1 over a unix
 socket, with WebSocket (RFC 6455) for the long-lived streams.
 
 **The code is the source of truth for every message shape** (decided
@@ -324,7 +324,7 @@ in the order the server produced them. The kinds, as `Protocol`'s
 client event type defines them: the whole layout document on every
 change (section 7); a pane's title, pwd, status, variable, death,
 bell, notification and progress; later a pane's clipboard write and
-clipboard read (K6), a run's start or end (K3), and this client's
+clipboard read (K6), a run's start or outcome (section 10), and this client's
 own state when another connection moved it (K2). The OSC 133 steps
 and the OSC 7501 records reach a client only through `status`.
 
@@ -465,13 +465,64 @@ WebSocket with data or a refusal.
 
 ## 10. Runs
 
-Under `/runs`: create a run (the server adds its window to the layout
-document itself, detached), list runs (all, or by parent), read one
-with its captured screen, record an outcome (first write wins), wait
-for its end as a long poll whose body arrives when the run ends, and
-stop it. The CLI maps error kinds to its exit codes as kido does
-today (2, 3, 4, 5). migration.md S3 specifies the bodies until the
-code exists.
+`ko_server/src/protocol.rs` and `ko_server/src/runs.rs` define the
+bodies; `ko_server/src/state/run_ops.rs` holds the routes' logic. The
+server keeps each run in `runs/<id>/` of its own state directory, as
+kido's `Run` does: `meta.json` and `command` written once at the
+start, `outcome` with first-write-wins (`create_new`), the captured
+`screen` and the `output` path that the run's command writes. kido
+and ko never share a state directory; nothing migrates.
+
+A run request that names a caller sends the header `Ko-Pane: pane_N`.
+The run and prompt commands of the CLI send it from `$KO_PANE`; `ko
+api` sends none.
+
+- `POST /runs` creates the run and its window as one server-made
+  `PUT` of the document: a new window at the end of the caller's
+  session, or of the session that the body names. No client switches
+  to it. The pane's environment gets `KO_RUN_ID` and `KO_RUN_OUTPUT`,
+  its variable `ko.run` is set at its creation, and its command is
+  the body's argv with no wrapper. A parent (a run id or `pane_N`)
+  that is unknown is `missing`, one that has ended is `gone`.
+- `GET /runs` lists runs, newest first: `live` (no outcome),
+  `present` (the pane still exists and names the run) or `all`, and
+  optionally only the children of one parent. `GET /runs/<id>` adds
+  the captured screen.
+- `GET /runs/<id>/wait` is a long poll (plans/ko-stages.md 4.4): the
+  server answers at once when the run has ended or the timeout is 0,
+  else when the run ends or at the deadline. A waiting connection
+  makes no work for the server until one of the two. A timeout, and
+  a stop's `wait_ms`, over one hour is `invalid`.
+- `POST /runs/<id>/outcome` records an outcome. A second write is
+  `refused`. A `failed` outcome of a run whose pane exists first
+  captures the pane's screen.
+- `POST /runs/<id>/stop` records `stopped` (or `completed`), then
+  waits up to its `wait_ms` for the pane to die and removes it. The
+  removal hangs up the program (`ko-pane` sends `SIGHUP`, then
+  `SIGKILL` 250 ms later); if the removed pane still lives after
+  `KO_STOP_ESCALATION_MS`, the coordinator kills it. A run that has
+  already ended is `refused`.
+- `POST /runs/reap` runs one sweep at once, for tests.
+
+The sweep runs when one of its inputs changes: a pane's death or
+removal, a recorded outcome, the focused panes, a pane's `ko.run` or
+pi evidence, and at the end of a linger grace. It closes a run's pane when the pane is dead for longer than
+`KO_LINGER_SECONDS` (the linger grace, in seconds with an optional
+fraction), or when the run's parent has
+ended (the orphan rule: a run parent by its outcome; a pane parent
+when it is gone, dead or shows neither a pi root nor `pi.session`).
+It records the run's outcome (the pane's exit, else `died`; `failed`
+"its parent ended" for an orphan), captures the screen and removes the
+pane. It never closes a run pane that is focused: shown by a client
+whose terminal has focus (section 3); it tries again when the focus
+changes. An empty session ends.
+
+The `run` event on `/client` carries a run's row when it starts and
+when an outcome is written. A run that ends because its pane dies
+gets no `run` event; a client reads that from the pane's `dead`
+event. The CLI maps the error kinds to kido's exit codes: `missing`
+or `gone` of a parent to 2, an unknown run to 3, a refused name to 4
+(the CLI checks it before the request), `refused` to 5.
 
 ## 11. Search and prompting
 
@@ -481,12 +532,26 @@ from the top of the history at the time of the search, for display
 only; a client jumps to a match by taking a full snapshot and
 searching its mirror, since server rows move with output.
 
-`GET /prompt/resolve` lists the candidate agent panes for a caller's
-pane: the caller's window first, then its session, from the layout.
-`POST /prompt` sends text to one candidate and reports whether it went
-over the inbox or as a paste (design.md 4.10; kido's
-docs/design-rpc.md, "Prompting an agent", for the scope and error
-rules).
+`GET /prompt/resolve` lists the candidate agent panes for the caller
+of the `Ko-Pane` header, with kido's scope rule applied in the server:
+the candidates of the caller's window, else, when that window has
+none, those of the other windows of its session. With `window=true`
+it never widens. Run windows and terminal panes are not candidates. `POST /prompt` sends text to one candidate
+and reports whether it went over the inbox or as a paste
+(`ko_server/src/state/prompt.rs`):
+
+- A pane whose trusted `pi.inbox` names an inbox gets the text over
+  that socket (`ko_server/src/msg.rs`, the protocol of
+  `share/pi/README.md`), with a 2 s deadline as a stored send in the
+  loop. An inbox that cannot be reached is `refused`; a timeout or
+  another failure after the connect is `io`. Neither falls back to a
+  paste.
+- Any other candidate gets one `paste` input and one Enter key through
+  its `ko-pane`; the pane's bracketed paste mode decides the wrapping.
+
+`ko prompt` keeps kido's exit codes (0 sent, 1 empty text or an
+error, 4 no agent in scope, 5 several); its `--window` sends
+`window=true`.
 
 ## 12. Flow of an app window
 

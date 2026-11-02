@@ -299,9 +299,13 @@ These requirements are fixed:
   the bin directory lookup, ports of kido's `lib/prime.ml`,
   `shell.ml`, `ssh.ml` and `bin_dir.ml`. It embeds the shell
   integrations of `share/ko/` with `include_str!`; `make build-ko`
-  installs `share/ko/bin` (the `ko` and `ssh` shims) and
-  `share/ko/shim.sh` beside `bin/ko` in `build/ko/`, the layout that
-  `Bin_dir` finds as installed. `ko_bench/` is the binary `ko-bench`, the benchmark
+  installs `share/ko/bin` (the `ko`, `ssh` and `ko-pi` shims),
+  `share/ko/shim.sh` and `share/pi/ko-pi.ts` (as
+  `share/ko/pi/ko-pi.ts`) beside `bin/ko` in `build/ko/`, the layout
+  that `Bin_dir` finds as installed. `share/pi/testdata/fake_ko/` is
+  the crate `fake_ko`, the fake `ko` of the TypeScript suite, a
+  workspace member outside `default-members` that `make
+  build-fake-ko` builds for `scripts/test-ts.sh`. `ko_bench/` is the binary `ko-bench`, the benchmark
   modes, which `make build-ko` builds into `target/release` and never
   installs. ko has no C of its own; the only C is the measurement
   helpers of `bench/`, which `make build-bench` compiles. Do not add
@@ -605,7 +609,12 @@ Conventions:
   of `ko_sys::signal`, one `Signals` per process. Back-pressure is the
   interest. The owner matches on the ready tokens and the due timers
   and calls its own handlers with `&mut self`; no callback is
-  registered with the loop, and no `Rc<RefCell<..>>` exists.
+  registered with the loop, and no `Rc<RefCell<..>>` exists. A
+  request that waits (`/runs/<id>/wait`, `/runs/<id>/stop` with a
+  wait, a failed outcome's screen capture, the prompt's inbox send)
+  is a connection in `Phase::Handling` with a waiter stored in
+  `State` and, for its deadline, a timer of the loop, never a thread
+  (plans/ko-stages.md 4.4).
 - **The terminal client.** `ko_tui`'s loop watches stdin, the
   `/client` link, the shown view and the signal pipe. Its plain
   requests (create, delete, list, the pager's `/screen`) block with
@@ -722,10 +731,11 @@ Conventions:
                        defaults the launcher writes into
                        server.conf (embedded, not installed)
       pi/              kido-pi.ts, the harness, which the kido-pi shim loads
-                       with --extension
+                       with --extension; ko-pi.ts, ko's copy of it (below)
       pi/testdata/fake_kido/, pi/testdata/fake_tmux/, pi/testdata/fake_common/
                        the TypeScript suite's fake kido and fake tmux, and
-                       their shared helpers, built by scripts/test-ts.sh
+                       their shared helpers, built by scripts/test-ts.sh;
+                       pi/testdata/fake_ko/, the Rust fake ko of ko-pi's suite
     .pi/prompts/       gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
                        release.md, /release: Kido.app first, then kido
     .pi/extensions/    no-git-writes, the spawned agent's bash-tool guard
@@ -849,6 +859,20 @@ commands, their flags, exit codes and JSON are the contract between the
 two (docs/design.md, "The pi extension, kido-pi"). The extension never
 finds or parses kido's state directory; it reads only the output path
 that a run command prints. kido never reads the extension's files.
+
+`share/pi/ko-pi.ts` is ko's harness, a copy of `kido-pi.ts` until
+the cut-over (plans/ko-stages.md K8), which deletes `kido-pi.ts` and
+its suite. A change of the harness's behaviour goes into both files
+until then. ko-pi calls ko's run commands with the same contract, and
+in place of tmux it calls `ko api`: `GET /panes` and `GET /layout`
+(joined for each pane's session and window) and `PUT` and `DELETE` on
+`/panes/$KO_PANE/vars/pi.*`. It never opens ko's socket. Its knobs
+are `KO_*`, and its state directory is `$KO_PI_STATE_DIR`, else
+`$XDG_STATE_HOME/ko-pi`, else `~/.local/state/ko-pi`. A ko agent
+starts with an empty `ko-pi` directory: nothing migrates from
+`kido-pi`, and ko-pi never reads it (decided 2026-11-02). Its suite
+is `share/pi/ko-pi-*.test.ts` on the fake `ko`, and its prompt
+snapshot is `share/pi/testdata/ko-prompts.txt`.
 
 ## The tmux fork
 
@@ -1253,6 +1277,9 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make verify-ko  scrubbed make build-ko, ko's cargo tests, ko's e2e, cargo fmt, clippy and scripts/lint.sh, and make verus
     make verus   cargo verus verify on ko_pane_wire and ko_server with the pinned Verus release, downloaded once into build/verus/
     make build-ko  the Rust ko's installed layout under build/ko/
+    make cargo ARGS='test -p ko_server'  one cargo command, with --locked added after the subcommand, for iterating on one package
+    make fmt     cargo fmt on the workspace
+    make build-fake-ko  the fake ko of the TypeScript suite
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe-ko BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build-ko
@@ -1316,8 +1343,9 @@ a stage slower needs a reason.
   cases that need the same setup in one test, on one server.
 - Test pure logic in a unit test, not through a tmux server.
 - In the TypeScript suite, the fake `kido` is the OCaml executable
-  `share/pi/testdata/fake_kido`. A Node process start costs about
-  70 ms. A fake delay is a `KIDO_FAKE_*` gate that the test releases,
+  `share/pi/testdata/fake_kido`, and the fake `ko` is the Rust
+  binary `share/pi/testdata/fake_ko`. A Node process start costs about
+  70 ms. A fake delay is a `KIDO_FAKE_*` or `KO_FAKE_*` gate that the test releases,
   not a delay that the test waits out. A test that reads only the
   registered tools needs no fixture.
 - A test earns its time. Do not keep a test that repeats another test,
@@ -1690,7 +1718,7 @@ A brief does not repeat them.
   The top-level session commits.
   Leave work uncommitted.
   Never use `git stash`.
-  If `KIDO_AGENT_PARENT_SESSION` is set,
+  If `KIDO_AGENT_PARENT_SESSION` or `KO_AGENT_PARENT_SESSION` is set,
   `.pi/extensions/no-git-writes` guards bash tool calls.
 - **Other agents' uncommitted changes are expected.**
   Work runs in parallel.

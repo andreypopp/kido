@@ -45,7 +45,7 @@ test:
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: build-ko build-bench test-ko lint-rs lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: build-ko build-fake-ko build-bench test-ko cargo fmt lint-rs lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -111,8 +111,10 @@ build-ko: $(TERMINFO)/x/xterm-ghostty
 	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release --bins
 	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
 	cp target/release/ko target/release/ko-pane $(KO)/bin/
-	rm -rf $(KO)/share/ko/bin
+	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi
 	cp -R share/ko/bin $(KO)/share/ko/bin
+	mkdir -p $(KO)/share/ko/pi
+	cp share/pi/ko-pi.ts $(KO)/share/ko/pi/ko-pi.ts
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
 
 $(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/src/terminfo/*.zig)
@@ -131,6 +133,18 @@ test-ko:
 	$(CARGO) build --locked -p ko_pane
 	KO_PANE_EXE=$(CURDIR)/target/debug/ko-pane $(CARGO) test --locked
 	RUSTFLAGS='--cfg loom' $(CARGO) test --locked --release -p ko_pane_wire --target-dir target/loom ring::model
+
+# The fake ko of the TypeScript suite (share/pi/testdata/fake_ko).
+build-fake-ko:
+	$(CARGO) build --locked -p fake_ko
+
+# One cargo command, for iterating on a package: make cargo ARGS='test -p ko_server'.
+# --locked follows the subcommand, as in every other cargo command of this file.
+cargo:
+	$(CARGO) $(firstword $(ARGS)) --locked $(wordlist 2,$(words $(ARGS)),$(ARGS))
+
+fmt:
+	$(CARGO) fmt
 
 lint-rs:
 	$(CARGO) fmt --check

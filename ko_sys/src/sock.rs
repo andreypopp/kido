@@ -1,5 +1,7 @@
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 
 use crate::pid::Pid;
 use crate::retry::check;
@@ -18,6 +20,41 @@ fn set(fd: BorrowedFd<'_>, option: libc::c_int, bytes: usize) -> io::Result<()> 
         )
     })?;
     Ok(())
+}
+
+pub fn connect_nonblocking(path: &Path) -> io::Result<OwnedFd> {
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: an all-zero sockaddr_un is valid.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid socket path",
+        ));
+    }
+    address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap_or_default();
+    for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *slot = libc::c_char::from_ne_bytes([*byte]);
+    }
+    // SAFETY: socket has no memory preconditions.
+    let raw = check(unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) })?;
+    // SAFETY: raw is a new descriptor that nothing else owns.
+    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+    crate::fd::set_cloexec(socket.as_fd())?;
+    crate::fd::set_nonblocking(socket.as_fd())?;
+    let length = libc::socklen_t::try_from(size_of::<libc::sockaddr_un>()).unwrap_or(106);
+    crate::retry::retry(|| {
+        // SAFETY: address is a sockaddr_un of length bytes, and socket is open.
+        check(unsafe {
+            libc::connect(
+                socket.as_raw_fd(),
+                (&raw const address).cast::<libc::sockaddr>(),
+                length,
+            )
+        })
+        .map(drop)
+    })?;
+    Ok(socket)
 }
 
 pub fn set_send_buffer(fd: BorrowedFd<'_>, bytes: usize) -> io::Result<()> {
@@ -97,7 +134,7 @@ pub fn peer_pid(fd: BorrowedFd<'_>) -> io::Result<Option<Pid>> {
 mod tests {
     use super::*;
     use std::os::fd::AsFd;
-    use std::os::unix::net::UnixStream;
+    use std::os::unix::net::{UnixListener, UnixStream};
 
     #[test]
     fn a_socketpair_peer_is_this_user_and_this_process() {
@@ -114,5 +151,28 @@ mod tests {
         let credentials = credentials(a.as_fd()).unwrap();
         assert_eq!(credentials.uid, uid());
         assert_eq!(u32::try_from(credentials.pid).unwrap(), std::process::id());
+    }
+
+    #[test]
+    fn a_nonblocking_connect_reaches_a_listener_and_refuses_a_missing_path() {
+        let dir = std::path::PathBuf::from(format!("/tmp/ko-sock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("socket");
+        let listener = UnixListener::bind(&path).unwrap();
+        let socket = UnixStream::from(connect_nonblocking(&path).unwrap());
+        let (accepted, _) = listener.accept().unwrap();
+        assert_eq!(peer_uid(accepted.as_fd()).unwrap(), uid());
+        assert_eq!(peer_uid(socket.as_fd()).unwrap(), uid());
+        assert_eq!(
+            connect_nonblocking(&dir.join("absent")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            connect_nonblocking(&dir.join("x".repeat(200)))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

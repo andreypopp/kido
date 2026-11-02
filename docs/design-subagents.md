@@ -151,7 +151,7 @@ The window's environment is what `run-child` gives every run
 | `KIDO_RUN_ID` | the child's run id; the child's own runs name it as their parent |
 | `KIDO_RUN_OUTPUT` | the run's output path; a pi child writes nothing there |
 | `KIDO_AGENT_DIR` | the child's agent directory, which holds its task and its parent edge |
-| `KIDO_AGENT_PARENT_SESSION` | the parent's session id, read only by the repo's `no-git-writes` guard |
+| `KIDO_AGENT_PARENT_SESSION` | the parent's session id, read only by the repo's `no-git-writes` guard, which also reads ko-pi's `KO_AGENT_PARENT_SESSION` |
 | `KIDO_AGENT_TRUSTED_ROOT` | the git common directory of a repository that the parent trusts; absent otherwise |
 
 The environment does not prove identity. Everything that the child's

@@ -27,6 +27,7 @@ data-encoding
 digest
 equivalent
 errno
+fake_ko
 fastrand
 find-msvc-tools
 fnv

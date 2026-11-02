@@ -535,12 +535,7 @@ fn pi_variables_gate() {
         ("pi.name", "Worker"),
         ("pi.activity", "checking"),
     ] {
-        s.request(
-            "PUT",
-            &format!("/panes/{pane}/vars/{name}"),
-            Some(&json!(value)),
-            200,
-        );
+        s.set_var(&pane, name, &json!(value));
     }
     let status = s.wait_row(&pane, "the variables", |row| {
         row["vars"]["pi.activity"] == "checking"

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ko_server::http::{self, Response, call};
-use ko_server::ids::ClientId;
+use ko_server::ids::{ClientId, PaneId};
 use ko_server::protocol::Route;
 use ko_server::ws::{accepted, upgrade_request};
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token};
@@ -41,7 +41,7 @@ pub fn silent(received: Instant, now: Instant, limit: Duration) -> bool {
 
 fn open(
     socket: &Path,
-    client: Option<ClientId>,
+    (client, caller): (Option<ClientId>, Option<PaneId>),
     (method, target): (&str, &str),
     body: &[u8],
     within: Duration,
@@ -49,19 +49,23 @@ fn open(
     let mut stream = launch::connect(socket, PATIENCE)?;
     stream.set_read_timeout(Some(within))?;
     stream.set_write_timeout(Some(within))?;
-    let extra = [("Connection", "keep-alive")];
+    let caller = caller.map(|pane| pane.to_string());
+    let mut extra = vec![("Connection", "keep-alive")];
+    if let Some(caller) = &caller {
+        extra.push(("Ko-Pane", caller));
+    }
     stream.write_all(&call(method, target, client, &extra, body))?;
     Ok(stream)
 }
 
 pub(crate) fn exchange(
     socket: &Path,
-    client: Option<ClientId>,
+    who: (Option<ClientId>, Option<PaneId>),
     target: (&str, &str),
     body: &[u8],
     within: Duration,
 ) -> io::Result<Response> {
-    http::read_response(&mut open(socket, client, target, body, within)?)
+    http::read_response(&mut open(socket, who, target, body, within)?)
 }
 
 fn fetch(
@@ -72,7 +76,14 @@ fn fetch(
     mut sink: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> Result<(), String> {
     let (method, target) = route.to_request();
-    let mut stream = open(socket, client, (method, &target), body, READ_TIMEOUT).map_err(text)?;
+    let mut stream = open(
+        socket,
+        (client, None),
+        (method, &target),
+        body,
+        READ_TIMEOUT,
+    )
+    .map_err(text)?;
     let mut failure = Vec::new();
     let response = http::read_response_with(&mut stream, |head, piece| {
         if head.status == 200 {

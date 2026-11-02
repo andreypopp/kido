@@ -105,7 +105,7 @@ for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', 
         for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
             report(path, text, match.start(), 'signals must go through ko_sys::pid')
 
-core = ['share/pi/kido-pi.ts']
+core = ['share/pi/kido-pi.ts', 'share/pi/ko-pi.ts']
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
@@ -206,6 +206,7 @@ for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go')):
 # ko_e2e waits for events; its one fixed wait is the idle measurement, and harness.rs holds the poll tick.
 rust_sleeps = {
     'ko_e2e/tests/e2e/idle.rs': {'std::thread::sleep(Duration::from_secs(2));': 1},
+    'ko_e2e/tests/e2e/wait.rs': {'std::thread::sleep(Duration::from_secs(2));': 1},
 }
 for path in candidates(r'thread::(sleep|park_timeout)', glob.glob('ko_e2e/tests/e2e/*.rs')):
     if path == 'ko_e2e/tests/e2e/harness.rs':
@@ -250,16 +251,19 @@ else
   echo 'lint: SKIP prompt snapshot (node cannot run TypeScript)'
   exit "$failed"
 fi
-if ! node "${node_flags[@]}" scripts/dump-prompts.ts > "$scratch/prompts.txt"; then
-  echo 'scripts/dump-prompts.ts:1: prompt dump failed' >&2
-  exit 1
-fi
-fixture=share/pi/testdata/prompts.txt
-if [[ "${1:-}" == --update-prompts ]]; then
-  cp "$scratch/prompts.txt" "$fixture"
-elif ! diff -u "$fixture" "$scratch/prompts.txt"; then
-  echo "$fixture:1: prompt snapshot differs; regenerate: scripts/lint.sh --update-prompts"
-  failed=1
-fi
+for extension in kido-pi ko-pi; do
+  fixture=share/pi/testdata/prompts.txt
+  [[ "$extension" == ko-pi ]] && fixture=share/pi/testdata/ko-prompts.txt
+  if ! node "${node_flags[@]}" scripts/dump-prompts.ts "$extension" > "$scratch/prompts.txt"; then
+    echo 'scripts/dump-prompts.ts:1: prompt dump failed' >&2
+    exit 1
+  fi
+  if [[ "${1:-}" == --update-prompts ]]; then
+    cp "$scratch/prompts.txt" "$fixture"
+  elif ! diff -u "$fixture" "$scratch/prompts.txt"; then
+    echo "$fixture:1: prompt snapshot differs; regenerate: scripts/lint.sh --update-prompts"
+    failed=1
+  fi
+done
 if [[ "$failed" == 0 ]]; then echo 'lint: PASS'; fi
 exit "$failed"

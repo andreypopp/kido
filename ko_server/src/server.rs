@@ -440,6 +440,8 @@ mod tests {
             media: Vec::new(),
             env: Vec::new(),
             cwd: PathBuf::from("/"),
+            linger: crate::config::LINGER,
+            stop_escalation: crate::config::STOP_ESCALATION,
         };
         let timing = Timing {
             shutdown_grace: Duration::from_millis(100),

@@ -34,7 +34,7 @@ fn send(
     let (method, target) = Route::PutLayout.to_request();
     let response = wire::exchange(
         socket,
-        client,
+        (client, None),
         (method, &target),
         protocol::json(&request).as_bytes(),
         wire::READ_TIMEOUT,

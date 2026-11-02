@@ -428,7 +428,7 @@ impl Client {
                 Panel::Choosing(chosen) => outline
                     .iter()
                     .enumerate()
-                    .filter(|(_, item)| matches!(item, ko_client::model::Item::Pane(_)))
+                    .filter(|(_, item)| matches!(item, ko_client::model::Item::Pane { .. }))
                     .nth(chosen)
                     .map(|(row, _)| row),
                 _ => None,

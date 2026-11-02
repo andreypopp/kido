@@ -139,6 +139,39 @@ shows. `Client::Active` gains `session` and `window`. `protocol::decode`
 walks one `serde_json::Value` for a body that contains `[`; a `PUT
 /layout` always does, which is fine on the control path.
 
+Semantic risks for Kido.app (kido-app-notes/ko-api-gap.md 2.3, recorded
+2026-11-02; K5 handles them):
+
+- One `PUT` for each gesture step with a `409` retry: the app writes
+  each edit as a function of the current document, as
+  `ko_client::layout::edit` does, and keeps one `PUT` in flight with
+  one coalesced successor, or a drag loses concurrent server changes.
+- The server normalizes geometry: a dock beside a pane fills sizes
+  proportionally, not by tmux's join-pane rule, so the app's split
+  snapshots move.
+- Previous and next window are the client's: the app computes the
+  target from its K3 tree (it skips run windows, steps among nested
+  siblings, wraps across sessions) and sends `select`; the terminal
+  client's `switch` walks the document order. They disagree, which
+  is accepted.
+- Whole-history mirrors: a restore is one `full` snapshot, about 6 MB
+  for 100k lines (4.6), and the app's 32-surface budget now holds
+  whole histories; the local memory ceiling is not measured.
+- `Ko-Vt` coupling: the server refuses a `vt` difference with `409
+  vt_mismatch`, so every Ghostty fork bump in either repo is a
+  coordinated app release; the mismatch sheet needs the new headers.
+- Times: status times are `Mono` nanoseconds anchored by `now` on
+  `welcome` and on each `status` event, a run's start is wall time;
+  the app's clocks, seen keys and notification identities use
+  `Model.server_now`, and a remote anchor drifts across sleep until
+  the next event.
+- The sizing claim: the focused client, else the client that last
+  switched to the window, holds the size; the app's sidebar-focus and
+  palette states must send `focused` correctly, or the claim flips.
+- SSH remotes: the remote server is `ko` on Linux (RL), started
+  explicitly; the forward replaces the stdio bridge, and until K7 a
+  remote window has no ko path.
+
 ### 4.2 Pane variables
 
 Keep, with the limits of migration.md 3.3. A value is arbitrary JSON,
@@ -255,7 +288,9 @@ Decided 2026-11-02 (question 3). Both clients share one Rust crate,
   the client crate's types or both on a `ko_protocol` module of this
   crate), the `/client` event stream with reconnect gated on
   `instance`, the client model (the layout document, the panes with
-  status and variables, the runs, the subagent tree), and view
+  status and variables, the runs, the subagent tree, and the seen
+  record: one `Seen` for each host, observed with the set of shown
+  panes and an attendance flag, decided 2026-11-02), and view
   streams that hand bytes, markers and snapshot slices to the caller.
   It contains no terminal: `ko_client` never links `ko_vt` or
   libghostty-vt.
@@ -526,7 +561,7 @@ sessions.
 Risk: medium. The engine must agree with the app's expectations of
 tmux's arithmetic; the recorded trees are the check.
 
-### K3. Runs, subagents, prompt, the harness (12 to 17 agent-days)
+### K3. Runs, subagents, prompt, the harness (12 to 17 agent-days, built)
 
 Depends on K1 (the trust rule reads the pi root) and K2 (a run is a
 window). migration.md S3 is the specification, with the long poll of
@@ -574,6 +609,62 @@ stopped and is swept.
 Risk: medium. Mostly moving tested logic. The long poll on the
 `Handling` phase is new, and the sweep as a layout change.
 
+Built (2026-11-02):
+
+- The run's pane carries `ko.run` as a variable of the new pane in
+  the server-made `PUT`; the new pane needs no `run` field.
+- The inbox send is in `ko_server` (`msg.rs`), because the server
+  delivers: a non-blocking connect and a stored send with a 2 s
+  timer, no thread. A `/runs/<id>/wait` uses the connection's own
+  timer.
+- `ko-pane` hangs up a removed pane's program with `SIGHUP`, then
+  `SIGKILL` after 250 ms, so a stop has no `SIGTERM` stage.
+  `KO_STOP_ESCALATION_MS` is the coordinator's last kill of a removed
+  run pane that still lives.
+- The sweep keeps kido's guard over ko's focus: it never closes a run
+  pane that a client with terminal focus shows (protocol.md 3), and a
+  focus change is one of its inputs. The last-window refusal went; an
+  empty session ends.
+- The sweep removes the run's pane, pane by pane; a window that loses
+  its last pane goes with it. K2b changes the close of a run window
+  to the atomic `DELETE /windows/window_N`.
+- `share/pi/ko-pi.ts` is a copy of `kido-pi.ts`; K8 deletes
+  `kido-pi.ts` and its suite. ko-pi reads the panes' sessions and
+  windows by joining `GET /panes` with `GET /layout`; a `/panes` row
+  does not repeat the document. Its state directory is `ko-pi`, which
+  starts empty: nothing migrates from `kido-pi` (decided 2026-11-02).
+- The run ids are 32 lowercase hex characters, so no id looks like
+  `pane_N`.
+
+### K2b. Layout follow-ups (2 to 3 agent-days, after K3, before K5 step 4)
+
+Depends on K2 and K3. kido-app-notes/ko-api-gap.md 2.1 and the
+decisions of 2026-11-02 (section 7, questions 9 to 15).
+
+Scope:
+
+- `DELETE /windows/window_N` and `DELETE /sessions/session_N`, each
+  one atomic change of the document: a pane created during it cannot
+  survive in a half-closed window. A `PUT` has no remove list. K3's
+  sweep closes a run window with the window delete.
+- A read-only `focus` field on each `Window` in `GET /layout` and the
+  `layout` event: the window's last-focused pane. The server sets it
+  and ignores it on `PUT`.
+- The empty document: when the last session goes, the server keeps
+  running with an empty document; a test pins it.
+- A default name for a new window, derived from its first pane as
+  tmux does; a client can rename the window.
+- A proptest that equalizes an existing tree by omitting its sizes,
+  with the normalization's invariants as properties.
+
+Tests that close it: both deletes with a concurrent pane creation;
+the `focus` field after a focus change and its absence of effect on
+`PUT`; the last session's removal leaves a running server; a new
+window's name from its pane and after a rename; the equalize
+proptest.
+
+Risk: low.
+
 ### K4. Linux measurements (1 to 2 agent-days, after RL)
 
 RL builds, tests and verifies the Rust ko on Linux and adds Ubuntu to
@@ -607,11 +698,19 @@ specification, with the shared core of 4.10 in place of a Swift
    document, the panes with status and variables, the runs, the
    tree), the layout edit call with its retry, view open and close
    with the byte and snapshot feed, input events, `/prompt`, `/runs`,
-   and in K6 the image, clipboard and search calls. Kido.app's Swift
-   side holds no protocol decoding and no reconnect logic.
+   the seen record (4.10: one `Seen` for each host over the set of
+   shown panes and the attendance flag, the one implementation for
+   both clients), and in K6 the image, clipboard and search calls.
+   Kido.app's Swift side holds no protocol decoding and no reconnect
+   logic.
 4. The layout from the model; every gesture one edit call, coalesced
    per gesture step. Tabs, the sidebar tree, seen state and
-   notifications read the model's snapshots.
+   notifications read the model's snapshots. After K2b: a tab of a
+   window that is not current takes its title from the window's
+   `focus` pane, and selecting the window lands on that pane; tabs
+   show the server's default window name until a rename; an empty
+   document shows the app's banner and its start flow opens a new
+   session (the server keeps running).
 5. `PaneView` from a view feed into the surface; find over the full
    mirror; no capture, no Load more, no anchors.
 6. Delete `TmuxControl`, `PaneSync`, `HistoryCapture`, `SearchCapture`,
@@ -691,7 +790,9 @@ Scope after the fork:
   source on the connection; the `<dir>/shm` leak record keyed by
   image, frame and generation, cleaned at start and after a `ko-pane`
   crash. `clipboard.rs` (one answerer by focus, the 8 s timer,
-  `clipboard_answer` on `/client`). `GET /panes/pane_N/search` as a
+  `clipboard_answer` on `/client`). A clipboard read for a pane that
+  no attended window shows is refused at once, as the app does today;
+  it does not wait 8 s for an answerer (decided 2026-11-02). `GET /panes/pane_N/search` as a
   WebSocket with the match stream and `done`. `ko_sys::mapping`: a
   named kept object. Protocol minor.
 - `ko_tui`: OSC 52 writes forwarded to the outer terminal; reads
@@ -748,9 +849,11 @@ Scope:
   `ssh HOST ko server`.
 - Reconnect by offset, gated on `instance`.
 - Kido.app: the forward on the master it already owns; discovery
-  reads `/version` through the forward; `SSH_AUTH_SOCK` for remote
-  panes stays the app's `agent.sock` publication, which `ko server`
-  inherits into every pane's environment.
+  reads `/version` through the forward.
+- `SSH_AUTH_SOCK`: `ko server` sets it to `<dir>/agent.sock` by
+  default, so every pane gets the app's agent publication, also on a
+  server that `ko` started before the first app window. There is no
+  server-environment route (decided 2026-11-02).
 - Measured: attach, 100k-line restore and echo at 50, 150 and 300 ms
   RTT with a throttled link, with and without a compression crate in
   a scratch build. The result decides question 2 of section 7.
@@ -802,17 +905,18 @@ and ends its panes.
 | K1 status, variables, `ko shell`, `ko ssh` | 10 to 14 | none | S1 |
 | K2 layout document, reconnect gate | 8 to 11 | none (beside K1) | S2 |
 | K3 runs, prompt, harness | 12 to 17 | K1, K2 | S3 |
+| K2b layout follow-ups | 2 to 3 | K2, K3 | none |
 | K4 Linux measurements | 1 to 2 | RL | S4 (rest) |
-| K5 Kido.app on `ko_client`, text | 16 to 24 | K1, K2 (steps 1 and 2 at once) | S5 |
+| K5 Kido.app on `ko_client`, text | 16 to 24 | K1, K2 (steps 1 and 2 at once); K2b before step 4 | S5 |
 | K6 images with animation (fork first), clipboard, search | 12 to 17 | K1; K5 for the app part | S6 |
 | K7 remote | 5 to 8 | RL, K2; K5 for the app part | S7 |
 | K8 cut-over | 6 to 9 | K3, K5, K6, K7 | S8 |
 | K9 upgrade in place | 7 to 10 | K8 | S9 |
 
-To the cut-over: 70 to 102 agent-days of implementation, plus review
+To the cut-over: 72 to 105 agent-days of implementation, plus review
 and verification. K0 did the `ko_client` split before K1 and K2. The critical path is K2, K5, K6 (app part), K7 (app
-part), K8. K1, K3, K4 and the server parts of K6 and K7 run beside
-K5. RL must land before K7's acceptance. The earlier total was 67 to
+part), K8, with K3 and K2b before K5 step 4. K1, K4 and the server
+parts of K6 and K7 run beside K5. RL must land before K7's acceptance. The earlier total was 67 to
 102; the Rust base adds the port surcharge on K1 and K3 and removes
 most of S4.
 
@@ -876,3 +980,26 @@ Decided:
    an `.xcframework` through a hand-written C ABI, with no
    libghostty-vt inside the core; `ko_tui` keeps its mirror outside
    the core; K5 starts with the probe. Decided.
+
+Decided 2026-11-02, from Kido.app's review of ko
+(kido-app-notes/ko-api-gap.md section 3):
+
+9. **Window and session deletion.** `DELETE /windows/window_N` and
+   `DELETE /sessions/session_N`, each atomic; no remove list in `PUT`
+   (K2b).
+10. **The window's last-focused pane.** A read-only `focus` field on
+    `Window` in `GET /layout` and the `layout` event; the server sets
+    it and ignores it on `PUT`; the app keeps no copy (K2b, K5 step 4).
+11. **Seen state.** It moves into `ko_client` (4.10) with a set of
+    shown panes and an attendance flag; both clients use this one
+    implementation, with one `Seen` for each host (K5 step 3).
+12. **`SSH_AUTH_SOCK`.** `ko server` sets it to `<dir>/agent.sock` by
+    default; there is no server-environment route (K7).
+13. **Clipboard reads for a pane that no attended window shows.**
+    Refused at once, today's rule; no 8 s wait for an answerer (K6).
+14. **The empty document.** When the last session goes, the server
+    keeps running with an empty document, and the app opens a new
+    session (K2b for the server, K5 step 4 for the app).
+15. **Window names.** The server gives a new window a default name,
+    derived from its first pane as tmux does; clients can rename it
+    (K2b, K5 step 4).

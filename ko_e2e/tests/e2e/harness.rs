@@ -71,6 +71,14 @@ pub(crate) fn poll(what: &str, mut check: impl FnMut() -> bool) {
     }
 }
 
+pub(crate) fn stays(what: &str, duration: Duration, mut check: impl FnMut() -> bool) {
+    let end = Instant::now() + duration;
+    while Instant::now() < end {
+        assert!(check(), "{what}");
+        thread::park_timeout(Duration::from_millis(50));
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Dir(PathBuf);
 
@@ -984,6 +992,19 @@ impl Server {
 
     pub(crate) fn stty(&self, pane: &str) -> (u32, u32) {
         self.sttys(&[pane])[0]
+    }
+
+    pub(crate) fn set_var(&self, pane: &str, name: &str, value: &Value) {
+        self.request(
+            "PUT",
+            &format!("/panes/{pane}/vars/{name}"),
+            Some(value),
+            200,
+        );
+    }
+
+    pub(crate) fn unset_var(&self, pane: &str, name: &str) {
+        self.request("DELETE", &format!("/panes/{pane}/vars/{name}"), None, 200);
     }
 
     pub(crate) fn text(&self, pane: &str, text: &str) {
