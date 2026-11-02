@@ -2037,6 +2037,13 @@ delegates to subagents, by these rules:
   make test in app/ (plus make visual for a visible change) when the
   change touches app/ or the shared third_party/ghostty pin; nobody runs
   make fuzz, long fuzzing runs only in CI
+- flakes and fuzzing have a time box: a flake investigation gets 5
+  minutes, and a fuzz or long property-test run gets 5 minutes; then the
+  agent reports what it has; first suspect the test (a race in its waits,
+  a read that discards what it waits for later, a wall-clock bound): a
+  flaky test is rewritten to wait for the event, or dropped if it repeats
+  another test; no load loops that saturate the CPU, because other agents
+  work on the same machine
 - macOS is the platform that counts for now: a failure that occurs only on
   Linux CI gets no unit unless the user asks, and briefs ask for no Linux
   checks
