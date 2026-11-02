@@ -4,7 +4,7 @@ DERIVED := build/xcode.noindex/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
+.PHONY: ko-probe visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
 
 project:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
@@ -64,6 +64,15 @@ visual visual-fast visual-slow: project
 		-destination platform=macOS -derivedDataPath $(DERIVED) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
 		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(VISUAL_TMUX) $$select test
 	python3 scripts/quit-check.py $(abspath $(APP))
+
+KO_CHECKOUT ?= $(HOME)/Workspace/kido-rust
+
+ko-probe: KO_ABS = $(abspath $(KO_CHECKOUT))
+ko-probe: DERIVED = build/xcode.noindex/derived-$@
+ko-probe: project
+	$(MAKE) -C $(KO_ABS) build-ko
+	TEST_RUNNER_KO_BIN=$(KO_ABS)/build/ko/bin/ko xcodebuild -quiet -project Kido.xcodeproj -scheme KoProbe -configuration Debug -destination platform=macOS \
+		-derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) test
 
 run: all
 	open -W $(APP)
