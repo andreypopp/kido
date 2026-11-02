@@ -53,6 +53,33 @@ fn time_left(deadline: Instant) -> Duration {
         .expect("the deadline passed")
 }
 
+#[derive(Debug)]
+pub(crate) struct Steady(UnixStream);
+
+impl Deref for Steady {
+    type Target = UnixStream;
+
+    fn deref(&self) -> &UnixStream {
+        &self.0
+    }
+}
+
+impl Read for Steady {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        ko_sys::retry::retry(|| self.0.read(buffer))
+    }
+}
+
+impl Write for Steady {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        ko_sys::retry::retry(|| self.0.write(bytes))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        ko_sys::retry::retry(|| self.0.flush())
+    }
+}
+
 fn read_within(stream: &UnixStream, deadline: Instant) {
     stream.set_read_timeout(Some(time_left(deadline))).unwrap();
 }
@@ -380,7 +407,7 @@ impl Record<'_> {
 
 #[derive(Debug)]
 pub(crate) struct Ws {
-    socket: WebSocket<UnixStream>,
+    socket: WebSocket<Steady>,
     deadline: Instant,
 }
 
@@ -431,7 +458,7 @@ impl Ws {
             .unwrap_or_else(|error| panic!("send {value}: {error}"));
     }
 
-    pub(crate) fn raw(&mut self) -> &mut UnixStream {
+    pub(crate) fn raw(&mut self) -> &mut Steady {
         self.socket.get_mut()
     }
 
@@ -662,8 +689,8 @@ impl Server {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
-    pub(crate) fn dial(&self) -> std::io::Result<UnixStream> {
-        UnixStream::connect(self.dir.join("socket"))
+    pub(crate) fn dial(&self) -> std::io::Result<Steady> {
+        UnixStream::connect(self.dir.join("socket")).map(Steady)
     }
 
     pub(crate) fn headers(&self) -> Headers {
@@ -785,9 +812,6 @@ impl Server {
 
     pub(crate) fn dial_ws(&self, path: &str, headers: Option<Headers>, status: u16) -> Option<Ws> {
         let headers = headers.unwrap_or_else(|| self.headers());
-        let stream = self.dial().unwrap();
-        stream.set_read_timeout(Some(DEADLINE)).unwrap();
-        stream.set_write_timeout(Some(DEADLINE)).unwrap();
         let mut request =
             tungstenite::client::IntoClientRequest::into_client_request(format!("ws://ko{path}"))
                 .unwrap();
@@ -797,6 +821,9 @@ impl Server {
                 HeaderValue::from_str(value).unwrap(),
             );
         }
+        let stream = self.dial().unwrap();
+        stream.set_read_timeout(Some(DEADLINE)).unwrap();
+        stream.set_write_timeout(Some(DEADLINE)).unwrap();
         let shaken = tungstenite::client::client(request, stream);
         if status != 101 {
             match shaken {

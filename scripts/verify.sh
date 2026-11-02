@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 unset KIDO_AGENT_PARENT_SESSION KIDO_AGENT_DIR KIDO_RUN_ID KIDO_RUN_OUTPUT TMUX_PANE TMUX
 IFS=: read -r -a entries <<< "$PATH"
 PATH=
-for entry in "${entries[@]}"; do
+for entry in ${entries[@]+"${entries[@]}"}; do
   [[ ${entry%/} == *share/kido/bin ]] || PATH+="${PATH:+:}$entry"
 done
 export PATH KIDO_E2E_REQUIRED=1 KIDO_TS_TEST_REQUIRED=1

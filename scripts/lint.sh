@@ -254,7 +254,7 @@ fi
 for extension in kido-pi ko-pi; do
   fixture=share/pi/testdata/prompts.txt
   [[ "$extension" == ko-pi ]] && fixture=share/pi/testdata/ko-prompts.txt
-  if ! node "${node_flags[@]}" scripts/dump-prompts.ts "$extension" > "$scratch/prompts.txt"; then
+  if ! node ${node_flags[@]+"${node_flags[@]}"} scripts/dump-prompts.ts "$extension" > "$scratch/prompts.txt"; then
     echo 'scripts/dump-prompts.ts:1: prompt dump failed' >&2
     exit 1
   fi

@@ -144,7 +144,7 @@ done
 
 busy_names=()
 cleanup() {
-	for name in "${busy_names[@]}"; do
+	for name in ${busy_names[@]+"${busy_names[@]}"}; do
 		"$podman" stop -t 1 "$name" >/dev/null 2>&1 || true
 	done
 }
@@ -186,13 +186,13 @@ status=0
 	--name "$container_name" \
 	--cpus "$cpus" \
 	--memory "$memory" \
-	"${cpu_shares_args[@]}" \
-	"${userns_args[@]}" \
+	${cpu_shares_args[@]+"${cpu_shares_args[@]}"} \
+	${userns_args[@]+"${userns_args[@]}"} \
 	-e KIDO_STATE_DIR=/tmp/kido-state \
 	-e HOME=/home/ci \
-	"${env_args[@]}" \
+	${env_args[@]+"${env_args[@]}"} \
 	-v "$repo_root:/repo:Z" \
-	"${git_args[@]}" \
+	${git_args[@]+"${git_args[@]}"} \
 	-v kido-ci-like-gomodcache:/go/pkg/mod \
 	-v kido-ci-like-gocache:/gocache \
 	-v kido-ci-like-dune-build:/dune-build \
