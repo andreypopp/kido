@@ -12,9 +12,29 @@ pub fn bytes() -> io::Result<[u8; 16]> {
     }
 }
 
+pub fn hex(count: usize) -> io::Result<String> {
+    Ok(bytes()?
+        .iter()
+        .take(count)
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_is_two_lowercase_digits_for_each_requested_byte() {
+        let text = hex(5).unwrap();
+        assert!(
+            text.len() == 10
+                && text
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_eq!(hex(16).unwrap().len(), 32);
+    }
 
     #[test]
     fn two_reads_differ() {

@@ -399,6 +399,16 @@ impl Outer {
     }
 
     pub(crate) fn attach(&self, pager: &str) {
+        let state = format!("--server {}", quote(text_of(&self.state)));
+        self.start(pager, "", &state);
+    }
+
+    pub(crate) fn attach_host(&self, host: &str, path_prefix: &Path) {
+        let path = format!("PATH={}:\"$PATH\"", quote(text_of(path_prefix)));
+        self.start("", &path, &quote(host));
+    }
+
+    fn start(&self, pager: &str, extra_env: &str, tail: &str) {
         let pager_env = if pager.is_empty() {
             "-u PAGER LESS=-RiF".to_owned()
         } else {
@@ -412,9 +422,8 @@ impl Outer {
         let command = format!(
             "/bin/sh -c {}; printf '\\nKO-DETACHED\\n'",
             quote(&format!(
-                "echo $$ > {}; exec env {pager_env} {program} --server {}",
+                "echo $$ > {}; exec env {pager_env} {extra_env} {program} {tail}",
                 quote(text_of(&self.pidfile)),
-                quote(text_of(&self.state))
             ))
         );
         self.attaches.fetch_add(1, Ordering::Relaxed);

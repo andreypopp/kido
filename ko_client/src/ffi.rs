@@ -3539,6 +3539,47 @@ mod tests {
     }
 
     #[test]
+    fn only_a_full_snapshot_gives_a_view_an_offset_to_resume_from() {
+        let (screen_seen, screen_done) = channel::<()>();
+        let (go, proceed) = channel::<()>();
+        let routes = client_script(|socket, _| {
+            welcomed(socket);
+            wait_for_hangup(socket);
+        })
+        .view(move |socket, _| {
+            send_binary(socket, slice_record(10, true, true, false, b"screen"));
+            send_binary(socket, output_record(10, b"after"));
+            let _ = screen_seen.send(());
+            let _ = proceed.recv_timeout(WAIT);
+            send_binary(socket, slice_record(50, true, true, true, b"whole"));
+            send_binary(socket, output_record(50, b"kept"));
+            wait_for_hangup(socket);
+        });
+        let server = serve("resume-eligibility", routes);
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
+        let decoder = Decoder::new(|snapshot| {
+            pull(snapshot, usize::MAX, 64).unwrap();
+            Restored::Ok
+        });
+        let view = open_view(client, decoder, false);
+        assert_eq!(fixture.next(), Seen::Restored(1, Restored::Ok));
+        assert_eq!(decoder.next_feed(), Fed::Bytes(10, b"after".to_vec()));
+        screen_done.recv_timeout(WAIT).unwrap();
+        assert_eq!(handle_of(view).view.resume_offset(), None);
+        go.send(()).unwrap();
+        assert_eq!(fixture.next(), Seen::Restored(2, Restored::Ok));
+        assert_eq!(decoder.next_feed(), Fed::Bytes(50, b"kept".to_vec()));
+        until("the full snapshot's bytes advance the offset", || {
+            handle_of(view).view.resume_offset() == Some(54)
+        });
+        close_view(view);
+        close(client);
+    }
+
+    #[test]
     fn a_size_mismatch_is_reported_without_a_resync_and_the_apps_resync_is_the_next_request() {
         let (asked, resync) = channel::<String>();
         let routes = client_script(|socket, _| {

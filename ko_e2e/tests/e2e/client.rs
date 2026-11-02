@@ -961,3 +961,43 @@ fn sidebar_mark_column() {
     );
     o.detach();
 }
+
+#[test]
+fn client_a_signal_ends_it_while_the_pager_runs_and_removes_the_pager_file() {
+    let s = start(&[]);
+    s.pane("printf 'pane-one\\n'; exec /bin/sh");
+    let o = Outer::new(&s.dir, Keys::Extended);
+    let (pager, record) = pager_fixture(&o.dir);
+    o.attach(text_of(&pager));
+    o.contains("pane-one");
+    o.chord('e');
+    o.contains("PAGER-OPEN");
+    let file = PathBuf::from(std::fs::read_to_string(&record).unwrap());
+    signal_descendant(o.shell_pid(), o.client_pid(), Signal::Term).unwrap();
+    o.detached();
+    o.wait("pager file removed", || !file.exists());
+}
+
+#[test]
+fn client_a_new_pane_of_a_local_attach_has_the_cwd_of_the_client() {
+    let s = start(&[]);
+    let first = s.pane("printf 'pane-one\\n'; exec /bin/sh");
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("pane-one");
+    o.chord('n');
+    crate::harness::poll("a second pane", || s.rows().len() == 2);
+    let created = s
+        .rows()
+        .into_iter()
+        .find(|row| row["id"] != first.as_str())
+        .unwrap();
+    assert!(
+        created["cwd"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("ko-tui-"),
+        "{created}"
+    );
+    o.detach();
+}

@@ -82,6 +82,14 @@ fn environment(config: &Config, id: PaneId, requested: &[Variable]) -> Vec<Vec<u
         }
         forced.push(("PATH", path));
     }
+    let agent = (
+        "SSH_AUTH_SOCK",
+        crate::agent::socket(&config.dir)
+            .as_os_str()
+            .as_encoded_bytes()
+            .to_vec(),
+    );
+    let requested_agent = requested.iter().any(|variable| variable.name == agent.0);
     let overrides: Vec<(&str, Vec<u8>)> = forced
         .iter()
         .cloned()
@@ -91,6 +99,7 @@ fn environment(config: &Config, id: PaneId, requested: &[Variable]) -> Vec<Vec<u
                 .filter(|variable| forced.iter().all(|(forced, _)| *forced != variable.name))
                 .map(|variable| (variable.name.as_str(), variable.value.clone().into_bytes())),
         )
+        .chain((!requested_agent).then_some(agent))
         .collect();
     let overridden = |entry: &&Vec<u8>| {
         let name = entry.split(|&byte| byte == b'=').next().unwrap_or_default();
@@ -312,9 +321,24 @@ mod tests {
                 "KO_PANE=pane_3".to_owned(),
                 "KO_SHELL=/bin/sh".to_owned(),
                 "LANG=en".to_owned(),
+                "SSH_AUTH_SOCK=/tmp/agent.sock".to_owned(),
                 "HOME=/home".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn a_requested_ssh_auth_sock_wins_over_the_default_agent_socket() {
+        let requested = [Variable {
+            name: "SSH_AUTH_SOCK".to_owned(),
+            value: "/mine".to_owned(),
+        }];
+        let env: Vec<String> = environment(&config(), PaneId::new(3), &requested)
+            .into_iter()
+            .map(|entry| String::from_utf8(entry).unwrap())
+            .filter(|entry| entry.starts_with("SSH_AUTH_SOCK"))
+            .collect();
+        assert_eq!(env, ["SSH_AUTH_SOCK=/mine".to_owned()]);
     }
 
     #[test]

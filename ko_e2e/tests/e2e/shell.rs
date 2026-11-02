@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use crate::harness::{DEADLINE, Dir, Server, ko, run_ko, run_program, start_with, test_env, which};
+use crate::harness::{
+    DEADLINE, Dir, Server, host_ssh_enabled, ko, run_ko, run_program, start_with, test_env, which,
+};
 use crate::status::{Flavour, dotfiles, shell_of};
 
 pub(crate) fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
@@ -27,13 +29,6 @@ fn path_with(dir: &Path) -> String {
         dir.display(),
         std::env::var("PATH").unwrap_or_default()
     )
-}
-
-fn zsh_server(path: &str) -> Option<Server> {
-    let shell = shell_of(&Flavour::Zsh)?;
-    let s = start_with(&shell, &[("PATH", path)], &[]);
-    dotfiles(&Flavour::Zsh, &s.dir, "");
-    Some(s)
 }
 
 #[test]
@@ -378,16 +373,18 @@ fn login_command() {
 // dotfiles, whatever HOME the test sets. They run only with KO_E2E_HOST_SSH=1; then a failed ssh
 // probe or a missing zsh is a failure, not a skip.
 fn host_ssh() -> Option<Server> {
-    if std::env::var("KO_E2E_HOST_SSH").as_deref() != Ok("1") {
-        eprintln!("skipped: KO_E2E_HOST_SSH is not 1");
+    if !host_ssh_enabled() {
         return None;
     }
     let ssh = which("ssh").expect("ssh is not on PATH");
     let probe = Dir::new("ko-host-ssh-");
+    let agent = std::env::var("SSH_AUTH_SOCK").unwrap_or_default();
+    let mut env = test_env(&probe);
+    env.push(format!("SSH_AUTH_SOCK={agent}").into_bytes());
     let run = run_program(
         &probe,
         &ssh,
-        &test_env(&probe),
+        &env,
         &["-o", "BatchMode=yes", "localhost", "true"],
         "",
         DEADLINE,
@@ -397,8 +394,10 @@ fn host_ssh() -> Option<Server> {
         ko_sys::pid::Exit::Exited(0),
         "ssh to localhost: {run:?}"
     );
-    let s = zsh_server(&std::env::var("PATH").unwrap_or_default())
-        .expect("KO_E2E_HOST_SSH needs a local zsh");
+    let shell = shell_of(&Flavour::Zsh).expect("KO_E2E_HOST_SSH needs a local zsh");
+    let path = std::env::var("PATH").unwrap_or_default();
+    let s = start_with(&shell, &[("PATH", &path), ("SSH_AUTH_SOCK", &agent)], &[]);
+    dotfiles(&Flavour::Zsh, &s.dir, "");
     Some(s)
 }
 

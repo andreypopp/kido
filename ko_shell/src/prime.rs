@@ -156,11 +156,7 @@ fn bash_has_ps0(output: &str) -> bool {
 fn throwaway_dir() -> io::Result<PathBuf> {
     let base = std::env::temp_dir();
     loop {
-        let suffix: String = ko_sys::entropy::bytes()?
-            .iter()
-            .take(3)
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let suffix = ko_sys::entropy::hex(3)?;
         let dir = base.join(format!("ko-shell.{suffix}"));
         match fs::DirBuilder::new().mode(0o700).create(&dir) {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}

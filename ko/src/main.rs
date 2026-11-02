@@ -11,13 +11,16 @@ use clap::{Args, Parser, Subcommand};
 use ko_client::api;
 use ko_client::launch::{self, PATIENCE};
 use ko_client::layout::Document;
+use ko_client::remote::Remote;
 use ko_pane_wire::frame::Scrollback;
+use ko_server::agent;
 use ko_server::api::Route;
 use ko_server::config::{self, Config, DEFAULT_LIMITS};
 use ko_server::protocol::{self, Cause, Row};
 use ko_server::schema;
 use ko_server::server::{Server, Status, Timing};
 use ko_shell::{bin_dir, shell, ssh};
+use ko_sys::signal::{Signal, Signals};
 use ko_tui::client;
 
 mod runs;
@@ -25,12 +28,19 @@ mod runs;
 const USAGE_ERROR: u8 = 124;
 
 /// The ko terminal. Without a command, it attaches to the server and starts one if none runs.
+///
+/// With HOST, ko attaches over ssh to the ko server that already runs on HOST. It forwards the
+/// server's unix socket through an ssh master connection, and it reconnects when the connection
+/// ends. It never starts a server on HOST: run "ssh HOST ko server" for that.
 #[derive(Debug, Parser)]
 #[command(name = "ko")]
 struct Cli {
     /// The server's state directory.
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", conflicts_with = "host")]
     server: Option<PathBuf>,
+    /// The host to attach to over ssh, as ssh names it.
+    #[arg(value_name = "HOST")]
+    host: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -213,13 +223,20 @@ struct ServerArgs {
     /// share/ko/bin beside the installed ko, if it exists.
     #[arg(long, value_name = "DIR")]
     bin_dir: Option<PathBuf>,
+    /// Print the absolute path of the socket that the server would use, and start nothing.
+    #[arg(long)]
+    print_socket: bool,
 }
 
 #[derive(Debug, Args)]
 struct ApiArgs {
     /// The server's state directory.
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", conflicts_with = "host")]
     server: Option<PathBuf>,
+    /// Send the request to the ko server on HOST, over an ssh forward that ko opens for this one
+    /// request.
+    #[arg(long, value_name = "HOST")]
+    host: Option<String>,
     /// The HTTP method. The default is GET, or POST with --input.
     #[arg(long, short = 'X', value_name = "METHOD")]
     method: Option<String>,
@@ -256,6 +273,18 @@ fn invoked() -> PathBuf {
 }
 
 fn server(args: ServerArgs) -> ExitCode {
+    if args.print_socket {
+        let socket = std::path::absolute(config::dir(args.server))
+            .map_err(|error| error.to_string())
+            .and_then(|dir| config::socket_path(&dir));
+        return match socket {
+            Ok(socket) => {
+                let _ = writeln!(io::stdout().lock(), "{}", socket.display());
+                ExitCode::SUCCESS
+            }
+            Err(message) => fail("server", message),
+        };
+    }
     let (default_bytes, default_lines) = default_limits();
     let chosen = |limit: Option<Limit>, default| match limit {
         None => default,
@@ -280,6 +309,9 @@ fn server(args: ServerArgs) -> ExitCode {
         Ok(config) => config,
         Err(message) => return fail("server", message),
     };
+    if let Err(error) = agent::publish(&config.dir, std::env::var_os("SSH_AUTH_SOCK").as_deref()) {
+        eprintln!("ko server: SSH_AUTH_SOCK: {error}");
+    }
     let served = launch::bind(&config.dir, &config.socket, PATIENCE)
         .and_then(|listener| Server::new(config, listener, Timing::DEFAULT))
         .and_then(|mut server| {
@@ -349,7 +381,14 @@ fn api(args: ApiArgs) -> ExitCode {
     if !args.path.starts_with('/') {
         return fail("api", "path must start with /");
     }
-    let dir = client_dir(args.server);
+    let remote = match args.host.as_deref().map(open_remote).transpose() {
+        Ok(remote) => remote,
+        Err(code) => return code,
+    };
+    let dir = remote.as_ref().map_or_else(
+        || client_dir(args.server),
+        |(remote, _)| remote.dir().to_path_buf(),
+    );
     match api::request(&dir, &method, &args.path, &body) {
         Err(api::Error::Websocket) => {
             eprintln!(
@@ -358,7 +397,10 @@ fn api(args: ApiArgs) -> ExitCode {
             );
             ExitCode::from(2)
         }
-        Err(api::Error::Server(failure)) => server_failure("api", &dir, failure),
+        Err(api::Error::Server(failure)) => match &remote {
+            Some((remote, _)) => fail(remote.host(), remote.unreachable()),
+            None => server_failure("api", &dir, failure),
+        },
         Ok(response) => {
             let mut out = io::stdout().lock();
             if args.include {
@@ -375,14 +417,32 @@ fn api(args: ApiArgs) -> ExitCode {
     }
 }
 
-fn ssh(args: &[OsString]) -> ExitCode {
+fn ssh_binary() -> Result<PathBuf, String> {
     let path = std::env::var("PATH").unwrap_or_default();
-    let found = match bin_dir::of_exe(&invoked()) {
+    match bin_dir::of_exe(&invoked()) {
         Some(dir) => bin_dir::look_path_past(&path, &dir, "ssh")
             .ok_or_else(|| format!("no ssh on PATH past {}", dir.display())),
         None => bin_dir::look_path(&path, "ssh").ok_or_else(|| "ssh not found on PATH".to_owned()),
-    };
-    let ssh_path = match found {
+    }
+}
+
+fn open_remote(host: &str) -> Result<(Remote, Signals), ExitCode> {
+    let signals = Signals::install(&[
+        Signal::Hup,
+        Signal::Term,
+        Signal::Int,
+        Signal::Quit,
+        Signal::Child,
+    ])
+    .map_err(|error| fail(host, error))?;
+    let ssh = ssh_binary().map_err(|message| fail(host, message))?;
+    Remote::open(host, &ssh, &config::dir(None), &signals)
+        .map(|remote| (remote, signals))
+        .map_err(|error| fail(host, error))
+}
+
+fn ssh(args: &[OsString]) -> ExitCode {
+    let ssh_path = match ssh_binary() {
         Ok(found) => found,
         Err(message) => return fail("ssh", message),
     };
@@ -492,14 +552,20 @@ fn layout(args: LayoutArgs) -> ExitCode {
     }
 }
 
-fn attach(server: Option<PathBuf>) -> ExitCode {
+fn attach(server: Option<PathBuf>, host: Option<String>) -> ExitCode {
     let pager = std::env::var("PAGER")
         .ok()
         .filter(|pager| !pager.is_empty())
         .unwrap_or_else(|| "less -R +G -+F".to_owned());
-    match client::run(&config::dir(server), &invoked(), &pager) {
+    let attached = match &host {
+        None => client::run(&config::dir(server), &invoked(), &pager),
+        Some(host) => {
+            ssh_binary().and_then(|ssh| client::run_remote(host, &ssh, &config::dir(None), &pager))
+        }
+    };
+    match attached {
         Ok(()) => ExitCode::SUCCESS,
-        Err(message) => fail("attach", message),
+        Err(message) => fail(host.as_deref().unwrap_or("attach"), message),
     }
 }
 
@@ -516,7 +582,7 @@ fn main() -> ExitCode {
         }
     };
     let Some(command) = cli.command else {
-        return attach(cli.server);
+        return attach(cli.server, cli.host);
     };
     match command {
         Command::Server(args) => server(args),

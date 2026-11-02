@@ -11,7 +11,7 @@ use ko_pane_wire::frame::{Limits, Medium, Scrollback};
 
 pub(crate) const BUILD: &str = env!("KO_BUILD");
 
-const SUN_PATH_MAX: usize = 103;
+pub const SUN_PATH_MAX: usize = 103;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -104,7 +104,7 @@ pub enum Dir {
     Existing,
 }
 
-pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
+pub fn socket_path(dir: &Path) -> Result<PathBuf, String> {
     let socket = dir.join("socket");
     if dir.as_os_str().as_encoded_bytes().contains(&b',') {
         return Err("server directory contains a comma".to_owned());
@@ -112,6 +112,11 @@ pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
     if socket.as_os_str().len() > SUN_PATH_MAX {
         return Err(format!("server socket path exceeds {SUN_PATH_MAX} bytes"));
     }
+    Ok(socket)
+}
+
+pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
+    let socket = socket_path(dir)?;
     if mode == Dir::Create {
         fs::DirBuilder::new()
             .recursive(true)

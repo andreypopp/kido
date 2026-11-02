@@ -19,7 +19,7 @@ use crate::launch::{self, PATIENCE};
 
 const MAX_MESSAGE: usize = 128 << 20;
 const RECEIVE_BUFFER: usize = 1 << 20;
-pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(40);
+pub const READ_TIMEOUT: Duration = Duration::from_secs(40);
 pub const WATCHDOG: Duration = Duration::from_secs(40);
 
 // poll cannot see frames that the upgrade read already buffered in the link,
@@ -139,7 +139,7 @@ fn fetch(
     client: Option<ClientId>,
     route: &Route,
     body: &[u8],
-    cancel: Option<&Wake>,
+    (cancel, within): (Option<&Wake>, Duration),
     mut sink: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> Result<(), String> {
     let (method, target) = route.to_request();
@@ -148,7 +148,7 @@ fn fetch(
         (client, None),
         (method, &target),
         body,
-        READ_TIMEOUT,
+        within,
         cancel,
     )
     .map_err(text)?;
@@ -156,7 +156,7 @@ fn fetch(
     let mut reader = Interruptible {
         stream: &stream,
         cancel,
-        within: READ_TIMEOUT,
+        within,
     };
     let response = http::read_response_with(&mut reader, |head, piece| {
         if head.status == 200 {
@@ -186,8 +186,18 @@ pub fn request(
     body: &[u8],
     cancel: Option<&Wake>,
 ) -> Result<Vec<u8>, String> {
+    request_within(socket, client, route, body, (cancel, READ_TIMEOUT))
+}
+
+pub fn request_within(
+    socket: &Path,
+    client: Option<ClientId>,
+    route: &Route,
+    body: &[u8],
+    limits: (Option<&Wake>, Duration),
+) -> Result<Vec<u8>, String> {
     let mut answer = Vec::new();
-    fetch(socket, client, route, body, cancel, |piece| {
+    fetch(socket, client, route, body, limits, |piece| {
         answer.extend_from_slice(piece);
         Ok(())
     })?;
@@ -200,9 +210,37 @@ pub fn download(
     route: &Route,
     file: &mut impl Write,
 ) -> Result<(), String> {
-    fetch(socket, Some(client), route, b"", None, |piece| {
-        file.write_all(piece)
-    })
+    fetch(
+        socket,
+        Some(client),
+        route,
+        b"",
+        (None, READ_TIMEOUT),
+        |piece| file.write_all(piece),
+    )
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Resume(Option<u64>);
+
+impl Resume {
+    pub fn at(&mut self, offset: u64) {
+        self.0 = Some(offset);
+    }
+
+    pub fn advance(&mut self, end: u64) {
+        if self.0.is_some() {
+            self.0 = Some(end);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    pub fn offset(self) -> Option<u64> {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,20 +306,30 @@ fn failed(error: Error) -> io::Error {
 
 impl Link {
     pub fn upgrade(
-        mut stream: UnixStream,
+        stream: UnixStream,
         client: Option<ClientId>,
         route: &Route,
         cancel: Option<Arc<Wake>>,
     ) -> io::Result<Link> {
-        stream.set_read_timeout(Some(READ_TIMEOUT))?;
+        Link::upgrade_within(stream, client, route, cancel, READ_TIMEOUT)
+    }
+
+    pub fn upgrade_within(
+        mut stream: UnixStream,
+        client: Option<ClientId>,
+        route: &Route,
+        cancel: Option<Arc<Wake>>,
+        within: Duration,
+    ) -> io::Result<Link> {
+        stream.set_read_timeout(Some(within))?;
         ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER)?;
         let (method, target) = route.to_request();
         let (request, key) = upgrade_request(method, &target, client);
-        write_until(&mut stream, &request, cancel.as_deref(), READ_TIMEOUT)?;
+        write_until(&mut stream, &request, cancel.as_deref(), within)?;
         let (response, rest) = http::read_upgrade(&mut Interruptible {
             stream: &stream,
             cancel: cancel.as_deref(),
-            within: READ_TIMEOUT,
+            within,
         })?;
         accepted(&response, &key)?;
         let mut link = Link::of(stream, rest);
@@ -312,8 +360,18 @@ impl Link {
         route: &Route,
         cancel: Option<Arc<Wake>>,
     ) -> io::Result<Link> {
+        Link::connect_within(socket, client, route, cancel, READ_TIMEOUT)
+    }
+
+    pub fn connect_within(
+        socket: &Path,
+        client: Option<ClientId>,
+        route: &Route,
+        cancel: Option<Arc<Wake>>,
+        within: Duration,
+    ) -> io::Result<Link> {
         let stream = launch::connect(socket, PATIENCE, cancel.as_deref())?;
-        Link::upgrade(stream, client, route, cancel)
+        Link::upgrade_within(stream, client, route, cancel, within)
     }
 
     pub fn watch(&mut self, poll: &mut Poll) -> io::Result<Token> {

@@ -16,6 +16,13 @@ pub const PATIENCE: Patience = Patience {
     retry: Duration::from_millis(10),
 };
 
+pub const BACKOFF_FIRST: Duration = Duration::from_millis(100);
+const BACKOFF_LAST: Duration = Duration::from_secs(2);
+
+pub fn backoff_after(backoff: Duration) -> Duration {
+    (backoff * 2).min(BACKOFF_LAST)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Patience {
     deadline: Duration,
@@ -177,6 +184,17 @@ mod tests {
         let dir = PathBuf::from(format!("/tmp/ko-launch-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_backoff_doubles_up_to_its_last_value() {
+        let mut backoff = BACKOFF_FIRST;
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            seen.push(backoff.as_millis());
+            backoff = backoff_after(backoff);
+        }
+        assert_eq!(seen, [100, 200, 400, 800, 1600, 2000, 2000]);
     }
 
     #[test]
