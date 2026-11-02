@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -52,6 +53,7 @@ struct Screen {
     raw: Vec<u8>,
     rows: u16,
     shown: Shown,
+    covered: usize,
     generation: u64,
 }
 
@@ -61,6 +63,7 @@ impl Screen {
         if self.terminal.mode(2026).unwrap_or(false) {
             return;
         }
+        self.covered = self.raw.len();
         let dump = self.terminal.dump(Format::Plain).unwrap();
         let dump = String::from_utf8_lossy(&dump);
         let mut text = String::new();
@@ -106,6 +109,7 @@ pub(crate) struct Outer {
     pub(crate) env: Vec<Vec<u8>>,
     state: PathBuf,
     pidfile: PathBuf,
+    attaches: AtomicUsize,
 }
 
 fn winsize(cols: u16, rows: u16) -> Winsize {
@@ -223,6 +227,7 @@ impl Outer {
                 cursor: (true, 0, 0),
                 modes: Vec::new(),
             },
+            covered: 0,
             generation: 0,
         };
         screen.refresh();
@@ -246,6 +251,7 @@ impl Outer {
             arguments: Vec::new(),
             env,
             state: state.to_path_buf(),
+            attaches: AtomicUsize::new(0),
         }
     }
 
@@ -411,6 +417,7 @@ impl Outer {
                 quote(text_of(&self.state))
             ))
         );
+        self.attaches.fetch_add(1, Ordering::Relaxed);
         self.line(&command);
     }
 
@@ -419,9 +426,17 @@ impl Outer {
         Pid::new(data.trim().parse().unwrap()).expect("a client pid")
     }
 
+    pub(crate) fn shown_marks(&self, marker: &[u8]) -> usize {
+        let screen = self.lock();
+        screen.raw[..screen.covered]
+            .windows(marker.len())
+            .filter(|window| *window == marker)
+            .count()
+    }
+
     pub(crate) fn detached(&self) {
-        self.wait("KO-DETACHED on its own line", || {
-            self.lines().iter().any(|line| line == "KO-DETACHED")
+        self.wait("KO-DETACHED after each attach", || {
+            self.shown_marks(b"\r\nKO-DETACHED\r\n") >= self.attaches.load(Ordering::Relaxed)
         });
     }
 

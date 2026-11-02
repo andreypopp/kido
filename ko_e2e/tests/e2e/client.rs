@@ -5,7 +5,7 @@ use std::time::Duration;
 use ko_sys::pid::{Pid, signal_descendant};
 use ko_sys::signal::Signal;
 
-use crate::harness::{Dir, Server, quote, run_ko, start, text_of};
+use crate::harness::{DEADLINE, Dir, Server, quote, run_ko, start, text_of};
 use crate::outer::{
     CHORD_DOWN, CHORD_UP, DOWN_PRESS_RELEASE, FOCUS_IN, FOCUS_OUT, Keys, Outer, UP,
 };
@@ -304,10 +304,9 @@ fn client_history_and_alternate_screen() {
     o.contains("AFTER-ALT");
 
     let _ = std::fs::remove_file(&record);
+    let before = o.shown_marks(b"PAGER-OPEN");
     o.chord('e');
-    o.wait("pager started", || {
-        read_file(&record).is_some_and(|text| !text.is_empty())
-    });
+    o.wait("pager started", || o.shown_marks(b"PAGER-OPEN") > before);
     let path = read_file(&record).unwrap_or_default();
     let data = read_file(Path::new(&path)).unwrap_or_default();
     assert!(
@@ -336,15 +335,28 @@ fn client_history_and_alternate_screen() {
             quote(producer)
         ),
     );
-    o.wait("output while client is stopped", || {
-        s.request(
-            "GET",
-            &format!("/panes/{alt_pane}/screen?format=plain"),
-            None,
-            200,
-        )
-        .contains("FLOOD-DONE")
-    });
+    let flooded_at = std::time::Instant::now();
+    let mut flood_screen = String::new();
+    assert!(
+        o.within(DEADLINE, || {
+            flood_screen = s.request(
+                "GET",
+                &format!("/panes/{alt_pane}/screen?format=plain"),
+                None,
+                200,
+            );
+            flood_screen.contains("FLOOD-DONE")
+        }),
+        "no FLOOD-DONE {:?} after the client stopped; client ended: {}; pane screen tail:\n{}",
+        flooded_at.elapsed(),
+        client.has_ended(),
+        flood_screen
+            .lines()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     signal_descendant(shell, client, Signal::Cont).unwrap();
     resume.client_stopped = false;
     o.contains("FLOOD-DONE");

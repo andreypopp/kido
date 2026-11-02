@@ -232,6 +232,7 @@ fn pane_runs_the_shims() {
 fn dotfile_probe() {
     let scratch = Dir::new("ko-probe-run-");
     let home = Dir::new("ko-probe-home-");
+    let started = std::time::Instant::now();
     for name in ["bash", "zsh", "sh"] {
         let Some(shell) = which(name) else { continue };
         for args in [
@@ -240,6 +241,7 @@ fn dotfile_probe() {
             &["-c", ":"],
         ] {
             let run = run_program(&scratch, &shell, &test_env(&home), args, "");
+            eprintln!("probe {:?}: {name} {args:?} ended", started.elapsed());
             assert_eq!(
                 run.exit,
                 ko_sys::pid::Exit::Exited(0),
@@ -247,10 +249,12 @@ fn dotfile_probe() {
             );
         }
         let s = start_with(&shell, &[], &[]);
+        eprintln!("probe {:?}: {name} server started", started.elapsed());
         let pane = s.pane("ko shell -- sh -c 'exit 0'");
         s.wait_row(&pane, "the login command to end", |row| {
             !row["dead"].is_null()
         });
+        eprintln!("probe {:?}: {name} login command ended", started.elapsed());
     }
 }
 
@@ -304,6 +308,7 @@ fn shell_dotfile_isolation() {
             "--exact",
             "shell::shell_dotfile_isolation",
             "--test-threads=1",
+            "--nocapture",
         ],
         "",
     );

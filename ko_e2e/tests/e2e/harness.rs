@@ -293,9 +293,16 @@ pub(crate) fn run_program(
         env,
         &[(stdin.as_fd(), 0), (stdout.as_fd(), 1), (stderr.as_fd(), 2)],
     );
-    let exit = child
-        .wait(DEADLINE)
-        .unwrap_or_else(|| panic!("{} {args:?} did not exit", program.display()));
+    let started = Instant::now();
+    let exit = child.wait(DEADLINE).unwrap_or_else(|| {
+        panic!(
+            "{} {args:?} did not exit after {:?}; stdout: {:?}; stderr: {:?}",
+            program.display(),
+            started.elapsed(),
+            std::fs::read_to_string(file("stdout")).unwrap_or_default(),
+            std::fs::read_to_string(file("stderr")).unwrap_or_default(),
+        )
+    });
     Run {
         stdout: std::fs::read_to_string(file("stdout")).unwrap(),
         stderr: std::fs::read_to_string(file("stderr")).unwrap(),
