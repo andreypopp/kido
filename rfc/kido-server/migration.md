@@ -157,7 +157,7 @@ trees. The app does not get a layout engine of its own.
     PUT /layout {revision, layout}  -> 200 {revision, layout}   the normalized document
                                        409 {revision, layout}   the client's revision is stale
                                        400 {kind: invalid, message}
-    event on /client: ["layout", {revision, layout}]   on every change
+    event on /client: {"type": "layout", revision, layout}   on every change
 
 A client reads the document, edits it, and sends it back with the
 revision it read. On `409` it takes the current document from the

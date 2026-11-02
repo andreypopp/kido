@@ -82,6 +82,13 @@ negotiated with `Accept-Encoding` on history and image responses; the
 `/search`, never on views, because their latency matters and the
 bytes compress poorly.
 
+JSON shape: every message is one object. A type with several
+kinds is tagged by its `type` field (the error body by `kind`), and
+the kind's fields are beside the tag, so a reader dispatches on one
+key; a payload that is a value and not a record gets one named
+field. A type whose kinds carry no data is a string. Protocol 2.0
+made this change (it replaced 1.x's `["name", payload]` arrays).
+
 Ids are a lowercase kind, an underscore and a decimal (`pane_N`,
 `client_N`), so a path needs no encoding and a log line shows the
 kind. Sessions and windows exist only inside the layout document
@@ -101,9 +108,12 @@ mirror before it opens a view. The server instance identity is not
 in P1; S5 adds it to `Welcome` (migration.md S5).
 
 Every other request carries the `Ko-Protocol` and `Ko-Vt` headers; a
-request without them is refused as a mismatch. A major mismatch is
-`426 Upgrade Required`, a `vt` mismatch is `409 Conflict`, both with
-a `refused` body that names the server's values. The minor of the
+request without them is refused as a mismatch. The protocol version
+is 2.0. A major mismatch is `426 Upgrade Required`, a `vt` mismatch
+is `409 Conflict`, with a `protocol_mismatch` or `vt_mismatch` body
+that names the server's values beside `kind` and `message`. Those two
+fields have the same place in every major, so a client of any major
+reads the refusal. The minor of the
 server may be higher: it appends fields and resources and never
 removes them. The launcher and Kido.app discovery compare these
 values instead of a server stamp.
@@ -111,7 +121,8 @@ values instead of a server stamp.
 Error kinds and their status codes: `invalid` (400), `not_found`
 (404), `refused` (409), `gone` (410, a closed client), `busy` (503),
 `io` (500), `unknown` (502, the prompt case: the effect may have
-happened, do not retry). The error type is `Protocol.error`.
+happened, do not retry). The error type is `Error` in
+`ko_server/src/protocol.rs`.
 
 ## 3. Clients
 
@@ -394,8 +405,8 @@ rules).
 
 ## 13. Versioning rules
 
-- MAJOR: a field removed or changed in meaning, a resource removed, a
-  record format change.
+- MAJOR: a field removed or changed in meaning or encoding, a
+  resource removed, a record format change.
 - MINOR: a field appended, a new resource, a new event or marker kind,
   a new feature string.
 - `vt`: the libghostty-vt revision; any change is a refusal. kido and

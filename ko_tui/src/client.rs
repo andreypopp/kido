@@ -295,7 +295,7 @@ fn welcome(link: &mut Link) -> Result<(ClientId, Limits, Vec<Row>), String> {
     let ClientEvent::Welcome(welcome) = next()? else {
         return Err("welcome missing".to_owned());
     };
-    let ClientEvent::Topology(panes) = next()? else {
+    let ClientEvent::Topology { panes } = next()? else {
         return Err("topology missing".to_owned());
     };
     Ok((welcome.client, welcome.limits.terminal.limits(), panes))
@@ -460,7 +460,7 @@ impl Client {
     }
 
     fn input_send(&mut self, input: Wire) -> Result<(), String> {
-        self.view_send(&ViewRequest::Input(input))
+        self.view_send(&ViewRequest::Input { input })
     }
 
     fn resize(&mut self) -> Result<(), String> {
@@ -474,16 +474,23 @@ impl Client {
 
     fn switch(&mut self, pane: PaneId) -> Result<(), String> {
         if let View::Showing { mut mirror, .. } = std::mem::replace(&mut self.view, View::None) {
-            mirror.send(&mut self.poll, &ViewRequest::Input(Wire::Focus(false)))?;
+            mirror.send(
+                &mut self.poll,
+                &ViewRequest::Input {
+                    input: Wire::Focus { focused: false },
+                },
+            )?;
             mirror.close(&mut self.poll);
         }
         self.leave_choosing();
         self.session.reset()?;
         self.renderer.invalidate();
-        self.client_send(&ClientRequest::Select(pane))?;
+        self.client_send(&ClientRequest::Select { pane })?;
         let mirror = Mirror::open(&self.socket, self.id, pane, self.limits, &mut self.poll)?;
         self.view = View::open(pane, mirror);
-        self.input_send(Wire::Focus(self.focused))?;
+        self.input_send(Wire::Focus {
+            focused: self.focused,
+        })?;
         self.immediate = true;
         Ok(())
     }
@@ -746,8 +753,8 @@ impl Client {
             }
             Event::Focus(focused) => {
                 self.focused = focused;
-                self.client_send(&ClientRequest::Focused(focused))?;
-                self.input_send(Wire::Focus(focused))
+                self.client_send(&ClientRequest::Focused { focused })?;
+                self.input_send(Wire::Focus { focused })
             }
             Event::Reply(Reply::Kitty) => {
                 self.kitty = true;
@@ -759,7 +766,7 @@ impl Client {
 
     fn server(&mut self, event: ClientEvent) {
         match event {
-            ClientEvent::Topology(panes) => self.panes = panes,
+            ClientEvent::Topology { panes } => self.panes = panes,
             ClientEvent::Title(title) => {
                 for row in self.panes.iter_mut().filter(|row| row.id == title.pane) {
                     row.title.clone_from(&title.title);

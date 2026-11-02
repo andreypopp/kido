@@ -608,7 +608,7 @@ mod tests {
         feed(&mut mirror, first).unwrap();
         marked(
             &mut mirror,
-            r#"["marked",{"offset":0,"marker":["resize",{"cols":8,"rows":2}]}]"#,
+            r#"{"type":"marked","offset":0,"marker":{"type":"resize","cols":8,"rows":2}}"#,
         );
         feed(&mut mirror, &output(b"\x1b[1;50HR")).unwrap();
         for record in rest {
@@ -642,7 +642,7 @@ mod tests {
     fn the_dead_marker_counts_once_the_output_before_it_is_applied() {
         let (mut mirror, _theirs, _poll) = mirror();
         let records = slices(&server(8, 2, "x").snapshot_bytes(false).unwrap(), 10);
-        let dead = r#"["marked",{"offset":0,"marker":["dead",{"at":1,"cause":["exited",3]}]}]"#;
+        let dead = r#"{"type":"marked","offset":0,"marker":{"type":"dead","at":1,"cause":{"type":"exited","code":3}}}"#;
         feed(&mut mirror, &records[0]).unwrap();
         marked(&mut mirror, dead);
         let queued = mirror.dead().cloned();

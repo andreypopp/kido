@@ -728,6 +728,34 @@ The e2e readability pass forced this decision:
      endpoints. `client_grid_limit` merged into
      `hostile_clients_do_not_affect_others`, on its server: 28 tests.
 
+RW forced these decisions:
+
+150. `protocol::decode` decodes through the derive straight from the
+     bytes, so serde still refuses a duplicate field or tag. Only when
+     the bytes contain a `[` does it also parse a `serde_json::Value`
+     and refuse an array where the re-encoded value has an object.
+     This replaces the `Objects` deserializer wrapper (about 200
+     lines): an internally tagged enum buffers its input in serde's
+     private `Content`, so the wrapper no longer sees the nested
+     records. Key, mouse, text, paste, size and view events have no
+     array and pay nothing; a create or a topology pays one `Value`
+     and one re-encoding, on the control path (decision 16).
+151. The fuzz corpora move to the new wire form with a one-off script
+     in the change, not with `make fuzz MERGE=1`: agents do not run
+     `make fuzz`. The script converts each input that parses as the
+     old form, names it by its SHA-1 and drops the inputs that become
+     identical; hostile bytes stay as they are. `decode` kept 18
+     inputs (13 converted), `http` 13 (11 converted, only the
+     `Ko-Protocol` header). AGENTS.md permits this for a format
+     migration in the same change as the code.
+152. `make verify` runs kido's stages and ko's (`build-ko`,
+     `unit-ko`, `e2e-ko`, `lint-rs`, `verus`) in one run, so one
+     command checks everything; `make verify-ko` stays for ko-only
+     work. `make lint-rs` is cargo fmt and clippy; `make lint-ko`
+     adds `scripts/lint.sh`, which `make verify` runs once, in its
+     `ts` stage. The stage `build` is always kido's `dune build`, and
+     `build-ko` is ko's. Off macOS, every ko stage prints SKIP.
+
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
 `wc -l` on 2026-10-31.
@@ -899,7 +927,7 @@ smaller risk.
 | a field with a default (`ignore_size`, `env`, `history`) | `#[serde(default)]` |
 | a renamed field (`to_` as `to`) | `#[serde(rename = "to")]` |
 | a validating id (`pane_N`, `client_N`) | `#[serde(try_from = "String", into = "String")]` on the newtype; `TryFrom<String>` is the one validator |
-| a compact variant (until RW, 2.6): a constructor without arguments is `"name"`, one with an argument is `["name", payload]` | serde's external tagging gives `"name"` for a unit variant but `{"name": payload}` for one with data, so serde has no attribute for the array form. One `macro_rules! compact` in `protocol.rs`, about 70 lines, implements `Serialize` (a unit variant as `serialize_str`, a payload variant as a 2-tuple) and `Deserialize` (a visitor that takes a string or a sequence whose first element names the variant, then decodes the payload with `next_element::<T>()`, so no intermediate `Value`). Each enum lists its variants and names once in the macro call. A constructor with an inline record (`Welcome of {client; limits}`) is a variant with a struct payload |
+| an enum with a payload variant (since RW, 2.6) | internal tagging, `#[serde(tag = "type")]`; until RW a `compact!` macro gave jsonkit's `["name", payload]` form |
 | a closed set of names (`History`, key and mouse actions) | `#[serde(rename_all = "snake_case")]` on a unit enum gives `"none"`, `"all"`; jsonkit's lowercase `[@json.name]` |
 | a decode error | `serde_json::Error`, caught only at an untrusted edge (an HTTP body, a WebSocket text message), mapped to `invalid` (400) |
 
@@ -1036,34 +1064,13 @@ buffered `Content` value, which allocates. That is acceptable, because
 the JSON is the control path, not a ring record (decision 16 counts
 records).
 
-| type (OCaml source) | today | after RW |
-|---|---|---|
-| `cause` (`protocol.ml`) | `["exited", 0]`, `["signaled", 9]`, `["failed", "msg"]` | `{"type": "exited", "code": 0}`, `{"type": "signaled", "signal": 9}`, `{"type": "failed", "message": "msg"}` |
-| `error_kind` in `error` | `{"kind": "invalid", ...}`, `{"kind": ["protocol_mismatch", {version}], "message": ...}` | `{"kind": "invalid", "message": ...}`; `{"kind": "protocol_mismatch", "protocol": ..., "vt": ..., "build": ..., "message": ...}` (flattened, tag `kind`) |
-| `command` | `["argv", [...]]`, `["shell", "cmd"]` | `{"type": "argv", "argv": [...]}`, `{"type": "shell", "command": "cmd"}` |
-| `marker` | `["resize", {size}]`, `["dead", {dead}]` | `{"type": "resize", "cols": ..., "rows": ...}`, `{"type": "dead", "at": ..., "cause": {...}}` |
-| `Request.input` | `["key", {key}]`, `["mouse", {...}]`, `["paste", {...}]`, `["text", "b64"]`, `["focus", true]` | `{"type": "key", ...}`, `{"type": "mouse", ...}`, `{"type": "paste", ...}`, `{"type": "text", "data": "b64"}`, `{"type": "focus", "focused": true}` |
-| `Request.client` | `["hello", {...}]`, `["select", "pane_1"]`, `["size", {...}]`, `["focused", true]` | `{"type": "hello", ...}`, `{"type": "select", "pane": "pane_1"}`, `{"type": "size", ...}`, `{"type": "focused", "focused": true}` |
-| `Request.view` | `["resync", {options}]`, `["input", input]` | `{"type": "resync", "history": ..., "images": ...}`, `{"type": "input", "input": {...}}` |
-| `Event.client` | `["welcome", {...}]`, `["topology", [rows]]`, `["title", {...}]`, `["pwd", {...}]`, `["dead", {...}]` | `{"type": "welcome", ...}`, `{"type": "topology", "panes": [rows]}`, `{"type": "title", ...}`, `{"type": "pwd", ...}`, `{"type": "dead", ...}` |
-| `Event.view` | `["marked", {offset, marker}]`, `["skipped", {...}]`, `["pasted", {...}]` | `{"type": "marked", "offset": ..., "marker": {...}}`, `{"type": "skipped", ...}`, `{"type": "pasted", ...}` |
-| `scrollback` (`config.ml`) | `"disabled"`, `["scrollback", {max_bytes, max_lines}]` | `{"type": "disabled"}`, `{"type": "scrollback", "max_bytes": ..., "max_lines": ...}` |
-| `key_action`, `mouse_action`, `mouse_button`, `history`, `images`, `client_kind` (`protocol.ml`), `medium` (`config.ml`) | strings | unchanged: `rename_all = "snake_case"` already derives them |
-
-These are the 17 `compact_variants` types of `ko_server/` (15 in
-`protocol.ml`, 2 in `config.ml`); `ko_tui/` declares none and only
-uses them. The other codecs of the plan stay as they are: the
+RW applied this rule to the ten enums with a payload variant;
+`ko_server/src/protocol.rs` and its wire tests now define every shape.
+The other codecs of the plan stay as they are: the
 validating ids (`try_from = "String"`, a real rule), the screen query
 string (not JSON), the binary record header (protocol.md 9, not
 JSON), and `GET /version` and `ko version`, whose shape protocol.md 2
 freezes across versions.
-
-**Lines it saves:** the `compact!` macro (about 70 lines) and its unit
-tests (about 40), so about 110 lines of `protocol.rs`, and the
-`decode` fuzz target no longer covers a hand codec. Each of the 10
-changed enums trades its macro call for one attribute line, about the
-same size. `bench/client.py` changes four literals (the `command`,
-`hello`, `input` and `size` sends) and no line count.
 
 ## 3. Architecture in Rust
 
@@ -1116,7 +1123,7 @@ the underscore, so there is one spelling.
 | `connection.ml` (the write queue, the batch, the record write, the ping, the head limit) | `conn.rs` (the `Phase` state machine of 3.6, the read buffer, the write queue, the batch, the record write), `link.rs` (the WebSocket phase and its ping) | the model of `connection.ml`, with `poll(2)` in place of libuv |
 | `ws.ml`, `sha1.ml`, httpun-ws | `ws.rs`: the tungstenite adapter (`Io`, 3.6) and `record_header` over `FrameHeader::format` | no own frame parser, SHA-1 or base64 |
 | `http.ml`, httpun | `http.rs` (the head reader over httparse, the head limit, `Content-Length` bodies, the response writer, the client's request writer and response reader), `router.rs` (the dispatch, the version and `Origin` checks, `411`, the 101 response) | routes stay in `protocol.rs` as `Route` |
-| `protocol.ml`, `ids.ml` | `protocol.rs` (serde derives and the `compact!` macro of 2.3), `ids.rs` | |
+| `protocol.ml`, `ids.ml` | `protocol.rs` (serde derives, internally tagged since RW, 2.6), `ids.rs` | |
 | `client.ml`, `state.ml` | `client.rs`, `state.rs` | |
 | `config.ml` | `config.rs` | |
 | `loop.ml`, `uv.ml`, `native_stubs.c` | `ko_sys::event` (the loop), `ko_server/src/server.rs` (the listener, the uid check, the output tick, `SIGCHLD`, `SIGTERM`) | |
@@ -1747,7 +1754,7 @@ library crates with a byte slice:
 | `http` | one connection fed the bytes, over the in-process server (the loop, `conn.rs`, the router, a link, one `cat` pane); the server is made once per fuzz process, a fresh socketpair per input | `fuzz_http`'s byte-level part and the hostile test's inputs; it covers the framing, the upgrade and the link together |
 | `client` | the client's response reader (`http.rs`) over the bytes | new |
 | `ws` | a `Link` after the upgrade fed the bytes as client frames, against a fake view: tungstenite's reader, the caps, the close reasons, the link's queue | new |
-| `decode` | each `Request` decoder of `protocol.rs` over the bytes (serde_json and the `compact!` macro) | the decoder part of `fuzz_http` |
+| `decode` | each `Request` decoder of `protocol.rs` over the bytes (serde_json and `protocol::decode`'s shape check, decision 150) | the decoder part of `fuzz_http` |
 | `frames` | `pane_proc`'s frame reader over the bytes, with a fake ring; each input is also fed in two parts at a fuzzer-chosen cut and must give the same effects | the reference's Monolith `pane-proc` target, which compares a frame fed whole with one fed in two parts |
 | `frame` | `ko_pane_wire::frame`'s frame-size reader: every accepted frame is at least 5 bytes, at most the input and at most `MAX_FRAME + 4` | `fuzz_frame.c` |
 | `control` | `ko-pane`'s control dispatch in process (`ko_pane::control`), with a fresh terminal per input (R3 adds the pool, decision 64), no pty and an in-memory ring; the first byte picks the mode (a fresh terminal or none, a stream read or frame by frame), as `fuzz_control.c` does | `fuzz_control.c`; its 188-input corpus moves from `ko_pane/fuzz/control/` to `fuzz/corpus/control/` unchanged, with `control.dict` and `max_len = 4000` |
@@ -1816,8 +1823,8 @@ uses a `Mutex`.
 `scripts/miri.sh` runs `cargo +nightly miri test` on the modules with
 no sockets and no FFI: `ko_pane_wire::ring` (the
 writer and the reader on an in-memory backing, the one module with
-ko's own raw-pointer `unsafe`), `ko_pane_wire::frame`, `protocol` (serde_json and the `compact!`
-macro), `ids` and `http.rs`'s head reader over byte buffers.
+ko's own raw-pointer `unsafe`), `ko_pane_wire::frame`, `protocol` (serde_json and
+`decode`'s shape check), `ids` and `http.rs`'s head reader over byte buffers.
 `conn` and `pane_proc` run on sockets and stay out (decision 70).
 httparse, tungstenite and serde_json are not in Miri's scope beyond
 what these tests call; their projects test themselves. It runs in the
@@ -2452,10 +2459,13 @@ Decision 25. One change applies every row of 2.6:
   JSON bodies.
 - `bench/client.py`: the four sends of 2.6 and its `Ko-Protocol`
   header (`"1.0"` to `"2.0"`).
-- The `decode` fuzz corpus (`fuzz/corpus/decode/`), merged again with
-  `make fuzz MERGE=1` from seeds in the new form.
-- Acceptance: `make verify-ko` green; `grep` finds no `compact!` and
-  no `["`-form request in `ko_e2e/`, `bench/` and protocol.md.
+- The `decode` and `http` fuzz corpora, converted by a one-off script
+  (decision 151), not merged with `make fuzz MERGE=1`.
+- Acceptance: `make verify` green (with ko's stages, decision 152);
+  `grep` finds no `compact!` and no `["`-form wire value in `ko_e2e/`,
+  `bench/`, protocol.md and the tests (except inputs that a test
+  refuses); version 2.0 everywhere; a test shows the refusal of a 1.x
+  client.
 
 ### RV3. Verus: `view.rs` (5 to 8 agent-days, after RV2)
 
@@ -2625,12 +2635,11 @@ Conventions:
 - **JSON.** serde derives every codec; `protocol.rs` owns the wire
   types. An enum with payloads has `#[serde(tag = "type",
   rename_all = "snake_case")]`; a primitive, list, id or enum payload
-  is a struct variant with one named field (2.6). Until RW, the
-  `compact!` macro of `protocol.rs` gives the old form. A unit enum
+  is a struct variant with one named field (2.6). A unit enum
   uses `rename_all = "snake_case"`. An option field has
   `#[serde(default, skip_serializing_if = "Option::is_none")]`. Only
   the ids validate, through `try_from = "String"`. No codec is
-  written by hand outside the macro, and no code walks a
+  written by hand, and no code walks a
   `serde_json::Value` to decode a wire type. Decoding errors are
   handled only at an untrusted-input edge: an HTTP body or a
   WebSocket text message.

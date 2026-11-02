@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use crate::harness::{DEADLINE, Hello, start, within};
+use crate::harness::{DEADLINE, Hello, size_request, start, within};
 
 #[test]
 fn hostile_clients_do_not_affect_others() {
@@ -82,7 +82,7 @@ fn hostile_clients_do_not_affect_others() {
     };
     let mut c = hello(4096, 4096);
     c.welcome();
-    c.send(&json!(["size", grid(4097, 24)]));
+    c.send(&size_request(grid(4097, 24)));
     c.closed("size 4097 accepted");
     let mut c = hello(4097, 24);
     c.closed("hello 4097 accepted");

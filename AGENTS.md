@@ -502,17 +502,19 @@ Conventions:
   from libghostty-vt never unwinds and never calls back into the
   terminal.
 - **JSON.** serde derives every codec. `ko_server::protocol` owns
-  the wire types and keeps the wire of protocol version 1.0 byte for
-  byte until stage RW. A variant with a payload encodes through the
-  `compact!` macro of `protocol.rs`: a unit variant as `"name"`, a
-  payload variant as `["name", payload]`. A unit enum uses
-  `rename_all = "snake_case"`. An option field has
+  the wire types. An enum with a payload variant has `#[serde(tag =
+  "type", rename_all = "snake_case")]`, so a message is one flat
+  object; a primitive, list, id or enum payload is a struct variant
+  with one named field. The error body flattens its kind with the tag
+  `kind`. A unit enum uses `rename_all = "snake_case"`. An option field has
   `#[serde(default, skip_serializing_if = "Option::is_none")]`. A
   value with its own rules (an id, a size, a key, base64 text)
   validates in its `TryFrom`, through `#[serde(try_from = ...)]` on
   the derived codec. Every untrusted body and WebSocket message
   decodes through `protocol::decode`, which refuses a JSON array for a
-  record at every level; serde's derive alone accepts one. Do not write a codec by hand outside the macro, and do not walk a
+  record at every level; serde's derive alone accepts one. It decodes
+  through the derive and, when the input has an array, compares the
+  input's shape with the re-encoded value. Do not write a codec by hand, and do not walk a
   `serde_json::Value` to decode a wire type. Catch a decode error only
   at an untrusted-input edge: an HTTP body or a WebSocket text
   message.
@@ -1204,7 +1206,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
 
 ## Tests
 
-    make verify  scrubbed dune build, dune test --force, full e2e and TypeScript tests
+    make verify  scrubbed dune build, dune test --force, full e2e and TypeScript tests (including scripts/lint.sh), and ko's stages: make build-ko, ko's cargo tests, ko's e2e, cargo fmt and clippy, and make verus
     make verify-ko  scrubbed make build-ko, ko's cargo tests, ko's e2e, cargo fmt, clippy and scripts/lint.sh, and make verus
     make verus   cargo verus verify on ko_pane_wire and ko_server with the pinned Verus release, downloaded once into build/verus/
     make build-ko  the Rust ko's installed layout under build/ko/ (macOS only for now)
@@ -1230,11 +1232,12 @@ whose names contain the text (a cargo test filter). Its lint stage
 uses the TypeScript suite's setup, so it also needs Node 24 or newer.
 Before a release, validation uses `make verify` in full.
 
-**Which verification.** For ko work, the full verification is
-`make verify-ko`. Use the whole `make verify` only when the change
-also touches a file that kido shares with ko: the Makefile, `scripts/`,
+**Which verification.** `make verify` checks everything, kido and
+ko, in one run. For ko-only work, the full verification is
+`make verify-ko`. Use the whole `make verify` when the change also
+touches a file that kido shares with ko: the Makefile, `scripts/`,
 CI, `dune-project`, `dune.lock`, a shared library such as `kido_fs`,
-or kido's code.
+or kido's code. On Linux, ko's stages print SKIP until stage RL.
 
 Agents run `make fuzz` only when the user asks. Long fuzz runs occur
 only in CI and never in verify.
@@ -1338,6 +1341,9 @@ the explicit input or operation list, not a seed.
 The corpora are files named by SHA-1. Only `make fuzz MERGE=1`
 (`scripts/fuzz.sh --merge`) changes one, with a `-merge=1` into a
 minimal set, and only with a code change that needs the new inputs.
+The exception is a format migration in the same change as the code:
+a one-off script converts each input to the new form, names it by
+its SHA-1 and drops the inputs that become identical.
 The scheduled workflow `.github/workflows/ko-nightly.yml` runs each
 target for 600 s in its own job, and `make miri`, and uploads a
 finding. It never

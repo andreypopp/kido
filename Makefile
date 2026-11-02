@@ -45,7 +45,7 @@ test:
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: build-ko build-bench test-ko lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
+.PHONY: build-ko build-bench test-ko lint-rs lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -128,9 +128,11 @@ test-ko:
 	KO_PANE_EXE=$(CURDIR)/target/debug/ko-pane $(CARGO) test --locked
 	RUSTFLAGS='--cfg loom' $(CARGO) test --locked --release -p ko_pane_wire --target-dir target/loom ring::model
 
-lint-ko:
+lint-rs:
 	$(CARGO) fmt --check
 	$(CARGO) clippy --locked --workspace --all-targets -- -D warnings
+
+lint-ko: lint-rs
 	./scripts/test-ts.sh lint
 
 bindgen:

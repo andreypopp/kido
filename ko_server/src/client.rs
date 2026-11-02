@@ -57,18 +57,18 @@ impl Client {
                 Ok(Change::Hello)
             }
             (None, _) => Err("hello must be first"),
-            (Some(active), ClientRequest::Select(id)) => {
-                if !exists(id) {
+            (Some(active), ClientRequest::Select { pane }) => {
+                if !exists(pane) {
                     return Err("pane not found");
                 }
-                active.pane = Some(id);
+                active.pane = Some(pane);
                 Ok(Change::Claim)
             }
             (Some(active), ClientRequest::Size(size)) => {
                 active.size = size.0;
                 Ok(Change::Resize)
             }
-            (Some(active), ClientRequest::Focused(focused)) => {
+            (Some(active), ClientRequest::Focused { focused }) => {
                 active.focused = focused;
                 Ok(if focused {
                     Change::Claim

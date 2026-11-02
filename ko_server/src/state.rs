@@ -362,7 +362,7 @@ impl State {
 
     pub(crate) fn topology(&mut self) {
         let rows = self.rows();
-        self.broadcast(&ClientEvent::Topology(rows));
+        self.broadcast(&ClientEvent::Topology { panes: rows });
     }
 
     pub(crate) fn registered(&self, id: ClientId) -> bool {
@@ -634,7 +634,7 @@ impl State {
                     client: id,
                     limits: Limits::of(self.config.limits, &self.config.media),
                 });
-                let topology = ClientEvent::Topology(self.rows());
+                let topology = ClientEvent::Topology { panes: self.rows() };
                 if let Some((_, wire)) = self.conns.get_mut(index).and_then(Conn::role_mut) {
                     wire.ws.send(wire.out, protocol::json(&welcome));
                     wire.ws.send(wire.out, protocol::json(&topology));
@@ -701,7 +701,7 @@ impl State {
                     self.snapshot(poll, index, history);
                 }
             }
-            Ok(ViewRequest::Input(input)) => {
+            Ok(ViewRequest::Input { input }) => {
                 let (sent, events) =
                     self.input(poll, pane, &input, |paste| Owner::ViewPaste(token, paste));
                 if let Some((Role::View(view), mut wire)) = self.conns[index].role_mut() {

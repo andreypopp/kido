@@ -57,7 +57,10 @@ fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, 
     let _ = poll.start(conn.timer, ws::FIRST_PING, None);
 }
 
-fn body<T: serde::de::DeserializeOwned>(conn: &mut Conn, body: &Payload) -> Option<T> {
+fn body<T: serde::Serialize + serde::de::DeserializeOwned>(
+    conn: &mut Conn,
+    body: &Payload,
+) -> Option<T> {
     match body {
         Payload::Oversized => error(conn, ErrorKind::Invalid, "body exceeds 1 MiB"),
         Payload::Bytes(bytes) => match protocol::decode(bytes) {
@@ -325,7 +328,12 @@ mod tests {
     #[test]
     fn refusals_are_the_bytes_of_the_reference_server() {
         let mut server = harness("refusals");
-        let version = protocol::json(&protocol::version());
+        let ours = protocol::version();
+        let version = protocol::json(&ours);
+        let mismatch = format!(
+            r#"{{"kind":"protocol_mismatch","protocol":"{}","vt":"{}","build":"{}","message":"protocol major mismatch"}}"#,
+            ours.protocol, ours.vt, ours.build
+        );
         let json = |status: &str, body: &str| {
             format!(
                 "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
@@ -357,6 +365,16 @@ mod tests {
                 ),
             ),
             server.reply("GET /client", "\r\n"),
+            String::from_utf8_lossy(
+                server.exchange(
+                    format!(
+                        "GET /panes HTTP/1.1\r\nHost: ko\r\nKo-Protocol: 1.0\r\nKo-Vt: {}\r\n\r\n",
+                        ours.vt
+                    )
+                    .as_bytes(),
+                ),
+            )
+            .into_owned(),
         ];
         assert_eq!(
             replies,
@@ -372,6 +390,7 @@ mod tests {
                 json("400 Bad Request", r#"{"kind":"invalid","message":"body exceeds 1 MiB"}"#)
                     + &json("200 OK", &version),
                 json("400 Bad Request", r#"{"kind":"invalid","message":"Didn't pass scrutiny"}"#),
+                json("426 Upgrade Required", &mismatch),
             ]
         );
     }
@@ -409,13 +428,13 @@ mod tests {
         let create = server.status("POST /panes", "Content-Length: 10\r\n\r\n[\"/tmp\"]  ");
         let input = server.status(
             "POST /panes/pane_1/input",
-            "Content-Length: 25\r\n\r\n[\"focus\",true]           ",
+            "Content-Length: 31\r\n\r\n{\"type\":\"focus\",\"focused\":true}",
         );
         let hello = r#"["hello",["terminal","t","pane_1",true,{"cols":7,"rows":7},false]]"#;
         let _array_hello = server.connect(&[upgrade("/client"), text(hello)].concat());
-        let size_hello = r#"["hello",{"kind":"terminal","name":"t","pane":"pane_1","focused":false,"ignore_size":true,"size":[80,24]}]"#;
+        let size_hello = r#"{"type":"hello","kind":"terminal","name":"t","pane":"pane_1","focused":false,"ignore_size":true,"size":[80,24]}"#;
         let _array_size = server.connect(&[upgrade("/client"), text(size_hello)].concat());
-        let key = r#"["input",["key",["press",20,0,97,"a",false]]]"#;
+        let key = r#"{"type":"input","input":["key",["press",20,0,97,"a",false]]}"#;
         let _array_key = server.connect(&[upgrade("/panes/pane_1/view"), text(key)].concat());
         let sizer = server
             .state
@@ -440,17 +459,18 @@ mod tests {
         let mut server = harness("unread");
         let long = CreatePane {
             cwd: None,
-            command: Some(Command::Argv(vec![
-                "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                "exec cat".to_owned(),
-                "x".repeat(400_000),
-            ])),
+            command: Some(Command::Argv {
+                argv: vec![
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    "exec cat".to_owned(),
+                    "x".repeat(400_000),
+                ],
+            }),
             env: Vec::new(),
         };
         server.state.add_pane(&mut server.poll, &long).unwrap();
-        let hello =
-            r#"["hello",{"kind":"app","name":"t","focused":false,"size":{"cols":80,"rows":24}}]"#;
+        let hello = r#"{"type":"hello","kind":"app","name":"t","focused":false,"size":{"cols":80,"rows":24}}"#;
         let client = server.connect(&[upgrade("/client"), text(hello)].concat());
         let registered = server.state.registered(ClientId::new(1));
         let closed_at = (1..400).find(|_| {
@@ -482,20 +502,20 @@ mod tests {
     fn message() -> impl Strategy<Value = Vec<u8>> {
         prop_oneof![
             4 => prop::sample::select(vec![
-                r#"["hello",{"kind":"terminal","name":"t","focused":true,"size":{"cols":80,"rows":24}}]"#,
-                r#"["hello",{"kind":"app","name":"t","pane":"pane_1","focused":false,"size":{"cols":4097,"rows":24}}]"#,
-                r#"["select","pane_1"]"#,
-                r#"["select","pane_99"]"#,
-                r#"["size",{"cols":50,"rows":10,"cell_px":{"width":8,"height":16}}]"#,
-                r#"["focused",true]"#,
-                r#"["resync",{"history":"all","images":"none"}]"#,
-                r#"["input",["text","aGk="]]"#,
-                r#"["input",["text","!!"]]"#,
-                r#"["input",["paste",{"text":"x","check_safe":true,"id":3}]]"#,
-                r#"["input",["key",{"action":"press","key":20,"mods":0,"unshifted_codepoint":97,"text":"a","composing":false}]]"#,
-                r#"["input",["mouse",{"action":"press","button":"left","col":3,"row":4,"mods":1}]]"#,
-                r#"["input",["focus",false]]"#,
-                r#"{"command":["argv",["/bin/true"]],"cwd":"/tmp"}"#,
+                r#"{"type":"hello","kind":"terminal","name":"t","focused":true,"size":{"cols":80,"rows":24}}"#,
+                r#"{"type":"hello","kind":"app","name":"t","pane":"pane_1","focused":false,"size":{"cols":4097,"rows":24}}"#,
+                r#"{"type":"select","pane":"pane_1"}"#,
+                r#"{"type":"select","pane":"pane_99"}"#,
+                r#"{"type":"size","cols":50,"rows":10,"cell_px":{"width":8,"height":16}}"#,
+                r#"{"type":"focused","focused":true}"#,
+                r#"{"type":"resync","history":"all","images":"none"}"#,
+                r#"{"type":"input","input":{"type":"text","data":"aGk="}}"#,
+                r#"{"type":"input","input":{"type":"text","data":"!!"}}"#,
+                r#"{"type":"input","input":{"type":"paste","text":"x","check_safe":true,"id":3}}"#,
+                r#"{"type":"input","input":{"type":"key","action":"press","key":20,"mods":0,"unshifted_codepoint":97,"text":"a","composing":false}}"#,
+                r#"{"type":"input","input":{"type":"mouse","action":"press","button":"left","col":3,"row":4,"mods":1}}"#,
+                r#"{"type":"input","input":{"type":"focus","focused":false}}"#,
+                r#"{"command":{"type":"argv","argv":["/bin/true"]},"cwd":"/tmp"}"#,
                 r#"{"cwd":"/nonexistent"}"#,
                 r#"["invalid"]"#,
                 "{",
@@ -522,7 +542,7 @@ mod tests {
         let vt = ours.vt.clone();
         let versions = prop_oneof![
             30 => Just(ko_headers()),
-            1 => Just(format!("Ko-Protocol: 2.0\r\nKo-Vt: {vt}\r\n")),
+            1 => Just(format!("Ko-Protocol: 1.0\r\nKo-Vt: {vt}\r\n")),
             1 => Just(format!("Ko-Protocol: {}\r\n", ours.protocol)),
             1 => Just(String::new()),
         ];

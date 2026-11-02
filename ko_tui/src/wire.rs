@@ -401,11 +401,15 @@ mod tests {
         let mut reply = [0; 10];
         server.read_exact(&mut reply).unwrap();
         assert_eq!(unmasked(&reply), (10, b"abcd".to_vec()));
-        link.send("[\"focused\",true]".to_owned()).unwrap();
+        link.send(r#"{"type":"focused","focused":true}"#.to_owned())
+            .unwrap();
         link.settle(&mut poll).unwrap();
-        let mut sent = [0; 6 + 16];
+        let mut sent = [0; 6 + 33];
         server.read_exact(&mut sent).unwrap();
-        assert_eq!(unmasked(&sent), (1, b"[\"focused\",true]".to_vec()));
+        assert_eq!(
+            unmasked(&sent),
+            (1, br#"{"type":"focused","focused":true}"#.to_vec())
+        );
         server.write_all(&frame(8, b"")).unwrap();
         assert_eq!(settled(&mut link, &mut poll), [Next::Closed]);
     }

@@ -9,13 +9,13 @@ fn defaults_and_pane_environment() {
     let terminal = &welcome["limits"]["terminal"];
     let scrollback = &terminal["scrollback"];
     assert_eq!(
-        scrollback[0],
+        scrollback["type"],
         json!("scrollback"),
         "limits: {}",
         welcome["limits"]
     );
-    assert_eq!(scrollback[1]["max_bytes"], json!(80 * 1024 * 1024));
-    assert_eq!(scrollback[1]["max_lines"], json!(100));
+    assert_eq!(scrollback["max_bytes"], json!(80 * 1024 * 1024));
+    assert_eq!(scrollback["max_lines"], json!(100));
     assert_eq!(terminal["continuation_max_bytes"], json!(65 * 1024 * 1024));
 
     let mut env = test_env(&s.dir);
@@ -70,6 +70,6 @@ fn defaults_and_pane_environment() {
 
     s.ko(&["api", "--input", "-", "/panes"], r#"{"cwd": "relative"}"#)
         .http_error(400);
-    s.ko(&["api", "--input", "-", "/panes"], r#"["invalid"]"#)
+    s.ko(&["api", "--input", "-", "/panes"], "[]")
         .http_error(400);
 }

@@ -9,8 +9,8 @@ use tungstenite::protocol::frame::coding::{Data, OpCode};
 use tungstenite::protocol::frame::{Frame, FrameHeader};
 
 use crate::harness::{
-    DEADLINE, Hello, Message, Record, contains, decode, history_lines, size, start, tagged,
-    wait_gone,
+    DEADLINE, Hello, Message, Record, contains, decode, history_lines, size, size_request, start,
+    tagged, wait_gone,
 };
 
 const SOCKET_BUFFER: usize = 1 << 20;
@@ -23,11 +23,15 @@ const MODS_CTRL: u32 = 2;
 
 fn key_press(key: u32, mods: u32, text: &str) -> Value {
     let unshifted = text.chars().next().map_or(0, u32::from);
-    json!(["input", ["key", {"action": "press", "key": key, "mods": mods, "unshifted_codepoint": unshifted, "text": text, "composing": false}]])
+    json!({"type": "input", "input": {"type": "key", "action": "press", "key": key, "mods": mods, "unshifted_codepoint": unshifted, "text": text, "composing": false}})
+}
+
+fn resync(history: &str) -> Value {
+    json!({"type": "resync", "history": history, "images": "none"})
 }
 
 fn paste(id: u32, text: &str, check_safe: bool) -> Value {
-    json!(["input", ["paste", {"id": id, "text": text, "check_safe": check_safe}]])
+    json!({"type": "input", "input": {"type": "paste", "id": id, "text": text, "check_safe": check_safe}})
 }
 
 fn history_program(record: &str) -> String {
@@ -90,7 +94,7 @@ fn paste_then_enter_during_snapshot() {
     let mut v = s.ws(&format!("/panes/{p}/view?history=none"));
     v.ready("READY");
     let messages = [
-        json!(["resync", {"history": "all", "images": "none"}]),
+        resync("all"),
         paste(77, "PASTE", false),
         key_press(KEY_ENTER, MODS_NONE, ""),
     ];
@@ -127,18 +131,19 @@ fn pane_process_failure() {
     v.ready("READY");
     let program = s.program_pid();
     let parent = program.parent().expect("a pane process");
-    v.send(&json!(["resync", {"history": "all", "images": "none"}]));
+    v.send(&resync("all"));
     signal_descendant(s.child.pid(), parent, Signal::Kill).unwrap();
-    let dead = c.event("dead").to_string();
-    assert!(
-        dead.contains(r#""cause":["failed","#),
+    let dead = c.event("dead");
+    assert_eq!(
+        dead["dead"]["cause"]["type"],
+        json!("failed"),
         "failed pane: {dead}"
     );
     s.ko(&["api", &format!("/panes/{p}/screen")], "")
         .http_error(500);
     s.ko(
         &["api", "--input", "-", &format!("/panes/{p}/input")],
-        r#"["paste", {"text": "x", "check_safe": false}]"#,
+        r#"{"type": "paste", "text": "x", "check_safe": false}"#,
     )
     .http_error(500);
     v.closed("failed pane view did not close");
@@ -163,7 +168,7 @@ fn unfocused_first_client_sizes_pane() {
         "rows of a pane sized by its unfocused first client"
     );
     let (mut focused, _) = s.client(Some(&p));
-    focused.send(&json!(["size", size(51, 9)]));
+    focused.send(&size_request(size(51, 9)));
     let deadline = Instant::now() + DEADLINE;
     while decode(&v.snapshot().0, false).rows != 9 {
         assert!(Instant::now() < deadline, "no snapshot with 9 rows");
@@ -183,7 +188,7 @@ fn stalled_view_learns_resize_after_ring_retention() {
     let mut stalled = s.ws(&format!("/panes/{p}/view?history=all"));
     let mut reader = s.ws(&format!("/panes/{p}/view?history=all"));
     reader.snapshot();
-    sizer.send(&json!(["size", size(61, 21)]));
+    sizer.send(&size_request(size(61, 21)));
     reader.event("marked");
     let mut flood = s.ws(&format!("/panes/{p}/view?history=all"));
     flood.snapshot();
@@ -282,7 +287,11 @@ fn pane_dead_snapshot() {
             "title" => seen_title = text.contains(r#""title":"dead title""#),
             "pwd" => seen_pwd = text.contains(r#""pwd":"file://localhost/tmp""#),
             "dead" => {
-                assert!(text.contains(r#""cause":["exited",7]"#), "dead: {text}");
+                assert_eq!(
+                    value["dead"]["cause"],
+                    json!({"type": "exited", "code": 7}),
+                    "dead: {text}"
+                );
                 break value;
             }
             _ => {}
@@ -297,7 +306,7 @@ fn pane_dead_snapshot() {
     let at = |value: &Value| value.as_i64().unwrap_or_default();
     let (notice, marker, row) = (
         at(&notice["dead"]["at"]),
-        at(&marked["marker"][1]["at"]),
+        at(&marked["marker"]["at"]),
         at(&rows[0]["dead"]["at"]),
     );
     assert_ne!(notice, 0, "death time of the event");
@@ -364,7 +373,7 @@ fn view_resume_resize_and_input() {
     v.type_text("BARRIER");
     v.output("BARRIER");
 
-    c.send(&json!(["size", size(62, 22)]));
+    c.send(&size_request(size(62, 22)));
     let marker = v.event("marked").to_string();
     assert!(marker.contains(r#""cols":62"#), "marker: {marker}");
 
@@ -378,7 +387,7 @@ fn view_resume_resize_and_input() {
     let response = s
         .ko(
             &["api", "--input", "-", &format!("/panes/{p}/input")],
-            r#"["paste", {"id": 41, "text": "unsafe\n", "check_safe": true}]"#,
+            r#"{"type": "paste", "id": 41, "text": "unsafe\n", "check_safe": true}"#,
         )
         .json();
     assert_ne!(response["pasted"], json!(true), "unsafe paste: {response}");
@@ -403,10 +412,10 @@ fn view_resume_resize_and_input() {
         "pty input: {input:?}"
     );
 
-    c.send(&json!(["size", size(60, 20)]));
+    c.send(&size_request(size(60, 20)));
     let marker = v.event("marked").to_string();
     assert!(marker.contains(r#""cols":60"#), "marker: {marker}");
-    v.send(&json!(["resync", {"history": "none", "images": "none"}]));
+    v.send(&resync("none"));
     let (data, _) = v.snapshot();
     assert!(
         !decode(&data, false).sync,

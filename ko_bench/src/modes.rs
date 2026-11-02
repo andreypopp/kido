@@ -19,7 +19,7 @@ use ko_sys::signal::Signal;
 use crate::alloc::allocations;
 use crate::client::{
     Socket, Stamps, Typist, create_pane, dead, exchange, open_view, output, program_pids,
-    screen_text, upgrade,
+    screen_text, skipped, upgrade,
 };
 
 const DEADLINE: Duration = Duration::from_secs(900);
@@ -209,7 +209,7 @@ pub(crate) fn throughput(bytes: &str, coalesce: &str, streams: &[&str]) -> Resul
                 next = Some(offset + data.len() as u64);
                 count.bytes += data.len() as u64;
                 count.records += 1;
-            } else if message.opcode == 1 && message.payload.starts_with(b"[\"skipped\"") {
+            } else if skipped(&message) {
                 count.lost += 1;
             } else if message.opcode == 2 && !matches!(message.payload.first(), Some(1 | 2))
                 || message.payload.first() == Some(&1) && message.payload.len() < 9

@@ -1,11 +1,11 @@
 GET /panes HTTP/1.1
 Host: ko
-Ko-Protocol: 1.0
+Ko-Protocol: 2.0
 Ko-Vt: da3eff4c4ad49a0c90aebf7cb045492701f6dcce
 
 GET /panes HTTP/1.1
 Host: ko
-Ko-Protocol: 1.0
+Ko-Protocol: 2.0
 Ko-Vt: da3eff4c4ad49a0c90aebf7cb045492701f6dcce
 
 GET /x HTTP/1.1

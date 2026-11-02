@@ -46,6 +46,10 @@ ko_platform() {
   echo 'SKIP: the Rust ko builds on macOS only'
   return 77
 }
+ko_stage() {
+  ko_platform || return
+  "$@"
+}
 ko_suite() {
   ko_platform || return
   make e2e-ko E2E_KO="${E2E_KO:-}"
@@ -57,17 +61,18 @@ case ${1:-verify} in
     E2E=$RUN COUNT=${COUNT:-20} stage e2e e2e
     ;;
   verify|verify-ko)
-    default='build unit e2e e2e-ko ts'
-    [[ ${1:-} == verify-ko ]] && default='build unit-ko e2e-ko lint verus'
+    default='build unit e2e ts build-ko unit-ko e2e-ko lint-rs verus'
+    [[ ${1:-} == verify-ko ]] && default='build-ko unit-ko e2e-ko lint verus'
     for name in ${STAGES:-$default}; do
       case $name in
-        build)
-          if [[ ${1:-} == verify-ko ]]; then stage build make build-ko; else stage build dune build; fi ;;
+        build) stage build dune build ;;
+        build-ko) stage build-ko ko_stage make build-ko ;;
         unit) stage unit dune test --force ;;
         e2e) stage e2e e2e ;;
-        unit-ko) stage unit-ko make test-ko ;;
-        lint) stage lint make lint-ko ;;
-        verus) stage verus verus ;;
+        unit-ko) stage unit-ko ko_stage make test-ko ;;
+        lint) stage lint ko_stage make lint-ko ;;
+        lint-rs) stage lint-rs ko_stage make lint-rs ;;
+        verus) stage verus ko_stage verus ;;
         e2e-ko) stage e2e-ko ko_suite ;;
         ts) stage ts ./scripts/test-ts.sh ;;
         *) echo "Unknown stage: $name" >&2; status=1 ;;

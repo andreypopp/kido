@@ -7,304 +7,57 @@ use ko_pane_wire::frame::{
 };
 use ko_pane_wire::ring;
 use ko_sys::pid::Exit;
-use serde::de::{self, DeserializeOwned, DeserializeSeed, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::de::{self, DeserializeOwned};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::config::BUILD;
 use crate::http::Status;
 use crate::ids::{ClientId, PaneId};
 use crate::pane_proc::{self, Death};
 
-const PROTOCOL: &str = "1.0";
-const PROTOCOL_MAJOR: &str = "1";
+const PROTOCOL: &str = "2.0";
+const PROTOCOL_MAJOR: &str = "2";
 const VT: &str = env!("KO_VT");
 const MAX_OFFSET: u64 = (1 << 62) - 1;
 
-macro_rules! compact {
-    (
-        $(#[$meta:meta])*
-        $vis:vis enum $name:ident {
-            units { $($unit:ident = $unit_tag:literal),* $(,)? }
-            payloads { $($variant:ident($payload:ty) = $tag:literal),* $(,)? }
-        }
-    ) => {
-        $(#[$meta])*
-        $vis enum $name {
-            $($unit,)*
-            $($variant($payload),)*
-        }
+pub(crate) const PROTOCOL_HEADER: &str = "ko-protocol";
+pub(crate) const VT_HEADER: &str = "ko-vt";
 
-        impl Serialize for $name {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                use serde::ser::SerializeTuple;
-                match self {
-                    $($name::$unit => serializer.serialize_str($unit_tag),)*
-                    $($name::$variant(payload) => {
-                        let mut tuple = serializer.serialize_tuple(2)?;
-                        tuple.serialize_element($tag)?;
-                        tuple.serialize_element(payload)?;
-                        tuple.end()
-                    })*
-                }
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<$name, D::Error> {
-                struct Visitor;
-
-                impl<'de> serde::de::Visitor<'de> for Visitor {
-                    type Value = $name;
-
-                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                        f.write_str(concat!("a compact ", stringify!($name)))
-                    }
-
-                    fn visit_str<E: serde::de::Error>(self, tag: &str) -> Result<$name, E> {
-                        match tag {
-                            $($unit_tag => Ok($name::$unit),)*
-                            _ => Err(E::unknown_variant(tag, &[$($unit_tag),*])),
-                        }
-                    }
-
-                    fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                        self,
-                        mut seq: A,
-                    ) -> Result<$name, A::Error> {
-                        use serde::de::Error;
-                        let tag: String = seq
-                            .next_element()?
-                            .ok_or_else(|| A::Error::invalid_length(0, &self))?;
-                        let value = match tag.as_str() {
-                            $($tag => $name::$variant(
-                                seq.next_element()?
-                                    .ok_or_else(|| A::Error::invalid_length(1, &self))?,
-                            ),)*
-                            _ => return Err(A::Error::unknown_variant(&tag, &[$($tag),*])),
-                        };
-                        match seq.next_element::<serde::de::IgnoredAny>()? {
-                            None => Ok(value),
-                            Some(_) => Err(A::Error::invalid_length(3, &self)),
-                        }
-                    }
-                }
-
-                deserializer.deserialize_any(Visitor)
-            }
-        }
-    };
-}
-
-pub const PROTOCOL_HEADER: &str = "ko-protocol";
-pub const VT_HEADER: &str = "ko-vt";
-
-pub fn version_headers() -> [(&'static str, String); 2] {
+pub(crate) fn version_headers() -> [(&'static str, String); 2] {
     [
         (PROTOCOL_HEADER, PROTOCOL.to_owned()),
         (VT_HEADER, VT.to_owned()),
     ]
 }
 
-struct Objects<D>(D);
-struct Wrap<V>(V);
-struct Seed<S>(S);
-
-macro_rules! forward {
-    ($($method:ident),*) => {
-        $(fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, D::Error> {
-            self.0.$method(Wrap(visitor))
-        })*
-    };
-}
-
-impl<'de, D: Deserializer<'de>> Deserializer<'de> for Objects<D> {
-    type Error = D::Error;
-
-    forward!(
-        deserialize_any,
-        deserialize_bool,
-        deserialize_i8,
-        deserialize_i16,
-        deserialize_i32,
-        deserialize_i64,
-        deserialize_i128,
-        deserialize_u8,
-        deserialize_u16,
-        deserialize_u32,
-        deserialize_u64,
-        deserialize_u128,
-        deserialize_f32,
-        deserialize_f64,
-        deserialize_char,
-        deserialize_str,
-        deserialize_string,
-        deserialize_bytes,
-        deserialize_byte_buf,
-        deserialize_option,
-        deserialize_unit,
-        deserialize_seq,
-        deserialize_map,
-        deserialize_identifier,
-        deserialize_ignored_any
-    );
-
-    fn deserialize_unit_struct<V: Visitor<'de>>(
-        self,
-        name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, D::Error> {
-        self.0.deserialize_unit_struct(name, Wrap(visitor))
+pub fn decode<T: Serialize + DeserializeOwned>(text: &[u8]) -> serde_json::Result<T> {
+    let value: T = serde_json::from_slice(text)?;
+    if text.contains(&b'[')
+        && !records_are_objects(
+            &serde_json::from_slice(text)?,
+            &serde_json::to_value(&value)?,
+        )
+    {
+        return Err(de::Error::custom("a record must be a JSON object"));
     }
-
-    fn deserialize_newtype_struct<V: Visitor<'de>>(
-        self,
-        name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, D::Error> {
-        self.0.deserialize_newtype_struct(name, Wrap(visitor))
-    }
-
-    fn deserialize_tuple<V: Visitor<'de>>(
-        self,
-        len: usize,
-        visitor: V,
-    ) -> Result<V::Value, D::Error> {
-        self.0.deserialize_tuple(len, Wrap(visitor))
-    }
-
-    fn deserialize_tuple_struct<V: Visitor<'de>>(
-        self,
-        name: &'static str,
-        len: usize,
-        visitor: V,
-    ) -> Result<V::Value, D::Error> {
-        self.0.deserialize_tuple_struct(name, len, Wrap(visitor))
-    }
-
-    fn deserialize_struct<V: Visitor<'de>>(
-        self,
-        _: &'static str,
-        _: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, D::Error> {
-        self.0.deserialize_map(Wrap(visitor))
-    }
-
-    fn deserialize_enum<V: Visitor<'de>>(
-        self,
-        name: &'static str,
-        variants: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, D::Error> {
-        self.0.deserialize_enum(name, variants, Wrap(visitor))
-    }
-}
-
-macro_rules! pass {
-    ($($method:ident($type:ty)),*) => {
-        $(fn $method<E: de::Error>(self, value: $type) -> Result<V::Value, E> {
-            self.0.$method(value)
-        })*
-    };
-}
-
-impl<'de, V: Visitor<'de>> Visitor<'de> for Wrap<V> {
-    type Value = V::Value;
-
-    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.expecting(f)
-    }
-
-    pass!(
-        visit_bool(bool),
-        visit_i64(i64),
-        visit_i128(i128),
-        visit_u64(u64),
-        visit_u128(u128),
-        visit_f64(f64),
-        visit_str(&str),
-        visit_borrowed_str(&'de str),
-        visit_string(String),
-        visit_bytes(&[u8]),
-        visit_borrowed_bytes(&'de [u8]),
-        visit_byte_buf(Vec<u8>)
-    );
-
-    fn visit_none<E: de::Error>(self) -> Result<V::Value, E> {
-        self.0.visit_none()
-    }
-
-    fn visit_unit<E: de::Error>(self) -> Result<V::Value, E> {
-        self.0.visit_unit()
-    }
-
-    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<V::Value, D::Error> {
-        self.0.visit_some(Objects(deserializer))
-    }
-
-    fn visit_newtype_struct<D: Deserializer<'de>>(
-        self,
-        deserializer: D,
-    ) -> Result<V::Value, D::Error> {
-        self.0.visit_newtype_struct(Objects(deserializer))
-    }
-
-    fn visit_seq<A: de::SeqAccess<'de>>(self, seq: A) -> Result<V::Value, A::Error> {
-        self.0.visit_seq(Wrap(seq))
-    }
-
-    fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<V::Value, A::Error> {
-        self.0.visit_map(Wrap(map))
-    }
-
-    fn visit_enum<A: de::EnumAccess<'de>>(self, data: A) -> Result<V::Value, A::Error> {
-        self.0.visit_enum(data)
-    }
-}
-
-impl<'de, A: de::SeqAccess<'de>> de::SeqAccess<'de> for Wrap<A> {
-    type Error = A::Error;
-
-    fn next_element_seed<T: DeserializeSeed<'de>>(
-        &mut self,
-        seed: T,
-    ) -> Result<Option<T::Value>, A::Error> {
-        self.0.next_element_seed(Seed(seed))
-    }
-
-    fn size_hint(&self) -> Option<usize> {
-        self.0.size_hint()
-    }
-}
-
-impl<'de, A: de::MapAccess<'de>> de::MapAccess<'de> for Wrap<A> {
-    type Error = A::Error;
-
-    fn next_key_seed<K: DeserializeSeed<'de>>(
-        &mut self,
-        seed: K,
-    ) -> Result<Option<K::Value>, A::Error> {
-        self.0.next_key_seed(seed)
-    }
-
-    fn next_value_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value, A::Error> {
-        self.0.next_value_seed(Seed(seed))
-    }
-}
-
-impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Seed<S> {
-    type Value = S::Value;
-
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<S::Value, D::Error> {
-        self.0.deserialize(Objects(deserializer))
-    }
-}
-
-pub fn decode<T: DeserializeOwned>(text: &[u8]) -> serde_json::Result<T> {
-    let mut deserializer = serde_json::Deserializer::from_slice(text);
-    let value = T::deserialize(Objects(&mut deserializer))?;
-    deserializer.end()?;
     Ok(value)
+}
+
+fn records_are_objects(input: &Value, output: &Value) -> bool {
+    match (input, output) {
+        (Value::Array(_), Value::Object(_)) => false,
+        (Value::Object(input), Value::Object(output)) => output.iter().all(|(key, output)| {
+            input
+                .get(key)
+                .is_none_or(|input| records_are_objects(input, output))
+        }),
+        (Value::Array(input), Value::Array(output)) => input
+            .iter()
+            .zip(output)
+            .all(|(input, output)| records_are_objects(input, output)),
+        _ => true,
+    }
 }
 
 pub fn json(value: &impl Serialize) -> String {
@@ -326,21 +79,17 @@ pub fn version() -> Version {
     }
 }
 
-compact! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum ErrorKind {
-        units {
-            Invalid = "invalid",
-            Refused = "refused",
-            Gone = "gone",
-            Io = "io",
-            Missing = "not_found",
-        }
-        payloads {
-            ProtocolMismatch(Version) = "protocol_mismatch",
-            VtMismatch(Version) = "vt_mismatch",
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ErrorKind {
+    Invalid,
+    Refused,
+    Gone,
+    Io,
+    #[serde(rename = "not_found")]
+    Missing,
+    ProtocolMismatch(Version),
+    VtMismatch(Version),
 }
 
 impl ErrorKind {
@@ -358,6 +107,7 @@ impl ErrorKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Error {
+    #[serde(flatten)]
     pub(crate) kind: ErrorKind,
     pub(crate) message: String,
 }
@@ -435,16 +185,12 @@ impl From<Size> for RawSize {
     }
 }
 
-compact! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum Cause {
-        units {}
-        payloads {
-            Exited(i32) = "exited",
-            Signaled(i32) = "signaled",
-            Failed(String) = "failed",
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Cause {
+    Exited { code: i32 },
+    Signaled { signal: i32 },
+    Failed { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -456,8 +202,8 @@ pub struct Dead {
 impl From<Exit> for Cause {
     fn from(exit: Exit) -> Cause {
         match exit {
-            Exit::Exited(code) => Cause::Exited(code),
-            Exit::Signaled(signal) => Cause::Signaled(signal),
+            Exit::Exited(code) => Cause::Exited { code },
+            Exit::Signaled(signal) => Cause::Signaled { signal },
         }
     }
 }
@@ -468,7 +214,9 @@ impl From<&Death> for Dead {
             at: death.at.nanos(),
             cause: match &death.cause {
                 pane_proc::Cause::Exit(exit) => Cause::from(*exit),
-                pane_proc::Cause::Failed(message) => Cause::Failed(message.clone()),
+                pane_proc::Cause::Failed(message) => Cause::Failed {
+                    message: message.clone(),
+                },
             },
         }
     }
@@ -665,18 +413,14 @@ impl From<Text> for String {
     }
 }
 
-compact! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum Input {
-        units {}
-        payloads {
-            Key(Key) = "key",
-            Mouse(Mouse) = "mouse",
-            Paste(Paste) = "paste",
-            Text(Text) = "text",
-            Focus(bool) = "focus",
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Input {
+    Key(Key),
+    Mouse(Mouse),
+    Paste(Paste),
+    Text { data: Text },
+    Focus { focused: bool },
 }
 
 impl<'a> From<&'a Input> for pane_proc::Input<'a> {
@@ -688,21 +432,17 @@ impl<'a> From<&'a Input> for pane_proc::Input<'a> {
                 text: &paste.text,
                 check_safe: paste.check_safe,
             },
-            Input::Text(text) => pane_proc::Input::Text(&text.0),
-            Input::Focus(focused) => pane_proc::Input::Focus(*focused),
+            Input::Text { data } => pane_proc::Input::Text(&data.0),
+            Input::Focus { focused } => pane_proc::Input::Focus(*focused),
         }
     }
 }
 
-compact! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum Command {
-        units {}
-        payloads {
-            Argv(Vec<String>) = "argv",
-            Shell(String) = "shell",
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Command {
+    Argv { argv: Vec<String> },
+    Shell { command: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -747,15 +487,11 @@ pub struct ViewOptions {
     pub images: Images,
 }
 
-compact! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum Marker {
-        units {}
-        payloads {
-            Resize(Size) = "resize",
-            Dead(Dead) = "dead",
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Marker {
+    Resize(Size),
+    Dead(Dead),
 }
 
 impl From<ring::Marker> for Marker {
@@ -789,28 +525,20 @@ pub struct Hello {
     pub ignore_size: bool,
 }
 
-compact! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum ClientRequest {
-        units {}
-        payloads {
-            Hello(Hello) = "hello",
-            Select(PaneId) = "select",
-            Size(Size) = "size",
-            Focused(bool) = "focused",
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientRequest {
+    Hello(Hello),
+    Select { pane: PaneId },
+    Size(Size),
+    Focused { focused: bool },
 }
 
-compact! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum ViewRequest {
-        units {}
-        payloads {
-            Resync(ViewOptions) = "resync",
-            Input(Input) = "input",
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ViewRequest {
+    Resync(ViewOptions),
+    Input { input: Input },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -821,12 +549,11 @@ pub(crate) struct Bounds {
     pub(crate) max_lines: Option<NonZeroUsize>,
 }
 
-compact! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum Scrollback {
-        units { Disabled = "disabled" }
-        payloads { Scrollback(Bounds) = "scrollback" }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum Scrollback {
+    Disabled,
+    Scrollback(Bounds),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -918,18 +645,14 @@ pub struct PaneDead {
     pub dead: Dead,
 }
 
-compact! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum ClientEvent {
-        units {}
-        payloads {
-            Welcome(Welcome) = "welcome",
-            Topology(Vec<Row>) = "topology",
-            Title(Title) = "title",
-            Pwd(Pwd) = "pwd",
-            Dead(PaneDead) = "dead",
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientEvent {
+    Welcome(Welcome),
+    Topology { panes: Vec<Row> },
+    Title(Title),
+    Pwd(Pwd),
+    Dead(PaneDead),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -945,16 +668,12 @@ pub struct Skipped {
     pub to: u64,
 }
 
-compact! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum ViewEvent {
-        units {}
-        payloads {
-            Marked(Marked) = "marked",
-            Skipped(Skipped) = "skipped",
-            Pasted(PasteResult) = "pasted",
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ViewEvent {
+    Marked(Marked),
+    Skipped(Skipped),
+    Pasted(PasteResult),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1115,15 +834,10 @@ mod tests {
     use proptest::prelude::*;
     use serde::de::DeserializeOwned;
 
-    fn same<T: Serialize + DeserializeOwned>(json: &str) {
-        let value: T = decode(json.as_bytes()).unwrap_or_else(|error| panic!("{json}: {error}"));
-        assert_eq!(super::json(&value), json);
-    }
-
     #[test]
-    fn every_wire_type_round_trips_the_protocol_1_0_json() {
+    fn every_wire_type_round_trips_the_protocol_2_0_json() {
         same::<Version>(
-            r#"{"protocol":"1.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
+            r#"{"protocol":"2.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
         );
         for json in [
             r#"{"kind":"invalid","message":"m"}"#,
@@ -1131,16 +845,16 @@ mod tests {
             r#"{"kind":"gone","message":"m"}"#,
             r#"{"kind":"io","message":"m"}"#,
             r#"{"kind":"not_found","message":"m"}"#,
-            r#"{"kind":["protocol_mismatch",{"protocol":"1.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}],"message":"m"}"#,
-            r#"{"kind":["vt_mismatch",{"protocol":"1.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}],"message":"m"}"#,
+            r#"{"kind":"protocol_mismatch","protocol":"2.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
+            r#"{"kind":"vt_mismatch","protocol":"2.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
         ] {
             same::<Error>(json);
         }
         for json in [
             r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":null}"#,
-            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":["exited",7]}}"#,
-            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":["signaled",9]}}"#,
-            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":["failed","boom"]}}"#,
+            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"exited","code":7}}}"#,
+            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"signaled","signal":9}}}"#,
+            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"failed","message":"boom"}}}"#,
         ] {
             same::<Row>(json);
         }
@@ -1152,59 +866,63 @@ mod tests {
             same::<PasteResult>(json);
         }
         for json in [
-            r#"["hello",{"kind":"terminal","name":"test","focused":true,"size":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"ignore_size":false}]"#,
-            r#"["hello",{"kind":"app","name":"app","pane":"pane_3","focused":false,"size":{"cols":4096,"rows":1},"ignore_size":true}]"#,
-            r#"["select","pane_3"]"#,
-            r#"["size",{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}}]"#,
-            r#"["focused",true]"#,
+            r#"{"type":"hello","kind":"terminal","name":"test","focused":true,"size":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"ignore_size":false}"#,
+            r#"{"type":"hello","kind":"app","name":"app","pane":"pane_3","focused":false,"size":{"cols":4096,"rows":1},"ignore_size":true}"#,
+            r#"{"type":"select","pane":"pane_3"}"#,
+            r#"{"type":"size","cols":80,"rows":24,"cell_px":{"width":8,"height":16}}"#,
+            r#"{"type":"focused","focused":true}"#,
         ] {
             same::<ClientRequest>(json);
         }
         for json in [
             r#"{"env":[]}"#,
-            r#"{"cwd":"/tmp","command":["argv",["/bin/sh","-c","x"]],"env":[{"name":"X","value":"y"}]}"#,
-            r#"{"command":["shell","exec cat"],"env":[]}"#,
+            r#"{"cwd":"/tmp","command":{"type":"argv","argv":["/bin/sh","-c","x"]},"env":[{"name":"X","value":"y"}]}"#,
+            r#"{"command":{"type":"shell","command":"exec cat"},"env":[]}"#,
         ] {
             same::<CreatePane>(json);
         }
         for json in [
-            r#"["resync",{"history":"all","images":"none"}]"#,
-            r#"["resync",{"history":"none","images":"none"}]"#,
-            r#"["input",["key",{"action":"press","key":20,"mods":2,"unshifted_codepoint":97,"text":"a","composing":false}]]"#,
-            r#"["input",["key",{"action":"release","key":58,"mods":0,"unshifted_codepoint":0,"text":"","composing":true}]]"#,
-            r#"["input",["key",{"action":"repeat","key":1,"mods":0,"unshifted_codepoint":0,"text":"","composing":false}]]"#,
-            r#"["input",["mouse",{"action":"press","button":"left","col":3,"row":4,"mods":1}]]"#,
-            r#"["input",["mouse",{"action":"motion","button":"eleven","col":0,"row":0,"mods":0}]]"#,
-            r#"["input",["mouse",{"action":"release","button":"unknown","col":0,"row":0,"mods":0}]]"#,
-            r#"["input",["paste",{"text":"hello\n","check_safe":false,"id":23}]]"#,
-            r#"["input",["paste",{"text":"x","check_safe":true}]]"#,
-            r#"["input",["text","aGk="]]"#,
-            r#"["input",["focus",false]]"#,
+            r#"{"type":"resync","history":"all","images":"none"}"#,
+            r#"{"type":"resync","history":"none","images":"none"}"#,
+            r#"{"type":"input","input":{"type":"key","action":"press","key":20,"mods":2,"unshifted_codepoint":97,"text":"a","composing":false}}"#,
+            r#"{"type":"input","input":{"type":"key","action":"release","key":58,"mods":0,"unshifted_codepoint":0,"text":"","composing":true}}"#,
+            r#"{"type":"input","input":{"type":"key","action":"repeat","key":1,"mods":0,"unshifted_codepoint":0,"text":"","composing":false}}"#,
+            r#"{"type":"input","input":{"type":"mouse","action":"press","button":"left","col":3,"row":4,"mods":1}}"#,
+            r#"{"type":"input","input":{"type":"mouse","action":"motion","button":"eleven","col":0,"row":0,"mods":0}}"#,
+            r#"{"type":"input","input":{"type":"mouse","action":"release","button":"unknown","col":0,"row":0,"mods":0}}"#,
+            r#"{"type":"input","input":{"type":"paste","text":"hello\n","check_safe":false,"id":23}}"#,
+            r#"{"type":"input","input":{"type":"paste","text":"x","check_safe":true}}"#,
+            r#"{"type":"input","input":{"type":"text","data":"aGk="}}"#,
+            r#"{"type":"input","input":{"type":"focus","focused":false}}"#,
         ] {
             same::<ViewRequest>(json);
         }
         for json in [
-            r#"["welcome",{"client":"client_2","limits":{"terminal":{"scrollback":["scrollback",{"max_bytes":50000000}],"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]}}]"#,
-            r#"["welcome",{"client":"client_2","limits":{"terminal":{"scrollback":"disabled","apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]}}]"#,
-            r#"["welcome",{"client":"client_2","limits":{"terminal":{"scrollback":["scrollback",{"max_bytes":83886080,"max_lines":5000}],"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]}}]"#,
-            r#"["welcome",{"client":"client_2","limits":{"terminal":{"scrollback":["scrollback",{}],"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]}}]"#,
-            r#"["topology",[{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":null},{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":["exited",0]}}]]"#,
-            r#"["topology",[]]"#,
-            r#"["title",{"pane":"pane_3","title":"x"}]"#,
-            r#"["pwd",{"pane":"pane_3","pwd":"file://h/tmp"}]"#,
-            r#"["dead",{"pane":"pane_3","dead":{"at":123456789012345,"cause":["signaled",15]}}]"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":50000000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]}}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]}}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]}}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]}}"#,
+            r#"{"type":"topology","panes":[{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":null},{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"exited","code":0}}}]}"#,
+            r#"{"type":"topology","panes":[]}"#,
+            r#"{"type":"title","pane":"pane_3","title":"x"}"#,
+            r#"{"type":"pwd","pane":"pane_3","pwd":"file://h/tmp"}"#,
+            r#"{"type":"dead","pane":"pane_3","dead":{"at":123456789012345,"cause":{"type":"signaled","signal":15}}}"#,
         ] {
             same::<ClientEvent>(json);
         }
         for json in [
-            r#"["marked",{"offset":99,"marker":["resize",{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}}]}]"#,
-            r#"["marked",{"offset":5,"marker":["resize",{"cols":4096,"rows":1}]}]"#,
-            r#"["marked",{"offset":7,"marker":["dead",{"at":123456789012345,"cause":["exited",7]}]}]"#,
-            r#"["skipped",{"offset":100000,"from":10,"to":100000}]"#,
-            r#"["pasted",{"id":77,"pasted":true,"unsafe":false}]"#,
+            r#"{"type":"marked","offset":99,"marker":{"type":"resize","cols":80,"rows":24,"cell_px":{"width":8,"height":16}}}"#,
+            r#"{"type":"marked","offset":5,"marker":{"type":"resize","cols":4096,"rows":1}}"#,
+            r#"{"type":"marked","offset":7,"marker":{"type":"dead","at":123456789012345,"cause":{"type":"exited","code":7}}}"#,
+            r#"{"type":"skipped","offset":100000,"from":10,"to":100000}"#,
+            r#"{"type":"pasted","id":77,"pasted":true,"unsafe":false}"#,
         ] {
             same::<ViewEvent>(json);
         }
+    }
+
+    fn same<T: Serialize + DeserializeOwned>(json: &str) {
+        assert_eq!(decoded::<T>(json), Ok(json.to_owned()), "{json}");
     }
 
     fn decoded<T: Serialize + DeserializeOwned>(json: &str) -> Result<String, String> {
@@ -1215,24 +933,27 @@ mod tests {
 
     #[test]
     fn decoders_take_defaults_and_nulls_and_refuse_bad_shapes() {
-        let hello = r#"["hello",{"kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1},"ignore_size":false}]"#;
+        let hello = r#"{"type":"hello","kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1},"ignore_size":false}"#;
         assert_eq!(
             decoded::<ClientRequest>(
-                r#"["hello",{"kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1},"extra":1}]"#
+                r#"{"type":"hello","kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1},"extra":1}"#
             ),
             Ok(hello.to_owned())
         );
         assert_eq!(
             decoded::<ClientRequest>(
-                r#"["hello",{"kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1,"cell_px":null},"pane":null}]"#
+                r#"{"type":"hello","kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1,"cell_px":null},"pane":null}"#
             ),
             Ok(hello.to_owned())
         );
         for refused in [
-            r#"["select","pane_1","x"]"#,
-            r#"["focused"]"#,
+            r#"["select","pane_1"]"#,
+            r#"{"type":"select"}"#,
+            r#"{"type":"focused","focused":1}"#,
+            r#"{"type":"focused"}"#,
             r#""focused""#,
-            r#"["nope",1]"#,
+            r#"{"type":"nope"}"#,
+            r#"{"focused":true}"#,
         ] {
             assert!(decoded::<ClientRequest>(refused).is_err(), "{refused}");
         }
@@ -1241,14 +962,17 @@ mod tests {
             Ok(r#"{"env":[]}"#.to_owned())
         );
         assert_eq!(
-            decoded::<ViewRequest>(r#"["resync",{}]"#),
-            Ok(r#"["resync",{"history":"none","images":"none"}]"#.to_owned())
+            decoded::<ViewRequest>(r#"{"type":"resync"}"#),
+            Ok(r#"{"type":"resync","history":"none","images":"none"}"#.to_owned())
         );
         assert_eq!(
             decoded::<ViewRequest>(
-                r#"["input",["paste",{"text":"x","check_safe":true,"id":null}]]"#
+                r#"{"type":"input","input":{"type":"paste","text":"x","check_safe":true,"id":null}}"#
             ),
-            Ok(r#"["input",["paste",{"text":"x","check_safe":true}]]"#.to_owned())
+            Ok(
+                r#"{"type":"input","input":{"type":"paste","text":"x","check_safe":true}}"#
+                    .to_owned()
+            )
         );
     }
 
@@ -1256,7 +980,7 @@ mod tests {
     fn input_is_checked_where_it_is_decoded() {
         let key = |key: i64, codepoint: i64| {
             format!(
-                r#"["key",{{"action":"press","key":{key},"mods":0,"unshifted_codepoint":{codepoint},"text":"","composing":false}}]"#
+                r#"{{"type":"key","action":"press","key":{key},"mods":0,"unshifted_codepoint":{codepoint},"text":"","composing":false}}"#
             )
         };
         let refused: Vec<bool> = [
@@ -1265,20 +989,22 @@ mod tests {
             key(175, 0x10ffff),
             key(1, 0x110000),
             key(1, 0xd800),
-            r#"["mouse",{"action":"press","button":"left","col":70000,"row":0,"mods":0}]"#
+            r#"{"type":"mouse","action":"press","button":"left","col":70000,"row":0,"mods":0}"#
                 .to_owned(),
-            r#"["text","aGk"]"#.to_owned(),
-            r#"["text","a=Gk"]"#.to_owned(),
+            r#"{"type":"text","data":"aGk"}"#.to_owned(),
+            r#"{"type":"text","data":"a=Gk"}"#.to_owned(),
         ]
         .iter()
         .map(|json| decoded::<Input>(json).is_err())
         .collect();
         assert_eq!(refused, [true, true, false, true, true, true, true, true]);
         for (text, bytes) in [("", ""), ("aGk=", "hi"), ("aGk/", "hi?"), ("aA==", "h")] {
-            let json = format!(r#"["text","{text}"]"#);
+            let json = format!(r#"{{"type":"text","data":"{text}"}}"#);
             assert_eq!(
                 serde_json::from_str::<Input>(&json).unwrap(),
-                Input::Text(Text(bytes.as_bytes().to_vec()))
+                Input::Text {
+                    data: Text(bytes.as_bytes().to_vec())
+                }
             );
             assert_eq!(decoded::<Input>(&json), Ok(json));
         }
@@ -1370,13 +1096,13 @@ mod tests {
     #[test]
     fn the_version_check_takes_a_higher_minor_and_refuses_another_major_or_terminal() {
         let checked: Vec<String> = [
-            (Some("1.0"), Some(VT)),
-            (Some("1.7"), Some(VT)),
             (Some("2.0"), Some(VT)),
-            (Some("1."), Some(VT)),
+            (Some("2.7"), Some(VT)),
+            (Some("1.0"), Some(VT)),
+            (Some("2."), Some(VT)),
             (None, Some(VT)),
-            (Some("1.0"), Some("wrong")),
-            (Some("1.0"), None),
+            (Some("2.0"), Some("wrong")),
+            (Some("2.0"), None),
         ]
         .into_iter()
         .map(|(protocol, vt)| match check_version(protocol, vt) {
@@ -1473,30 +1199,62 @@ mod tests {
     }
 
     #[test]
-    fn a_record_is_an_object_at_every_level_and_a_compact_variant_stays_an_array() {
-        let refused: Vec<bool> = [
+    fn a_record_is_an_object_at_every_level_and_inside_a_tagged_enum() {
+        for (accepted, json) in [
+            (
+                decoded::<CreatePane>(
+                    r#"{"command":{"type":"argv","argv":["/bin/sh"]},"env":[{"name":"A","value":"b"}]}"#,
+                ),
+                r#"{"command":{"type":"argv","argv":["/bin/sh"]},"env":[{"name":"A","value":"b"}]}"#,
+            ),
+            (
+                decoded::<ClientRequest>(
+                    r#"{"type":"size","cols":80,"rows":24,"cell_px":{"width":8,"height":16}}"#,
+                ),
+                r#"{"type":"size","cols":80,"rows":24,"cell_px":{"width":8,"height":16}}"#,
+            ),
+            (
+                decoded::<ViewRequest>(
+                    r#"{"type":"input","input":{"type":"mouse","action":"press","button":"left","col":1,"row":2,"mods":0}}"#,
+                ),
+                r#"{"type":"input","input":{"type":"mouse","action":"press","button":"left","col":1,"row":2,"mods":0}}"#,
+            ),
+            (
+                decoded::<ClientEvent>(r#"{"type":"topology","panes":[]}"#),
+                r#"{"type":"topology","panes":[]}"#,
+            ),
+        ] {
+            assert_eq!(accepted, Ok(json.to_owned()), "{json}");
+        }
+        let refused = [
             decoded::<CreatePane>(r#"[]"#),
             decoded::<CreatePane>(r#"["/tmp"]"#),
             decoded::<CreatePane>(r#"{"env":[["A","b"]]}"#),
-            decoded::<ClientRequest>(r#"["hello",["terminal","t",null,true,{"cols":1,"rows":1},false]]"#),
-            decoded::<ClientRequest>(r#"["size",[80,24]]"#),
-            decoded::<ClientRequest>(r#"["size",{"cols":80,"rows":24,"cell_px":[8,16]}]"#),
-            decoded::<ViewRequest>(r#"["input",["key",["press",20,0,97,"a",false]]]"#),
-            decoded::<ViewRequest>(r#"["input",["paste",["x",true]]]"#),
-            decoded::<ViewRequest>(r#"["resync",["all","none"]]"#),
-            decoded::<CreatePane>(r#"{"command":["argv",["/bin/sh"]],"env":[{"name":"A","value":"b"}]}"#),
-            decoded::<ClientRequest>(r#"["size",{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}}]"#),
-            decoded::<ViewRequest>(r#"["input",["mouse",{"action":"press","button":"left","col":1,"row":2,"mods":0}]]"#),
-        ]
-        .iter()
-        .map(Result::is_err)
-        .collect();
-        assert_eq!(
-            refused,
-            [
-                true, true, true, true, true, true, true, true, true, false, false, false
-            ]
-        );
+            decoded::<CreatePane>(r#"{"command":["argv",["/bin/sh"]]}"#),
+            decoded::<ClientRequest>(r#"["size",{"cols":80,"rows":24}]"#),
+            decoded::<ClientRequest>(r#"["focused",true]"#),
+            decoded::<ClientRequest>(r#"{"type":"size","cols":80,"rows":24,"cell_px":[8,16]}"#),
+            decoded::<ClientRequest>(
+                r#"{"type":"hello","kind":"terminal","name":"t","focused":true,"size":[80,24]}"#,
+            ),
+            decoded::<ViewRequest>(r#"{"type":"resync","history":"all","images":["x"]}"#),
+            decoded::<ViewRequest>(r#"{"type":"input","input":["paste",["x",true]]}"#),
+            decoded::<ViewRequest>(
+                r#"{"type":"input","input":{"type":"paste","text":"x","check_safe":["true"]}}"#,
+            ),
+            decoded::<ViewEvent>(
+                r#"{"type":"marked","offset":1,"marker":{"type":"dead","at":1,"cause":["exited",7]}}"#,
+            ),
+            decoded::<ViewEvent>(r#"{"type":"marked","offset":1,"marker":["resize",80,24]}"#),
+            decoded::<ClientEvent>(r#"{"type":"topology","panes":[["pane_1",1,[],"/","t",null]]}"#),
+            decoded::<ClientEvent>(r#"{"type":"welcome","client":"client_1","limits":[]}"#),
+            decoded::<Error>(r#"{"kind":["invalid"],"message":"m"}"#),
+            decoded::<ClientRequest>(r#"{"type":"focused","focused":true,"focused":false}"#),
+            decoded::<ClientRequest>(r#"{"type":"focused","type":"focused","focused":true}"#),
+        ];
+        for result in refused {
+            assert!(result.is_err(), "{result:?}");
+        }
     }
 
     proptest! {

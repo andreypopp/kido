@@ -244,7 +244,7 @@ class WebSocket:
         self.sock.connect(directory + "/socket")
         key = base64.b64encode(os.urandom(16)).decode()
         self.sock.sendall((f"GET {path} HTTP/1.1\r\nHost: ko\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                           f"Sec-WebSocket-Version: 13\r\nKo-Protocol: 1.0\r\nKo-Vt: {vt}\r\n\r\n").encode())
+                           f"Sec-WebSocket-Version: 13\r\nKo-Protocol: 2.0\r\nKo-Vt: {vt}\r\n\r\n").encode())
         self.buffer = b""
         while b"\r\n\r\n" not in self.buffer:
             self.buffer += self.sock.recv(65536)
@@ -314,7 +314,7 @@ class Ko:
         connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.sock.settimeout(10)
         connection.sock.connect(self.dir + "/socket")
-        connection.request(method, path, json.dumps(body).encode() if body is not None else b"", {"Ko-Protocol": "1.0", "Ko-Vt": self.vt})
+        connection.request(method, path, json.dumps(body).encode() if body is not None else b"", {"Ko-Protocol": "2.0", "Ko-Vt": self.vt})
         response = connection.getresponse()
         data = response.read()
         if response.status != 200:
@@ -323,7 +323,7 @@ class Ko:
         return data
 
     def pane(self, command):
-        return json.loads(self.request("POST", "/panes", {"command": ["argv", ["/bin/sh", "-c", command]], "cwd": self.dir}))["pane"]
+        return json.loads(self.request("POST", "/panes", {"command": {"type": "argv", "argv": ["/bin/sh", "-c", command]}, "cwd": self.dir}))["pane"]
 
     def screen(self, pane):
         return self.request("GET", f"/panes/{pane}/screen?history=none").decode(errors="replace")
@@ -335,7 +335,7 @@ class Ko:
 
     def claim(self, pane):
         self.sizing = WebSocket(self.dir, self.vt, "/client")
-        self.sizing.send(["hello", {"kind": "terminal", "name": "bench", "pane": pane, "focused": True, "size": {"cols": PANE_COLS, "rows": ROWS, "cell_px": {"width": 8, "height": 16}}}])
+        self.sizing.send({"type": "hello", "kind": "terminal", "name": "bench", "pane": pane, "focused": True, "size": {"cols": PANE_COLS, "rows": ROWS, "cell_px": {"width": 8, "height": 16}}})
         self.sizing.receive()
         self.sizing.receive()
 
@@ -459,7 +459,7 @@ def latency(count=500):
                 for n in range(count + 1, 2 * count + 1):
                     time.sleep(0.01)
                     began = time.monotonic()
-                    view.send(["input", ["text", base64.b64encode(b"x").decode()]])
+                    view.send({"type": "input", "input": {"type": "text", "data": base64.b64encode(b"x").decode()}})
                     while True:
                         opcode, data = view.receive()
                         if opcode == 2 and data[0] == 1 and b"<%04d>" % n in data[9:]:
@@ -586,7 +586,7 @@ def resize_row():
             for n in range(20):
                 cols = 60 if n % 2 == 0 else PANE_COLS
                 began = time.monotonic()
-                ko.sizing.send(["size", {"cols": cols, "rows": ROWS, "cell_px": {"width": 8, "height": 16}}])
+                ko.sizing.send({"type": "size", "cols": cols, "rows": ROWS, "cell_px": {"width": 8, "height": 16}})
                 if history == "none":
                     view.snapshot()
                 else:

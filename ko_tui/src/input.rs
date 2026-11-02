@@ -1093,7 +1093,9 @@ mod tests {
     }
 
     fn input_json(event: &KeyEvent) -> String {
-        json(&ViewRequest::Input(Wire::Key(Key(key(event).unwrap()))))
+        json(&ViewRequest::Input {
+            input: Wire::Key(Key(key(event).unwrap())),
+        })
     }
 
     #[test]
@@ -1112,7 +1114,7 @@ mod tests {
         assert_eq!(command(&released), None);
         assert_eq!(
             input_json(&k),
-            r#"["input",["key",{"action":"press","key":38,"mods":3,"unshifted_codepoint":115,"text":"s","composing":false}]]"#
+            r#"{"type":"input","input":{"type":"key","action":"press","key":38,"mods":3,"unshifted_codepoint":115,"text":"s","composing":false}}"#
         );
     }
 
@@ -1142,7 +1144,7 @@ mod tests {
             .collect();
         let line = |action: &str, key: u16, mods: u16, unshifted: u32, text: &str| {
             format!(
-                r#"["input",["key",{{"action":"{action}","key":{key},"mods":{mods},"unshifted_codepoint":{unshifted},"text":"{text}","composing":false}}]]"#
+                r#"{{"type":"input","input":{{"type":"key","action":"{action}","key":{key},"mods":{mods},"unshifted_codepoint":{unshifted},"text":"{text}","composing":false}}}}"#
             )
         };
         assert_eq!(
@@ -1436,7 +1438,7 @@ mod tests {
         .collect();
         let line = |key: u16, mods: u16, unshifted: u32, text: &str| {
             format!(
-                r#"["input",["key",{{"action":"press","key":{key},"mods":{mods},"unshifted_codepoint":{unshifted},"text":"{text}","composing":false}}]]"#
+                r#"{{"type":"input","input":{{"type":"key","action":"press","key":{key},"mods":{mods},"unshifted_codepoint":{unshifted},"text":"{text}","composing":false}}}}"#
             )
         };
         assert_eq!(

@@ -445,10 +445,9 @@ mod tests {
         let mut server = Server::new(config, UnixListener::bind(&socket).unwrap(), timing).unwrap();
         let request = crate::protocol::CreatePane {
             cwd: None,
-            command: Some(crate::protocol::Command::Argv(vec![
-                "/bin/sleep".to_owned(),
-                "30".to_owned(),
-            ])),
+            command: Some(crate::protocol::Command::Argv {
+                argv: vec!["/bin/sleep".to_owned(), "30".to_owned()],
+            }),
             env: Vec::new(),
         };
         let id = server.state.add_pane(&mut server.poll, &request).unwrap();

@@ -43,9 +43,9 @@ fn signal_name(signal: i32) -> String {
 
 pub(crate) fn dead_line(dead: &Dead) -> String {
     let what = match &dead.cause {
-        Cause::Exited(status) => format!("exited {status}"),
-        Cause::Signaled(signal) => format!("killed by {}", signal_name(*signal)),
-        Cause::Failed(message) => format!("failed: {message}"),
+        Cause::Exited { code } => format!("exited {code}"),
+        Cause::Signaled { signal } => format!("killed by {}", signal_name(*signal)),
+        Cause::Failed { message } => format!("failed: {message}"),
     };
     format!("[{what} \u{2014} Ctrl+D to remove]")
 }
@@ -68,9 +68,9 @@ pub(crate) fn lines(selected: Option<PaneId>, panes: &[Row]) -> Vec<Line> {
             };
             let status = match &pane.dead {
                 Some(Dead {
-                    cause: Cause::Exited(status),
+                    cause: Cause::Exited { code },
                     ..
-                }) => format!(" \u{2020}{status}"),
+                }) => format!(" \u{2020}{code}"),
                 Some(_) => " \u{2020}".to_owned(),
                 None => String::new(),
             };
@@ -103,7 +103,7 @@ mod tests {
         };
         let dead = Dead {
             at: 0,
-            cause: Cause::Exited(7),
+            cause: Cause::Exited { code: 7 },
         };
         let panes = [
             pane.clone(),
@@ -124,10 +124,12 @@ mod tests {
         );
         assert_eq!((WIDTH, visible(99), visible(100)), (24, false, true));
         let causes = [
-            Cause::Exited(0),
-            Cause::Signaled(15),
-            Cause::Signaled(99),
-            Cause::Failed("boom".to_owned()),
+            Cause::Exited { code: 0 },
+            Cause::Signaled { signal: 15 },
+            Cause::Signaled { signal: 99 },
+            Cause::Failed {
+                message: "boom".to_owned(),
+            },
         ];
         let dead_lines: Vec<String> = causes
             .into_iter()

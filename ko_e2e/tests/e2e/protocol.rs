@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
-use crate::harness::{Child, DEADLINE, Dir, poll, run_ko, start, test_env, text_of, wait_gone};
+use crate::harness::{
+    Child, DEADLINE, Dir, PROTOCOL, poll, run_ko, start, test_env, text_of, wait_gone,
+};
 
 #[test]
 fn kill_server() {
@@ -65,23 +67,32 @@ fn version_and_origin() {
     let (_client, welcome) = s.client(None);
     let scrollback = &welcome["limits"]["terminal"]["scrollback"];
     assert_eq!(
-        scrollback[0],
+        scrollback["type"],
         json!("scrollback"),
         "limits: {}",
         welcome["limits"]
     );
-    assert_eq!(scrollback[1], json!({"max_bytes": 50000000}));
+    assert_eq!(
+        scrollback,
+        &json!({"type": "scrollback", "max_bytes": 50000000})
+    );
     let vt = s.vt.replace("wrong".to_owned()).unwrap();
     s.request("GET", "/panes", None, 409);
-    let (status, _) = s.exchange(
+    let (status, body) = s.exchange(
         "GET",
         "/panes",
-        &vec![("Ko-Protocol".to_owned(), "2.0".to_owned())],
+        &vec![("Ko-Protocol".to_owned(), "1.0".to_owned())],
         b"",
     );
     assert_eq!(status, 426, "unsupported protocol version");
+    let refusal: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        refusal["kind"],
+        json!("protocol_mismatch"),
+        "refusal: {refusal}"
+    );
     let headers = vec![
-        ("Ko-Protocol".to_owned(), "1.0".to_owned()),
+        ("Ko-Protocol".to_owned(), PROTOCOL.to_owned()),
         ("Origin".to_owned(), "https://evil.example".to_owned()),
         ("Ko-Vt".to_owned(), vt),
     ];
@@ -106,13 +117,17 @@ fn api() {
     let created = s
         .ko(
             &["api", "--input", "-", "/panes"],
-            r#"{"command":["shell","exec cat"]}"#,
+            r#"{"command":{"type":"shell","command":"exec cat"}}"#,
         )
         .json();
     let created = created["pane"].as_str().unwrap_or_default().to_owned();
     assert!(!created.is_empty(), "POST via stdin: {created:?}");
     let file = s.dir.join("body.json");
-    std::fs::write(&file, r#"{"command":["shell","exec cat"]}"#).unwrap();
+    std::fs::write(
+        &file,
+        r#"{"command":{"type":"shell","command":"exec cat"}}"#,
+    )
+    .unwrap();
     s.ko(
         &["api", "-X", "POST", "--input", text_of(&file), "/panes"],
         "",

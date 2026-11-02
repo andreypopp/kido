@@ -292,14 +292,16 @@ pub(crate) struct Hello<'a> {
 }
 
 pub(crate) fn tagged(text: &str) -> Option<(String, Value)> {
-    let Value::Array(mut parts) = serde_json::from_str(text).ok()? else {
-        return None;
-    };
-    if parts.len() != 2 {
-        return None;
-    }
-    let payload = parts.pop()?;
-    Some((parts.pop()?.as_str()?.to_owned(), payload))
+    let message: Value = serde_json::from_str(text).ok()?;
+    Some((message.get("type")?.as_str()?.to_owned(), message))
+}
+
+pub(crate) const PROTOCOL: &str = "2.0";
+
+pub(crate) fn size_request(size: Value) -> Value {
+    let mut request = size;
+    request["type"] = json!("size");
+    request
 }
 
 #[derive(Debug)]
@@ -497,7 +499,9 @@ impl Ws {
     }
 
     pub(crate) fn type_text(&mut self, text: &str) {
-        self.send(&json!(["input", ["text", base64(text.as_bytes())]]));
+        self.send(
+            &json!({"type": "input", "input": {"type": "text", "data": base64(text.as_bytes())}}),
+        );
     }
 
     pub(crate) fn ready(&mut self, needle: &str) {
@@ -618,7 +622,7 @@ impl Server {
     }
 
     pub(crate) fn headers(&self) -> Headers {
-        let mut headers = vec![("Ko-Protocol".to_owned(), "1.0".to_owned())];
+        let mut headers = vec![("Ko-Protocol".to_owned(), PROTOCOL.to_owned())];
         if let Some(vt) = &self.vt {
             headers.push(("Ko-Vt".to_owned(), vt.clone()));
         }
@@ -777,6 +781,7 @@ impl Server {
     pub(crate) fn hello(&self, hello: Hello) -> Ws {
         let mut ws = self.ws("/client");
         let mut body = json!({
+            "type": "hello",
             "kind": "terminal",
             "name": "test",
             "focused": hello.focused,
@@ -785,7 +790,7 @@ impl Server {
         if let Some(pane) = hello.pane {
             body["pane"] = json!(pane);
         }
-        ws.send(&json!(["hello", body]));
+        ws.send(&body);
         ws
     }
 
@@ -800,7 +805,8 @@ impl Server {
     }
 
     pub(crate) fn pane(&self, command: &str) -> String {
-        let body = json!({"command": ["argv", ["/bin/sh", "-c", command]], "cwd": "/tmp"});
+        let body =
+            json!({"command": {"type": "argv", "argv": ["/bin/sh", "-c", command]}, "cwd": "/tmp"});
         self.ko(&["api", "--input", "-", "/panes"], &body.to_string())
             .json()["pane"]
             .as_str()
@@ -809,7 +815,7 @@ impl Server {
     }
 
     pub(crate) fn text(&self, pane: &str, text: &str) {
-        let body = json!(["text", base64(text.as_bytes())]);
+        let body = json!({"type": "text", "data": base64(text.as_bytes())});
         self.ko(
             &["api", "--input", "-", &format!("/panes/{pane}/input")],
             &body.to_string(),

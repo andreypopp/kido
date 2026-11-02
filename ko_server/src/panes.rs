@@ -128,8 +128,12 @@ impl Panes {
         let shell = || config.shell.as_os_str().as_encoded_bytes().to_vec();
         let command: Vec<Vec<u8>> = match &request.command {
             None => vec![shell(), b"-l".to_vec()],
-            Some(Command::Argv(argv)) => argv.iter().map(|arg| arg.clone().into_bytes()).collect(),
-            Some(Command::Shell(text)) => vec![shell(), b"-c".to_vec(), text.clone().into_bytes()],
+            Some(Command::Argv { argv }) => {
+                argv.iter().map(|arg| arg.clone().into_bytes()).collect()
+            }
+            Some(Command::Shell { command }) => {
+                vec![shell(), b"-c".to_vec(), command.clone().into_bytes()]
+            }
         };
         if !command
             .first()
@@ -278,9 +282,9 @@ mod tests {
                 .collect(),
         };
         let argv = |argv: &[&str]| {
-            Some(Command::Argv(
-                argv.iter().map(|a| (*a).to_owned()).collect(),
-            ))
+            Some(Command::Argv {
+                argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+            })
         };
         let cases = [
             (

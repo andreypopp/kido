@@ -26,7 +26,9 @@ pub(crate) fn exchange(socket: &Path, route: &Route, body: &str) -> io::Result<R
 pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> {
     let body = json(&CreatePane {
         cwd: Some("/".to_owned()),
-        command: Some(Command::Argv(argv.to_vec())),
+        command: Some(Command::Argv {
+            argv: argv.to_vec(),
+        }),
         env: Vec::new(),
     });
     let response = exchange(socket, &Route::CreatePane, &body)?;
@@ -63,7 +65,9 @@ impl Typist {
     }
 
     pub(crate) fn type_text(&mut self, pane: PaneId, text: &[u8]) -> io::Result<()> {
-        let body = json(&Input::Text(Text(text.to_vec())));
+        let body = json(&Input::Text {
+            data: Text(text.to_vec()),
+        });
         send(&mut self.stream, &Route::Input(pane), body.as_bytes())?;
         read_response(&mut self.stream).map(drop)
     }
@@ -159,6 +163,14 @@ pub(crate) fn output<'a>(message: &Message<'a>) -> Option<(u64, &'a [u8])> {
         Ok((Record::Output, offset, data)) if message.opcode == 2 => Some((offset, data)),
         _ => None,
     }
+}
+
+pub(crate) fn skipped(message: &Message<'_>) -> bool {
+    message.opcode == 1
+        && matches!(
+            protocol::decode::<ViewEvent>(message.payload),
+            Ok(ViewEvent::Skipped(_))
+        )
 }
 
 pub(crate) fn dead(message: &Message<'_>) -> bool {

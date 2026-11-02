@@ -386,9 +386,9 @@ impl Rig {
         );
         let request = CreatePane {
             cwd: None,
-            command: Some(Command::Argv(
-                ["/bin/sh", "-c", command].map(str::to_owned).to_vec(),
-            )),
+            command: Some(Command::Argv {
+                argv: ["/bin/sh", "-c", command].map(str::to_owned).to_vec(),
+            }),
             env: Vec::new(),
         };
         let pane = state

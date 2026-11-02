@@ -4,6 +4,6 @@ Upgrade: websocket
 Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 Sec-WebSocket-Version: 13
-Ko-Protocol: 1.0
+Ko-Protocol: 2.0
 Ko-Vt: da3eff4c4ad49a0c90aebf7cb045492701f6dcce
 
