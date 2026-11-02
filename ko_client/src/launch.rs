@@ -83,7 +83,7 @@ pub fn bind(dir: &Path, socket: &Path, patience: Patience) -> io::Result<UnixLis
     UnixListener::bind(socket)
 }
 
-pub(crate) fn attach(
+pub fn attach(
     dir: &Path,
     executable: &Path,
     patience: Patience,

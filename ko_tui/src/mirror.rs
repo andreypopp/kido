@@ -3,6 +3,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use ko_client::wire::{self, Link, Next, text};
 use ko_pane_wire::frame::{History, Limits};
 use ko_server::ids::{ClientId, PaneId};
 use ko_server::protocol::{self, Images, Marker, Route, ViewEvent, ViewOptions, ViewRequest, json};
@@ -13,8 +14,6 @@ use ko_vt::compress::{Compress, Tick};
 use ko_vt::render::Frame;
 use ko_vt::{Extent, ReadyScan, Terminal};
 use tungstenite::Bytes;
-
-use crate::wire::{self, Link, Next, text};
 
 const BURST: Duration = Duration::from_millis(1);
 const YIELD: Duration = Duration::from_micros(500);

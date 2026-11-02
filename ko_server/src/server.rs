@@ -7,6 +7,7 @@ use ko_sys::event::{Events, Interest, Mode, Poll, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 
 use crate::config::Config;
+use crate::ids::Instance;
 use crate::state::{State, Wake};
 
 const ACCEPT_BURST: usize = 16;
@@ -124,7 +125,7 @@ impl Server {
         let mut poll = Poll::new();
         let signal_token = poll.watch(signals.fd(), Interest::Read);
         let listener = Listener::new(socket, &mut poll, timing.accept_retry)?;
-        let state = State::new(config, &mut poll, timing.output_tick);
+        let state = State::new(config, Instance::mint()?, &mut poll, timing.output_tick);
         Ok(Server {
             timing,
             poll,

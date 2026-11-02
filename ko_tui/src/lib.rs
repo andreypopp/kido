@@ -1,11 +1,8 @@
-pub mod api;
 pub mod client;
 mod differ;
 mod input;
-pub mod launch;
 mod mirror;
 mod modes;
 mod renderer;
 mod sidebar;
 mod tty;
-mod wire;

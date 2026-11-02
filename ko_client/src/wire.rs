@@ -19,11 +19,11 @@ use crate::launch::{self, PATIENCE};
 const MAX_MESSAGE: usize = 128 << 20;
 const RECEIVE_BUFFER: usize = 1 << 20;
 const READ_TIMEOUT: Duration = Duration::from_secs(40);
-pub(crate) const WATCHDOG: Duration = Duration::from_secs(40);
+pub const WATCHDOG: Duration = Duration::from_secs(40);
 
 // poll cannot see frames that the upgrade read already buffered in the link,
 // so the owner of a new link dispatches one read at once.
-pub(crate) fn buffered(token: Token) -> Ready {
+pub fn buffered(token: Token) -> Ready {
     Ready {
         token,
         read: true,
@@ -31,11 +31,11 @@ pub(crate) fn buffered(token: Token) -> Ready {
     }
 }
 
-pub(crate) fn text(error: impl Display) -> String {
+pub fn text(error: impl Display) -> String {
     error.to_string()
 }
 
-pub(crate) fn silent(received: Instant, now: Instant, limit: Duration) -> bool {
+pub fn silent(received: Instant, now: Instant, limit: Duration) -> bool {
     now.saturating_duration_since(received) >= limit
 }
 
@@ -92,7 +92,7 @@ fn fetch(
     }
 }
 
-pub(crate) fn request(
+pub fn request(
     socket: &Path,
     client: ClientId,
     route: &Route,
@@ -106,7 +106,7 @@ pub(crate) fn request(
     Ok(answer)
 }
 
-pub(crate) fn download(
+pub fn download(
     socket: &Path,
     client: ClientId,
     route: &Route,
@@ -116,7 +116,7 @@ pub(crate) fn download(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Next {
+pub enum Next {
     Text(Utf8Bytes),
     Binary(Bytes),
     Wait,
@@ -124,7 +124,7 @@ pub(crate) enum Next {
 }
 
 #[derive(Debug)]
-pub(crate) struct Link {
+pub struct Link {
     stream: UnixStream,
     ctx: WebSocketContext,
     out: Queue,
@@ -167,7 +167,7 @@ fn failed(error: Error) -> io::Error {
 }
 
 impl Link {
-    pub(crate) fn upgrade(
+    pub fn upgrade(
         mut stream: UnixStream,
         client: Option<ClientId>,
         route: &Route,
@@ -182,7 +182,7 @@ impl Link {
         Ok(Link::of(stream, rest))
     }
 
-    pub(crate) fn of(stream: UnixStream, rest: Vec<u8>) -> Link {
+    pub fn of(stream: UnixStream, rest: Vec<u8>) -> Link {
         let config = WebSocketConfig::default()
             .read_buffer_size(1 << 15)
             .write_buffer_size(0)
@@ -198,15 +198,11 @@ impl Link {
         }
     }
 
-    pub(crate) fn connect(
-        socket: &Path,
-        client: Option<ClientId>,
-        route: &Route,
-    ) -> io::Result<Link> {
+    pub fn connect(socket: &Path, client: Option<ClientId>, route: &Route) -> io::Result<Link> {
         Link::upgrade(launch::connect(socket, PATIENCE)?, client, route)
     }
 
-    pub(crate) fn watch(&mut self, poll: &mut Poll) -> io::Result<Token> {
+    pub fn watch(&mut self, poll: &mut Poll) -> io::Result<Token> {
         fd::set_nonblocking(self.stream.as_fd())?;
         let token = poll.watch(
             self.stream.as_fd(),
@@ -216,21 +212,21 @@ impl Link {
         Ok(token)
     }
 
-    pub(crate) fn unwatch(&mut self, poll: &mut Poll) {
+    pub fn unwatch(&mut self, poll: &mut Poll) {
         if let Some(token) = self.token.take() {
             poll.unwatch(token);
         }
     }
 
-    pub(crate) fn received(&self) -> Instant {
+    pub fn received(&self) -> Instant {
         self.received
     }
 
-    pub(crate) fn begin_turn(&mut self) {
+    pub fn begin_turn(&mut self) {
         self.reads = Reads::new();
     }
 
-    pub(crate) fn next(&mut self, poll: &mut Poll, now: Instant) -> io::Result<Next> {
+    pub fn next(&mut self, poll: &mut Poll, now: Instant) -> io::Result<Next> {
         let Some(token) = self.token else {
             return Ok(Next::Closed);
         };
@@ -291,7 +287,7 @@ impl Link {
         Ok(next)
     }
 
-    pub(crate) fn send(&mut self, body: String) -> io::Result<()> {
+    pub fn send(&mut self, body: String) -> io::Result<()> {
         let mut io = Io {
             stream: &self.stream,
             source: None,
@@ -302,11 +298,11 @@ impl Link {
             .map_err(failed)
     }
 
-    pub(crate) fn flush_blocking(&mut self) -> io::Result<()> {
+    pub fn flush_blocking(&mut self) -> io::Result<()> {
         self.out.flush(self.stream.as_fd())
     }
 
-    pub(crate) fn settle(&mut self, poll: &mut Poll) -> io::Result<()> {
+    pub fn settle(&mut self, poll: &mut Poll) -> io::Result<()> {
         self.out.flush(self.stream.as_fd())?;
         if let Some(token) = self.token {
             poll.interest(token, Interest::of(true, !self.out.is_empty()));

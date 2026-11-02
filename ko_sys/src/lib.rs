@@ -1,6 +1,7 @@
 #![allow(unsafe_code)]
 
 pub mod clock;
+pub mod entropy;
 pub mod event;
 pub mod fd;
 #[cfg(any(test, feature = "fuzz"))]

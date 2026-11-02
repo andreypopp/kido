@@ -365,6 +365,7 @@ name = "ko"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "ko_client",
  "ko_pane_wire",
  "ko_server",
  "ko_sys",
@@ -379,6 +380,16 @@ dependencies = [
  "ko_server",
  "ko_sys",
  "ko_vt",
+]
+
+[[package]]
+name = "ko_client"
+version = "0.0.0"
+dependencies = [
+ "ko_pane_wire",
+ "ko_server",
+ "ko_sys",
+ "tungstenite",
 ]
 
 [[package]]
@@ -440,6 +451,7 @@ dependencies = [
 name = "ko_tui"
 version = "0.0.0"
 dependencies = [
+ "ko_client",
  "ko_pane_wire",
  "ko_server",
  "ko_sys",

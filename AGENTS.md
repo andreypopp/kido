@@ -289,7 +289,11 @@ These requirements are fixed:
   cargo-fuzz crate, a workspace member outside `default-members`:
   clippy checks it on stable, and only `make fuzz` runs it.
   `ko_tui/` is the terminal client that `ko` runs without a
-  command. `ko_bench/` is the binary `ko-bench`, the benchmark
+  command: the mirror, the renderer, the input and the tty.
+  `ko_client/` is the client core that `ko_tui` and `ko` use and
+  Kido.app will link (plans/ko-stages.md 4.10): the launcher, the
+  wire layer, the API client and the `/client` model. It never
+  depends on `ko_vt` or libghostty-vt. `ko_bench/` is the binary `ko-bench`, the benchmark
   modes, which `make build-ko` builds into `target/release` and never
   installs. ko has no C of its own; the only C is the measurement
   helpers of `bench/`, which `make build-bench` compiles. Do not add
@@ -719,7 +723,8 @@ Conventions:
 **ko**, the terminal server that replaces tmux, is in Rust
 (plans/ko-rust.md, "Rust (ko)" above; rfc/kido-server/p1-mvp.md is
 its design). Its crates: `ko/` (the binary), `ko_server/` (the
-coordinator), `ko_tui/` (the terminal client), `ko_pane/` (the pane
+coordinator), `ko_client/` (the client core), `ko_tui/` (the
+terminal client), `ko_pane/` (the pane
 process), `ko_pane_wire/` (the frame codec and the ring),
 `ko_vt/` and `ko_vt_sys/` (libghostty-vt, built by zig from PATH
 out of `third_party/ghostty`), `ko_sys/` (the OS layer),

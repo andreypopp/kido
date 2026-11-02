@@ -13,10 +13,10 @@ use serde_json::Value;
 
 use crate::config::BUILD;
 use crate::http::Status;
-use crate::ids::{ClientId, PaneId};
+use crate::ids::{ClientId, Instance, PaneId};
 use crate::pane_proc::{self, Death};
 
-const PROTOCOL: &str = "2.0";
+const PROTOCOL: &str = "2.1";
 const PROTOCOL_MAJOR: &str = "2";
 const VT: &str = env!("KO_VT");
 const MAX_OFFSET: u64 = (1 << 62) - 1;
@@ -625,6 +625,7 @@ impl Terminal {
 pub struct Welcome {
     pub client: ClientId,
     pub limits: Limits,
+    pub instance: Instance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -835,9 +836,9 @@ mod tests {
     use serde::de::DeserializeOwned;
 
     #[test]
-    fn every_wire_type_round_trips_the_protocol_2_0_json() {
+    fn every_wire_type_round_trips_its_json() {
         same::<Version>(
-            r#"{"protocol":"2.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
+            r#"{"protocol":"2.1","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
         );
         for json in [
             r#"{"kind":"invalid","message":"m"}"#,
@@ -845,8 +846,8 @@ mod tests {
             r#"{"kind":"gone","message":"m"}"#,
             r#"{"kind":"io","message":"m"}"#,
             r#"{"kind":"not_found","message":"m"}"#,
-            r#"{"kind":"protocol_mismatch","protocol":"2.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
-            r#"{"kind":"vt_mismatch","protocol":"2.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
+            r#"{"kind":"protocol_mismatch","protocol":"2.1","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
+            r#"{"kind":"vt_mismatch","protocol":"2.1","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
         ] {
             same::<Error>(json);
         }
@@ -898,10 +899,10 @@ mod tests {
             same::<ViewRequest>(json);
         }
         for json in [
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":50000000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]}}"#,
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]}}"#,
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]}}"#,
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]}}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":50000000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef"}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef"}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef"}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef"}"#,
             r#"{"type":"topology","panes":[{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":null},{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"exited","code":0}}}]}"#,
             r#"{"type":"topology","panes":[]}"#,
             r#"{"type":"title","pane":"pane_3","title":"x"}"#,
@@ -1096,13 +1097,13 @@ mod tests {
     #[test]
     fn the_version_check_takes_a_higher_minor_and_refuses_another_major_or_terminal() {
         let checked: Vec<String> = [
-            (Some("2.0"), Some(VT)),
+            (Some("2.1"), Some(VT)),
             (Some("2.7"), Some(VT)),
             (Some("1.0"), Some(VT)),
             (Some("2."), Some(VT)),
             (None, Some(VT)),
-            (Some("2.0"), Some("wrong")),
-            (Some("2.0"), None),
+            (Some("2.1"), Some("wrong")),
+            (Some("2.1"), None),
         ]
         .into_iter()
         .map(|(protocol, vt)| match check_version(protocol, vt) {
@@ -1248,6 +1249,9 @@ mod tests {
             decoded::<ViewEvent>(r#"{"type":"marked","offset":1,"marker":["resize",80,24]}"#),
             decoded::<ClientEvent>(r#"{"type":"topology","panes":[["pane_1",1,[],"/","t",null]]}"#),
             decoded::<ClientEvent>(r#"{"type":"welcome","client":"client_1","limits":[]}"#),
+            decoded::<ClientEvent>(
+                r#"{"type":"welcome","client":"client_1","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":1,"kitty_images_max_bytes":1,"continuation_max_bytes":1},"media":[]},"instance":"0123456789ABCDEF0123456789abcdef"}"#,
+            ),
             decoded::<Error>(r#"{"kind":["invalid"],"message":"m"}"#),
             decoded::<ClientRequest>(r#"{"type":"focused","focused":true,"focused":false}"#),
             decoded::<ClientRequest>(r#"{"type":"focused","type":"focused","focused":true}"#),

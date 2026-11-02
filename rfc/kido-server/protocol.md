@@ -104,12 +104,17 @@ frozen across minors. It carries only the protocol version, the
 libghostty-vt revision and the build (decided 2026-10-31). The
 terminal limits that form the mirror contract (design.md 4.3) arrive
 with the `Welcome` event on `/client`; a client applies them to every
-mirror before it opens a view. The server instance identity is not
-in P1; S5 adds it to `Welcome` (migration.md S5).
+mirror before it opens a view. The `Welcome` event also carries
+`instance`, the identity of the server process: 128 random bits from
+the OS, made once at server start. Two server starts never share an
+instance, and every client of one server gets the same one. The
+value is opaque to a client, which only compares it for equality
+(section 12). An upgrade in place (K9) will keep it, because the
+panes and their offsets survive.
 
 Every other request carries the `Ko-Protocol` and `Ko-Vt` headers; a
 request without them is refused as a mismatch. The protocol version
-is 2.0. A major mismatch is `426 Upgrade Required`, a `vt` mismatch
+is 2.1. A major mismatch is `426 Upgrade Required`, a `vt` mismatch
 is `409 Conflict`, with a `protocol_mismatch` or `vt_mismatch` body
 that names the server's values beside `kind` and `message`. Those two
 fields have the same place in every major, so a client of any major
@@ -400,7 +405,7 @@ rules).
    `/runs` again, and reopen the views with the last offset seen:
    bytes and markers resume if inside the ring, else a snapshot. An
    offset is reused only when the `Welcome`'s instance equals the one
-   the client saw before (S5); a new server restarts pane ids at
+   the client saw before; a new server restarts pane ids at
    `pane_1`, so an old offset would resume on an unrelated pane.
 
 ## 13. Versioning rules

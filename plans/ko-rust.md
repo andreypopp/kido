@@ -1529,7 +1529,7 @@ place (`pane_proc.rs`). A `head` frame scans the ring and pumps the
 pane's views at once, in the same turn. The 2 ms output tick is a
 deadline that exists only while a pane is busy.
 
-**The client side** (`ko_tui/wire.rs` and `ko api`, decision 7): one
+**The client side** (`ko_client/wire.rs` and `ko api`, decision 7): one
 HTTP/1.1 client of about 120 lines over the same `http.rs` writer and
 `httparse::Response::parse`. `ko api` and `ko ssh` (S1) send one
 request on a blocking socket with a 5 s deadline and read the
@@ -1548,7 +1548,7 @@ A library function returns `Result`. `std::io::Error` carries the OS
 error (the `Unix_error` of today) and propagates with `?`. A failure
 with a message to print is a `String` error that holds the message (R1).
 Where callers distinguish cases, the module defines an enum
-(`api::Error::{Websocket, NoServer, Failed(String)}` as `ko_tui/api.ml`
+(`api::Error::{Websocket, NoServer, Failed(String)}` as `ko_client/api.rs`
 has). `Display` is implemented by hand; ko's own code uses no
 `thiserror` and no `anyhow` (tungstenite uses `thiserror` inside).
 httparse's, tungstenite's and serde_json's errors are mapped to
@@ -1806,7 +1806,7 @@ inline test of the same meaning; "property" is a proptest module;
 | 18 | queued WebSocket frames inside one read | ed21d4a4, p1-mvp.md 6.4 | after one socket read, every complete frame in the buffer is processed before the next read | `link.rs`: `ws.read()` until `WouldBlock`; tungstenite returns buffered messages without I/O | Go `TestViewInputFramesInOneWrite`, `TestViewInputFrameSplitAcrossWrites`; unit: two frames in one write and one frame across two writes, over `ws::Io` |
 | 19 | shifted characters under kitty flags | 76ea5374 | Shift counts as consumed when the text is one printable character other than the unshifted codepoint and no Ctrl, Alt or Super; Option is Alt; a CSI u key without text gets its shifted text in the client | `ko_vt`'s key encoder wrapper (`shift_made_text`, `MACOS_OPTION_AS_ALT`) used by `ko_pane/src/input.rs`; `ko_tui/input.rs` | unit: `shift_made_text`'s table; Go `TestClientLegacyShiftedKey`, `TestClientNvimNormalModeShiftedKeys` |
 | 20 | `EINTR` | a94fd3a0 (the test), the stubs' loops | a signal during a pane's screen reply does not fail the pane; no syscall fails on `EINTR` | `ko_sys::event`: an `EINTR` from `poll` is a turn with no events; `ko_sys::retry` around `read`, `write`, `waitpid`, `posix_spawn`, `shm_open` | property harness explicit case "a signal while a screen reply waits for its pipe does not fail the pane"; unit: `retry` and the loop return after a `SIGCHLD` |
-| 21 | `kill-server` by peer pid | 66e75d30 | `ko kill-server` reads the peer pid and uid from the socket, refuses another user, sends `SIGTERM` through `Pid`, waits 5 s for the process and the socket | `ko_tui/launch.rs`, `ko_sys::peer` | Go `TestKillServer`, `TestKillServerSignalsByPeerPID` |
+| 21 | `kill-server` by peer pid | 66e75d30 | `ko kill-server` reads the peer pid and uid from the socket, refuses another user, sends `SIGTERM` through `Pid`, waits 5 s for the process and the socket | `ko_client/launch.rs`, `ko_sys::peer` | Go `TestKillServer`, `TestKillServerSignalsByPeerPID` |
 | 22 | `SIGTERM` ends the programs | ad858e14, 3.1 of p1-mvp.md | `SIGHUP` to every pane, 500 ms, `SIGKILL`; a failed pane process gets its program group killed through the verified `Group` | `server.rs`, `pane_proc.rs` | Go `TestSIGTERMKillsPrograms`, `TestPaneProcessCrashKillsProgram` |
 | 23 | the missing cwd is `400`, not `500`; chunked is `411` | 7c877215 | | `panes.rs`, `http.rs` | property: "bad bodies are answered with 400 or 411, not a crash or a 500" |
 | 24 | `Origin` refused; version headers; `/version` exempt | 0d71779f | | `router.rs` | Go `TestVersionAndOrigin` |

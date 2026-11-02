@@ -5,24 +5,25 @@ use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
-use ko_pane_wire::frame::{Dim, Limits, ScreenFormat, ScreenRows, Size};
-use ko_server::ids::{ClientId, PaneId};
+use ko_client::launch::{self, PATIENCE};
+use ko_client::model::Model;
+use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
+use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
+use ko_server::ids::PaneId;
 use ko_server::protocol::{
-    self, ClientEvent, ClientKind, ClientRequest, CreatePane, Created, Hello, Input as Wire,
-    Key as WireKey, Mouse as WireMouse, Paste, Route, Row, ViewRequest, json,
+    self, ClientKind, ClientRequest, CreatePane, Created, Hello, Input as Wire, Key as WireKey,
+    Mouse as WireMouse, Paste, Route, ViewRequest, json,
 };
 use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 use ko_vt::render::{Frame, MouseTracking};
 
 use crate::input::{self, Command, Event, Input, KeyEvent, Kind, MouseKind, Name, Reply};
-use crate::launch::{self, PATIENCE};
 use crate::mirror::Mirror;
 use crate::modes::{self, Modes};
 use crate::renderer::{Layout, Renderer};
 use crate::sidebar;
 use crate::tty::Tty;
-use crate::wire::{self, Link, Next, WATCHDOG, silent, text};
 
 const PACE: Duration = Duration::from_millis(8);
 const PROBE: Duration = Duration::from_millis(500);
@@ -263,15 +264,13 @@ struct Client {
     signal_token: Token,
     link: Link,
     link_token: Token,
-    id: ClientId,
+    model: Model,
     socket: PathBuf,
-    limits: Limits,
     pager_command: String,
     pager: Option<Running>,
     output: String,
     input: Input,
     renderer: Renderer,
-    panes: Vec<Row>,
     panel: Panel,
     warning: bool,
     kitty: bool,
@@ -285,20 +284,6 @@ struct Client {
     wake: Deadline,
     escape: Deadline,
     watchdog: Deadline,
-}
-
-fn welcome(link: &mut Link) -> Result<(ClientId, Limits, Vec<Row>), String> {
-    let mut next = || match link.receive().map_err(text)? {
-        Next::Text(event) => protocol::decode::<ClientEvent>(event.as_bytes()).map_err(text),
-        _ => Err("client event missing".to_owned()),
-    };
-    let ClientEvent::Welcome(welcome) = next()? else {
-        return Err("welcome missing".to_owned());
-    };
-    let ClientEvent::Topology { panes } = next()? else {
-        return Err("topology missing".to_owned());
-    };
-    Ok((welcome.client, welcome.limits.terminal.limits(), panes))
 }
 
 impl Client {
@@ -345,7 +330,7 @@ impl Client {
         });
         link.send(json(&hello)).map_err(text)?;
         link.flush_blocking().map_err(text)?;
-        let (id, limits, panes) = welcome(&mut link)?;
+        let model = Model::welcome(&mut link)?;
         let link_token = link.watch(&mut poll).map_err(text)?;
         let (wake, escape, watchdog) = (
             Deadline::new(&mut poll),
@@ -361,15 +346,13 @@ impl Client {
             signal_token,
             link,
             link_token,
-            id,
+            model,
             socket,
-            limits,
             pager_command: pager,
             pager: None,
             output: String::new(),
             input,
             renderer: Renderer::default(),
-            panes,
             panel,
             warning,
             kitty: probed.kitty,
@@ -385,7 +368,7 @@ impl Client {
             watchdog,
         };
         client.client(wire::buffered(client.link_token), Instant::now())?;
-        match client.panes.first().map(|pane| pane.id) {
+        match client.model.panes.first().map(|pane| pane.id) {
             None => client.create_pane()?,
             Some(pane) => client.switch(pane)?,
         }
@@ -401,7 +384,8 @@ impl Client {
 
     fn dead(&self) -> Option<protocol::Dead> {
         let pane = self.pane()?;
-        self.panes
+        self.model
+            .panes
             .iter()
             .find(|row| row.id == pane)
             .and_then(|row| row.dead.clone())
@@ -442,7 +426,7 @@ impl Client {
             },
             sidebar: match self.panel {
                 Panel::Hidden => Vec::new(),
-                _ => sidebar::lines(self.pane(), &self.panes),
+                _ => sidebar::lines(self.pane(), &self.model.panes),
             },
         }
     }
@@ -469,7 +453,7 @@ impl Client {
     }
 
     fn request(&self, route: &Route) -> Result<Vec<u8>, String> {
-        wire::request(&self.socket, self.id, route, b"")
+        wire::request(&self.socket, self.model.client, route, b"")
     }
 
     fn switch(&mut self, pane: PaneId) -> Result<(), String> {
@@ -486,7 +470,13 @@ impl Client {
         self.session.reset()?;
         self.renderer.invalidate();
         self.client_send(&ClientRequest::Select { pane })?;
-        let mirror = Mirror::open(&self.socket, self.id, pane, self.limits, &mut self.poll)?;
+        let mirror = Mirror::open(
+            &self.socket,
+            self.model.client,
+            pane,
+            self.model.limits,
+            &mut self.poll,
+        )?;
         self.view = View::open(pane, mirror);
         self.input_send(Wire::Focus {
             focused: self.focused,
@@ -504,25 +494,31 @@ impl Client {
             command: None,
             env: Vec::new(),
         });
-        let response = wire::request(&self.socket, self.id, &Route::CreatePane, body.as_bytes())?;
+        let response = wire::request(
+            &self.socket,
+            self.model.client,
+            &Route::CreatePane,
+            body.as_bytes(),
+        )?;
         let created: Created = protocol::decode(&response).map_err(text)?;
         self.switch(created.pane)
     }
 
     fn selected(&self) -> usize {
-        self.panes
+        self.model
+            .panes
             .iter()
             .position(|row| Some(row.id) == self.pane())
             .unwrap_or(0)
     }
 
     fn choose(&mut self, step: isize) -> Result<(), String> {
-        let count = self.panes.len();
+        let count = self.model.panes.len();
         if count == 0 {
             return Ok(());
         }
         let at = (self.selected() as isize + step).rem_euclid(count as isize) as usize;
-        match self.panes.get(at).map(|row| row.id) {
+        match self.model.panes.get(at).map(|row| row.id) {
             Some(pane) => self.switch(pane),
             None => Ok(()),
         }
@@ -535,8 +531,8 @@ impl Client {
         };
         mirror.close(&mut self.poll);
         self.request(&Route::DeletePane(pane))?;
-        self.panes = protocol::decode(&self.request(&Route::ListPanes)?).map_err(text)?;
-        match self.panes.first().map(|row| row.id) {
+        self.model.panes = protocol::decode(&self.request(&Route::ListPanes)?).map_err(text)?;
+        match self.model.panes.first().map(|row| row.id) {
             None => self.create_pane(),
             Some(first) => self.switch(first),
         }
@@ -572,7 +568,7 @@ impl Client {
             }
         };
         let route = Route::Screen(pane, ScreenFormat::Ansi, ScreenRows::Full);
-        let started = wire::download(&self.socket, self.id, &route, &mut file)
+        let started = wire::download(&self.socket, self.model.client, &route, &mut file)
             .and_then(|()| file.flush().map_err(text))
             .and_then(|()| self.launch(&path));
         match started {
@@ -675,7 +671,7 @@ impl Client {
     }
 
     fn plain(&mut self, key: &KeyEvent) -> Result<(), String> {
-        let count = self.panes.len();
+        let count = self.model.panes.len();
         match (self.panel, key.name) {
             (Panel::Choosing(chosen), Name::Up | Name::Down) => {
                 if count > 0 {
@@ -685,7 +681,7 @@ impl Client {
                 Ok(())
             }
             (Panel::Choosing(chosen), Name::Enter) => {
-                match self.panes.get(chosen).map(|row| row.id) {
+                match self.model.panes.get(chosen).map(|row| row.id) {
                     Some(pane) => self.switch(pane),
                     None => Ok(()),
                 }
@@ -761,23 +757,6 @@ impl Client {
                 Ok(())
             }
             Event::Reply(_) => Ok(()),
-        }
-    }
-
-    fn server(&mut self, event: ClientEvent) {
-        match event {
-            ClientEvent::Topology { panes } => self.panes = panes,
-            ClientEvent::Title(title) => {
-                for row in self.panes.iter_mut().filter(|row| row.id == title.pane) {
-                    row.title.clone_from(&title.title);
-                }
-            }
-            ClientEvent::Dead(dead) => {
-                for row in self.panes.iter_mut().filter(|row| row.id == dead.pane) {
-                    row.dead = Some(dead.dead.clone());
-                }
-            }
-            ClientEvent::Welcome(_) | ClientEvent::Pwd(_) => {}
         }
     }
 
@@ -943,7 +922,7 @@ impl Client {
                     }
                     Next::Text(event) => {
                         let event = protocol::decode(event.as_bytes()).map_err(text)?;
-                        self.server(event);
+                        self.model.apply(event);
                     }
                 }
             }

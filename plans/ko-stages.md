@@ -82,7 +82,7 @@ code has; "missing" names the work; "stage" names the stage below.
 | the feed (status, tree, switch, prompt) | `title`, `pwd`, `dead` events | `status` per pane and its event; OSC 133 and OSC 7501 frames and the record set; the foreground and alternate frames; pane variables and their events; `run` events; `/prompt/resolve`, `POST /prompt` | K1, K3 |
 | `#{pane_current_path}` | `cwd` and `pwd` on the row | nothing | done |
 | `@kido_ssh_args` and the other pane options | none | pane variables under `/panes/pane_N/vars`, `ko ssh`, `ko shell` | K1 |
-| discovery, stamp, kill-server, detach | `/version` with headers, `ko kill-server`, close is detach | `instance` in `welcome` (reconnect gate) | K2 |
+| discovery, stamp, kill-server, detach | `/version` with headers, `ko kill-server`, close is detach | the reconnect gate on `instance` | K0 (`instance`), K2 (gate) |
 | the pi harness (`set-option -p`, `list-panes -a`) | `KO_PANE` and `KO_SOCKET` in every pane, `ko api` | pane variables (K1); `ko run*`, `ko prompt`, `ko-pi.ts` (K3) | K1, K3 |
 | remote hosts over SSH | nothing on the client side; the server is transport-neutral | `ko HOST` (master, `-O forward`), the app's forward, reconnect by offset gated on `instance`, Linux (RL) | K7 |
 | SSH agent for remote panes (the app's `agent.sock` publication) | panes inherit the server's environment | nothing in the protocol; the app starts `ko server` with `SSH_AUTH_SOCK` set, as it does for tmux | K7 (app) |
@@ -216,10 +216,10 @@ last stage.
 
 ### 4.7 The protocol's shapes and versions
 
-Protocol 2.0 is the base. K1 appends (2.1). K2 removes `POST /panes`
+Protocol 2.0 is the base. K0 appends `instance` to `welcome` (2.1).
+K1 appends (2.2). K2 removes `POST /panes`
 and the `topology` event and changes `hello`, so it is a major bump
-(3.0). K3 and K6 append. K7 and K9 add nothing to the wire except
-`instance`, which K2 adds early.
+(3.0). K3 and K6 append. K7 and K9 add nothing to the wire.
 
 ### 4.8 The Verus boundary
 
@@ -303,6 +303,16 @@ code with tests per agent-day, plus 20 percent on logic that ports
 from OCaml (the handover's figure). Names in code are ko's names from
 the start (`KO_*`, `ko_*`, `share/ko`).
 
+### K0. The `ko_client` crate and `instance` (done)
+
+Added by the top-level session before K1 and K2, so that both start
+on the crate. The workspace crate `ko_client` holds the launcher, the
+wire layer, the API client and the `/client` event handling that were in
+`ko_tui`; `ko_tui` depends on it. The protocol types stay in
+`ko_server::protocol` until a later stage moves them (4.10). The
+`welcome` event carries `instance`, the server process's identity,
+and `ko_client` keeps it beside the client id. Protocol 2.1.
+
 ### K1. Status, pane variables, `ko shell`, `ko ssh` (10 to 14 agent-days)
 
 Depends on nothing. Runs beside K2. s1.md is the specification, with
@@ -326,7 +336,7 @@ Scope:
   (the store and limits). `Pane` gains the fields of s1.md 3.
   `protocol.rs`: the row fields `foreground`, `status`, `vars`; the
   events `status`, `var`, `var_deleted`, `bell`, `notify`,
-  `progress`; the routes under `/panes/pane_N/vars`. Protocol 2.1.
+  `progress`; the routes under `/panes/pane_N/vars`. Protocol 2.2.
 - A new workspace crate `ko_shell`: `prime.rs`, `shell.rs`, `ssh.rs`,
   `bin_dir.rs`, ports of `lib/prime.ml`, `shell.ml`, `ssh.ml` and
   `bin_dir.ml`, with the shell integrations and shims embedded with
@@ -336,9 +346,7 @@ Scope:
 - `ko_client` (4.10): the `status`, `var`, `var_deleted`, `bell`,
   `notify` and `progress` events applied to the model's panes, and
   the pane kind and status types. `ko_tui`: the status column and the
-  seen rule (s1.md 10), over the model. K1 creates the crate and
-  moves `wire.rs`, `api.rs` and the event handling of `client.rs`
-  into it before it adds the new events.
+  seen rule (s1.md 10), over the model.
 
 Tests that close it (`ko_e2e`, snake case of s1.md 11): the status
 event sequences for an agent, the record set rules, child records,
@@ -368,15 +376,14 @@ Scope:
   session and window `vars`. `protocol.rs`: the document types,
   `GET`/`PUT /layout`, the `layout` event, `hello {session?, window?,
   pane?}`, `select`, `switch`, `POST /clients/client_N/select`,
-  `instance` in `welcome` (a random 128-bit id made at server start),
   the `clear_history` request. `POST /panes` and `topology` go.
   Protocol 3.0.
 - Sizing per window: `Pane.sizer` moves to the window; a leaf's pty
   size follows its cell geometry; a window with no sizing client keeps
   its last size, 80x24 at creation.
 - `ko_client`: the document types, the `layout` event applied to the
-  model, the read-edit-`PUT`-retry loop as one call, `instance` and
-  the reconnect gate, the per-client current session and window.
+  model, the read-edit-`PUT`-retry loop as one call, the reconnect
+  gate on `instance`, the per-client current session and window.
   `ko_tui`: the grouped list (section 3), `Ctrl+Shift+N` adds a
   window to the shown pane's session, `Ctrl+D` on a dead pane is
   `DELETE /panes/pane_N`, clipped or padded display of a pane whose
@@ -606,12 +613,12 @@ coordinated app release, as every pin bump does.
 
 ### K7. Remote over SSH (5 to 8 agent-days)
 
-Depends on RL (the remote host is Linux), on K2 (`instance`), and on
+Depends on RL (the remote host is Linux), on K2 (the reconnect gate), and on
 K5 for the app part.
 
 Scope:
 
-- `ko HOST`: `ko_tui/src/launch.rs` starts `ssh -M -N -T` with a
+- `ko HOST`: `ko_client/src/launch.rs` starts `ssh -M -N -T` with a
   private `ControlPath` under a 0700 directory, waits with `-O check`,
   asks `-O forward -L <local>:<remote dir>/socket`, and attaches to
   `<local>` as to a local server. `ko api --host`. Nothing runs on the
@@ -671,7 +678,7 @@ and ends its panes.
 | stage | agent-days | depends on | maps to |
 |---|---|---|---|
 | K1 status, variables, `ko shell`, `ko ssh` | 10 to 14 | none | S1 |
-| K2 layout document, `instance` | 8 to 11 | none (beside K1) | S2 |
+| K2 layout document, reconnect gate | 8 to 11 | none (beside K1) | S2 |
 | K3 runs, prompt, harness | 12 to 17 | K1, K2 | S3 |
 | K4 Linux measurements | 1 to 2 | RL | S4 (rest) |
 | K5 Kido.app on `ko_client`, text | 16 to 24 | K1, K2 (steps 1 and 2 at once) | S5 |
@@ -681,8 +688,7 @@ and ends its panes.
 | K9 upgrade in place | 7 to 10 | K8 | S9 |
 
 To the cut-over: 70 to 102 agent-days of implementation, plus review
-and verification. K1 to K3 each grow by about one agent-day for the
-`ko_client` split, inside their ranges. The critical path is K2, K5, K6 (app part), K7 (app
+and verification. K0 did the `ko_client` split before K1 and K2. The critical path is K2, K5, K6 (app part), K7 (app
 part), K8. K1, K3, K4 and the server parts of K6 and K7 run beside
 K5. RL must land before K7's acceptance. The earlier total was 67 to
 102; the Rust base adds the port surcharge on K1 and K3 and removes

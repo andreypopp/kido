@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::conn::{Conn, Phase};
 use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
-use crate::ids::{ClientId, PaneId};
+use crate::ids::{ClientId, Instance, PaneId};
 use crate::link::{Role, Wire};
 use crate::pane::Pane;
 use crate::pane_proc::{self, Event, Io, Refusal, discard};
@@ -35,6 +35,7 @@ pub(crate) enum Owner {
 #[derive(Debug)]
 pub(crate) struct State {
     pub(crate) config: Config,
+    instance: Instance,
     pub(crate) panes: Panes,
     pub(crate) conns: Vec<Conn>,
     owners: BTreeMap<(PaneId, Req), Owner>,
@@ -84,9 +85,15 @@ fn deliver(
 }
 
 impl State {
-    pub(crate) fn new(config: Config, poll: &mut Poll, tick: Duration) -> State {
+    pub(crate) fn new(
+        config: Config,
+        instance: Instance,
+        poll: &mut Poll,
+        tick: Duration,
+    ) -> State {
         State {
             config,
+            instance,
             panes: Panes::default(),
             conns: Vec::new(),
             owners: BTreeMap::new(),
@@ -646,6 +653,7 @@ impl State {
                 let welcome = ClientEvent::Welcome(Welcome {
                     client: id,
                     limits: Limits::of(self.config.limits, &self.config.media),
+                    instance: self.instance.clone(),
                 });
                 let topology = ClientEvent::Topology { panes: self.rows() };
                 if let Some((_, wire)) = self.conns.get_mut(index).and_then(Conn::role_mut) {

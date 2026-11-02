@@ -25,6 +25,7 @@ use crate::config::DEFAULT_LIMITS;
 use crate::conn::Conn;
 use crate::delivery::{Delivery, mint_stamps};
 use crate::http::{MAX_HEAD, Parsed, parse_head, read_response, read_upgrade, request};
+use crate::ids::Instance;
 #[cfg(test)]
 use crate::ids::PaneId;
 use crate::pane_proc::{Cause, Event, Io, Life, PaneProc, discard};
@@ -381,6 +382,7 @@ impl Rig {
         let mut poll = Poll::new();
         let mut state = State::new(
             crate::config::scratch(&dir, pane_exe, limits),
+            Instance::mint().expect("an instance"),
             &mut poll,
             Duration::from_millis(2),
         );

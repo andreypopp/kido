@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+use ko_client::api;
+use ko_client::launch::{self, PATIENCE};
 use ko_pane_wire::frame::Scrollback;
 use ko_server::config::{self, Config, DEFAULT_LIMITS};
 use ko_server::protocol;
 use ko_server::server::{Server, Status, Timing};
-use ko_tui::launch::{self, PATIENCE};
-use ko_tui::{api, client};
+use ko_tui::client;
 
 const USAGE_ERROR: u8 = 124;
 

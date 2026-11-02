@@ -73,3 +73,19 @@ fn defaults_and_pane_environment() {
     s.ko(&["api", "--input", "-", "/panes"], "[]")
         .http_error(400);
 }
+
+#[test]
+fn a_server_has_one_instance_for_all_its_clients() {
+    let (first, second) = (start(&[]), start(&[]));
+    let (_a, welcome_a) = first.client(None);
+    let (_b, welcome_b) = first.client(None);
+    let (_c, welcome_c) = second.client(None);
+    assert!(
+        welcome_a["instance"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "welcome: {welcome_a}"
+    );
+    assert_eq!(welcome_b["instance"], welcome_a["instance"]);
+    assert_ne!(welcome_c["instance"], welcome_a["instance"]);
+}

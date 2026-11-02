@@ -296,7 +296,7 @@ pub(crate) fn tagged(text: &str) -> Option<(String, Value)> {
     Some((message.get("type")?.as_str()?.to_owned(), message))
 }
 
-pub(crate) const PROTOCOL: &str = "2.0";
+pub(crate) const PROTOCOL: &str = "2.1";
 
 pub(crate) fn size_request(size: Value) -> Value {
     let mut request = size;

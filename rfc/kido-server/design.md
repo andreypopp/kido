@@ -781,8 +781,8 @@ with the nesting of kido's `Tree`. Compared with kido's feed:
   or re-arm outcomes" and "concurrent feeds give different serials"
   limits go away.
 - The server instance identity that replaces `server_instance` is
-  not in P1. S5 adds it as an `instance` field of the `Welcome`
-  event (migration.md S5): a client that reconnects must tell the
+  the `instance` field of the `Welcome` event (protocol 2.1,
+  plans/ko-stages.md K0): a client that reconnects must tell the
   same server from a new one, because pane ids restart at `pane_1`
   and an old view offset must not resume on a new server's pane. It
   survives an in-place upgrade.

@@ -1,4 +1,5 @@
-use std::fmt;
+use std::fmt::{self, Write};
+use std::io;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,42 @@ macro_rules! id {
 id!(pub PaneId, "pane_");
 id!(pub ClientId, "client_");
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Instance(String);
+
+impl Instance {
+    pub(crate) fn mint() -> io::Result<Instance> {
+        let mut text = String::with_capacity(32);
+        for byte in ko_sys::entropy::bytes()? {
+            let _ = write!(text, "{byte:02x}");
+        }
+        Ok(Instance(text))
+    }
+}
+
+impl TryFrom<String> for Instance {
+    type Error = InvalidId;
+
+    fn try_from(text: String) -> Result<Instance, InvalidId> {
+        if text.len() == 32
+            && text
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            Ok(Instance(text))
+        } else {
+            Err(InvalidId(text))
+        }
+    }
+}
+
+impl From<Instance> for String {
+    fn from(instance: Instance) -> String {
+        instance.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +123,24 @@ mod tests {
         ] {
             assert_eq!(
                 text.parse::<PaneId>().unwrap_err().to_string(),
+                format!("invalid id {text:?}")
+            );
+        }
+    }
+
+    #[test]
+    fn an_instance_is_32_lowercase_hex_digits() {
+        let minted = Instance::mint().unwrap();
+        assert_eq!(Instance::try_from(String::from(minted.clone())), Ok(minted));
+        for text in [
+            "",
+            "0123456789abcdef0123456789abcde",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789ABCDEF0123456789abcdef",
+            "0123456789abcdef0123456789abcdeg",
+        ] {
+            assert_eq!(
+                Instance::try_from(text.to_owned()).unwrap_err().to_string(),
                 format!("invalid id {text:?}")
             );
         }

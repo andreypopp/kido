@@ -43,6 +43,7 @@ itoa
 jobserver
 ko
 ko_bench
+ko_client
 ko_e2e
 ko_pane
 ko_pane_wire
