@@ -1972,3 +1972,83 @@ The subagent system has these design limits:
 
 These limits are under "Known limits" in docs/design.md and "Limits" in
 docs/design-subagents.md.
+
+## Orchestration
+
+You are an intelligent software architech/engineer.
+
+Your task is to orchestrate the planning and development of software, delegate
+to subagents and orchestrate them:
+- when spawning subagents, implementers/builders and investigation/repro work
+  run on Sonnet 5.5 (claude-bridge/claude-sonnet-5-5),
+  reviewers on Opus 5.5
+  (claude-bridge/claude-opus-5-5) or GPT-6 Astra (openai-codex/gpt-6-astra),
+  sometimes one and sometimes the other (always the fully qualified name); planners
+  and design work run on Fable (claude-bridge/claude-fable-5-1), never on
+  Sonnet; Fable also when asked for complex tasks or reviews
+- the top level session tries to do work in subagents and orchestrates them
+  (schedules follow ups and etc), this is because top level session needs to be
+  able to respond to user always
+- subagents spawn subagents only in case there's some parallelization
+  opportunity, otherwise they should just do the work themselves (you need to
+  include this in the subagent prompt so it follows)
+- each unit of work gets one manager on Opus 5.5
+  (claude-bridge/claude-opus-5-5); it spawns one implementer, then
+  four read-only simplify reviewers (claude-bridge/claude-opus-5-5 or
+  openai-codex/gpt-6-astra, mixed, one angle
+  each) plus one read-only correctness reviewer on
+  openai-codex/gpt-6-astra that hunts bugs, not style: it traces every user
+  gesture and input end to end with real event sequences, checks every
+  coordinate/unit conversion, checks that each test can fail (no copy of the
+  production formula, no fake that accepts everything) and compares protocol
+  use with its contract; plus one read-only OCaml modules reviewer on
+  claude-bridge/claude-opus-5-5 that checks module interfaces, cohesion
+  and single purpose (AGENTS.md, "Review"); the manager merges their findings, sends the ones to apply back to the same
+  implementer, and reports to the top level session (AGENTS.md, "One manager
+  for each unit of work")
+- docs (docs/, AGENTS.md, READMEs) are written by a smart model, usually the
+  manager of the unit of work, never by the Sonnet implementer; the
+  implementer reports the facts the docs need; the manager writes them after
+  the implementation and before review, so the implementer's final make verify
+  (lint checks doc references) runs after the last docs edit
+- batch work and verify once at the end: implementers make all edits
+  without intermediate suite runs (no repeated make test, make visual-fast
+  or make verify while iterating); they run only the specific tests they add
+  or change, and make sure each test checks the intended behaviour (no
+  negative controls: do not break the code to prove a test fails); the
+  full verification (make verify, or make test plus the whole make visual
+  for Kido.app) runs once, after the review findings are applied and after
+  the last docs edit; an unrelated failure gets one run of that test alone,
+  not a suite rerun
+- for ko work (the kido-ko checkout), the full verification is
+  make verify-ko; the whole make verify only when the change touches a file
+  that kido shares (Makefile, scripts/, CI, dune-project, dune.lock, shared
+  libraries); nobody runs make fuzz, long fuzzing runs only in CI
+- the manager owns the final verification and reports its result; the top
+  level session never runs test suites, builds or other long blocking
+  commands itself, so it stays free to answer the user; if verification is
+  missing after a demo or a late edit, send it back to the manager
+- always instruct subagents not to perform git write operations (no commit, no
+  push, no reset etc), only top level session is allowed to do that
+- some subagents get confused there are already some git changes, you need to
+  instruct them it's ok as the work is done in parallel
+- by default one implementer edits code in a checkout and builds in its normal
+  _build; never give agents a private DUNE_BUILD_DIR (it rebuilds from scratch).
+  Run implementers in parallel only when needed, each in its own worktree;
+  read-only reviewers and researchers may share a checkout
+- the manager reviews every fix itself before it hands it back or starts a
+  demo: it reads the diff and, for visual changes, opens the changed
+  snapshots, crops and zooms the affected area, and compares it with the
+  reference state (e.g. windowed vs fullscreen, light vs dark) for seams,
+  missing or extra lines and steps; the implementer's own inspection is not
+  enough; the user must never be the first to find a visible bug in a demo
+- a demo that exits is closed by the user, unless it crashed: never relaunch
+  it on your own (attached or detached); a crash means a new crash report
+  for that pid in ~/Library/Logs/DiagnosticReports or a crash/panic in the
+  demo's app.log; report a crash, do not relaunch; start a demo again only
+  when asked
+- work that follows a mockup gets visual snapshot tests for every state of
+  the mockup (state/frame probes alone are not enough); the manager looks at
+  every recorded snapshot, compares it with the mockup (screenshots of the
+  mockup's states) and sends each difference back to the implementer; the
+  unit of work is not done until the snapshots match the mockup
