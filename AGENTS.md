@@ -2007,11 +2007,16 @@ delegates to subagents, by these rules:
   gesture and input end to end with real event sequences, checks every
   coordinate/unit conversion, checks that each test can fail (no copy of the
   production formula, no fake that accepts everything) and compares protocol
-  use with its contract; plus one read-only OCaml modules reviewer on
+  use with its contract; plus one read-only modules reviewer on
   claude-bridge/claude-opus-5-5 that checks module interfaces, cohesion
-  and single purpose (AGENTS.md, "Review"); the manager merges their findings, sends the ones to apply back to the same
-  implementer, and reports to the top level session (AGENTS.md, "One manager
-  for each unit of work")
+  and single purpose ("Review"); the manager merges their findings, sends
+  the ones to apply back to the same implementer, and reports to the top
+  level session ("One manager for each unit of work")
+- size the process to what the change is for, not to its line count:
+  local tooling (the pi extensions in .pi/, scripts that only agents use,
+  briefs, plans and other prose) gets one agent, a quick check such as
+  scripts/lint.sh, and no tests, reviewers or full verification; a small
+  product change may use fewer reviewers if the manager says which ones
 - docs (docs/, AGENTS.md, READMEs) are written by a smart model, usually the
   manager of the unit of work, never by the Sonnet implementer; the
   implementer reports the facts the docs need; the manager writes them after
@@ -2026,10 +2031,20 @@ delegates to subagents, by these rules:
   for Kido.app) runs once, after the review findings are applied and after
   the last docs edit; an unrelated failure gets one run of that test alone,
   not a suite rerun
-- for ko work (the kido-ko checkout), the full verification is
-  make verify-ko; the whole make verify only when the change touches a file
-  that kido shares (Makefile, scripts/, CI, dune-project, dune.lock, shared
-  libraries); nobody runs make fuzz, long fuzzing runs only in CI
+- the full verification is make verify-ko for a ko-only change; the whole
+  make verify when the change touches a shared file (Makefile, scripts/,
+  CI, share/pi, dune-project, dune.lock, shared libraries); the app's
+  make test in app/ (plus make visual for a visible change) when the
+  change touches app/ or the shared third_party/ghostty pin; nobody runs
+  make fuzz, long fuzzing runs only in CI
+- macOS is the platform that counts for now: a failure that occurs only on
+  Linux CI gets no unit unless the user asks, and briefs ask for no Linux
+  checks
+- one development branch, kido-app-ko, holds ko and the app; each unit
+  works in its own worktree under ~/Workspace/kido-<unit>, which the top
+  level session creates; agents start in that worktree and stay there; the
+  top level session merges the result, pushes, and removes the worktree
+  only after every agent that ran in it has stopped
 - the manager owns the final verification and reports its result; the top
   level session never runs test suites, builds or other long blocking
   commands itself, so it stays free to answer the user; if verification is
