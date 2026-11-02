@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use crate::harness::{DEADLINE, Message, start, tagged, within};
+use crate::harness::{DEADLINE, Hello, start, within};
 
 #[test]
 fn hostile_clients_do_not_affect_others() {
@@ -71,27 +71,20 @@ fn hostile_clients_do_not_affect_others() {
         good.type_text(&format!("alive{i}"));
         good.output(&format!("alive{i}"));
     }
-}
 
-#[test]
-fn client_grid_limit() {
-    let s = start(&[]);
     let grid = |cols: u32, rows: u32| json!({"cols": cols, "rows": rows, "cell_px": {"width": 65535, "height": 65535}});
     let hello = |cols: u32, rows: u32| {
-        let mut c = s.ws("/client");
-        c.send(&json!(["hello", {"kind": "terminal", "name": "t", "focused": true, "size": grid(cols, rows)}]));
-        c
-    };
-    let tag = |message: Message| match message {
-        Message::Text(text) => tagged(&text).map(|(tag, _)| tag).unwrap_or_default(),
-        Message::Binary(_) => String::new(),
+        s.hello(Hello {
+            pane: None,
+            focused: true,
+            size: grid(cols, rows),
+        })
     };
     let mut c = hello(4096, 4096);
-    assert_eq!(tag(c.read()), "welcome", "4096x4096 refused");
-    assert_eq!(tag(c.read()), "topology", "expected topology");
+    c.welcome();
     c.send(&json!(["size", grid(4097, 24)]));
-    assert!(c.next().is_err(), "size 4097 accepted");
+    c.closed("size 4097 accepted");
     let mut c = hello(4097, 24);
-    assert!(c.next().is_err(), "hello 4097 accepted");
+    c.closed("hello 4097 accepted");
     s.request("GET", "/version", None, 200);
 }

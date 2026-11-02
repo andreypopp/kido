@@ -380,38 +380,44 @@ Conventions:
   another test thread can inherit it and keep a peer open.
 - **The e2e suite** is `ko_e2e/`: one integration-test binary,
   `ko_e2e/tests/e2e/main.rs`, with one module for each area, because
-  cargo runs test binaries one after another and the tests of one
-  binary in parallel. It is a workspace member outside
-  `default-members`, so `make test-ko` does not run it. It drives
-  `build/ko/bin/ko`, which `make e2e-ko` builds first; a test never
-  runs make or cargo. Its client side writes requests as literal
-  bytes and parses replies with httparse, not ko's `http.rs`, and
-  speaks WebSocket through tungstenite's client role; the hostile
-  tests send raw frame bytes. Snapshots decode in the test process
-  through `ko_vt::Terminal::decode`. A client test is the outer
-  terminal (`outer.rs`): an interactive `/bin/sh` on a pty from
-  `ko_sys::pty::spawn`, and a `ko_vt::Terminal` that gets every byte
-  from the master and writes its replies back, so the client's queries
-  get a real terminal's answers. An outer terminal without extended
-  keys drops the kitty keyboard query (`CSI ? u`) before the terminal
-  sees it. The screen, the cursor and the modes that the tests read
-  change only outside synchronized output (mode 2026), as a real
+  cargo runs test binaries one after another and the tests of one binary
+  in parallel. It is a workspace member outside `default-members`, so
+  `make test-ko` does not run it. It drives `build/ko/bin/ko`, which
+  `make e2e-ko` builds first; a test never runs make or cargo. A test
+  reads like command-line use: a step that a `ko` command can do (`ko
+  api`, `ko kill-server`, `ko version`) runs that command through
+  `Server::ko`, or `run_ko` without a started server or with its own
+  environment, and asserts its stdout, stderr and exit code, with the
+  request path written out at the call site. Raw requests, written as
+  literal bytes and parsed with httparse, stay only for HTTP framing,
+  exact statuses, hostile input and polling loops (plan decision 140).
+  WebSocket views and clients use tungstenite's client role; the hostile
+  tests send raw frame bytes. The outer terminal's steps name keys and
+  text (`chord('s')`, `line("echo abc")`, `contains`, `gone`). Snapshots
+  decode in the test process through `ko_vt::Terminal::decode`. A client
+  test is the outer terminal (`outer.rs`): an interactive `/bin/sh` on a
+  pty from `ko_sys::pty::spawn`, and a `ko_vt::Terminal` that gets every
+  byte from the master and writes its replies back, so the client's
+  queries get a real terminal's answers. An outer terminal without
+  extended keys drops the kitty keyboard query (`CSI ? u`) before the
+  terminal sees it. The screen, the cursor and the modes that the tests
+  read change only outside synchronized output (mode 2026), as a real
   terminal paints. Each child gets an explicit environment through
-  `spawn::program`'s `Env::Only`, scrubbed as `harness::test_env`
-  does, with a private `HOME` and XDG directories; the test process
-  never sets its own environment. State directories are under `/tmp`,
-  for the 104-byte socket path limit. Every wait reads a socket or
-  polls a condition with a deadline of 5 s. `scripts/lint.sh` refuses
-  `thread::sleep` and `thread::park_timeout` in `ko_e2e/` except
-  through its table of exact statements; `harness.rs` holds the poll
-  tick. The cargo feature `e2e` of `ko_sys` holds the OS calls that
-  only the suite needs (`signal_descendant`, `Pid::parent`,
-  `Pid::has_ended`, `Pid::wait_exit`, `Signal::Stop`, `Signal::Cont`,
-  `fd::wait_readable`, `fd::wait_writable_within`), and only `ko_e2e`
-  enables it. A `Child` of the harness reaps its process under the
-  lock that its signals take, after a wait that keeps the zombie, so
-  no signal reaches a reaped pid. `make e2e-ko` runs the tests with
-  `--test-threads=64`, so every test starts at once.
+  `spawn::program`'s `Env::Only`, scrubbed as `harness::test_env` does,
+  with a private `HOME` and XDG directories; the test process never sets
+  its own environment. State directories are under `/tmp`, for the
+  104-byte socket path limit. Every wait reads a socket or polls a
+  condition with a deadline of 5 s. `scripts/lint.sh` refuses
+  `thread::sleep` and `thread::park_timeout` in `ko_e2e/` except through
+  its table of exact statements; `harness.rs` holds the poll tick. The
+  cargo feature `e2e` of `ko_sys` holds the OS calls that only the suite
+  needs (`signal_descendant`, `Pid::parent`, `Pid::has_ended`,
+  `Pid::wait_exit`, `Signal::Stop`, `Signal::Cont`, `fd::wait_readable`,
+  `fd::wait_writable_within`), and only `ko_e2e` enables it. A `Child`
+  of the harness reaps its process under the lock that its signals take,
+  after a wait that keeps the zombie, so no signal reaches a reaped pid.
+  `make e2e-ko` runs the tests with `--test-threads=64`, so every test
+  starts at once.
 - **loom.** `ko_pane_wire::ring::model` checks the ring's records
   and the wakeup handshake on the real `Reader` and `Writer` under
   `--cfg loom` ("Proved modules (ko)" below). `make
@@ -1352,8 +1358,8 @@ A test that pins a libghostty-vt bug fails when the bug is fixed, so
 the workaround for it can be removed.
 
 Only `fuzz/` reads `KO_FUZZ_*` (`scripts/lint.sh` refuses it in the
-other crates), and `TestFuzzVariablesDoNotReachTheBinary` runs `ko`
-with fuzz variables set to junk.
+other crates), and `ko_e2e`'s `defaults_and_pane_environment` runs
+`ko version` with fuzz variables set to junk.
 
 `make e2e` builds the fork into `build/tmux-fork/<key>/`.
 It rebuilds only on a submodule bump or an installer change.

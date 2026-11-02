@@ -664,6 +664,70 @@ RE forced these decisions:
      snapshot of a dead pane; views already past it get a repeat that
      changes nothing. The sidebar's `†` and Ctrl+D still follow the
      event.
+124. The suite was trimmed from 45 tests to 29, because each server
+     start costs the whole suite and a test earns its time. Thirteen
+     tests merged into a test with the same setup, on its server:
+     `client_output_without_outer_input` into
+     `client_initial_cursor_and_synchronized_output`;
+     `client_sidebar_release` into `client_lifecycle`;
+     `client_nvim_normal_mode_shifted_keys` into
+     `client_legacy_shifted_key`, as rows with kitty flags 1 checked on
+     the pane's received bytes, so no test needs nvim;
+     `resume_skips_resize_markers_before_the_offset`,
+     `unsafe_paste_is_not_written` and `detach_keeps_kitty_input` into
+     `view_resume_resize_and_input`; `death_has_one_timestamp` and
+     `live_synchronized_snapshot_and_history` into
+     `pane_dead_snapshot` (a live pane and a dead pane take the same
+     snapshot path in `ko_pane`, so the dead snapshot checks it);
+     `pane_process_crash_kills_program` into `pane_process_failure`;
+     `partial_resize_snapshot` into
+     `unfocused_first_client_sizes_pane`; `scrollback_lines_limit` and
+     `fuzz_variables_do_not_reach_the_binary` into
+     `defaults_and_pane_environment`;
+     `view_input_frame_split_across_writes` into
+     `paste_then_enter_during_snapshot`, which writes its batch in two
+     parts cut inside a frame. Three tests went, because a unit test
+     checks the same fact: `client_snapshot_interruption` and its
+     proxy (`ko_tui::mirror`), `sigterm_kills_programs`
+     (`ko_server::server`; `kill_server` keeps the program that
+     ignores SIGHUP) and `view_input_frames_in_one_write`
+     (`ko_server::ws`). `client_grid_limit` stays: the unit test of
+     `ko_server::protocol` checks the decoded size, not that the
+     server closes the connection. The modules no longer follow the
+     Go files: `views.rs` holds the view and pane tests, `protocol.rs`
+     the server and API tests, and `input_frames.rs`, `state.rs` and
+     `streams.rs` went. `no_idle_wakeups` measures a shorter window
+     with the same CPU bound for each second, and the flood of
+     `client_history_and_alternate_screen` is shorter but still more
+     than the socket buffer and the ring. `full_snapshot_slow_reader`
+     stays: the view harness never fills the socket buffer.
+
+The e2e readability pass forced this decision:
+
+140. An e2e test reads like command-line use. A step that a `ko`
+     command can do (`ko api` with `-X`, `--input` and `-i`, `ko
+     kill-server`, `ko version`) runs that command through
+     `Server::ko` and asserts its stdout, stderr and exit code, with
+     the request path written out at the call site; no named helper
+     hides the path of a request that a test asserts on. The setup
+     helpers `Server::pane` and `Server::text` and the pid reads stay.
+     `ko api` exits 0 for every 2xx, and `ko_server::http::Status` has
+     no 2xx but 200, so exit 0 asserts the 200 of the raw request.
+     This replaces RE's rule that the client side
+     writes every request as literal bytes. The trade-off: an ordinary
+     request now goes through ko's own HTTP client and server, so a
+     fault that both ends share can hide there. The framing stays
+     covered by the raw-byte tests (`hostile.rs`, the exact statuses
+     of `version_and_origin`), the unit tests of `http.rs` and the
+     `head`, `http` and `client` fuzz targets. Raw requests also stay
+     where a test polls (`pane_pids` in `client_lifecycle`, the
+     `/version` read after each record of `full_snapshot_slow_reader`),
+     because a process start for each request would add its cost to
+     the loop, and in `start`, the setup of every test, which reads the
+     `vt` value of `/version` for the `Ko-Vt` header. WebSocket
+     views and clients stay raw, because `ko api` refuses those
+     endpoints. `client_grid_limit` merged into
+     `hostile_clients_do_not_affect_others`, on its server: 28 tests.
 
 RV4 (the spec gaps of the F*/Pulse parity audit of 2026-11-02)
 forced these decisions:
@@ -2335,9 +2399,11 @@ Decision 22. The crate `ko_e2e/` holds integration tests
 (`ko_e2e/tests/*.rs`) that drive the built `ko` and `ko-pane` of
 `build/ko/bin` over the wire, as the Go suite does.
 
-- **The client side of the tests** writes requests as literal bytes
-  and parses replies with `httparse` directly, not through ko's
-  `http.rs`, and speaks WebSocket through tungstenite's client role.
+- **The client side of the tests** sends ordinary requests through
+  `ko api` (decision 140). Raw requests, written as literal bytes and
+  parsed with `httparse` directly, not through ko's `http.rs`, stay
+  for framing, exact statuses, hostile input and polling. WebSocket
+  goes through tungstenite's client role.
   So a fault in ko's own framing cannot hide behind the same code on
   both ends. tungstenite is on both ends, as gorilla was not; the
   hostile tests send raw frame bytes and check raw replies, which
@@ -2401,6 +2467,10 @@ Decision 22. The crate `ko_e2e/` holds integration tests
 | `idle_test.go` | `TestNoIdleWakeups` (decision 118) | `tests/e2e/idle.rs` |
 | `signal_test.go` | the `signalOwned` and `gone` helpers | `ko_sys::pid::signal_descendant`, `Pid::has_ended` (feature `e2e`) |
 
+  This is the mapping of the port. The trim of decision 124 merged or
+  removed 16 of these tests and moved the rest into other modules;
+  the suite has 29.
+
 - When every row of the table passes in the final local `make
   verify` on macOS (decision 122), the same change deletes
   `test_e2e_ko/`, `internal/rusage/` and the `decode` example, and
@@ -2425,6 +2495,10 @@ Decision 22. The crate `ko_e2e/` holds integration tests
   client can paint the layout, with the dead line, before the pane's
   snapshot arrives, and the test fails at once when no output is
   directly above the line. The test keeps the Go semantics.
+- Trim (decision 124, 2026-11-02, macOS): 29 tests. The tests take
+  2.66 s, not 5.80 s, and the `e2e-ko` stage of `make verify-ko`
+  2.9 s, not 8.9 s. The final `make verify-ko` passed: build 0.2 s,
+  unit-ko 11.1 s, e2e-ko 2.9 s, lint 1.8 s, verus 5.0 s.
 
 ### RW. The serde wire (about 1 agent-day, after RE)
 
@@ -2671,7 +2745,7 @@ Conventions:
   reference's are, but no call relies on it.
 - **Fuzz variables.** `KO_FUZZ_*` is read only in `fuzz/` and in test
   modules; the shipped binaries read no fuzz or test variable
-  (`TestFuzzVariablesDoNotReachTheBinary`).
+  (`defaults_and_pane_environment` in `ko_e2e`).
 - **The loop and threads.** Every process is one thread on
   `ko_sys::event`: non-blocking descriptors, one state enum per
   connection, a read buffer and a write queue per connection, the

@@ -17,8 +17,6 @@ use ko_sys::spawn::{self, Env};
 use ko_vt::{Extent, Format, Terminal};
 use serde_json::{Value, json};
 use tungstenite::http::{HeaderName, HeaderValue};
-use tungstenite::protocol::frame::coding::{Data, OpCode};
-use tungstenite::protocol::frame::{Frame, FrameHeader};
 use tungstenite::{Message as Msg, WebSocket};
 
 pub(crate) const DEADLINE: Duration = Duration::from_secs(5);
@@ -48,7 +46,6 @@ pub(crate) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
             .any(|window| window == needle)
 }
 
-// A poll tick for a condition that has no descriptor to wait on: the Go suite's ticker.
 fn time_left(deadline: Instant) -> Duration {
     deadline
         .checked_duration_since(Instant::now())
@@ -56,7 +53,7 @@ fn time_left(deadline: Instant) -> Duration {
         .expect("the deadline passed")
 }
 
-pub(crate) fn read_within(stream: &UnixStream, deadline: Instant) {
+fn read_within(stream: &UnixStream, deadline: Instant) {
     stream.set_read_timeout(Some(time_left(deadline))).unwrap();
 }
 
@@ -69,6 +66,7 @@ pub(crate) fn poll(what: &str, mut check: impl FnMut() -> bool) {
     let deadline = Instant::now() + DEADLINE;
     while !check() {
         assert!(Instant::now() < deadline, "wait for {what}");
+        // A poll tick for a condition that has no descriptor to wait on: the Go suite's ticker.
         thread::park_timeout(Duration::from_millis(10));
     }
 }
@@ -206,7 +204,31 @@ impl Child {
 pub(crate) struct Run {
     pub(crate) stdout: String,
     pub(crate) stderr: String,
-    pub(crate) code: i32,
+    pub(crate) exit: Exit,
+}
+
+impl Run {
+    pub(crate) fn ok(self) -> String {
+        assert_eq!(self.exit, Exit::Exited(0), "{self:?}");
+        assert_eq!(self.stderr, "", "{self:?}");
+        self.stdout
+    }
+
+    pub(crate) fn json(self) -> Value {
+        serde_json::from_str(&self.ok()).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    pub(crate) fn http_error(self, status: u16) -> String {
+        assert_eq!(self.exit, Exit::Exited(1), "{self:?}");
+        assert_eq!(self.stderr, format!("ko api: HTTP {status}\n"), "{self:?}");
+        self.stdout
+    }
+
+    pub(crate) fn error(self, code: i32) -> String {
+        assert_eq!(self.exit, Exit::Exited(code), "{self:?}");
+        assert_eq!(self.stdout, "", "{self:?}");
+        self.stderr
+    }
 }
 
 pub(crate) fn run_ko(scratch: &Path, env: &[Vec<u8>], args: &[&str], stdin: &str) -> Run {
@@ -232,14 +254,11 @@ pub(crate) fn run_ko(scratch: &Path, env: &[Vec<u8>], args: &[&str], stdin: &str
     Run {
         stdout: std::fs::read_to_string(file("stdout")).unwrap(),
         stderr: std::fs::read_to_string(file("stderr")).unwrap(),
-        code: match exit {
-            Exit::Exited(code) => code,
-            Exit::Signaled(_) => -1,
-        },
+        exit,
     }
 }
 
-pub(crate) fn base64(bytes: &[u8]) -> String {
+fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
@@ -257,21 +276,19 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     out
 }
 
-pub(crate) fn masked_frame(payload: &[u8]) -> Vec<u8> {
-    let header = FrameHeader {
-        opcode: OpCode::Data(Data::Text),
-        mask: Some([1, 2, 3, 4]),
-        ..FrameHeader::default()
-    };
-    let mut out = Vec::new();
-    Frame::from_payload(header, payload.to_vec().into())
-        .format(&mut out)
-        .unwrap();
-    out
+pub(crate) fn history_lines(count: u32) -> String {
+    format!("i=0; while [ $i -lt {count} ]; do printf 'history-%s\\r\\n' $i; i=$((i+1)); done")
 }
 
 pub(crate) fn size(cols: u16, rows: u16) -> Value {
     json!({"cols": cols, "rows": rows, "cell_px": {"width": 8, "height": 16}})
+}
+
+#[derive(Debug)]
+pub(crate) struct Hello<'a> {
+    pub(crate) pane: Option<&'a str>,
+    pub(crate) focused: bool,
+    pub(crate) size: Value,
 }
 
 pub(crate) fn tagged(text: &str) -> Option<(String, Value)> {
@@ -295,6 +312,45 @@ pub(crate) enum Message {
 pub(crate) enum End {
     Timeout,
     Closed,
+}
+
+#[derive(Debug)]
+pub(crate) enum Record<'a> {
+    Output {
+        offset: u64,
+        data: &'a [u8],
+    },
+    Snapshot {
+        offset: u64,
+        first: bool,
+        last: bool,
+        extent: Extent,
+        data: &'a [u8],
+    },
+}
+
+impl Record<'_> {
+    pub(crate) fn parse(bytes: &[u8]) -> Option<Record<'_>> {
+        let offset = u64::from_le_bytes(bytes.get(1..9)?.try_into().ok()?);
+        match bytes[0] {
+            1 => Some(Record::Output {
+                offset,
+                data: &bytes[9..],
+            }),
+            2 if bytes.len() >= 11 => Some(Record::Snapshot {
+                offset,
+                first: bytes[9] & 1 != 0,
+                last: bytes[9] & 2 != 0,
+                extent: match bytes[10] {
+                    0 => Extent::Full,
+                    1 => Extent::Screen,
+                    _ => return None,
+                },
+                data: &bytes[11..],
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -367,6 +423,34 @@ impl Ws {
         panic!("no {key}");
     }
 
+    pub(crate) fn closed(&mut self, what: &str) {
+        self.within(DEADLINE);
+        loop {
+            match self.next() {
+                Err(End::Timeout) => panic!("{what}"),
+                Err(End::Closed) => return,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    pub(crate) fn welcome(&mut self) -> Value {
+        let mut identity = Value::Null;
+        for key in ["welcome", "topology"] {
+            let Message::Text(text) = self.read() else {
+                panic!("expected {key}, got a binary message");
+            };
+            let Some((tag, payload)) = tagged(&text) else {
+                panic!("expected {key}, got {text}");
+            };
+            assert_eq!(tag, key, "expected {key}, got {text}");
+            if key == "welcome" {
+                identity = payload;
+            }
+        }
+        identity
+    }
+
     pub(crate) fn snapshot(&mut self) -> (Vec<u8>, u64) {
         self.within(DEADLINE);
         let mut result = Vec::new();
@@ -374,15 +458,21 @@ impl Ws {
             let Message::Binary(bytes) = self.read() else {
                 continue;
             };
-            if bytes.len() < 11 || bytes[0] != 2 {
+            let Some(Record::Snapshot {
+                offset,
+                first,
+                last,
+                data,
+                ..
+            }) = Record::parse(&bytes)
+            else {
                 continue;
-            }
-            let offset = u64::from_le_bytes(bytes[1..9].try_into().unwrap());
-            if bytes[9] & 1 != 0 {
+            };
+            if first {
                 result.clear();
             }
-            result.extend_from_slice(&bytes[11..]);
-            if bytes[9] & 2 != 0 {
+            result.extend_from_slice(data);
+            if last {
                 return (result, offset);
             }
         }
@@ -396,11 +486,10 @@ impl Ws {
             let Message::Binary(bytes) = self.read() else {
                 continue;
             };
-            if bytes.len() >= 9 && bytes[0] == 1 {
-                text.extend_from_slice(&bytes[9..]);
+            if let Some(Record::Output { offset, data }) = Record::parse(&bytes) {
+                text.extend_from_slice(data);
                 if contains(&text, needle.as_bytes()) {
-                    return u64::from_le_bytes(bytes[1..9].try_into().unwrap())
-                        + (bytes.len() - 9) as u64;
+                    return offset + data.len() as u64;
                 }
             }
         }
@@ -477,8 +566,7 @@ pub(crate) struct Server {
     pub(crate) dir: Dir,
     pub(crate) scratch: Dir,
     pub(crate) child: Child,
-    pub(crate) vt: String,
-    pub(crate) limits: Value,
+    pub(crate) vt: Option<String>,
     log: PathBuf,
     stopped: bool,
 }
@@ -502,8 +590,7 @@ pub(crate) fn start(args: &[&str]) -> Server {
         dir,
         scratch: Dir::new("ko-run-"),
         child,
-        vt: String::new(),
-        limits: Value::Null,
+        vt: None,
         log,
         stopped: false,
     };
@@ -515,8 +602,9 @@ pub(crate) fn start(args: &[&str]) -> Server {
         );
         server.dial().is_ok()
     });
-    let version = server.request("GET", "/version", None, 200);
-    server.vt = version["vt"].as_str().unwrap_or_default().to_owned();
+    let version: Value =
+        serde_json::from_str(&server.request("GET", "/version", None, 200)).unwrap();
+    server.vt = version["vt"].as_str().map(str::to_owned);
     server
 }
 
@@ -531,8 +619,8 @@ impl Server {
 
     pub(crate) fn headers(&self) -> Headers {
         let mut headers = vec![("Ko-Protocol".to_owned(), "1.0".to_owned())];
-        if !self.vt.is_empty() {
-            headers.push(("Ko-Vt".to_owned(), self.vt.clone()));
+        if let Some(vt) = &self.vt {
+            headers.push(("Ko-Vt".to_owned(), vt.clone()));
         }
         headers
     }
@@ -621,7 +709,7 @@ impl Server {
         (status, body)
     }
 
-    pub(crate) fn request_text(
+    pub(crate) fn request(
         &self,
         method: &str,
         path: &str,
@@ -640,15 +728,10 @@ impl Server {
         data
     }
 
-    pub(crate) fn request(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&Value>,
-        status: u16,
-    ) -> Value {
-        let data = self.request_text(method, path, body, status);
-        serde_json::from_str(&data).unwrap_or(Value::Null)
+    pub(crate) fn ko(&self, args: &[&str], stdin: &str) -> Run {
+        let mut argv = args.to_vec();
+        argv.extend(["--server", text_of(&self.dir)]);
+        run_ko(&self.scratch, &test_env(&self.dir), &argv, stdin)
     }
 
     pub(crate) fn dial_ws(&self, path: &str, headers: Option<Headers>, status: u16) -> Option<Ws> {
@@ -691,51 +774,53 @@ impl Server {
         self.dial_ws(path, None, 101).unwrap()
     }
 
-    pub(crate) fn client(&mut self, pane: &str) -> (Ws, String) {
+    pub(crate) fn hello(&self, hello: Hello) -> Ws {
         let mut ws = self.ws("/client");
-        let mut hello =
-            json!({"kind": "terminal", "name": "test", "focused": true, "size": size(80, 24)});
-        if !pane.is_empty() {
-            hello["pane"] = json!(pane);
+        let mut body = json!({
+            "kind": "terminal",
+            "name": "test",
+            "focused": hello.focused,
+            "size": hello.size,
+        });
+        if let Some(pane) = hello.pane {
+            body["pane"] = json!(pane);
         }
-        ws.send(&json!(["hello", hello]));
-        let mut identity = Value::Null;
-        for key in ["welcome", "topology"] {
-            let Message::Text(text) = ws.read() else {
-                panic!("expected {key}, got a binary message");
-            };
-            let Some((tag, payload)) = tagged(&text) else {
-                panic!("expected {key}, got {text}");
-            };
-            assert_eq!(tag, key, "expected {key}, got {text}");
-            if key == "welcome" {
-                identity = payload;
-            }
-        }
-        self.limits = identity["limits"].clone();
-        let id = identity["client"].as_str().unwrap_or_default().to_owned();
-        (ws, id)
+        ws.send(&json!(["hello", body]));
+        ws
+    }
+
+    pub(crate) fn client(&self, pane: Option<&str>) -> (Ws, Value) {
+        let mut ws = self.hello(Hello {
+            pane,
+            focused: true,
+            size: size(80, 24),
+        });
+        let welcome = ws.welcome();
+        (ws, welcome)
     }
 
     pub(crate) fn pane(&self, command: &str) -> String {
         let body = json!({"command": ["argv", ["/bin/sh", "-c", command]], "cwd": "/tmp"});
-        self.request("POST", "/panes", Some(&body), 200)["pane"]
+        self.ko(&["api", "--input", "-", "/panes"], &body.to_string())
+            .json()["pane"]
             .as_str()
             .unwrap_or_default()
             .to_owned()
     }
 
     pub(crate) fn text(&self, pane: &str, text: &str) {
-        self.request(
-            "POST",
-            &format!("/panes/{pane}/input"),
-            Some(&json!(["text", base64(text.as_bytes())])),
-            200,
-        );
+        let body = json!(["text", base64(text.as_bytes())]);
+        self.ko(
+            &["api", "--input", "-", &format!("/panes/{pane}/input")],
+            &body.to_string(),
+        )
+        .ok();
     }
 
     pub(crate) fn pane_pids(&self) -> Vec<(String, i64)> {
-        let Value::Array(rows) = self.request("GET", "/panes", None, 200) else {
+        let Ok(Value::Array(rows)) =
+            serde_json::from_str(&self.request("GET", "/panes", None, 200))
+        else {
             panic!("/panes is not a list");
         };
         rows.iter()
@@ -752,16 +837,6 @@ impl Server {
         let panes = self.pane_pids();
         assert!(panes.len() == 1 && panes[0].1 > 1, "program pid: {panes:?}");
         Pid::new(panes[0].1).unwrap()
-    }
-
-    pub(crate) fn run(&self, args: &[&str]) -> Run {
-        run_ko(&self.scratch, &test_env(&self.dir), args, "")
-    }
-
-    pub(crate) fn stop(&mut self) {
-        if let Err(message) = self.shutdown() {
-            panic!("{message}");
-        }
     }
 
     fn shutdown(&mut self) -> Result<(), String> {
@@ -791,12 +866,6 @@ impl Drop for Server {
         }
         let _ = std::fs::remove_file(&self.log);
     }
-}
-
-pub(crate) fn which(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
 }
 
 pub(crate) fn wait_gone(pid: Pid, what: &str) {
