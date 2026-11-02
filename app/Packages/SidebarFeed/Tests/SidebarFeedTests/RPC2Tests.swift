@@ -37,7 +37,7 @@ import TmuxControl
     let nodes = [pane(0, title: "excluded shell", lifecycle: terminal(running("excluded-command"), report: report(waiting(), msg: "composed caption")), records: records, serial: 7, children: [
         pane(1, title: "Compiler expert", lifecycle: agent(working())),
         pane(2, title: "excluded-title", lifecycle: remote(["Remote_terminal", ["interactive": true, "status": shell(running("excluded-command"))]])),
-        pane(3, title: "Reviewer", lifecycle: remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]], host: "agenthost"))])]
+        pane(3, title: "Reviewer", lifecycle: remote(["Remote_agent", ["name": "pi", "status": ["since": 1, "msg": null, "state": idle()]]], destination: "agenthost"))])]
     var object = snapshotObject(nodes)
     object["sessions"] = [["id": "$0", "name": "workspace", "current": true, "nodes": nodes],
                           ["id": "$1", "name": "devbox", "current": false, "nodes": []]]

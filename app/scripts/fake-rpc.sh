@@ -2,7 +2,7 @@
 exec python3 -u -c '
 import json, select, sys, time
 started = time.time() - 5
-print(json.dumps(dict(hello=dict(protocol="6.2"))))
+print(json.dumps(dict(hello=dict(protocol="7.0"))))
 def status(state, msg=None):
     return dict(since=started, msg=msg, state=state)
 def agent(state, msg=None):
@@ -27,7 +27,7 @@ while True:
         item(1, 0, "zsh", shell())])
     work = [item(6, 5, "review the pull request", agent(["Idle", dict(outcome=dict(serial=1, result="failure"))], "reading files")),
         group(6, [item(7, 6, "cargo build --release", shell(["Idle", dict(last=None)], status(["Idle", dict(outcome=dict(serial=2, result="failure"))])), run="r-2"),
-                  item(8, 6, "ssh", ["Live", ["Ssh", dict(user="me", host="devbox", pane=["Remote_terminal", dict(interactive=True, status=dict(phase=running("tail -f /var/log/system.log"), report=None))])]])]),
+                  item(8, 6, "ssh", ["Live", ["Ssh", dict(destination="me@devbox", pane=["Remote_terminal", dict(interactive=True, status=dict(phase=running("tail -f /var/log/system.log"), report=None))])]])]),
         group(7, [item(9, 7, "refactor", agent(["Running", dict(progress=None)], "compacting")), item(10, 7, "zsh", shell())])]
     sessions = [dict(id="$0", name="main", current=True, nodes=[main, item(5, 4, "make test", shell(running("make test")), started=started, run="r-2"), item(16, 11, "main-watch", shell(running("main-watch")), started=started, run="r-3")]),
         dict(id="$1", name="work", current=False, nodes=work)]

@@ -10,7 +10,7 @@ import TmuxControl
         {"kind":"pane","id":"%3","pane":"%3","window":"@2","title":"kido","lifecycle":["Live",["Pi_agent",{"session":"pi-session-id","status":{"since":1780000000,"msg":"fixing tests","state":["Running",{"progress":null}]}}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[
           {"kind":"window","id":"@7","window":"@7","name":"build","children":[
             {"kind":"pane","id":"%9","pane":"%9","window":"@7","title":"tests","lifecycle":["Live",["Terminal",{"phase":["Running",{"origin":["Command",{"command":"make","started_at":1780000000}],"fullscreen":false}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"r-tests","started":1700000000.5,"children":[
-              {"kind":"pane","id":"%11","pane":"%11","window":"@8","title":"ssh","lifecycle":["Live",["Ssh",{"user":"alice","host":"example.org","pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Idle",{"last":null}],"report":null}}]}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[
+              {"kind":"pane","id":"%11","pane":"%11","window":"@8","title":"ssh","lifecycle":["Live",["Ssh",{"destination":"alice@example.org","pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Idle",{"last":null}],"report":null}}]}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[
                 {"kind":"pane","id":"%12","pane":"%12","window":"@9","title":"helper","lifecycle":["Ended",{"result":"completed"}],"program_status":{"serial":0,"records":[]},"run":"r-helper","started":null,"children":[]}]}]},
             {"kind":"pane","id":"%10","pane":"%10","window":"@7","title":"zsh","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]}]}]}]}
     """
@@ -31,7 +31,7 @@ import TmuxControl
     #expect(group.children[0].shell?.phase == .running(.init(command: "make", startedAt: Date(timeIntervalSince1970: 1780000000)), fullscreen: false))
     #expect(group.children[1].shell?.phase == .unknown)
     guard case .live(.ssh(let destination, .terminal(interactive: true, _))) = ssh.lifecycle else { Issue.record("not a remote terminal"); return }
-    #expect(destination.user == "alice" && destination.host == "example.org")
+    #expect(destination == "alice@example.org")
     #expect(ended.lifecycle == .ended(.completed))
 }
 
@@ -40,8 +40,8 @@ import TmuxControl
         #"["Live",["Terminal",{"phase":["Idle",{"last":null}],"report":null}]]"#,
         #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1780000000,"msg":null,"state":["Idle",{"outcome":null}]}}]]"#,
         #"["Live",["Pi_agent",{"session":"pi-session-id","status":{"since":1780000000,"msg":null,"state":["Idle",{"outcome":null}]}}]]"#,
-        #"["Live",["Ssh",{"user":"alice","host":"example.org","pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Idle",{"last":null}],"report":null}}]}]]"#,
-        #"["Live",["Ssh",{"user":"alice","host":"example.org","pane":["Remote_agent",{"name":"pi","status":{"since":1780000000,"msg":null,"state":["Idle",{"outcome":null}]}}]}]]"#,
+        #"["Live",["Ssh",{"destination":"alice@example.org","pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Idle",{"last":null}],"report":null}}]}]]"#,
+        #"["Live",["Ssh",{"destination":"alice@example.org","pane":["Remote_agent",{"name":"pi","status":{"since":1780000000,"msg":null,"state":["Idle",{"outcome":null}]}}]}]]"#,
         #"["Ended",{"result":"unknown"}]"#, #"["Ended",{"result":"completed"}]"#, #"["Ended",{"result":"failed"}]"#,
         #"["Ended",{"result":"died"}]"#, #"["Ended",{"result":"stopped"}]"#
     ]
@@ -78,8 +78,8 @@ import TmuxControl
     #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Stalled"]}}]]"#,
     #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Waiting",{"source":["Blocked",{"kind":"permission"}],"progress":3}]}}]]"#,
     #"["Live",["Some_agent",{"name":"claude-code","status":{"since":1,"msg":null,"state":["Idle",{"outcome":{"serial":1,"result":"done"}}]}}]]"#,
-    #"["Live",["Ssh",{"user":"alice","pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Unknown"],"report":null}}]}]]"#,
-    #"["Live",["Ssh",{"user":"alice","host":"h","pane":["Remote_shell",{}]}]]"#,
+    #"["Live",["Ssh",{"pane":["Remote_terminal",{"interactive":true,"status":{"phase":["Unknown"],"report":null}}]}]]"#,
+    #"["Live",["Ssh",{"destination":"alice@h","pane":["Remote_shell",{}]}]]"#,
     #"["Live",["Shell",{"phase":["Unknown"],"report":null}]]"#,
     #"["Ended"]"#,
     #"{"kind":"idle"}"#
@@ -156,7 +156,7 @@ func requiresServerInstance(_ instance: [String: Int]?) {
 }
 
 @Test func decodesCapturedKidoFeed() throws {
-    let hello = #"{"hello":{"protocol":"6.2"}}"#
+    let hello = #"{"hello":{"protocol":"7.0"}}"#
     let line = #"{"v":2,"server_instance":{"started_at":1791708862,"pid":10744},"client":{"session":"$1","window":"@1","pane":"%1"},"error":null,"sessions":[{"id":"$0","name":"main","current":false,"nodes":[{"kind":"pane","id":"%0","pane":"%0","window":"@0","title":"zsh","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]},{"id":"$1","name":"probe","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"sleep","children":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"mpb-andre.local","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791708863.57487,"msg":"Approve","state":["Waiting",{"kind":"permission","progress":null}]}}]],"program_status":{"serial":2,"records":[{"id":"","state":"blocked","app":"claude-code","kind":"permission","msg":"Approve"},{"id":"sub","state":"error","title":"Sub"}]},"run":null,"started":null,"children":[]},{"kind":"pane","id":"%2","pane":"%2","window":"@1","title":"builder","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":{"since":1791708863.57487,"msg":"Built","state":["Idle",{"outcome":{"serial":2,"result":"success"}}]}}]],"program_status":{"serial":2,"records":[{"id":"","state":"done","app":"builder","msg":"Built"}]},"run":null,"started":null,"children":[]}]},{"kind":"pane","id":"%3","pane":"%3","window":"@2","title":"mpb-andre.local","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791708863.57487,"msg":null,"state":["Waiting",{"kind":null,"progress":null}]}}]],"program_status":{"serial":1,"records":[{"id":"","state":"blocked","app":"claude-code"}]},"run":null,"started":null,"children":[]},{"kind":"pane","id":"%4","pane":"%4","window":"@3","title":"less","lifecycle":["Live",["Terminal",{"phase":["Running",{"origin":["Unknown"],"fullscreen":true}],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]}]}"#
     guard case .hello(.accepted(let version)) = try JSONDecoder().decode(RPCEvent.self, from: Data(hello.utf8)) else { Issue.record("no hello"); return }
     #expect(version.compatible)

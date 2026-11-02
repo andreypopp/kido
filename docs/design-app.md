@@ -195,7 +195,7 @@ Relative/control-containing paths or noisy/malformed stdout are errors. Explicit
 Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
-Discovery requires the binary's RPC protocol to be exactly 6.0, as does
+Discovery requires the binary's RPC protocol to be exactly 7.0, as does
 RPC hello; both major and minor must match. Server compatibility is separate:
 the opaque server stamp must equal the expected stamp from the same binary's
 discovery JSON. A null stamp is incompatible. The app has no stamp constant.
@@ -1277,7 +1277,7 @@ banner as discovery, without automatic retry. Window and session navigation
 use numbered RPC requests. Replies can interleave with
 snapshots and arrive out of order; pending callbacks live on the feed reader
 queue and complete once, including failure when the connection ends or restarts.
-The app decodes v2 snapshots of protocol 6.0 only. Pane items carry a plain
+The app decodes v2 snapshots of protocol 7.0 only. Pane items carry a plain
 `title`, a typed `lifecycle` (Live pane kind with its agent or shell status,
 or Ended with a run result) and the raw `program_status`; their variants,
 null rules and percentages are enforced, and a malformed snapshot restarts
@@ -1437,7 +1437,8 @@ rules leave raw pane labels and tab/window titles unchanged.
 The app composes what kido no longer sends. The label is the wire title,
 except that a local shell without a program report and not in a run shows a
 non-empty running non-fullscreen command, and a remote terminal shows
-`ssh user@host`, adding `: command` only for an interactive, report-free,
+`ssh <destination>`, the Ssh item's destination as the user typed it
+(`ssh fish000`, `ssh bob@fish000`), adding `: command` only for an interactive, report-free,
 non-fullscreen running command. The caption is the agent's or report's `msg`
 and progress percentage, joined by a space; Ended rows show their result
 except completed or unknown, which show none: the green check alone marks

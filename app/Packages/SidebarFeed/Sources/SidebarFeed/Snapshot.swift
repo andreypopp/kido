@@ -167,11 +167,6 @@ public enum Lifecycle: Decodable, Equatable, Sendable {
 }
 
 public enum PaneKind: Decodable, Equatable, Sendable {
-    public struct Destination: Equatable, Sendable, CustomStringConvertible {
-        public let user: String
-        public let host: String
-        public var description: String { user + "@" + host }
-    }
     public enum Remote: Equatable, Sendable {
         case terminal(interactive: Bool, ShellStatus)
         case agent(name: String, Report)
@@ -179,7 +174,7 @@ public enum PaneKind: Decodable, Equatable, Sendable {
     case terminal(ShellStatus)
     case someAgent(name: String, Report)
     case piAgent(session: String, Report)
-    case ssh(Destination, Remote)
+    case ssh(destination: String, Remote)
     public init(from decoder: Decoder) throws {
         var v = try Variant(decoder)
         switch v.tag {
@@ -188,11 +183,11 @@ public enum PaneKind: Decodable, Equatable, Sendable {
         case "Pi_agent": self = try v.fields { .piAgent(session: try $0.decode(String.self, forKey: "session"), try $0.decode(Report.self, forKey: "status")) }
         case "Ssh":
             self = try v.fields { c in
-                let destination = Destination(user: try c.decode(String.self, forKey: "user"), host: try c.decode(String.self, forKey: "host"))
+                let destination = try c.decode(String.self, forKey: "destination")
                 var remote = try Variant(c.superDecoder(forKey: "pane"))
                 return switch remote.tag {
-                case "Remote_terminal": .ssh(destination, try remote.fields { .terminal(interactive: try $0.decode(Bool.self, forKey: "interactive"), try $0.decode(ShellStatus.self, forKey: "status")) })
-                case "Remote_agent": .ssh(destination, try remote.fields { .agent(name: try $0.decode(String.self, forKey: "name"), try $0.decode(Report.self, forKey: "status")) })
+                case "Remote_terminal": .ssh(destination: destination, try remote.fields { .terminal(interactive: try $0.decode(Bool.self, forKey: "interactive"), try $0.decode(ShellStatus.self, forKey: "status")) })
+                case "Remote_agent": .ssh(destination: destination, try remote.fields { .agent(name: try $0.decode(String.self, forKey: "name"), try $0.decode(Report.self, forKey: "status")) })
                 default: throw remote.unknown()
                 }
             }

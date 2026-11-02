@@ -531,7 +531,7 @@ private class AlertEscape: NSView {
         guard host == .local else { return nil }
         func find(_ nodes: [SidebarFeed.Node]) -> String? {
             for node in nodes {
-                if case .item(let item) = node, item.pane == pane.pane { return if case .live(.ssh(let destination, _)) = item.lifecycle { destination.description } else { nil } }
+                if case .item(let item) = node, item.pane == pane.pane { return if case .live(.ssh(let destination, _)) = item.lifecycle { destination } else { nil } }
                 if let found = find(node.children) { return found }
             }
             return nil

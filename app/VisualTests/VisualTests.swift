@@ -239,7 +239,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     @discardableResult
     func fakeFeedScript(_ scratch: URL, _ python: String) throws -> URL {
         let script = scratch.appendingPathComponent("kido")
-        try ("#!/bin/sh\nexec python3 -u -c '\n" + python + "\n'\n").write(to: script, atomically: true, encoding: .utf8)
+        try ("#!/bin/sh\nexec python3 -u -c '\nimport json\nprint(json.dumps(dict(hello=dict(protocol=\"\(RPCVersion.required)\"))))\n" + python + "\n'\n").write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         return script
     }
@@ -1916,7 +1916,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             try JSONSerialization.data(withJSONObject: object).write(to: fixture)
             let script = try fakeFeedScript(scratch, """
             import json, sys
-            print(json.dumps(dict(hello=dict(protocol="6.2"))))
             snapshot = json.load(open("\(fixture.path)"))
             print(json.dumps(snapshot))
             held = None
@@ -2051,8 +2050,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func testServerCompatibilityFields() throws {
         for (stamp, version, compatible) in [
-            ("null", "6.2", false), ("\"other\"", "6.2", false),
-            ("\"0123456789ab\"", "6.0", false), ("\"0123456789ab\"", "6.1", false), ("\"0123456789ab\"", "6.2", true), ("\"0123456789ab\"", "5.0", false)
+            ("null", "7.0", false), ("\"other\"", "7.0", false),
+            ("\"0123456789ab\"", "6.0", false), ("\"0123456789ab\"", "6.2", false), ("\"0123456789ab\"", "7.0", true), ("\"0123456789ab\"", "5.0", false)
         ] {
             let json = "{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"\(version)\",\"server\":\(stamp),\"expected\":\"0123456789ab\"}"
             let server = try JSONDecoder().decode(Server.self, from: Data(json.utf8))
@@ -2534,12 +2533,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 XCTAssertEqual(alert.buttons[0].hasDestructiveAction, host == .local)
                 if host == .local { XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[1].cell) }
             }
-            for version in ["3.1", "6.3"] {
+            for version in ["3.1", "7.1"] {
                 let alert = WindowOwner.mismatchAlert(host: host, server: ServerStamp("same"), binary: try XCTUnwrap(RPCVersion(version)))
-                XCTAssertTrue(alert.informativeText.contains("needs kido RPC 6.2"))
+                XCTAssertTrue(alert.informativeText.contains("needs kido RPC 7.0"))
                 XCTAssertTrue(alert.informativeText.contains("speaks \(version)"))
                 if host != .local && version == "3.1" { XCTAssertTrue(alert.informativeText.contains("Upgrade kido there")) }
-                if version == "6.3" { XCTAssertTrue(alert.informativeText.contains("Update Kido.app, then reconnect.")) }
+                if version == "7.1" { XCTAssertTrue(alert.informativeText.contains("Update Kido.app, then reconnect.")) }
             }
         }
     }
@@ -2638,7 +2637,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertNil(owner.testConnection)
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
-        print("RPC E2E hello 6.2; unstamped server refused; local mismatch alert prepared off-screen")
+        print("RPC E2E hello 7.0; unstamped server refused; local mismatch alert prepared off-screen")
     }
 
     func testSidebarHeadersKeysAndAccessibility() throws {

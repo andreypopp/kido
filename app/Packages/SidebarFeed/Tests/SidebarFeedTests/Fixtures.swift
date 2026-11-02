@@ -39,4 +39,4 @@ func decode<T: Decodable>(_ object: Any, as type: T.Type = Snapshot.self) throws
 }
 func waiting(_ kind: Any = null, progress: Any = null) -> [Any] { ["Waiting", ["kind": kind, "progress": progress]] }
 func working(_ progress: Any = null) -> [Any] { ["Running", ["progress": progress]] }
-func remote(_ pane: [Any], user: String = "alice", host: String = "devbox") -> [Any] { ["Live", ["Ssh", ["user": user, "host": host, "pane": pane]]] }
+func remote(_ pane: [Any], destination: String = "alice@devbox") -> [Any] { ["Live", ["Ssh", ["destination": destination, "pane": pane]]] }
