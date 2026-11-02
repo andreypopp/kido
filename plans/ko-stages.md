@@ -639,9 +639,10 @@ Built (2026-11-02):
   pane that a client with terminal focus shows (protocol.md 3), and a
   focus change is one of its inputs. The last-window refusal went; an
   empty session ends.
-- The sweep removes the run's pane, pane by pane; a window that loses
-  its last pane goes with it. K2b changes the close of a run window
-  to the atomic `DELETE /windows/window_N`.
+- The sweep removes the run's pane; a window that loses its last pane
+  goes with it in the same change. K2b found that this is already
+  the atomic close that the window delete gives, so the sweep keeps
+  the pane delete.
 - `share/pi/ko-pi.ts` is a copy of `kido-pi.ts`; K8 deletes
   `kido-pi.ts` and its suite. ko-pi reads the panes' sessions and
   windows by joining `GET /panes` with `GET /layout`; a `/panes` row
@@ -678,6 +679,28 @@ window's name from its pane and after a rename; the equalize
 proptest.
 
 Risk: low.
+
+Built (2026-11-02), with two additions of the top-level session:
+
+- The window's focus lives only in the document (`Window.focus`,
+  always present); the coordinator's separate per-window store went.
+  A focus change bumps the revision, so a `PUT` can get `409` from a
+  focused client's selection; the read-edit-`PUT` loop retries it.
+- `DraftWindow.name` is optional. The default rule and its limits are
+  in protocol.md 7. A `PUT` whose new window has no name and no
+  derivable one is `invalid`.
+- C7, the ko-pi cleanup race: `DELETE /panes/pane_N/vars` with
+  `names` and `if` deletes atomically and answers `412
+  precondition_failed` on a mismatch. ko-pi's `unsetVars` and
+  `unsetVarsSync` send one such delete on `pi.session` equal to their
+  own session, and nothing without one. `kido-pi.ts` keeps its
+  per-name unset, because kido's tmux options have no conditional
+  delete; the race stays in kido until K8 deletes it.
+- A delete and the sizing claims of the clients that it moves are one
+  revision and one layout event.
+- `KO_STOP_ESCALATION_MS` has an e2e test: `ko-pane` hangs up and
+  kills its program itself, so only a `ko-pane` that cannot act
+  (stopped) reaches the coordinator's last kill.
 
 ### K4. Linux measurements (1 to 2 agent-days, after RL)
 

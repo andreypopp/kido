@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use ko_pane_wire::frame::Size;
 
 use crate::ids::{ClientId, PaneId, SessionId, WindowId};
+use crate::layout::nearest;
 use crate::protocol::{ClientKind, ClientRequest, Direction, Layout, Over, Selection, Switch};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,47 +62,6 @@ pub(crate) fn claims<'a>(
             && peer.current.map(|current| current.window) == window
     });
     window.is_some() && !active.ignore_size && (active.focused || !focused_elsewhere)
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct Focus(BTreeMap<WindowId, PaneId>);
-
-impl Focus {
-    pub(crate) fn pane_for(&self, layout: &Layout, window: WindowId) -> Option<PaneId> {
-        let panes = layout.window(window)?.1.panes();
-        self.0
-            .get(&window)
-            .filter(|pane| panes.contains(pane))
-            .or_else(|| panes.first())
-            .copied()
-    }
-
-    pub(crate) fn note(&mut self, window: WindowId, pane: PaneId) {
-        self.0.insert(window, pane);
-    }
-
-    pub(crate) fn settle(&mut self, before: &Layout, after: &Layout) {
-        let mut next = BTreeMap::new();
-        for (_, window) in after.windows() {
-            if let Some(pane) = self.pane_for(before, window.id).and_then(|old| {
-                let now = window.panes();
-                let order = before.window(window.id)?.1.panes();
-                let at = order.iter().position(|pane| *pane == old)?;
-                nearest(&order, at, |pane| now.contains(pane))
-            }) {
-                next.insert(window.id, pane);
-            }
-        }
-        self.0 = next;
-    }
-}
-
-fn nearest<T: Copy>(order: &[T], at: usize, keep: impl Fn(&T) -> bool) -> Option<T> {
-    order[at..]
-        .iter()
-        .chain(order[..at].iter().rev())
-        .find(|item| keep(item))
-        .copied()
 }
 
 fn step(count: usize, from: Option<usize>, direction: Direction) -> usize {
@@ -169,12 +129,7 @@ impl Client {
         }
     }
 
-    pub(crate) fn select(
-        &self,
-        layout: &Layout,
-        focus: &Focus,
-        selection: Selection,
-    ) -> Option<Current> {
+    pub(crate) fn select(&self, layout: &Layout, selection: Selection) -> Option<Current> {
         if let Some(pane) = selection.pane {
             let (session, window) = layout.locate(pane)?;
             return Some(Current {
@@ -199,11 +154,11 @@ impl Client {
         Some(Current {
             session: session.id,
             window: window.id,
-            pane: focus.pane_for(layout, window.id)?,
+            pane: window.focus,
         })
     }
 
-    pub(crate) fn switch(&self, layout: &Layout, focus: &Focus, switch: Switch) -> Option<Current> {
+    pub(crate) fn switch(&self, layout: &Layout, switch: Switch) -> Option<Current> {
         let current = self.current();
         let selection = match switch.over {
             Over::Window => {
@@ -236,17 +191,12 @@ impl Client {
                 }
             }
         };
-        self.select(layout, focus, selection)
+        self.select(layout, selection)
     }
 
-    pub(crate) fn reconcile(
-        &self,
-        before: &Layout,
-        layout: &Layout,
-        focus: &Focus,
-    ) -> Option<Current> {
+    pub(crate) fn reconcile(&self, before: &Layout, layout: &Layout) -> Option<Current> {
         let current = self.current()?;
-        let named = |selection| self.select(layout, focus, selection);
+        let named = |selection| self.select(layout, selection);
         named(Selection {
             pane: Some(current.pane),
             ..Selection::default()
@@ -347,33 +297,32 @@ mod tests {
 
     #[test]
     fn a_pane_implies_its_window_a_window_its_last_focused_pane_a_session_its_last_window() {
-        let layout = three();
-        let mut focus = Focus::default();
+        let mut source = three_documents();
         let client = Client::new(ClientId::new(1));
-        let select = |client: &Client, focus: &Focus, s| client.select(&layout, focus, s);
+        let select = |client: &Client, source: &Document, s| client.select(source.layout(), s);
         assert_eq!(
-            select(&client, &focus, selection(None, None, Some(2))),
+            select(&client, &source, selection(None, None, Some(2))),
             Some(current(1, 1, 2))
         );
         assert_eq!(
-            select(&client, &focus, selection(Some(2), None, Some(1))),
+            select(&client, &source, selection(Some(2), None, Some(1))),
             Some(current(1, 1, 1))
         );
         assert_eq!(
-            select(&client, &focus, selection(None, Some(1), None)),
+            select(&client, &source, selection(None, Some(1), None)),
             Some(current(1, 1, 1))
         );
-        focus.note(WindowId::new(1), PaneId::new(2));
+        assert!(source.focus(WindowId::new(1), PaneId::new(2)));
         assert_eq!(
-            select(&client, &focus, selection(None, Some(1), None)),
+            select(&client, &source, selection(None, Some(1), None)),
             Some(current(1, 1, 2))
         );
         assert_eq!(
-            select(&client, &focus, selection(Some(1), None, None)),
+            select(&client, &source, selection(Some(1), None, None)),
             Some(current(1, 1, 2))
         );
         assert_eq!(
-            select(&client, &focus, selection(Some(2), None, None)),
+            select(&client, &source, selection(Some(2), None, None)),
             Some(current(2, 3, 4))
         );
         for missing in [
@@ -382,11 +331,11 @@ mod tests {
             selection(Some(9), None, None),
             Selection::default(),
         ] {
-            assert_eq!(select(&client, &focus, missing), None);
+            assert_eq!(select(&client, &source, missing), None);
         }
         let in_second = at(current(1, 2, 3));
         assert_eq!(
-            in_second.select(&layout, &focus, selection(Some(1), None, None)),
+            in_second.select(source.layout(), selection(Some(1), None, None)),
             Some(current(1, 2, 3))
         );
     }
@@ -394,14 +343,13 @@ mod tests {
     #[test]
     fn a_switch_moves_in_document_order_wraps_and_starts_at_either_end() {
         let layout = three();
-        let focus = Focus::default();
         let switch = |over, direction| Switch { over, direction };
         let windows = |from: Option<Current>, direction| {
             let mut client = Client::new(ClientId::new(1));
             client.active = at(current(1, 1, 1)).active;
             client.set_current(from);
             client
-                .switch(&layout, &focus, switch(Over::Window, direction))
+                .switch(&layout, switch(Over::Window, direction))
                 .map(|c| c.window.to_string())
         };
         assert_eq!(
@@ -423,17 +371,16 @@ mod tests {
         );
         let client = at(current(1, 2, 3));
         assert_eq!(
-            client.switch(&layout, &focus, switch(Over::Session, Direction::Next)),
+            client.switch(&layout, switch(Over::Session, Direction::Next)),
             Some(current(2, 3, 4))
         );
         assert_eq!(
-            client.switch(&layout, &focus, switch(Over::Session, Direction::Previous)),
+            client.switch(&layout, switch(Over::Session, Direction::Previous)),
             Some(current(2, 3, 4))
         );
         assert_eq!(
             at(current(1, 1, 1)).switch(
                 &Layout { sessions: vec![] },
-                &focus,
                 switch(Over::Window, Direction::Next)
             ),
             None
@@ -444,31 +391,25 @@ mod tests {
     fn when_the_current_pane_or_window_goes_the_client_gets_the_next_one_in_document_order() {
         let source = three_documents();
         let before = source.layout().clone();
-        let mut focus = Focus::default();
-        let reconcile =
-            |after: &Layout, focus: &Focus, from| at(from).reconcile(&before, after, focus);
+        let reconcile = |after: &Layout, from| at(from).reconcile(&before, after);
         let after_1 = without(&source, &[1]);
-        focus.settle(&before, &after_1);
         assert_eq!(
-            reconcile(&after_1, &focus, current(1, 1, 1)),
+            reconcile(&after_1, current(1, 1, 1)),
             Some(current(1, 1, 2))
         );
         let after_3 = without(&source, &[3]);
         assert_eq!(
-            reconcile(&after_3, &focus, current(1, 2, 3)),
+            reconcile(&after_3, current(1, 2, 3)),
             Some(current(2, 3, 4))
         );
         let after_4 = without(&source, &[4]);
         assert_eq!(
-            reconcile(&after_4, &focus, current(2, 3, 4)),
+            reconcile(&after_4, current(2, 3, 4)),
             Some(current(1, 2, 3))
         );
         let empty = without(&source, &[1, 2, 3, 4]);
-        assert_eq!(reconcile(&empty, &focus, current(1, 1, 1)), None);
-        assert_eq!(
-            reconcile(&before, &focus, current(1, 1, 2)),
-            Some(current(1, 1, 2))
-        );
+        assert_eq!(reconcile(&empty, current(1, 1, 1)), None);
+        assert_eq!(reconcile(&before, current(1, 1, 2)), Some(current(1, 1, 2)));
     }
 
     #[test]
@@ -483,37 +424,9 @@ mod tests {
             .put(serde_json::from_value(json!({"revision": 1, "layout": edited})).unwrap())
             .unwrap();
         assert_eq!(
-            at(current(1, 1, 1)).reconcile(&before, source.layout(), &Focus::default()),
+            at(current(1, 1, 1)).reconcile(&before, source.layout()),
             Some(current(2, 3, 1))
         );
-    }
-
-    #[test]
-    fn the_last_focused_pane_of_a_window_passes_to_the_next_pane_in_order_when_it_goes() {
-        let source = document(json!([{"name": "a", "windows": [
-            {"name": "w", "tree": {"split": "h", "children": [leaf(), leaf(), leaf()]}}]}]));
-        let before = source.layout().clone();
-        let window = WindowId::new(1);
-        assert_eq!(
-            Focus::default().pane_for(&before, window),
-            Some(PaneId::new(1))
-        );
-        for (gone, expected) in [(2, 3), (3, 2), (1, 2)] {
-            let after = without(&source, &[gone]);
-            let mut focus = Focus::default();
-            focus.note(window, PaneId::new(gone));
-            focus.settle(&before, &after);
-            assert_eq!(
-                focus.pane_for(&after, window),
-                Some(PaneId::new(expected)),
-                "{gone}"
-            );
-        }
-        let after = without(&source, &[3]);
-        let mut focus = Focus::default();
-        focus.note(window, PaneId::new(2));
-        focus.settle(&before, &after);
-        assert_eq!(focus.pane_for(&after, window), Some(PaneId::new(2)));
     }
 
     #[test]

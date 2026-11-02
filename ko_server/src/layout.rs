@@ -1,11 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use ko_pane_wire::frame::Dim;
 
-use crate::ids::{PaneId, SessionId, WindowId};
+use crate::ids::{Name, PaneId, SessionId, WindowId};
 use crate::protocol::{
-    Axis, CellPixels, Cells, CreatePane, DraftFloat, DraftLayout, DraftLeaf, DraftWindow, Float,
-    Layout, Leaf, Node, PaneRef, PutLayout, Revision, Session, Snapshot, Window,
+    Axis, CellPixels, Cells, Command, CreatePane, DraftFloat, DraftLayout, DraftLeaf, DraftWindow,
+    Float, Layout, Leaf, Node, PaneRef, PutLayout, Revision, Session, Snapshot, Window,
 };
 use crate::vars::Vars;
 
@@ -50,12 +51,19 @@ pub(crate) struct Document {
     revision: Revision,
     layout: Layout,
     ids: Ids,
+    shell: Option<Name>,
 }
 
 impl Window {
     pub(crate) fn single(&self) -> bool {
         matches!(self.tree, Node::Leaf(_)) && self.floats.is_empty()
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct Removal {
+    pub(crate) panes: Vec<PaneId>,
+    pub(crate) before: Layout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,8 +74,9 @@ pub(crate) enum Resized {
 }
 
 impl Document {
-    pub(crate) fn empty() -> Document {
+    pub(crate) fn new(shell: &Path) -> Document {
         Document {
+            shell: shell.to_str().and_then(base_name),
             revision: Revision::FIRST,
             layout: Layout { sessions: vec![] },
             ids: Ids {
@@ -76,6 +85,11 @@ impl Document {
                 window: 1,
             },
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn empty() -> Document {
+        Document::new(Path::new("/bin/sh"))
     }
 
     pub(crate) fn layout(&self) -> &Layout {
@@ -100,18 +114,67 @@ impl Document {
         if request.revision != self.revision {
             return Err(PutError::Stale);
         }
-        let normalized =
-            normalize(request.layout, &self.layout, self.ids).map_err(PutError::Invalid)?;
+        let normalized = normalize(request.layout, &self.layout, self.ids, self.shell.as_ref())
+            .map_err(PutError::Invalid)?;
         self.ids = normalized.ids;
         self.replace(normalized.layout);
         Ok(normalized.created)
     }
 
-    pub(crate) fn remove_pane(&mut self, pane: PaneId) -> bool {
-        let mut layout = self.layout.clone();
-        let found = remove_pane(&mut layout, pane);
-        self.replace(layout);
-        found
+    fn removal(&mut self, panes: Vec<PaneId>, change: impl FnOnce(&mut Layout)) -> Removal {
+        let before = self.layout.clone();
+        change(&mut self.layout);
+        settle(&before, &mut self.layout);
+        self.revision = self.revision.next();
+        Removal { panes, before }
+    }
+
+    pub(crate) fn remove_pane(&mut self, pane: PaneId) -> Option<Removal> {
+        self.layout.locate(pane)?;
+        Some(self.removal(vec![pane], |layout| remove_pane(layout, pane)))
+    }
+
+    pub(crate) fn remove_window(&mut self, window: WindowId) -> Option<Removal> {
+        let panes = self.layout.window(window)?.1.panes();
+        Some(self.removal(panes, |layout| {
+            for session in &mut layout.sessions {
+                session.windows.retain(|found| found.id != window);
+            }
+            prune(layout);
+        }))
+    }
+
+    pub(crate) fn remove_session(&mut self, session: SessionId) -> Option<Removal> {
+        let panes = self
+            .layout
+            .session(session)?
+            .windows
+            .iter()
+            .flat_map(Window::panes)
+            .collect();
+        Some(self.removal(panes, |layout| {
+            layout.sessions.retain(|found| found.id != session);
+        }))
+    }
+
+    pub(crate) fn fold_into(&mut self, revision: Revision) {
+        self.revision = revision;
+    }
+
+    pub(crate) fn focus(&mut self, window: WindowId, pane: PaneId) -> bool {
+        let Some(found) = self
+            .layout
+            .sessions
+            .iter_mut()
+            .flat_map(|session| &mut session.windows)
+            .find(|candidate| candidate.id == window)
+            .filter(|found| found.focus != pane && found.has(pane))
+        else {
+            return false;
+        };
+        found.focus = pane;
+        self.revision = self.revision.next();
+        true
     }
 
     pub(crate) fn rollback(&mut self, before: Document) {
@@ -144,10 +207,58 @@ impl Document {
         }
     }
 
-    fn replace(&mut self, layout: Layout) {
+    fn replace(&mut self, mut layout: Layout) {
+        settle(&self.layout, &mut layout);
         if layout != self.layout {
             self.layout = layout;
             self.revision = self.revision.next();
+        }
+    }
+}
+
+pub(crate) fn nearest<T: Copy>(order: &[T], at: usize, keep: impl Fn(&T) -> bool) -> Option<T> {
+    order[at..]
+        .iter()
+        .chain(order[..at].iter().rev())
+        .find(|item| keep(item))
+        .copied()
+}
+
+fn base_name(word: &str) -> Option<Name> {
+    let base = Path::new(word).file_name()?.to_str()?;
+    Name::try_from(base.to_owned()).ok()
+}
+
+fn prune(layout: &mut Layout) {
+    layout
+        .sessions
+        .retain(|session| !session.windows.is_empty());
+}
+
+fn settle(before: &Layout, after: &mut Layout) {
+    let olds: BTreeMap<WindowId, &Window> = before
+        .windows()
+        .map(|(_, window)| (window.id, window))
+        .collect();
+    for window in after
+        .sessions
+        .iter_mut()
+        .flat_map(|session| &mut session.windows)
+    {
+        let Some(old) = olds.get(&window.id) else {
+            continue;
+        };
+        if window.has(old.focus) {
+            window.focus = old.focus;
+            continue;
+        }
+        let (now, order) = (window.panes(), old.panes());
+        if let Some(pane) = order
+            .iter()
+            .position(|pane| *pane == old.focus)
+            .and_then(|at| nearest(&order, at, |pane| now.contains(pane)))
+        {
+            window.focus = pane;
         }
     }
 }
@@ -283,6 +394,13 @@ fn fit(node: Node<Raw>, cols: usize, rows: usize) -> Node<Leaf> {
                     .collect(),
             }
         }
+    }
+}
+
+fn first_leaf<L>(node: &Node<L>) -> Option<&L> {
+    match node {
+        Node::Leaf(leaf) => Some(leaf),
+        Node::Split { children, .. } => children.iter().find_map(first_leaf),
     }
 }
 
@@ -447,12 +565,12 @@ fn remove_leaf(node: Node<Leaf>, pane: PaneId) -> Option<Node<Leaf>> {
     }
 }
 
-fn remove_pane(layout: &mut Layout, pane: PaneId) -> bool {
+fn remove_pane(layout: &mut Layout, pane: PaneId) {
     let Some((session, window)) = layout.sessions.iter().enumerate().find_map(|(s, session)| {
         let w = session.windows.iter().position(|window| window.has(pane))?;
         Some((s, w))
     }) else {
-        return false;
+        return;
     };
     let windows = &mut layout.sessions[session].windows;
     let target = &mut windows[window];
@@ -470,10 +588,8 @@ fn remove_pane(layout: &mut Layout, pane: PaneId) -> bool {
             Some(node) => target.tree = node,
             None if target.floats.is_empty() => {
                 windows.remove(window);
-                if windows.is_empty() {
-                    layout.sessions.remove(session);
-                }
-                return true;
+                prune(layout);
+                return;
             }
             None => {
                 let float = target.floats.remove(0);
@@ -491,10 +607,11 @@ fn remove_pane(layout: &mut Layout, pane: PaneId) -> bool {
     if target.zoom == Some(pane) {
         target.zoom = None;
     }
-    true
 }
 
 struct Claims<'a> {
+    current: &'a Layout,
+    shell: Option<&'a Name>,
     live: &'a BTreeSet<PaneId>,
     seen: BTreeSet<PaneId>,
     ids: Ids,
@@ -502,6 +619,24 @@ struct Claims<'a> {
 }
 
 impl Claims<'_> {
+    fn default_name(&self, first: &PaneRef) -> Option<Name> {
+        let shell = || self.shell.cloned();
+        let word = match first {
+            PaneRef::Existing(pane) => {
+                return self
+                    .current
+                    .locate(*pane)
+                    .map_or_else(shell, |(_, window)| Some(window.name.clone()));
+            }
+            PaneRef::New { new } => match &new.command {
+                None => return shell(),
+                Some(Command::Argv { argv }) => argv.first().map(String::as_str),
+                Some(Command::Shell { command }) => command.split_whitespace().next(),
+            },
+        };
+        word.and_then(base_name).or_else(shell)
+    }
+
     fn pane(&mut self, reference: PaneRef) -> Result<PaneId, String> {
         let pane = match reference {
             PaneRef::Existing(pane) if self.live.contains(&pane) => pane,
@@ -547,7 +682,15 @@ fn window(
     previous: Option<&Window>,
     claims: &mut Claims<'_>,
 ) -> Result<Window, String> {
+    let name = match (draft.name, previous) {
+        (Some(name), _) => name,
+        (None, Some(old)) => old.name.clone(),
+        (None, None) => first_leaf(&draft.tree)
+            .and_then(|leaf| claims.default_name(&leaf.pane))
+            .ok_or("the window needs a name")?,
+    };
     let tree = claims.node(draft.tree)?;
+    let focus = first_leaf(&tree).ok_or("a window needs a pane")?.pane;
     let mut floats = vec![];
     for float in draft.floats {
         let DraftFloat {
@@ -592,12 +735,13 @@ fn window(
     }
     let built = Window {
         id,
-        name: draft.name,
+        name,
         vars: Vars::checked(draft.vars)?,
         cols: Cells::clamped(cols),
         rows: Cells::clamped(rows),
         cell_px: draft.cell_px.or(previous.and_then(|old| old.cell_px)),
         zoom: draft.zoom,
+        focus,
         tree: fit(tree, cols, rows),
         floats: place(floats, cols, rows),
     };
@@ -607,9 +751,16 @@ fn window(
     }
 }
 
-fn normalize(draft: DraftLayout, current: &Layout, ids: Ids) -> Result<Normalized, String> {
+fn normalize(
+    draft: DraftLayout,
+    current: &Layout,
+    ids: Ids,
+    shell: Option<&Name>,
+) -> Result<Normalized, String> {
     let live = layout_panes(current);
     let mut claims = Claims {
+        current,
+        shell,
         live: &live,
         seen: BTreeSet::new(),
         ids,
@@ -1193,13 +1344,13 @@ mod tests {
         tree_window["rows"] = json!(80);
         let mut document = document_of(tree_window);
         let revision = document.snapshot().revision;
-        assert!(document.remove_pane(PaneId::new(1)));
+        assert!(document.remove_pane(PaneId::new(1)).is_some());
         assert_eq!(tree_shape(&document), "v[2:200x20 3:200x59]");
         assert_eq!(document.snapshot().revision, revision.next());
-        assert!(!document.remove_pane(PaneId::new(1)));
-        assert!(document.remove_pane(PaneId::new(3)));
+        assert!(document.remove_pane(PaneId::new(1)).is_none());
+        assert!(document.remove_pane(PaneId::new(3)).is_some());
         assert_eq!(tree_shape(&document), "2:200x80");
-        assert!(document.remove_pane(PaneId::new(2)));
+        assert!(document.remove_pane(PaneId::new(2)).is_some());
         assert_eq!(document.snapshot().layout.sessions, vec![]);
     }
 
@@ -1241,9 +1392,9 @@ mod tests {
         tree_window["floats"] = json!([{"pane": new_pane()}, {"pane": new_pane(), "z": 5}]);
         tree_window["zoom"] = Value::Null;
         let mut document = document_of(tree_window);
-        assert!(document.remove_pane(PaneId::new(2)));
+        assert!(document.remove_pane(PaneId::new(2)).is_some());
         assert_eq!(first_window(&document).floats.len(), 1);
-        assert!(document.remove_pane(PaneId::new(1)));
+        assert!(document.remove_pane(PaneId::new(1)).is_some());
         let window = first_window(&document);
         assert_eq!(shape(&window.tree), "3:80x24");
         assert_eq!(window.floats, vec![]);
@@ -1343,6 +1494,193 @@ mod tests {
         check(&document.snapshot().layout);
     }
 
+    fn two_sessions() -> Document {
+        let mut document = Document::empty();
+        document
+            .put(request(
+                &document,
+                vec![
+                    session(vec![
+                        window(split(
+                            "h",
+                            vec![unsized_leaf(new_pane()), unsized_leaf(new_pane())],
+                        )),
+                        window(unsized_leaf(new_pane())),
+                    ]),
+                    session(vec![window(unsized_leaf(new_pane()))]),
+                ],
+            ))
+            .unwrap();
+        document
+    }
+
+    #[test]
+    fn deleting_a_window_or_a_session_is_one_change_that_returns_its_panes() {
+        let mut document = two_sessions();
+        let revision = document.revision();
+        assert_eq!(
+            document
+                .remove_window(WindowId::new(9))
+                .map(|removed| removed.panes),
+            None
+        );
+        assert_eq!(
+            document
+                .remove_session(SessionId::new(9))
+                .map(|removed| removed.panes),
+            None
+        );
+        assert_eq!(document.revision(), revision);
+        assert_eq!(
+            document
+                .remove_window(WindowId::new(1))
+                .map(|removed| removed.panes),
+            Some(vec![PaneId::new(1), PaneId::new(2)])
+        );
+        assert_eq!(document.revision(), revision.next());
+        assert_eq!(document.layout().sessions[0].windows.len(), 1);
+        assert_eq!(
+            document
+                .remove_window(WindowId::new(3))
+                .map(|removed| removed.panes),
+            Some(vec![PaneId::new(4)])
+        );
+        assert_eq!(document.revision(), revision.next().next());
+        assert_eq!(document.layout().sessions.len(), 1);
+        assert_eq!(
+            document
+                .remove_window(WindowId::new(2))
+                .map(|removed| removed.panes),
+            Some(vec![PaneId::new(3)])
+        );
+        assert_eq!(document.layout().sessions, vec![]);
+        let mut document = two_sessions();
+        assert_eq!(
+            document
+                .remove_session(SessionId::new(1))
+                .map(|removed| removed.panes),
+            Some(vec![PaneId::new(1), PaneId::new(2), PaneId::new(3)])
+        );
+        assert_eq!(document.layout().sessions.len(), 1);
+        assert_eq!(document.layout().sessions[0].id, SessionId::new(2));
+    }
+
+    #[test]
+    fn a_window_is_focused_on_the_first_pane_until_a_focus_is_noted_and_a_put_cannot_change_it() {
+        let mut document = two_sessions();
+        let window = WindowId::new(1);
+        let focus = |document: &Document| document.layout().window(window).unwrap().1.focus;
+        assert_eq!(focus(&document), PaneId::new(1));
+        let revision = document.revision();
+        assert!(!document.focus(window, PaneId::new(1)));
+        assert!(!document.focus(window, PaneId::new(3)));
+        assert_eq!(document.revision(), revision);
+        assert!(document.focus(window, PaneId::new(2)));
+        assert_eq!(focus(&document), PaneId::new(2));
+        assert_eq!(document.revision(), revision.next());
+
+        let mut sent = serde_json::to_value(document.snapshot()).unwrap();
+        sent["layout"]["sessions"][0]["windows"][0]["focus"] = json!("pane_1");
+        sent["layout"]["sessions"][0]["windows"][1]["focus"] = json!("pane_99");
+        document.put(serde_json::from_value(sent).unwrap()).unwrap();
+        assert_eq!(focus(&document), PaneId::new(2));
+        assert_eq!(document.revision(), revision.next());
+    }
+
+    #[test]
+    fn the_focus_passes_to_the_next_pane_in_order_when_its_pane_goes() {
+        let source = document_of(window(split(
+            "h",
+            vec![
+                unsized_leaf(new_pane()),
+                unsized_leaf(new_pane()),
+                unsized_leaf(new_pane()),
+            ],
+        )));
+        for (focused, gone, expected) in [(2, 2, 3), (3, 3, 2), (1, 1, 2), (2, 3, 2)] {
+            let mut document = source.clone();
+            document.focus(WindowId::new(1), PaneId::new(focused));
+            document.remove_pane(PaneId::new(gone));
+            assert_eq!(
+                first_window(&document).focus,
+                PaneId::new(expected),
+                "{focused} {gone}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_focus_of_a_pane_moved_out_of_its_window_falls_to_a_pane_that_stays() {
+        let mut document = two_sessions();
+        document.focus(WindowId::new(1), PaneId::new(2));
+        let mut moved = serde_json::to_value(document.snapshot()).unwrap();
+        let tree = moved["layout"]["sessions"][0]["windows"][1]["tree"].take();
+        moved["layout"]["sessions"][0]["windows"][1]["tree"] =
+            split("h", vec![tree, unsized_leaf(json!("pane_2"))]);
+        moved["layout"]["sessions"][0]["windows"][0]["tree"] = unsized_leaf(json!("pane_1"));
+        document
+            .put(serde_json::from_value(moved).unwrap())
+            .unwrap();
+        let windows = &document.layout().sessions[0].windows;
+        assert_eq!(windows[0].focus, PaneId::new(1));
+        assert_eq!(windows[1].focus, PaneId::new(3));
+    }
+
+    #[test]
+    fn a_new_window_without_a_name_takes_its_first_panes_program_and_an_old_one_keeps_its_name() {
+        let named = |command: Value| {
+            let pane = json!({"new": {"command": command}});
+            json!({"tree": split("h", vec![json!({"pane": pane}), unsized_leaf(new_pane())])})
+        };
+        let argv = |words: &[&str]| json!({"type": "argv", "argv": words});
+        let mut document = Document::empty();
+        let created = json!({"name": "s", "windows": [
+            named(argv(&["/usr/bin/vim", "a"])),
+            named(json!({"type": "shell", "command": "ls -l | wc"})),
+            {"tree": unsized_leaf(new_pane())},
+            named(argv(&["/"])),
+            {"name": "given", "tree": unsized_leaf(new_pane())},
+        ]});
+        document.put(request(&document, vec![created])).unwrap();
+        let names = |document: &Document| -> Vec<String> {
+            document.layout().sessions[0]
+                .windows
+                .iter()
+                .map(|window| String::from(window.name.clone()))
+                .collect()
+        };
+        let created_names = names(&document);
+        assert_eq!(created_names, ["vim", "ls", "sh", "sh", "given"]);
+
+        let mut edited = serde_json::to_value(document.snapshot()).unwrap();
+        let windows = edited["layout"]["sessions"][0]["windows"]
+            .as_array_mut()
+            .unwrap();
+        windows[0].as_object_mut().unwrap().remove("name");
+        windows[1]["name"] = json!("renamed");
+        windows[4]["name"] = json!("given");
+        document
+            .put(serde_json::from_value(edited).unwrap())
+            .unwrap();
+        let renamed_names = names(&document);
+        assert_eq!(renamed_names, ["vim", "renamed", "sh", "sh", "given"]);
+
+        let mut moved = serde_json::to_value(document.snapshot()).unwrap();
+        moved["layout"]["sessions"][0]["windows"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"tree": {"pane": "pane_1"}}));
+        let first = moved["layout"]["sessions"][0]["windows"][0]["tree"]["children"]
+            .as_array_mut()
+            .unwrap();
+        first.remove(0);
+        document
+            .put(serde_json::from_value(moved).unwrap())
+            .unwrap();
+        let windows = &document.layout().sessions[0].windows;
+        assert_eq!(String::from(windows[5].name.clone()), "vim");
+    }
+
     #[derive(Debug, Clone)]
     enum Shape {
         Leaf(Option<(u16, u16)>),
@@ -1396,6 +1734,28 @@ mod tests {
             })
     }
 
+    fn unsize(node: &mut Node<DraftLeaf>) {
+        match node {
+            Node::Leaf(leaf) => (leaf.cols, leaf.rows) = (None, None),
+            Node::Split { children, .. } => children.iter_mut().for_each(unsize),
+        }
+    }
+
+    fn equalizing(document: &Document) -> PutLayout {
+        let mut layout = DraftLayout::from(document.layout());
+        for window in layout
+            .sessions
+            .iter_mut()
+            .flat_map(|session| &mut session.windows)
+        {
+            unsize(&mut window.tree);
+        }
+        PutLayout {
+            revision: document.revision(),
+            layout,
+        }
+    }
+
     fn pane_count(layout: &Layout) -> usize {
         layout_panes(layout).len()
     }
@@ -1431,6 +1791,53 @@ mod tests {
                 .unwrap();
             prop_assert!(created.is_empty());
             prop_assert_eq!(document.snapshot(), before);
+        }
+
+        #[test]
+        fn omitting_every_size_equalizes_into_a_consistent_fixed_point(generated in windows()) {
+            let mut document = document_of(generated);
+            let before = document.snapshot().layout;
+            let created = document.put(equalizing(&document)).unwrap();
+            prop_assert!(created.is_empty());
+            let equalized = document.snapshot().layout;
+            check(&equalized);
+            prop_assert_eq!(layout_panes(&equalized), layout_panes(&before));
+            let (old, new) = (&before.sessions[0].windows[0], &equalized.sessions[0].windows[0]);
+            prop_assert_eq!((new.cols, new.rows), (old.cols, old.rows));
+            let (mut leaves, mut was) = (vec![], vec![]);
+            new.tree.leaves(&mut leaves);
+            old.tree.leaves(&mut was);
+            prop_assert_eq!(
+                leaves.iter().map(|leaf| leaf.pane).collect::<Vec<_>>(),
+                was.iter().map(|leaf| leaf.pane).collect::<Vec<_>>()
+            );
+            prop_assert!(leaves.iter().all(|leaf| leaf.cols.get() >= 1 && leaf.rows.get() >= 1));
+            let again = document.put(equalizing(&document)).unwrap();
+            prop_assert!(again.is_empty());
+            prop_assert_eq!(document.snapshot().layout, equalized);
+        }
+
+        #[test]
+        fn omitting_the_sizes_of_a_flat_split_shares_its_axis_within_one_cell(
+            sizes in prop::collection::vec((1u16..60, 1u16..40), 2..7),
+            horizontal in any::<bool>(),
+            cols in 1u16..200,
+            rows in 1u16..80,
+        ) {
+            let leaves = sizes.iter().map(|(c, r)| leaf(new_pane(), *c, *r)).collect();
+            let mut generated = window(split(if horizontal { "h" } else { "v" }, leaves));
+            generated["cols"] = json!(cols);
+            generated["rows"] = json!(rows);
+            let mut document = document_of(generated);
+            document.put(equalizing(&document)).unwrap();
+            let (mut shared, tree) = (vec![], first_window(&document).tree);
+            tree.leaves(&mut shared);
+            let along: Vec<_> = shared
+                .iter()
+                .map(|leaf| usize::from(if horizontal { leaf.cols } else { leaf.rows }.get()))
+                .collect();
+            let (low, high) = (along.iter().min().unwrap(), along.iter().max().unwrap());
+            prop_assert!(high - low <= 1, "{along:?}");
         }
 
         #[test]
@@ -1471,7 +1878,7 @@ mod tests {
             let before = document.snapshot().layout;
             let panes: Vec<_> = layout_panes(&before).into_iter().collect();
             let victim = panes[pick.index(panes.len())];
-            prop_assert!(document.remove_pane(victim));
+            prop_assert!(document.remove_pane(victim).is_some());
             let after = document.snapshot().layout;
             check(&after);
             let mut expected = layout_panes(&before);

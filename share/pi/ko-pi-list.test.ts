@@ -359,17 +359,18 @@ test("discovery agrees for listing and completion without restricting addressing
       ["midpeer", "cousin"], ["toppeer", "otherchild"],
     ]) fx.writeAgent(owner, child, { session: child });
     const names = ["root", "toppeer", "mid", "midpeer", "leaf", "leafpeer", "child", "grandchild", "cousin", "otherchild", "elsewhere"];
-    fx.setPanes(names.map((session, i) => agentPane({
+    const panes = names.map((session, i) => agentPane({
       pane: `pane_${i + 1}`, session, name: session,
       inbox: session === "leaf" ? leafInbox.path : session === "cousin" ? cousinInbox.path : "",
       koSession: session === "elsewhere" ? "session_2" : "session_1",
-    })));
+    }));
     for (const [caller, parent, expected] of [
       ["root", "", ["toppeer", "mid", "midpeer"]],
       ["mid", "root", ["root", "toppeer", "midpeer", "leaf", "leafpeer"]],
       ["leaf", "mid", ["root", "toppeer", "mid", "midpeer", "leafpeer", "child"]],
     ] as const) {
       const check = async () => {
+        fx.setPanes(panes);
         const s = await startNamedSession(fx, caller, caller);
         const listed = await rows(s);
         assert.deepEqual(listed.map(r => r.name).sort(), [...expected].sort(), caller);

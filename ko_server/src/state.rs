@@ -5,13 +5,13 @@ use ko_pane_wire::frame::{Dead, History, Req, ScreenFormat, ScreenRows, Size};
 use ko_pane_wire::ring::Invalid;
 use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
 
-use crate::client::{self, Change, Client, Current, Focus};
+use crate::client::{self, Change, Client, Current};
 use crate::config::Config;
 use crate::conn::{Conn, Phase};
 use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
-use crate::ids::{ClientId, Instance, Name, PaneId, VarName, WindowId};
-use crate::layout::{Document, PutError, Resized};
+use crate::ids::{ClientId, Instance, Name, PaneId, SessionId, VarName, WindowId};
+use crate::layout::{Document, PutError, Removal, Resized};
 use crate::link::{Role, Wire};
 use crate::model::{self, Model};
 use crate::pane::Pane;
@@ -19,9 +19,9 @@ use crate::pane_kind::{PI_SESSION, RUN};
 use crate::pane_proc::{self, Event, Io, Refusal, discard};
 use crate::panes::{AddError, Panes};
 use crate::protocol::{
-    self, CellPixels, ClientEvent, ClientKind, ClientRequest, CreatePane, Input, Limits, Listing,
-    PaneDead, PasteResult, PutLayout, Pwd, Row, Selection, Snapshot, StatusChange, Title,
-    ViewEvent, ViewRequest, Welcome,
+    self, CellPixels, ClientEvent, ClientKind, ClientRequest, CreatePane, DeleteVars, Input,
+    Layout, Limits, Listing, PaneDead, PasteResult, PutLayout, Pwd, Row, Selection, Snapshot,
+    StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
 };
 use crate::router;
 use crate::server::Verified;
@@ -72,7 +72,6 @@ pub(crate) struct State {
     instance: Instance,
     pub(crate) panes: Panes,
     document: Document,
-    focus: Focus,
     sizers: BTreeMap<WindowId, ClientId>,
     pub(crate) conns: Vec<Conn>,
     owners: BTreeMap<(PaneId, Req), Owner>,
@@ -132,12 +131,12 @@ impl State {
         tick: Duration,
     ) -> State {
         let runs = run_ops::RunState::new(&config, poll);
+        let document = Document::new(&config.shell);
         State {
             config,
             instance,
             panes: Panes::default(),
-            document: Document::empty(),
-            focus: Focus::default(),
+            document,
             sizers: BTreeMap::new(),
             conns: Vec::new(),
             owners: BTreeMap::new(),
@@ -273,7 +272,9 @@ impl State {
             }
             started.push(id);
         }
-        self.changed(poll, &before);
+        if self.document.revision() != before.revision() {
+            self.changed(poll, before.layout());
+        }
         Ok(self.document.snapshot())
     }
 
@@ -305,50 +306,69 @@ impl State {
     }
 
     pub(crate) fn delete_pane(&mut self, poll: &mut Poll, id: PaneId) {
-        let before = self.document.clone();
-        self.document.remove_pane(id);
-        self.close_views(id);
-        self.remove_pane(poll, id);
+        let removal = self.document.remove_pane(id);
+        self.delete(poll, removal);
+    }
+
+    pub(crate) fn delete_window(&mut self, poll: &mut Poll, id: WindowId) -> bool {
+        let removal = self.document.remove_window(id);
+        self.delete(poll, removal)
+    }
+
+    pub(crate) fn delete_session(&mut self, poll: &mut Poll, id: SessionId) -> bool {
+        let removal = self.document.remove_session(id);
+        self.delete(poll, removal)
+    }
+
+    fn delete(&mut self, poll: &mut Poll, removal: Option<Removal>) -> bool {
+        let Some(Removal { panes, before }) = removal else {
+            return false;
+        };
+        for pane in panes {
+            self.close_views(pane);
+            self.stop_pane(poll, pane);
+        }
+        self.runs_changed(poll);
         self.changed(poll, &before);
+        true
     }
 
     pub(crate) fn clear_history(&mut self, poll: &mut Poll, id: PaneId) {
         self.run(poll, id, |pane, io| pane.proc_mut().clear_history(io));
     }
 
-    fn changed(&mut self, poll: &mut Poll, before: &Document) {
-        if self.document.revision() == before.revision() {
-            return;
-        }
+    fn changed(&mut self, poll: &mut Poll, before: &Layout) {
         let State {
             document,
-            focus,
             sizers,
             conns,
             ..
         } = self;
         let layout = document.layout();
-        focus.settle(before.layout(), layout);
         sizers.retain(|window, _| layout.window(*window).is_some());
         let mut moved = Vec::new();
         for (index, conn) in conns.iter_mut().enumerate() {
             if let Some((Role::Client(client), _)) = conn.role_mut()
                 && client.active.is_some()
             {
-                let after = client.reconcile(before.layout(), layout, focus);
+                let after = client.reconcile(before, layout);
                 if after != client.current() {
                     client.set_current(after);
                     moved.push((index, after));
                 }
             }
         }
-        let sizes = layout.pane_sizes().into_iter().collect();
+        let revision = self.document.revision();
+        for (index, _) in &moved {
+            self.note_focus(*index);
+            self.claim(poll, *index);
+        }
+        self.document.fold_into(revision);
+        let sizes = self.document.layout().pane_sizes().into_iter().collect();
         self.resize_panes(poll, &sizes);
         self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
         for (index, current) in moved {
-            self.note_focus(index);
             self.selected(index, current);
-            self.claim(poll, index);
         }
         self.refocus(poll);
     }
@@ -401,7 +421,7 @@ impl State {
         });
     }
 
-    fn size_window(&mut self, poll: &mut Poll, window: WindowId, size: Size) {
+    fn size_window(&mut self, poll: &mut Poll, window: WindowId, size: Size) -> bool {
         let cell_px = size.cell_px.map(CellPixels);
         let resized =
             self.document
@@ -415,8 +435,8 @@ impl State {
                 .flat_map(|(_, window)| window.pane_sizes())
                 .collect();
             self.resize_panes(poll, &sizes);
-            self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
         }
+        resized == Resized::Changed
     }
 
     pub(crate) fn focused_panes(&self) -> BTreeSet<PaneId> {
@@ -436,16 +456,28 @@ impl State {
         self.each_pane(poll, |pane, io| pane.focus(shown.contains(&pane.id()), io));
     }
 
-    fn note_focus(&mut self, index: usize) {
-        if let Some(active) = self
+    fn note_focus(&mut self, index: usize) -> bool {
+        let Some(active) = self
             .conns
             .get(index)
             .and_then(client_of)
             .and_then(|c| c.active)
-            && active.focused
-            && let Some(current) = active.current
-        {
-            self.focus.note(current.window, current.pane);
+            .filter(|active| active.focused)
+        else {
+            return false;
+        };
+        active
+            .current
+            .is_some_and(|current| self.document.focus(current.window, current.pane))
+    }
+
+    fn arrive(&mut self, poll: &mut Poll, index: usize) {
+        let before = self.document.revision();
+        self.note_focus(index);
+        self.claim(poll, index);
+        if self.document.revision() != before {
+            self.document.fold_into(before.next());
+            self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
         }
     }
 
@@ -463,7 +495,7 @@ impl State {
             })
             .ok_or(SelectFailure::NoClient)?;
         let current = client_of(&self.conns[index])
-            .and_then(|client| client.select(self.document.layout(), &self.focus, selection))
+            .and_then(|client| client.select(self.document.layout(), selection))
             .ok_or(SelectFailure::NoTarget)?;
         self.enter(poll, index, Some(current), true);
         Ok(())
@@ -474,15 +506,19 @@ impl State {
         {
             client.set_current(current);
         }
-        self.note_focus(index);
+        self.arrive(poll, index);
         if notify {
             self.selected(index, current);
         }
-        self.claim(poll, index);
         self.refocus(poll);
     }
 
     pub(crate) fn remove_pane(&mut self, poll: &mut Poll, id: PaneId) {
+        self.stop_pane(poll, id);
+        self.runs_changed(poll);
+    }
+
+    fn stop_pane(&mut self, poll: &mut Poll, id: PaneId) {
         if let Some(timer) = self
             .panes
             .find_mut(id)
@@ -500,7 +536,6 @@ impl State {
             },
         );
         self.dispatch(poll, id, events);
-        self.runs_changed(poll);
     }
 
     pub(crate) fn reap(&mut self, poll: &mut Poll) -> std::io::Result<()> {
@@ -599,6 +634,19 @@ impl State {
             }
             self.broadcast(&ClientEvent::VarDeleted { pane: id, name });
         }
+    }
+
+    pub(crate) fn delete_vars(&mut self, poll: &mut Poll, id: PaneId, request: DeleteVars) -> bool {
+        let DeleteVars { names, condition } = request;
+        if let Some(VarCondition { name, value }) = condition
+            && self.panes.find(id).and_then(|pane| pane.vars().get(&name)) != Some(&value)
+        {
+            return false;
+        }
+        for name in names {
+            self.delete_var(poll, id, name);
+        }
+        true
     }
 
     fn event(&mut self, poll: &mut Poll, id: PaneId, event: Event) {
@@ -1090,17 +1138,14 @@ impl State {
     fn client_text(&mut self, poll: &mut Poll, index: usize, text: &[u8]) {
         let request = protocol::decode::<ClientRequest>(text);
         let State {
-            document,
-            focus,
-            conns,
-            ..
+            document, conns, ..
         } = self;
         let Some((Role::Client(client), wire)) = conns.get_mut(index).and_then(Conn::role_mut)
         else {
             return;
         };
         let id = client.id;
-        let (layout, focus) = (document.layout(), &*focus);
+        let layout = document.layout();
         let change = request
             .map_err(|_| "invalid message")
             .and_then(|request| client.receive(request));
@@ -1109,10 +1154,9 @@ impl State {
         };
         let (current, notify) = match change {
             Change::Hello(selection) => {
-                let current = client.select(layout, focus, selection).or_else(|| {
+                let current = client.select(layout, selection).or_else(|| {
                     client.select(
                         layout,
-                        focus,
                         Selection {
                             pane: None,
                             ..selection
@@ -1131,17 +1175,16 @@ impl State {
                 let notify = current.is_some_and(|current| selection.pane != Some(current.pane));
                 (current, notify)
             }
-            Change::Select(selection) => match client.select(layout, focus, selection) {
+            Change::Select(selection) => match client.select(layout, selection) {
                 Some(current) => (Some(current), selection.pane != Some(current.pane)),
                 None => return wire.ws.reject(wire.out, "invalid"),
             },
-            Change::Switch(switch) => match client.switch(layout, focus, switch) {
+            Change::Switch(switch) => match client.switch(layout, switch) {
                 Some(current) => (Some(current), true),
                 None => return,
             },
             Change::Claim => {
-                self.note_focus(index);
-                self.claim(poll, index);
+                self.arrive(poll, index);
                 return self.refocus(poll);
             }
             Change::Resize => {
@@ -1151,8 +1194,9 @@ impl State {
                 if let Some(current) = active.current
                     && self.sizers.get(&current.window) == Some(&id)
                     && self.sizable(active.kind, current.window)
+                    && self.size_window(poll, current.window, active.size)
                 {
-                    self.size_window(poll, current.window, active.size);
+                    self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
                 }
                 return;
             }
@@ -1172,16 +1216,16 @@ impl State {
         }
     }
 
-    fn claim(&mut self, poll: &mut Poll, index: usize) {
+    fn claim(&mut self, poll: &mut Poll, index: usize) -> bool {
         let Some(client) = self.conns.get(index).and_then(client_of) else {
-            return;
+            return false;
         };
         let id = client.id;
         let Some(active) = client.active else {
-            return;
+            return false;
         };
         let Some(current) = active.current else {
-            return;
+            return false;
         };
         let others = self
             .conns
@@ -1190,8 +1234,9 @@ impl State {
             .filter_map(|client| client.active.as_ref().map(|peer| (client.id, peer)));
         if self.sizable(active.kind, current.window) && client::claims(id, &active, others) {
             self.sizers.insert(current.window, id);
-            self.size_window(poll, current.window, active.size);
+            return self.size_window(poll, current.window, active.size);
         }
+        false
     }
 
     fn view_text(&mut self, poll: &mut Poll, index: usize, text: &[u8]) {

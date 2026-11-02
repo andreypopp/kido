@@ -71,7 +71,7 @@ fn a_change_the_server_makes_reaches_every_client_as_a_layout_event() {
     let (mut b, _) = s.app_client(json!({}), false, (80, 24));
     let revision = first["revision"].as_u64().unwrap();
 
-    s.delete("pane_1");
+    s.delete("/panes/pane_1").ok();
     for client in [&mut a, &mut b] {
         let event = client.event("layout");
         assert_eq!(event["revision"].as_u64(), Some(revision + 1));
@@ -86,7 +86,7 @@ fn a_change_the_server_makes_reaches_every_client_as_a_layout_event() {
         Some(revision + 1),
         "an exit leaves the layout"
     );
-    s.delete("pane_2");
+    s.delete("/panes/pane_2").ok();
     for client in [&mut a, &mut b] {
         assert_eq!(
             client.event("layout")["revision"].as_u64(),
@@ -183,7 +183,7 @@ fn removing_the_last_pane_of_a_window_and_of_a_session_moves_the_client() {
     ]}}));
     let (mut c, _) = s.app_client(json!({"pane": "pane_1"}), false, (80, 24));
     c.event("layout");
-    s.delete("pane_1");
+    s.delete("/panes/pane_1").ok();
     let layout = layout_until(&mut c, |sessions| {
         sessions[0]["windows"].as_array().map(Vec::len) == Some(1)
     });
@@ -195,7 +195,7 @@ fn removing_the_last_pane_of_a_window_and_of_a_session_moves_the_client() {
         c.event("selected"),
         json!({"type": "selected", "session": "session_1", "window": "window_2", "pane": "pane_2"})
     );
-    s.delete("pane_2");
+    s.delete("/panes/pane_2").ok();
     layout_until(&mut c, |sessions| {
         sessions.as_array().map(Vec::len) == Some(1)
     });
@@ -203,7 +203,7 @@ fn removing_the_last_pane_of_a_window_and_of_a_session_moves_the_client() {
         c.event("selected"),
         json!({"type": "selected", "session": "session_2", "window": "window_3", "pane": "pane_3"})
     );
-    s.delete("pane_3");
+    s.delete("/panes/pane_3").ok();
     layout_until(&mut c, |sessions| sessions == &json!([]));
     assert_eq!(c.event("selected"), json!({"type": "selected"}));
     assert_eq!(s.doc()["layout"]["sessions"], json!([]));

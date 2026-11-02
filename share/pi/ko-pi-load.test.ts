@@ -136,33 +136,31 @@ test("a /reload keeps this session's pane variables, and a real shutdown unsets 
   }
 });
 
-const held = (call: { method: string; path: string }): boolean => call.method === "GET" && call.path === "/panes/pane_1/vars/pi.session";
+const ownDelete = (call: { method: string; path: string }): boolean => call.method === "DELETE" && call.path === "/panes/pane_1/vars";
 
-test("an uncaught exit unsets the variables only while the pane still names this session", async () => {
+test("an uncaught exit unsets the variables in one delete that holds only while the pane still names this session", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
     await startSession(fx, { factory: await freshExtension() });
     const before = fx.apiCalls().length;
     process.emit("exit", 0);
+    const first = fx.apiCalls().slice(before);
     assert.deepEqual(
-      fx.apiCalls().slice(before).map((call) => `${call.method} ${call.path}`),
-      [
-        "GET /panes/pane_1/vars/pi.session",
-        "DELETE /panes/pane_1/vars/pi.session",
-        "DELETE /panes/pane_1/vars/pi.name",
-        "DELETE /panes/pane_1/vars/pi.inbox",
-        "DELETE /panes/pane_1/vars/pi.activity",
-      ],
-      "the unset is conditional on the pane naming this session, and removes the four variables a clean shutdown does",
+      first.map((call) => [call.method, call.path, JSON.parse(call.body)]),
+      [["DELETE", "/panes/pane_1/vars", { names: ["pi.session", "pi.name", "pi.inbox", "pi.activity"], if: { name: "pi.session", value: "self-session" } }]],
+      "the four variables go in one request that names this session as the condition",
     );
-    fx.setPanes([selfPane({ pi_session: "another-session" })]);
+    assert.deepEqual(fx.panes().map((row) => row.pi_session), [""], "the pane's own variables are gone");
+
+    fx.setPanes([selfPane({ pi_session: "another-session", pi_name: "Newcomer" })]);
     const other = fx.apiCalls().length;
     process.emit("exit", 0);
+    assert.equal(fx.apiCalls().slice(other).filter(ownDelete).length, 1, "the exit handler still asks");
     assert.deepEqual(
-      fx.apiCalls().slice(other).map((call) => `${call.method} ${call.path}`),
-      ["GET /panes/pane_1/vars/pi.session"],
-      "a pane that another pi owns keeps its variables",
+      fx.panes().map((row) => [row.pi_session, row.pi_name]),
+      [["another-session", "Newcomer"]],
+      "the server refused the delete, so the pane's new owner keeps its variables",
     );
   } finally {
     await fx.restore();
@@ -175,7 +173,7 @@ test("a /reload keeps the exit handler until the next session replaces it, and a
     fx.setPanes([selfPane()]);
     const s1 = await startSession(fx, { factory: await freshExtension() });
     await s1.emit("session_shutdown", { reason: "reload" });
-    const handlerRuns = (since: number): number => fx.apiCalls().slice(since).filter(held).length;
+    const handlerRuns = (since: number): number => fx.apiCalls().slice(since).filter(ownDelete).length;
     const afterReload = fx.apiCalls().length;
     process.emit("exit", 0);
     assert.equal(handlerRuns(afterReload), 1, "a reload with no new session keeps a handler for the session that still owns the variables");

@@ -89,6 +89,7 @@ pub enum ErrorKind {
     Refused,
     Gone,
     Io,
+    PreconditionFailed,
     #[serde(rename = "not_found")]
     Missing,
     ProtocolMismatch(Version),
@@ -103,6 +104,7 @@ impl ErrorKind {
             ErrorKind::Gone => Status::Gone,
             ErrorKind::Io => Status::Internal,
             ErrorKind::Missing => Status::NotFound,
+            ErrorKind::PreconditionFailed => Status::PreconditionFailed,
             ErrorKind::ProtocolMismatch(_) => Status::UpgradeRequired,
         }
     }
@@ -817,6 +819,7 @@ pub struct Window {
     pub cell_px: Option<CellPixels>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zoom: Option<PaneId>,
+    pub focus: PaneId,
     pub tree: Node<Leaf>,
     pub floats: Vec<Float>,
 }
@@ -879,7 +882,8 @@ pub struct DraftFloat {
 pub struct DraftWindow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<WindowId>,
-    pub name: Name,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<Name>,
     #[serde(default)]
     pub vars: Loose,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -911,10 +915,10 @@ pub struct DraftLayout {
 }
 
 impl DraftWindow {
-    pub fn single(name: Name, request: &CreatePane) -> DraftWindow {
+    pub fn single(request: &CreatePane) -> DraftWindow {
         DraftWindow {
             id: None,
-            name,
+            name: None,
             vars: Loose::new(),
             cols: None,
             rows: None,
@@ -938,7 +942,7 @@ impl DraftSession {
             id: None,
             name: name.clone(),
             vars: Loose::new(),
-            windows: vec![DraftWindow::single(name, request)],
+            windows: vec![DraftWindow::single(request)],
         }
     }
 }
@@ -1074,7 +1078,7 @@ impl From<&Window> for DraftWindow {
     fn from(window: &Window) -> DraftWindow {
         DraftWindow {
             id: Some(window.id),
-            name: window.name.clone(),
+            name: Some(window.name.clone()),
             vars: window.vars.loose(),
             cols: Some(window.cols),
             rows: Some(window.rows),
@@ -1518,6 +1522,19 @@ pub struct StopRun {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VarCondition {
+    pub name: VarName,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteVars {
+    pub names: Vec<VarName>,
+    #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
+    pub condition: Option<VarCondition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Candidate {
     pub pane: PaneId,
     pub session: SessionId,
@@ -1582,6 +1599,8 @@ pub enum Route {
     Client,
     SelectClient(ClientId),
     DeletePane(PaneId),
+    DeleteWindow(WindowId),
+    DeleteSession(SessionId),
     ClearHistory(PaneId),
     Input(PaneId),
     Screen(PaneId, ScreenFormat, ScreenRows),
@@ -1590,6 +1609,7 @@ pub enum Route {
     Var(PaneId, VarName),
     SetVar(PaneId, VarName),
     DeleteVar(PaneId, VarName),
+    DeleteVars(PaneId),
     StartRun,
     ListRuns(Show, Option<Parent>),
     Reap,
@@ -1682,6 +1702,8 @@ impl Route {
             ("PUT", ["", "layout"]) => Some(Route::PutLayout),
             ("GET", ["", "client"]) => Some(Route::Client),
             ("POST", ["", "clients", id, "select"]) => id.parse().ok().map(Route::SelectClient),
+            ("DELETE", ["", "windows", id]) => id.parse().ok().map(Route::DeleteWindow),
+            ("DELETE", ["", "sessions", id]) => id.parse().ok().map(Route::DeleteSession),
             ("POST", ["", "runs"]) => Some(Route::StartRun),
             ("GET", ["", "runs"]) => {
                 let show = match arg("show") {
@@ -1748,6 +1770,7 @@ impl Route {
                         Some(Route::Screen(id, format, rows))
                     }
                     ("GET", ["vars"]) => Some(Route::Vars(id)),
+                    ("DELETE", ["vars"]) => Some(Route::DeleteVars(id)),
                     (_, ["vars", name]) => {
                         let name = percent_decode(name)
                             .and_then(|name| VarName::new(&name).ok())
@@ -1791,6 +1814,8 @@ impl Route {
             Route::Client => ("GET", "/client".to_owned()),
             Route::SelectClient(id) => ("POST", format!("/clients/{id}/select")),
             Route::DeletePane(id) => ("DELETE", pane(id)),
+            Route::DeleteWindow(id) => ("DELETE", format!("/windows/{id}")),
+            Route::DeleteSession(id) => ("DELETE", format!("/sessions/{id}")),
             Route::ClearHistory(id) => ("POST", format!("{}/clear_history", pane(id))),
             Route::Input(id) => ("POST", format!("{}/input", pane(id))),
             Route::Screen(id, format, rows) => {
@@ -1809,6 +1834,7 @@ impl Route {
                 )
             }
             Route::Vars(id) => ("GET", format!("{}/vars", pane(id))),
+            Route::DeleteVars(id) => ("DELETE", format!("{}/vars", pane(id))),
             Route::Var(id, name) => (
                 "GET",
                 format!("{}/vars/{}", pane(id), percent_encode(name.as_str())),
@@ -1911,10 +1937,17 @@ mod tests {
             r#"{"kind":"gone","message":"m"}"#,
             r#"{"kind":"io","message":"m"}"#,
             r#"{"kind":"not_found","message":"m"}"#,
+            r#"{"kind":"precondition_failed","message":"m"}"#,
             r#"{"kind":"protocol_mismatch","protocol":"1.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
             r#"{"kind":"vt_mismatch","protocol":"1.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty","message":"m"}"#,
         ] {
             same::<Error>(json);
+        }
+        for json in [
+            r#"{"names":["pi.session","pi.name"]}"#,
+            r#"{"names":["pi.session"],"if":{"name":"pi.session","value":"abc"}}"#,
+        ] {
+            same::<DeleteVars>(json);
         }
         for json in [
             r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":null}"#,
@@ -2035,7 +2068,7 @@ mod tests {
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
-            r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]}}"#,
+            r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","focus":"pane_2","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]}}"#,
             r#"{"type":"layout","revision":0,"layout":{"sessions":[]}}"#,
             r#"{"type":"selected","session":"session_1","window":"window_1","pane":"pane_2"}"#,
             r#"{"type":"selected"}"#,
@@ -2187,6 +2220,9 @@ mod tests {
             Route::ClearHistory(pane),
             Route::Client,
             Route::DeletePane(pane),
+            Route::DeleteWindow(WindowId::new(2)),
+            Route::DeleteSession(SessionId::new(3)),
+            Route::DeleteVars(pane),
             Route::Input(pane),
             Route::Screen(pane, ScreenFormat::Ansi, ScreenRows::Last(40)),
             Route::Screen(pane, ScreenFormat::Plain, ScreenRows::Full),

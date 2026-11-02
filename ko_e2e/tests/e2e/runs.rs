@@ -690,7 +690,7 @@ fn a_dead_run_reads_died_when_its_pane_is_gone_and_a_signal_names_itself() {
     );
 
     let gone = run_of(&s, &caller, "run-gone", &["sleep", "300"]);
-    s.delete(pane_of(&gone));
+    s.delete(&format!("/panes/{}", pane_of(&gone))).ok();
     assert_eq!(
         ending(&s, id_of(&gone)).0,
         "died",
@@ -736,4 +736,43 @@ fn a_stop_that_waits_longer_than_the_bound_is_refused_and_records_nothing() {
     );
     let wait = format!("/runs/{id}/wait?timeout_ms=3600001");
     assert_eq!(s.exchange("GET", &wait, &s.headers(), b"").0, 400);
+}
+
+#[test]
+fn the_coordinator_kills_a_removed_run_pane_whose_pane_process_cannot_hang_it_up() {
+    use ko_sys::signal::Signal;
+
+    let delay = Duration::from_millis(600);
+    let s = start_with(
+        Path::new("/bin/sh"),
+        &[("KO_STOP_ESCALATION_MS", "600")],
+        &[],
+    );
+    let caller = caller(&s);
+    let run = run_of(
+        &s,
+        &caller,
+        "stuck",
+        &["sh", "-c", "trap '' HUP; exec sleep 300"],
+    );
+    let program = s.pane_program(pane_of(&run));
+    let pane_process = program.parent().expect("the pane process");
+    ko_sys::pid::signal_descendant(s.child.pid(), pane_process, Signal::Stop).unwrap();
+
+    let began = Instant::now();
+    ko_as(&s, None, &["run-stop", id_of(&run)], "").ok();
+    wait_pane_gone(&s, pane_of(&run));
+    crate::harness::stays(
+        "the program lived on while its stopped pane process could not hang it up",
+        Duration::from_millis(250),
+        || !program.has_ended(),
+    );
+    wait_gone(program, "the coordinator's escalation");
+    wait_gone(pane_process, "the coordinator's escalation");
+    let took = began.elapsed();
+    assert!(took >= delay, "{took:?}");
+    assert!(
+        took < Duration::from_secs(3),
+        "the configured delay, not the 5 s default: {took:?}"
+    );
 }

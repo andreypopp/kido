@@ -182,7 +182,7 @@ fn the_last_window_of_a_session_goes_with_its_collected_run_and_the_session_ends
         "",
     )
     .json();
-    s.delete(&user_pane);
+    s.delete(&format!("/panes/{}", user_pane)).ok();
     wait_pane_gone(s, pane_of(&run));
     let sessions: Vec<Value> = s.doc()["layout"]["sessions"].as_array().unwrap().clone();
     assert_eq!(
@@ -220,7 +220,7 @@ fn a_child_whose_parent_ended_is_collected_while_its_command_runs() {
         || has_pane(&s, pane_of(&child)),
     );
 
-    s.delete(&parent);
+    s.delete(&format!("/panes/{}", parent)).ok();
     wait_pane_gone(&s, pane_of(&child));
     wait_gone(pid, "the orphan's command");
     assert_eq!(

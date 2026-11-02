@@ -111,7 +111,8 @@ fn a_wait_ends_with_the_pane_when_nothing_recorded_an_outcome() {
 
     let gone = run_of(&s, &caller, "gone", &["sleep", "300"]);
     let (mut waiting, out) = waiter(&s, &["run-wait", id_of(&gone)], "gone.out");
-    s.delete(gone["pane"].as_str().unwrap());
+    s.delete(&format!("/panes/{}", gone["pane"].as_str().unwrap()))
+        .ok();
     assert_eq!(waiting.wait(DEADLINE), Some(ko_sys::pid::Exit::Exited(0)));
     assert_eq!(fs::read_to_string(out).unwrap(), "died\n");
 }

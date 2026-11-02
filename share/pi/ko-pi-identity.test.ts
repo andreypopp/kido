@@ -12,6 +12,7 @@ import koPi from "./ko-pi.ts";
 
 import {
   makeFixture,
+  selfPane,
   fakeCtx,
   startSession,
   startSessionCore,
@@ -164,7 +165,26 @@ test("shutdown unsets the four options on this pane", async () => {
     await s.emit("session_shutdown", { reason: "quit" });
     const unset = fx.optionWrites().filter((w) => w.value === undefined);
     assert.deepEqual(unset.map((w) => w.key), ["pi.session", "pi.name", "pi.inbox", "pi.activity"]);
-    assert.equal(fx.apiCalls().filter((call) => call.method === "DELETE").length, 4, "the four unsets are four deletes");
+    const deletes = fx.apiCalls().filter((call) => call.method === "DELETE");
+    assert.deepEqual(
+      deletes.map((call) => [call.path, JSON.parse(call.body)]),
+      [["/panes/pane_1/vars", { names: ["pi.session", "pi.name", "pi.inbox", "pi.activity"], if: { name: "pi.session", value: "self-session" } }]],
+      "the four unsets are one delete, conditional on this session",
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a shutdown leaves the variables of a new owner of the pane", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    fx.setPanes([selfPane({ pi_session: "new-owner", pi_name: "Newcomer" })]);
+    await s.emit("session_shutdown", { reason: "quit" });
+    assert.equal(fx.apiCalls().filter((call) => call.method === "DELETE").length, 1, "this session asked once");
+    assert.deepEqual(fx.panes().map((row) => [row.pi_session, row.pi_name]), [["new-owner", "Newcomer"]]);
   } finally {
     await fx.restore();
   }

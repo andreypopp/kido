@@ -251,3 +251,63 @@ fn a_layout_put_takes_vars_on_new_panes_sessions_and_windows_under_the_limits_of
     let put = attempt(&small, "session").json();
     assert_eq!(put["layout"]["sessions"][2]["vars"], small);
 }
+
+#[test]
+fn a_conditional_delete_removes_its_names_together_and_changes_nothing_when_the_condition_fails() {
+    let s = start(&[]);
+    let pane = s.pane("printf READY; read x");
+    s.screen_has(&pane, "READY");
+    let (mut watcher, _) = s.client(None);
+    for (name, value) in [
+        ("pi.session", "\"mine\""),
+        ("pi.name", "\"N\""),
+        ("keep", "1"),
+    ] {
+        let route = format!("/panes/{pane}/vars/{name}");
+        s.ko(&["api", "-X", "PUT", "--input", "-", &route], value)
+            .ok();
+    }
+    let route = format!("/panes/{pane}/vars");
+    let delete = |body: &str| s.ko(&["api", "-X", "DELETE", "--input", "-", &route], body);
+    let all = || s.ko(&["api", &route], "").json();
+    let before = json!({"keep": 1, "pi.name": "N", "pi.session": "mine"});
+    assert_eq!(all(), before);
+
+    let refused =
+        delete(r#"{"names":["pi.session","pi.name"],"if":{"name":"pi.session","value":"theirs"}}"#)
+            .http_error(412);
+    assert_eq!(
+        serde_json::from_str::<Value>(&refused).unwrap()["kind"],
+        json!("precondition_failed")
+    );
+    delete(r#"{"names":["keep"],"if":{"name":"absent","value":null}}"#).http_error(412);
+    assert_eq!(all(), before, "a failed condition deletes nothing");
+
+    assert_eq!(
+        delete(
+            r#"{"names":["pi.session","never-set","pi.name"],"if":{"name":"pi.session","value":"mine"}}"#
+        )
+        .ok(),
+        "{}"
+    );
+    assert_eq!(all(), json!({"keep": 1}));
+    assert_eq!(delete(r#"{"names":["keep"]}"#).ok(), "{}");
+    assert_eq!(all(), json!({}));
+    let deleted: Vec<Value> = (0..3)
+        .map(|_| watcher.event("var_deleted")["name"].clone())
+        .collect();
+    assert_eq!(
+        deleted,
+        [json!("pi.session"), json!("pi.name"), json!("keep")],
+        "one event for each name that existed, in order; none for the refused delete or an absent name"
+    );
+
+    delete(r#"{"names":["bad\u0001"]}"#).http_error(400);
+    delete("{").http_error(400);
+    delete(r#"{"names":[],"if":{"name":"x"}}"#).http_error(400);
+    s.ko(
+        &["api", "-X", "DELETE", "--input", "-", "/panes/pane_99/vars"],
+        r#"{"names":[]}"#,
+    )
+    .http_error(404);
+}

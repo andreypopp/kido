@@ -396,7 +396,7 @@ mod tests {
 
     fn layout(revision: u64) -> String {
         format!(
-            r#"{{"type":"layout","revision":{revision},"layout":{{"sessions":[{{"id":"session_1","name":"s","vars":{{}},"windows":[{{"id":"window_1","name":"w","vars":{{}},"cols":80,"rows":24,"tree":{{"split":"h","children":[{{"pane":"pane_1","cols":40,"rows":24}},{{"pane":"pane_2","cols":39,"rows":24}}]}},"floats":[]}}]}}]}}}}"#
+            r#"{{"type":"layout","revision":{revision},"layout":{{"sessions":[{{"id":"session_1","name":"s","vars":{{}},"windows":[{{"id":"window_1","name":"w","vars":{{}},"cols":80,"rows":24,"focus":"pane_1","tree":{{"split":"h","children":[{{"pane":"pane_1","cols":40,"rows":24}},{{"pane":"pane_2","cols":39,"rows":24}}]}},"floats":[]}}]}}]}}}}"#
         )
     }
 

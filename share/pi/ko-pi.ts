@@ -707,7 +707,9 @@ export default function (pi: ExtensionAPI) {
   const insideKo = (): boolean =>
     !!process.env.KO_RUN_ID || (!!process.env.KO_SOCKET && findKo() !== null);
 
-  const varPath = (key: string): string => `/panes/${pane}/vars/${key}`;
+  const varsPath = (): string => `/panes/${pane}/vars`;
+
+  const varPath = (key: string): string => `${varsPath()}/${key}`;
 
   const writeVars = async (entries: Array<[string, string]>): Promise<void> => {
     if (!pane) return;
@@ -718,20 +720,23 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  // The server deletes the names only while pi.session still holds this
+  // session's id (412 otherwise), so a new owner of the pane keeps its variables.
+  const unsetVarsArgv = (): string[] => ["api", "-X", "DELETE", "--input", "-", varsPath()];
+  const unsetVarsBody = (): string =>
+    JSON.stringify({ names: VAR_KEYS, if: { name: VAR_SESSION, value: ownSessionId } });
+
   const unsetVars = async (): Promise<void> => {
-    if (!pane) return;
+    if (!pane || !ownSessionId) return;
     for (const key of VAR_KEYS) written.delete(key);
-    for (const key of VAR_KEYS) await runCommand("ko", ["api", "-X", "DELETE", varPath(key)], { timeoutMs: 2000 });
+    await runCommand("ko", unsetVarsArgv(), { timeoutMs: 2000, input: unsetVarsBody() });
   };
 
   // An uncaught crash exits without session_shutdown, so this runs at exit and
   // leaves a killed process (SIGKILL, SIGTERM) with the variables still set.
-  // Another pi may own the pane by then, so it unsets only this session's.
   const unsetVarsSync = (): void => {
     if (!pane || !ownSessionId) return;
-    const held = spawnSync("ko", ["api", varPath(VAR_SESSION)], { timeout: 1000, encoding: "utf8" });
-    if (held.status !== 0 || held.stdout.trim() !== JSON.stringify(ownSessionId)) return;
-    for (const key of VAR_KEYS) spawnSync("ko", ["api", "-X", "DELETE", varPath(key)], { timeout: 1000, stdio: "ignore" });
+    spawnSync("ko", unsetVarsArgv(), { timeout: 1000, input: unsetVarsBody(), stdio: ["pipe", "ignore", "ignore"] });
   };
 
   const deliver = (text: string): void => {

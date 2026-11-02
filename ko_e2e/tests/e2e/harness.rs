@@ -959,9 +959,8 @@ impl Server {
         self.put(&document)
     }
 
-    pub(crate) fn delete(&self, pane: &str) {
-        self.ko(&["api", "-X", "DELETE", &format!("/panes/{pane}")], "")
-            .ok();
+    pub(crate) fn delete(&self, path: &str) -> Run {
+        self.ko(&["api", "-X", "DELETE", path], "")
     }
 
     pub(crate) fn sttys(&self, panes: &[&str]) -> Vec<(u32, u32)> {
@@ -1027,6 +1026,13 @@ impl Server {
                 )
             })
             .collect()
+    }
+
+    pub(crate) fn pane_program(&self, pane: &str) -> Pid {
+        let row = self.wait_row(pane, &format!("the program of {pane}"), |row| {
+            row["pid"].as_i64().unwrap_or_default() > 1
+        });
+        Pid::new(row["pid"].as_i64().unwrap_or_default()).unwrap()
     }
 
     pub(crate) fn program_pid(&self) -> Pid {

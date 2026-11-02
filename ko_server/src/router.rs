@@ -8,8 +8,8 @@ use crate::ids::{ClientId, PaneId};
 use crate::link::{Link, Role};
 use crate::pane_proc::{Life, Refusal};
 use crate::protocol::{
-    self, Empty, Error, ErrorKind, Input, PROTOCOL_HEADER, PasteResult, PutLayout, ReportOutcome,
-    Route, Selection, SendPrompt, StartRun, StopRun, VT_HEADER, check_version,
+    self, DeleteVars, Empty, Error, ErrorKind, Input, PROTOCOL_HEADER, PasteResult, PutLayout,
+    ReportOutcome, Route, Selection, SendPrompt, StartRun, StopRun, VT_HEADER, check_version,
 };
 use crate::state::{Owner, PutFailure, SelectFailure, State};
 use crate::view::View;
@@ -134,6 +134,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
     | Route::Screen(id, ..)
     | Route::View(id, ..)
     | Route::Vars(id)
+    | Route::DeleteVars(id)
     | Route::Var(id, _)
     | Route::SetVar(id, _)
     | Route::DeleteVar(id, _) = route
@@ -216,6 +217,22 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
             state.delete_pane(poll, id);
             ok(&mut state.conns[index], &Empty {});
         }
+        Route::DeleteWindow(_) | Route::DeleteSession(_) => {
+            let (deleted, what) = match route {
+                Route::DeleteWindow(id) => (state.delete_window(poll, id), "window"),
+                Route::DeleteSession(id) => (state.delete_session(poll, id), "session"),
+                _ => return,
+            };
+            if deleted {
+                ok(&mut state.conns[index], &Empty {});
+            } else {
+                error(
+                    &mut state.conns[index],
+                    ErrorKind::Missing,
+                    format!("{what} not found"),
+                );
+            }
+        }
         Route::Input(id) => {
             let Some(input) = body::<Input>(&mut state.conns[index], &payload) else {
                 return;
@@ -263,6 +280,20 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
             match set {
                 Ok(()) => ok(&mut state.conns[index], &Empty {}),
                 Err(message) => error(&mut state.conns[index], ErrorKind::Invalid, message),
+            }
+        }
+        Route::DeleteVars(id) => {
+            let Some(request) = body::<DeleteVars>(&mut state.conns[index], &payload) else {
+                return;
+            };
+            if state.delete_vars(poll, id, request) {
+                ok(&mut state.conns[index], &Empty {});
+            } else {
+                error(
+                    &mut state.conns[index],
+                    ErrorKind::PreconditionFailed,
+                    "variable does not have the expected value",
+                );
             }
         }
         Route::DeleteVar(id, name) => {

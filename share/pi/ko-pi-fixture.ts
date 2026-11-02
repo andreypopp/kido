@@ -112,6 +112,7 @@ export interface Fixture {
   runStopCalls(): string[][];
   sessions: Array<() => Promise<unknown>>;
   setPanes(panes: PaneRow[]): void;
+  panes(): PaneRow[];
   setRuns(rows: unknown[]): void;
   apiCalls(): ApiCall[];
   paneReads(): number;
@@ -260,6 +261,9 @@ export function makeFixture(): Fixture {
     setPanes(panes) {
       writeFileSync(panesFile, JSON.stringify(panes));
     },
+    panes() {
+      return JSON.parse(readFileSync(panesFile, "utf8"));
+    },
     setRuns(rows) {
       writeFileSync(runsFile, JSON.stringify(rows));
     },
@@ -272,6 +276,10 @@ export function makeFixture(): Fixture {
     optionWrites() {
       const writes: Array<{ key: string; value: string | undefined }> = [];
       for (const call of jsonLines(apiLogFile) as ApiCall[]) {
+        if (call.method === "DELETE" && call.path.endsWith("/vars")) {
+          for (const key of JSON.parse(call.body).names) writes.push({ key, value: undefined });
+          continue;
+        }
         const key = call.path.split("/vars/")[1];
         if (key === undefined) continue;
         if (call.method === "PUT") writes.push({ key, value: JSON.parse(call.body) });

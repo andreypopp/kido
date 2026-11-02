@@ -138,7 +138,9 @@ clocks of two machines agreeing, which remote panes (K7) do not
 promise.
 
 Error kinds and their status codes: `invalid` (400), `not_found`
-(404), `refused` (409), `gone` (410, a closed client), `busy` (503),
+(404), `refused` (409), `precondition_failed` (412, a conditional
+delete whose condition does not hold), `gone` (410, a closed client),
+`busy` (503),
 `io` (500), `unknown` (502, the prompt case: the effect may have
 happened, do not retry). The error type is `Error` in
 `ko_server/src/protocol.rs`.
@@ -165,9 +167,10 @@ server deletes the client and closes its views; a view or request that
 names a closed client gets `gone`. The server keeps the client's
 current session, window, pane, size, focus and sizing flag, and prompt
 scope uses them. The current pane is per client and is not in the
-layout document; a client that enters a window where it has no
-current pane gets the pane that a client focused most recently in
-that window (migration.md 3.2). When a `switch`, another
+layout document. Each window's `focus` in the document is the pane
+that a client focused most recently in that window; a client that
+enters a window where it has no current pane gets that pane
+(section 7). When a `switch`, another
 connection's select or a removal moves a client, the client gets a
 `selected` event. A client also gets `selected` when its own hello
 or `select` names only a session or a window, because the server
@@ -400,24 +403,52 @@ document types of `ko_server/src/protocol.rs` are the reference.
   give each pane at least one cell. The variable limits below apply
   to session and window `vars` too.
 - `DELETE /panes/pane_N` removes the pane from its window; an empty
-  window or session goes with it. A pane whose `ko-pane` process ends
+  window or session goes with it. `DELETE /windows/window_N` and
+  `DELETE /sessions/session_N` remove a window or a session with all
+  its panes as one change: one revision and one layout event, which
+  also carries the new sizes that the moved clients' claims give, so a
+  `PUT` made from the document before it gets `409` and a pane that
+  it creates cannot survive in a half-closed window. A session goes
+  with its last window. A `PUT` has no remove list (decided
+  2026-11-02). A pane whose `ko-pane` process ends
   leaves the document by itself; a pane whose program exits stays,
   dead, until a `DELETE`. There is no `POST /panes`: a pane is
   created inside a `PUT /layout`. The server starts with an empty
-  document; a client that finds it empty `PUT`s one new session with
-  one new pane.
+  document, and it keeps running with an empty document when the
+  last session goes; a client that finds it empty `PUT`s one new
+  session with one new pane.
+- Each window's `focus` is read-only: the server sets it and a `PUT`
+  ignores it. It names the window's last-focused pane (section 3); a
+  new window starts with its first leaf, and when that pane leaves
+  the window, the focus goes to the window's next pane in document
+  order. A change of a window's `focus` is a change of the document:
+  it bumps the revision and sends a layout event. Thus a selection
+  by a client whose terminal has focus can make a concurrent `PUT`
+  stale.
+- A new window without `name` gets a default from its first pane, as
+  tmux names a new window: the basename of the first word of the
+  pane's `command`, else of the shell that `ko shell` runs. A new
+  window whose first pane moves in from another window takes that
+  window's name, because the document does not know a pane's program.
+  An existing window without `name` keeps its name; a `name` renames
+  it. A session has no default name.
 - `POST /panes/pane_N/clear_history` clears the pane's scrollback.
-  Every open view of the pane then gets a full snapshot through the
-  same path as a client's resync, so every mirror stays equal to the
-  pane's terminal; the snapshot is small because the history is
-  empty.
+  `ko-pane` puts the clear into the ring at its position in the
+  stream (plans/ko-stages.md K2), so every mirror, live or resumed,
+  stays equal to the pane's terminal.
 - `POST /clients/client_N/select` moves another connected client; the
   client itself sends its selection on its own connection.
 
 Session and window variables are the `vars` objects inside the
 document. Pane variables are resources under `/panes/pane_N/vars`:
 `GET` the set or one name, `PUT` one name with one JSON value,
-`DELETE` one name. A value is any JSON, at most 1 MiB minus 4 KiB
+`DELETE` one name. `DELETE /panes/pane_N/vars` with a body of
+`names` and an optional `if` (a name and a value) deletes the names
+in one step, with one `var_deleted` event for each name that existed.
+When the `if` variable is absent or has another value, it changes
+nothing and is `precondition_failed`. A harness that ends uses it to
+remove its own variables and no other owner's: the pane can have a
+new owner before the old one cleans up. A value is any JSON, at most 1 MiB minus 4 KiB
 (1,044,480 bytes) of encoded JSON, so that its `var` event, with a
 name of 256 bytes escaped and any pane id, fits in one WebSocket
 message of 1 MiB (section 1). The rule "a message is at most 1 MiB"
@@ -515,7 +546,9 @@ It records the run's outcome (the pane's exit, else `died`; `failed`
 "its parent ended" for an orphan), captures the screen and removes the
 pane. It never closes a run pane that is focused: shown by a client
 whose terminal has focus (section 3); it tries again when the focus
-changes. An empty session ends.
+changes. The removal of a window's last pane removes the window in
+the same change, as a window delete does (section 7). An empty
+session ends.
 
 The `run` event on `/client` carries a run's row when it starts and
 when an outcome is written. A run that ends because its pane dies

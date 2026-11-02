@@ -502,9 +502,9 @@ impl State {
             .iter_mut()
             .find(|candidate| candidate.id == Some(session_id))
         {
-            draft_session
-                .windows
-                .push(crate::protocol::DraftWindow::single(name, &create));
+            let mut window = crate::protocol::DraftWindow::single(&create);
+            window.name = Some(name);
+            draft_session.windows.push(window);
         }
         let revision = self.document.revision();
         let put = self.put_layout(

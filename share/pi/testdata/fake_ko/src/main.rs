@@ -90,8 +90,7 @@ fn runs_path() -> String {
     env("KO_FAKE_RUNS_FILE")
 }
 
-fn write_rows(rows: &[Value]) {
-    let path = runs_path();
+fn write_rows(path: &str, rows: &[Value]) {
     if !path.is_empty() {
         let temp = format!("{path}.tmp");
         if fs::write(&temp, Value::Array(rows.to_vec()).to_string()).is_ok() {
@@ -127,7 +126,7 @@ fn with_row(id: &str, change: impl Fn(Value) -> Value) {
             }
         })
         .collect();
-    write_rows(&changed);
+    write_rows(&runs_path(), &changed);
 }
 
 fn positional(argv: &[String]) -> String {
@@ -192,7 +191,7 @@ fn run(argv: &[String]) -> ExitCode {
             Some((result, outcome_text)) => with_outcome(row, result, &outcome_text),
             None => row,
         });
-        write_rows(&all);
+        write_rows(&runs_path(), &all);
     }
     println!(
         "{}",
@@ -345,17 +344,19 @@ fn run_outcome(argv: &[String]) -> ExitCode {
     }
 }
 
+const PANE_VARS: [(&str, &str); 4] = [
+    ("pi.session", "pi_session"),
+    ("pi.name", "pi_name"),
+    ("pi.inbox", "pi_inbox"),
+    ("pi.activity", "pi_activity"),
+];
+
 fn pane_vars(row: &Value) -> BTreeMap<&'static str, String> {
-    [
-        ("pi.session", "pi_session"),
-        ("pi.name", "pi_name"),
-        ("pi.inbox", "pi_inbox"),
-        ("pi.activity", "pi_activity"),
-    ]
-    .into_iter()
-    .map(|(name, key)| (name, text(row, key)))
-    .filter(|(_, value)| !value.is_empty())
-    .collect()
+    PANE_VARS
+        .into_iter()
+        .map(|(name, key)| (name, text(row, key)))
+        .filter(|(_, value)| !value.is_empty())
+        .collect()
 }
 
 fn listing(row: &Value) -> Value {
@@ -418,6 +419,45 @@ fn layout(table: &[Value]) -> Value {
     json!({"revision": 1, "layout": {"sessions": sessions}})
 }
 
+fn delete_vars(table: &[Value], pane: &str, body: &str) -> ExitCode {
+    let request: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let row = table.iter().find(|row| text(row, "pane_id") == pane);
+    let held = |name: &str| row.and_then(|row| pane_vars(row).get(name).cloned());
+    let condition = &request["if"];
+    let expected = condition["name"]
+        .as_str()
+        .map(|name| (held(name), &condition["value"]));
+    if let Some((current, wanted)) = expected
+        && current.map(Value::from).as_ref() != Some(wanted)
+    {
+        println!(
+            "{}",
+            json!({"kind": "precondition_failed", "message": "variable does not have the expected value"})
+        );
+        eprintln!("ko api: HTTP 412");
+        return ExitCode::FAILURE;
+    }
+    let names: Vec<&str> = request["names"]
+        .as_array()
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let cleared: Vec<Value> = table
+        .iter()
+        .map(|row| {
+            let mut row = row.clone();
+            if text(&row, "pane_id") == pane {
+                for (_, key) in PANE_VARS.iter().filter(|(name, _)| names.contains(name)) {
+                    row[*key] = json!("");
+                }
+            }
+            row
+        })
+        .collect();
+    write_rows(&env("KO_FAKE_PANES"), &cleared);
+    println!("{{}}");
+    ExitCode::SUCCESS
+}
+
 fn api(argv: &[String]) -> ExitCode {
     let mut method = "GET".to_owned();
     let (mut input, mut path) = (false, String::new());
@@ -473,6 +513,7 @@ fn api(argv: &[String]) -> ExitCode {
                 }
             }
         }
+        ("DELETE", ["", "panes", pane, "vars"]) => return delete_vars(&table, pane, &body),
         ("PUT" | "DELETE", ["", "panes", _, "vars", _]) => println!("{{}}"),
         _ => return ExitCode::FAILURE,
     }

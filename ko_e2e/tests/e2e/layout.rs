@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::harness::{Server, sh, start};
+use crate::harness::{Server, Ws, poll, sh, start, wait_gone};
 
 pub(crate) fn shell() -> Value {
     sh("exec /bin/sh")
@@ -185,19 +185,13 @@ fn every_edit_of_the_layout_is_normalized_and_resizes_the_panes() {
         children.reverse();
     });
     assert_eq!(tree(&swapped), "h[v[2:39x12 3:39x11] 1:40x24]");
-    assert_eq!(
-        swapped["revision"].as_u64(),
-        Some(equalized["revision"].as_u64().unwrap() + 1)
-    );
+    assert_eq!(revision(&swapped), revision(&equalized) + 1);
     ptys_follow(&s, &swapped);
 
-    s.delete("pane_3");
+    s.delete("/panes/pane_3").ok();
     let killed = s.doc();
     assert_eq!(tree(&killed), "h[2:39x24 1:40x24]");
-    assert_eq!(
-        killed["revision"].as_u64(),
-        Some(swapped["revision"].as_u64().unwrap() + 1)
-    );
+    assert_eq!(revision(&killed), revision(&swapped) + 1);
     ptys_follow(&s, &killed);
 
     let with_second_window = s.edit(|layout| {
@@ -350,14 +344,12 @@ fn a_stale_revision_gets_409_and_the_current_document_and_the_retry_lands() {
         layout["sessions"] = json!([{"name": "a", "windows": [{"name": "w", "tree": new()}]}]);
     });
     let stale = json!({"revision": 0, "layout": first["layout"]});
-    let (status, body) = s.exchange("PUT", "/layout", &s.headers(), stale.to_string().as_bytes());
-    assert_eq!(status, 409);
-    assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), s.doc());
+    assert_eq!(put_stale(&s, &stale, |_| {}), s.doc());
 
     let renamed = json!({"revision": 0, "layout": {"sessions": [{"id": "session_1", "name": "b",
         "windows": [{"id": "window_1", "name": "w", "tree": old("pane_1")}]}]}});
     let landed = s.put(&renamed);
-    assert_eq!(landed["revision"].as_u64(), Some(2));
+    assert_eq!(revision(&landed), 2);
     assert_eq!(landed["layout"]["sessions"][0]["name"], json!("b"));
 
     let (status, body) = s.exchange(
@@ -372,4 +364,257 @@ fn a_stale_revision_gets_409_and_the_current_document_and_the_retry_lands() {
         json!({"kind": "invalid", "message": "pane_1 is in no window"})
     );
     assert_eq!(s.doc(), landed);
+}
+
+fn revision(document: &Value) -> u64 {
+    document["revision"].as_u64().unwrap()
+}
+
+fn layout_at(client: &mut Ws, reached: impl Fn(&Value) -> bool) -> Value {
+    loop {
+        let event = client.event("layout");
+        if reached(&event) {
+            return event;
+        }
+    }
+}
+
+fn put_stale(s: &Server, stale: &Value, change: impl FnOnce(&mut Value)) -> Value {
+    let mut document = stale.clone();
+    change(&mut document["layout"]);
+    let (status, body) = s.exchange(
+        "PUT",
+        "/layout",
+        &s.headers(),
+        document.to_string().as_bytes(),
+    );
+    assert_eq!(status, 409, "{}", String::from_utf8_lossy(&body));
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[test]
+fn deleting_a_window_or_a_session_is_one_change_and_a_put_from_before_it_gets_409() {
+    let s = start(&[]);
+    s.put(&json!({"layout": {"sessions": [
+        {"name": "one", "windows": [
+            {"name": "w1", "tree": split("h", vec![new(), new()])},
+            {"name": "w2", "tree": new()}]},
+        {"name": "two", "windows": [{"name": "w3", "tree": new()}, {"name": "w4", "tree": new()}]},
+    ]}}));
+    let (mut client, _) = s.app_client(json!({"pane": "pane_1"}), false, (80, 24));
+    let rows = s.rows().len();
+    assert_eq!(rows, 5);
+
+    let before = s.doc();
+    let doomed = [s.pane_program("pane_1"), s.pane_program("pane_2")];
+    assert_eq!(s.delete("/windows/window_1").ok(), "{}");
+    let event = layout_at(&mut client, |event| revision(event) > revision(&before));
+    assert_eq!(
+        revision(&event),
+        revision(&before) + 1,
+        "one change, one event"
+    );
+    let names: Vec<_> = windows(&event).iter().map(|w| w["name"].clone()).collect();
+    assert_eq!(names, [json!("w2"), json!("w3"), json!("w4")]);
+    assert_eq!(
+        client.event("selected"),
+        json!({"type": "selected", "session": "session_1", "window": "window_2", "pane": "pane_3"}),
+        "the client in the deleted window moves to the next one"
+    );
+    for pid in doomed {
+        wait_gone(pid, "the delete of its window");
+    }
+    assert_eq!(s.rows().len(), rows - 2);
+    let current = put_stale(&s, &before, |layout| {
+        layout["sessions"][0]["windows"][0]["tree"] = split("h", vec![old("pane_1"), new()]);
+    });
+    assert_eq!(current, s.doc(), "the stale edit gets the current document");
+    assert_eq!(s.rows().len(), rows - 2, "no pane survived the stale edit");
+    let missing = s.delete("/windows/window_1").http_error(404);
+    assert_eq!(
+        serde_json::from_str::<Value>(&missing).unwrap()["kind"],
+        json!("not_found")
+    );
+    s.delete("/windows/window_77").http_error(404);
+    assert_eq!(s.doc(), current, "a refused delete changes nothing");
+
+    let before = s.doc();
+    let doomed = [s.pane_program("pane_4"), s.pane_program("pane_5")];
+    assert_eq!(s.delete("/sessions/session_2").ok(), "{}");
+    let event = layout_at(&mut client, |event| revision(event) > revision(&before));
+    assert_eq!(revision(&event), revision(&before) + 1);
+    assert_eq!(
+        event["layout"]["sessions"].as_array().map(Vec::len),
+        Some(1)
+    );
+    for pid in doomed {
+        wait_gone(pid, "the delete of its session");
+    }
+    put_stale(&s, &before, |layout| {
+        layout["sessions"][1]["windows"][0]["tree"] = split("h", vec![old("pane_4"), new()]);
+    });
+    assert_eq!(s.rows().len(), 1);
+    s.delete("/sessions/session_2").http_error(404);
+    assert_eq!(
+        s.doc()["layout"]["sessions"].as_array().map(Vec::len),
+        Some(1)
+    );
+}
+
+#[test]
+fn the_last_session_going_leaves_a_running_server_and_a_put_starts_the_next_session() {
+    let s = start(&[]);
+    let one = || {
+        json!({"layout": {"sessions": [
+            {"name": "only", "windows": [{"name": "w", "tree": new()}]}]}})
+    };
+    let (mut client, _) = {
+        s.put(&one());
+        s.app_client(json!({"pane": "pane_1"}), false, (80, 24))
+    };
+    let gone = [
+        ("/sessions/session_1", "the session delete"),
+        ("/windows/window_2", "the window delete"),
+        ("/panes/pane_3", "the pane delete"),
+    ];
+    for (round, (path, what)) in gone.into_iter().enumerate() {
+        if round > 0 {
+            s.put(&json!({"revision": revision(&s.doc()), "layout": one()["layout"]}));
+        }
+        let before = s.doc();
+        assert_eq!(s.delete(path).ok(), "{}", "{what}");
+        let after = s.doc();
+        assert_eq!(after["layout"], json!({"sessions": []}), "{what}");
+        assert_eq!(revision(&after), revision(&before) + 1, "{what}");
+        layout_at(&mut client, |event| revision(event) >= revision(&after));
+        assert_eq!(s.ko(&["panes", "--json"], "").json(), json!([]), "{what}");
+        s.request("GET", "/version", None, 200);
+    }
+    let again = s.doc();
+    assert_eq!(again["layout"]["sessions"], json!([]));
+    let created = s.put(&json!({"revision": revision(&again), "layout": one()["layout"]}));
+    assert_eq!(created["layout"]["sessions"][0]["id"], json!("session_4"));
+    poll("the new pane", || s.rows().len() == 1);
+}
+
+#[test]
+fn a_new_window_is_named_after_its_first_panes_program_and_a_name_in_a_put_renames_it() {
+    let s = start(&[]);
+    let argv =
+        |words: &[&str]| json!({"pane": {"new": {"command": {"type": "argv", "argv": words}}}});
+    let created = s.put(&json!({"layout": {"sessions": [{"name": "s", "windows": [
+        {"tree": argv(&["/bin/sleep", "300"])},
+        {"tree": {"pane": {"new": {"command": {"type": "shell", "command": "sleep 301"}}}}},
+        {"tree": {"pane": {"new": {}}}},
+        {"name": "given", "tree": argv(&["/bin/sleep", "302"])},
+    ]}]}}));
+    let names = |document: &Value| -> Vec<String> {
+        windows(document)
+            .iter()
+            .map(|window| window["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(names(&created), ["sleep", "sleep", "sh", "given"]);
+
+    let renamed = s.edit(|layout| {
+        let windows = layout["sessions"][0]["windows"].as_array_mut().unwrap();
+        windows[0]["name"] = json!("work");
+        windows[1].as_object_mut().unwrap().remove("name");
+        windows.push(json!({"tree": {"pane": "pane_4"}}));
+        windows[3]["tree"] = argv(&["/bin/sleep", "303"]);
+    });
+    assert_eq!(
+        names(&renamed),
+        ["work", "sleep", "sh", "given", "given"],
+        "a rename sticks, a missing name keeps the old one, a pane moved to a new window gives it its old window's name"
+    );
+    let again = s.put(&renamed);
+    assert_eq!(names(&again), names(&renamed));
+}
+
+#[test]
+fn a_window_names_its_last_focused_pane_and_a_put_cannot_set_it() {
+    let s = start(&[]);
+    let first = s.put(&json!({"layout": {"sessions": [{"name": "s", "windows": [
+        {"name": "w", "tree": split("h", vec![new(), new()])}]}]}}));
+    assert_eq!(windows(&first)[0]["focus"], json!("pane_1"));
+    let (mut client, _) = s.app_client(json!({"pane": "pane_1"}), true, (80, 24));
+    let sized = revision(&s.doc());
+    assert!(sized >= revision(&first));
+
+    client.send(&json!({"type": "select", "pane": "pane_2"}));
+    let event = layout_at(&mut client, |event| {
+        windows(event)[0]["focus"] == json!("pane_2")
+    });
+    assert_eq!(
+        revision(&event),
+        sized + 1,
+        "a focus change is one revision"
+    );
+    assert_eq!(s.doc()["layout"], event["layout"]);
+
+    let mut sent = s.doc();
+    sent["layout"]["sessions"][0]["windows"][0]["focus"] = json!("pane_1");
+    let kept = s.put(&sent);
+    assert_eq!(windows(&kept)[0]["focus"], json!("pane_2"));
+    assert_eq!(
+        revision(&kept),
+        revision(&event),
+        "a PUT of focus alone changes nothing"
+    );
+    sent["layout"]["sessions"][0]["windows"][0]["focus"] = json!("pane_99");
+    assert_eq!(s.put(&sent), kept);
+
+    s.delete("/panes/pane_2").ok();
+    let after = layout_at(&mut client, |event| revision(event) > revision(&kept));
+    assert_eq!(windows(&after)[0]["focus"], json!("pane_1"));
+}
+
+fn two_windows_and_a_wide_client(s: &Server) -> Ws {
+    s.put(&json!({"layout": {"sessions": [{"name": "s", "windows": [
+        {"name": "a", "tree": new()}, {"name": "b", "tree": new()}]}]}}));
+    let (client, _) = s.app_client(json!({"pane": "pane_1"}), true, (100, 30));
+    poll("the client to size its window", || {
+        windows(&s.doc())[0]["cols"] == json!(100)
+    });
+    client
+}
+
+fn assert_one_event_for_one_revision(s: &Server, client: &mut Ws, before: &Value) -> Value {
+    let event = layout_at(client, |event| revision(event) > revision(before));
+    assert_eq!(revision(&event), revision(before) + 1, "one revision");
+    assert_eq!(s.doc()["revision"], event["revision"]);
+    s.edit(|layout| layout["sessions"][0]["name"] = json!("marker"));
+    assert_eq!(
+        client.event("layout")["revision"],
+        json!(revision(before) + 2),
+        "no second event came before the next change"
+    );
+    event
+}
+
+#[test]
+fn deleting_the_window_of_a_sizing_client_sizes_its_next_window_in_the_same_change() {
+    let s = start(&[]);
+    let mut client = two_windows_and_a_wide_client(&s);
+    let before = s.doc();
+    assert_eq!(windows(&before)[1]["cols"], json!(80));
+    s.delete("/windows/window_1").ok();
+    let event = assert_one_event_for_one_revision(&s, &mut client, &before);
+    let moved = windows(&event)[0];
+    assert_eq!(
+        (&moved["id"], &moved["cols"], &moved["rows"]),
+        (&json!("window_2"), &json!(100), &json!(30))
+    );
+}
+
+#[test]
+fn selecting_another_window_sizes_it_in_the_same_change_as_the_focus() {
+    let s = start(&[]);
+    let mut client = two_windows_and_a_wide_client(&s);
+    let before = s.doc();
+    client.send(&json!({"type": "select", "pane": "pane_2"}));
+    let event = assert_one_event_for_one_revision(&s, &mut client, &before);
+    let moved = windows(&event)[1];
+    assert_eq!((&moved["cols"], &moved["rows"]), (&json!(100), &json!(30)));
 }

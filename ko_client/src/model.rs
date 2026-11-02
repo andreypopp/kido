@@ -380,6 +380,11 @@ mod tests {
                                     }
                                 })
                                 .collect();
+                            let focus = {
+                                let mut leaves = Vec::new();
+                                tree.leaves(&mut leaves);
+                                leaves[0].pane
+                            };
                             Window {
                                 id: id("window_", window),
                                 name: name(),
@@ -388,6 +393,7 @@ mod tests {
                                 rows: cells(),
                                 cell_px: None,
                                 zoom: None,
+                                focus,
                                 tree,
                                 floats,
                             }

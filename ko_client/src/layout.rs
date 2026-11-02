@@ -135,7 +135,7 @@ pub fn add_window(
     (session, after): (SessionId, WindowId),
     request: &CreatePane,
 ) -> Result<PaneId, String> {
-    let added = DraftWindow::single(ko_name()?, request);
+    let added = DraftWindow::single(request);
     let snapshot = edit(socket, client, |layout| {
         let windows = &mut layout
             .sessions
@@ -167,7 +167,7 @@ mod tests {
             .zip(1..)
             .map(|(name, id)| {
                 format!(
-                    r#"{{"id":"session_{id}","name":"{name}","vars":{{}},"windows":[{{"id":"window_{id}","name":"w","vars":{{}},"cols":80,"rows":24,"tree":{{"pane":"pane_{id}","cols":80,"rows":24}},"floats":[]}}]}}"#
+                    r#"{{"id":"session_{id}","name":"{name}","vars":{{}},"windows":[{{"id":"window_{id}","name":"w","vars":{{}},"cols":80,"rows":24,"focus":"pane_{id}","tree":{{"pane":"pane_{id}","cols":80,"rows":24}},"floats":[]}}]}}"#
                 )
             })
             .collect();
