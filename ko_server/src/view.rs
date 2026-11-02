@@ -1,4 +1,4 @@
-use ko_pane_wire::frame::History;
+use ko_pane_wire::frame::{Dead, History};
 use ko_pane_wire::ring::{self, Invalid, Mark, Offset, Pos, Reach, Reader, Record, RecordKind};
 #[cfg(verus_only)]
 use ko_pane_wire::ring::{
@@ -36,6 +36,11 @@ pub struct ExClientId(ClientId);
 #[verifier::external_type_specification]
 #[allow(dead_code, unreachable_pub)]
 pub struct ExHistory(History);
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+#[allow(dead_code, unreachable_pub)]
+pub struct ExDead(Dead);
 
 #[verifier::external_type_specification]
 #[verifier::external_body]
@@ -463,7 +468,7 @@ impl View {
         }
     }
 
-    pub(crate) fn on_done(&mut self, wire: &mut Wire<'_>, done: &Done)
+    pub(crate) fn on_done(&mut self, wire: &mut Wire<'_>, done: &Done, dead: Option<Dead>)
         requires
             old(self).wf(),
             done.valid(),
@@ -487,6 +492,9 @@ impl View {
                         assert(done.tl_of() <= self.cpos.v());
                     }
                     self.stage = Stage::Live;
+                    if let Some(dead) = dead {
+                        emit_dead(wire, dead, self.coff);
+                    }
                 } else {
                     self.reject(wire);
                 }
@@ -516,12 +524,20 @@ fn emit_marked(wire: &mut Wire<'_>, ring: &Reader, here: Pos, offset: u64) -> (r
 {
     match ring.marker(here) {
         Ok(marker) => {
-            let marked = Marked { offset, marker: marker.into() };
-            wire.ws.send(wire.out, protocol::json(&ViewEvent::Marked(marked)));
+            send_marked(wire, marker, offset);
             Ok(())
         },
         Err(e) => Err(e),
     }
+}
+
+// Assumes: it sends the death at `offset` on the wire's output only, and never reopens a closed output.
+#[verifier::external_body]
+fn emit_dead(wire: &mut Wire<'_>, dead: Dead, offset: u64)
+    ensures
+        old(wire).out.closed() ==> final(wire).out.closed(),
+{
+    send_marked(wire, ring::Marker::Dead(dead), offset);
 }
 
 // Assumes: it sends the skip event on the wire's output only, and never reopens a closed output.
@@ -1126,6 +1142,15 @@ impl View {
 
 } // verus!
 
+fn send_marked(wire: &mut Wire<'_>, marker: ring::Marker, offset: u64) {
+    let marked = Marked {
+        offset,
+        marker: marker.into(),
+    };
+    wire.ws
+        .send(wire.out, protocol::json(&ViewEvent::Marked(marked)));
+}
+
 impl std::fmt::Debug for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("View")
@@ -1211,6 +1236,7 @@ mod tests {
                 out: &mut out,
             },
             &done,
+            None,
         );
         view.stage
     }

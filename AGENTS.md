@@ -377,7 +377,10 @@ Conventions:
   `ko_sys::spawn::program`, which uses `POSIX_SPAWN_CLOEXEC_DEFAULT`:
   on macOS, `UnixStream::pair` and `accept` set close-on-exec only
   after they create the descriptor, so a `std::process::Command` in
-  another test thread can inherit it and keep a peer open.
+  another test thread can inherit it and keep a peer open. A test
+  that closes a peer waits, with a deadline, until the other end sees
+  the hangup: a `posix_spawn` in another thread holds every
+  descriptor until its child execs (plan decision 160).
 - **The e2e suite** is `ko_e2e/`: one integration-test binary,
   `ko_e2e/tests/e2e/main.rs`, with one module for each area, because
   cargo runs test binaries one after another and the tests of one binary
@@ -452,8 +455,8 @@ Conventions:
   value, with no contract). The coordinator's `Panes` owns the one
   `Stamps`. Verus proves that its stamps increase, never repeat and
   never wrap. In `view.rs`: the
-  WebSocket sends (`reject_ws`, `emit_marked`, `emit_skipped`,
-  `write_slice`) and the marker decode (`resize_marker`). In
+  WebSocket sends (`reject_ws`, `emit_marked`, `emit_dead`,
+  `emit_skipped`, `write_slice`) and the marker decode (`resize_marker`). In
   `conn.rs`: `Output`'s `waiting`, `available`, `close` and
   `send_batch` over the opaque `closed` and `waits`, and
   `Header::new` (the record header). Each has an `// Assumes:` comment that
@@ -1252,6 +1255,9 @@ CI builds the fork at the pinned revision, cached by OS and fork build key.
 While you work, use `dune test` for repeated checks.
 After you read an expect diff, `dune promote` accepts it.
 
+A test that fails only sometimes has a time box ("A flake has a time
+box" under "Working here as a spawned agent").
+
 **Test speed.** Tests stay very fast, because fast tests give fast
 iterations. `make verify` prints the time of each stage on its
 PASS/FAIL line. A full local run takes about 35 s. A change that makes
@@ -1697,10 +1703,19 @@ A brief does not repeat them.
   Do not also run `make test`, `make e2e` or `make e2e-ko`.
 
   Unless the brief requests `make flake`, do not use loops or a
-  second tmux build.
+  second tmux build. The one exception is the bounded loop of a
+  flake (below).
   Report PASS/FAIL/SKIP as printed.
   If a failure is in a file you do not own, report it.
   Do not fix it.
+- **A flake has a time box.**
+  When a test fails only sometimes, run one bounded loop to reproduce
+  it. Stop at the first failure and quote it. Then look for the cause
+  for at most half an agent-day. If the cause is still not known,
+  report the failure, the loop counts and the best hypothesis, and
+  stop. The manager or the user decides on more work. When the cause
+  is a class of fault, such as an inherited descriptor, fix the class
+  once, not each test.
 - **Docs are not per task.**
   An implementer or reviewer does not edit `docs/`, this file or
   READMEs. Put prose that a change needs in your report.

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use ko_pane_wire::frame::{History, Req, ScreenFormat, ScreenRows};
+use ko_pane_wire::frame::{Dead, History, Req, ScreenFormat, ScreenRows};
 use ko_pane_wire::ring::Invalid;
 use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
 
@@ -255,8 +255,21 @@ impl State {
                 if let Some(Owner::Snapshot(token)) = self.owners.remove(&(id, done.req()))
                     && let Some(index) = self.index(token)
                 {
+                    let dead = self
+                        .panes
+                        .find(id)
+                        .and_then(|pane| match pane.proc().dead() {
+                            Some(pane_proc::Death {
+                                at,
+                                cause: pane_proc::Cause::Exit(exit),
+                            }) => Some(Dead {
+                                at: *at,
+                                exit: *exit,
+                            }),
+                            _ => None,
+                        });
                     if let Some((Role::View(view), mut wire)) = self.conns[index].role_mut() {
-                        view.on_done(&mut wire, &done);
+                        view.on_done(&mut wire, &done, dead);
                     }
                     self.pump_view(poll, index);
                 }

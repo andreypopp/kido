@@ -123,10 +123,10 @@ touched in P1 and nothing in kido depends on the new directories.
   ring's dead marker and the `dead` frame on the control socket, two
   channels; the server makes the pane dead (row and event) only on the
   control frame, so a client always sees the pane's last title and
-  pwd before `dead`. A snapshot of a dead pane is followed in the ring
-  by its dead marker again, with the same time and status, so every
-  view reaches a dead marker after the pane's last output, also a view
-  whose snapshot starts after the first marker.
+  pwd before `dead`. After a snapshot of a dead pane, the server sends
+  the view a dead marker with the same time and status, so every view reaches a dead marker
+  after the pane's last output, also a view whose snapshot starts
+  after the first marker (plan decision 161).
 
 ### 3.2 Panes
 

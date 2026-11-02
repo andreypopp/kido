@@ -249,7 +249,7 @@ fn a_recorded_stream_arrives_as_frames_records_and_a_snapshot_across_a_full_ring
     assert_eq!((titles, pwds), (1, 1));
     assert!(pane.seen.offset > 8000, "{}", pane.seen.offset);
     assert_eq!(pane.seen.resizes, [size(40, 20)]);
-    assert_eq!(pane.seen.deaths, [death.unwrap(); 2]);
+    assert_eq!(pane.seen.deaths, [death.unwrap()]);
     for mark in [
         &b"\x1b]7501;state=working:app=ko\x07"[..],
         b"\x1b]133;D;7\x07",
