@@ -271,6 +271,11 @@ impl Out {
         self.published(commit);
     }
 
+    pub(crate) fn put(&mut self, kind: RecordKind, payload: &[u8]) {
+        let commit = self.writer.put(kind, payload);
+        self.published(commit);
+    }
+
     pub(crate) fn put_marker(&mut self, marker: Marker) {
         let commit = self.writer.put_marker(marker);
         self.published(commit);

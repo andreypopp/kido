@@ -308,7 +308,7 @@ fn select_switch_and_the_server_selecting_move_one_client_and_focus_reports_foll
 }
 
 #[test]
-fn clearing_the_history_leaves_a_full_and_a_partial_mirror_equal_to_the_pane() {
+fn clearing_the_history_reaches_every_view_as_output_and_a_fresh_mirror_has_none() {
     let s = start(&[]);
     let pane = s.pane("seq 300; printf READY; exec cat");
     let mut full = s.ws(&format!("/panes/{pane}/view?history=all"));
@@ -331,9 +331,11 @@ fn clearing_the_history_leaves_a_full_and_a_partial_mirror_equal_to_the_pane() {
         .ok(),
         "{}"
     );
-    let (data, _) = full.snapshot();
+    full.output("\x1b[3J");
+    partial.output("\x1b[3J");
+    let (data, _) = s.ws(&format!("/panes/{pane}/view?history=all")).snapshot();
     let full_after = decode(&data, true);
-    let (data, _) = partial.snapshot();
+    let (data, _) = s.ws(&format!("/panes/{pane}/view?history=none")).snapshot();
     let partial_after = decode(&data, false);
     assert!(
         full_after.history.lines().count() <= 24 && !full_after.history.contains("\n150\n"),

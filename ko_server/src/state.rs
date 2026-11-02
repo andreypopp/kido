@@ -314,16 +314,6 @@ impl State {
 
     pub(crate) fn clear_history(&mut self, poll: &mut Poll, id: PaneId) {
         self.run(poll, id, |pane, io| pane.proc_mut().clear_history(io));
-        for index in 0..self.conns.len() {
-            let Some((Role::View(view), wire)) = self.conns[index].role_mut() else {
-                continue;
-            };
-            if view.pane == id
-                && let Some(history) = view.request(wire.out, History::All)
-            {
-                self.snapshot(poll, index, history);
-            }
-        }
     }
 
     fn changed(&mut self, poll: &mut Poll, before: &Document) {

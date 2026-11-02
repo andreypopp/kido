@@ -503,7 +503,8 @@ Shapes decided by the user for K2 (2026-11-02):
   allocates its id. A new pane is `{new: {cwd?, command?, env?,
   vars?}}`; K3 adds `run`.
 - `POST /panes/pane_N/clear_history` answers `{}`. Every mirror of
-  the pane stays equal to the pane's terminal after it.
+  the pane stays equal to the pane's terminal after it, also a mirror
+  that resumes at an offset from before the clear.
 - A float's `cols` x `rows` is its pty size; with `border` the
   rectangle and one cell on each side are clamped into the window.
   `zoom` gives that pane the window's size; the other leaves keep
@@ -514,10 +515,21 @@ Shapes decided by the user for K2 (2026-11-02):
 
 Built on `ko-k2` (2026-11-02), for the K1 merge and later stages:
 
-- `clear_history` is a `ko-pane` frame that feeds `CSI 3 J` to the
-  pane's own terminal and writes nothing into the ring; the
-  coordinator then asks a full snapshot for every view of the pane,
-  as a resync does. No verified module changed.
+- `clear_history` is a `ko-pane` frame. `ko-pane` feeds `CSI 3 J`
+  to the pane's own terminal and puts the same bytes in the ring as
+  a `Bytes` record, in one step. Thus every mirror, live or resumed,
+  and every replay applies the clear at its true position in the
+  stream. A clear that came with less ring room than its bytes waits
+  for room; pty bytes read meanwhile go before it in the terminal and
+  in the ring. The pending clear is a flag, so clears that wait
+  together become one. With no room, `ko-pane` announces `Full`; with
+  less room than the clear, it pads to the end of the ring. Each loop
+  turn tries the pending clear, so a silent program does not keep it
+  waiting. The coordinator sends no snapshot for it. An earlier
+  design wrote nothing into the ring and gave the live views a
+  snapshot: a view that closed before the clear and resumed later
+  replayed the ring without it, and its mirror kept the old history
+  (a stale ZWJ cell in the view harness). No verified module changed.
 - `ko layout put FILE` (`-` is standard input) sends the file's
   `revision`, else the current one; on `409` it sends the file's
   layout again with the current revision, at most 8 times. The file

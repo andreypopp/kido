@@ -1196,6 +1196,7 @@ impl Harness {
                 if !self.crashed && self.pane_open() {
                     let id = self.rig.pane;
                     self.rig.state.clear_history(&mut self.rig.poll, id);
+                    self.fed += b"\x1b[3J".len() as u64;
                 }
             }
             Op::Reader(index, speed) => {
@@ -1326,6 +1327,20 @@ proptest! {
 mod tests {
     use super::*;
     use ko_pane_wire::frame::Limits;
+
+    #[test]
+    fn a_resume_across_a_history_clear_replays_the_clear() {
+        let ops = [
+            Op::Open(History::None, Reader::Fast, false, false),
+            Op::Feed(Source::Wide, 10092, 1271151472),
+            Op::Check,
+            Op::Open(History::None, Reader::Fast, false, false),
+            Op::ClearHistory,
+            Op::Close(8264128358021325326, Who::Client),
+            Op::Resume(0, History::None, Reader::Fast),
+        ];
+        run(&ops).unwrap_or_else(|failure| panic!("{failure:?}"));
+    }
 
     #[test]
     fn two_views_with_a_large_history_do_not_snapshot_each_other_forever() {

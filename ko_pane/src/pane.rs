@@ -54,6 +54,7 @@ struct Live {
     process: Option<Process>,
     alternate: bool,
     watch: Watch,
+    clear_due: bool,
 }
 
 #[derive(Debug)]
@@ -132,6 +133,24 @@ impl Live {
 
     fn push(&mut self, bytes: &[u8]) {
         self.pty_input.bytes.extend_from_slice(bytes);
+    }
+
+    fn clear_history(&mut self, out: &mut Out) {
+        const CLEAR: &[u8] = b"\x1b[3J";
+        if !self.clear_due {
+            return;
+        }
+        loop {
+            match out.available() {
+                0 => return out.announce_full(),
+                room if room >= CLEAR.len() => {
+                    self.clear_due = false;
+                    self.vt.write(CLEAR);
+                    return out.put(RecordKind::Bytes, CLEAR);
+                }
+                room => out.put(RecordKind::Pad, [0; 4].get(..room).unwrap_or_default()),
+            }
+        }
     }
 }
 
@@ -277,7 +296,10 @@ fn simple(live: &mut Option<Live>, out: &mut Out, request: Request<'_>) -> Resul
                 .map_err(invalid)?;
             screen.chunk(true)?;
         }
-        Request::ClearHistory => live.vt.write(b"\x1b[3J"),
+        Request::ClearHistory => {
+            live.clear_due = true;
+            live.clear_history(out);
+        }
         Request::Exit => out.stopping = true,
         Request::Init(_) | Request::Resize(_) | Request::Snapshot { .. } => {
             return Err(Fault::Invalid);
@@ -380,6 +402,7 @@ impl Pane {
             process,
             alternate: false,
             watch,
+            clear_due: false,
         });
         Ok(())
     }
@@ -669,6 +692,12 @@ impl Pane {
         }) = &mut self.live
         {
             watch.run_deferred(process.master.as_fd(), &mut self.io.out, Instant::now());
+        }
+    }
+
+    pub(crate) fn clear_history(&mut self) {
+        if let Some(live) = &mut self.live {
+            live.clear_history(&mut self.io.out);
         }
     }
 

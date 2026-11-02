@@ -14,7 +14,10 @@ pub(crate) fn osc7501(body: &str) -> String {
 
 impl<'a> Probe<'a> {
     pub(crate) fn new(s: &'a Server, pane: String) -> Probe<'a> {
-        Probe::after(s, pane, "the first status", |_| true)
+        s.text(&pane, "\n");
+        Probe::after(s, pane, "the status of cat", |status| {
+            status["title"] == "cat"
+        })
     }
 
     pub(crate) fn after(

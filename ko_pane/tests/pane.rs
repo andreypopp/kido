@@ -489,3 +489,61 @@ fn output_inside_the_throttle_window_then_silence_gets_one_trailing_foreground_c
     assert!(foregrounds.len() <= 2, "{foregrounds:?}");
     assert_eq!(pane.finish(), Waited::Ended(Exit::Exited(0)));
 }
+
+#[test]
+fn a_history_clear_is_a_record_in_the_stream_between_the_bytes_it_follows_and_precedes() {
+    let mut pane = Harness::start(1 << 16);
+    pane.send(&init(
+        &[
+            "/bin/sh",
+            "-c",
+            "stty -echo; printf AB; read gate; printf CD; sleep 5",
+        ],
+        "/",
+    ));
+    pane.pump_until(|seen| seen.output == b"AB");
+    pane.send(&encoded(&ToPane::ClearHistory));
+    pane.pump_until(|seen| seen.output == b"AB\x1b[3J");
+    pane.send(&encoded(&ToPane::Text(b"\r")));
+    pane.pump_until(|seen| seen.output.ends_with(b"CD"));
+    assert_eq!(pane.seen.output, b"AB\x1b[3JCD");
+    assert_eq!(pane.seen.offset, 8);
+}
+
+impl Harness {
+    fn wait_for_unread_bytes(&mut self, wanted: u64) {
+        let started = Instant::now();
+        loop {
+            let (mut at, head, mut held) = (self.cursor, self.reader.head(), 0);
+            while at < head {
+                let record = self.reader.record(at).unwrap();
+                held += record.len;
+                at = record.next;
+            }
+            if held == wanted {
+                return;
+            }
+            assert!(
+                started.elapsed() < DEADLINE,
+                "the program output did not arrive"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
+#[test]
+fn a_history_clear_that_finds_the_ring_full_reaches_it_after_the_reader_frees_room() {
+    let script = "stty -echo; for n in 1000 1000 1000; do printf \"%${n}s\" x; read gate; done; \
+        printf '%1015s' x; sleep 5";
+    let mut pane = Harness::start(4096);
+    pane.send(&init(&["/bin/sh", "-c", script], "/"));
+    for held in [1000, 2000, 3000] {
+        pane.wait_for_unread_bytes(held);
+        pane.send(&encoded(&ToPane::Text(b"\r")));
+    }
+    pane.wait_for_unread_bytes(4015);
+    pane.send(&encoded(&ToPane::ClearHistory));
+    pane.pump_until(|seen| seen.output.ends_with(b"\x1b[3J"));
+    assert_eq!(pane.seen.output.len(), 4019);
+}

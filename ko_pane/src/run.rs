@@ -95,7 +95,9 @@ fn turns(pane: &mut Pane) -> Outcome {
         }
         pane.settle_child();
         let committed = (master.is_some_and(ready) || pane.exit_pending()) && pane.read_pty();
-        if let Err(stop) = pane.dead().and_then(|()| pane.flush()) {
+        let dead = pane.dead();
+        pane.clear_history();
+        if let Err(stop) = dead.and_then(|()| pane.flush()) {
             return ended(pane, stop);
         }
         if let Some(after) = pane.foreground_arm()
