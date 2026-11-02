@@ -414,7 +414,12 @@ document types of `ko_server/src/protocol.rs` are the reference.
   it. A new pane is a leaf or float whose `pane` is `{new: {cwd?,
   command?, env?, vars?}}`; its `vars` have the limits of the pane
   variables below, and a refused one is `invalid` with the document
-  unchanged. A pane without `command` runs `ko shell`. If the `ko-pane` process of one cannot start,
+  unchanged. A pane without `command` runs `ko shell`. Every pane gets
+  `SSH_AUTH_SOCK=<dir>/agent.sock` unless its `env` names that
+  variable; a client publishes an agent by an atomic replacement of
+  that path with a symlink, and the server links it to its own
+  inherited agent at start only when the path is absent or a link to
+  no socket file (plans/ko-stages.md, K7). If the `ko-pane` process of one cannot start,
   the server stops the others that started and keeps the old
   document, but not its id counters, so an id is never handed out
   twice. A program that fails later, an exec failure included, is a

@@ -154,6 +154,7 @@ pub(crate) fn test_env(dir: &Path) -> Vec<Vec<u8>> {
                     "ENV",
                     "BASH_ENV",
                     "PROMPT_COMMAND",
+                    "SSH_AUTH_SOCK",
                 ]
                 .contains(&name.as_str());
             (!scrubbed).then(|| format!("{name}={}", value.to_string_lossy()).into_bytes())
@@ -713,9 +714,9 @@ impl Server {
         );
     }
 
-    pub(crate) fn restart(&mut self) {
+    pub(crate) fn restart(&mut self, env: &[(&str, &str)]) {
         self.stop();
-        self.child = spawn_server(&self.dir, &self.log, Path::new("/bin/sh"), &[], &[]);
+        self.child = spawn_server(&self.dir, &self.log, Path::new("/bin/sh"), env, &[]);
         self.wait_listening();
     }
 

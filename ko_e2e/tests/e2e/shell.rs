@@ -31,13 +31,6 @@ fn path_with(dir: &Path) -> String {
     )
 }
 
-fn zsh_server(path: &str) -> Option<Server> {
-    let shell = shell_of(&Flavour::Zsh)?;
-    let s = start_with(&shell, &[("PATH", path)], &[]);
-    dotfiles(&Flavour::Zsh, &s.dir, "");
-    Some(s)
-}
-
 #[test]
 fn ssh_mark() {
     let fakes = Dir::new("ko-fake-ssh-");
@@ -382,10 +375,13 @@ fn host_ssh() -> Option<Server> {
     }
     let ssh = which("ssh").expect("ssh is not on PATH");
     let probe = Dir::new("ko-host-ssh-");
+    let agent = std::env::var("SSH_AUTH_SOCK").unwrap_or_default();
+    let mut env = test_env(&probe);
+    env.push(format!("SSH_AUTH_SOCK={agent}").into_bytes());
     let run = run_program(
         &probe,
         &ssh,
-        &test_env(&probe),
+        &env,
         &["-o", "BatchMode=yes", "localhost", "true"],
         "",
     );
@@ -394,12 +390,10 @@ fn host_ssh() -> Option<Server> {
         ko_sys::pid::Exit::Exited(0),
         "ssh to localhost: {run:?}"
     );
-    let s = zsh_server(&std::env::var("PATH").unwrap_or_default())
-        .expect("KO_E2E_HOST_SSH needs a local zsh");
-    // Panes get SSH_AUTH_SOCK=<dir>/agent.sock; publish the developer's agent there, as the app does.
-    if let Some(agent) = std::env::var_os("SSH_AUTH_SOCK") {
-        std::os::unix::fs::symlink(agent, s.dir.join("agent.sock")).unwrap();
-    }
+    let shell = shell_of(&Flavour::Zsh).expect("KO_E2E_HOST_SSH needs a local zsh");
+    let path = std::env::var("PATH").unwrap_or_default();
+    let s = start_with(&shell, &[("PATH", &path), ("SSH_AUTH_SOCK", &agent)], &[]);
+    dotfiles(&Flavour::Zsh, &s.dir, "");
     Some(s)
 }
 

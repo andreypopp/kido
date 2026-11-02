@@ -1,3 +1,4 @@
+pub mod agent;
 mod client;
 pub mod config;
 mod conn;

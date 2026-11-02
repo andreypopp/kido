@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::AsFd;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use ko_sys::signal::Signal;
 
 use crate::harness::{
     Child, Dir, Server, history_lines, host_ssh_enabled, ko, poll, quote, run_ko, run_program,
-    start, test_env, text_of, which,
+    start, start_with, test_env, text_of, which,
 };
 use crate::outer::{CHORD_UP, Keys, Outer};
 
@@ -342,7 +343,7 @@ fn remote_a_restarted_server_starts_a_fresh_model_and_a_signal_cleans_up() {
 
     // The new ring is longer than the old offset, so a wrong resume would find its offset inside
     // the ring, keep the old screen and append the tail of the new output to it.
-    s.restart();
+    s.restart(&[]);
     let history = history_lines(300);
     s.pane(&format!(
         "{history}; printf '\\033]0;second-title\\007SECOND'; exec cat"
@@ -422,6 +423,10 @@ fn remote_without_ko_on_the_host_is_a_clear_error() {
 #[test]
 fn panes_get_the_agent_socket_of_the_server_directory() {
     let s = start(&[]);
+    assert!(
+        !s.dir.join("agent.sock").exists(),
+        "agent.sock without an agent"
+    );
     let pane = s.pane("printf 'AGENT=%s;' \"$SSH_AUTH_SOCK\"; exec cat");
     s.screen_has(
         &pane,
@@ -432,4 +437,34 @@ fn panes_get_the_agent_socket_of_the_server_directory() {
         "env": [{"name": "SSH_AUTH_SOCK", "value": "/explicit"}],
     }));
     s.screen_has(&own, "OWN=/explicit;");
+}
+
+fn agent_socket(dir: &Path, name: &str) -> UnixListener {
+    let listener = UnixListener::bind(dir.join(name)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    listener
+}
+
+#[test]
+fn the_inherited_agent_is_linked_to_the_server_directory() {
+    let agents = Dir::new("ko-agents-");
+    let first = agent_socket(&agents, "a");
+    let (path_a, path_b) = (agents.join("a"), agents.join("b"));
+    let (a, b) = (text_of(&path_a), text_of(&path_b));
+    let mut s = start_with(Path::new("/bin/sh"), &[("SSH_AUTH_SOCK", a)], &[]);
+    let link = s.dir.join("agent.sock");
+    assert_eq!(std::fs::read_link(&link).unwrap(), Path::new(a));
+    s.pane("ssh-add -l; exec cat");
+    poll("ssh-add to reach the agent", || first.accept().is_ok());
+
+    let second = agent_socket(&agents, "b");
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(b, &link).unwrap();
+    s.restart(&[("SSH_AUTH_SOCK", a)]);
+    assert_eq!(std::fs::read_link(&link).unwrap(), Path::new(b));
+
+    drop(second);
+    std::fs::remove_file(b).unwrap();
+    s.restart(&[("SSH_AUTH_SOCK", a)]);
+    assert_eq!(std::fs::read_link(&link).unwrap(), Path::new(a));
 }

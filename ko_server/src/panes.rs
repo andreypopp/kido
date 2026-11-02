@@ -84,9 +84,7 @@ fn environment(config: &Config, id: PaneId, requested: &[Variable]) -> Vec<Vec<u
     }
     let agent = (
         "SSH_AUTH_SOCK",
-        config
-            .dir
-            .join("agent.sock")
+        crate::agent::socket(&config.dir)
             .as_os_str()
             .as_encoded_bytes()
             .to_vec(),

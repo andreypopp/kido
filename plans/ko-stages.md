@@ -85,7 +85,7 @@ code has; "missing" names the work; "stage" names the stage below.
 | discovery, stamp, kill-server, detach | `/version` with headers, `ko kill-server`, close is detach | the reconnect gate on `instance` | K0 (`instance`), K2 (gate) |
 | the pi harness (`set-option -p`, `list-panes -a`) | `KO_PANE` and `KO_SOCKET` in every pane, `ko api` | pane variables (K1); `ko run*`, `ko prompt`, `ko-pi.ts` (K3) | K1, K3 |
 | remote hosts over SSH | nothing on the client side; the server is transport-neutral | `ko HOST` (master, `-O forward`), the app's forward, reconnect by offset gated on `instance`, Linux (RL) | K7 |
-| SSH agent for remote panes (the app's `agent.sock` publication) | panes inherit the server's environment | nothing in the protocol; the app starts `ko server` with `SSH_AUTH_SOCK` set, as it does for tmux | K7 (app) |
+| SSH agent for remote panes (the app's `agent.sock` publication) | panes inherit the server's environment | nothing in the protocol; every pane gets `<dir>/agent.sock`, which the server links to its inherited agent and the app replaces with its publication | K7 (app) |
 | notifications (OSC 9, 777), bell, progress (OSC 9;4) | none | `bell`, `notify`, `progress` frames and events; cheap once K1 adds the callback plumbing | K1 |
 | upgrade in place | none | K9 | K9 |
 
@@ -983,7 +983,26 @@ RTT measurements and compression):
   starts again when the pager ends. A remote attach sends no `cwd`
   when it creates a pane. A local attach does not reconnect.
 - `ko server` gives every pane `SSH_AUTH_SOCK=<dir>/agent.sock`
-  (ko_server/src/panes.rs); a pane request's `env` replaces it.
+  (ko_server/src/panes.rs); a pane request's `env` replaces it. At
+  start, before it binds its socket, the server links that path to
+  the agent of its own environment (ko_server/src/agent.rs), so a
+  server without the app keeps the user's agent. The rule: the
+  inherited value must be an absolute path to a socket, other than
+  `agent.sock` itself (a nested ko, or the app's remote start); the
+  server makes the link only when `agent.sock` is absent or a symlink
+  whose target is not a socket file. A symlink to an existing socket
+  file stays, so the app's publication wins over a later server
+  start, and a link whose target a reboot or a closed forward removed
+  gets the inherited agent. The check reads the file type and does
+  not connect: an agent that exited but left its socket file keeps
+  its link. Anything that is not a symlink stays. The link is made
+  under a temporary name in the directory and renamed over
+  `agent.sock`, as the app's attach script does. A failure is a
+  warning; the server starts. No marker records who made a link: the
+  file-type check needs none, and a marker would keep a dead link of
+  the app. Limit: no lock is shared with the app, so a publication
+  between the server's check and its rename is lost; the app
+  publishes at attach, after the server started.
 
 Limits: the handshake and the model fetch of an attempt block the
 loop for at most the time left, the error probe for at most 3 s, and
@@ -1123,7 +1142,9 @@ Decided 2026-11-02, from Kido.app's review of ko
     shown panes and an attendance flag; both clients use this one
     implementation, with one `Seen` for each host (K5 step 3).
 12. **`SSH_AUTH_SOCK`.** `ko server` sets it to `<dir>/agent.sock` by
-    default; there is no server-environment route (K7).
+    default; there is no server-environment route. The server links
+    that path to its own inherited agent only when the path is absent
+    or a link to no socket file, so the app's publication wins (K7).
 13. **Clipboard reads for a pane that no attended window shows.**
     Refused at once, today's rule; no 8 s wait for an answerer (K6).
 14. **The empty document.** When the last session goes, the server

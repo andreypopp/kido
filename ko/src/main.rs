@@ -13,6 +13,7 @@ use ko_client::launch::{self, PATIENCE};
 use ko_client::layout::Document;
 use ko_client::remote::Remote;
 use ko_pane_wire::frame::Scrollback;
+use ko_server::agent;
 use ko_server::config::{self, Config, DEFAULT_LIMITS};
 use ko_server::protocol::{self, Cause, Route, Row};
 use ko_server::server::{Server, Status, Timing};
@@ -301,6 +302,9 @@ fn server(args: ServerArgs) -> ExitCode {
         Ok(config) => config,
         Err(message) => return fail("server", message),
     };
+    if let Err(error) = agent::publish(&config.dir, std::env::var_os("SSH_AUTH_SOCK").as_deref()) {
+        eprintln!("ko server: SSH_AUTH_SOCK: {error}");
+    }
     let served = launch::bind(&config.dir, &config.socket, PATIENCE)
         .and_then(|listener| Server::new(config, listener, Timing::DEFAULT))
         .and_then(|mut server| {
