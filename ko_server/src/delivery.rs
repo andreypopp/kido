@@ -21,7 +21,7 @@ use vstd::tokens::InstanceId;
 
 verus! {
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Fault {
     Ring(Invalid),
     EarlySlice,
@@ -45,7 +45,6 @@ pub(crate) struct Delivery {
     stamp: u64,
 }
 
-#[derive(Clone)]
 pub(crate) struct Done {
     stamp: u64,
     serial: u64,
@@ -394,7 +393,11 @@ impl Delivery {
         &&& instance_of(self.stamp) == self.ring.mark_id()
     }
 
-    closed spec fn serials(self) -> Seq<u64> {
+    pub(crate) closed spec fn following(self) -> u64 {
+        self.next
+    }
+
+    pub(crate) closed spec fn serials(self) -> Seq<u64> {
         serials_of(self.done()) + serials_of(self.queue())
     }
 
@@ -896,6 +899,14 @@ impl Delivery {
             final(self).done() == old(self).done(),
             final(self).at() == old(self).at(),
             final(self).stamp_of() == old(self).stamp_of(),
+            r is Some ==> {
+                &&& 1 <= r->Some_0.0
+                &&& r->Some_0.1.val() as nat == low32(r->Some_0.0)
+                &&& r->Some_0.0 + 1 == final(self).following()
+                &&& forall|i: int|
+                    0 <= i < final(self).serials().len() ==> (#[trigger] final(self).serials()[i])
+                        < r->Some_0.0
+            },
     {
         proof {
             self.ring.facts();
@@ -928,52 +939,36 @@ impl Delivery {
         Some((candidate, Req::of_serial(candidate)))
     }
 
-    pub(crate) fn request(&mut self, serial: u64) -> (r: bool)
+    pub(crate) fn request(&mut self) -> (r: Option<(u64, Req)>)
         requires
             old(self).wf(),
         ensures
             final(self).wf(),
-            final(self).log() == old(self).log(),
+            log_le(old(self).log(), final(self).log()),
             final(self).tl() == old(self).tl(),
             final(self).done() == old(self).done(),
             final(self).stamp_of() == old(self).stamp_of(),
-            if r {
-                &&& final(self).queue().len() == old(self).queue().len() + 1
-                &&& final(self).queue().drop_last() == old(self).queue()
-                &&& final(self).queue().last().serial == serial
-                &&& final(self).queue().last().at.v() as nat == final(self).log().head
-                &&& old(self).queue().len() == 0 ==> final(self).at() == final(self).log().head
-                &&& old(self).queue().len() > 0 ==> final(self).at() == old(self).at()
-            } else {
-                &&& final(self).queue() == old(self).queue()
-                &&& final(self).at() == old(self).at()
+            match r {
+                Some((serial, req)) => {
+                    &&& final(self).queue().len() == old(self).queue().len() + 1
+                    &&& final(self).queue().drop_last() == old(self).queue()
+                    &&& final(self).queue().last().serial == serial
+                    &&& final(self).queue().last().at.v() as nat == final(self).log().head
+                    &&& req.val() as nat == low32(serial)
+                    &&& old(self).queue().len() == 0 ==> final(self).at() == final(self).log().head
+                    &&& old(self).queue().len() > 0 ==> final(self).at() == old(self).at()
+                },
+                None => {
+                    &&& final(self).queue() == old(self).queue()
+                    &&& final(self).at() == old(self).at()
+                },
             },
     {
+        let floor = self.head();
+        let (serial, req) = self.mint_serial()?;
         proof {
             self.ring.facts();
         }
-        if serial == 0 {
-            return false;
-        }
-        match serial.checked_add(1) {
-            Some(following) => {
-                if following != self.next {
-                    return false;
-                }
-            },
-            None => return false,
-        }
-        let last = if let Some(top) = self.requests.len().checked_sub(1) {
-            Some(self.requests[top].serial)
-        } else if let Some(top) = self.finished.len().checked_sub(1) {
-            Some(self.finished[top].serial)
-        } else {
-            None
-        };
-        if matches!(last, Some(last) if last >= serial) {
-            return false;
-        }
-        let floor = self.ring.seen();
         if self.requests.len() == 0 {
             self.delivered = floor;
         }
@@ -983,7 +978,7 @@ impl Delivery {
             assert(self.serials() =~= all0.push(serial));
             serials_push(all0, self.next, serial);
         }
-        true
+        Some((serial, req))
     }
 
     pub(crate) fn snapshot_done(&mut self, req: Req) -> (r: Option<Done>)
@@ -1138,6 +1133,8 @@ impl<'a> Handle<'a> {
         &&& self.d.wf()
         &&& self.d.requests@.len() > 0
         &&& self.d.requests@[0].serial == self.serial
+        &&& self.d.requests@[0].at.v() <= self.pos.v()
+        &&& self.d.last_slice@ is Some ==> self.d.last_slice@->Some_0 < self.pos.v()
         &&& self.d.ring.visible(self.pos.v())
         &&& self.d.ring.log().m[self.pos.v() as nat].kind == RecordKind::Slice
     }
@@ -1159,6 +1156,8 @@ impl<'a> Handle<'a> {
             d.wf(),
             d.requests@.len() > 0,
             d.requests@[0].serial == serial,
+            d.requests@[0].at.v() <= pos.v(),
+            d.last_slice@ is Some ==> d.last_slice@->Some_0 < pos.v(),
             d.ring.visible(pos.v()),
             d.ring.log().m[pos.v() as nat].kind == RecordKind::Slice,
         ensures

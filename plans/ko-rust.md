@@ -5,7 +5,8 @@ e38b032d. The tree is the OCaml reference at that commit: the poll
 loop, `ko_proofs/`, `ko_pane/genmc/`, `scripts/install-zig.sh` and the
 current `test_e2e_ko/`; every path in this plan was a path of this
 worktree then. R5 deleted the OCaml ko, the C `ko-pane` and the F*
-build, and `ko_pane/genmc/` went after it (decision 111); a path to
+build, `ko_pane/genmc/` went after it (decision 111) and
+`ko_proofs/` after RV4 (decision 137); a path to
 one of them names the reference, which `~/Workspace/kido-ko` keeps.
 `~/Workspace/kido-ko` (branch `ko`) holds the same
 reference and does not change. The wire protocol does not change
@@ -386,8 +387,8 @@ RV forced these decisions:
     the state machine. The published and the released bytes are
     `storage_map` fields of the machine, as in `ring_inv`. A token
     carries its value as an `Option<u8>`, as F*'s `bytes` does: a
-    payload that `Writer::payload` lends out is `None` until it is
-    published, and a read gives no claim for a `None` byte. One Verus
+    payload byte is `None` until it is written (decision 130), and a
+    read gives no claim for a `None` byte. One Verus
     instance cannot span two processes, so each role has its own
     trusted constructor and its own instance: `Backend::mint_reader`
     (the reader created the zero-filled mapping, and owns no data
@@ -401,6 +402,7 @@ RV forced these decisions:
     callers in `ko_server` are not verified; it ensures its fields
     only for a position in the log. Its `debug_assert!` lost the
     conjunct `header.off <= pos`, which a hostile peer can break.
+    Decision 132 restores it as a run-time check.
 82. `Writer::available` returns room 0 when its pad record is
     refused, which can happen only within one capacity of
     `MAX_HEAD`; before, it returned the room as if the pad was
@@ -700,6 +702,73 @@ RE forced these decisions:
      `client_history_and_alternate_screen` is shorter but still more
      than the socket buffer and the ring. `full_snapshot_slow_reader`
      stays: the view harness never fills the socket buffer.
+
+RV4 (the spec gaps of the F*/Pulse parity audit of 2026-11-02)
+forced these decisions:
+
+130. Every byte of a published record is written: the machine's
+     `publish` requires a written (`Some`) token for each payload
+     byte, as for the header. The fill is in unverified `ko-pane`, so
+     the writer counts the bytes written into the pending record and
+     refuses at run time to publish more; that refusal stops
+     `ko-pane`, as any refusal does, and a normal path never meets it.
+     The lending accessor `Backend::room` is gone. The snapshot slices
+     write through the verified path over the trusted `write`; the pty
+     read into the ring is one trusted primitive, `Backend::read`,
+     whose assumption is read(2)'s contract, so the trusted count
+     stays the same and the hot path gets no copy. The reader carries
+     no "published bytes are written" fact (F*'s `inited_*`, audit
+     item 9): no proof uses a payload byte's value.
+131. `Delivery::request` loads the head itself, mints the serial and
+     queues the request, and ensures that the floor is the head that
+     it loaded (F*'s `note_snapshot`). `PaneProc::snapshot` calls it
+     before it sends the `Snapshot` frame, so the floor is before
+     every slice of the request. A send that closes the pane now finds
+     the request queued, so `fail_all` reports it as a failed snapshot;
+     no owner has it yet, so the event goes nowhere.
+132. `Reader::header` refuses a header whose offset is after its
+     position (`off > pos`), the check that decision 81 removed, and
+     ensures `off <= pos`. A corrupted mapping thus cannot give
+     `view.rs` an offset past the stream. `off + len < MAX_OFFSET`
+     needs no check: it follows from `off <= pos`, `next <= seen` and
+     `MAX_POS`. Such a record is now `Invalid::Record`; the writer
+     never writes one.
+133. A `Handle` states that its slice is at or after its request's
+     floor and after the request's last slice (F*'s `slice_step`), so
+     `deliver` cannot hand over the same slice twice. The view does
+     not take it as a `requires`, because `state.rs` calls `on_slice`
+     unverified; the run-time `offset >= coff` compare stays.
+134. `Closed` implies a closed output (`View::sealed`). The output
+     is not the view's, so it is not a conjunct of the view's `wf`:
+     each view method that takes the output keeps it, and a new path
+     that sets `Closed` without `Output::close` fails to verify.
+     `started` ensures that only a live view starts a snapshot, so one
+     is in flight. `emit_skipped` requires `from <= head`.
+135. Parity: with RV4, the Verus specs state every property of
+     `ko_proofs/`'s `.fst` and `.fsti` sources, except four that the
+     user accepted (audit items 4, 8, 9, 10). Item 4: snapshot progress
+     (`linked`, `floor`, `snapped`) stays the run-time compares of
+     decision 97; a slice that unverified `state.rs` routes wrongly
+     makes the counts disagree and rejects the view, which is safe but
+     not live; closing it means verifying `state.rs`'s owner map.
+     Item 8: `observed`, `busy` and the closed guard of `scan` stay
+     outside the proof (decision 90); a wrong value costs only a
+     wakeup. Item 9: the reader's "published bytes are written"
+     lemmas (decision 130). Item 10: the ghost `vpos` ("the client was
+     sent exactly the stream up to `coff`") is a sum of facts for
+     each call, not one invariant; the senders were trusted in F* as
+     well, so the trust is equal. The `.fst` and `.fsti` sources can
+     thus be deleted (decision 137).
+136. The `make verify-ko` output is clean: no warning, and no stray
+     output of a passing stage. `scripts/verus.sh` prints the whole
+     Verus output only on a failure; a test that provokes a child's
+     failure asserts the child's stderr instead of letting it through.
+
+After RV4 the user decided:
+
+137. `ko_proofs/` is deleted. Verus is the one specification; the
+     reference copy of the F* sources is `~/Workspace/kido-ko`.
+     Decision 111's "the sources stay as the specification" ends here.
 
 The e2e readability pass forced this decision:
 
@@ -1106,8 +1175,6 @@ the underscore, so there is one spelling.
     ko_bench/      the benchmark binary (the port of bench/coordinator.ml,
                    mirror.ml and usage.ml); bench/*.c and client.py stay
     fuzz/          the cargo-fuzz crate, outside the default members
-    ko_proofs/     the reference's F*/Pulse proofs, read as the specs
-                   for Verus (decision 111)
 
 ### 3.2 Module map
 
@@ -1861,59 +1928,13 @@ Decision 10: Verus writes ko's specs. The state of Verus on
   7). Verus has no weak-memory model, so the acq/rel failure stays a
   loom and GenMC fact (6.5).
 
-**The references** are committed in the reference tree (43440688);
-this tree keeps only the `.fst` and `.fsti` sources (decision 111): `ko_proofs/` (F*/Pulse, 4,208
-lines; `make proofs` installs the pinned F* through
-`scripts/install-fstar.sh`, verifies, extracts and compares) and
-`ko_pane/genmc/`.
-
-- The ring: `ko_proofs/KoRing.Spec.fst` (the log model, `kind_of`,
-  `wf`, `boundary`), `KoRing.Inv.fst` (the shared invariant over
-  `head`, `tail`, `read` with the writer's and reader's halves and the
-  ghost log), `KoRing.Writer.fst` (`available`, `put_record`,
-  padding), `KoRing.Reader.fst` (`observe`, `header`, `release`,
-  `set_read`), `KoRing.Walk.fst` (`advance`, `end_offset`, `resume`),
-  `KoRing.Mask.fst` (byte windows, initialized bytes, header facts),
-  `KoRing.Init.fst` (a zeroed mapping splits into the invariant). It
-  proves, with no admits: the five writer facts that an earlier WhyML
-  proof had to assume as axioms (records never wrap, tags are valid,
-  boundaries are dense, `0 <= off <= pos`, the offset step); one owner
-  per byte (the writer never writes unreleased space, the reader
-  reads only `[tail, seen)`); the log is append-only and each boundary
-  is walked once in order; `advance` moves `tail` to the first
-  boundary at or after `min(head - cap/2, keep)` and no further;
-  positions stay below 2^62. `ko_proofs/ko_ring_proved.h` is the
-  extracted C that `ko_pane/pane.c` and the coordinator's ring stubs
-  call.
-- `ko_proofs/Ring.fsti` states the contracts of the OCaml reader
-  (`ko_server/ring.ml`), and `Ring_proof.fst` proves each against the
-  proved model; only `ring.ml`'s correspondence with that model is
-  trusted. In Rust there is no such gap: the verified module is the
-  reader.
-- Trusted there: `ko_proofs/ko_atomic.h` (`KoAtomic.fsti`), the
-  construction of the ring view from the mapping (`ko_ring_attach`),
-  a zero-filled mapping, `pane.c`'s payload writes within the room
-  and before the commit, the two processes treated as one heap, and
-  the callers' `keep` and cursors.
-- The cores: `ko_proofs/Pane_core.fst` (`deliver`, `scan`, `keep`,
-  the snapshot hold with the livelock fix, the done-callback order of
-  row 39, the refusal of row 40) and `View_core.fst` (the cursor,
-  resume, snapshots, one in flight, the progress rule, and
-  `flush_batch`'s "not sent means closed or blocked"), extracted to
-  `ko_server/pane_core.ml` and `view_core.ml`, against the assumed
-  I/O contracts `Delivery_io.fsti`, `Connection.fsti`, `Feed.fst`,
-  `Oint.fsti` (native ints), which `KO_CHECK_CONTRACTS` checks at run
-  time (row 42). Known gaps: two assumed ghost steps
-  (`start_stream`, `set_snapshotting`; the Verus port drops their
-  fields for run-time checks, decision 97),
-  the glue from tokens to generations, and no liveness (safety only).
-- GenMC: `ko_pane/genmc/ring_mc.c` (the writer and the reader as two
-  threads on a 64-byte ring, 5 records of 9 bytes: no errors under SC
-  and under acq/rel, 17,519 executions) and `wakeup_mc.c` (the
-  store-buffering handshake: a lost wakeup under acq/rel, none under
-  seq_cst), run by `ko_pane/genmc/run.sh sc|acqrel ring|wakeup` with
-  `ko_proofs/ko_atomic.h` or `ko_pane/genmc/acqrel/ko_atomic.h`. Both
-  include `ko_proofs/ko_ring_proved.h`.
+**The references.** Verus is ko's one specification. The OCaml ko
+had F*/Pulse proofs of the ring (`KoRing.*`), the delivery
+(`Pane_core`) and the view (`View_core`), with GenMC models of the
+extracted C ring; stages RV to RV4 ported them to Verus with parity
+except four accepted items (decision 135), and the sources were then
+deleted (decision 137). The reference copy is `~/Workspace/kido-ko`
+(and the reference tree, 43440688).
 
 **What Verus verifies in production, in this order:**
 
@@ -1962,12 +1983,16 @@ capacity getter); the header word load
 and store (vstd's `from_ptr_load` and `from_ptr_store` contracts); the
 byte accessors (`external_body` reads and writes of a range that
 `requires` the permission over it, a few lines each); vstd and
-the verifier; the libghostty-vt calls that fill a payload; and the
-callers outside the verified modules until RV2. After RV3:
+the verifier; the libghostty-vt calls that fill a payload (until
+RV4); and the callers outside the verified modules until RV2. After RV3:
 `delivery.rs`'s sink call, its one stamp counter for each process
 (`mint_stamps`) and the definition of a fresh stamp's ring instance
 (`bind_fresh`, decision 117), the WebSocket sends and marker decode of `view.rs`,
-and `Output`'s socket I/O in `conn.rs` (decision 100).
+and `Output`'s socket I/O in `conn.rs` (decision 100). After RV4:
+the lending accessor `Backend::room` is gone, and the pty read into
+the ring is the trusted `Backend::read`, whose assumption is read(2)'s
+contract; the snapshot slices write through the verified path
+(decision 130).
 
 **The lessons of the Pulse work that the port keeps:** no trusted
 function with an unconditional `ensures` (the WhyML `writer_causal`
@@ -2314,7 +2339,7 @@ one session. The attach and resize rows wait for R4.
   `ppx_deriving_qcheck`) and re-lock `dune.lock` with the pinned
   repositories rule of AGENTS.md.
 - `ko_proofs/`: every `.fst` and `.fsti` stays as the specification
-  of the Verus stages (decision 111). `lib/fs.ml` and `lib/timestamp.ml` stay with
+  of the Verus stages (decision 111), until decision 137. `lib/fs.ml` and `lib/timestamp.ml` stay with
   kido.
 - `verify.sh` loses the two-binary split; `lint.sh` loses the OCaml
   ko rows (QCheck, `Ko_server` doc references) and gains the Rust
@@ -2473,14 +2498,29 @@ Decision 15. The view's cursor, resume, snapshot and flush rules from
 `ko_proofs/View_core.fst`, verified at the call sites in `view.rs` and
 `conn.rs` (decisions 95 to 100). Acceptance: `cargo verus verify -p
 ko_server` passes on `view` within the cap of decision 18.
-`ko_proofs/` keeps `View_core.fst` and its contracts as the
-specification (decision 111).
+`ko_proofs/` kept `View_core.fst` and its contracts as the
+specification until decision 137.
 - Result (2026-11-02, macOS): `ko_server` verifies with 81
   obligations (1.6 s) and `ko_pane_wire` with 132 (1.4 s), no
   `assume` and no `admit`; the `verus` stage takes 4.3 s. The
   stripped release `ko` grew by 16,504 bytes (2,674,040 to
   2,690,544); `ko-pane` did not change. Decisions 95 to 100 came
   from RV3.
+
+### RV4. Verus: the parity gaps (about 2 agent-days, after RV3)
+
+The items of the F*/Pulse parity audit of 2026-11-02 that the user
+chose to close: the initialized payload, the head load of a request,
+the slice order of a request, the header's offset check, `Closed`
+with a closed output, one snapshot in flight and the skip's `from`
+(decisions 130 to 135), and a clean `make verify-ko` output (decision
+136). Acceptance: `make verus` passes with no `assume`, no `admit`
+and no new trusted item.
+- Result (2026-11-02, macOS): `ko_pane_wire` verifies with 136
+  obligations (1.9 s) and `ko_server` with 81 (1.8 s), no `assume`
+  and no `admit`; the `verus` stage takes 4.9 s. The stripped release
+  `ko` did not change (2,690,552 bytes); `ko-pane` grew by 32 bytes
+  (1,842,792 to 1,842,824).
 
 ### RL. Linux (3 to 5 agent-days, last, after parity)
 

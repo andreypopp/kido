@@ -109,7 +109,9 @@ impl Shared {
         let len = usize::try_from(len).ok()?;
         let start = self.data(at, len)?;
         // SAFETY: the bytes lie inside the mapping and inside [tail, seen) of the reader, which
-        // the writer does not change until the reader stores a new tail.
+        // the writer does not change until the reader stores a new tail, or inside the writer's
+        // own unpublished bytes, which no reader reads and which the `&self` borrow keeps the
+        // writer from changing.
         Some(unsafe { std::slice::from_raw_parts(start, len) })
     }
 

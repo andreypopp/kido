@@ -51,8 +51,6 @@ and 3.2 hold the crates and their modules:
                   ko_vt/terminfo.zig writes the xterm-ghostty terminfo
                   that is installed beside the binary
     ko_sys/       the OS layer
-    ko_proofs/    the F*/Pulse proofs of the ring, Pane_core and
-                  View_core, the specifications of the Verus proofs
     ko_bench/, bench/  the benchmark binary, scripts, C helpers and
                   recorded streams
     fuzz/         the cargo-fuzz targets
@@ -837,8 +835,8 @@ These points were open or wrong in the plan:
   requests come from generators derived on the protocol types.
   P1 also proved the ring, `Pane_core` and `View_core` in F*/Pulse
   (design.md 4.6). In the Rust ko, Verus proves the ring and the
-  delivery (plans/ko-rust.md 6.7), and the F* sources stay as their
-  specification (decision 111).
+  delivery and the view with parity to the F* proofs
+  (plans/ko-rust.md 6.7, decision 135); the F* sources are deleted.
   `dune test` replays fixed seeds and one explicit regression case
   for each bug that a fuzzer found; `make fuzz` runs one target for
   a fixed time, only in CI. The `-afl` targets run the same tests

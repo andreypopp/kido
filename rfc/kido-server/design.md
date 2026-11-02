@@ -607,17 +607,18 @@ multiplexed binary connection:
   gets a snapshot anyway, so it never holds the writer. This mapping is the pane's ring of this
   section; there is no second one.
 - The ring's writer and reader, and the coordinator's logic that
-  delivers records to views, are proved in F* with Pulse
-  (`ko_proofs/`, AGENTS.md "Proved modules (ko)"). The writer and
-  reader are extracted to C for `ko-pane` and the coordinator's ring
-  stubs; `Pane_core` and `View_core` are extracted to OCaml. The
+  delivers records to views, were proved in F* with Pulse in P1;
+  the Rust ko proves them with Verus (AGENTS.md "Proved modules
+  (ko)"). In P1 the writer and
+  reader were extracted to C for `ko-pane` and the coordinator's ring
+  stubs, and `Pane_core` and `View_core` to OCaml. The
   proofs cover the ring's layout and wrap, that a resume or
   `reachable` loses no data record, the tail held at a finished
   snapshot until `snapshot_done`, each view's stream position, at most
-  one snapshot in flight per view, and the flush rule. The proofs
-  trust the contracts of the OCaml ring reader, the connection and the
-  delivery I/O; test and fuzz builds check the parts of those
-  contracts that the run-time state can show. The ring's `head`, `tail` and `read` indices are sequentially
+  one snapshot in flight per view, and the flush rule. The P1 proofs
+  trusted the contracts of the OCaml ring reader, the connection and
+  the delivery I/O; plans/ko-rust.md 6.7 gives what the Verus proofs
+  trust. The ring's `head`, `tail` and `read` indices are sequentially
   consistent atomics: the idle wakeup is a store-buffering handshake,
   which acquire/release would let lose a wakeup (a GenMC model shows
   it).

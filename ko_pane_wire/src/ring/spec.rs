@@ -246,6 +246,21 @@ pub open spec fn staged(cap: nat, m: Map<nat, ByteTok>, head: nat, r: Rec) -> bo
     &&& dom_is(m.dom(), cap, head, head + size(r))
     &&& forall|j: nat|
         j < 13 ==> #[trigger] m.contains_key((head + j) % cap) && m[(head + j) % cap].val() == Some(enc(r, j))
+    &&& filled_some(m, cap, head, r.len)
+}
+
+pub open spec fn some_at(m: Map<nat, ByteTok>, cap: nat, head: nat, j: nat) -> bool {
+    &&& m.contains_key((head + HEADER as nat + j) % cap)
+    &&& m[(head + HEADER as nat + j) % cap].val() is Some
+}
+
+pub open spec fn filled_some(m: Map<nat, ByteTok>, cap: nat, head: nat, f: nat) -> bool {
+    forall|j: nat| j < f ==> #[trigger] some_at(m, cap, head, j)
+}
+
+pub open spec fn filled_ok(cap: nat, head: nat, tail: nat, f: nat) -> bool {
+    &&& head % cap + HEADER as nat + f <= cap
+    &&& head + HEADER as nat + f <= tail + cap
 }
 
 pub open spec fn fits_ok(cap: nat, head: nat, tail: nat, n: nat) -> bool {

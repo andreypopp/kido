@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use std::io::{Read, Write};
+use std::io::{PipeReader, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -11,6 +11,7 @@ use ko_pane_wire::frame::{
     ScreenRows, Scrollback, Size, ToPane,
 };
 use ko_pane_wire::ring::{Marker, Pos, Reader, RecordKind};
+use ko_sys::fd;
 use ko_sys::pid::{Exit, Pid, Waited};
 use ko_sys::signal::Signal;
 use ko_sys::spawn;
@@ -78,6 +79,7 @@ struct Harness {
     cursor: Pos,
     buffer: Vec<u8>,
     seen: Seen,
+    stderr: PipeReader,
 }
 
 impl Harness {
@@ -88,10 +90,16 @@ impl Harness {
     fn start_with(capacity: u64, program: &Path, args: &[&str]) -> Harness {
         let reader = Reader::create(capacity).unwrap();
         let (control, theirs) = UnixStream::pair().unwrap();
+        let (stderr, errors) = std::io::pipe().unwrap();
         let pane = spawn::program(
             program,
             args,
-            &[(theirs.as_fd(), 0), (theirs.as_fd(), 1), (reader.fd(), 3)],
+            &[
+                (theirs.as_fd(), 0),
+                (theirs.as_fd(), 1),
+                (errors.as_fd(), 2),
+                (reader.fd(), 3),
+            ],
             spawn::Env::Inherit,
         )
         .unwrap();
@@ -104,6 +112,7 @@ impl Harness {
             pane,
             buffer: Vec::new(),
             seen: Seen::default(),
+            stderr,
         }
     }
 
@@ -161,8 +170,7 @@ impl Harness {
         }
     }
 
-    fn finish(mut self) -> Waited {
-        self.send(&encoded(&ToPane::Exit));
+    fn exited(&mut self) -> Waited {
         let started = Instant::now();
         loop {
             match self.pane.try_wait().unwrap() {
@@ -173,6 +181,18 @@ impl Harness {
                 waited => return waited,
             }
         }
+    }
+
+    fn finish(mut self) -> Waited {
+        self.send(&encoded(&ToPane::Exit));
+        self.exited()
+    }
+
+    fn errors(&mut self) -> String {
+        fd::set_nonblocking(self.stderr.as_fd()).unwrap();
+        let mut text = String::new();
+        let _ = self.stderr.read_to_string(&mut text);
+        text
     }
 }
 
@@ -294,12 +314,15 @@ fn a_setup_failure_names_the_failing_call_and_its_error() {
         String::from_utf8_lossy(message),
         "openpty: Too many open files (os error 24)"
     );
-    drop(pane.control);
-    let started = Instant::now();
-    while pane.pane.try_wait().unwrap() == Waited::Running {
-        assert!(started.elapsed() < DEADLINE, "the pane did not exit");
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    drop(std::mem::replace(
+        &mut pane.control,
+        UnixStream::pair().unwrap().0,
+    ));
+    assert_eq!(pane.exited(), Waited::Ended(Exit::Exited(2)));
+    assert_eq!(
+        pane.errors(),
+        "pane control failed: openpty: Too many open files (os error 24)\n"
+    );
 }
 
 #[test]
@@ -352,6 +375,11 @@ fn a_grid_over_the_dimension_limit_is_refused_and_the_limit_itself_is_accepted()
     assert_eq!(error, "invalid control frame");
     pane.drain();
     assert_eq!(pane.seen.resizes, [size(4096, 24)]);
+    assert_eq!(pane.exited(), Waited::Ended(Exit::Exited(2)));
+    assert_eq!(
+        pane.errors(),
+        "pane control failed: invalid control frame\n"
+    );
 }
 
 impl Harness {
