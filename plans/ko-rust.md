@@ -492,15 +492,12 @@ RV3 forced these decisions:
     in practice. This closes decision 94.
 96. A view finds its `Delivery` through unverified `state.rs`, so the
     identity is checked at run time: each `Delivery` takes a stamp
-    from a process-wide counter, and the view keeps it. `open` and
+    from the coordinator's counter, and the view keeps it. `open` and
     `pump` compare the `Delivery`'s stamp; `on_slice` and `on_done`
     compare the stamp and the serial of the `Handle` or `Done` that
     only `delivery.rs` constructs. That is one compare for each call,
-    never for each record. The one trusted item is `delivery.rs`'s
-    `bind`, which ties the stamp to the ring's mark instance, as
-    `Backend::mint_reader` ties a role to its mapping (decision 80):
-    it assumes that the counter increases and never repeats a value.
-    The counter refuses to wrap, and `Delivery::create` then fails.
+    never for each record. The counter refuses to wrap, and
+    `Delivery::create` then fails. Decision 117 proves the counter.
 97. The view proves its invariant against the log through
     `ko_pane_wire::ring::mark`: a state machine with the reader's
     current log and persistent marks below it. The view keeps a
@@ -595,6 +592,28 @@ R5 forced these decisions:
      RL; `make verify-ko` is not run there.
 116. `ko_pane_wire` has no test against a C header: the Verus spec
      (`ring/spec.rs`) is the one source of the ring's constants.
+117. The `Delivery` stamp counter is proved, not trusted. `Stamps`
+     is a plain `u64` counter that the coordinator's `Panes` owns and
+     passes to `Delivery::create` by `&mut`; every production
+     `Delivery::create` runs on the coordinator thread (`Panes::add`).
+     Verus proves that a stamp is the counter's `next`, that `next`
+     increases with `checked_add`, and that at `u64::MAX` the counter
+     refuses and stays unchanged. The refusal is "the Delivery stamp
+     counter is exhausted" from `exhausted`, a trusted body with no
+     contract that only builds the error. The counter carries an
+     opaque tracked token `Bound`, the set of stamps that it handed
+     out: empty at `mint_stamps`, which starts `next` at 1, only
+     grown by one stamp for each `bind`, and all below `next`. Two
+     more trusted items remain, in the form of
+     `Backend::mint_reader` (decision 80):
+     `mint_stamps` assumes that the process mints one counter, and so
+     one `Bound`; `bind_fresh`, a proof function, defines
+     `instance_of` at a stamp that `Bound` does not hold and adds the
+     stamp to it. Its freshness `requires` is proved from the
+     counter, and a second call for the same stamp fails it. Nothing
+     in the types stops a second `mint_stamps` call. The test and
+     fuzz code mints one counter for each `Delivery`; only the
+     server's binary holds to the one-counter assumption.
 
 The yardstick for estimates is migration.md's: about 350 lines of new
 code with tests per agent-day. Line counts of the OCaml ko come from
@@ -1825,8 +1844,9 @@ byte accessors (`external_body` reads and writes of a range that
 `requires` the permission over it, a few lines each); vstd and
 the verifier; the libghostty-vt calls that fill a payload; and the
 callers outside the verified modules until RV2. After RV3:
-`delivery.rs`'s sink call and its `bind` of a stamp to a ring
-(decision 96), the WebSocket sends and marker decode of `view.rs`,
+`delivery.rs`'s sink call, its one stamp counter for each process
+(`mint_stamps`) and the definition of a fresh stamp's ring instance
+(`bind_fresh`, decision 117), the WebSocket sends and marker decode of `view.rs`,
 and `Output`'s socket I/O in `conn.rs` (decision 100).
 
 **The lessons of the Pulse work that the port keeps:** no trusted

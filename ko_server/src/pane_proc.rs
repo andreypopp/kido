@@ -19,7 +19,7 @@ use ko_sys::pid::{Exit, Group, Pid, Verdict, Waited};
 use ko_sys::signal::Signal;
 
 use crate::config::Config;
-use crate::delivery::{self, Delivery, Done, Handle};
+use crate::delivery::{self, Delivery, Done, Handle, Stamps};
 use crate::ids::PaneId;
 
 const RING_CAPACITY: u64 = 1 << 20;
@@ -219,6 +219,7 @@ impl PaneProc {
         cwd: &Path,
         argv: &[Vec<u8>],
         env: &[Vec<u8>],
+        stamps: &mut Stamps,
         io: &mut Io<'_>,
     ) -> io::Result<PaneProc> {
         let mut out = Vec::new();
@@ -235,7 +236,7 @@ impl PaneProc {
         frame::encode(&ToPane::Init(&init), &mut out).map_err(|oversize| {
             io::Error::new(io::ErrorKind::InvalidInput, oversize.to_string())
         })?;
-        let delivery = Delivery::create(RING_CAPACITY)?;
+        let delivery = Delivery::create(stamps, RING_CAPACITY)?;
         let (socket, theirs) = UnixStream::pair()?;
         let pid = ko_sys::spawn::pane(&config.pane_exe, theirs.as_fd(), delivery.ring().fd())?;
         drop(theirs);
@@ -744,7 +745,7 @@ mod tests {
     }
 
     fn fake(capacity: u64) -> Fake {
-        let delivery = Delivery::create(capacity).unwrap();
+        let delivery = Delivery::create(&mut delivery::mint_stamps(), capacity).unwrap();
         let writer = delivery.ring().writer().unwrap();
         let (socket, peer) = UnixStream::pair().unwrap();
         socket.set_nonblocking(true).unwrap();

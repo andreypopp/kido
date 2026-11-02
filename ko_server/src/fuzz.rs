@@ -23,7 +23,7 @@ use serde::de::DeserializeOwned;
 
 use crate::config::DEFAULT_LIMITS;
 use crate::conn::Conn;
-use crate::delivery::Delivery;
+use crate::delivery::{Delivery, mint_stamps};
 use crate::http::{MAX_HEAD, Parsed, parse_head, read_response, read_upgrade, request};
 #[cfg(test)]
 use crate::ids::PaneId;
@@ -298,7 +298,7 @@ struct Effects {
 }
 
 fn run_frames(parts: &[&[u8]]) -> Option<Effects> {
-    let delivery = Delivery::create(1 << 12).ok()?;
+    let delivery = Delivery::create(&mut mint_stamps(), 1 << 12).ok()?;
     let (socket, _peer) = UnixStream::pair().ok()?;
     socket.set_nonblocking(true).ok()?;
     let mut poll = Poll::new();

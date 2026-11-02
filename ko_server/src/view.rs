@@ -1120,6 +1120,7 @@ impl std::fmt::Debug for View {
 mod tests {
     use super::*;
     use crate::conn::tests::{full_output, output};
+    use crate::delivery::mint_stamps;
     use crate::ws::Ws;
     use std::io::Read as _;
 
@@ -1135,7 +1136,7 @@ mod tests {
     #[test]
     fn a_view_whose_socket_refused_a_write_whole_decides_no_skip_until_it_is_writable() {
         let (mut out, mut peer) = full_output();
-        let mut delivery = Delivery::create(1 << 20).unwrap();
+        let mut delivery = Delivery::create(&mut mint_stamps(), 1 << 20).unwrap();
         let mut writer = delivery.ring().writer().unwrap();
         writer.available();
         writer.put(RecordKind::Bytes, &[1; 100_000]);
@@ -1161,7 +1162,7 @@ mod tests {
 
     fn snapshot_with_a_dropped_slice(dropped: Option<usize>) -> Stage {
         let (mut out, _peer) = output();
-        let mut delivery = Delivery::create(1 << 16).unwrap();
+        let mut delivery = Delivery::create(&mut mint_stamps(), 1 << 16).unwrap();
         let mut writer = delivery.ring().writer().unwrap();
         let mut ws = Ws::new(Vec::new());
         let mut view = View::new(PaneId::new(1), None, History::None, &delivery);

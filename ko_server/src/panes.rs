@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use ko_sys::event::Token;
 
 use crate::config::{BUILD, Config, variable};
+use crate::delivery::{Stamps, mint_stamps};
 use crate::ids::PaneId;
 use crate::pane::Pane;
 use crate::pane_proc::{Io, Life};
@@ -29,6 +30,7 @@ impl fmt::Display for AddError {
 #[derive(Debug)]
 pub(crate) struct Panes {
     next: u64,
+    stamps: Stamps,
     panes: Vec<Pane>,
     removed: Vec<Pane>,
 }
@@ -37,6 +39,7 @@ impl Default for Panes {
     fn default() -> Panes {
         Panes {
             next: 1,
+            stamps: mint_stamps(),
             panes: Vec::new(),
             removed: Vec::new(),
         }
@@ -163,7 +166,8 @@ impl Panes {
             return Err(AddError::Invalid("invalid environment"));
         }
         let env = environment(config, id, &request.env);
-        let pane = Pane::spawn(config, id, &cwd, command, &env, io).map_err(AddError::Io)?;
+        let pane = Pane::spawn(config, id, &cwd, command, &env, &mut self.stamps, io)
+            .map_err(AddError::Io)?;
         self.next = self.next.saturating_add(1);
         self.panes.push(pane);
         Ok(id)

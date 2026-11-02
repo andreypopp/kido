@@ -4,7 +4,6 @@
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use ko_pane_wire::frame::Req;
 #[cfg(verus_only)]
@@ -19,8 +18,6 @@ use ko_pane_wire::ring::{
 use vstd::arithmetic::div_mod::{lemma_mod_equivalence, lemma_small_mod};
 use vstd::prelude::*;
 use vstd::tokens::InstanceId;
-
-static NEXT_STAMP: AtomicU64 = AtomicU64::new(1);
 
 verus! {
 
@@ -60,16 +57,95 @@ pub(crate) struct Done {
 
 pub(crate) uninterp spec fn instance_of(stamp: u64) -> InstanceId;
 
-// Assumes: the process-wide counter increases and never repeats a value that it handed out.
+#[verifier::external_body]
+tracked struct Bound {}
+
+impl Bound {
+    uninterp spec fn set(self) -> Set<u64>;
+}
+
+pub(crate) struct Stamps {
+    next: u64,
+    #[allow(dead_code)]
+    bound: Tracked<Bound>,
+}
+
+// Assumes: the process mints one counter, so it makes one `Bound`, and no second counter hands
+// out a stamp that this one handed out.
+#[verifier::external_body]
+pub(crate) fn mint_stamps() -> (r: Stamps)
+    ensures
+        r.wf(),
+        r.next() == 1,
+        r.bound() == Set::<u64>::empty(),
+{
+    Stamps { next: 1, bound: Tracked::assume_new() }
+}
+
+// Assumes: none; the body only builds the error value, and the contract says nothing about it.
+#[verifier::external_body]
+fn exhausted() -> std::io::Error {
+    std::io::Error::other("the Delivery stamp counter is exhausted")
+}
+
+// Assumes: `instance_of` is unconstrained at a stamp that the one `Bound` does not hold, so the
+// caller can define it there once.
 #[verifier::external_body]
 #[allow(unused_variables)]
-fn bind(id: Ghost<InstanceId>) -> (r: Result<u64, std::io::Error>)
+proof fn bind_fresh(tracked bound: &mut Bound, stamp: u64, id: InstanceId)
+    requires
+        !old(bound).set().contains(stamp),
     ensures
-        r is Ok ==> instance_of(r->Ok_0) == id@,
+        final(bound).set() == old(bound).set().insert(stamp),
+        instance_of(stamp) == id,
 {
-    NEXT_STAMP
-        .try_update(Ordering::SeqCst, Ordering::SeqCst, |stamp| stamp.checked_add(1))
-        .map_err(|_| std::io::Error::other("the Delivery stamp counter is exhausted"))
+}
+
+impl Stamps {
+    pub(crate) closed spec fn next(self) -> u64 {
+        self.next
+    }
+
+    pub(crate) closed spec fn bound(self) -> Set<u64> {
+        self.bound@.set()
+    }
+
+    pub(crate) closed spec fn wf(self) -> bool {
+        forall|s: u64| #[trigger] self.bound().contains(s) ==> s < self.next()
+    }
+
+    #[allow(unused_variables)]
+    fn bind(&mut self, id: Ghost<InstanceId>) -> (r: Result<u64, std::io::Error>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            final(self).next() >= old(self).next(),
+            old(self).bound().subset_of(final(self).bound()),
+            r is Ok ==> r->Ok_0 == old(self).next() && final(self).next() > r->Ok_0
+                && final(self).bound() == old(self).bound().insert(r->Ok_0)
+                && instance_of(r->Ok_0) == id@,
+            r is Err ==> final(self).next() == old(self).next()
+                && final(self).bound() == old(self).bound(),
+    {
+        let stamp = self.next;
+        match stamp.checked_add(1) {
+            Some(next) => {
+                proof {
+                    assert(!self.bound().contains(stamp));
+                    bind_fresh(self.bound.borrow_mut(), stamp, id@);
+                    assert forall|s: u64| #[trigger] self.bound().contains(s) implies s < next by {
+                        if s != stamp {
+                            assert(old(self).bound().contains(s));
+                        }
+                    }
+                }
+                self.next = next;
+                Ok(stamp)
+            },
+            None => Err(exhausted()),
+        }
+    }
 }
 
 spec fn inv(
@@ -459,8 +535,13 @@ impl Delivery {
         }
     }
 
-    pub(crate) fn create(capacity: u64) -> (r: Result<Delivery, std::io::Error>)
+    pub(crate) fn create(stamps: &mut Stamps, capacity: u64) -> (r: Result<Delivery, std::io::Error>)
+        requires
+            old(stamps).wf(),
         ensures
+            final(stamps).wf(),
+            final(stamps).next() >= old(stamps).next(),
+            old(stamps).bound().subset_of(final(stamps).bound()),
             r is Ok ==> r->Ok_0.wf(),
     {
         match Reader::create(capacity) {
@@ -469,7 +550,7 @@ impl Delivery {
                     ring.facts();
                 }
                 let delivered = ring.tail();
-                let stamp = bind(Ghost(ring.mark_id()))?;
+                let stamp = stamps.bind(Ghost(ring.mark_id()))?;
                 Ok(Delivery {
                     ring,
                     requests: VecDeque::new(),
@@ -1158,6 +1239,12 @@ impl fmt::Display for Fault {
             Fault::Ring(invalid) => invalid.fmt(f),
             Fault::EarlySlice => f.write_str("ko-pane wrote a slice before its request"),
         }
+    }
+}
+
+impl fmt::Debug for Stamps {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Stamps").field("next", &self.next).finish()
     }
 }
 

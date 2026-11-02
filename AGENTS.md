@@ -403,8 +403,13 @@ Conventions:
   (`create_handle`, with no `ensures`), the capacity getter, the
   header word load and store, the byte accessors and the opaque types
   that they use. In `delivery.rs`: the sink call (`hand_over`, with
-  no contract) and `bind`, which ties a `Delivery`'s stamp from the
-  process-wide counter to its ring's mark instance. In `view.rs`: the
+  no contract), the stamp counter's constructor (`mint_stamps`, one
+  for each process, with the opaque token `Bound` of the stamps that
+  it handed out), `bind_fresh`, which ties a stamp that `Bound` does
+  not hold to its ring's mark instance, and `exhausted` (the error
+  value, with no contract). The coordinator's `Panes` owns the one
+  `Stamps`. Verus proves that its stamps increase, never repeat and
+  never wrap. In `view.rs`: the
   WebSocket sends (`reject_ws`, `emit_marked`, `emit_skipped`,
   `write_slice`) and the marker decode (`resize_marker`). In
   `conn.rs`: `Output`'s `waiting`, `available`, `close` and

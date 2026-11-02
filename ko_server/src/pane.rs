@@ -4,6 +4,7 @@ use std::path::Path;
 use ko_pane_wire::frame::Size;
 
 use crate::config::Config;
+use crate::delivery::Stamps;
 use crate::ids::{ClientId, PaneId};
 use crate::pane_proc::{Io, PaneProc};
 
@@ -23,11 +24,12 @@ impl Pane {
         cwd: &Path,
         command: Vec<Vec<u8>>,
         env: &[Vec<u8>],
+        stamps: &mut Stamps,
         io: &mut Io<'_>,
     ) -> io::Result<Pane> {
         Ok(Pane {
             id,
-            proc: PaneProc::spawn(config, id, cwd, &command, env, io)?,
+            proc: PaneProc::spawn(config, id, cwd, &command, env, stamps, io)?,
             command,
             size: Size::DEFAULT,
             sizer: None,
