@@ -21,10 +21,10 @@ settings:
       ENABLE_HARDENED_RUNTIME: NO
 settingGroups:
   KoClientSlice:
-    KO_CLIENT_SLICE: "$(SRCROOT)/build/ko_client.xcframework/macos-arm64_x86_64"
+    KO_CLIENT_SLICE: "$(SRCROOT)/build/ko_client.xcframework/macos-arm64"
     SWIFT_INCLUDE_PATHS: "$(KO_CLIENT_SLICE)/Headers"
     LIBRARY_SEARCH_PATHS: "$(KO_CLIENT_SLICE)"
-    OTHER_LDFLAGS: [-lko_client, -lc++]
+    OTHER_LDFLAGS: [-lko_client_private, -lc++]
 packages:
   SnapshotTesting:
     url: https://github.com/pointfreeco/swift-snapshot-testing
@@ -119,7 +119,7 @@ targets:
       - name: Build ko_client
         script: |
           set -eu
-          : "${KO_CHECKOUT:?set KO_CHECKOUT to the kido-rust checkout}"
+          : "${KO_CHECKOUT:?set KO_CHECKOUT to the repository root}"
           env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin DEVELOPER_DIR="$DEVELOPER_DIR" MACOSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
             make -C "$KO_CHECKOUT" ko-client-xcframework KO_CLIENT_XC="$SRCROOT/build/ko_client.xcframework"
         basedOnDependencyAnalysis: false

@@ -2,7 +2,7 @@
 set -eu
 
 app_root=$(cd "$(dirname "$0")/.." && pwd)
-submodule="$app_root/third_party/ghostty"
+submodule="$app_root/../third_party/ghostty"
 revision=$(git -C "$submodule" rev-parse HEAD)
 source_hash=$({
 	git -C "$submodule" diff HEAD --binary

@@ -693,6 +693,11 @@ Conventions:
   file is committed with the hash of the headers in its first line.
   A change of the ghostty pin regenerates it in the same commit.
   `scripts/lint.sh` checks the hash.
+- **One Ghostty.** `third_party/ghostty` (the `kido-upstream` branch
+  of andreypopp/ghostty) is the one Ghostty checkout of ko and
+  Kido.app: libghostty-vt for ko, GhosttyKit for the app
+  (`app/scripts/build-ghosttykit.sh`). A pin bump moves both, so it
+  passes ko's verification and the app's build and tests.
 - **libghostty-vt.** `ko_vt_sys/build.rs` builds it with zig from
   PATH. Every cargo profile and target directory shares one zig cache,
   so libghostty-vt compiles once for release, test and clippy. The

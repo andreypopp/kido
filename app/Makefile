@@ -65,7 +65,7 @@ visual visual-fast visual-slow: project
 		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(VISUAL_TMUX) $$select test
 	python3 scripts/quit-check.py $(abspath $(APP))
 
-KO_CHECKOUT ?= $(HOME)/Workspace/kido-rust
+KO_CHECKOUT ?= ..
 
 ko-probe: KO_ABS = $(abspath $(KO_CHECKOUT))
 ko-probe: DERIVED = build/xcode.noindex/derived-$@

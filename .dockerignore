@@ -3,3 +3,5 @@ _build
 _build-ci-like
 build
 share/pi/node_modules
+app
+third_party/ghostty

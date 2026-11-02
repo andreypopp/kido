@@ -34,7 +34,7 @@ tmux's option (medium change). Status: parked, low priority.
 
 A full renderer mailbox can block main; this is not a reproduced universal
 UI deadlock. `.forever` sends remain, for example in
-`app/third_party/ghostty/src/Surface.zig:2573` and `src/termio/Termio.zig:712`.
+`third_party/ghostty/src/Surface.zig:2573` and `src/termio/Termio.zig:712`.
 Search-input capacity does not block main, but that guarantee does not cover
 all Ghostty sends; see [Threads](design-app.md#threads).
 It affects responsiveness under renderer pressure and ordinarily heals when
@@ -47,7 +47,7 @@ Status: parked; a blanket no-mailbox-waits guarantee is unverified.
 Failed surface construction can retain the renderer's background image: the
 renderer keeps the image bytes, and its teardown does not release them when
 construction fails before renderer-thread cleanup
-(`app/third_party/ghostty/src/renderer/generic.zig`). Ghostty 1.4.0 frees the
+(`third_party/ghostty/src/renderer/generic.zig`). Ghostty 1.4.0 frees the
 derived configs, the environment and the font-grid reference when renderer or
 termio initialization fails (`src/Surface.zig`); stale copies after a
 successful initialization are not examined. These inherited error-path leaks
@@ -78,7 +78,7 @@ during `/reload` (small investigation). Status: parked by the user.
 ## Never-focused pane frame rate
 
 The renderer's unfocused pacer targets about 30 fps
-(`app/third_party/ghostty/src/renderer/Thread.zig:25`). The reported off-screen
+(`third_party/ghostty/src/renderer/Thread.zig:25`). The reported off-screen
 measurement is about 44 fps; the on-screen rate is unmeasured.
 Code inspection cannot establish that measurement or its present validity.
 The possible cost is excess rendering for unfocused visible panes, not lost
@@ -502,7 +502,7 @@ Status: unverified diagnostics, not evidence of a failing visual suite.
 
 The Ghostty pin is an andreypopp fork on the manaflow-ai embedding lineage;
 the upstream embedding API is internal, not a stable compatibility contract.
-See `app/third_party/ghostty/include/ghostty.h` and `.gitmodules`.
+See `third_party/ghostty/include/ghostty.h` and `.gitmodules`.
 Rebases can break app builds or behavior for developers and users; nothing
 heals until integration is repaired. Audit each rebase with targeted tests
 (medium recurring work), or own a narrower embedding boundary (large).
