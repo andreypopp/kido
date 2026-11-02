@@ -9,10 +9,11 @@
 # --print-key prints the release, which is also the cache key of the archive.
 # install downloads the archive into <prefix> unless <prefix>/verus exists.
 # verify cleans the verified crates, so that Verus runs on them again, then runs
-# cargo verus verify with $CARGO (the Makefile's cargo). It prints Verus's
-# per-module times, fails without a "verification results" line for each crate,
-# and fails over the cap. It prints SKIP and exits 0 when the archive cannot be
-# fetched, unless KO_VERUS_REQUIRED=1.
+# cargo verus verify with $CARGO (the Makefile's cargo). It keeps the whole output of
+# each crate in target/verus/<crate>.log and prints it only on a failure. It prints the
+# "verification results" line and the time of each crate, fails without a
+# "verification results" line for each crate, and fails over the cap. It prints SKIP
+# and exits 0 when the archive cannot be fetched, unless KO_VERUS_REQUIRED=1.
 #
 # Requires: curl, unzip, shasum or sha256sum.
 
@@ -75,28 +76,30 @@ verify() {
 		return 0
 	fi
 	: "${CARGO:?verus.sh verify runs under make}"
-	local dir
-	dir=$(mktemp -d)
-	trap "rm -rf '$dir'" EXIT
+	local dir="$script_dir/../target/verus"
+	mkdir -p "$dir"
 	export PATH="$prefix:$PATH"
 	for crate in "${crates[@]}"; do
-		"$CARGO" clean --locked -p "$crate"
+		"$CARGO" clean --locked -p "$crate" >/dev/null 2>&1
 	done
 	# One run for each crate: the requested crate builds last in its run, so the last result
 	# and the last time of its log are its own. The first run also builds vstd; that is not counted.
-	local total=0 crate
+	local total=0 crate result
 	for crate in "${crates[@]}"; do
 		log="$dir/$crate.log"
-		"$CARGO" verus verify --locked -p "$crate" -- --time-expanded 2>&1 | tee "$log"
-		status=${PIPESTATUS[0]}
+		status=0
+		"$CARGO" verus verify --locked -p "$crate" -- --time-expanded >"$log" 2>&1 || status=$?
 		if [ "$status" != 0 ]; then
+			cat "$log" >&2
 			return "$status"
 		fi
-		if ! grep '^verification results::' "$log" | tail -n 1 | grep -q '^verification results:: [0-9]* verified, 0 errors'; then
+		result=$(grep '^verification results::' "$log" | tail -n 1)
+		if ! grep -q '^verification results:: [0-9]* verified, 0 errors' <<<"$result"; then
 			echo "FAIL: no verification result of 0 errors for $crate" >&2
-			tail -n 20 "$log" >&2
+			cat "$log" >&2
 			return 1
 		fi
+		echo "$result"
 		ms=$(awk '/^total-time:/ { t = $2 } END { print t + 0 }' "$log")
 		echo "verified $crate in ${ms} ms"
 		total=$((total + ms))

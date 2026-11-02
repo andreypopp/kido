@@ -350,6 +350,23 @@ impl View {
         }
     }
 
+    pub(crate) closed spec fn started_from(self, old: View, serial: u64) -> bool {
+        if old.stage is Live {
+            self.stage == (Stage::Snapshotting { serial, received: 0 })
+        } else {
+            self.stage == old.stage
+        }
+    }
+
+    pub(crate) closed spec fn keeps_sealed(self, old: View, before: Output, after: Output) -> bool {
+        &&& before.closed() ==> after.closed()
+        &&& old.sealed(before) ==> self.sealed(after)
+    }
+
+    pub(crate) closed spec fn sealed(self, out: Output) -> bool {
+        self.stage is Closed ==> out.closed()
+    }
+
     pub(crate) closed spec fn shut(self, old: View) -> bool {
         &&& self.stage is Closed
         &&& self.cpos == old.cpos
@@ -393,6 +410,7 @@ impl View {
             old(self).wf(),
         ensures
             final(self).wf(),
+            final(self).started_from(*old(self), serial),
     {
         if matches!(self.stage, Stage::Live) {
             self.stage = Stage::Snapshotting { serial, received: 0 };
@@ -452,6 +470,7 @@ impl View {
         ensures
             final(self).wf(),
             final(self).completed(*old(self), *done),
+            final(self).keeps_sealed(*old(self), *old(wire).out, *final(wire).out),
     {
         match self.stage {
             Stage::Snapshotting { serial, received } if serial == done.serial()
@@ -508,6 +527,8 @@ fn emit_marked(wire: &mut Wire<'_>, ring: &Reader, here: Pos, offset: u64) -> (r
 // Assumes: it sends the skip event on the wire's output only, and never reopens a closed output.
 #[verifier::external_body]
 fn emit_skipped(wire: &mut Wire<'_>, head: u64, from: u64)
+    requires
+        from <= head,
     ensures
         old(wire).out.closed() ==> final(wire).out.closed(),
 {
@@ -556,8 +577,7 @@ impl View {
             final(self).cpos == old(self).cpos || exists|i: int|
                 0 <= i < old(self).batch@.len() && final(self).cpos == (#[trigger] old(self).batch@[i]).0,
             final(self).same_kept(*old(self)),
-            old(out).closed() ==> final(out).closed(),
-            final(self).stage is Closed ==> final(out).closed(),
+            final(self).keeps_sealed(*old(self), *old(out), *final(out)),
     {
         proof {
             ring.facts();
@@ -607,7 +627,7 @@ impl View {
             go ==> final(self).batch@.len() < BATCH,
             old(self).cpos.v() <= final(self).cpos.v(),
             final(self).same_kept(*old(self)),
-            old(out).closed() ==> final(out).closed(),
+            final(self).keeps_sealed(*old(self), *old(out), *final(out)),
     {
         proof {
             ring.facts();
@@ -655,7 +675,7 @@ impl View {
             old(self).batch@.len() < BATCH,
         ensures
             final(self).same_kept(*old(self)),
-            old(wire).out.closed() ==> final(wire).out.closed(),
+            final(self).keeps_sealed(*old(self), *old(wire).out, *final(wire).out),
             r is Ok ==> final(self).resuming(
                 ring.log(),
                 ring.tl(),
@@ -712,7 +732,7 @@ impl View {
             final(self).stage is Live || final(self).stage is Closed,
             final(self).same_kept(*old(self)),
             old(self).cpos.v() <= final(self).cpos.v(),
-            old(wire).out.closed() ==> final(wire).out.closed(),
+            final(self).keeps_sealed(*old(self), *old(wire).out, *final(wire).out),
     {
         proof {
             d.facts();
@@ -741,7 +761,7 @@ impl View {
                 going ==> self.batch@.len() < BATCH,
                 self.same_kept(*old(self)),
                 old(self).cpos.v() <= self.cpos.v(),
-                old(wire).out.closed() ==> wire.out.closed(),
+                self.keeps_sealed(*old(self), *old(wire).out, *wire.out),
             decreases if going { 1 + l.head - pos.v() as int } else { 0int },
         {
             proof {
@@ -856,7 +876,7 @@ impl View {
             final(self).kept(*old(self)),
             r is Ok && r->Ok_0 is Some ==> (old(self).blocked || old(self).history is None
                 || lost(old(d).log(), old(d).tl(), old(self).cpos.v() as nat)),
-            old(wire).out.closed() ==> final(wire).out.closed(),
+            final(self).keeps_sealed(*old(self), *old(wire).out, *final(wire).out),
     {
         proof {
             d.facts();
@@ -914,14 +934,15 @@ impl View {
         match decision {
             Decision::Skip => {
                 let ghost d3 = *d;
-                let head = d.end_offset()?.get();
+                let end = d.end_offset()?.get();
                 proof {
                     view_grows(*self, d.cap(), d3.log(), d.log());
                     Delivery::grew_trans(d0, d3, *d);
+                    log_le_head(d3.log(), d.log());
                 }
-                emit_skipped(wire, head, self.coff);
+                emit_skipped(wire, end, self.coff);
                 let r = self.request(&*wire.out, History::None);
-                self.coff = head;
+                self.coff = end;
                 Ok(r)
             },
             Decision::Snapshot(history) => Ok(self.request(&*wire.out, history)),
@@ -956,7 +977,7 @@ impl View {
         ensures
             final(self).wf(),
             final(self).took(*old(self), handle),
-            old(out).closed() ==> final(out).closed(),
+            final(self).keeps_sealed(*old(self), *old(out), *final(out)),
     {
         let (current, received) = match self.stage {
             Stage::Snapshotting { serial, received } => (serial, received),
@@ -1014,7 +1035,7 @@ impl View {
             final(self).wf(),
             final(d).wf(),
             final(self).pumped(*old(self), r, old(d).log(), old(d).tl()),
-            old(wire).out.closed() ==> final(wire).out.closed(),
+            final(self).keeps_sealed(*old(self), *old(wire).out, *final(wire).out),
     {
         if let Some(history) = self.flush_wanted(&*wire.out) {
             return Ok(Some(history));
@@ -1043,6 +1064,7 @@ impl View {
         ensures
             final(self).wf(),
             final(d).wf(),
+            final(self).keeps_sealed(*old(self), *old(wire).out, *final(wire).out),
     {
         if !matches!(self.stage, Stage::Live) || self.wanted.is_none() {
             return Ok(None);
@@ -1166,9 +1188,7 @@ mod tests {
         let mut writer = delivery.ring().writer().unwrap();
         let mut ws = Ws::new(Vec::new());
         let mut view = View::new(PaneId::new(1), None, History::None, &delivery);
-        delivery.head();
-        let (serial, req) = delivery.mint_serial().unwrap();
-        assert!(delivery.request(serial));
+        let (serial, req) = delivery.request().unwrap();
         view.started(serial, History::None);
         for i in 0..3 {
             let mut body = vec![0; 100];

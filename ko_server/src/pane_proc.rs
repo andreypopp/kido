@@ -45,7 +45,7 @@ pub(crate) struct Death {
     pub(crate) cause: Cause,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Event {
     Title,
     Pwd,
@@ -92,7 +92,7 @@ impl fmt::Display for Refusal {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum Fault {
     Delivery(delivery::Fault),
     Frame(Malformed),
@@ -454,17 +454,9 @@ impl PaneProc {
         if !self.is_open() {
             return None;
         }
-        let delivery = self.stage.delivery_mut()?;
-        delivery.head();
-        let (serial, req) = delivery.mint_serial()?;
+        let (serial, req) = self.stage.delivery_mut()?.request()?;
         let _ = self.send(&ToPane::Snapshot { req, history }, io);
-        if !self.is_open() {
-            return None;
-        }
-        self.stage
-            .delivery_mut()?
-            .request(serial)
-            .then_some((serial, req))
+        self.is_open().then_some((serial, req))
     }
 
     pub(crate) fn screen(
@@ -970,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_request_that_cannot_be_sent_is_refused_and_never_reports() {
+    fn a_snapshot_request_that_cannot_be_sent_is_refused_and_fails_its_entry_without_slices() {
         let mut fake = fake(2048);
         drop(std::mem::replace(
             &mut fake.peer,
@@ -978,11 +970,15 @@ mod tests {
         ));
         let asked = fake.with(|proc, io| proc.snapshot(History::None, io));
         assert_eq!((asked, fake.proc.life()), (None, Life::Closed));
-        assert!(
-            fake.events
-                .iter()
-                .all(|event| !matches!(event, Event::Snapshot { .. }))
-        );
+        let failed: Vec<_> = fake
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Snapshot(done) => Some((done.hold(), done.slices())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failed, [(None, 0)]);
     }
 
     #[test]
@@ -1106,9 +1102,7 @@ mod tests {
     fn watched() -> Fake {
         let mut fake = fake(64);
         let delivery = fake.proc.stage.delivery_mut().unwrap();
-        delivery.head();
-        let (serial, _) = delivery.mint_serial().unwrap();
-        assert!(delivery.request(serial));
+        delivery.request().unwrap();
         let (_, paste) = delivery.mint_serial().unwrap();
         let (_, screen) = delivery.mint_serial().unwrap();
         fake.proc.pending.insert(paste, Reply::Paste);

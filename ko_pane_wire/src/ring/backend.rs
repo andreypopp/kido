@@ -69,6 +69,12 @@ pub struct HandleBox(Handle);
 #[verifier::external_body]
 pub struct ExIoError(std::io::Error);
 
+#[cfg(not(loom))]
+#[allow(dead_code)]
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExBorrowedFd<'a>(BorrowedFd<'a>);
+
 // Assumes: it returns a fresh mapping that only this handle refers to; it states nothing, and
 // `Reader::with` establishes `wf` from the zero-filled mapping.
 #[cfg(not(loom))]
@@ -269,37 +275,47 @@ impl Backend {
         self.handle.write(at, bytes)
     }
 
-    // Assumes: the same as `write`, but the slice gives the caller the bytes to fill, and the
-    // permission keeps no claim about their contents. The slice lives only while the Backend is
-    // borrowed.
+    // Assumes: it is read(2) of ko_sys::pty::read on `fd` into the data bytes with the indices
+    // `(at + j) % capacity` for j < len, which the permission `perm` covers. On Ok(n) it
+    // returns n <= len, the permission gives the bytes [at, at + n) some value and no claim on
+    // it, and the other bytes keep theirs. On Err nothing changes.
     #[cfg(not(loom))]
     #[verifier::external_body]
-    pub fn room(
+    pub fn read(
         &mut self,
+        fd: BorrowedFd<'_>,
         at: u64,
         len: usize,
         Tracked(perm): Tracked<&mut Map<nat, ByteTok>>,
-    ) -> (res: Option<&mut [u8]>)
+    ) -> (res: std::io::Result<usize>)
         requires
             covers(old(perm).dom(), old(self).cap(), at as nat, (at as nat + len) as nat),
             tok_ok(old(self).base(), *old(perm)),
             at as nat % old(self).cap() + len <= old(self).cap(),
         ensures
-            res.is_some(),
             *final(self) == *old(self),
             final(perm).dom() == old(perm).dom(),
             tok_ok(old(self).base(), *final(perm)),
-            forall|j: nat|
-                j < len ==> #[trigger] final(perm)[(at as nat + j) % old(self).cap()].val() is None,
-            forall|k: nat|
-                old(perm).contains_key(k) && !in_rng(
-                    old(self).cap(),
-                    at as nat,
-                    (at as nat + len) as nat,
-                    k,
-                ) ==> #[trigger] final(perm)[k] == old(perm)[k],
+            if res is Ok {
+                &&& res->Ok_0 <= len
+                &&& forall|j: nat|
+                    j < res->Ok_0 ==> #[trigger] final(perm)[(at as nat + j) % old(self).cap()].val() is Some
+                &&& forall|k: nat|
+                    old(perm).contains_key(k) && !in_rng(
+                        old(self).cap(),
+                        at as nat,
+                        (at as nat + res->Ok_0) as nat,
+                        k,
+                    ) ==> #[trigger] final(perm)[k] == old(perm)[k]
+            } else {
+                *final(perm) == *old(perm)
+            },
     {
-        self.handle.room(at, len)
+        let window = self
+            .handle
+            .room(at, len)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        ko_sys::pty::read(fd, window)
     }
 }
 

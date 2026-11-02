@@ -143,15 +143,6 @@ impl Slices<'_> {
         if self.room == 0 {
             return;
         }
-        let flags = Slice {
-            first: self.first,
-            last: false,
-            screen: self.screen,
-        }
-        .encode();
-        if let Some(payload) = self.io.out.writer.payload(SLICE_HEADER) {
-            payload.copy_from_slice(&flags);
-        }
         self.first = false;
         self.io
             .out
@@ -166,6 +157,19 @@ impl Slices<'_> {
                 self.commit();
                 self.io.wait_space(SLICE_HEADER.saturating_add(1))?;
                 self.room = self.io.out.available().saturating_sub(SLICE_HEADER);
+                if self.room > 0 {
+                    let flags = Slice {
+                        first: self.first,
+                        last: false,
+                        screen: self.screen,
+                    }
+                    .encode();
+                    self.io
+                        .out
+                        .writer
+                        .write_at(0, &flags)
+                        .ok_or(Stop::Failed(Failure::RingFull))?;
+                }
             }
             let take = self.room.saturating_sub(self.used).min(bytes.len());
             let (head, rest) = bytes.split_at(take);
@@ -173,11 +177,8 @@ impl Slices<'_> {
             self.io
                 .out
                 .writer
-                .payload(self.room.saturating_add(SLICE_HEADER))
-                .and_then(|payload| payload.get_mut(start..))
-                .and_then(|room| room.get_mut(..take))
-                .ok_or(Stop::Failed(Failure::RingFull))?
-                .copy_from_slice(head);
+                .write_at(start, head)
+                .ok_or(Stop::Failed(Failure::RingFull))?;
             self.used = self.used.saturating_add(take);
             bytes = rest;
         }
@@ -560,28 +561,25 @@ impl Pane {
             out.announce_full();
             return false;
         }
-        let Some(dst) = out.writer.payload(room) else {
-            return false;
-        };
         let (mut used, mut reads) = (0, 0);
         while used < room && reads < MAX_READS {
             reads += 1;
-            let Some(window) = dst.get_mut(used..) else {
-                break;
-            };
-            match pty::read(process.master.as_fd(), window) {
-                Ok(0) => {
+            match out
+                .writer
+                .fill(process.master.as_fd(), room.saturating_sub(used))
+            {
+                Some(Ok(0)) => {
                     process.eof = true;
                     break;
                 }
-                Ok(count) => used = used.saturating_add(count),
-                Err(_) => break,
+                Some(Ok(count)) => used = used.saturating_add(count),
+                _ => break,
             }
         }
         if used == 0 {
             return false;
         }
-        if let Some(bytes) = dst.get(..used) {
+        if let Some(bytes) = out.writer.pending(used) {
             vt.write(bytes);
         }
         let changes = vt.take_changes();

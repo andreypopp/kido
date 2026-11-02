@@ -435,8 +435,10 @@ Conventions:
   constructor of each role (`Backend::mint_reader`,
   `Backend::mint_writer`), the mapping's creation
   (`create_handle`, with no `ensures`), the capacity getter, the
-  header word load and store, the byte accessors and the opaque types
-  that they use. In `delivery.rs`: the sink call (`hand_over`, with
+  header word load and store, the byte accessors, the pty read into
+  the writer's bytes (`Backend::read`, read(2)'s contract) and the
+  opaque types that they use. A record publishes only over payload
+  bytes that were written. In `delivery.rs`: the sink call (`hand_over`, with
   no contract), the stamp counter's constructor (`mint_stamps`, one
   for each process, with the opaque token `Bound` of the stamps that
   it handed out), `bind_fresh`, which ties a stamp that `Bound` does
@@ -459,9 +461,12 @@ Conventions:
   without a "verification results" line of 0 errors for each crate:
   it verifies one crate for each `cargo verus verify` run and reads
   the last result and time of that run, because Verus names no crate
-  on the line. `ko_server::delivery` (`Delivery`) owns the pane's
+  on the line. It keeps each crate's whole output in
+  `target/verus/<crate>.log` and prints it only on a failure.
+  `ko_server::delivery` (`Delivery`) owns the pane's
   `Reader`, its snapshot queues, the delivered position and the mint
-  of every `Req` (a u64 serial; the `Req` is its low 32 bits). Its
+  of every `Req` (a u64 serial; the `Req` is its low 32 bits). A
+  snapshot request's floor is the head that `request` loads. Its
   `wf` is `Pane_core.fst`'s `pane_inv`, with the queued serials
   unique and in mint order. A slice reaches a view only as a
   `Handle` that `deliver` constructs, and a snapshot's end only as a

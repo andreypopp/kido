@@ -17,6 +17,7 @@ use std::os::fd::{BorrowedFd, OwnedFd};
 
 use vstd::open_atomic_invariant;
 use vstd::prelude::*;
+use vstd::slice::slice_subrange;
 
 use crate::frame::{self, Dead, Size};
 use backend::{Backend, ByteTok, Handle, HandleBox, Index, MAX_CAPACITY, MIN_CAPACITY};
@@ -39,6 +40,44 @@ pub use spec::{
 use vstd::tokens::InstanceId;
 
 verus! {
+
+proof fn grown_filled(
+    cap: nat,
+    head: nat,
+    before: Map<nat, ByteTok>,
+    after: Map<nat, ByteTok>,
+    f: nat,
+    g: nat,
+    at: nat,
+    n: nat,
+    room: nat,
+)
+    requires
+        n <= room,
+        cap > 0,
+        filled_some(before, cap, head, f),
+        after.dom() == before.dom(),
+        covers(before.dom(), cap, at, at + room),
+        forall|i: nat| i < n ==> #[trigger] after[(at + i) % cap].val() is Some,
+        forall|k: nat|
+            before.contains_key(k) && !in_rng(cap, at, at + n, k) ==> #[trigger] after[k] == before[k],
+        g <= f || (at <= head + HEADER as nat + f && head + HEADER as nat + g <= at + n),
+    ensures
+        filled_some(after, cap, head, g),
+{
+    assert forall|j: nat| j < g implies #[trigger] some_at(after, cap, head, j) by {
+        let k = (head + HEADER as nat + j) % cap;
+        if in_rng(cap, at, at + n, k) {
+            let p = choose|p: nat| at <= p < at + n && #[trigger] (p % cap) == k;
+            assert((at + (p - at) as nat) % cap == k);
+            rng_has(cap, at, at + room, p);
+        } else if j >= f {
+            rng_has(cap, at, at + n, head + HEADER as nat + j);
+        } else {
+            assert(some_at(before, cap, head, j));
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordKind {
@@ -428,6 +467,7 @@ impl Reader {
                 let h = h.unwrap();
                 &&& BYTES <= h.tag <= PAD
                 &&& self.ghost().tail <= pos
+                &&& h.off <= pos
                 &&& pos as nat + HEADER as nat + h.len as nat <= self.ghost().log.head
                 &&& pos as nat % self.cap() + HEADER as nat + h.len as nat <= self.cap()
                 &&& h.next as nat == pos as nat + HEADER as nat + h.len as nat
@@ -479,7 +519,8 @@ impl Reader {
         let next = pos.checked_add(HEADER)?.checked_add(len)?;
         let capacity = self.shared.capacity();
         let index_end = pos.checked_rem(capacity)?.checked_add(HEADER)?.checked_add(len)?;
-        let ok = (BYTES..=PAD).contains(&tag_byte) && index_end <= capacity && next <= self.seen;
+        let ok = (BYTES..=PAD).contains(&tag_byte) && index_end <= capacity && next <= self.seen
+            && off <= pos;
         if ok {
             Some(Header { tag: tag_byte, len, off, next })
         } else {
@@ -967,6 +1008,7 @@ pub struct Writer {
     head: u64,
     woff: u64,
     tail: u64,
+    filled: u64,
     #[allow(dead_code)]
     world: Tracked<World>,
     #[allow(dead_code)]
@@ -993,6 +1035,17 @@ impl Writer {
         &&& self.ghost().pend is None
         &&& dom_is(self.wperm@.dom(), self.cap(), self.ghost().log.head, self.ghost().tail + self.cap())
         &&& tok_ok(self.shared.base(), self.wperm@)
+        &&& self.filled > 0 ==> filled_ok(
+            self.cap(),
+            self.ghost().log.head,
+            self.ghost().tail,
+            self.filled as nat,
+        )
+        &&& filled_some(self.wperm@, self.cap(), self.ghost().log.head, self.filled as nat)
+    }
+
+    pub closed spec fn staged_len(&self) -> nat {
+        self.filled as nat
     }
 
     pub closed spec fn same_as(&self, other: &Writer) -> bool {
@@ -1028,6 +1081,7 @@ impl Writer {
             head: 0,
             woff: 0,
             tail: 0,
+            filled: 0,
             world: Tracked(world),
             tok: Tracked(wtok),
             wperm: Tracked(data),
@@ -1065,12 +1119,12 @@ impl Writer {
         ensures
             final(self).wf(),
             final(self).cap() == old(self).cap(),
-            (r is Refused) <==> !fits_ok(
+            (r is Refused) <==> !(fits_ok(
                 old(self).cap(),
                 old(self).ghost().log.head,
                 old(self).ghost().tail,
                 len as nat,
-            ),
+            ) && len as nat <= old(self).staged_len()),
             (r is Refused) ==> final(self).same_as(old(self)),
             !(r is Refused) ==> committed(old(self).ghost(), final(self).ghost(), kind, len as nat, r is Idle),
     {
@@ -1081,6 +1135,10 @@ impl Writer {
             Some(next) => next,
             None => return Commit::Refused,
         };
+        if len > self.filled {
+            return Commit::Refused;
+        }
+        let ghost staged0 = self.wperm@;
         let woff = match kind {
             RecordKind::Bytes => match self.woff.checked_add(len) {
                 Some(woff) => woff,
@@ -1151,6 +1209,14 @@ impl Writer {
                     rng_has(cap, w0.log.head, nhd, w0.log.head + j);
                     map_facts(perm0, keys, (w0.log.head + j) % cap);
                 }
+                assert forall|j: nat| j < len as nat implies #[trigger] some_at(m, cap, w0.log.head, j) by {
+                    let k = (w0.log.head + HEADER as nat + j) % cap;
+                    rng_has(cap, w0.log.head, nhd, w0.log.head + HEADER as nat + j);
+                    map_facts(perm0, keys, k);
+                    rng_disjoint(cap, w0.log.head, w0.log.head + HEADER as nat, nhd, k);
+                    assert(some_at(staged0, cap, w0.log.head, j));
+                    assert(perm0[k] == staged0[k]);
+                }
                 assert(staged(cap, m, w0.log.head, rec));
                 inst.publish(kind, len as nat, m, &mut slog, self.tok.borrow_mut(), m);
                 pair = (perm, slog);
@@ -1168,6 +1234,7 @@ impl Writer {
         });
         self.woff = woff;
         self.head = next;
+        self.filled = 0;
         proof {
             assert(self.ghost().log.head == w0.log.head + HEADER as nat + len as nat);
             assert(self.ghost().tail == w0.tail);
@@ -1223,6 +1290,18 @@ impl Writer {
                 let ghost perm0 = self.wperm@;
                 tok_ok_union(self.shared.base(), perm0, pool);
                 self.wperm.borrow_mut().tracked_union_prefer_right(pool);
+                self.world.borrow().inst.writer_facts(self.tok.borrow());
+                assert forall|j: nat| j < self.filled as nat implies #[trigger] some_at(
+                    self.wperm@,
+                    cap,
+                    w0.log.head,
+                    j,
+                ) by {
+                    let k = (w0.log.head + HEADER as nat + j) % cap;
+                    rng_has(cap, w0.log.head, w0.tail + cap, w0.log.head + HEADER as nat + j);
+                    rng_disjoint(cap, w0.log.head, w0.tail + cap, tail_tok.value() + cap, k);
+                    assert(some_at(perm0, cap, w0.log.head, j));
+                }
                 assert forall|i: nat| self.wperm@.dom().contains(i) <==> #[trigger] in_rng(
                     cap,
                     w0.log.head,
@@ -1283,7 +1362,13 @@ impl Writer {
             return None;
         }
         let ghost w0 = self.ghost();
-        let committed = self.commit(RecordKind::Pad, end.checked_sub(HEADER)?);
+        let pad = end.checked_sub(HEADER)?;
+        let zeros = [0u8; HEADER as usize];
+        proof {
+            assert(pad <= HEADER);
+        }
+        self.write_at(0, slice_subrange(zeros.as_slice(), 0, pad as usize))?;
+        let committed = self.commit(RecordKind::Pad, pad);
         let idle = match committed {
             Commit::Refused => return None,
             Commit::Idle => true,
@@ -1301,38 +1386,178 @@ impl Writer {
         })
     }
 
-    #[cfg(not(loom))]
-    pub fn payload(&mut self, len: usize) -> (r: Option<&mut [u8]>)
+    fn window(&self, offset: u64, len: u64) -> (r: Option<u64>)
+        requires
+            self.wf(),
+        ensures
+            r.is_some() <==> fits_ok(
+                self.cap(),
+                self.ghost().log.head,
+                self.ghost().tail,
+                offset as nat + len as nat,
+            ),
+            r.is_some() ==> {
+                &&& r.unwrap() as nat == self.ghost().log.head + HEADER as nat + offset as nat
+                &&& r.unwrap() as nat % self.cap() + len as nat <= self.cap()
+                &&& covers(self.wperm@.dom(), self.cap(), r.unwrap() as nat, r.unwrap() as nat + len as nat)
+            },
+    {
+        proof {
+            self.facts();
+        }
+        let total = offset.checked_add(len)?;
+        self.fits(total)?;
+        let at = self.head.checked_add(HEADER)?.checked_add(offset)?;
+        proof {
+            let cap = self.cap();
+            let head = self.ghost().log.head;
+            payload_fits(cap, head, total as nat);
+            mod_step(cap, (head + HEADER as nat) as nat, offset as nat);
+            covers_window(
+                self.wperm@.dom(),
+                cap,
+                head,
+                self.ghost().tail + cap,
+                at as nat,
+                at as nat + len as nat,
+            );
+        }
+        Some(at)
+    }
+
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> (r: Option<()>)
         requires
             old(self).wf(),
         ensures
             final(self).wf(),
             final(self).same_as(old(self)),
+            final(self).cap() == old(self).cap(),
             r.is_some() <==> fits_ok(
                 old(self).cap(),
                 old(self).ghost().log.head,
                 old(self).ghost().tail,
-                len as nat,
+                offset as nat + bytes.len() as nat,
             ),
+            final(self).staged_len() == if r.is_some() && offset <= old(self).staged_len() {
+                if old(self).staged_len() >= offset + bytes.len() {
+                    old(self).staged_len()
+                } else {
+                    (offset + bytes.len()) as nat
+                }
+            } else {
+                old(self).staged_len()
+            },
     {
+        let at = self.window(offset as u64, bytes.len() as u64)?;
+        let ghost before = self.wperm@;
+        self.shared.write(at, bytes, Tracked(self.wperm.borrow_mut()))?;
+        let total = (offset as u64).checked_add(bytes.len() as u64)?;
+        let ghost old_filled = self.filled;
+        if (offset as u64) <= self.filled && self.filled < total {
+            self.filled = total;
+        }
+        proof {
+            self.world.borrow().inst.cap_bounds();
+            grown_filled(
+                self.cap(),
+                self.ghost().log.head,
+                before,
+                self.wperm@,
+                old_filled as nat,
+                self.filled as nat,
+                at as nat,
+                bytes.len() as nat,
+                bytes.len() as nat,
+            );
+        }
+        Some(())
+    }
+
+    #[cfg(not(loom))]
+    pub fn fill(&mut self, fd: BorrowedFd<'_>, len: usize) -> (r: Option<io::Result<usize>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            final(self).same_as(old(self)),
+            final(self).cap() == old(self).cap(),
+            r.is_some() <==> fits_ok(
+                old(self).cap(),
+                old(self).ghost().log.head,
+                old(self).ghost().tail,
+                old(self).staged_len() + len as nat,
+            ),
+            match r {
+                Some(Ok(n)) => n <= len && final(self).staged_len() == old(self).staged_len() + n,
+                _ => final(self).staged_len() == old(self).staged_len(),
+            },
+    {
+        let at = self.window(self.filled, len as u64)?;
+        let ghost before = self.wperm@;
+        let done = self.shared.read(fd, at, len, Tracked(self.wperm.borrow_mut()));
+        match done {
+            Ok(n) => {
+                let ghost old_filled = self.filled;
+                self.filled = match self.filled.checked_add(n as u64) {
+                    Some(filled) => filled,
+                    None => {
+                        proof {
+                            assert(false);
+                        }
+                        return None;
+                    },
+                };
+                proof {
+                    self.world.borrow().inst.cap_bounds();
+                    grown_filled(
+                        self.cap(),
+                        self.ghost().log.head,
+                        before,
+                        self.wperm@,
+                        old_filled as nat,
+                        self.filled as nat,
+                        at as nat,
+                        n as nat,
+                        len as nat,
+                    );
+                    assert(filled_ok(self.cap(), self.ghost().log.head, self.ghost().tail, self.filled as nat));
+                }
+                Some(Ok(n))
+            },
+            Err(e) => Some(Err(e)),
+        }
+    }
+
+    #[cfg(not(loom))]
+    pub fn pending(&self, len: usize) -> (r: Option<&[u8]>)
+        requires
+            self.wf(),
+        ensures
+            r.is_some() <==> 0 < len as nat <= self.staged_len(),
+            r.is_some() ==> r.unwrap().len() == len,
+    {
+        if len == 0 || len as u64 > self.filled {
+            return None;
+        }
         proof {
             self.facts();
         }
-        let len64 = len as u64;
-        self.fits(len64)?;
         let at = self.head.checked_add(HEADER)?;
+        let seen = at.checked_add(self.filled)?;
         proof {
-            payload_fits(self.cap(), self.ghost().log.head, len64 as nat);
+            let cap = self.cap();
+            let head = self.ghost().log.head;
+            payload_fits(cap, head, self.filled as nat);
             covers_window(
                 self.wperm@.dom(),
-                self.cap(),
-                self.ghost().log.head,
-                self.ghost().tail + self.cap(),
-                at as nat,
-                at as nat + len as nat,
+                cap,
+                head,
+                self.ghost().tail + cap,
+                head,
+                seen as nat,
             );
         }
-        self.shared.room(at, len, Tracked(self.wperm.borrow_mut()))
+        self.shared.bytes(self.head, seen, at, len as u64, Tracked(self.wperm.borrow()))
     }
 
     pub fn publish(&mut self, kind: RecordKind, len: usize) -> (c: Commit)
@@ -1340,12 +1565,12 @@ impl Writer {
             old(self).wf(),
         ensures
             final(self).wf(),
-            (c is Refused) <==> !fits_ok(
+            (c is Refused) <==> !(fits_ok(
                 old(self).cap(),
                 old(self).ghost().log.head,
                 old(self).ghost().tail,
                 len as nat,
-            ),
+            ) && len as nat <= old(self).staged_len()),
             (c is Refused) ==> final(self).same_as(old(self)),
             !(c is Refused) ==> committed(old(self).ghost(), final(self).ghost(), kind, len as nat, c is Idle),
     {
@@ -1372,41 +1597,12 @@ impl Writer {
                 c is Idle,
             ),
     {
-        proof {
-            self.facts();
-        }
-        let len = payload.len() as u64;
-        if self.fits(len).is_none() {
+        if self.write_at(0, payload).is_none() {
             return Commit::Refused;
         }
-        let at = match self.head.checked_add(HEADER) {
-            Some(at) => at,
-            None => {
-                proof {
-                    assert(false);
-                }
-                return Commit::Refused;
-            },
-        };
+        let len = payload.len() as u64;
         proof {
-            payload_fits(self.cap(), self.ghost().log.head, len as nat);
-            covers_window(
-                self.wperm@.dom(),
-                self.cap(),
-                self.ghost().log.head,
-                self.ghost().tail + self.cap(),
-                at as nat,
-                at as nat + len as nat,
-            );
-        }
-        match self.shared.write(at, payload, Tracked(self.wperm.borrow_mut())) {
-            Some(_) => {},
-            None => {
-                proof {
-                    assert(false);
-                }
-                return Commit::Refused;
-            },
+            assert(self.staged_len() >= payload.len());
         }
         self.commit(kind, len)
     }
@@ -1601,6 +1797,44 @@ mod tests {
                 pair.apply(op);
             }
         }
+    }
+
+    #[test]
+    fn a_record_whose_offset_is_past_its_position_is_refused() {
+        let (mut reader, mut writer) = ring(512);
+        writer.available();
+        assert_ne!(writer.put(RecordKind::Bytes, &[7; 10]), Commit::Refused);
+        reader.head();
+        assert!(reader.record(Pos(0)).is_ok());
+        reader
+            .shared
+            .duplicate()
+            .unwrap()
+            .write(5, &1u64.to_le_bytes())
+            .unwrap();
+        assert_eq!(reader.record(Pos(0)), Err(Invalid::Record));
+    }
+
+    #[test]
+    fn a_record_is_published_only_over_bytes_that_were_filled() {
+        use std::io::Write;
+        use std::os::fd::AsFd;
+        let (mut reader, mut writer) = ring(512);
+        let (pipe_out, mut pipe_in) = std::io::pipe().unwrap();
+        writer.available();
+        assert_eq!(writer.publish(RecordKind::Bytes, 3), Commit::Refused);
+        assert!(writer.pending(1).is_none());
+        pipe_in.write_all(b"abcd").unwrap();
+        assert_eq!(writer.fill(pipe_out.as_fd(), 3).unwrap().unwrap(), 3);
+        assert_eq!(writer.pending(3), Some(&b"abc"[..]));
+        assert_eq!(writer.publish(RecordKind::Bytes, 4), Commit::Refused);
+        assert!(writer.write_at(3, b"d").is_some());
+        assert_eq!(writer.pending(4), Some(&b"abcd"[..]));
+        assert_ne!(writer.publish(RecordKind::Bytes, 4), Commit::Refused);
+        assert!(writer.pending(1).is_none());
+        let head = reader.head();
+        assert_eq!(reader.payload(Pos(0)).unwrap(), b"abcd");
+        assert_eq!(head, Pos(17));
     }
 
     #[test]
