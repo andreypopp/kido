@@ -1103,22 +1103,24 @@ func (h *harness) waitGlyph(title, glyph string) {
 		func() string { return fmt.Sprintf("row %q (is %q)", want, h.rowFor(title)) })
 }
 
-func (h *harness) programStatus(pane, body string, title ...string) {
+func (h *harness) writeTTY(pane, s string) {
 	h.t.Helper()
-	tty := h.in("display-message", "-p", "-t", pane, "#{pane_tty}")
-	f, err := os.OpenFile(tty, os.O_WRONLY, 0)
+	f, err := os.OpenFile(h.in("display-message", "-p", "-t", pane, "#{pane_tty}"), os.O_WRONLY, 0)
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	defer f.Close()
-	if len(title) > 0 {
-		if _, err := f.WriteString("\x1b]2;π - " + title[0] + "\x1b\\"); err != nil {
-			h.t.Fatal(err)
-		}
-	}
-	if _, err := f.WriteString("\x1b]7501;" + body + "\x1b\\"); err != nil {
+	if _, err := f.WriteString(s); err != nil {
 		h.t.Fatal(err)
 	}
+}
+
+func (h *harness) programStatus(pane, body string, title ...string) {
+	h.t.Helper()
+	if len(title) > 0 {
+		h.writeTTY(pane, "\x1b]2;π - "+title[0]+"\x1b\\")
+	}
+	h.writeTTY(pane, "\x1b]7501;"+body+"\x1b\\")
 	want := map[string]string{}
 	for _, part := range strings.Split(body, ":") {
 		key, value, _ := strings.Cut(part, "=")

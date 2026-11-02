@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -76,21 +77,27 @@ func TestFollowActivePane(t *testing.T) {
 func TestSSHRow(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
+	ssh := kidoBin + " ssh -F /dev/null -o ProxyCommand=" + h.sshProxy() + " deploy@example.test"
 	// ssh blocks on the proxy command, so no network is needed.
 	pane := h.newWindow("alpha", "")
-	h.in("send-keys", "-t", pane,
-		kidoBin+" ssh -F /dev/null -o ProxyCommand="+h.sshProxy()+" deploy@example.test", "Enter")
+	h.in("send-keys", "-t", pane, ssh, "Enter")
 	h.waitPaneCommand(pane, "ssh")
 	h.waitRow("ssh deploy@example.test")
 
 	// OSC 133 markers cross the connection and land on the local pane, so
-	// the row must name the far side's running command too.
-	script := "{ sleep 1; printf '\\033]133;C\\007';" +
-		" sleep 2; printf '\\033]133;A\\007';" +
-		" sleep 1; printf '\\033]133;C;cmdline_url=sleep%%2045\\007'; } >/dev/tty &\n" +
-		"exec " + kidoBin + " ssh -F /dev/null -o ProxyCommand=" + h.sshProxy() + " deploy@example.test\n"
-	h.newWindow("alpha", "", "sh", "-c", script)
-	h.waitRow("ssh deploy@example.test")
+	// the row must name the far side's running command too. The test writes
+	// them itself, each after the sidebar shows the one before: a prompt
+	// counts only if its whole second is later than the command's start.
+	far := h.newWindow("alpha", "", "sh", "-c", "exec "+ssh)
+	h.waitPaneCommand(far, "ssh")
+	h.writeTTY(far, "\x1b]133;C\x07")
+	running := func() bool { return strings.Contains(strings.Join(h.rows(), "\n"), "◼") }
+	h.waitFor(running, settle, msgf("the far side's command to show as running"))
+	started, _ := strconv.ParseInt(h.in("display-message", "-p", "-t", far, "#{pane_command_start_time}"), 10, 64)
+	h.waitFor(func() bool { return time.Now().Unix() > started }, settle, msgf("the next whole second"))
+	h.writeTTY(far, "\x1b]133;A\x07")
+	h.waitFor(func() bool { return !running() }, settle, msgf("the row to go idle at the far side's prompt"))
+	h.writeTTY(far, "\x1b]133;C;cmdline_url=sleep%2045\x07")
 	h.waitRow("ssh deploy@example.test: sleep 45")
 }
 
