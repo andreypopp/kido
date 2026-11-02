@@ -126,8 +126,9 @@ refreshed by every remote path, palette, URL or intent alike. There is no
 remote restore. Off-screen FileMenuTests create inert window owners without
 starting a server.
 Local keeps `SessionModel.title` (session and current window); remote prefixes
-it with resolved `user@host / `. The original dialing alias is the window
-content's tooltip. Offline titles drop the session/window name.
+it with the entered host as typed (`alias / ` or `user@host / `). A bad
+destination or config fails with the master's stderr. Offline titles drop the
+session/window name.
 
 `AppDelegate` owns shared Ghostty configuration, app lifecycle and menus.
 Each `WindowOwner` owns its immutable Host, generation, transport, Connection,
@@ -1302,7 +1303,7 @@ the presentation options. New Session is a standard
 image toolbar item, as is the sidebar toggle, targeting the split view
 controller. Both are borderless and the toolbar is not customizable.
 
-Titlebar tabs and the remote user@host label occupy a flexible native
+Titlebar tabs and the remote host label (the entered host) occupy a flexible native
 `NSToolbarItem` after `sidebarTrackingSeparator`, not a content overlay.
 They follow the native separator when the floating sidebar opens.
 `WindowOwner` computes the background and appearance once and assigns them
@@ -1987,8 +1988,8 @@ and the notifier's entries with one (no banners). That asymmetry is
 deliberate.
 
 **Content.** Title is the sidebar row's title. Subtitle is the session
-name; for a remote window `user@host · session`, using the resolved
-identity the window title shows; for a `kido ssh` remote agent in a Local
+name; for a remote window `host · session`, with the entered host that
+the window title shows; for a `kido ssh` remote agent in a Local
 window, `session · destination`. Body: `Waiting` or
 `Waiting: <caption>`, else `Exit <code>: <command>` for a command, else
 `Failed` or `Failed: <caption>`. Nothing is truncated by the app.

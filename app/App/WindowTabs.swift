@@ -137,7 +137,7 @@ final class WindowTabs: NSView {
         slide(from: start)
     }
     var select: (WindowStep) -> Void = { _ in }
-    var hostLabel: () -> (text: String, alias: String, connected: Bool)? = { nil }
+    var hostLabel: () -> (text: String, connected: Bool)? = { nil }
     var theme: (background: NSColor, appearance: NSAppearance?) = (Chrome.defaultPaper, nil) {
         didSet {
             headerBackground.color = theme.background
@@ -180,13 +180,8 @@ final class WindowTabs: NSView {
             closeButton.isHidden = closeButton.frame.minX < hostWidth || closeButton.frame.maxX > bounds.width - 28
             closeButton.setAccessibilityLabel("Close window: " + entries[hovered].name)
         }
-        removeAllToolTips()
-        if hostLabel() != nil { addToolTip(NSRect(x: 0, y: 0, width: hostWidth, height: bounds.height), owner: self, userData: nil) }
     }
 
-    @objc func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
-        hostLabel()?.alias ?? ""
-    }
     override var mouseDownCanMoveWindow: Bool { false }
 
     private func tabWidth(_ count: Int, hostWidth: CGFloat) -> CGFloat { max(85, min(220, max(0, bounds.width - hostWidth - 28) / CGFloat(max(1, count)))) }

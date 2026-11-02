@@ -45,12 +45,12 @@ import SidebarFeed
             XCTAssertFalse(ssh.masterArguments.contains("ClearAllForwardings=yes"))
             XCTAssertTrue(ssh.masterArguments.contains("ExitOnForwardFailure=no"))
             XCTAssertFalse(ssh.masterArguments.contains("ForwardAgent=no"))
-            XCTAssertTrue(ssh.probeArguments.contains("ClearAllForwardings=yes"))
             XCTAssertTrue(ssh.checkArguments.contains("ClearAllForwardings=yes"))
-            let result = try await Child.run("/usr/bin/ssh", ssh.probeArguments, env: tools.environment.merging(["PRIVATE_AGENT": "/tmp/private-agent.sock"]) { _, new in new })
+            var probe = ssh.masterArguments
+            probe.insert("-G", at: probe.firstIndex(of: "--")!)
+            let result = try await Child.run("/usr/bin/ssh", probe, env: tools.environment.merging(["PRIVATE_AGENT": "/tmp/private-agent.sock"]) { _, new in new })
             XCTAssertEqual(result.status, 0, result.err)
             XCTAssertTrue(result.out.components(separatedBy: "\n").contains("forwardagent " + policy), result.out)
-            XCTAssertTrue(result.out.contains("clearallforwardings yes"))
             let helper = ssh.passenger(["/usr/bin/printf", "%s", "a'b $c"])
             XCTAssertTrue(helper.arguments.contains("ForwardAgent=no"))
             XCTAssertTrue(helper.arguments.contains("ClearAllForwardings=yes"))
@@ -69,6 +69,23 @@ import SidebarFeed
             return Launch("/usr/bin/printf", ["%s", output])
         })
         XCTAssertEqual(launches.last, ["/usr/bin/env", "SSH_AUTH_SOCK=" + endpoint.directory + "/agent.sock", "/tmp/kido", "server", "--server", endpoint.directory])
+    }
+
+    func testBadConfigurationIsReportedFromTheMaster() async throws {
+        let root = "/tmp/kr-badcfg-" + UUID().uuidString.prefix(8)
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try "Bogus yes\n".write(toFile: root + "/config", atomically: true, encoding: .utf8)
+        let ssh = try SSH("localhost")
+        ssh.testConfiguration = root + "/config"
+        addTeardownBlock { @MainActor in ssh.stop() }
+        do {
+            try await ssh.start(onLoss: { _ in })
+            XCTFail("start succeeded")
+        } catch {
+            XCTAssertTrue(error.message.contains("Bad configuration option"), error.message)
+            XCTAssertFalse(error.message.contains("did not become ready"), error.message)
+        }
     }
 
     func testPrivateAgentPublication() async throws {
@@ -375,7 +392,7 @@ import SidebarFeed
         transports += owners.compactMap(\.ssh)
         XCTAssertEqual(owners.count, 3)
         XCTAssertNotEqual(first.ssh?.directory, second.ssh?.directory)
-        XCTAssertTrue(first.window.title.hasPrefix(first.testIdentity + " / main"))
+        XCTAssertTrue(first.window.title.hasPrefix(first.host.label + " / main"))
         let a = try XCTUnwrap(first.testSession?.windows.values.first?.panes.first)
         let b = try XCTUnwrap(second.testSession?.windows.values.first?.panes.first)
         let c = try XCTUnwrap(local.testSession?.windows.values.first?.panes.first)

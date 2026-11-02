@@ -77,7 +77,7 @@ public struct NotifierState: Equatable, Sendable {
         return effects
     }
 
-    public mutating func step(owner: String, host: String, identity: String? = nil, snapshot: Snapshot,
+    public mutating func step(owner: String, host: String, snapshot: Snapshot,
                               fresh: Bool, seen: SidebarSeen, shown: Set<WindowID>, appActive: Bool) -> NotifierEffects {
         guard snapshot.error == nil else { return NotifierEffects() }
         let changed = owners[owner]?.instance != snapshot.serverInstance || owners[owner]?.host != host
@@ -128,7 +128,7 @@ public struct NotifierState: Equatable, Sendable {
             case .failure: body = caption.isEmpty ? "Failed" : "Failed: " + caption
             }
             var subtitle = session.name
-            if host != "local" { subtitle = "\(identity ?? String(host.dropFirst(4))) · \(subtitle)" }
+            if host != "local" { subtitle = "\(host.dropFirst(4)) · \(subtitle)" }
             else if case .live(.ssh(let destination, .agent)) = item.lifecycle { subtitle += " · \(destination)" }
             effects.post.append(Notice(kind: status == .waiting ? .waiting : .failed, key: key, target: NoticeTarget(host: host, instance: snapshot.serverInstance,
                 position: Snapshot.Position(session: session.id, window: item.window, pane: item.pane)),

@@ -83,7 +83,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let owner = try XCTUnwrap(delegate.open(.remote("buildbox"), start: false))
         defer { owner.close() }
         let tabs = owner.sidebar.tabs
-        XCTAssertEqual(tabs.hostLabel()?.alias, "buildbox")
+        XCTAssertEqual(tabs.hostLabel()?.text, "buildbox")
         XCTAssertFalse(try XCTUnwrap(tabs.hostLabel()).connected)
         tabs.entries = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 0), name: "Shell"), .init(id: WindowID(number: 1), name: "Editor")], window: WindowID(number: 0)).navigation(nil).tabs
         owner.window.display()
@@ -93,7 +93,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         XCTAssertFalse(owner.window(owner.window, willUseFullScreenPresentationOptions: [.fullScreen, .autoHideToolbar]).contains(.autoHideToolbar))
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         for (name, text, connected) in [("connected", "dev@buildbox", true), ("offline", "dev@buildbox", false), ("long", "developer@buildbox.production.eu-west.example.net", true), ("local", "", true)] {
-            tabs.hostLabel = { text.isEmpty ? nil : (text, "buildbox", connected) }
+            tabs.hostLabel = { text.isEmpty ? nil : (text, connected) }
             for mode in ["docked", "collapsed", "floating"] {
                 owner.sidebar.dismissFloating()
                 owner.sidebar.isCollapsed = mode != "docked"
@@ -117,7 +117,6 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
                     tabs.mouseDown(with: event)
                     XCTAssertEqual(selections, 0)
-                    XCTAssertEqual(tabs.view(tabs, stringForToolTip: 0, point: .zero, userData: nil), "buildbox")
                 }
                 if let failure = verifySnapshot(of: try headerImage(tabs), as: .image, named: "\(name)-\(mode)", record: record),
                    !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }

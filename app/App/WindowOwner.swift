@@ -86,7 +86,6 @@ private class AlertEscape: NSView {
     private var drain: Drain?
     private var initial: DispatchWorkItem?
     private(set) var ssh: SSH?
-    private(set) var identity: String? { didSet { sidebar.tabs.needsLayout = true; sidebar.tabs.needsDisplay = true } }
     var menuChanged: () -> Void = {}
     var onClose: () -> Void = {}
     var snapshotReceived: () -> Void = {}
@@ -229,8 +228,8 @@ private class AlertEscape: NSView {
         updateAppearance()
         window.contentViewController = sidebar
         sidebar.tabs.hostLabel = { [weak self] in
-            guard let self, case .remote(let alias) = self.host else { return nil }
-            return (self.identity ?? alias, alias, { if case .connected = self.link { return true }; return false }())
+            guard let self, self.host != .local else { return nil }
+            return (self.host.label, { if case .connected = self.link { return true }; return false }())
         }
         let toolbar = NSToolbar(identifier: "KidoSidebar")
         toolbar.delegate = sidebar
@@ -549,7 +548,7 @@ private class AlertEscape: NSView {
         guard admitsUpload() else { return }
         if host == .local || uploadPermission == .allow || Self.clipboardConsent.allows(host, .upload) { return transfer(plan, base: base, to: pane) }
         if uploadPermission == .deny { return notice("Kido did not upload", "Uploads to “\(host.label)” are denied for this connection.") }
-        askUpload(plan, to: host.label, "Kido copies them to \(base)/drops on \(identity ?? host.label) and pastes their paths. Files are kept for about 7 days.",
+        askUpload(plan, to: host.label, "Kido copies them to \(base)/drops on \(host.label) and pastes their paths. Files are kept for about 7 days.",
                   ["Allow for this connection", "Always allow", "Deny"]) { [weak self, weak pane] response in
             guard let self else { return }
             if response == .alertSecondButtonReturn { Self.clipboardConsent.allowAlways(host, .upload) }
@@ -846,7 +845,7 @@ private class AlertEscape: NSView {
     private func present(_ view: SessionView) {
         if let held, !holds(held) { self.held = nil }
         let model = model
-        window.title = host == .local ? model.title : "\(identity ?? host.label) / \(model.title)"
+        window.title = host == .local ? model.title : "\(host.label) / \(model.title)"
         if model.session == nil { snapshot = nil }
         updateTabs()
         if view.superview == nil {
@@ -1097,9 +1096,7 @@ private class AlertEscape: NSView {
         if let testRemoteEnvironment { transport.testEnvironment(testRemoteEnvironment) }
         transport.testConfiguration = testSSHConfiguration
         #endif
-        let resolved = try await transport.start(drain: drain) { [weak self] error in self?.failed(token, error) }
-        guard accepts(token) else { return }
-        identity = resolved
+        try await transport.start(drain: drain) { [weak self] error in self?.failed(token, error) }
     }
 
     private func ready() {
@@ -1152,7 +1149,7 @@ private class AlertEscape: NSView {
             snapshot = nil
             updateTabs()
         }
-        window.title = host == .local ? "Local" : identity ?? host.label
+        window.title = host == .local ? "Local" : host.label
     }
 
     func close(cause: Connection.CloseCause = .windowClosed) {
@@ -1184,7 +1181,6 @@ private class AlertEscape: NSView {
     #if KIDO_VISUAL || KIDO_STRESS
     var testRemoteEnvironment: [String: String]?
     var testSSHConfiguration: String?
-    var testIdentity: String { identity ?? host.label }
     var testEndpoint: Endpoint?
     var testUploadBase: String?
     var testBanner: Banner { banner }

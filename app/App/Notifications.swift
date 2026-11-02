@@ -131,7 +131,7 @@ import UserNotifications
         let shown = Set(windows.filter(\.attended).compactMap { $0.snapshot?.client.window })
         for owner in windows {
             guard let snapshot = owner.snapshot, !owner.feedFresh || owner === snapshotOwner else { continue }
-            let effects = state.step(owner: owner.notificationID, host: host.clipboardKey, identity: owner.identity,
+            let effects = state.step(owner: owner.notificationID, host: host.clipboardKey,
                 snapshot: snapshot, fresh: owner.feedFresh, seen: owner.seen.value, shown: shown, appActive: NSApp.isActive)
             poster.withdraw(effects.withdraw)
             effects.post.forEach { poster.post($0) }

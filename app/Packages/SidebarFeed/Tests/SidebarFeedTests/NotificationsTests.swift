@@ -10,8 +10,8 @@ private func notifier() throws -> NotifierState {
 }
 
 private func step(_ state: inout NotifierState, _ nodes: [[String: Any]], owner: String = "a", host: String = "local",
-                  identity: String? = nil, fresh: Bool = false, seen: SidebarSeen = SidebarSeen(), shown: Set<WindowID> = [], appActive: Bool = false) throws -> NotifierEffects {
-    state.step(owner: owner, host: host, identity: identity, snapshot: try decode(snapshotObject(nodes)), fresh: fresh, seen: seen, shown: shown, appActive: appActive)
+                  fresh: Bool = false, seen: SidebarSeen = SidebarSeen(), shown: Set<WindowID> = [], appActive: Bool = false) throws -> NotifierEffects {
+    state.step(owner: owner, host: host, snapshot: try decode(snapshotObject(nodes)), fresh: fresh, seen: seen, shown: shown, appActive: appActive)
 }
 
 @Test func notificationBaselines() throws {
@@ -252,8 +252,8 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
     #expect(posts[4].subtitle == "session-0")
     #expect(try JSONDecoder().decode(NoticeTarget.self, from: JSONEncoder().encode(posts[0].target)) == posts[0].target)
     _ = try step(&state, [], owner: "remote", host: "ssh:dev", fresh: true)
-    let remotePosts = try step(&state, nodes, owner: "remote", host: "ssh:dev", identity: "bob@machine").post
-    #expect(remotePosts[0].subtitle == "bob@machine · session-0")
+    let remotePosts = try step(&state, nodes, owner: "remote", host: "ssh:dev").post
+    #expect(remotePosts[0].subtitle == "dev · session-0")
     #expect(remotePosts[0].target.host == "ssh:dev")
 }
 

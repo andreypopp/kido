@@ -581,7 +581,7 @@ extension VisualTests {
         try await start(initialOutput: imageFixture)
         let ssh = try SSH("localhost")
         addTeardownBlock { @MainActor in ssh.stop() }
-        _ = try await ssh.start(onLoss: { XCTFail($0.message) })
+        try await ssh.start(onLoss: { XCTFail($0.message) })
         try await imageReconnect(ssh: ssh)
         let pane = try XCTUnwrap(terminal?.panes.first)
         try await imagePixels(pane)
