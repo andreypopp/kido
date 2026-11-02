@@ -1349,6 +1349,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make test    dune test --force, ko's e2e suite and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
     make schemas regenerate share/ko/openapi.json and share/pi/ko-api.d.ts through scripts/lint.sh --update-schemas
+    make api-docs  one static HTML page of share/ko/openapi.json (Redocly) in build/ko-api.html; not part of verify
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
     make fuzz TARGET=ring TIME=600  one time-boxed ko fuzz run, for CI or the user; no TARGET lists the targets

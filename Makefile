@@ -45,12 +45,18 @@ test:
 
 TMUX_FORK_KEY := $(shell ./scripts/install-tmux-fork.sh --print-build-key)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_KEY)
-.PHONY: build-ko build-fake-ko ko-client-xcframework build-bench test-ko cargo fmt lint-rs lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts schemas website
+.PHONY: build-ko build-fake-ko ko-client-xcframework build-bench test-ko cargo fmt lint-rs lint-ko probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko pinned-fork verify verify-ko flake clean-forks preview-pi unpreview-pi release prompts schemas api-docs website
 prompts:
 	./scripts/lint.sh --update-prompts
 
 schemas:
 	./scripts/lint.sh --update-schemas
+
+api-docs:
+	@cd share/pi && npm ci --silent
+	@mkdir -p build
+	@share/pi/node_modules/.bin/redocly build-docs share/ko/openapi.json --output build/ko-api.html >/dev/null
+	@echo build/ko-api.html
 
 pinned-fork:
 	$(call ensure-fork,$(TMUX_FORK))
