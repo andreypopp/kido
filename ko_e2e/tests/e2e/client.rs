@@ -519,10 +519,25 @@ fn client_modes_before_attach_and_unattached_da1() {
     let pasted = "\x1b[200~abc\x1b[201~";
     o.raw(pasted);
     o.contains(&input(pasted));
+    let pane_screen = || {
+        s.request(
+            "GET",
+            &format!("/panes/{pane}/screen?format=plain&history=all"),
+            None,
+            200,
+        )
+    };
+    let focus_outs = pane_screen().matches(&input(FOCUS_OUT)).count();
     o.detach();
+    o.wait("focus-out of the detach read by the pane", || {
+        pane_screen().matches(&input(FOCUS_OUT)).count() > focus_outs
+    });
 
     o.attach("cat");
     o.contains("MODE-READY");
+    o.wait("focus-in forwarded on reattach", || {
+        lines_with(&input(FOCUS_IN)) == focus_ins + 2
+    });
     o.raw(UP);
     o.wait("kitty mode input survives reattach", || {
         lines_with(&input("\x1b[1;1:1A")) == 2

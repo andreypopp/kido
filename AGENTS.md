@@ -440,7 +440,10 @@ Conventions:
   terminal paints. Each child gets an explicit environment through
   `spawn::program`'s `Env::Only`, scrubbed as `harness::test_env` does,
   with a private `HOME` and XDG directories; the test process never sets
-  its own environment. State directories are under `/tmp`, for the
+  its own environment. A server's private `HOME` is its state
+  directory, which `harness::start_with` gives an empty `.zshrc`:
+  without it, Debian's zsh-newuser-install menu blocks a login zsh.
+  State directories are under `/tmp`, for the
   104-byte socket path limit. Every wait reads a socket or polls a
   condition with a deadline of 5 s. `scripts/lint.sh` refuses
   `thread::sleep` and `thread::park_timeout` in `ko_e2e/` except through
@@ -1480,7 +1483,8 @@ because `ko_server/build.rs` runs git. Linux's ko check is
 `make ci-like ARGS="--cpus 3 --memory 6g -- make verify-ko"`; the
 Rust and zig builds need more than the default 1g. The podman
 machine on Apple silicon runs aarch64 Linux; CI's Ubuntu runner is
-x86_64.
+x86_64. For a worktree under `/tmp`, run the script from its
+`/private/tmp` path: podman cannot mount the `/tmp` alias.
 
 **The e2e harness** (`test_e2e/harness_test.go`) nests two tmux servers.
 The outer server hosts a pty.

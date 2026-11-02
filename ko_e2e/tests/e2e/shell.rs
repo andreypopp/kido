@@ -49,10 +49,10 @@ fn ssh_mark() {
     };
 
     let pane = session("alias uptime");
-    let row = s.wait_row(&pane, "the ssh marks", |row| {
+    s.wait_row(&pane, "the ssh marks", |row| {
         row["vars"]["ssh.dest"] == "deploy@example.test"
+            && row["vars"]["ssh.args"] == json!(["alias"])
     });
-    assert_eq!(row["vars"]["ssh.args"], json!(["alias"]));
     s.screen_has(&pane, "SSH-ARGS:alias uptime");
 
     s.text(&pane, "prompt\n");
@@ -89,13 +89,10 @@ fn ssh_mark() {
     assert_eq!(row["vars"]["ssh.args"], json!(["alias"]));
 
     let realm = session("-l deploy@realm realm uptime");
-    let row = s.wait_row(&realm, "the realm marks", |row| {
+    s.wait_row(&realm, "the realm marks", |row| {
         row["vars"]["ssh.dest"] == "deploy@realm@next.test"
+            && row["vars"]["ssh.args"] == json!(["-l", "deploy@realm", "realm"])
     });
-    assert_eq!(
-        row["vars"]["ssh.args"],
-        json!(["-l", "deploy@realm", "realm"])
-    );
     s.text(&realm, "prompt\n");
     let row = s.wait_row(&realm, "the split destination", |row| {
         row["status"]["kind"]["type"] == "ssh"

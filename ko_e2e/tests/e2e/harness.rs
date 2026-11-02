@@ -610,6 +610,7 @@ pub(crate) fn start(args: &[&str]) -> Server {
 
 pub(crate) fn start_with(shell: &Path, env: &[(&str, &str)], args: &[&str]) -> Server {
     let dir = Dir::new("ko-");
+    std::fs::write(dir.join(".zshrc"), "").unwrap();
     let log = PathBuf::from(format!("{}.log", dir.display()));
     let (null, output) = (
         File::open("/dev/null").unwrap(),
